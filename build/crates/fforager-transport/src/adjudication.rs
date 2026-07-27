@@ -291,6 +291,55 @@ impl LiveWireProbeReport {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveProbeVerdict {
+    ObservedExternalWire,
+    BlockedExternalWire,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedLiveProbeReport {
+    schema_version: String,
+    verdict: LiveProbeVerdict,
+    endpoint_id: String,
+    candidate: String,
+    evidence: Option<LiveWireProbeReport>,
+    error: Option<String>,
+}
+
+impl PersistedLiveProbeReport {
+    #[must_use]
+    pub fn observed(evidence: LiveWireProbeReport) -> Self {
+        Self {
+            schema_version: "ff-wreq-live-probe-v1".to_owned(),
+            verdict: LiveProbeVerdict::ObservedExternalWire,
+            endpoint_id: "tls-peet-api-all".to_owned(),
+            candidate: "wreq-6.0.0-rc.29".to_owned(),
+            evidence: Some(evidence),
+            error: None,
+        }
+    }
+
+    #[must_use]
+    pub fn blocked(error: String) -> Self {
+        Self {
+            schema_version: "ff-wreq-live-probe-v1".to_owned(),
+            verdict: LiveProbeVerdict::BlockedExternalWire,
+            endpoint_id: "tls-peet-api-all".to_owned(),
+            candidate: "wreq-6.0.0-rc.29".to_owned(),
+            evidence: None,
+            error: Some(error),
+        }
+    }
+
+    #[must_use]
+    pub fn verdict(&self) -> LiveProbeVerdict {
+        self.verdict
+    }
+}
+
 /// Strictly consumes a serialized live report and rejects identity, capability,
 /// structure, parity, and receipt-hash drift.
 ///
@@ -326,9 +375,13 @@ pub fn validate_live_wire_probe_report(
         StructuralWireEvidence::ObservationOnly { receipt_sha256 }
             if receipt_sha256 == &expected_receipt_hash
     );
-    let one_pool_blocker = report.observation.semantic_capabilities.blocked.len() == 1
-        && report.observation.semantic_capabilities.blocked[0].capability
-            == Capability::PoolPartition;
+    let blocked_semantics = report
+        .observation
+        .semantic_capabilities
+        .blocked
+        .iter()
+        .map(|blocked| blocked.capability)
+        .collect::<BTreeSet<_>>();
     if report.schema_version != "ff-wreq-live-probe-v1"
         || report.evidence_class != "structural_observation_only"
         || report.observation.backend_id != BACKEND_ID
@@ -342,10 +395,13 @@ pub fn validate_live_wire_probe_report(
         || !report.observation.transport_preflight.blocked.is_empty()
         || !report.observation.transport_preflight.execution_allowed
         || report.observation.semantic_capabilities.requested != expected_semantics
-        || report.observation.semantic_capabilities.satisfied
-            != BTreeSet::from([Capability::TlsFingerprint, Capability::Http2Fingerprint])
+        || !report
+            .observation
+            .semantic_capabilities
+            .satisfied
+            .is_empty()
         || report.observation.semantic_capabilities.execution_allowed
-        || !one_pool_blocker
+        || blocked_semantics != expected_semantics
         || !receipt_hash_matches
         || report.receipt.schema_version != "ff-fingerprint-observation-v1"
         || report.receipt.endpoint_id != "tls-peet-api-all"
@@ -363,6 +419,52 @@ pub fn validate_live_wire_probe_report(
         return Err(AdjudicationError::WireReceipt(
             "live report failed strict identity or consistency validation".to_owned(),
         ));
+    }
+    Ok(report)
+}
+
+/// Strictly consumes the complete artifact persisted by the live-probe CLI.
+///
+/// # Errors
+///
+/// Returns a typed wire-receipt error when the outer identity/verdict envelope
+/// or its inner evidence is oversized, malformed, mutated, or inconsistent.
+pub fn validate_persisted_live_probe_report(
+    bytes: &[u8],
+) -> Result<PersistedLiveProbeReport, AdjudicationError> {
+    const MAX_PERSISTED_REPORT_BYTES: usize = 2 * 1024 * 1024;
+    if bytes.len() > MAX_PERSISTED_REPORT_BYTES {
+        return Err(AdjudicationError::WireReceipt(
+            "persisted live report exceeds 2097152 bytes".to_owned(),
+        ));
+    }
+    let report: PersistedLiveProbeReport = serde_json::from_slice(bytes).map_err(|_| {
+        AdjudicationError::WireReceipt("invalid strict persisted live report JSON".to_owned())
+    })?;
+    if report.schema_version != "ff-wreq-live-probe-v1"
+        || report.endpoint_id != "tls-peet-api-all"
+        || report.candidate != "wreq-6.0.0-rc.29"
+    {
+        return Err(AdjudicationError::WireReceipt(
+            "persisted live report identity mismatch".to_owned(),
+        ));
+    }
+    match (&report.verdict, &report.evidence, &report.error) {
+        (LiveProbeVerdict::ObservedExternalWire, Some(evidence), None) => {
+            let encoded = serde_json::to_vec(evidence).map_err(|_| {
+                AdjudicationError::WireReceipt("evidence encoding failed".to_owned())
+            })?;
+            validate_live_wire_probe_report(&encoded)?;
+        }
+        (LiveProbeVerdict::BlockedExternalWire, None, Some(error))
+            if error.starts_with("FF-WREQ-E-")
+                && error.len() <= 1024
+                && !error.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) => {}
+        _ => {
+            return Err(AdjudicationError::WireReceipt(
+                "persisted live report verdict payload mismatch".to_owned(),
+            ));
+        }
     }
     Ok(report)
 }
@@ -712,8 +814,6 @@ fn transport_capabilities(profile: FingerprintProfile) -> BTreeSet<Capability> {
     let mut capabilities = BTreeSet::from([Capability::Http11, Capability::BodyBounds]);
     if profile == FingerprintProfile::Chrome136Windows {
         capabilities.insert(Capability::Http2);
-        capabilities.insert(Capability::TlsFingerprint);
-        capabilities.insert(Capability::Http2Fingerprint);
     }
     capabilities
 }
@@ -831,7 +931,6 @@ fn sanitize_local_receipt(captured: CapturedRequest) -> LocalProbeReceipt {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ExternalWireEcho {
     http_version: String,
     tls: ExternalTlsEcho,
@@ -839,14 +938,12 @@ struct ExternalWireEcho {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ExternalTlsEcho {
     ja3_hash: String,
     ja4: String,
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ExternalHttp2Echo {
     akamai_fingerprint: String,
     akamai_fingerprint_hash: String,
@@ -973,8 +1070,6 @@ mod tests {
                 Capability::Http11,
                 Capability::Http2,
                 Capability::BodyBounds,
-                Capability::TlsFingerprint,
-                Capability::Http2Fingerprint,
             ]),
             semantic_capabilities: semantic_capability_decision(
                 FingerprintProfile::Chrome136Windows,
@@ -995,14 +1090,21 @@ mod tests {
 
     fn structurally_valid_echo() -> &'static [u8] {
         br#"{
+            "donate":"https://example.invalid",
+            "ip":"203.0.113.1:443",
+            "method":"GET",
+            "user_agent":"fixture",
+            "tcpip":{"ip":{"version":4}},
             "http_version":"h2",
             "tls":{
                 "ja3_hash":"0123456789abcdef0123456789abcdef",
-                "ja4":"t13d1516h2_8daaf6152771_02713d6af862"
+                "ja4":"t13d1516h2_8daaf6152771_02713d6af862",
+                "ciphers":["TLS_AES_128_GCM_SHA256"]
             },
             "http2":{
                 "akamai_fingerprint":"1:65536;2:0;4:6291456|15663105|0|m,a,s,p",
-                "akamai_fingerprint_hash":"abcdef0123456789abcdef0123456789"
+                "akamai_fingerprint_hash":"abcdef0123456789abcdef0123456789",
+                "sent_frames":[{"frame_type":"SETTINGS"}]
             }
         }"#
     }
@@ -1080,7 +1182,8 @@ mod tests {
             ])
         );
         assert!(!observation.semantic_capabilities().execution_allowed);
-        assert_eq!(observation.semantic_capabilities().blocked.len(), 1);
+        assert!(observation.semantic_capabilities().satisfied.is_empty());
+        assert_eq!(observation.semantic_capabilities().blocked.len(), 3);
         assert_ne!(
             observation.profile_client_partition(),
             "ordinary-profile-client",
@@ -1296,23 +1399,69 @@ mod tests {
             )
             .is_err()
         );
+
+        let mut semantic_mutation: serde_json::Value =
+            serde_json::from_slice(&encoded).expect("report value");
+        semantic_mutation["observation"]["semantic_capabilities"]["satisfied"] =
+            serde_json::json!(["tls_fingerprint", "http2_fingerprint"]);
+        assert!(
+            validate_live_wire_probe_report(
+                &serde_json::to_vec(&semantic_mutation).expect("semantic mutation")
+            )
+            .is_err()
+        );
     }
 
     #[test]
-    fn unknown_nested_receipt_field_is_rejected() {
+    fn endpoint_owned_extra_fields_do_not_block_required_wire_observation() {
         let body = br#"{
             "http_version":"h2",
             "tls":{
                 "ja3_hash":"0123456789abcdef0123456789abcdef",
                 "ja4":"t13d1516h2_8daaf6152771_02713d6af862",
-                "forged":"accepted"
+                "endpoint_owned_extra":"accepted"
             },
             "http2":{
-                "akamai_fingerprint":"1:65536|m,a,s,p",
-                "akamai_fingerprint_hash":"abcdef0123456789abcdef0123456789"
-            }
+                "akamai_fingerprint":"1:65536|15663105|0|m,a,s,p",
+                "akamai_fingerprint_hash":"abcdef0123456789abcdef0123456789",
+                "endpoint_owned_extra":[1,2,3]
+            },
+            "endpoint_owned_extra":{"current_schema_can_grow":true}
         }"#;
-        assert!(parse_structural_wire_receipt(&eligible_observation(), body).is_err());
+        assert!(parse_structural_wire_receipt(&eligible_observation(), body).is_ok());
+    }
+
+    #[test]
+    fn persisted_report_consumer_rejects_outer_and_inner_mutations() {
+        let report = PersistedLiveProbeReport::observed(structurally_valid_report());
+        let encoded = serde_json::to_vec(&report).expect("persisted report");
+        validate_persisted_live_probe_report(&encoded).expect("valid persisted report");
+
+        let mut outer_mutation: serde_json::Value =
+            serde_json::from_slice(&encoded).expect("report value");
+        outer_mutation["candidate"] = serde_json::Value::String("wreq-latest".to_owned());
+        assert!(
+            validate_persisted_live_probe_report(
+                &serde_json::to_vec(&outer_mutation).expect("outer mutation")
+            )
+            .is_err()
+        );
+
+        let mut inner_mutation: serde_json::Value =
+            serde_json::from_slice(&encoded).expect("report value");
+        inner_mutation["evidence"]["receipt"]["unexpected"] = serde_json::Value::Bool(true);
+        assert!(
+            validate_persisted_live_probe_report(
+                &serde_json::to_vec(&inner_mutation).expect("inner mutation")
+            )
+            .is_err()
+        );
+
+        let blocked = PersistedLiveProbeReport::blocked("FF-WREQ-E-REQUEST: connect".to_owned());
+        validate_persisted_live_probe_report(
+            &serde_json::to_vec(&blocked).expect("blocked report"),
+        )
+        .expect("valid blocked report");
     }
 
     #[test]

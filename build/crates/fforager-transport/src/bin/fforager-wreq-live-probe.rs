@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
-use fforager_transport::{LiveProbeOptions, WreqAdjudicationAdapter};
+use fforager_transport::{
+    LiveProbeOptions, PersistedLiveProbeReport, WreqAdjudicationAdapter,
+    validate_persisted_live_probe_report,
+};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
@@ -9,17 +12,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_REPORT_BYTES: usize = 2 * 1024 * 1024;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Debug, Serialize)]
-#[serde(deny_unknown_fields)]
-struct LiveProbeReport<T> {
-    schema_version: &'static str,
-    verdict: &'static str,
-    endpoint_id: &'static str,
-    candidate: &'static str,
-    evidence: Option<T>,
-    error: Option<String>,
-}
 
 #[derive(Debug)]
 struct RunOutcome {
@@ -51,30 +43,10 @@ fn run(arguments: impl Iterator<Item = String>) -> Result<RunOutcome, String> {
     let result =
         WreqAdjudicationAdapter::new().and_then(|adapter| adapter.execute_live_wire_probe(options));
     let (report, exit_code) = match result {
-        Ok(evidence) => (
-            LiveProbeReport {
-                schema_version: "ff-wreq-live-probe-v1",
-                verdict: "observed_external_wire",
-                endpoint_id: "tls-peet-api-all",
-                candidate: "wreq-6.0.0-rc.29",
-                evidence: Some(evidence),
-                error: None,
-            },
-            0,
-        ),
-        Err(error) => (
-            LiveProbeReport {
-                schema_version: "ff-wreq-live-probe-v1",
-                verdict: "blocked_external_wire",
-                endpoint_id: "tls-peet-api-all",
-                candidate: "wreq-6.0.0-rc.29",
-                evidence: None,
-                error: Some(error.to_string()),
-            },
-            1,
-        ),
+        Ok(evidence) => (PersistedLiveProbeReport::observed(evidence), 0),
+        Err(error) => (PersistedLiveProbeReport::blocked(error.to_string()), 1),
     };
-    write_json_report_atomic(&output, &report)?;
+    write_persisted_report_atomic(&output, &report)?;
     let verdict = if exit_code == 0 {
         "observed_external_wire"
     } else {
@@ -123,6 +95,17 @@ fn report_path(value: &str) -> Result<PathBuf, String> {
     } else {
         Err("output must be a space-free relative build/reports/NAME.json path".to_owned())
     }
+}
+
+fn write_persisted_report_atomic(
+    path: &Path,
+    report: &PersistedLiveProbeReport,
+) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec_pretty(report)
+        .map_err(|error| format!("FF-WREQ-E-REPORT-ENCODE: {error}"))?;
+    bytes.push(b'\n');
+    validate_persisted_live_probe_report(&bytes).map_err(|error| error.to_string())?;
+    write_report_bytes_atomic(path, &bytes)
 }
 
 fn write_json_report_atomic(path: &Path, report: &impl Serialize) -> Result<(), String> {
@@ -177,11 +160,29 @@ fn write_report_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             }
         })
     })();
-    let cleanup = fs::remove_file(&temporary);
-    match (result, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Ok(()), Err(error)) => Err(format!("FF-WREQ-E-REPORT-CLEANUP: {error}")),
-        (Err(error), _) => Err(error),
+    match result {
+        Ok(()) => {
+            cleanup_after_commit(path, &temporary, |candidate| fs::remove_file(candidate));
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
+}
+
+fn cleanup_after_commit(
+    committed: &Path,
+    temporary: &Path,
+    cleanup: impl FnOnce(&Path) -> std::io::Result<()>,
+) {
+    if let Err(error) = cleanup(temporary) {
+        eprintln!(
+            "FF-WREQ-W-REPORT-CLEANUP: report committed at {}; temporary name {} requires cleanup: {error}",
+            committed.display(),
+            temporary.display()
+        );
     }
 }
 
@@ -280,5 +281,17 @@ mod tests {
                     .is_none_or(|extension| extension != "tmp"))
         );
         fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn cleanup_failure_cannot_downgrade_a_committed_report() {
+        let committed = Path::new("build/reports/committed.json");
+        let temporary = Path::new("build/reports/.committed.json.tmp");
+        cleanup_after_commit(committed, temporary, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "mutation-only cleanup failure",
+            ))
+        });
     }
 }

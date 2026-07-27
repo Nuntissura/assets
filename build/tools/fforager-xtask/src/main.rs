@@ -4260,6 +4260,7 @@ fn validate_transitive_dependencies(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_native_exception_reachability(
     policy: &ArchitecturePolicy,
     metadata: &Metadata,
@@ -11094,19 +11095,26 @@ mod tests {
         );
         assert_architecture_mutation_fails(
             "native-exception-shipped-product-reachability",
-            |root| {
-                replace_file_text(
-                    &root.join("product/crates/fforager-core/Cargo.toml"),
-                    "fforager-contracts = { version = \"0.1.0\", path = \"../fforager-contracts\" }",
-                    "fforager-contracts = { version = \"0.1.0\", path = \"../fforager-contracts\" }\nwreq.workspace = true",
-                );
-                replace_file_text(
-                    &root.join("build/architecture-policy.toml"),
-                    "[[dependency_decisions]]\nname = \"toml\"",
-                    "[[dependency_decisions]]\nname = \"wreq\"\nversion = \"6.0.0-rc.29\"\nconsumer = \"fforager-core\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only shipped consumer bypass probe.\"\nnative = false\nowner = \"WP-FF-015-wreq-transport-adjudication\"\nallowed_consumers = [\"fforager-core\"]\nreason = \"Mutation-only reachability proof.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-015-wreq-transport-adjudication-v1-AC-001\"\nfeatures = [\"stream\", \"tokio-rt\", \"webpki-roots\"]\ndefault_features = false\n\n[[dependency_decisions]]\nname = \"toml\"",
-                );
-            },
+            mutate_shipped_product_native_reachability,
             "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY",
+        );
+    }
+
+    #[test]
+    fn native_exception_shipped_product_reachability_rejects_actual_resolve_graph() {
+        let root = architecture_sandbox("native-exception-shipped-product-resolve-graph");
+        mutate_shipped_product_native_reachability(&root);
+        let policy: ArchitecturePolicy =
+            read_toml(&root.join("build/architecture-policy.toml")).unwrap();
+        let native_exceptions =
+            read_native_dependency_exceptions(&root.join(&policy.exception_authority)).unwrap();
+        let metadata = cargo_metadata(&root, &policy).unwrap();
+        let error = validate_native_exception_reachability(&policy, &metadata, &native_exceptions)
+            .unwrap_err();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(
+            error.contains("FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY"),
+            "expected shipped-product reachability rejection, observed {error}"
         );
     }
 
@@ -11772,5 +11780,23 @@ mod tests {
         let text = fs::read_to_string(path).unwrap();
         assert!(text.contains(before), "missing mutation anchor {before}");
         fs::write(path, text.replacen(before, after, 1)).unwrap();
+    }
+
+    fn mutate_shipped_product_native_reachability(root: &Path) {
+        replace_file_text(
+            &root.join("product/crates/fforager-core/Cargo.toml"),
+            "fforager-contracts = { version = \"0.1.0\", path = \"../fforager-contracts\" }",
+            "fforager-contracts = { version = \"0.1.0\", path = \"../fforager-contracts\" }\nwreq.workspace = true",
+        );
+        replace_file_text(
+            &root.join("build/Cargo.lock"),
+            "name = \"fforager-core\"\nversion = \"0.1.0\"\ndependencies = [\n \"fforager-contracts\",\n]",
+            "name = \"fforager-core\"\nversion = \"0.1.0\"\ndependencies = [\n \"fforager-contracts\",\n \"wreq\",\n]",
+        );
+        replace_file_text(
+            &root.join("build/architecture-policy.toml"),
+            "[[dependency_decisions]]\nname = \"toml\"",
+            "[[dependency_decisions]]\nname = \"wreq\"\nversion = \"6.0.0-rc.29\"\nconsumer = \"fforager-core\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only shipped consumer bypass probe.\"\nnative = false\nowner = \"WP-FF-015-wreq-transport-adjudication\"\nallowed_consumers = [\"fforager-core\"]\nreason = \"Mutation-only reachability proof.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-015-wreq-transport-adjudication-v1-AC-001\"\nfeatures = [\"stream\", \"tokio-rt\", \"webpki-roots\"]\ndefault_features = false\n\n[[dependency_decisions]]\nname = \"toml\"",
+        );
     }
 }
