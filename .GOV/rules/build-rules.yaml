@@ -3,6 +3,12 @@ file_id: FF-GOV-RULES-001
 updated_at: "2026-07-27"
 authority: canonical
 verification_gates:
+  - id: FF-GATE-SECRET-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- secret-scan --history
+    working_directory: repository_root
+    purpose: Reject provider-pattern API keys in reachable history without emitting matched values; repository hooks apply the same scanner to exact staged blobs before commit and all outgoing commits before push.
+    required_when: before every commit, push, pull-request verification, and release
+    current_status: IMPLEMENTED
   - id: FF-GATE-ARCH-001
     command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check
     working_directory: repository_root
@@ -39,6 +45,12 @@ verification_gates:
     purpose: Classify product impact, reject test-only or substitute proof, and for product-affecting work build, stage, execute, identify, and counterfactually validate the exact production artifact through its shipped entrypoint.
     required_when: every TRACKED or EXPANDED product-affecting change and every product capability, product phase, packaging, release, or replacement claim
     current_status: IMPLEMENTED_RUNTIME_PATH_UNEXERCISED_NO_SHIPPED_MEMBER
+  - id: FF-GATE-ARTIFACT-HYGIENE-001
+    command: powershell -NoProfile -File build/scripts/clean-artifacts.ps1 -VerifyOnly
+    working_directory: repository_root
+    purpose: Prove the single ignored repository-root artifact directory is empty before another task begins.
+    required_when: before selecting, starting, or moving to the next task
+    current_status: IMPLEMENTED
 change_evidence_contract:
   canonical_location: active_work_packet.extensions.change_evidence
   resolved_by: START_HERE.yaml -> .GOV/taskboard/taskboard.yaml -> active work packet
@@ -395,7 +407,7 @@ rules:
 
   - id: FF-BUILD-077
     category: architecture
-    statement: "The repository MUST maintain three non-overlapping roots: .GOV/ owns governance; product/ owns shipped runtime code, assets, the watcher, and package-local product tests; build/ owns the Cargo workspace, lockfile, build policies, non-shipped tooling, shared test infrastructure, reports, and target output. rust-toolchain.toml at repository root is the sole rustup selector, and shipped product runtime MUST NOT require .GOV/ or build/ at runtime."
+    statement: "The repository MUST maintain three non-overlapping tracked roots: .GOV/ owns governance; product/ owns shipped runtime code, assets, the watcher, and package-local product tests; build/ owns the Cargo workspace, lockfile, build policies, non-shipped tooling, shared test infrastructure, and governance reports. The ignored `.fforager-artifacts/` root owns all disposable build and test output. rust-toolchain.toml at repository root is the sole rustup selector, and shipped product runtime MUST NOT require .GOV/, build/, or `.fforager-artifacts/` at runtime."
     enforcement: REQUIRED
 
   - id: FF-BUILD-078
@@ -410,7 +422,7 @@ rules:
     enforcement: REQUIRED
   - id: FF-BUILD-080
     category: runtime_truth
-    statement: FF-GATE-RUNTIME-001 MUST build the locked shipping profile once, record the artifact digest, stage that exact artifact into a clean package directory, and execute it without source-tree, governance, build-tool, dev-dependency, testkit, test-only feature, or cfg(test) assistance.
+    statement: FF-GATE-RUNTIME-001 MUST build the locked shipping profile once, record the artifact digest, stage that exact artifact into an isolated `.fforager-artifacts/runtime-proof/` package directory, and execute it without governance, build-tool, product-source, dev-dependency, testkit, test-only feature, or cfg(test) assistance.
     enforcement: REQUIRED
   - id: FF-BUILD-081
     category: runtime_truth
@@ -488,4 +500,9 @@ rules:
   - id: FF-BUILD-098
     category: validation_reporting
     statement: Every gate result MUST record proof class, concrete input, executed boundary, expected result, observed result, and skipped semantic dependencies; aggregation MUST preserve the weakest proof class and MUST NOT promote structural-only evidence to semantic, integration, or runtime PASS.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-099
+    category: credential_protection
+    statement: "No commit or push may contain an API key or credential. Pre-commit MUST scan exact stage-zero index blobs; pre-push MUST scan every complete outgoing commit snapshot including new-branch ancestry; canonical verification MUST scan reachable history, the exact index, and tracked or non-ignored worktree files; binary blobs are scanned, oversized or unreadable blobs fail closed, matched values are never emitted, explicit redacted placeholders remain legal, and GitHub secret-scanning push protection MUST remain enabled as an independent remote pre-receive control."
     enforcement: REQUIRED

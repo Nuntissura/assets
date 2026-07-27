@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+hook_target=.fforager-artifacts/cargo-target
+if ! CARGO_TARGET_DIR="$hook_target" cargo build --quiet --manifest-path build/Cargo.toml --locked -p fforager-xtask >/dev/null 2>&1; then
+  echo "FF-SECRET-E-BOOTSTRAP: scanner build failed; compiler output suppressed" >&2
+  exit 1
+fi
+scanner="$hook_target/debug/fforager-xtask"
+if [ -x "$scanner.exe" ]; then scanner="$scanner.exe"; fi
+exec "$scanner" secret-scan --staged

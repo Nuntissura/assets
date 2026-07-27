@@ -3209,7 +3209,8 @@ fn optional_arg<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 
 fn require_safe_output(root: &Path, path: &str) -> Result<PathBuf, String> {
     if !safe_relative(path)
-        || !(path.starts_with("build/fixtures/compatibility/") || path.starts_with("build/target/"))
+        || !(path.starts_with("build/fixtures/compatibility/")
+            || path.starts_with(".fforager-artifacts/cargo-target/"))
     {
         return Err(format!("unsafe compatibility output path {path}"));
     }
@@ -3237,7 +3238,8 @@ fn require_safe_output(root: &Path, path: &str) -> Result<PathBuf, String> {
 
 fn require_safe_input(root: &Path, path: &str) -> Result<PathBuf, String> {
     if !safe_relative(path)
-        || !(path.starts_with("build/fixtures/compatibility/") || path.starts_with("build/target/"))
+        || !(path.starts_with("build/fixtures/compatibility/")
+            || path.starts_with(".fforager-artifacts/cargo-target/"))
     {
         return Err(format!("unsafe compatibility input path {path}"));
     }
@@ -3257,7 +3259,7 @@ fn require_safe_input(root: &Path, path: &str) -> Result<PathBuf, String> {
 fn canonical_compatibility_roots(root: &Path) -> Result<[PathBuf; 2], String> {
     let fixtures = fs::canonicalize(root.join("build/fixtures/compatibility"))
         .map_err(|error| format!("canonicalize compatibility fixtures: {error}"))?;
-    let target = fs::canonicalize(root.join("build/target"))
+    let target = fs::canonicalize(root.join(".fforager-artifacts/cargo-target"))
         .map_err(|error| format!("canonicalize build target: {error}"))?;
     Ok([fixtures, target])
 }
@@ -3716,7 +3718,7 @@ mod tests {
             .expect("clock")
             .as_nanos();
         let path = test_root()
-            .join("build/target")
+            .join(".fforager-artifacts/cargo-target")
             .join(format!("compatibility-crlf-{nonce}.json"));
         fs::write(&path, b"{\r\n  \"value\": true\r\n}\r\n").expect("write CRLF fixture");
         let observed = sha256_normalized_text_file(&path).expect("normalized digest");
@@ -3731,7 +3733,7 @@ mod tests {
             .expect("clock")
             .as_nanos();
         let path = test_root()
-            .join("build/target")
+            .join(".fforager-artifacts/cargo-target")
             .join(format!("compatibility-oversized-{nonce}.json"));
         let file = fs::File::create(&path).expect("create sparse input");
         file.set_len(MAX_JSON_BYTES + 1).expect("size sparse input");
@@ -3936,7 +3938,7 @@ mod tests {
             .expect("clock")
             .as_nanos();
         let root = test_root()
-            .join("build/target")
+            .join(".fforager-artifacts/cargo-target")
             .join(format!("compatibility-negative-inventory-test-{nonce}"));
         let target = root.join(NEGATIVE_ROOT);
         fs::create_dir_all(&target).expect("negative target");

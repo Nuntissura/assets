@@ -2014,10 +2014,19 @@ fn reject_secret_canary(report: &CorpusReport) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
 
     fn manifest() -> CorpusManifest {
         serde_json::from_str(include_str!("../../../fixtures/transport-v1/manifest.json"))
             .expect("canonical manifest")
+    }
+
+    fn report() -> CorpusReport {
+        static REPORT: OnceLock<Result<CorpusReport, String>> = OnceLock::new();
+        REPORT
+            .get_or_init(|| run_corpus(&manifest()))
+            .clone()
+            .expect("corpus")
     }
 
     #[test]
@@ -2043,15 +2052,13 @@ mod tests {
 
     #[test]
     fn same_oracle_rejects_behavior_mutation() {
-        let manifest = manifest();
-        let report = run_corpus(&manifest).expect("corpus");
+        let report = report();
         assert!(report.counterfactual.rejected_by_same_oracle);
     }
 
     #[test]
     fn mandatory_blocked_capability_forces_failed_spike_verdict() {
-        let manifest = manifest();
-        let report = run_corpus(&manifest).expect("corpus");
+        let report = report();
         assert_eq!(
             report.verdict,
             AggregateVerdict::FailedSpikeRequiresOperatorDecision
@@ -2060,8 +2067,7 @@ mod tests {
 
     #[test]
     fn report_never_contains_secret_canary() {
-        let manifest = manifest();
-        let report = run_corpus(&manifest).expect("corpus");
+        let report = report();
         let encoded = serde_json::to_string(&report).expect("report JSON");
         assert!(!encoded.contains(SECRET_CANARY));
     }
@@ -2090,7 +2096,7 @@ mod tests {
     #[test]
     fn forged_blocked_capability_state_is_rejected() {
         let manifest = manifest();
-        let report = run_corpus(&manifest).expect("corpus");
+        let report = report();
         let mut cases = report.cases;
         let blocked = cases
             .iter_mut()
