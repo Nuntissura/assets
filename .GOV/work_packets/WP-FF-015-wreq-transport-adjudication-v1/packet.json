@@ -8,7 +8,7 @@
     "version": "1",
     "title": "Adjudicate the operator-approved wreq transport exception",
     "created_at_utc": "2026-07-27T11:16:32Z",
-    "updated_at_utc": "2026-07-27T11:16:32Z"
+    "updated_at_utc": "2026-07-27T11:31:00Z"
   },
   "authorization": {
     "source": "operator_message",
@@ -168,22 +168,19 @@
   ],
   "recovery": {
     "last_checkpoint": {
-      "recorded_at_utc": "2026-07-27T11:16:32Z",
+      "recorded_at_utc": "2026-07-27T11:31:00Z",
       "branch": "codex/wreq-sanitized-rebuild",
       "base_sha": "de8b50d780224dc54a62ad2be914e9047f4b7bfd",
-      "head_sha": "de8b50d780224dc54a62ad2be914e9047f4b7bfd",
-      "dirty_paths": [
-        ".GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json",
-        ".GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/refinement.json",
-        ".GOV/taskboard/taskboard.yaml",
-        ".GOV/id-registry.yaml",
-        ".GOV/rules/build-rules.yaml"
-      ],
+      "head_sha": "5cf9d7756d89cc4800ad57d6ffd3113ad15357ac",
+      "dirty_paths": [],
       "checks_run": [
         "Verified main de8b50d780224dc54a62ad2be914e9047f4b7bfd contains validated WP-007.",
         "Verified AGENTS.md and CLAUDE.md are byte-identical.",
         "Read START_HERE.yaml, .GOV/codex.yaml, taskboard, topology, build rules, packet requirements/template, WP-007 packet/refinement, cited transport design anchors, and readiness matrix.",
-        "Verified current upstream wreq stable 5.3.0 and v6.0.0-rc.29 status and BoringSSL build/link requirements."
+        "Verified current upstream wreq stable 5.3.0 and v6.0.0-rc.29 status and BoringSSL build/link requirements.",
+        "PASS: FF-GATE-ARCH-001 activation enforcement report build/reports/architecture-check-1785151667383869800-20412.json.",
+        "PASS: fforager-xtask warnings-denied Clippy and workspace formatting.",
+        "Committed sanitized activation checkpoint 5cf9d7756d89cc4800ad57d6ffd3113ad15357ac."
       ],
       "blockers": [],
       "next_action": "Complete activation authority changes, commit the checkpoint, then implement the dependency adapter and behavior-sensitive probes."
