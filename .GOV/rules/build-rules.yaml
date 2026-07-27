@@ -1,8 +1,14 @@
 schema_id: ff.build_rules@2
 file_id: FF-GOV-RULES-001
-updated_at: "2026-07-22"
+updated_at: "2026-07-27"
 authority: canonical
 verification_gates:
+  - id: FF-GATE-SECRET-001
+    command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- secret-scan --history
+    working_directory: repository_root
+    purpose: Reject provider-pattern API keys in reachable history without emitting matched values; repository hooks apply the same scanner to exact staged blobs before commit and all outgoing commits before push.
+    required_when: before every commit, push, pull-request verification, and release
+    current_status: IMPLEMENTED
   - id: FF-GATE-ARCH-001
     command: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- architecture-check
     working_directory: repository_root
@@ -470,4 +476,9 @@ rules:
   - id: FF-BUILD-098
     category: validation_reporting
     statement: Every gate result MUST record proof class, concrete input, executed boundary, expected result, observed result, and skipped semantic dependencies; aggregation MUST preserve the weakest proof class and MUST NOT promote structural-only evidence to semantic, integration, or runtime PASS.
+    enforcement: REQUIRED
+
+  - id: FF-BUILD-099
+    category: credential_protection
+    statement: "No commit or push may contain an API key or credential. Pre-commit MUST scan exact stage-zero index blobs; pre-push MUST scan every complete outgoing commit snapshot including new-branch ancestry; canonical verification MUST scan reachable history, the exact index, and tracked or non-ignored worktree files; binary blobs are scanned, oversized or unreadable blobs fail closed, matched values are never emitted, explicit redacted placeholders remain legal, and GitHub secret-scanning push protection MUST remain enabled as an independent remote pre-receive control."
     enforcement: REQUIRED

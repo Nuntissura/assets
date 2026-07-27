@@ -85,6 +85,7 @@ state:
 workflow:
   startup:
     - Read deterministic_navigation.always_read_in_order.
+    - Run `cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- secret-scan --install-hooks` once per clone and verify `core.hooksPath` remains `build/git-hooks` before any commit or push.
     - Classify the task using task_profiles and use the highest applicable profile.
     - Inspect `git status --porcelain=v2 --branch` and `git worktree list --porcelain` before changing TRACKED or EXPANDED work.
     - For TRACKED or EXPANDED work, resolve current_focus.active_wp_id or allocate the next registered WP-FF ID, instantiate one packet.json from the template, and index it on the taskboard.
@@ -125,3 +126,5 @@ critical_boundaries:
     statement: Do not allow unbounded queues, hidden shared state, resume state ahead of durable bytes, or success before output/archive reconciliation.
   - id: FF-START-BOUNDARY-006
     statement: Do not narrow the complete product's extractor, protocol, metadata, archive, or diagnostic scope to make a phase pass.
+  - id: FF-START-BOUNDARY-007
+    statement: Do not commit or push an API key or credential; the exact staged snapshot and every outgoing commit MUST pass FF-GATE-SECRET-001, matched values MUST remain suppressed, and GitHub secret-scanning push protection MUST remain enabled.

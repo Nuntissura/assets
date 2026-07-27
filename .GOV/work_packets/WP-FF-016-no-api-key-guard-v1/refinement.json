@@ -1,0 +1,113 @@
+{
+  "schema_id": "ff.work_packet_refinement@1",
+  "file_id": "WP-FF-016-no-api-key-guard-v1-REFINEMENT-001",
+  "wp_id": "WP-FF-016-no-api-key-guard-v1",
+  "updated_at_utc": "2026-07-27T15:17:09Z",
+  "operator_request": "Remove the exposed Google API keys from the GitHub repository, create a repository rule that checks for API keys before commit and push, then continue the transport adjudication work.",
+  "spec_anchors": [
+    {
+      "path": "START_HERE.yaml#critical_boundaries",
+      "scope": "The existing runtime and tooling dependency boundary prohibits adding Python or another runtime dependency without explicit approval."
+    },
+    {
+      "path": ".GOV/codex.yaml#rules",
+      "scope": "Authority, proof integrity, source control, and credential protection requirements."
+    }
+  ],
+  "scope_edges": {
+    "in_scope": [
+      "Rewrite every GitHub branch containing the exposed Google-key pattern and verify fresh remote history.",
+      "Install repository-owned pre-commit and pre-push hooks backed by the pinned Rust xtask and Git.",
+      "Scan staged blobs, complete outgoing commit snapshots, reachable history, the index, and non-ignored worktree files.",
+      "Keep matched values out of diagnostics and retain GitHub push protection as an independent remote layer."
+    ],
+    "non_goals": [
+      "Rotate or revoke credentials in the Operator's Google Cloud account.",
+      "Introduce Python, Go, Docker, a hosted scanner, or another governed runtime dependency.",
+      "Claim that prefix matching proves absence of every possible unstructured secret."
+    ]
+  },
+  "research_basis": {
+    "checked_at_utc": "2026-07-27T15:17:09Z",
+    "sources": [
+      "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository",
+      "https://docs.github.com/en/code-security/concepts/secret-security/push-protection",
+      "https://git-scm.com/docs/githooks",
+      "https://github.com/gitleaks/gitleaks",
+      "https://github.com/Yelp/detect-secrets",
+      "https://trufflesecurity.com/docs/github",
+      "https://arxiv.org/abs/2307.00714"
+    ],
+    "patterns_found": [
+      "History rewriting removes branch and tag reachability but GitHub Support is required for cached commit views or pull-request references.",
+      "Client hooks are useful before commit and push but are bypassable, so independent server-side push protection is required.",
+      "Mature scanners combine provider patterns, history scanning, staged scanning, CI or pre-receive enforcement, suppression, and explicit allowlisting."
+    ],
+    "reuse_opportunities": [
+      "Reuse the pinned Rust xtask, existing Git tooling identity, verify-pr aggregation, and GitHub's already-enabled secret scanning and push protection.",
+      "Reuse the repository's machine-readable rule, taskboard, topology, and ID registry surfaces."
+    ],
+    "rejected_options": [
+      {
+        "option": "detect-secrets",
+        "reason": "It adds Python to canonical repository tooling, which current authority forbids without explicit approval."
+      },
+      {
+        "option": "Gitleaks or TruffleHog binary",
+        "reason": "Both broaden detection but add a new external executable, provenance, update, and host-support surface; the current request can be closed with existing Rust and Git plus GitHub push protection."
+      },
+      {
+        "option": "GitHub push protection alone",
+        "reason": "It protects the remote but does not satisfy the requested before-commit local gate or provide deterministic local outgoing-history proof."
+      }
+    ],
+    "selected_approach": "Use git-filter-repo 2.47 for the one-time full-history rewrite, then a no-new-dependency Rust xtask scanner invoked by repository-owned pre-commit and pre-push hooks, verify-pr state scanning, and GitHub secret-scanning push protection.",
+    "risks_and_mitigations": [
+      {
+        "risk": "A repository-local hook can be bypassed or left uninstalled.",
+        "mitigation": "Provide an idempotent installer and verifier, require installation in START_HERE, integrate the scan into verify-pr, and retain GitHub pre-receive push protection."
+      },
+      {
+        "risk": "A scanner may expose the secret in its own diagnostic.",
+        "mitigation": "Emit only pattern ID, source path, commit identity, and line while testing that the matched value is absent."
+      },
+      {
+        "risk": "Scanning only diffs misses secrets in new-branch ancestry or unchanged snapshots.",
+        "mitigation": "Enumerate complete trees for every outgoing reachable commit and deduplicate blobs by object ID."
+      },
+      {
+        "risk": "Binary or oversized blobs evade scanning.",
+        "mitigation": "Scan binary bytes and fail closed above the explicit 32 MiB per-blob bound."
+      },
+      {
+        "risk": "Pattern matching has false negatives for unknown or unstructured credentials.",
+        "mitigation": "Cover high-signal provider prefixes locally, retain GitHub's broader provider scanning, and record the limitation without overclaiming."
+      }
+    ],
+    "validation_plan": [
+      "Run unit and temporary-repository tests for clean, staged-secret, history-secret, binary, placeholder, and redacted-diagnostic paths.",
+      "Run the real history scanner, exact staged scanner, hook installer/verifier, and a simulated pre-push update.",
+      "Run formatting, warnings-denied Clippy, architecture-check, verify-pr, and fresh remote history verification.",
+      "Use independent subagents to attack bypass, Git plumbing, secret leakage, portability, and governance integration."
+    ]
+  },
+  "red_team": {
+    "attack_surfaces": [
+      "unstaged-versus-staged snapshot confusion",
+      "new branch push with tainted ancestry",
+      "binary and oversized blob evasion",
+      "hook non-installation or no-verify bypass",
+      "scanner self-modification",
+      "secret value leakage in logs",
+      "cached GitHub SHA views after force-push"
+    ],
+    "minimum_controls": [
+      "Exact index and commit-tree scanning",
+      "Fail-closed object and size handling",
+      "Suppressed matched values",
+      "Independent GitHub pre-receive protection",
+      "Fresh-clone remote verification",
+      "Support escalation data retained for GitHub cache garbage collection"
+    ]
+  }
+}

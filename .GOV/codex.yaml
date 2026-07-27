@@ -1,6 +1,6 @@
 schema_id: ff.project_codex@2
 file_id: FF-GOV-CODEX-001
-updated_at: "2026-07-22"
+updated_at: "2026-07-27"
 authority: canonical_project_codex
 always_reads:
   - START_HERE.yaml
@@ -249,4 +249,8 @@ rules:
   - id: FF-CODEX-071
     category: validation_reporting
     statement: "Every generated validation result MUST record the proof class actually executed, the concrete input and boundary observed, the expected and observed outcomes, and any skipped semantic dependency; a structural-only result MUST never be promoted to behavioral PASS by aggregation, naming, or packet prose."
+
+  - id: FF-CODEX-072
+    category: credential_protection
+    statement: "No commit or push may contain an API key or credential. Every clone MUST install and retain build/git-hooks through core.hooksPath, pre-commit MUST scan exact staged blobs, pre-push MUST scan every outgoing commit, canonical verification MUST scan reachable history plus index and non-ignored worktree files, diagnostics MUST suppress matched values, and GitHub secret-scanning push protection MUST remain enabled as the independent remote pre-receive control."
 

@@ -1,0 +1,357 @@
+{
+  "schema_id": "ff.work_packet_contract@2",
+  "schema_version": "2.0.0",
+  "profile": "EXPANDED",
+  "identity": {
+    "wp_id": "WP-FF-016-no-api-key-guard-v1",
+    "base_wp_id": "WP-FF-016-no-api-key-guard",
+    "version": "1",
+    "title": "No API key commit and push guard",
+    "created_at_utc": "2026-07-27T15:17:09Z",
+    "updated_at_utc": "2026-07-27T15:17:09Z"
+  },
+  "authorization": {
+    "source": "operator_message",
+    "reference": "Remove the API keys from the GitHub repository, create a repository rule that checks for API keys before commit and push, then continue work.",
+    "recorded_at_utc": "2026-07-27T15:17:09Z"
+  },
+  "authority": {
+    "bootstrap": "START_HERE.yaml",
+    "rules": ".GOV/codex.yaml",
+    "taskboard": ".GOV/taskboard/taskboard.yaml",
+    "requirements": ".GOV/templates/WORK_PACKET_REQUIREMENTS.yaml",
+    "spec_anchors": [
+      "START_HERE.yaml#critical_boundaries",
+      ".GOV/codex.yaml#rules",
+      ".GOV/rules/build-rules.yaml#verification_gates"
+    ],
+    "decision_ids": []
+  },
+  "source_control": {
+    "canonical_branch": "main",
+    "base_sha": "de8b50d780224dc54a62ad2be914e9047f4b7bfd",
+    "work_branch": "codex/no-api-key-guard",
+    "worktree_policy": "NONE",
+    "worktree_id": null,
+    "remote_backup": {
+      "required_for_handoff": true,
+      "branch": null,
+      "head_sha": null,
+      "verified_at_utc": null
+    },
+    "closure_commit": null,
+    "main_containment_status": "NOT_STARTED",
+    "merged_main_commit": null
+  },
+  "lifecycle": {
+    "status": "IN_PROGRESS",
+    "risk": "HIGH",
+    "blockers": [
+      "GitHub cached commit views can only be garbage-collected by GitHub Support even after all branch references are clean.",
+      "Google-side key rotation or revocation is outside repository access and remains Operator-owned."
+    ],
+    "next_action": "Run staged and pre-push counterfactuals, complete adversarial subagent review, remediate findings, and run canonical gates before committing and pushing.",
+    "supersedes": [],
+    "superseded_by": null
+  },
+  "scope": {
+    "summary": "Purge exposed Google-key strings from reachable GitHub history and enforce exact staged, outgoing-history, canonical verification, and remote push-protection checks without a new runtime dependency.",
+    "product_impact": "NONE",
+    "in_scope": [
+      "Sanitize all affected GitHub branch histories and verify from a fresh remote mirror.",
+      "Add a provider-pattern scanner to the existing pinned Rust xtask.",
+      "Install repository-owned pre-commit and pre-push hooks.",
+      "Add canonical authority, topology, registry, taskboard, and verify-pr integration.",
+      "Attack the implementation through independent adversarial review."
+    ],
+    "non_goals": [
+      "Google Cloud credential rotation or revocation.",
+      "New Python, Go, Docker, hosted scanner, runtime, or native dependency.",
+      "A universal proof that every arbitrary secret format is absent.",
+      "Any Ferric product capability or runtime-progress claim."
+    ],
+    "allowed_paths": [
+      ".gitattributes",
+      "START_HERE.yaml",
+      ".GOV/codex.yaml",
+      ".GOV/id-registry.yaml",
+      ".GOV/rules/build-rules.yaml",
+      ".GOV/taskboard/taskboard.yaml",
+      ".GOV/topology.yaml",
+      ".GOV/work_packets/WP-FF-016-no-api-key-guard-v1/packet.json",
+      ".GOV/work_packets/WP-FF-016-no-api-key-guard-v1/refinement.json",
+      "build/git-hooks/pre-commit",
+      "build/git-hooks/pre-push",
+      "build/tools/fforager-xtask/src/main.rs",
+      "build/tools/fforager-xtask/src/secret_scan.rs"
+    ],
+    "dependencies": [
+      "Pinned repository Rust toolchain and existing fforager-xtask dependencies.",
+      "Supported-host Git executable already governed by build/tooling-policy.toml.",
+      "GitHub secret scanning and push protection enabled for Nuntissura/ferric_forager."
+    ]
+  },
+  "acceptance_matrix": [
+    {
+      "id": "WP-FF-016-no-api-key-guard-v1-AC-001",
+      "requirement": "Every GitHub branch and tag is rewritten where necessary, and a fresh remote mirror scan observes zero Google API-key pattern matches across all reachable commits.",
+      "proof_class": "integration",
+      "status": "PASS",
+      "evidence": [
+        "Fresh mirror of 11 remote branches and 120 reachable commits reported GoogleKeyMatches=0 and git fsck --full exit 0; no tags, pull requests, or forks exist."
+      ]
+    },
+    {
+      "id": "WP-FF-016-no-api-key-guard-v1-AC-002",
+      "requirement": "Pre-commit scans exact stage-zero Git index blobs, rejects a provider-pattern key, accepts the explicit redacted placeholder, scans binary bytes, and never emits the matched value.",
+      "proof_class": "counterfactual",
+      "status": "PASS",
+      "evidence": [
+        "Five focused secret_scan tests passed, including staged rejection, clean placeholder, binary scanning, history rejection, and diagnostic suppression."
+      ]
+    },
+    {
+      "id": "WP-FF-016-no-api-key-guard-v1-AC-003",
+      "requirement": "Pre-push consumes Git's update rows and scans every complete outgoing commit tree, including all ancestry for a new branch, while deletions remain legal.",
+      "proof_class": "counterfactual",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-016-no-api-key-guard-v1-AC-004",
+      "requirement": "The idempotent hook installer sets core.hooksPath to build/git-hooks and both committed hooks invoke FF-GATE-SECRET-001 before commit and push.",
+      "proof_class": "integration",
+      "status": "PASS",
+      "evidence": [
+        "secret-scan --install-hooks and --verify-hooks report hooks_path=build/git-hooks."
+      ]
+    },
+    {
+      "id": "WP-FF-016-no-api-key-guard-v1-AC-005",
+      "requirement": "Project authority carries stable no-key rule and gate IDs; START_HERE requires hook installation; verify-pr scans reachable history, exact index, and tracked or non-ignored worktree files.",
+      "proof_class": "structural",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-016-no-api-key-guard-v1-AC-006",
+      "requirement": "Formatting, warnings-denied Clippy, focused and full tests, architecture-check, verify-pr, governance parsing, registry checks, allowed-path containment, and real secret-scan commands pass.",
+      "proof_class": "integration",
+      "status": "PENDING",
+      "evidence": []
+    },
+    {
+      "id": "WP-FF-016-no-api-key-guard-v1-AC-007",
+      "requirement": "GitHub secret scanning and push protection remain enabled as an independent remote pre-receive control, with unavailable optional modes reported truthfully.",
+      "proof_class": "integration",
+      "status": "PASS",
+      "evidence": [
+        "GitHub repository API reports secret_scanning=enabled and secret_scanning_push_protection=enabled; non-provider patterns and validity checks remained disabled after an enable attempt."
+      ]
+    },
+    {
+      "id": "WP-FF-016-no-api-key-guard-v1-AC-008",
+      "requirement": "No new external executable, package, native dependency, or product runtime behavior is added; the packet claims zero product progress.",
+      "proof_class": "structural",
+      "status": "PENDING",
+      "evidence": []
+    }
+  ],
+  "recovery": {
+    "last_checkpoint": {
+      "recorded_at_utc": "2026-07-27T15:17:09Z",
+      "branch": "codex/no-api-key-guard",
+      "base_sha": "de8b50d780224dc54a62ad2be914e9047f4b7bfd",
+      "head_sha": "de8b50d780224dc54a62ad2be914e9047f4b7bfd",
+      "dirty_paths": [
+        ".gitattributes",
+        "START_HERE.yaml",
+        ".GOV/codex.yaml",
+        ".GOV/id-registry.yaml",
+        ".GOV/rules/build-rules.yaml",
+        ".GOV/taskboard/taskboard.yaml",
+        ".GOV/topology.yaml",
+        ".GOV/work_packets/WP-FF-016-no-api-key-guard-v1/packet.json",
+        ".GOV/work_packets/WP-FF-016-no-api-key-guard-v1/refinement.json",
+        "build/git-hooks/pre-commit",
+        "build/git-hooks/pre-push",
+        "build/tools/fforager-xtask/src/main.rs",
+        "build/tools/fforager-xtask/src/secret_scan.rs"
+      ],
+      "checks_run": [
+        "Fresh remote mirror scan: 120 commits, zero Google-key matches, git fsck exit 0.",
+        "Focused secret_scan tests: 5 passed.",
+        "Warnings-denied xtask Clippy: PASS.",
+        "Real reachable-history scan: findings=0.",
+        "Hook install and verification: PASS."
+      ],
+      "blockers": [
+        "GitHub Support is required for server-side garbage collection of cached old commit views.",
+        "Google-side credential rotation or revocation is unavailable from repository access."
+      ],
+      "next_action": "Run exact staged and simulated outgoing-push counterfactuals, then independent adversarial reviews."
+    }
+  },
+  "validation": {
+    "checks": [
+      "fresh remote mirror history scan",
+      "secret_scan focused tests",
+      "secret-scan --history",
+      "secret-scan --staged",
+      "secret-scan --pre-push origin",
+      "secret-scan --verify-hooks",
+      "cargo fmt --check",
+      "warnings-denied cargo clippy",
+      "full xtask tests",
+      "architecture-check",
+      "verify-pr --evidence-from-taskboard",
+      "GitHub security_and_analysis API"
+    ],
+    "not_proven": [
+      "Absence of every unknown or unstructured credential format.",
+      "Removal from other people's already-created clones.",
+      "GitHub cached old-SHA views before GitHub Support garbage collection.",
+      "Google-side key revocation or rotation."
+    ]
+  },
+  "extensions": {
+    "refinement": ".GOV/work_packets/WP-FF-016-no-api-key-guard-v1/refinement.json",
+    "zero_product_progress_declaration": {
+      "product_progress": false,
+      "capability_progress": false,
+      "runtime_completion": false,
+      "packaging_or_release_progress": false,
+      "phase_progress": false
+    },
+    "change_evidence": {
+      "applicable_rule_ids": [
+        "FF-BUILD-036",
+        "FF-BUILD-037",
+        "FF-BUILD-038",
+        "FF-BUILD-039",
+        "FF-BUILD-040",
+        "FF-BUILD-041",
+        "FF-BUILD-042",
+        "FF-BUILD-043",
+        "FF-BUILD-044",
+        "FF-BUILD-045",
+        "FF-BUILD-046",
+        "FF-BUILD-047",
+        "FF-BUILD-048",
+        "FF-BUILD-057",
+        "FF-BUILD-059",
+        "FF-BUILD-060",
+        "FF-BUILD-064",
+        "FF-BUILD-066",
+        "FF-BUILD-077",
+        "FF-BUILD-078",
+        "FF-BUILD-079",
+        "FF-BUILD-080",
+        "FF-BUILD-081",
+        "FF-BUILD-082",
+        "FF-BUILD-083",
+        "FF-BUILD-084",
+        "FF-BUILD-085",
+        "FF-BUILD-086",
+        "FF-BUILD-087",
+        "FF-BUILD-088",
+        "FF-BUILD-089",
+        "FF-BUILD-090",
+        "FF-BUILD-091",
+        "FF-BUILD-092",
+        "FF-BUILD-093",
+        "FF-BUILD-094",
+        "FF-BUILD-095",
+        "FF-BUILD-096",
+        "FF-BUILD-097",
+        "FF-BUILD-098",
+        "FF-BUILD-099"
+      ],
+      "acceptance_or_authority_ids": [
+        "WP-FF-016-no-api-key-guard-v1-AC-001",
+        "WP-FF-016-no-api-key-guard-v1-AC-002",
+        "WP-FF-016-no-api-key-guard-v1-AC-003",
+        "WP-FF-016-no-api-key-guard-v1-AC-004",
+        "WP-FF-016-no-api-key-guard-v1-AC-005",
+        "WP-FF-016-no-api-key-guard-v1-AC-006",
+        "WP-FF-016-no-api-key-guard-v1-AC-007",
+        "WP-FF-016-no-api-key-guard-v1-AC-008"
+      ],
+      "scope_and_risk_matrix": {
+        "required_outcomes": [
+          "Remote reachable history contains no Google API key pattern.",
+          "Every exact staged snapshot and outgoing commit is scanned before commit or push.",
+          "Matched values are suppressed and GitHub pre-receive protection remains enabled."
+        ],
+        "risk_cases": [
+          "staged versus worktree mismatch",
+          "new branch with tainted ancestry",
+          "binary or oversized object evasion",
+          "hook bypass or missing installation",
+          "scanner self-modification",
+          "remote cached old-SHA views"
+        ]
+      },
+      "reuse_candidates_in_order_with_result": [
+        {
+          "candidate": "no mechanism beyond the accepted outcome",
+          "result": "Rejected because the reported exposure proves an enforceable commit and push boundary is required."
+        },
+        {
+          "candidate": "reuse current Ferric code",
+          "result": "Selected: extend the existing pinned fforager-xtask and verify-pr aggregation."
+        },
+        {
+          "candidate": "Rust core/std",
+          "result": "Selected for bounded byte scanning, Git process control, deterministic parsing, and tests."
+        },
+        {
+          "candidate": "approved platform capability",
+          "result": "Selected: Git hooks and exact Git object plumbing supply the local snapshot boundaries."
+        },
+        {
+          "candidate": "already-approved dependency",
+          "result": "Selected only for existing xtask dependencies; no additional dependency is needed."
+        },
+        {
+          "candidate": "smallest complete clear implementation",
+          "result": "Selected as one Rust module, two hooks, authority bindings, and independent GitHub push protection."
+        }
+      ],
+      "artifact_specific_justification": {
+        "secret-scan-module": "Owns bounded provider-pattern scanning and exact Git snapshot traversal without a new dependency.",
+        "pre-commit-hook": "Invokes the scanner against exact stage-zero index blobs before Git creates a commit.",
+        "pre-push-hook": "Invokes the scanner against every outgoing complete commit snapshot before network transfer.",
+        "authority-bindings": "Make installation, execution boundaries, and no-key behavior durable project rules.",
+        "work-packet": "Records the high-risk rewrite, residual cache limitation, validation, and sanitized migration state."
+      },
+      "pre_simplification_verdict": "FAIL: reachable GitHub history contained three Google API-key strings and the repository had no mandatory before-commit or before-push credential gate.",
+      "simplification_changes": [
+        "Reused the existing Rust xtask and Git rather than introducing Python, Go, Docker, a hosted service, or a new package.",
+        "Deduplicated history scanning by Git blob object ID while retaining complete commit-tree coverage.",
+        "Kept diagnostics to provider pattern ID, source identity, and line without retaining or printing secret values."
+      ],
+      "post_simplification_verdict": "PASS: the current implementation closes the direct exposed-key and local hook gaps with no new dependency, while retaining explicit limits for unknown secret formats and GitHub cache garbage collection.",
+      "complete_post_change_verification": [
+        "Fresh GitHub mirror scan reports zero Google-key matches across every reachable commit.",
+        "Focused staged, history, binary, placeholder, and diagnostic-suppression tests pass.",
+        "Warnings-denied xtask Clippy passes.",
+        "Real reachable-history scan reports findings=0.",
+        "Hook installer and verifier report build/git-hooks.",
+        "GitHub API reports secret scanning and push protection enabled."
+      ],
+      "ceilings_exceptions_and_evidence": {
+        "ceiling_id": "WP-FF-016-no-api-key-guard-v1-CEILING-001",
+        "current_ceiling": "Provider-prefix matching and GitHub provider scanning cannot prove absence of every unknown or unstructured secret format.",
+        "replacement_trigger": "A missed credential format, material false-positive burden, new approved scanner dependency, or GitHub custom-pattern availability.",
+        "likely_upgrade_path": "Adopt a pinned mature scanner or approved custom pattern set while preserving exact staged, outgoing-history, value-suppression, and remote pre-receive contracts.",
+        "trigger_detection_method": "Secret-scanning alerts, incident review, mutation fixtures, provider-format changes, and periodic scanner coverage review.",
+        "linked_evidence": [
+          ".GOV/work_packets/WP-FF-016-no-api-key-guard-v1/refinement.json",
+          "build/tools/fforager-xtask/src/secret_scan.rs",
+          "GitHub security_and_analysis API response"
+        ]
+      }
+    }
+  }
+}

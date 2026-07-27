@@ -1,4 +1,5 @@
 mod compatibility;
+mod secret_scan;
 
 use cargo_metadata::{DependencyKind, Metadata, PackageId};
 use saphyr::{LoadableYamlNode, Yaml};
@@ -504,6 +505,7 @@ fn run() -> Result<(), String> {
             compatibility::run_live_canaries(&root, &args, rest)
         }
         [command] if command == "transport-corpus" => run_transport_corpus(&root),
+        [command, rest @ ..] if command == "secret-scan" => secret_scan::run(&root, rest),
         [gate, evidence] if gate == "verify-pr" && evidence == "--evidence-from-taskboard" => {
             run_verify_pr(&root, &args)
         }
@@ -520,7 +522,7 @@ fn run() -> Result<(), String> {
         [gate] if matches!(gate.as_str(), "verify-release" | "watcher-check") => {
             Err(format!("{gate} is NOT_IMPLEMENTED for Phase 0 and cannot report PASS"))
         }
-        _ => Err("usage: fforager-xtask <architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|transport-corpus|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
+        _ => Err("usage: fforager-xtask <architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|secret-scan <--install-hooks|--verify-hooks|--staged|--history|--pre-push REMOTE>|transport-corpus|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
     }
 }
 
@@ -7443,6 +7445,25 @@ fn run_verify_pr(root: &Path, gate_args: &[String]) -> Result<(), String> {
 fn run_verify_pr_inner(root: &Path, gate_args: &[String]) -> Result<(), String> {
     let mut checks = Vec::new();
     validate_change_evidence(root, &mut checks)?;
+    secret_scan::verify_hook_configuration(root)?;
+    let findings = secret_scan::verify_repository_state(root)?;
+    checks.push(Check {
+        id: "secret-scan".to_owned(),
+        status: "PASS",
+        proof_class: "structural",
+        concrete_input:
+            "reachable Git history, exact index blobs, tracked and untracked non-ignored worktree files"
+                .to_owned(),
+        executed_boundary: "fforager-xtask credential scanner".to_owned(),
+        expected_result: "zero provider-pattern API-key findings and no unscannable blob"
+            .to_owned(),
+        observed_result: format!("PASS: findings={findings}"),
+        skipped_semantic_dependencies: vec![
+            "Pattern matching cannot prove absence of every possible unstructured secret."
+                .to_owned(),
+        ],
+        detail: "Matched values are never emitted; GitHub secret-scanning push protection supplies the independent remote pre-receive layer.".to_owned(),
+    });
     let mut transport_report = String::new();
     let architecture = run_verify_deep_checks(root, &mut checks, &mut transport_report)?;
     run_command_with_env(

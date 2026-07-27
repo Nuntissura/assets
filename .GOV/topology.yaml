@@ -1,6 +1,6 @@
 schema_id: ff.repository_topology@1
 file_id: FF-GOV-TOPOLOGY-001
-updated_at: "2026-07-19"
+updated_at: "2026-07-27"
 project:
   id: FF-PROJ-001
   name: Ferric Forager
@@ -51,7 +51,7 @@ nodes:
     kind: build_root
     path: build/
     owner: build_tooling
-    contains: [cargo_workspace, lockfile, policies, non_shipped_tools, shared_test_harnesses, fixtures, fuzzing, benchmarks, reports, target_output]
+    contains: [cargo_workspace, lockfile, policies, non_shipped_tools, shared_test_harnesses, fixtures, fuzzing, benchmarks, reports, target_output, git_hooks]
   - id: FF-NODE-TOOLCHAIN-SELECTOR-001
     kind: rustup_selector
     path: rust-toolchain.toml
@@ -182,6 +182,8 @@ entrypoints:
   project_codex: .GOV/codex.yaml
   build_rules: .GOV/rules/build-rules.yaml
   build_verification_contracts: .GOV/rules/build-rules.yaml#verification_gates
+  secret_scan: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- secret-scan --history
+  git_hooks: build/git-hooks/
   runtime_truth_gate: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard
   task_state: .GOV/taskboard/taskboard.yaml
   work_packet_template: .GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json
