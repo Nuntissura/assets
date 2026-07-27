@@ -73,6 +73,19 @@ impl CandidateAdapter {
         }
     }
 
+    pub(crate) fn wreq_adjudication() -> Self {
+        Self {
+            identity: "ferric-wreq-adjudication-v1".to_owned(),
+            supported: BTreeSet::from([
+                Capability::Http11,
+                Capability::Http2,
+                Capability::BodyBounds,
+                Capability::TlsFingerprint,
+                Capability::Http2Fingerprint,
+            ]),
+        }
+    }
+
     #[must_use]
     pub fn identity(&self) -> &str {
         &self.identity
@@ -110,15 +123,27 @@ impl CandidateAdapter {
         requested: impl IntoIterator<Item = Capability>,
         operation: impl FnOnce(&ExecutionGrant) -> Result<T, TransportError>,
     ) -> Result<(CapabilityDecision, T), TransportError> {
+        self.execute_typed(requested, operation)
+    }
+
+    pub(crate) fn execute_typed<T, E>(
+        &self,
+        requested: impl IntoIterator<Item = Capability>,
+        operation: impl FnOnce(&ExecutionGrant) -> Result<T, E>,
+    ) -> Result<(CapabilityDecision, T), E>
+    where
+        E: From<TransportError>,
+    {
         let decision = self.negotiate(requested);
         if decision.requested.is_empty() {
             return Err(TransportError::Policy(
                 "FF-TRANSPORT-E-CAPABILITY-EMPTY: operation requires declared capabilities"
                     .to_owned(),
-            ));
+            )
+            .into());
         }
         if !decision.execution_allowed {
-            return Err(TransportError::CapabilityBlocked(decision.blocked));
+            return Err(TransportError::CapabilityBlocked(decision.blocked).into());
         }
         let grant = ExecutionGrant {
             capabilities: decision.satisfied.clone(),

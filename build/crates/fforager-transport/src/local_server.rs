@@ -431,6 +431,7 @@ fn wait_for_peer_close(stream: &mut TcpStream, required: bool) -> Result<(), Str
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn response_for(request: &CapturedRequest) -> Result<ResponsePlan, String> {
     let path = request_target(request)?;
     let (status, reason, headers, body_chunks, wait_for_peer_close) =
@@ -486,6 +487,24 @@ fn response_for(request: &CapturedRequest) -> Result<ResponsePlan, String> {
                 false,
             ),
             "/stream-small" => (200, "OK", Vec::new(), vec![b"stream".to_vec()], false),
+            "/redirect" => (302, "Found", vec![("Location", "/ok")], Vec::new(), false),
+            "/set-cookie" => (
+                200,
+                "OK",
+                vec![("Set-Cookie", "ff-session=secret; Path=/")],
+                Vec::new(),
+                false,
+            ),
+            "/gzip" => (
+                200,
+                "OK",
+                vec![("Content-Encoding", "gzip")],
+                vec![vec![
+                    31, 139, 8, 0, 0, 0, 0, 0, 0, 10, 75, 75, 45, 42, 202, 76, 214, 77, 175, 202,
+                    44, 208, 45, 72, 172, 204, 201, 79, 76, 1, 0, 191, 75, 160, 215, 19, 0, 0, 0,
+                ]],
+                false,
+            ),
             "/huge-length" => (
                 200,
                 "OK",
@@ -500,6 +519,13 @@ fn response_for(request: &CapturedRequest) -> Result<ResponsePlan, String> {
                 Vec::new(),
                 true,
             ),
+            "/chunked-oversize" => (
+                200,
+                "OK",
+                vec![("X-FF-Transfer-Encoding", "chunked")],
+                vec![vec![b'x'; 128]],
+                false,
+            ),
             _ => (
                 404,
                 "Not Found",
@@ -508,22 +534,39 @@ fn response_for(request: &CapturedRequest) -> Result<ResponsePlan, String> {
                 false,
             ),
         };
+    let chunked = headers
+        .iter()
+        .any(|(name, value)| *name == "X-FF-Transfer-Encoding" && *value == "chunked");
     let body_len = body_chunks.iter().map(Vec::len).sum::<usize>();
     let override_length = headers
         .iter()
         .find(|(name, _)| *name == "X-FF-Override-Length")
         .map(|(_, value)| *value);
     let content_length_text = override_length.map_or_else(|| body_len.to_string(), str::to_owned);
-    let mut head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Length: {content_length_text}\r\nConnection: close\r\n"
-    )
-    .into_bytes();
+    let mut head = if chunked {
+        format!("HTTP/1.1 {status} {reason}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n")
+            .into_bytes()
+    } else {
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {content_length_text}\r\nConnection: close\r\n"
+        )
+        .into_bytes()
+    };
     for (name, value) in headers {
-        if name != "X-FF-Override-Length" {
+        if !matches!(name, "X-FF-Override-Length" | "X-FF-Transfer-Encoding") {
             head.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
         }
     }
     head.extend_from_slice(b"\r\n");
+    let body_chunks = if chunked {
+        let payload = body_chunks.concat();
+        let mut encoded = format!("{:x}\r\n", payload.len()).into_bytes();
+        encoded.extend_from_slice(&payload);
+        encoded.extend_from_slice(b"\r\n0\r\n\r\n");
+        vec![encoded]
+    } else {
+        body_chunks
+    };
     Ok(ResponsePlan {
         head,
         body_chunks,
