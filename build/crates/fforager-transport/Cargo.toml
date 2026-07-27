@@ -9,9 +9,13 @@ publish.workspace = true
 
 [dependencies]
 fforager-contracts = { version = "0.1.0", path = "../../../product/crates/fforager-contracts" }
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tokio.workspace = true
+wreq.workspace = true
+wreq-util.workspace = true
 
 [lints]
 workspace = true
@@ -19,3 +23,7 @@ workspace = true
 [[bin]]
 name = "fforager-transport-corpus"
 path = "src/bin/fforager-transport-corpus.rs"
+
+[[bin]]
+name = "fforager-wreq-live-probe"
+path = "src/bin/fforager-wreq-live-probe.rs"

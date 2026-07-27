@@ -42,6 +42,36 @@ impl std::fmt::Debug for LocalHarnessTarget {
     }
 }
 
+impl LocalHarnessTarget {
+    pub(crate) fn url(&self, path: &str) -> String {
+        format!("http://{}:{}{path}", self.address.ip(), self.address.port())
+    }
+
+    pub(crate) fn authorization(&self) -> &str {
+        &self.authorization
+    }
+
+    pub(crate) fn acknowledge_fragment(&self) -> Result<(), TransportError> {
+        let receiver = self.fragment_rx.lock().map_err(|_| {
+            TransportError::Protocol("FF-TRANSPORT-E-HARNESS-FRAGMENT-LOCK".to_owned())
+        })?;
+        receiver
+            .recv_timeout(IO_TIMEOUT)
+            .map_err(|error| {
+                TransportError::Protocol(format!(
+                    "FF-TRANSPORT-E-HARNESS-FRAGMENT-RECEIVE: {error}"
+                ))
+            })
+            .and_then(|_| {
+                self.fragment_ack_tx.send(()).map_err(|error| {
+                    TransportError::Protocol(format!(
+                        "FF-TRANSPORT-E-HARNESS-FRAGMENT-ACK: {error}"
+                    ))
+                })
+            })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapturedRequest {
@@ -419,6 +449,22 @@ fn response_for(request: &CapturedRequest) -> Result<ResponsePlan, String> {
             ],
         ),
         "/stream-small" => (200, "OK", Vec::new(), vec![b"stream".to_vec()]),
+        "/redirect" => (302, "Found", vec![("Location", "/ok")], Vec::new()),
+        "/set-cookie" => (
+            200,
+            "OK",
+            vec![("Set-Cookie", "ff-session=secret; Path=/")],
+            Vec::new(),
+        ),
+        "/gzip" => (
+            200,
+            "OK",
+            vec![("Content-Encoding", "gzip")],
+            vec![vec![
+                31, 139, 8, 0, 0, 0, 0, 0, 0, 10, 75, 75, 45, 42, 202, 76, 214, 77, 175, 202, 44,
+                208, 45, 72, 172, 204, 201, 79, 76, 1, 0, 191, 75, 160, 215, 19, 0, 0, 0,
+            ]],
+        ),
         "/huge-length" => (
             200,
             "OK",
