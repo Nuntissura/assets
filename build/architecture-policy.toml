@@ -18,8 +18,8 @@ internal_edge_default = "deny"
 forbidden_layer_edges = ["engine->frontend", "engine->adapter", "engine->watcher", "adapter->adapter", "product->watcher", "watcher->engine", "normal_or_build:product->testkit"]
 forbidden_product_runtime_roots = [".GOV", "build"]
 allowed_runtime_or_native_dependencies = ["FFmpeg", "ffprobe", "FF-DEC-001"]
-approved_transitive_build_packages = ["camino@1.2.4", "crossbeam-utils@0.8.22", "getrandom@0.3.4", "icu_normalizer_data@2.0.0", "icu_properties_data@2.0.1", "libc@0.2.189", "memoffset@0.9.1", "ntapi@0.4.3", "num-traits@0.2.19", "parking_lot_core@0.9.12", "paste@1.0.15", "portable-atomic@1.14.0", "proc-macro2@1.0.107", "quote@1.0.47", "rustversion@1.0.23", "serde@1.0.228", "serde_core@1.0.228", "serde_json@1.0.150", "thiserror@2.0.19", "winapi-i686-pc-windows-gnu@0.4.0", "winapi-x86_64-pc-windows-gnu@0.4.0", "winapi@0.3.9", "wit-bindgen@0.57.1", "zerocopy@0.8.55", "zmij@1.0.23"]
-approved_transitive_proc_macros = ["boa_macros@0.21.1", "bytemuck_derive@1.11.0", "derive_arbitrary@1.4.2", "displaydoc@0.2.6", "dynify-macros@0.1.2", "equator-macro@0.4.2", "num_enum_derive@0.7.6", "paste@1.0.15", "phf_macros@0.13.1", "pin-project-internal@1.1.13", "rustversion@1.0.23", "serde_derive@1.0.228", "thiserror-impl@2.0.19", "time-macros@0.2.32", "windows-implement@0.60.2", "windows-interface@0.59.3", "yoke-derive@0.8.2", "zerocopy-derive@0.8.55", "zerofrom-derive@0.1.7", "zerovec-derive@0.11.3"]
+approved_transitive_build_packages = ["bindgen@0.72.1", "boring-sys2@4.15.15", "camino@1.2.4", "clang-sys@1.8.1", "crc32fast@1.5.0", "crossbeam-utils@0.8.22", "getrandom@0.3.4", "getrandom@0.4.3", "httparse@1.10.1", "icu_normalizer_data@2.0.0", "icu_properties_data@2.0.1", "libc@0.2.189", "memoffset@0.9.1", "ntapi@0.4.3", "num-traits@0.2.19", "parking_lot_core@0.9.12", "paste@1.0.15", "portable-atomic@1.14.0", "proc-macro2@1.0.107", "quote@1.0.47", "rustversion@1.0.23", "serde@1.0.228", "serde_core@1.0.228", "serde_json@1.0.150", "thiserror@2.0.19", "winapi-i686-pc-windows-gnu@0.4.0", "winapi-x86_64-pc-windows-gnu@0.4.0", "winapi@0.3.9", "windows_aarch64_gnullvm@0.52.6", "windows_aarch64_msvc@0.52.6", "windows_i686_gnu@0.52.6", "windows_i686_gnullvm@0.52.6", "windows_i686_msvc@0.52.6", "windows_x86_64_gnu@0.52.6", "windows_x86_64_gnullvm@0.52.6", "windows_x86_64_msvc@0.52.6", "wit-bindgen@0.57.1", "zerocopy@0.8.55", "zmij@1.0.23", "zstd-safe@7.2.4", "zstd-sys@2.0.16+zstd.1.5.7"]
+approved_transitive_proc_macros = ["boa_macros@0.21.1", "bytemuck_derive@1.11.0", "derive_arbitrary@1.4.2", "displaydoc@0.2.6", "dynify-macros@0.1.2", "equator-macro@0.4.2", "foreign-types-macros@0.2.4", "num_enum_derive@0.7.6", "openssl-macros@0.1.1", "paste@1.0.15", "phf_macros@0.13.1", "pin-project-internal@1.1.13", "rustversion@1.0.23", "serde_derive@1.0.228", "thiserror-impl@2.0.19", "time-macros@0.2.32", "typed-builder-macro@0.21.2", "windows-implement@0.60.2", "windows-interface@0.59.3", "yoke-derive@0.8.2", "zerocopy-derive@0.8.55", "zerofrom-derive@0.1.7", "zerovec-derive@0.11.3"]
 
 [[members]]
 name = "fforager-xtask"
@@ -300,6 +300,37 @@ removal_trigger = "All validation executables are supplied through an independen
 approval_id = "WP-FF-003-executable-gate-bootstrap-v2-AC-003"
 features = []
 default_features = false
+
+[[dependency_decisions]]
+name = "tokio"
+version = "1.53.1"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Drive the bounded asynchronous wreq control and candidate executions without adding an external runtime process."
+native = false
+owner = "WP-FF-015-wreq-transport-adjudication"
+allowed_consumers = ["fforager-transport"]
+reason = "Wreq exposes an asynchronous transport and the retained adjudication adapter must execute timeout and cancellation behavior through a deterministic owned runtime."
+removal_trigger = "The non-shipped adjudication is removed or its future shipped consumer supplies the accepted application runtime through a separately proven composition root."
+approval_id = "WP-FF-015-wreq-transport-adjudication-v1-AC-002"
+features = ["rt-multi-thread", "time"]
+default_features = false
+
+[[dependency_decisions]]
+name = "wreq"
+version = "5.3.0"
+consumer = "fforager-transport"
+runtime_class = "non_shipped_phase0_prerequisite"
+purpose = "Compile and execute the stable control through the same Ferric-owned transport adjudication boundary."
+native = true
+owner = "WP-FF-015-wreq-transport-adjudication"
+allowed_consumers = ["fforager-transport"]
+reason = "The recommended dependency path requires a current stable control before retaining or rejecting the v6 release candidate."
+removal_trigger = "Replace with the selected exact-pinned candidate after stable-control evidence is recorded, or remove if adjudication fails."
+approval_id = "WP-FF-015-wreq-transport-adjudication-v1-AC-001"
+features = ["webpki-roots"]
+default_features = false
+exception_id = "FF-DEC-001"
 
 [[dependency_decisions]]
 name = "toml"

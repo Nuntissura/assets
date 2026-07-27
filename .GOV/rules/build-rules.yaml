@@ -67,7 +67,7 @@ exception_authority:
       allowed_consumers: [fforager-transport]
       allowed_direct_dependencies: [wreq, wreq-util]
       allowed_versions: ["wreq@5.3.0", "wreq@6.0.0-rc.29", "wreq-util@3.0.0-rc.14"]
-      allowed_native_link_packages: []
+      allowed_native_link_packages: ["boring-sys2@4.15.15", "clang-sys@1.8.1", "zstd-sys@2.0.16+zstd.1.5.7"]
       allowed_runtime_classes: [non_shipped_phase0_prerequisite]
       allow_build_scripts: true
       allow_build_time_downloads: false
