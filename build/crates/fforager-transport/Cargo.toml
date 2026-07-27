@@ -12,6 +12,8 @@ fforager-contracts = { version = "0.1.0", path = "../../../product/crates/fforag
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tokio.workspace = true
+wreq.workspace = true
 
 [lints]
 workspace = true

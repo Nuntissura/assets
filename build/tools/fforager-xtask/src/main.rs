@@ -4008,7 +4008,7 @@ fn validate_dependencies(
     validate_transitive_dependencies(policy, metadata, native_exceptions)?;
     checks.push(pass(
         "dependency-policy",
-        "all direct external dependencies have exact per-consumer decisions; transitive build/proc-macro/native-link packages exactly match policy and canonical exceptions",
+        "all direct external dependencies have exact per-consumer decisions; transitive build/proc-macro/native-link packages exactly match policy and canonical exceptions; BoringSSL source is vendored and environment/precompiled overrides are absent",
     ));
     Ok(())
 }
@@ -4253,6 +4253,90 @@ fn validate_transitive_dependencies(
     if observed_native_links != expected_native_links {
         return Err(format!(
             "FF-ARCH-E-NATIVE-LINK-SURFACE: expected {expected_native_links:?}, observed {observed_native_links:?}"
+        ));
+    }
+    validate_native_supply_chain(metadata, &expected_native_links)?;
+    Ok(())
+}
+
+fn validate_native_supply_chain(
+    metadata: &Metadata,
+    expected_native_links: &BTreeSet<String>,
+) -> Result<(), String> {
+    let forbidden_environment = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| name.to_ascii_uppercase().contains("BORING_BSSL"))
+        .collect::<BTreeSet<_>>();
+    if !forbidden_environment.is_empty() {
+        return Err(format!(
+            "FF-ARCH-E-NATIVE-SOURCE-OVERRIDE: BoringSSL environment overrides are forbidden: {forbidden_environment:?}"
+        ));
+    }
+    let resolve = metadata
+        .resolve
+        .as_ref()
+        .ok_or("Cargo metadata omitted resolve graph")?;
+    for identity in expected_native_links {
+        let Some((name, version)) = identity.rsplit_once('@') else {
+            return Err(format!(
+                "FF-ARCH-E-NATIVE-SOURCE: invalid native package identity {identity}"
+            ));
+        };
+        if !matches!(name, "boring-sys2" | "btls-sys") {
+            continue;
+        }
+        let package = metadata
+            .packages
+            .iter()
+            .find(|package| package.name.as_str() == name && package.version.to_string() == version)
+            .ok_or_else(|| {
+                format!("FF-ARCH-E-NATIVE-SOURCE: metadata omitted native package {identity}")
+            })?;
+        let selected_features = resolve
+            .nodes
+            .iter()
+            .find(|node| node.id == package.id)
+            .map(|node| {
+                node.features
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<BTreeSet<_>>()
+            })
+            .ok_or_else(|| {
+                format!("FF-ARCH-E-NATIVE-SOURCE: resolve graph omitted native package {identity}")
+            })?;
+        let manifest_dir = package
+            .manifest_path
+            .parent()
+            .ok_or_else(|| {
+                format!("FF-ARCH-E-NATIVE-SOURCE: manifest has no parent for {identity}")
+            })?
+            .as_std_path();
+        validate_boringssl_source_dir(identity, manifest_dir, &selected_features)?;
+    }
+    Ok(())
+}
+
+fn validate_boringssl_source_dir(
+    identity: &str,
+    manifest_dir: &Path,
+    selected_features: &BTreeSet<String>,
+) -> Result<(), String> {
+    if selected_features
+        .iter()
+        .any(|feature| matches!(feature.as_str(), "fips" | "fips-link-precompiled"))
+    {
+        return Err(format!(
+            "FF-ARCH-E-NATIVE-PRECOMPILED: {identity} selected forbidden FIPS/precompiled feature surface {selected_features:?}"
+        ));
+    }
+    let vendored_markers = [
+        manifest_dir.join("deps/boringssl/CMakeLists.txt"),
+        manifest_dir.join("deps/boringssl/src/CMakeLists.txt"),
+    ];
+    if !vendored_markers.iter().any(|marker| marker.is_file()) {
+        return Err(format!(
+            "FF-ARCH-E-NATIVE-SOURCE: {identity} has no packaged BoringSSL CMake marker; build-time source acquisition would be possible"
         ));
     }
     Ok(())
@@ -10753,6 +10837,28 @@ mod tests {
     }
 
     #[test]
+    fn boringssl_source_policy_rejects_missing_vendoring_and_precompiled_features() {
+        let root = test_root("boringssl-source-policy");
+        fs::create_dir_all(&root).unwrap();
+        let empty = BTreeSet::new();
+        let error = validate_boringssl_source_dir("boring-sys2@4.15.15", &root, &empty)
+            .expect_err("missing vendored source marker must fail");
+        assert!(error.contains("FF-ARCH-E-NATIVE-SOURCE"));
+
+        let marker = root.join("deps/boringssl/CMakeLists.txt");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(&marker, "cmake_minimum_required(VERSION 3.10)\n").unwrap();
+        validate_boringssl_source_dir("boring-sys2@4.15.15", &root, &empty)
+            .expect("packaged source marker");
+
+        let selected_features = ["fips-link-precompiled".to_owned()].into_iter().collect();
+        let error = validate_boringssl_source_dir("boring-sys2@4.15.15", &root, &selected_features)
+            .expect_err("precompiled feature must fail");
+        assert!(error.contains("FF-ARCH-E-NATIVE-PRECOMPILED"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn representative_repository_mutations_reach_production_validation() {
         assert_architecture_mutation_fails(
             "shipped-before-bootstrap",
@@ -10834,6 +10940,43 @@ mod tests {
                 fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
             },
             "FF-ARCH-E-WRONG-ROOT",
+        );
+    }
+
+    #[test]
+    fn native_exception_mutations_reach_production_validation() {
+        assert_architecture_mutation_fails(
+            "native-exception-wrong-consumer",
+            |root| {
+                replace_file_text(
+                    &root.join(".GOV/rules/build-rules.yaml"),
+                    "allowed_consumers: [fforager-transport]",
+                    "allowed_consumers: [fforager-xtask]",
+                );
+            },
+            "FF-ARCH-E-UNAPPROVED-NATIVE-DEPENDENCY",
+        );
+        assert_architecture_mutation_fails(
+            "native-exception-hidden-link-package",
+            |root| {
+                replace_file_text(
+                    &root.join(".GOV/rules/build-rules.yaml"),
+                    "\"clang-sys@1.8.1\", ",
+                    "",
+                );
+            },
+            "FF-ARCH-E-NATIVE-LINK-SURFACE",
+        );
+        assert_architecture_mutation_fails(
+            "native-exception-product-promotion",
+            |root| {
+                replace_file_text(
+                    &root.join(".GOV/rules/build-rules.yaml"),
+                    "allow_product_use: false",
+                    "allow_product_use: true",
+                );
+            },
+            "FF-ARCH-E-EXCEPTION-SCHEMA",
         );
     }
 
