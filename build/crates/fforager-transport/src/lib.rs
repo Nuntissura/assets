@@ -9,8 +9,10 @@ mod local_server;
 mod policy;
 
 pub use adjudication::{
-    AdjudicationError, AdjudicationObservation, AdjudicationRequest, ConvenienceState,
-    FingerprintProfile, PolicyConveniences, WireProof, WreqAdjudicationAdapter,
+    AdjudicationError, AdjudicationObservation, EvidenceState, FingerprintProfile,
+    FingerprintReceipt, LiveProbeOptions, LiveWireProbeReport, PolicyConveniences,
+    ProfileParityStatus, StructuralWireEvidence, WreqAdjudicationAdapter,
+    validate_live_wire_probe_report,
 };
 pub use corpus::{
     AggregateVerdict, CorpusManifest, CorpusReport, run_corpus, validate_aggregate_evidence,

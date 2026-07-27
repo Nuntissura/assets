@@ -9,11 +9,13 @@ publish.workspace = true
 
 [dependencies]
 fforager-contracts = { version = "0.1.0", path = "../../../product/crates/fforager-contracts" }
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 wreq.workspace = true
+wreq-util.workspace = true
 
 [lints]
 workspace = true

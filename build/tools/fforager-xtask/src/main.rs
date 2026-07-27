@@ -4255,7 +4255,121 @@ fn validate_transitive_dependencies(
             "FF-ARCH-E-NATIVE-LINK-SURFACE: expected {expected_native_links:?}, observed {observed_native_links:?}"
         ));
     }
+    validate_native_exception_reachability(policy, metadata, native_exceptions)?;
     validate_native_supply_chain(metadata, &expected_native_links)?;
+    Ok(())
+}
+
+fn validate_native_exception_reachability(
+    policy: &ArchitecturePolicy,
+    metadata: &Metadata,
+    native_exceptions: &BTreeMap<String, NativeDependencyException>,
+) -> Result<(), String> {
+    let resolve = metadata
+        .resolve
+        .as_ref()
+        .ok_or("Cargo metadata omitted resolve graph")?;
+    for exception_id in &policy.exception_decision_ids {
+        let exception = native_exceptions.get(exception_id).ok_or_else(|| {
+            format!(
+                "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: missing native exception {exception_id}"
+            )
+        })?;
+        let governed_package_ids = metadata
+            .packages
+            .iter()
+            .filter(|package| {
+                let identity = format!("{}@{}", package.name, package.version);
+                exception.allowed_versions.contains(&identity)
+                    || exception.allowed_native_link_packages.contains(&identity)
+            })
+            .map(|package| package.id.to_string())
+            .collect::<BTreeSet<_>>();
+        if governed_package_ids.is_empty() {
+            return Err(format!(
+                "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: {exception_id} has no selected package in the resolve graph"
+            ));
+        }
+        for workspace_id in &metadata.workspace_members {
+            let workspace_id = workspace_id.to_string();
+            let package = metadata
+                .packages
+                .iter()
+                .find(|package| package.id.to_string() == workspace_id)
+                .ok_or_else(|| {
+                    format!(
+                        "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: workspace package {workspace_id} is absent from metadata"
+                    )
+                })?;
+            let member = policy
+                .members
+                .iter()
+                .find(|member| member.name == package.name.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: workspace package {} has no member policy",
+                        package.name
+                    )
+                })?;
+            let mut pending = vec![workspace_id.clone()];
+            let mut visited = BTreeSet::new();
+            let mut reaches_exception = false;
+            while let Some(package_id) = pending.pop() {
+                if !visited.insert(package_id.clone()) {
+                    continue;
+                }
+                if governed_package_ids.contains(&package_id) {
+                    reaches_exception = true;
+                    break;
+                }
+                let Some(node) = resolve
+                    .nodes
+                    .iter()
+                    .find(|node| node.id.to_string() == package_id)
+                else {
+                    continue;
+                };
+                pending.extend(
+                    node.deps
+                        .iter()
+                        .map(|dependency| dependency.pkg.to_string()),
+                );
+            }
+            if !reaches_exception {
+                continue;
+            }
+            if member.shipped
+                || member.manifest.starts_with("product/")
+                || !exception.allowed_consumers.contains(&member.name)
+            {
+                return Err(format!(
+                    "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: {} reaches {exception_id} but is not an allowed non-shipped consumer",
+                    member.name
+                ));
+            }
+            let direct_exception_decisions = policy
+                .dependency_decisions
+                .iter()
+                .filter(|decision| {
+                    decision.consumer == member.name
+                        && exception
+                            .allowed_direct_dependencies
+                            .contains(&decision.name)
+                })
+                .collect::<Vec<_>>();
+            if direct_exception_decisions.is_empty()
+                || direct_exception_decisions.iter().any(|decision| {
+                    !decision.native
+                        || decision.exception_id.as_deref() != Some(exception_id.as_str())
+                })
+            {
+                return Err(format!(
+                    "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY: {} reaches {exception_id} without an explicit matching native dependency decision",
+                    member.name
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -10977,6 +11091,22 @@ mod tests {
                 );
             },
             "FF-ARCH-E-EXCEPTION-SCHEMA",
+        );
+        assert_architecture_mutation_fails(
+            "native-exception-shipped-product-reachability",
+            |root| {
+                replace_file_text(
+                    &root.join("product/crates/fforager-core/Cargo.toml"),
+                    "fforager-contracts = { version = \"0.1.0\", path = \"../fforager-contracts\" }",
+                    "fforager-contracts = { version = \"0.1.0\", path = \"../fforager-contracts\" }\nwreq.workspace = true",
+                );
+                replace_file_text(
+                    &root.join("build/architecture-policy.toml"),
+                    "[[dependency_decisions]]\nname = \"toml\"",
+                    "[[dependency_decisions]]\nname = \"wreq\"\nversion = \"6.0.0-rc.29\"\nconsumer = \"fforager-core\"\nruntime_class = \"shipped_rust_product\"\npurpose = \"Mutation-only shipped consumer bypass probe.\"\nnative = false\nowner = \"WP-FF-015-wreq-transport-adjudication\"\nallowed_consumers = [\"fforager-core\"]\nreason = \"Mutation-only reachability proof.\"\nremoval_trigger = \"Mutation sandbox is deleted after the assertion.\"\napproval_id = \"WP-FF-015-wreq-transport-adjudication-v1-AC-001\"\nfeatures = [\"stream\", \"tokio-rt\", \"webpki-roots\"]\ndefault_features = false\n\n[[dependency_decisions]]\nname = \"toml\"",
+                );
+            },
+            "FF-ARCH-E-NATIVE-CONSUMER-REACHABILITY",
         );
     }
 
