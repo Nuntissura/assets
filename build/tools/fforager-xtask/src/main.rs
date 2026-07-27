@@ -132,6 +132,20 @@ struct DependencyDecision {
     approval_id: String,
     features: Vec<String>,
     default_features: bool,
+    #[serde(default)]
+    exception_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct NativeDependencyException {
+    id: String,
+    owner: String,
+    approval_id: String,
+    allowed_consumers: BTreeSet<String>,
+    allowed_direct_dependencies: BTreeSet<String>,
+    allowed_versions: BTreeSet<String>,
+    allowed_native_link_packages: BTreeSet<String>,
+    allowed_runtime_classes: BTreeSet<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2821,7 +2835,9 @@ fn canonical_contract_manual_commands() -> Vec<&'static str> {
 
 fn architecture_check(root: &Path) -> Result<ArchitectureResult, String> {
     let policy: ArchitecturePolicy = read_toml(&root.join("build/architecture-policy.toml"))?;
-    validate_policy_identity(&policy)?;
+    let native_exceptions =
+        read_native_dependency_exceptions(&root.join(&policy.exception_authority))?;
+    validate_policy_identity(&policy, &native_exceptions)?;
     let tooling: ToolingPolicy = read_toml(&root.join("build/tooling-policy.toml"))?;
     validate_tooling_policy(&tooling)?;
     validate_current_host(root, &tooling)?;
@@ -2832,7 +2848,7 @@ fn architecture_check(root: &Path) -> Result<ArchitectureResult, String> {
     validate_workspace(root, &policy, &metadata, &mut checks)?;
     validate_internal_graph(&policy, &metadata, &mut checks)?;
     validate_three_roots(root, &policy, &mut checks)?;
-    validate_dependencies(&policy, &metadata, &mut checks)?;
+    validate_dependencies(&policy, &metadata, &native_exceptions, &mut checks)?;
     let canonical_rules = required_architecture_rules(&root.join(".GOV/rules/build-rules.yaml"))?;
     validate_rule_map(&rule_map, &canonical_rules, &mut checks)?;
     let fixtures = validate_fixtures(root, &rule_map, &mut checks)?;
@@ -2861,7 +2877,10 @@ fn architecture_check(root: &Path) -> Result<ArchitectureResult, String> {
     })
 }
 
-fn validate_policy_identity(policy: &ArchitecturePolicy) -> Result<(), String> {
+fn validate_policy_identity(
+    policy: &ArchitecturePolicy,
+    native_exceptions: &BTreeMap<String, NativeDependencyException>,
+) -> Result<(), String> {
     if policy.schema_id != "ff.architecture_policy@2"
         || policy.file_id != "FF-GOV-BUILD-ARCH-POLICY-001"
         || policy.schema_version != "2.0.0"
@@ -2893,9 +2912,16 @@ fn validate_policy_identity(policy: &ArchitecturePolicy) -> Result<(), String> {
             "architecture-policy canonical path mismatch: {exact_paths:?}"
         ));
     }
-    if unapproved_exception_diagnostic(policy.exception_decision_ids.len()).is_some() {
+    let declared_exception_ids = policy
+        .exception_decision_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let authorized_exception_ids = native_exceptions.keys().cloned().collect::<BTreeSet<_>>();
+    if declared_exception_ids != authorized_exception_ids {
         return Err(
-            "FF-ARCH-E-UNAPPROVED-EXCEPTION: canonical exception allowlist is empty".to_owned(),
+            "FF-ARCH-E-UNAPPROVED-EXCEPTION: architecture policy and canonical exception allowlist differ"
+                .to_owned(),
         );
     }
     let expected_forbidden = BTreeSet::from([
@@ -2920,7 +2946,17 @@ fn validate_policy_identity(policy: &ArchitecturePolicy) -> Result<(), String> {
     {
         return Err("unsafe or direct-edge decision policy mismatch".to_owned());
     }
-    if policy.allowed_runtime_or_native_dependencies != ["FFmpeg", "ffprobe"] {
+    let expected_runtime_or_native_dependencies = ["FFmpeg".to_owned(), "ffprobe".to_owned()]
+        .into_iter()
+        .chain(authorized_exception_ids)
+        .collect::<BTreeSet<_>>();
+    if policy
+        .allowed_runtime_or_native_dependencies
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        != expected_runtime_or_native_dependencies
+    {
         return Err("architecture-policy changed the approved runtime/native boundary".to_owned());
     }
     Ok(())
@@ -3676,14 +3712,6 @@ fn validate_three_roots(
             "{diagnostic}: wrong_paths={existing_wrong:?}; selectors={existing:?}"
         ));
     }
-    let exception_authority = fs::read_to_string(root.join(&policy.exception_authority))
-        .map_err(|e| format!("read exception authority: {e}"))?;
-    if !exception_authority
-        .lines()
-        .any(|line| line.trim() == "canonical_allowlist: []")
-    {
-        return Err("exception authority does not expose the canonical empty allowlist".to_owned());
-    }
     scan_product_runtime_literals(root)?;
     scan_product_oracle_boundary(root)?;
     scan_ferric_implementation_independence(root)?;
@@ -3961,9 +3989,10 @@ fn product_oracle_source_diagnostic(source: &str) -> Option<&'static str> {
 fn validate_dependencies(
     policy: &ArchitecturePolicy,
     metadata: &Metadata,
+    native_exceptions: &BTreeMap<String, NativeDependencyException>,
     checks: &mut Vec<Check>,
 ) -> Result<(), String> {
-    let decisions = validate_dependency_decisions(policy)?;
+    let decisions = validate_dependency_decisions(policy, native_exceptions)?;
     let packages = metadata.workspace_packages();
     if packages.is_empty() {
         return Err("workspace has no package".to_owned());
@@ -3976,10 +4005,10 @@ fn validate_dependencies(
         validate_product_oracle_dependencies(package, policy, &workspace_names)?;
         validate_direct_dependencies(package, &decisions, &workspace_names)?;
     }
-    validate_transitive_dependencies(policy, metadata)?;
+    validate_transitive_dependencies(policy, metadata, native_exceptions)?;
     checks.push(pass(
         "dependency-policy",
-        "all direct external dependencies have exact per-consumer decisions; transitive build/proc-macro packages match policy and no package declares native links",
+        "all direct external dependencies have exact per-consumer decisions; transitive build/proc-macro/native-link packages exactly match policy and canonical exceptions",
     ));
     Ok(())
 }
@@ -4012,9 +4041,10 @@ fn validate_product_oracle_dependencies(
     Ok(())
 }
 
-fn validate_dependency_decisions(
-    policy: &ArchitecturePolicy,
-) -> Result<BTreeMap<(&str, &str), &DependencyDecision>, String> {
+fn validate_dependency_decisions<'policy>(
+    policy: &'policy ArchitecturePolicy,
+    native_exceptions: &BTreeMap<String, NativeDependencyException>,
+) -> Result<BTreeMap<(&'policy str, &'policy str), &'policy DependencyDecision>, String> {
     let decisions: BTreeMap<_, _> = policy
         .dependency_decisions
         .iter()
@@ -4044,7 +4074,6 @@ fn validate_dependency_decisions(
                     | "shipped_rust_product"
             )
             || decision.purpose.trim().is_empty()
-            || decision.native
             || decision.version.trim().is_empty()
             || !work_packet_base_owner_valid(&decision.owner)
             || decision.allowed_consumers != [decision.consumer.as_str()]
@@ -4058,8 +4087,41 @@ fn validate_dependency_decisions(
                 decision.name
             ));
         }
+        if !dependency_native_exception_valid(decision, native_exceptions) {
+            return Err(format!(
+                "FF-ARCH-E-UNAPPROVED-NATIVE-DEPENDENCY: invalid native exception for {}",
+                decision.name
+            ));
+        }
     }
     Ok(decisions)
+}
+
+fn dependency_native_exception_valid(
+    decision: &DependencyDecision,
+    native_exceptions: &BTreeMap<String, NativeDependencyException>,
+) -> bool {
+    if !decision.native {
+        return decision.exception_id.is_none();
+    }
+    let Some(exception_id) = decision.exception_id.as_deref() else {
+        return false;
+    };
+    let Some(exception) = native_exceptions.get(exception_id) else {
+        return false;
+    };
+    exception.owner == decision.owner
+        && exception.approval_id == decision.approval_id
+        && exception.allowed_consumers.contains(&decision.consumer)
+        && exception
+            .allowed_direct_dependencies
+            .contains(&decision.name)
+        && exception
+            .allowed_versions
+            .contains(&format!("{}@{}", decision.name, decision.version))
+        && exception
+            .allowed_runtime_classes
+            .contains(&decision.runtime_class)
 }
 
 fn work_packet_base_owner_valid(owner: &str) -> bool {
@@ -4148,17 +4210,16 @@ fn validate_direct_dependencies(
 fn validate_transitive_dependencies(
     policy: &ArchitecturePolicy,
     metadata: &Metadata,
+    native_exceptions: &BTreeMap<String, NativeDependencyException>,
 ) -> Result<(), String> {
     let mut observed_build = BTreeSet::new();
     let mut observed_proc = BTreeSet::new();
+    let mut observed_native_links = BTreeSet::new();
     for package in &metadata.packages {
-        if package.links.is_some() {
-            return Err(format!(
-                "native links package is unapproved: {}",
-                package.name
-            ));
-        }
         let identity = format!("{}@{}", package.name, package.version);
+        if package.links.is_some() {
+            observed_native_links.insert(identity.clone());
+        }
         for target in &package.targets {
             if target.is_custom_build() {
                 observed_build.insert(identity.clone());
@@ -4178,12 +4239,126 @@ fn validate_transitive_dependencies(
         .iter()
         .cloned()
         .collect();
+    let expected_native_links = policy
+        .exception_decision_ids
+        .iter()
+        .filter_map(|id| native_exceptions.get(id))
+        .flat_map(|exception| exception.allowed_native_link_packages.iter().cloned())
+        .collect::<BTreeSet<_>>();
     if observed_build != expected_build || observed_proc != expected_proc {
         return Err(format!(
             "transitive build/proc-macro surface mismatch: build={observed_build:?}, proc={observed_proc:?}"
         ));
     }
+    if observed_native_links != expected_native_links {
+        return Err(format!(
+            "FF-ARCH-E-NATIVE-LINK-SURFACE: expected {expected_native_links:?}, observed {observed_native_links:?}"
+        ));
+    }
     Ok(())
+}
+
+fn read_native_dependency_exceptions(
+    path: &Path,
+) -> Result<BTreeMap<String, NativeDependencyException>, String> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "read native exception authority {}: {error}",
+            path.display()
+        )
+    })?;
+    let document = parse_single_yaml(&text, &path.display().to_string())?;
+    let authority = document
+        .as_mapping_get("exception_authority")
+        .ok_or("build rules omit exception_authority")?;
+    let rows = authority
+        .as_mapping_get("canonical_allowlist")
+        .and_then(Yaml::as_sequence)
+        .ok_or("exception_authority canonical_allowlist is not a sequence")?;
+    let expected_keys = BTreeSet::from([
+        "allow_build_scripts",
+        "allow_build_time_downloads",
+        "allow_packaging_or_release",
+        "allow_prebuilt_binaries",
+        "allow_product_use",
+        "allowed_consumers",
+        "allowed_direct_dependencies",
+        "allowed_native_link_packages",
+        "allowed_runtime_classes",
+        "allowed_versions",
+        "approval_id",
+        "id",
+        "kind",
+        "owner",
+        "promotion_requires_new_operator_decision",
+        "reason",
+        "removal_trigger",
+        "status",
+    ]);
+    let mut result = BTreeMap::new();
+    for row in rows {
+        let mapping = row
+            .as_mapping()
+            .ok_or("native exception row is not a mapping")?;
+        let keys = mapping
+            .keys()
+            .map(|key| {
+                key.as_str()
+                    .ok_or("native exception row has a non-string key")
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        if keys != expected_keys {
+            return Err(format!(
+                "FF-ARCH-E-EXCEPTION-SCHEMA: native exception keys are invalid: {keys:?}"
+            ));
+        }
+        let id = yaml_string(row, "id")?;
+        let owner = yaml_string(row, "owner")?;
+        let approval_id = yaml_string(row, "approval_id")?;
+        if !id.starts_with("FF-DEC-")
+            || yaml_string(row, "kind")? != "native_dependency"
+            || yaml_string(row, "status")? != "ACTIVE_NON_SHIPPED_ADJUDICATION_ONLY"
+            || !work_packet_base_owner_valid(owner)
+            || !decision_approval_matches_owner(approval_id, owner)
+            || !yaml_bool(row, "allow_build_scripts")?
+            || yaml_bool(row, "allow_build_time_downloads")?
+            || yaml_bool(row, "allow_prebuilt_binaries")?
+            || yaml_bool(row, "allow_product_use")?
+            || yaml_bool(row, "allow_packaging_or_release")?
+            || !yaml_bool(row, "promotion_requires_new_operator_decision")?
+            || yaml_string(row, "reason")?.trim().is_empty()
+            || yaml_string(row, "removal_trigger")?.trim().is_empty()
+        {
+            return Err(format!(
+                "FF-ARCH-E-EXCEPTION-SCHEMA: native exception {id} violates the bounded policy"
+            ));
+        }
+        let exception = NativeDependencyException {
+            id: id.to_owned(),
+            owner: owner.to_owned(),
+            approval_id: approval_id.to_owned(),
+            allowed_consumers: yaml_string_set(row, "allowed_consumers")?,
+            allowed_direct_dependencies: yaml_string_set(row, "allowed_direct_dependencies")?,
+            allowed_versions: yaml_string_set(row, "allowed_versions")?,
+            allowed_native_link_packages: yaml_string_set(row, "allowed_native_link_packages")?,
+            allowed_runtime_classes: yaml_string_set(row, "allowed_runtime_classes")?,
+        };
+        if exception.allowed_consumers.is_empty()
+            || exception.allowed_direct_dependencies.is_empty()
+            || exception.allowed_versions.is_empty()
+            || exception.allowed_runtime_classes.is_empty()
+        {
+            return Err(format!(
+                "FF-ARCH-E-EXCEPTION-SCHEMA: native exception {id} has an empty required scope"
+            ));
+        }
+        if result.insert(exception.id.clone(), exception).is_some() {
+            return Err(format!(
+                "FF-ARCH-E-EXCEPTION-SCHEMA: duplicate native exception {id}"
+            ));
+        }
+    }
+    Ok(result)
 }
 
 fn required_architecture_rules(path: &Path) -> Result<BTreeSet<String>, String> {
@@ -4258,6 +4433,34 @@ fn yaml_string<'a>(mapping: &'a Yaml<'_>, key: &str) -> Result<&'a str, String> 
         .and_then(Yaml::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("YAML mapping has no nonempty string {key}"))
+}
+
+fn yaml_bool(mapping: &Yaml<'_>, key: &str) -> Result<bool, String> {
+    mapping
+        .as_mapping_get(key)
+        .and_then(Yaml::as_bool)
+        .ok_or_else(|| format!("YAML mapping has no boolean {key}"))
+}
+
+fn yaml_string_set(mapping: &Yaml<'_>, key: &str) -> Result<BTreeSet<String>, String> {
+    let values = mapping
+        .as_mapping_get(key)
+        .and_then(Yaml::as_sequence)
+        .ok_or_else(|| format!("YAML mapping has no sequence {key}"))?;
+    let parsed = values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|item| !item.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| format!("YAML sequence {key} contains a non-string or empty value"))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if parsed.len() != values.len() {
+        return Err(format!("YAML sequence {key} contains duplicate values"));
+    }
+    Ok(parsed)
 }
 
 #[allow(
@@ -10520,6 +10723,7 @@ mod tests {
             approval_id: "WP-FF-003-executable-gate-bootstrap-v1-AC-002".to_owned(),
             features: vec!["derive".to_owned()],
             default_features: true,
+            exception_id: None,
         };
         assert!(dependency_features_match(
             &["derive".to_owned()],
@@ -10566,7 +10770,7 @@ mod tests {
             |root| {
                 replace_file_text(
                     &root.join("build/architecture-policy.toml"),
-                    "exception_decision_ids = []",
+                    "exception_decision_ids = [\"FF-DEC-001\"]",
                     "exception_decision_ids = [\"SELF-AUTHORIZED\"]",
                 );
             },

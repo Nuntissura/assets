@@ -1,6 +1,6 @@
 schema_id: ff.build_rules@2
 file_id: FF-GOV-RULES-001
-updated_at: "2026-07-22"
+updated_at: "2026-07-27"
 authority: canonical
 verification_gates:
   - id: FF-GATE-ARCH-001
@@ -58,7 +58,25 @@ change_evidence_contract:
     ceilings_exceptions_and_evidence.when_deliberate_ceiling: [ceiling_id, current_ceiling, replacement_trigger, likely_upgrade_path, trigger_detection_method, linked_evidence]
   runtime_boundary: Build tooling may read the explicitly resolved active packet; shipped Ferric and watcher binaries MUST NOT read .GOV or build/ files at runtime.
 exception_authority:
-  canonical_allowlist: []
+  canonical_allowlist:
+    - id: FF-DEC-001
+      kind: native_dependency
+      status: ACTIVE_NON_SHIPPED_ADJUDICATION_ONLY
+      owner: WP-FF-015-wreq-transport-adjudication
+      approval_id: WP-FF-015-wreq-transport-adjudication-v1-AC-001
+      allowed_consumers: [fforager-transport]
+      allowed_direct_dependencies: [wreq, wreq-util]
+      allowed_versions: ["wreq@5.3.0", "wreq@6.0.0-rc.29", "wreq-util@3.0.0-rc.14"]
+      allowed_native_link_packages: []
+      allowed_runtime_classes: [non_shipped_phase0_prerequisite]
+      allow_build_scripts: true
+      allow_build_time_downloads: false
+      allow_prebuilt_binaries: false
+      allow_product_use: false
+      allow_packaging_or_release: false
+      promotion_requires_new_operator_decision: true
+      reason: The validated WP-007 corpus produced 31 mandatory typed blockers and proved that the approved std-first stack cannot execute browser TLS or HTTP2 fingerprint semantics; the Operator explicitly selected the recommended bounded wreq adjudication path.
+      removal_trigger: Remove the exception if wreq fails adjudication, a maintained non-native implementation passes the same corpus, or the non-shipped transport prerequisite is retired; production promotion requires a separate explicit Operator decision.
   rule: build/architecture-policy.toml MUST reference a stable decision ID in this separate allowlist and MUST NOT authorize native runtimes, unsafe crates, forbidden edges, build-time downloads, prebuilt binaries, FFI, or other architecture exceptions by editing build policy alone.
 rules:
   - id: FF-BUILD-001
