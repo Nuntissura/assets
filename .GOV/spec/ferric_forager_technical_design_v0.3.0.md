@@ -3,7 +3,7 @@ title: "Ferric Forager — Technical Design"
 document_id: "FERRIC-FORAGER-DESIGN"
 file_id: "FF-DOC-DESIGN-001"
 file_kind: "technical-design"
-updated_at: "2026-07-19"
+updated_at: "2026-07-27"
 version: "0.3.0"
 status: "Architecture and executable-contract prerequisite charter"
 date: "2026-07-18"
@@ -484,6 +484,7 @@ The production dependency boundary is normative:
 - FFmpeg and ffprobe are required supervised external processes;
 - Python, yt-dlp, and yt-dlp companion packages or executable assets are forbidden product, build, test, canonical-verification, package, release, and runtime dependencies; explicitly invoked non-canonical research tooling may only observe an Operator-supplied external reference;
 - Deno, Node.js, QuickJS as an external runtime, Wasmtime, BoringSSL-backed transports, SQLite native bindings, and any other runtime or native dependency require explicit Operator approval backed by current research and measured need;
+- `FF-DEC-001` records the Operator-approved exception for exact-pinned `wreq`/`wreq-util` and their exact audited BoringSSL native-link surface in the non-shipped `fforager-transport` Phase 0 adjudication package only; it does not authorize product use, packaging, release, another consumer, version or link drift, or promotion without a new explicit Operator decision and production-runtime proof;
 - Rust executable plugins over bounded, versioned process IPC are the accepted v1 plugin direction;
 - the archive backend remains undecided pending a pure-Rust store spike;
 - a pure-Rust JavaScript engine and a pure-Rust fingerprint-capable transport are Phase 0 candidates, not proven selections.

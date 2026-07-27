@@ -10,14 +10,14 @@ governance_root = ".GOV"
 product_root = "product"
 build_root = "build"
 exception_authority = ".GOV/rules/build-rules.yaml"
-exception_decision_ids = []
+exception_decision_ids = ["FF-DEC-001"]
 unsafe_policy = "forbid_in_workspace_members"
 unsafe_exception_authority = ".GOV/rules/build-rules.yaml#exception_authority"
 unsafe_decision_ids = []
 internal_edge_default = "deny"
 forbidden_layer_edges = ["engine->frontend", "engine->adapter", "engine->watcher", "adapter->adapter", "product->watcher", "watcher->engine", "normal_or_build:product->testkit"]
 forbidden_product_runtime_roots = [".GOV", "build"]
-allowed_runtime_or_native_dependencies = ["FFmpeg", "ffprobe"]
+allowed_runtime_or_native_dependencies = ["FFmpeg", "ffprobe", "FF-DEC-001"]
 approved_transitive_build_packages = ["camino@1.2.4", "crossbeam-utils@0.8.22", "getrandom@0.3.4", "icu_normalizer_data@2.0.0", "icu_properties_data@2.0.1", "libc@0.2.189", "memoffset@0.9.1", "ntapi@0.4.3", "num-traits@0.2.19", "parking_lot_core@0.9.12", "paste@1.0.15", "portable-atomic@1.14.0", "proc-macro2@1.0.107", "quote@1.0.47", "rustversion@1.0.23", "serde@1.0.228", "serde_core@1.0.228", "serde_json@1.0.150", "thiserror@2.0.19", "winapi-i686-pc-windows-gnu@0.4.0", "winapi-x86_64-pc-windows-gnu@0.4.0", "winapi@0.3.9", "wit-bindgen@0.57.1", "zerocopy@0.8.55", "zmij@1.0.23"]
 approved_transitive_proc_macros = ["boa_macros@0.21.1", "bytemuck_derive@1.11.0", "derive_arbitrary@1.4.2", "displaydoc@0.2.6", "dynify-macros@0.1.2", "equator-macro@0.4.2", "num_enum_derive@0.7.6", "paste@1.0.15", "phf_macros@0.13.1", "pin-project-internal@1.1.13", "rustversion@1.0.23", "serde_derive@1.0.228", "thiserror-impl@2.0.19", "time-macros@0.2.32", "windows-implement@0.60.2", "windows-interface@0.59.3", "yoke-derive@0.8.2", "zerocopy-derive@0.8.55", "zerofrom-derive@0.1.7", "zerovec-derive@0.11.3"]
 

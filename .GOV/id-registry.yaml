@@ -1,6 +1,6 @@
 schema_id: ff.id_registry@1
 file_id: FF-GOV-ID-REGISTRY-001
-updated_at: "2026-07-26"
+updated_at: "2026-07-27"
 namespaces:
   FF-PROJ:
     entity_kind: project
@@ -44,7 +44,7 @@ namespaces:
     next_numeric_id: 7
   WP-FF:
     entity_kind: work_packet
-    next_numeric_id: 15
+    next_numeric_id: 16
   FF-AC:
     entity_kind: work_packet_acceptance_row
     next_numeric_id: 1
@@ -53,7 +53,7 @@ namespaces:
     next_numeric_id: 1
   FF-DEC:
     entity_kind: decision
-    next_numeric_id: 1
+    next_numeric_id: 2
 registered_files:
   - id: FF-DOC-START-001
     path: START_HERE.yaml
@@ -175,6 +175,14 @@ registered_files:
     path: .GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/refinement.json
   - id: WP-FF-014-durable-wire-proof-remediation-v3-CEILING-001
     path: .GOV/work_packets/WP-FF-014-durable-wire-proof-remediation-v3/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: WP-FF-015-wreq-transport-adjudication-v1
+    path: .GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json
+  - id: WP-FF-015-wreq-transport-adjudication-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/refinement.json
+  - id: WP-FF-015-wreq-transport-adjudication-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
+  - id: FF-DEC-001
+    path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/0
 registered_rule_ranges:
   - namespace: FF-BOOT
     first: FF-BOOT-001
