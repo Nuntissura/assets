@@ -80,8 +80,6 @@ impl CandidateAdapter {
                 Capability::Http11,
                 Capability::Http2,
                 Capability::BodyBounds,
-                Capability::TlsFingerprint,
-                Capability::Http2Fingerprint,
             ]),
         }
     }
