@@ -1,1 +1,2 @@
 build/fixtures/youtube-challenge-v1/players/*.js -text
+build/git-hooks/* text eol=lf

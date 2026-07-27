@@ -85,6 +85,7 @@ state:
 workflow:
   startup:
     - Read deterministic_navigation.always_read_in_order.
+    - Run `cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- secret-scan --install-hooks` once per clone and verify `core.hooksPath` remains `build/git-hooks` before any commit or push.
     - Classify the task using task_profiles and use the highest applicable profile.
     - Inspect `git status --porcelain=v2 --branch` and `git worktree list --porcelain` before changing TRACKED or EXPANDED work.
     - For TRACKED or EXPANDED work, resolve current_focus.active_wp_id or allocate the next registered WP-FF ID, instantiate one packet.json from the template, and index it on the taskboard.
@@ -101,17 +102,29 @@ workflow:
     - Record the closure commit and MERGE_PENDING in the packet.
     - Merge the closure to main.
     - Run `git merge-base --is-ancestor <CLOSURE_SHA> main`; only exit code 0 produces VALIDATED.
+    - A completed implementation from any linked worktree MUST be merged into the canonical main worktree before closure; shipped implementation MUST reside under `product/` on main, and prerequisite-only code that is not approved for product promotion remains decision-required rather than falsely complete.
+    - Before selecting or starting the next task, run `powershell -NoProfile -File build/scripts/clean-artifacts.ps1`, then `powershell -NoProfile -File build/scripts/clean-artifacts.ps1 -VerifyOnly`; do not advance while `.fforager-artifacts/` contains generated output.
     - Clear current_focus.active_wp_id when closure is proven; do not copy packet lifecycle details into the taskboard.
   worktrees:
     default: NONE
     use_only_when: [parallel_work, long_running_dirty_work, isolated_validation, high_risk_experiment]
-    create: git worktree add --lock --reason <WP_ID> -b codex/<SLUG> <LOCAL_PATH> main
+    root: .worktrees/
+    create: powershell -NoProfile -File build/scripts/new-worktree.ps1 -WorktreeId <WP_ID> -Branch codex/<SLUG> -StartPoint main
     inspect: git worktree list --porcelain
-    remove_clean: git worktree unlock <LOCAL_PATH>, then git worktree remove <LOCAL_PATH>
-    repair: git worktree repair <LOCAL_PATH>
+    remove_clean: git worktree unlock .worktrees/<WP_ID>, then git worktree remove .worktrees/<WP_ID>
+    repair: git worktree repair .worktrees/<WP_ID>
     prune_preview: git worktree prune --dry-run --verbose
-    local_paths: Physical paths are machine-local and MUST NOT be committed; Git worktree metadata is the local registry.
+    local_paths: Every linked worktree MUST live under the ignored repository-root `.worktrees/` directory; the creation helper links its ignored `.fforager-artifacts` path to the primary repository's single artifact root; physical link paths are machine-local and MUST NOT be committed, and Git worktree metadata is the local registry.
     warning: A worktree is isolation, not backup; durable recovery requires commits and remote backup.
+  artifact_hygiene:
+    root: .fforager-artifacts/
+    cargo_target: .fforager-artifacts/cargo-target/
+    test_runs: .fforager-artifacts/test-runs/
+    runtime_proof: .fforager-artifacts/runtime-proof/
+    command_capture: .fforager-artifacts/command-capture/
+    constraint: All disposable build, test, benchmark, proof-stage, command-capture, temporary, and generated validation output MUST remain inside this ignored repository-root directory; external temp roots, root `target/`, and `build/target/` are forbidden.
+    cleanup: powershell -NoProfile -File build/scripts/clean-artifacts.ps1
+    verify_clean: powershell -NoProfile -File build/scripts/clean-artifacts.ps1 -VerifyOnly
 critical_boundaries:
   - id: FF-START-BOUNDARY-001
     statement: Do not add Python, yt-dlp, any yt-dlp companion package or executable asset, another JS runtime, Wasmtime, BoringSSL-backed transports, SQLite native bindings, or another runtime/native dependency to any Ferric implementation, build, test, verification, package, release, fallback, or delegated-work path without explicit Operator approval; optional isolated comparison tooling may only observe an Operator-supplied external reference.
@@ -125,3 +138,9 @@ critical_boundaries:
     statement: Do not allow unbounded queues, hidden shared state, resume state ahead of durable bytes, or success before output/archive reconciliation.
   - id: FF-START-BOUNDARY-006
     statement: Do not narrow the complete product's extractor, protocol, metadata, archive, or diagnostic scope to make a phase pass.
+  - id: FF-START-BOUNDARY-007
+    statement: All disposable build and test state is confined to `.fforager-artifacts/`; the directory MUST be cleaned and verified empty before work advances to another task.
+  - id: FF-START-BOUNDARY-008
+    statement: All linked worktrees live under `.worktrees/`, and implementation is not complete until its closure commit is merged into the canonical main worktree with shipped code under `product/`.
+  - id: FF-START-BOUNDARY-009
+    statement: Do not commit or push an API key or credential; the exact staged snapshot and every outgoing commit MUST pass FF-GATE-SECRET-001, matched values MUST remain suppressed, and GitHub secret-scanning push protection MUST remain enabled.

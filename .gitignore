@@ -1,5 +1,5 @@
-/target/
-/build/target/
+/.fforager-artifacts/
+/.worktrees/
 /build/reports/*
 !/build/reports/.gitkeep
 /.idea/

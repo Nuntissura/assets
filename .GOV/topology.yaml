@@ -1,6 +1,6 @@
 schema_id: ff.repository_topology@1
 file_id: FF-GOV-TOPOLOGY-001
-updated_at: "2026-07-19"
+updated_at: "2026-07-27"
 project:
   id: FF-PROJ-001
   name: Ferric Forager
@@ -51,7 +51,19 @@ nodes:
     kind: build_root
     path: build/
     owner: build_tooling
-    contains: [cargo_workspace, lockfile, policies, non_shipped_tools, shared_test_harnesses, fixtures, fuzzing, benchmarks, reports, target_output]
+    contains: [cargo_workspace, lockfile, policies, non_shipped_tools, shared_test_harnesses, fixtures, fuzzing, benchmarks, reports, git_hooks]
+  - id: FF-NODE-ARTIFACT-ROOT-001
+    kind: ignored_disposable_artifact_root
+    path: .fforager-artifacts/
+    owner: build_tooling
+    contains: [cargo_target, test_runs, runtime_proof, command_capture, temporary_repositories, validation_scratch]
+    cleanup_gate: FF-GATE-ARTIFACT-HYGIENE-001
+  - id: FF-NODE-WORKTREE-ROOT-001
+    kind: ignored_linked_worktree_root
+    path: .worktrees/
+    owner: repository_workflow
+    create_command: powershell -NoProfile -File build/scripts/new-worktree.ps1
+    artifact_link: Each worktree-local .fforager-artifacts path links to FF-NODE-ARTIFACT-ROOT-001.
   - id: FF-NODE-TOOLCHAIN-SELECTOR-001
     kind: rustup_selector
     path: rust-toolchain.toml
@@ -148,6 +160,18 @@ edges:
     from: FF-NODE-BUILD-001
     to: FF-NODE-PRODUCT-001
     relation: builds_and_tests
+  - id: FF-EDGE-BUILD-WRITES-ARTIFACTS-001
+    from: FF-NODE-BUILD-001
+    to: FF-NODE-ARTIFACT-ROOT-001
+    relation: writes_disposable_outputs
+  - id: FF-EDGE-WORKTREES-MERGE-PRODUCT-001
+    from: FF-NODE-WORKTREE-ROOT-001
+    to: FF-NODE-PRODUCT-001
+    relation: merges_completed_implementation_to_main
+  - id: FF-EDGE-WORKTREES-SHARE-ARTIFACTS-001
+    from: FF-NODE-WORKTREE-ROOT-001
+    to: FF-NODE-ARTIFACT-ROOT-001
+    relation: links_each_worktree_to_single_disposable_root
   - id: FF-EDGE-TOOLCHAIN-SELECTS-BUILD-001
     from: FF-NODE-TOOLCHAIN-SELECTOR-001
     to: FF-NODE-BUILD-001
@@ -168,7 +192,7 @@ boundaries:
   - id: FF-BOUNDARY-PRODUCT-GOV-001
     statement: Product runtime code under product/ MUST NOT depend on .GOV/ or build/ at runtime.
   - id: FF-BOUNDARY-PRODUCT-BUILD-001
-    statement: Product-local tests remain with their product package; shared and cross-package build or test infrastructure belongs under build/ and is never shipped.
+    statement: Product-local tests remain with their product package; shared and cross-package build or test infrastructure belongs under build/, all disposable output belongs under `.fforager-artifacts/`, and neither is shipped.
   - id: FF-BOUNDARY-RUNTIME-DEPENDENCY-001
     statement: Production implementation is Rust with supervised FFmpeg and ffprobe; any other runtime or native dependency requires explicit Operator approval.
   - id: FF-BOUNDARY-WATCHER-001
@@ -182,12 +206,16 @@ entrypoints:
   project_codex: .GOV/codex.yaml
   build_rules: .GOV/rules/build-rules.yaml
   build_verification_contracts: .GOV/rules/build-rules.yaml#verification_gates
+  secret_scan: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- secret-scan --history
+  git_hooks: build/git-hooks/
   runtime_truth_gate: cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- runtime-truth-check --evidence-from-taskboard
   task_state: .GOV/taskboard/taskboard.yaml
   work_packet_template: .GOV/templates/WORK_PACKET_CONTRACT_TEMPLATE.json
   work_packet_requirements: .GOV/templates/WORK_PACKET_REQUIREMENTS.yaml
   product_root: product/
   build_root: build/
+  artifact_root: .fforager-artifacts/
+  worktree_root: .worktrees/
   cargo_workspace: build/Cargo.toml
   rust_toolchain_selector: rust-toolchain.toml
   watcher_root: product/watcher/

@@ -7,13 +7,13 @@ namespaces:
     next_numeric_id: 2
   FF-CODEX:
     entity_kind: project_rule
-    next_numeric_id: 72
+    next_numeric_id: 77
   FF-BOOT:
     entity_kind: bootstrap_rule
-    next_numeric_id: 3
+    next_numeric_id: 7
   FF-BUILD:
     entity_kind: build_rule
-    next_numeric_id: 99
+    next_numeric_id: 100
   FF-GATE:
     entity_kind: validation_gate
     next_numeric_id: 2
@@ -41,10 +41,10 @@ namespaces:
     next_numeric_id: 59
   FF-START-BOUNDARY:
     entity_kind: model_entrypoint_boundary
-    next_numeric_id: 7
+    next_numeric_id: 10
   WP-FF:
     entity_kind: work_packet
-    next_numeric_id: 16
+    next_numeric_id: 17
   FF-AC:
     entity_kind: work_packet_acceptance_row
     next_numeric_id: 1
@@ -183,22 +183,28 @@ registered_files:
     path: .GOV/work_packets/WP-FF-015-wreq-transport-adjudication-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
   - id: FF-DEC-001
     path: .GOV/rules/build-rules.yaml#/exception_authority/canonical_allowlist/0
+  - id: WP-FF-016-no-api-key-guard-v1
+    path: .GOV/work_packets/WP-FF-016-no-api-key-guard-v1/packet.json
+  - id: WP-FF-016-no-api-key-guard-v1-REFINEMENT-001
+    path: .GOV/work_packets/WP-FF-016-no-api-key-guard-v1/refinement.json
+  - id: WP-FF-016-no-api-key-guard-v1-CEILING-001
+    path: .GOV/work_packets/WP-FF-016-no-api-key-guard-v1/packet.json#/extensions/change_evidence/ceilings_exceptions_and_evidence
 registered_rule_ranges:
   - namespace: FF-BOOT
     first: FF-BOOT-001
-    last: FF-BOOT-002
-    count: 2
+    last: FF-BOOT-006
+    count: 6
     path: AGENTS.md
     mirror_path: CLAUDE.md
   - namespace: FF-CODEX
     first: FF-CODEX-001
-    last: FF-CODEX-071
-    count: 71
+    last: FF-CODEX-076
+    count: 76
     path: .GOV/codex.yaml
   - namespace: FF-BUILD
     first: FF-BUILD-001
-    last: FF-BUILD-098
-    count: 98
+    last: FF-BUILD-099
+    count: 99
     path: .GOV/rules/build-rules.yaml
   - namespace: FF-TASKBOARD-RULE
     first: FF-TASKBOARD-RULE-001
@@ -212,8 +218,8 @@ registered_rule_ranges:
     path: .GOV/templates/WORK_PACKET_REQUIREMENTS.yaml
   - namespace: FF-START-BOUNDARY
     first: FF-START-BOUNDARY-001
-    last: FF-START-BOUNDARY-006
-    count: 6
+    last: FF-START-BOUNDARY-009
+    count: 9
     path: START_HERE.yaml
 registered_topology_ids:
   - FF-NODE-ROOT-001
@@ -224,6 +230,8 @@ registered_topology_ids:
   - FF-NODE-TOPOLOGY-001
   - FF-NODE-PRODUCT-001
   - FF-NODE-BUILD-001
+  - FF-NODE-ARTIFACT-ROOT-001
+  - FF-NODE-WORKTREE-ROOT-001
   - FF-NODE-TOOLCHAIN-SELECTOR-001
   - FF-NODE-WATCHER-001
   - FF-NODE-GOV-001
@@ -247,6 +255,9 @@ registered_topology_ids:
   - FF-EDGE-PACKETS-GOVERN-PRODUCT-001
   - FF-EDGE-PACKETS-GOVERN-BUILD-001
   - FF-EDGE-BUILD-BUILDS-PRODUCT-001
+  - FF-EDGE-BUILD-WRITES-ARTIFACTS-001
+  - FF-EDGE-WORKTREES-MERGE-PRODUCT-001
+  - FF-EDGE-WORKTREES-SHARE-ARTIFACTS-001
   - FF-EDGE-TOOLCHAIN-SELECTS-BUILD-001
   - FF-EDGE-WATCHER-OBSERVES-PRODUCT-001
   - FF-EDGE-SPEC-INFORMS-PACKETS-001
@@ -257,9 +268,11 @@ registered_topology_ids:
   - FF-BOUNDARY-WATCHER-001
   - FF-BOUNDARY-PYTHON-001
 registered_validation_gate_ids:
+  - FF-GATE-SECRET-001
   - FF-GATE-ARCH-001
   - FF-GATE-PR-001
   - FF-GATE-DEEP-001
   - FF-GATE-RELEASE-001
   - FF-GATE-WATCHER-001
   - FF-GATE-RUNTIME-001
+  - FF-GATE-ARTIFACT-HYGIENE-001

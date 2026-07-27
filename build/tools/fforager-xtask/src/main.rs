@@ -1,4 +1,5 @@
 mod compatibility;
+mod secret_scan;
 
 use cargo_metadata::{DependencyKind, Metadata, PackageId};
 use saphyr::{LoadableYamlNode, Yaml};
@@ -518,6 +519,7 @@ fn run() -> Result<(), String> {
             compatibility::run_live_canaries(&root, &args, rest)
         }
         [command] if command == "transport-corpus" => run_transport_corpus(&root),
+        [command, rest @ ..] if command == "secret-scan" => secret_scan::run(&root, rest),
         [gate, evidence] if gate == "verify-pr" && evidence == "--evidence-from-taskboard" => {
             run_verify_pr(&root, &args)
         }
@@ -534,7 +536,7 @@ fn run() -> Result<(), String> {
         [gate] if matches!(gate.as_str(), "verify-release" | "watcher-check") => {
             Err(format!("{gate} is NOT_IMPLEMENTED for Phase 0 and cannot report PASS"))
         }
-        _ => Err("usage: fforager-xtask <architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|transport-corpus|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
+        _ => Err("usage: fforager-xtask <architecture-check|runtime-truth-check --evidence-from-taskboard|verify-pr --evidence-from-taskboard|verify-deep --evidence-from-taskboard|secret-scan <--install-hooks|--verify-hooks|--staged|--history|--pre-push REMOTE>|transport-corpus|compatibility-generate --oracle-exe PATH --source-root PATH [--output PATH]|compatibility-validate|compatibility-replay [--shard INDEX/TOTAL]|compatibility-diff --candidate PATH|compatibility-inventory-diff --before PATH --after PATH|compatibility-live-canaries --enable-live --oracle-exe PATH|verify-release|watcher-check>".to_owned()),
     }
 }
 
@@ -545,6 +547,15 @@ fn repo_root() -> Result<PathBuf, String> {
         .nth(3)
         .map(Path::to_path_buf)
         .ok_or_else(|| "cannot derive repository root from CARGO_MANIFEST_DIR".to_owned())
+}
+
+fn disposable_artifact_root(root: &Path) -> PathBuf {
+    match repo_root() {
+        Ok(repository_root) if root.starts_with(&repository_root) => {
+            repository_root.join(".fforager-artifacts")
+        }
+        _ => root.join(".fforager-artifacts"),
+    }
 }
 
 fn require_repository_root_cwd(root: &Path) -> Result<(), String> {
@@ -646,7 +657,7 @@ fn run_verify_deep_inner(root: &Path, gate_args: &[String]) -> Result<(), String
             "build/fixtures/contracts/inventory.json".to_owned(),
             "build/reports".to_owned(),
             transport_report,
-            "build/target".to_owned(),
+            ".fforager-artifacts/cargo-target".to_owned(),
         ],
     };
     let path = write_report(root, "verify-deep", &report)?;
@@ -2838,6 +2849,7 @@ fn architecture_check(root: &Path) -> Result<ArchitectureResult, String> {
     let native_exceptions =
         read_native_dependency_exceptions(&root.join(&policy.exception_authority))?;
     validate_policy_identity(&policy, &native_exceptions)?;
+    validate_artifact_layout(root)?;
     let tooling: ToolingPolicy = read_toml(&root.join("build/tooling-policy.toml"))?;
     validate_tooling_policy(&tooling)?;
     validate_current_host(root, &tooling)?;
@@ -2891,7 +2903,10 @@ fn validate_policy_identity(
     let exact_paths = [
         (policy.workspace_manifest.as_str(), "build/Cargo.toml"),
         (policy.workspace_root.as_str(), "build"),
-        (policy.target_directory.as_str(), "build/target"),
+        (
+            policy.target_directory.as_str(),
+            ".fforager-artifacts/cargo-target",
+        ),
         (
             policy.root_toolchain_selector.as_str(),
             "rust-toolchain.toml",
@@ -3189,8 +3204,47 @@ fn validate_workspace(
     }
     checks.push(pass(
         "workspace-shape",
-        "locked resolver-3 workspace members exactly match policy, inherit the pinned package contract, and use build/target output",
+        "locked resolver-3 workspace members exactly match policy, inherit the pinned package contract, and use .fforager-artifacts/cargo-target output",
     ));
+    Ok(())
+}
+
+fn validate_artifact_layout(root: &Path) -> Result<(), String> {
+    let cargo_config = fs::read_to_string(root.join(".cargo/config.toml"))
+        .map_err(|error| format!("FF-ARCH-E-ARTIFACT-ROOT: read Cargo config: {error}"))?
+        .replace("\r\n", "\n");
+    if cargo_config != "[build]\ntarget-dir = \".fforager-artifacts/cargo-target\"\n" {
+        return Err(
+            "FF-ARCH-E-ARTIFACT-ROOT: .cargo/config.toml must select the canonical artifact root"
+                .to_owned(),
+        );
+    }
+    let gitignore = fs::read_to_string(root.join(".gitignore"))
+        .map_err(|error| format!("FF-ARCH-E-ARTIFACT-ROOT: read .gitignore: {error}"))?;
+    for required in ["/.fforager-artifacts/", "/.worktrees/"] {
+        if !gitignore.lines().any(|line| line.trim() == required) {
+            return Err(format!(
+                "FF-ARCH-E-ARTIFACT-ROOT: .gitignore omits {required}"
+            ));
+        }
+    }
+    for forbidden in ["target", "build/target"] {
+        if root.join(forbidden).exists() {
+            return Err(format!(
+                "FF-ARCH-E-ARTIFACT-ROOT: legacy disposable path exists: {forbidden}"
+            ));
+        }
+    }
+    for script in [
+        "build/scripts/clean-artifacts.ps1",
+        "build/scripts/new-worktree.ps1",
+    ] {
+        if !root.join(script).is_file() {
+            return Err(format!(
+                "FF-ARCH-E-ARTIFACT-ROOT: required lifecycle script is absent: {script}"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -3653,8 +3707,10 @@ fn validate_three_roots(
             return Err(format!("required repository root is absent: {expected}"));
         }
     }
-    if policy.forbidden_product_runtime_roots != [".GOV", "build"] {
-        return Err("product runtime boundary must forbid .GOV and build".to_owned());
+    if policy.forbidden_product_runtime_roots != [".GOV", "build", ".fforager-artifacts"] {
+        return Err(
+            "product runtime boundary must forbid .GOV, build, and .fforager-artifacts".to_owned(),
+        );
     }
     let wrong_root = [
         "Cargo.toml",
@@ -3730,7 +3786,7 @@ fn toolchain_selectors(root: &Path) -> Result<Vec<String>, String> {
             selectors.push(name.to_owned());
         }
     }
-    let generated_target = root.join("build/target");
+    let generated_target = root.join(".fforager-artifacts/cargo-target");
     let mut pending = [".GOV", "product", "build"]
         .iter()
         .map(|directory| root.join(directory))
@@ -4585,6 +4641,7 @@ fn required_architecture_rules(path: &Path) -> Result<BTreeSet<String>, String> 
                 | "graph_integrity"
                 | "finding_remediation"
                 | "validation_reporting"
+                | "credential_protection"
         ) && enforcement == "REQUIRED"
             && !rules.insert(id.to_owned())
         {
@@ -4891,6 +4948,11 @@ fn validate_rule_map(
                 &["proof-class-aggregation"],
                 &["proof-class-promotion", "gate-report-runtime-claim"],
             ),
+            "FF-BUILD-099" => (
+                &["counterfactual", "integration", "negative_fixture"],
+                &["credential-snapshot-boundary"],
+                &["secret-scan-provider-key"],
+            ),
             other => return Err(format!("FF-ARCH-E-UNKNOWN-RULE: {other}")),
         };
         require_exact_strings(&rule.rule_id, "proof_classes", &rule.proof_classes, proof)?;
@@ -5023,6 +5085,7 @@ fn proof_integrity_fixture_execution(
         "clippy_conf_dir_poison" => clippy_conf_dir_poison_fixture_execution(root),
         "cargo_home_poison" => cargo_home_poison_fixture_execution(root),
         "source_content_fingerprint" => source_content_fingerprint_fixture_execution(root),
+        "secret_scan_provider_key" => secret_scan_provider_key_fixture_execution(root),
         "structural_replay_behavioral_pass" => {
             let diagnostic = compatibility::structural_replay_report_mutation_diagnostic()
                 .expect_err(
@@ -5103,6 +5166,25 @@ fn proof_integrity_fixture_execution(
             ))
         }
     }
+}
+
+fn secret_scan_provider_key_fixture_execution(root: &Path) -> Result<FixtureExecution, String> {
+    let diagnostic = with_isolated_fixture_root(root, "credential-snapshot-boundary", |sandbox| {
+        secret_scan::credential_snapshot_counterfactual_diagnostic(sandbox)
+    })
+    .expect_err("credential scanner accepted staged, outgoing-tree, or outgoing-ref input");
+    if !diagnostic.starts_with("FF-SECRET-E-DETECTED:") {
+        return Err(format!(
+            "credential scanner failed for wrong reason: {diagnostic}"
+        ));
+    }
+    Ok(proof_fixture(
+        vec!["FF-SECRET-E-DETECTED".to_owned()],
+        "counterfactual",
+        "credential-snapshot-boundary",
+        "isolated Git index, direct tree-root push, and ref-name inputs containing a synthetic provider-pattern key assembled at runtime",
+        "production staged-index and pre-push snapshot scanners with exact hook integrity and value suppression",
+    ))
 }
 
 fn durable_storage_fixture_execution(
@@ -5314,6 +5396,10 @@ fn compiler_guard_environment_poison_fixture_execution(
     environment_key: &str,
     concrete_input: &str,
 ) -> Result<FixtureExecution, String> {
+    let target_dir = disposable_artifact_root(root).join("cargo-target/compiler-guard-probe");
+    let target_dir = target_dir
+        .to_str()
+        .ok_or("compiler guard target directory is not valid UTF-8")?;
     let diagnostic = with_isolated_fixture_root(root, label, |sandbox| {
         let product = sandbox.join("product");
         let probe = product.join("crates/compiler-guard-probe");
@@ -5357,7 +5443,7 @@ fn compiler_guard_environment_poison_fixture_execution(
                 "product/crates/compiler-guard-probe/Cargo.toml",
                 "--offline",
                 "--target-dir",
-                "build/target/compiler-guard-probe",
+                target_dir,
                 "--",
                 "-D",
                 "warnings",
@@ -5447,7 +5533,8 @@ fn proof_fixture(
 fn proof_map_string_only_fixture_execution(root: &Path) -> Result<FixtureExecution, String> {
     const DELETED_PROOF_ID: &str =
         "contracts::identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
-    let target_dir = root.join("build/target/proof-integrity-fixtures/contract-inventory-resolver");
+    let target_dir = disposable_artifact_root(root)
+        .join("cargo-target/proof-integrity-fixtures/contract-inventory-resolver");
     fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let diagnostic = with_isolated_fixture_root(root, "proof-map-deleted-test", |sandbox| {
         prepare_isolated_testkit_workspace(root, sandbox)?;
@@ -5482,7 +5569,8 @@ fn proof_map_behavior_stub_fixture_execution(root: &Path) -> Result<FixtureExecu
     const PROOF_ID: &str =
         "contracts::identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
     const SELECTOR: &str = "identity::tests::typed_ids_reject_wrong_prefix_and_uppercase";
-    let target_dir = root.join("build/target/proof-integrity-fixtures/contract-inventory-behavior");
+    let target_dir = disposable_artifact_root(root)
+        .join("cargo-target/proof-integrity-fixtures/contract-inventory-behavior");
     fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let diagnostic = with_isolated_fixture_root(root, "proof-map-behavior-stub", |sandbox| {
         prepare_isolated_testkit_workspace(root, sandbox)?;
@@ -5645,8 +5733,8 @@ fn with_isolated_fixture_root<T>(
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_nanos();
-    let sandbox = root
-        .join("build/target/proof-integrity-fixtures")
+    let sandbox = disposable_artifact_root(root)
+        .join("test-runs/proof-integrity-fixtures")
         .join(format!("{label}-{}-{nonce}", std::process::id()));
     fs::create_dir_all(&sandbox).map_err(|error| error.to_string())?;
     let result = action(&sandbox);
@@ -5667,7 +5755,8 @@ fn public_invariant_mutation_fixture_execution(
     diagnostic: &str,
     proof_class: &'static str,
 ) -> Result<FixtureExecution, String> {
-    let target_dir = root.join("build/target/proof-integrity-fixtures/public-invariant-mutations");
+    let target_dir = disposable_artifact_root(root)
+        .join("cargo-target/proof-integrity-fixtures/public-invariant-mutations");
     fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let observed = with_isolated_fixture_root(root, mutation, |sandbox| {
         prepare_isolated_testkit_workspace(root, sandbox)?;
@@ -5941,7 +6030,8 @@ fn proof_report_fixture_execution(mutation: &str) -> Result<FixtureExecution, St
 }
 
 fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecution, String> {
-    let target_dir = root.join("build/target/proof-integrity-fixtures/compiled-testkit");
+    let target_dir = disposable_artifact_root(root)
+        .join("cargo-target/proof-integrity-fixtures/compiled-testkit");
     fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let missing = with_isolated_fixture_root(root, "public-counterexample-removed", |sandbox| {
         prepare_isolated_testkit_workspace(root, sandbox)?;
@@ -5984,7 +6074,8 @@ fn isolated_public_counterexample_mutations(root: &Path) -> Result<FixtureExecut
 fn receipt_only_public_counterexample_fixture_execution(
     root: &Path,
 ) -> Result<FixtureExecution, String> {
-    let target_dir = root.join("build/target/proof-integrity-fixtures/public-receipt-only");
+    let target_dir = disposable_artifact_root(root)
+        .join("cargo-target/proof-integrity-fixtures/public-receipt-only");
     fs::create_dir_all(&target_dir).map_err(|error| error.to_string())?;
     let diagnostic = with_isolated_fixture_root(
         root,
@@ -6396,7 +6487,11 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
         .ok_or("FF-RUNTIME-E-BASE-MISSING: packet base SHA is required")?;
     let activated_packet = validate_packet_activation_base(root, &id, base)?;
     let changed = changed_paths_since(root, base)?;
-    let policy: ArchitecturePolicy = read_toml(&root.join("build/architecture-policy.toml"))?;
+    let policy_path = root.join("build/architecture-policy.toml");
+    let current_policy_text =
+        fs::read_to_string(&policy_path).map_err(|error| format!("read policy: {error}"))?;
+    let policy: ArchitecturePolicy =
+        toml::from_str(&current_policy_text).map_err(|error| format!("parse policy: {error}"))?;
     let current_has_shipped_member = policy.members.iter().any(|member| member.shipped);
     let base_policy_text = command_output(
         root,
@@ -6405,11 +6500,19 @@ fn runtime_truth_check(root: &Path) -> Result<RuntimeTruthResult, String> {
     )?;
     let base_policy: ArchitecturePolicy = toml::from_str(&base_policy_text)
         .map_err(|error| format!("FF-RUNTIME-E-BASE-POLICY: {error}"))?;
+    let architecture_policy_affects_product =
+        architecture_policy_product_affecting(&base_policy_text, &current_policy_text)?;
     let base_has_shipped_member = base_policy.members.iter().any(|member| member.shipped);
     let has_shipped_member = current_has_shipped_member || base_has_shipped_member;
     let product_paths = changed
         .iter()
-        .filter(|path| product_affecting_path(path, has_shipped_member))
+        .filter(|path| {
+            if path.replace('\\', "/") == "build/architecture-policy.toml" {
+                has_shipped_member && architecture_policy_affects_product
+            } else {
+                product_affecting_path(path, has_shipped_member)
+            }
+        })
         .cloned()
         .collect::<Vec<_>>();
     if product_paths.is_empty() {
@@ -6965,6 +7068,32 @@ fn product_affecting_path(path: &str, has_shipped_member: bool) -> bool {
         )
 }
 
+fn architecture_policy_product_affecting(
+    base_text: &str,
+    current_text: &str,
+) -> Result<bool, String> {
+    let mut base: toml::Value =
+        toml::from_str(base_text).map_err(|error| format!("FF-RUNTIME-E-BASE-POLICY: {error}"))?;
+    let mut current: toml::Value = toml::from_str(current_text)
+        .map_err(|error| format!("FF-RUNTIME-E-CURRENT-POLICY: {error}"))?;
+    normalize_architecture_policy_hygiene(&mut base)?;
+    normalize_architecture_policy_hygiene(&mut current)?;
+    Ok(base != current)
+}
+
+fn normalize_architecture_policy_hygiene(policy: &mut toml::Value) -> Result<(), String> {
+    let table = policy
+        .as_table_mut()
+        .ok_or("FF-RUNTIME-E-POLICY-SHAPE: architecture policy root is not a table")?;
+    table.remove("target_directory");
+    let roots = table
+        .get_mut("forbidden_product_runtime_roots")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or("FF-RUNTIME-E-POLICY-SHAPE: forbidden_product_runtime_roots is not an array")?;
+    roots.retain(|root| root.as_str() != Some(".fforager-artifacts"));
+    Ok(())
+}
+
 fn validate_packet_activation_base(
     root: &Path,
     packet_id: &str,
@@ -7369,7 +7498,7 @@ fn execute_runtime_proof(
         "--bin".to_owned(),
         proof.artifact.binary.clone(),
         "--target-dir".to_owned(),
-        "build/target".to_owned(),
+        ".fforager-artifacts/cargo-target".to_owned(),
     ];
     if !proof.artifact.features.is_empty() {
         build_args.push("--features".to_owned());
@@ -7387,7 +7516,7 @@ fn execute_runtime_proof(
         &mut checks,
     )?;
     let mut artifact = root
-        .join("build/target/release")
+        .join(".fforager-artifacts/cargo-target/release")
         .join(&proof.artifact.binary);
     if cfg!(windows) {
         artifact.set_extension("exe");
@@ -7440,7 +7569,7 @@ fn validate_built_runtime_artifact(root: &Path, artifact: &Path) -> Result<(), S
     let metadata = fs::symlink_metadata(artifact)
         .map_err(|error| format!("FF-RUNTIME-E-ARTIFACT-IDENTITY: {error}"))?;
     let release_root = root
-        .join("build/target/release")
+        .join(".fforager-artifacts/cargo-target/release")
         .canonicalize()
         .map_err(|error| format!("FF-RUNTIME-E-ARTIFACT-IDENTITY: {error}"))?;
     let canonical_artifact = artifact
@@ -7503,21 +7632,23 @@ fn stage_runtime_scenario(
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_nanos();
-    let stage = env::temp_dir()
-        .join("ferric-forager-runtime-proof")
-        .join(format!("{}-{nonce}-{}", scenario.id, std::process::id()));
+    let artifact_root = root.join(".fforager-artifacts");
+    let stage = artifact_root.join("runtime-proof").join(format!(
+        "{}-{nonce}-{}",
+        scenario.id,
+        std::process::id()
+    ));
     fs::create_dir_all(&stage)
         .map_err(|error| format!("FF-RUNTIME-E-CLEAN-STAGE: create stage: {error}"))?;
-    let canonical_root = root
+    let canonical_artifact_root = artifact_root
         .canonicalize()
         .map_err(|error| format!("FF-RUNTIME-E-CLEAN-STAGE: canonicalize root: {error}"))?;
     let canonical_stage = stage
         .canonicalize()
         .map_err(|error| format!("FF-RUNTIME-E-CLEAN-STAGE: canonicalize stage: {error}"))?;
-    if canonical_stage.starts_with(&canonical_root) {
+    if !canonical_stage.starts_with(&canonical_artifact_root) {
         return Err(
-            "FF-RUNTIME-E-CLEAN-STAGE: runtime stage must be outside the repository tree"
-                .to_owned(),
+            "FF-RUNTIME-E-CLEAN-STAGE: runtime stage must be inside .fforager-artifacts".to_owned(),
         );
     }
     let staged_artifact = stage.join(
@@ -7845,6 +7976,25 @@ fn run_verify_pr(root: &Path, gate_args: &[String]) -> Result<(), String> {
 fn run_verify_pr_inner(root: &Path, gate_args: &[String]) -> Result<(), String> {
     let mut checks = Vec::new();
     validate_change_evidence(root, &mut checks)?;
+    secret_scan::verify_hook_configuration(root)?;
+    let findings = secret_scan::verify_repository_state(root)?;
+    checks.push(Check {
+        id: "secret-scan".to_owned(),
+        status: "PASS",
+        proof_class: "structural",
+        concrete_input:
+            "reachable Git history, exact index blobs, tracked and untracked non-ignored worktree files"
+                .to_owned(),
+        executed_boundary: "fforager-xtask credential scanner".to_owned(),
+        expected_result: "zero provider-pattern API-key findings and no unscannable blob"
+            .to_owned(),
+        observed_result: format!("PASS: findings={findings}"),
+        skipped_semantic_dependencies: vec![
+            "Pattern matching cannot prove absence of every possible unstructured secret."
+                .to_owned(),
+        ],
+        detail: "Matched values are never emitted; GitHub secret-scanning push protection supplies the independent remote pre-receive layer.".to_owned(),
+    });
     let mut transport_report = String::new();
     let architecture = run_verify_deep_checks(root, &mut checks, &mut transport_report)?;
     run_command_with_env(
@@ -7860,7 +8010,7 @@ fn run_verify_pr_inner(root: &Path, gate_args: &[String]) -> Result<(), String> 
             "--locked",
             "--no-deps",
             "--target-dir",
-            "build/target",
+            ".fforager-artifacts/cargo-target",
         ],
         "RUSTDOCFLAGS",
         "-Dwarnings",
@@ -7891,7 +8041,7 @@ fn run_verify_pr_inner(root: &Path, gate_args: &[String]) -> Result<(), String> 
     let mut proof_limitations = architecture.limitations;
     proof_limitations.extend(runtime.limitations);
     let mut artifacts = vec![
-        "build/target".to_owned(),
+        ".fforager-artifacts/cargo-target".to_owned(),
         "build/reports".to_owned(),
         transport_report,
     ];
@@ -8045,7 +8195,7 @@ fn run_rust_verification(root: &Path, checks: &mut Vec<Check>) -> Result<(), Str
         if let Some(feature_arg) = features {
             args.push(feature_arg);
         }
-        args.extend(["--target-dir", "build/target"]);
+        args.extend(["--target-dir", ".fforager-artifacts/cargo-target"]);
         run_command(root, id, "cargo", &args, checks)?;
     }
     run_command(
@@ -8061,7 +8211,7 @@ fn run_rust_verification(root: &Path, checks: &mut Vec<Check>) -> Result<(), Str
             "--all-features",
             "--locked",
             "--target-dir",
-            "build/target",
+            ".fforager-artifacts/cargo-target",
             "--",
             "-D",
             "warnings",
@@ -8082,7 +8232,7 @@ fn run_rust_verification(root: &Path, checks: &mut Vec<Check>) -> Result<(), Str
             "--locked",
             "--no-fail-fast",
             "--target-dir",
-            "build/target",
+            ".fforager-artifacts/cargo-target",
         ],
         checks,
     )?;
@@ -8103,7 +8253,7 @@ fn run_doctests(root: &Path, checks: &mut Vec<Check>) -> Result<(), String> {
             "--all-features",
             "--locked",
             "--target-dir",
-            "build/target",
+            ".fforager-artifacts/cargo-target",
         ],
         checks,
     )
@@ -8609,6 +8759,29 @@ fn expected_adversarial_finding_proof(finding_id: &str) -> Option<&'static str> 
         "WP-FF-007-FINDING-DEEP-DECLARATION-005" => Some(
             "xtask::tests::deep_gate_reports_canonical_rules_without_packet_acceptance_attribution",
         ),
+        "WP-FF-016-FINDING-TREE-REF-001" => {
+            Some("xtask::secret_scan::tests::tree_root_and_ref_names_are_scanned_before_push")
+        }
+        "WP-FF-016-FINDING-HOOK-INTEGRITY-002" | "WP-FF-016-FINDING-COMPILER-DISCLOSURE-006" => {
+            Some(
+                "xtask::secret_scan::tests::hook_configuration_requires_exact_content_and_executable_index_mode",
+            )
+        }
+        "WP-FF-016-FINDING-ENCODING-CORPUS-003" => {
+            Some("xtask::secret_scan::tests::utf16_and_gitlab_provider_tokens_are_scanned")
+        }
+        "WP-FF-016-FINDING-REPLACE-REF-004" => {
+            Some("xtask::secret_scan::tests::git_replace_refs_cannot_hide_outgoing_secret")
+        }
+        "WP-FF-016-FINDING-BATCH-RESOURCE-005" => {
+            Some("xtask::secret_scan::tests::dense_provider_matches_are_bounded")
+        }
+        "WP-FF-016-FINDING-HISTORY-REF-007" => {
+            Some("xtask::secret_scan::tests::history_scans_ref_names_and_non_commit_roots")
+        }
+        "WP-FF-016-FINDING-PROOF-BOUNDARY-008" => {
+            Some("FF-GATE-ARCH-001::credential-snapshot-boundary")
+        }
         "WP-FF-013-FINDING-SEMANTIC-REPLAY-001" => Some(
             "xtask::compatibility::tests::native_semantic_replay_executes_each_corpus_plane_and_rejects_label_echoes",
         ),
@@ -9198,7 +9371,7 @@ fn command_output_bytes_with_timeout_and_environment(
     timeout: Duration,
     environment: &[(&str, &str)],
 ) -> Result<Vec<u8>, String> {
-    let capture_root = root.join("build/target/command-capture");
+    let capture_root = root.join(".fforager-artifacts/command-capture");
     fs::create_dir_all(&capture_root)
         .map_err(|error| format!("create command capture directory: {error}"))?;
     let stem = command_capture_stem(program)?;
@@ -9307,16 +9480,33 @@ fn validate_rust_verification_environment(root: &Path) -> Result<(), String> {
         config_paths.push(cargo_home.join("config.toml"));
         config_paths.push(cargo_home.join("config"));
     }
-    let present = config_paths
+    config_paths.sort();
+    config_paths.dedup();
+    let canonical_config = "[build]\ntarget-dir = \".fforager-artifacts/cargo-target\"\n";
+    let repository_root = repo_root()?;
+    let mut allowed = vec![root.join(".cargo/config.toml")];
+    if root.starts_with(&repository_root) {
+        allowed.push(repository_root.join(".cargo/config.toml"));
+    }
+    let invalid = config_paths
         .into_iter()
         .filter(|path| path.exists())
-        .map(|path| path.display().to_string())
+        .filter_map(|path| {
+            if allowed.iter().any(|candidate| candidate == &path)
+                && fs::read_to_string(&path)
+                    .is_ok_and(|text| text.replace("\r\n", "\n") == canonical_config)
+            {
+                None
+            } else {
+                Some(path.display().to_string())
+            }
+        })
         .collect::<Vec<_>>();
-    if present.is_empty() {
+    if invalid.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "FF-ARCH-E-RUST-ENV-OVERRIDE: verification refuses effective Cargo configuration files: {present:?}"
+            "FF-ARCH-E-RUST-ENV-OVERRIDE: verification refuses non-canonical effective Cargo configuration files: {invalid:?}"
         ))
     }
 }
@@ -10139,7 +10329,10 @@ mod tests {
 
     #[test]
     fn slash_normalizes_windows_separator() {
-        assert_eq!(slash(Path::new("build\\target")), "build/target");
+        assert_eq!(
+            slash(Path::new(".fforager-artifacts\\cargo-target")),
+            ".fforager-artifacts/cargo-target"
+        );
     }
 
     #[test]
@@ -10534,7 +10727,7 @@ mod tests {
         );
         assert_eq!(
             product_oracle_boundary_diagnostic(
-                "build/target/research-oracle/yt-dlp.exe",
+                ".fforager-artifacts/cargo-target/research-oracle/yt-dlp.exe",
                 b"yt-dlp",
             ),
             None
@@ -10851,7 +11044,12 @@ mod tests {
     #[test]
     fn nested_toolchain_selectors_are_inventoried() {
         let root = test_root("nested-selector");
-        for directory in [".GOV", "product/nested", "build/target"] {
+        for directory in [
+            ".GOV",
+            "product/nested",
+            "build",
+            ".fforager-artifacts/cargo-target",
+        ] {
             fs::create_dir_all(root.join(directory)).unwrap();
         }
         fs::write(root.join("rust-toolchain.toml"), "[toolchain]\n").unwrap();
@@ -10861,7 +11059,7 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            root.join("build/target/rust-toolchain.toml"),
+            root.join(".fforager-artifacts/cargo-target/rust-toolchain.toml"),
             "ignored generated output",
         )
         .unwrap();
@@ -11171,6 +11369,17 @@ mod tests {
             },
             "FF-ARCH-E-DEPENDENCY-FEATURE",
         );
+        assert_architecture_mutation_fails(
+            "artifact-root-drift",
+            |root| {
+                replace_file_text(
+                    &root.join(".cargo/config.toml"),
+                    ".fforager-artifacts/cargo-target",
+                    "build/target",
+                );
+            },
+            "FF-ARCH-E-ARTIFACT-ROOT",
+        );
     }
 
     #[cfg(windows)]
@@ -11293,6 +11502,33 @@ mod tests {
         assert!(!product_affecting_path("build/Cargo.lock", false));
         assert!(product_affecting_path("build/Cargo.lock", true));
         assert!(product_affecting_path("rust-toolchain.toml", true));
+    }
+
+    #[test]
+    fn architecture_policy_output_hygiene_is_not_product_impact() {
+        let base = r#"
+target_directory = "build/target"
+forbidden_product_runtime_roots = [".GOV", "build"]
+product_root = "product"
+"#;
+        let hygiene = r#"
+target_directory = ".fforager-artifacts/cargo-target"
+forbidden_product_runtime_roots = [".GOV", "build", ".fforager-artifacts"]
+product_root = "product"
+"#;
+        assert_eq!(
+            architecture_policy_product_affecting(base, hygiene),
+            Ok(false)
+        );
+        let runtime_boundary_change = r#"
+target_directory = ".fforager-artifacts/cargo-target"
+forbidden_product_runtime_roots = ["build", ".fforager-artifacts"]
+product_root = "product"
+"#;
+        assert_eq!(
+            architecture_policy_product_affecting(base, runtime_boundary_change),
+            Ok(true)
+        );
     }
 
     #[test]
@@ -11699,10 +11935,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        env::temp_dir().join(format!(
-            "fforager-xtask-{label}-{}-{nonce}",
-            std::process::id()
-        ))
+        repo_root()
+            .unwrap()
+            .join(".fforager-artifacts/test-runs")
+            .join(format!(
+                "fforager-xtask-{label}-{}-{nonce}",
+                std::process::id()
+            ))
     }
 
     fn assert_architecture_mutation_fails(
@@ -11734,6 +11973,8 @@ mod tests {
         let root = test_root(label);
         for relative in [
             "rust-toolchain.toml",
+            ".cargo/config.toml",
+            ".gitignore",
             ".GOV/rules/build-rules.yaml",
             "build/Cargo.toml",
             "build/Cargo.lock",
@@ -11742,6 +11983,8 @@ mod tests {
             "build/rule-to-proof.toml",
             "build/tools/fforager-xtask/Cargo.toml",
             "build/tools/fforager-xtask/src/main.rs",
+            "build/scripts/clean-artifacts.ps1",
+            "build/scripts/new-worktree.ps1",
             "product/clippy.toml",
             "product/MODEL_MANUAL.md",
         ] {

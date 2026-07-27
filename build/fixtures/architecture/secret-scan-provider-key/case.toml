@@ -1,0 +1,4 @@
+schema_version = 1
+fixture_id = "secret-scan-provider-key"
+mutation = "secret_scan_provider_key"
+expected_diagnostic = "FF-SECRET-E-DETECTED"

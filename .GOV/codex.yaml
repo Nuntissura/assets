@@ -1,6 +1,6 @@
 schema_id: ff.project_codex@2
 file_id: FF-GOV-CODEX-001
-updated_at: "2026-07-22"
+updated_at: "2026-07-27"
 authority: canonical_project_codex
 always_reads:
   - START_HERE.yaml
@@ -170,7 +170,7 @@ rules:
 
   - id: FF-CODEX-048
     category: repository_boundary
-    statement: Keep the Cargo workspace manifest and lockfile, architecture/tooling/proof policies, non-shipped xtask and testkit packages, shared fixtures, cross-package test harnesses, fuzzing, benchmarks, generated reports, and Cargo target output under build/; keep rust-toolchain.toml at repository root as the sole rustup selector for canonical repository-root commands.
+    statement: Keep the Cargo workspace manifest and lockfile, architecture/tooling/proof policies, non-shipped xtask and testkit packages, shared fixtures, cross-package test harnesses, fuzzing, benchmarks, and governance reports under build/; keep all disposable build and test output under `.fforager-artifacts/`; keep rust-toolchain.toml at repository root as the sole rustup selector for canonical repository-root commands.
 
   - id: FF-CODEX-049
     category: runtime_truth
@@ -182,7 +182,7 @@ rules:
     revision: 2
   - id: FF-CODEX-051
     category: runtime_truth
-    statement: Product closure proof MUST build the shipping profile once, record the artifact digest, stage that exact artifact into a clean package directory, and execute it without source-tree, .GOV/, build/, dev-dependency, testkit, test-only feature, or cfg(test) assistance.
+    statement: Product closure proof MUST build the shipping profile once, record the artifact digest, stage that exact artifact into an isolated `.fforager-artifacts/runtime-proof/` package directory, and execute it without .GOV/, build/, product source, dev-dependency, testkit, test-only feature, or cfg(test) assistance.
   - id: FF-CODEX-052
     category: runtime_truth
     statement: A mock, fake, stub, fixture-only implementation, in-memory substitute, hardcoded-success path, test-only adapter, or direct internal-function invocation MUST NOT satisfy runtime acceptance, product progress, phase completion, compatibility, durability, integration, or release proof; such mechanisms remain allowed only as supporting tests.
@@ -249,4 +249,20 @@ rules:
   - id: FF-CODEX-071
     category: validation_reporting
     statement: "Every generated validation result MUST record the proof class actually executed, the concrete input and boundary observed, the expected and observed outcomes, and any skipped semantic dependency; a structural-only result MUST never be promoted to behavioral PASS by aggregation, naming, or packet prose."
+  - id: FF-CODEX-072
+    category: artifact_hygiene
+    statement: "Every disposable Cargo build, test run, benchmark output, runtime-proof stage, command capture, temporary repository, and generated validation scratch artifact MUST live under the ignored repository-root `.fforager-artifacts/` directory; external temp roots, root `target/`, and `build/target/` are forbidden."
+  - id: FF-CODEX-073
+    category: artifact_hygiene
+    statement: "Before selecting, starting, or moving to the next task, run `powershell -NoProfile -File build/scripts/clean-artifacts.ps1` and its `-VerifyOnly` mode; the next task MUST NOT begin until `.fforager-artifacts/` is verified empty."
+  - id: FF-CODEX-074
+    category: worktrees
+    statement: "Every linked worktree MUST live under the ignored repository-root `.worktrees/` directory and MUST be created through `build/scripts/new-worktree.ps1`; the helper MUST link the worktree-local `.fforager-artifacts` path to the primary repository's single artifact root, and external ad hoc worktree paths are forbidden."
+  - id: FF-CODEX-075
+    category: implementation_closure
+    statement: "Implementation performed on a work branch or linked worktree is not complete until its closure commit is merged into canonical `main` and main-containment is proven; shipped implementation MUST reside under `product/`, while prerequisite-only code that lacks product-promotion approval remains decision-required and MUST NOT be called complete product implementation."
+
+  - id: FF-CODEX-076
+    category: credential_protection
+    statement: "No commit or push may contain an API key or credential. Every clone MUST install and retain build/git-hooks through core.hooksPath, pre-commit MUST scan exact staged blobs, pre-push MUST scan every outgoing commit, canonical verification MUST scan reachable history plus index and non-ignored worktree files, diagnostics MUST suppress matched values, and GitHub secret-scanning push protection MUST remain enabled as the independent remote pre-receive control."
 

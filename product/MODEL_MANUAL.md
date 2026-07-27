@@ -36,8 +36,8 @@ Phase 0 product source must not embed `README` or `docs` assets with `include!`,
 To refresh external comparison data deliberately, set repository-relative paths to separately acquired, hash-matching inputs and run only the capture command:
 
 ```powershell
-$oracleExe = "build/target/wp4-research/oracle/yt-dlp.exe"
-$sourceRoot = "build/target/wp4-research/yt-dlp-2026.07.04"
+$oracleExe = ".fforager-artifacts/cargo-target/wp4-research/oracle/yt-dlp.exe"
+$sourceRoot = ".fforager-artifacts/cargo-target/wp4-research/yt-dlp-2026.07.04"
 cargo run --manifest-path build/Cargo.toml --locked -p fforager-xtask -- compatibility-generate --oracle-exe $oracleExe --source-root $sourceRoot
 ```
 
@@ -98,7 +98,7 @@ Recovery follows the stable diagnostic:
 - `FF-COMP-E-PARSE` or deterministic regeneration mismatch: preserve both outputs, inspect the pinned source and normalization rule, then fix and rerun the generator twice.
 - `FF-COMP-E-UNSANITIZED-SECRET`: replace the named secret or machine-local value with an allowlisted `{{PLACEHOLDER}}`, recompute the fixture hash, and rerun validation.
 - `FF-COMP-E-COVERAGE`, `FF-COMP-E-SHARD`, or `FF-COMP-E-NORMALIZATION`: repair the canonical manifest/case mapping rather than bypassing the validator.
-- Profile/corpus/live integrity or unsafe canonical-path errors: restore the versioned committed artifact or use a repository-relative file physically contained under `build/fixtures/compatibility/` or `build/target/`; do not reuse an ID for changed content or route through a link outside those roots.
+- Profile/corpus/live integrity or unsafe canonical-path errors: restore the versioned committed artifact or use a repository-relative file physically contained under `build/fixtures/compatibility/` or `.fforager-artifacts/cargo-target/`; do not reuse an ID for changed content or route through a link outside those roots.
 - Candidate identity, digest, classification, or decision errors: repair the candidate file; do not remove missing rows from the emitted report.
 - Report-write failure: verify `build/reports/` is writable. Atomic writes do not accept a partial final JSON report.
 
@@ -272,9 +272,9 @@ The report covers exact raw-player results plus cache separation, malformed/part
 - challenge mismatch or no candidate: retain the report as evidence, inspect the exact raw player and Ferric AST discovery path, and require an Operator decision before changing the accepted approach.
 - stale-cache failure: verify that script hash, solver, engine, execution mode, and extractor version all participate in the key; never reuse cached heap state.
 - dependency-policy failure: inspect the exact Cargo path and advisory identity. Do not broaden wildcard or advisory policy; the only accepted advisory ID is `RUSTSEC-2024-0436` under the non-shipped WP-006 ceiling.
-- disk exhaustion during canonical gates: clean only generated Cargo/proof target outputs after resolving their absolute path inside `build/target`; retain sources, fixtures, the lockfile, and reports, then rerun the same gate.
+- disk exhaustion during canonical gates: run `powershell -NoProfile -File build/scripts/clean-artifacts.ps1`; retain sources, fixtures, the lockfile, and governance reports, then rerun the same gate.
 
-The worker is quiet and bounded. If an interrupted manual run leaves `fforager-js-worker` alive, terminate only the recorded report PID after confirming its executable path is this repository's `build/target` worker, then rerun the corpus so the process-absence probes produce fresh evidence.
+The worker is quiet and bounded. If an interrupted manual run leaves `fforager-js-worker` alive, terminate only the recorded report PID after confirming its executable path is this repository's `.fforager-artifacts/cargo-target` worker, then rerun the corpus so the process-absence probes produce fresh evidence.
 
 </topic>
 
@@ -401,7 +401,7 @@ Replace every `replace-with-*` value with the packet's real capability, producti
 
 ## Inputs, outputs, safety, and recovery
 
-Inputs are committed policies, the locked workspace, the active packet, the canonical build rules, governed Rust source, and negative fixtures. Generated outputs are confined to `build/target/` and `build/reports/`; both are non-shipped.
+Inputs are committed policies, the locked workspace, the active packet, the canonical build rules, governed Rust source, and negative fixtures. Disposable outputs are confined to `.fforager-artifacts/`; governance reports remain under `build/reports/`; neither is shipped.
 
 The gate runner never auto-installs or upgrades tools, never uses a shell to compose child commands, and refuses to run outside the repository root. Every child process is bounded; a timeout kills and reaps the child and reports incomplete evidence instead of PASS. Project-owned TOML schemas reject unknown keys, and governance YAML must parse as one structurally valid document before any value is consumed. Tool identity checks require exact output and supported-host policy; host-installed Git and cargo-deny executables also require the pinned SHA-256 digest. Unknown rule IDs, missing proof mappings, missing or unreferenced fixtures, duplicate or nested toolchain selectors, wrong-root build files, undeclared workspace members, and runtime boundary literals fail closed.
 
@@ -414,7 +414,7 @@ Common failures and recovery:
 - `--locked` failure: do not remove `--locked`; reconcile `build/Cargo.toml` and intentionally regenerate `build/Cargo.lock`.
 - Wrong current directory: return to the repository root and rerun the canonical command.
 - Policy or fixture mismatch: use the stable diagnostic in stderr/report, correct the canonical policy or implementation, and rerun the same gate.
-- Stale build output: remove only the verified repository-local `build/target/` directory or run `cargo clean --manifest-path build/Cargo.toml`; never target the repository root.
+- Stale build output: run `powershell -NoProfile -File build/scripts/clean-artifacts.ps1`; the script resolves and cleans only the ignored repository-local `.fforager-artifacts/` root.
 - Failed report write: verify `build/reports/` is writable. Temporary report files are removed on failure and an incomplete final report is never accepted.
 
 An architecture report proves the declared prerequisite graph, policy, source scan, and assigned negative cases. It does not prove product runtime behavior, packaging, watcher independence, compatibility, durability, or performance. Product proof begins only when FF-GATE-RUNTIME-001 builds, hashes, stages, and externally executes the exact production artifact through a shipped entrypoint and verifies operator-visible results plus a failing counterfactual.

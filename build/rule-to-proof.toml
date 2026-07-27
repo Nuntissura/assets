@@ -232,3 +232,10 @@ proof_classes = ["structural", "semantic", "integration", "production_runtime", 
 validators = ["proof-class-aggregation"]
 fixture_ids = ["proof-class-promotion", "gate-report-runtime-claim"]
 limitations = ["Aggregation reports the weakest executed class and cannot upgrade prerequisite evidence into runtime proof."]
+
+[[rules]]
+rule_id = "FF-BUILD-099"
+proof_classes = ["counterfactual", "integration", "negative_fixture"]
+validators = ["credential-snapshot-boundary"]
+fixture_ids = ["secret-scan-provider-key"]
+limitations = ["Provider-prefix matching cannot prove absence of every unknown or unstructured secret; GitHub push protection remains an independent remote control."]
