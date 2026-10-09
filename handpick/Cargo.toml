@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Portable search interaction and draft foundation"
+include = ["Cargo.toml", "LICENSE", "README.md", "src/**", "tests/**"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
