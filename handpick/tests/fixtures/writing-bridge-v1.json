@@ -865,6 +865,359 @@
           "expect": true
         }
       ]
+    },
+    {
+      "name": "native-content-presentation-empty-rich-ime-save-and-stale",
+      "context": "private",
+      "session": "content-fixture",
+      "max_pins": 1,
+      "steps": [
+        {
+          "op": "bind",
+          "args": [
+            "editor-bookmark",
+            "7"
+          ]
+        },
+        {
+          "op": "park",
+          "args": [
+            "bookmark"
+          ]
+        },
+        {
+          "op": "bind",
+          "args": [
+            "editor-content",
+            "1"
+          ]
+        },
+        {
+          "op": "fence",
+          "store": "f"
+        },
+        {
+          "op": "expand"
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "complete",
+            [
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "image"
+                },
+                "label": "Rich resource",
+                "detail": null,
+                "actions": []
+              }
+            ]
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            0,
+            1,
+            false
+          ],
+          "expect": true
+        },
+        {
+          "op": "select",
+          "args": [
+            "$f",
+            {
+              "provider": "notes",
+              "result": "image"
+            }
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            0,
+            1,
+            true
+          ],
+          "expect": false
+        },
+        {
+          "op": "selected",
+          "expect": null
+        },
+        {
+          "op": "pins",
+          "expect": [
+            {
+              "id": "bookmark",
+              "editor": "editor-bookmark",
+              "revision": "7"
+            }
+          ]
+        },
+        {
+          "op": "expanded",
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "search",
+            "complete",
+            [
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "image"
+                },
+                "label": "Rich resource",
+                "detail": null,
+                "actions": []
+              }
+            ]
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            160,
+            1,
+            false
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "fence",
+          "expect": {
+            "context": "private",
+            "session": "content-fixture",
+            "editor": "editor-content",
+            "revision": "1",
+            "generation": "4"
+          },
+          "store": "empty"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$empty",
+            0,
+            1,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$empty",
+            159,
+            2,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$empty",
+            5000,
+            1,
+            false
+          ],
+          "expect": true
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$empty",
+            0,
+            1,
+            false
+          ],
+          "expect": true
+        },
+        {
+          "op": "beginComposition",
+          "args": [
+            "$empty"
+          ],
+          "store": "ime"
+        },
+        {
+          "op": "fence",
+          "store": "imef"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            0,
+            1,
+            true
+          ],
+          "expect": true
+        },
+        {
+          "op": "compact",
+          "error": "Stale"
+        },
+        {
+          "op": "endComposition",
+          "args": [
+            "$ime"
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            0,
+            1,
+            true
+          ],
+          "expect": false
+        },
+        {
+          "op": "fence",
+          "store": "current"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$current",
+            2,
+            3,
+            false
+          ],
+          "expect": true
+        },
+        {
+          "op": "submit",
+          "args": [
+            {
+              "operation": "pending-content",
+              "fence": "$current",
+              "destination": {
+                "kind": "create",
+                "folder": null
+              }
+            }
+          ]
+        },
+        {
+          "op": "pendingSave",
+          "expect": {
+            "operation": "pending-content",
+            "fence": {
+              "context": "private",
+              "session": "content-fixture",
+              "editor": "editor-content",
+              "revision": "1",
+              "generation": "6"
+            },
+            "destination": {
+              "kind": "create",
+              "folder": null
+            }
+          }
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$current",
+            0,
+            1,
+            true
+          ],
+          "expect": true
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "pins",
+          "expect": [
+            {
+              "id": "bookmark",
+              "editor": "editor-bookmark",
+              "revision": "7"
+            }
+          ]
+        },
+        {
+          "op": "edited",
+          "args": [
+            "$current",
+            "2"
+          ]
+        },
+        {
+          "op": "fence",
+          "store": "edited"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$current",
+            0,
+            1,
+            true
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$edited",
+            0,
+            1,
+            true
+          ],
+          "expect": true
+        },
+        {
+          "op": "pendingSave",
+          "expect": {
+            "operation": "pending-content",
+            "fence": {
+              "context": "private",
+              "session": "content-fixture",
+              "editor": "editor-content",
+              "revision": "1",
+              "generation": "6"
+            },
+            "destination": {
+              "kind": "create",
+              "folder": null
+            }
+          }
+        },
+        {
+          "op": "revoke"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$edited",
+            0,
+            1,
+            true
+          ],
+          "error": "Revoked"
+        }
+      ]
     }
   ]
 }

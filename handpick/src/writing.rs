@@ -626,6 +626,22 @@ impl WritingSession {
         self.expanded = true;
         Ok(true)
     }
+    /// Apply owner-observed native emptiness/metrics without copying content or changing selection.
+    pub fn present_content(&mut self, fence: &WritingFence, utf16_units: u32, line_count: u32, is_empty: bool) -> Result<bool, Error> {
+        self.validate(fence)?;
+        if self.composition.is_some() || self.pending_save.is_some() {
+            return Ok(self.expanded);
+        }
+        if is_empty {
+            let next = self.next()?;
+            self.expanded = false;
+            self.generation = next;
+            self.results.invalidate();
+        } else if utf16_units > 0 && (utf16_units >= 160 || line_count >= 3) {
+            self.expanded = true;
+        }
+        Ok(self.expanded)
+    }
     /// Explicit compact presentation retains the same native editor and lookup state.
     pub fn compact(&mut self) -> Result<(), Error> {
         self.active()?;
