@@ -12,7 +12,7 @@ const fixtures = JSON.parse(await readFile(new URL('./fixtures/writing-bridge-v1
 assert.equal(fixtures.version, 'handpick.v1');
 assert.ok(fixtures.scenarios.length > 0);
 const jsonReturns = new Set(['fence', 'pins', 'beginLookup', 'beginComposition', 'pendingSave', 'selected']);
-const jsonArgs = new Map([['edited', [0]], ['beginComposition', [0]], ['endComposition', [0]], ['submit', [0]], ['acknowledge', [0]], ['deliver', [0, 3]], ['select', [0, 1]], ['expandIfEmpty', [0]]]);
+const jsonArgs = new Map([['edited', [0]], ['beginComposition', [0]], ['endComposition', [0]], ['submit', [0]], ['acknowledge', [0]], ['deliver', [0, 3]], ['select', [0, 1]], ['expandIfEmpty', [0]], ['expandForProse', [0]]]);
 function substitute(value, vars) {
   if (typeof value === 'string' && value.startsWith('$')) {
     assert.ok(vars.has(value.slice(1)), 'Missing fixture variable');
@@ -49,6 +49,10 @@ const invalid = new glue.WritingSession('private', 'wire-negative', 1);
 try {
   invalid.bind('editor-a', '1');
   const before = invalid.fence();
+  for (const metric of [-1, 1.5, Infinity, NaN, 4294967296]) {
+    assert.throws(() => invalid.expandForProse(before, metric, 1), error => String(error) === 'InvalidWire');
+    assert.throws(() => invalid.expandForProse(before, 160, metric), error => String(error) === 'InvalidWire');
+  }
   assert.throws(() => invalid.edited('secret malformed input', '2'), error => String(error) === 'InvalidWire');
   assert.throws(() => invalid.edited('x'.repeat(65537), '2'), error => String(error) === 'PayloadLimit');
   assert.throws(() => invalid.edited(before, '01'), error => String(error) === 'InvalidRevision');
@@ -134,4 +138,4 @@ try {
   richReject(() => rich.validateRelationships(encode(page),'notes',10),'Stale');
   richCheck(decode(rich.delivery('search')),{status:'pending',items:[]});
 } finally { rich.free(); }
-console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:9, foundation_checks:foundationChecks,rich_checks:richChecks}));
+console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:19, foundation_checks:foundationChecks,rich_checks:richChecks}));

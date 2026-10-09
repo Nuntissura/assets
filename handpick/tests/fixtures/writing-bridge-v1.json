@@ -556,6 +556,245 @@
           "expect": null
         }
       ]
+    },
+    {
+      "name": "shared-prose-eligibility-and-empty-delivery-gate",
+      "context": "private",
+      "session": "prose-fixture",
+      "max_pins": 1,
+      "steps": [
+        {
+          "op": "bind",
+          "args": [
+            "editor-prose",
+            "1"
+          ]
+        },
+        {
+          "op": "fence",
+          "store": "f"
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            160,
+            1
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "pending",
+            []
+          ]
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            160,
+            1
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "failed",
+            []
+          ]
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            160,
+            1
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "offline",
+            []
+          ]
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            160,
+            1
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "partial",
+            []
+          ]
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            160,
+            1
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "complete",
+            [
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "a"
+                },
+                "label": "a",
+                "detail": null,
+                "actions": []
+              }
+            ]
+          ]
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            160,
+            1
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "complete",
+            []
+          ]
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            159,
+            2
+          ],
+          "expect": false
+        },
+        {
+          "op": "expanded",
+          "expect": false
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            160,
+            1
+          ],
+          "expect": true
+        },
+        {
+          "op": "compact"
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            0,
+            3
+          ],
+          "expect": true
+        },
+        {
+          "op": "compact"
+        },
+        {
+          "op": "beginComposition",
+          "args": [
+            "$f"
+          ],
+          "store": "ime"
+        },
+        {
+          "op": "fence",
+          "store": "imef"
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$imef",
+            "suggestions",
+            "complete",
+            []
+          ]
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$imef",
+            160,
+            3
+          ],
+          "expect": false
+        },
+        {
+          "op": "endComposition",
+          "args": [
+            "$ime"
+          ]
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            160,
+            3
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$imef",
+            160,
+            3
+          ],
+          "expect": true
+        },
+        {
+          "op": "beginLookup",
+          "store": "lookup"
+        },
+        {
+          "op": "fence",
+          "store": "retained"
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        }
+      ]
     }
   ]
 }

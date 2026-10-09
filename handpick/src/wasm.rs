@@ -288,6 +288,15 @@ impl WasmWritingSession {
             .expand_if_empty(&read(fence_json)?)
             .map_err(core_error)
     }
+    #[wasm_bindgen(js_name = expandForProse)]
+    pub fn expand_for_prose(&mut self, fence_json: &str, utf16_units: f64, line_count: f64) -> Result<bool, JsValue> {
+        for metric in [utf16_units, line_count] {
+            if !metric.is_finite() || metric.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&metric) {
+                return Err(reject("InvalidWire"));
+            }
+        }
+        self.inner.expand_for_prose(&read(fence_json)?, utf16_units as u32, line_count as u32).map_err(core_error)
+    }
     pub fn deliver(
         &mut self,
         fence_json: &str,
