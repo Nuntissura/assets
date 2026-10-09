@@ -1,0 +1,426 @@
+{
+  "version": "handpick.v1",
+  "scenarios": [
+    {
+      "name": "occupied-restore-and-ime",
+      "context": "private",
+      "session": "fixture-one",
+      "max_pins": 1,
+      "steps": [
+        {
+          "op": "bind",
+          "args": [
+            "editor-a",
+            "1"
+          ]
+        },
+        {
+          "op": "fence",
+          "store": "old"
+        },
+        {
+          "op": "expand"
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "park",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "op": "bind",
+          "args": [
+            "editor-b",
+            "7"
+          ]
+        },
+        {
+          "op": "restore",
+          "args": [
+            "a",
+            null
+          ],
+          "error": "OccupiedDraft"
+        },
+        {
+          "op": "restore",
+          "args": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "op": "pins",
+          "expect": [
+            {
+              "id": "b",
+              "editor": "editor-b",
+              "revision": "7"
+            }
+          ]
+        },
+        {
+          "op": "edited",
+          "args": [
+            "$old",
+            "2"
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "beginLookup",
+          "store": "first"
+        },
+        {
+          "op": "beginLookup",
+          "store": "second"
+        },
+        {
+          "op": "edited",
+          "args": [
+            "$first",
+            "2"
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "beginComposition",
+          "args": [
+            "$second"
+          ],
+          "store": "token"
+        },
+        {
+          "op": "fence",
+          "store": "composing"
+        },
+        {
+          "op": "park",
+          "args": [
+            "blocked"
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "edited",
+          "args": [
+            "$composing",
+            "2"
+          ]
+        },
+        {
+          "op": "endComposition",
+          "args": [
+            "$token"
+          ]
+        },
+        {
+          "op": "endComposition",
+          "args": [
+            "$token"
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "revoke"
+        },
+        {
+          "op": "pins",
+          "expect": []
+        },
+        {
+          "op": "fence",
+          "error": "Revoked"
+        }
+      ]
+    },
+    {
+      "name": "unknown-save-and-active-preedit",
+      "context": "private",
+      "session": "fixture-two",
+      "max_pins": 1,
+      "steps": [
+        {
+          "op": "bind",
+          "args": [
+            "editor-a",
+            "9007199254740993"
+          ]
+        },
+        {
+          "op": "fence",
+          "store": "saved",
+          "expect": {
+            "context": "private",
+            "session": "fixture-two",
+            "editor": "editor-a",
+            "revision": "9007199254740993",
+            "generation": "1"
+          }
+        },
+        {
+          "op": "submit",
+          "args": [
+            {
+              "operation": "operation-a",
+              "fence": "$saved",
+              "destination": {
+                "kind": "append",
+                "note": "note-a",
+                "expected_revision": "revision-a"
+              }
+            }
+          ]
+        },
+        {
+          "op": "acknowledge",
+          "args": [
+            {
+              "submitted": {
+                "operation": "operation-a",
+                "fence": "$saved",
+                "destination": {
+                  "kind": "append",
+                  "note": "note-a",
+                  "expected_revision": "revision-a"
+                }
+              },
+              "content": {
+                "state": "unknown"
+              }
+            }
+          ],
+          "expect": "reconcile_before_retry"
+        },
+        {
+          "op": "beginComposition",
+          "args": [
+            "$saved"
+          ],
+          "store": "token"
+        },
+        {
+          "op": "acknowledge",
+          "args": [
+            {
+              "submitted": {
+                "operation": "operation-a",
+                "fence": "$saved",
+                "destination": {
+                  "kind": "append",
+                  "note": "note-a",
+                  "expected_revision": "revision-a"
+                }
+              },
+              "content": {
+                "state": "committed",
+                "note": "note-a",
+                "revision": "revision-b",
+                "relationships": "failed",
+                "search": "pending"
+              }
+            }
+          ],
+          "expect": "retain_active_composition"
+        },
+        {
+          "op": "pendingSave",
+          "expect": null
+        },
+        {
+          "op": "endComposition",
+          "args": [
+            "$token"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "stable-results-and-expansion",
+      "context": "private",
+      "session": "fixture-results",
+      "max_pins": 1,
+      "steps": [
+        {
+          "op": "bind",
+          "args": [
+            "editor-results",
+            "1"
+          ]
+        },
+        {
+          "op": "beginLookup",
+          "store": "first"
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$first",
+            "suggestions",
+            "complete",
+            [
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "a"
+                },
+                "label": "a",
+                "detail": null,
+                "actions": []
+              },
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "b"
+                },
+                "label": "b",
+                "detail": null,
+                "actions": []
+              }
+            ]
+          ]
+        },
+        {
+          "op": "select",
+          "args": [
+            "$first",
+            {
+              "provider": "notes",
+              "result": "a"
+            }
+          ]
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$first",
+            "suggestions",
+            "complete",
+            [
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "b"
+                },
+                "label": "b",
+                "detail": null,
+                "actions": []
+              },
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "a"
+                },
+                "label": "a",
+                "detail": null,
+                "actions": []
+              }
+            ]
+          ]
+        },
+        {
+          "op": "selected",
+          "expect": {
+            "provider": "notes",
+            "result": "a"
+          }
+        },
+        {
+          "op": "canExpand",
+          "expect": false
+        },
+        {
+          "op": "beginLookup",
+          "store": "second"
+        },
+        {
+          "op": "selected",
+          "expect": null
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$first",
+            "suggestions",
+            "complete",
+            []
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$second",
+            "suggestions",
+            "offline",
+            []
+          ]
+        },
+        {
+          "op": "expandIfEmpty",
+          "args": [
+            "$second"
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$second",
+            "suggestions",
+            "complete",
+            []
+          ]
+        },
+        {
+          "op": "expandIfEmpty",
+          "args": [
+            "$second"
+          ],
+          "expect": true
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$second",
+            "suggestions",
+            "complete",
+            [
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "a"
+                },
+                "label": "a",
+                "detail": null,
+                "actions": []
+              }
+            ]
+          ]
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "compact"
+        },
+        {
+          "op": "expanded",
+          "expect": false
+        },
+        {
+          "op": "revoke"
+        },
+        {
+          "op": "selected",
+          "expect": null
+        }
+      ]
+    }
+  ]
+}

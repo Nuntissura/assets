@@ -1,0 +1,21 @@
+[package]
+name = "handpick"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Portable search interaction and draft foundation"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+wasm = ["dep:wasm-bindgen", "dep:serde_json"]
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+wasm-bindgen = { version = "=0.2.129", optional = true }
+serde_json = { version = "=1.0.151", optional = true }
+
+[dev-dependencies]
+serde_json = "=1.0.151"
