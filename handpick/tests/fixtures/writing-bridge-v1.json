@@ -1205,6 +1205,74 @@
           }
         },
         {
+          "op": "acknowledge",
+          "args": [
+            {
+              "submitted": {
+                "operation": "pending-content",
+                "fence": "$current",
+                "destination": {
+                  "kind": "create",
+                  "folder": null
+                }
+              },
+              "content": {
+                "state": "rejected"
+              }
+            }
+          ],
+          "expect": "retain_for_retry"
+        },
+        {
+          "op": "pendingSave",
+          "expect": null
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$edited",
+            0,
+            1,
+            true
+          ],
+          "expect": false
+        },
+        {
+          "op": "expanded",
+          "expect": false
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$edited",
+            160,
+            1,
+            false
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$edited",
+            "suggestions",
+            "complete",
+            []
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "fence",
+          "store": "settled",
+          "expect": {
+            "context": "private",
+            "session": "content-fixture",
+            "editor": "editor-content",
+            "revision": "2",
+            "generation": "8"
+          }
+        },
+        {
           "op": "revoke"
         },
         {
