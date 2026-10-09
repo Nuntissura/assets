@@ -617,13 +617,14 @@ impl WritingSession {
         Ok(true)
     }
     /// Host observes native text in UTF-16 units and newline-delimited lines; no content is copied.
-    /// Both renderers share prose eligibility and the completed-empty/IME admission gate.
+    /// Prose intent is independent of result delivery; active lifecycle and IME fences still apply.
     pub fn expand_for_prose(&mut self, fence: &WritingFence, utf16_units: u32, line_count: u32) -> Result<bool, Error> {
         self.validate(fence)?;
-        if utf16_units < 160 && line_count < 3 {
+        if self.composition.is_some() || utf16_units == 0 || (utf16_units < 160 && line_count < 3) {
             return Ok(false);
         }
-        self.expand_if_empty(fence)
+        self.expanded = true;
+        Ok(true)
     }
     /// Explicit compact presentation retains the same native editor and lookup state.
     pub fn compact(&mut self) -> Result<(), Error> {

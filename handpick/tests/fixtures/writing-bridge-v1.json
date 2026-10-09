@@ -558,7 +558,7 @@
       ]
     },
     {
-      "name": "shared-prose-eligibility-and-empty-delivery-gate",
+      "name": "shared-prose-eligibility-independent-of-delivery",
       "context": "private",
       "session": "prose-fixture",
       "max_pins": 1,
@@ -578,10 +578,29 @@
           "op": "expandForProse",
           "args": [
             "$f",
+            5000,
+            1
+          ],
+          "expect": true
+        },
+        {
+          "op": "compact"
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
             160,
             1
           ],
-          "expect": false
+          "expect": true
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "compact"
         },
         {
           "op": "deliver",
@@ -599,7 +618,14 @@
             160,
             1
           ],
-          "expect": false
+          "expect": true
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "compact"
         },
         {
           "op": "deliver",
@@ -617,7 +643,14 @@
             160,
             1
           ],
-          "expect": false
+          "expect": true
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "compact"
         },
         {
           "op": "deliver",
@@ -635,7 +668,14 @@
             160,
             1
           ],
-          "expect": false
+          "expect": true
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "compact"
         },
         {
           "op": "deliver",
@@ -653,7 +693,14 @@
             160,
             1
           ],
-          "expect": false
+          "expect": true
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "compact"
         },
         {
           "op": "deliver",
@@ -681,7 +728,14 @@
             160,
             1
           ],
-          "expect": false
+          "expect": true
+        },
+        {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "compact"
         },
         {
           "op": "deliver",
@@ -715,6 +769,13 @@
           "expect": true
         },
         {
+          "op": "expanded",
+          "expect": true
+        },
+        {
+          "op": "compact"
+        },
+        {
           "op": "compact"
         },
         {
@@ -722,6 +783,15 @@
           "args": [
             "$f",
             0,
+            3
+          ],
+          "expect": false
+        },
+        {
+          "op": "expandForProse",
+          "args": [
+            "$f",
+            2,
             3
           ],
           "expect": true
