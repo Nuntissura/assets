@@ -421,6 +421,141 @@
           "expect": null
         }
       ]
+    },
+    {
+      "name": "canonical-note-continuation",
+      "context": "owner-profile",
+      "session": "fixture-continuation",
+      "max_pins": 2,
+      "steps": [
+        {
+          "op": "bind",
+          "args": [
+            "editor-continuation",
+            "4"
+          ]
+        },
+        {
+          "op": "fence",
+          "store": "active"
+        },
+        {
+          "op": "submit",
+          "args": [
+            {
+              "operation": "operation-next",
+              "fence": "$active",
+              "destination": {
+                "kind": "update",
+                "note": "canonical-note",
+                "expected_revision": "epoch-1:serial-3:source-3",
+                "prior_operation": "operation-prior"
+              }
+            }
+          ]
+        },
+        {
+          "op": "acknowledge",
+          "args": [
+            {
+              "submitted": {
+                "operation": "operation-next",
+                "fence": "$active",
+                "destination": {
+                  "kind": "update",
+                  "note": "canonical-note",
+                  "expected_revision": "epoch-1:serial-3:source-3",
+                  "prior_operation": "operation-prior"
+                }
+              },
+              "content": {
+                "state": "unknown"
+              }
+            }
+          ],
+          "expect": "reconcile_before_retry"
+        },
+        {
+          "op": "acknowledge",
+          "args": [
+            {
+              "submitted": {
+                "operation": "operation-next",
+                "fence": "$active",
+                "destination": {
+                  "kind": "update",
+                  "note": "canonical-note",
+                  "expected_revision": "epoch-1:serial-3:source-3",
+                  "prior_operation": "operation-prior"
+                }
+              },
+              "content": {
+                "state": "committed",
+                "note": "other-note",
+                "revision": "revision-next",
+                "relationships": "pending",
+                "search": "pending"
+              }
+            }
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "pendingSave",
+          "expect": {
+            "operation": "operation-next",
+            "fence": {
+              "context": "owner-profile",
+              "session": "fixture-continuation",
+              "editor": "editor-continuation",
+              "revision": "4",
+              "generation": "1"
+            },
+            "destination": {
+              "kind": "update",
+              "note": "canonical-note",
+              "expected_revision": "epoch-1:serial-3:source-3",
+              "prior_operation": "operation-prior"
+            }
+          }
+        },
+        {
+          "op": "edited",
+          "args": [
+            "$active",
+            "5"
+          ]
+        },
+        {
+          "op": "acknowledge",
+          "args": [
+            {
+              "submitted": {
+                "operation": "operation-next",
+                "fence": "$active",
+                "destination": {
+                  "kind": "update",
+                  "note": "canonical-note",
+                  "expected_revision": "epoch-1:serial-3:source-3",
+                  "prior_operation": "operation-prior"
+                }
+              },
+              "content": {
+                "state": "committed",
+                "note": "canonical-note",
+                "revision": "revision-next",
+                "relationships": "pending",
+                "search": "pending"
+              }
+            }
+          ],
+          "expect": "older_revision_committed"
+        },
+        {
+          "op": "pendingSave",
+          "expect": null
+        }
+      ]
     }
   ]
 }

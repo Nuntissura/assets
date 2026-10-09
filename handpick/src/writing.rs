@@ -62,6 +62,12 @@ pub enum SaveDestination {
         note: NoteId,
         expected_revision: RevisionId,
     },
+    /// Continue the fragment committed by an earlier capture, preserving its ordinary Note identity.
+    Update {
+        note: NoteId,
+        expected_revision: RevisionId,
+        prior_operation: OperationId,
+    },
     Insert {
         target: NoteAddress,
         expected_revision: RevisionId,
@@ -147,6 +153,7 @@ pub enum WritingCapability {
     FolderPlacement,
     AnchoredInsert,
     Append,
+    UpdateCapture,
     Recovery,
     Templates,
     Search,
@@ -698,6 +705,9 @@ impl WritingSession {
         ) {
             return Err(Error::InvalidSpan);
         }
+        if matches!(&intent.destination, SaveDestination::Update { prior_operation, .. } if prior_operation == &intent.operation) {
+            return Err(Error::InvalidSpan);
+        }
         self.pending_save = Some(intent);
         Ok(())
     }
@@ -715,7 +725,7 @@ impl WritingSession {
             ContentOutcome::Committed { note, .. } => {
                 let existing = match &outcome.submitted.destination {
                     SaveDestination::Create { .. } => None,
-                    SaveDestination::Append { note, .. } => Some(note),
+                    SaveDestination::Append { note, .. } | SaveDestination::Update { note, .. } => Some(note),
                     SaveDestination::Insert { target, .. } => Some(match target {
                         NoteAddress::Note { note }
                         | NoteAddress::Heading { note, .. }

@@ -139,6 +139,30 @@ fn writing_insert_requires_anchor_and_rejects_stale_revision_without_loss() {
 }
 
 #[test]
+fn writing_continuation_keeps_canonical_identity_and_rejects_self_lineage() {
+    let mut s = session("continuation");
+    let mut save = intent(&s);
+    save.destination = SaveDestination::Update {
+        note: NoteId::new("note-a").unwrap(),
+        expected_revision: RevisionId::new("revision-a").unwrap(),
+        prior_operation: save.operation.clone(),
+    };
+    assert_eq!(s.submit(save.clone()), Err(Error::InvalidSpan));
+    assert!(s.pending_save().is_none());
+    if let SaveDestination::Update { prior_operation, .. } = &mut save.destination {
+        *prior_operation = OperationId::new("operation-prior").unwrap();
+    }
+    let wire = serde_json::to_string(&save).unwrap();
+    assert_eq!(serde_json::from_str::<SaveIntent>(&wire).unwrap(), save);
+    s.submit(save.clone()).unwrap();
+    let mut wrong = committed(save.clone());
+    if let ContentOutcome::Committed { note, .. } = &mut wrong.content { *note = NoteId::new("other-note").unwrap(); }
+    assert_eq!(s.acknowledge(&wrong), Err(Error::Stale));
+    assert_eq!(s.pending_save(), Some(&save));
+    assert_eq!(s.acknowledge(&committed(save)), Ok(SaveDisposition::CurrentRevisionCommitted));
+}
+
+#[test]
 fn writing_ime_blocks_actions_save_and_pin_without_changing_editor() {
     let mut s = session("s");
     let save = intent(&s);

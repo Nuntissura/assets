@@ -42,6 +42,8 @@ There is one Notes system. Quicknote names quick writing through Handpick; it is
 
 Saving creates an ordinary note, optionally in a selected folder, or inserts/appends into an existing note at a supported owner-resolved location. Search, expansion and pinning do not themselves save content. Unsaved editor state, recovery and saved-state indicators describe editing progress, not different note types. New writing becomes an ordinary Note only on explicit Save. Native unsaved recovery remains separate; no separate writing mode exists. Default destination and journal defaults remain undecided.
 
+`SaveDestination::Update` continues a previously committed capture in the same ordinary Note. It names the prior owner operation and expected destination revision; the owner preserves surviving block identities and unrelated destination content and rejects conflicting edits. The additive `handpick.v1` variant requires updated adapters: an older strict decoder rejects it instead of treating it as append or create. Every consumer binds to an exact compatible crate revision.
+
 </topic>
 
 <topic id="expanded-capabilities" status="planned">
