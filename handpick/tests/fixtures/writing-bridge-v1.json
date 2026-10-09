@@ -751,7 +751,7 @@
           "args": [
             "$f",
             159,
-            2
+            1
           ],
           "expect": false
         },
@@ -792,7 +792,7 @@
           "args": [
             "$f",
             2,
-            3
+            2
           ],
           "expect": true
         },
@@ -1022,7 +1022,7 @@
           "args": [
             "$empty",
             159,
-            2,
+            1,
             false
           ],
           "expect": false
@@ -1097,7 +1097,7 @@
           "args": [
             "$current",
             2,
-            3,
+            2,
             false
           ],
           "expect": true
@@ -1282,6 +1282,338 @@
             0,
             1,
             true
+          ],
+          "error": "Revoked"
+        }
+      ]
+    },
+    {
+      "name": "short-current-empty-search-and-second-line-presentation",
+      "context": "private",
+      "session": "short-fixture",
+      "max_pins": 1,
+      "steps": [
+        {
+          "op": "bind",
+          "args": [
+            "editor-short",
+            "1"
+          ]
+        },
+        {
+          "op": "fence",
+          "store": "f"
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "pending",
+            []
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            5,
+            1,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "partial",
+            []
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            5,
+            1,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "failed",
+            []
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            5,
+            1,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "offline",
+            []
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            5,
+            1,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "complete",
+            [
+              {
+                "key": {
+                  "provider": "notes",
+                  "result": "found"
+                },
+                "label": "Found note",
+                "detail": null,
+                "actions": []
+              }
+            ]
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            5,
+            1,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "complete",
+            []
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            5,
+            1,
+            false
+          ],
+          "expect": true
+        },
+        {
+          "op": "compact"
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$f",
+            "suggestions",
+            "pending",
+            []
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            2,
+            2,
+            false
+          ],
+          "expect": true
+        },
+        {
+          "op": "compact"
+        },
+        {
+          "op": "beginComposition",
+          "args": [
+            "$f"
+          ],
+          "store": "ime"
+        },
+        {
+          "op": "fence",
+          "store": "imef"
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$imef",
+            "suggestions",
+            "complete",
+            []
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            5,
+            1,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            2,
+            2,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "endComposition",
+          "args": [
+            "$ime"
+          ]
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            5,
+            1,
+            false
+          ],
+          "expect": true
+        },
+        {
+          "op": "submit",
+          "args": [
+            {
+              "operation": "short-pending",
+              "fence": "$imef",
+              "destination": {
+                "kind": "create",
+                "folder": null
+              }
+            }
+          ]
+        },
+        {
+          "op": "compact"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            5,
+            1,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            2,
+            2,
+            false
+          ],
+          "expect": false
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$f",
+            5,
+            1,
+            false
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "acknowledge",
+          "args": [
+            {
+              "submitted": {
+                "operation": "short-pending",
+                "fence": "$imef",
+                "destination": {
+                  "kind": "create",
+                  "folder": null
+                }
+              },
+              "content": {
+                "state": "rejected"
+              }
+            }
+          ],
+          "expect": "retain_for_retry"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            5,
+            1,
+            false
+          ],
+          "expect": true
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            0,
+            1,
+            true
+          ],
+          "expect": false
+        },
+        {
+          "op": "deliver",
+          "args": [
+            "$imef",
+            "suggestions",
+            "complete",
+            []
+          ],
+          "error": "Stale"
+        },
+        {
+          "op": "revoke"
+        },
+        {
+          "op": "presentContent",
+          "args": [
+            "$imef",
+            5,
+            1,
+            false
           ],
           "error": "Revoked"
         }

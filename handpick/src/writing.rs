@@ -620,7 +620,7 @@ impl WritingSession {
     /// Prose intent is independent of result delivery; active lifecycle and IME fences still apply.
     pub fn expand_for_prose(&mut self, fence: &WritingFence, utf16_units: u32, line_count: u32) -> Result<bool, Error> {
         self.validate(fence)?;
-        if self.composition.is_some() || utf16_units == 0 || (utf16_units < 160 && line_count < 3) {
+        if self.composition.is_some() || self.pending_save.is_some() || utf16_units == 0 || (utf16_units < 160 && line_count < 2) {
             return Ok(false);
         }
         self.expanded = true;
@@ -637,7 +637,7 @@ impl WritingSession {
             self.expanded = false;
             self.generation = next;
             self.results.invalidate();
-        } else if utf16_units > 0 && (utf16_units >= 160 || line_count >= 3) {
+        } else if self.can_expand() || (utf16_units > 0 && (utf16_units >= 160 || line_count >= 2)) {
             self.expanded = true;
         }
         Ok(self.expanded)
