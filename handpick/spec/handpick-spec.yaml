@@ -1,0 +1,1010 @@
+schema_version: handpick.product-spec.v1
+file_id: handpick-product-spec-v1
+file_kind: product-specification
+version: 1
+updated_at: '2026-10-09'
+title: Handpick shared search and Notes input surface
+purpose: Give a fresh agent the fixed product intent, reusable asset boundaries, complete requirements and honest
+  implementation/proof state before extending Handpick.
+reading_contract:
+  machine_readable_baseline: This YAML carries the preserved product requirements; README.md explains them. Runtime
+    source is evidence for mechanisms, not permission to redefine intent.
+  authority_boundary: This asset specification does not import Portal/Desktop governance or grant ownership of their
+    work. Consumers retain their own current project authority, canonical owners and coordinated implementation
+    scopes.
+  preservation: The 53 requirement, 12 capability and 16 acceptance records below are copied verbatim from the committed
+    source WP. Their IDs and statements remain traceable; dated status notes do not rewrite acceptance obligations.
+  scope_boundary: Portal and Desktop master specifications were left unchanged. This document describes Handpick
+    and its asset; it is not a rewrite of either master specification.
+  snapshot_warning: Reinspect current source, consumer authority and result artifacts before claiming a newer implementation
+    status. Recorded results are historical evidence, not a fresh run from this specification.
+source_snapshot:
+  observed_at: '2026-10-09'
+  asset:
+    repository: https://github.com/Nuntissura/assets.git
+    subfolder: handpick
+    package_version: 0.1.0
+    wire_version: handpick.v1
+    published_branch: codex/handpick
+    published_revision: 2b4bcdad756aa0f524152e3be2176f60acf32583
+  portal:
+    repository: handshake-portal
+    implementation_revision: b444617225eacf0cc96ce05436842f91722275ef
+    recovery_revision: c361b8d4f3694fb2fb9ed12b856f54dc9ea88f62
+    test_base_revision: d564b7d7bb209bcce9766ce0345585f61441401f
+    wp_id: WP-HANDPICK-001-shared-search-v1
+    wp_path: repo-governance/work-packets/active/WP-HANDPICK-001-shared-search-v1/wp-contract.yaml
+    state_path: repo-governance/work-packets/active/WP-HANDPICK-001-shared-search-v1/state.yaml
+    contract_sha256: dc29410fc37c6dadfe26986f78daca8771ced79a2a0d7801741e7423cca9a8ba
+  desktop:
+    repository: handshake-desktop
+    inspected_worktree: wtc-WP-KERNEL-012
+    state: consumer_assignment_pending
+    source_of_status: Portal WP/state and recorded Desktop coordination; no Desktop changes made by this specification
+operator_intent:
+  goal: A powerful reusable search and text-input surface for Handshake Desktop and Portal, connected to the existing
+    Notes and Loom systems.
+  quicknote: Quicknote is ad hoc writing through Handpick into the same Notes content. It is not a second note entity,
+    content store, writing mode, inbox database or promotion/conversion step.
+  workflow: Combine Logseq-style ad hoc outlining, nesting, references and connected writing with the existing Obsidian-style
+    rich document workflow. Prose remains prose unless the user makes a native edit; do not force automatic bullet
+    conversion.
+  search_and_write: Writing, selected-text/contextual lookup and ordinary searching coexist. Park writing with a
+    bookmark when another search needs the field, then restore it without losing the occupied composition.
+  field_actions: Search and explicit Save are separate buttons in the field container, including short text with
+    remaining suggestions.
+  expansion: Longer writing can expand to a mini editor with a toolbar only after completed empty applicable suggestions;
+    manual expansion remains available. Later suggestions must not collapse active writing.
+  bookmarks: Bookmark labels occupy the top edge of the searchbox. Excerpts appear only in hover/focus tooltips,
+    leaving the bottom area for suggestions, results and controls.
+  completion: VS Code-inspired contextual name/metadata/reference completion with manual invocation, visible details
+    and explicit acceptance. Generated prose is not selected by this requirement.
+  save: Explicit Save creates an ordinary Note, optionally in a selected folder, or appends/inserts into an existing
+    Note/heading/block. A subsequent Save continues the same saved Note/fragment through the owner operation lineage.
+  canonical_data: Existing Notes native state, grants, CRDT/journal and canonical persistence retain authority.
+    Loom provides existing tag/property/relationship context. SurrealDB-compatible owners are adapters; no Turso,
+    duplicate graph or new canonical store is selected.
+  host_parity: Portal mirrors substantial supported behavior while exposing actual limitations; shared contracts
+    alone do not establish Desktop parity or synchronization.
+ownership:
+  handpick: Shared interaction contracts, orchestration, query/completion outcomes, transition rules, contextual
+    actions and bounded presentation state.
+  notes: Native rich documents, editing transactions/undo, note and nested-block identity, grants, recovery, save/conflict/history
+    and canonical persistence.
+  loom: Authorized tag/property and relationship context through public discovery/resolution/projection contracts.
+  host: Renderer, editor binding, input method, touch/accessibility, animation, lifecycle, adapter composition and
+    configured storage/network effects.
+scope:
+  included:
+  - Framework-independent Rust handpick crate, public versioned contracts and portable package assets.
+  - Shared query/completion/interaction semantics and opaque result identities, with explicit Portal and Desktop
+    capability adapters.
+  - SurrealDB-compatible retrieval through injected owner boundaries; pin the actual application SDK/database capabilities
+    rather than adopting latest examples blindly.
+  - Portal refactor of shell search, Notes catalogue/content lookup, Loom metadata/link lookup, manual/settings/actions
+    and supported feed/task providers.
+  - React rendering for Portal and egui rendering for Desktop, sharing behavioral fixtures and preserving each application's
+    authorization and canonical content owners.
+  - Search and Save buttons together inside the field container for short text, even when suggestions remain.
+  - Longer text with genuinely empty completed suggestions expands into a mini editor with a toolbar; preserve input,
+    cursor, selection and focus and avoid automatic collapse during writing.
+  - Pin the current draft to park it while searching; bookmarks hang along the TOP edge of the searchbox and remain
+    visible in editor mode. Excerpts appear ONLY in hover/focus tooltips, never bookmark labels. Keep the area below
+    free for completions/results/controls.
+  - Restore pinned text without overwriting another draft; bounded pin overflow and keyboard access; separate pinning
+    from committing a note.
+  - VS Code-inspired completion list for operators, authorized tag/property values, names and targets; manual suggestion
+    invocation, explicit acceptance and details.
+  - Explicit typed result actions for opening content, revealing settings, running supported commands, applying
+    filters/completions and capturing text.
+  - Recoverable capture drafts plus canonical create/append through existing Notes/task owners; replay-safe retries,
+    destination visibility and honest persistence states.
+  - Rich Notes editing through the input surface, retaining the same canonical note identity and native document
+    model as the full Notes editor.
+  - Nested block split/merge, indent/outdent, subtree movement, collapse/expand and focused block navigation; prose,
+    formatting and existing rich content remain available in those same notes.
+  - Note/heading/block reference completion, authorized embeds and backlink context; permanent nested identity and
+    explicit deleted/inaccessible target behavior.
+  - Search selected text and find/insert references while composing without replacing the writing session; contextual
+    result details and explicit target actions.
+  - In-place folder, Loom tag/property, link and task interactions, reusable text/template insertion and structured
+    note/block/section/task/property query results through supported owner contracts.
+  - Owner-resolved insertion into an existing note at a supported heading/block anchor, alongside new-note creation
+    and ordinary append; show destination and save outcome.
+  - Journal-style chronological writing using ordinary Notes content; journal identity, date grouping, default routing
+    and automatic creation remain open decisions.
+  - Host-native rich draft recovery, selection/undo preservation through expansion and pinning, input-method/touch/accessibility
+    support and granular adapter capability reporting.
+  - Diagnostics, affected help/model manual, migration/rollback, accessibility and real desktop/mobile rendered
+    proof for affected surfaces.
+  excluded:
+  - Full Desktop feature parity in Portal, speculative scale infrastructure, unrelated provider acquisition or restyling.
+  - Production deployment, live operator-content mutations, broad Desktop edits outside an authorized coordinated
+    implementation step.
+  - A second canonical content store, automatic Turso adoption, or a claim of cross-product synchronization from
+    shared database technology.
+  - A separate saved Quicknote entity, conversion/promotion into Notes, a duplicate generic rich editor in Handpick,
+    or automatic prose-to-bullet conversion.
+  - Editing the Portal or Desktop master specifications in this scope/handoff task, or accepting stale PostgreSQL
+    contract wording as the implemented SurrealDB architecture.
+  - Publication to an invented remote, registry release, or license selection without inspecting the operator-provided
+    asset-library repository.
+capabilities:
+- capability_id: HP-CAP-001
+  name: Search and discovery
+  scope: Content, metadata, Loom tags/properties, navigation, manual/settings/commands and supported feeds/tasks;
+    filters, explainable interpretation, ranked authorized results and coverage.
+- capability_id: HP-CAP-002
+  name: Contextual completion
+  scope: Notes/headings/blocks, tags/properties, filters, destination names and supported commands; manual invocation,
+    details, explicit acceptance and native editor anchors.
+- capability_id: HP-CAP-003
+  name: Rich writing continuity
+  scope: Reuse Notes editing through compact/expanded/full-document presentations; preserve stock Obsidian baseline,
+    formatting, native rich data, selection and undo.
+- capability_id: HP-CAP-004
+  name: Outlining
+  scope: Split/merge, nesting, subtree movement, collapse/expand and focus/zoom/back navigation over the same document
+    content.
+- capability_id: HP-CAP-005
+  name: Connected writing
+  scope: Note/heading/block references, bounded authorized embeds, backlink context and explicit link/tag creation
+    with stable identity.
+- capability_id: HP-CAP-006
+  name: Search during composition
+  scope: Selected-text lookup, reference insertion and result details without replacing the composition; top-edge
+    pins remain available to park and restore writing.
+- capability_id: HP-CAP-007
+  name: Organization and tasks
+  scope: In-place folder destinations, Loom tags/properties, native checkboxes and supported task actions/queries;
+    document folder references and Loom folder membership use explicit mappings.
+- capability_id: HP-CAP-008
+  name: Note destinations and commit
+  scope: Create ordinary notes, selected folder placement and anchored insert/append into existing notes; target
+    previews, replay safety, current grants and matching save acknowledgements.
+- capability_id: HP-CAP-009
+  name: Recovery and pins
+  scope: Recoverable rich editor state, atomic occupied restore, bounded overflow, truthful status and scope/lifecycle
+    isolation; local recovery does not promise cross-device synchronization.
+- capability_id: HP-CAP-010
+  name: Templates and reusable insertion
+  scope: Explicit host-supported text/template insertion with preview and native undo; plugin execution and generated
+    prose are outside this capability.
+- capability_id: HP-CAP-011
+  name: Journal-style writing
+  scope: Ad hoc chronological entry/append into ordinary notes; automatic daily creation, date grouping and default
+    routing remain undecided.
+- capability_id: HP-CAP-012
+  name: Accessible host interaction and diagnostics
+  scope: Shared outcomes with native/web rendering, touch/IME/keyboard access, reduced-motion behavior, stable controls
+    and bounded structured model-facing diagnostics without note text leakage.
+requirements:
+- requirement_id: HP-REQ-001
+  statement: Core has no Axum, React, egui, database handles, global runtime or Portal/Desktop path dependency.
+    Host effects are explicit adapters.
+- requirement_id: HP-REQ-002
+  statement: Preserve original text and opaque IDs. Version wire contracts; declare text coordinate units and convert
+    Rust UTF-8/JavaScript UTF-16/matcher grapheme positions explicitly.
+- requirement_id: HP-REQ-003
+  statement: Fence pending searches/completions by scope and monotonically advancing generation; preserve selected
+    result identity across updates and never execute an unrelated row after reordering.
+- requirement_id: HP-REQ-004
+  statement: Authenticate and authorize suggestions, snippets, facets, totals, history, pins, destinations, opens
+    and commits at their owners; profile switching cannot disclose or reuse another profile's pending state.
+- requirement_id: HP-REQ-005
+  statement: Query and capture remain distinct intents. Capture acknowledgements name operation, target, draft revision
+    and durability; old acknowledgements cannot clear newer text; failures and uncertain commits retain recoverable
+    drafts.
+- requirement_id: HP-REQ-006
+  statement: Search indexes/embeddings/Loom projections are rebuildable derivatives. Notes native state and existing
+    checkpoint/receipt behavior retain authority. Sharing and revocation recheck current grants.
+- requirement_id: HP-REQ-007
+  statement: Portal supported providers mirror shared behavior and report unsupported Desktop capabilities explicitly;
+    no mock rows, inert controls or empty success for unavailable providers.
+- requirement_id: HP-REQ-008
+  statement: Full-set search/facet/count operations use canonical authorized sources before pagination; visible
+    rows do not define scope. Bound query, pins, payloads, concurrency and provider work.
+- requirement_id: HP-REQ-009
+  statement: Query edits, pending work, true empty results, stale indexing, offline coverage, partial provider failure
+    and semantic outage have distinct observable states.
+- requirement_id: HP-REQ-010
+  statement: Settings/command actions remain typed, enabled only in valid context and routed through existing dispatch/navigation
+    owners; finding an action never executes it.
+- requirement_id: HP-REQ-011
+  statement: Notes exposes an owner-controlled searchable source projection with title/text, stable note/block IDs,
+    revision/hash and bounded enumeration/reconciliation from native journal state. Existing KnowledgeSnapshot references
+    alone are insufficient. Unsupported rich content is preserved.
+- requirement_id: HP-REQ-012
+  statement: Capture uses a stable caller operation ID with durable deduplication, declared retention and rejection
+    of reused IDs with different intent. Reconcile committed-response-loss before retry; append fences name destination,
+    source epoch/version and draft revision. Never PATCH a projection or silently replace Markdown.
+- requirement_id: HP-REQ-013
+  statement: Each provider declares its canonical authorized set. Notes includes owned/currently granted shared
+    sources; feed account catalogue and selected-profile reading scopes stay distinct. Resolve Tasks' profile-kind
+    storage limitation before exposing profile-isolated task search/capture. Source/target grants remain valid through
+    serialization and are rechecked on effects.
+- requirement_id: HP-REQ-014
+  statement: Loom discovery/completion is read-only and never calls get-or-create. Preserve stable UUID-first resolution,
+    normalization version, explicit ambiguity, manual/inline origin union and membership freshness; renamed labels
+    never retarget IDs.
+- requirement_id: HP-REQ-015
+  statement: Keep source architecture-neutral. ARM64 tablet tests do not establish x64 consumer compatibility; x64
+    application integration requires its own build/runtime proof with the appropriate toolchain. Bind callbacks
+    to session lifecycle so replacing a Session cannot revive old responses.
+- requirement_id: HP-REQ-016
+  statement: Capture editing must support stock Obsidian editing behavior, including Markdown source and Live Preview
+    intent, formatting, headings, lists/nesting, task checkboxes, links, tags, code, tables, callouts and other
+    stock syntax. Audit the complete baseline against the reused Notes editor; disclose unsupported constructs and
+    preserve them without loss. Actual rendering remains a host-editor responsibility.
+- requirement_id: HP-REQ-017
+  statement: Quicknote names a writing workflow into the same Notes content and canonical owner used by the full
+    document editor; no separate note kind, content store, writing mode or promotion step is permitted. Presentation
+    folders, document folder references and Loom folder membership require explicit owner mappings.
+- requirement_id: HP-REQ-018
+  statement: Saving creates an ordinary note, optionally in a selected existing folder, or inserts/appends into
+    a selected existing note at an owner-supported document/heading/block anchor. Destinations use opaque owner-resolved
+    identities and declared capabilities; a folder is a container, not an appendable document. Default insertion
+    placement remains open.
+- requirement_id: HP-REQ-019
+  statement: Append-to-note preserves unrelated rich/native content and uses the destination owner's version/epoch
+    fences plus replay-safe capture identity. Native CRDT journal append and Markdown epoch replacement are not
+    semantic prose-append operations. Missing, deleted, read-only or unsupported destinations return explicit errors
+    and retain the recoverable draft.
+- requirement_id: HP-REQ-020
+  statement: The next crate milestone covers shared rich-input/editor-session, outliner, reference, in-writing search,
+    destination, recovery and contextual-action contracts with focused proof. Native document operations remain
+    Notes-owned; animations and rendering remain host responsibilities. Planned capabilities must remain distinguishable
+    from implemented foundation behavior.
+- requirement_id: HP-REQ-021
+  statement: Quicknote exposes folder selection/creation, inline tag and note-link lookup with explicit creation
+    actions, and backlink context within the same writing surface through owner capabilities. Backlinks derive from
+    accepted canonical native Notes links; a separate Forgejo checkpoint is not required to recognize an already
+    committed native link. Provisional draft links must remain distinguishable. Search/completion discovery stays
+    read-only and unsupported folder actions remain explicit until the host implements them.
+- requirement_id: HP-REQ-022
+  statement: Expansion, search during composition and pin/restore must preserve the native rich document or fragment
+    without flattening it into the existing plain-string draft primitive.
+- requirement_id: HP-REQ-023
+  statement: Presentation transitions must retain caret, selection, undo/redo history, native editor identity and
+    any selected insertion destination.
+- requirement_id: HP-REQ-024
+  statement: Expansion changes presentation only and must not save content, execute results or infer a canonical
+    destination.
+- requirement_id: HP-REQ-025
+  statement: Automatic expansion must require completed empty applicable suggestions; pending, partial, offline,
+    failed or stale-index deliveries cannot satisfy that condition.
+- requirement_id: HP-REQ-026
+  statement: Users must be able to expand explicitly and continue writing without automatic collapse when later
+    suggestions arrive.
+- requirement_id: HP-REQ-027
+  statement: Search selected text or contextual link/metadata lookup must run without replacing or navigating away
+    from the active composition.
+- requirement_id: HP-REQ-028
+  statement: Accepted contextual results must perform a declared native edit or owner-routed action at a current
+    valid editor anchor; lookup alone cannot mutate content.
+- requirement_id: HP-REQ-029
+  statement: The same Notes document must support split/merge, indent/outdent and subtree movement through native
+    undoable document operations while retaining prose and unrelated rich content.
+- requirement_id: HP-REQ-030
+  statement: Collapse/expand and focused block navigation must use view state associated with stable block identities
+    without changing the canonical content tree merely to render a view.
+- requirement_id: HP-REQ-031
+  statement: Addressable nested blocks must have permanent owner-controlled identities; moves preserve identity,
+    split/copy allocates unique identities and merge/deletion has explicit reference handling.
+- requirement_id: HP-REQ-032
+  statement: Note/heading/block references and embeds must resolve through current owner authorization with explicit
+    provisional, missing, deleted, inaccessible and unsupported states.
+- requirement_id: HP-REQ-033
+  statement: Reference/embedded-content expansion must enforce depth, payload, work and cycle limits while preserving
+    unsupported native content intact.
+- requirement_id: HP-REQ-034
+  statement: Host recovery must preserve unsaved rich content and pins across supported interruption/restart paths
+    with truthful recoverable, pending and canonical-save status.
+- requirement_id: HP-REQ-035
+  statement: A save acknowledgement may retire only the submitted revision of the submitted operation/destination;
+    newer writing and ambiguous outcomes must remain recoverable.
+- requirement_id: HP-REQ-036
+  statement: Enter, Tab, arrows, Escape and completion shortcuts must have explicit contextual arbitration that
+    preserves standard editing, input-method composition and accessible focus behavior.
+- requirement_id: HP-REQ-037
+  statement: Accepted completion must preserve rich marks and native selection semantics with verified UTF-8/UTF-16/grapheme
+    conversion; stale or composition-in-progress replacements must reject without loss.
+- requirement_id: HP-REQ-038
+  statement: Context actions must expose their authorized target and effect before explicit execution; commands,
+    settings changes, folder/tag creation and template insertion cannot execute merely from a matching suggestion.
+- requirement_id: HP-REQ-039
+  statement: Each adapter must declare granular editor, outliner, reference/embed, insertion, recovery, template
+    and query capabilities; unsupported behavior must preserve content and return an explicit capability state.
+- requirement_id: HP-REQ-040
+  statement: Structured block/section/task/property queries must operate on authorized source-derived structure
+    with bounded work and visible query interpretation/coverage.
+- requirement_id: HP-REQ-041
+  statement: Search/provider requests and diagnostics must respect scope and data-minimization rules so full composition,
+    pin excerpts and recovery content are not automatically transmitted or logged.
+- requirement_id: HP-REQ-042
+  statement: Template/snippet insertion must be an explicit native content edit with previewable scope and undo;
+    it must not introduce executable template/plugin behavior.
+- requirement_id: HP-REQ-043
+  statement: Journal-style entry creation or append must target ordinary owner-resolved notes; date labels cannot
+    substitute for canonical identity or choose automatic routing.
+- requirement_id: HP-REQ-044
+  statement: Relationship results preserve available owner-provided source-note identity, source-block anchor, relationship
+    identity, source revision/hash, freshness, pagination and count scope; missing evidence must be explicit. Authorized
+    source-note counts, relationship counts and rendered row counts must remain distinguishable, and pending/stale
+    projections cannot appear complete.
+- requirement_id: HP-REQ-045
+  statement: Reference destination identity is separate from source-occurrence identity. Portal KnowledgeReference.block_id
+    identifies the source occurrence, not a target block; target heading/nested-block addresses require explicit
+    Notes-owner resolution and declared versioned support.
+- requirement_id: HP-REQ-046
+  statement: Links inserted/appended into an existing note produce relationships whose source is that destination
+    note; Handpick must not allocate a separate Quicknote source or maintain a private backlink graph.
+- requirement_id: HP-REQ-047
+  statement: Accepted link completion inserts the host-native stable target identity with a presentation label;
+    unresolved or ambiguous literal titles remain explicit and label changes cannot retarget accepted identity links.
+- requirement_id: HP-REQ-048
+  statement: Linked backlinks and search-derived unlinked mentions remain distinct results; an unlinked candidate
+    becomes a committed relationship only through an explicit authorized native link edit.
+- requirement_id: HP-REQ-049
+  statement: Save outcomes report canonical content commitment separately from backlink/embed/index projection readiness;
+    projection failure must not be reported as an unsaved note or trigger duplicate content creation.
+- requirement_id: HP-REQ-050
+  statement: Backlink context refreshes after relevant committed edits, relationship invalidation and authorization
+    changes without replacing the active composition; source navigation resolves current owner anchors or reports
+    unavailable positioning explicitly.
+- requirement_id: HP-REQ-051
+  statement: Loom adapters declare actual tag-hub, hierarchy, property-schema, durable-alias and reference/embed
+    support; inspected backend or local view fields cannot be advertised as capabilities that are not implemented
+    through public owner contracts.
+- requirement_id: HP-REQ-052
+  statement: A tag mutation is acknowledged as durable only after the existing Notes/Loom owner commits it; local
+    property-panel chips alone cannot establish durable membership, and manual/inline provenance must remain intact.
+- requirement_id: HP-REQ-053
+  statement: Handpick capability-specific search, composition, completion and pin views exchange state and user
+    intent through its public contracts; app shells compose those views and renderer/editor mechanisms attach through
+    adapters rather than privately duplicating interaction behavior.
+architecture:
+  portable_core:
+    implemented: Effect-free Rust interaction/contracts and optional WASM JSON bridge. Default runtime dependencies
+      are Serde only. No framework, database, renderer, network, global runtime or native content dependency.
+    literal_input: Session owns bounded in-memory String input/pins and UTF-8 completion replacements. It is for
+      literal fields, not native rich-document storage.
+    rich_input: WritingSession binds opaque Notes-owned EditorId/revision handles. It tracks orchestration, results,
+      presentation, parked handle identities, IME and a pending SaveIntent; it does not copy document content, selection,
+      undo or recovery.
+  notes_owner: Owns native rich documents/transactions/undo, stable note and nested-block identities, authorization,
+    canonical create/append/anchored-insert/update, version/epoch fences, durable operation receipts and recoverable
+    native editor data.
+  loom_owner: Owns existing authorized tags/properties and derived relationships. Source occurrence identity differs
+    from reference destination identity. Backlinks, provisional links and unlinked textual candidates remain separate.
+  host: Owns editor binding, render/layout/animations/reduced motion, keyboard/IME/touch/accessibility, lifecycle,
+    coordinate conversion, provider composition, query interpretation/ranking, effects, local storage/network and
+    user-facing diagnostics.
+  database_boundary: Retrieve and commit through public owner adapters using the application-pinned SDK/engine.
+    Database technology does not establish native CRDT compatibility or cross-product synchronization.
+  no_duplicate_implementation: Hosts consume shared orchestration/contracts and attach editor mechanisms; they do
+    not privately reimplement the interaction state machine or introduce a second rich editor in the asset.
+public_api:
+  source_map:
+  - path: ../src/lib.rs
+    purpose: 'Public Rust entry point: contracts, session and writing are re-exported; optional WasmSession and
+      WasmWritingSession.'
+  - path: ../src/contracts.rs
+    purpose: Opaque identities, Envelope/WireVersion, SearchItem/ResultKey, explicit action kinds, channels/delivery
+      states and UTF-8 completion edits.
+  - path: ../src/session.rs
+    purpose: Literal Session/Limits/Pin/Delivery/Error; bounded text, UTF-8 replacement, request fencing, result
+      identity and atomic occupied restore.
+  - path: ../src/writing.rs
+    purpose: WritingSession; native editor handles/fences/IME/pins; typed save destinations/outcomes, provider/query/action/reference/relationship/recovery
+      contracts.
+  - path: ../src/wasm.rs
+    purpose: Optional synchronous JSON bridge; JS Session and WritingSession; bounds, decimal counters and content-free
+      rejection codes.
+  - path: ../tests/foundation.rs
+    purpose: Foundation wire, completion, admission, pin and lifecycle behavior.
+  - path: ../tests/adversarial.rs
+    purpose: Adversarial literal input, resource bounds and stale/revoked behavior.
+  - path: ../tests/writing.rs
+    purpose: Native writing contract, identity, save outcome, action, provider and relationship admission.
+  - path: ../tests/bridge_fixtures.rs
+    purpose: Native execution of shared orchestration fixture.
+  - path: ../tests/fixtures/writing-bridge-v1.json
+    purpose: Shared native/WASM fixture; four scenarios and 59 steps.
+  - path: ../tests/wasm_bridge.mjs
+    purpose: Real generated web-glue/WASM fixture runner and bridge-negative/foundation/rich checks.
+  - path: ../Cargo.toml
+    purpose: Standalone 0.1.0 package, optional wasm feature, exact dependency versions and reusable source/package
+      allowlist.
+  - path: ../README.md
+    purpose: Existing library/API manual; integration-pending/planned labels are not current external Portal status.
+  rust_literal:
+    constructor: Session::new(ContextId, Limits)
+    methods:
+    - set_draft
+    - draft
+    - draft_revision
+    - begin
+    - deliver
+    - delivery
+    - select
+    - selected
+    - complete
+    - pin
+    - restore
+    - pins
+    - switch_context
+    - revoke
+    coordinates: CompletionEdit.span is a half-open UTF-8 byte range in the fenced original String; complete returns
+      a UTF-8 caret byte offset. Hosts convert UTF-16/native/grapheme coordinates.
+  rust_rich:
+    constructor: WritingSession::new(ContextId, SessionId, max_pins) or WritingSession::with_limits(ContextId, SessionId,
+      Limits)
+    methods:
+    - bind
+    - editor
+    - fence
+    - expanded
+    - validate
+    - edited
+    - begin_lookup
+    - deliver
+    - delivery
+    - select
+    - selected
+    - expand
+    - compact
+    - can_expand
+    - expand_if_empty
+    - begin_composition
+    - end_composition
+    - park
+    - restore
+    - pins
+    - validate_action
+    - submit
+    - pending_save
+    - acknowledge
+    - revoke
+    contracts:
+    - WritingFence
+    - CompositionToken
+    - NoteAddress
+    - SaveDestination
+    - SaveIntent
+    - ContentOutcome
+    - SaveOutcome
+    - SaveDisposition
+    - WritingProvider
+    - CompositionQuery
+    - CapabilityDeclaration
+    - CapabilitySupport
+    - WritingActionIntent
+    - ReferenceResolution
+    - RelationshipPage
+    - RelationshipEvidence
+    - RelationshipCounts
+    - RecoveryState
+    save_destinations:
+    - Create { folder }
+    - Append { note, expected_revision }
+    - 'Insert { target: heading_or_block, expected_revision, side }'
+    - Update { note, expected_revision, prior_operation }
+    admission_not_execution: validate_action, WritingProvider::validate_query and RelationshipPage::validate check
+      declared state/evidence; they do not resolve targets, execute edits, authorize, search or write.
+  wasm:
+    feature: wasm
+    rust_exports:
+    - WasmSession
+    - WasmWritingSession
+    javascript_exports:
+    - Session
+    - WritingSession
+    shape: Synchronous JSON methods wrapping the same Rust orchestration; the host explicitly initializes generated
+      --target web glue and retires callbacks before free().
+    counters: Writing revisions/generations/sequences and applicable relationship counts serialize as canonical
+      decimal strings. The WASM literal-fence bridge also uses strings; native foundation Fence remains numeric
+      u64. Never round-trip counters through JavaScript Number.
+    bounds: Bridge JSON input limit is 65536 UTF-8 bytes; JS pin ceiling is 1024. Resource bounds are admission
+      limits, not persistence guarantees.
+    errors: Malformed JSON or noncanonical counters inside writing-contract JSON -> InvalidWire; oversized JSON
+      -> PayloadLimit; noncanonical standalone bind/edited revision arguments or foundation-fence decimal decode
+      -> InvalidRevision. Codes omit input content.
+    rust_only_methods:
+    - WritingSession::with_limits
+    - WritingSession::editor
+    - WritingSession::validate
+    raw_payloads: Bridge methods consume raw contract payloads, not Envelope<T>. wireVersion() reports handpick.v1
+      separately; callers enforce their compatible binding/version.
+    non_serde_values: SaveDisposition and WritingPin are Rust API values without Serde serialization; the bridge
+      explicitly maps them into disposition strings and pin JSON.
+integration_flow:
+- step: 1
+  action: Resolve current authorized context and capabilities through owners; create a host-unique lifecycle/session
+    ID and native Notes editor handle; bind its actual monotonic revision.
+- step: 2
+  action: Native edits happen in Notes. Call edited with the current WritingFence and newer owner revision, retaining
+    the same editor, selection and undo through presentation changes.
+- step: 3
+  action: For lookup, begin_lookup and retain the entire returned fence. Dispatch only the permitted explicit query/selected
+    text. Aggregate applicable provider coverage before delivering completed suggestions; partial/offline/failed/pending/stale-index
+    is never empty success.
+- step: 4
+  action: Display stable ResultKey selection and action target/effect. Explicit acceptance validates a current fence;
+    owners reauthorize/resolve targets and execute native transactions. Discovery never creates tags/folders or
+    executes commands.
+- step: 5
+  action: Use begin_composition/end_composition exact IME tokens. Defer keyboard interception, completion acceptance,
+    Save and park/restore during composition. Native editor input owns the text.
+- step: 6
+  action: Park/restore native editor handles atomically with host-owned rich content/selection/undo/destination.
+    Occupied restore requires a fresh replacement PinId and retains both compositions; overflow/rejection must preserve
+    existing state.
+- step: 7
+  action: On explicit Save, capture the native snapshot at the submitted revision, choose an owner-resolved destination
+    and stable operation ID, submit SaveIntent and commit through the canonical owner with grants/revision/epoch/dedup
+    fences.
+- step: 8
+  action: Reconcile an unknown owner result for the same operation before another submission. Matching SaveOutcome
+    separates canonical commitment from derivative readiness. Never clear newer writing or interpret projection
+    failure as an unsaved Note.
+- step: 9
+  action: Retain receipt/lineage after commitment. Next Save uses Update for that Note/fragment; preserve unrelated
+    native content and surviving identities, reject conflicting captured-fragment edits, and retain recoverable
+    writing.
+- step: 10
+  action: On context/grant/lifecycle change, recover or release native handles under their authorized owner policy,
+    retire callbacks and revoke the old session. Replacing or returning to a context must not revive earlier deliveries.
+host_implementation_snapshot:
+  as_of: '2026-10-09'
+  portal:
+    status: shared_core_and_portal_implemented_validated
+    public_entrypoint: product/handpick/web/index.ts
+    surface: product/handpick/web/Handpick.tsx
+    capability_declaration: product/handpick/web/capabilities.ts
+    providers: product/handpick/web/providers.ts
+    query_completion_adapter: product/handpick/web/search.ts
+    native_editor_owner: product/notes/web/draft-session.ts
+    native_rendering: product/notes/web/rich.ts
+    source_adapter: product/notes/web/markdown.ts
+    canonical_owner: product/notes/src/lib.rs and product/notes/src/owner.rs
+    implemented:
+    - Persistent shell input and separate Search/Save; compact/expanded native editor continuity.
+    - Live/source/reading editing, outliner actions, selected-text/transient query search, contextual reference/tag/template
+      completion and real IME guards.
+    - Top bookmarks with tooltip-only excerpts, atomic occupied restore and account/profile device-local rich recovery.
+    - Owner-authorized Notes/headings/blocks/checklists, tags, actual shell/settings/manual actions and scoped task/feed
+      providers with bounded paging/coverage.
+    - Ordinary Note creation/folder placement, native anchored insertion/append, durable replay receipts and same-Note
+      continuation with collaborator-fragment conflict rejection.
+    - Owner-resolved note/heading/block links, bounded embeds, backlinks/unlinked candidates and explicit durable
+      Loom tag creation; membership remains provisional until canonical Save.
+    - Explicit template content preview/insert/native undo and full Notes reopening with canonical rich content/IDs.
+    unsupported:
+    - Rich Loom tag hubs
+    - Tag hierarchy
+    - Typed property schemas/mutation/query
+    - Durable aliases
+    - Automatic daily journal routing/date grouping/default creation
+    - Semantic search/generated prose
+    - Replay-safe standalone task capture
+    prototype_policy: Current Portal automatic expansion uses 160 characters or 3 lines only after completed-empty
+      applicable suggestions with no active completion trigger/transient lookup. This is a host prototype, not a
+      portable/final threshold.
+    limits_note: Current Portal exposes eight bookmarks; this is its selected bounded policy, not a universal crate
+      limit.
+    recovery_note: Device-local native recovery is supported; cold-start offline, cross-device pin/native-content
+      synchronization and undo history across restart are not proved.
+  desktop:
+    status: assignment_pending_not_implemented_by_this_work
+    blocker: Desktop coordinator confirms current WP-KERNEL-012 MTs do not authorize Handpick host or canonical
+      append/insert/replay/tag changes. Requires explicit Desktop consumer assignment and backend owner scope; Desktop
+      remains read-only.
+    remaining: Authorized native host/editor adapter plus canonical owner append/anchored-insert/replay/tag/identity
+      scopes, then real egui and x64 consumer proof. Read Desktop current authority and assignment before edits.
+    parity_rule: Do not report both-host parity or full work-packet completion from Portal and shared-core results.
+open_decisions:
+- decision_id: HP-DEC-001
+  subject: Canonical persistence of new Handpick writing
+  status: resolved
+  direction: Operator selected explicit Save. Typing retains unsaved native recovery separately; no separate writing
+    mode exists.
+- decision_id: HP-DEC-002
+  subject: Editor morph threshold and whether unrelated command/settings suggestions inhibit prose capture
+  status: open
+  direction: Prototype and compare; loading/offline/error must never count as no suggestions.
+- decision_id: HP-DEC-003
+  subject: Pin appearance without visible excerpts, pin synchronization and default capture destination
+  status: open
+  direction: Top bookmark strip and tooltip excerpts are fixed. Quicknote saves to regular notes, including a selected
+    existing note or a new note in a selected folder. A Quicknote navigation entry or default ordinary-notes folder
+    remains an optional convenience; default destination, identity styling and local/cross-device pin persistence
+    remain undecided.
+- decision_id: HP-DEC-004
+  subject: Filter grammar, AND/OR tag selection, descendant inclusion and ranking policy
+  status: open
+  direction: Preserve existing identities and disclose capability differences; do not silently choose Desktop's
+    current OR tag behavior for both products.
+- decision_id: HP-DEC-005
+  subject: Prose ghost-text completion, semantic models and history policy
+  status: open
+  direction: Ordinary metadata/name completion is required; generated prose and personal history remain separately
+    decidable.
+- decision_id: HP-DEC-006
+  subject: Asset-library remote, layout, ownership and dependency pinning
+  status: inspected_published_and_portal_pinned
+  direction: Operator selected sibling .assets/handpick. Its inspected origin is https://github.com/Nuntissura/assets.git;
+    reusable crate revision 2b4bcdad756aa0f524152e3be2176f60acf32583 is published on codex/handpick with independent
+    remote readback. Portal validates that exact asset pin; Desktop consumer binding remains pending assignment.
+- decision_id: HP-DEC-007
+  subject: Capture feature name
+  status: decided
+  direction: Operator selected Quicknote as the feature name. Handpick remains the crate name.
+- decision_id: HP-DEC-008
+  subject: Outliner keybindings and journal presentation/defaults
+  status: open
+  direction: Outlining and connected ad hoc writing are in scope over the same Notes content. Exact keybindings,
+    daily journal creation, date grouping and default destination remain open; no separate journal/quicknote content
+    authority is selected.
+- decision_id: HP-DEC-009
+  subject: Native editor binding, recovery format and Portal shared-core bridge
+  status: shared_bridge_and_portal_recovery_proved_desktop_pending
+  direction: Shared WritingSession binds host-native editor handles; Portal consumes the Rust WASM bridge with shared
+    native/WASM fixtures. Portal Notes-owned native fragment transport, indexed recovery, pins, explicit Save and
+    same-note continuation have owner and actual browser proof. Desktop native binding and recovery require its
+    separately assigned host/owner implementation and proof.
+compatibility:
+  package_version: 0.1.0
+  wire_version: handpick.v1
+  additive_update_caveat: SaveDestination::Update and WritingCapability::UpdateCapture are additive handpick.v1
+    contracts. Older strict adapters reject unknown variants; adding a variant is not automatically compatible merely
+    because the wire label remains v1.
+  consumer_binding: Bind consumers to an approved exact compatible asset revision; rebuild/update their native/WASM
+    bindings together. Do not infer compatibility from package version, matching database technology or similar
+    native schemas.
+  decoder_policy: Unknown wire versions reject. Writing contracts use explicit tagged variants and strict unknown-field
+    rejection; foundation and bridge transport shapes are not interchangeable.
+  evolution: Review wire/API/semantic changes and consumer decoding before choosing package/wire version changes;
+    retain existing field/variant meaning and shared fixtures, or make the incompatibility explicit with migration
+    and rejection behavior.
+  packaging: The current Cargo include allowlist includes Cargo.toml, LICENSE, README.md, src/** and tests/**. This
+    spec/** subfolder is repository documentation and is not included in the current crate archive. Registry publication
+    is not implied.
+acceptance:
+- acceptance_id: HP-AC-001
+  statement: Exportable Rust crate compiles and focused tests demonstrate agreed draft/pin/completion behavior and
+    late-response isolation, independently of either app.
+- acceptance_id: HP-AC-002
+  statement: Shared fixtures demonstrate equivalent query interpretation and interaction outcomes for Portal and
+    Desktop supported capabilities; differences are explicit.
+- acceptance_id: HP-AC-003
+  statement: Real Portal boundary proves canonical authorized search beyond the first page, correct facets/counts
+    and denial after cross-account/profile/revocation attempts.
+- acceptance_id: HP-AC-004
+  statement: Actual React and native egui render proves top bookmarks with tooltip-only excerpts, preserved drafts/focus
+    during pin/restore/morph, usable completions and Search/Save separation; Portal also passes narrow/mobile layout.
+- acceptance_id: HP-AC-005
+  statement: Real owner readback proves create/insert/append persistence, lost-response reconciliation, duplicate/retry
+    safety, concurrent destination edits and projection-lag visibility. Restart recovery retains rich drafts/pins;
+    acknowledgements after further typing and grant/profile changes cannot lose newer writing or expose another
+    scope. Cold-start offline behavior requires its own proof.
+- acceptance_id: HP-AC-006
+  statement: Search execution preserves identities, scoped grants and existing Notes CRDT/Forgejo/history/reindex
+    guarantees; no silently substituted native CRDT formats or title-based retargeting.
+- acceptance_id: HP-AC-007
+  statement: Asset-library publication includes only approved reusable assets and usable no-context documentation;
+    exact exported commit/version and both consumer migration paths are recorded.
+- acceptance_id: HP-AC-008
+  statement: Target architecture is recorded for every build/runtime result. Desktop x64 consumer builds and affected
+    behavior pass on x64; ARM64 native and x64 emulation observations are separately identified.
+- acceptance_id: HP-AC-009
+  statement: Crate input contracts distinguish create-note, optional folder placement and anchored insert/append-to-existing-note
+    intents with stable target/operation/draft identities. Focused tests reject invalid or stale intents without
+    loss. Adapter acceptance proves one Notes content owner and no separate Quicknote entity or conversion step.
+- acceptance_id: HP-AC-010
+  statement: Edit a rich note through expanded input, search while composing, pin/restore, save and reopen in the
+    full Notes editor. Compare canonical native content, marks, rich nodes, IDs and destination. Verify selection/undo
+    through live transitions and recovery without asserting that undo history persists across restart unless supported.
+- acceptance_id: HP-AC-011
+  statement: Nested split/copy/merge/reparent/move and focus/collapse/reference/embed operations demonstrate identity
+    preservation or explicit reference transition, bounded cyclic embeds and missing/deleted/unauthorized outcomes.
+    Prose and unsupported native data survive.
+- acceptance_id: HP-AC-012
+  statement: Actual rendered interaction proves writing during late searches/completions, IME and Enter/Tab arbitration,
+    selected-text lookup, rich link insertion, completed-empty versus offline/partial delivery, manual expansion,
+    no surprise collapse, occupied pin restore and usable narrow/touch/accessibility layouts.
+- acceptance_id: HP-AC-013
+  statement: Supported metadata/structural queries, templates, task and journal-style actions return real authorized
+    owner outcomes with visible target/effect and truthful unsupported states; lookup never creates tags/folders
+    or executes commands. Query/history/diagnostic paths do not leak composition or pin text.
+- acceptance_id: HP-AC-014
+  statement: Real Notes/Loom owner readback proves backlinks and tag membership after new-note creation and existing-note
+    insertion, multiple relationships from one note, pagination, renamed targets and source/target revocation. Verify
+    source identities, snippets, count scope and projection revision/hash; provisional and unlinked candidates remain
+    distinct from committed backlinks.
+- acceptance_id: HP-AC-015
+  statement: Commit a note with delayed/failed/skipped relationship projection and prove that content remains saved,
+    status remains truthful and projection retry does not duplicate content. A currently open backlink view refreshes
+    after the applicable invalidation; source navigation and missing/stale anchors produce real owner outcomes without
+    losing composition.
+- acceptance_id: HP-AC-016
+  statement: Public capability results match each inspected host's actual Loom support. Durable tag changes survive
+    canonical readback and reopening; local-only chips cannot pass this proof. Heading/block/alias/property/hierarchy
+    features are explicitly unsupported until their owner contracts and affected boundary checks pass.
+acceptance_proof_layers:
+- acceptance_id: HP-AC-001
+  layers:
+  - portable_native
+  - package
+  dated_status_note: Portable foundation proof recorded; no host effects implied.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-002
+  layers:
+  - portable_native
+  - portable_wasm
+  - portal_owner
+  - desktop_owner
+  dated_status_note: Native/WASM orchestration fixtures pass; Desktop supported-capability equivalence remains pending.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-003
+  layers:
+  - portal_owner
+  dated_status_note: Seven scoped owner-boundary cases are recorded; do not treat the failed aggregate run as wholly
+    passing.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-004
+  layers:
+  - portal_gui
+  - desktop_gui
+  dated_status_note: Portal Handpick wide/narrow proof recorded; native egui proof pending.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-005
+  layers:
+  - portal_owner
+  - portal_gui
+  - desktop_owner
+  dated_status_note: Portal capture/replay/continuation and local recovery proof recorded; cold-start offline and
+    Desktop recovery need separate proof.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-006
+  layers:
+  - portal_owner
+  - desktop_owner
+  dated_status_note: Inspect affected owner formats, grants and derivative behavior; shared orchestration cannot
+    prove either persistence engine.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-007
+  layers:
+  - package
+  - publication
+  - consumer_binding
+  dated_status_note: Exact reusable asset revision published and Portal bound; Desktop consumer migration remains
+    pending.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-008
+  layers:
+  - architecture
+  - desktop_gui
+  - desktop_owner
+  dated_status_note: ARM64 native and WASM evidence recorded separately; Desktop x64 build/runtime proof pending.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-009
+  layers:
+  - portable_native
+  - portable_wasm
+  - portal_owner
+  - desktop_owner
+  dated_status_note: Typed destinations and invalid/stale rejection proved in shared fixtures; Portal uses one Notes
+    owner; Desktop owner proof pending.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-010
+  layers:
+  - portal_gui
+  - portal_owner
+  - desktop_gui
+  - desktop_owner
+  dated_status_note: Portal rich writing/search/pins/save/full Notes reopening is recorded; this does not promise
+    undo history across restart.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-011
+  layers:
+  - portal_gui
+  - portal_owner
+  - desktop_gui
+  - desktop_owner
+  dated_status_note: Owner/native identity and reference transitions require concrete operation proof; shared action
+    enums do not execute them.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-012
+  layers:
+  - portal_gui
+  - desktop_gui
+  dated_status_note: Portal browser proof includes real IME, selected-text lookup and completion/pin/morph arbitration;
+    Desktop proof pending.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-013
+  layers:
+  - portal_owner
+  - portal_gui
+  - desktop_owner
+  - desktop_gui
+  dated_status_note: Supported Portal actions expose real outcomes and unsupported states; automatic journal routing/generated
+    prose remain undecided.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-014
+  layers:
+  - portal_owner
+  - desktop_owner
+  dated_status_note: Portal Notes/Loom scoped relationship evidence recorded; Desktop counterpart pending.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-015
+  layers:
+  - portal_owner
+  - portal_gui
+  - desktop_owner
+  - desktop_gui
+  dated_status_note: Canonical commitment and derivative readiness remain separate; every new host must prove its
+    actual failure/refresh behavior.
+  full_acceptance_pass_claimed: false
+- acceptance_id: HP-AC-016
+  layers:
+  - portal_owner
+  - portal_gui
+  - desktop_owner
+  - desktop_gui
+  dated_status_note: Acceptance obligation retained verbatim. Portal advertises proved note/heading/block links
+    but unsupported rich Loom aliases/properties/hierarchy; the statement is not a blanket current pass.
+  full_acceptance_pass_claimed: false
+proof_snapshot:
+  as_of: '2026-10-09'
+  binding: Proofs ran with HEAD d564b7d7bb209bcce9766ce0345585f61441401f and recorded uncommitted implementation
+    inputs, now committed as b444617225eacf0cc96ce05436842f91722275ef. Product/harness inputs have no later changes.
+    Result references are relative to the canonical Portal checkout; no result claims a fresh run at the implementation
+    or recovery-state commit.
+  portable_native:
+    status: pass
+    tests: 27
+    architecture: aarch64-pc-windows-msvc
+    result_ref: .local/test-runs/WP-HANDPICK-001-shared-search-v1/20261009T021044-47244/result.json
+    evidence_repository: handshake-portal
+  portable_wasm:
+    status: pass
+    target: wasm32-unknown-unknown
+    runtime: Node WebAssembly
+    shared_scenarios: 4
+    shared_steps: 59
+    negative_checks: 9
+    foundation_checks: 28
+    rich_checks: 16
+    result_ref: .local/test-runs/WP-HANDPICK-001-shared-search-v1/20261009T022901-5964/result.json
+    evidence_repository: handshake-portal
+  package:
+    status: pass
+    archive_files: 17
+    result_ref: .local/test-runs/WP-HANDPICK-001-shared-search-v1/20261009T022859-42928/result.json
+    archive_sha256: 58a164292c8d907b3d159f4b48dd92f8b968b32508307734ccb60f5f7bf06c00
+    evidence_repository: handshake-portal
+  portal_owner:
+    status: seven_scoped_cases_pass
+    aggregate_run_status: blocked
+    result_ref: .local/test-runs/WP-HANDPICK-001-shared-search-v1/20261009T024710-32128/result.json
+    cases:
+    - handpick_task_and_feed_sources_owner_scope_pagination_and_legacy
+    - notes_search_sources_owner_pagination_native_and_revocation
+    - notes_capture_native_create_append_anchor_replay_and_grants
+    - notes_capture_continuation_keeps_note_identity_subtrees_and_replay
+    - notes_capture_atomic_quota_and_lossless_shape_rejections
+    - notes_handpick_folders_native_reference_and_unlinked_owner_boundary
+    - notes_handpick_folder_quota_serializes_concurrent_creates
+    notes_native_tests: 35
+    evidence_repository: handshake-portal
+  portal_frontend:
+    status: pass
+    tests: 45
+    result_ref: .local/test-runs/WP-HANDPICK-001-shared-search-v1/20261009T034046-37500/result.json
+    evidence_repository: handshake-portal
+  portal_gui:
+    status: scoped_cases_pass
+    handpick_checks: 22
+    handpick_result_ref: .local/test-runs/WP-HANDPICK-001-shared-search-v1/20261009T034102-35276/result.json
+    handpick_aggregate_run_status: blocked
+    notes_checks: 13
+    projection_checks: 14
+    notes_result_ref: .local/test-runs/WP-HANDPICK-001-shared-search-v1/20261009T040653-31496/result.json
+    evidence_repository: handshake-portal
+  not_proven:
+  - Desktop Handpick host/owner integration, egui rendering, cross-host parity and x64 consumer runtime.
+  - Cold-start offline use, cross-device pin/native-content synchronization, production deployment and remote Forgejo
+    synchronization.
+  artifact_availability: Result refs are relative to the canonical Portal checkout and may be ignored/local evidence,
+    not distributed in this asset. Fetch/inspect their actual artifacts or rerun authorized proof before making
+    a new claim. This documentation change runs no runtime tests.
+extension_workflow:
+  starting_point:
+  - Read README.md, this specification, the actual public API and shared fixtures.
+  - Inspect current consumer authority, native owner contracts and capability declarations for the exact change.
+  - Map the requested extension to existing HP-REQ/HP-CAP/HP-AC IDs; preserve original scope and unresolved decisions.
+  change_boundary:
+  - Keep reusable interaction/contracts in the crate; effects and native transactions in owners/adapters; rendering/animation
+    in hosts.
+  - Extend public contracts/fixtures rather than bypassing them with a private host state machine.
+  - Preserve rich content and stable identity, authorization/coverage truth, replay/conflict safety and scope/lifecycle
+    isolation.
+  - Do not advertise a capability until the public owner port and required real boundary/rendered proof exist.
+  verification:
+  - Use native focused tests and the same fixture against actual generated WASM when shared code/transport changes.
+  - Use the consumer project canonical runner and affected owner authorization/replay/readback tests for effects.
+  - Use actual host GUI tests for editor identity, rich content, selection/undo, IME, bookmarks, morph and wide/narrow
+    behavior.
+  - Record target architecture and separate Desktop x64 proof; do not substitute ARM64 or emulation results.
+  - Reuse still-valid results only when their inputs/asserted behavior are unchanged; documentation parse/ID checks
+    do not prove runtime behavior.
+  safe_recovery: On a rejected/stale/conflicting/unknown operation retain native recoverable writing and explicit
+    status. Resolve the exact owner/lifecycle issue before retrying effects; do not create substitute content or
+    a new store.
+research_basis_snapshot:
+  source: Committed Portal WP research_basis; inspected external research in that work, not freshly re-browsed for
+    this documentation change.
+  inspected_at: '2026-10-09'
+  selected_foundation: Effect-free versioned Rust contracts and bounded in-memory interaction state; hosts supply
+    authorized IDs, budgets and effects. No grammar/ranking/autosave/morph policy is finalized by the foundation.
+  selected_expansion: One Notes system with shared input orchestration and native editor bindings; rich-session
+    preservation, outliner operations and search/completion while composing precede full adapter integration. Preserve
+    host authority/sync formats and explicitly gate unsupported capabilities.
+  reuse: Existing native Notes editors/transactions/draft APIs, Portal journal/outbox/Forgejo checkpoints, Loom
+    UUID resolution/access leases, injected frontend host ports, navigation routes and the canonical focused runner.
+  external_sources:
+  - url: https://code.visualstudio.com/docs/editing/intellisense
+    application: Explicit suggestion acceptance, manual invocation and detail disclosure; no automatic prose capture
+      decision.
+  - url: https://www.w3.org/WAI/ARIA/apg/patterns/combobox/
+    application: Keyboard focus/selection and accessible popup semantics; editor mode needs its own focus contract.
+  - url: https://github.blog/engineering/the-technology-behind-githubs-new-code-search/
+    application: Separate query interpretation, scoped retrieval and ranked display; do not blindly parse rich query
+      text with a fuzzy matcher grammar.
+  - url: https://github.com/helix-editor/nucleo
+    application: Candidate mature fuzzy matcher; bounded worker execution and Unicode coordinate conversion require
+      adapter proof.
+  - url: https://serde.rs/enum-representations.html
+    application: Explicit wire discriminants and versions; reject unsupported versions rather than infer variants.
+  - url: https://surrealdb.com/docs/reference/query-language/functions/database-functions/search
+    application: Assess full-text/BM25/fusion behind owners against the actual pinned SDK and engine, not latest
+      documentation alone.
+  - url: https://learn.microsoft.com/en-us/azure/search/hybrid-search-overview
+    application: Lexical/vector retrieval and fusion as a later measurable option; semantic outage must retain useful
+      lexical behavior.
+  - url: https://github.com/logseq/docs/blob/master/pages/Logseq%20Protocol.md
+    application: Explicit native capture target; Operator selected canonical creation only on Save, without a separate
+      writing mode.
+  - url: https://obsidian.md/help/plugins/search
+    application: Structured operators, exact phrases and tag/property search; preserve readable text and test incomplete
+      syntax.
+  - url: https://obsidian.md/help/edit-and-read
+    application: Stock Obsidian Source and Live Preview editing modes; editor parity is separate from capture/journal
+      organization and must be audited against actual host editors.
+  - url: https://blog.logseq.com/how-to-get-started-with-networked-thinking-and-logseq/
+    application: Outliner nesting/collapse/zoom, journal entry, references/embeds and linked writing; adopt interactions
+      over existing Notes rather than a second note model.
+  - url: https://github.com/logseq/docs/blob/master/db-version.md
+    application: Current block/page, property/task/query/template and quick-add capabilities; journal defaults and
+      storage choices belong to the host product, not this shared workflow.
+  - url: https://obsidian.md/help/links
+    application: Note/heading/block completion and stable reference behavior; block-reference Markdown interoperability
+      requires explicit mappings and proof.
+  - url: https://obsidian.md/help/plugins/backlinks
+    application: Separate linked backlinks from unlinked mention candidates and expose useful source context without
+      treating a textual match as a committed link.
+  - url: https://obsidian.md/help/embeds
+    application: In-place reference context with supported native preservation; bound recursion and recheck target
+      authorization.
+  - url: https://obsidian.md/help/plugins/templates
+    application: Reusable explicit content insertion; preserve native undo and do not add executable plugin/template
+      behavior.
+  - url: https://tiptap.dev/docs/editor/extensions/functionality/uniqueid
+    application: Unique node identity and collaboration initialization/mutation constraints; compare with current
+      stable-block code before reuse.
+  - url: https://github.com/logseq/logseq/blob/master/docs/cli/logseq-cli.md
+    application: Position-aware insertion and operation previews; repeated insertion creates new content, so durable
+      deduplication is an explicit owner requirement here.
+  - url: https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html
+    application: Record host and target separately and require appropriate x64 tools for x64 builds.
