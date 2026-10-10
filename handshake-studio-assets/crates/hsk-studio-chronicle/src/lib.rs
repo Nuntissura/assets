@@ -169,7 +169,7 @@ pub enum SourceResult {
         correlation_id: u64,
         actor: Actor,
         observed_current_revision: u64,
-        successor: StudioDocument,
+        successor: Box<StudioDocument>,
         revision_updates: Vec<RevisionUpdate>,
         inverse: Inverse,
     },
@@ -733,7 +733,7 @@ pub fn prepare(
         correlation_id: p.correlation_id,
         actor: p.actor.clone(),
         observed_current_revision: current.document().revision,
-        successor: snapshot.document().clone(),
+        successor: Box::new(snapshot.document().clone()),
         revision_updates: updates,
         inverse,
     };
