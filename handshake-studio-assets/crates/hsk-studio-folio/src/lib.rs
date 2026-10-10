@@ -1251,13 +1251,13 @@ fn extension(v: &Value, target: &str, t: &CancellationToken) -> Result<Option<Di
         } else {
             None
         };
-        if let Some(allowed) = allowed {
-            if o.keys().any(|k| !allowed.contains(&k.as_str())) {
-                return Ok(Some(err(
-                    Code::UnknownField,
-                    format!("{target}/unknown_field"),
-                )));
-            }
+        if let Some(allowed) = allowed
+            && o.keys().any(|k| !allowed.contains(&k.as_str()))
+        {
+            return Ok(Some(err(
+                Code::UnknownField,
+                format!("{target}/unknown_field"),
+            )));
         }
         for (k, v) in o {
             if let Some(d) = extension(v, &format!("{target}/{k}"), t)? {
