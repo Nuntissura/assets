@@ -583,7 +583,7 @@ fn run() -> Result<(), String> {
     scene.precharge();
     scene.with_request(operation,false,|request,context|{
         let cancel=&scene.cancel;let mut observer=scene.observer();let mut diagnostics=scene.observer();let mut fallback=Collector::new(None);
-        let proposal=match prepare(request,&context,&scene,&scene.meter,cancel){Ok(value)=>value,Err(rejection)=>{let delivery=emit_rejection(&request,rejection,&mut observer,cancel,&mut fallback);print_frames(&fallback);println!("{{\"disposition\":\"rejected\",\"code\":\"{:?}\",\"work_units\":{},\"diagnostic_delivered\":{}}}",rejection.error,rejection.inspection.counts.work_units,delivery.is_ok());return Err(format!("{:?}",rejection.error));}};
+        let proposal=match prepare(request,&context,&scene,&scene.meter,cancel){Ok(value)=>value,Err(rejection)=>{let delivery=emit_rejection(&request,rejection,&mut observer,cancel,&mut fallback);print_frames(&fallback);println!("{{\"disposition\":\"rejected\",\"code\":\"{:?}\",\"work_units\":{},\"diagnostic_delivered\":{}}}",rejection.error(),rejection.inspection.counts.work_units,delivery.is_ok());return Err(format!("{:?}",rejection.error()));}};
         let mut port=Port{context:&context,sink:Collector::new(None),reconciliation:Reconciliation::StillIndeterminate,exclusive_error:None};
         let outcome=finalize(proposal,&mut port,&mut observer,&mut diagnostics,cancel,&mut fallback);
         print_frames(&port.sink);print_frames(&fallback);

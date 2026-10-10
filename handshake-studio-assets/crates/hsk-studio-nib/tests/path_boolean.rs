@@ -31,7 +31,7 @@ fn reject(request: Request<'_>, context: &Context<'_>, scene: &Scene) -> Error {
             assert_eq!(disposition, 3);
             assert_eq!(&counts[2..6], &[0; 4]);
             assert_eq!(bytes[2], 0);
-            r.error
+            r.error()
         }
     }
 }
@@ -135,7 +135,7 @@ fn rectangle_union_difference_winding() {
             for permuted in [false, true] {
                 scene.with_request(op, permuted, |request, context| {
                     let prepared = prepare(request, &context, &scene, &scene.meter, &scene.cancel)
-                        .unwrap_or_else(|r| panic!("{:?}", r.error));
+                        .unwrap_or_else(|r| panic!("{:?}", r.error()));
                     proof(prepared.geometry(), expected, &scene.styles[2]);
                     let result = signature(prepared.geometry());
                     if let Some(ref previous) = first {
@@ -235,7 +235,7 @@ fn rectangle_union_difference_winding() {
             let s = Scene::new(a, b).unwrap();
             s.with_request(op, false, |request, context| {
                 let p = prepare(request, &context, &s, &s.meter, &s.cancel)
-                    .unwrap_or_else(|r| panic!("{:?}", r.error));
+                    .unwrap_or_else(|r| panic!("{:?}", r.error()));
                 proof(p.geometry(), expected, &s.styles[2]);
                 assert_eq!(p.geometry().loops().len(), loops);
                 assert_eq!(p.geometry().regions().len(), regions);
@@ -255,7 +255,7 @@ fn rectangle_union_difference_winding() {
                 &reversed.meter,
                 &reversed.cancel,
             )
-            .unwrap_or_else(|r| panic!("{:?}", r.error));
+            .unwrap_or_else(|r| panic!("{:?}", r.error()));
             proof(p.geometry(), 150., &reversed.styles[2]);
         });
         let empty = Scene::new([0., 0., 10., 10.], [0., 0., 10., 10.]).unwrap();
@@ -388,12 +388,13 @@ fn nonfinite_degenerate_budget_cancel_stale() {
         scene.meter.denied.store(false, Ordering::SeqCst);
         for mode in [
             DeliveryError::Rejected,
+            DeliveryError::Saturated,
             DeliveryError::Unavailable,
             DeliveryError::Indeterminate,
         ] {
             scene.with_request(Operation::Unite, false, |request, context| {
                 let p = prepare(request, &context, &scene, &scene.meter, &scene.cancel)
-                    .unwrap_or_else(|r| panic!("{:?}", r.error));
+                    .unwrap_or_else(|r| panic!("{:?}", r.error()));
                 let mut observer = scene.observer();
                 let mut diagnostics = scene.observer();
                 let mut fallback = Collector::new(None);
@@ -411,6 +412,7 @@ fn nonfinite_degenerate_budget_cancel_stale() {
                     &scene.cancel,
                     &mut fallback,
                 );
+                assert_eq!(outcome.inspection().delivery, Some(mode));
                 match outcome {
                     Finalized::ReconciliationRequired { token, inspection } => {
                         assert_eq!(mode, DeliveryError::Indeterminate);
@@ -443,14 +445,21 @@ fn nonfinite_degenerate_budget_cancel_stale() {
                             &mut fallback,
                         );
                         assert!(matches!(resolved, Finalized::Accepted { .. }));
+                        assert_eq!(resolved.inspection().delivery, None);
                         drop(resolved);
                         assert_eq!(scene.meter.current.load(Ordering::SeqCst), charged);
                         drop(retained);
                     }
-                    Finalized::Rejected { error, .. } => assert!(matches!(
+                    Finalized::Rejected { error, .. } => assert_eq!(
                         error,
-                        Error::DeliveryRejected | Error::DeliveryUnavailable
-                    )),
+                        match mode {
+                            DeliveryError::Rejected => Error::DeliveryRejected,
+                            DeliveryError::Unavailable => Error::DeliveryUnavailable,
+                            DeliveryError::Saturated => Error::DeliverySaturated,
+                            DeliveryError::Indeterminate =>
+                                panic!("indeterminate outcome lost token"),
+                        }
+                    ),
                     _ => panic!("sink failure accepted"),
                 }
             });
@@ -461,7 +470,7 @@ fn nonfinite_degenerate_budget_cancel_stale() {
         }
         scene.with_request(Operation::Unite, false, |request, context| {
             let p = prepare(request, &context, &scene, &scene.meter, &scene.cancel)
-                .unwrap_or_else(|r| panic!("{:?}", r.error));
+                .unwrap_or_else(|r| panic!("{:?}", r.error()));
             scene.target_revision.store(41, Ordering::SeqCst);
             let mut observer = scene.observer();
             let mut diagnostics = scene.observer();
@@ -494,7 +503,7 @@ fn nonfinite_degenerate_budget_cancel_stale() {
             let mut diagnostics = scene.observer();
             let mut fallback = Collector::new(None);
             let p = prepare(request, &context, &scene, &scene.meter, &scene.cancel)
-                .unwrap_or_else(|r| panic!("{:?}", r.error));
+                .unwrap_or_else(|r| panic!("{:?}", r.error()));
             let mut port = Port {
                 context: &context,
                 sink: Collector::new(None),
@@ -530,7 +539,7 @@ fn nonfinite_degenerate_budget_cancel_stale() {
             let mut diagnostics = scene.observer();
             let mut fallback = Collector::new(Some(DeliveryError::Indeterminate));
             let p = prepare(request, &context, &scene, &scene.meter, &scene.cancel)
-                .unwrap_or_else(|r| panic!("{:?}", r.error));
+                .unwrap_or_else(|r| panic!("{:?}", r.error()));
             let mut port = Port {
                 context: &context,
                 sink: Collector::new(None),

@@ -208,12 +208,17 @@ pub fn required_owned_bytes() -> Result<u64, Error> {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Rejected {
-    pub error: Error,
     pub inspection: Inspection,
+}
+impl Rejected {
+    pub fn error(&self) -> Error {
+        self.inspection
+            .error
+            .expect("rejected inspection has a code")
+    }
 }
 fn rejected(error: Error, counts: Counts, epoch: u64) -> Rejected {
     Rejected {
-        error,
         inspection: Inspection {
             disposition: ProposalDisposition::Rejected,
             error: Some(error),
@@ -666,7 +671,7 @@ fn geometry_detail<'a>(
         Error::Cancelled => GeometryCode::Canceled,
         Error::BudgetExceeded => GeometryCode::BudgetExceeded,
         Error::LeaseUnavailable => GeometryCode::LeaseUnavailable,
-        Error::DeliveryRejected => GeometryCode::DeliveryRejected,
+        Error::DeliveryRejected | Error::DeliverySaturated => GeometryCode::DeliveryRejected,
         Error::DeliveryUnavailable => GeometryCode::DeliveryUnavailable,
         Error::ReconciliationRequired => GeometryCode::ReconciliationRequired,
         Error::HashMismatch => GeometryCode::HashMismatch,
@@ -696,6 +701,7 @@ fn delivery_error(error: hsk_studio_observe::Error) -> Error {
         hsk_studio_observe::Error::Delivery(DeliveryError::Unavailable) => {
             Error::DeliveryUnavailable
         }
+        hsk_studio_observe::Error::Delivery(DeliveryError::Saturated) => Error::DeliverySaturated,
         _ => Error::DeliveryRejected,
     }
 }
@@ -703,6 +709,7 @@ fn diagnostic_error(result: Result<hsk_studio_observe::Receipt, Error>) -> Optio
     result.err().map(|error| match error {
         Error::ReconciliationRequired => DeliveryError::Indeterminate,
         Error::DeliveryUnavailable => DeliveryError::Unavailable,
+        Error::DeliverySaturated => DeliveryError::Saturated,
         _ => DeliveryError::Rejected,
     })
 }
@@ -794,6 +801,10 @@ pub fn finalize<'a>(
                     inspection.delivery = Some(DeliveryError::Unavailable);
                     Err(Error::DeliveryUnavailable)
                 }
+                Err(hsk_studio_observe::Error::Delivery(DeliveryError::Saturated)) => {
+                    inspection.delivery = Some(DeliveryError::Saturated);
+                    Err(Error::DeliverySaturated)
+                }
                 Err(_) => {
                     inspection.delivery = Some(DeliveryError::Rejected);
                     Err(Error::DeliveryRejected)
@@ -831,7 +842,7 @@ pub fn finalize<'a>(
             inspection.counts.output_loops = 0;
             inspection.diagnostic_delivery = diagnostic_error(emit_rejection(
                 &request,
-                Rejected { error, inspection },
+                Rejected { inspection },
                 diagnostics,
                 cancel,
                 fallback_sink,
@@ -917,6 +928,7 @@ pub fn reconcile<'a>(
             } else {
                 hsk_studio_observe::Outcome::Failure(hsk_studio_observe::FailureCode::Unavailable)
             };
+            inspection.delivery = None;
             let receipt = observer
                 .emit_geometry(
                     hsk_studio_observe::Observation {
@@ -930,7 +942,16 @@ pub fn reconcile<'a>(
                     cancel,
                     sink,
                 )
-                .map_err(|_| Error::ReconciliationRequired)?;
+                .map_err(|error| {
+                    inspection.delivery = match error {
+                        hsk_studio_observe::Error::Delivery(delivery) => Some(delivery),
+                        hsk_studio_observe::Error::ReconciliationRequired => {
+                            Some(DeliveryError::Indeterminate)
+                        }
+                        _ => None,
+                    };
+                    Error::ReconciliationRequired
+                })?;
             if disposition == ProposalDisposition::Accepted
                 && receipt.outcome == hsk_studio_observe::Outcome::Canceled
             {

@@ -26,6 +26,7 @@ pub enum Error {
     LeaseUnavailable,
     ProviderRefused,
     DeliveryRejected,
+    DeliverySaturated,
     DeliveryUnavailable,
     ReconciliationRequired,
     UnsupportedFinalization,
