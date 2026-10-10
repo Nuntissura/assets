@@ -167,7 +167,7 @@ pub struct Failure {
 }
 #[derive(Debug)]
 pub enum Outcome {
-    Accepted(Patch),
+    Accepted(Box<Patch>),
     Rejected(Failure),
     ReconciliationRequired {
         token: String,

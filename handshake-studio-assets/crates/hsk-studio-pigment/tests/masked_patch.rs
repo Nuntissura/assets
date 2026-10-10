@@ -279,7 +279,7 @@ impl Fixture {
         )
     }
 }
-fn accepted(out: Outcome) -> Patch {
+fn accepted(out: Outcome) -> Box<Patch> {
     match out {
         Outcome::Accepted(p) => p,
         other => panic!("expected accepted:{other:?}"),

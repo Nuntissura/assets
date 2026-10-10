@@ -538,7 +538,8 @@ impl<S: SinkPort> ExecutionPort for SerializedOwner<S> {
             + r.command_id.len()
             + crate::masked_patch::actor_bytes(r.actor) * 2
             + 256
-            + hsk_studio_observe::MAX_FRAME_BYTES) as u64;
+            + hsk_studio_observe::MAX_FRAME_BYTES) as u64
+            + std::alloc::Layout::new::<Patch>().size() as u64;
         let admission = match self.admission.scoped(r.byte_limit) {
             Ok(admission) => admission,
             Err(error) => return self.reject(r, error, prepared.counts, cancel),
@@ -606,7 +607,7 @@ impl<S: SinkPort> ExecutionPort for SerializedOwner<S> {
                 if receipt.outcome == hsk_studio_observe::Outcome::Success
                     && fresh(self, r, cancel).is_ok() =>
             {
-                Outcome::Accepted(self.accept(
+                Outcome::Accepted(Box::new(self.accept(
                     prepared,
                     r.document_id.clone(),
                     r.command_id.into(),
@@ -615,7 +616,7 @@ impl<S: SinkPort> ExecutionPort for SerializedOwner<S> {
                     r.cancel_epoch,
                     receipt,
                     metadata_lease,
-                ))
+                )))
             }
             Ok(_)
             | Err(hsk_studio_observe::Error::Delivery(DeliveryError::Indeterminate))
