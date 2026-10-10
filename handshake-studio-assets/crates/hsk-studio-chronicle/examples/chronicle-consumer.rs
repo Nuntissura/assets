@@ -1,12 +1,13 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_chronicle::*;
 use hsk_studio_folio::{Inspection, Unresolved};
-use hsk_studio_observe::{DeliveryClass, DeliveryError, Outcome, SinkPort};
+use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
 use std::{env, fs::File, io::Read};
 struct Sink {
     mode: String,
     frames: usize,
     bytes: usize,
+    captured: Vec<Vec<u8>>,
 }
 impl SinkPort for Sink {
     fn try_send(
@@ -23,6 +24,7 @@ impl SinkPort for Sink {
                 }
                 self.frames += 1;
                 self.bytes += bytes.len();
+                self.captured.push(bytes.to_vec());
                 Ok(())
             }
         }
@@ -58,6 +60,77 @@ fn install(
         }
         *current = s.clone();
     }
+}
+fn consume(
+    p: &Patch,
+    current: &mut hsk_studio_folio::Snapshot,
+    vector: &mut [RevisionEntry],
+    budget: Budget,
+    before: bool,
+    after: bool,
+    delivery: &str,
+) -> (Option<Prepared>, serde_json::Value, Option<String>) {
+    let prepare_token = CancellationToken::default();
+    if before {
+        prepare_token.cancel();
+    }
+    let mut result = prepare(p, current, vector, budget, &prepare_token, &Unresolved);
+    if result.is_ok() && prepare_token.check().is_err() {
+        result = Err(Diagnostic {
+            code: Code::Canceled,
+            address: None,
+        });
+    }
+    if let Ok(prepared) = &result {
+        install(current, vector, prepared);
+    }
+    let emit_token = CancellationToken::default();
+    if after && result.is_ok() {
+        emit_token.cancel();
+    }
+    let mut sink = Sink {
+        mode: delivery.into(),
+        frames: 0,
+        bytes: 0,
+        captured: Vec::new(),
+    };
+    let report = deliver_result(
+        p,
+        current.document().revision,
+        result.as_ref(),
+        budget,
+        &mut sink,
+        &emit_token,
+    );
+    let delivery = match report {
+        Ok(report) => {
+            serde_json::json!({"receipt":format!("{:?}",report.receipt),"acknowledged":report.state.acknowledged,"indeterminate":report.state.indeterminate_count,"frames":sink.frames,"bytes":sink.bytes,"captured_frames":sink.captured})
+        }
+        Err(error) => {
+            serde_json::json!({"adapter_error":format!("{:?}",error.code),"frames":sink.frames,"bytes":sink.bytes,"captured_frames":sink.captured})
+        }
+    };
+    match result {
+        Ok(prepared) => {
+            let output = serde_json::json!({"result":prepared.wire(),"source_only":true,"delivery":delivery.get("receipt").unwrap_or(&delivery),"delivery_acknowledged":delivery.get("acknowledged"),"delivery_indeterminate":delivery.get("indeterminate"),"delivery_frames":sink.frames,"delivery_bytes":sink.bytes,"delivery_detail":delivery,"post_source_cancel":after});
+            (Some(prepared), output, None)
+        }
+        Err(error) => {
+            let code = format!("{:?}", error.code);
+            let output = serde_json::json!({"diagnostic":{"code":code,"address":error.address},"source_only":true,"delivery":delivery});
+            (None, output, Some(code))
+        }
+    }
+}
+fn print_output(
+    outcomes: &[serde_json::Value],
+    current: &hsk_studio_folio::Snapshot,
+    vector: &[RevisionEntry],
+) {
+    println!(
+        "{}",
+        serde_json::json!({"outcomes":outcomes,"current":current.document(),"revisions":vector,"host_acceptance":false})
+    );
 }
 fn run() -> std::result::Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -156,39 +229,24 @@ fn run() -> std::result::Result<(), String> {
     for path in patches {
         let p = decode_patch(&read(&path, budget.input_bytes)?, budget, &t)
             .map_err(|e| format!("{:?}", e.code))?;
-        let prepare_token = CancellationToken::default();
-        if before {
-            prepare_token.cancel();
-        }
-        let prepared = prepare(&p, &current, &vector, budget, &prepare_token, &Unresolved)
-            .map_err(|e| format!("{:?}", e.code))?;
-        // This bounded synchronous consumer owns local read plus publication; no host acceptance.
-        if prepare_token.check().is_err() {
-            return Err("Canceled before source publication".into());
+        let (prepared, output, error) = consume(
+            &p,
+            &mut current,
+            &mut vector,
+            budget,
+            before,
+            after,
+            &delivery,
+        );
+        outcomes.push(output);
+        if let Some(error) = error {
+            print_output(&outcomes, &current, &vector);
+            return Err(error);
         }
         if first_inverse.is_none() {
-            first_inverse = prepared.inverse().cloned();
+            first_inverse = prepared.as_ref().and_then(Prepared::inverse).cloned();
             first_actor = Some(p.actor.clone());
         }
-        install(&mut current, &mut vector, &prepared);
-        let emit_token = CancellationToken::default();
-        if after {
-            emit_token.cancel();
-        }
-        let mut sink = Sink {
-            mode: delivery.clone(),
-            frames: 0,
-            bytes: 0,
-        };
-        let diagnostic = deliver(
-            &p,
-            current.document().revision,
-            Outcome::Success,
-            &mut sink,
-            &emit_token,
-        )
-        .map_err(|e| format!("{:?}", e.code))?;
-        outcomes.push(serde_json::json!({"result":prepared.wire(),"source_only":true,"delivery":format!("{:?}",diagnostic.receipt),"delivery_acknowledged":diagnostic.state.acknowledged,"delivery_indeterminate":diagnostic.state.indeterminate_count,"delivery_frames":sink.frames,"delivery_bytes":sink.bytes,"post_source_cancel":after}));
     }
     if inverse {
         let inv = first_inverse.ok_or("no changed result to invert")?;
@@ -198,15 +256,22 @@ fn run() -> std::result::Result<(), String> {
             first_actor.ok_or("inverse actor")?,
             current.document().revision,
         );
-        let prepared = prepare(&p, &current, &vector, budget, &t, &Unresolved)
-            .map_err(|e| format!("{:?}", e.code))?;
-        install(&mut current, &mut vector, &prepared);
-        outcomes.push(serde_json::json!({"result":prepared.wire(),"source_only":true}));
+        let (_, output, error) = consume(
+            &p,
+            &mut current,
+            &mut vector,
+            budget,
+            before,
+            after,
+            &delivery,
+        );
+        outcomes.push(output);
+        if let Some(error) = error {
+            print_output(&outcomes, &current, &vector);
+            return Err(error);
+        }
     }
-    println!(
-        "{}",
-        serde_json::json!({"outcomes":outcomes,"current":current.document(),"revisions":vector,"host_acceptance":false})
-    );
+    print_output(&outcomes, &current, &vector);
     Ok(())
 }
 fn main() {

@@ -27,6 +27,7 @@ pub trait SinkPort: Send + Sync {
 pub enum Error {
     InvalidBudget,
     InvalidProgress,
+    InvalidDetail,
     RevisionMismatch,
     Saturated,
     Closed,
@@ -40,6 +41,7 @@ impl Error {
         match self {
             Self::InvalidBudget => "invalid_budget",
             Self::InvalidProgress => "invalid_progress",
+            Self::InvalidDetail => "invalid_detail",
             Self::RevisionMismatch => "revision_mismatch",
             Self::Saturated => "saturated",
             Self::Closed => "closed",
@@ -118,6 +120,111 @@ impl Progress {
     }
     pub fn total(self) -> u64 {
         self.total
+    }
+}
+/// Closed shared diagnostic vocabulary; stable wire discriminants, never raw error text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DiagnosticCode {
+    InvalidInput = 1,
+    UnsupportedVersion,
+    DuplicateField,
+    InvalidActor,
+    InvalidCommand,
+    WrongDocument,
+    InvalidTarget,
+    WrongType,
+    DuplicateAddress,
+    MissingRead,
+    RevisionUnavailable,
+    RevisionConflict,
+    ValueConflict,
+    RevisionOverflow,
+    BudgetExceeded,
+    Canceled,
+    ValidationRejected,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Disposition {
+    Changed = 1,
+    NoChange = 2,
+    Rejected = 3,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DiagnosticTarget {
+    Layer = 1,
+    Artboard = 2,
+    PageSpread = 3,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DiagnosticProperty {
+    Name = 1,
+    Visible = 2,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticAddress {
+    target: DiagnosticTarget,
+    property: DiagnosticProperty,
+    id: DomainId,
+}
+impl DiagnosticAddress {
+    pub fn new(
+        target: DiagnosticTarget,
+        property: DiagnosticProperty,
+        id: DomainId,
+    ) -> Result<Self, Error> {
+        let prefix = match target {
+            DiagnosticTarget::Layer => "SLYR",
+            DiagnosticTarget::Artboard => "SART",
+            DiagnosticTarget::PageSpread => "SPGS",
+        };
+        if id.prefix() != prefix
+            || (property == DiagnosticProperty::Visible && target != DiagnosticTarget::Layer)
+        {
+            return Err(Error::InvalidDetail);
+        }
+        Ok(Self {
+            target,
+            property,
+            id,
+        })
+    }
+}
+pub const MAX_DETAIL_COUNT: u32 = 1_048_576;
+/// Counts are capped, not inferred progress. Rejections have zero admitted/changed counts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticDetail {
+    disposition: Disposition,
+    code: Option<DiagnosticCode>,
+    address: Option<DiagnosticAddress>,
+    counts: [u32; 5],
+}
+impl DiagnosticDetail {
+    pub fn new(
+        disposition: Disposition,
+        code: Option<DiagnosticCode>,
+        address: Option<DiagnosticAddress>,
+        counts: [u32; 5],
+    ) -> Result<Self, Error> {
+        if (disposition == Disposition::Rejected) != code.is_some()
+            || counts.iter().any(|v| *v > MAX_DETAIL_COUNT)
+            || counts[2] > counts[0]
+            || counts[3] > counts[1]
+            || counts[4] > counts[3]
+            || (disposition == Disposition::Rejected && counts[2..].iter().any(|v| *v != 0))
+            || (disposition == Disposition::NoChange && counts[4] != 0)
+        {
+            return Err(Error::InvalidDetail);
+        }
+        Ok(Self {
+            disposition,
+            code,
+            address,
+            counts,
+        })
     }
 }
 /// Finite lifetime admission; one terminal is reserved separately from progress budget.
@@ -220,6 +327,32 @@ impl Observe {
         cancel: &CancellationToken,
         sink: &mut impl SinkPort,
     ) -> Result<Receipt, Error> {
+        self.emit_inner(event, None, cancel, sink)
+    }
+    /// Version 2 terminal detail uses the same admission, cancellation and delivery state machine.
+    pub fn emit_detail(
+        &mut self,
+        event: Observation<'_>,
+        detail: &DiagnosticDetail,
+        cancel: &CancellationToken,
+        sink: &mut impl SinkPort,
+    ) -> Result<Receipt, Error> {
+        if event.outcome == Outcome::Progress
+            || (detail.disposition == Disposition::Rejected && event.outcome == Outcome::Success)
+            || (detail.disposition != Disposition::Rejected
+                && matches!(event.outcome, Outcome::Failure(_)))
+        {
+            return Err(Error::InvalidDetail);
+        }
+        self.emit_inner(event, Some(detail), cancel, sink)
+    }
+    fn emit_inner(
+        &mut self,
+        event: Observation<'_>,
+        detail: Option<&DiagnosticDetail>,
+        cancel: &CancellationToken,
+        sink: &mut impl SinkPort,
+    ) -> Result<Receipt, Error> {
         if self.state.reconciliation_required {
             return Err(Error::ReconciliationRequired);
         }
@@ -253,7 +386,7 @@ impl Observe {
             self.state.dropped_attempts = self.state.dropped_attempts.saturating_add(1);
             return Err(Error::Saturated);
         }
-        let frame = self.encode(sequence, outcome, progress)?;
+        let frame = self.encode(sequence, outcome, progress, detail)?;
         let next_bytes = self
             .state
             .progress_bytes
@@ -313,6 +446,7 @@ impl Observe {
         sequence: u64,
         outcome: Outcome,
         progress: Option<Progress>,
+        detail: Option<&DiagnosticDetail>,
     ) -> Result<Vec<u8>, Error> {
         let strings = [
             self.resource.as_str(),
@@ -323,14 +457,17 @@ impl Observe {
             self.actor.access_space_id(),
             self.actor.session_id(),
         ];
-        let length = 48 + strings.iter().map(|s| 2 + s.len()).sum::<usize>();
+        let extra = detail.map_or(0, |d| {
+            23 + d.address.as_ref().map_or(0, |a| 4 + a.id.as_str().len())
+        });
+        let length = 48 + strings.iter().map(|s| 2 + s.len()).sum::<usize>() + extra;
         if length > MAX_FRAME_BYTES {
             return Err(Error::FrameLimit);
         }
         let mut out = Vec::with_capacity(length);
         out.extend_from_slice(b"HSKO");
         out.extend_from_slice(&[
-            WIRE_VERSION,
+            if detail.is_some() { 2 } else { WIRE_VERSION },
             outcome.wire(),
             if let Outcome::Failure(code) = outcome {
                 code.wire()
@@ -353,9 +490,25 @@ impl Observe {
             out.extend_from_slice(&count.to_be_bytes());
             out.extend_from_slice(string.as_bytes())
         }
+        if let Some(d) = detail {
+            out.extend_from_slice(&[
+                d.disposition as u8,
+                d.code.map_or(0, |c| c as u8),
+                u8::from(d.address.is_some()),
+            ]);
+            for count in d.counts {
+                out.extend_from_slice(&count.to_be_bytes());
+            }
+            if let Some(a) = &d.address {
+                out.extend_from_slice(&[a.target as u8, a.property as u8]);
+                let len = u16::try_from(a.id.as_str().len()).map_err(|_| Error::FrameLimit)?;
+                out.extend_from_slice(&len.to_be_bytes());
+                out.extend_from_slice(a.id.as_str().as_bytes());
+            }
+        }
         Ok(out)
     }
 }
 
 /// Same descriptor for models, human manual and Argus/diagnostic adapters. No new Studio schema ID.
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-OBSERVE","version":1,"operation":"Observe::emit closed allowlisted progress/outcome delivery","operator":{"intent":"Track work without exposing project text","result":"Correlation/revision/sequence receipt only after required sink accepts the emitted bytes","recovery":"On full/rejected/unavailable sink correct destination or admission and retry same revision; indeterminate delivery requires caller reconciliation before replacing emitter; stale context must refresh; canceled work emits a reserved terminal outcome"},"model":{"inputs":"Accord DomainId/ActorContext plus local u64 correlation/revision, bounded Budget, Observation progress or fixed success/failure/canceled enum, cancellation token, caller SinkPort","consumer":"observe-consumer [--descriptor] [--mode success|error|cancel|reject|saturate] [--private-text TEXT]","wire":"Local binary transport v1, not canonical document or business event: HSKO ASCII, u8 version=1,outcome=1(progress)/2(success)/3(failure)/4(canceled),u8 fixed failure code0..4,u8 progress-present0|1; five big-endian u64 fields correlation,revision,sequence,completed,total; seven u16-byte-length UTF8 strings resource_id,account_id,principal_id,owner_account_id,owner_principal_id,access_space_id,session_id; reject trailing bytes at collector","limits":{"frame_bytes":2048,"progress_events":1024,"progress_lifetime_bytes":2097152,"terminal_reserve":1,"pending_callers_per_mutable_emitter":1},"redaction":"Private project text, raw errors, arbitrary attributes, labels and source paths never serialized; input content is borrowed and not inspected. Only caller-authorized Accord attribution IDs are included. Destination visibility/grants are caller-owned and host conformance remains pending","port":"Nonblocking atomic all-or-none try_send(Progress|Terminal,bytes); terminal reserves independent destination capacity. Indeterminate partial delivery never reports success; emitter blocks further delivery until caller reconciles","cancel":"Canceled token overrides requested outcome to Canceled; progress saturation cannot consume terminal reserve; delivered terminal closes emitter","realtime":"General diagnostic path allocates bounded frame memory; never invoke from realtime audio callback; retain existing multiple-writer/SPSC synchronization in host adapter","undo":"No document mutation or undo; this is not an EventLedger acknowledgment","argus":{"inspect":"Observe::state bounded saturating drop/saturation/rejection/unavailable/indeterminate/canceled counters and typed receipt/error","action":"same emit port and cancellation token","capture":"caller captures actual emitted bytes and independently decoded fields under fresh grant"},"diagnostics":"Caller sinks adapt to existing Flight Recorder/internal diagnostics/Palmistry; no private recorder/catalog/DB/session authority or host proof"}}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-OBSERVE","version":1,"operation":"Observe::emit closed allowlisted progress/outcome delivery","operator":{"intent":"Track work without exposing project text","result":"Correlation/revision/sequence receipt only after required sink accepts the emitted bytes","recovery":"On full/rejected/unavailable sink correct destination or admission and retry same revision; indeterminate delivery requires caller reconciliation before replacing emitter; stale context must refresh; canceled work emits a reserved terminal outcome"},"model":{"inputs":"Accord DomainId/ActorContext plus local u64 correlation/revision, bounded Budget, Observation progress or fixed success/failure/canceled enum, cancellation token, caller SinkPort","consumer":"observe-consumer [--descriptor] [--mode success|error|cancel|reject|saturate] [--private-text TEXT]","detail_wire":"emit_detail terminal HSKO version2: identical v1 header and seven attribution strings followed by u8 disposition1changed/2no_change/3rejected, u8 diagnostic code0none/1InvalidInput/2UnsupportedVersion/3DuplicateField/4InvalidActor/5InvalidCommand/6WrongDocument/7InvalidTarget/8WrongType/9DuplicateAddress/10MissingRead/11RevisionUnavailable/12RevisionConflict/13ValueConflict/14RevisionOverflow/15BudgetExceeded/16Canceled/17ValidationRejected, u8 address_present0|1, five BE u32 capped counts attempted_reads,attempted_writes,admitted_reads,admitted_writes,changed_writes (cap1048576); optional u8 target1Layer/2Artboard/3PageSpread,u8 property1Name/2Visible,u16-byte-length UTF8 validated prefixed domain ID. Visible is Layer only; reject unknown tags/trailing bytes. Rejected admitted/changed counts zero; postacceptance cancellation changes terminal outcome but preserves source disposition. Legacy emit stays byte-identical version1","wire":"Local binary transport v1, not canonical document or business event: HSKO ASCII, u8 version=1,outcome=1(progress)/2(success)/3(failure)/4(canceled),u8 fixed failure code0..4,u8 progress-present0|1; five big-endian u64 fields correlation,revision,sequence,completed,total; seven u16-byte-length UTF8 strings resource_id,account_id,principal_id,owner_account_id,owner_principal_id,access_space_id,session_id; reject trailing bytes at collector","limits":{"frame_bytes":2048,"progress_events":1024,"progress_lifetime_bytes":2097152,"terminal_reserve":1,"pending_callers_per_mutable_emitter":1},"redaction":"Private project text, raw errors, arbitrary attributes, labels and source paths never serialized; input content is borrowed and not inspected. Only caller-authorized Accord attribution IDs are included. Destination visibility/grants are caller-owned and host conformance remains pending","port":"Nonblocking atomic all-or-none try_send(Progress|Terminal,bytes); terminal reserves independent destination capacity. Indeterminate partial delivery never reports success; emitter blocks further delivery until caller reconciles","cancel":"Canceled token overrides requested outcome to Canceled; progress saturation cannot consume terminal reserve; delivered terminal closes emitter","realtime":"General diagnostic path allocates bounded frame memory; never invoke from realtime audio callback; retain existing multiple-writer/SPSC synchronization in host adapter","undo":"No document mutation or undo; this is not an EventLedger acknowledgment","argus":{"inspect":"Observe::state bounded saturating drop/saturation/rejection/unavailable/indeterminate/canceled counters and typed receipt/error","action":"same emit port and cancellation token","capture":"caller captures actual emitted bytes and independently decoded fields under fresh grant"},"diagnostics":"Caller sinks adapt to existing Flight Recorder/internal diagnostics/Palmistry; no private recorder/catalog/DB/session authority or host proof"}}"#;

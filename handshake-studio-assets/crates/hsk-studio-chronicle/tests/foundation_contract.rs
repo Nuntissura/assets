@@ -835,3 +835,326 @@ fn borrowed_folio_budget_preflight_and_prospective_output_cap() {
         },
     );
 }
+
+// Independent reader of the documented Observe v2 trailer; no producer encode helper.
+type DetailFields = (u8, u8, [u32; 5], Option<(u8, u8, String)>);
+fn detail_fields(frame: &[u8]) -> DetailFields {
+    use std::io::{Cursor, Read};
+    assert!(frame.len() <= 2048);
+    assert_eq!(&frame[..4], b"HSKO");
+    assert_eq!(frame[4], 2);
+    let mut reader = Cursor::new(frame);
+    reader.set_position(48);
+    for _ in 0..7 {
+        let mut len = [0; 2];
+        reader.read_exact(&mut len).unwrap();
+        reader.set_position(reader.position() + u16::from_be_bytes(len) as u64);
+    }
+    let mut tags = [0; 3];
+    reader.read_exact(&mut tags).unwrap();
+    let mut counts = [0; 5];
+    for count in &mut counts {
+        let mut b = [0; 4];
+        reader.read_exact(&mut b).unwrap();
+        *count = u32::from_be_bytes(b);
+    }
+    let address = if tags[2] == 1 {
+        let mut t = [0; 2];
+        reader.read_exact(&mut t).unwrap();
+        let mut len = [0; 2];
+        reader.read_exact(&mut len).unwrap();
+        let mut id = vec![0; u16::from_be_bytes(len) as usize];
+        reader.read_exact(&mut id).unwrap();
+        Some((t[0], t[1], String::from_utf8(id).unwrap()))
+    } else {
+        assert_eq!(tags[2], 0);
+        None
+    };
+    assert_eq!(reader.position() as usize, frame.len());
+    (tags[0], tags[1], counts, address)
+}
+#[test]
+fn actual_detail_changed_nochange_inverse_conflict_and_privacy() {
+    bounded_case(
+        "actual_detail_changed_nochange_inverse_conflict_and_privacy",
+        || {
+            let s = snapshot();
+            let v = vector();
+            let p = patch(
+                Property::Name,
+                PropertyValue::String("private-new-value-never-emitted".into()),
+            );
+            let changed = run(&p, &s, &v).unwrap();
+            let mut sink = Capture {
+                failure: None,
+                frames: vec![],
+            };
+            deliver_result(
+                &p,
+                8,
+                Ok(&changed),
+                Budget::default(),
+                &mut sink,
+                &CancellationToken::default(),
+            )
+            .unwrap()
+            .receipt
+            .unwrap();
+            assert_eq!(
+                detail_fields(&sink.frames[0]),
+                (1, 0, [1, 1, 1, 1, 1], None)
+            );
+            let next = changed.successor().unwrap();
+            let mut next_v = v.clone();
+            next_v[0].revision = 1;
+            let conflict = run(&p, next, &next_v).unwrap_err();
+            assert_eq!(conflict.code, Code::RevisionConflict);
+            let mut sink = Capture {
+                failure: None,
+                frames: vec![],
+            };
+            deliver_result(
+                &p,
+                8,
+                Err(&conflict),
+                Budget::default(),
+                &mut sink,
+                &CancellationToken::default(),
+            )
+            .unwrap()
+            .receipt
+            .unwrap();
+            assert_eq!(
+                detail_fields(&sink.frames[0]),
+                (3, 12, [1, 1, 0, 0, 0], Some((1, 1, id("SLYR", 1))))
+            );
+            for secret in [
+                "private-new-value-never-emitted",
+                "original-private-name",
+                p.command_id.as_str(),
+            ] {
+                assert!(
+                    !sink.frames[0]
+                        .windows(secret.len())
+                        .any(|w| w == secret.as_bytes())
+                );
+            }
+            let nochange_p = patch(Property::Visible, PropertyValue::Bool(true));
+            let nochange = run(&nochange_p, &s, &v).unwrap();
+            let mut sink = Capture {
+                failure: None,
+                frames: vec![],
+            };
+            deliver_result(
+                &nochange_p,
+                7,
+                Ok(&nochange),
+                Budget::default(),
+                &mut sink,
+                &CancellationToken::default(),
+            )
+            .unwrap()
+            .receipt
+            .unwrap();
+            assert_eq!(
+                detail_fields(&sink.frames[0]),
+                (2, 0, [1, 1, 1, 1, 0], None)
+            );
+            let inverse = changed.inverse().unwrap().invocation(
+                "private-inverse-command".into(),
+                99,
+                actor(),
+                8,
+            );
+            let restored = run(&inverse, next, &next_v).unwrap();
+            let mut sink = Capture {
+                failure: None,
+                frames: vec![],
+            };
+            deliver_result(
+                &inverse,
+                9,
+                Ok(&restored),
+                Budget::default(),
+                &mut sink,
+                &CancellationToken::default(),
+            )
+            .unwrap()
+            .receipt
+            .unwrap();
+            assert_eq!(
+                detail_fields(&sink.frames[0]),
+                (1, 0, [1, 1, 1, 1, 1], None)
+            );
+            assert!(
+                !sink.frames[0]
+                    .windows(b"private-inverse-command".len())
+                    .any(|w| w == b"private-inverse-command")
+            );
+        },
+    );
+}
+#[test]
+fn detail_failures_cancel_and_invalid_attribution_preserve_source() {
+    bounded_case(
+        "detail_failures_cancel_and_invalid_attribution_preserve_source",
+        || {
+            let s = snapshot();
+            let p = patch(Property::Name, PropertyValue::String("private".into()));
+            let bytes = s.encoded_bytes().to_vec();
+            let v = vector();
+            let changed = run(&p, &s, &v).unwrap();
+            let accepted = changed.successor().unwrap().encoded_bytes().to_vec();
+            for forced in [
+                DeliveryError::Rejected,
+                DeliveryError::Unavailable,
+                DeliveryError::Indeterminate,
+            ] {
+                let mut sink = Capture {
+                    failure: Some(forced),
+                    frames: vec![],
+                };
+                let report = deliver_result(
+                    &p,
+                    8,
+                    Ok(&changed),
+                    Budget::default(),
+                    &mut sink,
+                    &CancellationToken::default(),
+                )
+                .unwrap();
+                assert!(report.receipt.is_err());
+                assert_eq!(changed.successor().unwrap().encoded_bytes(), accepted);
+            }
+            let token = CancellationToken::default();
+            token.cancel();
+            let error = prepare(&p, &s, &v, Budget::default(), &token, &Unresolved).unwrap_err();
+            let mut sink = Capture {
+                failure: None,
+                frames: vec![],
+            };
+            deliver_result(&p, 7, Err(&error), Budget::default(), &mut sink, &token)
+                .unwrap()
+                .receipt
+                .unwrap();
+            assert_eq!(sink.frames[0][5], 4);
+            assert_eq!(
+                detail_fields(&sink.frames[0]),
+                (3, 16, [1, 1, 0, 0, 0], None)
+            );
+            let mut sink = Capture {
+                failure: None,
+                frames: vec![],
+            };
+            deliver_result(&p, 8, Ok(&changed), Budget::default(), &mut sink, &token)
+                .unwrap()
+                .receipt
+                .unwrap();
+            assert_eq!(sink.frames[0][5], 4);
+            assert_eq!(detail_fields(&sink.frames[0]).0, 1);
+            let mut invalid = p.clone();
+            invalid.actor.account_id = "bad\nactor".into();
+            let mut sink = Capture {
+                failure: None,
+                frames: vec![],
+            };
+            assert_eq!(
+                deliver_result(
+                    &invalid,
+                    7,
+                    Err(&error),
+                    Budget::default(),
+                    &mut sink,
+                    &token
+                )
+                .unwrap_err()
+                .code,
+                Code::InvalidActor
+            );
+            assert!(sink.frames.is_empty());
+            assert_eq!(s.encoded_bytes(), bytes);
+            assert_eq!(v, vector());
+        },
+    );
+}
+
+#[test]
+fn detail_actual_value_budget_and_unavailable_rejections() {
+    bounded_case(
+        "detail_actual_value_budget_and_unavailable_rejections",
+        || {
+            let s = snapshot();
+            let v = vector();
+            let p = patch(
+                Property::Name,
+                PropertyValue::String("private-value".into()),
+            );
+            let mut wrong = p.clone();
+            wrong.reads[0].expected_value = PropertyValue::String("private-wrong-read".into());
+            let value_error = run(&wrong, &s, &v).unwrap_err();
+            let unavailable = run(&p, &s, &[]).unwrap_err();
+            let mut budget = Budget::default();
+            budget.reads = 0;
+            let budget_error = prepare(
+                &p,
+                &s,
+                &v,
+                budget,
+                &CancellationToken::default(),
+                &Unresolved,
+            )
+            .unwrap_err();
+            for (patch, error, budget, wire_code) in [
+                (&wrong, &value_error, Budget::default(), 13),
+                (&p, &unavailable, Budget::default(), 11),
+                (&p, &budget_error, budget, 15),
+            ] {
+                let mut sink = Capture {
+                    failure: None,
+                    frames: vec![],
+                };
+                deliver_result(
+                    patch,
+                    7,
+                    Err(error),
+                    budget,
+                    &mut sink,
+                    &CancellationToken::default(),
+                )
+                .unwrap()
+                .receipt
+                .unwrap();
+                let fields = detail_fields(&sink.frames[0]);
+                assert_eq!(
+                    (fields.0, fields.1, fields.2),
+                    (3, wire_code, [1, 1, 0, 0, 0])
+                );
+                assert!(
+                    !sink.frames[0]
+                        .windows(b"private-wrong-read".len())
+                        .any(|w| w == b"private-wrong-read")
+                );
+            }
+            let mut invalid = p.clone();
+            invalid.document_id = "SDOC-private-raw".into();
+            let mut sink = Capture {
+                failure: None,
+                frames: vec![],
+            };
+            assert_eq!(
+                deliver_result(
+                    &invalid,
+                    7,
+                    Err(&value_error),
+                    Budget::default(),
+                    &mut sink,
+                    &CancellationToken::default()
+                )
+                .unwrap_err()
+                .code,
+                Code::WrongDocument
+            );
+            assert!(sink.frames.is_empty());
+        },
+    );
+}

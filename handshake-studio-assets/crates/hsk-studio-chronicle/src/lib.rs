@@ -784,6 +784,152 @@ pub fn deliver(
         state: observe.state(),
     })
 }
+/// Adapt the actual preparation result to the existing Observe sink. Delivery is separate
+/// from source acceptance; the caller retains the supplied result even on delivery failure.
+pub fn deliver_result(
+    p: &Patch,
+    revision: u64,
+    result: std::result::Result<&Prepared, &Diagnostic>,
+    budget: Budget,
+    sink: &mut impl SinkPort,
+    token: &CancellationToken,
+) -> Result<DeliveryReport> {
+    use hsk_studio_observe::{
+        DiagnosticAddress, DiagnosticCode, DiagnosticDetail, DiagnosticProperty, DiagnosticTarget,
+        Disposition, FailureCode, MAX_DETAIL_COUNT,
+    };
+    let resource =
+        DomainId::parse(&p.document_id).map_err(|_| failure(Code::WrongDocument, None))?;
+    if resource.prefix() != "SDOC" {
+        return Err(failure(Code::WrongDocument, None));
+    }
+    let actor = p.actor.validated()?;
+    let capped = |n: usize| n.min(MAX_DETAIL_COUNT as usize) as u32;
+    let mut counts = [capped(p.reads.len()), capped(p.writes.len()), 0, 0, 0];
+    let (disposition, code, address, outcome) = match result {
+        Ok(prepared) => {
+            if p.reads.len() > budget.reads || p.writes.len() > budget.writes {
+                return Err(failure(Code::BudgetExceeded, None));
+            }
+            let (document_id, command_id, correlation_id, result_actor, changed) =
+                match prepared.wire() {
+                    SourceResult::Changed {
+                        document_id,
+                        command_id,
+                        correlation_id,
+                        actor,
+                        ..
+                    } => (document_id, command_id, correlation_id, actor, true),
+                    SourceResult::NoChange {
+                        document_id,
+                        command_id,
+                        correlation_id,
+                        actor,
+                        ..
+                    } => (document_id, command_id, correlation_id, actor, false),
+                };
+            if document_id != &p.document_id
+                || command_id != &p.command_id
+                || *correlation_id != p.correlation_id
+                || result_actor != &p.actor
+            {
+                return Err(failure(Code::InvalidInput, None));
+            }
+            counts[2] = counts[0];
+            counts[3] = counts[1];
+            counts[4] = capped(prepared.revision_updates().len());
+            (
+                if changed {
+                    Disposition::Changed
+                } else {
+                    Disposition::NoChange
+                },
+                None,
+                None,
+                Outcome::Success,
+            )
+        }
+        Err(error) => {
+            let code = match error.code {
+                Code::InvalidInput => DiagnosticCode::InvalidInput,
+                Code::UnsupportedVersion => DiagnosticCode::UnsupportedVersion,
+                Code::DuplicateField => DiagnosticCode::DuplicateField,
+                Code::InvalidActor => DiagnosticCode::InvalidActor,
+                Code::InvalidCommand => DiagnosticCode::InvalidCommand,
+                Code::WrongDocument => DiagnosticCode::WrongDocument,
+                Code::InvalidTarget => DiagnosticCode::InvalidTarget,
+                Code::WrongType => DiagnosticCode::WrongType,
+                Code::DuplicateAddress => DiagnosticCode::DuplicateAddress,
+                Code::MissingRead => DiagnosticCode::MissingRead,
+                Code::RevisionUnavailable => DiagnosticCode::RevisionUnavailable,
+                Code::RevisionConflict => DiagnosticCode::RevisionConflict,
+                Code::ValueConflict => DiagnosticCode::ValueConflict,
+                Code::RevisionOverflow => DiagnosticCode::RevisionOverflow,
+                Code::BudgetExceeded => DiagnosticCode::BudgetExceeded,
+                Code::Canceled => DiagnosticCode::Canceled,
+                Code::FolioRejected => DiagnosticCode::ValidationRejected,
+            };
+            // A diagnostic supplied by a caller cannot serialize an unvalidated ID/property.
+            let address = error
+                .address
+                .as_ref()
+                .filter(|a| address_valid(a).is_ok())
+                .map(|a| {
+                    let target = match a.target.node_kind {
+                        NodeKind::Layer => DiagnosticTarget::Layer,
+                        NodeKind::Artboard => DiagnosticTarget::Artboard,
+                        NodeKind::PageSpread => DiagnosticTarget::PageSpread,
+                    };
+                    let property = match a.property {
+                        Property::Name => DiagnosticProperty::Name,
+                        Property::Visible => DiagnosticProperty::Visible,
+                    };
+                    DiagnosticAddress::new(
+                        target,
+                        property,
+                        DomainId::parse(&a.target.node_id).expect("validated address"),
+                    )
+                })
+                .transpose()
+                .map_err(|_| failure(Code::InvalidTarget, None))?;
+            (
+                Disposition::Rejected,
+                Some(code),
+                address,
+                if error.code == Code::Canceled {
+                    Outcome::Canceled
+                } else {
+                    Outcome::Failure(FailureCode::Validation)
+                },
+            )
+        }
+    };
+    let detail = DiagnosticDetail::new(disposition, code, address, counts)
+        .map_err(|_| failure(Code::InvalidInput, None))?;
+    let mut observe = Observe::new(
+        p.correlation_id,
+        revision,
+        resource,
+        actor,
+        hsk_studio_observe::Budget::new(0, 0).map_err(|_| failure(Code::InvalidInput, None))?,
+    );
+    let receipt = observe.emit_detail(
+        Observation {
+            correlation_id: p.correlation_id,
+            revision,
+            outcome,
+            progress: None,
+            private_project_text: None,
+        },
+        &detail,
+        token,
+        sink,
+    );
+    Ok(DeliveryReport {
+        receipt,
+        state: observe.state(),
+    })
+}
 // Bounded unique-key decoding checks array counts before pushing, byte counts before cloning,
 // and depth/cancellation at every visited JSON value. Value is temporary transport, never authority.
 struct DecodeContext<'a> {
@@ -975,4 +1121,4 @@ pub fn result_schema() -> schemars::Schema {
         .into_generator()
         .into_root_schema_for::<SourceResult>()
 }
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-CHRONICLE","version":1,"scope":"Pure CON022-026 source-local patch preparation; no persisted StudioEditProposal/HistoryEntry, approval, EventLedger, CRDT, retained history or host acceptance","api":"decode_patch / decode_revisions / prepare / Inverse::invocation / deliver","consumer":"chronicle-consumer --document FILE --revisions FILE --patch FILE [--patch FILE ...] [--inverse] [--cancel-before] [--cancel-after] [--delivery delivered|rejected|indeterminate] [--max-bytes N --max-reads N --max-writes N --max-value-bytes N]; --schema; --result-schema; --descriptor","input":"Explicit version1 actor/doc/base provenance, reads+writes/name or visible; caller-owned current revision entries; immutable Folio document; budget/cancellation/resolver","result":"changed with actual canonical successor/revision_updates/conditional inverse, or closed metadata-only no_change; typed failure with stable address and conflict dimension","recovery":"Refresh current snapshot and property vector; re-evaluate conflict against fresh current state; missing entries unavailable, no default zero; correct type/reference; invert with fresh attribution only when conditional reads still hold","parallel":"Caller serializes latest read and local publication; disjoint old-base footprints succeed; global successor revision is bookkeeping, not CAS; no private queue/database","manual":"Same typed transport and generated draft2020-12 schema shared by model/API/operator","argus":{"inspect":"actual snapshot, property updates, inverse and typed diagnostic address","steer":"same bounded prepare API","state":"explicit changed/no_change/failure plus delivery counters","capture":"caller captures protected actual output without focus stealing"},"diagnostics":"Observe allowlisted resource/correlation/revision/terminal delivery; typed address/conflict returned to caller; names/string values/raw input never telemetry; missing/indeterminate delivery cannot undo accepted source result","host":"Pending actual grants, serialized SurrealDB/EventLedger promotion, idempotency/restart, history cursor, native GUI and three diagnostic tiers"}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-CHRONICLE","version":1,"scope":"Pure CON022-026 source-local patch preparation; no persisted StudioEditProposal/HistoryEntry, approval, EventLedger, CRDT, retained history or host acceptance","api":"decode_patch / decode_revisions / prepare / Inverse::invocation / deliver_result / legacy deliver","consumer":"chronicle-consumer --document FILE --revisions FILE --patch FILE [--patch FILE ...] [--inverse] [--cancel-before] [--cancel-after] [--delivery delivered|rejected|indeterminate] [--max-bytes N --max-reads N --max-writes N --max-value-bytes N]; --schema; --result-schema; --descriptor","input":"Explicit version1 actor/doc/base provenance, reads+writes/name or visible; caller-owned current revision entries; immutable Folio document; budget/cancellation/resolver","result":"changed with actual canonical successor/revision_updates/conditional inverse, or closed metadata-only no_change; typed failure with stable address and conflict dimension","recovery":"Refresh current snapshot and property vector; re-evaluate conflict against fresh current state; missing entries unavailable, no default zero; correct type/reference; invert with fresh attribution only when conditional reads still hold","parallel":"Caller serializes latest read and local publication; disjoint old-base footprints succeed; global successor revision is bookkeeping, not CAS; no private queue/database","manual":"Same typed transport and generated draft2020-12 schema shared by model/API/operator","argus":{"inspect":"actual snapshot, property updates, inverse and typed diagnostic address","steer":"same bounded prepare API","state":"explicit changed/no_change/failure plus delivery counters","capture":"caller captures protected actual output without focus stealing"},"diagnostics":"Observe emit_detail shared closed version2 stable code/validated conflict address/source disposition and capped attempted/admitted/changed counters; result retained independently of delivery; names/string values/raw input never telemetry; missing/indeterminate delivery cannot undo accepted source result","host":"Pending actual grants, serialized SurrealDB/EventLedger promotion, idempotency/restart, history cursor, native GUI and three diagnostic tiers"}"#;

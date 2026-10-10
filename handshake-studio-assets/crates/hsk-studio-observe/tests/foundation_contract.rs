@@ -388,3 +388,150 @@ fn indeterminate_delivery_blocks_duplicate_retry() {
         assert!(sink.frames.is_empty());
     })
 }
+
+#[test]
+fn detail_v2_closed_fields_and_legacy_bytes_preserved() {
+    bounded_case("detail_v2_closed_fields_and_legacy_bytes_preserved", || {
+        let token = CancellationToken::default();
+        let mut legacy = observe(0, 0);
+        let mut legacy_sink = CollectorSink::new(0);
+        legacy
+            .emit(event(Outcome::Success), &token, &mut legacy_sink)
+            .unwrap();
+        let mut expected = b"HSKO".to_vec();
+        expected.extend_from_slice(&[1, 2, 0, 0]);
+        for value in [42u64, 7, 1, 0, 0] {
+            expected.extend_from_slice(&value.to_be_bytes());
+        }
+        for text in [
+            "SDOC-019abcde-0000-7000-8000-000000000001",
+            "account",
+            "principal",
+            "owner",
+            "owner-principal",
+            "space",
+            "session",
+        ] {
+            expected.extend_from_slice(&(text.len() as u16).to_be_bytes());
+            expected.extend_from_slice(text.as_bytes());
+        }
+        assert_eq!(legacy_sink.frames[0], expected);
+        let address = DiagnosticAddress::new(
+            DiagnosticTarget::Layer,
+            DiagnosticProperty::Name,
+            DomainId::parse("SLYR-019abcde-0000-7000-8000-000000000001").unwrap(),
+        )
+        .unwrap();
+        let detail = DiagnosticDetail::new(
+            Disposition::Rejected,
+            Some(DiagnosticCode::RevisionConflict),
+            Some(address),
+            [1, 1, 0, 0, 0],
+        )
+        .unwrap();
+        let mut emitter = observe(0, 0);
+        let mut sink = CollectorSink::new(0);
+        emitter
+            .emit_detail(
+                event(Outcome::Failure(FailureCode::Validation)),
+                &detail,
+                &token,
+                &mut sink,
+            )
+            .unwrap();
+        let bytes = &sink.frames[0];
+        assert_eq!(bytes[4], 2);
+        let mut reader = Cursor::new(bytes);
+        reader.set_position(48);
+        for _ in 0..7 {
+            let mut len = [0; 2];
+            reader.read_exact(&mut len).unwrap();
+            reader.set_position(reader.position() + u16::from_be_bytes(len) as u64);
+        }
+        let mut tags = [0; 3];
+        reader.read_exact(&mut tags).unwrap();
+        assert_eq!(tags, [3, 12, 1]);
+        for expected in [1u32, 1, 0, 0, 0] {
+            let mut value = [0; 4];
+            reader.read_exact(&mut value).unwrap();
+            assert_eq!(u32::from_be_bytes(value), expected);
+        }
+        let mut tags = [0; 2];
+        reader.read_exact(&mut tags).unwrap();
+        assert_eq!(tags, [1, 1]);
+        let mut len = [0; 2];
+        reader.read_exact(&mut len).unwrap();
+        let mut id = vec![0; u16::from_be_bytes(len) as usize];
+        reader.read_exact(&mut id).unwrap();
+        assert_eq!(
+            String::from_utf8(id).unwrap(),
+            "SLYR-019abcde-0000-7000-8000-000000000001"
+        );
+        assert_eq!(reader.position() as usize, bytes.len());
+        assert!(
+            !bytes
+                .windows(b"PROJECT-TEXT-SECRET-DO-NOT-EMIT".len())
+                .any(|v| v == b"PROJECT-TEXT-SECRET-DO-NOT-EMIT")
+        );
+    });
+}
+#[test]
+fn detail_invalid_address_counts_and_delivery_refused_safely() {
+    bounded_case(
+        "detail_invalid_address_counts_and_delivery_refused_safely",
+        || {
+            let id = DomainId::parse("SART-019abcde-0000-7000-8000-000000000001").unwrap();
+            assert_eq!(
+                DiagnosticAddress::new(
+                    DiagnosticTarget::Layer,
+                    DiagnosticProperty::Name,
+                    id.clone()
+                ),
+                Err(Error::InvalidDetail)
+            );
+            assert_eq!(
+                DiagnosticAddress::new(DiagnosticTarget::Artboard, DiagnosticProperty::Visible, id),
+                Err(Error::InvalidDetail)
+            );
+            assert_eq!(
+                DiagnosticDetail::new(Disposition::Rejected, None, None, [1, 1, 0, 0, 0]),
+                Err(Error::InvalidDetail)
+            );
+            assert_eq!(
+                DiagnosticDetail::new(
+                    Disposition::Rejected,
+                    Some(DiagnosticCode::BudgetExceeded),
+                    None,
+                    [1, 1, 1, 0, 0]
+                ),
+                Err(Error::InvalidDetail)
+            );
+            assert_eq!(
+                DiagnosticDetail::new(
+                    Disposition::NoChange,
+                    None,
+                    None,
+                    [MAX_DETAIL_COUNT + 1, 0, 0, 0, 0]
+                ),
+                Err(Error::InvalidDetail)
+            );
+            let detail =
+                DiagnosticDetail::new(Disposition::Changed, None, None, [1, 1, 1, 1, 1]).unwrap();
+            let token = CancellationToken::default();
+            token.cancel();
+            let mut emitter = observe(0, 0);
+            let mut sink = CollectorSink::new(0);
+            sink.forced = Some(DeliveryError::Indeterminate);
+            assert_eq!(
+                emitter.emit_detail(event(Outcome::Success), &detail, &token, &mut sink),
+                Err(Error::Delivery(DeliveryError::Indeterminate))
+            );
+            assert!(emitter.state().reconciliation_required);
+            assert_eq!(emitter.state().acknowledged, 0);
+            assert_eq!(
+                emitter.emit_detail(event(Outcome::Success), &detail, &token, &mut sink),
+                Err(Error::ReconciliationRequired)
+            );
+        },
+    );
+}
