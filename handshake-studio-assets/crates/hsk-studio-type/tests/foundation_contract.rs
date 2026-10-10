@@ -64,17 +64,28 @@ pub fn font_axis_missing_cancel_stale() {
                 // A real post-prepare read conflict refuses before required publication.
                 ledger.begin();
                 let result = prepared(request, ports);
+                let prepared_work = result.counts().work_units;
                 let original = hash(request.text_utf8.as_bytes());
                 {
                     let _lock = scene.gate.lock().unwrap();
                     scene.revision.store(2, Ordering::SeqCst);
                 }
                 let mut port = final_port(request, ports, scene, ledger, None);
-                let final_result = finalize(result, &mut port);
+                let final_result = finalize_with_diagnostics(result, &mut port);
                 assert_eq!(final_result.inspection().error, Some(Error::StaleRead));
+                assert!(
+                    final_result.inspection().counts.work_units > prepared_work,
+                    "final validation work survives rejection"
+                );
                 assert_eq!(port.target.commits, 0);
                 assert_eq!(&port.target.bytes[..port.target.len], b"original-preimage");
                 assert_eq!(port.capture.count, 0);
+                assert_eq!(port.diagnostics.count, 1);
+                let detail = diagnostic_frame(&port.diagnostics, 0);
+                assert_eq!((detail.0, detail.1), (3, 20));
+                assert_eq!(detail.3, 0);
+                assert!(detail.4 > 0, "still-live caller allocations remain charged");
+                assert_eq!(final_result.inspection().diagnostic_delivery, None);
                 assert_eq!(hash(request.text_utf8.as_bytes()), original);
                 drop(final_result);
                 drop(port);
@@ -92,10 +103,20 @@ pub fn font_axis_missing_cancel_stale() {
                     assert!(current.current_requested_bytes > base);
                     assert_eq!(current.retained_generations, 1);
                     let mut port = final_port(request, ports, scene, ledger, Some(mode));
-                    let outcome = finalize(result, &mut port);
+                    let outcome = finalize_with_diagnostics(result, &mut port);
                     assert_eq!(port.target.commits, 0);
                     assert_eq!(&port.target.bytes[..port.target.len], b"original-preimage");
                     assert_eq!(outcome.inspection().delivery, Some(mode));
+                    assert_eq!(outcome.inspection().diagnostic_delivery, None);
+                    assert_eq!(port.diagnostics.count, 1);
+                    assert_eq!(
+                        diagnostic_frame(&port.diagnostics, 0).0,
+                        if mode == obs::DeliveryError::Indeterminate {
+                            4
+                        } else {
+                            3
+                        }
+                    );
                     if mode == obs::DeliveryError::Indeterminate {
                         let Finalized::ReconciliationRequired { token } = outcome else {
                             panic!("pending ownership required")
@@ -104,19 +125,24 @@ pub fn font_axis_missing_cancel_stale() {
                         assert!(ledger.snapshot().unwrap().current_requested_bytes > base);
                         assert_eq!(ledger.snapshot().unwrap().retained_generations, 1);
                         let key = token.key();
-                        let outcome = reconcile(token, &mut port);
+                        let outcome = reconcile_with_diagnostics(token, &mut port);
                         let Finalized::ReconciliationRequired { token } = outcome else {
                             panic!("still pending")
                         };
                         assert_eq!(token.key(), key);
+                        assert_eq!(port.diagnostics.count, 2);
+                        assert_eq!(diagnostic_frame(&port.diagnostics, 1).0, 4);
                         assert_eq!(port.target.commits, 0);
                         assert_eq!(&port.target.bytes[..port.target.len], b"original-preimage");
                         port.reconciliation = Reconciliation::Rejected;
-                        let rejected = reconcile(token, &mut port);
+                        let rejected = reconcile_with_diagnostics(token, &mut port);
                         assert_eq!(
                             rejected.inspection().disposition,
                             ProposalDisposition::Rejected
                         );
+                        assert_eq!(port.diagnostics.count, 3);
+                        assert_eq!(diagnostic_frame(&port.diagnostics, 2).0, 3);
+                        assert_eq!(rejected.inspection().counts.retained_generations, 0);
                         drop(rejected);
                     } else {
                         assert_eq!(
@@ -131,19 +157,25 @@ pub fn font_axis_missing_cancel_stale() {
                 }
                 ledger.begin();
                 let result = prepared(request, ports);
+                let prepared_work = result.counts().work_units;
                 let actual_hash = hash(result.serialized());
                 let mut port = final_port(request, ports, scene, ledger, None);
-                let accepted = finalize(result, &mut port);
+                let accepted = finalize_with_diagnostics(result, &mut port);
                 assert_eq!(
                     accepted.inspection().disposition,
                     ProposalDisposition::Accepted
                 );
                 assert_eq!(port.target.hash, Some(actual_hash));
+                assert!(
+                    accepted.inspection().counts.work_units > prepared_work,
+                    "final validation work is counted"
+                );
                 let Finalized::Accepted { proposal, .. } = &accepted else {
                     panic!("actual accepted owner")
                 };
                 assert_eq!(&port.target.bytes[..port.target.len], proposal.serialized());
                 assert_eq!(port.capture.count, 1);
+                assert_eq!(port.diagnostics.count, 0);
                 assert_eq!(port.capture.frames[0][4], 5);
                 request.cancellation.cancel();
                 assert_eq!(
@@ -159,7 +191,7 @@ pub fn font_axis_missing_cancel_stale() {
             let result = prepared(request, ports);
             let mut port = final_port(request, ports, scene, ledger, None);
             port.target.cancel_before_delivery = Some(request.cancellation);
-            let outcome = finalize(result, &mut port);
+            let outcome = finalize_with_diagnostics(result, &mut port);
             assert_eq!(
                 outcome.inspection().disposition,
                 ProposalDisposition::Rejected,
@@ -170,6 +202,31 @@ pub fn font_axis_missing_cancel_stale() {
             assert_eq!(&port.target.bytes[..port.target.len], b"original-preimage");
             assert_eq!(port.capture.count, 1);
             assert_eq!(port.capture.frames[0][5], 4);
+            drop(outcome);
+            drop(port);
+        });
+        with_case(&fonts, latin, None, |request, ports, scene, ledger, _| {
+            let result = prepared(request, ports);
+            let mut port = final_port(
+                request,
+                ports,
+                scene,
+                ledger,
+                Some(obs::DeliveryError::Rejected),
+            );
+            port.diagnostic_mode = Some(obs::DeliveryError::Saturated);
+            let outcome = finalize_with_diagnostics(result, &mut port);
+            assert_eq!(
+                outcome.inspection().disposition,
+                ProposalDisposition::Rejected
+            );
+            assert_eq!(outcome.inspection().error, Some(Error::RejectedDelivery));
+            assert_eq!(
+                outcome.inspection().diagnostic_delivery,
+                Some(obs::Error::Delivery(obs::DeliveryError::Saturated))
+            );
+            assert_eq!(port.diagnostics.count, 0);
+            assert_eq!(&port.target.bytes[..port.target.len], b"original-preimage");
             drop(outcome);
             drop(port);
         });
@@ -311,6 +368,30 @@ pub fn mixed_script_bidi_font_runs() {
         assert_ne!(
             variable_hashes[0], variable_hashes[1],
             "actual variable coordinates alter output"
+        );
+        let mut discretionary = [0; 2];
+        for (i, name) in ["latin_dlig_0", "latin_dlig_1"].iter().enumerate() {
+            let expected = find_reference(&reference, name);
+            with_case(
+                &fonts,
+                &expected["options"],
+                None,
+                |request, ports, _, _, _| {
+                    let result = prepared(request, ports);
+                    verify_coverage(&result);
+                    compare_reference(&result, expected);
+                    discretionary[i] = result.counts().glyphs;
+                    let receipt = &result.paragraphs()[0].runs()[0].features()[0];
+                    assert_eq!(receipt.feature.tag, *b"dlig");
+                    assert_eq!(receipt.feature.value, i as u32);
+                    assert_eq!(receipt.state, FeatureState::Applied);
+                },
+            );
+        }
+        assert_eq!(
+            discretionary,
+            [2, 1],
+            "independent actual Inter !? dlig substitution effect"
         );
         let arabic = &recipe["cases"][2];
         with_case(

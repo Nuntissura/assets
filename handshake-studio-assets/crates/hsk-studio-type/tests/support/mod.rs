@@ -410,6 +410,7 @@ pub struct Target<'a> {
     hash: Option<[u8; 32]>,
     commits: u64,
     cancel_before_delivery: Option<&'a CancellationToken>,
+    attempt: Option<PendingKey>,
 }
 impl TargetPublication for Target<'_> {
     fn with_publication(
@@ -423,6 +424,12 @@ impl TargetPublication for Target<'_> {
         if let Some(token) = self.cancel_before_delivery {
             token.cancel();
         }
+        self.attempt = Some(PendingKey {
+            result_sha256: hash(p.serialized()),
+            source_sha256: p.request().text_sha256,
+            target_revision: p.request().result_target.address.expected_revision,
+            cancel_epoch: p.request().cancel_epoch,
+        });
         deliver()?;
         self.bytes[..p.serialized().len()].copy_from_slice(p.serialized());
         self.len = p.serialized().len();
@@ -438,6 +445,9 @@ pub struct FinalPort<'a, 'b> {
     capture: Capture,
     target: Target<'a>,
     reconciliation: Reconciliation,
+    diagnostics: Capture,
+    diagnostic_mode: Option<obs::DeliveryError>,
+    reconciliation_key: Option<PendingKey>,
     _observer_lease: Reservation<'a>,
 }
 impl<'a> FinalizationPort<'a> for FinalPort<'a, '_> {
@@ -453,8 +463,22 @@ impl<'a> FinalizationPort<'a> for FinalPort<'a, '_> {
         };
         Ok(call(self.ports, &mut publisher))
     }
-    fn reconcile(&mut self, _: PendingKey) -> Result<Reconciliation, Error> {
-        Ok(self.reconciliation)
+    fn with_reconciliation<T>(
+        &mut self,
+        key: PendingKey,
+        call: impl FnOnce(&Ports<'a>, Result<Reconciliation, Error>) -> T,
+    ) -> Result<T, Error> {
+        let _guard = self.scene.gate.lock().unwrap();
+        assert_eq!(
+            self.target.attempt,
+            Some(key),
+            "query is bound to actual prior publication attempt"
+        );
+        if let Some(previous) = self.reconciliation_key {
+            assert_eq!(previous, key, "query exact prior attempt");
+        }
+        self.reconciliation_key = Some(key);
+        Ok(call(self.ports, Ok(self.reconciliation)))
     }
 }
 pub fn observer(request: &Request<'_>) -> obs::Observe {
@@ -500,10 +524,102 @@ pub fn final_port<'a, 'b>(
             hash: None,
             commits: 0,
             cancel_before_delivery: None,
+            attempt: None,
         },
         reconciliation: Reconciliation::StillIndeterminate,
+        diagnostics: Capture::new(None),
+        diagnostic_mode: None,
+        reconciliation_key: None,
         _observer_lease: lease,
     }
+}
+pub fn observer_bytes(request: &Request<'_>) -> u64 {
+    request.document_id.as_str().len() as u64
+        + [
+            request.actor.account_id(),
+            request.actor.principal_id(),
+            request.actor.owner_account_id(),
+            request.actor.owner_principal_id(),
+            request.actor.access_space_id(),
+            request.actor.session_id(),
+        ]
+        .iter()
+        .map(|s| s.len() as u64)
+        .sum::<u64>()
+}
+pub fn diagnostic_transition<'a, 'b>(
+    request: Request<'a>,
+    port: &mut FinalPort<'a, 'b>,
+    call: impl FnOnce(&mut FinalPort<'a, 'b>, &mut DiagnosticPorts<'_, 'a>) -> Finalized<'a>,
+) -> Finalized<'a> {
+    let admission = port.ports.admission;
+    let lease = admission
+        .reserve(
+            observer_bytes(&request),
+            request.limits.requested_owned_bytes,
+        )
+        .unwrap();
+    let mut fresh = observer(&request);
+    let mut capture = Capture::new(port.diagnostic_mode);
+    let mut diagnostics = DiagnosticPorts {
+        observer: &mut fresh,
+        sink: &mut capture,
+        admission,
+    };
+    let outcome = call(port, &mut diagnostics);
+    assert!(outcome.inspection().counts_fresh);
+    assert_eq!(
+        outcome.inspection().counts.current_requested_bytes,
+        admission.snapshot().unwrap().current_requested_bytes,
+        "transition snapshot includes still-live caller diagnostics/publication storage"
+    );
+    for i in 0..capture.count {
+        obs::SinkPort::try_send(
+            &mut port.diagnostics,
+            obs::DeliveryClass::Terminal,
+            &capture.frames[i][..capture.lengths[i]],
+        )
+        .unwrap();
+    }
+    drop(fresh);
+    drop(lease);
+    outcome
+}
+pub fn finalize_with_diagnostics<'a>(
+    proposal: Prepared<'a>,
+    port: &mut FinalPort<'a, '_>,
+) -> Finalized<'a> {
+    let request = *proposal.request();
+    diagnostic_transition(request, port, |port, diagnostics| {
+        finalize(proposal, port, diagnostics)
+    })
+}
+pub fn reconcile_with_diagnostics<'a>(
+    token: PendingToken<'a>,
+    port: &mut FinalPort<'a, '_>,
+) -> Finalized<'a> {
+    let request = *token.proposal().request();
+    diagnostic_transition(request, port, |port, diagnostics| {
+        reconcile(token, port, diagnostics)
+    })
+}
+pub fn diagnostic_frame(capture: &Capture, index: usize) -> (u8, u8, u64, u64, u64) {
+    let frame = &capture.frames[index][..capture.lengths[index]];
+    assert_eq!(&frame[..5], b"HSKO\x05");
+    let mut at = 48;
+    for _ in 0..7 {
+        let n = u16::from_be_bytes(frame[at..at + 2].try_into().unwrap()) as usize;
+        at += 2 + n;
+    }
+    let get =
+        |offset: usize| u64::from_be_bytes(frame[at + offset..at + offset + 8].try_into().unwrap());
+    (
+        frame[at],
+        frame[at + 1],
+        get(4 + 6 * 8),
+        get(4 + 7 * 8),
+        get(4 + 8 * 8),
+    )
 }
 pub fn with_case(
     fonts: &Fonts,
@@ -1157,7 +1273,7 @@ pub fn compare_reference(result: &Prepared<'_>, reference: &Value) {
 }
 
 pub fn reference_file() -> Value {
-    const EXPECTED: &str = "a94f28198fcdd2965a4a96f6956ecf687ad89c15b88ea8f4f2f743b9853baa14";
+    const EXPECTED: &str = "6579f9a90162edaf6dc1bcb91b964d8014eaeaf8d7fef7536243e55bd52c2bbe";
     let path = std::env::var_os("HSK_TYPE_REFERENCE_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -1166,7 +1282,7 @@ pub fn reference_file() -> Value {
                 .unwrap()
                 .parent()
                 .unwrap()
-                .join("studio-assets-validator/type-reference-producer/type-reference.json")
+                .join("studio-assets-validator/type-reference-producer/type-reference-corrected-with-dlig.json")
         });
     if let Ok(binding) = std::env::var("HSK_TYPE_REFERENCE_SHA256") {
         assert_eq!(
