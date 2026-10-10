@@ -2,6 +2,8 @@
 //! This transport is caller-owned and is NOT a full StudioDocument or database schema.
 pub const SCHEMA_STUDIO_DOCUMENT: &str = "hsk.studio.document@1";
 pub const SCHEMA_STUDIO_LAYER: &str = "hsk.studio.layer@1";
+pub const SCHEMA_STUDIO_LAYER_GRAPH: &str = "hsk.studio.layer_graph@1";
+pub const SCHEMA_STUDIO_RASTER_TILE: &str = "hsk.studio.raster_tile@1";
 pub const SCHEMA_STUDIO_ARTBOARD: &str = "hsk.studio.artboard@1";
 pub const SCHEMA_STUDIO_PAGE_SPREAD: &str = "hsk.studio.page_spread@1";
 pub const SCHEMA_STUDIO_SELECTION_SET: &str = "hsk.studio.selection_set@1";
@@ -38,6 +40,8 @@ pub const SCHEMA_STUDIO_EXPRESSION_PROFILE: &str = "hsk.studio.expression_profil
 pub const CANONICAL_SCHEMAS: &[&str] = &[
     "hsk.studio.document@1",
     "hsk.studio.layer@1",
+    SCHEMA_STUDIO_LAYER_GRAPH,
+    SCHEMA_STUDIO_RASTER_TILE,
     "hsk.studio.artboard@1",
     "hsk.studio.page_spread@1",
     "hsk.studio.selection_set@1",

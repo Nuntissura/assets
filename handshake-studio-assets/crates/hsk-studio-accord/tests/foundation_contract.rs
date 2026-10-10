@@ -242,6 +242,8 @@ fn unsupported_identity_mapping_is_not_guessed() {
             decode(&INPUT.replace("document@1", "gradient@1")).unwrap_err(),
             ValidationError::UnsupportedIdentityMapping
         );
-        assert_eq!(CANONICAL_SCHEMAS.len(), 35);
+        assert_eq!(CANONICAL_SCHEMAS.len(), 37);
+        assert!(CANONICAL_SCHEMAS.contains(&SCHEMA_STUDIO_LAYER_GRAPH));
+        assert!(CANONICAL_SCHEMAS.contains(&SCHEMA_STUDIO_RASTER_TILE));
     });
 }
