@@ -655,6 +655,15 @@ impl WritingSession {
         self.expanded = true;
         Ok(true)
     }
+    /// Host observes compact-field overflow; dimensions and native content remain owner-held.
+    pub fn expand_for_overflow(&mut self, fence: &WritingFence, has_content: bool, overflowing: bool) -> Result<bool, Error> {
+        self.validate(fence)?;
+        if self.query_purpose != QueryPurpose::SearchWrite || self.composition.is_some() || self.pending_save.is_some() || !has_content || !overflowing {
+            return Ok(false);
+        }
+        self.expanded = true;
+        Ok(true)
+    }
     /// Apply owner-observed native emptiness/metrics without copying content or changing selection.
     pub fn present_content(&mut self, fence: &WritingFence, utf16_units: u32, line_count: u32, is_empty: bool) -> Result<bool, Error> {
         self.validate(fence)?;

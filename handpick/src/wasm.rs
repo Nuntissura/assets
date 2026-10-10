@@ -396,6 +396,12 @@ impl WasmWritingSession {
         }
         self.inner.expand_for_prose(&read(fence_json)?, utf16_units as u32, line_count as u32).map_err(core_error)
     }
+    #[wasm_bindgen(js_name = expandForOverflow)]
+    pub fn expand_for_overflow(&mut self, fence_json: &str, has_content: JsValue, overflowing: JsValue) -> Result<bool, JsValue> {
+        let has_content = has_content.as_bool().ok_or_else(|| reject("InvalidWire"))?;
+        let overflowing = overflowing.as_bool().ok_or_else(|| reject("InvalidWire"))?;
+        self.inner.expand_for_overflow(&read(fence_json)?, has_content, overflowing).map_err(core_error)
+    }
     #[wasm_bindgen(js_name = presentContent)]
     pub fn present_content(&mut self, fence_json: &str, utf16_units: f64, line_count: f64, is_empty: JsValue) -> Result<bool, JsValue> {
         for metric in [utf16_units, line_count] {

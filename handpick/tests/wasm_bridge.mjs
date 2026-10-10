@@ -16,7 +16,7 @@ assert.throws(() => glue.resolveDraftTitle('x'.repeat(65537), ''), error => Stri
 assert.equal(fixtures.version, 'handpick.v1');
 assert.ok(fixtures.scenarios.length > 0);
 const jsonReturns = new Set(['fence', 'pins', 'beginLookup', 'beginComposition', 'pendingSave', 'selected']);
-const jsonArgs = new Map([['edited', [0]], ['beginComposition', [0]], ['endComposition', [0]], ['submit', [0]], ['acknowledge', [0]], ['deliver', [0, 3]], ['select', [0, 1]], ['expandIfEmpty', [0]], ['expandForProse', [0]], ['presentContent', [0]], ['presentDraft', [0]]]);
+const jsonArgs = new Map([['edited', [0]], ['beginComposition', [0]], ['endComposition', [0]], ['submit', [0]], ['acknowledge', [0]], ['deliver', [0, 3]], ['select', [0, 1]], ['expandIfEmpty', [0]], ['expandForProse', [0]], ['expandForOverflow', [0]], ['presentContent', [0]], ['presentDraft', [0]]]);
 function substitute(value, vars) {
   if (typeof value === 'string' && value.startsWith('$')) {
     assert.ok(vars.has(value.slice(1)), 'Missing fixture variable');
@@ -222,4 +222,34 @@ const acquiredSlots=new glue.RecoverySlots(2);try{
   recoveryReject(()=>acquiredSlots.busy(3),'OutOfOrder');recoveryReject(()=>acquiredSlots.acquired(3),'OutOfOrder');recoveryReject(()=>acquiredSlots.busy(2.5),'InvalidSlot');recoveryCheck(acquiredSlots.current(),2);
   recoveryCheck(acquiredSlots.busy(2),0);recoveryReject(()=>acquiredSlots.busy(2),'OutOfOrder');acquiredSlots.acquired(0);recoveryCheck(acquiredSlots.current(),undefined);recoveryCheck(acquiredSlots.acquiredSlot(),0);recoveryCheck(acquiredSlots.exhausted(),false);recoveryReject(()=>acquiredSlots.acquired(0),'Closed');
 }finally{acquiredSlots.free();}
-console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks,recovery_checks:recoveryChecks}));
+let overflowChecks=0;
+const overflowCheck=(actual,expected)=>{assert.deepEqual(actual,expected);overflowChecks++;};
+const overflowReject=(fn,code)=>{assert.throws(fn,error=>String(error)===code);overflowChecks++;};
+const overflow=new glue.WritingSession('private','overflow',1);
+try{
+  overflow.bind('editor','1');
+  let fence=overflow.fence();
+  for(const flag of [null,undefined,0,1,'true',{}]){
+    overflowReject(()=>overflow.expandForOverflow(fence,flag,true),'InvalidWire');
+    overflowReject(()=>overflow.expandForOverflow(fence,true,flag),'InvalidWire');
+  }
+  for(const state of ['pending','complete','partial','failed','offline']){
+    fence=overflow.beginLookup();overflow.deliver(fence,'suggestions',state,'[]');
+    overflowCheck(overflow.expandForOverflow(fence,false,true),false);
+    overflowCheck(overflow.expandForOverflow(fence,true,false),false);
+    overflowCheck(overflow.expandForOverflow(fence,true,true),true);
+    overflowCheck(overflow.fence(),fence);overflow.compact();
+  }
+  fence=overflow.beginLookup();overflow.deliver(fence,'suggestions','complete',encode([item('match')]));overflowCheck(overflow.expandForOverflow(fence,true,true),true);overflow.compact();
+  for(const purpose of ['navigation','commands','settings']){
+    overflow.setQueryPurpose(purpose);overflowCheck(overflow.expandForOverflow(overflow.fence(),true,true),false);
+  }
+  overflow.setQueryPurpose('search_write');fence=overflow.fence();
+  const ime=overflow.beginComposition(fence);fence=overflow.fence();overflowCheck(overflow.expandForOverflow(fence,true,true),false);overflow.endComposition(ime);
+  const submitted={operation:'overflow-save',fence:decode(fence),destination:{kind:'append',note:'note',expected_revision:'revision'}};
+  overflow.submit(encode(submitted));overflowCheck(overflow.expandForOverflow(fence,true,true),false);
+  overflow.acknowledge(encode({submitted,content:{state:'rejected'}}));
+  overflow.edited(fence,'2');overflowReject(()=>overflow.expandForOverflow(fence,true,true),'Stale');
+  fence=overflow.fence();overflow.revoke();overflowReject(()=>overflow.expandForOverflow(fence,true,true),'Revoked');
+}finally{overflow.free();}
+console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks,recovery_checks:recoveryChecks,overflow_checks:overflowChecks}));

@@ -490,3 +490,60 @@ fn writing_results_preserve_stable_selection_and_admit_only_completed_empty_expa
     assert!(s.delivery(Channel::Suggestions).items().is_empty());
     assert!(s.selected().is_none());
 }
+
+#[test]
+fn writing_overflow_is_independent_of_lookup_and_preserves_native_identity() {
+    for status in [DeliveryStatus::Pending, DeliveryStatus::Complete, DeliveryStatus::Partial, DeliveryStatus::Failed, DeliveryStatus::Offline] {
+        let mut s = session("overflow");
+        let fence = s.begin_lookup().unwrap();
+        s.deliver(&fence, Channel::Suggestions, status, vec![]).unwrap();
+        assert!(!s.expand_for_overflow(&fence, false, true).unwrap());
+        assert!(!s.expand_for_overflow(&fence, true, false).unwrap());
+        if status == DeliveryStatus::Complete {
+            s.deliver(&fence, Channel::Suggestions, status, vec![SearchItem {
+                key: ResultKey { provider: ProviderId::new("notes").unwrap(), result: ResultId::new("match").unwrap() },
+                label: "Match".into(), detail: None, actions: vec![],
+            }]).unwrap();
+        }
+        let editor = s.editor().map(|(id, revision)| (id.clone(), revision));
+        assert!(s.expand_for_overflow(&fence, true, true).unwrap());
+        assert!(s.expanded());
+        assert_eq!(s.fence().unwrap(), fence);
+        assert_eq!(s.editor().map(|(id, revision)| (id.clone(), revision)), editor);
+        assert_eq!(s.delivery(Channel::Suggestions).status(), status);
+        s.compact().unwrap();
+        assert!(!s.expanded());
+    }
+}
+
+#[test]
+fn writing_overflow_respects_lookup_modes_ime_and_pending_save() {
+    for purpose in [QueryPurpose::Navigation, QueryPurpose::Commands, QueryPurpose::Settings] {
+        let mut s = session("overflow-mode");
+        s.set_query_purpose(purpose).unwrap();
+        assert!(!s.expand_for_overflow(&s.fence().unwrap(), true, true).unwrap());
+        assert!(!s.expanded());
+    }
+    let mut s = session("overflow-guard");
+    let token = s.begin_composition(&s.fence().unwrap()).unwrap();
+    assert!(!s.expand_for_overflow(&s.fence().unwrap(), true, true).unwrap());
+    s.end_composition(&token).unwrap();
+    let submitted = intent(&s);
+    s.submit(submitted.clone()).unwrap();
+    assert!(!s.expand_for_overflow(&s.fence().unwrap(), true, true).unwrap());
+    assert_eq!(s.pending_save(), Some(&submitted));
+    s.acknowledge(&SaveOutcome { submitted, content: ContentOutcome::Rejected }).unwrap();
+    assert!(s.expand_for_overflow(&s.fence().unwrap(), true, true).unwrap());
+}
+
+#[test]
+fn writing_overflow_rejects_stale_and_revoked_observations() {
+    let mut s = session("overflow-stale");
+    let old = s.fence().unwrap();
+    s.edited(&old, old.revision + 1).unwrap();
+    assert_eq!(s.expand_for_overflow(&old, true, true), Err(Error::Stale));
+    assert!(!s.expanded());
+    let current = s.fence().unwrap();
+    s.revoke();
+    assert_eq!(s.expand_for_overflow(&current, true, true), Err(Error::Revoked));
+}
