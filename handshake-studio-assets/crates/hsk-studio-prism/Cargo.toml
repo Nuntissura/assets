@@ -1,0 +1,17 @@
+[package]
+name = "hsk-studio-prism"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+moxcms = { version = "=0.9.1", default-features = false, features = ["extended_range"] }
+sha2 = { version = "=0.11.0", default-features = false, features = [] }
+
+[lib]
+path = "src/lib.rs"
