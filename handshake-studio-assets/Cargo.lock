@@ -91,6 +91,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsk-studio-pigment"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-folio",
+ "hsk-studio-observe",
+ "hsk-studio-prism",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hsk-studio-prism"
 version = "0.1.0"
 dependencies = [
