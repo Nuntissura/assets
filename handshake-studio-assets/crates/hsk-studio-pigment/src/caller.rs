@@ -201,6 +201,9 @@ impl hsk_studio_prism::ProviderAdmission for MemoryAdmission {
         true
     }
     fn reserve(&self, bytes: u64) -> Result<ProviderLease, hsk_studio_prism::Error> {
+        if self.meter.is_some() && bytes == 0 {
+            return Err(hsk_studio_prism::Error::AdmissionDenied);
+        }
         let mut ledger = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
         let total = ledger
             .state

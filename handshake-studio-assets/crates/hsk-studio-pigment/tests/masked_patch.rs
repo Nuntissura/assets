@@ -872,6 +872,13 @@ fn malformed_stride_and_lease_exhaustion() {
         let operation = ledger.scoped(4096).unwrap().begin_operation().unwrap();
         assert_eq!(operation.peak_bytes(), 0);
         let old_admission = operation.admission();
+        let before_zero = ledger.accounting();
+        assert!(hsk_studio_prism::ProviderAdmission::reserve(&old_admission, 0).is_err());
+        let after_zero = ledger.accounting();
+        assert_eq!(after_zero.live_bytes, before_zero.live_bytes);
+        assert_eq!(after_zero.reserved, before_zero.reserved);
+        assert_eq!(after_zero.provider_live, before_zero.provider_live);
+        assert_eq!(operation.peak_bytes(), 0);
         let reservation =
             hsk_studio_prism::ProviderAdmission::reserve(&old_admission, 1024).unwrap();
         assert_eq!(operation.peak_bytes(), 1024);
