@@ -1,0 +1,543 @@
+use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use hsk_studio_observe::{DeliveryClass, DeliveryError, MAX_FRAME_BYTES, Outcome, SinkPort};
+use hsk_studio_prism::*;
+const SRGB: &[u8] = include_bytes!("profiles/sRGB-v4.icc");
+const P3: &[u8] = include_bytes!("profiles/DisplayP3-v4.icc");
+const PIXELS: &[[f32; 3]] = &[
+    [1., 0., 0.],
+    [0., 1., 0.],
+    [0., 0., 1.],
+    [0.2, 0.4, 0.8],
+    [0., 0., 0.],
+    [1., 1., 1.],
+];
+fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+        sync::mpsc,
+        time::Duration,
+    };
+    let (tx, rx) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(catch_unwind(AssertUnwindSafe(body)));
+    });
+    match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(Ok(())) => {}
+        Ok(Err(p)) => resume_unwind(p),
+        Err(e) => panic!("case {name} exceeded/lost30s deadline: {e}"),
+    }
+}
+struct Context {
+    actor: ActorContext,
+    source: DomainId,
+    destination: DomainId,
+    resource: DomainId,
+}
+impl Context {
+    fn new() -> Self {
+        Self {
+            actor: ActorContext::new(
+                "account",
+                "principal",
+                "owner-account",
+                "owner-principal",
+                "space",
+                "session",
+            )
+            .unwrap(),
+            source: DomainId::parse("SCPF-019abcde-0000-7000-8000-000000000001").unwrap(),
+            destination: DomainId::parse("SCPF-019abcde-0000-7000-8000-000000000002").unwrap(),
+            resource: DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000003").unwrap(),
+        }
+    }
+    fn request<'a>(
+        &'a self,
+        source: &'a [u8],
+        destination: &'a [u8],
+        pixels: &'a [[f32; 3]],
+    ) -> TransformRequest<'a> {
+        TransformRequest {
+            source: ProfileInput {
+                profile_id: &self.source,
+                bytes: source,
+                expected_sha256: profile_hash(source),
+            },
+            destination: ProfileInput {
+                profile_id: &self.destination,
+                bytes: destination,
+                expected_sha256: profile_hash(destination),
+            },
+            pixels,
+            intent: Intent::RelativeColorimetric,
+            bit_depth: 32,
+            black_point_compensation: false,
+            revision: 7,
+            expected_revision: 7,
+            correlation_id: 42,
+            resource_id: &self.resource,
+            actor: &self.actor,
+            private_project_text: Some("PRIVACY-SECRET-ICC-PROJECT-DO-NOT-EMIT"),
+        }
+    }
+}
+#[derive(Default)]
+struct Collector {
+    frames: Vec<Vec<u8>>,
+    forced: Option<DeliveryError>,
+}
+impl SinkPort for Collector {
+    fn try_send(&mut self, class: DeliveryClass, bytes: &[u8]) -> Result<(), DeliveryError> {
+        if let Some(e) = self.forced {
+            return Err(e);
+        }
+        if class != DeliveryClass::Terminal
+            || bytes.len() > MAX_FRAME_BYTES
+            || !self.frames.is_empty()
+        {
+            return Err(DeliveryError::Saturated);
+        }
+        self.frames.push(bytes.to_vec());
+        Ok(())
+    }
+}
+fn reject(r: &TransformRequest<'_>, expected: Error) {
+    let source = r.source.bytes.to_vec();
+    let destination = r.destination.bytes.to_vec();
+    let original: Vec<_> = r.pixels.iter().map(|p| p.map(f32::to_bits)).collect();
+    let mut engine = Prism::new(r.actor.clone(), 1).unwrap();
+    let mut sink = Collector::default();
+    let error = engine
+        .transform(r, &CancellationToken::default(), &mut sink)
+        .unwrap_err();
+    assert_eq!(error.error, expected);
+    assert_eq!(error.operation_error, Some(expected));
+    assert!(error.delivery.is_ok());
+    assert_eq!(error.diagnostic_state.acknowledged, 1);
+    assert_eq!(sink.frames.len(), 1);
+    assert_eq!(
+        sink.frames[0][5],
+        Outcome::Failure(hsk_studio_observe::FailureCode::Validation).wire()
+    );
+    assert_eq!(r.source.bytes, source);
+    assert_eq!(r.destination.bytes, destination);
+    assert_eq!(
+        r.pixels
+            .iter()
+            .map(|p| p.map(f32::to_bits))
+            .collect::<Vec<_>>(),
+        original
+    );
+    assert_eq!(engine.cache_stats().entries, 0);
+}
+// Fixture-only independent ICC oracle: signed fixed16.16 XYZ matrix and para type3.
+// No moxcms parsing, matrix helpers or transfer evaluators are used below.
+fn be32(b: &[u8], at: usize) -> u32 {
+    u32::from_be_bytes(b[at..at + 4].try_into().unwrap())
+}
+fn fixed(b: &[u8], at: usize) -> f64 {
+    i32::from_be_bytes(b[at..at + 4].try_into().unwrap()) as f64 / 65536.
+}
+fn tag(b: &[u8], name: &[u8; 4]) -> (usize, usize, usize) {
+    for i in 0..be32(b, 128) as usize {
+        let at = 132 + i * 12;
+        if &b[at..at + 4] == name {
+            return (be32(b, at + 4) as usize, be32(b, at + 8) as usize, at);
+        }
+    }
+    panic!("fixture missing tag");
+}
+fn matrix(b: &[u8]) -> [[f64; 3]; 3] {
+    let mut m = [[0.; 3]; 3];
+    for (column, name) in [b"rXYZ", b"gXYZ", b"bXYZ"].iter().enumerate() {
+        let (offset, size, _) = tag(b, name);
+        assert_eq!(size, 20);
+        assert_eq!(&b[offset..offset + 4], b"XYZ ");
+        for (row, values) in m.iter_mut().enumerate() {
+            values[column] = fixed(b, offset + 8 + row * 4);
+        }
+    }
+    m
+}
+fn inverse(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut a = [[0.; 6]; 3];
+    for i in 0..3 {
+        a[i][..3].copy_from_slice(&m[i]);
+        a[i][i + 3] = 1.;
+    }
+    for i in 0..3 {
+        let pivot = (i..3)
+            .max_by(|x, y| a[*x][i].abs().total_cmp(&a[*y][i].abs()))
+            .unwrap();
+        a.swap(i, pivot);
+        let divisor = a[i][i];
+        assert!(divisor.abs() > 1e-10);
+        for v in &mut a[i] {
+            *v /= divisor;
+        }
+        let pivot_row = a[i];
+        for (row, values) in a.iter_mut().enumerate() {
+            if row != i {
+                let amount = values[i];
+                for (value, pivot_value) in values.iter_mut().zip(pivot_row) {
+                    *value -= amount * pivot_value;
+                }
+            }
+        }
+    }
+    std::array::from_fn(|i| [a[i][3], a[i][4], a[i][5]])
+}
+fn curve(b: &[u8]) -> [f64; 5] {
+    let (offset, size, _) = tag(b, b"rTRC");
+    assert_eq!(size, 32);
+    assert_eq!(&b[offset..offset + 4], b"para");
+    assert_eq!(
+        u16::from_be_bytes(b[offset + 8..offset + 10].try_into().unwrap()),
+        3
+    );
+    std::array::from_fn(|i| fixed(b, offset + 12 + i * 4))
+}
+fn oracle(source: &[u8], destination: &[u8], pixel: [f32; 3]) -> [f64; 3] {
+    let [g, a, b, c, d] = curve(source);
+    let linear = pixel.map(|x| {
+        let x = x as f64;
+        if x >= d { (a * x + b).powf(g) } else { c * x }
+    });
+    let src = matrix(source);
+    let xyz: [f64; 3] = std::array::from_fn(|r| (0..3).map(|c| src[r][c] * linear[c]).sum());
+    let dst = inverse(matrix(destination));
+    let out: [f64; 3] = std::array::from_fn(|r| (0..3).map(|c| dst[r][c] * xyz[c]).sum());
+    let [g, a, b, c, d] = curve(destination);
+    let threshold = (a * d + b).powf(g);
+    out.map(|y| {
+        if y >= threshold {
+            (y.max(0.).powf(1. / g) - b) / a
+        } else {
+            y / c
+        }
+    })
+}
+#[test]
+fn external_consumer_nonidentity_independent_icc_oracle_and_receipt() {
+    bounded_case("nonidentity", || {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Prism>();
+        assert_send_sync::<Collector>();
+        assert_eq!(
+            hash_hex(&profile_hash(SRGB)),
+            "c56e1685d888f5edb92fe07f2750f387f8fe8e91b32ff8fb0b56bfbbb9458353"
+        );
+        assert_eq!(
+            hash_hex(&profile_hash(P3)),
+            "cb51de38e482ee974c0c76b9689e16aad04bad16e226fed2f30c842d15ff3a3d"
+        );
+        let c = Context::new();
+        let original = PIXELS.to_vec();
+        let request = c.request(SRGB, P3, PIXELS);
+        let mut engine = Prism::new(c.actor.clone(), 1).unwrap();
+        let mut sink = Collector::default();
+        let out = engine
+            .transform(&request, &CancellationToken::default(), &mut sink)
+            .unwrap();
+        for (pixel, actual) in PIXELS.iter().zip(&out.pixels) {
+            let expected = oracle(SRGB, P3, *pixel);
+            for i in 0..3 {
+                assert!(
+                    (actual[i] as f64 - expected[i]).abs() <= 0.0001,
+                    "actual={actual:?} expected={expected:?}"
+                );
+            }
+        }
+        assert!((out.pixels[0][1] - PIXELS[0][1]).abs() > 0.1);
+        assert_eq!(PIXELS, original);
+        assert_eq!(out.receipt.engine_version, "0.9.1");
+        assert_eq!(out.receipt.engine_name, "moxcms");
+        assert_eq!(out.receipt.source_profile_id, c.source);
+        assert_eq!(out.receipt.destination_sha256, profile_hash(P3));
+        assert_eq!(out.receipt.revision, 7);
+        assert_eq!(out.receipt.correlation_id, 42);
+        assert!(out.receipt.analytical);
+        assert!(!out.receipt.cache_hit);
+        assert_eq!(out.delivery.outcome, Outcome::Success);
+        let frame = &sink.frames[0];
+        assert_eq!(&frame[..4], b"HSKO");
+        assert_eq!(frame[5], 2);
+        assert_eq!(u64::from_be_bytes(frame[16..24].try_into().unwrap()), 7);
+        let mut at = 48;
+        let mut strings = Vec::new();
+        for _ in 0..7 {
+            let n = u16::from_be_bytes(frame[at..at + 2].try_into().unwrap()) as usize;
+            at += 2;
+            strings.push(std::str::from_utf8(&frame[at..at + n]).unwrap());
+            at += n;
+        }
+        assert_eq!(at, frame.len());
+        assert_eq!(strings[0], c.resource.as_str());
+        assert_eq!(strings[1], c.actor.account_id());
+        assert!(!String::from_utf8_lossy(frame).contains("PRIVACY-SECRET"));
+        let mut without_private = c.request(SRGB, P3, PIXELS);
+        without_private.private_project_text = None;
+        let mut baseline = Collector::default();
+        engine
+            .transform(
+                &without_private,
+                &CancellationToken::default(),
+                &mut baseline,
+            )
+            .unwrap();
+        assert_eq!(baseline.frames, sink.frames);
+        eprintln!(
+            "nonidentity RGB {:?}; moxcms{}; hashes verified; independent ICC f64 oracle tolerance0.0001",
+            out.pixels[0], ENGINE_VERSION
+        );
+    });
+}
+#[test]
+fn stale_revision_rejected_immutable() {
+    bounded_case("stale", || {
+        let c = Context::new();
+        let mut r = c.request(SRGB, P3, PIXELS);
+        r.expected_revision = 8;
+        reject(&r, Error::RevisionMismatch);
+    });
+}
+#[test]
+fn wrong_depth_intent_and_bpc_rejected() {
+    bounded_case("depth-intent-bpc", || {
+        let c = Context::new();
+        let mut r = c.request(SRGB, P3, PIXELS);
+        for d in [8, 16, 64] {
+            r.bit_depth = d;
+            reject(&r, Error::UnsupportedDepth);
+        }
+        r.bit_depth = 32;
+        r.intent = Intent::Perceptual;
+        reject(&r, Error::UnsupportedIntent);
+        r.intent = Intent::RelativeColorimetric;
+        r.black_point_compensation = true;
+        reject(&r, Error::UnsupportedBpc);
+    });
+}
+#[test]
+fn malformed_profile_rejected_without_identity() {
+    bounded_case("malformed", || {
+        let c = Context::new();
+        let mut bytes = SRGB.to_vec();
+        bytes[36..40].copy_from_slice(b"FAIL");
+        reject(&c.request(&bytes, P3, PIXELS), Error::MalformedProfile);
+        reject(
+            &c.request(&SRGB[..100], P3, PIXELS),
+            Error::MalformedProfile,
+        );
+    });
+}
+#[test]
+fn wrong_hash_and_identity_rejected() {
+    bounded_case("hash-id", || {
+        let c = Context::new();
+        let mut r = c.request(SRGB, P3, PIXELS);
+        r.source.expected_sha256 = [0; 32];
+        reject(&r, Error::HashMismatch);
+        r.source.expected_sha256 = profile_hash(SRGB);
+        r.source.profile_id = &c.resource;
+        reject(&r, Error::InvalidProfileId);
+    });
+}
+#[test]
+fn unsupported_profile_class_rejected() {
+    bounded_case("unsupported", || {
+        let c = Context::new();
+        let mut bytes = SRGB.to_vec();
+        bytes[12..16].copy_from_slice(b"abst");
+        reject(&c.request(&bytes, P3, PIXELS), Error::UnsupportedProfile);
+    });
+}
+#[test]
+fn cicp_excluded_before_analytical_construction() {
+    bounded_case("cicp", || {
+        let c = Context::new();
+        let n = be32(SRGB, 128) as usize;
+        let table_end = 132 + n * 12;
+        let mut b = SRGB[..table_end].to_vec();
+        b.extend_from_slice(b"cicp");
+        b.extend_from_slice(&((SRGB.len() + 12) as u32).to_be_bytes());
+        b.extend_from_slice(&12u32.to_be_bytes());
+        b.extend_from_slice(&SRGB[table_end..]);
+        b.extend_from_slice(b"cicp\0\0\0\0\x01\x0d\0\x01");
+        for i in 0..n {
+            let at = 132 + i * 12 + 4;
+            let old = be32(&b, at);
+            b[at..at + 4].copy_from_slice(&(old + 12).to_be_bytes());
+        }
+        b[128..132].copy_from_slice(&((n + 1) as u32).to_be_bytes());
+        let size = b.len() as u32;
+        b[..4].copy_from_slice(&size.to_be_bytes());
+        reject(&c.request(&b, P3, PIXELS), Error::UnsupportedProfile);
+    });
+}
+#[test]
+fn singular_matrix_and_mismatched_curves_rejected() {
+    bounded_case("matrix-curves", || {
+        let c = Context::new();
+        let mut b = SRGB.to_vec();
+        let (offset, _, _) = tag(&b, b"rXYZ");
+        b[offset + 8..offset + 20].fill(0);
+        reject(&c.request(&b, P3, PIXELS), Error::SingularMatrix);
+        let mut b = SRGB.to_vec();
+        let (offset, size, entry) = tag(&b, b"gTRC");
+        let extra = b[offset..offset + size].to_vec();
+        let start = b.len();
+        b.extend_from_slice(&extra);
+        b[entry + 4..entry + 8].copy_from_slice(&(start as u32).to_be_bytes());
+        b[start + 12..start + 16].copy_from_slice(&(3i32 * 65536).to_be_bytes());
+        let size = b.len() as u32;
+        b[..4].copy_from_slice(&size.to_be_bytes());
+        reject(&c.request(&b, P3, PIXELS), Error::InvalidCurve);
+    });
+}
+#[test]
+fn nonfinite_and_out_of_range_channels_rejected() {
+    bounded_case("nonfinite", || {
+        let c = Context::new();
+        for x in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let p = [[x, 0.4, 0.5]];
+            reject(&c.request(SRGB, P3, &p), Error::NonfiniteChannel);
+        }
+        reject(&c.request(SRGB, P3, &[[1.01, 0., 0.]]), Error::ChannelRange);
+    });
+}
+#[test]
+fn cancellation_delivered_without_numeric_success() {
+    bounded_case("cancel", || {
+        let c = Context::new();
+        let r = c.request(SRGB, P3, PIXELS);
+        let token = CancellationToken::default();
+        token.cancel();
+        let mut engine = Prism::new(c.actor.clone(), 1).unwrap();
+        let mut sink = Collector::default();
+        let e = engine.transform(&r, &token, &mut sink).unwrap_err();
+        assert_eq!(e.error, Error::Canceled);
+        assert_eq!(e.delivery.unwrap().outcome, Outcome::Canceled);
+        assert_eq!(e.diagnostic_state.canceled_delivered, 1);
+        assert_eq!(engine.cache_stats().entries, 0);
+        assert_eq!(PIXELS, r.pixels);
+    });
+}
+#[test]
+fn delivery_rejection_and_indeterminate_withhold_output() {
+    bounded_case("delivery", || {
+        let c = Context::new();
+        let r = c.request(SRGB, P3, PIXELS);
+        for forced in [
+            DeliveryError::Rejected,
+            DeliveryError::Saturated,
+            DeliveryError::Unavailable,
+            DeliveryError::Indeterminate,
+        ] {
+            let mut engine = Prism::new(c.actor.clone(), 1).unwrap();
+            let mut sink = Collector {
+                forced: Some(forced),
+                ..Default::default()
+            };
+            let e = engine
+                .transform(&r, &CancellationToken::default(), &mut sink)
+                .unwrap_err();
+            assert_eq!(e.error, Error::DeliveryFailed);
+            assert_eq!(e.operation_error, None);
+            assert_eq!(
+                e.delivery.unwrap_err(),
+                hsk_studio_observe::Error::Delivery(forced)
+            );
+            assert_eq!(e.diagnostic_state.dropped_attempts, 1);
+            assert_eq!(
+                e.diagnostic_state.reconciliation_required,
+                forced == DeliveryError::Indeterminate
+            );
+            assert!(sink.frames.is_empty());
+        }
+    });
+}
+#[test]
+fn cache_scope_capacity_hit_and_explicit_recovery() {
+    bounded_case("cache", || {
+        let c = Context::new();
+        let mut engine = Prism::new(c.actor.clone(), 1).unwrap();
+        let r = c.request(SRGB, P3, PIXELS);
+        let first = engine
+            .transform(&r, &CancellationToken::default(), &mut Collector::default())
+            .unwrap();
+        let second = engine
+            .transform(&r, &CancellationToken::default(), &mut Collector::default())
+            .unwrap();
+        assert!(second.receipt.cache_hit);
+        assert_eq!(first.pixels, second.pixels);
+        assert_eq!(engine.cache_stats().hits, 1);
+        let reverse = c.request(P3, SRGB, PIXELS);
+        assert_eq!(
+            engine
+                .transform(
+                    &reverse,
+                    &CancellationToken::default(),
+                    &mut Collector::default()
+                )
+                .unwrap_err()
+                .error,
+            Error::CacheFull
+        );
+        assert_eq!(engine.cache_stats().entries, 1);
+        engine.clear_cache();
+        assert_eq!(engine.cache_stats().entries, 0);
+        assert!(
+            engine
+                .transform(
+                    &reverse,
+                    &CancellationToken::default(),
+                    &mut Collector::default()
+                )
+                .is_ok()
+        );
+        let mut other = c.request(SRGB, P3, PIXELS);
+        let actor = ActorContext::new(
+            "other",
+            "principal",
+            "owner-account",
+            "owner-principal",
+            "space",
+            "session",
+        )
+        .unwrap();
+        other.actor = &actor;
+        assert_eq!(
+            engine
+                .transform(
+                    &other,
+                    &CancellationToken::default(),
+                    &mut Collector::default()
+                )
+                .unwrap_err()
+                .error,
+            Error::ContextMismatch
+        );
+    });
+}
+#[test]
+fn bounded_resources_and_shared_descriptor() {
+    bounded_case("bounds-descriptor", || {
+        let c = Context::new();
+        assert!(matches!(
+            Prism::new(c.actor.clone(), 0),
+            Err(Error::InvalidBudget)
+        ));
+        assert!(matches!(
+            Prism::new(c.actor.clone(), MAX_CACHE_ENTRIES + 1),
+            Err(Error::InvalidBudget)
+        ));
+        let bytes = vec![0; MAX_PROFILE_BYTES + 1];
+        reject(&c.request(&bytes, P3, PIXELS), Error::ProfileLimit);
+        let pixels = vec![[0.; 3]; MAX_PIXELS + 1];
+        reject(&c.request(SRGB, P3, &pixels), Error::PixelLimit);
+        reject(&c.request(SRGB, P3, &[]), Error::PixelLimit);
+        assert!(DESCRIPTOR.contains("same descriptor"));
+        assert!(DESCRIPTOR.contains("cross-host bit-identical promotion"));
+        assert!(DESCRIPTOR.contains("65536"));
+    });
+}
