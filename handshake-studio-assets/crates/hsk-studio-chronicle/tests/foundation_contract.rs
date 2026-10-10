@@ -1093,8 +1093,10 @@ fn detail_actual_value_budget_and_unavailable_rejections() {
             wrong.reads[0].expected_value = PropertyValue::String("private-wrong-read".into());
             let value_error = run(&wrong, &s, &v).unwrap_err();
             let unavailable = run(&p, &s, &[]).unwrap_err();
-            let mut budget = Budget::default();
-            budget.reads = 0;
+            let budget = Budget {
+                reads: 0,
+                ..Budget::default()
+            };
             let budget_error = prepare(
                 &p,
                 &s,
