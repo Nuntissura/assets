@@ -1809,7 +1809,7 @@ macro_rules! foreach_group {
             $meter.step()?;
             $($body)*;
             $start = $end;
-            $end = $buffer.group_end($start, $group_func, $meter)?;
+            $end = if $start < count { $buffer.group_end($start, $group_func, $meter)? } else { count };
         }
     }};
 }

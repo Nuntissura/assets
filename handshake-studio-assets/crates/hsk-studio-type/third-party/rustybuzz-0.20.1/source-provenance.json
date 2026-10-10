@@ -387,7 +387,7 @@
     },
     {
       "path": "hb/buffer.rs",
-      "sha256": "20e52316c3e4a18d5ffbcfcc6a8314c63faf72abeef7d7f1b642f6f840f0a8e4",
+      "sha256": "5ab9075af1436bc6138b9da9edd9d7343a9be910e898c326aef8088d42df54e0",
       "declared_module_graph": true
     },
     {
@@ -783,5 +783,15 @@
     ],
     "change": "trailing whitespace only",
     "compiler": "parent reported library and owning-test check green; unchanged semantic inputs, no rerun by owner"
+  },
+  "arabic_positive_remediation": {
+    "finding_id": "MT-35536-FINDING-ARABIC-POSITIVE-V1",
+    "source_cause": "foreach_group final start=end=count unconditionally called bounded group_end(count), whose start>=len guard refuses InternalInvariant; non-ASCII form_clusters reaches this before substitution. Upstream group_end allowed unused terminal sentinel.",
+    "patch": "Only foreach_group skips query at terminal start==count, setting end=count. Nonterminal Context call, bounds guard and iteration metering unchanged.",
+    "selected_callsites": [
+      "ot_shape.rs form_clusters two grapheme branches: cluster metadata/flags only, no len mutation",
+      "ot_shape.rs propagate_flags: mask metadata only, no len mutation"
+    ],
+    "verification": "rustfmt1.97.1 exit0; parent compile and independent Arabic positive runtime pending"
   }
 }
