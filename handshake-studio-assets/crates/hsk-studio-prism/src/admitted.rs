@@ -214,15 +214,24 @@ fn reserve<A: ProviderAdmission>(
     bytes: u64,
     t: &CancellationToken,
 ) -> Result<A::Reservation, Error> {
+    canceled(t)?;
+    let lease = reserve_without_cancellation(admission, bytes)?;
+    canceled(t)?;
+    Ok(lease)
+}
+// Construction has no caller cancellation token; creating a default token here
+// would allocate an unadmitted Arc even when admission rejects the constructor.
+fn reserve_without_cancellation<A: ProviderAdmission>(
+    admission: &A,
+    bytes: u64,
+) -> Result<A::Reservation, Error> {
     if !admission.synchronous_retirement() {
         return Err(Error::UnsupportedAdmission);
     }
-    canceled(t)?;
     let lease = admission.reserve(bytes)?;
     if lease.reserved_bytes() < bytes {
         return Err(Error::AdmissionDenied);
     }
-    canceled(t)?;
     Ok(lease)
 }
 // Field order matters: owned allocation drops BEFORE its accounting token.
@@ -275,7 +284,7 @@ impl<A: ProviderAdmission> AdmittedPrism<A> {
             actor_bytes(actor),
             bytes_for::<AdmittedEntry<A::Reservation>>(cache_entries)?,
         )?;
-        let lease = reserve(&admission, cost, &CancellationToken::default())?;
+        let lease = reserve_without_cancellation(&admission, cost)?;
         Ok(Self {
             actor: actor.clone(),
             capacity: cache_entries,

@@ -865,6 +865,7 @@ fn admitted_denial_precedes_parser_and_partial_admission_rolls_back() {
             let construction = AdmittedPrism::new(&c.actor, 1, a.clone());
             if denied_call == 1 {
                 assert!(matches!(construction, Err(Error::AdmissionDenied)));
+                assert_eq!(a.ledger.calls.load(SeqCst), 1);
                 assert_eq!(live(&a), 0);
                 continue;
             }
