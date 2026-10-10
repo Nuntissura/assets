@@ -1,0 +1,18 @@
+[package]
+name = "hsk-studio-observe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "observe-consumer"
+path = "examples/observe-consumer.rs"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/hsk-studio-accord"]
+members = ["crates/hsk-studio-accord", "crates/hsk-studio-observe"]
 
 [workspace.package]
 version = "0.1.0"
