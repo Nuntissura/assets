@@ -2,6 +2,12 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
 
+/// Explicit owner-held titles take precedence; derived labels never mutate draft metadata.
+pub fn resolve_draft_title<'a>(title: &'a str, fallback: &'a str) -> &'a str {
+    let title = title.trim();
+    if title.is_empty() { fallback.trim() } else { title }
+}
+
 // Decimal strings preserve u64 counters across JSON/JavaScript boundaries.
 mod counter {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -641,6 +647,18 @@ impl WritingSession {
             self.expanded = true;
         }
         Ok(self.expanded)
+    }
+    /// Title and body remain one owner-held draft. A title keeps its editor discoverable.
+    pub fn present_draft(&mut self, fence: &WritingFence, utf16_units: u32, line_count: u32, body_is_empty: bool, title: &str) -> Result<bool, Error> {
+        self.validate(fence)?;
+        if self.composition.is_some() || self.pending_save.is_some() {
+            return Ok(self.expanded);
+        }
+        if !title.trim().is_empty() {
+            self.expanded = true;
+            return Ok(true);
+        }
+        self.present_content(fence, utf16_units, line_count, body_is_empty)
     }
     /// Explicit compact presentation retains the same native editor and lookup state.
     pub fn compact(&mut self) -> Result<(), Error> {

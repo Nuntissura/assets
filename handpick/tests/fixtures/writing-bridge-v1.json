@@ -1619,5 +1619,134 @@
         }
       ]
     }
-  ]
+  ,
+{
+  "max_pins": 1,
+  "session": "title-draft",
+  "context": "private",
+  "steps": [
+    {
+      "op": "bind",
+      "args": [
+        "editor-a",
+        "1"
+      ]
+    },
+    {
+      "op": "fence",
+      "store": "f"
+    },
+    {
+      "expect": true,
+      "args": [
+        "$f",
+        0,
+        1,
+        true,
+        "  My idea  "
+      ],
+      "op": "presentDraft"
+    },
+    {
+      "store": "same",
+      "expect": {
+        "session": "title-draft",
+        "generation": "1",
+        "context": "private",
+        "editor": "editor-a",
+        "revision": "1"
+      },
+      "op": "fence"
+    },
+    {
+      "expect": false,
+      "args": [
+        "$f",
+        0,
+        1,
+        true,
+        "  "
+      ],
+      "op": "presentDraft"
+    },
+    {
+      "error": "Stale",
+      "args": [
+        "$f",
+        0,
+        1,
+        true,
+        "My idea"
+      ],
+      "op": "presentDraft"
+    },
+    {
+      "op": "fence",
+      "store": "fresh"
+    },
+    {
+      "expect": false,
+      "args": [
+        "$fresh",
+        0,
+        1,
+        false,
+        ""
+      ],
+      "op": "presentDraft"
+    },
+    {
+      "expect": true,
+      "args": [
+        "$fresh",
+        0,
+        1,
+        false,
+        "恢复标题"
+      ],
+      "op": "presentDraft"
+    },
+    {
+      "store": "ime",
+      "args": [
+        "$fresh"
+      ],
+      "op": "beginComposition"
+    },
+    {
+      "op": "fence",
+      "store": "during"
+    },
+    {
+      "expect": true,
+      "args": [
+        "$during",
+        0,
+        1,
+        true,
+        ""
+      ],
+      "op": "presentDraft"
+    },
+    {
+      "op": "endComposition",
+      "args": [
+        "$ime"
+      ]
+    },
+    {
+      "expect": false,
+      "args": [
+        "$during",
+        0,
+        1,
+        true,
+        ""
+      ],
+      "op": "presentDraft"
+    }
+  ],
+  "name": "optional-title-presentation"
+}
+]
 }

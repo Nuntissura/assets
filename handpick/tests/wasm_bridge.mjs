@@ -9,10 +9,14 @@ if (!gluePath) throw new Error('Generated Handpick web glue path is required');
 const glue = await import(pathToFileURL(resolve(gluePath)).href);
 glue.initSync({ module: await readFile(join(dirname(resolve(gluePath)), 'handpick_bg.wasm')) });
 const fixtures = JSON.parse(await readFile(new URL('./fixtures/writing-bridge-v1.json', import.meta.url), 'utf8'));
+assert.equal(glue.resolveDraftTitle('  My idea  ', 'first body'), 'My idea');
+assert.equal(glue.resolveDraftTitle('My idea', 'edited body'), 'My idea');
+assert.equal(glue.resolveDraftTitle(' \n\t', '  first body  '), 'first body');
+assert.throws(() => glue.resolveDraftTitle('x'.repeat(65537), ''), error => String(error) === 'PayloadLimit');
 assert.equal(fixtures.version, 'handpick.v1');
 assert.ok(fixtures.scenarios.length > 0);
 const jsonReturns = new Set(['fence', 'pins', 'beginLookup', 'beginComposition', 'pendingSave', 'selected']);
-const jsonArgs = new Map([['edited', [0]], ['beginComposition', [0]], ['endComposition', [0]], ['submit', [0]], ['acknowledge', [0]], ['deliver', [0, 3]], ['select', [0, 1]], ['expandIfEmpty', [0]], ['expandForProse', [0]], ['presentContent', [0]]]);
+const jsonArgs = new Map([['edited', [0]], ['beginComposition', [0]], ['endComposition', [0]], ['submit', [0]], ['acknowledge', [0]], ['deliver', [0, 3]], ['select', [0, 1]], ['expandIfEmpty', [0]], ['expandForProse', [0]], ['presentContent', [0]], ['presentDraft', [0]]]);
 function substitute(value, vars) {
   if (typeof value === 'string' && value.startsWith('$')) {
     assert.ok(vars.has(value.slice(1)), 'Missing fixture variable');
@@ -56,6 +60,8 @@ try {
     assert.throws(() => invalid.presentContent(before, 160, metric, false), error => String(error) === 'InvalidWire');
   }
   for (const flag of [null, undefined, 0, 1, 'false', {}]) assert.throws(() => invalid.presentContent(before, 0, 1, flag), error => String(error) === 'InvalidWire');
+  for (const flag of [null, undefined, 0, 1, 'false', {}]) assert.throws(() => invalid.presentDraft(before, 0, 1, flag, 'Title'), error => String(error) === 'InvalidWire');
+  assert.throws(() => invalid.presentDraft(before, 0, 1, true, 'x'.repeat(65537)), error => String(error) === 'PayloadLimit');
   assert.throws(() => invalid.edited('secret malformed input', '2'), error => String(error) === 'InvalidWire');
   assert.throws(() => invalid.edited('x'.repeat(65537), '2'), error => String(error) === 'PayloadLimit');
   assert.throws(() => invalid.edited(before, '01'), error => String(error) === 'InvalidRevision');

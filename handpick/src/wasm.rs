@@ -6,6 +6,14 @@ use wasm_bindgen::prelude::*;
 const MAX_WIRE_BYTES: usize = 65_536;
 const MAX_WASM_PINS: usize = 1_024;
 
+#[wasm_bindgen(js_name = resolveDraftTitle)]
+pub fn resolve_title(title: &str, fallback: &str) -> Result<String, JsValue> {
+    if title.len() > MAX_WIRE_BYTES || fallback.len() > MAX_WIRE_BYTES {
+        return Err(reject("PayloadLimit"));
+    }
+    Ok(resolve_draft_title(title, fallback).to_owned())
+}
+
 fn reject(code: &str) -> JsValue {
     JsValue::from_str(code)
 }
@@ -306,6 +314,17 @@ impl WasmWritingSession {
         }
         let is_empty = is_empty.as_bool().ok_or_else(|| reject("InvalidWire"))?;
         self.inner.present_content(&read(fence_json)?, utf16_units as u32, line_count as u32, is_empty).map_err(core_error)
+    }
+    #[wasm_bindgen(js_name = presentDraft)]
+    pub fn present_draft(&mut self, fence_json: &str, utf16_units: f64, line_count: f64, body_is_empty: JsValue, title: &str) -> Result<bool, JsValue> {
+        for metric in [utf16_units, line_count] {
+            if !metric.is_finite() || metric.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&metric) {
+                return Err(reject("InvalidWire"));
+            }
+        }
+        if title.len() > MAX_WIRE_BYTES { return Err(reject("PayloadLimit")); }
+        let body_is_empty = body_is_empty.as_bool().ok_or_else(|| reject("InvalidWire"))?;
+        self.inner.present_draft(&read(fence_json)?, utf16_units as u32, line_count as u32, body_is_empty, title).map_err(core_error)
     }
     pub fn deliver(
         &mut self,

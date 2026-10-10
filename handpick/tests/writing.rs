@@ -1,5 +1,21 @@
 use handpick::*;
 
+#[test]
+fn writing_optional_title_preserves_explicit_metadata_and_pending_save() {
+    assert_eq!(resolve_draft_title("  My idea  ", "first body"), "My idea");
+    assert_eq!(resolve_draft_title("My idea", "edited body"), "My idea");
+    assert_eq!(resolve_draft_title(" \n\t", "  first body  "), "first body");
+    assert_eq!(resolve_draft_title("", ""), "");
+    let mut session = session("title-save");
+    let fence = session.fence().unwrap();
+    session.present_draft(&fence, 0, 1, true, "Title only").unwrap();
+    let editor = session.editor().map(|(id, revision)| (id.clone(), revision));
+    session.submit(intent(&session)).unwrap();
+    assert!(session.present_draft(&fence, 0, 1, true, "").unwrap());
+    assert_eq!(session.editor().map(|(id, revision)| (id.clone(), revision)), editor);
+    assert_eq!(session.fence().unwrap(), fence);
+}
+
 fn session(name: &str) -> WritingSession {
     let mut session = WritingSession::new(
         ContextId::new("private").unwrap(),
