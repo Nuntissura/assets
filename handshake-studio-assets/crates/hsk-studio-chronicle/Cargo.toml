@@ -1,0 +1,19 @@
+[package]
+name = "hsk-studio-chronicle"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+schemars = { version = "=1.2.2", default-features = false, features = ["std", "derive"] }
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"

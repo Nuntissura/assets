@@ -62,6 +62,18 @@ name = "hsk-studio-accord"
 version = "0.1.0"
 
 [[package]]
+name = "hsk-studio-chronicle"
+version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-folio",
+ "hsk-studio-observe",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hsk-studio-folio"
 version = "0.1.0"
 dependencies = [
