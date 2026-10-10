@@ -550,7 +550,7 @@ impl SinkPort for Capture {
         if let Some(e) = self.failure {
             return Err(e);
         }
-        if self.frames.len() >= 1 {
+        if !self.frames.is_empty() {
             return Err(DeliveryError::Saturated);
         }
         self.frames.push(b.to_vec());
