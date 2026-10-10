@@ -440,6 +440,19 @@ fn detail_v2_closed_fields_and_legacy_bytes_preserved() {
             )
             .unwrap();
         let bytes = &sink.frames[0];
+        let mut expected_v2 = expected.clone();
+        expected_v2[4] = 2;
+        expected_v2[5] = 3;
+        expected_v2[6] = 1;
+        expected_v2.extend_from_slice(&[3, 12, 1]);
+        for count in [1u32, 1, 0, 0, 0] {
+            expected_v2.extend_from_slice(&count.to_be_bytes());
+        }
+        expected_v2.extend_from_slice(&[1, 1]);
+        let layer = "SLYR-019abcde-0000-7000-8000-000000000001";
+        expected_v2.extend_from_slice(&(layer.len() as u16).to_be_bytes());
+        expected_v2.extend_from_slice(layer.as_bytes());
+        assert_eq!(*bytes, expected_v2);
         assert_eq!(bytes[4], 2);
         let mut reader = Cursor::new(bytes);
         reader.set_position(48);
@@ -534,4 +547,427 @@ fn detail_invalid_address_counts_and_delivery_refused_safely() {
             );
         },
     );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ResourceFrame {
+    outcome: u8,
+    disposition: u8,
+    code: u8,
+    epoch: u64,
+    counts: [u32; 3],
+    tile_limit: u32,
+    bytes: [u64; 3],
+    byte_limit: u64,
+    address: Option<(String, String, i64, i64)>,
+}
+// External-style collector consumes documented v3 bytes without a producer serializer.
+fn collect_resource(frame: &[u8]) -> ResourceFrame {
+    assert!(frame.len() <= 2048);
+    let mut reader = Cursor::new(frame);
+    let mut header = [0; 8];
+    reader.read_exact(&mut header).unwrap();
+    assert_eq!(&header[..4], b"HSKO");
+    assert_eq!(header[4], 3);
+    assert_eq!(header[7], 0);
+    assert!((2..=4).contains(&header[5]));
+    assert!(header[6] <= 4);
+    reader.set_position(48);
+    for _ in 0..7 {
+        let mut len = [0; 2];
+        reader.read_exact(&mut len).unwrap();
+        let len = u16::from_be_bytes(len);
+        assert!(len <= 128);
+        reader.set_position(reader.position() + len as u64);
+    }
+    let mut tags = [0; 3];
+    reader.read_exact(&mut tags).unwrap();
+    assert!((1..=4).contains(&tags[0]));
+    assert!(tags[1] <= 13);
+    assert!(tags[2] <= 1);
+    let mut b = [0; 8];
+    reader.read_exact(&mut b).unwrap();
+    let epoch = u64::from_be_bytes(b);
+    let mut counts = [0; 3];
+    for count in &mut counts {
+        let mut b = [0; 4];
+        reader.read_exact(&mut b).unwrap();
+        *count = u32::from_be_bytes(b);
+    }
+    let mut b = [0; 4];
+    reader.read_exact(&mut b).unwrap();
+    let tile_limit = u32::from_be_bytes(b);
+    assert!(counts[0] <= 1_048_576 && tile_limit <= 1_048_576);
+    assert!(counts[1] <= counts[0] && counts[1] <= tile_limit && counts[2] <= counts[1]);
+    let mut bytes = [0; 3];
+    for count in &mut bytes {
+        let mut b = [0; 8];
+        reader.read_exact(&mut b).unwrap();
+        *count = u64::from_be_bytes(b);
+    }
+    let mut b = [0; 8];
+    reader.read_exact(&mut b).unwrap();
+    let byte_limit = u64::from_be_bytes(b);
+    assert!(
+        bytes[0]
+            .checked_add(bytes[1])
+            .and_then(|n| n.checked_add(bytes[2]))
+            .unwrap()
+            <= byte_limit
+    );
+    let address = if tags[2] == 1 {
+        let mut property = [0; 1];
+        reader.read_exact(&mut property).unwrap();
+        assert_eq!(property[0], 1);
+        let mut strings = Vec::new();
+        for _ in 0..2 {
+            let mut len = [0; 2];
+            reader.read_exact(&mut len).unwrap();
+            let n = u16::from_be_bytes(len) as usize;
+            assert!(n > 0 && n <= 128);
+            let mut s = vec![0; n];
+            reader.read_exact(&mut s).unwrap();
+            strings.push(String::from_utf8(s).unwrap());
+        }
+        assert!(strings[0].starts_with("SLYR-"));
+        assert!(
+            strings[1]
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        );
+        let mut b = [0; 8];
+        reader.read_exact(&mut b).unwrap();
+        let column = i64::from_be_bytes(b);
+        reader.read_exact(&mut b).unwrap();
+        let row = i64::from_be_bytes(b);
+        Some((strings.remove(0), strings.remove(0), column, row))
+    } else {
+        None
+    };
+    assert_eq!(reader.position() as usize, frame.len());
+    ResourceFrame {
+        outcome: header[5],
+        disposition: tags[0],
+        code: tags[1],
+        epoch,
+        counts,
+        tile_limit,
+        bytes,
+        byte_limit,
+        address,
+    }
+}
+#[test]
+fn resource_v3_actual_tile_tuple_epoch_bytes_and_privacy() {
+    bounded_case(
+        "resource_v3_actual_tile_tuple_epoch_bytes_and_privacy",
+        || {
+            let layer = "SLYR-019abcde-0000-7000-8000-000000000001";
+            let address = TileAddress::new(
+                DomainId::parse(layer).unwrap(),
+                "tile_01-A",
+                i64::MIN,
+                i64::MAX,
+            )
+            .unwrap();
+            let counts = ResourceCounts::new([2, 2, 1], 2, [4096, 1024, 4096], 9216).unwrap();
+            let detail = ResourceDetail::new(
+                ResourceDisposition::Changed,
+                None,
+                Some(address),
+                99,
+                counts,
+            )
+            .unwrap();
+            let mut emitter = observe(0, 0);
+            let mut sink = CollectorSink::new(0);
+            let receipt = emitter
+                .emit_resource(
+                    event(Outcome::Success),
+                    &detail,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap();
+            assert_eq!(receipt.outcome, Outcome::Success);
+            assert_eq!(
+                collect_resource(&sink.frames[0]),
+                ResourceFrame {
+                    outcome: 2,
+                    disposition: 1,
+                    code: 0,
+                    epoch: 99,
+                    counts: [2, 2, 1],
+                    tile_limit: 2,
+                    bytes: [4096, 1024, 4096],
+                    byte_limit: 9216,
+                    address: Some((layer.into(), "tile_01-A".into(), i64::MIN, i64::MAX))
+                }
+            );
+            assert!(
+                !sink.frames[0]
+                    .windows(b"PROJECT-TEXT-SECRET-DO-NOT-EMIT".len())
+                    .any(|w| w == b"PROJECT-TEXT-SECRET-DO-NOT-EMIT")
+            );
+            assert_eq!(sink.classes, [DeliveryClass::Terminal]);
+            assert!(emitter.state().terminal_closed);
+            assert_eq!(
+                emitter.emit_resource(
+                    event(Outcome::Success),
+                    &detail,
+                    &CancellationToken::default(),
+                    &mut sink
+                ),
+                Err(Error::Closed)
+            );
+        },
+    );
+}
+#[test]
+fn resource_v3_closed_address_count_byte_and_disposition_negatives() {
+    bounded_case(
+        "resource_v3_closed_address_count_byte_and_disposition_negatives",
+        || {
+            let layer = DomainId::parse("SLYR-019abcde-0000-7000-8000-000000000001").unwrap();
+            for key in ["", "a/b", "a.b", "a\\b", "private label", "λ"] {
+                assert_eq!(
+                    TileAddress::new(layer.clone(), key, 0, 0),
+                    Err(Error::InvalidDetail)
+                );
+            }
+            assert_eq!(
+                TileAddress::new(layer.clone(), &"a".repeat(129), 0, 0),
+                Err(Error::InvalidDetail)
+            );
+            assert!(TileAddress::new(layer, &"a".repeat(128), -1, 2).is_ok());
+            assert_eq!(
+                TileAddress::new(
+                    DomainId::parse("SART-019abcde-0000-7000-8000-000000000001").unwrap(),
+                    "tile",
+                    0,
+                    0
+                ),
+                Err(Error::InvalidDetail)
+            );
+            for (tiles, limit) in [
+                ([2, 3, 0], 3),
+                ([2, 2, 3], 2),
+                ([2, 2, 0], 1),
+                ([MAX_DETAIL_COUNT + 1, 0, 0], 0),
+                ([0, 0, 0], MAX_DETAIL_COUNT + 1),
+            ] {
+                assert_eq!(
+                    ResourceCounts::new(tiles, limit, [0; 3], 0),
+                    Err(Error::InvalidDetail)
+                );
+            }
+            assert_eq!(
+                ResourceCounts::new([1, 1, 1], 1, [2, 3, 4], 8),
+                Err(Error::InvalidDetail)
+            );
+            assert_eq!(
+                ResourceCounts::new([1, 1, 1], 1, [u64::MAX, 1, 0], u64::MAX),
+                Err(Error::InvalidDetail)
+            );
+            let changed = ResourceCounts::new([1, 1, 1], 1, [0; 3], 0).unwrap();
+            assert_eq!(
+                ResourceDetail::new(
+                    ResourceDisposition::Rejected,
+                    Some(ResourceCode::Validation),
+                    None,
+                    0,
+                    changed
+                ),
+                Err(Error::InvalidDetail)
+            );
+            assert_eq!(
+                ResourceDetail::new(ResourceDisposition::NoChange, None, None, 0, changed),
+                Err(Error::InvalidDetail)
+            );
+            let empty = ResourceCounts::new([0; 3], 0, [0; 3], 0).unwrap();
+            assert_eq!(
+                ResourceDetail::new(ResourceDisposition::Changed, None, None, 0, empty),
+                Err(Error::InvalidDetail)
+            );
+            assert_eq!(
+                ResourceDetail::new(
+                    ResourceDisposition::ReconciliationRequired,
+                    None,
+                    None,
+                    0,
+                    empty
+                ),
+                Err(Error::InvalidDetail)
+            );
+            let rejected = ResourceDetail::new(
+                ResourceDisposition::Rejected,
+                Some(ResourceCode::StaleEpoch),
+                None,
+                10,
+                empty,
+            )
+            .unwrap();
+            let mut emitter = observe(0, 0);
+            let mut sink = CollectorSink::new(0);
+            assert_eq!(
+                emitter.emit_resource(
+                    event(Outcome::Success),
+                    &rejected,
+                    &CancellationToken::default(),
+                    &mut sink
+                ),
+                Err(Error::InvalidDetail)
+            );
+            assert!(sink.frames.is_empty());
+        },
+    );
+}
+#[test]
+fn resource_v3_reconciliation_cancel_and_reserved_terminal_delivery() {
+    bounded_case(
+        "resource_v3_reconciliation_cancel_and_reserved_terminal_delivery",
+        || {
+            let counts = ResourceCounts::new([1, 1, 1], 1, [16, 4, 16], 36).unwrap();
+            let pending = ResourceDetail::new(
+                ResourceDisposition::ReconciliationRequired,
+                Some(ResourceCode::Unavailable),
+                None,
+                8,
+                counts,
+            )
+            .unwrap();
+            let mut emitter = observe(0, 0);
+            let mut sink = CollectorSink::new(0);
+            let receipt = emitter
+                .emit_resource(
+                    event(Outcome::Failure(FailureCode::Unavailable)),
+                    &pending,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap();
+            assert_eq!(receipt.outcome, Outcome::Failure(FailureCode::Unavailable));
+            let frame = collect_resource(&sink.frames[0]);
+            assert_eq!((frame.disposition, frame.code), (4, 2));
+            assert_eq!(emitter.state().acknowledged, 1);
+            assert!(!emitter.state().reconciliation_required);
+            let detail =
+                ResourceDetail::new(ResourceDisposition::Changed, None, None, 8, counts).unwrap();
+            let token = CancellationToken::default();
+            token.cancel();
+            let mut emitter = observe(0, 0);
+            let mut sink = CollectorSink::new(0);
+            assert_eq!(
+                emitter.emit(
+                    event(Outcome::Progress),
+                    &CancellationToken::default(),
+                    &mut sink
+                ),
+                Err(Error::Saturated)
+            );
+            let receipt = emitter
+                .emit_resource(event(Outcome::Success), &detail, &token, &mut sink)
+                .unwrap();
+            assert_eq!(receipt.outcome, Outcome::Canceled);
+            let frame = collect_resource(&sink.frames[0]);
+            assert_eq!((frame.outcome, frame.disposition, frame.epoch), (4, 1, 8));
+            assert_eq!(emitter.state().canceled_delivered, 1);
+            for error in [
+                DeliveryError::Rejected,
+                DeliveryError::Unavailable,
+                DeliveryError::Indeterminate,
+            ] {
+                let mut emitter = observe(0, 0);
+                let mut sink = CollectorSink::new(0);
+                sink.forced = Some(error);
+                assert_eq!(
+                    emitter.emit_resource(
+                        event(Outcome::Success),
+                        &detail,
+                        &CancellationToken::default(),
+                        &mut sink
+                    ),
+                    Err(Error::Delivery(error))
+                );
+                assert_eq!(emitter.state().acknowledged, 0);
+                assert!(sink.frames.is_empty());
+                if error == DeliveryError::Indeterminate {
+                    assert!(emitter.state().reconciliation_required);
+                    assert_eq!(
+                        emitter.emit_resource(
+                            event(Outcome::Success),
+                            &detail,
+                            &CancellationToken::default(),
+                            &mut sink
+                        ),
+                        Err(Error::ReconciliationRequired)
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn resource_v3_nochange_and_closed_rejection_codes() {
+    bounded_case("resource_v3_nochange_and_closed_rejection_codes", || {
+        let counts = ResourceCounts::new([2, 2, 0], 2, [0, 4, 0], 4).unwrap();
+        let detail =
+            ResourceDetail::new(ResourceDisposition::NoChange, None, None, 19, counts).unwrap();
+        let mut emitter = observe(0, 0);
+        let mut sink = CollectorSink::new(0);
+        emitter
+            .emit_resource(
+                event(Outcome::Success),
+                &detail,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap();
+        let frame = collect_resource(&sink.frames[0]);
+        assert_eq!(
+            (frame.disposition, frame.code, frame.counts, frame.bytes),
+            (2, 0, [2, 2, 0], [0, 4, 0])
+        );
+        for (code, expected) in [
+            (ResourceCode::StaleEpoch, 5),
+            (ResourceCode::LeaseUnavailable, 6),
+            (ResourceCode::UnsupportedFinalization, 7),
+        ] {
+            let counts = ResourceCounts::new([2, 0, 0], 1, [0; 3], 0).unwrap();
+            let address = TileAddress::new(
+                DomainId::parse("SLYR-019abcde-0000-7000-8000-000000000001").unwrap(),
+                &"a".repeat(128),
+                -7,
+                -9,
+            )
+            .unwrap();
+            let detail = ResourceDetail::new(
+                ResourceDisposition::Rejected,
+                Some(code),
+                Some(address),
+                20,
+                counts,
+            )
+            .unwrap();
+            let mut emitter = observe(0, 0);
+            let mut sink = CollectorSink::new(0);
+            emitter
+                .emit_resource(
+                    event(Outcome::Failure(FailureCode::Unavailable)),
+                    &detail,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap();
+            let frame = collect_resource(&sink.frames[0]);
+            assert_eq!(
+                (frame.disposition, frame.code, frame.counts),
+                (3, expected, [2, 0, 0])
+            );
+            let address = frame.address.unwrap();
+            assert_eq!(address.1.len(), 128);
+            assert_eq!((address.2, address.3), (-7, -9));
+        }
+    });
 }
