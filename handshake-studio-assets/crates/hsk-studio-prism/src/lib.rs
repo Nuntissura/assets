@@ -92,6 +92,51 @@ pub struct ProfileInput<'a> {
     pub bytes: &'a [u8],
     pub expected_sha256: [u8; 32],
 }
+/// Validated transfer classification, not a caller label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transfer {
+    LinearLight,
+    Encoded,
+}
+impl Transfer {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::LinearLight => "linear_light",
+            Self::Encoded => "encoded",
+        }
+    }
+}
+/// Only the validated engine inspection port can construct this descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileDescriptor {
+    profile_id: DomainId,
+    sha256: [u8; 32],
+    transfer: Transfer,
+}
+impl ProfileDescriptor {
+    pub fn profile_id(&self) -> &DomainId {
+        &self.profile_id
+    }
+    pub fn sha256(&self) -> &[u8; 32] {
+        &self.sha256
+    }
+    pub const fn transfer(&self) -> Transfer {
+        self.transfer
+    }
+    pub const fn engine_name(&self) -> &'static str {
+        ENGINE_NAME
+    }
+    pub const fn engine_version(&self) -> &'static str {
+        ENGINE_VERSION
+    }
+    /// Match both identity and exact profile content before using this classification.
+    pub fn matches(&self, input: ProfileInput<'_>) -> bool {
+        input.bytes.len() <= MAX_PROFILE_BYTES
+            && self.profile_id == *input.profile_id
+            && self.sha256 == input.expected_sha256
+            && self.sha256 == profile_hash(input.bytes)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Intent {
     RelativeColorimetric,
@@ -167,6 +212,12 @@ pub struct Failure {
     pub diagnostic_state: hsk_studio_observe::State,
 }
 pub trait ColorEngine: Send + Sync {
+    /// Pure bounded validation; no transform, cache admission or telemetry publication.
+    fn inspect_profile(
+        &self,
+        input: ProfileInput<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<ProfileDescriptor, Error>;
     fn transform(
         &mut self,
         request: &TransformRequest<'_>,
@@ -417,6 +468,27 @@ impl SinkPort for ForwardSink<'_> {
     }
 }
 impl ColorEngine for Prism {
+    fn inspect_profile(
+        &self,
+        input: ProfileInput<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<ProfileDescriptor, Error> {
+        canceled(cancel)?;
+        let profile = parse_profile(input)?;
+        canceled(cancel)?;
+        let transfer = match &profile.red_trc {
+            Some(ToneReprCurve::Parametric(values)) if values.as_slice() == [1.0] => {
+                Transfer::LinearLight
+            }
+            _ => Transfer::Encoded,
+        };
+        Ok(ProfileDescriptor {
+            profile_id: input.profile_id.clone(),
+            sha256: profile_hash(input.bytes),
+            transfer,
+        })
+    }
+
     fn transform(
         &mut self,
         r: &TransformRequest<'_>,
@@ -519,4 +591,4 @@ impl ColorEngine for Prism {
     }
 }
 /// Same owned descriptor feeds CLI help, models, manual and Argus adapters.
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PRISM","descriptor_version":1,"command":"prism-consumer","api":"ColorEngine: Send + Sync; immutable TransformRequest and caller SinkPort","purpose":"Display-class RGB ICCv4 matrix/analytical matching parametric-TRC relative-colorimetric f32 conversion; only desc,cprt,wtpt,chad,rXYZ,gXYZ,bXYZ,rTRC,gTRC,bTRC tags admitted","input":"--source FILE --destination FILE --source-hash SHA256 --destination-hash SHA256 --pixels FILE --depth 32 --intent relative_colorimetric --revision U64 --expected-revision U64; whitespace RGB triples; also required --source-id SCPF-UUIDv7 --destination-id SCPF-UUIDv7 --resource-id DOMAIN-UUIDv7 --correlation U64 --account ID --principal ID --owner-account ID --owner-principal ID --access-space ID --session ID; optional --cancel --reject-sink","output":"Local JSON numeric RGB output, profile IDs/hashes, engine/version/options, revision/correlation/cache-hit and Observe delivery state; exit2 failure; no numeric success after delivery failure","bounds":{"profile_bytes":65536,"pixels":4096,"cache_entries":8,"test_case_seconds":30},"options":{"engine":"moxcms","version":"0.9.1","default_features":false,"features":["extended_range"],"cicp":false,"fixed_point":false,"extended_range_rgb_xyz":true,"bpc":false,"input_channels":"finite0..1","output_channels":"finite unclamped floats"},"reject":"malformed/hash/profile-id/unsupported profile,intent,BPC,depth/nonfinite/range/stale/context/cache-limit/cancel/engine/delivery","recovery":"Correct input/revision; select supported profiles; clear caller cache or create bounded engine; reconcile indeterminate telemetry through owning sink before retry","privacy":"Profile bytes, paths, pixels, labels and private text never enter Observe telemetry; caller owns grants","pending":["full StudioColorProfile wire decoding","render materialization","cross-host bit-identical promotion","LUT","OCIO","softproof","gamut","BPC","host authorization and embedding"],"manual_route":"same descriptor","argus_route":"same descriptor plus receipt/cache_stats/diagnostic_state"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PRISM","descriptor_version":1,"command":"prism-consumer","api":"ColorEngine: Send + Sync; inspect_profile returns opaque validated ID/hash/transfer descriptor; immutable TransformRequest and caller SinkPort","purpose":"Display-class RGB ICCv4 matrix/analytical matching parametric-TRC relative-colorimetric f32 conversion; only desc,cprt,wtpt,chad,rXYZ,gXYZ,bXYZ,rTRC,gTRC,bTRC tags admitted","inspection":"--inspect --source FILE --source-hash SHA256 --source-id SCPF-UUIDv7; optional --cancel; pure validation, no telemetry/cache; linear_light only matching type0 gamma1, otherwise admitted profile encoded; errors exit2","input":"--source FILE --destination FILE --source-hash SHA256 --destination-hash SHA256 --pixels FILE --depth 32 --intent relative_colorimetric --revision U64 --expected-revision U64; whitespace RGB triples; also required --source-id SCPF-UUIDv7 --destination-id SCPF-UUIDv7 --resource-id DOMAIN-UUIDv7 --correlation U64 --account ID --principal ID --owner-account ID --owner-principal ID --access-space ID --session ID; optional --cancel --reject-sink","output":"Local JSON numeric RGB output, profile IDs/hashes, engine/version/options, revision/correlation/cache-hit and Observe delivery state; exit2 failure; no numeric success after delivery failure","bounds":{"profile_bytes":65536,"pixels":4096,"cache_entries":8,"test_case_seconds":30},"options":{"engine":"moxcms","version":"0.9.1","default_features":false,"features":["extended_range"],"cicp":false,"fixed_point":false,"extended_range_rgb_xyz":true,"bpc":false,"input_channels":"finite0..1","output_channels":"finite unclamped floats"},"reject":"malformed/hash/profile-id/unsupported profile,intent,BPC,depth/nonfinite/range/stale/context/cache-limit/cancel/engine/delivery","recovery":"Correct input/revision; select supported profiles; clear caller cache or create bounded engine; reconcile indeterminate telemetry through owning sink before retry","privacy":"Profile bytes, paths, pixels, labels and private text never enter Observe telemetry; caller owns grants","pending":["full StudioColorProfile wire decoding","render materialization","cross-host bit-identical promotion","LUT","OCIO","softproof","gamut","BPC","host authorization and embedding"],"manual_route":"same descriptor","argus_route":"same descriptor plus receipt/cache_stats/diagnostic_state"}"#;

@@ -73,12 +73,15 @@ fn run() -> Result<(), &'static str> {
     let mut values = BTreeMap::new();
     let mut cancel_flag = false;
     let mut reject = false;
+    let mut inspect = false;
     let mut i = 0;
     while i < args.len() {
         let key = &args[i];
-        if ["--cancel", "--reject-sink"].contains(&key.as_str()) {
+        if ["--cancel", "--reject-sink", "--inspect"].contains(&key.as_str()) {
             let flag = if key == "--cancel" {
                 &mut cancel_flag
+            } else if key == "--inspect" {
+                &mut inspect
             } else {
                 &mut reject
             };
@@ -121,6 +124,71 @@ fn run() -> Result<(), &'static str> {
         i += 2;
     }
     let source = read_bounded(get(&values, "--source")?, MAX_PROFILE_BYTES)?;
+    if inspect {
+        if reject
+            || values
+                .keys()
+                .any(|k| !["--source", "--source-hash", "--source-id"].contains(&k.as_str()))
+        {
+            return Err("inspection_argument_conflict");
+        }
+        let id = DomainId::parse(get(&values, "--source-id")?).map_err(|_| "invalid_id")?;
+        let actor = ActorContext::new(
+            "inspection",
+            "inspection",
+            "inspection",
+            "inspection",
+            "inspection",
+            "inspection",
+        )
+        .map_err(|_| "invalid_context")?;
+        let engine = Prism::new(actor, 1).map_err(Error::code)?;
+        let token = CancellationToken::default();
+        if cancel_flag {
+            token.cancel();
+        }
+        let inspected = engine.inspect_profile(
+            ProfileInput {
+                profile_id: &id,
+                bytes: &source,
+                expected_sha256: digest(get(&values, "--source-hash")?)?,
+            },
+            &token,
+        );
+        let descriptor = match inspected {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                let output = format!(
+                    "{{\"status\":\"rejected\",\"operation\":\"inspect\",\"error\":\"{}\"}}\n",
+                    error.code()
+                );
+                let mut stdout = io::stdout().lock();
+                stdout
+                    .write_all(output.as_bytes())
+                    .map_err(|_| "consumer_output_indeterminate")?;
+                stdout
+                    .flush()
+                    .map_err(|_| "consumer_output_indeterminate")?;
+                return Err(error.code());
+            }
+        };
+        let output = format!(
+            "{{\"status\":\"inspected\",\"profile_id\":\"{}\",\"sha256\":\"{}\",\"transfer\":\"{}\",\"engine\":\"{}\",\"engine_version\":\"{}\"}}\n",
+            descriptor.profile_id().as_str(),
+            hash_hex(descriptor.sha256()),
+            descriptor.transfer().code(),
+            descriptor.engine_name(),
+            descriptor.engine_version()
+        );
+        let mut stdout = io::stdout().lock();
+        stdout
+            .write_all(output.as_bytes())
+            .map_err(|_| "consumer_output_indeterminate")?;
+        stdout
+            .flush()
+            .map_err(|_| "consumer_output_indeterminate")?;
+        return Ok(());
+    }
     let destination = read_bounded(get(&values, "--destination")?, MAX_PROFILE_BYTES)?;
     let text = read_bounded(get(&values, "--pixels")?, 262144)?;
     let text = std::str::from_utf8(&text).map_err(|_| "pixel_syntax")?;

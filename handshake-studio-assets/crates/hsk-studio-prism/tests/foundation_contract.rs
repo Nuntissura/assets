@@ -541,3 +541,173 @@ fn bounded_resources_and_shared_descriptor() {
         assert!(DESCRIPTOR.contains("65536"));
     });
 }
+
+const LINEAR_SRGB: &[u8] = include_bytes!("profiles/sRGB-linear-v4.icc");
+const LINEAR_P3: &[u8] = include_bytes!("profiles/DisplayP3-linear-v4.icc");
+#[test]
+fn validated_transfer_inspection_identity_hash_and_encoded() {
+    bounded_case("inspection", || {
+        let c = Context::new();
+        let engine = Prism::new(c.actor.clone(), 1).unwrap();
+        for (bytes, expected) in [
+            (LINEAR_SRGB, Transfer::LinearLight),
+            (LINEAR_P3, Transfer::LinearLight),
+            (SRGB, Transfer::Encoded),
+            (P3, Transfer::Encoded),
+        ] {
+            let input = ProfileInput {
+                profile_id: &c.source,
+                bytes,
+                expected_sha256: profile_hash(bytes),
+            };
+            let d = engine
+                .inspect_profile(input, &CancellationToken::default())
+                .unwrap();
+            assert_eq!(d.transfer(), expected);
+            assert_eq!(d.profile_id(), &c.source);
+            assert_eq!(d.sha256(), &profile_hash(bytes));
+            assert_eq!(d.engine_name(), ENGINE_NAME);
+            assert_eq!(d.engine_version(), ENGINE_VERSION);
+            assert!(d.matches(input));
+            assert!(!d.matches(ProfileInput {
+                profile_id: &c.destination,
+                ..input
+            }));
+            assert!(!d.matches(ProfileInput {
+                expected_sha256: [0; 32],
+                ..input
+            }));
+            assert!(!d.matches(ProfileInput {
+                bytes: b"changed",
+                ..input
+            }));
+        }
+        assert_eq!(engine.cache_stats().entries, 0);
+    });
+}
+#[test]
+fn inspection_rejects_malformed_hash_unsupported_and_cancel_without_mutation() {
+    bounded_case("inspection_reject", || {
+        let c = Context::new();
+        let engine = Prism::new(c.actor.clone(), 1).unwrap();
+        let original = LINEAR_SRGB.to_vec();
+        let input = ProfileInput {
+            profile_id: &c.source,
+            bytes: LINEAR_SRGB,
+            expected_sha256: profile_hash(LINEAR_SRGB),
+        };
+        let token = CancellationToken::default();
+        assert_eq!(
+            engine
+                .inspect_profile(
+                    ProfileInput {
+                        expected_sha256: [0; 32],
+                        ..input
+                    },
+                    &token
+                )
+                .unwrap_err(),
+            Error::HashMismatch
+        );
+        let malformed = b"not ICC";
+        assert_eq!(
+            engine
+                .inspect_profile(
+                    ProfileInput {
+                        bytes: malformed,
+                        expected_sha256: profile_hash(malformed),
+                        ..input
+                    },
+                    &token
+                )
+                .unwrap_err(),
+            Error::MalformedProfile
+        );
+        let mut unsupported = original.clone();
+        unsupported[8] = 2;
+        assert_eq!(
+            engine
+                .inspect_profile(
+                    ProfileInput {
+                        bytes: &unsupported,
+                        expected_sha256: profile_hash(&unsupported),
+                        ..input
+                    },
+                    &token
+                )
+                .unwrap_err(),
+            Error::UnsupportedProfile
+        );
+        token.cancel();
+        assert_eq!(
+            engine.inspect_profile(input, &token).unwrap_err(),
+            Error::Canceled
+        );
+        assert_eq!(LINEAR_SRGB, original);
+        assert_eq!(engine.cache_stats().entries, 0);
+    });
+}
+// Linear derivative oracle: only decoded ICC XYZ fixed16.16 matrices, independent f64 solve.
+fn linear_oracle(source: &[u8], destination: &[u8], pixel: [f32; 3]) -> [f64; 3] {
+    for bytes in [source, destination] {
+        for name in [b"rTRC", b"gTRC", b"bTRC"] {
+            let (offset, size, _) = tag(bytes, name);
+            assert_eq!(size, 16);
+            assert_eq!(&bytes[offset..offset + 4], b"para");
+            assert_eq!(&bytes[offset + 8..offset + 12], &[0; 4]);
+            assert_eq!(fixed(bytes, offset + 12), 1.0);
+        }
+    }
+    let src = matrix(source);
+    let dst = inverse(matrix(destination));
+    let xyz: [f64; 3] =
+        std::array::from_fn(|r| (0..3).map(|c| src[r][c] * f64::from(pixel[c])).sum());
+    std::array::from_fn(|r| (0..3).map(|c| dst[r][c] * xyz[c]).sum())
+}
+#[test]
+fn linear_cross_profile_both_directions_independent_matrix_oracle_unclamped() {
+    bounded_case("linear_transform", || {
+        assert_eq!(
+            hash_hex(&profile_hash(LINEAR_SRGB)),
+            "4813c25a76abcf572f146c5a36b56ed83526c82327ee9f863553bf1e99c8b64d"
+        );
+        assert_eq!(
+            hash_hex(&profile_hash(LINEAR_P3)),
+            "138ca6af5c8709c8dab4123a48ba2509ac8c89e53004f0909fc948f87f37f3f7"
+        );
+        let c = Context::new();
+        let mut nonidentity = false;
+        let mut outside_unit = false;
+        for (source, destination) in [(LINEAR_SRGB, LINEAR_P3), (LINEAR_P3, LINEAR_SRGB)] {
+            let original = PIXELS.to_vec();
+            let request = c.request(source, destination, PIXELS);
+            let mut engine = Prism::new(c.actor.clone(), 1).unwrap();
+            let mut sink = Collector::default();
+            let result = engine
+                .transform(&request, &CancellationToken::default(), &mut sink)
+                .unwrap();
+            for (input, actual) in PIXELS.iter().zip(&result.pixels) {
+                let expected = linear_oracle(source, destination, *input);
+                for channel in 0..3 {
+                    assert!(
+                        (f64::from(actual[channel]) - expected[channel]).abs() < 0.0001,
+                        "actual={actual:?} expected={expected:?}"
+                    );
+                    nonidentity |= (actual[channel] - input[channel]).abs() > 0.01;
+                    outside_unit |= actual[channel] < -0.01 || actual[channel] > 1.01;
+                }
+            }
+            assert_eq!(result.receipt.source_sha256, profile_hash(source));
+            assert_eq!(result.receipt.destination_sha256, profile_hash(destination));
+            assert!(!result.receipt.options.clamped_output);
+            assert_eq!(result.receipt.engine_version, ENGINE_VERSION);
+            assert_eq!(result.receipt.intent, Intent::RelativeColorimetric);
+            assert_eq!(result.receipt.bit_depth, 32);
+            assert!(!result.receipt.black_point_compensation);
+            assert_eq!(PIXELS, original);
+            assert_eq!(sink.frames.len(), 1);
+        }
+        assert!(nonidentity);
+        assert!(outside_unit);
+    });
+}
