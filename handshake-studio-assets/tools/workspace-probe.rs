@@ -446,6 +446,231 @@ fn inherited_text<'a>(d: &'a Document, w: &'a Document, key: &str) -> Result<&'a
         v => v.text(),
     }
 }
+const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
+const MAX_REGISTRY_RECORDS: usize = 256;
+fn stable_version(version: &str) -> bool {
+    let parts: Vec<_> = version.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+fn pure_registry_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && !name.ends_with("-sys")
+        && !name.ends_with("_sys")
+        && ![
+            "handshake_core",
+            "handshake_native",
+            "surrealdb",
+            "rocksdb",
+            "egui",
+            "eframe",
+            "wgpu",
+            "image",
+            "ffmpeg-sys-next",
+            "libsqlite3-sys",
+        ]
+        .contains(&name)
+}
+fn as_map(value: &Value) -> Result<&Table> {
+    if let Value::Map(map) = value {
+        Ok(map)
+    } else {
+        Err("registry_policy_expected_inline_map".into())
+    }
+}
+fn text_key<'a>(map: &'a Table, key: &str) -> Result<&'a str> {
+    map.get(key).ok_or("registry_policy_missing_key")?.text()
+}
+fn exact_keys(map: &Table, allowed: &[&str]) -> Result<()> {
+    if map.keys().any(|k| !allowed.contains(&k.as_str())) {
+        Err("registry_policy_unknown_field".into())
+    } else {
+        Ok(())
+    }
+}
+fn registry_closure(
+    owner: &str,
+    alias: &str,
+    dep: &str,
+    specification: &Value,
+    workspace: &Document,
+    lock: &BTreeMap<(String, String), Table>,
+    observed: &mut BTreeSet<String>,
+) -> Result<()> {
+    // Narrow permission: current source foundation authorizes these pure direct libraries only.
+    if owner != "hsk-studio-folio" || !["schemars", "serde", "serde_json"].contains(&dep) {
+        return Err("registry_owner_or_direct_library_not_approved".into());
+    }
+    let actual = as_map(specification)?;
+    exact_keys(
+        actual,
+        &[
+            "version",
+            "features",
+            "default-features",
+            "optional",
+            "package",
+        ],
+    )?;
+    if actual
+        .get("default-features")
+        .ok_or("registry_default_policy_missing")?
+        .boolean()?
+    {
+        return Err("registry_implicit_default_features_forbidden".into());
+    }
+    let policy = workspace.table(&format!("workspace.metadata.studio.registry.{owner}"))?;
+    exact_keys(policy, &["direct", "locked"])?;
+    let direct = as_map(
+        policy
+            .get("direct")
+            .ok_or("registry_direct_policy_missing")?,
+    )?;
+    if direct.len() > 3
+        || direct
+            .keys()
+            .any(|n| !["schemars", "serde", "serde_json"].contains(&n.as_str()))
+    {
+        return Err("registry_unapproved_direct_policy".into());
+    }
+    let pin = as_map(direct.get(dep).ok_or("registry_direct_pin_missing")?)?;
+    exact_keys(pin, &["version", "features", "default-features"])?;
+    let version = text_key(pin, "version")?;
+    if !stable_version(version) || text_key(actual, "version")? != format!("={version}") {
+        return Err("registry_exact_version_pin_required".into());
+    }
+    if pin
+        .get("default-features")
+        .ok_or("registry_pin_default_policy_missing")?
+        .boolean()?
+    {
+        return Err("registry_pin_defaults_forbidden".into());
+    }
+    let mut actual_features = actual
+        .get("features")
+        .ok_or("registry_features_missing")?
+        .list()?;
+    let mut expected_features = pin
+        .get("features")
+        .ok_or("registry_pin_features_missing")?
+        .list()?;
+    unique(&actual_features, "registry_duplicate_features")?;
+    unique(&expected_features, "registry_duplicate_pin_features")?;
+    actual_features.sort();
+    expected_features.sort();
+    if actual_features != expected_features {
+        return Err("registry_feature_policy_mismatch".into());
+    }
+    // Aliases must explicitly name the approved library; no private registry or renamed provider.
+    if alias != dep && actual.get("package").is_none() {
+        return Err("registry_alias_package_missing".into());
+    }
+    let pins = as_map(policy.get("locked").ok_or("registry_lock_policy_missing")?)?;
+    if pins.len() > MAX_REGISTRY_RECORDS {
+        return Err("registry_record_limit".into());
+    }
+    let root = (dep.to_owned(), version.to_owned());
+    let mut graph = RegistryGraph::new();
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(identity) = pending.pop() {
+        if !visited.insert(identity.clone()) {
+            continue;
+        }
+        if visited.len() > MAX_REGISTRY_RECORDS {
+            return Err("registry_record_limit".into());
+        }
+        let (name, version) = &identity;
+        if !pure_registry_name(name) || !stable_version(version) {
+            return Err("registry_unapproved_native_or_identity".into());
+        }
+        let locked = lock.get(&identity).ok_or("registry_package_not_locked")?;
+        let key = format!("{name}@{version}");
+        let pinned = as_map(pins.get(&key).ok_or("registry_transitive_pin_missing")?)?;
+        exact_keys(pinned, &["source", "checksum", "kind"])?;
+        if text_key(pinned, "kind")? != "pure-rust" {
+            return Err("registry_nonpure_policy_forbidden".into());
+        }
+        if text_key(locked, "source")? != CRATES_IO_SOURCE
+            || text_key(pinned, "source")? != CRATES_IO_SOURCE
+        {
+            return Err("registry_source_not_crates_io".into());
+        }
+        let checksum = text_key(locked, "checksum")?;
+        if !hex(checksum, 64) || text_key(pinned, "checksum")? != checksum {
+            return Err("registry_checksum_pin_mismatch".into());
+        }
+        observed.insert(format!("{owner}:{key}:{checksum}"));
+        if observed.len() > MAX_REGISTRY_RECORDS {
+            return Err("registry_record_limit".into());
+        }
+        if let Some(dependencies) = locked.get("dependencies") {
+            for edge in dependencies.list()? {
+                let fields: Vec<_> = edge.split_whitespace().collect();
+                let target = match fields.as_slice() {
+                    [name] => {
+                        let candidates: Vec<_> = lock
+                            .keys()
+                            .filter(|(candidate, _)| candidate.as_str() == *name)
+                            .cloned()
+                            .collect();
+                        if candidates.len() != 1 {
+                            return Err("registry_lock_dependency_ambiguous".into());
+                        }
+                        candidates[0].clone()
+                    }
+                    [name, version] => ((*name).to_owned(), (*version).to_owned()),
+                    [name, version, source] if *source == format!("({CRATES_IO_SOURCE})") => {
+                        ((*name).to_owned(), (*version).to_owned())
+                    }
+                    _ => return Err("registry_lock_edge_unsupported_source".into()),
+                };
+                graph
+                    .entry(identity.clone())
+                    .or_default()
+                    .insert(target.clone());
+                pending.push(target);
+                if pending.len() > MAX_REGISTRY_RECORDS {
+                    return Err("registry_edge_limit".into());
+                }
+            }
+        }
+    }
+    let mut done = BTreeSet::new();
+    for identity in &visited {
+        registry_acyclic(identity, &graph, &mut BTreeSet::new(), &mut done)?;
+    }
+    Ok(())
+}
+type LockIdentity = (String, String);
+type RegistryGraph = BTreeMap<LockIdentity, BTreeSet<LockIdentity>>;
+fn registry_acyclic(
+    node: &LockIdentity,
+    graph: &RegistryGraph,
+    visiting: &mut BTreeSet<LockIdentity>,
+    done: &mut BTreeSet<LockIdentity>,
+) -> Result<()> {
+    if done.contains(node) {
+        return Ok(());
+    }
+    if !visiting.insert(node.clone()) {
+        return Err("registry_dependency_cycle".into());
+    }
+    if let Some(edges) = graph.get(node) {
+        for next in edges {
+            registry_acyclic(next, graph, visiting, done)?;
+        }
+    }
+    visiting.remove(node);
+    done.insert(node.clone());
+    Ok(())
+}
 fn inspect(args: &[String]) -> Result<String> {
     let mut opts = BTreeMap::new();
     let mut selected = vec![];
@@ -557,12 +782,16 @@ fn inspect(args: &[String]) -> Result<String> {
     let mut graph = BTreeMap::<String, BTreeSet<String>>::new();
     let mut pending = selected.clone();
     let mut visited = BTreeSet::new();
-    let mut locked = BTreeSet::new();
+    let mut locked = BTreeMap::new();
+    let mut registry_observed = BTreeSet::new();
     for (section, table) in &lock.tables {
         if section == "package[]" {
             let name = table.get("name").ok_or("lock_package_name")?.text()?;
             let version = table.get("version").ok_or("lock_package_version")?.text()?;
-            if !locked.insert((name.to_owned(), version.to_owned())) {
+            if locked
+                .insert((name.to_owned(), version.to_owned()), table.clone())
+                .is_some()
+            {
                 return Err("duplicate_lock_package".into());
             }
         }
@@ -583,7 +812,7 @@ fn inspect(args: &[String]) -> Result<String> {
             return Err("package_name_mismatch".into());
         }
         let version = inherited_text(&d, &manifest, "version")?;
-        if !locked.contains(&(package.clone(), version.to_owned())) {
+        if !locked.contains_key(&(package.clone(), version.to_owned())) {
             return Err("selected_package_not_locked".into());
         }
         let requested = features.get(&package).cloned().unwrap_or_default();
@@ -630,7 +859,18 @@ fn inspect(args: &[String]) -> Result<String> {
                     let mut spec = spec.clone();
                     let inherited = matches!(&spec,Value::Map(m) if m.get("workspace").is_some_and(|v|v.boolean()==Ok(true)));
                     if inherited {
+                        if as_map(&spec)?.len() != 1 {
+                            return Err("inherited_dependency_override_unsupported".into());
+                        }
                         spec = manifest.get("workspace.dependencies", alias)?.clone()
+                    }
+                    if let Value::Map(fields) = &spec {
+                        if fields.keys().any(|k| {
+                            ["git", "branch", "tag", "rev", "registry", "registry-index"]
+                                .contains(&k.as_str())
+                        }) {
+                            return Err("dependency_source_override_forbidden".into());
+                        }
                     }
                     let (dep, path, optional) = match &spec {
                         Value::Map(m) => (
@@ -685,7 +925,15 @@ fn inspect(args: &[String]) -> Result<String> {
                         graph.entry(package.clone()).or_default().insert(dep.into());
                         pending.push(dep.into());
                     } else {
-                        return Err("external_dependency_requires_owning_pin_policy".into());
+                        registry_closure(
+                            &package,
+                            alias,
+                            dep,
+                            &spec,
+                            &manifest,
+                            &locked,
+                            &mut registry_observed,
+                        )?;
                     }
                 }
             } else if section.starts_with("dependencies.")
@@ -757,19 +1005,20 @@ fn inspect(args: &[String]) -> Result<String> {
         .collect::<Vec<_>>()
         .join(",");
     Ok(format!(
-        "{{\"schema\":\"hsk.studio.workspace-inspection@1\",\"status\":\"accepted\",\"proof_kind\":\"input_selection_only\",\"compiled_packages\":false,\"revision\":{},\"tree\":{},\"toolchain\":{},\"selected\":{},\"closure\":{},\"declared_count\":{},\"materialized_member_count\":{},\"provenance_sha256\":{},\"inputs_sha256\":{{{}}}}}",
+        "{{\"schema\":\"hsk.studio.workspace-inspection@1\",\"status\":\"accepted\",\"proof_kind\":\"input_selection_only\",\"compiled_packages\":false,\"revision\":{},\"tree\":{},\"toolchain\":{},\"selected\":{},\"closure\":{},\"registry_closure\":{},\"declared_count\":{},\"materialized_member_count\":{},\"provenance_sha256\":{},\"inputs_sha256\":{{{}}}}}",
         quoted(revision),
         quoted(tree),
         quoted(TOOLCHAIN),
         strings(selected),
         strings(visited),
+        strings(registry_observed),
         declared.len(),
         members.len(),
         quoted(&sha256(&provenance_bytes)),
         hashes
     ))
 }
-const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","selection":"Explicit registered packages only, no implicit default features. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. External libraries/native providers require future owning pin policies and currently reject; host paths and pure-leaf GPU edges reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":35,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
+const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","selection":"Explicit registered packages only, no implicit default features. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only Folio schemars/serde/serde_json exact inline direct registry pins are approved, with explicit no defaults and exact feature sets. Metadata workspace.metadata.studio.registry.hsk-studio-folio has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":35,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = if args == ["--help"] || args == ["--descriptor"] {
