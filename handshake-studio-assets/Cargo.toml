@@ -1,0 +1,156 @@
+[workspace]
+resolver = "3"
+members = []
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+
+[workspace.metadata.studio]
+schema = 1
+repository = "https://github.com/Nuntissura/assets"
+subtree = "handshake-studio-assets"
+toolchain = "1.97.1"
+declared-members = [
+  "crates/hsk-studio-accord",
+  "crates/hsk-studio-observe",
+  "crates/hsk-studio-folio",
+  "crates/hsk-studio-chronicle",
+  "crates/hsk-studio-prism",
+  "crates/hsk-studio-pigment",
+  "crates/hsk-studio-nib",
+  "crates/hsk-studio-type",
+  "crates/hsk-studio-layout",
+  "crates/hsk-studio-develop",
+  "crates/hsk-studio-components",
+  "crates/hsk-studio-pulse",
+  "crates/hsk-studio-score",
+  "crates/hsk-studio-reel",
+  "crates/hsk-studio-motion",
+  "crates/hsk-studio-composite",
+  "crates/hsk-studio-render-cpu",
+  "crates/hsk-studio-render-gpu",
+  "crates/hsk-studio-package",
+  "crates/hsk-studio-interop-psd",
+  "crates/hsk-studio-interop-vector",
+  "crates/hsk-studio-interop-fig",
+  "crates/hsk-studio-interop-layout",
+  "crates/hsk-studio-interop-media",
+  "crates/hsk-studio-controls",
+  "crates/hsk-studio-session",
+  "crates/hsk-studio-harness",
+  "crates/hsk-studio-kernel-bindings",
+  "crates/hsk-studio-press",
+  "crates/hsk-studio-web",
+  "crates/hsk-studio-score-device",
+  "crates/hsk-studio-score-plugin",
+  "crates/hsk-studio-reel-native",
+  "crates/hsk-studio-interop-lrcat",
+  "crates/hsk-studio-motion-js",
+]
+
+[workspace.metadata.studio.dependencies.hsk-studio-accord]
+allowed = []
+
+[workspace.metadata.studio.dependencies.hsk-studio-observe]
+allowed = ["hsk-studio-accord"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-folio]
+allowed = ["hsk-studio-accord"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-chronicle]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-prism]
+allowed = ["hsk-studio-accord", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-pigment]
+allowed = ["hsk-studio-accord", "hsk-studio-prism", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-nib]
+allowed = ["hsk-studio-accord", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-type]
+allowed = ["hsk-studio-accord", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-layout]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-type", "hsk-studio-nib", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-develop]
+allowed = ["hsk-studio-accord", "hsk-studio-pigment", "hsk-studio-prism", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-components]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-layout", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-pulse]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-score]
+allowed = ["hsk-studio-accord", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-reel]
+allowed = ["hsk-studio-accord", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-motion]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-composite]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-prism", "hsk-studio-pigment", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-render-cpu]
+allowed = ["hsk-studio-accord", "hsk-studio-prism", "hsk-studio-pigment", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-render-gpu]
+allowed = ["hsk-studio-accord", "hsk-studio-prism", "hsk-studio-pigment", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-package]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-psd]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-pigment", "hsk-studio-prism", "hsk-studio-type", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-vector]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-nib", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-fig]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-components", "hsk-studio-type", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-layout]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-layout", "hsk-studio-type", "hsk-studio-prism", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-media]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-controls]
+allowed = ["hsk-studio-accord", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-session]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-chronicle", "hsk-studio-package", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-harness]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-controls", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-kernel-bindings]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-session", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-press]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-web]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-score-device]
+allowed = ["hsk-studio-accord", "hsk-studio-score", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-score-plugin]
+allowed = ["hsk-studio-accord", "hsk-studio-score", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-reel-native]
+allowed = ["hsk-studio-accord", "hsk-studio-reel", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-interop-lrcat]
+allowed = ["hsk-studio-accord", "hsk-studio-folio", "hsk-studio-observe"]
+
+[workspace.metadata.studio.dependencies.hsk-studio-motion-js]
+allowed = ["hsk-studio-accord", "hsk-studio-motion", "hsk-studio-observe"]
