@@ -147,4 +147,64 @@ try {
   richReject(() => rich.validateRelationships(encode(page),'notes',10),'Stale');
   richCheck(decode(rich.delivery('search')),{status:'pending',items:[]});
 } finally { rich.free(); }
-console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks}));
+let pickerChecks = 0;
+const pickerCheck = (actual, expected) => { assert.deepEqual(actual, expected); pickerChecks++; };
+const pickerReject = (fn, code) => { assert.throws(fn, error => String(error) === code); pickerChecks++; };
+for (const purpose of ['navigation', 'commands', 'settings']) {
+  const mode = new glue.WritingSession('private', `mode-${purpose}`, 1);
+  try {
+    mode.bind('editor', '9007199254740993');
+    const stale = mode.beginLookup();
+    pickerCheck(mode.setQueryPurpose(purpose), true);
+    pickerCheck(mode.queryPurpose(), purpose);
+    pickerReject(() => mode.deliver(stale, 'suggestions', 'complete', '[]'), 'Stale');
+    const fence = mode.beginLookup();
+    mode.deliver(fence, 'suggestions', 'complete', '[]');
+    pickerCheck(mode.canExpand(), false);
+    pickerCheck(mode.expandIfEmpty(fence), false);
+    pickerCheck(mode.expandForProse(fence, 200, 2), false);
+    pickerCheck(mode.presentDraft(fence, 200, 2, false, 'Title'), false);
+    mode.expand(); pickerCheck(mode.expanded(), true);
+    pickerCheck(mode.setQueryPurpose('search_write'), true);
+    pickerCheck(mode.expanded(), true);
+    pickerCheck(decode(mode.fence()).revision, '9007199254740993');
+    pickerReject(() => mode.setQueryPurpose('unknown'), 'InvalidWire');
+    const token = mode.beginComposition(mode.fence());
+    pickerReject(() => mode.setQueryPurpose('settings'), 'Stale');
+    mode.endComposition(token);
+  } finally { mode.free(); }
+}
+pickerCheck(decode(glue.parseQuery('> open settings')).purpose, 'commands');
+pickerCheck(decode(glue.parseQuery('type:folder drafts')).purpose, 'navigation');
+pickerCheck(decode(glue.parseQuery('type:settings theme')).purpose, 'settings');
+pickerCheck(decode(glue.parseQuery('an idea to write')).purpose, 'search_write');
+pickerCheck(decode(glue.parseQuery('type:')).incomplete, true);
+pickerReject(() => glue.parseQuery('x'.repeat(65537)), 'TextLimit');
+const picker = new glue.Picker();
+const rows = ['a','b','c','d'].map(id => ({item:item(id),category:'notes',location:'Ideas',highlights:[]}));
+rows.push({item:item('file'),category:'files',highlights:[],preview:{kind:'image',owner_ref:'thumbnail-1'}});
+const coverage = [{category:'notes',status:'complete',loaded:4,total:4},{category:'files',status:'partial',loaded:1,total:null}];
+try {
+  picker.setResults(encode(rows),encode(coverage));
+  pickerCheck(decode(picker.view()).groups.map(group => group.shown), [3,1]);
+  pickerCheck(decode(picker.view()).groups[0].has_more, true);
+  picker.select(encode(item('b').key));
+  picker.setResults(encode([rows[2],rows[1],rows[0],rows[3],rows[4]]),encode(coverage));
+  pickerCheck(decode(picker.view()).selected, item('b').key);
+  picker.showMore('notes'); pickerCheck(decode(picker.view()).groups[0].shown, 4);
+  picker.toggle('notes'); pickerCheck(decode(picker.view()).selected, item('file').key);
+  picker.toggle('notes'); picker.moveSelection(-1); pickerCheck(decode(picker.view()).selected, item('d').key);
+  const before = picker.view();
+  pickerReject(() => picker.setResults(encode(rows),encode([{...coverage[0],loaded:3},coverage[1]])), 'InvalidCoverage');
+  pickerReject(() => picker.setResults(encode(rows),encode([{...coverage[0],total:3},coverage[1]])), 'InvalidCoverage');
+  pickerReject(() => picker.setResults(encode(rows),encode([{...coverage[0],loaded:4.5},coverage[1]])), 'InvalidWire');
+  pickerReject(() => picker.setResults(encode([...rows,rows[0]]),encode(coverage)), 'DuplicateResult');
+  pickerReject(() => picker.setResults(encode([{...rows[4],preview:{kind:'image',owner_ref:'data:image/png;base64,secret'}}]),encode([coverage[1]])), 'InvalidPreview');
+  pickerReject(() => picker.setResults(encode([{...rows[0],item:{...item('unicode'),label:'é'},highlights:[{start:0,end:1}]}]),encode([{...coverage[0],loaded:1,total:1}])), 'InvalidHighlight');
+  pickerReject(() => picker.setResults('x'.repeat(65537),'[]'), 'PayloadLimit');
+  pickerReject(() => picker.toggle('unknown'), 'InvalidWire');
+  pickerReject(() => picker.moveSelection(0.5), 'InvalidWire');
+  pickerCheck(picker.view(), before);
+  picker.setResults('[]','[]'); pickerCheck(decode(picker.view()), {groups:[],selected:null});
+} finally { picker.free(); }
+console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks}));

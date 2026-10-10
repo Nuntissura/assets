@@ -24,13 +24,29 @@ Completion edits reference the original draft revision and a half-open UTF-8 byt
 
 ## Integration and export
 
-No query grammar, ranking policy, database, network, GUI runtime, generated prose, history, auto-save, capture persistence or synchronization is implemented. Shared native-writing prose eligibility is implemented through `expand_for_prose`; hosts own layout and animations. Action descriptors express intent only; discovering or selecting one never executes it. Pins and drafts are in memory and are not a durability promise.
+Shared query grammar and grouped presentation are implemented. Retrieval ranking, database, network, GUI runtime, generated prose, history, auto-save, capture persistence and synchronization remain owner responsibilities. Shared native-writing prose eligibility is implemented through `expand_for_prose`; hosts own layout and animations. Action descriptors express intent only; discovering or selecting one never executes it. Pins and drafts are in memory and are not a durability promise.
 
 Portal and Desktop adapters must authorize suggestions, snippets, counts, pins, opens and capture destinations at their canonical owners. Recheck access before effects. The core's context fence cannot replace database authorization or grant revocation detection. SurrealDB SDK/query/index configuration belongs in owner adapters, which must use the application's pinned version and bound allowlisted queries.
 
 Export this directory as a standalone Rust library, retaining its manifest, source, tests, README and MIT LICENSE. Its MIT package declaration matches the inspected host workspace manifest. Inspect destination authority/layout before publication. Import with a path dependency during development, then bind consumers to an approved exact asset-library revision. No registry publication is implied. Changes to versioned wire contracts require explicit compatibility review; unknown wire versions reject.
 
 This asset repository owns the reusable `handpick` subfolder. From its root, run `cargo test --locked --manifest-path handpick/Cargo.toml`. Build the optional browser library with `cargo build --locked --manifest-path handpick/Cargo.toml --features wasm --target wasm32-unknown-unknown`, generate web glue using matching `wasm-bindgen` CLI 0.2.129 with `--target web`, then run `node handpick/tests/wasm_bridge.mjs path/to/handpick.js`. Keep compiler output and generated bindings outside tracked source. The Portal consumer additionally provides its canonical `tooling/check.ps1 -Profile handpick` runner. Tests cover preservation, scope changes, stale delivery, stable selection, UTF-8 edits, admission and contract round-trips. Product integrations, authorization, rendered behavior and real persistence need separate owner-boundary proof.
+
+</topic>
+
+<topic id="grouped-picker" status="implemented">
+
+## Modes and grouped results
+
+`parse_query` returns bounded words, quoted phrases, `type:`, `tag:`, `in:` and `is:` filters, incomplete/unsupported syntax and `QueryPurpose`. Normalize input to NFC before parsing. Plain input uses `search_write`; `>` selects commands, `type:settings` selects settings, and explicit filters select lookup/navigation. `WritingSession::set_query_purpose` invalidates old delivery fences on changes and preserves the owner-held draft; active IME and pending Save reject changes. Only search/write may automatically expand from prose or completed empty suggestions. Explicit expansion remains available. The WASM bridge exposes `parseQuery`, `setQueryPurpose` and `queryPurpose` with the same semantics.
+
+`Picker` adds notes/files/folders/tags/actions/tasks/feeds groups without changing the original `SearchItem` contract. Supply authorized `PickerItem` metadata and `PickerCoverage`; `loaded` must equal supplied category rows and optional canonical `total` must be at least loaded. Complete retrieval is distinct from complete visible paging. A group initially shows three rows; `show_more` reveals three more loaded rows, while totals above loaded require the owner's paging port. Do not infer canonical zero from collapsed groups, visible previews, absent thumbnails or unloaded pages.
+
+Selection uses `ResultKey`, survives result reorder and preview changes, skips group headings and reconciles to a visible identity on collapse/removal. Reset picker presentation on query/context changes and invalidate retrieval immediately before debounce; admit results through the original Session/WritingSession fences before `set_results`. Picker itself performs no authorization or request fencing. Invalid metadata, counts, duplicate identities and UTF-8 highlight spans reject replacements atomically.
+
+`PreviewReference` holds an opaque owner reference and image/text kind. Hosts resolve it through current authorization and bound download, decoding and cache budgets; never place URLs or image bytes in shared result descriptors. Preview failures affect preview presentation only, never result counts or quicknote transitions. Native adapters retain their canonical retrieval/ranking and rich editor, selection, undo, persistence and recovery.
+
+Validation: native query/picker/mode tests, real WASM boundary assertions and consuming app's authenticated keyboard, grouping, freshness, preview and recovery browser proof. These contracts do not establish Desktop integration or cross-app synchronization.
 
 </topic>
 

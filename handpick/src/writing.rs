@@ -433,6 +433,7 @@ pub struct WritingSession {
     pins: Vec<WritingPin>,
     max_pins: usize,
     pending_save: Option<SaveIntent>,
+    query_purpose: QueryPurpose,
     expanded: bool,
     composition: Option<CompositionToken>,
     results: Session,
@@ -464,6 +465,7 @@ impl WritingSession {
             pins: vec![],
             max_pins: limits.max_pins,
             pending_save: None,
+            query_purpose: QueryPurpose::SearchWrite,
             expanded: false,
             composition: None,
             results,
@@ -492,6 +494,25 @@ impl WritingSession {
     }
     pub fn expanded(&self) -> bool {
         self.expanded
+    }
+    pub fn query_purpose(&self) -> QueryPurpose {
+        self.query_purpose
+    }
+    /// Change lookup purpose without replacing or hiding the owner-held draft.
+    /// Old deliveries are invalidated before the host starts its next request.
+    pub fn set_query_purpose(&mut self, purpose: QueryPurpose) -> Result<bool, Error> {
+        self.active()?;
+        if self.query_purpose == purpose {
+            return Ok(false);
+        }
+        if self.composition.is_some() || self.pending_save.is_some() {
+            return Err(Error::Stale);
+        }
+        let next = self.next()?;
+        self.query_purpose = purpose;
+        self.generation = next;
+        self.results.invalidate();
+        Ok(true)
     }
     pub fn bind(&mut self, editor: EditorId, revision: u64) -> Result<(), Error> {
         self.active()?;
@@ -605,8 +626,10 @@ impl WritingSession {
     /// Host adapters combine all applicable providers before delivering that collection.
     pub fn can_expand(&self) -> bool {
         self.active
+            && self.query_purpose == QueryPurpose::SearchWrite
             && self.editor.is_some()
             && self.composition.is_none()
+            && self.pending_save.is_none()
             && self.results.delivery(Channel::Suggestions).status() == DeliveryStatus::Complete
             && self
                 .results
@@ -626,7 +649,7 @@ impl WritingSession {
     /// Prose intent is independent of result delivery; active lifecycle and IME fences still apply.
     pub fn expand_for_prose(&mut self, fence: &WritingFence, utf16_units: u32, line_count: u32) -> Result<bool, Error> {
         self.validate(fence)?;
-        if self.composition.is_some() || self.pending_save.is_some() || utf16_units == 0 || (utf16_units < 160 && line_count < 2) {
+        if self.query_purpose != QueryPurpose::SearchWrite || self.composition.is_some() || self.pending_save.is_some() || utf16_units == 0 || (utf16_units < 160 && line_count < 2) {
             return Ok(false);
         }
         self.expanded = true;
@@ -643,7 +666,7 @@ impl WritingSession {
             self.expanded = false;
             self.generation = next;
             self.results.invalidate();
-        } else if self.can_expand() || (utf16_units > 0 && (utf16_units >= 160 || line_count >= 2)) {
+        } else if self.can_expand() || (self.query_purpose == QueryPurpose::SearchWrite && utf16_units > 0 && (utf16_units >= 160 || line_count >= 2)) {
             self.expanded = true;
         }
         Ok(self.expanded)
@@ -655,8 +678,10 @@ impl WritingSession {
             return Ok(self.expanded);
         }
         if !title.trim().is_empty() {
-            self.expanded = true;
-            return Ok(true);
+            if self.query_purpose == QueryPurpose::SearchWrite {
+                self.expanded = true;
+            }
+            return Ok(self.expanded);
         }
         self.present_content(fence, utf16_units, line_count, body_is_empty)
     }

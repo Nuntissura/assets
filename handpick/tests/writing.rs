@@ -1,6 +1,77 @@
 use handpick::*;
 
 #[test]
+fn writing_lookup_purpose_never_turns_navigation_or_actions_into_prose() {
+    for purpose in [QueryPurpose::Navigation, QueryPurpose::Commands, QueryPurpose::Settings] {
+        let mut s = session("purpose");
+        assert!(s.set_query_purpose(purpose).unwrap());
+        let fence = s.begin_lookup().unwrap();
+        s.deliver(&fence, Channel::Suggestions, DeliveryStatus::Complete, vec![]).unwrap();
+        assert!(!s.can_expand());
+        assert!(!s.expand_if_empty(&fence).unwrap());
+        assert!(!s.expand_for_prose(&fence, 200, 2).unwrap());
+        assert!(!s.present_content(&fence, 200, 2, false).unwrap());
+        assert!(!s.present_draft(&fence, 200, 2, false, "Explicit title").unwrap());
+        s.expand().unwrap();
+        assert!(s.present_content(&fence, 200, 2, false).unwrap());
+        assert!(s.present_draft(&fence, 0, 1, true, "Explicit title").unwrap());
+        assert!(!s.present_draft(&fence, 0, 1, true, "").unwrap());
+    }
+    let mut s = session("plain");
+    assert_eq!(s.query_purpose(), QueryPurpose::SearchWrite);
+    let fence = s.begin_lookup().unwrap();
+    s.deliver(&fence, Channel::Suggestions, DeliveryStatus::Complete, vec![]).unwrap();
+    assert!(s.expand_if_empty(&fence).unwrap());
+    s.compact().unwrap();
+    assert!(s.expand_for_prose(&fence, 160, 1).unwrap());
+    s.compact().unwrap();
+    assert!(s.present_content(&fence, 5, 2, false).unwrap());
+}
+
+#[test]
+fn writing_purpose_change_fences_delivery_immediately_and_retains_native_draft() {
+    let mut s = session("mode-freshness");
+    let old = s.begin_lookup().unwrap();
+    s.deliver(&old, Channel::Suggestions, DeliveryStatus::Complete, vec![]).unwrap();
+    s.expand().unwrap();
+    let editor = s.editor().map(|(id, revision)| (id.clone(), revision));
+    assert!(s.set_query_purpose(QueryPurpose::Commands).unwrap());
+    assert_eq!(s.query_purpose(), QueryPurpose::Commands);
+    assert!(s.expanded());
+    assert_eq!(s.editor().map(|(id, revision)| (id.clone(), revision)), editor);
+    assert_eq!(s.validate(&old), Err(Error::Stale));
+    assert_eq!(s.deliver(&old, Channel::Suggestions, DeliveryStatus::Complete, vec![]), Err(Error::Stale));
+    assert_eq!(s.delivery(Channel::Suggestions).status(), DeliveryStatus::Pending);
+    let fresh = s.fence().unwrap();
+    assert!(!s.set_query_purpose(QueryPurpose::Commands).unwrap());
+    assert_eq!(s.fence().unwrap(), fresh);
+    s.edited(&fresh, fresh.revision + 1).unwrap();
+    assert_eq!(s.validate(&fresh), Err(Error::Stale));
+    let before_clear = s.fence().unwrap();
+    s.present_content(&before_clear, 0, 1, true).unwrap();
+    assert_eq!(s.validate(&before_clear), Err(Error::Stale));
+    assert!(!s.expanded());
+}
+
+#[test]
+fn writing_purpose_change_cannot_interrupt_ime_or_pending_save() {
+    let mut s = session("mode-ime-save");
+    let token = s.begin_composition(&s.fence().unwrap()).unwrap();
+    let composing = s.fence().unwrap();
+    assert_eq!(s.set_query_purpose(QueryPurpose::Navigation), Err(Error::Stale));
+    assert_eq!(s.query_purpose(), QueryPurpose::SearchWrite);
+    assert_eq!(s.fence().unwrap(), composing);
+    s.end_composition(&token).unwrap();
+    let submitted = intent(&s);
+    s.submit(submitted.clone()).unwrap();
+    assert_eq!(s.set_query_purpose(QueryPurpose::Settings), Err(Error::Stale));
+    assert_eq!(s.pending_save(), Some(&submitted));
+    assert_eq!(s.fence().unwrap(), composing);
+    s.acknowledge(&SaveOutcome { submitted, content: ContentOutcome::Rejected }).unwrap();
+    assert!(s.set_query_purpose(QueryPurpose::Settings).unwrap());
+}
+
+#[test]
 fn writing_optional_title_preserves_explicit_metadata_and_pending_save() {
     assert_eq!(resolve_draft_title("  My idea  ", "first body"), "My idea");
     assert_eq!(resolve_draft_title("My idea", "edited body"), "My idea");

@@ -6,6 +6,60 @@ use wasm_bindgen::prelude::*;
 const MAX_WIRE_BYTES: usize = 65_536;
 const MAX_WASM_PINS: usize = 1_024;
 
+#[wasm_bindgen(js_name = parseQuery)]
+pub fn parse_query_wire(text: &str) -> Result<String, JsValue> {
+    write(&parse_query(text).map_err(|error| reject(&error.to_string()))?)
+}
+
+fn purpose(value: &str) -> Result<QueryPurpose, JsValue> {
+    match value {
+        "search_write" => Ok(QueryPurpose::SearchWrite),
+        "navigation" => Ok(QueryPurpose::Navigation),
+        "commands" => Ok(QueryPurpose::Commands),
+        "settings" => Ok(QueryPurpose::Settings),
+        _ => Err(reject("InvalidWire")),
+    }
+}
+fn category(value: &str) -> Result<ResultCategory, JsValue> {
+    match value {
+        "notes" => Ok(ResultCategory::Notes), "files" => Ok(ResultCategory::Files),
+        "folders" => Ok(ResultCategory::Folders), "tags" => Ok(ResultCategory::Tags),
+        "actions" => Ok(ResultCategory::Actions), "tasks" => Ok(ResultCategory::Tasks),
+        "feeds" => Ok(ResultCategory::Feeds), _ => Err(reject("InvalidWire")),
+    }
+}
+
+/// Effect-free grouped presentation. Hosts fence and authorize before admitting results.
+#[wasm_bindgen(js_name = Picker)]
+pub struct WasmPicker { inner: Picker }
+#[wasm_bindgen(js_class = Picker)]
+impl WasmPicker {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self { Self { inner: Picker::new() } }
+    #[wasm_bindgen(js_name = setResults)]
+    pub fn set_results(&mut self, items_json: &str, coverage_json: &str) -> Result<(), JsValue> {
+        self.inner.set_results(read(items_json)?, read(coverage_json)?).map_err(|error| reject(&error.to_string()))
+    }
+    pub fn toggle(&mut self, category_name: &str) -> Result<(), JsValue> {
+        self.inner.toggle(category(category_name)?); Ok(())
+    }
+    #[wasm_bindgen(js_name = showMore)]
+    pub fn show_more(&mut self, category_name: &str) -> Result<(), JsValue> {
+        self.inner.show_more(category(category_name)?); Ok(())
+    }
+    pub fn select(&mut self, key_json: &str) -> Result<(), JsValue> {
+        self.inner.select(read(key_json)?).map_err(|error| reject(&error.to_string()))
+    }
+    #[wasm_bindgen(js_name = moveSelection)]
+    pub fn move_selection(&mut self, delta: f64) -> Result<(), JsValue> {
+        if !delta.is_finite() || delta.fract() != 0.0 || !(i32::MIN as f64..=i32::MAX as f64).contains(&delta) {
+            return Err(reject("InvalidWire"));
+        }
+        self.inner.move_selection(delta as i32); Ok(())
+    }
+    pub fn view(&self) -> Result<String, JsValue> { write(&self.inner.view()) }
+}
+
 #[wasm_bindgen(js_name = resolveDraftTitle)]
 pub fn resolve_title(title: &str, fallback: &str) -> Result<String, JsValue> {
     if title.len() > MAX_WIRE_BYTES || fallback.len() > MAX_WIRE_BYTES {
@@ -282,6 +336,17 @@ impl WasmWritingSession {
     }
     pub fn expanded(&self) -> bool {
         self.inner.expanded()
+    }
+    #[wasm_bindgen(js_name = setQueryPurpose)]
+    pub fn set_query_purpose(&mut self, value: &str) -> Result<bool, JsValue> {
+        self.inner.set_query_purpose(purpose(value)?).map_err(core_error)
+    }
+    #[wasm_bindgen(js_name = queryPurpose)]
+    pub fn query_purpose(&self) -> String {
+        match self.inner.query_purpose() {
+            QueryPurpose::SearchWrite => "search_write", QueryPurpose::Navigation => "navigation",
+            QueryPurpose::Commands => "commands", QueryPurpose::Settings => "settings",
+        }.into()
     }
     pub fn compact(&mut self) -> Result<(), JsValue> {
         self.inner.compact().map_err(core_error)
