@@ -347,6 +347,7 @@ fn shape<'a>(
         b"Latn" => rb::script::LATIN,
         b"Arab" => rb::script::ARABIC,
         b"Hani" => rb::script::HAN,
+        b"Zyyy" => rb::script::COMMON,
         _ => return Err(Error::UnsupportedProfile),
     };
     let direction = if level % 2 == 0 {
@@ -607,8 +608,18 @@ fn resolved_script(declared: [u8; 4], text: &str, ctx: &Context<'_>) -> Provider
             selected = Some(current);
         }
     }
-    // Common-only input requires an explicit shaping script rather than a locale/default guess.
-    selected.ok_or(Error::UnsupportedProfile)
+    if let Some(script) = selected {
+        return Ok(script);
+    }
+    // A standalone pinned default-ignorable has no strong script. Keep it in
+    // the shaper so removal and original-byte coverage remain provider-derived.
+    for ch in text.chars() {
+        ctx.step()?;
+        if !rb::is_default_ignorable(ch) {
+            return Err(Error::UnsupportedProfile);
+        }
+    }
+    Ok(*b"Zyyy")
 }
 fn points(value: i32, size: f64, scale: u32) -> ProviderResult<f64> {
     let product = f64::from(value) * size;
