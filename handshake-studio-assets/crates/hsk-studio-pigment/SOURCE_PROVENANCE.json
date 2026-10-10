@@ -1,0 +1,52 @@
+{
+  "module": "STUDIO-MODULE-PIGMENT",
+  "implementation": "source-informed bounded leaf adaptation; canonical masked_replace policy, not source-suite parity",
+  "candidate": {
+    "repository": "https://github.com/storytold/photocraft",
+    "commit": "175603a644f10d2e8c61f82a63f7c2659c71dc47",
+    "license": "MIT OR Apache-2.0",
+    "source_files": [
+      "crates/raster/src/lib.rs",
+      "crates/color/src/blend.rs",
+      "crates/paint/src/tile.rs"
+    ],
+    "reused_patterns": [
+      "immutable preimage and affected tile copy-on-write",
+      "row-major per-tile traversal",
+      "explicit straight-alpha math"
+    ],
+    "excluded": [
+      "upstream native-endian packing",
+      "fixed256tile policy",
+      "implicit zero/white defaults",
+      "private app/history/CAS/catalog",
+      "upstream CMS fallback",
+      "GPU/codec"
+    ]
+  },
+  "canonical_policy": "v02.212 STU-CON-027 through STU-CON-031",
+  "pending": [
+    "original-produced brush/blend corpus feature parity",
+    "host artifact/grant/atomic commit/restart proof",
+    "full HDR and richer raster features"
+  ],
+  "reservation_unit": "conservative peak requested owned allocation layouts/capacities, including padding/control/ownership; not RSS or physical heap",
+  "rust_arc_layout": {
+    "rustc_commit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+    "source": "https://raw.githubusercontent.com/rust-lang/rust/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/alloc/src/sync.rs",
+    "sha256": "768776d4a37cfeb28c71a0c6d8b2ad33332d11ceaef7e47cb01463bd71b9048a",
+    "file_lines": "387-405",
+    "implementation": "repr(C,align(2)) AtomicUsize strong/weak header + checked Layout.extend(data).pad_to_align()",
+    "independent_reconciliation": "PENDING"
+  },
+  "prism_route": {
+    "api": "AdmittedPrism<MemoryAdmission>",
+    "fixture_owner": "hsk-studio-prism/tests/profiles",
+    "source": "sRGB-admitted-linear-v4.icc",
+    "source_sha256": "63fc75efa59e9499411634a4298e48fc0f45d073f214a1c1de35fd76241aed27",
+    "destination": "DisplayP3-admitted-linear-v4.icc",
+    "destination_sha256": "c94737d225dec435f0119910080395e63d5efc6a6cbe594507d0c84544becfde",
+    "derivation": "Explicit independently bounded metadata-free derivatives; no runtime stripping or legacy engine fallback",
+    "oracle": "Fixture-only independent signed ICC fixed16.16 XYZ matrices and f64 inverse; no moxcms oracle helpers"
+  }
+}
