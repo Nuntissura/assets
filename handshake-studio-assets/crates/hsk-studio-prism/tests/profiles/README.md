@@ -37,3 +37,13 @@ The linear-pair oracle reads signed fixed16.16 XYZ columns and computes
 from fixture bytes. Both transform directions, primaries, endpoints and interior
 samples use tolerance0.0001 and require nonidentity plus unclamped out-of-gamut
 output. It calls no moxcms parser/evaluator. ICC reference remains the standard above.
+
+Admitted linear derivatives use the same pinned originals, remove desc/cprt table entries
+and payloads, retain matrix/chad/white payloads exactly, use shared para type0 gamma1,
+compact four-byte-aligned tags, update declared size, and zero the old ICC MD5 identifier.
+They exercise the metadata-free admitted route; no input is stripped at runtime.
+
+| Derived profile | Bytes | SHA256 |
+|---|---:|---|
+| sRGB-admitted-linear-v4.icc | 368 | 63fc75efa59e9499411634a4298e48fc0f45d073f214a1c1de35fd76241aed27 |
+| DisplayP3-admitted-linear-v4.icc | 368 | c94737d225dec435f0119910080395e63d5efc6a6cbe594507d0c84544becfde |

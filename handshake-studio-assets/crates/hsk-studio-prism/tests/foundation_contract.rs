@@ -711,3 +711,305 @@ fn linear_cross_profile_both_directions_independent_matrix_oracle_unclamped() {
         assert!(outside_unit);
     });
 }
+
+const ADMITTED_SRGB: &[u8] = include_bytes!("profiles/sRGB-admitted-linear-v4.icc");
+const ADMITTED_P3: &[u8] = include_bytes!("profiles/DisplayP3-admitted-linear-v4.icc");
+#[derive(Default)]
+struct AllocationLedger {
+    live: std::sync::atomic::AtomicU64,
+    calls: std::sync::atomic::AtomicUsize,
+    deny: std::sync::atomic::AtomicUsize,
+    refuse_retire: std::sync::atomic::AtomicBool,
+}
+#[derive(Clone)]
+struct AllocationAdmission {
+    ledger: std::sync::Arc<AllocationLedger>,
+    supported: bool,
+}
+struct AllocationLease {
+    ledger: std::sync::Arc<AllocationLedger>,
+    bytes: u64,
+}
+impl Drop for AllocationLease {
+    fn drop(&mut self) {
+        self.ledger
+            .live
+            .fetch_sub(self.bytes, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl ProviderReservation for AllocationLease {
+    fn reserved_bytes(&self) -> u64 {
+        self.bytes
+    }
+    fn retirement_ready(&self) -> Result<(), Error> {
+        if self
+            .ledger
+            .refuse_retire
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            Err(Error::RetirementUnavailable)
+        } else {
+            Ok(())
+        }
+    }
+}
+impl ProviderAdmission for AllocationAdmission {
+    type Reservation = AllocationLease;
+    fn synchronous_retirement(&self) -> bool {
+        self.supported
+    }
+    fn reserve(&self, bytes: u64) -> Result<AllocationLease, Error> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let call = self.ledger.calls.fetch_add(1, SeqCst) + 1;
+        if self.ledger.deny.load(SeqCst) == call {
+            return Err(Error::AdmissionDenied);
+        }
+        self.ledger.live.fetch_add(bytes, SeqCst);
+        Ok(AllocationLease {
+            ledger: self.ledger.clone(),
+            bytes,
+        })
+    }
+}
+fn allocation_admission() -> AllocationAdmission {
+    AllocationAdmission {
+        ledger: std::sync::Arc::new(AllocationLedger::default()),
+        supported: true,
+    }
+}
+fn live(a: &AllocationAdmission) -> u64 {
+    a.ledger.live.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn admitted_cross_profile_oracle_cache_and_owned_result_lifetimes() {
+    bounded_case("admitted_matrix_and_lifetimes", || {
+        assert_eq!(
+            hash_hex(&profile_hash(ADMITTED_SRGB)),
+            "63fc75efa59e9499411634a4298e48fc0f45d073f214a1c1de35fd76241aed27"
+        );
+        assert_eq!(
+            hash_hex(&profile_hash(ADMITTED_P3)),
+            "c94737d225dec435f0119910080395e63d5efc6a6cbe594507d0c84544becfde"
+        );
+        for (source, destination) in [(ADMITTED_SRGB, ADMITTED_P3), (ADMITTED_P3, ADMITTED_SRGB)] {
+            let c = Context::new();
+            let a = allocation_admission();
+            let mut engine = AdmittedPrism::new(&c.actor, 1, a.clone()).unwrap();
+            let base = live(&a);
+            assert_eq!(base, engine.provider_reserved_bytes());
+            let request = c.request(source, destination, PIXELS);
+            let descriptor = engine
+                .inspect_profile(request.source, &CancellationToken::default())
+                .unwrap();
+            assert_eq!(descriptor.descriptor().transfer(), Transfer::LinearLight);
+            assert_eq!(live(&a), base + descriptor.reserved_bytes());
+            drop(descriptor);
+            assert_eq!(live(&a), base);
+            let first = engine
+                .transform(
+                    &request,
+                    &CancellationToken::default(),
+                    &mut Collector::default(),
+                )
+                .unwrap();
+            let mut different = false;
+            for (input, output) in PIXELS.iter().zip(&first.result().pixels) {
+                let expected = linear_oracle(source, destination, *input);
+                for i in 0..3 {
+                    assert!((f64::from(output[i]) - expected[i]).abs() < 0.0001);
+                }
+                different |= input
+                    .iter()
+                    .zip(output)
+                    .any(|(a, b)| (*a - *b).abs() > 0.01);
+            }
+            assert!(different);
+            assert!(!first.result().receipt.cache_hit);
+            let cached = live(&a) - base - first.reserved_bytes();
+            assert_eq!(cached, analytical_executor_bytes().unwrap());
+            let second = engine
+                .transform(
+                    &request,
+                    &CancellationToken::default(),
+                    &mut Collector::default(),
+                )
+                .unwrap();
+            assert!(second.result().receipt.cache_hit);
+            assert_eq!(
+                live(&a),
+                base + cached + first.reserved_bytes() + second.reserved_bytes()
+            );
+            engine.try_clear_cache().unwrap();
+            assert_eq!(
+                live(&a),
+                base + first.reserved_bytes() + second.reserved_bytes()
+            );
+            drop(engine);
+            assert_eq!(live(&a), first.reserved_bytes() + second.reserved_bytes());
+            assert_eq!(first.result().receipt.source_sha256, profile_hash(source));
+            drop(first);
+            drop(second);
+            assert_eq!(live(&a), 0);
+        }
+    });
+}
+#[test]
+fn admitted_denial_precedes_parser_and_partial_admission_rolls_back() {
+    bounded_case("admitted_denial", || {
+        use std::sync::atomic::Ordering::SeqCst;
+        for denied_call in 1..=4 {
+            let c = Context::new();
+            let a = allocation_admission();
+            a.ledger.deny.store(denied_call, SeqCst);
+            let construction = AdmittedPrism::new(&c.actor, 1, a.clone());
+            if denied_call == 1 {
+                assert!(matches!(construction, Err(Error::AdmissionDenied)));
+                assert_eq!(live(&a), 0);
+                continue;
+            }
+            let mut engine = construction.unwrap();
+            let base = live(&a);
+            // Structurally bounded but singular matrix: parser would fail if called.
+            let mut singular = ADMITTED_SRGB.to_vec();
+            for name in [b"rXYZ", b"gXYZ", b"bXYZ"] {
+                let (offset, _, _) = tag(&singular, name);
+                singular[offset + 8..offset + 20].fill(0);
+            }
+            let r = c.request(&singular, ADMITTED_P3, PIXELS);
+            let mut sink = Collector::default();
+            assert!(matches!(
+                engine.transform(&r, &CancellationToken::default(), &mut sink),
+                Err(Error::AdmissionDenied)
+            ));
+            assert_eq!(live(&a), base);
+            assert!(sink.frames.is_empty());
+            assert_eq!(engine.cache_stats().entries, 0);
+            drop(engine);
+            assert_eq!(live(&a), 0);
+        }
+        let c = Context::new();
+        let mut a = allocation_admission();
+        a.supported = false;
+        assert!(matches!(
+            AdmittedPrism::new(&c.actor, 1, a.clone()),
+            Err(Error::UnsupportedAdmission)
+        ));
+        assert_eq!(a.ledger.calls.load(SeqCst), 0);
+        assert_eq!(live(&a), 0);
+    });
+}
+#[test]
+fn admitted_metadata_cancel_delivery_and_retirement_refusal_preserve_ownership() {
+    bounded_case("admitted_refusals", || {
+        use std::sync::atomic::Ordering::SeqCst;
+        let c = Context::new();
+        let a = allocation_admission();
+        let mut engine = AdmittedPrism::new(&c.actor, 1, a.clone()).unwrap();
+        let base = live(&a);
+        let legacy = c.request(LINEAR_SRGB, LINEAR_P3, PIXELS);
+        let calls = a.ledger.calls.load(SeqCst);
+        assert!(matches!(
+            engine.inspect_profile(legacy.source, &CancellationToken::default()),
+            Err(Error::UnsupportedProfile)
+        ));
+        assert_eq!(a.ledger.calls.load(SeqCst), calls);
+        let r = c.request(ADMITTED_SRGB, ADMITTED_P3, PIXELS);
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        assert!(matches!(
+            engine.transform(&r, &canceled, &mut Collector::default()),
+            Err(Error::Canceled)
+        ));
+        assert_eq!(live(&a), base);
+        for forced in [
+            DeliveryError::Rejected,
+            DeliveryError::Unavailable,
+            DeliveryError::Indeterminate,
+        ] {
+            let mut sink = Collector {
+                frames: Vec::new(),
+                forced: Some(forced),
+            };
+            assert!(
+                matches!(engine.transform(&r,&CancellationToken::default(),&mut sink),Err(Error::DiagnosticDelivery(hsk_studio_observe::Error::Delivery(e))) if e==forced)
+            );
+            assert_eq!(live(&a), base);
+            assert_eq!(engine.cache_stats().entries, 0);
+        }
+        let result = engine
+            .transform(&r, &CancellationToken::default(), &mut Collector::default())
+            .unwrap();
+        drop(result);
+        let retained = live(&a);
+        a.ledger.refuse_retire.store(true, SeqCst);
+        assert_eq!(engine.try_clear_cache(), Err(Error::RetirementUnavailable));
+        assert_eq!(engine.cache_stats().entries, 1);
+        assert_eq!(live(&a), retained);
+        let engine = engine
+            .try_retire()
+            .expect("refusal returns entire provider");
+        assert_eq!(engine.cache_stats().entries, 1);
+        assert_eq!(live(&a), retained);
+        a.ledger.refuse_retire.store(false, SeqCst);
+        assert!(engine.try_retire().is_none());
+        assert_eq!(live(&a), 0);
+    });
+}
+
+struct CancelingAdmission {
+    owner: AllocationAdmission,
+    token: CancellationToken,
+    cancel_call: usize,
+}
+impl ProviderAdmission for CancelingAdmission {
+    type Reservation = AllocationLease;
+    fn synchronous_retirement(&self) -> bool {
+        true
+    }
+    fn reserve(&self, bytes: u64) -> Result<AllocationLease, Error> {
+        let lease = self.owner.reserve(bytes)?;
+        if self
+            .owner
+            .ledger
+            .calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == self.cancel_call
+        {
+            self.token.cancel();
+        }
+        Ok(lease)
+    }
+}
+#[test]
+fn admitted_cancellation_during_partial_admission_retires_every_token() {
+    bounded_case("admitted_partial_cancel", || {
+        for cancel_call in 2..=4 {
+            let c = Context::new();
+            let owner = allocation_admission();
+            let token = CancellationToken::default();
+            let a = CancelingAdmission {
+                owner: owner.clone(),
+                token: token.clone(),
+                cancel_call,
+            };
+            let mut engine = AdmittedPrism::new(&c.actor, 1, a).unwrap();
+            let base = live(&owner);
+            let request = c.request(ADMITTED_SRGB, ADMITTED_P3, PIXELS);
+            let mut sink = Collector::default();
+            assert!(matches!(
+                engine.transform(&request, &token, &mut sink),
+                Err(Error::Canceled)
+            ));
+            assert_eq!(live(&owner), base);
+            assert_eq!(engine.cache_stats().entries, 0);
+            assert!(sink.frames.is_empty());
+            assert_eq!(
+                owner.ledger.calls.load(std::sync::atomic::Ordering::SeqCst),
+                cancel_call
+            );
+            drop(engine);
+            assert_eq!(live(&owner), 0);
+        }
+    });
+}

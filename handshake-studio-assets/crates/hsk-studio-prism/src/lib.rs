@@ -8,6 +8,9 @@ use moxcms::{
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+mod admitted;
+pub use admitted::*;
+
 pub const ENGINE_NAME: &str = "moxcms";
 pub const ENGINE_VERSION: &str = "0.9.1";
 pub const MAX_PROFILE_BYTES: usize = 65_536;
@@ -37,6 +40,10 @@ pub enum Error {
     EngineFailure,
     NonfiniteOutput,
     DeliveryFailed,
+    AdmissionDenied,
+    UnsupportedAdmission,
+    RetirementUnavailable,
+    DiagnosticDelivery(hsk_studio_observe::Error),
 }
 impl Error {
     pub const fn code(self) -> &'static str {
@@ -62,6 +69,10 @@ impl Error {
             Self::EngineFailure => "engine_failure",
             Self::NonfiniteOutput => "nonfinite_output",
             Self::DeliveryFailed => "delivery_failed",
+            Self::AdmissionDenied => "admission_denied",
+            Self::UnsupportedAdmission => "unsupported_admission",
+            Self::RetirementUnavailable => "retirement_unavailable",
+            Self::DiagnosticDelivery(_) => "diagnostic_delivery",
         }
     }
 }
@@ -591,4 +602,4 @@ impl ColorEngine for Prism {
     }
 }
 /// Same owned descriptor feeds CLI help, models, manual and Argus adapters.
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PRISM","descriptor_version":1,"command":"prism-consumer","api":"ColorEngine: Send + Sync; inspect_profile returns opaque validated ID/hash/transfer descriptor; immutable TransformRequest and caller SinkPort","purpose":"Display-class RGB ICCv4 matrix/analytical matching parametric-TRC relative-colorimetric f32 conversion; only desc,cprt,wtpt,chad,rXYZ,gXYZ,bXYZ,rTRC,gTRC,bTRC tags admitted","inspection":"--inspect --source FILE --source-hash SHA256 --source-id SCPF-UUIDv7; optional --cancel; pure validation, no telemetry/cache; linear_light only matching type0 gamma1, otherwise admitted profile encoded; errors exit2","input":"--source FILE --destination FILE --source-hash SHA256 --destination-hash SHA256 --pixels FILE --depth 32 --intent relative_colorimetric --revision U64 --expected-revision U64; whitespace RGB triples; also required --source-id SCPF-UUIDv7 --destination-id SCPF-UUIDv7 --resource-id DOMAIN-UUIDv7 --correlation U64 --account ID --principal ID --owner-account ID --owner-principal ID --access-space ID --session ID; optional --cancel --reject-sink","output":"Local JSON numeric RGB output, profile IDs/hashes, engine/version/options, revision/correlation/cache-hit and Observe delivery state; exit2 failure; no numeric success after delivery failure","bounds":{"profile_bytes":65536,"pixels":4096,"cache_entries":8,"test_case_seconds":30},"options":{"engine":"moxcms","version":"0.9.1","default_features":false,"features":["extended_range"],"cicp":false,"fixed_point":false,"extended_range_rgb_xyz":true,"bpc":false,"input_channels":"finite0..1","output_channels":"finite unclamped floats"},"reject":"malformed/hash/profile-id/unsupported profile,intent,BPC,depth/nonfinite/range/stale/context/cache-limit/cancel/engine/delivery","recovery":"Correct input/revision; select supported profiles; clear caller cache or create bounded engine; reconcile indeterminate telemetry through owning sink before retry","privacy":"Profile bytes, paths, pixels, labels and private text never enter Observe telemetry; caller owns grants","pending":["full StudioColorProfile wire decoding","render materialization","cross-host bit-identical promotion","LUT","OCIO","softproof","gamut","BPC","host authorization and embedding"],"manual_route":"same descriptor","argus_route":"same descriptor plus receipt/cache_stats/diagnostic_state"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PRISM","descriptor_version":1,"command":"prism-consumer","api":"ColorEngine: Send + Sync; inspect_profile returns opaque validated ID/hash/transfer descriptor; immutable TransformRequest and caller SinkPort","admitted_api":"AdmittedPrism<ProviderAdmission> reserves source-proven requested owned allocation layouts before parsing/executor/cache/output; metadata-free type0-linear matrix ICCv4 only; legacy APIs unchanged. Supported x86_64-pc-windows-msvc Rust1.97.1(8bab26f4f), moxcms0.9.1 extended_range; other targets/admission owners rejected. Inline tokens retain caller ledger and guarantee synchronous infallible Drop; unsupported/indeterminate-retirement owners refused before reserve. Explicit try_clear_cache/try_retire precheck every token and retain intact provider on refusal. Cache/provider/result/descriptor lifetime reservations do not double charge shared cached executors; borrowed result()/descriptor() accessors cannot detach allocations from reservation. Unit excludes allocator bookkeeping/RSS; reserve includes requested capacities, strings, Arc control/padding and transient overlapping owners; external sink/admission ledger internals belong to separately admitted caller. Text metadata is rejected before parser, no runtime stripping or legacy fallback. Cost/source derivation in src/admitted.rs; independently scoped allocation observations required; no full ICC/host proof","purpose":"Display-class RGB ICCv4 matrix/analytical matching parametric-TRC relative-colorimetric f32 conversion; only desc,cprt,wtpt,chad,rXYZ,gXYZ,bXYZ,rTRC,gTRC,bTRC tags admitted","inspection":"--inspect --source FILE --source-hash SHA256 --source-id SCPF-UUIDv7; optional --cancel; pure validation, no telemetry/cache; linear_light only matching type0 gamma1, otherwise admitted profile encoded; errors exit2","input":"--source FILE --destination FILE --source-hash SHA256 --destination-hash SHA256 --pixels FILE --depth 32 --intent relative_colorimetric --revision U64 --expected-revision U64; whitespace RGB triples; also required --source-id SCPF-UUIDv7 --destination-id SCPF-UUIDv7 --resource-id DOMAIN-UUIDv7 --correlation U64 --account ID --principal ID --owner-account ID --owner-principal ID --access-space ID --session ID; optional --cancel --reject-sink","output":"Local JSON numeric RGB output, profile IDs/hashes, engine/version/options, revision/correlation/cache-hit and Observe delivery state; exit2 failure; no numeric success after delivery failure","bounds":{"profile_bytes":65536,"pixels":4096,"cache_entries":8,"test_case_seconds":30},"options":{"engine":"moxcms","version":"0.9.1","default_features":false,"features":["extended_range"],"cicp":false,"fixed_point":false,"extended_range_rgb_xyz":true,"bpc":false,"input_channels":"finite0..1","output_channels":"finite unclamped floats"},"reject":"malformed/hash/profile-id/unsupported profile,intent,BPC,depth/nonfinite/range/stale/context/cache-limit/cancel/engine/delivery","recovery":"Correct input/revision; select supported profiles; clear caller cache or create bounded engine; reconcile indeterminate telemetry through owning sink before retry","privacy":"Profile bytes, paths, pixels, labels and private text never enter Observe telemetry; caller owns grants","pending":["full StudioColorProfile wire decoding","render materialization","cross-host bit-identical promotion","LUT","OCIO","softproof","gamut","BPC","host authorization and embedding"],"manual_route":"same descriptor","argus_route":"same descriptor plus receipt/cache_stats/diagnostic_state"}"#;
