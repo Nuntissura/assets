@@ -6,6 +6,32 @@ use wasm_bindgen::prelude::*;
 const MAX_WIRE_BYTES: usize = 65_536;
 const MAX_WASM_PINS: usize = 1_024;
 
+fn recovery_slot(value: f64) -> Result<u8, JsValue> {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..8.0).contains(&value) { return Err(reject("InvalidSlot")); }
+    Ok(value as u8)
+}
+
+/// Shared bounded acquisition policy; the host performs and owns each actual lock attempt.
+#[wasm_bindgen(js_name = RecoverySlots)]
+pub struct WasmRecoverySlots { inner: RecoverySlots }
+#[wasm_bindgen(js_class = RecoverySlots)]
+impl WasmRecoverySlots {
+    #[wasm_bindgen(constructor)]
+    pub fn new(preferred: f64) -> Result<Self, JsValue> {
+        Ok(Self { inner: RecoverySlots::new(recovery_slot(preferred)?).map_err(|error| reject(&error.to_string()))? })
+    }
+    pub fn current(&self) -> Option<u8> { self.inner.current() }
+    pub fn busy(&mut self, slot: f64) -> Result<Option<u8>, JsValue> {
+        self.inner.busy(recovery_slot(slot)?).map_err(|error| reject(&error.to_string()))
+    }
+    pub fn acquired(&mut self, slot: f64) -> Result<(), JsValue> {
+        self.inner.acquired(recovery_slot(slot)?).map_err(|error| reject(&error.to_string()))
+    }
+    pub fn exhausted(&self) -> bool { self.inner.exhausted() }
+    #[wasm_bindgen(js_name = acquiredSlot)]
+    pub fn acquired_slot(&self) -> Option<u8> { self.inner.acquired_slot() }
+}
+
 #[wasm_bindgen(js_name = parseQuery)]
 pub fn parse_query_wire(text: &str) -> Result<String, JsValue> {
     write(&parse_query(text).map_err(|error| reject(&error.to_string()))?)

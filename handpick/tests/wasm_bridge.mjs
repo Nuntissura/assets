@@ -207,4 +207,19 @@ try {
   pickerCheck(picker.view(), before);
   picker.setResults('[]','[]'); pickerCheck(decode(picker.view()), {groups:[],selected:null});
 } finally { picker.free(); }
-console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks}));
+let recoveryChecks=0;
+const recoveryCheck=(actual,expected)=>{assert.deepEqual(actual,expected);recoveryChecks++;};
+const recoveryReject=(operation,code)=>{assert.throws(operation,error=>String(error)===code);recoveryChecks++;};
+for(const preferred of [0,3,7]){
+  const slots=new glue.RecoverySlots(preferred);try{
+    const attempts=[];while(slots.current()!==undefined){const current=slots.current();attempts.push(current);slots.busy(current);}
+    recoveryCheck(attempts[0],preferred);recoveryCheck([...attempts].sort((a,b)=>a-b),[0,1,2,3,4,5,6,7]);recoveryCheck(slots.exhausted(),true);recoveryCheck(slots.acquiredSlot(),undefined);
+    recoveryReject(()=>slots.busy(0),'Closed');recoveryReject(()=>slots.acquired(0),'Closed');
+  }finally{slots.free();}
+}
+for(const invalid of [-1,8,0.5,NaN,Infinity])recoveryReject(()=>new glue.RecoverySlots(invalid),'InvalidSlot');
+const acquiredSlots=new glue.RecoverySlots(2);try{
+  recoveryReject(()=>acquiredSlots.busy(3),'OutOfOrder');recoveryReject(()=>acquiredSlots.acquired(3),'OutOfOrder');recoveryReject(()=>acquiredSlots.busy(2.5),'InvalidSlot');recoveryCheck(acquiredSlots.current(),2);
+  recoveryCheck(acquiredSlots.busy(2),0);recoveryReject(()=>acquiredSlots.busy(2),'OutOfOrder');acquiredSlots.acquired(0);recoveryCheck(acquiredSlots.current(),undefined);recoveryCheck(acquiredSlots.acquiredSlot(),0);recoveryCheck(acquiredSlots.exhausted(),false);recoveryReject(()=>acquiredSlots.acquired(0),'Closed');
+}finally{acquiredSlots.free();}
+console.log(JSON.stringify({status:'pass', scenarios:fixtures.scenarios.length, steps:assertions, bridge_negative_checks:35, foundation_checks:foundationChecks,rich_checks:richChecks,picker_checks:pickerChecks,recovery_checks:recoveryChecks}));

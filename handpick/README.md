@@ -50,6 +50,18 @@ Validation: native query/picker/mode tests, real WASM boundary assertions and co
 
 </topic>
 
+<topic id="recovery-acquisition" status="implemented">
+
+## Exclusive recovery acquisition
+
+`RecoverySlots::new(preferred)` chooses a bounded exclusive owner slot from 0 through 7. It tries the preferred slot first, then each remaining slot once. `current()` returns the next slot; call `busy(current)` only after that exact owner lock reports busy. The returned next slot is absent after eight attempts and `exhausted()` is true. `acquired(current)` finishes successfully; `acquired_slot()` retains that identity. Out-of-order, invalid and terminal outcomes reject without advancing. Default preference is legacy slot zero.
+
+The effect-free policy never acquires, steals or releases locks and never reads or writes storage. The host retains authorization, actual exclusivity, durable manifest/checkpoint namespaces and the acquired slot across reloads. Slot zero must preserve existing keys. Abort on storage failures, corrupted recovery or any non-busy owner error; never skip an unreadable draft, pending Save or checkpoint by trying another slot. No acquisition outcome proves recovered content or canonical Save.
+
+The WASM class is `RecoverySlots(preferred)` with `current()`, `busy(slot)`, `acquired(slot)`, `exhausted()` and `acquiredSlot()`. Slots must be finite integers from 0 through 7. Absent slots are JavaScript `undefined`; free the policy after acquisition or abort. Native and real-WASM tests cover bounded order, legacy preference, duplicate/out-of-order outcomes, strict inputs and closed states. Hosts still require actual simultaneous-tab, lock-exclusivity and durable reload proof.
+
+</topic>
+
 <topic id="quicknote" status="contracts-implemented-integration-pending">
 
 ## Quicknote
