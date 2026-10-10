@@ -508,6 +508,7 @@ fn registry_closure(
         "hsk-studio-folio" | "hsk-studio-chronicle" => &["schemars", "serde", "serde_json"],
         "hsk-studio-prism" => &["moxcms", "sha2"],
         "hsk-studio-pigment" => &["serde", "serde_json"],
+        "hsk-studio-nib" => &["sha2", "kurbo"],
         _ => return Err("registry_owner_or_direct_library_not_approved".into()),
     };
     if !approved.contains(&dep) {

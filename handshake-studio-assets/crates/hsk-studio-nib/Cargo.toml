@@ -1,0 +1,22 @@
+[package]
+name = "hsk-studio-nib"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+kurbo = { version = "=0.13.1", default-features = false, features = ["std"] }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "nib-consumer"
+path = "examples/nib-consumer.rs"

@@ -1,0 +1,192 @@
+{
+  "format_version": 1,
+  "module": "hsk-studio-nib",
+  "file_kind": "source-adaptation-provenance",
+  "scope": "source-only exact closed zero-handle axis-aligned rectangle binary operations; not upstream parity or a host commit",
+  "license": "MIT OR Apache-2.0",
+  "source_pins": [
+    {
+      "name": "Vectorcraft",
+      "commit": "825d4fdb8b527c597855d273fb4bcc1971855b6a",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "linesweeper",
+      "version": "0.4.0",
+      "archive_sha256": "9c19728333c060c6569a53c9a0e56c4be0df52cb4e6e07a8fbe16084cecce769",
+      "vcs_commit": "7e735ff3eae44fb6580e92a2ff4f67a34b12e75c",
+      "license": "MIT OR Apache-2.0"
+    },
+    {
+      "name": "kurbo",
+      "version": "0.13.1",
+      "archive_sha256": "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2",
+      "vcs_commit": "838b69ef35f3381cefc007d86aa8364f5a6dc673",
+      "role": "provenance of upstream exact line geometry; budget provider does not invoke allocating BezPath or curve APIs",
+      "license": "MIT OR Apache-2.0"
+    }
+  ],
+  "source_records": [
+    {
+      "path": "src/topology.rs",
+      "sha256": "66e73e70696c603b271fd2827deac1c4845debdcacfa1256130b9d07588cc1b6",
+      "source_archive": "linesweeper-0.4.0",
+      "primary_url": "https://static.crates.io/crates/linesweeper/linesweeper-0.4.0.crate"
+    },
+    {
+      "path": "src/curve/line.rs",
+      "sha256": "07aebead4b0050410a3f9f28b66062b6016c115df58e2b2669470263cd352f3e",
+      "source_archive": "linesweeper-0.4.0",
+      "primary_url": "https://static.crates.io/crates/linesweeper/linesweeper-0.4.0.crate"
+    },
+    {
+      "path": "src/sweep/sweep_line.rs",
+      "sha256": "defdec48e84f6a166628243e97538c3bb7c98cf761bd5c9329b2d1b3b04c0392",
+      "source_archive": "linesweeper-0.4.0",
+      "primary_url": "https://static.crates.io/crates/linesweeper/linesweeper-0.4.0.crate"
+    },
+    {
+      "path": "src/sweep/output_event.rs",
+      "sha256": "447639f5e03873ee5ef051e6bba1a8e57f6c4d7eb2be40405522537001a434d9",
+      "source_archive": "linesweeper-0.4.0",
+      "primary_url": "https://static.crates.io/crates/linesweeper/linesweeper-0.4.0.crate"
+    },
+    {
+      "path": "src/segments.rs",
+      "sha256": "3c4d59fcc7aad423ceed87657cb20364efafa42ece95e0fec24292216d87d26f",
+      "source_archive": "linesweeper-0.4.0",
+      "primary_url": "https://static.crates.io/crates/linesweeper/linesweeper-0.4.0.crate"
+    },
+    {
+      "path": "src/geom.rs",
+      "sha256": "2eac6819e3f00f3e0077d18e8444441084b8907fbb3231e6373a0a787ccc19bb",
+      "source_archive": "linesweeper-0.4.0",
+      "primary_url": "https://static.crates.io/crates/linesweeper/linesweeper-0.4.0.crate"
+    },
+    {
+      "path": "crates/pathops/src/boolean.rs",
+      "sha256": "3473aa3f99db806fc246c2444fd60f5c1fbdf775281bad3f513da39a281e6900",
+      "commit": "825d4fdb8b527c597855d273fb4bcc1971855b6a",
+      "primary_url": "https://raw.githubusercontent.com/storytold/vectorcraft/825d4fdb8b527c597855d273fb4bcc1971855b6a/crates/pathops/src/boolean.rs"
+    }
+  ],
+  "algorithm_mapping": [
+    {
+      "upstream": "Vectorcraft boolean.rs24-57 BoolOp::apply/inside",
+      "local": "selected/inside",
+      "adaptation": "Union and the two z-ordered Difference predicates; nonzero/evenodd winding retained."
+    },
+    {
+      "upstream": "linesweeper topology.rs60-143 BinaryWindingNumber and tagged addition; 710-808 process_sweep_line_range",
+      "local": "BinaryWinding/side_windings",
+      "adaptation": "Exact west-to-east ordered original vertical identities accumulate two independent signed winding counters. Endpoint inequalities encode formal sides of an atomic interval, avoiding midpoint rounding and epsilon movement. Horizontal north/south events use separate enter/exit predicates."
+    },
+    {
+      "upstream": "linesweeper curve/line.rs exact straight-line interaction; segments.rs280-345 closed LineTo insertion",
+      "local": "Edge/cuts_pair/cut_insert/rect",
+      "adaptation": "Strict finite axis lines only; exact perpendicular coordinate selection and collinear overlap endpoints. Keep eight source identities, split only output intervals. Curves, auto-closure and further subdivisions refused."
+    },
+    {
+      "upstream": "linesweeper topology.rs856-907 merge_coincident",
+      "local": "side_windings plus exact duplicate boundary interval suppression in evaluate",
+      "adaptation": "Combine all source winding contributions for each exact coincident interval before boundary visibility. Exact equality replaces epsilon proximity. No deleted coincident payload remains in output."
+    },
+    {
+      "upstream": "linesweeper topology.rs1287-1424 contours_for_positions boundary predicate and incident-halfedge walk",
+      "local": "successor/contours",
+      "adaptation": "Walk visible directed halfedges around each endpoint by clockwise angular order from the reverse halfedge. Every boundary segment visited once. Inline visited/ref arrays replace dynamic paths."
+    },
+    {
+      "upstream": "linesweeper topology.rs1340-1359 scan-west contour parent selection",
+      "local": "contains_loop and westmost containing-outer selection in contours",
+      "adaptation": "Exact original-coordinate west scan gives enclosing outer for each hole, bounded iterative traversal. Two rectangles cannot produce multiply nested holes; unexpected non-simple turn count or missing parent refuses."
+    }
+  ],
+  "allocation_contract": {
+    "unit": "requested_owned_allocation_bytes",
+    "provider_requested_heap_bytes": 0,
+    "storage": "Fixed inline scratch and Network value; borrowed style identity. No Vec, Box, Arc, String, hash tree, SmallVec growth or sorting scratch in provider. Caller allocating an ownership wrapper must reserve its actual layout separately before allocation. Caller input/attribution storage remains caller-owned and pre-admitted.",
+    "retirement": "Provider returns an inline owned immutable Network; borrowed style lifetime is explicit. No private provider ledger, lease or retained heap cache."
+  },
+  "bounds": {
+    "original_edges": 8,
+    "unordered_pairs": 28,
+    "pair_points": 2,
+    "cut_refs_per_original": 16,
+    "total_cut_refs": 128,
+    "atomic_pieces": 120,
+    "candidate_vertices": 64,
+    "directed_endpoint_actions": 240,
+    "network_segments": 120,
+    "network_loops": 120,
+    "total_loop_refs": 120,
+    "regions": 120,
+    "original_vertical_order_scratch": 8,
+    "contour_visited": 120,
+    "parent_and_loop_order": 120,
+    "canonical_vertex_permutation": 64,
+    "canonical_segment_permutation": 120
+  },
+  "bound_derivation": [
+    "Each of 8 edges owns 2 endpoints plus at most 2 points from each of 7 partners:16 unique references. Adjacent references yield at most15 nonzero intervals, total120.",
+    "At most8 original rectangle vertices plus2 points per28 unordered pairs gives64 candidate vertices. Output deduplicates coordinates before insertion.",
+    "Atomic interval start/end actions total at most240, counted as two admitted sweep events per nonzero source interval, including later invisible/coincident intervals.",
+    "Intersections counts admitted exact pair contact points, including collinear overlap endpoints and shared original endpoints, per unordered source-edge pair; at most56.",
+    "Each visible deduplicated boundary segment belongs to one directed loop. The shared loop reference arena is120 total, not120 per loop. Every insert has a capacity guard and caller output limit check."
+  ],
+  "eliminated_reviewed_states": [
+    "ComparisonCache including both original policies",
+    "TreeVec/Box root and split or iterator stack",
+    "EventQueue BTreeSet and repeated dynamic intersection scheduling",
+    "changed_intervals and scan_after",
+    "AlmostHorizontalDecomposition/Cubic/Quadratic subdivision",
+    "CurveOrder SmallVec/Metrics Vec/cubic recursion and numerical root solvers",
+    "feasible_horizontal_positions and general compute_positions perturbation",
+    "segs_to_path/can_merge/refit/curve recovery",
+    "Vectorcraft snap_horizontals/is_sliver/tidy/fit and silent empty fallback",
+    "Contours::grouped recursive hierarchy"
+  ],
+  "precision": "No midpoint, arithmetic-generated intersection coordinate, epsilon displacement, approximate refit, sliver filtering, grid/raster classification or sampling. Orientation of a simple orthogonal cycle uses integer total quarter-turn +/-4, equivalent to signed shoelace orientation without floating overflow/underflow. Non-simple/ambiguous walk refuses rather than claiming approximation.",
+  "work_cancel": "WorkMeter.step before each validation unit, pair/cut test or insertion, sort comparison/move, original winding crossing, boundary/vertex lookup, endpoint-neighbor hop, contour reference, normalization comparison/move, west scan, parent assignment and canonical permutation. WorkMeter record methods preserve admitted event/intersection counts on error; final check precedes return. All caller inputs immutable.",
+  "validation_status": "SOURCE_ONLY; no compiler, runtime, allocation observer or independent acceptance claimed",
+  "required_independent_proof": [
+    "actual cross-source winding numeric/set result for union and both z-order differences",
+    "holes, disjoint components, coincident/opposite edges, corner touches, strict nesting and near-equal finite coordinates",
+    "actual allocation observation before denial and across returned-value lifetime; provider has no heap requests",
+    "each collection cap, caller output/event/intersection budget refusal, cancellation and stale-epoch rollback",
+    "normalized vertex/segment/loop/component indices and positive outer/negative hole orientation"
+  ],
+  "existing_research_evidence": {
+    "path": "WP-KERNEL-STUDIO/MT-35535/studio-assets-kernel-builder/research/research-evidence.json",
+    "sha256": "4711e10e70c0f5c67b545f949bfe8bd76c08c3166e5aa63e06cdf6bfd55fcf01"
+  },
+  "adapted_provider_sha256": "8e2d4b3e0536c897166674a44aacaa405c18d690fcce8fcd9b828885adf19be5",
+  "license_notices": {
+    "LICENSE-MIT": "Both actual Vectorcraft and linesweeper/kurbo upstream MIT notices retained verbatim.",
+    "LICENSE-APACHE": "Actual linesweeper Apache-2.0 license retained verbatim."
+  },
+  "selected_registry_closure": {
+    "authority": "workspace Cargo.lock and workspace.metadata.studio.registry.hsk-studio-nib",
+    "direct_features": {
+      "sha2@0.10.9": [
+        "force-soft"
+      ],
+      "kurbo@0.13.1": [
+        "std"
+      ]
+    },
+    "libc_reuse": {
+      "version": "0.2.190",
+      "archive_sha256": "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78",
+      "reason": "Preserve existing workspace/Prism pin; cpufeatures0.2.17 target-specific caret0.2.155 permits this version; libc edges inactive on Windows x86_64",
+      "upstream_research_version": "0.2.189",
+      "independent_source_review": "Registry/archive/license/source reconciled; actual Cargo selected closure still pending"
+    },
+    "optional_lock_only": {
+      "euclid@0.22.14": "Kurbo optional euclid feature; std forwards euclid?/std only if independently activated",
+      "num-traits@0.2.19": "Existing workspace pin referenced by optional euclid; active Prism proof preserved",
+      "autocfg@1.5.1": "Existing workspace num-traits build dependency",
+      "evidence": "Exact archive/source/license and registry metadata independently inspected; active Cargo feature tree pending"
+    }
+  }
+}

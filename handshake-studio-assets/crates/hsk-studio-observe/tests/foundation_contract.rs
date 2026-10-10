@@ -1,6 +1,138 @@
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::*;
 use std::io::{Cursor, Read};
+
+#[derive(Debug)]
+struct GeometryFrame<'a> {
+    disposition: u8,
+    code: u8,
+    counts: [u64; 8],
+    bytes: [u64; 3],
+    limits: [u64; 5],
+    reads: [Option<u64>; 3],
+    address: Option<(&'a str, &'a str)>,
+    source: Option<&'a str>,
+}
+// Independent borrowed collector; no producer serializer, typed detail, or heap error.
+fn collect_geometry(frame: &[u8]) -> Result<GeometryFrame<'_>, &'static str> {
+    fn take<'a>(bytes: &mut &'a [u8], count: usize) -> Result<&'a [u8], &'static str> {
+        let result = bytes.get(..count).ok_or("short frame")?;
+        *bytes = &bytes[count..];
+        Ok(result)
+    }
+    fn u64_field(bytes: &mut &[u8]) -> Result<u64, &'static str> {
+        Ok(u64::from_be_bytes(
+            take(bytes, 8)?.try_into().map_err(|_| "u64")?,
+        ))
+    }
+    fn string<'a>(bytes: &mut &'a [u8]) -> Result<&'a str, &'static str> {
+        let count = u16::from_be_bytes(take(bytes, 2)?.try_into().map_err(|_| "u16")?);
+        std::str::from_utf8(take(bytes, usize::from(count))?).map_err(|_| "utf8")
+    }
+    if frame.len() > 2048 {
+        return Err("frame cap");
+    }
+    let mut bytes = frame;
+    let header = take(&mut bytes, 8)?;
+    if &header[..4] != b"HSKO"
+        || header[4] != 4
+        || !(2..=4).contains(&header[5])
+        || header[6] > 4
+        || header[7] != 0
+    {
+        return Err("header");
+    }
+    take(&mut bytes, 40)?;
+    for _ in 0..7 {
+        string(&mut bytes)?;
+    }
+    let tags = take(&mut bytes, 3)?;
+    let disposition = tags[0];
+    let code = tags[1];
+    let flags = tags[2];
+    if !(1..=4).contains(&disposition) || code > 15 || flags & 0xe0 != 0 {
+        return Err("tags");
+    }
+    let mut counts = [0; 8];
+    for value in &mut counts {
+        *value = u64_field(&mut bytes)?;
+    }
+    let mut allocations = [0; 3];
+    for value in &mut allocations {
+        *value = u64_field(&mut bytes)?;
+    }
+    let mut limits = [0; 5];
+    for value in &mut limits {
+        *value = u64_field(&mut bytes)?;
+    }
+    if limits[0] > limits[4] {
+        return Err("delivery bounds");
+    }
+    if disposition != 3
+        && (counts[..7].iter().any(|n| *n > limits[1])
+            || counts[7] > limits[2]
+            || allocations[2] > allocations[0]
+            || allocations[0]
+                .checked_add(allocations[1])
+                .ok_or("overflow")?
+                > limits[3])
+    {
+        return Err("bounds");
+    }
+    if ((disposition <= 2) != (code == 0))
+        || ((disposition == 4) != (code == 14))
+        || (disposition == 3 && (counts[2..6].iter().any(|n| *n != 0) || allocations[2] != 0))
+    {
+        return Err("disposition");
+    }
+    let mut reads = [None; 3];
+    for (index, value) in reads.iter_mut().enumerate() {
+        if flags & (1 << (index + 2)) != 0 {
+            *value = Some(u64_field(&mut bytes)?);
+        }
+    }
+    let address = if flags & 1 != 0 {
+        if take(&mut bytes, 1)?[0] != 1 {
+            return Err("property");
+        }
+        let layer = string(&mut bytes)?;
+        let key = string(&mut bytes)?;
+        if !layer.starts_with("SLYR-")
+            || key.is_empty()
+            || key.len() > 128
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err("address");
+        }
+        Some((layer, key))
+    } else {
+        None
+    };
+    let source = if flags & 2 != 0 {
+        let id = string(&mut bytes)?;
+        if !id.starts_with("SVPT-") {
+            return Err("source");
+        }
+        Some(id)
+    } else {
+        None
+    };
+    if !bytes.is_empty() {
+        return Err("trailing");
+    }
+    Ok(GeometryFrame {
+        disposition,
+        code,
+        counts,
+        bytes: allocations,
+        limits,
+        reads,
+        address,
+        source,
+    })
+}
 fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
     use std::{
         panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
@@ -970,4 +1102,330 @@ fn resource_v3_nochange_and_closed_rejection_codes() {
             assert_eq!((address.2, address.3), (-7, -9));
         }
     });
+}
+
+#[test]
+fn geometry_v4_borrowed_actual_wire_privacy_and_legacy_compatibility() {
+    bounded_case(
+        "geometry_v4_borrowed_actual_wire_privacy_and_legacy_compatibility",
+        || {
+            let layer = DomainId::parse("SLYR-019abcde-0000-7000-8000-000000000001").unwrap();
+            let source = DomainId::parse("SVPT-019abcde-0000-7000-8000-000000000002").unwrap();
+            let budget = GeometryBudget {
+                count_limit: 64,
+                work_limit: 200,
+                byte_limit: 120,
+                delivery_limit: 1,
+            };
+            let counts =
+                GeometryCounts::new([8, 8, 6, 6, 1, 1, 2, 100], [100, 20, 100], 1, budget).unwrap();
+            let detail = GeometryDetail::new(
+                GeometryDisposition::Prepared,
+                None,
+                Some(GeometryAddress::new(&layer, "shape_A").unwrap()),
+                GeometryRead {
+                    source_path_id: Some(&source),
+                    read_revision: Some(6),
+                    target_revision: Some(7),
+                    cancel_epoch: Some(9),
+                },
+                counts,
+            )
+            .unwrap();
+            let mut sink = CollectorSink::new(0);
+            let mut emitter = observe(0, 0);
+            let receipt = emitter
+                .emit_geometry(
+                    event(Outcome::Success),
+                    &detail,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap();
+            let frame = collect_geometry(&sink.frames[0]).unwrap();
+            assert_eq!((frame.disposition, frame.code), (1, 0));
+            assert_eq!(frame.counts, [8, 8, 6, 6, 1, 1, 2, 100]);
+            assert_eq!(frame.bytes, [100, 20, 100]);
+            assert_eq!(frame.limits, [1, 64, 200, 120, 1]);
+            assert_eq!(frame.reads, [Some(6), Some(7), Some(9)]);
+            assert_eq!(frame.address, Some((layer.as_str(), "shape_A")));
+            assert_eq!(frame.source, Some(source.as_str()));
+            assert_eq!(receipt.delivered_bytes, sink.frames[0].len());
+            assert!(
+                !sink.frames[0]
+                    .windows(b"PROJECT-TEXT-SECRET".len())
+                    .any(|w| w == b"PROJECT-TEXT-SECRET")
+            );
+            let mut invalid = sink.frames[0].clone();
+            invalid.push(0);
+            assert!(collect_geometry(&invalid).is_err());
+            // Independently specified legacy golden bytes: stack storage must not change their transport.
+            let mut base = b"HSKO\x01\x02\x00\x00".to_vec();
+            for value in [42_u64, 7, 1, 0, 0] {
+                base.extend_from_slice(&value.to_be_bytes());
+            }
+            for value in [
+                "SDOC-019abcde-0000-7000-8000-000000000001",
+                "account",
+                "principal",
+                "owner",
+                "owner-principal",
+                "space",
+                "session",
+            ] {
+                base.extend_from_slice(&(value.len() as u16).to_be_bytes());
+                base.extend_from_slice(value.as_bytes());
+            }
+            for version in 1..=3 {
+                let mut expected = base.clone();
+                expected[4] = version;
+                let mut emitter = observe(0, 0);
+                let mut sink = CollectorSink::new(0);
+                let token = CancellationToken::default();
+                match version {
+                    1 => {
+                        emitter
+                            .emit(event(Outcome::Success), &token, &mut sink)
+                            .unwrap();
+                    }
+                    2 => {
+                        expected.extend_from_slice(&[2, 0, 0]);
+                        expected.extend_from_slice(&[0; 20]);
+                        let detail =
+                            DiagnosticDetail::new(Disposition::NoChange, None, None, [0; 5])
+                                .unwrap();
+                        emitter
+                            .emit_detail(event(Outcome::Success), &detail, &token, &mut sink)
+                            .unwrap();
+                    }
+                    _ => {
+                        expected.extend_from_slice(&[2, 0, 0]);
+                        expected.extend_from_slice(&[0; 56]);
+                        let detail = ResourceDetail::new(
+                            ResourceDisposition::NoChange,
+                            None,
+                            None,
+                            0,
+                            ResourceCounts::new([0; 3], 0, [0; 3], 0).unwrap(),
+                        )
+                        .unwrap();
+                        emitter
+                            .emit_resource(event(Outcome::Success), &detail, &token, &mut sink)
+                            .unwrap();
+                    }
+                }
+                assert_eq!(sink.frames[0], expected, "legacy version {version}");
+            }
+        },
+    );
+}
+#[test]
+fn geometry_v4_bounds_dispositions_and_required_delivery() {
+    bounded_case(
+        "geometry_v4_bounds_dispositions_and_required_delivery",
+        || {
+            let budget = GeometryBudget {
+                count_limit: 8,
+                work_limit: 20,
+                byte_limit: 100,
+                delivery_limit: 1,
+            };
+            assert!(GeometryCounts::new([0; 8], [100, 0, 100], 1, budget).is_ok());
+            for bytes in [[100, 1, 0], [10, 0, 11], [u64::MAX, 1, 0]] {
+                assert_eq!(
+                    GeometryCounts::new([0; 8], bytes, 1, budget),
+                    Err(Error::InvalidDetail)
+                );
+            }
+            let mut counts = [0; 8];
+            counts[7] = 21;
+            assert!(GeometryCounts::new(counts, [0; 3], 1, budget).is_err());
+            counts = [0; 8];
+            counts[0] = 9;
+            assert!(GeometryCounts::new(counts, [0; 3], 1, budget).is_err());
+            assert!(GeometryCounts::new([0; 8], [0; 3], 2, budget).is_err());
+            let document = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+            let layer = DomainId::parse("SLYR-019abcde-0000-7000-8000-000000000001").unwrap();
+            assert!(GeometryAddress::new(&document, "shape").is_err());
+            for key in ["", "../file", "private text"] {
+                assert!(GeometryAddress::new(&layer, key).is_err());
+            }
+            let read = GeometryRead {
+                source_path_id: None,
+                read_revision: None,
+                target_revision: None,
+                cancel_epoch: Some(9),
+            };
+            // Actual precharged input can exceed a zero-byte request budget before admission.
+            let denied_budget = GeometryBudget {
+                count_limit: 0,
+                work_limit: 0,
+                byte_limit: 0,
+                delivery_limit: 1,
+            };
+            let observed = [8, 8, 0, 0, 0, 0, 2, 37];
+            let denial =
+                GeometryCounts::for_rejection(observed, [0, 4096, 0], 1, denied_budget).unwrap();
+            for disposition in [
+                GeometryDisposition::Prepared,
+                GeometryDisposition::Accepted,
+                GeometryDisposition::ReconciliationRequired,
+            ] {
+                let code = (disposition == GeometryDisposition::ReconciliationRequired)
+                    .then_some(GeometryCode::ReconciliationRequired);
+                assert!(GeometryDetail::new(disposition, code, None, read, denial).is_err());
+            }
+            let denied_detail = GeometryDetail::new(
+                GeometryDisposition::Rejected,
+                Some(GeometryCode::BudgetExceeded),
+                None,
+                read,
+                denial,
+            )
+            .unwrap();
+            let mut denied_emitter = observe(0, 0);
+            let mut denied_sink = CollectorSink::new(0);
+            denied_emitter
+                .emit_geometry(
+                    event(Outcome::Failure(FailureCode::Validation)),
+                    &denied_detail,
+                    &CancellationToken::default(),
+                    &mut denied_sink,
+                )
+                .unwrap();
+            let decoded_denial = collect_geometry(&denied_sink.frames[0]).unwrap();
+            assert_eq!(decoded_denial.counts, observed);
+            assert_eq!(decoded_denial.bytes, [0, 4096, 0]);
+            assert_eq!(decoded_denial.limits, [1, 0, 0, 0, 1]);
+            let mut nonzero_output = observed;
+            nonzero_output[2] = 1;
+            assert!(
+                GeometryCounts::for_rejection(nonzero_output, [0, 4096, 0], 1, denied_budget)
+                    .is_err()
+            );
+            assert!(
+                GeometryCounts::for_rejection(observed, [1, 4096, 1], 1, denied_budget).is_err()
+            );
+            assert!(
+                GeometryCounts::for_rejection(observed, [0, 4096, 0], 2, denied_budget).is_err()
+            );
+            let zero = GeometryCounts::new([0; 8], [0; 3], 1, budget).unwrap();
+            assert!(
+                GeometryDetail::new(
+                    GeometryDisposition::Prepared,
+                    Some(GeometryCode::Validation),
+                    None,
+                    read,
+                    zero
+                )
+                .is_err()
+            );
+            assert!(
+                GeometryDetail::new(GeometryDisposition::Rejected, None, None, read, zero).is_err()
+            );
+            assert!(
+                GeometryDetail::new(
+                    GeometryDisposition::ReconciliationRequired,
+                    Some(GeometryCode::Validation),
+                    None,
+                    read,
+                    zero
+                )
+                .is_err()
+            );
+            let wrong = GeometryRead {
+                source_path_id: Some(&layer),
+                ..read
+            };
+            assert!(
+                GeometryDetail::new(
+                    GeometryDisposition::Rejected,
+                    Some(GeometryCode::Validation),
+                    None,
+                    wrong,
+                    zero
+                )
+                .is_err()
+            );
+            let mut output = [0; 8];
+            output[2] = 1;
+            let retained = GeometryCounts::new(output, [10, 0, 10], 1, budget).unwrap();
+            assert!(
+                GeometryDetail::new(
+                    GeometryDisposition::Rejected,
+                    Some(GeometryCode::Validation),
+                    None,
+                    read,
+                    retained
+                )
+                .is_err()
+            );
+            let pending = GeometryDetail::new(
+                GeometryDisposition::ReconciliationRequired,
+                Some(GeometryCode::ReconciliationRequired),
+                None,
+                read,
+                retained,
+            )
+            .unwrap();
+            let rejected = GeometryDetail::new(
+                GeometryDisposition::Rejected,
+                Some(GeometryCode::HashMismatch),
+                None,
+                read,
+                zero,
+            )
+            .unwrap();
+            for delivery in [
+                DeliveryError::Saturated,
+                DeliveryError::Rejected,
+                DeliveryError::Unavailable,
+                DeliveryError::Indeterminate,
+            ] {
+                let mut emitter = observe(0, 0);
+                let mut sink = CollectorSink::new(0);
+                sink.forced = Some(delivery);
+                assert_eq!(
+                    emitter.emit_geometry(
+                        event(Outcome::Failure(FailureCode::Validation)),
+                        &rejected,
+                        &CancellationToken::default(),
+                        &mut sink
+                    ),
+                    Err(Error::Delivery(delivery))
+                );
+                assert_eq!(emitter.state().acknowledged, 0);
+                assert_eq!(emitter.state().dropped_attempts, 1);
+                if delivery == DeliveryError::Indeterminate {
+                    assert!(emitter.state().reconciliation_required);
+                    assert_eq!(
+                        emitter.emit_geometry(
+                            event(Outcome::Failure(FailureCode::Validation)),
+                            &rejected,
+                            &CancellationToken::default(),
+                            &mut sink
+                        ),
+                        Err(Error::ReconciliationRequired)
+                    );
+                }
+            }
+            let mut emitter = observe(0, 0);
+            let mut sink = CollectorSink::new(0);
+            let token = CancellationToken::default();
+            token.cancel();
+            emitter
+                .emit_geometry(
+                    event(Outcome::Failure(FailureCode::Unavailable)),
+                    &pending,
+                    &token,
+                    &mut sink,
+                )
+                .unwrap();
+            let decoded = collect_geometry(&sink.frames[0]).unwrap();
+            assert_eq!(decoded.disposition, 4);
+            assert_eq!(decoded.bytes, [10, 0, 10]);
+            assert_eq!(sink.frames[0][5], 4);
+            assert_eq!(emitter.state().canceled_delivered, 1);
+        },
+    );
 }
