@@ -37,7 +37,8 @@
     "sha256": "768776d4a37cfeb28c71a0c6d8b2ad33332d11ceaef7e47cb01463bd71b9048a",
     "file_lines": "387-405",
     "implementation": "repr(C,align(2)) AtomicUsize strong/weak header + checked Layout.extend(data).pad_to_align()",
-    "independent_reconciliation": "PENDING"
+    "independent_reconciliation": "PENDING",
+    "retirement_source_lines": "1226-1251 Arc::into_inner drops Weak/control allocation before returning inner value; no Weak escape from private Lease"
   },
   "prism_route": {
     "api": "AdmittedPrism<MemoryAdmission>",

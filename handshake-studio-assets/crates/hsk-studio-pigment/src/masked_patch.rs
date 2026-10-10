@@ -35,31 +35,61 @@ impl Counts {
         .map_err(|_| Error::BudgetExceeded)
     }
 }
-/// Implementations must provide synchronous, unambiguous bookkeeping. A provider with
-/// indeterminate reservation/release cannot issue a Lease and must refuse admission.
+/// Existing caller-owned retirement authority. Context clones its already allocated Arc.
+/// Retirement must be synchronous and infallible. Indeterminate owners cannot issue a lease.
+pub trait RetirementPort: Send + Sync {
+    fn retire(&self, handle: u64, counts: Counts);
+}
+pub struct RetirementContext {
+    pub(crate) port: std::sync::Arc<dyn RetirementPort>,
+    pub(crate) handle: u64,
+    pub(crate) counts: Counts,
+}
+impl RetirementContext {
+    /// The port Arc/control allocation belongs to the caller's pre-admitted lifetime.
+    /// This constructor only moves it and validates bounded counters; it allocates nothing.
+    pub fn new(
+        port: std::sync::Arc<dyn RetirementPort>,
+        handle: u64,
+        counts: Counts,
+    ) -> Result<Self, Error> {
+        counts.diagnostic(crate::MAX_BYTES)?;
+        Ok(Self {
+            port,
+            handle,
+            counts,
+        })
+    }
+}
+impl Drop for RetirementContext {
+    fn drop(&mut self) {
+        self.port.retire(self.handle, self.counts);
+    }
+}
 pub trait LeasePort: Send + Sync {
     fn handle(&self) -> u64;
     fn counts(&self) -> Counts;
     fn reduce(&mut self, counts: Counts) -> Result<(), Error>;
     fn mark_transferred(&mut self);
-    fn release(&mut self);
+    fn retirement(&self) -> RetirementContext;
 }
-/// Owns exactly one admitted reservation; Drop releases only this reservation.
 struct LeaseInner {
     port: std::sync::Mutex<Box<dyn LeasePort>>,
 }
-impl Drop for LeaseInner {
-    fn drop(&mut self) {
-        self.port
-            .get_mut()
-            .unwrap_or_else(|p| p.into_inner())
-            .release()
-    }
-}
-/// Cloned handles retain the same reservation; only the final counted owner releases it.
+/// Every clone invokes into_inner; exactly one obtains the value after Arc storage is freed.
 #[derive(Clone)]
 pub struct Lease {
-    inner: std::sync::Arc<LeaseInner>,
+    inner: Option<std::sync::Arc<LeaseInner>>,
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if let Some(inner) = std::sync::Arc::into_inner(self.inner.take().expect("owned lease")) {
+            let port = inner.port.into_inner().unwrap_or_else(|p| p.into_inner());
+            let retirement = port.retirement(); // inline, no new allocation
+            drop(port); // Box<MemoryLease> is freed while its charge remains live
+            drop(retirement); // Arc control and boxed provider are already freed
+        }
+    }
 }
 impl Lease {
     pub fn allocation_bytes() -> Result<u64, Error> {
@@ -67,34 +97,37 @@ impl Lease {
     }
     pub fn new(port: Box<dyn LeasePort>) -> Self {
         Self {
-            inner: std::sync::Arc::new(LeaseInner {
+            inner: Some(std::sync::Arc::new(LeaseInner {
                 port: std::sync::Mutex::new(port),
-            }),
+            })),
         }
     }
+    fn inner(&self) -> &LeaseInner {
+        self.inner.as_ref().expect("owned lease")
+    }
     pub fn handle(&self) -> u64 {
-        self.inner
+        self.inner()
             .port
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .handle()
     }
     pub fn counts(&self) -> Counts {
-        self.inner
+        self.inner()
             .port
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .counts()
     }
-    pub fn reduce(&mut self, counts: Counts) -> Result<(), Error> {
-        self.inner
+    pub(crate) fn reduce(&mut self, counts: Counts) -> Result<(), Error> {
+        self.inner()
             .port
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .reduce(counts)
     }
-    pub fn mark_transferred(&mut self) {
-        self.inner
+    pub(crate) fn mark_transferred(&mut self) {
+        self.inner()
             .port
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -152,11 +185,71 @@ pub struct Patch {
     pub counts: Counts,
     pub lease: Option<Lease>,
     pub diagnostic: hsk_studio_observe::Receipt,
-    pub(crate) metadata_lease: crate::caller::ProviderLease,
 }
-impl Patch {
+/// Immutable public view; container allocation is freed before outer accounting retires.
+#[derive(Debug)]
+pub struct AcceptedPatch {
+    data: Option<Box<Patch>>,
+    metadata_lease: crate::caller::ProviderLease,
+}
+impl AcceptedPatch {
+    pub(crate) fn new(data: Patch, metadata_lease: crate::caller::ProviderLease) -> Self {
+        Self {
+            data: Some(Box::new(data)),
+            metadata_lease,
+        }
+    }
     pub fn metadata_reserved_bytes(&self) -> u64 {
         hsk_studio_prism::ProviderReservation::reserved_bytes(&self.metadata_lease)
+    }
+}
+impl std::ops::Deref for AcceptedPatch {
+    type Target = Patch;
+    fn deref(&self) -> &Patch {
+        self.data.as_deref().expect("owned accepted patch")
+    }
+}
+impl Drop for AcceptedPatch {
+    fn drop(&mut self) {
+        drop(self.data.take());
+    }
+}
+/// Allocation-free named reconciliation identity. Wire rendering borrows this value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingToken {
+    bytes: [u8; 64],
+    len: u8,
+}
+impl PendingToken {
+    pub(crate) fn new(sequence: u64) -> Self {
+        let mut token = Self {
+            bytes: [0; 64],
+            len: 0,
+        };
+        use std::fmt::Write as _;
+        write!(&mut token, "pigment-pending-{sequence}").expect("bounded pending identity");
+        token
+    }
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).expect("ASCII pending identity")
+    }
+}
+impl std::fmt::Write for PendingToken {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let start = usize::from(self.len);
+        let end = start
+            .checked_add(s.len())
+            .filter(|n| *n <= 64)
+            .ok_or(std::fmt::Error)?;
+        self.bytes[start..end].copy_from_slice(s.as_bytes());
+        self.len = end as u8;
+        Ok(())
+    }
+}
+impl std::ops::Deref for PendingToken {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
     }
 }
 #[derive(Debug)]
@@ -167,10 +260,10 @@ pub struct Failure {
 }
 #[derive(Debug)]
 pub enum Outcome {
-    Accepted(Box<Patch>),
+    Accepted(AcceptedPatch),
     Rejected(Failure),
     ReconciliationRequired {
-        token: String,
+        token: PendingToken,
         counts: Counts,
         delivery: hsk_studio_observe::Error,
     },
@@ -185,7 +278,6 @@ pub struct Prepared {
 /// cancellation validation, required sink delivery and lease transfer as one boundary.
 /// It must retain Prepared under a named token on any indeterminate decision; no blind retry.
 pub trait ExecutionPort {
-    fn provider_peak_bytes(&mut self) -> u64;
     fn current_epoch(&mut self) -> Result<u64, Error>;
     fn current_membership(&mut self, document: &DomainId, layer: &DomainId) -> Result<(), Error>;
     fn current_revision(
@@ -433,8 +525,12 @@ fn compute(
             lease: None,
         });
     }
-    let mut engine = AdmittedPrism::new(r.actor, 1, port.provider_admission(r.byte_limit)?)
+    let provider_operation = port
+        .provider_admission(r.byte_limit)?
+        .begin_operation()
         .map_err(Error::Prism)?;
+    let mut engine =
+        AdmittedPrism::new(r.actor, 1, provider_operation.admission()).map_err(Error::Prism)?;
     let mut updates = Vec::with_capacity(r.tiles.len());
     for item in r.tiles {
         let before = &item.before;
@@ -571,7 +667,7 @@ fn compute(
     drop(engine); // Retire provider cache and all parsed/converted owners before transfer.
     counts.scratch_bytes = counts
         .scratch_bytes
-        .checked_add(port.provider_peak_bytes())
+        .checked_add(provider_operation.peak_bytes())
         .ok_or(Error::Overflow)?;
     if counts.bytes()? > r.byte_limit {
         return Err(Error::BudgetExceeded);

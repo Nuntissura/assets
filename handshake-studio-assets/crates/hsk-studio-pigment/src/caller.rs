@@ -17,16 +17,31 @@ pub struct Accounting {
     pub provider_live: u64,
     pub provider_peak: u64,
 }
+#[derive(Clone, Copy, Debug, Default)]
+struct Meter {
+    active: bool,
+    closing: bool,
+    generation: u64,
+    live: u64,
+    peak: u64,
+}
+#[derive(Clone, Copy, Debug)]
+struct MeterKey {
+    slot: usize,
+    generation: u64,
+}
 #[derive(Debug)]
 struct Ledger {
     limit: u64,
     next: u64,
     state: Accounting,
+    meters: [Meter; MAX_TILES],
 }
 #[derive(Clone)]
 pub struct MemoryAdmission {
     ledger: Arc<Mutex<Ledger>>,
     operation_limit: u64,
+    meter: Option<MeterKey>,
 }
 impl MemoryAdmission {
     pub fn new(limit: u64) -> Result<Self, Error> {
@@ -35,10 +50,12 @@ impl MemoryAdmission {
         }
         Ok(Self {
             operation_limit: limit,
+            meter: None,
             ledger: Arc::new(Mutex::new(Ledger {
                 limit,
                 next: 1,
                 state: Accounting::default(),
+                meters: [Meter::default(); MAX_TILES],
             })),
         })
     }
@@ -49,6 +66,37 @@ impl MemoryAdmission {
         Ok(Self {
             ledger: self.ledger.clone(),
             operation_limit: self.operation_limit.min(limit),
+            meter: self.meter,
+        })
+    }
+    pub fn begin_operation(&self) -> Result<ProviderOperation, hsk_studio_prism::Error> {
+        if self.meter.is_some() {
+            return Err(hsk_studio_prism::Error::UnsupportedAdmission);
+        }
+        let mut ledger = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
+        let slot = ledger
+            .meters
+            .iter()
+            .position(|m| !m.active)
+            .ok_or(hsk_studio_prism::Error::AdmissionDenied)?;
+        let generation = ledger.meters[slot]
+            .generation
+            .checked_add(1)
+            .ok_or(hsk_studio_prism::Error::AdmissionDenied)?;
+        ledger.meters[slot] = Meter {
+            active: true,
+            closing: false,
+            generation,
+            live: 0,
+            peak: 0,
+        };
+        drop(ledger);
+        Ok(ProviderOperation {
+            admission: Self {
+                ledger: self.ledger.clone(),
+                operation_limit: self.operation_limit,
+                meter: Some(MeterKey { slot, generation }),
+            },
         })
     }
     pub fn accounting(&self) -> Accounting {
@@ -77,9 +125,42 @@ impl MemoryAdmission {
             ledger: self.ledger.clone(),
             handle,
             counts,
-            active: true,
             transferred: false,
         })))
+    }
+}
+/// Allocation-free current-operation meter. Closing refuses new reservations; slot is
+/// retained until the final reservation retires, even when result lifetimes outlive scope.
+pub struct ProviderOperation {
+    admission: MemoryAdmission,
+}
+impl ProviderOperation {
+    pub fn admission(&self) -> MemoryAdmission {
+        self.admission.clone()
+    }
+    pub fn peak_bytes(&self) -> u64 {
+        let key = self.admission.meter.expect("operation meter");
+        self.admission
+            .ledger
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .meters[key.slot]
+            .peak
+    }
+}
+impl Drop for ProviderOperation {
+    fn drop(&mut self) {
+        let key = self.admission.meter.expect("operation meter");
+        let mut ledger = self
+            .admission
+            .ledger
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let meter = &mut ledger.meters[key.slot];
+        meter.closing = true;
+        if meter.live == 0 {
+            meter.active = false;
+        }
     }
 }
 /// Inline token shares the caller's already owned ledger; no new container allocation.
@@ -87,6 +168,7 @@ impl MemoryAdmission {
 #[derive(Debug)]
 pub struct ProviderLease {
     ledger: Arc<Mutex<Ledger>>,
+    meter: Option<MeterKey>,
     bytes: u64,
 }
 impl hsk_studio_prism::ProviderReservation for ProviderLease {
@@ -99,6 +181,17 @@ impl Drop for ProviderLease {
         let mut ledger = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
         ledger.state.live_bytes -= self.bytes;
         ledger.state.provider_live -= self.bytes;
+        if let Some(key) = self.meter {
+            let meter = &mut ledger.meters[key.slot];
+            assert_eq!(
+                meter.generation, key.generation,
+                "retained meter generation"
+            );
+            meter.live -= self.bytes;
+            if meter.closing && meter.live == 0 {
+                meter.active = false;
+            }
+        }
         ledger.state.released = ledger.state.released.saturating_add(self.bytes);
     }
 }
@@ -122,6 +215,26 @@ impl hsk_studio_prism::ProviderAdmission for MemoryAdmission {
             .provider_live
             .checked_add(bytes)
             .ok_or(hsk_studio_prism::Error::AdmissionDenied)?;
+        let meter_live = if let Some(key) = self.meter {
+            let meter = &ledger.meters[key.slot];
+            if !meter.active || meter.closing || meter.generation != key.generation {
+                return Err(hsk_studio_prism::Error::AdmissionDenied);
+            }
+            Some(
+                meter
+                    .live
+                    .checked_add(bytes)
+                    .ok_or(hsk_studio_prism::Error::AdmissionDenied)?,
+            )
+        } else {
+            None
+        };
+        // All generation/overflow/budget checks precede every mutation.
+        if let (Some(key), Some(live)) = (self.meter, meter_live) {
+            let meter = &mut ledger.meters[key.slot];
+            meter.live = live;
+            meter.peak = meter.peak.max(live);
+        }
         ledger.state.live_bytes = total;
         ledger.state.provider_live = provider_live;
         ledger.state.provider_peak = ledger.state.provider_peak.max(provider_live);
@@ -129,6 +242,7 @@ impl hsk_studio_prism::ProviderAdmission for MemoryAdmission {
         drop(ledger);
         Ok(ProviderLease {
             ledger: self.ledger.clone(),
+            meter: self.meter,
             bytes,
         })
     }
@@ -137,7 +251,6 @@ struct MemoryLease {
     ledger: Arc<Mutex<Ledger>>,
     handle: u64,
     counts: Counts,
-    active: bool,
     transferred: bool,
 }
 impl LeasePort for MemoryLease {
@@ -148,6 +261,9 @@ impl LeasePort for MemoryLease {
         self.counts
     }
     fn reduce(&mut self, counts: Counts) -> Result<(), Error> {
+        if self.transferred {
+            return Err(Error::UnsupportedFinalization);
+        }
         let old = self.counts.bytes()?;
         let new = counts.bytes()?;
         if new > old {
@@ -174,14 +290,20 @@ impl LeasePort for MemoryLease {
                 .saturating_add(self.counts.bytes().expect("admitted counts"))
         }
     }
-    fn release(&mut self) {
-        if self.active {
-            self.active = false;
-            let mut l = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
-            let bytes = self.counts.bytes().expect("admitted counts");
-            l.state.live_bytes -= bytes;
-            l.state.released = l.state.released.saturating_add(bytes)
+    fn retirement(&self) -> RetirementContext {
+        RetirementContext {
+            port: self.ledger.clone(),
+            handle: self.handle,
+            counts: self.counts,
         }
+    }
+}
+impl RetirementPort for Mutex<Ledger> {
+    fn retire(&self, _handle: u64, counts: Counts) {
+        let bytes = counts.bytes().expect("admitted counts");
+        let mut ledger = self.lock().unwrap_or_else(|p| p.into_inner());
+        ledger.state.live_bytes -= bytes;
+        ledger.state.released = ledger.state.released.saturating_add(bytes);
     }
 }
 #[derive(Default)]
@@ -245,7 +367,7 @@ pub struct SerializedOwner<S: SinkPort> {
     revisions: Vec<(TileAddress, u64)>,
     pub admission: MemoryAdmission,
     pub sink: S,
-    pending: [Option<(String, Pending)>; MAX_TILES],
+    pending: [Option<(PendingToken, Pending)>; MAX_TILES],
     next_pending: u64,
 }
 impl<S: SinkPort> SerializedOwner<S> {
@@ -300,7 +422,7 @@ impl<S: SinkPort> SerializedOwner<S> {
         let i = self
             .pending
             .iter()
-            .position(|p| p.as_ref().is_some_and(|(t, _)| t == token))
+            .position(|p| p.as_ref().is_some_and(|(t, _)| t.as_str() == token))
             .ok_or(Error::InvalidInput)?;
         drop(self.pending[i].take());
         Ok(())
@@ -311,11 +433,11 @@ impl<S: SinkPort> SerializedOwner<S> {
         token: &str,
         receipt: hsk_studio_observe::Receipt,
         cancel: &CancellationToken,
-    ) -> Result<Patch, Error> {
+    ) -> Result<AcceptedPatch, Error> {
         let i = self
             .pending
             .iter()
-            .position(|p| p.as_ref().is_some_and(|(t, _)| t == token))
+            .position(|p| p.as_ref().is_some_and(|(t, _)| t.as_str() == token))
             .ok_or(Error::InvalidInput)?;
         let p = &self.pending[i].as_ref().expect("located pending").1;
         if cancel.check().is_err()
@@ -366,7 +488,7 @@ impl<S: SinkPort> SerializedOwner<S> {
         epoch: u64,
         receipt: hsk_studio_observe::Receipt,
         metadata_lease: ProviderLease,
-    ) -> Patch {
+    ) -> AcceptedPatch {
         for update in &prepared.updates {
             let revision = self
                 .revisions
@@ -378,18 +500,20 @@ impl<S: SinkPort> SerializedOwner<S> {
         if let Some(lease) = &mut prepared.lease {
             lease.mark_transferred()
         }
-        Patch {
-            document_id: document,
-            command_id: command,
-            correlation_id: correlation,
-            actor,
-            cancel_epoch: epoch,
-            updates: prepared.updates,
-            counts: prepared.counts,
-            lease: prepared.lease,
-            diagnostic: receipt,
+        AcceptedPatch::new(
+            Patch {
+                document_id: document,
+                command_id: command,
+                correlation_id: correlation,
+                actor,
+                cancel_epoch: epoch,
+                updates: prepared.updates,
+                counts: prepared.counts,
+                lease: prepared.lease,
+                diagnostic: receipt,
+            },
             metadata_lease,
-        }
+        )
     }
     fn deliver(
         &mut self,
@@ -456,9 +580,6 @@ impl<S: SinkPort> SerializedOwner<S> {
     }
 }
 impl<S: SinkPort> ExecutionPort for SerializedOwner<S> {
-    fn provider_peak_bytes(&mut self) -> u64 {
-        self.admission.accounting().provider_peak
-    }
     fn current_epoch(&mut self) -> Result<u64, Error> {
         Ok(self.epoch)
     }
@@ -607,7 +728,7 @@ impl<S: SinkPort> ExecutionPort for SerializedOwner<S> {
                 if receipt.outcome == hsk_studio_observe::Outcome::Success
                     && fresh(self, r, cancel).is_ok() =>
             {
-                Outcome::Accepted(Box::new(self.accept(
+                Outcome::Accepted(self.accept(
                     prepared,
                     r.document_id.clone(),
                     r.command_id.into(),
@@ -616,15 +737,13 @@ impl<S: SinkPort> ExecutionPort for SerializedOwner<S> {
                     r.cancel_epoch,
                     receipt,
                     metadata_lease,
-                )))
+                ))
             }
             Ok(_)
             | Err(hsk_studio_observe::Error::Delivery(DeliveryError::Indeterminate))
             | Err(hsk_studio_observe::Error::ReconciliationRequired) => {
                 // Callback-time context/cancellation change or indeterminate sink retains ownership.
-                let mut token = String::with_capacity(64);
-                use std::fmt::Write as _;
-                write!(&mut token, "pigment-pending-{}", self.next_pending).expect("bounded token");
+                let token = PendingToken::new(self.next_pending);
                 self.next_pending += 1;
                 let counts = prepared.counts;
                 let slot = self
@@ -633,7 +752,7 @@ impl<S: SinkPort> ExecutionPort for SerializedOwner<S> {
                     .find(|p| p.is_none())
                     .expect("bounded pending slot");
                 *slot = Some((
-                    token.clone(),
+                    token,
                     Pending {
                         prepared,
                         document: r.document_id.clone(),

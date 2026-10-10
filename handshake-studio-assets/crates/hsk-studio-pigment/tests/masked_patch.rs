@@ -74,6 +74,52 @@ fn linear_oracle(source: &[u8], destination: &[u8], pixel: [f32; 3]) -> [f64; 3]
         std::array::from_fn(|r| (0..3).map(|c| src[r][c] * f64::from(pixel[c])).sum());
     std::array::from_fn(|r| (0..3).map(|c| dst[r][c] * xyz[c]).sum())
 }
+#[derive(Default)]
+struct RetirementWitness {
+    boxed_drops: std::sync::atomic::AtomicUsize,
+    retirements: std::sync::atomic::AtomicUsize,
+}
+impl RetirementPort for RetirementWitness {
+    fn retire(&self, _handle: u64, _counts: Counts) {
+        use std::sync::atomic::Ordering;
+        assert_eq!(
+            self.boxed_drops.load(Ordering::SeqCst),
+            1,
+            "boxed port data must free before accounting retirement"
+        );
+        assert_eq!(
+            self.retirements.fetch_add(1, Ordering::SeqCst),
+            0,
+            "last shared lease retires once"
+        );
+    }
+}
+struct TrackedPort {
+    witness: std::sync::Arc<RetirementWitness>,
+    counts: Counts,
+}
+impl Drop for TrackedPort {
+    fn drop(&mut self) {
+        self.witness
+            .boxed_drops
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl LeasePort for TrackedPort {
+    fn handle(&self) -> u64 {
+        1
+    }
+    fn counts(&self) -> Counts {
+        self.counts
+    }
+    fn reduce(&mut self, _counts: Counts) -> Result<(), Error> {
+        Err(Error::UnsupportedFinalization)
+    }
+    fn mark_transferred(&mut self) {}
+    fn retirement(&self) -> RetirementContext {
+        RetirementContext::new(self.witness.clone(), 1, self.counts).unwrap()
+    }
+}
 fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
     use std::{
         panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
@@ -279,7 +325,7 @@ impl Fixture {
         )
     }
 }
-fn accepted(out: Outcome) -> Box<Patch> {
+fn accepted(out: Outcome) -> AcceptedPatch {
     match out {
         Outcome::Accepted(p) => p,
         other => panic!("expected accepted:{other:?}"),
@@ -325,9 +371,6 @@ struct Changing {
     stale_at_final: bool,
 }
 impl ExecutionPort for Changing {
-    fn provider_peak_bytes(&mut self) -> u64 {
-        self.inner.provider_peak_bytes()
-    }
     fn current_epoch(&mut self) -> Result<u64, Error> {
         self.calls += 1;
         if self.calls == self.cancel_at {
@@ -530,6 +573,13 @@ fn tile_preimage_survives_cancel() {
         assert!(owner.admission.accounting().live_bytes > 0);
         owner.reconcile_rejected(&pending).unwrap();
         assert_eq!(owner.admission.accounting().live_bytes, 0);
+        let retained_identity = pending;
+        assert_eq!(retained_identity.as_str(), "pigment-pending-1");
+        assert_eq!(
+            std::mem::size_of_val(&retained_identity),
+            65,
+            "inline identity survives charge retirement without heap"
+        );
         assert_eq!(f.fingerprint(), fingerprint);
         for failure in [
             DeliveryError::Rejected,
@@ -788,6 +838,58 @@ fn malformed_stride_and_lease_exhaustion() {
             Error::Overflow,
         );
         assert_eq!(owner.admission.accounting().live_bytes, 0);
+        // Real external LeasePort adapter: clones retain both wrappers until last drop;
+        // callback observes the boxed port already destroyed and occurs exactly once.
+        let witness = std::sync::Arc::new(RetirementWitness::default());
+        let counts = Counts {
+            output_bytes: Lease::allocation_bytes().unwrap()
+                + std::mem::size_of::<TrackedPort>() as u64,
+            ..Counts::default()
+        };
+        let lease = Lease::new(Box::new(TrackedPort {
+            witness: witness.clone(),
+            counts,
+        }));
+        let last = lease.clone();
+        drop(lease);
+        assert_eq!(
+            witness
+                .retirements
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        drop(last);
+        assert_eq!(
+            witness
+                .retirements
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        // Current operation peak excludes released historical provider reservations.
+        let ledger = MemoryAdmission::new(1024 * 1024).unwrap();
+        let historical = hsk_studio_prism::ProviderAdmission::reserve(&ledger, 200_000).unwrap();
+        drop(historical);
+        let operation = ledger.scoped(4096).unwrap().begin_operation().unwrap();
+        assert_eq!(operation.peak_bytes(), 0);
+        let old_admission = operation.admission();
+        let reservation =
+            hsk_studio_prism::ProviderAdmission::reserve(&old_admission, 1024).unwrap();
+        assert_eq!(operation.peak_bytes(), 1024);
+        drop(operation); // Existing result token retains the closing generation's slot.
+        assert!(hsk_studio_prism::ProviderAdmission::reserve(&old_admission, 1).is_err());
+        let next = ledger.scoped(4096).unwrap().begin_operation().unwrap();
+        assert_eq!(next.peak_bytes(), 0);
+        let current = hsk_studio_prism::ProviderAdmission::reserve(&next.admission(), 128).unwrap();
+        assert_eq!(next.peak_bytes(), 128);
+        drop(reservation);
+        assert_eq!(
+            next.peak_bytes(),
+            128,
+            "retiring another operation does not reset this peak"
+        );
+        drop(current);
+        drop(next);
+        assert_eq!(ledger.accounting().live_bytes, 0);
         // Actual admitted native-Rust cross-profile conversion, both matrix directions.
         for (source, destination) in [(P3, LINEAR), (LINEAR, P3)] {
             let mut item = f.item();

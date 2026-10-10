@@ -192,7 +192,7 @@ pub fn output(outcome: &Outcome, frames: &[Vec<u8>]) -> serde_json::Value {
             counts: c,
             delivery,
         } => {
-            serde_json::json!({"disposition":"reconciliation_required","pending_token":token,"delivery":delivery.code(),"counts":counts(*c),"diagnostic_frames_hex":frames})
+            serde_json::json!({"disposition":"reconciliation_required","pending_token":token.as_str(),"delivery":delivery.code(),"counts":counts(*c),"diagnostic_frames_hex":frames})
         }
     }
 }
