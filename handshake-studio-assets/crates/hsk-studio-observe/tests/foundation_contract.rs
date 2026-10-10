@@ -1429,3 +1429,347 @@ fn geometry_v4_bounds_dispositions_and_required_delivery() {
         },
     );
 }
+
+#[derive(Debug)]
+struct ShapingFrame<'a> {
+    disposition: u8,
+    code: u8,
+    result: u8,
+    counts: [u64; 8],
+    bytes: [u64; 3],
+    limits: [u64; 11],
+    reads: [Option<u64>; 4],
+    address: Option<(u8, &'a str)>,
+}
+// Independent borrowed decoder of the closed v5 wire, without producer types/serializer.
+fn collect_shaping(frame: &[u8]) -> Result<ShapingFrame<'_>, &'static str> {
+    fn take<'a>(b: &mut &'a [u8], n: usize) -> Result<&'a [u8], &'static str> {
+        let out = b.get(..n).ok_or("short")?;
+        *b = &b[n..];
+        Ok(out)
+    }
+    fn number(b: &mut &[u8]) -> Result<u64, &'static str> {
+        Ok(u64::from_be_bytes(
+            take(b, 8)?.try_into().map_err(|_| "u64")?,
+        ))
+    }
+    fn string<'a>(b: &mut &'a [u8]) -> Result<&'a str, &'static str> {
+        let n = u16::from_be_bytes(take(b, 2)?.try_into().map_err(|_| "u16")?);
+        std::str::from_utf8(take(b, usize::from(n))?).map_err(|_| "utf8")
+    }
+    if frame.len() > 2048 {
+        return Err("cap");
+    };
+    let mut b = frame;
+    let h = take(&mut b, 8)?;
+    if &h[..4] != b"HSKO" || h[4] != 5 || !(2..=4).contains(&h[5]) || h[6] > 4 || h[7] != 0 {
+        return Err("header");
+    }
+    take(&mut b, 40)?;
+    for _ in 0..7 {
+        string(&mut b)?;
+    }
+    let tags = take(&mut b, 4)?;
+    let (disposition, code, result, flags) = (tags[0], tags[1], tags[2], tags[3]);
+    if !(1..=4).contains(&disposition) || code > 33 || result > 3 || flags & 0xe0 != 0 {
+        return Err("tags");
+    }
+    let mut counts = [0; 8];
+    for n in &mut counts {
+        *n = number(&mut b)?;
+    }
+    let mut bytes = [0; 3];
+    for n in &mut bytes {
+        *n = number(&mut b)?;
+    }
+    let mut limits = [0; 11];
+    for n in &mut limits {
+        *n = number(&mut b)?;
+    }
+    if limits[0] > limits[10] || bytes[0] > bytes[1] || bytes[2] > bytes[0] {
+        return Err("bounds");
+    }
+    if disposition != 3
+        && (counts.iter().zip(&limits[1..9]).any(|(n, cap)| n > cap) || bytes[1] > limits[9])
+    {
+        return Err("admission");
+    }
+    if ((disposition <= 2) != (code == 0))
+        || ((disposition == 4) != (code == 33))
+        || ((disposition == 3) != (result == 0))
+        || (disposition == 3 && (bytes[2] != 0 || counts[7] != 0))
+    {
+        return Err("disposition");
+    }
+    let mut reads = [None; 4];
+    for (i, n) in reads.iter_mut().enumerate() {
+        if flags & (1 << (i + 1)) != 0 {
+            *n = Some(number(&mut b)?);
+        }
+    }
+    let address = if flags & 1 != 0 {
+        let property = take(&mut b, 1)?[0];
+        let id = string(&mut b)?;
+        let parsed = DomainId::parse(id).map_err(|_| "id")?;
+        let valid = match property {
+            1 => parsed.prefix() == "STXT",
+            3 => parsed.prefix() == "STYS",
+            2 | 4 => matches!(parsed.prefix(), "STXT" | "SLYR"),
+            _ => false,
+        };
+        if !valid {
+            return Err("address");
+        };
+        Some((property, id))
+    } else {
+        None
+    };
+    if !b.is_empty() {
+        return Err("trailing");
+    }
+    Ok(ShapingFrame {
+        disposition,
+        code,
+        result,
+        counts,
+        bytes,
+        limits,
+        reads,
+        address,
+    })
+}
+#[test]
+fn shaping_v5_roundtrip_privacy_and_closed_decoder() {
+    bounded_case("shaping_v5_roundtrip_privacy_and_closed_decoder", || {
+        let story = DomainId::parse("STXT-019abcde-0000-7000-8000-000000000001").unwrap();
+        let budget = ShapingBudget {
+            counts: [1000; 8],
+            byte_limit: 4096,
+            delivery_limit: 2,
+        };
+        let counts = [20, 12, 3, 4, 10, 2, 99, 1];
+        let bytes = [512, 1024, 512];
+        let read = ShapingRead {
+            source_revision: Some(7),
+            resolver_revision: Some(9),
+            cancel_epoch: Some(11),
+            target_revision: Some(13),
+        };
+        let detail = ShapingDetail::new(
+            ShapingDisposition::Prepared,
+            None,
+            Some(TextDisposition::Shaped),
+            Some(TextAddress::new(&story, TextProperty::Text).unwrap()),
+            read,
+            ShapingCounts::new(counts, bytes, 1, budget).unwrap(),
+        )
+        .unwrap();
+        let mut sink = CollectorSink::new(2);
+        let mut emitter = observe(1, 2048);
+        emitter
+            .emit_shaping(
+                event(Outcome::Success),
+                &detail,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap();
+        let frame = &sink.frames[0];
+        let decoded = collect_shaping(frame).unwrap();
+        assert_eq!(
+            (decoded.disposition, decoded.code, decoded.result),
+            (1, 0, 1)
+        );
+        assert_eq!(decoded.counts, counts);
+        assert_eq!(decoded.bytes, bytes);
+        assert_eq!(
+            decoded.limits,
+            [1, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 4096, 2]
+        );
+        assert_eq!(decoded.reads, [Some(7), Some(9), Some(11), Some(13)]);
+        assert_eq!(decoded.address, Some((1, story.as_str())));
+        assert!(!frame.windows(12).any(|b| b == b"PROJECT-TEXT"));
+        let mut malformed = frame.clone();
+        malformed.push(0);
+        assert!(collect_shaping(&malformed).is_err());
+        // Header length48 plus seven attribution strings gives independent tag position.
+        let tags = 48
+            + 7 * 2
+            + [
+                "SDOC-019abcde-0000-7000-8000-000000000001",
+                "account",
+                "principal",
+                "owner",
+                "owner-principal",
+                "space",
+                "session",
+            ]
+            .iter()
+            .map(|s| s.len())
+            .sum::<usize>();
+        for (offset, value) in [(0, 5), (1, 34), (2, 4), (3, 128)] {
+            let mut malformed = frame.clone();
+            malformed[tags + offset] = value;
+            assert!(collect_shaping(&malformed).is_err());
+        }
+        let mut redacted = CollectorSink::new(2);
+        let mut obs = observe(1, 2048);
+        let mut clean = event(Outcome::Success);
+        clean.private_project_text = None;
+        obs.emit_shaping(clean, &detail, &CancellationToken::default(), &mut redacted)
+            .unwrap();
+        assert_eq!(sink.frames, redacted.frames);
+    });
+}
+#[test]
+fn shaping_v5_denial_cancel_and_indeterminate() {
+    bounded_case("shaping_v5_denial_cancel_and_indeterminate", || {
+        let budget = ShapingBudget {
+            counts: [1; 8],
+            byte_limit: 1,
+            delivery_limit: 1,
+        };
+        let read = ShapingRead {
+            source_revision: None,
+            resolver_revision: Some(3),
+            cancel_epoch: Some(4),
+            target_revision: None,
+        };
+        assert!(ShapingCounts::new([2; 8], [0, 0, 0], 1, budget).is_err());
+        assert!(ShapingCounts::new([0; 8], [2, 1, 0], 1, budget).is_err());
+        assert!(ShapingCounts::for_rejection([0; 8], [0, 2, 1], 1, budget).is_err());
+        assert!(ShapingCounts::for_rejection([0; 8], [0, 2, 0], 2, budget).is_err());
+        let wrong = DomainId::parse("SSTY-019abcde-0000-7000-8000-000000000001").unwrap();
+        assert!(TextAddress::new(&wrong, TextProperty::Style).is_err());
+        let observed = [200, 100, 4, 3, 20, 10, 900, 0];
+        let counts = ShapingCounts::for_rejection(observed, [0, 4096, 0], 1, budget).unwrap();
+        assert!(
+            ShapingDetail::new(
+                ShapingDisposition::Accepted,
+                None,
+                Some(TextDisposition::Shaped),
+                None,
+                read,
+                counts
+            )
+            .is_err()
+        );
+        let detail = ShapingDetail::new(
+            ShapingDisposition::Rejected,
+            Some(ShapingCode::BudgetExceeded),
+            None,
+            None,
+            read,
+            counts,
+        )
+        .unwrap();
+        let token = CancellationToken::default();
+        token.cancel();
+        let mut emitter = observe(1, 2048);
+        let mut sink = CollectorSink::new(2);
+        let receipt = emitter
+            .emit_shaping(
+                event(Outcome::Failure(FailureCode::Validation)),
+                &detail,
+                &token,
+                &mut sink,
+            )
+            .unwrap();
+        assert_eq!(receipt.outcome, Outcome::Canceled);
+        let decoded = collect_shaping(&sink.frames[0]).unwrap();
+        assert_eq!(decoded.counts, observed);
+        assert_eq!(decoded.bytes, [0, 4096, 0]);
+        assert_eq!(
+            (decoded.disposition, decoded.code, decoded.result),
+            (3, 3, 0)
+        );
+        let admitted_budget = ShapingBudget {
+            counts: [1000; 8],
+            byte_limit: 4096,
+            delivery_limit: 1,
+        };
+        let retained = ShapingCounts::new(
+            [20, 12, 3, 4, 10, 2, 99, 1],
+            [512, 1024, 512],
+            1,
+            admitted_budget,
+        )
+        .unwrap();
+        let pending = ShapingDetail::new(
+            ShapingDisposition::ReconciliationRequired,
+            Some(ShapingCode::ReconciliationRequired),
+            Some(TextDisposition::Shaped),
+            None,
+            read,
+            retained,
+        )
+        .unwrap();
+        let mut pending_obs = observe(1, 2048);
+        let mut pending_sink = CollectorSink::new(2);
+        pending_obs
+            .emit_shaping(
+                event(Outcome::Failure(FailureCode::Unavailable)),
+                &pending,
+                &CancellationToken::default(),
+                &mut pending_sink,
+            )
+            .unwrap();
+        let pending_frame = collect_shaping(&pending_sink.frames[0]).unwrap();
+        assert_eq!(
+            (
+                pending_frame.disposition,
+                pending_frame.code,
+                pending_frame.result
+            ),
+            (4, 33, 1)
+        );
+        assert_eq!(pending_frame.counts[7], 1);
+        assert_eq!(pending_frame.bytes, [512, 1024, 512]);
+        for result in [TextDisposition::EmptyInput, TextDisposition::ControlOnly] {
+            let zero = ShapingCounts::new([0; 8], [0; 3], 1, admitted_budget).unwrap();
+            let detail = ShapingDetail::new(
+                ShapingDisposition::Accepted,
+                None,
+                Some(result),
+                None,
+                read,
+                zero,
+            )
+            .unwrap();
+            let mut obs = observe(1, 2048);
+            let mut sink = CollectorSink::new(2);
+            obs.emit_shaping(
+                event(Outcome::Success),
+                &detail,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap();
+            assert_eq!(
+                collect_shaping(&sink.frames[0]).unwrap().result,
+                result as u8
+            );
+        }
+        let mut obs = observe(1, 2048);
+        let mut sink = CollectorSink::new(2);
+        sink.forced = Some(DeliveryError::Indeterminate);
+        assert_eq!(
+            obs.emit_shaping(
+                event(Outcome::Failure(FailureCode::Validation)),
+                &detail,
+                &CancellationToken::default(),
+                &mut sink
+            ),
+            Err(Error::Delivery(DeliveryError::Indeterminate))
+        );
+        assert_eq!(
+            obs.emit_shaping(
+                event(Outcome::Failure(FailureCode::Validation)),
+                &detail,
+                &CancellationToken::default(),
+                &mut sink
+            ),
+            Err(Error::ReconciliationRequired)
+        );
+    });
+}

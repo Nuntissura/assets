@@ -1,0 +1,980 @@
+{
+  "upstream_package": "ttf-parser",
+  "version": "0.25.1",
+  "archive_sha256": "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31",
+  "revision": "56c33b910b03ca152f78363ec471c5dfd97c3069",
+  "license": "MIT OR Apache-2.0",
+  "module_root": "src/provider/ttf/mod.rs",
+  "features_frozen_on": [
+    "opentype-layout",
+    "std",
+    "variable-fonts"
+  ],
+  "features_frozen_off": [
+    "apple-layout",
+    "glyph-names",
+    "gvar-alloc",
+    "no-std-float"
+  ],
+  "changes": [
+    "crate-root namespace remapping",
+    "module-local std configuration",
+    "operation-local bounded parser methods and checked arithmetic; no context retained in Face/tables",
+    "Rust2024 match ergonomics and explicit borrowed GPOS anchor lifetime from named compile diagnostics"
+  ],
+  "upstream_files": [
+    {
+      "upstream": "aat.rs",
+      "sha256": "6ecaaae27affe14be1569561c6da01a138bd17e8b9e808af74e1238037f55993",
+      "owned": "src/provider/ttf/aat.rs"
+    },
+    {
+      "upstream": "delta_set.rs",
+      "sha256": "c538b63a91a6b8bc3699639f05a4898830115bab67811f9b73861d3668ca1d17",
+      "owned": "src/provider/ttf/delta_set.rs"
+    },
+    {
+      "upstream": "language.rs",
+      "sha256": "a60ae54702f016da956ae2302031610183df180c7dd726ca244948d7b1d0ab1c",
+      "owned": "src/provider/ttf/language.rs"
+    },
+    {
+      "upstream": "lib.rs",
+      "sha256": "694779e7f8a52ba4b9ff22c2b3c3082fdebca00277c2e82be777abf189bd1dc4",
+      "owned": "src/provider/ttf/mod.rs"
+    },
+    {
+      "upstream": "parser.rs",
+      "sha256": "e67c7c55241e17579ee27b457e3490a42d0cf475d9f8d4c8607ceab3ae7c4838",
+      "owned": "src/provider/ttf/parser.rs"
+    },
+    {
+      "upstream": "var_store.rs",
+      "sha256": "2ddf2e3543fc8c5842217d7cb1f84d45320c5c5956226ab42f4317afe0a79564",
+      "owned": "src/provider/ttf/var_store.rs"
+    },
+    {
+      "upstream": "ggg/chained_context.rs",
+      "sha256": "7e21ae2102f9e280c863f9338a1a5695c348f031aff583f8bf6c18f49d7b67be",
+      "owned": "src/provider/ttf/ggg/chained_context.rs"
+    },
+    {
+      "upstream": "ggg/context.rs",
+      "sha256": "9ecff524b4c6fcba01ee836296bb4238f4884c7f6cecca6e1fc39c52e2dacc21",
+      "owned": "src/provider/ttf/ggg/context.rs"
+    },
+    {
+      "upstream": "ggg/feature_variations.rs",
+      "sha256": "4be41e9fb734a843fce99caacaae31f9749464dc34a02f42dfe7518149a90bad",
+      "owned": "src/provider/ttf/ggg/feature_variations.rs"
+    },
+    {
+      "upstream": "ggg/layout_table.rs",
+      "sha256": "c55b2395e033378ce343f8fff0e0990bc9a313700e877ab10fc57e59950361c2",
+      "owned": "src/provider/ttf/ggg/layout_table.rs"
+    },
+    {
+      "upstream": "ggg/lookup.rs",
+      "sha256": "a81e0b87f5d63767a4c04fb05cb84d00e91b83887f4393a3e2b7352e7d6d5b65",
+      "owned": "src/provider/ttf/ggg/lookup.rs"
+    },
+    {
+      "upstream": "ggg/mod.rs",
+      "sha256": "67d542bdfb69fafda825db0ac7bb1b50a592c10c42402476546affccd85f0213",
+      "owned": "src/provider/ttf/ggg/mod.rs"
+    },
+    {
+      "upstream": "tables/ankr.rs",
+      "sha256": "b71784f3587d0c5893e848e29284f89793dc95451f059651dfb99268d642ca3d",
+      "owned": "src/provider/ttf/tables/ankr.rs"
+    },
+    {
+      "upstream": "tables/avar.rs",
+      "sha256": "31d2b442eb7252f2925001f7d8831d8317a197f8aeadcee335ce19a8823c6a66",
+      "owned": "src/provider/ttf/tables/avar.rs"
+    },
+    {
+      "upstream": "tables/cbdt.rs",
+      "sha256": "3cae1371844cb027313ab00e672441130926f24af5505b24c855b76a49fa079a",
+      "owned": "src/provider/ttf/tables/cbdt.rs"
+    },
+    {
+      "upstream": "tables/cblc.rs",
+      "sha256": "db7d7d8379ad8c257552b577e40807b51d6cd9f1a91dd8cef9fb9edf8782d607",
+      "owned": "src/provider/ttf/tables/cblc.rs"
+    },
+    {
+      "upstream": "tables/colr.rs",
+      "sha256": "cfe387826b48c478e5622c5e8e67b4feb12da982998cf4f85e4c8812c366407d",
+      "owned": "src/provider/ttf/tables/colr.rs"
+    },
+    {
+      "upstream": "tables/cpal.rs",
+      "sha256": "ff1cde4fb084429bbf05e4aba278f68079ec68a85be7743bd39089081ee71a7a",
+      "owned": "src/provider/ttf/tables/cpal.rs"
+    },
+    {
+      "upstream": "tables/feat.rs",
+      "sha256": "da33feae512feaf9903721f237981c8685e54be66d1cf2da03627e1742ab4a6e",
+      "owned": "src/provider/ttf/tables/feat.rs"
+    },
+    {
+      "upstream": "tables/fvar.rs",
+      "sha256": "74e2b47e142cc4c27f5cf3fe2871421292a5abda8869358419b5ff4ebaec41f9",
+      "owned": "src/provider/ttf/tables/fvar.rs"
+    },
+    {
+      "upstream": "tables/gdef.rs",
+      "sha256": "ba699b88a063e3780cd86c27a2c519acb7d75fd79c96f6b38f966a9f53a52d45",
+      "owned": "src/provider/ttf/tables/gdef.rs"
+    },
+    {
+      "upstream": "tables/glyf.rs",
+      "sha256": "6a03b8d92f12566fd1dc244f4fd0cd9a8babb7f79917d9cf5812eef1350df809",
+      "owned": "src/provider/ttf/tables/glyf.rs"
+    },
+    {
+      "upstream": "tables/gpos.rs",
+      "sha256": "5b6cdc49164a16719edc1cc850ea4333f97432589282c2012bd33196a382adcd",
+      "owned": "src/provider/ttf/tables/gpos.rs"
+    },
+    {
+      "upstream": "tables/gsub.rs",
+      "sha256": "6638dfdd0d740e2c4cb1d1b1f9082a0dc882de04de62f3c85dcc2ae684d739d1",
+      "owned": "src/provider/ttf/tables/gsub.rs"
+    },
+    {
+      "upstream": "tables/gvar.rs",
+      "sha256": "8b2de50aa93c81cd3298f9c59c641bd7a9d63bae180f351d2096ae63461412cc",
+      "owned": "src/provider/ttf/tables/gvar.rs"
+    },
+    {
+      "upstream": "tables/head.rs",
+      "sha256": "4965d2761aff7ed22b77d5ee4ad7c63fc17be8e67691239cf4d9a4848d1a50c6",
+      "owned": "src/provider/ttf/tables/head.rs"
+    },
+    {
+      "upstream": "tables/hhea.rs",
+      "sha256": "368261d1cb1c869f1f5177cb72b83a6bc7b8c1e093cf2d57cbab53a8a5e7a663",
+      "owned": "src/provider/ttf/tables/hhea.rs"
+    },
+    {
+      "upstream": "tables/hmtx.rs",
+      "sha256": "6885aeb36858c9a446232689e3928f2ec6e924bfe690ff3a7b5de6a7d31c6f45",
+      "owned": "src/provider/ttf/tables/hmtx.rs"
+    },
+    {
+      "upstream": "tables/hvar.rs",
+      "sha256": "abc834054bda6b506a23fcfa4acbc5e500098a39f5b82e0a87903df6c7d73ef8",
+      "owned": "src/provider/ttf/tables/hvar.rs"
+    },
+    {
+      "upstream": "tables/kern.rs",
+      "sha256": "ed3f95efdc3eb6d0e9950e6f475ae22e84b0616b7a55faa26e146ecf9dbaefd9",
+      "owned": "src/provider/ttf/tables/kern.rs"
+    },
+    {
+      "upstream": "tables/kerx.rs",
+      "sha256": "8c7063c0142eba0ea4179ad46c5a1a51fae0b57b2c94549b6c96fb3a2c97f8e4",
+      "owned": "src/provider/ttf/tables/kerx.rs"
+    },
+    {
+      "upstream": "tables/loca.rs",
+      "sha256": "5ec366c137465039b8935f68476ab5798f562e7bdf3e698a28b1727f48ae4239",
+      "owned": "src/provider/ttf/tables/loca.rs"
+    },
+    {
+      "upstream": "tables/math.rs",
+      "sha256": "279669c8d2f77db1338ccea6a588763c757d6d52057b94cb9642aecee9c2f0fd",
+      "owned": "src/provider/ttf/tables/math.rs"
+    },
+    {
+      "upstream": "tables/maxp.rs",
+      "sha256": "e5a9fffdfc1624873ddcb6289aab47964fbef5d3d513522dcdb3a759354cb8d4",
+      "owned": "src/provider/ttf/tables/maxp.rs"
+    },
+    {
+      "upstream": "tables/mod.rs",
+      "sha256": "052fee3308feecd21a8954da4a8e2b38c9ff17035a32e5bb4cd37a1977f6afe4",
+      "owned": "src/provider/ttf/tables/mod.rs"
+    },
+    {
+      "upstream": "tables/morx.rs",
+      "sha256": "9d3318f3592f05ebefe6aa7c00fd5bb781448ffeff2f7cc5934991c3a183bfa0",
+      "owned": "src/provider/ttf/tables/morx.rs"
+    },
+    {
+      "upstream": "tables/mvar.rs",
+      "sha256": "34a5cc5f723c6b7b0deea191c914c8b9bc3413c595b3bff83b3adda902c6b149",
+      "owned": "src/provider/ttf/tables/mvar.rs"
+    },
+    {
+      "upstream": "tables/name.rs",
+      "sha256": "12ff8509c8fc14c12a244bc5b76ef43556d2d6800336e30d8ed9c96b9274bab8",
+      "owned": "src/provider/ttf/tables/name.rs"
+    },
+    {
+      "upstream": "tables/os2.rs",
+      "sha256": "24d39455fdf53e4c85510f87446e4f6dca834b0bd6a82cfdf052fe7b1d4869f0",
+      "owned": "src/provider/ttf/tables/os2.rs"
+    },
+    {
+      "upstream": "tables/post.rs",
+      "sha256": "a361a2c4462bd4d89a6c61a34004795151f579f4744073f911d704016a2854f8",
+      "owned": "src/provider/ttf/tables/post.rs"
+    },
+    {
+      "upstream": "tables/sbix.rs",
+      "sha256": "85a34ba1f6b618eedfee76f58f5fe016b8d79e2794bdb9a84d1965e13a10120f",
+      "owned": "src/provider/ttf/tables/sbix.rs"
+    },
+    {
+      "upstream": "tables/stat.rs",
+      "sha256": "88d93fe5c38868a72f72671abcb936eae2ee152a0e31af12aea37532005836cf",
+      "owned": "src/provider/ttf/tables/stat.rs"
+    },
+    {
+      "upstream": "tables/svg.rs",
+      "sha256": "c6407459f35b6d6fab6f889041f9c85811d9ba81dc8cb05efccf25bcac6934b5",
+      "owned": "src/provider/ttf/tables/svg.rs"
+    },
+    {
+      "upstream": "tables/trak.rs",
+      "sha256": "c070a4a8b5ddcca09a02dc392c74b611f39fa140992502965c7f7389847186e5",
+      "owned": "src/provider/ttf/tables/trak.rs"
+    },
+    {
+      "upstream": "tables/vhea.rs",
+      "sha256": "c2a1b72659969772ecac3f5221ea5cd7502f03454c5e34516a8e0d23578ef34e",
+      "owned": "src/provider/ttf/tables/vhea.rs"
+    },
+    {
+      "upstream": "tables/vorg.rs",
+      "sha256": "8b5872e30a796f7e06ec3e3ad874ad05326f578098bbb6277ba94d1e3418149a",
+      "owned": "src/provider/ttf/tables/vorg.rs"
+    },
+    {
+      "upstream": "tables/vvar.rs",
+      "sha256": "6af9eb4c737aa33a85ee83e382d25c6ee6901f6baff4cb2cdfed80907c4e22dd",
+      "owned": "src/provider/ttf/tables/vvar.rs"
+    },
+    {
+      "upstream": "tables/cff/argstack.rs",
+      "sha256": "1e1bd5036c3afba097c9eba133de5c7e5eedb62ab34f835c155bf4699f3022cf",
+      "owned": "src/provider/ttf/tables/cff/argstack.rs"
+    },
+    {
+      "upstream": "tables/cff/cff1.rs",
+      "sha256": "352c4b3fe57eba059556abdd171746de0cf7f7f34e4a8b3c9a89209f45116704",
+      "owned": "src/provider/ttf/tables/cff/cff1.rs"
+    },
+    {
+      "upstream": "tables/cff/cff2.rs",
+      "sha256": "98bb5d09b5ccfb5d7ac8b70609449b35dadf1e40d1b04329f695f5c11cfa58a2",
+      "owned": "src/provider/ttf/tables/cff/cff2.rs"
+    },
+    {
+      "upstream": "tables/cff/charset.rs",
+      "sha256": "4f9f8d857012a8136e8577cfbefdcf133e04f1300a371c802434c081e1983b8d",
+      "owned": "src/provider/ttf/tables/cff/charset.rs"
+    },
+    {
+      "upstream": "tables/cff/charstring.rs",
+      "sha256": "2272a9661804882c18c88b9184946e3401943316d1998c42b21d39ef6076ddd1",
+      "owned": "src/provider/ttf/tables/cff/charstring.rs"
+    },
+    {
+      "upstream": "tables/cff/dict.rs",
+      "sha256": "7ef850f6e2bef222afe44b411ba6b21ab1995165cd2357538bbc0fcbc02008a3",
+      "owned": "src/provider/ttf/tables/cff/dict.rs"
+    },
+    {
+      "upstream": "tables/cff/encoding.rs",
+      "sha256": "f017bee08cf79c2c7a9130dae5f0a2d6f51cb1c2bfcac94bff2e32c8027f903e",
+      "owned": "src/provider/ttf/tables/cff/encoding.rs"
+    },
+    {
+      "upstream": "tables/cff/index.rs",
+      "sha256": "2648e1e40783651ffa5606e98a80772bebb60dc57c0b49556f3786dd0414c5d0",
+      "owned": "src/provider/ttf/tables/cff/index.rs"
+    },
+    {
+      "upstream": "tables/cff/mod.rs",
+      "sha256": "b5c66ed90beae78ba4dcc79c5461a7c4528261f00363b3a3f5bf586aa8592c35",
+      "owned": "src/provider/ttf/tables/cff/mod.rs"
+    },
+    {
+      "upstream": "tables/cff/std_names.rs",
+      "sha256": "28f192e64551773c97d0457ddabc774cfabe535585a2ef65f37ca48022221923",
+      "owned": "src/provider/ttf/tables/cff/std_names.rs"
+    },
+    {
+      "upstream": "tables/cmap/format0.rs",
+      "sha256": "e6f73f8c6ef2203bf2894dcc0e66eb4569b5c237de05f021cd8fdd579d43c93c",
+      "owned": "src/provider/ttf/tables/cmap/format0.rs"
+    },
+    {
+      "upstream": "tables/cmap/format10.rs",
+      "sha256": "0a9559f9cc3b57fa9cb666299de50d8cd65a96211da735267780af2de949aa9f",
+      "owned": "src/provider/ttf/tables/cmap/format10.rs"
+    },
+    {
+      "upstream": "tables/cmap/format12.rs",
+      "sha256": "6e6a2a2ffade2b5b69d613f6fe750c42f602cb3a445e2d96d7108cbd3958c026",
+      "owned": "src/provider/ttf/tables/cmap/format12.rs"
+    },
+    {
+      "upstream": "tables/cmap/format13.rs",
+      "sha256": "8ec2464aa88441df18a74da209152943e180e9c501f5cd87232b467f82e68f8f",
+      "owned": "src/provider/ttf/tables/cmap/format13.rs"
+    },
+    {
+      "upstream": "tables/cmap/format14.rs",
+      "sha256": "e8b876c23c510fa5ee18f4803d4d3978d4258eda7499356a35db42cca244f5ae",
+      "owned": "src/provider/ttf/tables/cmap/format14.rs"
+    },
+    {
+      "upstream": "tables/cmap/format2.rs",
+      "sha256": "6ff32e631e8436202e0e5ea0a53b305f5b00c5701331083895beba88cbd971b5",
+      "owned": "src/provider/ttf/tables/cmap/format2.rs"
+    },
+    {
+      "upstream": "tables/cmap/format4.rs",
+      "sha256": "031e29ba168dd05c68d2b1e9b8221dd9e27ff81e24da6905e4654eb13c072116",
+      "owned": "src/provider/ttf/tables/cmap/format4.rs"
+    },
+    {
+      "upstream": "tables/cmap/format6.rs",
+      "sha256": "0bf95f3c74246dd3ca14b467e340378daf289bebf3c8bdcfe46f5b4f4a72007c",
+      "owned": "src/provider/ttf/tables/cmap/format6.rs"
+    },
+    {
+      "upstream": "tables/cmap/mod.rs",
+      "sha256": "d28bee77c6fba712877da53512ff520ec21d8f3cee5facd8fc7f2ac207576a95",
+      "owned": "src/provider/ttf/tables/cmap/mod.rs"
+    }
+  ],
+  "derivative_files": [
+    {
+      "path": "src/provider/ttf/aat.rs",
+      "bytes": 17570,
+      "sha256": "8860205ff5d95b50e4e70fbf85c71c91aea3060b4deaa9fa9c815d7026ed9e17"
+    },
+    {
+      "path": "src/provider/ttf/bounded.rs",
+      "bytes": 1459,
+      "sha256": "b5b76ee281939d874b37f78fc575e4238cdb826c12399a4f60ab1982fcc3d9d0"
+    },
+    {
+      "path": "src/provider/ttf/delta_set.rs",
+      "bytes": 3200,
+      "sha256": "048a689dd180f5a0d6f05c037dda3415c9b2691ba07d62dc8b58925ab6338e34"
+    },
+    {
+      "path": "src/provider/ttf/ggg/chained_context.rs",
+      "bytes": 5523,
+      "sha256": "f928928991c283c6215cd44f379524359bb7507e8c1b754b461d4d70a3ba2489"
+    },
+    {
+      "path": "src/provider/ttf/ggg/context.rs",
+      "bytes": 4149,
+      "sha256": "83bee603ee3d63907682531ed3c4616aaaf0c3a12c8b1276d4164660a2fc89a1"
+    },
+    {
+      "path": "src/provider/ttf/ggg/feature_variations.rs",
+      "bytes": 7790,
+      "sha256": "2a84d4a21c670ac3c4ee2287e922c288ed86b69ac76dfaaa8272ad2196116f82"
+    },
+    {
+      "path": "src/provider/ttf/ggg/layout_table.rs",
+      "bytes": 9664,
+      "sha256": "ccf507a84e57a8473076d902d04a733787959ed1f3366aaf10457d32185bcdef"
+    },
+    {
+      "path": "src/provider/ttf/ggg/lookup.rs",
+      "bytes": 6361,
+      "sha256": "333b346a5b0ea2689a910d90f97f40a6900bbf0b011870c62d91f5b5ed36f5e3"
+    },
+    {
+      "path": "src/provider/ttf/ggg/mod.rs",
+      "bytes": 7062,
+      "sha256": "9118d13dac3cc12fa1d7c580eb146a017b71edc7837abf9ae07f9f90591af155"
+    },
+    {
+      "path": "src/provider/ttf/language.rs",
+      "bytes": 19858,
+      "sha256": "0e0e3aa9a8a64d9f65556bad1003d8f8c2388ecf94cf2ef4222e8d7305617b54"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "bytes": 93730,
+      "sha256": "3b4c3f24d1297b0db00ed413fe7f37d27e6d43bde422d6fce820d6ed9f83eb28"
+    },
+    {
+      "path": "src/provider/ttf/parser.rs",
+      "bytes": 26095,
+      "sha256": "640f8f1789043c0423e50e960d86b3d64c83a8cebf6a1d57154e42a5eddc3bc5"
+    },
+    {
+      "path": "src/provider/ttf/tables/ankr.rs",
+      "bytes": 2686,
+      "sha256": "daabd3607b3f8d2b02a8189b020c803e67ba92eab5bbcc68311f64f5fbbdd78b"
+    },
+    {
+      "path": "src/provider/ttf/tables/avar.rs",
+      "bytes": 7941,
+      "sha256": "7231f7a3efb994f0d40cc9d837bfa7c3de03b1d4a8a4dddf703527fcf012faf5"
+    },
+    {
+      "path": "src/provider/ttf/tables/cbdt.rs",
+      "bytes": 5534,
+      "sha256": "82fcf121bb9116d207ed8413580f5db243d56444265c41fb03ba901454da0a48"
+    },
+    {
+      "path": "src/provider/ttf/tables/cblc.rs",
+      "bytes": 9248,
+      "sha256": "64fb0aa3e4cb889b257c871ff7b89e3d7bfbbf36b8cfeb483f76489ee78a5845"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/argstack.rs",
+      "bytes": 1360,
+      "sha256": "1e1bd5036c3afba097c9eba133de5c7e5eedb62ab34f835c155bf4699f3022cf"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/cff1.rs",
+      "bytes": 44249,
+      "sha256": "371492e326f99d54ff338f74bd5046ef97acd3815b8a82e19b3db6094404589d"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/cff2.rs",
+      "bytes": 18630,
+      "sha256": "05aa12c167ae4d0e2db1a366c7c7952b4a28d151ab3aa6f297d9a341f2dd62ae"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/charset.rs",
+      "bytes": 10055,
+      "sha256": "aff4b114c37861eb79c011c81f120d11ebffa047f6123e641eea625bd5e33075"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/charstring.rs",
+      "bytes": 17498,
+      "sha256": "872d8418e33f1db0135ed77503f78945ca6d46540a18ca6032c70603cf552cd7"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/dict.rs",
+      "bytes": 13392,
+      "sha256": "cb2fd8b492da2c974c691a5a95b2b960a9bb895373dece6a17133e407c65b095"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/encoding.rs",
+      "bytes": 6909,
+      "sha256": "fe1bc195851025e4ab9ebd8d350d63d00594df19075130b136d40163d4cd8cd8"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/index.rs",
+      "bytes": 7445,
+      "sha256": "3a73081f4659470d0afc7528b9fa5009e036c094fb07a2f5479b19c8d658bc05"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/mod.rs",
+      "bytes": 3041,
+      "sha256": "5477c206a7c9ea94356fe7b653c6e66ed3eb2a0c6bcd87f68e980e41f5df16ca"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/std_names.rs",
+      "bytes": 6222,
+      "sha256": "28f192e64551773c97d0457ddabc774cfabe535585a2ef65f37ca48022221923"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format0.rs",
+      "bytes": 2579,
+      "sha256": "653091cffc72f6f370db3452610853fb7e629a653c2dec4fbe590bbef3fcc31a"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format10.rs",
+      "bytes": 2094,
+      "sha256": "298c14992bbacfec756eb235ae459321981680480721facf4d238bbd11227cb2"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format12.rs",
+      "bytes": 3553,
+      "sha256": "74d3924cccde135335a8f859305a754f42fbe830d1d680e09005274351cb4b44"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format13.rs",
+      "bytes": 2648,
+      "sha256": "749748de0b4214b2a9f934e6d65f3cd9cfcd237be94146863e7c59f56909c387"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format14.rs",
+      "bytes": 6040,
+      "sha256": "82fd9408d0130986e6ce3c21b8e038a69fec0a13d0375882a0f1d59f3aea60c4"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format2.rs",
+      "bytes": 7926,
+      "sha256": "17c5edec3be9a31362dbb71c4a5e7780bae6552c5688c57341c4bff23287540b"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format4.rs",
+      "bytes": 6953,
+      "sha256": "591992690bccb64fd8c92c40b3bc0ae3699e3f89e25b835ff1a5eb660cd638be"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format6.rs",
+      "bytes": 2426,
+      "sha256": "8e4e6b6003771c6b153386acba1c038df6db9246307b062f7a00b827f05f9838"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/mod.rs",
+      "bytes": 11492,
+      "sha256": "13c000e07bb0c1a6e5e542b32f5ded2a2faa8a3827e284ddcaa96ed7aba202cf"
+    },
+    {
+      "path": "src/provider/ttf/tables/colr.rs",
+      "bytes": 63628,
+      "sha256": "9e3c9b4051cfc9a3b62d85606ba0d307262fb36decc8261a54d34e3c171f695d"
+    },
+    {
+      "path": "src/provider/ttf/tables/cpal.rs",
+      "bytes": 2453,
+      "sha256": "5631c4f2c19e8604f36274ab621ad9616505fcb57cd2b33c3b18a7d494dc71f0"
+    },
+    {
+      "path": "src/provider/ttf/tables/feat.rs",
+      "bytes": 5130,
+      "sha256": "52bc8cc3ffcd849069300da1aec25057c95a7b31d2b275a4ecfcc425f4b7cf72"
+    },
+    {
+      "path": "src/provider/ttf/tables/fvar.rs",
+      "bytes": 3081,
+      "sha256": "0613fabeade34309060ed5164b3331c8981e05badb057011c9e4870cdd9c8aa9"
+    },
+    {
+      "path": "src/provider/ttf/tables/gdef.rs",
+      "bytes": 9460,
+      "sha256": "4747081a21d406952895db03cb81dbac3e06e4dc46ce59071631aa907543d1ca"
+    },
+    {
+      "path": "src/provider/ttf/tables/glyf.rs",
+      "bytes": 20613,
+      "sha256": "3d09fbb0af563f8c97abaf2c37fb32abfe9f9cca2dc745d2e922cc687a23769e"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "bytes": 36903,
+      "sha256": "2de37928a70a11de9f2874d4ce4600dbd13b570754fbd7d83c9610e63269ed72"
+    },
+    {
+      "path": "src/provider/ttf/tables/gsub.rs",
+      "bytes": 10435,
+      "sha256": "9995fcd9433ba5a9f116bb4292c8d99c9282c8dd432632f7d271e6e7e6c3c2b1"
+    },
+    {
+      "path": "src/provider/ttf/tables/gvar.rs",
+      "bytes": 63266,
+      "sha256": "18328966e15fe245dacae0ec1eec4f20eb45634f6cda7e78ccaac154514bec62"
+    },
+    {
+      "path": "src/provider/ttf/tables/head.rs",
+      "bytes": 2544,
+      "sha256": "b0448727823a1189f6dd8d0bc5aaec8d0db8f348627f3ec9a9f80595d02c6e85"
+    },
+    {
+      "path": "src/provider/ttf/tables/hhea.rs",
+      "bytes": 1248,
+      "sha256": "afb239f1e5134ce0bf330b99571aa8bc5625ff8d5108c3d8e23e7ad20c043af1"
+    },
+    {
+      "path": "src/provider/ttf/tables/hmtx.rs",
+      "bytes": 3886,
+      "sha256": "6dc505fe4c2d36c79ebc385626256ac925e89e5b9d2d0193a151330588117774"
+    },
+    {
+      "path": "src/provider/ttf/tables/hvar.rs",
+      "bytes": 5404,
+      "sha256": "d94b0d58088aa90992064182f6242694b5aeead84a38405ae899f6dd6aa96d8e"
+    },
+    {
+      "path": "src/provider/ttf/tables/kern.rs",
+      "bytes": 15149,
+      "sha256": "7c743fdbc2b929cf64f68a985f43141848de47cb794eb323cae840444f7cb5d8"
+    },
+    {
+      "path": "src/provider/ttf/tables/kerx.rs",
+      "bytes": 16235,
+      "sha256": "11c8f84ffda9d003c2557183b8ddb7805419410f0a58c8a369c4fa1f1845ead8"
+    },
+    {
+      "path": "src/provider/ttf/tables/loca.rs",
+      "bytes": 3484,
+      "sha256": "430f0c2652db914fb1087967d4fa2bb109c049838c251fc9e4a8d93f09c16c6d"
+    },
+    {
+      "path": "src/provider/ttf/tables/math.rs",
+      "bytes": 32695,
+      "sha256": "2d02d14fafc2aa1af3430467485b0817979b72aa2996d9774420f527423e53a1"
+    },
+    {
+      "path": "src/provider/ttf/tables/maxp.rs",
+      "bytes": 832,
+      "sha256": "278aabde43bd6316d040d59526b79a325bc8a8908e595f5fc4d75ff4e8766c52"
+    },
+    {
+      "path": "src/provider/ttf/tables/mod.rs",
+      "bytes": 786,
+      "sha256": "a11e00e826529d0c03224529ead31a3dbeccc916b9885a4dee4d7dff73f2c9f0"
+    },
+    {
+      "path": "src/provider/ttf/tables/morx.rs",
+      "bytes": 14268,
+      "sha256": "1ce313749fdd4c8c0fafc97804fa64a80cd89362af4a32dad6c7cf6e1904852f"
+    },
+    {
+      "path": "src/provider/ttf/tables/mvar.rs",
+      "bytes": 2457,
+      "sha256": "3fe0060135709fd5c37f5be0aa5dda4f083aa6d2cd352baeaee39cd5b7b79327"
+    },
+    {
+      "path": "src/provider/ttf/tables/name.rs",
+      "bytes": 9656,
+      "sha256": "ff7b18ca8dde5853d4bae9cb6a0ad81082faba8fbb67d62a1b4f2bacea0b1adb"
+    },
+    {
+      "path": "src/provider/ttf/tables/os2.rs",
+      "bytes": 18220,
+      "sha256": "b1fe3565798deb4e00ec730ae508ffd613dd85c7ea34f4e41b953d0b9e88bf73"
+    },
+    {
+      "path": "src/provider/ttf/tables/post.rs",
+      "bytes": 8972,
+      "sha256": "d62120c5c1ace4df7493cbc71ee751fc2618792dbd0701db249b80beaff54be9"
+    },
+    {
+      "path": "src/provider/ttf/tables/sbix.rs",
+      "bytes": 7561,
+      "sha256": "1d8410b0841d9891279319f8fd103c8ddf03aa6deacf20ae9016554125f86a79"
+    },
+    {
+      "path": "src/provider/ttf/tables/stat.rs",
+      "bytes": 15893,
+      "sha256": "5a1630581872ae186c30f4badac6731a18dcb45818cb68634af4cb46833c4a26"
+    },
+    {
+      "path": "src/provider/ttf/tables/svg.rs",
+      "bytes": 5005,
+      "sha256": "2697b3101252b46ebb8a6dfa566fac19e622f82521778bd847609e46fab22cb4"
+    },
+    {
+      "path": "src/provider/ttf/tables/trak.rs",
+      "bytes": 4769,
+      "sha256": "13b616a07857bd902294835051ab00e4aaf56b114e89ce6f848d5108b39a191f"
+    },
+    {
+      "path": "src/provider/ttf/tables/vhea.rs",
+      "bytes": 1253,
+      "sha256": "a0e4b0713da30412d0f369d1612fc466ac2f43be4d0df2321ab332830d5d1931"
+    },
+    {
+      "path": "src/provider/ttf/tables/vorg.rs",
+      "bytes": 1919,
+      "sha256": "37520fba97a1ac137d041d73b9822a099ed0cf84e286f76513ed78ef85750789"
+    },
+    {
+      "path": "src/provider/ttf/tables/vvar.rs",
+      "bytes": 4058,
+      "sha256": "bd92e2d09ab5830a65476b6499334b1c3863d21aa4037d75538018c96b1f2965"
+    },
+    {
+      "path": "src/provider/ttf/var_store.rs",
+      "bytes": 10661,
+      "sha256": "d8597d7c6e53e57665b296086890a24116eb155a39f48dad9380f4265bb733ce"
+    }
+  ],
+  "bounded_api": [
+    {
+      "path": "src/provider/ttf/delta_set.rs",
+      "line": 56,
+      "signature": "pub(crate) fn map_bounded( &self, mut index: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<(u16, u16)>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/feature_variations.rs",
+      "line": 189,
+      "signature": "pub(crate) fn find_index_bounded( &self, coords: &[NormalizedCoordinate], ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<VariationIndex>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/feature_variations.rs",
+      "line": 228,
+      "signature": "pub(crate) fn find_substitute_bounded( &self, feature: FeatureIndex, variation: VariationIndex, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<Feature<'a>>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/layout_table.rs",
+      "line": 290,
+      "signature": "pub(crate) fn get_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<T>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/layout_table.rs",
+      "line": 298,
+      "signature": "pub(crate) fn find_bounded( &self, tag: Tag, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<T>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/layout_table.rs",
+      "line": 312,
+      "signature": "pub(crate) fn index_bounded( &self, tag: Tag, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<u16>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/lookup.rs",
+      "line": 177,
+      "signature": "pub(crate) fn get_bounded<T: LookupSubtable<'a>>( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<T>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/lookup.rs",
+      "line": 192,
+      "signature": "pub(crate) fn parse_extension_lookup_bounded<'a, T>( data: &'a [u8], parse: impl FnOnce( &'a [u8], u16, &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<T>>, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<T>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/mod.rs",
+      "line": 194,
+      "signature": "pub(crate) fn get_bounded( &self, glyph: GlyphId, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<u16>>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/mod.rs",
+      "line": 211,
+      "signature": "pub(crate) fn contains_bounded( &self, glyph: GlyphId, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<bool>"
+    },
+    {
+      "path": "src/provider/ttf/ggg/mod.rs",
+      "line": 220,
+      "signature": "pub(crate) fn get_bounded( &self, glyph: GlyphId, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Class>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2417,
+      "signature": "pub(crate) fn parse_bounded( data: &'a [u8], index: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Self>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2699,
+      "signature": "pub(crate) fn glyph_hor_advance_bounded( &self, glyph: GlyphId, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<u16>>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2722,
+      "signature": "pub(crate) fn glyph_hor_side_bearing_bounded( &self, glyph: GlyphId, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<i16>>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2745,
+      "signature": "pub(crate) fn set_variation_bounded( &mut self, tag: Tag, value: f32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<()>>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2779,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, character: char, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2802,
+      "signature": "pub(crate) fn glyph_variation_index_bounded( &self, character: char, variation: char, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2834,
+      "signature": "pub(crate) fn table_bounded( &self, tag: Tag, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<&'a [u8]>>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2850,
+      "signature": "pub(crate) fn table_data_bounded( &self, tag: Tag, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<&'a [u8]>>"
+    },
+    {
+      "path": "src/provider/ttf/mod.rs",
+      "line": 2857,
+      "signature": "pub(crate) fn variation_axes_bounded( &self, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<LazyArray16<'a, VariationAxis>>"
+    },
+    {
+      "path": "src/provider/ttf/parser.rs",
+      "line": 1016,
+      "signature": "pub(crate) fn get_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<T>>"
+    },
+    {
+      "path": "src/provider/ttf/parser.rs",
+      "line": 1026,
+      "signature": "pub(crate) fn get_bounded( &self, index: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<T>>"
+    },
+    {
+      "path": "src/provider/ttf/parser.rs",
+      "line": 1036,
+      "signature": "pub(crate) fn get_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<T>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/avar.rs",
+      "line": 190,
+      "signature": "pub(crate) fn map_coordinate_bounded( &self, coordinates: &mut [NormalizedCoordinate], index: usize, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<()>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cff/cff1.rs",
+      "line": 1315,
+      "signature": "pub(crate) fn parse_bounded( data: &'a [u8], ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<Self>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format0.rs",
+      "line": 65,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code_point: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format10.rs",
+      "line": 57,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code_point: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format12.rs",
+      "line": 112,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code_point: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format13.rs",
+      "line": 74,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code_point: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format14.rs",
+      "line": 178,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code_point: u32, variation: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphVariationResult>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format2.rs",
+      "line": 211,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code_point: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format4.rs",
+      "line": 181,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code_point: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/format6.rs",
+      "line": 64,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code_point: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/mod.rs",
+      "line": 287,
+      "signature": "pub(crate) fn glyph_index_bounded( &self, code: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphId>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/mod.rs",
+      "line": 304,
+      "signature": "pub(crate) fn glyph_variation_index_bounded( &self, code: u32, variation: u32, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphVariationResult>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/cmap/mod.rs",
+      "line": 318,
+      "signature": "pub(crate) fn get_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<Subtable<'a>>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gdef.rs",
+      "line": 193,
+      "signature": "pub(crate) fn parse_bounded( data: &'a [u8], ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<Self>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gdef.rs",
+      "line": 201,
+      "signature": "pub(crate) fn glyph_variation_delta_bounded( &self, outer: u16, inner: u16, coordinates: &[NormalizedCoordinate], ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<f32>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gdef.rs",
+      "line": 217,
+      "signature": "pub(crate) fn glyph_class_bounded( &self, glyph: GlyphId, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<GlyphClass>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gdef.rs",
+      "line": 234,
+      "signature": "pub(crate) fn glyph_mark_attachment_class_bounded( &self, glyph: GlyphId, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Class>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gdef.rs",
+      "line": 245,
+      "signature": "pub(crate) fn is_mark_glyph_bounded( &self, glyph: GlyphId, set: Option<u16>, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<bool>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1082,
+      "signature": "pub(crate) fn get_bounded( &self, second: GlyphId, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<(ValueRecord<'a>, ValueRecord<'a>)>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1100,
+      "signature": "pub(crate) fn get_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<ValueRecord<'a>>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1110,
+      "signature": "pub(crate) fn get_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<PairSet<'a>>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1120,
+      "signature": "pub(crate) fn get_bounded( &self, classes: (u16, u16), ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<(ValueRecord<'a>, ValueRecord<'a>)>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1131,
+      "signature": "pub(crate) fn get_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<AnchorMatrix<'a>>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1141,
+      "signature": "pub(crate) fn get_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<(Class, Anchor<'a>)>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1151,
+      "signature": "pub(crate) fn get_bounded( &self, row: u16, col: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<Anchor<'a>>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1163,
+      "signature": "pub(crate) fn entry_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<Anchor<'a>>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/gpos.rs",
+      "line": 1171,
+      "signature": "pub(crate) fn exit_bounded( &self, index: u16, ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<Anchor<'a>>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/hvar.rs",
+      "line": 105,
+      "signature": "pub(crate) fn parse_bounded( data: &'a [u8], ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<Self>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/hvar.rs",
+      "line": 113,
+      "signature": "pub(crate) fn advance_offset_bounded( &self, glyph: GlyphId, coordinates: &[NormalizedCoordinate], ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<f32>>"
+    },
+    {
+      "path": "src/provider/ttf/tables/hvar.rs",
+      "line": 134,
+      "signature": "pub(crate) fn left_side_bearing_offset_bounded( &self, glyph: GlyphId, coordinates: &[NormalizedCoordinate], ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<f32>>"
+    },
+    {
+      "path": "src/provider/ttf/var_store.rs",
+      "line": 214,
+      "signature": "pub(crate) fn parse_delta_bounded( &self, outer: u16, inner: u16, coordinates: &[NormalizedCoordinate], ctx: &crate::provider::Context<'_>, ) -> crate::provider::ProviderResult<Option<f32>>"
+    }
+  ],
+  "selected_route_constraints": [
+    "horizontal hmtx metrics; variable Face requires parsed HVAR",
+    "no outline/raster/color/AAT execution; actual AAT/color/bitmap/SVG tags refused before table parsing",
+    "CFF2 unsupported; evaluated CFF real operands unsupported; ignored real operands retain checked byte scanning",
+    "legacy parser APIs remain private upstream compatibility; selected Rustybuzz calls must choose bounded interfaces and propagate first typed Error",
+    "bounded indexed fixed-record wrappers charge one unit before fixed scalar parsing; loop/search/variation/extension methods charge per iteration and guard depth"
+  ],
+  "validation": {
+    "rustfmt_toolchain": "1.97.1",
+    "rustfmt": "source parsing succeeded",
+    "compiler": "cargo check --locked --tests -p hsk-studio-type --no-default-features exit0; owning runtime pending",
+    "runtime": "NOT_RUN",
+    "independent_verdict": "PENDING"
+  }
+}

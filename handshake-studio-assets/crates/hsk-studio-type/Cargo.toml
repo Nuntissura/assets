@@ -1,0 +1,30 @@
+[package]
+name = "hsk-studio-type"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
+bitflags = { version = "=2.13.2", default-features = false, features = [] }
+bytemuck = { version = "=1.25.2", default-features = false, features = [] }
+unicode-bidi-mirroring = { version = "=0.4.0", default-features = false, features = [] }
+unicode-ccc = { version = "=0.4.0", default-features = false, features = [] }
+unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
+unicode-script = { version = "=0.5.8", default-features = false, features = [] }
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "type-consumer"
+path = "examples/type-consumer.rs"
+
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }

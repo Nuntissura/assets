@@ -1,0 +1,85 @@
+{
+  "package": "unicode-bidi",
+  "version": "0.3.18",
+  "unicode_version": "16.0.0",
+  "selected_features": [
+    "std",
+    "hardcoded-data"
+  ],
+  "private_changes": [
+    "explicit style X6 override",
+    "typed bounded execution",
+    "exact-layout admitted containers",
+    "no public string reorder/UTF16 API"
+  ],
+  "upstream_inputs": [
+    {
+      "path": "level.rs",
+      "upstream_sha256": "ce1eaa9940f1b90bc59aba296488b8cd128aefeb4b6b2e3ecc34da26c569150b"
+    },
+    {
+      "path": "data_source.rs",
+      "upstream_sha256": "36fa0785e51c549c1f72f09040cfe515b848d1b23fb30d469770a6b4b17b49df"
+    },
+    {
+      "path": "format_chars.rs",
+      "upstream_sha256": "678399fec3f4bfaf4093f38cfdb8956288313386dc3511dab9fb58164e8dc01b"
+    },
+    {
+      "path": "char_data/mod.rs",
+      "upstream_sha256": "8cbdcaacddb3dd9b70d615693fa73d0e7dca6332102a95f0d3ce447df7645284"
+    },
+    {
+      "path": "char_data/tables.rs",
+      "upstream_sha256": "8cbe4b6a4fc690e76107d4654047d3f0d8988b870fc3234f76dc265ad2e2a9ca"
+    },
+    {
+      "path": "explicit.rs",
+      "upstream_sha256": "86c3c55bf2cc90aab1411aac6cf05de505ca74e44a76fe829572dd7dc4dd2aa3"
+    },
+    {
+      "path": "implicit.rs",
+      "upstream_sha256": "8d5b003464aee3f333785c6170a884945251f39601e4ea658e669a2ad575d588"
+    }
+  ],
+  "derivative_files": [
+    {
+      "path": "src/provider/bidi/char_data/mod.rs",
+      "sha256": "bac0c8d02e8c127f5347601dbb3c73a22c6460a58aac3b6efb0e5412e347f175"
+    },
+    {
+      "path": "src/provider/bidi/char_data/tables.rs",
+      "sha256": "f3095410357836f9bf3fbad80b7f89207b362c0fd64fe3cad4f2b61676afce96"
+    },
+    {
+      "path": "src/provider/bidi/data_source.rs",
+      "sha256": "65271a4fa8bbd57c2346554503b243a49e5cfa238a42a7a91f469cfd74a2b742"
+    },
+    {
+      "path": "src/provider/bidi/explicit.rs",
+      "sha256": "3d178fc2b534bca162de5ec1e770de81914fc59b6e8516631d3e079f6e9053cb"
+    },
+    {
+      "path": "src/provider/bidi/format_chars.rs",
+      "sha256": "b316c75f1040aec77e2a7fd29bfde6ba73fbd935a346b3f03c05e3e0bf63684f"
+    },
+    {
+      "path": "src/provider/bidi/implicit.rs",
+      "sha256": "15afa9254aaf45a8e2efdc23a5474bc3ec6d5dd68587b74ab8ec7ffcc1de386d"
+    },
+    {
+      "path": "src/provider/bidi/level.rs",
+      "sha256": "87e6e041a244512cdbedf3574a99cb19eb972323897fcbef526afc478fa3d78b"
+    },
+    {
+      "path": "src/provider/bidi/mod.rs",
+      "sha256": "292d05a7ecb16e759c54f31ca226624c7426ee2a57ec44a5b19814818d4e453c"
+    },
+    {
+      "path": "src/provider/bidi/prepare.rs",
+      "sha256": "85f32cc001144d8223e826c4bc08e14aa2a91372d02e92af78fc89d755b28140"
+    }
+  ],
+  "status": "ACTUAL_SOURCE_ADAPTATION_COMPILE_CHECK_PASSED_RUNTIME_PENDING",
+  "semantics": "Frozen UTF8 Unicode16; no owned clones/string reorder; admitted nested storage; explicit metered bounded loops; structured ordinary X6 override priority; original controls; L1/L2 unchanged coordinate bytes; independent official bidi proof pending"
+}

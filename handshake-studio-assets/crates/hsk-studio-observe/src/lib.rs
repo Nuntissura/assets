@@ -516,6 +516,196 @@ impl<'a> GeometryDetail<'a> {
     }
 }
 
+/// Closed, borrowed shaping diagnostics; source content is never transported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ShapingDisposition {
+    Prepared = 1,
+    Accepted,
+    Rejected,
+    ReconciliationRequired,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ShapingCode {
+    InvalidInput = 1,
+    Overflow,
+    BudgetExceeded,
+    Allocation,
+    Canceled,
+    StaleEpoch,
+    CorruptFont,
+    MissingFont,
+    MissingGlyph,
+    UnsupportedProfile,
+    UnsupportedFeature,
+    HashMismatch,
+    RevokedFont,
+    UnavailableFace,
+    UnavailableFont,
+    UnsupportedFont,
+    InvalidAxis,
+    AbsentRead,
+    UnavailableRead,
+    StaleRead,
+    UnsupportedFinalization,
+    DeliveryRejected,
+    DeliveryUnavailable,
+    DeliverySaturated,
+    DeliveryIndeterminate,
+    LeaseUnavailable,
+    UnknownComposition,
+    UnsupportedNormalization,
+    InternalInvariant,
+    InvalidBidi,
+    InvalidMapping,
+    PartialOutput,
+    ReconciliationRequired,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TextDisposition {
+    Shaped = 1,
+    EmptyInput,
+    ControlOnly,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TextProperty {
+    Text = 1,
+    StoryMembership,
+    Style,
+    ShapedRuns,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextAddress<'a> {
+    id: &'a DomainId,
+    property: TextProperty,
+}
+impl<'a> TextAddress<'a> {
+    pub fn new(id: &'a DomainId, property: TextProperty) -> Result<Self, Error> {
+        let valid = match property {
+            TextProperty::Text => id.prefix() == "STXT",
+            TextProperty::Style => id.prefix() == "STYS",
+            TextProperty::StoryMembership | TextProperty::ShapedRuns => {
+                matches!(id.prefix(), "STXT" | "SLYR")
+            }
+        };
+        if !valid {
+            return Err(Error::InvalidDetail);
+        }
+        Ok(Self { id, property })
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapingBudget {
+    pub counts: [u64; 8],
+    pub byte_limit: u64,
+    pub delivery_limit: u64,
+}
+/// Counts: input UTF8 bytes/scalars, fonts/runs/glyphs/fallback/work, retained generations.
+/// All are this-operation observations, never historical high-water or authority.
+/// Bytes are current owned/this-operation peak/retained owned; retained overlaps current.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapingCounts {
+    counts: [u64; 8],
+    bytes: [u64; 3],
+    delivery_attempts: u64,
+    budget: ShapingBudget,
+    rejection_only: bool,
+}
+impl ShapingCounts {
+    pub fn new(
+        counts: [u64; 8],
+        bytes: [u64; 3],
+        delivery_attempts: u64,
+        budget: ShapingBudget,
+    ) -> Result<Self, Error> {
+        if counts.iter().zip(budget.counts).any(|(n, cap)| *n > cap)
+            || bytes[0] > bytes[1]
+            || bytes[2] > bytes[0]
+            || bytes[1] > budget.byte_limit
+            || delivery_attempts > budget.delivery_limit
+        {
+            return Err(Error::InvalidDetail);
+        }
+        Ok(Self {
+            counts,
+            bytes,
+            delivery_attempts,
+            budget,
+            rejection_only: false,
+        })
+    }
+    /// Preserve actual observations and caller limits on denial; no live result is represented.
+    pub fn for_rejection(
+        counts: [u64; 8],
+        bytes: [u64; 3],
+        delivery_attempts: u64,
+        budget: ShapingBudget,
+    ) -> Result<Self, Error> {
+        if bytes[0] > bytes[1]
+            || bytes[2] != 0
+            || counts[7] != 0
+            || delivery_attempts > budget.delivery_limit
+        {
+            return Err(Error::InvalidDetail);
+        }
+        Ok(Self {
+            counts,
+            bytes,
+            delivery_attempts,
+            budget,
+            rejection_only: true,
+        })
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapingRead {
+    pub source_revision: Option<u64>,
+    pub resolver_revision: Option<u64>,
+    pub cancel_epoch: Option<u64>,
+    pub target_revision: Option<u64>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapingDetail<'a> {
+    disposition: ShapingDisposition,
+    code: Option<ShapingCode>,
+    result: Option<TextDisposition>,
+    address: Option<TextAddress<'a>>,
+    read: ShapingRead,
+    counts: ShapingCounts,
+}
+impl<'a> ShapingDetail<'a> {
+    pub fn new(
+        disposition: ShapingDisposition,
+        code: Option<ShapingCode>,
+        result: Option<TextDisposition>,
+        address: Option<TextAddress<'a>>,
+        read: ShapingRead,
+        counts: ShapingCounts,
+    ) -> Result<Self, Error> {
+        let rejected = disposition == ShapingDisposition::Rejected;
+        let pending = disposition == ShapingDisposition::ReconciliationRequired;
+        if (rejected == result.is_some())
+            || (counts.rejection_only && !rejected)
+            || ((rejected || pending) != code.is_some())
+            || (pending != (code == Some(ShapingCode::ReconciliationRequired)))
+            || (rejected && (counts.bytes[2] != 0 || counts.counts[7] != 0))
+        {
+            return Err(Error::InvalidDetail);
+        }
+        Ok(Self {
+            disposition,
+            code,
+            result,
+            address,
+            read,
+            counts,
+        })
+    }
+}
+
 /// Fixed bounded transport storage; no owned frame allocation on any version.
 struct Frame {
     bytes: [u8; MAX_FRAME_BYTES],
@@ -646,7 +836,7 @@ impl Observe {
         cancel: &CancellationToken,
         sink: &mut (impl SinkPort + ?Sized),
     ) -> Result<Receipt, Error> {
-        self.emit_inner(event, None, None, None, cancel, sink)
+        self.emit_inner(event, None, None, None, None, cancel, sink)
     }
     /// Version 2 terminal detail uses the same admission, cancellation and delivery state machine.
     pub fn emit_detail(
@@ -663,7 +853,7 @@ impl Observe {
         {
             return Err(Error::InvalidDetail);
         }
-        self.emit_inner(event, Some(detail), None, None, cancel, sink)
+        self.emit_inner(event, Some(detail), None, None, None, cancel, sink)
     }
     /// Version 3 shares the existing delivery state machine; reservations and finalization
     /// remain caller-owned. A pending source result is distinct from diagnostic delivery state.
@@ -684,7 +874,7 @@ impl Observe {
         {
             return Err(Error::InvalidDetail);
         }
-        self.emit_inner(event, None, Some(detail), None, cancel, sink)
+        self.emit_inner(event, None, Some(detail), None, None, cancel, sink)
     }
     /// Version 4 borrowed geometry detail shares all legacy delivery/admission states.
     pub fn emit_geometry(
@@ -704,7 +894,27 @@ impl Observe {
         {
             return Err(Error::InvalidDetail);
         }
-        self.emit_inner(event, None, None, Some(detail), cancel, sink)
+        self.emit_inner(event, None, None, Some(detail), None, cancel, sink)
+    }
+    /// Version 5 uses the existing terminal sink and reconciliation state.
+    pub fn emit_shaping(
+        &mut self,
+        event: Observation<'_>,
+        detail: &ShapingDetail<'_>,
+        cancel: &CancellationToken,
+        sink: &mut (impl SinkPort + ?Sized),
+    ) -> Result<Receipt, Error> {
+        let unsuccessful = matches!(
+            detail.disposition,
+            ShapingDisposition::Rejected | ShapingDisposition::ReconciliationRequired
+        );
+        if event.outcome == Outcome::Progress
+            || (unsuccessful && event.outcome == Outcome::Success)
+            || (!unsuccessful && matches!(event.outcome, Outcome::Failure(_)))
+        {
+            return Err(Error::InvalidDetail);
+        }
+        self.emit_inner(event, None, None, None, Some(detail), cancel, sink)
     }
     fn emit_inner(
         &mut self,
@@ -712,6 +922,7 @@ impl Observe {
         detail: Option<&DiagnosticDetail>,
         resource: Option<&ResourceDetail>,
         geometry: Option<&GeometryDetail<'_>>,
+        shaping: Option<&ShapingDetail<'_>>,
         cancel: &CancellationToken,
         sink: &mut (impl SinkPort + ?Sized),
     ) -> Result<Receipt, Error> {
@@ -748,7 +959,9 @@ impl Observe {
             self.state.dropped_attempts = self.state.dropped_attempts.saturating_add(1);
             return Err(Error::Saturated);
         }
-        let frame = self.encode(sequence, outcome, progress, detail, resource, geometry)?;
+        let frame = self.encode(
+            sequence, outcome, progress, detail, resource, geometry, shaping,
+        )?;
         let next_bytes = self
             .state
             .progress_bytes
@@ -811,6 +1024,7 @@ impl Observe {
         detail: Option<&DiagnosticDetail>,
         resource: Option<&ResourceDetail>,
         geometry: Option<&GeometryDetail<'_>>,
+        shaping: Option<&ShapingDetail<'_>>,
     ) -> Result<Frame, Error> {
         let strings = [
             self.resource.as_str(),
@@ -838,7 +1052,9 @@ impl Observe {
         let mut out = Frame::new();
         out.extend_from_slice(b"HSKO")?;
         out.extend_from_slice(&[
-            if geometry.is_some() {
+            if shaping.is_some() {
+                5
+            } else if geometry.is_some() {
                 4
             } else if resource.is_some() {
                 3
@@ -957,9 +1173,51 @@ impl Observe {
                 out.extend_from_slice(source.as_str().as_bytes())?;
             }
         }
+        if let Some(d) = shaping {
+            let flags = u8::from(d.address.is_some())
+                | (u8::from(d.read.source_revision.is_some()) << 1)
+                | (u8::from(d.read.resolver_revision.is_some()) << 2)
+                | (u8::from(d.read.cancel_epoch.is_some()) << 3)
+                | (u8::from(d.read.target_revision.is_some()) << 4);
+            out.extend_from_slice(&[
+                d.disposition as u8,
+                d.code.map_or(0, |c| c as u8),
+                d.result.map_or(0, |r| r as u8),
+                flags,
+            ])?;
+            for n in d
+                .counts
+                .counts
+                .into_iter()
+                .chain(d.counts.bytes)
+                .chain([d.counts.delivery_attempts])
+                .chain(d.counts.budget.counts)
+                .chain([d.counts.budget.byte_limit, d.counts.budget.delivery_limit])
+            {
+                out.extend_from_slice(&n.to_be_bytes())?;
+            }
+            for revision in [
+                d.read.source_revision,
+                d.read.resolver_revision,
+                d.read.cancel_epoch,
+                d.read.target_revision,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                out.extend_from_slice(&revision.to_be_bytes())?;
+            }
+            if let Some(a) = d.address {
+                out.push(a.property as u8)?;
+                let id = a.id.as_str();
+                let len = u16::try_from(id.len()).map_err(|_| Error::FrameLimit)?;
+                out.extend_from_slice(&len.to_be_bytes())?;
+                out.extend_from_slice(id.as_bytes())?;
+            }
+        }
         Ok(out)
     }
 }
 
 /// Same descriptor for models, human manual and Argus/diagnostic adapters. No new Studio schema ID.
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-OBSERVE","version":1,"operation":"Observe::emit/emit_detail/emit_resource/emit_geometry closed allowlisted progress/outcome delivery","operator":{"intent":"Track work without exposing project text","result":"Correlation/revision/sequence receipt only after required sink accepts the emitted bytes","recovery":"On full/rejected/unavailable sink correct destination or admission and retry same revision; indeterminate delivery requires caller reconciliation before replacing emitter; stale context must refresh; canceled work emits a reserved terminal outcome"},"model":{"inputs":"Accord DomainId/ActorContext plus local u64 correlation/revision, bounded Budget, Observation progress or fixed success/failure/canceled enum, cancellation token, caller SinkPort","consumer":"observe-consumer [--descriptor] [--mode success|error|cancel|reject|saturate] [--private-text TEXT]","geometry_wire":"emit_geometry terminal HSKO version4: identical v1 header/seven attribution strings then u8 disposition1Prepared/2Accepted/3Rejected/4ReconciliationRequired,u8 code0none/1Validation/2Unsupported/3Empty/4UnavailableRead/5UnavailableStyle/6RevisionConflict/7StaleEpoch/8Overflow/9Canceled/10BudgetExceeded/11LeaseUnavailable/12DeliveryRejected/13DeliveryUnavailable/14ReconciliationRequired/15HashMismatch,u8 optional flags bit0address/bit1source_path_id/bit2read_revision/bit3target_revision/bit4cancel_epoch (bits5..7 reject). Eight BEu64 counts input_anchors,input_segments,output_vertices,output_segments,output_regions,output_loops,intersections,work_units; three BEu64 bytes requested_owned,precharged_input,retained_owned; five BEu64 delivery_attempts,count_limit,work_limit,byte_limit,delivery_limit. Admission counts0..6<=count_limit,work<=work_limit,retained<=requested,checked requested+precharged<=byte_limit,delivery_attempts<=delivery_limit. GeometryCounts::for_rejection preserves actual limits and observed input/intersection/work/requested/precharged counters even above admission bounds; zero outputs/retained are required and the private rejection-only marker forbids Prepared/Accepted/Pending. Rejected frames may report exceeded admission bounds, never inflated limits or clamped observations; delivery_attempts remains bounded. Retained bytes overlap requested owned and never add a second charge; counts describe actual caller reservations, not ownership proof. Optional BEu64 read_revision,target_revision,cancel_epoch in that order, then optional address u8 property_geometry=1,u16-length UTF8 SLYR,u16-length UTF8 nonempty<=128 ASCII alnum/_/- key,then optional u16-length UTF8 SVPT. Reject unknown tags/trailing bytes. Prepared/Accepted have no code; Rejected requires code and zero output counts/retained bytes; pending requires ReconciliationRequired code and may retain output. No raw coordinates/style/path data or private text. Versions1-3 byte-compatible. Same delivery state machine; cancellation changes event outcome without rewriting geometry disposition.","resource_wire":"emit_resource terminal HSKO version3: identical v1 header and seven attribution strings followed by u8 resource disposition1changed/2no_change/3rejected/4reconciliation_required, u8 code0none/1Validation/2Unavailable/3Unsupported/4RevisionConflict/5StaleEpoch/6LeaseUnavailable/7UnsupportedFinalization/8Overflow/9BudgetExceeded/10Canceled/11Loss/12HashMismatch/13Unauthorized, u8 tile_address_present0|1, BEu64 caller epoch, three BEu32 attempted/admitted-to-bounded-work/proposed-changed tile counts and BEu32 caller tile limit; attempted count and tile limit <=1048576, admitted<=attempted and limit, changed<=admitted. Three BEu64 counted output/scratch/retained-preimage reservation peak byte counts and BEu64 caller byte limit; checked byte sum<=limit. Reservation counts may already be released and never prove current ownership or transfer. Rejected and no_change changed counts zero; changed requires nonzero changed count; no_change transfers no output/preimage, enforced by caller finalization. ReconciliationRequired is an unresolved source/finalization result, separate from sink receipt/reconciliation state. Optional address: u8 samples=1, u16-length UTF8 SLYR ID, u16-length UTF8 object key (nonempty<=128 ASCII alnum/_/-), BEi64 column and row. Key is caller-granted stable identity, not a private label/path. Reject unknown tags/trailing bytes. v1/v2 bytes unchanged; cancellation changes terminal outcome without erasing resource disposition; no pixel/profile/mask bytes, raw errors, arbitrary attributes or lease handles","detail_wire":"emit_detail terminal HSKO version2: identical v1 header and seven attribution strings followed by u8 disposition1changed/2no_change/3rejected, u8 diagnostic code0none/1InvalidInput/2UnsupportedVersion/3DuplicateField/4InvalidActor/5InvalidCommand/6WrongDocument/7InvalidTarget/8WrongType/9DuplicateAddress/10MissingRead/11RevisionUnavailable/12RevisionConflict/13ValueConflict/14RevisionOverflow/15BudgetExceeded/16Canceled/17ValidationRejected, u8 address_present0|1, five BE u32 capped counts attempted_reads,attempted_writes,admitted_reads,admitted_writes,changed_writes (cap1048576); optional u8 target1Layer/2Artboard/3PageSpread,u8 property1Name/2Visible,u16-byte-length UTF8 validated prefixed domain ID. Visible is Layer only; reject unknown tags/trailing bytes. Rejected admitted/changed counts zero; postacceptance cancellation changes terminal outcome but preserves source disposition. Legacy emit stays byte-identical version1","wire":"Local binary transport v1, not canonical document or business event: HSKO ASCII, u8 version=1,outcome=1(progress)/2(success)/3(failure)/4(canceled),u8 fixed failure code0..4,u8 progress-present0|1; five big-endian u64 fields correlation,revision,sequence,completed,total; seven u16-byte-length UTF8 strings resource_id,account_id,principal_id,owner_account_id,owner_principal_id,access_space_id,session_id; reject trailing bytes at collector","limits":{"frame_bytes":2048,"progress_events":1024,"progress_lifetime_bytes":2097152,"terminal_reserve":1,"pending_callers_per_mutable_emitter":1},"redaction":"Private project text, raw errors, arbitrary attributes, labels and source paths never serialized; input content is borrowed and not inspected. Only caller-authorized Accord attribution IDs are included. Destination visibility/grants are caller-owned and host conformance remains pending","port":"Nonblocking atomic all-or-none try_send(Progress|Terminal,bytes); terminal reserves independent destination capacity. Indeterminate partial delivery never reports success; emitter blocks further delivery until caller reconciles","cancel":"Canceled token overrides requested outcome to Canceled; progress saturation cannot consume terminal reserve; delivered terminal closes emitter","realtime":"Emitted frames use a checked2048-byte stack buffer; caller sink/setup costs remain caller-owned; never invoke from realtime audio callback; retain existing multiple-writer/SPSC synchronization in host adapter","undo":"No document mutation or undo; this is not an EventLedger acknowledgment","argus":{"inspect":"Observe::state bounded saturating drop/saturation/rejection/unavailable/indeterminate/canceled counters and typed receipt/error","action":"same emit port and cancellation token","capture":"caller captures actual emitted bytes and independently decoded fields under fresh grant"},"diagnostics":"Caller sinks adapt to existing Flight Recorder/internal diagnostics/Palmistry; no private recorder/catalog/DB/session authority or host proof"}}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-OBSERVE","version":1,"operation":"Observe::emit/emit_detail/emit_resource/emit_geometry/emit_shaping closed allowlisted progress/outcome delivery","operator":{"intent":"Track work without exposing project text","result":"Correlation/revision/sequence receipt only after required sink accepts the emitted bytes","recovery":"On full/rejected/unavailable sink correct destination or admission and retry same revision; indeterminate delivery requires caller reconciliation before replacing emitter; stale context must refresh; canceled work emits a reserved terminal outcome"},"model":{"inputs":"Accord DomainId/ActorContext plus local u64 correlation/revision, bounded Budget, Observation progress or fixed success/failure/canceled enum, cancellation token, caller SinkPort","consumer":"observe-consumer [--descriptor] [--mode success|error|cancel|reject|saturate] [--private-text TEXT]","geometry_wire":"emit_geometry terminal HSKO version4: identical v1 header/seven attribution strings then u8 disposition1Prepared/2Accepted/3Rejected/4ReconciliationRequired,u8 code0none/1Validation/2Unsupported/3Empty/4UnavailableRead/5UnavailableStyle/6RevisionConflict/7StaleEpoch/8Overflow/9Canceled/10BudgetExceeded/11LeaseUnavailable/12DeliveryRejected/13DeliveryUnavailable/14ReconciliationRequired/15HashMismatch,u8 optional flags bit0address/bit1source_path_id/bit2read_revision/bit3target_revision/bit4cancel_epoch (bits5..7 reject). Eight BEu64 counts input_anchors,input_segments,output_vertices,output_segments,output_regions,output_loops,intersections,work_units; three BEu64 bytes requested_owned,precharged_input,retained_owned; five BEu64 delivery_attempts,count_limit,work_limit,byte_limit,delivery_limit. Admission counts0..6<=count_limit,work<=work_limit,retained<=requested,checked requested+precharged<=byte_limit,delivery_attempts<=delivery_limit. GeometryCounts::for_rejection preserves actual limits and observed input/intersection/work/requested/precharged counters even above admission bounds; zero outputs/retained are required and the private rejection-only marker forbids Prepared/Accepted/Pending. Rejected frames may report exceeded admission bounds, never inflated limits or clamped observations; delivery_attempts remains bounded. Retained bytes overlap requested owned and never add a second charge; counts describe actual caller reservations, not ownership proof. Optional BEu64 read_revision,target_revision,cancel_epoch in that order, then optional address u8 property_geometry=1,u16-length UTF8 SLYR,u16-length UTF8 nonempty<=128 ASCII alnum/_/- key,then optional u16-length UTF8 SVPT. Reject unknown tags/trailing bytes. Prepared/Accepted have no code; Rejected requires code and zero output counts/retained bytes; pending requires ReconciliationRequired code and may retain output. No raw coordinates/style/path data or private text. Versions1-3 byte-compatible. Same delivery state machine; cancellation changes event outcome without rewriting geometry disposition.","resource_wire":"emit_resource terminal HSKO version3: identical v1 header and seven attribution strings followed by u8 resource disposition1changed/2no_change/3rejected/4reconciliation_required, u8 code0none/1Validation/2Unavailable/3Unsupported/4RevisionConflict/5StaleEpoch/6LeaseUnavailable/7UnsupportedFinalization/8Overflow/9BudgetExceeded/10Canceled/11Loss/12HashMismatch/13Unauthorized, u8 tile_address_present0|1, BEu64 caller epoch, three BEu32 attempted/admitted-to-bounded-work/proposed-changed tile counts and BEu32 caller tile limit; attempted count and tile limit <=1048576, admitted<=attempted and limit, changed<=admitted. Three BEu64 counted output/scratch/retained-preimage reservation peak byte counts and BEu64 caller byte limit; checked byte sum<=limit. Reservation counts may already be released and never prove current ownership or transfer. Rejected and no_change changed counts zero; changed requires nonzero changed count; no_change transfers no output/preimage, enforced by caller finalization. ReconciliationRequired is an unresolved source/finalization result, separate from sink receipt/reconciliation state. Optional address: u8 samples=1, u16-length UTF8 SLYR ID, u16-length UTF8 object key (nonempty<=128 ASCII alnum/_/-), BEi64 column and row. Key is caller-granted stable identity, not a private label/path. Reject unknown tags/trailing bytes. v1/v2 bytes unchanged; cancellation changes terminal outcome without erasing resource disposition; no pixel/profile/mask bytes, raw errors, arbitrary attributes or lease handles","detail_wire":"emit_detail terminal HSKO version2: identical v1 header and seven attribution strings followed by u8 disposition1changed/2no_change/3rejected, u8 diagnostic code0none/1InvalidInput/2UnsupportedVersion/3DuplicateField/4InvalidActor/5InvalidCommand/6WrongDocument/7InvalidTarget/8WrongType/9DuplicateAddress/10MissingRead/11RevisionUnavailable/12RevisionConflict/13ValueConflict/14RevisionOverflow/15BudgetExceeded/16Canceled/17ValidationRejected, u8 address_present0|1, five BE u32 capped counts attempted_reads,attempted_writes,admitted_reads,admitted_writes,changed_writes (cap1048576); optional u8 target1Layer/2Artboard/3PageSpread,u8 property1Name/2Visible,u16-byte-length UTF8 validated prefixed domain ID. Visible is Layer only; reject unknown tags/trailing bytes. Rejected admitted/changed counts zero; postacceptance cancellation changes terminal outcome but preserves source disposition. Legacy emit stays byte-identical version1","wire":"Local binary transport v1, not canonical document or business event: HSKO ASCII, u8 version=1,outcome=1(progress)/2(success)/3(failure)/4(canceled),u8 fixed failure code0..4,u8 progress-present0|1; five big-endian u64 fields correlation,revision,sequence,completed,total; seven u16-byte-length UTF8 strings resource_id,account_id,principal_id,owner_account_id,owner_principal_id,access_space_id,session_id; reject trailing bytes at collector","limits":{"frame_bytes":2048,"progress_events":1024,"progress_lifetime_bytes":2097152,"terminal_reserve":1,"pending_callers_per_mutable_emitter":1},"redaction":"Private project text, raw errors, arbitrary attributes, labels and source paths never serialized; input content is borrowed and not inspected. Only caller-authorized Accord attribution IDs are included. Destination visibility/grants are caller-owned and host conformance remains pending","port":"Nonblocking atomic all-or-none try_send(Progress|Terminal,bytes); terminal reserves independent destination capacity. Indeterminate partial delivery never reports success; emitter blocks further delivery until caller reconciles","cancel":"Canceled token overrides requested outcome to Canceled; progress saturation cannot consume terminal reserve; delivered terminal closes emitter","realtime":"Emitted frames use a checked2048-byte stack buffer; caller sink/setup costs remain caller-owned; never invoke from realtime audio callback; retain existing multiple-writer/SPSC synchronization in host adapter","undo":"No document mutation or undo; this is not an EventLedger acknowledgment","argus":{"inspect":"Observe::state bounded saturating drop/saturation/rejection/unavailable/indeterminate/canceled counters and typed receipt/error","action":"same emit port and cancellation token","capture":"caller captures actual emitted bytes and independently decoded fields under fresh grant"},"diagnostics":"Caller sinks adapt to existing Flight Recorder/internal diagnostics/Palmistry; no private recorder/catalog/DB/session authority or host proof","shaping_wire":"emit_shaping terminal HSKO version5: unchanged v1 header and seven attribution strings; u8 disposition1Prepared/2Accepted/3Rejected/4ReconciliationRequired, u8 closed ShapingCode0none/1InvalidInput/2Overflow/3BudgetExceeded/4Allocation/5Canceled/6StaleEpoch/7CorruptFont/8MissingFont/9MissingGlyph/10UnsupportedProfile/11UnsupportedFeature/12HashMismatch/13RevokedFont/14UnavailableFace/15UnavailableFont/16UnsupportedFont/17InvalidAxis/18AbsentRead/19UnavailableRead/20StaleRead/21UnsupportedFinalization/22DeliveryRejected/23DeliveryUnavailable/24DeliverySaturated/25DeliveryIndeterminate/26LeaseUnavailable/27UnknownComposition/28UnsupportedNormalization/29InternalInvariant/30InvalidBidi/31InvalidMapping/32PartialOutput/33ReconciliationRequired; u8 result0none/1Shaped/2EmptyInput/3ControlOnly; u8 flags bit0address,bit1source_revision,bit2resolver_revision,bit3cancel_epoch,bit4target_revision (bits5..7 reject). Eight BEu64 observed counts input_UTF8_bytes,scalars,fonts,runs,glyphs,fallback_attempts,work_units,retained_generations; three BEu64 bytes current_requested_owned,this_operation_peak_requested_owned,retained_requested_owned; BEu64 delivery_attempts; eight BEu64 corresponding caller count limits then BEu64 byte_limit,delivery_limit. Current<=operation_peak,retained_bytes<=current; peak<=byte_limit and counts<=corresponding limits except rejected observations may exceed actual caller admission limits without clamping or inflating limits; rejection retained bytes/generations zero. Retained bytes overlap current and never double-charge; generations count is separate. These are operation-local requested allocation observations, not historical peak or ownership proof. Delivery attempts always<=delivery_limit. Optional BEu64 source,resolver,epoch,target revisions in flag order; optional u8 property1Text/2StoryMembership/3Style/4ShapedRuns then u16-length UTF8 granted DomainId: Text STXT, Style STYS, membership/result STXT or SLYR. No arbitrary property keys. Result is required on prepared/accepted/pending and absent on rejection; code required only rejected/pending; pending code33 only. Reject unknown tags, invalid IDs, bounds, disposition or trailing bytes. Cancellation changes terminal outcome without changing shaping/result disposition. No source text/font names/bytes/glyph coordinates/private strings. Versions1-4 byte-identical; same2048-byte stack frame, SinkPort admission, receipt and reconciliation state."}}"#;

@@ -1,0 +1,787 @@
+{
+  "upstream": "https://github.com/harfbuzz/rustybuzz",
+  "version": "0.20.1",
+  "archive_sha256": "fd3c7c96f8a08ee34eff8857b11b49b07d71d1c3f4e88f8a88d4c9e9f90b1702",
+  "status": "SOURCE_FROZEN_PARENT_COMPILER_AND_INDEPENDENT_RUNTIME_PENDING",
+  "source_files": [
+    {
+      "path": "lib.rs",
+      "sha256": "ae73a999754ead00fdbde8b8e23f096a480ce0d0339dab0a55d3ee9d10ac790e"
+    },
+    {
+      "path": "hb/aat_layout.rs",
+      "sha256": "68a19b873cef24274f2e9f5c6f08f95bb4998c9c2cb2b2ebf0221e80aafa0661"
+    },
+    {
+      "path": "hb/aat_layout_common.rs",
+      "sha256": "83e8d0f0a27092ffe96277ff1d5b46a8c45c28865ca3503dd040effc5f2cf813"
+    },
+    {
+      "path": "hb/aat_layout_kerx_table.rs",
+      "sha256": "c2034090ae2a769615c45a19adf81ce87a2c3529f03904799af712dd7060d2f9"
+    },
+    {
+      "path": "hb/aat_layout_morx_table.rs",
+      "sha256": "5018632dee58db940622aecae8fc7d754bec9bdb8ba1d6b848cad9f042ac46a0"
+    },
+    {
+      "path": "hb/aat_layout_trak_table.rs",
+      "sha256": "4d59f62c8b445f862b3a6bc08bd1383b436ac0ebe3f0b5fe44c9c2fd7d6ef0ec"
+    },
+    {
+      "path": "hb/aat_map.rs",
+      "sha256": "8a3782f9b6b645cc472aed8301284e9a09e3a846a46978dc205ac7c1fa9ba0a2"
+    },
+    {
+      "path": "hb/algs.rs",
+      "sha256": "34d7e1f263850e157b49ceb160302c47640f39c518036167d34068df870f3bea"
+    },
+    {
+      "path": "hb/buffer.rs",
+      "sha256": "c3ee3d1d8425166c2bb44df8e8a5bc4dfa674078be102eecb7e4529212069b47"
+    },
+    {
+      "path": "hb/common.rs",
+      "sha256": "8211d489830ebd93ea64eb6c5e1c439a771126dda57de9c9294fad5b271ce7cc"
+    },
+    {
+      "path": "hb/face.rs",
+      "sha256": "c76d98ef51c1673dfea7959c03f41a5ee4593c617cbb9903d7dae2c7a8bc1c31"
+    },
+    {
+      "path": "hb/kerning.rs",
+      "sha256": "a423331d371278e273433111e0819823c7ce80ca9fd8674db045e7d129c7a489"
+    },
+    {
+      "path": "hb/machine_cursor.rs",
+      "sha256": "a436de07bc69fb22e8dbef362ce71183cff7ce0a15599825bebbf4e99238ad92"
+    },
+    {
+      "path": "hb/mod.rs",
+      "sha256": "07dd969bf7038d4cdc5ffde76c80bcd27439d725205e639ced5e435d9e2af49e"
+    },
+    {
+      "path": "hb/ot_layout.rs",
+      "sha256": "15b9ca8855470fe86d6f51d954aaad9a447df454912a4f46245f662e1d638ad4"
+    },
+    {
+      "path": "hb/ot_layout_common.rs",
+      "sha256": "f851eb5570cf934d212c5d22492a90390c7676a6e5b3897ddd20736650c41998"
+    },
+    {
+      "path": "hb/ot_layout_gpos_table.rs",
+      "sha256": "81a8eb09f8586e111407a5ed058afa351b80514ad5d9232a29b7ce6445122edf"
+    },
+    {
+      "path": "hb/ot_layout_gsubgpos.rs",
+      "sha256": "c925835c36cf2dbc4b84afd5237b3ec6a816cad71e202e159a6f814a0f4ea50b"
+    },
+    {
+      "path": "hb/ot_layout_gsub_table.rs",
+      "sha256": "1b037bb9a34f6f38cdca625a461a84b17c60272936de94c1887e68a043e233e1"
+    },
+    {
+      "path": "hb/ot_map.rs",
+      "sha256": "f68c7151f4fc12e993f4add52b42b90238fccef5da8b2e949645a25d2183813d"
+    },
+    {
+      "path": "hb/ot_shape.rs",
+      "sha256": "d7a4554c01aa2ce8348ebd19e32dd81d6a04d3abd08e09869aa2ee485ffb6195"
+    },
+    {
+      "path": "hb/ot_shaper.rs",
+      "sha256": "a67ab5f87bb67226b58f071455d8bc2c1c9c6664daf2bf5d71974700862f5dee"
+    },
+    {
+      "path": "hb/ot_shaper_arabic.rs",
+      "sha256": "dccc27b3fb1152068c1901dabc1352bfed0bfaf185e879fb5ddeaa9e750938d1"
+    },
+    {
+      "path": "hb/ot_shaper_arabic_table.rs",
+      "sha256": "5b5e3c33bd8743caadc5b3cd72f7608982ce071277569da3322118f5f5001a02"
+    },
+    {
+      "path": "hb/ot_shaper_hangul.rs",
+      "sha256": "1fd6c7f1e9ff175e224c951e8855c5ebdb8fb52ac4f633dd7a9f54770dc7da0d"
+    },
+    {
+      "path": "hb/ot_shaper_hebrew.rs",
+      "sha256": "f56c25103b6166168d1f784f5827ee370c90e086d92ebb6950612dd5d39183d4"
+    },
+    {
+      "path": "hb/ot_shaper_indic.rs",
+      "sha256": "ec05b45577db226cf1feeb74245e8e595d0877d0995927c99429e9a6d07ca1b5"
+    },
+    {
+      "path": "hb/ot_shaper_indic_machine.rs",
+      "sha256": "f1b96f6c9179e402d5e3110090753d8792f21cd21eafdb3959b57d9500f60d5a"
+    },
+    {
+      "path": "hb/ot_shaper_indic_table.rs",
+      "sha256": "15020d5ee7bdab279a246a0c0e125cda89a8035447452241e742c813e1d56033"
+    },
+    {
+      "path": "hb/ot_shaper_khmer.rs",
+      "sha256": "afc221c8cb776ea4fb10578d0bab365af4485d3d018eed61d8181ab2d1442adf"
+    },
+    {
+      "path": "hb/ot_shaper_khmer_machine.rs",
+      "sha256": "11fb14c9d263b63a9fb77c6951b0d8e55428d4a552e6c0b509ca2c67485acc10"
+    },
+    {
+      "path": "hb/ot_shaper_myanmar.rs",
+      "sha256": "a44120c2a51bb14cace0c48abc32dc1942ac0ca10ef99dd4be87468942a61c17"
+    },
+    {
+      "path": "hb/ot_shaper_myanmar_machine.rs",
+      "sha256": "ee11aa306df1833d9d97383a7a70f69478bfc3a0d5706d20c4dd7a7f0e122be2"
+    },
+    {
+      "path": "hb/ot_shaper_syllabic.rs",
+      "sha256": "92c20341de98a296f5bc32f226d38317d0d471d5288c70a0a94604772c1c4bb8"
+    },
+    {
+      "path": "hb/ot_shaper_thai.rs",
+      "sha256": "3890691c57d68239d8259ddf547194806a96e03193f3695b6f5045d3e940541c"
+    },
+    {
+      "path": "hb/ot_shaper_use.rs",
+      "sha256": "8d4730a5c7b01cd38bd2dc313cd97af757189d37f211428df3147db2dabd2f1b"
+    },
+    {
+      "path": "hb/ot_shaper_use_machine.rs",
+      "sha256": "a549458249671249a0173bbcb691558010e0a14371cb4d3d80dd2c5b53c06e01"
+    },
+    {
+      "path": "hb/ot_shaper_use_table.rs",
+      "sha256": "a4cc44bbf879ce26fe21e5a38e4cf2695402e07fc8e8b7af3df747173f0c3575"
+    },
+    {
+      "path": "hb/ot_shaper_vowel_constraints.rs",
+      "sha256": "c96f105874190f06020373a41821606f7366e736ed15edffbba3cb39bfa83050"
+    },
+    {
+      "path": "hb/ot_shape_fallback.rs",
+      "sha256": "185c1250fa32614ad3731e3cd6e3556f601d678a5b3655fb954aa1ae985e173b"
+    },
+    {
+      "path": "hb/ot_shape_normalize.rs",
+      "sha256": "4a4f977c8369cb2e826a3dce265009d20982726210139d37be5531ee6a453c7c"
+    },
+    {
+      "path": "hb/ot_shape_plan.rs",
+      "sha256": "d5d24d08f656ab86bc6a94ade9a54c7e341d28d2ee121a89942ac950ec233b29"
+    },
+    {
+      "path": "hb/paint_extents.rs",
+      "sha256": "e96d1c70d1b7cfd6849882d3c7f93d93f25520d242e451d21c3c7f9e35544efd"
+    },
+    {
+      "path": "hb/set_digest.rs",
+      "sha256": "12e2b60011a51c20c086a140f3a5eafcb4ee5a3530d65019413aa6bbfe93cf4b"
+    },
+    {
+      "path": "hb/shape.rs",
+      "sha256": "8108639f54abb713a1d9ecad68adf54255850224633749ed93a71bddafc2f646"
+    },
+    {
+      "path": "hb/shape_wasm.rs",
+      "sha256": "b7df8fa10105c8c7ba1b5f2152a0f165df9bc82614a8550dd66f572697c9849b"
+    },
+    {
+      "path": "hb/tag.rs",
+      "sha256": "b207d7a876dd2e49ad1851d9a572e0e05aedaa05915eb9c21dcf3d3f1da9541a"
+    },
+    {
+      "path": "hb/tag_table.rs",
+      "sha256": "d78d17489ed49e1ad311f2b12e85d5ab78ece5fb12d609f1425d8086251df9da"
+    },
+    {
+      "path": "hb/text_parser.rs",
+      "sha256": "76c881a9dfd7b0dfa13dce7278e830bab5529a2d03921356d58798f3548fd3a2"
+    },
+    {
+      "path": "hb/unicode.rs",
+      "sha256": "e6577a4a4e04a53686146d522ca57210b29134f716ce8f65a2a3f2e1987e45cf"
+    },
+    {
+      "path": "hb/unicode_norm.rs",
+      "sha256": "91f24d16f13a6617ec3f9c2589ed9dced84b3404c45b5b11fb950201b5a1d064"
+    },
+    {
+      "path": "hb/ot/mod.rs",
+      "sha256": "18d00b1700011a119acd587c804e4395a4da39e38f66d64374167482ac53ba0c"
+    },
+    {
+      "path": "hb/ot/layout/mod.rs",
+      "sha256": "85a941496b3849fad2f62dcf32e985b4b34d00d461b66b6a5e8f004eabc05850"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/cursive_pos.rs",
+      "sha256": "5cb608324a04c47a813503dbbed178d30a3e47b6a1a016d04f2e69ff111329e9"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mark_array.rs",
+      "sha256": "2e5a4f77045f2427164e86de84045ba9a5b3bfa4188b1d1e26fee02305a6e0db"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mark_base_pos.rs",
+      "sha256": "d5aa457bfc930aff59b72f5d4be34d2fb1b5f54d68086a1e1329ba0970b4c866"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mark_lig_pos.rs",
+      "sha256": "e97704832494b155897ade475e94207ec5c73cf802802bad284c391d5bf29307"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mark_mark_pos.rs",
+      "sha256": "590acd13c3d03a82ec862f9547cc90f87c3662883355378ac2e3156677bb1ce1"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mod.rs",
+      "sha256": "ee9686d5c7dc9d0a635f22ff52a592e2f6ad9f78135031588261b92350e28bc8"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/pair_pos.rs",
+      "sha256": "22695713b2d0e0bc31aef67dab8a2c499c320ab2e8625a5cd2b353b544c8f974"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/pos_lookup.rs",
+      "sha256": "cd4604ba8381fe4e532102aaa27f38d253846ab82a54f18729d53fc30ae462d7"
+    },
+    {
+      "path": "hb/ot/layout/GPOS/single_pos.rs",
+      "sha256": "0355cacaa5a71624a12f2608b2e8c5426fe46efb73226c5cdb0d92d9243923f4"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/alternate_set.rs",
+      "sha256": "89e4bf025ccbe8d6e4f31a6348bbf2f6a222d103723dfa08c6faab5ad39e9071"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/alternate_subst.rs",
+      "sha256": "6db8938f8eda1d0227ef7621bec23a9a7c8439334f445a79667bc29595505687"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/ligature.rs",
+      "sha256": "25368c726c59e4d078968a45ba2126bef2b9058c0a35c557045d71b77d8961c6"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/ligature_set.rs",
+      "sha256": "623b79808eb888d12432dc8a528a8f8d803cceb279b3a925d37a2277ace75836"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/ligature_subst.rs",
+      "sha256": "084fec33da56e8239666a65979e23428ae6cd459f99309e4780cc5c221bdeb32"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/mod.rs",
+      "sha256": "6364616406541cc2ddf46fb222742e179a0a3881b29f4d3228780d1f8dd491b5"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/multi_subst.rs",
+      "sha256": "62fec02b0154ddc0ef1c57ca1452a768ba53be29accb77a26c04018984f62115"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/reverse_chain_single_subst.rs",
+      "sha256": "a2889c894bc9abe195553dddfbc9c6ac6ed5c391def6dd8acecde4a141c5f12c"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/sequence.rs",
+      "sha256": "412562c70e06b174bb3de14f979eb1dfb0b1e071a76db0fc0c451cc26aba62b2"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/single_subst.rs",
+      "sha256": "c67fea601c2d52aeb24f571f150ddde45f5cd85ae7db0634030b306bf0fc3042"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/subst_lookup.rs",
+      "sha256": "1ef188756e4f22cafb3c25794e901cb2f1c55f62a1864233609e1ad076ee10bd"
+    },
+    {
+      "path": "hb/ot/layout/GSUB/subst_lookup_subtable.rs",
+      "sha256": "ff84293cd3b830a9a6c84b7f79da5e85d0f870b25c3d630df02bd30b73e0d5f8"
+    }
+  ],
+  "patches": [
+    "private owning namespace",
+    "private ttf owner path",
+    "frozen std path"
+  ],
+  "selected_scripts": [
+    "Latn",
+    "Arab",
+    "Hani"
+  ],
+  "selected_configuration": {
+    "std": true,
+    "aat": false,
+    "wasm": false,
+    "glyph_names": false,
+    "color": false,
+    "outline_fallback": false,
+    "legacy_kern": false,
+    "allocating_serialization": false
+  },
+  "excluded_declarations_retained_on_disk": [
+    "hb/aat_layout.rs",
+    "hb/aat_layout_common.rs",
+    "hb/aat_layout_kerx_table.rs",
+    "hb/aat_layout_morx_table.rs",
+    "hb/aat_layout_trak_table.rs",
+    "hb/aat_map.rs",
+    "hb/kerning.rs",
+    "hb/ot/layout/GSUB/subst_lookup_subtable.rs",
+    "hb/ot_shape_fallback.rs",
+    "hb/ot_shaper_hangul.rs",
+    "hb/ot_shaper_hebrew.rs",
+    "hb/ot_shaper_indic.rs",
+    "hb/ot_shaper_indic_machine.rs",
+    "hb/ot_shaper_indic_table.rs",
+    "hb/ot_shaper_khmer.rs",
+    "hb/ot_shaper_khmer_machine.rs",
+    "hb/ot_shaper_myanmar.rs",
+    "hb/ot_shaper_myanmar_machine.rs",
+    "hb/ot_shaper_syllabic.rs",
+    "hb/ot_shaper_thai.rs",
+    "hb/ot_shaper_use.rs",
+    "hb/ot_shaper_use_machine.rs",
+    "hb/ot_shaper_use_table.rs",
+    "hb/ot_shaper_vowel_constraints.rs",
+    "hb/paint_extents.rs",
+    "hb/shape_wasm.rs"
+  ],
+  "derivative_files": [
+    {
+      "path": "hb/aat_layout.rs",
+      "sha256": "7b20c5ce14b1ab4a8078138f89979e982795f668bfe42a7e86520eb8c42ab6e2",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/aat_layout_common.rs",
+      "sha256": "7f9dcce2c5c618ae1daf3a983e17711c8d6cd27a136df3b148f85425e9823062",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/aat_layout_kerx_table.rs",
+      "sha256": "3f8183d560f8f89c6a3d56380eeb219e13150cf7480e3d575d395704fb6d4a76",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/aat_layout_morx_table.rs",
+      "sha256": "164245be22b3cf66cd1823c1620556fffb1778509a04e22b68cd3ab3eecead99",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/aat_layout_trak_table.rs",
+      "sha256": "d9ad8d883b4d4b167ad414c9c734fe1c23e6f50bfbe317308c35f6b580b31640",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/aat_map.rs",
+      "sha256": "1a269c4e24c373891c665f71d08d6a8dc4efe1815945dcfa51b891cf19dfce01",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/algs.rs",
+      "sha256": "7f26946d56494a7177a2860a8087b2807d45111c5dfdea479b6f1ffb8e5c6154",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/buffer.rs",
+      "sha256": "20e52316c3e4a18d5ffbcfcc6a8314c63faf72abeef7d7f1b642f6f840f0a8e4",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/common.rs",
+      "sha256": "7ff7ac776f2854531ab349e455ceb992a93c50b10e7b1e0f15864e88d89d7a1e",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/face.rs",
+      "sha256": "3eca311ff961b00656b3a47b4a505c03f09ec5e5007da0208696ca6b46f381e2",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/kerning.rs",
+      "sha256": "4741fb4467eb228012fbe70481542102a6843e03452fde9ca5807a2e9482cc70",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/machine_cursor.rs",
+      "sha256": "a4cfdece818b2f9d1b00457881ab83a46bae3edd09fefab57b10a86f283f2e19",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/mod.rs",
+      "sha256": "790742f0427468376199b16b56a1b0a695444e7ec447a34b2f312d73aaa41466",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/cursive_pos.rs",
+      "sha256": "b7ec0c202c2048f3338d4531a710fd560f5fd24ed598fd0a1599008ec845b415",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mark_array.rs",
+      "sha256": "be53bc185afbf39a31aecd77109ac6a4f2e070c3a52112dd008a93fb11146410",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mark_base_pos.rs",
+      "sha256": "78fddb5318b738f6be971efa59e2dc6bbc1c0e25c2cacb957a2d8be3163e03be",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mark_lig_pos.rs",
+      "sha256": "e20d9d9d6543af9c3c41035048076b975098150b2bdc3e170a464e17c29df00d",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mark_mark_pos.rs",
+      "sha256": "ce4b8e4e8ba7cb3ffb6732ee2a68b9026139f9eb63171479c4d8bf0ecd0b0041",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/mod.rs",
+      "sha256": "dfb58f3b1e0c372511d228c357a3f4d6b4b51a680e79a0d7394dd74ee5d51717",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/pair_pos.rs",
+      "sha256": "aef9eef95dde6914d36c5c0e4b0e658b2c637906cddca2411600ba46a598a2fb",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/pos_lookup.rs",
+      "sha256": "56a0186470767613b41d2477cf26b99dee72eeeb9a04818e50c2e2a069274b36",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GPOS/single_pos.rs",
+      "sha256": "4526d2ae228b14a3f6cd18afce083329f98010579b7f07aa2691366a8d3fda35",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/alternate_set.rs",
+      "sha256": "3df1b67624360ff95b56ec4135580fd12f6f137421d12b4b6a3405adffad04bc",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/alternate_subst.rs",
+      "sha256": "268f6863724c805e8ce78efb5f38fc472ccc5ce52fbd8bc548262d353e2d3ab2",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/ligature.rs",
+      "sha256": "8f98c552923b154f01fefd0d59dfdfbe25481d0eac6abab1f037e0238fc40694",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/ligature_set.rs",
+      "sha256": "9bb15246f242b5427b307c3500ec53ed717baeafd6a08ed4f964546a60dc1e5f",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/ligature_subst.rs",
+      "sha256": "d9d2abe1ab2fa5c212699b4b098871e6eb6344f354e17ed42eef8dfe68385562",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/mod.rs",
+      "sha256": "1c53557d89fec2eca74293eaee301d9aedf5a91a171803a61b5c8e24a5784197",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/multi_subst.rs",
+      "sha256": "7a14b76c65c72e5ec647ed839d9e922c03adb4d56c6248331ff3da39884f2198",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/reverse_chain_single_subst.rs",
+      "sha256": "b0b6a57e8e5f9a4ba8c346e4677580876ae2f59e419027f2a80949a3c5ddf4bf",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/sequence.rs",
+      "sha256": "a74c9601b6aca80ed2734b3a5dc7803be30b9035b152c2d79f4cc24af8347045",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/single_subst.rs",
+      "sha256": "625a94aaa039441ed0836cd748eea788d1d4dbc0bc74d78c3a8a7c517af30daf",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/subst_lookup.rs",
+      "sha256": "00b301404dd1e17f8226897465c9a2d3a23435653b548ea821b27680ad7c33b0",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/layout/GSUB/subst_lookup_subtable.rs",
+      "sha256": "2ca025895ca66bd0bddf57451acee8885befadbc0550a4772fb550669fcbca05",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot/layout/mod.rs",
+      "sha256": "f73d1ddcca0b58b769342240b34d4204da2d291809efc6d8c69ff4bd7e0850f7",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot/mod.rs",
+      "sha256": "e87ce709bb9be0508be2a213e929ae3bae470daec26612002290730cd14259e7",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_layout.rs",
+      "sha256": "5eb662a24463f0f9912a7b01bfdafd31accc304d10a3f66b4dfdfdd1d19b514b",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_layout_common.rs",
+      "sha256": "bd9f5f6a45dd60109248b3e5cd416954eaf21afb5c1fa5c345c79caa26cc373c",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_layout_gpos_table.rs",
+      "sha256": "fa1694ce0008696efeb78675593bf88fcceb80bf9d71190672c1ad41a702c6ae",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_layout_gsub_table.rs",
+      "sha256": "57982564586aa00884a8bb603d9ff00901de174c82218a0e554b74451af74aff",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_layout_gsubgpos.rs",
+      "sha256": "e59baa1e2e153ab80d9fe892777bdbb6f6f8f2b03009b4f4350ddb92cb6c0488",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_map.rs",
+      "sha256": "0131d6dce97a68ec78247c90fc2f23f4997f55dcef8048d8c1c2631f5eaa7db0",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_shape.rs",
+      "sha256": "d0be1d4d29029492076a2bd1f36a5f68dd1a622d4a052a4c25e849160c0696cc",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_shape_fallback.rs",
+      "sha256": "dd353bbbfe6449485e2bd21816cc7e3bf8f21bec364a554b0cc655bc61650379",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shape_normalize.rs",
+      "sha256": "c7e4931f45f5f894e11de54df47f3f23024e06faa3eb5bb413550ca7bf4b0a31",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_shape_plan.rs",
+      "sha256": "14896ae3f4277fa32f2bf8d949a561a6d67546e1038bb3f55220eb248da2488f",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_shaper.rs",
+      "sha256": "afc45441367c59422c6170a40456f0ebb9887a62ea33ae8b574e656f2f34f781",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_shaper_arabic.rs",
+      "sha256": "89af11603b30bf0b620b0282a8c17a0bd42c9fdb2623cd287c62d421bdd7cca2",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_shaper_arabic_table.rs",
+      "sha256": "926c47ededfe6a350d0435b3163bd14fd01b39c0d8405b144b800ae27f28c496",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/ot_shaper_hangul.rs",
+      "sha256": "b631addf41b7dbc6e5c863aec24d587a60435749426087d9333c1b71e037586e",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_hebrew.rs",
+      "sha256": "a4b74be8009cc12bd59a5bf1de555bb31d2f5fe7181a1ed5eb29bacb70298103",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_indic.rs",
+      "sha256": "081790dad1f0a64992f6878a7156d4f1d76b929f5aa7ac1fd68fc0e419284150",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_indic_machine.rs",
+      "sha256": "54f1ecc3cf06363928397ab49363c43bf11b95d29c44f14b1f9545a0cd1d882d",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_indic_table.rs",
+      "sha256": "ac5efb856b392898817cfcb60f1abafb60f680ad96d9dc2dec80b50045bfe1cc",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_khmer.rs",
+      "sha256": "91f1a11ced89654fba89fbd65c6d7f52d0e51d575fa3f8c17b04d3ea7206aaba",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_khmer_machine.rs",
+      "sha256": "4d5b617bebc2725914845fb89b0ac325407b098848390535d0bb413366ac5ae2",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_myanmar.rs",
+      "sha256": "6899b45bd088f187fbd26e3fe3689aad193a1ef5d5fa375d0c5c66da26073962",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_myanmar_machine.rs",
+      "sha256": "056402c61c57dd05f173609d9167683e7b38715cb81939e2e2aa13c549665525",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_syllabic.rs",
+      "sha256": "6244b827eefe6c2999b6ec387ffd8fb2e28f9b9fab998ce98ef70064f257ecb9",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_thai.rs",
+      "sha256": "80a84ce488d81c1d59895d4b5fe4637a1bbd0d54f7d887c2da6093fb97beb624",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_use.rs",
+      "sha256": "90e2d3fbc9f856e23133145ba45e43910753e0bd6cf211308b3323b552fdf77b",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_use_machine.rs",
+      "sha256": "622ee96b8da9f693dc68eaa9447cd263d812f6a65c4042d05b63afde6b634368",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_use_table.rs",
+      "sha256": "922916998a7272894857c34064490dbc4be5e76456ca8410d85aa174ffbf3f86",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/ot_shaper_vowel_constraints.rs",
+      "sha256": "2fe79b6135eddae764467011a50d623b0979bb6c03ad767d2fb6fd3df03b7ab5",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/paint_extents.rs",
+      "sha256": "183b9b9fb28907b64f3d0fe60ca5d07f7aec182877a7a5b449b39f5461cc131c",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/set_digest.rs",
+      "sha256": "6168f3de6e9ac2b2cde7a9ef5e63d5837bd89cdbeb87c2af05be260ab6acde77",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/shape.rs",
+      "sha256": "fec691104b584365f0acc8a08a1171846f936a637ec9504ae6d3ba3c89d6beb7",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/shape_wasm.rs",
+      "sha256": "16798bd2c9aec4c763b031248ffb804fadf182c9d28a19a56d7ca45f6e0db580",
+      "declared_module_graph": false
+    },
+    {
+      "path": "hb/tag.rs",
+      "sha256": "1a2f54f2526a9890c79a304d1bf3cbf98f8f375a8bbe6dccf221569a3d09152f",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/tag_table.rs",
+      "sha256": "a29ddd9857dc98bb01027f5583ccfb44107967797acb8068f4bd2942691c6308",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/text_parser.rs",
+      "sha256": "6ddd2f9906228278cb9153dcc1246226a0ba3fea403c2294df9a5e24cfb81fd9",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/unicode.rs",
+      "sha256": "d729e4cecbdfe82c8ef3893dfd86737fa1b2e29de4112fb9150147f18261bc0c",
+      "declared_module_graph": true
+    },
+    {
+      "path": "hb/unicode_norm.rs",
+      "sha256": "46fb4f86d1841b33a5aae4cda30f46e7b6a06768c177fd68de0823262743ef36",
+      "declared_module_graph": true
+    },
+    {
+      "path": "mod.rs",
+      "sha256": "760d29c66129d953bc913927ca653ac327aa9b43f6c5889488e7a21f18096ce2",
+      "declared_module_graph": true
+    }
+  ],
+  "patch_inventory": [
+    "Private crate path remap to caller-owned ttf parser; exact archive original source identities retained in source_files.",
+    "Explicit borrowed Context/ProviderResult propagation through selected GSUB/GPOS contextual, chained, ligature, reverse, pair, cursive and mark paths. None remains ordinary lookup nonmatch; Err aborts.",
+    "ChargedVec exact-layout buffers, source groups, plan features, lookup/stage maps and coverage caches; no Face/cache cloning or heap plan Any.",
+    "Explicit caller glyph/lookup limits; per-loop work and cancellation/epoch polling; metered normalization recursion and attachment/context recursion.",
+    "Pre-delete source groups retain original global UTF8 clusters and surviving-glyph counts; standalone removed controls avoid neighbor attribution.",
+    "Fixed 64-element context matching scratch and fixed three-tag language containers; no SmallVec spill. Inline language maximum63 bytes.",
+    "Language static helper work precharged by source-derived LANGUAGE_MATCH_WORK_BOUND*63 and polled afterward; feature binary searches meter each comparison.",
+    "Buffer range guards before extent subtraction; checked selected signed positioning and Arabic stretch arithmetic.",
+    "Unsupported selected profile guards refuse outline fallback mark positioning and legacy/fallback kerning before those provider paths; unselected declarations pruned while derivative files preserved."
+  ],
+  "unicode_helpers": {
+    "bidi_ccc_mirroring": "Unicode16",
+    "unicode_script_0.5.8_unicode_properties_0.1.4": "Unicode17"
+  },
+  "verification": {
+    "pinned_rustfmt": "1.97.1 --edition 2024 --config skip_children=true: exit0",
+    "compiler": "NOT_RUN_BY_OWNER",
+    "runtime": "NOT_RUN_BY_OWNER",
+    "independent_acceptance": "PENDING"
+  },
+  "known_proof_boundaries": [
+    "Compiler signature/lifetime closure unproven until parent locked --tests check.",
+    "Required Latin/Arabic/Han/mixed-bidi/variable positives, exact reference outputs, cancellation, resource admission and retained allocation lifetimes pending independent runtime.",
+    "Full TYP132/cross-host raster and unselected shapers remain outside this source foundation."
+  ],
+  "initial_pending_history": [
+    "typed abort propagation",
+    "charged containers",
+    "bounded selected callbacks and parser calls",
+    "unsupported AAT/wasm/glyph-name pruning",
+    "control attribution"
+  ],
+  "compiler_remediation": {
+    "diagnostic": "type-check-01.stderr.log",
+    "fixed": [
+      "buffer Context/ProviderResult/Error/ChargedVec and default-ignorable imports",
+      "Unicode trait visibility to parent provider",
+      "ordinary may_skip nonmatch Result wrapping",
+      "propagate_flags typed empty return",
+      "reorder_marks Context and Result propagation",
+      "callback caller reservation lifetime tied to buffer",
+      "BufferFlags equality derives",
+      "fixed ThreeTags generated-table extension preserving overflow detection"
+    ],
+    "verification": "pinned rustfmt exit0; parent compiler retry pending"
+  },
+  "compiler_remediation_02": {
+    "diagnostic": "type-check-02.stderr.log",
+    "fixed": [
+      "borrowed ChargedVec iteration through .iter()",
+      "output_char and next_char named shared buffer/admission lifetime"
+    ],
+    "verification": "pinned rustfmt exit0; parent compiler retry pending"
+  },
+  "whitespace_remediation": {
+    "files": [
+      "hb/tag_table.rs",
+      "hb/unicode.rs"
+    ],
+    "change": "trailing whitespace only",
+    "compiler": "parent reported library and owning-test check green; unchanged semantic inputs, no rerun by owner"
+  }
+}
