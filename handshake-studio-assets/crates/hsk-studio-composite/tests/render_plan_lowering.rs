@@ -1546,6 +1546,13 @@ use hsk_studio_pigment::effect_math::{GlowSource, InnerGlowOp, InnerShadowOp, Ou
 /// A Softer glow kind block (size 2, range 100, jitter 0) with `fields` overriding.
 fn fx_glow(kind: &str, fields: Value) -> Value {
     let mut v = json!({"effect_kind":kind,"technique":"softer","size":2.0,"range":100.0,"jitter":0.0});
+    // Kind-specific required fields: an outer glow has a spread, an inner glow a source and a choke.
+    if kind == "inner_glow" {
+        v["source"] = json!("edge");
+        v["choke"] = json!(0.0);
+    } else {
+        v["spread"] = json!(0.0);
+    }
     for (k, x) in fields.as_object().unwrap() {
         v[k] = x.clone();
     }
