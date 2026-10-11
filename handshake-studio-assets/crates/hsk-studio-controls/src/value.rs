@@ -49,6 +49,9 @@ pub enum ControlError {
     UnknownChoice { control_id: String, choice: String },
     TextTooLong { control_id: String, max_chars: usize, got_chars: usize },
     Stale { control_id: String, expected: Value, current: Value },
+    /// A discrete step would leave the value unchanged (increment below `f64` resolution at this
+    /// magnitude); refused instead of reporting an unchanged value as a successful step.
+    StepNoEffect { control_id: String },
 }
 
 impl ControlError {
@@ -66,6 +69,7 @@ impl ControlError {
             ControlError::UnknownChoice { .. } => "unknown_choice",
             ControlError::TextTooLong { .. } => "text_too_long",
             ControlError::Stale { .. } => "stale",
+            ControlError::StepNoEffect { .. } => "step_no_effect",
         }
     }
 }
@@ -109,6 +113,9 @@ impl fmt::Display for ControlError {
                 write!(f, "control `{control_id}`: text has {got_chars} chars, limit {max_chars}")
             }
             ControlError::Stale { control_id, .. } => write!(f, "control `{control_id}`: stale change"),
+            ControlError::StepNoEffect { control_id } => {
+                write!(f, "control `{control_id}`: step has no effect at this value")
+            }
         }
     }
 }

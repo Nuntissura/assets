@@ -82,9 +82,18 @@ fn pow10_neg(n: i32) -> f64 {
     if n >= 0 { 1.0 / 10f64.powi(n) } else { 10f64.powi(-n) }
 }
 
-/// Removes binary-representation noise from a computed step (0.5 + 0.01 -> 0.51).
-fn clean(x: f64) -> f64 {
-    if x.abs() < 1.0e6 { (x * 1.0e9).round() / 1.0e9 } else { x }
+/// Decimal digits of the grid that removes binary-representation noise: 9, and always one finer
+/// than the declared precision, so `fine_step = 10^-(precision+1)` (STU-FX-110) stays on the grid
+/// and a fine step can never round away (precision 9 needs 10 digits).
+fn clean_digits(precision: u8) -> i32 {
+    (i32::from(precision) + 1).max(9)
+}
+
+/// Removes binary-representation noise from a computed value (0.5 + 0.01 -> 0.51) on the
+/// precision-aware grid; magnitudes whose scaled value would exceed 1e15 pass through unrounded.
+fn clean(x: f64, precision: u8) -> f64 {
+    let scale = 10f64.powi(clean_digits(precision));
+    if x.abs() < 1.0e15 / scale { (x * scale).round() / scale } else { x }
 }
 
 impl NumberSpec {
@@ -198,6 +207,8 @@ pub struct ScrubParams {
     pub soft: Option<(f64, f64)>,
     /// `10^-precision` for numbers, 0 for integers (no declared precision).
     pub q: f64,
+    /// Declared decimal places for numbers, 0 for integers; selects the noise-removal grid.
+    pub precision: u8,
     pub integer: bool,
 }
 
@@ -261,7 +272,7 @@ impl ScrubGesture {
             raw = raw.min(m);
         }
         self.raw = raw;
-        let value = if self.params.integer { Value::Int(raw.round() as i64) } else { Value::Number(clean(raw)) };
+        let value = if self.params.integer { Value::Int(raw.round() as i64) } else { Value::Number(clean(raw, self.params.precision)) };
         spec.validate_value(&value)
     }
 }
@@ -378,6 +389,7 @@ impl ControlSpec {
                 hard_max: n.hard_max,
                 soft: soft_pair(n.soft_min, n.soft_max),
                 q: n.step(),
+                precision: n.precision,
                 integer: false,
             }),
             ControlKind::Integer(n) => Some(ScrubParams {
@@ -385,6 +397,7 @@ impl ControlSpec {
                 hard_max: n.hard_max.map(|v| v as f64),
                 soft: soft_pair(n.soft_min.map(|v| v as f64), n.soft_max.map(|v| v as f64)),
                 q: 0.0,
+                precision: 0,
                 integer: true,
             }),
             _ => None,
@@ -653,7 +666,9 @@ impl ControlSpec {
     /// `fine_step` (fine role), `step*100` for both roles (STU-FX-110; the spec is silent on the
     /// combined role for arrows, so the pointer map of STU-SHL-190 is extended). Integers: always
     /// exactly one legal step regardless of roles. A step that would leave the hard range is
-    /// REJECTED (the spec defines clamping for pointer routes only; STU-FX-110a).
+    /// REJECTED (the spec defines clamping for pointer routes only; STU-FX-110a), and so is a
+    /// number step that leaves the value unchanged (`StepNoEffect`: the increment is below the
+    /// resolution of `f64` at this magnitude) instead of returning the old value as success.
     pub fn step_value(&self, current: &Value, dir: i8, roles: GestureRoles) -> Result<Value, ControlError> {
         let sign = f64::from(dir.signum());
         match (&self.kind, current) {
@@ -664,7 +679,11 @@ impl ControlSpec {
                     (false, true) => n.fine_step(),
                     (true, true) => n.step() * 100.0,
                 };
-                self.validate_value(&Value::Number(clean(cur + sign * amount)))
+                let next = clean(cur + sign * amount, n.precision);
+                if next == *cur {
+                    return Err(ControlError::StepNoEffect { control_id: self.id.clone() });
+                }
+                self.validate_value(&Value::Number(next))
             }
             (ControlKind::Integer(_), Value::Int(cur)) => {
                 let next = cur.saturating_add(i64::from(dir.signum()));
