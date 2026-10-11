@@ -514,6 +514,29 @@ fn decode_rich(bytes: &[u8]) -> Vec<char> {
 /// Appearance streams of one annotation dictionary: `/AP` `/N` `/R` `/D`, each a stream or a
 /// dictionary of state streams (12.5.5), plus form XObjects those streams draw (bounded).
 pub(crate) fn appearance_streams_of(objs: &Objs, d: &Dict) -> BTreeSet<u32> {
+    let mut out = appearance_direct(objs, d);
+    let mut work: Vec<u32> = out.iter().copied().collect();
+    while let Some(n) = work.pop() {
+        let Some(Entry { obj: Object::Stream(s), .. }) = objs.get(&n) else { continue };
+        let forms = s.dict.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict).and_then(|r| r.get("XObject")).map(|x| res(objs, x));
+        if let Some(Object::Dict(xo)) = forms {
+            for (_, v) in &xo.entries {
+                if let Object::Ref(r) = v
+                    && out.len() < MAX_AP_FORMS
+                    && matches!(objs.get(&r.num), Some(Entry { obj: Object::Stream(s), .. }) if s.dict.get("Subtype").is_some_and(|t| t.is_name("Form")))
+                    && out.insert(r.num)
+                {
+                    work.push(r.num);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The `/AP` `/N` `/R` `/D` streams of one annotation dictionary (states included), without the
+/// forms they list.
+fn appearance_direct(objs: &Objs, d: &Dict) -> BTreeSet<u32> {
     fn state_streams(objs: &Objs, states: &Dict, out: &mut BTreeSet<u32>) {
         for (_, v) in &states.entries {
             if let Object::Ref(r) = v
@@ -540,28 +563,12 @@ pub(crate) fn appearance_streams_of(objs: &Objs, d: &Dict) -> BTreeSet<u32> {
             _ => {}
         }
     }
-    let mut work: Vec<u32> = out.iter().copied().collect();
-    while let Some(n) = work.pop() {
-        let Some(Entry { obj: Object::Stream(s), .. }) = objs.get(&n) else { continue };
-        let forms = s.dict.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict).and_then(|r| r.get("XObject")).map(|x| res(objs, x));
-        if let Some(Object::Dict(xo)) = forms {
-            for (_, v) in &xo.entries {
-                if let Object::Ref(r) = v
-                    && out.len() < MAX_AP_FORMS
-                    && matches!(objs.get(&r.num), Some(Entry { obj: Object::Stream(s), .. }) if s.dict.get("Subtype").is_some_and(|t| t.is_name("Form")))
-                    && out.insert(r.num)
-                {
-                    work.push(r.num);
-                }
-            }
-        }
-    }
     out
 }
 
-/// Every stream that is (part of) an annotation appearance, over all objects. The payload proof
-/// judges these as annotation text, not as kept page text.
-pub(crate) fn appearance_stream_nums(objs: &Objs) -> BTreeSet<u32> {
+/// The appearance streams of every annotation dictionary in the document (the roots an appearance
+/// is drawn from; the forms they draw are followed by `Do` in the payload proof's content walk).
+pub(crate) fn appearance_roots(objs: &Objs) -> BTreeSet<u32> {
     let mut out = BTreeSet::new();
     for entry in objs.values() {
         let mut stack: Vec<&Object> = vec![&entry.obj];
@@ -570,13 +577,13 @@ pub(crate) fn appearance_stream_nums(objs: &Objs) -> BTreeSet<u32> {
                 Object::Array(a) => stack.extend(a.iter()),
                 Object::Dict(d) => {
                     if d.get("AP").is_some() {
-                        out.extend(appearance_streams_of(objs, d));
+                        out.extend(appearance_direct(objs, d));
                     }
                     stack.extend(d.entries.iter().map(|(_, v)| v));
                 }
                 Object::Stream(s) => {
                     if s.dict.get("AP").is_some() {
-                        out.extend(appearance_streams_of(objs, &s.dict));
+                        out.extend(appearance_direct(objs, &s.dict));
                     }
                     stack.extend(s.dict.entries.iter().map(|(_, v)| v));
                 }

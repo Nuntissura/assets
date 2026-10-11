@@ -470,7 +470,7 @@ impl<'a> Interp<'a> {
         }
         let data = miniz_oxide::deflate::compress_to_vec_zlib(&pass.out, 6);
         let num = self.alloc()?;
-        self.new_objects.push((num, Entry { generation: 0, obj: Object::Stream(Box::new(Stream { dict, data })), span: None }));
+        self.new_objects.push((num, Entry { generation: 0, obj: Object::Stream(Box::new(Stream { dict, data })), span: None, data_at: None }));
         Ok(Some(ObjRef { num, generation: 0 }))
     }
 
@@ -834,7 +834,7 @@ impl PdfDoc {
             let mut dict = Dict::default();
             dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
             let data = miniz_oxide::deflate::compress_to_vec_zlib(&new_content, 6);
-            staged.insert(new_num, Entry { generation: 0, obj: Object::Stream(Box::new(Stream { dict, data })), span: None });
+            staged.insert(new_num, Entry { generation: 0, obj: Object::Stream(Box::new(Stream { dict, data })), span: None, data_at: None });
             let page = staged.get_mut(&page_num).ok_or(PressError::NoSuchPage)?;
             if let Object::Dict(d) = &mut page.obj {
                 d.set("Contents", Object::Ref(ObjRef { num: new_num, generation: 0 }));

@@ -16,9 +16,19 @@ pub(crate) struct Op {
     /// Byte span (operands through operator) in the tokenized data.
     pub start: usize,
     pub end: usize,
+    /// For `BI`: the byte range of the image data (after `ID` and its white-space byte, up to the
+    /// white space before `EI`).
+    pub inline_data: Option<(usize, usize)>,
 }
 
 pub(crate) fn parse_content(data: &[u8], limits: &Limits) -> Result<Vec<Op>> {
+    parse_content_ext(data, limits).map(|(ops, _)| ops)
+}
+
+/// [`parse_content`] that also reports operands left after the last operator (`true`). A viewer
+/// joins a page's content streams into one, so such operands belong to the first operator of the
+/// next stream; read on their own they would be dropped.
+pub(crate) fn parse_content_ext(data: &[u8], limits: &Limits) -> Result<(Vec<Op>, bool)> {
     let mut lx = Lexer::new(data, 0, limits.max_depth);
     let mut ops: Vec<Op> = Vec::new();
     loop {
@@ -27,12 +37,13 @@ pub(crate) fn parse_content(data: &[u8], limits: &Limits) -> Result<Vec<Op>> {
             break;
         }
         let start = lx.pos;
+        let mut inline_data = None;
         let mut operands: Vec<Object> = Vec::new();
         let name = loop {
             lx.skip_ws();
             let Some(b) = lx.peek() else {
-                // Trailing operands without an operator: ignore, as viewers do.
-                return Ok(ops);
+                // Trailing operands without an operator: ignored here; reported to the caller.
+                return Ok((ops, !operands.is_empty()));
             };
             match b {
                 b'/' | b'(' | b'<' | b'[' | b'+' | b'-' | b'.' | b'0'..=b'9' => {
@@ -85,16 +96,17 @@ pub(crate) fn parse_content(data: &[u8], limits: &Limits) -> Result<Vec<Op>> {
                 let before_ok = q == 0 || data.get(q.saturating_sub(1)).is_some_and(|b| is_ws(*b));
                 let after_ok = data.get(q.saturating_add(2)).is_none_or(|b| !is_regular(*b));
                 if before_ok && after_ok {
-                    break q.saturating_add(2);
+                    break q;
                 }
                 p = q.saturating_add(2);
             };
-            lx.pos = end;
+            inline_data = Some((lx.pos.min(end), end.saturating_sub(1).max(lx.pos.min(end))));
+            lx.pos = end.saturating_add(2);
         }
-        ops.push(Op { name, operands, start, end: lx.pos });
+        ops.push(Op { name, operands, start, end: lx.pos, inline_data });
         if ops.len() > limits.max_content_ops {
             return Err(PressError::InputLimit("max_content_ops"));
         }
     }
-    Ok(ops)
+    Ok((ops, false))
 }

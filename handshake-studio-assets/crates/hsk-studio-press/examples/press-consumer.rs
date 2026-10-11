@@ -62,7 +62,7 @@ fn run(args: &[String]) -> Result<(), String> {
             for h in &r.proof.hits {
                 match h.location {
                     PayloadLocation::RawBytes { .. } => raw += 1,
-                    PayloadLocation::DecodedStream { object, .. } | PayloadLocation::DecodedText { object } => {
+                    PayloadLocation::DecodedStream { object, .. } | PayloadLocation::DecodedText { object } | PayloadLocation::InlineImage { object, .. } => {
                         dec += 1;
                         objs.insert(object);
                     }

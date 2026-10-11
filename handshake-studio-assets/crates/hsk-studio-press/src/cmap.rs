@@ -16,6 +16,8 @@ pub(crate) struct Cmap {
     /// Code lengths in bytes, ascending.
     lens: Vec<usize>,
     map: BTreeMap<(usize, u32), String>,
+    /// Character -> lowest single-character code, built on first use by [`Cmap::encode`].
+    inverse: std::cell::OnceCell<BTreeMap<char, (usize, u32)>>,
 }
 
 enum Tok {
@@ -208,10 +210,34 @@ pub(crate) fn parse_to_unicode(data: &[u8]) -> Option<Cmap> {
         return None;
     }
     let lens: Vec<usize> = if space.is_empty() { seen.into_iter().collect() } else { space.into_iter().collect() };
-    Some(Cmap { lens, map })
+    Some(Cmap { lens, map, inverse: std::cell::OnceCell::new() })
 }
 
 impl Cmap {
+    /// Codes this map reads as `text`, one code per character (the lowest code when several map to
+    /// the same character), or `None` when a character has no single-character mapping. The payload
+    /// proof scans content for these codes, so text drawn with this font is found by bytes as well as
+    /// by reading.
+    pub(crate) fn encode(&self, text: &[char]) -> Option<Vec<u8>> {
+        let inverse = self.inverse.get_or_init(|| {
+            let mut inv: BTreeMap<char, (usize, u32)> = BTreeMap::new();
+            for ((len, code), s) in &self.map {
+                let mut it = s.chars();
+                if let (Some(c), None) = (it.next(), it.next()) {
+                    inv.entry(c).or_insert((*len, *code));
+                }
+            }
+            inv
+        });
+        let mut out = Vec::new();
+        for c in text {
+            let (len, code) = inverse.get(c)?;
+            let bytes = code.to_be_bytes();
+            out.extend_from_slice(bytes.get(bytes.len().saturating_sub(*len)..)?);
+        }
+        Some(out)
+    }
+
     /// Text of a show-operator string; codes without a mapping are skipped.
     pub(crate) fn decode(&self, s: &[u8]) -> Vec<char> {
         let mut out = Vec::new();

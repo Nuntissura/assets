@@ -23,6 +23,10 @@ pub(crate) struct Entry {
     /// Byte range of the object body in the source (verbatim copy on save); `None` once the
     /// object is modified or when it came from an object stream.
     pub span: Option<(usize, usize)>,
+    /// Offset of a stream's data in the parsed bytes (`None` for other objects, object-stream
+    /// members and objects built in memory). Used by the payload proof to tie raw bytes to the
+    /// decoder that consumed them.
+    pub data_at: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,8 +62,9 @@ fn rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).rposition(|w| w == needle)
 }
 
-/// Parsed indirect object: number, value, and the verbatim body span when it can be copied.
-type Indirect = (u32, Object, Option<(usize, usize)>);
+/// Parsed indirect object: number, value, the verbatim body span when it can be copied, and the
+/// offset of the stream data.
+type Indirect = (u32, Object, Option<(usize, usize)>, Option<usize>);
 
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -108,8 +113,8 @@ impl<'a> Reader<'a> {
         lx.parse_object(0, false).ok()?.as_int()
     }
 
-    /// `lx` is positioned just after the `stream` keyword.
-    fn read_stream_data(&mut self, lx: &mut Lexer<'a>, dict: &Dict, xref: &BTreeMap<u32, Xref>) -> Result<Vec<u8>> {
+    /// `lx` is positioned just after the `stream` keyword. Returns the data and its offset.
+    fn read_stream_data(&mut self, lx: &mut Lexer<'a>, dict: &Dict, xref: &BTreeMap<u32, Xref>) -> Result<(Vec<u8>, usize)> {
         let mut p = lx.pos;
         match self.bytes.get(p) {
             Some(b'\r') => {
@@ -168,7 +173,7 @@ impl<'a> Reader<'a> {
             return Err(PressError::Malformed("endstream_missing"));
         }
         lx.advance(9);
-        Ok(data)
+        Ok((data, p))
     }
 
     /// Charges the bytes an object spanned to the overlap budget.
@@ -194,18 +199,20 @@ impl<'a> Reader<'a> {
         if lx.starts_with(b"endobj") {
             // `n g obj endobj` is the null object.
             self.charge(abs, lx.pos)?;
-            return Ok((num, Object::Null, None));
+            return Ok((num, Object::Null, None, None));
         }
         let start = lx.pos;
         let obj = lx.parse_object(0, true)?;
         self.nodes_left = lx.nodes_left;
+        let mut data_at = None;
         let obj = match obj {
             Object::Dict(dict) => {
                 let after_dict = lx.pos;
                 lx.skip_ws();
                 if lx.starts_with(b"stream") {
                     lx.advance(6);
-                    let data = self.read_stream_data(&mut lx, &dict, xref)?;
+                    let (data, at) = self.read_stream_data(&mut lx, &dict, xref)?;
+                    data_at = Some(at);
                     Object::Stream(Box::new(Stream { dict, data }))
                 } else {
                     lx.pos = after_dict;
@@ -215,7 +222,7 @@ impl<'a> Reader<'a> {
             other => other,
         };
         self.charge(abs, lx.pos)?;
-        Ok((num, obj, Some((start, lx.pos))))
+        Ok((num, obj, Some((start, lx.pos)), data_at))
     }
 
     fn read_section(&mut self, abs: usize, xref: &mut BTreeMap<u32, Xref>, budget: &mut usize) -> Result<Dict> {
@@ -265,7 +272,7 @@ impl<'a> Reader<'a> {
             };
         }
         // Cross-reference stream.
-        let (_num, obj, _span) = self.indirect_at(abs, xref)?;
+        let (_num, obj, _span, _at) = self.indirect_at(abs, xref)?;
         let Object::Stream(stream) = obj else {
             return Err(PressError::Malformed("xref_section"));
         };
@@ -423,11 +430,11 @@ pub(crate) fn parse_document(bytes: &[u8], limits: &Limits, cancel: &Cancellatio
                     return Err(PressError::InputLimit("max_objects"));
                 }
                 let abs = off.checked_add(base).filter(|a| *a < bytes.len()).ok_or(PressError::Malformed("object_offset"))?;
-                let (n, obj, span) = reader.indirect_at(abs, &xref)?;
+                let (n, obj, span, data_at) = reader.indirect_at(abs, &xref)?;
                 if n != *num {
                     return Err(PressError::Malformed("object_number_mismatch"));
                 }
-                objects.insert(*num, Entry { generation, obj, span });
+                objects.insert(*num, Entry { generation, obj, span, data_at });
             }
             Xref::InStream { stm } => {
                 in_streams.entry(stm).or_default().insert(*num);
@@ -477,7 +484,7 @@ pub(crate) fn parse_document(bytes: &[u8], limits: &Limits, cancel: &Cancellatio
                 if parsed_bytes > data.len() {
                     return Err(PressError::InputLimit("objstm_overlap"));
                 }
-                objects.insert(onum, Entry { generation: 0, obj, span: None });
+                objects.insert(onum, Entry { generation: 0, obj, span: None, data_at: None });
             }
         }
     }

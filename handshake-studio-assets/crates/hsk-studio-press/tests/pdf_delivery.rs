@@ -2417,3 +2417,265 @@ fn name_trees_submit_fields_and_embedded_content_redacted() {
     assert_eq!((unsure.report.unverifiable, unsure.report.complete), (1, false));
     assert!(!unsure.is_proven());
 }
+
+// ------------------------------------------------- remediation R7 pre-review B (SMB-PRESS, N1-N7)
+// Lines marked R7-new-api use API added by this remediation; the red run on 0e48167 drops only those
+// lines, and every test there fails on an API-stable assertion before them.
+
+const R7_REGION: RedactionRegion = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+
+fn r7_run(pdf: &[u8]) -> hsk_studio_press::RedactedOutput {
+    let mut doc = open(pdf);
+    redact_and_save(&mut doc, &[R7_REGION], UnsupportedPolicy::Refuse, &token()).unwrap()
+}
+
+fn r7_page() -> String {
+    format!("{TEXT_IN_REGION}\nBT /F1 12 Tf 72 400 Td (Public) Tj ET")
+}
+
+/// base_objs page plus a catalog-reachable object 20 (not drawn by anything).
+fn r7_with_hidden(content: &str, hidden: Vec<u8>) -> Vec<u8> {
+    let mut objs = base_objs(content.as_bytes(), "<< /Title (T) >>");
+    objs[0].1 = b"<< /Type /Catalog /Pages 2 0 R /Hidden 20 0 R >>".to_vec();
+    objs.push((20, hidden));
+    build(&objs, "/Info 7 0 R", b"")
+}
+
+fn zl(data: &[u8]) -> Vec<u8> {
+    miniz_oxide::deflate::compress_to_vec_zlib(data, 6)
+}
+
+/// ASCII85 encoding (ISO 32000-2 7.4.3), no `z` shortcut.
+fn a85(data: &[u8]) -> Vec<u8> {
+    let mut v = Vec::new();
+    for c in data.chunks(4) {
+        let mut g = [0u8; 4];
+        g[..c.len()].copy_from_slice(c);
+        let mut n = u64::from(u32::from_be_bytes(g));
+        let mut d = [0u8; 5];
+        for k in (0..5).rev() {
+            d[k] = b'!' + (n % 85) as u8;
+            n /= 85;
+        }
+        v.extend_from_slice(&d[..c.len() + 1]);
+    }
+    v.extend_from_slice(b"~>");
+    v
+}
+
+fn raw_hit(p: &hsk_studio_press::PayloadProof) -> bool {
+    p.hits.iter().any(|h| matches!(h.location, PayloadLocation::RawBytes { .. }))
+}
+
+/// N1: bytes after a filter's end-of-data marker and comments in a stream dictionary are file bytes
+/// no decoder reads. At 0e48167 a decodable stream exempted every raw match in its object span.
+#[test]
+fn bytes_after_end_of_data_and_dictionary_comments_are_hits() {
+    let page = r7_page();
+    // The removed string in plain bytes right after the end-of-data marker of each filter.
+    let plain_after: Vec<(&str, Vec<u8>)> = vec![
+        ("/Filter /ASCIIHexDecode", b"41>SECRET-ALPHA".to_vec()),
+        ("/Filter /FlateDecode", [zl(b"x"), b"SECRET-ALPHA".to_vec()].concat()),
+        ("/Filter /ASCII85Decode", b"87cURDZ~>SECRET-ALPHA".to_vec()),
+        ("/Filter /RunLengthDecode", [vec![0u8, b'x', 128], b"SECRET-ALPHA".to_vec()].concat()),
+    ];
+    for (dict, data) in plain_after {
+        let out = r7_run(&r7_with_hidden(&page, stream_body(dict, &data)));
+        assert!(!out.is_proven(), "{dict}: the removed string is in the saved file: {:?}", out.proof);
+        assert!(raw_hit(&out.proof) && find(&out.bytes, b"SECRET-ALPHA").is_some(), "{dict}: {:?} {:?}", out.proof, find(&out.bytes, b"SECRET-ALPHA"));
+        assert!(out.proof.trailing_data_streams.iter().any(|(n, _)| *n == 20), "{dict}"); // R7-new-api
+        assert!(out.not_proven_reasons().contains(&NotProven::TrailingData), "{dict}"); // R7-new-api
+    }
+    // An encoded copy after the end of the deflate stream: no plain byte anywhere, never decoded.
+    let out = r7_run(&r7_with_hidden(&page, stream_body("/Filter /FlateDecode", &[zl(b"x"), zl(b"SECRET-ALPHA")].concat())));
+    assert!(!out.is_proven(), "a second zlib stream after the end of the first is never read");
+    assert_eq!(out.not_proven_reasons(), vec![NotProven::TrailingData]); // R7-new-api
+    assert_eq!(out.proof.trailing_data_streams, vec![(20, "FlateDecode".to_string())]); // R7-new-api
+    // A comment inside the stream dictionary: the stream decodes cleanly, the comment is file text.
+    let out = r7_run(&r7_with_hidden(&page, b"<< /Length 5 % SECRET-ALPHA\n>>\nstream\nhello\nendstream".to_vec()));
+    assert!(!out.is_proven() && raw_hit(&out.proof), "{:?}", out.proof.hits);
+    // A dictionary KEY spelled with # escapes is the same name: compared by decoded value.
+    let out = r7_run(&r7_with_hidden(&page, b"<< /SECRET#2DALPHA 1 >>".to_vec()));
+    assert!(!out.is_proven(), "a dictionary key holds the removed string");
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 20 })));
+    // Other spellings in a stream nobody draws: UTF-16LE and hex.
+    for spelled in [b"S\0E\0C\0R\0E\0T\0-\0A\0L\0P\0H\0A\0".to_vec(), b"5345435245542D414C504841".to_vec()] {
+        let out = r7_run(&r7_with_hidden(&page, stream_body("", &spelled)));
+        assert!(!out.is_proven(), "{:?}", String::from_utf8_lossy(&spelled));
+    }
+    // Control: white space after the marker is not data.
+    let out = r7_run(&r7_with_hidden(&page, stream_body("/Filter /ASCIIHexDecode", b"41>\r\n \0")));
+    assert!(out.is_proven(), "{:?}", out.not_proven_reasons());
+}
+
+/// N2: inline-image data is decoded through its implemented filters (and a zlib codec input behind
+/// a raster codec name) and scanned. At 0e48167 it was scanned only in its encoded form.
+#[test]
+fn inline_image_data_is_decoded_and_scanned() {
+    let page = r7_page();
+    let pdf = |filter: &str, data: &[u8]| {
+        let mut c = format!("{page}\nq 10 0 0 10 400 100 cm\nBI /W 4 /H 3 /CS /G /BPC 8 /F {filter} ID\n").into_bytes();
+        c.extend_from_slice(data);
+        c.extend_from_slice(b"\nEI\nQ");
+        build(&base_objs(&c, "<< /Title (T) >>"), "/Info 7 0 R", b"")
+    };
+    let pixels = b"SECRET-ALPHA pixels";
+    for (filter, data) in [("/Fl", zl(pixels)), ("[/Fl /DCT]", zl(&zl(pixels))), ("/AHx", hex_stream(pixels)), ("[/A85 /Fl]", a85(&zl(pixels)))] {
+        let out = r7_run(&pdf(filter, &data));
+        assert!(!out.is_proven(), "{filter}: the removed string is in the decoded image data: {:?}", out.not_proven_reasons());
+        assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::InlineImage { .. })), "{filter}: {:?}", out.proof.hits); // R7-new-api
+    }
+    // Control: pixels without the string are proven, the raster tail is listed.
+    let out = r7_run(&pdf("[/Fl /DCT]", &zl(&jpeg(b"plain"))));
+    assert!(out.is_proven() && out.proof.raster_streams.iter().any(|r| r.inline), "{:?}", out.not_proven_reasons());
+}
+
+/// Type0 test fonts: 23 has no /ToUnicode (unreadable), 24 maps codes 0101..010C to SECRET-ALPHA.
+fn r7_fonts() -> Vec<(u32, Vec<u8>)> {
+    let mut cmap = String::from("/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n12 beginbfchar\n");
+    for (i, ch) in "SECRET-ALPHA".chars().enumerate() {
+        cmap.push_str(&format!("<{:04X}> <{:04X}>\n", 0x0101 + i as u32, ch as u32));
+    }
+    cmap.push_str("endbfchar\nendcmap\nend end");
+    vec![
+        (21, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /T >>".to_vec()),
+        (23, b"<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Identity-H /DescendantFonts [21 0 R] >>".to_vec()),
+        (24, b"<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Identity-H /DescendantFonts [21 0 R] /ToUnicode 25 0 R >>".to_vec()),
+        (25, stream_body("", cmap.as_bytes())),
+    ]
+}
+
+/// Codes of SECRET-ALPHA under font 24 (glyph ids under font 23).
+const R7_CODES: &str = "<010101020103010401050106010701080109010A010B010C>";
+const R7_RES: &str = "/Font << /F1 24 0 R /F2 6 0 R /F3 23 0 R >> /ExtGState << /GS1 << /Font [24 0 R 12] >> >> /XObject << /Im1 8 0 R >>";
+
+/// A page with the test fonts: `content` (object 4, or a /Contents array with `more` as object 27),
+/// an annotation appearance (object 26, outside any region) drawing `ap`, page XObjects `xobjects`,
+/// and `extra` objects.
+fn r7_font_doc(content: &str, more: Option<&str>, ap: Option<&str>, xobjects: &str, extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs = base_objs(content.as_bytes(), "<< /Title (T) >>");
+    let contents = if more.is_some() { "[4 0 R 27 0 R]" } else { "4 0 R" };
+    let res = R7_RES.replace("/Im1 8 0 R", &format!("/Im1 8 0 R {xobjects}"));
+    objs[2].1 = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {contents} /Annots [5 0 R] /Resources << {res} >> >>").into_bytes();
+    if let Some(m) = more {
+        objs.push((27, stream_body("", m.as_bytes())));
+    }
+    if let Some(ap) = ap {
+        objs[4].1 = b"<< /Type /Annot /Subtype /FreeText /Rect [300 100 400 140] /Contents (label) /AP << /N 26 0 R >> /P 3 0 R >>".to_vec();
+        objs.push((26, stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 100 40] /Resources << {R7_RES} >>"), ap.as_bytes())));
+    }
+    objs.extend(r7_fonts());
+    objs.extend(extra);
+    build(&objs, "/Info 7 0 R", b"")
+}
+
+fn r7_verify(pdf: &[u8]) -> hsk_studio_press::PayloadProof {
+    verify_payload_absent(pdf, &[b"SECRET-ALPHA".to_vec()], &Limits::default(), &token()).unwrap()
+}
+
+const R7_PLAIN: &str = "BT /F2 12 Tf 72 700 Td (Public) Tj ET";
+
+/// N4, N6 and the same class at other sites: the font is graphics state (q/Q, gs /Font, Tf), it
+/// carries across a page's content streams and into forms drawn by Do, and a form without its own
+/// resources uses the caller's. At 0e48167 the proof read each stream on its own with the last Tf.
+#[test]
+fn font_state_follows_q_q_gs_and_do() {
+    // Control: fonts read correctly, nothing to find.
+    let p = r7_verify(&r7_font_doc(R7_PLAIN, None, Some("BT /F2 12 Tf q /F1 9 Tf Q 2 5 Td (plain) Tj ET"), "", vec![]));
+    assert!(p.is_clean(), "{:?}", p.not_proven_reasons());
+    // N4: Q restores F1 (its codes spell the removed string through its ToUnicode); F2 only inside q..Q.
+    let p = r7_verify(&r7_font_doc(R7_PLAIN, None, Some(&format!("BT /F1 12 Tf q /F2 9 Tf Q 2 5 Td {R7_CODES} Tj ET")), "", vec![]));
+    assert!(!p.is_clean(), "the appearance draws SECRET-ALPHA with F1 after Q");
+    assert!(p.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedText { object: 26 })), "{:?}", p.hits);
+    // N4: the font set by an ExtGState through gs.
+    let p = r7_verify(&r7_font_doc(R7_PLAIN, None, Some(&format!("BT /GS1 gs 2 5 Td {R7_CODES} Tj ET")), "", vec![]));
+    assert!(!p.is_clean() && p.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedText { object: 26 })), "{:?}", p.hits);
+    // N4: the same q/Q trick with a font that has no ToUnicode hides unreadable text.
+    let p = r7_verify(&r7_font_doc(R7_PLAIN, None, Some(&format!("BT /F3 12 Tf q /F2 9 Tf Q 2 5 Td {R7_CODES} Tj ET")), "", vec![]));
+    assert!(!p.is_clean(), "unreadable text drawn after Q");
+    assert!(p.not_proven_reasons().contains(&NotProven::OpaqueText) && p.opaque_text_streams == vec![26], "{:?}", p.not_proven_reasons());
+    // N6: a form without its own /Resources drawn by the page uses the page resources (F3 unreadable).
+    let legacy = |body: &str, own: &str| stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 612 792] {own}"), body.as_bytes());
+    let p = r7_verify(&r7_font_doc(&format!("{R7_PLAIN}\nq /Fm1 Do Q"), None, None, "/Fm1 28 0 R", vec![(28, legacy(&format!("BT /F3 12 Tf 72 300 Td {R7_CODES} Tj ET"), ""))]));
+    assert!(!p.is_clean(), "the legacy form draws unreadable text with the inherited F3");
+    assert!(p.not_proven_reasons().contains(&NotProven::OpaqueText) && p.opaque_text_streams == vec![28], "{:?}", p.not_proven_reasons());
+    // A form inherits the caller's FONT too: no Tf inside the form, F3 set by the page.
+    let own = "/Resources << /Font << /F2 6 0 R >> >>";
+    let p = r7_verify(&r7_font_doc(&format!("{R7_PLAIN}\nBT /F3 12 Tf ET q /Fm1 Do Q"), None, None, "/Fm1 28 0 R", vec![(28, legacy(&format!("BT 72 300 Td {R7_CODES} Tj ET"), own))]));
+    assert!(!p.is_clean(), "the form draws with the caller's F3");
+    assert_eq!(p.opaque_text_streams, vec![28]);
+    // A page's content streams are one stream: Tf in the first applies to the second.
+    let p = r7_verify(&r7_font_doc("BT /F3 12 Tf 72 300 Td", Some(&format!("{R7_CODES} Tj ET")), None, "", vec![]));
+    assert!(!p.is_clean(), "the second content stream draws with F3 from the first");
+    assert_eq!(p.opaque_text_streams, vec![27]);
+    // Page content naming a font its resources do not hold cannot be checked.
+    let p = r7_verify(&r7_font_doc(&format!("BT /F9 12 Tf 72 300 Td {R7_CODES} Tj ET"), None, None, "", vec![]));
+    assert!(!p.is_clean(), "unresolved font in page content");
+    assert!(p.not_proven_reasons().contains(&NotProven::OpaqueText) && p.opaque_text_streams == vec![4], "{:?}", p.not_proven_reasons());
+}
+
+/// N3 and N5: content no page draws is still read with its own resources, and content that cannot
+/// be followed never reads clean. At 0e48167 stray streams were not parsed (c520095) and a parse
+/// failure skipped every text check.
+#[test]
+fn unreadable_or_stray_content_never_reads_clean() {
+    let page = r7_page();
+    let form = "/Type /XObject /Subtype /Form /BBox [0 0 9 9] /Resources << /Font << /F1 24 0 R /F3 23 0 R >> >>";
+    let stray = |dict: &str, body: &str| {
+        let mut objs = base_objs(page.as_bytes(), "<< /Title (T) >>");
+        objs[0].1 = b"<< /Type /Catalog /Pages 2 0 R /Hidden 20 0 R >>".to_vec();
+        objs.push((20, stream_body(dict, body.as_bytes())));
+        objs.extend(r7_fonts());
+        build(&objs, "/Info 7 0 R", b"")
+    };
+    // Control: a stray form with readable text and no removed string is proven.
+    let out = r7_run(&stray(form, "BT /F1 12 Tf <0101> Tj ET"));
+    assert!(out.is_proven(), "{:?}", out.not_proven_reasons());
+    // N3: a stray form with its own resources draws unreadable text.
+    let out = r7_run(&stray(form, &format!("BT /F3 12 Tf {R7_CODES} Tj ET")));
+    assert!(!out.is_proven(), "stray unreadable text");
+    assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText) && out.proof.opaque_text_streams == vec![20], "{:?}", out.not_proven_reasons());
+    // N3: the same stray form drawing the removed string through a ToUnicode map is a leak.
+    let out = r7_run(&stray(form, &format!("BT /F1 12 Tf {R7_CODES} Tj ET")));
+    assert!(!out.is_proven() && out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedText { object: 20 })), "{:?}", out.proof.hits);
+    // N3: an inline image with a Crypt filter in a stray stream blocks.
+    let out = r7_run(&stray("", "q BI /W 1 /H 1 /CS /G /BPC 8 /F /Crypt ID\nx\nEI Q"));
+    assert!(!out.is_proven(), "inline Crypt image in a stray stream");
+    assert!(out.proof.streams_not_decodable.contains(&(20, "inline:Crypt".to_string())), "{:?}", out.proof.streams_not_decodable);
+    // N5: an annotation appearance that does not tokenize (a stray '}') draws the removed string
+    // through F1 before the bad token.
+    let p = r7_verify(&r7_font_doc(R7_PLAIN, None, Some(&format!("BT /F1 12 Tf 2 5 Td {R7_CODES} Tj ET }}")), "", vec![]));
+    assert!(!p.is_clean(), "unparseable appearance");
+    assert!(p.unreadable_content_streams.iter().any(|(n, _)| *n == 26), "{:?}", p.unreadable_content_streams); // R7-new-api
+    // Operands in one content stream of a page and their operator in the next: one logical stream
+    // for a viewer, unreadable for a per-stream reading.
+    let p = r7_verify(&r7_font_doc(&format!("BT /F3 12 Tf 72 300 Td {R7_CODES}"), Some("Tj ET"), None, "", vec![]));
+    assert!(!p.is_clean(), "operands split from their operator across content streams");
+    assert!(p.not_proven_reasons().contains(&NotProven::UnreadableContent), "{:?}", p.not_proven_reasons()); // R7-new-api
+}
+
+/// N7: only forms a page actually draws (Do) are kept text. At 0e48167 a form merely listed in the
+/// page resources counted as kept, so the removed string inside it read as a collision.
+#[test]
+fn listed_but_undrawn_forms_are_not_kept_text() {
+    let page = r7_page();
+    let doc = |content: &str, xobjects: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = base_objs(content.as_bytes(), "<< /Title (T) >>");
+        objs[2].1 = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R] /Resources << /Font << /F1 6 0 R >> /XObject << /Im1 8 0 R {xobjects} >> >> >>").into_bytes();
+        objs.extend(extra);
+        build(&objs, "/Info 7 0 R", b"")
+    };
+    let form = |body: &str, res: &str| stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> {res} >>"), body.as_bytes());
+    let secret = "BT /F1 12 Tf 300 300 Td (SECRET-ALPHA) Tj ET";
+    // Listed under the page resources, never drawn.
+    let out = r7_run(&doc(&page, "/Fm9 20 0 R", vec![(20, form(secret, ""))]));
+    assert!(!out.is_proven(), "an undrawn form is payload, not kept text");
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 20, .. })), "{:?}", out.proof);
+    assert!(out.proof.kept_text_collisions.iter().all(|c| c.object != 20));
+    // Listed by a drawn form, never drawn by it.
+    let out = r7_run(&doc(&format!("{page}\nq /Fm1 Do Q"), "/Fm1 21 0 R", vec![(21, form("BT /F1 9 Tf (shell) Tj ET", "/XObject << /Fm9 20 0 R >>")), (20, form(secret, ""))]));
+    assert!(!out.is_proven() && out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 20, .. })), "{:?}", out.proof);
+    // Control: drawn by the page, the same form is kept text (a collision, not a leak).
+    let out = r7_run(&doc(&format!("{page}\nq /Fm9 Do Q"), "/Fm9 20 0 R", vec![(20, form(secret, ""))]));
+    assert!(out.is_proven() && out.proof.kept_text_collisions.iter().any(|c| c.object == 20), "{:?}", out.proof);
+}

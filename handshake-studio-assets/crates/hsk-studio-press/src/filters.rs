@@ -18,6 +18,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Limits, PressError, Result};
 use crate::syntax::{Dict, Object, Stream, hex_val, is_ws};
+use miniz_oxide::inflate::TINFLStatus;
+use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
 use std::borrow::Cow;
 
 fn filter_names(dict: &Dict, limits: Option<&Limits>) -> Result<Vec<Vec<u8>>> {
@@ -92,19 +94,52 @@ pub(crate) fn is_decodable(dict: &Dict) -> bool {
 /// Decodes the full filter chain. `budget` is the remaining decoded-byte allowance for the
 /// current operation; it is reduced by the output of every stage (and by the cost of a failed one).
 pub(crate) fn decode_stream(stream: &Stream, limits: &Limits, budget: &mut usize) -> Result<Vec<u8>> {
+    decode_chain(stream, limits, budget).map(|d| d.data)
+}
+
+/// A decoded stream and what the decoders did NOT read.
+pub(crate) struct Decoded {
+    pub data: Vec<u8>,
+    /// Bytes of the stream data the first filter consumed (all of them without a filter). Bytes after
+    /// this offset were never decoded.
+    pub consumed: usize,
+    /// First filter whose input still held non-whitespace bytes after its end-of-data marker
+    /// (Flate: end of the deflate stream and its Adler-32; LZW code 257; ASCIIHex `>`; ASCII85 `~>`;
+    /// RunLength 128): viewers ignore those bytes and no decoded scan sees them.
+    pub trailing: Option<String>,
+}
+
+/// Non-whitespace input after the end-of-data marker of a stage (PDF white space, NUL included).
+fn has_trailing(data: &[u8], used: usize) -> bool {
+    data.get(used..).is_some_and(|rest| rest.iter().any(|b| !is_ws(*b)))
+}
+
+/// [`decode_stream`] that also reports consumed and trailing input (the payload proof's view; test
+/// `bytes_after_end_of_data_and_dictionary_comments_are_hits`).
+pub(crate) fn decode_chain(stream: &Stream, limits: &Limits, budget: &mut usize) -> Result<Decoded> {
     let names = filter_names(&stream.dict, Some(limits))?;
     let parms = decode_parms(&stream.dict, names.len())?;
     let mut data: Cow<'_, [u8]> = Cow::Borrowed(stream.data.as_slice());
+    let mut consumed = stream.data.len();
+    let mut trailing: Option<String> = None;
     if names.is_empty() {
         let cap = limits.max_decoded_bytes.min(*budget);
         if data.len() > cap {
             return Err(limit_error(limits, cap));
         }
     }
-    for (name, parm) in names.iter().zip(parms.iter()) {
+    for (i, (name, parm)) in names.iter().zip(parms.iter()).enumerate() {
         let cap = limits.max_decoded_bytes.min(*budget);
         let out = match stage(name, parm.as_ref(), &data, cap) {
-            Ok(out) if out.len() <= cap => out,
+            Ok((out, used)) if out.len() <= cap => {
+                if i == 0 {
+                    consumed = used;
+                }
+                if trailing.is_none() && has_trailing(&data, used) {
+                    trailing = Some(String::from_utf8_lossy(name).into_owned());
+                }
+                out
+            }
             Ok(_) => {
                 *budget = budget.saturating_sub(cap);
                 return Err(limit_error(limits, cap));
@@ -124,7 +159,38 @@ pub(crate) fn decode_stream(stream: &Stream, limits: &Limits, budget: &mut usize
     if names.is_empty() {
         *budget = budget.saturating_sub(data.len());
     }
-    Ok(data.into_owned())
+    Ok(Decoded { data: data.into_owned(), consumed, trailing })
+}
+
+/// Zlib inflate with the output capped at `cap` bytes. Returns the inflated bytes and the number of
+/// input bytes the decoder read (the deflate stream and its Adler-32 checksum); input after that is
+/// not part of the stream. Same flags and buffer growth as
+/// `miniz_oxide::inflate::decompress_to_vec_zlib_with_limit`, which does not report the count.
+pub(crate) fn inflate_zlib(input: &[u8], cap: usize) -> std::result::Result<(Vec<u8>, usize), TINFLStatus> {
+    let flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+    let mut ret: Vec<u8> = vec![0; input.len().saturating_mul(2).min(cap)];
+    let mut decomp = Box::<DecompressorOxide>::default();
+    let (mut out_pos, mut read) = (0usize, 0usize);
+    loop {
+        let rest = input.get(read..).unwrap_or(&[]);
+        let (status, in_consumed, out_written) = decompress(&mut decomp, rest, &mut ret, out_pos, flags);
+        out_pos = out_pos.saturating_add(out_written);
+        read = read.saturating_add(in_consumed).min(input.len());
+        match status {
+            TINFLStatus::Done => {
+                ret.truncate(out_pos);
+                return Ok((ret, read));
+            }
+            TINFLStatus::HasMoreOutput => {
+                if ret.len() >= cap {
+                    return Err(TINFLStatus::HasMoreOutput);
+                }
+                let new_len = ret.len().saturating_mul(2).max(1).min(cap);
+                ret.resize(new_len, 0);
+            }
+            other => return Err(other),
+        }
+    }
 }
 
 /// The cap was the per-stream limit (`decoded_bytes`) or what remained of the operation budget (`decoded_total`).
@@ -132,24 +198,21 @@ fn limit_error(limits: &Limits, cap: usize) -> PressError {
     if cap < limits.max_decoded_bytes { PressError::InputLimit("decoded_total") } else { PressError::InputLimit("decoded_bytes") }
 }
 
-/// One filter stage (plus its predictor) with output capped at `cap` bytes.
-fn stage(name: &[u8], parm: Option<&Dict>, data: &[u8], cap: usize) -> Result<Vec<u8>> {
+/// One filter stage (plus its predictor) with output capped at `cap` bytes: `(output, input bytes
+/// read up to and including the end-of-data marker)`.
+fn stage(name: &[u8], parm: Option<&Dict>, data: &[u8], cap: usize) -> Result<(Vec<u8>, usize)> {
     match name {
         b"FlateDecode" | b"Fl" => {
-            let inflated = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, cap).map_err(|e| {
-                if e.status == miniz_oxide::inflate::TINFLStatus::HasMoreOutput {
-                    PressError::InputLimit("decoded_bytes")
-                } else {
-                    PressError::Malformed("flate_data")
-                }
+            let (inflated, used) = inflate_zlib(data, cap).map_err(|status| {
+                if status == TINFLStatus::HasMoreOutput { PressError::InputLimit("decoded_bytes") } else { PressError::Malformed("flate_data") }
             })?;
-            apply_predictor(inflated, parm, cap)
+            Ok((apply_predictor(inflated, parm, cap)?, used))
         }
         b"LZWDecode" | b"LZW" => {
             let early = parm_int(parm, "EarlyChange", 1);
             let early = usize::try_from(early).ok().filter(|e| *e <= 1).ok_or(PressError::Malformed("lzw_early_change"))?;
-            let out = lzw(data, early, cap)?;
-            apply_predictor(out, parm, cap)
+            let (out, used) = lzw(data, early, cap)?;
+            Ok((apply_predictor(out, parm, cap)?, used))
         }
         b"ASCIIHexDecode" | b"AHx" => ascii_hex(data, cap),
         b"ASCII85Decode" | b"A85" => ascii85(data, cap),
@@ -256,7 +319,7 @@ const MASK: [u32; 13] = [0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095
 /// PDF LZWDecode: MSB-first codes of 9..=12 bits, 256 = clear, 257 = end of data. Dictionary
 /// entries are (prefix code, byte, length) triples (max 4096), so memory is constant and the
 /// output is bounded by `cap`.
-fn lzw(data: &[u8], early: usize, cap: usize) -> Result<Vec<u8>> {
+fn lzw(data: &[u8], early: usize, cap: usize) -> Result<(Vec<u8>, usize)> {
     let mut prefix = [0u16; 4096];
     let mut byte = [0u8; 4096];
     let mut length = [0u16; 4096];
@@ -280,7 +343,7 @@ fn lzw(data: &[u8], early: usize, cap: usize) -> Result<Vec<u8>> {
     loop {
         while nbits < width {
             let Some(&b) = data.get(pos) else {
-                return Ok(out); // tolerate a missing EOD
+                return Ok((out, pos)); // tolerate a missing EOD
             };
             pos = pos.saturating_add(1);
             acc = acc.wrapping_shl(8) | u32::from(b);
@@ -291,7 +354,7 @@ fn lzw(data: &[u8], early: usize, cap: usize) -> Result<Vec<u8>> {
         nbits = left;
         acc &= MASK.get(nbits).copied().unwrap_or(0);
         match code {
-            257 => return Ok(out),
+            257 => return Ok((out, pos)),
             256 => {
                 next = 258;
                 width = 9;
@@ -363,11 +426,13 @@ fn lzw(data: &[u8], early: usize, cap: usize) -> Result<Vec<u8>> {
     }
 }
 
-fn ascii_hex(data: &[u8], cap: usize) -> Result<Vec<u8>> {
+fn ascii_hex(data: &[u8], cap: usize) -> Result<(Vec<u8>, usize)> {
     let mut out = Vec::new();
     let mut hi: Option<u8> = None;
-    for &b in data {
+    let mut used = data.len();
+    for (i, &b) in data.iter().enumerate() {
         if b == b'>' {
+            used = i.saturating_add(1);
             break;
         }
         let v = match hex_val(b) {
@@ -391,20 +456,25 @@ fn ascii_hex(data: &[u8], cap: usize) -> Result<Vec<u8>> {
             return Err(PressError::InputLimit("decoded_bytes"));
         }
     }
-    Ok(out)
+    Ok((out, used))
 }
 
 fn ascii85_value(group: &[u32; 5]) -> u64 {
     group.iter().fold(0u64, |acc, g| acc.saturating_mul(85).saturating_add(u64::from(*g)))
 }
 
-fn ascii85(data: &[u8], cap: usize) -> Result<Vec<u8>> {
+fn ascii85(data: &[u8], cap: usize) -> Result<(Vec<u8>, usize)> {
     let mut out = Vec::new();
     let mut group = [0u32; 5];
     let mut n = 0usize;
-    for &b in data {
+    let mut used = data.len();
+    for (i, &b) in data.iter().enumerate() {
         match b {
-            b'~' => break,
+            b'~' => {
+                // The end-of-data marker is `~>`.
+                used = i.saturating_add(if data.get(i.saturating_add(1)) == Some(&b'>') { 2 } else { 1 });
+                break;
+            }
             _ if is_ws(b) => {}
             b'z' if n == 0 => out.extend_from_slice(&[0, 0, 0, 0]),
             b'!'..=b'u' => {
@@ -440,16 +510,16 @@ fn ascii85(data: &[u8], cap: usize) -> Result<Vec<u8>> {
             return Err(PressError::InputLimit("decoded_bytes"));
         }
     }
-    Ok(out)
+    Ok((out, used))
 }
 
-fn run_length(data: &[u8], cap: usize) -> Result<Vec<u8>> {
+fn run_length(data: &[u8], cap: usize) -> Result<(Vec<u8>, usize)> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while let Some(&len) = data.get(i) {
         i = i.saturating_add(1);
         match len {
-            128 => break,
+            128 => return Ok((out, i)),
             0..=127 => {
                 let n = usize::from(len).saturating_add(1);
                 let end = i.saturating_add(n).min(data.len());
@@ -469,7 +539,7 @@ fn run_length(data: &[u8], cap: usize) -> Result<Vec<u8>> {
             return Err(PressError::InputLimit("decoded_bytes"));
         }
     }
-    Ok(out)
+    Ok((out, i))
 }
 
 #[cfg(test)]
@@ -547,6 +617,29 @@ mod tests {
         assert_eq!(decode_stream(&stream(&names, None, b"41>".to_vec()), &limits, &mut budget).unwrap_err(), PressError::InputLimit("filter_chain"));
         // ASCII85: a final group that cannot come from any encoder is refused, not truncated.
         assert_eq!(ascii85(b"uu~>", 100).unwrap_err(), PressError::Malformed("ascii85"));
-        assert_eq!(ascii85(b"87cURDZ~>", 100).unwrap(), b"Hello".to_vec());
+        assert_eq!(ascii85(b"87cURDZ~>", 100).unwrap(), (b"Hello".to_vec(), 9));
+    }
+
+    /// Every decoder reports the input it read up to its end-of-data marker; what follows is
+    /// trailing input (the payload proof's `TrailingData`).
+    #[test]
+    fn consumed_and_trailing_input_are_reported() {
+        let limits = Limits::default();
+        let z = zlib(b"x");
+        let cases: Vec<(&str, Vec<u8>, usize)> = vec![
+            ("FlateDecode", [z.clone(), b"SECRET".to_vec()].concat(), z.len()),
+            ("ASCIIHexDecode", b"41>SECRET".to_vec(), 3),
+            ("ASCII85Decode", b"87cURDZ~>SECRET".to_vec(), 9),
+            ("RunLengthDecode", [vec![0u8, b'x', 128], b"SECRET".to_vec()].concat(), 3),
+        ];
+        for (name, data, used) in cases {
+            let mut budget = 1usize << 20;
+            let d = decode_chain(&stream(&[name], None, data), &limits, &mut budget).unwrap();
+            assert_eq!((d.consumed, d.trailing.as_deref()), (used, Some(name)), "{name}");
+        }
+        // White space after the marker is not data.
+        let mut budget = 1usize << 20;
+        let d = decode_chain(&stream(&["FlateDecode"], None, [z, b"\r\n \0".to_vec()].concat()), &limits, &mut budget).unwrap();
+        assert_eq!((d.data, d.trailing), (b"x".to_vec(), None));
     }
 }

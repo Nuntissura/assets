@@ -90,28 +90,31 @@ pub(crate) fn classify_inline(operands: &[Object]) -> InlineClass {
 }
 
 /// Decodes every filter except the final raster codec. The result is the codec's input (a JPEG,
-/// JPEG 2000, CCITT or JBIG2 codestream), which is scanned as bytes.
-pub(crate) fn decode_prefix(stream: &Stream, limits: &Limits, budget: &mut usize) -> Result<Vec<u8>> {
+/// JPEG 2000, CCITT or JBIG2 codestream), which is scanned as bytes; `trailing` reports input left
+/// after an end-of-data marker of the prefix filters.
+pub(crate) fn decode_prefix(stream: &Stream, limits: &Limits, budget: &mut usize) -> Result<filters::Decoded> {
     let chain = filter_chain(&stream.dict, false).ok_or(PressError::Malformed("filter_entry"))?;
     let head = chain.get(..chain.len().saturating_sub(1)).unwrap_or(&[]);
     let mut dict = stream.dict.clone();
     // An explicit (possibly empty) array so the file-specification key `/F` is not read as a filter.
     dict.set("Filter", Object::Array(head.iter().map(|n| Object::Name(n.clone())).collect()));
-    filters::decode_stream(&Stream { dict, data: stream.data.clone() }, limits, budget)
+    filters::decode_chain(&Stream { dict, data: stream.data.clone() }, limits, budget)
 }
 
 /// A raster stream whose codec input is itself a complete zlib stream is not pixel data (JPEG,
 /// JPEG 2000, CCITT and JBIG2 streams are never valid zlib streams): returns the inflated bytes so
-/// the proof scans them, bounded like any decode (a bomb is `InputLimit`). Without this, zlib bytes
-/// of a removed string behind a raster filter name would read as unsearchable pixels.
-pub(crate) fn hidden_zlib(codec_input: &[u8], limits: &Limits, budget: &mut usize) -> Result<Option<Vec<u8>>> {
+/// the proof scans them, bounded like any decode (a bomb is `InputLimit`), and whether non-whitespace
+/// bytes follow the end of that zlib stream (they would be read by nobody). Without this, zlib
+/// bytes of a removed string behind a raster filter name would read as unsearchable pixels.
+pub(crate) fn hidden_zlib(codec_input: &[u8], limits: &Limits, budget: &mut usize) -> Result<Option<(Vec<u8>, bool)>> {
     let cap = limits.max_decoded_bytes.min(*budget);
-    match miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(codec_input, cap) {
-        Ok(v) => {
+    match filters::inflate_zlib(codec_input, cap) {
+        Ok((v, used)) => {
             *budget = budget.saturating_sub(v.len());
-            Ok(Some(v))
+            let trailing = codec_input.get(used..).is_some_and(|rest| rest.iter().any(|b| !crate::syntax::is_ws(*b)));
+            Ok(Some((v, trailing)))
         }
-        Err(e) if e.status == miniz_oxide::inflate::TINFLStatus::HasMoreOutput => {
+        Err(miniz_oxide::inflate::TINFLStatus::HasMoreOutput) => {
             *budget = budget.saturating_sub(cap);
             Err(PressError::InputLimit(if cap < limits.max_decoded_bytes { "decoded_total" } else { "decoded_bytes" }))
         }
