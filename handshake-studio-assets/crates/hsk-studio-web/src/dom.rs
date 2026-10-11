@@ -48,10 +48,12 @@ pub struct Limits {
     pub max_depth: usize,
     pub max_attributes: usize,
     pub max_edits: usize,
+    /// CSS rules and `@media` contexts considered by the preview.
+    pub max_rules: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_bytes: 8 << 20, max_nodes: 200_000, max_depth: 128, max_attributes: 256, max_edits: 1024 }
+        Self { max_bytes: 8 << 20, max_nodes: 200_000, max_depth: 128, max_attributes: 256, max_edits: 1024, max_rules: 2048 }
     }
 }
 
@@ -233,7 +235,7 @@ struct Parser<'a> {
     ticks: u32,
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+pub(crate) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
@@ -695,7 +697,7 @@ impl WebDoc {
         Descendants { doc: self, stack: if id < self.nodes.len() { vec![id] } else { Vec::new() } }
     }
 
-    fn label(&self, id: NodeId) -> String {
+    pub(crate) fn label(&self, id: NodeId) -> String {
         let node = &self.nodes[id];
         match node.kind {
             NodeKind::Element => self.tag_name(id).unwrap_or("").to_ascii_lowercase(),

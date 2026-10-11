@@ -12,6 +12,7 @@ pub enum LimitKind {
     Attributes,
     Edits,
     MediaBlocks,
+    Rules,
 }
 impl LimitKind {
     pub const fn code(self) -> &'static str {
@@ -22,6 +23,7 @@ impl LimitKind {
             Self::Attributes => "limit_attributes",
             Self::Edits => "limit_edits",
             Self::MediaBlocks => "limit_media_blocks",
+            Self::Rules => "limit_rules",
         }
     }
 }
@@ -141,6 +143,8 @@ pub enum WebError {
     Conflict { span: Range<usize> },
     StaleRevision { expected: u64, found: u64 },
     RevisionOverflow,
+    /// Viewport width must be finite and non-negative.
+    InvalidViewport,
 }
 impl WebError {
     pub const fn code(&self) -> &'static str {
@@ -158,6 +162,7 @@ impl WebError {
             Self::Conflict { .. } => "conflict",
             Self::StaleRevision { .. } => "stale_revision",
             Self::RevisionOverflow => "revision_overflow",
+            Self::InvalidViewport => "invalid_viewport",
         }
     }
 

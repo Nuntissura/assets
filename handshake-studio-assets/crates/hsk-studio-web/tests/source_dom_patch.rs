@@ -1,9 +1,13 @@
-use hsk_studio_accord::CancellationToken;
+use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, FailureCode, Observe, Outcome, SinkPort};
 use hsk_studio_web::responsive::{Breakpoint, document_media_blocks, matches_any, parse_media_query};
 use hsk_studio_web::{
-    Applied, EditRefusal, Limits, LimitKind, LossKind, MalformedKind, NodeKey, NodeKind, SourcePatch, UnsupportedKind, WebDoc, WebError,
-    apply, decode_entities, escape_attr, escape_text, insert_element, parse, remove_attribute, remove_node, set_attribute, set_text,
+    Applied, AssetDecision, AssetOutcome, AssetPort, AssetSource, DenyReason, EditRefusal, HiddenReason, LimitKind, Limits, LossKind,
+    MalformedKind, NodeKey, NodeKind, SourcePatch, UnsupportedKind, UnsupportedRuleReason, WebDoc, WebError, apply, collect_assets,
+    decode_entities, escape_attr, escape_text, insert_element, outcome_of, parse, preview_tree, refresh, remove_attribute, remove_node,
+    report, set_attribute, set_text,
 };
+use std::sync::Mutex;
 
 // Each canonical test case owns its deadline; panic payloads reach the Cargo harness.
 fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
@@ -329,5 +333,273 @@ fn breakpoints_parse_match_and_refuse_typed() {
             document_media_blocks(&broken, &CancellationToken::default()),
             Err(WebError::Malformed { kind: MalformedKind::UnterminatedCss, .. })
         ));
+    });
+}
+
+#[test]
+fn code_edit_refresh_same_revision() {
+    bounded_case("code_edit_refresh_same_revision", || {
+        let cancel = CancellationToken::default();
+        let doc = load(DOC);
+        let (body, p) = (key(&doc, "body"), doc.key_of(doc.find_by_html_id("p1").unwrap()).unwrap());
+        // A visual insert, then the same bytes arriving as a code edit: refresh == parse(apply(..)) at R+1.
+        let patch = insert_element(&doc, &body, 0, "nav", &[("id", "top")], Some("Menu"), &cancel).unwrap();
+        let applied = apply(&doc, &patch).unwrap();
+        let reparsed = doc.apply_patch(&patch, &cancel).unwrap();
+        let (fresh, map) = refresh(&doc, &applied.source, 1, &cancel).unwrap();
+        assert_eq!((fresh.revision(), fresh.sha256_hex()), (reparsed.revision(), reparsed.sha256_hex()));
+        assert_eq!(fresh.view(), reparsed.view());
+        // Surviving nodes keep identity through shifted positions; only the new subtree is reported.
+        let moved = map.map_key(&doc, &fresh, &p).unwrap();
+        assert_ne!(moved, p, "the insert shifted the key");
+        assert_eq!(fresh.resolve(&moved), fresh.find_by_html_id("p1"));
+        assert_eq!(map.kept(), doc.len());
+        assert_eq!((map.removed_roots().len(), map.removed_nodes()), (0, 0));
+        assert_eq!((map.added_roots().len(), map.added_nodes()), (1, 2));
+        assert_eq!(fresh.tag_name(map.added_roots()[0]), Some("nav"));
+        let script = doc.find_by_tag("script")[0];
+        let raw = doc.node(script).unwrap().children[0];
+        assert_eq!(fresh.slice(&fresh.node(map.new_id(raw).unwrap()).unwrap().span), doc.slice(&doc.node(raw).unwrap().span));
+        // A removal reports the removed subtree and keeps every other node.
+        let comment = doc.key_of(doc.node(doc.find_by_tag("body")[0]).unwrap().children[1]).unwrap();
+        let gone = apply(&doc, &remove_node(&doc, &comment).unwrap()).unwrap();
+        let (after, map) = refresh(&doc, &gone.source, 1, &cancel).unwrap();
+        // The comment and the whitespace text after it merge into one text node when the comment is gone.
+        assert!(map.removed_keys(&doc).contains(&comment));
+        assert_eq!((map.removed_nodes(), map.added_nodes(), map.kept()), (2, 0, doc.len() - 2));
+        assert_eq!(after.len(), doc.len() - 2);
+        // Elements with an HTML id keep identity when reordered inside one parent.
+        let old = load("<div><p id=a>1</p><p id=b>2</p><p id=c>3</p></div>");
+        let (new, map) = refresh(&old, "<div><p id=c>3</p><p id=b>2</p><p id=a>1</p></div>", 1, &cancel).unwrap();
+        for id in ["a", "b", "c"] {
+            let (o, n) = (old.find_by_html_id(id).unwrap(), new.find_by_html_id(id).unwrap());
+            assert_eq!(map.new_id(o), Some(n), "id {id}");
+            assert_eq!(map.old_id(n), Some(o));
+        }
+        assert_eq!((map.added_nodes(), map.removed_nodes()), (0, 0));
+        // The next revision is the only revision a refresh accepts; cancellation and bad source are typed.
+        assert_eq!(refresh(&doc, &gone.source, 0, &cancel).err(), Some(WebError::StaleRevision { expected: 1, found: 0 }));
+        assert_eq!(refresh(&doc, &gone.source, 2, &cancel).err(), Some(WebError::StaleRevision { expected: 1, found: 2 }));
+        assert!(matches!(refresh(&doc, "<b><i></b></i>", 1, &cancel), Err(WebError::Malformed { kind: MalformedKind::MisnestedEndTag, .. })));
+        let stop = CancellationToken::default();
+        stop.cancel();
+        assert_eq!(refresh(&doc, &gone.source, 1, &stop).err(), Some(WebError::Canceled));
+    });
+}
+
+struct Grants {
+    calls: Mutex<Vec<String>>,
+}
+impl AssetPort for Grants {
+    fn resolve(&self, reference: &str) -> AssetDecision {
+        self.calls.lock().unwrap().push(reference.to_owned());
+        match reference {
+            "logo.png" => AssetDecision::Granted { id: "asset-logo".into() },
+            "theme.css" => AssetDecision::Granted { id: "asset-theme".into() },
+            "base.css" => AssetDecision::Granted { id: "asset-base".into() },
+            "sub/e.png" => AssetDecision::Granted { id: "asset-sub".into() },
+            "missing.png" => AssetDecision::Unavailable,
+            _ => AssetDecision::Denied,
+        }
+    }
+}
+
+#[test]
+fn external_asset_denial_cancel_stale() {
+    bounded_case("external_asset_denial_cancel_stale", || {
+        let cancel = CancellationToken::default();
+        let html = "<img src=\"logo.png\"><img src=\"missing.png\"><img src=\"http://e.invalid/a.png\"><img src=\"//cdn.invalid/b.png\">\
+            <a href=\"file:///c:/x\"></a><a href=\"java&#10;script:alert(1)\"></a><a href=\"JavaScript:1\"></a>\
+            <img src=\"data:image/png;base64,AAAA\"><a href=\"#top\"></a><a href=\"mailto:x@y.invalid\"></a>\
+            <div style=\"background:url('bg.png'), url(//cdn.invalid/c.png)\"></div><link href=\"theme.css\" rel=stylesheet>\
+            <style>@import \"base.css\"; .a{background:url(http://e.invalid/d.png)} /* url(nope.png) */ .b{background:url( sub/e.png )}</style>";
+        let doc = load(html);
+        let port = Grants { calls: Mutex::new(Vec::new()) };
+        let found = collect_assets(&doc, &port, &cancel).unwrap();
+        let seen: Vec<(&str, AssetOutcome)> = found.iter().map(|a| (a.reference.as_str(), a.outcome.clone())).collect();
+        let granted = |id: &str| AssetOutcome::Granted { id: id.into() };
+        let denied = AssetOutcome::Denied;
+        assert_eq!(
+            seen,
+            [
+                ("logo.png", granted("asset-logo")),
+                ("missing.png", AssetOutcome::Unavailable),
+                ("http://e.invalid/a.png", denied(DenyReason::ExternalScheme)),
+                ("//cdn.invalid/b.png", denied(DenyReason::ProtocolRelative)),
+                ("file:///c:/x", denied(DenyReason::FileScheme)),
+                ("java\nscript:alert(1)", denied(DenyReason::ScriptScheme)),
+                ("JavaScript:1", denied(DenyReason::ScriptScheme)),
+                ("data:image/png;base64,AAAA", AssetOutcome::Inline),
+                ("#top", AssetOutcome::SameDocument),
+                ("mailto:x@y.invalid", denied(DenyReason::ExternalScheme)),
+                ("bg.png", denied(DenyReason::NotGranted)),
+                ("//cdn.invalid/c.png", denied(DenyReason::ProtocolRelative)),
+                ("theme.css", granted("asset-theme")),
+                ("base.css", granted("asset-base")),
+                ("http://e.invalid/d.png", denied(DenyReason::ExternalScheme)),
+                ("sub/e.png", granted("asset-sub")),
+            ]
+        );
+        // The port only ever saw relative references, once each, in document order.
+        assert_eq!(*port.calls.lock().unwrap(), ["logo.png", "missing.png", "bg.png", "theme.css", "base.css", "sub/e.png"]);
+        // Spans point at the reference bytes, also inside style attributes and style bodies.
+        let sources: Vec<&AssetSource> = found.iter().map(|a| &a.source).collect();
+        assert_eq!(sources[0], &AssetSource::Attribute("src".into()));
+        assert_eq!((sources[10], sources[13]), (&AssetSource::InlineStyle, &AssetSource::StyleBody));
+        for a in found.iter().filter(|a| a.reference != "java\nscript:alert(1)") {
+            assert_eq!(doc.slice(&a.span), a.reference, "{a:?}");
+        }
+        // Cancellation stops the walk before the port is consulted; stale revisions and bad widths are typed.
+        let stop = CancellationToken::default();
+        stop.cancel();
+        let quiet = Grants { calls: Mutex::new(Vec::new()) };
+        assert_eq!(collect_assets(&doc, &quiet, &stop).err(), Some(WebError::Canceled));
+        assert!(quiet.calls.lock().unwrap().is_empty());
+        let patch = set_attribute(&doc, &doc.key_of(doc.find_by_tag("img")[0]).unwrap(), "src", "other.png").unwrap();
+        let next = doc.apply_patch(&patch, &cancel).unwrap();
+        assert_eq!(apply(&next, &patch), Err(WebError::StaleRevision { expected: 1, found: 0 }));
+        assert_eq!(preview_tree(&doc, -1.0, &cancel).err(), Some(WebError::InvalidViewport));
+        assert_eq!(preview_tree(&doc, f64::NAN, &cancel).err(), Some(WebError::InvalidViewport));
+    });
+}
+
+const PAGE: &str = "<!DOCTYPE html><html><head><style>\n\
+    .nav { display: block }\n\
+    @media (max-width: 600px) { .nav { display: none } #menu { display: none !important } }\n\
+    @media (min-width: 601px) { .wide { display: none } }\n\
+    a:hover { color: red } @font-face { font-family: x } div > p { margin: 0 }\n\
+    @media print { .x { display: none } }\n\
+    </style></head><body>\n\
+    <header><nav class=\"nav\" aria-label=\"Main\"><a href=\"/a\">Home</a><a href=\"/b\" tabindex=\"2\">Docs</a></nav></header>\n\
+    <main><h1>Title <em>x</em></h1><img src=\"a.png\" alt=\"Logo\"><img src=\"b.png\"><img src=\"c.png\" alt=\"\">\n\
+    <button id=\"menu\">Menu</button><button tabindex=\"-1\">Skip</button><button disabled>Off</button>\n\
+    <input type=\"text\" id=\"q\"><label for=\"q\">Search</label>\n\
+    <a href=\"/c\" class=\"wide\">Wide only</a><div tabindex=\"1\">Focus first</div>\n\
+    <div aria-hidden=\"true\"><button>Hidden btn</button></div></main>\n\
+    <footer>f</footer></body></html>";
+
+#[test]
+fn breakpoint_keyboard_a11y_preview() {
+    bounded_case("breakpoint_keyboard_a11y_preview", || {
+        let cancel = CancellationToken::default();
+        let doc = parse(PAGE, 7, &Limits::default(), &cancel).unwrap();
+        let order = |p: &hsk_studio_web::PreviewTree| -> Vec<String> {
+            p.tab_order.iter().map(|&id| doc.text_content(id).trim().to_owned()).collect()
+        };
+        let by_tag = |p: &hsk_studio_web::PreviewTree, tag: &str| p.nodes.iter().find(|n| n.tag == tag).cloned().unwrap();
+
+        // Narrow: the media rules hide the nav and the menu button; the wide-only link is still there.
+        let narrow = preview_tree(&doc, 500.0, &cancel).unwrap();
+        assert_eq!((narrow.source_revision, narrow.viewport_width_px), (7, 500.0));
+        let nav = by_tag(&narrow, "nav");
+        assert_eq!((nav.rendered, nav.hidden), (false, Some(HiddenReason::StyleRule)));
+        assert!(narrow.nodes.iter().all(|n| n.tag != "a" || doc.text_content(n.id) == "Wide only"), "hidden nav subtree omitted");
+        assert_eq!(order(&narrow), ["Focus first", "", "Wide only", "Hidden btn"]);
+        let rules: Vec<_> = narrow.active_rules.iter().map(|r| (r.selector.as_str(), r.media.len(), r.matched_count)).collect();
+        assert_eq!(rules, [(".nav", 0, 1), (".nav", 1, 1), ("#menu", 1, 1)]);
+        assert_eq!(doc.slice(&narrow.active_rules[1].media[0]), "(max-width: 600px)");
+
+        // Wide: the max-width rules drop out, the min-width rule hides the wide-only link; tabindex orders first.
+        let wide = preview_tree(&doc, 800.0, &cancel).unwrap();
+        assert_eq!(order(&wide), ["Focus first", "Docs", "Home", "Menu", "", "Hidden btn"]);
+        assert_eq!(wide.active_rules.iter().map(|r| r.selector.as_str()).collect::<Vec<_>>(), [".nav", ".wide"]);
+        let link = wide.nodes.iter().find(|n| n.hidden.is_some() && n.tag == "a").unwrap();
+        assert_eq!(doc.text_content(link.id), "Wide only");
+
+        // Roles, accessible names, heading level, unnamed report (wide).
+        let facts = |tag: &str| {
+            let n = by_tag(&wide, tag);
+            (n.role.unwrap_or_default(), n.name.unwrap_or_default(), n.heading_level)
+        };
+        assert_eq!(facts("header"), ("banner".into(), String::new(), None));
+        assert_eq!(facts("nav"), ("navigation".into(), "Main".into(), None));
+        assert_eq!(facts("main").0, "main");
+        assert_eq!(facts("footer").0, "contentinfo");
+        assert_eq!(facts("h1"), ("heading".into(), "Title x".into(), Some(1)));
+        assert_eq!(facts("input"), ("textbox".into(), "Search".into(), None));
+        let imgs: Vec<_> = wide.nodes.iter().filter(|n| n.tag == "img").map(|n| (n.role.clone().unwrap(), n.name.clone())).collect();
+        assert_eq!(
+            imgs,
+            [("img".to_owned(), Some("Logo".to_owned())), ("img".to_owned(), None), ("presentation".to_owned(), None)]
+        );
+        assert_eq!(wide.unnamed.len(), 1);
+        assert_eq!(doc.attribute(wide.unnamed[0], "src").and_then(|a| doc.attr_value(a)).as_deref(), Some("b.png"));
+        let hidden_btn = wide.nodes.iter().find(|n| n.a11y_hidden && n.tag == "button").unwrap();
+        assert!(hidden_btn.focusable && hidden_btn.name.as_deref() == Some("Hidden btn"));
+        let disabled = wide.nodes.iter().find(|n| doc.text_content(n.id) == "Off").unwrap();
+        assert!(!disabled.focusable);
+
+        // Everything outside the subset is reported, in both widths, never guessed.
+        let reasons: Vec<String> = wide
+            .unsupported
+            .iter()
+            .map(|u| match &u.reason {
+                UnsupportedRuleReason::Rule(r) => r.code().to_owned(),
+                UnsupportedRuleReason::MediaQuery(WebError::Unsupported { kind, .. }) => format!("media:{}", kind.code()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(reasons, ["at_rule", "selector", "selector", "media:media_type"]);
+        assert_eq!(preview_tree(&doc, 500.0, &cancel).unwrap().unsupported, narrow.unsupported);
+
+        // Inline style wins over a non-important rule; `hidden` hides unless a rule sets a display.
+        let page = load("<style>.k{display:block}.i{display:none !important}</style><p class=k style=\"display:none\">a</p><p hidden>b</p><p hidden class=k>c</p><p class=i style=\"display:block\">d</p><input type=hidden><p>e</p>");
+        let tree = preview_tree(&page, 100.0, &cancel).unwrap();
+        let seen: Vec<_> = tree.nodes.iter().map(|n| (page.text_content(n.id), n.hidden)).collect();
+        assert_eq!(
+            seen,
+            [
+                ("a".into(), Some(HiddenReason::InlineStyle)),
+                ("b".into(), Some(HiddenReason::HiddenAttribute)),
+                ("c".into(), None),
+                ("d".into(), Some(HiddenReason::StyleRule)),
+                (String::new(), Some(HiddenReason::InputHidden)),
+                ("e".into(), None),
+            ]
+        );
+    });
+}
+
+struct Frames(Vec<Vec<u8>>);
+impl SinkPort for Frames {
+    fn try_send(&mut self, _class: DeliveryClass, bytes: &[u8]) -> Result<(), DeliveryError> {
+        self.0.push(bytes.to_vec());
+        Ok(())
+    }
+}
+
+fn observer(revision: u64) -> Observe {
+    let actor = ActorContext::new("account", "principal", "owner", "owner-principal", "space", "session").unwrap();
+    let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+    Observe::new(5, revision, resource, actor, Budget::new(1, 4096).unwrap())
+}
+
+#[test]
+fn observe_report_maps_outcomes() {
+    bounded_case("observe_report_maps_outcomes", || {
+        let fresh = CancellationToken::default();
+        let delivered = |result: Result<(), WebError>, token: &CancellationToken| {
+            let mut sink = Frames(Vec::new());
+            let receipt = report(&mut observer(3), 5, 3, &result, token, &mut sink).unwrap();
+            assert_eq!(sink.0.len(), 1, "exactly one terminal frame");
+            assert_eq!((receipt.correlation_id, receipt.revision), (5, 3));
+            receipt.outcome
+        };
+        assert_eq!(delivered(Ok(()), &fresh), Outcome::Success);
+        let unsupported = WebError::Unsupported { kind: UnsupportedKind::ImpliedEndTag, span: 0..1 };
+        assert_eq!(delivered(Err(unsupported.clone()), &fresh), Outcome::Failure(FailureCode::Unsupported));
+        assert_eq!(delivered(Err(WebError::StaleRevision { expected: 2, found: 1 }), &fresh), Outcome::Failure(FailureCode::Validation));
+        assert_eq!(delivered(Err(WebError::Conflict { span: 0..0 }), &fresh), Outcome::Failure(FailureCode::Validation));
+        assert_eq!(delivered(Err(WebError::Canceled), &fresh), Outcome::Canceled);
+        // A cancelled token always reports Canceled, even for a result that finished.
+        let stop = CancellationToken::default();
+        stop.cancel();
+        assert_eq!(delivered(Ok(()), &stop), Outcome::Canceled);
+        // Denied assets inside an Ok result are still a Success; the list stays with the caller.
+        assert_eq!(outcome_of(&Ok::<_, WebError>(vec![AssetOutcome::Denied(DenyReason::ExternalScheme)])), Outcome::Success);
+        // The wrong revision is refused by observe itself, not silently re-labelled.
+        let mut sink = Frames(Vec::new());
+        assert!(report(&mut observer(3), 5, 4, &Ok::<(), WebError>(()), &fresh, &mut sink).is_err());
+        assert!(sink.0.is_empty());
     });
 }
