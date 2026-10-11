@@ -45,10 +45,10 @@ use hsk_studio_pigment::effect_math::EffectKind;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BackendIdentity, ClipRole, ColourTag, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Group, Knockout, MASK_DENSITY_OPERATOR,
-    MaskFormat, NoVector, Operator, PASS_THROUGH_FILL_OPERATOR, PlanError, PlanExtensions,
-    PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
-    SAMPLE_RANGE_OPERATOR, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
-    TileSink, admit, admit_extended,
+    MaskFormat, NoVector, Operator, PASS_THROUGH_FILL_OPERATOR, PASS_THROUGH_MASK_OPERATOR,
+    PlanError, PlanExtensions, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
+    RenderReceipt, SAMPLE_RANGE_OPERATOR, SampleFormat, SourceKey, StudioBlendMode, TileInput,
+    TilePlanes, TileSink, admit, admit_extended,
 };
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -312,8 +312,10 @@ fn verify_tile(
     plan_space: ColourTag,
 ) -> Result<(), GpuError> {
     let key = input.key;
+    // Defence in depth: shared admission refuses a premultiplied convention first, because this
+    // backend declares `ExtOperator::AlphaPremultiplied` Unsupported (key is pigment's).
     if input.alpha != AlphaConvention::Straight {
-        return Err(unsupported("alpha_premultiplied"));
+        return Err(unsupported(ExtOperator::AlphaPremultiplied.key()));
     }
     if !planes.matches(input, plan_space)
         || !plane_ok(
@@ -379,7 +381,7 @@ fn prepare<'a>(
 ) -> Result<Prepared<'a>, GpuError> {
     let target = plan.target;
     if target.alpha != AlphaConvention::Straight {
-        return Err(unsupported("alpha_premultiplied"));
+        return Err(unsupported(ExtOperator::AlphaPremultiplied.key()));
     }
     if target.format != SampleFormat::RgbF32Le {
         return Err(unsupported("sample_format"));
@@ -523,8 +525,10 @@ fn prepare<'a>(
                             if m.density != 1.0 && extensions.is_none() {
                                 return Err(unsupported(MASK_DENSITY_OPERATOR));
                             }
+                            // Defence in depth: pigment defines no mask on a pass-through
+                            // layer and shared admission refuses it first (its constant).
                             if pass_through {
-                                return Err(unsupported("mask_on_pass_through"));
+                                return Err(unsupported(PASS_THROUGH_MASK_OPERATOR));
                             }
                             let wide = match m.format {
                                 MaskFormat::CoverageU8 => false,
@@ -600,10 +604,11 @@ fn prepare<'a>(
                         None => None,
                     };
                     // Blend-If with effects: the weight depends on the backdrop of the content
-                    // composite and pigment does not define the combination (render-cpu refuses
-                    // it too, under the same key).
+                    // composite and pigment does not define the combination, so shared admission
+                    // refuses it for every backend (`ExtOperator::EffectsWithBlendIf`, intrinsically
+                    // Unsupported) before this point. Kept as defence in depth under pigment's key.
                     if blend_if.is_some() && fx.is_some() {
-                        return Err(unsupported("effects_with_blend_if"));
+                        return Err(unsupported(ExtOperator::EffectsWithBlendIf.key()));
                     }
                     // Blend-If on the base of a clipping run or on a clipped layer: no public source
                     // defines it, so pigment refuses it for every backend in `admit_extended`
@@ -959,7 +964,7 @@ impl GpuBackend {
             None => admit::<NoVector>(plan, self, request, cancel)?,
             Some(e) => admit_extended(plan, e, self, request, cancel)?,
         };
-        leaf_root_class(plan, self, request, &mut ledger)?;
+        leaf_root_class(plan, self, &mut ledger);
         let prepared = prepare(plan, sources, extensions, request.max_working_bytes)?;
         let digest = match extensions {
             None => plan.digest(),
@@ -1027,30 +1032,20 @@ impl GpuBackend {
 
 /// A leaf root (`Solid`/`Tile`) has no layer, so the plan lists no blend operator, but `run`
 /// composites it through the blend kernel (Normal, opacity 1, over transparent). That arithmetic
-/// carries the GPU blend class (`Fitted`), so admission checks it against the floor and the receipt
-/// records it; `Exact` is not claimed for a kernel pass (test leaf_root_reports_the_blend_kernel_class).
+/// carries the GPU blend class (`Fitted`). Shared admission already checks that class against the
+/// request floor (`RenderPlan::has_leaf_root`, pigment `admit_plan_rules`), so this only RECORDS it
+/// in the receipt ledger; `Exact` is not claimed for a kernel pass (test
+/// leaf_root_reports_the_blend_kernel_class).
 fn leaf_root_class(
     plan: &RenderPlan<NoVector>,
     backend: &GpuBackend,
-    request: &ExecuteRequest,
     ledger: &mut ExactnessLedger,
-) -> Result<(), GpuError> {
-    if matches!(
-        plan.nodes.get(plan.root.0 as usize),
-        Some(PlanNode::Group(_))
-    ) {
-        return Ok(());
+) {
+    if !plan.has_leaf_root() {
+        return;
     }
     let op = Operator::Blend(StudioBlendMode::Normal);
-    let class = op.intrinsic().lowest_of(backend.exactness(op));
-    if class == Exactness::Unsupported || class.rank() > request.min_exactness.rank() {
-        return Err(GpuError::Backend(BackendError::Unsupported {
-            operator: op.key(),
-            exactness: class,
-        }));
-    }
-    ledger.record(op.key(), class);
-    Ok(())
+    ledger.record(op.key(), op.intrinsic().lowest_of(backend.exactness(op)));
 }
 
 fn identity_of(state: &State) -> BackendIdentity {
@@ -1110,12 +1105,21 @@ impl RenderBackend<NoVector> for GpuBackend {
     /// 2; knockout is not implemented, and Blend-If on a clip base or a clipped layer
     /// (`BlendIfClipBase`, `BlendIfClippedLayer`) is Unsupported because no definition exists (test
     /// ext_refusals_and_capabilities_run_without_adapter).
+    ///
+    /// Declared by lane SMB-FX-OPS-ADOPT: `EffectsNested` is supported (a layer with effects whose
+    /// content holds a layer with effects is evaluated as a composition of per-layer effect stacks,
+    /// test fx_stack_mask_group_and_nesting_parity; class Approximate like the effects);
+    /// `AlphaPremultiplied` is Unsupported (this backend works on straight alpha and does not convert
+    /// at the boundary); `EffectsWithBlendIf` is intrinsically Unsupported in pigment, so shared
+    /// admission refuses it whatever is declared here.
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
         let supported = match operator {
             ExtOperator::AdjustmentLayer
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
-            | ExtOperator::MaskFeather => true,
+            | ExtOperator::MaskFeather
+            | ExtOperator::EffectsNested => true,
+            ExtOperator::AlphaPremultiplied => false,
             ExtOperator::Adjustment(kind) => gpu_adjust_supported(kind),
             ExtOperator::Effect(kind) => matches!(
                 kind,
