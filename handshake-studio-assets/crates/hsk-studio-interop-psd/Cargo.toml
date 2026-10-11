@@ -9,3 +9,11 @@ default = []
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
+
+[[example]]
+name = "interop-psd-consumer"
+path = "examples/interop-psd-consumer.rs"
