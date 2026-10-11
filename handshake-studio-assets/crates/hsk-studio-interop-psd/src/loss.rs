@@ -1,6 +1,7 @@
 //! Typed loss report: what the importer holds byte-exact but does not semantically import.
-//! Codes are fixed strings; paths contain indices and sanitized four-character keys only,
-//! never layer names or other source text.
+//! Codes are fixed strings; paths contain indices and sanitized four-character keys
+//! ([`key_text`]) and no layer names or other source text.
+#![deny(clippy::arithmetic_side_effects)]
 
 use crate::blend::{StudioBlendMode, studio_blend_for_key};
 use crate::document::{MergedStatus, PsdDocument};

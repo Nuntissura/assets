@@ -12,12 +12,19 @@
 //! CMYK (8/16-bit) with an embedded ICC profile (res 1039), Lab (8/16-bit, PCS-native, no profile)
 //! and gray (8/16-bit) with a `kTRC` profile are display-converted through the converter's wide
 //! path into the same linear working RGB tiles. This is a PROJECTION: the layer channels in the
-//! [`PsdDocument`] are never rewritten, an unedited export is byte-identical, and tile edits on a
-//! projected layer are a typed loss at export. The converter output is unclamped; every clamp to
-//! `0..=1` is counted (`Provenance::display`) and reported as a loss entry. CMYK without a usable
-//! profile stays an unmapped raster layer with a typed reason (no default CMYK profile is
-//! invented). Opacity, fill opacity, blend mode, clipping, group isolation and the mask reference
-//! are written to the Folio layer.
+//! [`PsdDocument`] are not rewritten, an unedited export is byte-identical, and tile edits on a
+//! projected layer are a typed loss at export (tests
+//! `cmyk_display_conversion_is_a_clamped_projection_and_keeps_the_original_channels`,
+//! `gray_ktrc_profile_converts_and_other_gray_cases_stay_typed`). The converter output is
+//! unclamped; every clamp to `0..=1` is counted (`Provenance::display`) and reported as a loss
+//! entry. CMYK without a usable profile stays an unmapped raster layer with a typed reason, and
+//! no default CMYK profile is invented (test
+//! `cmyk_without_a_usable_profile_is_a_typed_unmapped_layer_never_defaulted`). RGB and gray with an
+//! embedded profile take the same wide path, so the intent and black point compensation reach the
+//! converter (tests `gray_black_point_compensation_is_applied_when_the_profile_black_is_not_zero`,
+//! `rgb_intent_and_black_point_compensation_reach_prism_or_are_recorded`). Opacity, fill opacity,
+//! blend mode, clipping, group isolation and the mask reference are written to the Folio layer.
+#![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, Inspection, Resolver, Snapshot, inspect_bytes};
@@ -38,10 +45,18 @@ use crate::limits::Limits;
 use crate::loss::{LossKind, LossReport, key_text};
 use crate::pixels::Plane;
 use crate::resources::{RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED};
-use crate::samples::{SixteenBitScale, srgb_to_linear};
+use crate::samples::{SixteenBitScale, row_major, sample_range, size_add, size_mul, srgb_to_linear, write_f32_le};
 
 /// Pigment tile edge in pixels (columns and rows are cells of a canvas-origin grid).
 pub const TILE_EDGE: u32 = 256;
+/// Pixels in one grid cell.
+pub(crate) const CELL_PIXELS: usize = (TILE_EDGE as usize) * (TILE_EDGE as usize);
+/// Bytes of the colour plane of one tile (`rgb_f32le`, 12 bytes per pixel).
+pub(crate) const COLOUR_BYTES: usize = CELL_PIXELS * 12;
+/// Bytes of the straight `f32le` alpha plane of one tile.
+pub(crate) const ALPHA_BYTES: usize = CELL_PIXELS * 4;
+/// Bytes of one whole tile (colour plane plus alpha plane).
+const TILE_BYTES: usize = COLOUR_BYTES + ALPHA_BYTES;
 const TILE_FORMAT: &str = "rgb_f32le";
 pub(crate) const MASK_FORMAT_U8: &str = "coverage_u8";
 pub(crate) const MASK_FORMAT_U16: &str = "coverage_u16le";
@@ -54,7 +69,7 @@ const ADJUSTMENT_KEYS: [&[u8; 4]; 17] = [
 const FILL_KEYS: [&[u8; 4]; 3] = [b"SoCo", b"GdFl", b"PtFl"];
 const CACHED_PIXEL_KEYS: [&[u8; 4]; 8] = [b"TySh", b"tySh", b"SoLd", b"SoLE", b"PlLd", b"plLd", b"lfx2", b"lrFX"];
 
-/// Host-owned identity and handle minting. The importer never invents identities.
+/// Host-owned identity and handle minting. Every identity in a proposal comes from this trait.
 pub trait IdMint {
     /// `SDOC-...`
     fn document_id(&mut self) -> String;
@@ -247,7 +262,7 @@ impl ImportProposal {
             if layer.name != source.name || layer.hidden() != hidden {
                 layer.name.clone_from(&source.name);
                 layer.flags = if hidden { layer.flags | 0x02 } else { layer.flags & !0x02 };
-                changed += 1;
+                changed = usize::saturating_add(changed, 1);
             }
         }
         changed
@@ -290,7 +305,8 @@ pub(crate) fn percent_of_byte(byte: u8) -> f64 {
 }
 
 /// The appearance values the importer derives from a PSD layer record (also what the exporter
-/// compares edits against, so unchanged values are never rewritten).
+/// compares edits against, so unchanged values are not rewritten; test
+/// `export_of_an_edited_folio_document_round_trips_supported_fields_and_preserves_the_rest`).
 pub(crate) struct ImportedLook {
     pub opacity: f64,
     pub fill_opacity: f64,
@@ -408,8 +424,9 @@ impl Builder<'_, '_, '_> {
         self.map.push(LayerMapEntry { layer_id: layer_id.to_owned(), psd_index: index });
     }
 
-    /// The Folio `appearance` object. A leaf never reaches here with an unknown or `pass` key
-    /// (those layers are unsupported payloads); an unknown key on a group record keeps the
+    /// The Folio `appearance` object. A leaf with an unknown or `pass` key does not reach here
+    /// (those layers are unsupported payloads; test `unknown_blend_and_unmapped_fields_are_typed_losses`);
+    /// an unknown key on a group record keeps the
     /// structural placeholder `isolated`/normal, with the typed loss entry and the raw key in the
     /// extras.
     fn appearance_json(layer: &PsdLayer, is_group: bool, mask: Option<Value>) -> Value {
@@ -597,37 +614,44 @@ impl Builder<'_, '_, '_> {
             let (mleft, mtop) = (i64::from(rect.left), i64::from(rect.top));
             let (mright, mbottom) = (i64::from(rect.right), i64::from(rect.bottom));
             let mwidth = rect.width() as usize;
-            let cell = (TILE_EDGE as usize) * (TILE_EDGE as usize);
-            let default16 = u16::from(default) * 257;
-            for row in floor_div(top, edge)..=floor_div(bottom - 1, edge) {
-                for column in floor_div(left, edge)..=floor_div(right - 1, edge) {
+            let default16 = u16::from(default).saturating_mul(257);
+            for row in floor_div(top, edge)..=floor_div(bottom.saturating_sub(1), edge) {
+                for column in floor_div(left, edge)..=floor_div(right.saturating_sub(1), edge) {
                     self.cancel.check()?;
                     let bounds = grid.bounds(column, row).map_err(|_| PsdError::Overflow)?;
                     let x0 = bounds.x.max(left);
-                    let x1 = (bounds.x + i64::from(bounds.width)).min(right);
+                    let x1 = bounds.x.saturating_add(i64::from(bounds.width)).min(right);
                     let y0 = bounds.y.max(top);
-                    let y1 = (bounds.y + i64::from(bounds.height)).min(bottom);
-                    let mut coverage = vec![0u8; if wide { cell * 2 } else { cell }];
+                    let y1 = bounds.y.saturating_add(i64::from(bounds.height)).min(bottom);
+                    let mut coverage = vec![0u8; if wide { size_mul(CELL_PIXELS, 2)? } else { CELL_PIXELS }];
                     for y in y0..y1 {
                         for x in x0..x1 {
                             let inside = x >= mleft && x < mright && y >= mtop && y < mbottom;
-                            let dst = (y - bounds.y) as usize * TILE_EDGE as usize + (x - bounds.x) as usize;
-                            if wide {
-                                let value = if inside {
-                                    let unit = plane
-                                        .unit_at((y - mtop) as usize * mwidth + (x - mleft) as usize, scale)
-                                        .unwrap_or(0.0);
-                                    (f64::from(unit).clamp(0.0, 1.0) * 65535.0).round() as u16
-                                } else {
-                                    default16
-                                };
-                                coverage[dst * 2..dst * 2 + 2].copy_from_slice(&value.to_le_bytes());
+                            let dst = row_major(y.saturating_sub(bounds.y), x.saturating_sub(bounds.x), TILE_EDGE as usize)?;
+                            // The mask sample of this pixel, when it lies inside the mask rectangle.
+                            let source = if inside {
+                                Some(row_major(y.saturating_sub(mtop), x.saturating_sub(mleft), mwidth)?)
                             } else {
-                                coverage[dst] = if inside {
-                                    plane.bytes[(y - mtop) as usize * mwidth + (x - mleft) as usize]
-                                } else {
-                                    default
+                                None
+                            };
+                            if wide {
+                                let value = match source {
+                                    Some(at) => {
+                                        let unit = plane.unit_at(at, scale).unwrap_or(0.0);
+                                        (f64::from(unit).clamp(0.0, 1.0) * 65535.0).round() as u16
+                                    }
+                                    None => default16,
                                 };
+                                coverage
+                                    .get_mut(sample_range(dst, 2)?)
+                                    .ok_or(PsdError::Overflow)?
+                                    .copy_from_slice(&value.to_le_bytes());
+                            } else {
+                                let value = match source {
+                                    Some(at) => *plane.bytes.get(at).ok_or(PsdError::ChannelSize)?,
+                                    None => default,
+                                };
+                                *coverage.get_mut(dst).ok_or(PsdError::Overflow)? = value;
                             }
                         }
                     }
@@ -661,7 +685,7 @@ impl Builder<'_, '_, '_> {
     }
 
     /// Display-converts one batch of document samples (`raw`: unit samples in channel order) to
-    /// linear working RGB. The input mapping is explicit and recorded, never implied:
+    /// linear working RGB. The input mapping is explicit and recorded as loss entries:
     /// CMYK ink = `1 - stored` (PSD stores CMYK inverted, 255 = no ink; UNVERIFIED against a
     /// Photoshop fixture), Lab `L = unit * 100`, `a`/`b = unit * 255 - 128` (8-bit ICC legacy
     /// encoding; 16-bit keeps the same mapping per scale, `* 256` for the 32768 scale so the
@@ -680,7 +704,7 @@ impl Builder<'_, '_, '_> {
             }
         };
         let ab_scale = if header.depth == 16 && self.cfg.scale == SixteenBitScale::Photoshop32768 { 256.0 } else { 255.0 };
-        let mut input: Vec<f32> = Vec::with_capacity(raw.len() * route.kind.channels());
+        let mut input: Vec<f32> = Vec::with_capacity(size_mul(raw.len(), route.kind.channels())?);
         for p in raw {
             match route.kind {
                 WideKind::Cmyk => {
@@ -720,7 +744,7 @@ impl Builder<'_, '_, '_> {
         }
         let stats = &mut self.stats;
         stats.clip.absorb(&converted.clip, stats.calls == 0);
-        stats.calls += 1;
+        stats.calls = stats.calls.saturating_add(1);
         let mut out = converted.pixels;
         for (px, &alpha) in out.iter_mut().zip(alphas) {
             let visible = alpha > 0.0;
@@ -741,14 +765,15 @@ impl Builder<'_, '_, '_> {
                 if visible {
                     hit = true;
                     worst = worst.max(over);
-                    stats.channels_clamped[k] += 1;
+                    stats.channels_clamped[k] = stats.channels_clamped[k].saturating_add(1);
                 }
             }
             if visible {
-                stats.pixels_converted += 1;
+                stats.pixels_converted = stats.pixels_converted.saturating_add(1);
                 if hit {
-                    stats.pixels_clamped += 1;
-                    stats.pixels_out_of_gamut += u64::from(worst > GAMUT_CLAMP_TOLERANCE);
+                    stats.pixels_clamped = stats.pixels_clamped.saturating_add(1);
+                    stats.pixels_out_of_gamut =
+                        stats.pixels_out_of_gamut.saturating_add(u64::from(worst > GAMUT_CLAMP_TOLERANCE));
                     stats.max_overshoot = stats.max_overshoot.max(f64::from(worst));
                 }
             }
@@ -787,28 +812,27 @@ impl Builder<'_, '_, '_> {
         let edge = i64::from(TILE_EDGE);
         let (left, top) = (i64::from(rect.left), i64::from(rect.top));
         let (right, bottom) = (i64::from(rect.right), i64::from(rect.bottom));
-        let cell = (TILE_EDGE as usize) * (TILE_EDGE as usize);
         let mut refs = Vec::new();
-        for row in floor_div(top, edge)..=floor_div(bottom - 1, edge) {
-            for column in floor_div(left, edge)..=floor_div(right - 1, edge) {
+        for row in floor_div(top, edge)..=floor_div(bottom.saturating_sub(1), edge) {
+            for column in floor_div(left, edge)..=floor_div(right.saturating_sub(1), edge) {
                 self.cancel.check()?;
                 let bounds = grid.bounds(column, row).map_err(|_| PsdError::Overflow)?;
                 let x0 = bounds.x.max(left);
-                let x1 = (bounds.x + i64::from(bounds.width)).min(right);
+                let x1 = bounds.x.saturating_add(i64::from(bounds.width)).min(right);
                 let y0 = bounds.y.max(top);
-                let y1 = (bounds.y + i64::from(bounds.height)).min(bottom);
+                let y1 = bounds.y.saturating_add(i64::from(bounds.height)).min(bottom);
                 let mut raw: Vec<[f32; 4]> = Vec::new();
                 let mut alphas: Vec<f32> = Vec::new();
                 let mut destinations: Vec<usize> = Vec::new();
                 for y in y0..y1 {
                     for x in x0..x1 {
-                        let src = (y - top) as usize * width + (x - left) as usize;
+                        let src = row_major(y.saturating_sub(top), x.saturating_sub(left), width)?;
                         let channel = |p: &Plane| p.unit_at(src, scale).ok_or(PsdError::ChannelSize);
                         let mut samples = [0.0f32; 4];
                         for (slot, plane) in samples.iter_mut().zip(&planes) {
                             let v = channel(plane)?;
-                            // Only 32-bit float samples can be NaN or infinite; a non-finite value
-                            // never enters a tile (it would poison every blend downstream).
+                            // Only 32-bit float samples can be NaN or infinite; a non-finite value is
+                            // replaced before the tile (it would poison every blend downstream).
                             *slot = if v.is_finite() {
                                 v
                             } else {
@@ -832,7 +856,11 @@ impl Builder<'_, '_, '_> {
                             self.alpha_clamped = true;
                         }
                         alphas.push(a.clamp(0.0, 1.0));
-                        destinations.push((y - bounds.y) as usize * TILE_EDGE as usize + (x - bounds.x) as usize);
+                        destinations.push(row_major(
+                            y.saturating_sub(bounds.y),
+                            x.saturating_sub(bounds.x),
+                            TILE_EDGE as usize,
+                        )?);
                     }
                 }
                 if !alphas.iter().any(|&a| a > 0.0) {
@@ -870,15 +898,16 @@ impl Builder<'_, '_, '_> {
                         encoded.into_iter().map(|p| p.map(srgb_to_linear)).collect()
                     }
                 };
-                let mut colour = vec![0u8; cell * 12];
-                let mut alpha_plane = vec![0u8; cell * 4];
+                let mut colour = vec![0u8; COLOUR_BYTES];
+                let mut alpha_plane = vec![0u8; ALPHA_BYTES];
                 for ((dst, px), a) in destinations.iter().zip(&linear).zip(&alphas) {
+                    let base = size_mul(*dst, 3)?;
                     for (k, v) in px.iter().enumerate() {
-                        colour[dst * 12 + k * 4..dst * 12 + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                        write_f32_le(&mut colour, size_add(base, k)?, *v)?;
                     }
-                    alpha_plane[dst * 4..dst * 4 + 4].copy_from_slice(&a.to_le_bytes());
+                    write_f32_le(&mut alpha_plane, *dst, *a)?;
                 }
-                self.tile_bytes = self.tile_bytes.saturating_add(colour.len() + alpha_plane.len());
+                self.tile_bytes = self.tile_bytes.saturating_add(TILE_BYTES);
                 if self.tile_bytes > self.cfg.limits.max_decoded_bytes {
                     return Err(PsdError::PixelLimit);
                 }
@@ -981,7 +1010,7 @@ fn route(
     };
     // The black point compensation flag goes to Prism unchanged for every source kind, gray
     // included. A gray profile's black is NOT zero by definition (a `kTRC` table or parametric
-    // curve can have TRC(0) > 0), so the flag is never dropped on that premise; Prism measures the
+    // curve can have TRC(0) > 0), so the flag is not dropped on that premise; Prism measures the
     // source black from the profile itself (ISO 18619) and is the identity when it is zero.
     let wide_route = |kind: WideKind| Some(WideRoute { kind, intent, bpc });
     let mut wide_attempted = false;

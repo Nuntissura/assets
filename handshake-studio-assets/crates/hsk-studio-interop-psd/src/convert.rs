@@ -15,6 +15,7 @@
 //!
 //! Wide output is the converter's working RGB (linear light) and is UNCLAMPED: out-of-gamut values
 //! lie below 0 or above 1. Clamping is the caller's job and is recorded (see `proposal`).
+#![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::SinkPort;
@@ -64,7 +65,8 @@ pub struct ProfileFacts {
     pub device: ProfileDevice,
     /// Whether the device-to-PCS direction can serve each intent, indexed by the
     /// [`RenderingIntent`] discriminant (absolute colorimetric also needs the media white). A
-    /// missing table is never substituted by another intent.
+    /// missing table is not substituted by another intent (test
+    /// `cmyk_without_a_usable_profile_is_a_typed_unmapped_layer_never_defaulted`).
     pub intents: [bool; 4],
 }
 
@@ -235,7 +237,7 @@ pub struct PrismConverter<'a> {
     destination_sha256: [u8; 32],
     /// Created on first wide use; plans (LUT bakes) are cached inside it per profile pair.
     wide: Option<WideEngine>,
-    /// Device space per inspected wide profile hash, so a conversion never re-parses a profile
+    /// Device space per inspected wide profile hash, so a conversion does not re-parse a profile
     /// just to learn its channel count.
     devices: Vec<([u8; 32], ProfileFacts)>,
 }
@@ -363,9 +365,9 @@ impl IccConverter for PrismConverter<'_> {
             WideConvertSource::Profile(icc) => Some(profile_hash(icc)),
             WideConvertSource::Lab => None,
         };
-        let mut out = Vec::with_capacity(request.pixels.len() / channels);
+        let mut out = Vec::with_capacity(request.pixels.len().checked_div(channels).unwrap_or(0));
         let mut clip = ClipSummary::default();
-        for (n, chunk) in request.pixels.chunks(MAX_WIDE_PIXELS * channels).enumerate() {
+        for (n, chunk) in request.pixels.chunks(MAX_WIDE_PIXELS.saturating_mul(channels)).enumerate() {
             let source = match (request.source, source_sha256) {
                 (WideConvertSource::Profile(icc), Some(hash)) => WideSource::Profile(ProfileInput {
                     profile_id: &route.source_profile_id,
@@ -413,7 +415,8 @@ impl IccConverter for PrismConverter<'_> {
     }
 }
 
-/// Closed set of loss codes for a refusal, so reports never carry converter text.
+/// Closed set of loss codes for a refusal: the result is a `&'static str`, so a report carries a
+/// fixed code and no converter text.
 pub fn refusal_code(refusal: IccRefusal) -> &'static str {
     match refusal.0 {
         "profile_limit" => "icc_refused_profile_limit",

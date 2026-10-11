@@ -10,9 +10,17 @@
 //! that PSD cannot take (blend members without a PSD key, added or removed layers or masks, mask
 //! pixel edits, pixels after an ICC or CMYK/Lab display conversion) are reported as typed losses
 //! and left out; display-converted tiles are a projection, so the original channel bytes of CMYK,
-//! Lab and gray-profile layers always survive export unchanged. Any applied edit other than a name
+//! Lab and gray-profile layers survive export unchanged (tests
+//! `cmyk_display_conversion_is_a_clamped_projection_and_keeps_the_original_channels`,
+//! `sixteen_bit_cmyk_and_lab_use_the_scale_and_the_pcs_native_path`,
+//! `gray_ktrc_profile_converts_and_other_gray_cases_stay_typed`). Any applied edit other than a name
 //! makes the stored merged composite stale: `hasRealMergedData` is cleared and `merged_composite_stale`
-//! is reported (no renderer here to regenerate it). Malformed tile blobs are a typed error.
+//! is reported (no renderer here to regenerate it; test
+//! `edits_that_change_the_picture_mark_the_stored_composite_stale_and_name_edits_do_not`). Malformed
+//! tile blobs and non-finite tile values are typed errors (tests
+//! `export_with_malformed_tile_blobs_is_a_typed_error_never_a_panic`,
+//! `apply_edits_is_all_or_nothing_and_export_keeps_untiled_cells`).
+#![deny(clippy::arithmetic_side_effects)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,9 +35,11 @@ use crate::layers::{KEY_SECTION_DIVIDER, KEY_SECTION_DIVIDER_NESTED, PsdChannel,
 use crate::limits::Limits;
 use crate::loss::{LossEntry, LossKind, LossReport};
 use crate::pixels::Plane;
-use crate::proposal::{ImportProposal, TILE_EDGE, TileBlob, floor_div, imported_look};
+use crate::proposal::{ALPHA_BYTES, COLOUR_BYTES, ImportProposal, TILE_EDGE, TileBlob, floor_div, imported_look};
 use crate::resources::{ImageResources, RESOURCE_VERSION_INFO};
-use crate::samples::{SixteenBitScale, linear_to_srgb, unit_to_sample};
+use crate::samples::{
+    SixteenBitScale, linear_to_srgb, read_f32_le, row_major, sample_range, size_add, size_mul, unit_to_sample,
+};
 use crate::writer::write_psd;
 
 pub struct ExportOptions<'a> {
@@ -91,7 +101,7 @@ fn mask_digests(snapshot: &Snapshot, layer_id: &str) -> Vec<String> {
 /// matches the layers. This crate has no renderer to regenerate it, so resource 1057
 /// `hasRealMergedData` is cleared (readers then refuse it as an oracle) and the staleness is a typed
 /// loss. The composite bytes themselves stay as read. Name-only edits do not change the picture and
-/// never call this.
+/// do not call this (test `edits_that_change_the_picture_mark_the_stored_composite_stale_and_name_edits_do_not`).
 fn mark_merged_stale(resources: &mut ImageResources, report: &mut ExportReport) {
     // Resource 1057 data: u32 version, then the u8 `hasRealMergedData`.
     if let Some(block) = resources.blocks.iter_mut().find(|b| b.id == RESOURCE_VERSION_INFO)
@@ -270,12 +280,14 @@ pub fn export_psd(
     Ok((write_psd(&working, opts.limits)?, report))
 }
 
-fn put_sample(plane: &mut [u8], index: usize, raw: u32, depth: u16) {
+fn put_sample(plane: &mut [u8], index: usize, raw: u32, depth: u16) -> Result<()> {
+    let dst = plane.get_mut(sample_range(index, usize::from(depth / 8))?).ok_or(PsdError::Overflow)?;
     match depth {
-        8 => plane[index] = raw as u8,
-        16 => plane[index * 2..index * 2 + 2].copy_from_slice(&(raw as u16).to_be_bytes()),
-        _ => plane[index * 4..index * 4 + 4].copy_from_slice(&raw.to_be_bytes()),
+        8 => dst.copy_from_slice(&[raw as u8]),
+        16 => dst.copy_from_slice(&(raw as u16).to_be_bytes()),
+        _ => dst.copy_from_slice(&raw.to_be_bytes()),
     }
+    Ok(())
 }
 
 /// What [`encode_layer_pixels`] needs besides the layer and the edited tiles.
@@ -288,10 +300,12 @@ struct PixelExport<'a> {
     limits: &'a Limits,
 }
 
-fn copy_sample(dst: &mut [u8], src: Option<&Plane>, index: usize, per: usize) {
-    if let Some(from) = src.and_then(|p| p.bytes.get(index * per..index * per + per)) {
-        dst[index * per..index * per + per].copy_from_slice(from);
+fn copy_sample(dst: &mut [u8], src: Option<&Plane>, index: usize, per: usize) -> Result<()> {
+    let range = sample_range(index, per)?;
+    if let Some(from) = src.and_then(|p| p.bytes.get(range.clone())) {
+        dst.get_mut(range).ok_or(PsdError::Overflow)?.copy_from_slice(from);
     }
+    Ok(())
 }
 
 /// Re-encodes the layer's colour (and alpha) channels from linear-light tiles over the layer
@@ -313,13 +327,13 @@ fn encode_layer_pixels(
     }
     // Tile blobs are caller data (public fields): a blob that is not exactly one cell is a typed
     // error here, never an out-of-bounds index below.
-    let cell = (TILE_EDGE as usize) * (TILE_EDGE as usize);
-    if tiles.iter().any(|t| t.colour.len() != cell * 12 || t.alpha.len() != cell * 4) {
+    if tiles.iter().any(|t| t.colour.len() != COLOUR_BYTES || t.alpha.len() != ALPHA_BYTES) {
         return Err(PsdError::Encode("tile_blob_size"));
     }
     let rect = layer.rect;
     let (width, height) = (rect.width() as usize, rect.height() as usize);
     let per = usize::from(depth / 8);
+    let plane_len = size_mul(size_mul(width, height)?, per)?;
     let colour_ids: &[i16] = if header.color_mode == ColorMode::Rgb { &[0, 1, 2] } else { &[0] };
     let by_cell: BTreeMap<(i64, i64), &TileBlob> = tiles.iter().map(|t| ((t.column, t.row), *t)).collect();
     let edge = i64::from(TILE_EDGE);
@@ -328,8 +342,8 @@ fn encode_layer_pixels(
     if width > 0 && height > 0 {
         let (left, top) = (i64::from(rect.left), i64::from(rect.top));
         let (right, bottom) = (i64::from(rect.right), i64::from(rect.bottom));
-        'scan: for row in floor_div(top, edge)..=floor_div(bottom - 1, edge) {
-            for column in floor_div(left, edge)..=floor_div(right - 1, edge) {
+        'scan: for row in floor_div(top, edge)..=floor_div(bottom.saturating_sub(1), edge) {
+            for column in floor_div(left, edge)..=floor_div(right.saturating_sub(1), edge) {
                 if !by_cell.contains_key(&(column, row)) && !ctx.imported.contains(&(column, row)) {
                     needs_original = true;
                     break 'scan;
@@ -339,7 +353,7 @@ fn encode_layer_pixels(
     }
     let originals: Vec<Option<Plane>> = if needs_original {
         let cancel = CancellationToken::default();
-        let mut planes = Vec::with_capacity(colour_ids.len() + 1);
+        let mut planes = Vec::with_capacity(size_add(colour_ids.len(), 1)?);
         for &id in colour_ids.iter().chain(&[-1i16]) {
             planes.push(layer.decode_channel(id, header, ctx.limits, &cancel)?);
         }
@@ -347,26 +361,31 @@ fn encode_layer_pixels(
     } else {
         Vec::new()
     };
-    let mut planes = vec![vec![0u8; width * height * per]; colour_ids.len()];
-    let mut alpha_plane = vec![0u8; width * height * per];
+    let mut planes = vec![vec![0u8; plane_len]; colour_ids.len()];
+    let mut alpha_plane = vec![0u8; plane_len];
     let mut translucent = false;
     let mut alpha_clamped = false;
     for y in 0..height {
         for x in 0..width {
-            let (px, py) = (i64::from(rect.left) + x as i64, i64::from(rect.top) + y as i64);
+            let px = i64::from(rect.left).saturating_add(x as i64);
+            let py = i64::from(rect.top).saturating_add(y as i64);
             let key = (floor_div(px, edge), floor_div(py, edge));
-            let index = y * width + x;
+            let index = row_major(y as i64, x as i64, width)?;
             let (rgb, alpha) = match by_cell.get(&key) {
                 Some(tile) => {
-                    let at = ((py - key.1 * edge) * edge + (px - key.0 * edge)) as usize;
-                    let f = |buf: &[u8], i: usize| f32::from_le_bytes([buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3]]);
-                    ([f(&tile.colour, at * 3), f(&tile.colour, at * 3 + 1), f(&tile.colour, at * 3 + 2)], f(&tile.alpha, at))
+                    let at = row_major(py.rem_euclid(edge), px.rem_euclid(edge), TILE_EDGE as usize)?;
+                    let base = size_mul(at, 3)?;
+                    let mut rgb = [0.0f32; 3];
+                    for (k, slot) in rgb.iter_mut().enumerate() {
+                        *slot = read_f32_le(&tile.colour, size_add(base, k)?)?;
+                    }
+                    (rgb, read_f32_le(&tile.alpha, at)?)
                 }
                 None if !ctx.imported.contains(&key) => {
                     for (k, plane) in planes.iter_mut().enumerate() {
-                        copy_sample(plane, originals.get(k).and_then(Option::as_ref), index, per);
+                        copy_sample(plane, originals.get(k).and_then(Option::as_ref), index, per)?;
                     }
-                    copy_sample(&mut alpha_plane, originals.get(colour_ids.len()).and_then(Option::as_ref), index, per);
+                    copy_sample(&mut alpha_plane, originals.get(colour_ids.len()).and_then(Option::as_ref), index, per)?;
                     translucent = true;
                     continue;
                 }
@@ -377,11 +396,11 @@ fn encode_layer_pixels(
             }
             for (k, plane) in planes.iter_mut().enumerate() {
                 let raw = if depth == 32 { rgb[k].to_bits() } else { unit_to_sample(linear_to_srgb(rgb[k]), depth, scale) };
-                put_sample(plane, index, raw, depth);
+                put_sample(plane, index, raw, depth)?;
             }
             translucent |= alpha != 1.0;
             alpha_clamped |= !(0.0..=1.0).contains(&alpha);
-            put_sample(&mut alpha_plane, index, unit_to_sample(alpha.clamp(0.0, 1.0), depth, scale), depth);
+            put_sample(&mut alpha_plane, index, unit_to_sample(alpha.clamp(0.0, 1.0), depth, scale), depth)?;
         }
     }
     if alpha_clamped {

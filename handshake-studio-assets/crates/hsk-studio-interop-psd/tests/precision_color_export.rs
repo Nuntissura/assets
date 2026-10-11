@@ -987,7 +987,33 @@ fn apply_edits_is_all_or_nothing_and_export_keeps_untiled_cells() {
     });
 }
 
-/// R5 carried PLAUSIBLE items on import: a NaN or infinite float sample never enters a tile (zeroed, typed
+/// V4-02 for the importer: a header dimension of `u32::MAX` is a typed refusal before any allocation, and the
+/// running total of tile bytes over `max_decoded_bytes` is a typed refusal (the aggregate, not only each size).
+#[test]
+fn dims_u32_max_and_aggregate_over_budget_are_typed_errors() {
+    bounded_case("dims_u32_max_and_aggregate_over_budget_are_typed_errors", || {
+        let bytes = export_fixture();
+        let cancel = CancellationToken::default();
+        // header: height at 14..18, width at 18..22
+        for at in [14usize, 18] {
+            let mut hostile = bytes.clone();
+            hostile[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+            let err = read_psd(&hostile, &Limits::default(), &cancel).unwrap_err();
+            assert_eq!(err.code(), "psd_bad_dimensions", "header offset {at}");
+        }
+        // aggregate: every size is fine, the tiles together exceed the decoded-bytes budget
+        let doc = read(&bytes);
+        let limits = Limits { max_decoded_bytes: 1024, ..Limits::default() };
+        let cfg = ProposalConfig::new(&limits, budget(), &Open);
+        let err = to_proposal(&doc, &SourceIdentity::of(&bytes), &cfg, &mut Mint(0), None, &cancel).unwrap_err();
+        assert_eq!(err, PsdError::PixelLimit);
+        let default_limits = Limits::default();
+        let roomy = ProposalConfig::new(&default_limits, budget(), &Open);
+        assert!(to_proposal(&doc, &SourceIdentity::of(&bytes), &roomy, &mut Mint(0), None, &cancel).is_ok());
+    });
+}
+
+/// R5 carried PLAUSIBLE items on import: a NaN or infinite float sample does not enter a tile (zeroed, typed
 /// loss), and an alpha outside 0..=1 (float alpha, or 16-bit alpha above 1.0 on the 32768 scale) is clamped
 /// with a typed loss instead of silently.
 #[test]

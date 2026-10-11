@@ -5,6 +5,12 @@
 //! `0..=32768` range. Both interpretations are implemented behind [`SixteenBitScale`]; the default
 //! is the full range. 32-bit samples are IEEE-754 floats taken as stored (assumed linear light,
 //! also UNVERIFIED), and may exceed 1.0.
+//!
+//! The checked index helpers at the end of this file are the only arithmetic the tile and export
+//! code uses on file-derived sizes: every overflow is a typed [`PsdError::Overflow`].
+#![deny(clippy::arithmetic_side_effects)]
+
+use crate::error::{PsdError, Result};
 
 /// Interpretation of 16-bit samples.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,4 +74,41 @@ pub fn linear_to_srgb(y: f32) -> f32 {
     let a = y.abs();
     let x = if a <= 0.003_130_8 { a * 12.92 } else { 1.055 * a.powf(1.0 / 2.4) - 0.055 };
     x.copysign(y) as f32
+}
+
+/// `row * width + column` for non-negative coordinates; a negative coordinate or an overflow is
+/// [`PsdError::Overflow`].
+pub(crate) fn row_major(row: i64, column: i64, width: usize) -> Result<usize> {
+    let row = usize::try_from(row).map_err(|_| PsdError::Overflow)?;
+    let column = usize::try_from(column).map_err(|_| PsdError::Overflow)?;
+    row.checked_mul(width).and_then(|v| v.checked_add(column)).ok_or(PsdError::Overflow)
+}
+
+/// Byte range of sample `index` when each sample takes `bytes_per` bytes.
+pub(crate) fn sample_range(index: usize, bytes_per: usize) -> Result<std::ops::Range<usize>> {
+    let start = index.checked_mul(bytes_per).ok_or(PsdError::Overflow)?;
+    let end = start.checked_add(bytes_per).ok_or(PsdError::Overflow)?;
+    Ok(start..end)
+}
+
+/// Little-endian `f32` number `index` of `buf`.
+pub(crate) fn read_f32_le(buf: &[u8], index: usize) -> Result<f32> {
+    let bytes: [u8; 4] = buf.get(sample_range(index, 4)?).and_then(|b| b.try_into().ok()).ok_or(PsdError::Overflow)?;
+    Ok(f32::from_le_bytes(bytes))
+}
+
+/// Stores `value` as little-endian `f32` number `index` of `buf`.
+pub(crate) fn write_f32_le(buf: &mut [u8], index: usize, value: f32) -> Result<()> {
+    buf.get_mut(sample_range(index, 4)?).ok_or(PsdError::Overflow)?.copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+/// `a * b` as a size (a plane or tile byte count); overflow is [`PsdError::Overflow`].
+pub(crate) fn size_mul(a: usize, b: usize) -> Result<usize> {
+    a.checked_mul(b).ok_or(PsdError::Overflow)
+}
+
+/// `a + b` as a size; overflow is [`PsdError::Overflow`].
+pub(crate) fn size_add(a: usize, b: usize) -> Result<usize> {
+    a.checked_add(b).ok_or(PsdError::Overflow)
 }
