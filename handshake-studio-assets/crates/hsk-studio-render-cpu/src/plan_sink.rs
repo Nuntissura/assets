@@ -44,9 +44,10 @@ use hsk_studio_pigment::effect_math::EffectKind;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, Applicability, BackendError, BackendIdentity, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Layer, MASK_DENSITY_OPERATOR, MaskFormat,
-    MaskInput, Operator, PASS_THROUGH_FILL_OPERATOR, PlanError, PlanExtensions, PlanNode,
-    PlanSources, RenderBackend, RenderPlan, RenderReceipt, SAMPLE_RANGE_OPERATOR, SampleFormat,
-    SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink, admit, admit_extended,
+    MaskInput, Operator, PASS_THROUGH_FILL_OPERATOR, PASS_THROUGH_MASK_OPERATOR, PlanError,
+    PlanExtensions, PlanNode, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
+    SAMPLE_RANGE_OPERATOR, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
+    TileSink, admit, admit_extended,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -391,8 +392,10 @@ fn verify_tile(
     plan_space: hsk_studio_pigment::render_plan::ColourTag,
 ) -> Result<(), RenderError> {
     let key = input.key;
+    // Defence in depth: this backend declares `ExtOperator::AlphaPremultiplied` Unsupported, so
+    // shared admission refuses a premultiplied convention first (key is pigment's).
     if input.alpha != AlphaConvention::Straight {
-        return Err(unsupported("alpha_premultiplied"));
+        return Err(unsupported(ExtOperator::AlphaPremultiplied.key()));
     }
     if !planes.matches(input, plan_space) {
         return Err(source(key, SourceFault::Declared));
@@ -445,7 +448,7 @@ fn prepare<'a, V: VectorSource>(
 ) -> Result<Prepared<'a>, RenderError> {
     let target = plan.target;
     if target.alpha != AlphaConvention::Straight {
-        return Err(unsupported("alpha_premultiplied"));
+        return Err(unsupported(ExtOperator::AlphaPremultiplied.key()));
     }
     if target.format != SampleFormat::RgbF32Le {
         return Err(unsupported("sample_format"));
@@ -577,11 +580,15 @@ fn prepare<'a, V: VectorSource>(
                             .effect(index)
                             .map(|e| e.margin)
                             .ok_or_else(|| unsupported("plan_shape"))?;
+                        // Defence in depth: pigment's shared admission decides both rules first
+                        // (`ExtOperator::EffectsWithBlendIf` is intrinsically Unsupported;
+                        // `ExtOperator::EffectsNested` is declared Unsupported by this backend),
+                        // so the keys are pigment's.
                         if layer_fx.blend_if.is_some() {
-                            return Err(unsupported("effects_with_blend_if"));
+                            return Err(unsupported(ExtOperator::EffectsWithBlendIf.key()));
                         }
                         if has_effects[input] {
-                            return Err(unsupported("effects_nested"));
+                            return Err(unsupported(ExtOperator::EffectsNested.key()));
                         }
                         // The shadow and stroke reach beyond the content bounds by the margin.
                         layer_bounds = layer_bounds.map(|b| grow_rect(b, margin)).transpose()?;
@@ -600,8 +607,10 @@ fn prepare<'a, V: VectorSource>(
                             if m.density != 1.0 && !ext.allow_density {
                                 return Err(unsupported(MASK_DENSITY_OPERATOR));
                             }
+                            // Defence in depth: pigment defines no mask on a pass-through layer
+                            // and shared admission refuses it first (its constant).
                             if pass_through {
-                                return Err(unsupported("mask_on_pass_through"));
+                                return Err(unsupported(PASS_THROUGH_MASK_OPERATOR));
                             }
                             let plane = sources
                                 .mask(m.key)
@@ -1711,6 +1720,12 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
                 | EffectKind::OuterGlow
                 | EffectKind::InnerGlow,
             ) => operator.intrinsic(),
+            // Declared Unsupported on purpose (lane SMB-FX-OPS-ADOPT), so shared admission refuses
+            // them under pigment's keys before any sink call: a layer with effects whose content
+            // holds a layer with effects (the chunked compositor has one effect frame per chunk
+            // and refuses the nesting), and a premultiplied alpha convention at the target or a
+            // tile input (this backend works on straight alpha and does not convert).
+            ExtOperator::EffectsNested | ExtOperator::AlphaPremultiplied => Exactness::Unsupported,
             // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }

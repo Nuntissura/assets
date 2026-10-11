@@ -39,6 +39,7 @@ use hsk_studio_pigment::effect_math::window::{
     AlphaSource, WindowError, WindowGeometry, WindowPlane, render_layer_window,
 };
 use hsk_studio_pigment::effect_math::{EffectOp, LayerParams};
+use hsk_studio_pigment::render_plan::ExtOperator;
 
 /// Fills `content` over `region` (a sub-rectangle of `frame`) from `pixel(x, y)`.
 fn fill_region(
@@ -125,7 +126,7 @@ impl Eval<'_, '_> {
         let mut frame = fx
             .frame
             .take()
-            .ok_or_else(|| unsupported("effects_nested"))?;
+            .ok_or_else(|| unsupported(ExtOperator::EffectsNested.key()))?;
         let outcome = self.effect_window(
             layer,
             effect.margin,

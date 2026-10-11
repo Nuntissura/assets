@@ -6,15 +6,19 @@
 //! exported constants and operator enums, never a literal spelled here. The envelope mappers
 //! (`coverage_error`, `effect_error`, `window_error`, `blend_error`) are checked against the same
 //! pigment names, and the features pigment recognises and refuses in effects (gradient glow, glow
-//! range, jitter, Precise technique) are checked against `admit_extended`. Backend-owned keys
-//! (`plan_shape`, `effects_nested`, `effect_work_limit`, `effect_limit`, ...) are out of scope:
+//! range, jitter, Precise technique) are checked against `admit_extended`. Lane SMB-FX-OPS-ADOPT
+//! adds the rules pigment took over in SMB-PIGMENT-FX-OPS and SMB-PIGMENT-ADMIT-PARITY
+//! (`mask_on_pass_through`, `alpha_premultiplied`, `effects_with_blend_if`, `effects_nested`).
+//! Backend-owned keys (`plan_shape`, `effect_work_limit`, `effect_limit`, ...) are out of scope:
 //! pigment's admission does not report those rules under these names.
 use super::*;
 use hsk_studio_pigment::Mask;
-use hsk_studio_pigment::coverage_math::CoverageError;
+use hsk_studio_pigment::coverage_math::{
+    BlendChannel, BlendRangeEntry, CoverageError, IDENTITY_RANGE,
+};
 use hsk_studio_pigment::effect_math::window::WindowError;
 use hsk_studio_pigment::effect_math::{
-    EffectError, EffectFeature, EffectOp, GlowFill, GlowTechnique, OuterGlowOp,
+    ColourOverlayOp, EffectError, EffectFeature, EffectOp, GlowFill, GlowTechnique, OuterGlowOp,
 };
 use hsk_studio_pigment::render_plan::{
     BlendSpace, ColourTag, Group, LayerExtension, NoVector, OutputTarget, PlanNodeId,
@@ -123,6 +127,10 @@ fn defence_in_depth_refusal_keys_are_pigments() {
         inverted: false,
         density: 0.5,
     };
+    let full_mask = MaskInput {
+        density: 1.0,
+        ..density_mask
+    };
     let clipped = Layer {
         mask: Some(MaskInput::clip_to_base()),
         ..mk_layer(0, StudioBlendMode::Normal, 1.0, 1.0)
@@ -186,6 +194,36 @@ fn defence_in_depth_refusal_keys_are_pigments() {
             ),
             // Pigment's validation owns this rule: its own error value, node = the group node.
             BackendError::InvalidPlan(PlanError::ClipBasePassThrough { node: 2 }),
+        ),
+        (
+            // SMB-PIGMENT-ADMIT-PARITY: pigment defines no mask on a pass-through layer.
+            "coverage mask on a pass-through layer",
+            mk_plan(
+                vec![
+                    white(),
+                    mk_group(false, vec![mk_layer(0, StudioBlendMode::Normal, 1.0, 1.0)]),
+                    mk_group(
+                        true,
+                        vec![Layer {
+                            mask: Some(full_mask),
+                            ..mk_layer(1, StudioBlendMode::PassThrough, 1.0, 1.0)
+                        }],
+                    ),
+                ],
+                2,
+            ),
+            refusal(PASS_THROUGH_MASK_OPERATOR),
+        ),
+        (
+            // SMB-PIGMENT-ADMIT-PARITY: this backend declares the capability Unsupported.
+            "premultiplied alpha at the target",
+            {
+                let mut plan =
+                    one_layer_plan(white(), mk_layer(0, StudioBlendMode::Normal, 1.0, 1.0));
+                plan.target.alpha = AlphaConvention::Premultiplied;
+                plan
+            },
+            refusal(ExtOperator::AlphaPremultiplied.key()),
         ),
     ];
     for (rule, plan, pigment_says) in cases {
@@ -294,4 +332,86 @@ fn defence_in_depth_refusal_keys_are_pigments() {
         blend_error(BlendError::TooDeep),
         unsupported(BlendError::TooDeep.code())
     );
+}
+
+fn overlay_fx(group: u32, layer: u32) -> LayerExtension {
+    LayerExtension::new(PlanNodeId(group), layer).with_effects(vec![EffectOp::ColourOverlay(
+        ColourOverlayOp::new([1.0, 0.0, 0.0], StudioBlendMode::Normal, 0.5),
+    )])
+}
+
+/// SMB-FX-OPS-ADOPT: the declarations for the operators pigment added, and the two effects rules
+/// pigment now decides at shared admission: the error `prepare` returns on its own equals the one
+/// `admit_extended` returns, and both carry pigment's keys.
+#[test]
+fn fx_ops_declarations_and_refusals_equal_pigments() {
+    let renderer = Renderer::new(4).unwrap();
+    let declared = |op| RenderBackend::<NoVector>::extension_exactness(&renderer, op);
+    // Declared Unsupported on purpose: nesting (one effect frame per chunk) and premultiplied
+    // alpha (straight only), so shared admission refuses them as pigment's keys.
+    for op in [
+        ExtOperator::EffectsNested,
+        ExtOperator::AlphaPremultiplied,
+        ExtOperator::EffectsWithBlendIf,
+    ] {
+        assert_eq!(declared(op), Exactness::Unsupported, "{}", op.key());
+    }
+    // Counterfactual: the effect kinds themselves are supported at pigment's class.
+    assert_eq!(
+        declared(ExtOperator::Effect(EffectKind::ColourOverlay)),
+        ExtOperator::Effect(EffectKind::ColourOverlay).intrinsic()
+    );
+
+    // [solid, group{0}, root group{1}]: effects on (1, 0) and on the layer over the inner group.
+    let nested_plan = mk_plan(
+        vec![
+            white(),
+            mk_group(true, vec![mk_layer(0, StudioBlendMode::Normal, 1.0, 1.0)]),
+            mk_group(true, vec![mk_layer(1, StudioBlendMode::Normal, 1.0, 1.0)]),
+        ],
+        2,
+    );
+    let nested = PlanExtensions::from_layers(vec![overlay_fx(1, 0), overlay_fx(2, 0)]);
+    let flat_plan = one_layer_plan(white(), mk_layer(0, StudioBlendMode::Normal, 1.0, 1.0));
+    let both = PlanExtensions::from_layers(vec![overlay_fx(1, 0).with_blend_if(vec![
+        BlendRangeEntry {
+            channel: BlendChannel::Gray,
+            source: [0.2, 0.4, 0.6, 0.8],
+            destination: IDENTITY_RANGE,
+        },
+    ])]);
+    let cases = [
+        (
+            "effects nested in the content of a layer with effects",
+            nested_plan,
+            nested,
+            ExtOperator::EffectsNested.key(),
+        ),
+        (
+            "effects together with Blend-If on one layer",
+            flat_plan,
+            both,
+            ExtOperator::EffectsWithBlendIf.key(),
+        ),
+    ];
+    for (rule, plan, envelope, key) in cases {
+        let admitted = admit_extended::<NoVector, _>(
+            &plan,
+            &envelope,
+            &renderer,
+            &request(),
+            &CancellationToken::default(),
+        )
+        .expect_err("shared admission refuses the rule");
+        assert_eq!(admitted, refusal(key), "pigment admission, {rule}");
+        let ext = ExtPrep::build(&envelope, 1 << 20).expect("envelope preparation");
+        let prepared = prepare(&plan, &NoSources, ext)
+            .err()
+            .expect("prepare refuses the rule on its own");
+        assert_eq!(
+            prepared,
+            RenderError::Backend(admitted),
+            "prepare equals admission, {rule}"
+        );
+    }
 }
