@@ -1886,7 +1886,7 @@ fn proof_reads_tounicode_text_and_region_needles() {
     let code_bytes: Vec<u8> = (1u16..=11).flat_map(u16::to_be_bytes).collect();
 
     // The removed string is composite-font codes; read through its /ToUnicode it is text.
-    let mut doc = open(&pdf);
+    let mut doc = open(&split_region_page(&pdf, region.rect));
     let plain = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
     assert_eq!(plain.reports[0].removed_text, vec![code_bytes.clone()]);
     assert_eq!(plain.reports[0].removed_unicode, vec![Some("Budget Plan".to_string())]);
@@ -1906,7 +1906,7 @@ fn proof_reads_tounicode_text_and_region_needles() {
     assert!(blind.kept_text_collisions.is_empty() && blind.hits.is_empty());
 
     // With a text policy the appearance (found through its ToUnicode) is dropped and the document is proven.
-    let mut doc = open(&pdf);
+    let mut doc = open(&split_region_page(&pdf, region.rect));
     let fixed = redact_and_save_with(&mut doc, &[region], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
     assert!(fixed.proof.hits.is_empty());
     assert_eq!(fixed.proof.kept_text_collisions.len(), 1);
@@ -1918,7 +1918,7 @@ fn proof_reads_tounicode_text_and_region_needles() {
     // Without that text the same document is proven.
     let mut clear = objs.clone();
     clear[3].1 = stream_body("", format!("BT /F1 12 Tf 72 700 Td <{a}> Tj ET\nBT /F2 12 Tf 72 400 Td <{b}> Tj ET").as_bytes());
-    let mut doc = open(&build(&clear, "", b""));
+    let mut doc = open(&split_region_page(&build(&clear, "", b""), region.rect));
     let clean = redact_and_save_with(&mut doc, &[region], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
     assert!(clean.is_proven() && clean.proof.opaque_text_streams.is_empty(), "{:?}", clean.not_proven_reasons());
 }
@@ -2094,7 +2094,7 @@ fn opaque_composite_text_blocks_the_proof() {
     };
     let cid_text = "BT /F2 12 Tf 72 400 Td <010101020103010401050106> Tj ET";
     let run = |pdf: &[u8]| {
-        let mut doc = open(pdf);
+        let mut doc = open(&split_region_page(pdf, region.rect));
         redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap()
     };
 
@@ -2473,7 +2473,7 @@ fn stray_streams_and_hidden_payloads_are_not_kept_text() {
     let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
     let page = format!("{TEXT_IN_REGION}\nBT /F1 12 Tf 72 400 Td (Public) Tj ET");
     let run = |pdf: &[u8]| {
-        let mut doc = open(pdf);
+        let mut doc = open(&split_region_page(pdf, region.rect));
         redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap()
     };
 
@@ -3035,7 +3035,7 @@ fn differences_encoded_text_is_found_proven_and_redacted() {
         (20, diff_font(&differences, "")),
     ];
     let pdf = build(&objs, "", b"");
-    let mut doc = open(&pdf);
+    let mut doc = open(&split_region_page(&pdf, region.rect));
     let plain = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
     assert_eq!(plain.reports[0].removed_text, vec![codes.clone()]);
     assert_eq!(plain.reports[0].removed_unicode, vec![Some("SECRET-ALPHA".to_string())], "the redaction reads the codes through the encoding");
@@ -3044,7 +3044,7 @@ fn differences_encoded_text_is_found_proven_and_redacted() {
     assert!(plain.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 11 })), "{:?}", plain.proof.hits);
     // The kept second instance, drawn through the same codes, is kept page text: a collision.
     assert_eq!(plain.proof.kept_text_collisions.len(), 1, "{:?}", plain.proof);
-    let mut doc = open(&pdf);
+    let mut doc = open(&split_region_page(&pdf, region.rect));
     let fixed = redact_and_save_with(&mut doc, &[region], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
     assert!(fixed.is_proven(), "{:?}", fixed.not_proven_reasons());
     assert_eq!(rows(fixed.text_fields.as_ref().unwrap(), TextRole::OutlineTitle), vec![(11, false, TextOutcomeKind::Replaced, 1)]);
@@ -3131,7 +3131,7 @@ fn unmappable_glyph_names_and_encodingless_fonts_are_opaque() {
     // (RegionIncomplete, RedactionClass::Type3Text), so these run with ReportAndContinue; the reading
     // of the Type 3 text is what this test checks.
     let type3_run = |pdf: Vec<u8>| {
-        let mut doc = open(&pdf);
+        let mut doc = open(&split_region_page(&pdf, R7_REGION.rect));
         redact_and_save(&mut doc, &[R7_REGION], UnsupportedPolicy::ReportAndContinue, &token()).unwrap()
     };
     let out = type3_run(doc_with(type3("/g1 /g2"), vec![glyph.clone()], &show("<0102>")));
@@ -3431,8 +3431,9 @@ fn type3_and_vertical_text_never_read_as_cleared() {
     let region = RedactionRegion { page_index: 0, rect: [150.0, 690.0, 210.0, 715.0] };
     let mut doc = open(&pdf);
     let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::ReportAndContinue, &token()).unwrap();
-    // Independent oracle: SECRET is still drawn in the region (x = 100 + 10 x 0.6 x 10 = 160..196).
-    assert!(independent_streams(&out.bytes).iter().any(|s| find(s, b"(SECRET) Tj").is_some()), "the Type 3 run left the content");
+    // D27: the page is flattened, so the Type 3 run is gone from the file (its pixels in the region are
+    // painted over); its words were never read by the selector, so the region still reads not proven.
+    assert!(independent_streams(&out.bytes).iter().all(|s| find(s, b"(SECRET) Tj").is_none()), "the flattened page keeps no Type 3 run");
     assert!(!out.region_cleared() && !out.is_proven(), "Type 3 text on the page read as cleared");
     assert!(out.not_proven_reasons().contains(&NotProven::RegionIncomplete), "{:?}", out.not_proven_reasons());
     assert_eq!(out.reports[0].unredacted, vec![RedactionClass::Type3Text]); // R8-new-api
@@ -3449,7 +3450,7 @@ fn type3_and_vertical_text_never_read_as_cleared() {
     for enc in ["/Identity-V", "38 0 R"] {
         let mut doc = open(&r8_doc(&vtext, "/V1 37 0 R", "", vec![font(enc), cmap.clone()]));
         let out = redact_and_save(&mut doc, &[below], UnsupportedPolicy::ReportAndContinue, &token()).unwrap();
-        assert!(independent_streams(&out.bytes).iter().any(|s| find(s, R7_CODES.as_bytes()).is_some()), "{enc}");
+        assert!(independent_streams(&out.bytes).iter().all(|s| find(s, R7_CODES.as_bytes()).is_none()), "{enc}: D27 flattened page");
         assert!(!out.region_cleared(), "{enc}: vertical text read as cleared");
         assert_eq!(out.reports[0].unredacted, vec![RedactionClass::VerticalText], "{enc}"); // R8-new-api
     }
@@ -3540,8 +3541,8 @@ fn writing_mode_is_read_from_the_cmap() {
     ];
     for (what, pdf) in &vertical {
         let out = r9_run(pdf, R9_BELOW, UnsupportedPolicy::ReportAndContinue).unwrap();
-        // Independent oracle: the vertical run is still drawn (it starts at y 700 and runs down).
-        assert!(independent_streams(&out.bytes).iter().any(|s| find(s, R7_CODES.as_bytes()).is_some()), "{what}");
+        // D27: the run's page is flattened (the run is gone from the file); the selector still marks it.
+        assert!(independent_streams(&out.bytes).iter().all(|s| find(s, R7_CODES.as_bytes()).is_none()), "{what}");
         expect(&mut red, !out.region_cleared() && !out.is_proven(), format!("{what}: vertical text read as cleared"));
         expect(&mut red, out.reports[0].unredacted == vec![RedactionClass::VerticalText], format!("{what}: {:?}", out.reports[0].unredacted));
         expect(&mut red, r9_run(pdf, R9_BELOW, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::VerticalText)), format!("{what}: not refused"));
@@ -3578,8 +3579,11 @@ fn unknown_cmap_names_are_unresolved_writing_modes() {
         expect(&mut red, !out.region_cleared() && !out.is_proven(), format!("{what}: unknown writing mode read as cleared"));
         expect(&mut red, r9_run(pdf, R9_BELOW, UnsupportedPolicy::Refuse).is_err(), format!("{what}: not refused"));
         assert_eq!(out.reports[0].unredacted, vec![RedactionClass::UnresolvedWritingMode], "{what}"); // R9-new-api
-        assert!(out.not_proven_reasons().contains(&NotProven::UnresolvedWritingMode), "{what}"); // R9-new-api
-        assert!(out.proof.undetermined_text.iter().any(|(_, c)| *c == TextCause::UnresolvedWritingMode), "{what}"); // R9-new-api
+        // D27: the run's page is flattened, so the proof reads the run in the input file.
+        let p = verify_secret(pdf);
+        assert!(p.not_proven_reasons().contains(&NotProven::UnresolvedWritingMode), "{what}"); // R9-new-api
+        assert!(p.undetermined_text.iter().any(|(_, c)| *c == TextCause::UnresolvedWritingMode), "{what}"); // R9-new-api
+        assert!(independent_streams(&out.bytes).iter().all(|s| find(s, R7_CODES.as_bytes()).is_none()), "{what}: D27 flattened page");
     }
     // The proof side: text drawn anywhere (an annotation appearance) with such a font.
     let font = b"<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Secret-H /DescendantFonts [21 0 R] /ToUnicode 25 0 R >>".to_vec();
@@ -3647,7 +3651,7 @@ fn fonts_inherited_into_forms_are_resolved() {
         expect(&mut red, r9_run(pdf, region, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::Type3Text)), format!("{what}: not refused"));
         let out = r9_run(pdf, region, UnsupportedPolicy::ReportAndContinue).unwrap();
         expect(&mut red, !out.region_cleared() && out.reports[0].unredacted == vec![RedactionClass::Type3Text], format!("{what}: {:?}", out.not_proven_reasons()));
-        assert_eq!(out.region_undetermined, vec![(0, RedactionClass::Type3Text)], "{what}"); // R9-new-api
+        assert!(out.region_undetermined.is_empty(), "{what}: D27, a flattened page holds no text"); // R9-new-api
     }
     assert!(red.is_empty(), "{red:#?}");
 }
@@ -3667,11 +3671,13 @@ fn undetermined_fonts_never_read_as_cleared() {
     let no_font = r9_page_doc("BT 72 300 Td (Public) Tj ET\nBT /F1 12 Tf 100 700 Td (SECRET-ALPHA) Tj ET", "/Font << /F1 6 0 R >>", vec![]);
     let out = r9_run(&no_font, R9_INSIDE, UnsupportedPolicy::ReportAndContinue).unwrap();
     expect(&mut red, !out.region_cleared() && !out.is_proven(), "text with no font on the page read as cleared");
-    expect(&mut red, out.not_proven_reasons().contains(&NotProven::OpaqueText), format!("no font: {:?}", out.not_proven_reasons()));
+    // D27: the page is flattened, so the proof reads the text with no font in the input file.
+    let p = verify_secret(&no_font);
+    expect(&mut red, p.not_proven_reasons().contains(&NotProven::OpaqueText), format!("no font: {:?}", p.not_proven_reasons()));
     assert_eq!(r9_run(&unresolved, R9_INSIDE, UnsupportedPolicy::Refuse), Err(PressError::UnsupportedRedactionClass(RedactionClass::UnresolvedFont))); // R9-new-api
     assert_eq!(out.reports[0].unredacted, vec![RedactionClass::UnresolvedFont]); // R9-new-api
-    assert!(out.proof.undetermined_text.iter().any(|(_, c)| *c == TextCause::NoFont), "{:?}", out.proof.undetermined_text); // R9-new-api
-    assert_eq!(out.region_undetermined, vec![(0, RedactionClass::UnresolvedFont)]); // R9-new-api
+    assert!(p.undetermined_text.iter().any(|(_, c)| *c == TextCause::NoFont), "{:?}", p.undetermined_text); // R9-new-api
+    assert!(out.region_undetermined.is_empty(), "D27: a flattened page holds no text"); // R9-new-api
     assert!(red.is_empty(), "{red:#?}");
 }
 
@@ -3976,8 +3982,8 @@ fn wmode_spellings_and_identity_names_are_read_as_viewers_do() {
     ];
     for (what, pdf) in &vertical {
         let out = r9_run(pdf, R9_BELOW, UnsupportedPolicy::ReportAndContinue).unwrap();
-        // Independent oracle: the run is still drawn (it starts at y 700 and runs down).
-        assert!(independent_streams(&out.bytes).iter().any(|s| find(s, R7_CODES.as_bytes()).is_some()), "{what}");
+        // D27: the run's page is flattened (the run is gone from the file); the selector still marks it.
+        assert!(independent_streams(&out.bytes).iter().all(|s| find(s, R7_CODES.as_bytes()).is_none()), "{what}");
         expect(&mut red, !out.region_cleared() && !out.is_proven(), format!("{what}: vertical text read as cleared"));
         expect(&mut red, out.reports[0].unredacted == vec![RedactionClass::VerticalText], format!("{what}: {:?}", out.reports[0].unredacted));
         expect(&mut red, r9_run(pdf, R9_BELOW, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::VerticalText)), format!("{what}: not refused"));
@@ -4008,7 +4014,10 @@ fn indirect_subtypes_are_resolved() {
     // (b) An image whose /Subtype is an indirect /Image placed on the region: an image under the region.
     let img = (29, stream_body("/Type /XObject /Subtype 31 0 R /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", &[0u8]));
     let pdf = r9_page_doc("q 50 0 0 50 120 690 cm /Im9 Do Q\nBT /F1 12 Tf 72 300 Td (Public) Tj ET", "/Font << /F1 6 0 R >> /XObject << /Im9 29 0 R >>", vec![img, (31, b"/Image".to_vec())]);
-    expect(&mut red, r9_run(&pdf, R9_INSIDE, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::Image)), "image with an indirect /Subtype not marked");
+    // The selector alone marks it (fail closed); redact_and_save paints it over on the raster (D27).
+    expect(&mut red, open(&pdf).redact_region(&R9_INSIDE, UnsupportedPolicy::Refuse, &token()) == Err(PressError::UnsupportedRedactionClass(RedactionClass::Image)), "image with an indirect /Subtype not marked");
+    let painted = r9_run(&pdf, R9_INSIDE, UnsupportedPolicy::Refuse).map(|o| o.reports[0].painted_over.clone()); // D27-new-api
+    expect(&mut red, painted == Ok(vec![RedactionClass::Image]), "image with an indirect /Subtype not painted over"); // D27-new-api
     // (c) A Type 0 font whose /Subtype is an indirect /Type0, /Encoding /Identity-V, and a /ToUnicode
     // that names every byte (so a simple reading is complete): vertical text, never cleared.
     let tu = (33, stream_body("", b"1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfrange <00> <FF> <0041> endbfrange"));
