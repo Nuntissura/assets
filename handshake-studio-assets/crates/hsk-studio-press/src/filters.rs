@@ -472,3 +472,81 @@ fn run_length(data: &[u8], cap: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+#[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)] // test arithmetic on small literals
+mod tests {
+    use super::*;
+
+    fn stream(filters: &[&str], parms: Option<Dict>, data: Vec<u8>) -> Stream {
+        let mut dict = Dict::default();
+        dict.set("Filter", Object::Array(filters.iter().map(|f| Object::Name(f.as_bytes().to_vec())).collect()));
+        if let Some(p) = parms {
+            dict.set("DecodeParms", Object::Dict(p));
+        }
+        Stream { dict, data }
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        miniz_oxide::deflate::compress_to_vec_zlib(data, 6)
+    }
+
+    /// The budget is charged by every stage and by failures (see the module docs).
+    #[test]
+    fn budget_is_charged_by_every_stage_and_by_failures() {
+        let limits = Limits { max_decoded_bytes: 1 << 20, ..Limits::default() };
+        let start = 64usize << 20;
+
+        // Flate -> ASCIIHex: the final output is empty, the 100000-byte intermediate is charged.
+        let mut budget = start;
+        let out = decode_stream(&stream(&["FlateDecode", "ASCIIHexDecode"], None, zlib(&vec![b'>'; 100_000])), &limits, &mut budget).unwrap();
+        assert!(out.is_empty());
+        assert_eq!(start - budget, 100_000);
+
+        // A bomb is refused at the per-stream cap and costs the cap.
+        let mut budget = start;
+        let err = decode_stream(&stream(&["FlateDecode"], None, zlib(&vec![0u8; 8 << 20])), &limits, &mut budget).unwrap_err();
+        assert_eq!(err, PressError::InputLimit("decoded_bytes"));
+        assert_eq!(start - budget, 1 << 20);
+
+        // Garbage costs the input it examined.
+        let mut budget = start;
+        let err = decode_stream(&stream(&["FlateDecode"], None, vec![1, 2, 3, 4, 5]), &limits, &mut budget).unwrap_err();
+        assert_eq!(err, PressError::Malformed("flate_data"));
+        assert_eq!(start - budget, 5);
+
+        // When the remaining budget (not the per-stream cap) is what ran out, the error says so.
+        let mut budget = 1000usize;
+        let err = decode_stream(&stream(&["FlateDecode"], None, zlib(&vec![0u8; 5000])), &limits, &mut budget).unwrap_err();
+        assert_eq!(err, PressError::InputLimit("decoded_total"));
+        assert_eq!(budget, 0);
+    }
+
+    /// Hostile predictor dimensions never allocate a row the data does not hold, and the chain is bounded.
+    #[test]
+    fn predictor_rows_are_not_padded_and_chains_are_bounded() {
+        let limits = Limits::default();
+        let mut parms = Dict::default();
+        parms.set("Predictor", Object::Int(12));
+        parms.set("Columns", Object::Int(1 << 20));
+        parms.set("Colors", Object::Int(32));
+        parms.set("BitsPerComponent", Object::Int(16));
+        // Row width 64 MiB, three bytes of data: the output is those three bytes.
+        let mut budget = 1usize << 20;
+        let out = decode_stream(&stream(&["FlateDecode"], Some(parms.clone()), zlib(&[0, 1, 2, 3])), &limits, &mut budget).unwrap();
+        assert_eq!(out, vec![1, 2, 3]);
+        // Up predictor over two short rows: the partial last row stays partial.
+        parms.set("Columns", Object::Int(4));
+        parms.set("Colors", Object::Int(1));
+        parms.set("BitsPerComponent", Object::Int(8));
+        let mut budget = 1usize << 20;
+        let out = decode_stream(&stream(&["FlateDecode"], Some(parms), zlib(&[2, 1, 2, 3, 4, 2, 1, 1])), &limits, &mut budget).unwrap();
+        assert_eq!(out, vec![1, 2, 3, 4, 2, 3]);
+
+        let names: Vec<&str> = vec!["ASCIIHexDecode"; 9];
+        let mut budget = 1usize << 20;
+        assert_eq!(decode_stream(&stream(&names, None, b"41>".to_vec()), &limits, &mut budget).unwrap_err(), PressError::InputLimit("filter_chain"));
+        // ASCII85: a final group that cannot come from any encoder is refused, not truncated.
+        assert_eq!(ascii85(b"uu~>", 100).unwrap_err(), PressError::Malformed("ascii85"));
+        assert_eq!(ascii85(b"87cURDZ~>", 100).unwrap(), b"Hello".to_vec());
+    }
+}

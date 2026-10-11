@@ -1924,6 +1924,341 @@ fn opaque_composite_text_blocks_the_proof() {
     assert!(!fields.is_proven());
 }
 
+// ------------------------------------------------- workflow v4 hostile parser hardening
+
+/// Appends a classic cross-reference table with one subsection per run of consecutive object numbers.
+fn xref_tail(out: &mut Vec<u8>, off: &BTreeMap<u32, usize>, trailer_extra: &str) {
+    let xref = out.len();
+    let size = off.keys().max().map_or(1, |m| m + 1);
+    out.extend_from_slice(b"xref\n0 1\n0000000000 65535 f \n");
+    let nums: Vec<u32> = off.keys().copied().collect();
+    let mut i = 0;
+    while i < nums.len() {
+        let mut j = i;
+        while j + 1 < nums.len() && nums[j + 1] == nums[j] + 1 {
+            j += 1;
+        }
+        out.extend(format!("{} {}\n", nums[i], j - i + 1).into_bytes());
+        for n in &nums[i..=j] {
+            out.extend(format!("{:010} 00000 n \n", off[n]).into_bytes());
+        }
+        i = j + 1;
+    }
+    out.extend(format!("trailer\n<< /Size {size} /Root 1 0 R {trailer_extra} >>\nstartxref\n{xref}\n%%EOF\n").into_bytes());
+}
+
+/// Like `build`, but the table lists only the objects given (no free entries for gaps).
+fn build_sparse(objs: &[(u32, Vec<u8>)], trailer_extra: &str) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
+    let mut off: BTreeMap<u32, usize> = BTreeMap::new();
+    for (n, body) in objs {
+        off.insert(*n, out.len());
+        out.extend(obj_bytes(*n, body));
+    }
+    xref_tail(&mut out, &off, trailer_extra);
+    out
+}
+
+/// A PDF whose cross-reference is an uncompressed xref stream (object `xs`, rows /W [1 4 1]) covering
+/// the object numbers 0..=max(xs, members). `in_stream` lists objects held by an object stream as
+/// (number, stream, index). `dict_extra` is appended to the xref stream dictionary; a later duplicate
+/// key wins, so it can override /Size, /W and /Index.
+fn xref_stream_pdf(objs: &[(u32, Vec<u8>)], xs: u32, dict_extra: &str, in_stream: &[(u32, u32, u8)]) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
+    let mut off: BTreeMap<u32, usize> = BTreeMap::new();
+    for (n, body) in objs {
+        off.insert(*n, out.len());
+        out.extend(obj_bytes(*n, body));
+    }
+    let xs_off = out.len();
+    let hi = in_stream.iter().map(|(n, _, _)| *n).max().map_or(xs, |m| m.max(xs));
+    let mut rows = Vec::new();
+    for n in 0..=hi {
+        let row: [u8; 6] = if let Some((_, stm, idx)) = in_stream.iter().find(|(m, _, _)| *m == n) {
+            let b = stm.to_be_bytes();
+            [2, b[0], b[1], b[2], b[3], *idx]
+        } else if n == xs {
+            let b = (xs_off as u32).to_be_bytes();
+            [1, b[0], b[1], b[2], b[3], 0]
+        } else if let Some(o) = off.get(&n) {
+            let b = (*o as u32).to_be_bytes();
+            [1, b[0], b[1], b[2], b[3], 0]
+        } else {
+            [0, 0, 0, 0, 0, 0]
+        };
+        rows.extend_from_slice(&row);
+    }
+    let dict = format!("/Type /XRef /Size {} /W [1 4 1] /Root 1 0 R {dict_extra}", hi + 1);
+    out.extend(obj_bytes(xs, &stream_body(&dict, &rows)));
+    out.extend(format!("startxref\n{xs_off}\n%%EOF\n").into_bytes());
+    out
+}
+
+#[test]
+fn hostile_parser_dims_u32_max() {
+    let open_err = |b: &[u8], l: &Limits| PdfDoc::open(b, l, &token()).err();
+    let limits = Limits::default();
+    let base = minimal_objs("", "");
+    let with_xref = |extra: &str| xref_stream_pdf(&base, 5, extra, &[]);
+
+    // The control: the helper's own file opens.
+    assert_eq!(open(&with_xref("")).inspect().page_count, 1);
+
+    // /W (ISO 32000-2 7.5.8.2): a field wider than 8 bytes, a wrong count, all-zero or negative widths.
+    for w in ["[9 1 1]", "[4294967295 1 1]", "[1 4]", "[1 4 1 1]", "[0 0 0]", "[-1 4 1]"] {
+        assert_eq!(open_err(&with_xref(&format!("/W {w}")), &limits), Some(PressError::Malformed("xref_w")), "/W {w}");
+    }
+
+    // /Size and /Index counts the stream data cannot hold, at the u32 and i64 edge.
+    for extra in ["/Size 4294967295", "/Size 9223372036854775807", "/Index [0 4294967295]", "/Index [0 6 6 4294967295]"] {
+        assert_eq!(open_err(&with_xref(extra), &limits), Some(PressError::Malformed("xref_stream_short")), "{extra}");
+    }
+
+    // Object numbers past Limits::max_object_number (8,388,607), past u32, or negative.
+    for (extra, want) in [
+        ("/Index [4294967295 1]", PressError::InputLimit("object_number")),
+        ("/Index [8388608 1]", PressError::InputLimit("object_number")),
+        ("/Index [4294967296 1]", PressError::Malformed("xref_number")),
+        ("/Index [-1 1]", PressError::Malformed("xref_index")),
+    ] {
+        assert_eq!(open_err(&with_xref(extra), &limits), Some(want), "{extra}");
+    }
+    let low = Limits { max_object_number: 4, ..Limits::default() };
+    assert_eq!(open_err(&with_xref(""), &low), Some(PressError::InputLimit("object_number")));
+
+    // The same dims in a classic table (7.5.4): subsection counts and first numbers at the edges.
+    let classic = |sub: &str| {
+        let good = build(&base, "", b"");
+        let at = good.windows(4).position(|w| w == b"xref").unwrap();
+        let mut b = good[..at].to_vec();
+        let xref = b.len();
+        b.extend(format!("xref\n{sub}\n0000000000 00000 n \ntrailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").into_bytes());
+        b
+    };
+    for (sub, want) in [
+        ("4294967295 1", PressError::InputLimit("object_number")),
+        ("0 4294967295", PressError::Malformed("xref_count")),
+        ("4294967295 4294967295", PressError::Malformed("xref_count")),
+        ("18446744073709551615 1", PressError::Malformed("xref_number")),
+        ("18446744073709551616 1", PressError::Malformed("integer_overflow")),
+    ] {
+        assert_eq!(open_err(&classic(sub), &limits), Some(want), "subsection {sub}");
+    }
+
+    // /Length at the u32/i64 edge, negative, overflowing, or an indirect non-number: the stream is
+    // recovered by its endstream, nothing is allocated from the declared size, and no huge object is parsed.
+    for len in ["4294967295", "9223372036854775807", "-1", "18446744073709551616", "5 0 R"] {
+        let mut objs = base.clone();
+        let mut body = format!("<< /Length {len} >>\nstream\n").into_bytes();
+        body.extend_from_slice(b"q 1 0 0 1 0 0 cm Q kept");
+        body.extend_from_slice(b"\nendstream");
+        objs[3].1 = body;
+        objs.push((5, format!("<< /NotANumber [{}] >>", "1 ".repeat(1000)).into_bytes()));
+        let doc = PdfDoc::open(&build(&objs, "", b""), &limits, &token()).unwrap_or_else(|e| panic!("/Length {len}: {e}"));
+        assert!(find(&doc.save_full(&token()).unwrap(), b"Q kept").is_some(), "/Length {len}");
+    }
+
+    // Predictor dims (7.4.4.4) outside their ranges are a typed decode failure, never a row allocation.
+    let pred_doc = |parms: &str, data: &[u8]| {
+        let mut objs = base.clone();
+        objs[3].1 = stream_body(&format!("/Filter /FlateDecode /DecodeParms << {parms} >>"), &miniz_oxide::deflate::compress_to_vec_zlib(data, 6));
+        build(&objs, "", b"")
+    };
+    let needle = vec![b"zzzzzz".to_vec()];
+    for parms in [
+        "/Predictor 12 /Columns 4294967295",
+        "/Predictor 12 /Columns 0",
+        "/Predictor 12 /Columns 1048577",
+        "/Predictor 12 /Columns -1",
+        "/Predictor 12 /Colors 33",
+        "/Predictor 12 /BitsPerComponent 3",
+        "/Predictor 99",
+    ] {
+        let proof = verify_payload_absent(&pred_doc(parms, b"\x00abcd"), &needle, &limits, &token()).unwrap();
+        assert!(!proof.fully_decoded(), "{parms}");
+    }
+    // The widest legal row (2^20 columns x 32 colours x 16 bits = 64 MiB per row) over five bytes of
+    // data decodes to those bytes under a 1 KiB cap: rows are never padded to the declared width.
+    let tight = Limits { max_decoded_bytes: 1024, ..Limits::default() };
+    let wide = "/Predictor 12 /Columns 1048576 /Colors 32 /BitsPerComponent 16";
+    let proof = verify_payload_absent(&pred_doc(wide, b"\x00abcd"), &needle, &tight, &token()).unwrap();
+    assert!(proof.fully_decoded(), "{proof:?}");
+
+    // A filter chain longer than Limits::max_filters is refused; eight filters are not.
+    let chain = |n: usize| {
+        let mut objs = base.clone();
+        objs[3].1 = stream_body(&format!("/Filter [{}]", "/ASCIIHexDecode ".repeat(n)), b"41>");
+        build(&objs, "", b"")
+    };
+    assert_eq!(verify_payload_absent(&chain(9), &needle, &limits, &token()).unwrap_err(), PressError::InputLimit("filter_chain"));
+    assert!(verify_payload_absent(&chain(8), &needle, &limits, &token()).is_ok());
+
+    // The highest live object number sizes the table of a save: 8,388,607 opens, but its 168 MB
+    // table is refused before a line is written; a lower limit refuses the file at open.
+    let mut far = base.clone();
+    far[0].1 = b"<< /Type /Catalog /Pages 2 0 R /Far 8388607 0 R >>".to_vec();
+    far.push((8_388_607, b"<< /Note (end) >>".to_vec()));
+    let pdf = build_sparse(&far, "");
+    assert_eq!(open(&pdf).save_full(&token()).unwrap_err(), PressError::InputLimit("max_output_bytes"));
+    assert_eq!(open_err(&pdf, &Limits { max_object_number: 100, ..limits }), Some(PressError::InputLimit("object_number")));
+    // Numbers at the edge that do fit save and reopen.
+    let mut near = base.clone();
+    near[0].1 = b"<< /Type /Catalog /Pages 2 0 R /Near 300 0 R >>".to_vec();
+    near.push((300, b"<< /Note (end) >>".to_vec()));
+    let saved = open(&build_sparse(&near, "")).save_full(&token()).unwrap();
+    assert_eq!(open(&saved).inspect().object_count, 5);
+}
+
+#[test]
+fn aggregate_over_budget_many_streams() {
+    // 64 streams of 512 KiB of zeros (about 600 bytes of file each): every one is inside the 1 MiB
+    // per-stream cap, together they pass the 8 MiB total of the operation.
+    let limits = Limits { max_decoded_bytes: 1 << 20, max_decoded_total: 8 << 20, ..Limits::default() };
+    let page_with = |filter: &str, body: &[u8]| {
+        let mut objs = minimal_objs("", "");
+        objs[2].1 = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents [{}] /Resources << >> >>",
+            (10..74).map(|n| format!("{n} 0 R")).collect::<Vec<_>>().join(" ")
+        )
+        .into_bytes();
+        objs.extend((10..74).map(|n| (n, stream_body(filter, body))));
+        build(&objs, "", b"")
+    };
+    let zeros = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0u8; 512 << 10], 6);
+    let pdf = page_with("/Filter /FlateDecode", &zeros);
+    let needle = vec![b"zzzzzz".to_vec()];
+    assert_eq!(verify_payload_absent(&pdf, &needle, &limits, &token()).unwrap_err(), PressError::InputLimit("decoded_total"));
+    let mut doc = PdfDoc::open(&pdf, &limits, &token()).unwrap();
+    let region = RedactionRegion { page_index: 0, rect: [0.0, 0.0, 10.0, 10.0] };
+    assert_eq!(doc.redact_region(&region, UnsupportedPolicy::Refuse, &token()).unwrap_err(), PressError::InputLimit("decoded_total"));
+    // The control: the same document with a 64 MiB total decodes (64 x 512 KiB = 32 MiB).
+    let roomy = Limits { max_decoded_total: 64 << 20, ..limits };
+    assert!(verify_payload_absent(&pdf, &needle, &roomy, &token()).unwrap().fully_decoded());
+
+    // A chain pays for its intermediate results, not only for the last one: Flate expands to 512 KiB
+    // of '>' and ASCIIHex stops at the first byte, so every final output is empty (zero bytes each),
+    // yet the 64 inflations are 32 MiB of work.
+    let gt = miniz_oxide::deflate::compress_to_vec_zlib(&vec![b'>'; 512 << 10], 6);
+    let chained = page_with("/Filter [/FlateDecode /ASCIIHexDecode]", &gt);
+    assert_eq!(verify_payload_absent(&chained, &needle, &limits, &token()).unwrap_err(), PressError::InputLimit("decoded_total"));
+    assert!(verify_payload_absent(&chained, &needle, &roomy, &token()).unwrap().fully_decoded());
+
+    // Object streams count too: 64 object streams of 512 KiB against a 4 MiB total are refused at open.
+    let mut objs = minimal_objs("", "");
+    let mut members = Vec::new();
+    for i in 0..64u32 {
+        let mut text = b"<< /Pad [".to_vec();
+        text.extend(std::iter::repeat_n(b' ', 512 << 10));
+        text.extend_from_slice(b"] >>");
+        let data = miniz_oxide::deflate::compress_to_vec_zlib(&[format!("{} 0 ", 100 + i).into_bytes(), text].concat(), 6);
+        let first = format!("{} 0 ", 100 + i).len();
+        objs.push((10 + i, stream_body(&format!("/Type /ObjStm /N 1 /First {first} /Filter /FlateDecode"), &data)));
+        members.push((100 + i, 10 + i, 0u8));
+    }
+    let pdf = xref_stream_pdf(&objs, 200, "", &members);
+    let tight = Limits { max_decoded_bytes: 1 << 20, max_decoded_total: 4 << 20, ..Limits::default() };
+    assert_eq!(PdfDoc::open(&pdf, &tight, &token()).err(), Some(PressError::InputLimit("decoded_total")));
+    assert!(PdfDoc::open(&pdf, &Limits { max_decoded_total: 128 << 20, ..tight }, &token()).is_ok());
+}
+
+#[test]
+fn hostile_nesting_cycles_and_overlap() {
+    let open_err = |b: &[u8], l: &Limits| PdfDoc::open(b, l, &token()).err();
+    let limits = Limits::default();
+    let base = minimal_objs("", "");
+
+    // Nesting: whatever Limits::max_depth says, the tokenizer stops at its hard ceiling (no stack overflow).
+    let huge_depth = Limits { max_depth: usize::MAX, ..limits };
+    for opener in ["[", "<< /A "] {
+        let mut deep = base_objs(CONTENT.as_bytes(), "");
+        deep[5].1 = opener.repeat(100_000).into_bytes();
+        assert_eq!(open_err(&build(&deep, "", b""), &huge_depth), Some(PressError::InputLimit("depth")), "{opener}");
+    }
+
+    // Object and numeric-token budgets.
+    let mut wide = base_objs(CONTENT.as_bytes(), "");
+    wide[5].1 = format!("[{}]", "0 ".repeat(5000)).into_bytes();
+    let wide_pdf = build(&wide, "", b"");
+    assert!(PdfDoc::open(&wide_pdf, &limits, &token()).is_ok());
+    assert_eq!(open_err(&wide_pdf, &Limits { max_nodes: 1000, ..limits }), Some(PressError::InputLimit("nodes")));
+    wide[5].1 = format!("[{}]", "7".repeat(70)).into_bytes();
+    assert_eq!(open_err(&build(&wide, "", b""), &limits), Some(PressError::Malformed("number_length")));
+
+    // Reference chains and cycles end as null after MAX_REF_HOPS hops: 15 objects resolve, 16 do not.
+    let media = |bodies: Vec<Vec<u8>>| {
+        let mut objs = minimal_objs("", "");
+        objs[2].1 = b"<< /Type /Page /Parent 2 0 R /MediaBox 10 0 R /Contents 4 0 R /Resources << >> >>".to_vec();
+        objs.extend(bodies.into_iter().enumerate().map(|(i, b)| (10 + i as u32, b)));
+        open(&build(&objs, "", b"")).proposal(&token()).unwrap().pages[0].media_box
+    };
+    let chain = |k: usize| (0..k).map(|i| if i + 1 == k { b"[0 0 100 100]".to_vec() } else { format!("{} 0 R", 11 + i).into_bytes() }).collect::<Vec<_>>();
+    assert_eq!(media(chain(1)), Some([0.0, 0.0, 100.0, 100.0]));
+    assert_eq!(media(chain(15)), Some([0.0, 0.0, 100.0, 100.0]));
+    assert_eq!(media(chain(16)), None);
+    assert_eq!(media(chain(500)), None);
+    assert_eq!(media(vec![b"10 0 R".to_vec()]), None, "a self reference");
+    assert_eq!(media(vec![b"11 0 R".to_vec(), b"10 0 R".to_vec()]), None, "a two-object cycle");
+    // A /Parent chain that loops (the page is its own parent) is bounded too.
+    let mut self_parent = base.clone();
+    self_parent[2].1 = b"<< /Type /Page /Parent 3 0 R /Contents 4 0 R /Resources << >> >>".to_vec();
+    assert_eq!(open(&build(&self_parent, "", b"")).proposal(&token()).unwrap().pages[0].media_box, None);
+
+    // An AcroForm /Kids cycle is refused; a huge /T shared by many fields, or inherited by many kids,
+    // cannot be copied once per field past Limits::max_bytes.
+    let mut form = minimal_objs("/AcroForm << /Fields [10 0 R] >>", "");
+    form.push((10, b"<< /FT /Tx /T (a) /Kids [10 0 R] >>".to_vec()));
+    assert_eq!(open(&build(&form, "", b"")).proposal(&token()).unwrap_err(), PressError::Malformed("field_cycle"));
+    let big = "A".repeat(100_000);
+    let small = Limits { max_bytes: 512 << 10, ..limits };
+    let mut inherit = minimal_objs("/AcroForm << /Fields [10 0 R] >>", "");
+    let kids: String = (11..61).map(|n| format!("{n} 0 R ")).collect();
+    inherit.push((10, format!("<< /FT /Tx /T ({big}) /Kids [{kids}] >>").into_bytes()));
+    inherit.extend((11..61).map(|n| (n, b"<< /T (k) /Parent 10 0 R >>".to_vec())));
+    let pdf = build(&inherit, "", b"");
+    assert_eq!(open(&pdf).proposal(&token()).unwrap().form_fields.len(), 51);
+    assert_eq!(PdfDoc::open(&pdf, &small, &token()).unwrap().proposal(&token()).unwrap_err(), PressError::InputLimit("field_names"));
+    let roots: String = (11..61).map(|n| format!("{n} 0 R ")).collect();
+    let mut shared = minimal_objs(&format!("/AcroForm << /Fields [{roots}] >>"), "");
+    shared.push((9, format!("({big})").into_bytes()));
+    shared.extend((11..61).map(|n| (n, b"<< /FT /Tx /T 9 0 R >>".to_vec())));
+    let pdf = build(&shared, "", b"");
+    assert_eq!(open(&pdf).proposal(&token()).unwrap().form_fields.len(), 50);
+    assert_eq!(PdfDoc::open(&pdf, &small, &token()).unwrap().proposal(&token()).unwrap_err(), PressError::InputLimit("field_names"));
+
+    // Overlapping streams: 300 objects whose /Length all end at one endstream would copy the same
+    // 256 KiB 300 times. The bytes parsed over all objects are bounded by twice the input.
+    let overlap = |k: usize, payload: usize| {
+        let mut out = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
+        let mut off: BTreeMap<u32, usize> = BTreeMap::new();
+        for (n, body) in minimal_objs("", "") {
+            off.insert(n, out.len());
+            out.extend(obj_bytes(n, &body));
+        }
+        let hdr = |n: usize, len: usize| format!("{n} 0 obj\n<< /Length {len:09} >>\nstream\n").into_bytes();
+        let hdr_len = hdr(100, 0).len();
+        let start = out.len();
+        let end = start + k * hdr_len + payload;
+        for i in 0..k {
+            off.insert(100 + i as u32, out.len());
+            out.extend(hdr(100 + i, end - (start + (i + 1) * hdr_len)));
+        }
+        out.extend(vec![b'x'; payload]);
+        out.extend_from_slice(b"\nendstream\nendobj\n");
+        xref_tail(&mut out, &off, "");
+        out
+    };
+    assert!(PdfDoc::open(&overlap(1, 1000), &limits, &token()).is_ok());
+    assert_eq!(open_err(&overlap(300, 256 << 10), &limits), Some(PressError::InputLimit("stream_bytes")));
+
+    // Object-stream members that all point at one big array are parsed once per member without a bound.
+    let big_array = format!("[{}]", "0 ".repeat(5000));
+    let header: String = (0..50).map(|i| format!("{} 0 ", 20 + i)).collect();
+    let mut objs = minimal_objs("", "");
+    objs.push((5, stream_body(&format!("/Type /ObjStm /N 50 /First {}", header.len()), format!("{header}{big_array}").as_bytes())));
+    let members: Vec<(u32, u32, u8)> = (0..50).map(|i| (20 + i, 5, i as u8)).collect();
+    assert_eq!(open_err(&xref_stream_pdf(&objs, 70, "", &members), &limits), Some(PressError::InputLimit("objstm_overlap")));
+    assert!(PdfDoc::open(&xref_stream_pdf(&objs, 70, "", &members[..1]), &limits, &token()).is_ok());
+}
 
 // ------------------------------------------------- remediation R6 (review B, SMB-PRESS)
 
