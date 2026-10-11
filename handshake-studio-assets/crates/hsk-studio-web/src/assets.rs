@@ -20,7 +20,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::charref::{Context, decode};
-use crate::cssurl::css_references;
+use crate::cssurl::{RefKind, css_references};
 use crate::dom::{NodeId, NodeKind, WebDoc};
 use crate::error::{LimitKind, WebError};
 use hsk_studio_accord::CancellationToken;
@@ -60,6 +60,9 @@ pub enum DenyReason {
     /// A relative path with a backslash or a percent-encoded dot, slash or backslash: browsers and file-system ports
     /// disagree on what it means.
     AmbiguousPath,
+    /// A function inside a CSS URL function (`image-set()`, `src()`, `image()`, ...) that computes its value at style time
+    /// (`var()`, `attr()`, `env()`, custom `--*()` functions, any unknown function): the URL is not in the source.
+    ComputedUrl,
 }
 impl DenyReason {
     pub const fn code(self) -> &'static str {
@@ -72,6 +75,7 @@ impl DenyReason {
             Self::BaseHref => "base_href",
             Self::InlineDocument => "inline_document",
             Self::AmbiguousPath => "ambiguous_path",
+            Self::ComputedUrl => "computed_url",
         }
     }
 }
@@ -434,7 +438,8 @@ impl Collector<'_> {
     }
 
     /// References in CSS `css` (the text a browser's CSS parser reads); `locate` maps a range of `css` to the source bytes
-    /// it came from (location only).
+    /// it came from (location only). Blocks nested deeper than `cssurl::MAX_NESTING` refuse the scan typed
+    /// (`LimitExceeded(Depth)`), so no reference inside them goes unseen.
     fn css(
         &mut self,
         node: NodeId,
@@ -443,8 +448,22 @@ impl Collector<'_> {
         locate: &dyn Fn(&Range<usize>) -> Range<usize>,
     ) -> Result<(), WebError> {
         let room = self.limit.saturating_sub(self.out.len()).saturating_add(1);
-        for r in css_references(css, room) {
-            self.reference(node, source.clone(), &r.value, r.bad, locate(&r.span))?;
+        let found = css_references(css, room).map_err(|span| WebError::LimitExceeded {
+            limit: LimitKind::Depth,
+            span: locate(&span),
+        })?;
+        for r in found {
+            match r.kind {
+                RefKind::Url => self.reference(node, source.clone(), &r.value, false, locate(&r.span))?,
+                RefKind::Bad => self.reference(node, source.clone(), &r.value, true, locate(&r.span))?,
+                RefKind::Computed => self.push(
+                    node,
+                    source.clone(),
+                    r.value,
+                    locate(&r.span),
+                    AssetOutcome::Denied(DenyReason::ComputedUrl),
+                )?,
+            }
         }
         Ok(())
     }
@@ -569,11 +588,12 @@ fn animated_kind(doc: &WebDoc, id: NodeId) -> Option<Kind> {
 /// (`href`/`xlink:href` on any element, `src` on `img image source video audio iframe frame embed track input
 /// script`, `poster`, `object data/codebase/classid/archive`, `form action`, `formaction`, `cite`, `ping`,
 /// `srcset`/`imagesrcset` candidates, obsolete `background longdesc lowsrc manifest`, `<meta http-equiv=refresh>`
-/// URL), `<base href>`, `iframe srcdoc` (reported denied), CSS `url(...)` / `@import "..."` in `style`
-/// attributes, SVG presentation attributes (`fill stroke clip-path cursor filter mask marker-*`), `to from by
-/// values` of SVG `set`/`animate` whose `attributeName` is `href`, `xlink:href`, `src` or one of those presentation
-/// attributes, and `<style>` contents. `image-set()`/`src()` string arguments, `data:` payloads and `srcdoc` contents
-/// are not scanned.
+/// URL), `<base href>`, `iframe srcdoc` (reported denied), and in CSS text (`style` attributes, SVG presentation attributes
+/// `fill stroke clip-path cursor filter mask marker-*`, `to from by values` of SVG `set`/`animate` whose `attributeName` is
+/// `href`, `xlink:href`, `src` or one of those presentation attributes, and `<style>` contents) every URL a browser loads:
+/// url tokens, the strings of `url()`, `src()`, `image-set()`, `-webkit-image-set()`, `image()`, `cross-fade()` and
+/// `@import`, bad-url tokens (denied) and computed URLs (`Denied(ComputedUrl)`), read by the CSS Syntax 3 tokenizer in
+/// `cssurl` (tests: `tests/css_url_gate.rs`). `data:` payloads and `srcdoc` contents are not scanned.
 pub fn collect_assets(
     doc: &WebDoc,
     port: &dyn AssetPort,
