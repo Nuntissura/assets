@@ -247,23 +247,40 @@ impl Curve {
         }
     }
     /// Whether this curve can serve as the TRC of a DESTINATION matrix/Gray profile, whose inverse `inverse` takes.
-    /// ICC.1:2022 Annex F (normative) F.2 (grayTRC, p.101) and F.3 (redTRC/greenTRC/blueTRC, p.102) say that a
-    /// constant one-dimensional curve cannot be inverted and that the inverse of a non-invertible curve is
-    /// undefined. Constant curves here are
-    /// * a gamma of 0 (`curv` count 1 with u8Fixed8 0, or `para` type 0 with g = 0): y = x^0 = 1;
+    ///
+    /// ICC.1:2022 Annex F (normative; printed pages 101-102) decides it: F.1 says a one-dimensional non-constant
+    /// curve is invertible if it is monotonically increasing or monotonically decreasing over its domain, F.2
+    /// (grayTRC) and F.3 (redTRC/greenTRC/blueTRC) say that the behaviour of the inverse of a curve that is not
+    /// invertible is undefined and that a constant curve cannot be inverted. Clause 10.6 (curveType, p.48) does not
+    /// require a table to be monotonic, so such a profile is valid data, its forward use is defined, and only its
+    /// use as a destination is refused. The standard documents no inverse for a non-monotonic table (no "envelope"),
+    /// so none is invented. Refused:
+    /// * a gamma of 0 (`curv` count 1 with u8Fixed8 0, or `para` type 0 with g = 0): y = x^0 = 1, constant;
     /// * a gamma below 0 (`para` g < 0): x^g exceeds 1 for every x in (0, 1), and clause 10.18 (p.71) clips function
     ///   values outside [0, 1], so the curve is the constant 1;
-    /// * a `curv` table whose entries are all equal.
+    /// * `Gamma(g)` and the exponent `g` of `para` types 1-4 with `g <= 0` (or not finite);
+    /// * a `curv` table whose entries are all equal (constant);
+    /// * a `curv` table that rises somewhere and falls somewhere (not monotonic). One step of one count against the
+    ///   direction is enough: table entries are u16 and compare exactly, F.1 has no tolerance.
     ///
-    /// Refused: `Gamma(g)` and the exponent `g` of `para` types 1-4 with `g <= 0` (or not finite), and a constant
-    /// table. A table that is not monotonic but not constant is NOT refused here (the standard calls its inverse
-    /// undefined, the exact inverse of a monotonic table is `table_inverse`; recorded in the lane notes).
-    /// Forward (source) use of any of these curves is defined and unchanged.
+    /// Accepted: strictly or weakly monotonic tables, increasing or decreasing. A flat run (a plateau) is
+    /// invertible: F.1 a) and b) give its inverse and `table_inverse` implements them. (LittleCMS 2
+    /// `cmsReverseToneCurveEx` does not refuse a non-monotonic table: `GetInterval` takes the direction from the
+    /// first and last entry only and returns the first interval containing y in scan order, so its result for such
+    /// a table is a by-product of the scan, not a documented rule; Prism differs there on purpose.)
     pub(crate) fn require_invertible(&self) -> Result<(), WideError> {
         let invertible = match self {
             Self::Identity => true,
             Self::Gamma(g) => g.is_finite() && *g > 0.0,
-            Self::Table(t) => t.first().is_some_and(|first| t.iter().any(|v| v != first)),
+            Self::Table(t) => {
+                // Exactly one direction present: constant has neither, a non-monotonic table has both.
+                let (mut rises, mut falls) = (false, false);
+                for pair in t.windows(2) {
+                    rises |= pair[1] > pair[0];
+                    falls |= pair[1] < pair[0];
+                }
+                rises != falls
+            }
             Self::Param { p, .. } => p[0].is_finite() && p[0] > 0.0,
         };
         if invertible { Ok(()) } else { Err(WideError::NonInvertibleCurve) }
@@ -357,7 +374,14 @@ impl Curve {
 }
 
 /// Exact inverse of a monotonic piecewise-linear table (entries at i / (n - 1)); `t.len() >= 2`
-/// (`Curve::from_mox` and `split_tables` refuse shorter tables).
+/// (`Curve::from_mox` and `split_tables` refuse shorter tables). The table must be monotonic and not constant
+/// (`Curve::require_invertible` refuses every other table before a destination plan exists).
+///
+/// ICC.1:2022 F.1 (p.101) for flat runs: a run [x1, x2] mapped to y1 inverts to its highest x (x2) when x2 is not 1
+/// and to its lowest x (x1) when the run reaches 1; a y outside the range of the curve takes the inverse of the
+/// closest y in the range. A flat run at the start therefore inverts to the END of the run for y at or below the
+/// run value, a flat run at the end to the START of the run for y at or above it. Outside the range of a sloped end
+/// segment the table extrapolates that segment (out-of-gamut values keep their sign, see `Curve::inverse`).
 fn table_inverse(t: &[f64], y: f64) -> f64 {
     let n = t.len();
     let last = n.saturating_sub(1);
@@ -371,12 +395,28 @@ fn table_inverse(t: &[f64], y: f64) -> f64 {
         if hi > lo { base + (v - lo) / (hi - lo) * step } else { base }
     };
     if v <= at(0) {
+        // Flat start [0, x2]: F.1 a) for y equal to the run value, b) below it.
+        let mut end = 0usize;
+        while end < last && at(end.saturating_add(1)) == at(0) {
+            end = end.saturating_add(1);
+        }
+        if end > 0 {
+            return end as f64 * step;
+        }
         return seg(0).min(0.0);
     }
     if v >= at(last) {
+        // Flat end [x1, 1]: F.1 a) second case (lowest x) for y equal to the run value, b) above it.
+        let mut start = last;
+        while start > 0 && at(start.saturating_sub(1)) == at(last) {
+            start = start.saturating_sub(1);
+        }
+        if start < last {
+            return start as f64 * step;
+        }
         return seg(n.saturating_sub(2)).max(1.0);
     }
-    // Largest index with at(i) <= v.
+    // Largest index with at(i) <= v; the end of a flat run in the middle (F.1 a), x2 is not 1 here).
     let (mut lo, mut hi) = (0usize, last);
     while hi.saturating_sub(lo) > 1 {
         let mid = lo.saturating_add(hi.saturating_sub(lo) / 2);
@@ -1045,5 +1085,92 @@ mod tests {
         let e = exp(1.0);
         assert!((e - std::f64::consts::E).abs() < 1e-15, "{e}");
         assert!((ln(std::f64::consts::E) - 1.0).abs() < 1e-15);
+    }
+
+    /// A `curv` table as the evaluator holds it: u16 entries normalised by 65535.
+    fn table(entries: &[u16]) -> Curve {
+        Curve::table(entries.iter().map(|e| f64::from(*e) / 65535.0).collect())
+    }
+    fn at(entries: &[u16], i: usize) -> f64 {
+        f64::from(entries[i]) / 65535.0
+    }
+    fn near(got: f64, want: f64, what: &str) {
+        assert!((got - want).abs() < 1e-12, "{what}: got {got}, want {want}");
+    }
+
+    #[test]
+    fn require_invertible_accepts_monotonic_tables_and_refuses_the_rest() {
+        // ICC.1:2022 F.1: invertible iff monotonically increasing or decreasing (flat runs allowed); F.2/F.3:
+        // constant cannot be inverted, a non-invertible curve has an undefined inverse.
+        let ok: &[(&str, &[u16])] = &[
+            ("increasing", &[0, 0x2000, 0x8000, 0xe000, 0xffff]),
+            ("decreasing", &[0xffff, 0xe000, 0x8000, 0x2000, 0]),
+            ("start plateau", &[0x2000, 0x2000, 0x4000, 0x8000, 0xffff]),
+            ("middle plateau", &[0, 0x4000, 0x4000, 0x4000, 0xffff]),
+            ("end plateau", &[0, 0x4000, 0x8000, 0xc000, 0xc000]),
+            ("decreasing plateaus", &[0xffff, 0xffff, 0x8000, 0x8000, 0x2000]),
+        ];
+        for (label, entries) in ok {
+            assert_eq!(table(entries).require_invertible(), Ok(()), "{label}");
+        }
+        let refused: &[(&str, &[u16])] = &[
+            ("constant", &[0x8000; 4]),
+            ("dip", &[0, 0x6000, 0x4000, 0xa000, 0xffff]),
+            ("bump on a falling table", &[0xffff, 0x4000, 0x6000, 0x2000, 0]),
+            ("late reversal", &[0, 0x4000, 0x8000, 0xffff, 0xfff0]),
+            ("early reversal", &[0x0100, 0, 0x4000, 0x8000, 0xffff]),
+            ("one count against the direction", &[0, 0x4000, 0x3fff, 0x8000, 0xffff]),
+            ("saw", &[0, 0xffff, 0, 0xffff, 0]),
+            ("two entries, equal ends but a dip inside", &[0x8000, 0x4000, 0x8000]),
+        ];
+        for (label, entries) in refused {
+            assert_eq!(table(entries).require_invertible(), Err(WideError::NonInvertibleCurve), "{label}");
+        }
+    }
+
+    #[test]
+    fn table_inverse_follows_annex_f1_for_slopes_flat_runs_and_out_of_range_values() {
+        // Five entries: x = 0, 0.25, 0.5, 0.75, 1.
+        let inc = [0u16, 0x2000, 0x8000, 0xe000, 0xffff];
+        let c = table(&inc);
+        near(c.inverse(at(&inc, 2)), 0.5, "increasing at an entry");
+        near(c.inverse(at(&inc, 0) / 2.0 + at(&inc, 1) / 2.0), 0.125, "increasing mid-segment");
+        near(c.inverse(0.0), 0.0, "increasing at the bottom");
+        near(c.inverse(1.0), 1.0, "increasing at the top");
+        assert!(c.inverse(1.5) > 1.0 && c.inverse(-0.5) < 0.0, "sloped ends extrapolate");
+        let dec = [0xffffu16, 0xe000, 0x8000, 0x2000, 0];
+        let c = table(&dec);
+        near(c.inverse(at(&dec, 2)), 0.5, "decreasing at an entry");
+        near(c.inverse(at(&dec, 1)), 0.25, "decreasing at an entry (2)");
+        near(c.inverse(1.0), 0.0, "decreasing at the top of the range");
+        near(c.inverse(0.0), 1.0, "decreasing at the bottom of the range");
+        // F.1 a): [x1, x2] mapped to y1 with x2 != 1 inverts to x2, the highest x.
+        let mid = [0u16, 0x4000, 0x4000, 0x4000, 0xffff];
+        let c = table(&mid);
+        near(c.inverse(at(&mid, 1)), 0.75, "middle plateau value -> x2");
+        assert!(c.inverse(at(&mid, 1) - 1e-3) < 0.25 && c.inverse(at(&mid, 1) + 1e-3) > 0.75, "either side of the plateau");
+        // Flat start [0, x2]: x2 for the run value (a) and for anything below it (b: closest y in the range).
+        let start = [0x2000u16, 0x2000, 0x4000, 0x8000, 0xffff];
+        let c = table(&start);
+        near(c.inverse(at(&start, 0)), 0.25, "start plateau value -> x2");
+        near(c.inverse(at(&start, 0) - 1e-3), 0.25, "just below a start plateau");
+        near(c.inverse(0.0), 0.25, "zero below a start plateau");
+        // Flat end [x1, 1]: the end point is 1, so the LOWEST x for the run value (a) and for anything above it (b).
+        let end = [0u16, 0x4000, 0x8000, 0xc000, 0xc000];
+        let c = table(&end);
+        near(c.inverse(at(&end, 4)), 0.75, "end plateau value -> x1");
+        near(c.inverse(1.0), 0.75, "one above an end plateau");
+        assert!(c.inverse(at(&end, 3) - 1e-3) < 0.75, "just below the end plateau");
+        // The same rules on decreasing tables (x positions do not change with the direction).
+        let dstart = [0xffffu16, 0xffff, 0x8000, 0x8000, 0x2000];
+        let c = table(&dstart);
+        near(c.inverse(at(&dstart, 0)), 0.25, "decreasing start plateau value -> x2");
+        near(c.inverse(1.5), 0.25, "above a decreasing start plateau");
+        near(c.inverse(at(&dstart, 2)), 0.75, "decreasing middle plateau -> x2");
+        let dend = [0xffffu16, 0x8000, 0x8000, 0x2000, 0x2000];
+        let c = table(&dend);
+        near(c.inverse(at(&dend, 4)), 0.75, "decreasing end plateau value -> x1");
+        near(c.inverse(0.0), 0.75, "below a decreasing end plateau");
+        near(c.inverse(at(&dend, 1)), 0.5, "decreasing middle plateau -> x2");
     }
 }
