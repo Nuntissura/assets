@@ -203,13 +203,13 @@ pub(crate) struct ShowRec {
     pub mapped: Vec<char>,
     /// Operator of two or more non-empty strings (a kerned `TJ`): each reading that differs from the
     /// bytes, joined over all strings with NO separator, as a viewer draws one run (R8 F2/D2; test
-    /// `kerned_tj_runs_are_read_whole_and_kept_text_needs_a_drawn_reading`). Empty otherwise.
+    /// `kerned_tj_runs_are_read_whole`). Empty otherwise.
     pub joined: Vec<Vec<char>>,
     /// The string bytes of such an operator joined (empty for a single string).
     pub bytes: Vec<u8>,
     /// Per string of the operator ([`show_strings`] order): its bytes are what the font draws (a simple
     /// font whose complete encoding reading has the same letters and digits as the bytes). Only such
-    /// bytes may exempt a byte match in kept text (R8 P1).
+    /// bytes may exempt a byte match in kept text (R8 P1; test `kept_text_needs_a_drawn_reading`).
     pub raw_drawn: Vec<bool>,
     pub opaque: bool,
 }

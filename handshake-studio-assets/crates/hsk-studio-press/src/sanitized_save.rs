@@ -22,7 +22,7 @@
 //!   destination) are read with their resources, and every other stream that tokenizes as content is
 //!   read with none (an unresolvable font makes its text opaque); a kerned `TJ` is matched per string
 //!   and as one joined run (R8 F1/F2; tests `partial_tounicode_and_unreachable_pages_are_read_or_opaque`,
-//!   `kerned_tj_runs_are_read_whole_and_kept_text_needs_a_drawn_reading`).
+//!   `kerned_tj_runs_are_read_whole`).
 //! - Spellings: the given bytes, PDFDocEncoding, UTF-8, UTF-16BE, UTF-16LE, upper- and lower-case hex
 //!   of the byte and UTF-16BE spellings, and the codes each font's `/ToUnicode` map gives the text
 //!   (scanned in the content streams that can select that font).
@@ -455,7 +455,7 @@ struct KeptOp {
 /// these may exempt a match inside the operator's bytes, so a comment or a name between operand and
 /// operator never rides along, and bytes a font draws as other glyphs (`/Differences` remapping,
 /// composite codes, an unresolved or unset font) are no kept text (R8 P1; test
-/// `kerned_tj_runs_are_read_whole_and_kept_text_needs_a_drawn_reading`).
+/// `kept_text_needs_a_drawn_reading`).
 fn shown_needles(op: &Op, kept: Option<&KeptOp>, vars: &[Variant], texts: &[(usize, Vec<char>, bool)]) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
     let Some(k) = kept else { return out };

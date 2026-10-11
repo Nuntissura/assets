@@ -2996,3 +2996,270 @@ fn hostile_differences_are_bounded() {
         assert_eq!(p.not_proven_reasons(), vec![NotProven::OpaqueText], "{what}");
     }
 }
+
+// ------------------------------------------- R8 pre-review remediation (the proof fails closed)
+// Lead decision 2026-10-11T11:58:11Z, validation/R8-prereview-press.json F1-F4, P1, D1-D4. Lines
+// marked R8-new-api use API added by this remediation; the red run on 607d47c drops only those lines,
+// and every test there fails on an API-stable assertion before them.
+
+/// One page with the R7 test fonts (`R7_RES`: F1 = Type0 with /ToUnicode, F2 = Helvetica, F3 = Type0
+/// without /ToUnicode) plus `fonts`, page content `content`, catalog entries `catalog`, `extra` objects.
+fn r8_doc(content: &str, fonts: &str, catalog: &str, extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs = base_objs(content.as_bytes(), "<< /Title (T) >>");
+    objs[0].1 = format!("<< /Type /Catalog /Pages 2 0 R {catalog} >>").into_bytes();
+    let res = R7_RES.replace("/F3 23 0 R", &format!("/F3 23 0 R {fonts}"));
+    objs[2].1 = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R] /Resources << {res} >> >>").into_bytes();
+    objs.extend(r7_fonts());
+    objs.extend(extra);
+    build(&objs, "/Info 7 0 R", b"")
+}
+
+/// The removed string in `R7_REGION` (Helvetica), kept text outside it, and `more`.
+fn r8_page(more: &str) -> String {
+    format!("BT /F2 12 Tf 72 700 Td (SECRET-ALPHA) Tj ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET\n{more}")
+}
+
+/// A page whose FreeText annotation (outside any region) has appearance 13 drawing `content` with
+/// font 20 (`font`) as /F1.
+fn r8_ap_doc(font: Vec<u8>, content: &str, extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs = minimal_objs("", "5 0 R");
+    objs.extend([
+        (5, b"<< /Type /Annot /Subtype /FreeText /Rect [100 100 300 140] /Contents (label) /AP << /N 13 0 R >> >>".to_vec()),
+        (13, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 200 40] /Resources << /Font << /F1 20 0 R >> >>", content.as_bytes())),
+        (20, font),
+    ]);
+    objs.extend(extra);
+    build(&objs, "", b"")
+}
+
+/// Type0 font 29 whose /ToUnicode (28) names only code 0101 (S) of `R7_CODES`.
+fn r8_partial_font() -> Vec<(u32, Vec<u8>)> {
+    vec![
+        (29, b"<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Identity-H /DescendantFonts [21 0 R] /ToUnicode 28 0 R >>".to_vec()),
+        (28, stream_body("", b"1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfchar <0101> <0053> endbfchar")),
+    ]
+}
+
+fn decoded_text_hit(p: &hsk_studio_press::PayloadProof, object: u32) -> bool {
+    p.hits.iter().any(|h| h.location == PayloadLocation::DecodedText { object })
+}
+
+/// F1 (R6 FAIL #2 class): the proof reads the object table, not only the page tree. Page objects
+/// outside it (a /Names /Templates template page, ISO 32000-2 12.7.6; a page reached only through an
+/// outline /Dest) are read with their resources, a content stream nothing reaches is read with none
+/// (its fonts unresolvable: opaque), and composite text whose /ToUnicode lacks a drawn code is opaque.
+/// At 607d47c every one of these read as proven.
+#[test]
+fn partial_tounicode_and_unreachable_pages_are_read_or_opaque() {
+    let page = r8_page("");
+    let template = |font: &str, codes: &str| {
+        vec![
+            (30, format!("<< /Type /Page /MediaBox [0 0 612 792] /Resources << /Font << /F9 {font} >> >> /Contents 31 0 R >>").into_bytes()),
+            (31, stream_body("", format!("BT /F9 12 Tf 72 300 Td {codes} Tj ET").as_bytes())),
+        ]
+    };
+    let templates = "/Names << /Templates << /Names [(t) 30 0 R] >> >>";
+    // Control: a template page with readable text that is not the removed string.
+    let out = r7_run(&r8_doc(&page, "", templates, template("24 0 R", "<0101>")));
+    assert!(out.is_proven(), "{:?}", out.not_proven_reasons());
+    // Opaque composite text (font 23, no /ToUnicode) on a template page (the pre-review example).
+    let out = r7_run(&r8_doc(&page, "", templates, template("23 0 R", R7_CODES)));
+    assert!(!out.is_proven(), "opaque text on a template page read as proven");
+    assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText) && out.proof.opaque_text_streams == vec![31], "{:?}", out.not_proven_reasons());
+    // The removed string drawn through /ToUnicode codes on a template page: a leak.
+    let out = r7_run(&r8_doc(&page, "", templates, template("24 0 R", R7_CODES)));
+    assert!(!out.is_proven() && decoded_text_hit(&out.proof, 31), "{:?}", out.proof.hits);
+    // The same page object reached only through an outline destination.
+    let mut extra = template("24 0 R", R7_CODES);
+    extra.extend([
+        (40, b"<< /Type /Outlines /First 41 0 R /Last 41 0 R /Count 1 >>".to_vec()),
+        (41, b"<< /Title (Go) /Parent 40 0 R /Dest [30 0 R /Fit] >>".to_vec()),
+    ]);
+    let out = r7_run(&r8_doc(&page, "", "/Outlines 40 0 R", extra));
+    assert!(!out.is_proven() && decoded_text_hit(&out.proof, 31), "{:?}", out.proof.hits);
+    // A content stream nothing reaches as content (no /Subtype, no /Resources): read with no
+    // resources, so /F1 cannot be resolved and its text is opaque.
+    let hidden = (32, stream_body("", format!("BT /F1 12 Tf 72 300 Td {R7_CODES} Tj ET").as_bytes()));
+    let out = r7_run(&r8_doc(&page, "", "/Hidden 32 0 R", vec![hidden]));
+    assert!(!out.is_proven(), "unreached content stream read as proven");
+    assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText) && out.proof.opaque_text_streams == vec![32], "{:?}", out.not_proven_reasons());
+    // Kept page text drawn with a composite font whose /ToUnicode names only the first code.
+    let out = r7_run(&r8_doc(&r8_page(&format!("BT /F4 12 Tf 72 200 Td {R7_CODES} Tj ET")), "/F4 29 0 R", "", r8_partial_font()));
+    assert!(!out.is_proven(), "partially mapped composite text read as proven");
+    // (The redaction gave the page a new content stream object; it is the only opaque one.)
+    assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText) && out.proof.opaque_text_streams.len() == 1, "{:?} {:?}", out.not_proven_reasons(), out.proof.opaque_text_streams);
+}
+
+/// F2/D2: text one kerned TJ draws as one run is matched as one run (its readings and its bytes
+/// joined) in appearances and stray content, with Helvetica, /ToUnicode codes and /Differences codes
+/// split over TJ elements; a text-field pass drops such an appearance; kept page text stays a
+/// collision. At 607d47c each of these read as clean.
+#[test]
+fn kerned_tj_runs_are_read_whole() {
+    let ap = |content: &str| r7_verify(&r7_font_doc(R7_PLAIN, None, Some(content), "", vec![]));
+    // Helvetica (StandardEncoding): the bytes are the text, split by a kerning number.
+    let p = ap("BT /F2 12 Tf 2 5 Td [(SECRET-) -15 (ALPHA)] TJ ET");
+    assert!(!p.is_clean() && decoded_text_hit(&p, 26), "kerned Helvetica appearance: {:?}", p.hits);
+    // /ToUnicode codes split over two elements.
+    let p = ap("BT /F1 12 Tf 2 5 Td [<0101010201030104010501060107> -15 <01080109010A010B010C>] TJ ET");
+    assert!(!p.is_clean() && decoded_text_hit(&p, 26), "kerned ToUnicode appearance: {:?}", p.hits);
+    // /Differences codes split over two elements.
+    let split_diff = "BT /F1 12 Tf 2 5 Td [<01020304020506> -20 <0708090A07>] TJ ET";
+    let pdf = r8_ap_doc(diff_font(&format!("1 {DIFF_NAMES}"), ""), split_diff, vec![]);
+    let p = verify_secret(&pdf);
+    assert!(!p.is_clean() && decoded_text_hit(&p, 13), "kerned /Differences appearance: {:?}", p.hits);
+    // The text-field pass reads the run whole too: the appearance is dropped and the result proven.
+    let mut doc = open(&pdf);
+    let out = redact_text_fields_and_save(&mut doc, &["SECRET-ALPHA".to_string()], &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(rows(&out.report, TextRole::Appearance), vec![(5, false, TextOutcomeKind::Dropped, 1)]);
+    assert!(out.is_proven() && find(&out.bytes, b"/N 13 0 R").is_none(), "{:?}", out.not_proven_reasons());
+    // Stray content (a form nothing draws, with its own resources).
+    let form = stream_body("/Type /XObject /Subtype /Form /BBox [0 0 9 9] /Resources << /Font << /F2 6 0 R >> >>", b"BT /F2 12 Tf [(SECRET-) -15 (ALPHA)] TJ ET");
+    let out = r7_run(&r8_doc(&r8_page(""), "", "/Hidden 33 0 R", vec![(33, form)]));
+    assert!(!out.is_proven() && decoded_text_hit(&out.proof, 33), "kerned stray form: {:?}", out.proof.hits);
+    // Controls: a different word split the same way is not a hit; kerned kept page text is a collision.
+    let p = ap("BT /F2 12 Tf 2 5 Td [(SECRET-) -15 (BETA)] TJ ET");
+    assert!(p.is_clean(), "{:?}", p.hits);
+    let p = r7_verify(&r7_font_doc("BT /F2 12 Tf 72 300 Td [(SECRET-) -15 (ALPHA)] TJ ET", None, None, "", vec![]));
+    assert!(p.is_clean() && p.kept_text_collisions.iter().any(|c| c.object == 4), "{:?}", p);
+}
+
+/// P1: a byte match inside kept page text is exempt only when the font draws those bytes as the same
+/// letters. Kept "(SECRET-ALPHA) Tj" in a /Differences font that draws every capital as X is not the
+/// removed text, only its bytes: a leak. At 607d47c it read as a kept-text collision (proven).
+#[test]
+fn kept_text_needs_a_drawn_reading() {
+    let font = |names: &str| (33, format!("<< /Type /Font /Subtype /Type1 /BaseFont /Test /Encoding << /Type /Encoding /Differences [65 {names}] >> >>").into_bytes());
+    let kept = r8_page("BT /F5 12 Tf 72 200 Td (SECRET-ALPHA) Tj ET");
+    let out = r7_run(&r8_doc(&kept, "/F5 33 0 R", "", vec![font(&"/X ".repeat(26))]));
+    assert!(!out.is_proven(), "bytes drawn as other glyphs read as kept text: {:?}", out.proof);
+    assert!(out.not_proven_reasons().contains(&NotProven::Leak) && out.proof.kept_text_collisions.is_empty(), "{:?}", out.proof);
+    // Controls: the names spelled as the letters they are, and plain Helvetica: kept text (collision).
+    let az: String = ('A'..='Z').map(|c| format!("/{c} ")).collect();
+    let out = r7_run(&r8_doc(&kept, "/F5 33 0 R", "", vec![font(&az)]));
+    assert!(out.is_proven() && !out.proof.kept_text_collisions.is_empty(), "{:?}", out.not_proven_reasons());
+    let out = r7_run(&r8_doc(&r8_page("BT /F2 12 Tf 72 200 Td (SECRET-ALPHA) Tj ET"), "", "", vec![]));
+    assert!(out.is_proven() && !out.proof.kept_text_collisions.is_empty(), "{:?}", out.not_proven_reasons());
+}
+
+/// F3/D3: a removed string whose words cannot be read (composite font without /ToUnicode,
+/// unmappable or empty-stem /Differences names, a partial /ToUnicode) was searched only as its codes,
+/// so the same words in an outline title read as proven; and an encoding the selector's budget could
+/// not pay for was silently dropped. At 607d47c each read as proven or succeeded.
+#[test]
+fn unreadable_removed_text_is_never_proven() {
+    let titled = || {
+        vec![
+            (40, b"<< /Type /Outlines /First 41 0 R /Last 41 0 R /Count 1 >>".to_vec()),
+            (41, b"<< /Title (SECRET-ALPHA plan) /Parent 40 0 R >>".to_vec()),
+        ]
+    };
+    let region_text = |font: &str, codes: &str| format!("BT /{font} 12 Tf 72 700 Td {codes} Tj ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET");
+    // Composite font 23 (no /ToUnicode) draws the region text; its words live on in the outline title.
+    let pdf = r8_doc(&region_text("F3", R7_CODES), "", "/Outlines 40 0 R", titled());
+    let out = r7_run(&pdf);
+    assert!(!out.is_proven(), "unreadable removed text read as proven");
+    assert!(out.region_cleared(), "the in-region instance itself is gone: {:?}", out.not_proven_reasons());
+    assert_eq!(out.not_proven_reasons(), vec![NotProven::UnreadableRemovedText]); // R8-new-api
+    assert_eq!((out.unreadable_removed, out.reports[0].removed_unreadable.clone()), (1, vec![true])); // R8-new-api
+    // A text policy cannot find the words either (independent oracle: the title still holds them).
+    let mut doc = open(&pdf);
+    let with = redact_and_save_with(&mut doc, &[R7_REGION], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
+    assert!(!with.is_proven() && leaks(&with.bytes, "secret-alpha plan"), "{:?}", with.not_proven_reasons());
+    // Simple fonts whose names nothing reads (outside the glyph list; empty stems, D1).
+    for names in ["/g1 /g2 /g3 /g4 /g5 /g6 /g7", "/.s1 /.s2 /.s3 /_ /__ /.A /.B"] {
+        let font = (33, format!("<< /Type /Font /Subtype /Type1 /BaseFont /Test /Encoding << /Type /Encoding /Differences [1 {names}] >> >>").into_bytes());
+        let mut extra = titled();
+        extra.push(font);
+        let out = r7_run(&r8_doc(&region_text("F5", "<01020304050607>"), "/F5 33 0 R", "/Outlines 40 0 R", extra));
+        assert!(!out.is_proven() && out.region_cleared(), "{names}: {:?}", out.not_proven_reasons());
+        assert_eq!(out.not_proven_reasons(), vec![NotProven::UnreadableRemovedText], "{names}"); // R8-new-api
+    }
+    // A composite font whose /ToUnicode lacks drawn codes: the reading is partial.
+    let out = r7_run(&r8_doc(&region_text("F4", R7_CODES), "/F4 29 0 R", "", r8_partial_font()));
+    assert_eq!(out.reports[0].removed_unreadable, vec![true]); // R8-new-api
+    assert!(out.not_proven_reasons().contains(&NotProven::UnreadableRemovedText)); // R8-new-api
+    // Control: readable composite text (font 24): the outline title is found (a leak), not unreadable.
+    let out = r7_run(&r8_doc(&region_text("F1", R7_CODES), "", "/Outlines 40 0 R", titled()));
+    assert_eq!(out.not_proven_reasons(), vec![NotProven::Leak]);
+    // Budget: reading the region font's encoding needs more than the pass budget. The selector
+    // refuses (InputLimit) instead of reading the text without its encoding.
+    let blocks: String = (0..15).map(|_| format!("0 {}", "/A ".repeat(128))).collect();
+    let big = (34, format!("<< /Type /Font /Subtype /Type1 /BaseFont /Test /Encoding << /Differences [{blocks}] >> >>").into_bytes());
+    let pdf = r8_doc(&region_text("F6", "(SECRET-ALPHA)"), "/F6 34 0 R", "", vec![big]);
+    let tight = Limits { max_decoded_total: 100_000, ..Limits::default() };
+    let mut doc = PdfDoc::open(&pdf, &tight, &token()).unwrap();
+    assert_eq!(doc.redact_region(&R7_REGION, UnsupportedPolicy::Refuse, &token()).unwrap_err(), PressError::InputLimit("decoded_total"));
+}
+
+/// F4/D4 (PLR-039 re-opened; lead decision 11:58Z): the selector does not compute Type 3 glyph
+/// geometry (/FontMatrix) or vertical writing, so a region on a page drawing such text is never read
+/// as cleared. At 607d47c a Type 3 font with /FontMatrix [1 0 0 1 0 0] drew SECRET at x 160..196 while
+/// the selector placed it at 100.06..100.096: a region over it selected nothing and read as cleared
+/// and proven; vertical text below its first glyph read the same.
+#[test]
+fn type3_and_vertical_text_never_read_as_cleared() {
+    let widths = vec!["0.6"; 20].join(" ");
+    let t3 = format!(
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [1 0 0 1 0 0] /CharProcs << /A 36 0 R /C 36 0 R /E 36 0 R /R 36 0 R /S 36 0 R /T 36 0 R >> /Encoding << /Type /Encoding /Differences [65 /A 67 /C 69 /E 82 /R /S /T] >> /FirstChar 65 /LastChar 84 /Widths [{widths}] >>"
+    );
+    let glyph = (36, stream_body("", b"0.6 0 0 0 0.6 0.7 d1 0 0 0.6 0.7 re f"));
+    let content = "BT /T3 10 Tf 100 700 Td (AAAAAAAAAA) Tj (SECRET) Tj ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET";
+    let pdf = r8_doc(content, "/T3 35 0 R", "", vec![(35, t3.into_bytes()), glyph.clone()]);
+    let region = RedactionRegion { page_index: 0, rect: [150.0, 690.0, 210.0, 715.0] };
+    let mut doc = open(&pdf);
+    let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::ReportAndContinue, &token()).unwrap();
+    // Independent oracle: SECRET is still drawn in the region (x = 100 + 10 x 0.6 x 10 = 160..196).
+    assert!(independent_streams(&out.bytes).iter().any(|s| find(s, b"(SECRET) Tj").is_some()), "the Type 3 run left the content");
+    assert!(!out.region_cleared() && !out.is_proven(), "Type 3 text on the page read as cleared");
+    assert!(out.not_proven_reasons().contains(&NotProven::RegionIncomplete), "{:?}", out.not_proven_reasons());
+    assert_eq!(out.reports[0].unredacted, vec![RedactionClass::Type3Text]); // R8-new-api
+    let mut doc = open(&pdf);
+    let refused = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token());
+    assert_eq!(refused.unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::Type3Text)); // R8-new-api
+
+    // Vertical writing: /Identity-V, and an embedded CMap that sets /WMode 1; glyphs advance down the
+    // page from y 700, the region lies below the first glyph.
+    let below = RedactionRegion { page_index: 0, rect: [90.0, 600.0, 130.0, 650.0] };
+    let vtext = format!("BT /V1 12 Tf 100 700 Td {R7_CODES} Tj ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET");
+    let cmap = (38, stream_body("/Type /CMap /CMapName /Test-Embedded", b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /WMode 1 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 1 begincidrange <0000> <FFFF> 0 endcidrange endcmap end end"));
+    let font = |enc: &str| (37, format!("<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding {enc} /DescendantFonts [21 0 R] /ToUnicode 25 0 R >>").into_bytes());
+    for enc in ["/Identity-V", "38 0 R"] {
+        let mut doc = open(&r8_doc(&vtext, "/V1 37 0 R", "", vec![font(enc), cmap.clone()]));
+        let out = redact_and_save(&mut doc, &[below], UnsupportedPolicy::ReportAndContinue, &token()).unwrap();
+        assert!(independent_streams(&out.bytes).iter().any(|s| find(s, R7_CODES.as_bytes()).is_some()), "{enc}");
+        assert!(!out.region_cleared(), "{enc}: vertical text read as cleared");
+        assert_eq!(out.reports[0].unredacted, vec![RedactionClass::VerticalText], "{enc}"); // R8-new-api
+    }
+    // Controls: the same text written horizontally (/Identity-H), and a Type 3 font that is only listed.
+    let mut doc = open(&r8_doc(&vtext, "/V1 37 0 R", "", vec![font("/Identity-H")]));
+    let out = redact_and_save(&mut doc, &[below], UnsupportedPolicy::Refuse, &token()).unwrap();
+    assert!(out.region_cleared() && out.is_proven(), "{:?}", out.not_proven_reasons());
+    let listed_t3 = b"<< /Type /Font /Subtype /Type3 /FontMatrix [1 0 0 1 0 0] /CharProcs << >> /Encoding << /Differences [] >> /FirstChar 65 /LastChar 65 /Widths [0.6] >>";
+    let listed = r8_doc("BT /F2 12 Tf 160 700 Td (SECRET) Tj ET", "/T3 35 0 R", "", vec![(35, listed_t3.to_vec())]);
+    let mut doc = open(&listed);
+    let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
+    assert!(out.region_cleared() && out.reports[0].text_strings_removed == 1, "{:?}", out.not_proven_reasons());
+}
+
+/// D1: only /.notdef is a glyph without text; a name whose stem is empty (/.s1, /_, /.A) names a glyph
+/// the font draws that no reading turns into text: opaque. At 607d47c such names read as blank, so
+/// text drawn with them was never checked and the proof read clean.
+#[test]
+fn empty_stem_glyph_names_are_opaque() {
+    for names in ["/.s1 /.s2 /.s3 /.s4 /.s5 /.s6 /.s7 /.s8 /.s9 /.s10", "/_ /__ /.A /.B /._ /.x /.y /.z /.a /.b"] {
+        let p = verify_secret(&diff_ap_doc(&format!("1 {names}")));
+        assert!(!p.is_clean(), "{names}: text drawn with empty-stem glyph names was never read");
+        assert_eq!((p.not_proven_reasons(), p.opaque_text_streams.clone()), (vec![NotProven::OpaqueText], vec![13]), "{names}");
+    }
+    // The pre-review case: a Type 3 font whose glyph procedures are named /.s1 ... in an appearance.
+    let procs: String = (1..=10).map(|i| format!("/.s{i} 34 0 R ")).collect();
+    let names: String = (1..=10).map(|i| format!("/.s{i} ")).collect();
+    let t3 = format!("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << {procs}>> /Encoding << /Differences [1 {names}] >> /FirstChar 1 /LastChar 10 /Widths [600 600 600 600 600 600 600 600 600 600] >>");
+    let glyph = (34, stream_body("", b"600 0 0 0 600 700 d1 0 0 600 700 re f"));
+    let p = verify_secret(&r8_ap_doc(t3.into_bytes(), &format!("BT /F1 12 Tf 2 5 Td {DIFF_CODES} Tj ET"), vec![glyph]));
+    assert!(!p.is_clean() && p.opaque_text_streams == vec![13], "Type 3 empty-stem names: {:?}", p.not_proven_reasons());
+    // Control: /.notdef draws nothing.
+    let p = verify_secret(&diff_ap_doc(&format!("1 {}", "/.notdef ".repeat(10))));
+    assert!(p.is_clean(), "{:?}", p.not_proven_reasons());
+}
