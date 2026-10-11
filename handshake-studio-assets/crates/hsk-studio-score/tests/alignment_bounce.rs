@@ -82,6 +82,65 @@ fn resampler_alignment_is_exact_for_impulses() {
     });
 }
 
+#[test]
+fn resampler_publishes_the_exact_integer_frame_count() {
+    bounded_case("resampler_publishes_the_exact_integer_frame_count", || {
+        let (engine, token) = (engine(), CancellationToken::default());
+        // Independent integer oracle: ceil(frames * out / in); never an f64 ratio.
+        let want = |frames: usize, rate_in: u32, rate_out: u32| (frames as u128 * u128::from(rate_out)).div_ceil(u128::from(rate_in)) as usize;
+        let run = |resampler: &mut ClipResampler, rate_in: u32, frames: usize, start: u64| {
+            let tone: Vec<f32> = (0..frames).map(|n| (0.5 * (std::f64::consts::TAU * 997.0 * n as f64 / f64::from(rate_in)).sin()) as f32).collect();
+            let sp = BlockSpec { sample_rate_hz: rate_in, layout: mono(), frames, start_sample: start };
+            let channels: [&[f32]; 1] = [&tone];
+            // Capacity is exactly the sizing helper's bound.
+            let mut out = OutputBlock::with_capacity(mono(), resampler.output_capacity_for(frames)).unwrap();
+            let receipt = engine
+                .resample(&ctx(7), &InputBlock::new(&sp, &channels), resampler, &mut out, &token)
+                .unwrap();
+            (receipt, out)
+        };
+        let pairs = [(44_100_u32, 48_000_u32), (48_000, 44_100), (32_000, 48_000), (48_000, 96_000), (48_000, 48_000)];
+        let mut resamplers: Vec<ClipResampler> = pairs.iter().map(|(i, o)| ClipResampler::new(*i, *o, 1, 1024).unwrap()).collect();
+
+        // One second at every measured pair publishes exactly one second (the 44.1k -> 48k case
+        // is the one where rubato's f64 ratio rounds 48000 up to 48001).
+        for ((rate_in, rate_out), resampler) in pairs.iter().copied().zip(&mut resamplers) {
+            let frames = rate_in as usize;
+            let exact = rate_out as usize;
+            assert_eq!(want(frames, rate_in, rate_out), exact, "{rate_in}->{rate_out}");
+            assert_eq!(resampler.output_frames_for(frames), Some(exact));
+            let (receipt, out) = run(resampler, rate_in, frames, 0);
+            assert_eq!((receipt.requested_output_frames, receipt.actual_output_frames()), (exact, exact), "{rate_in}->{rate_out}");
+            assert_eq!((out.published_frames(), out.published_channel(0).unwrap().len()), (exact, exact), "{rate_in}->{rate_out}");
+            assert_eq!((receipt.block.start_sample, receipt.block.end_sample), (0, exact as u64), "{rate_in}->{rate_out}");
+            assert!(receipt.trimmed_tail_frames <= 2, "{rate_in}->{rate_out}: tail {}", receipt.trimmed_tail_frames);
+            assert!(out.backing()[exact..].iter().all(|s| *s == 0.0), "{rate_in}->{rate_out}: nothing past the published count");
+        }
+        // 44100 frames at 44.1 kHz -> 48 kHz: rubato yields one frame past the exact second; the
+        // receipt records that trimmed frame instead of publishing it.
+        let (receipt, _) = run(&mut resamplers[0], 44_100, 44_100, 0);
+        assert_eq!((receipt.requested_output_frames, receipt.trimmed_tail_frames), (48_000, 1));
+
+        // Adjacent clips on the output timeline tile with no overlap: the second clip starts at
+        // sample 147_000 + 44_100 on the input timeline and exactly at the first clip's end.
+        let (first, _) = run(&mut resamplers[0], 44_100, 44_100, 147_000);
+        let (second, _) = run(&mut resamplers[0], 44_100, 44_100, 147_000 + 44_100);
+        assert_eq!((first.block.start_sample, first.block.end_sample), (160_000, 208_000));
+        assert_eq!(second.block.start_sample, first.block.end_sample, "no one-sample overlap with the next clip");
+
+        // Length sweep: short lengths and the neighbours of one second land on the exact integer
+        // count, so the shortfall guard in Engine::resample never fires.
+        for ((rate_in, rate_out), resampler) in pairs[..4].iter().copied().zip(&mut resamplers) {
+            for frames in (1..=80).chain([147, 160, 441, 1470, 4799, 4801]) {
+                let (receipt, out) = run(resampler, rate_in, frames, 0);
+                let exact = want(frames, rate_in, rate_out);
+                assert_eq!((receipt.requested_output_frames, receipt.actual_output_frames(), out.published_frames()), (exact, exact, exact), "{rate_in}->{rate_out} x {frames}");
+                assert!(out.published_channel(0).unwrap().iter().all(|s| s.is_finite()));
+            }
+        }
+    });
+}
+
 fn fixture(frames: usize) -> (Vec<f32>, Vec<f32>) {
     let pattern = [0.0_f32, 0.25, -0.25, 0.5];
     let left: Vec<f32> = (0..frames).map(|n| pattern[n % 4]).collect();

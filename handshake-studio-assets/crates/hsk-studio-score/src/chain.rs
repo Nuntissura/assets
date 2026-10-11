@@ -155,6 +155,8 @@ impl Processor for Chain {
         if frames > self.capacity {
             return Err(ScoreError::CapacityExceeded);
         }
+        // A new block starts only after the previous one was published (a discard calls `reset`).
+        self.commit();
         let Some(last) = self.stages.iter().rposition(|s| !s.bypassed) else {
             return Unity.process(input, out, cancel);
         };
@@ -193,6 +195,11 @@ impl Processor for Chain {
     fn reset(&mut self) {
         for stage in &mut self.stages {
             stage.processor.reset();
+        }
+    }
+    fn commit(&mut self) {
+        for stage in &mut self.stages {
+            stage.processor.commit();
         }
     }
 }

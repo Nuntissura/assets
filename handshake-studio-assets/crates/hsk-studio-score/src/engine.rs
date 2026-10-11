@@ -10,7 +10,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// `input.frames()` samples of every output channel; allocate nothing; poll `cancel` at least
 /// every `CANCEL_CHECK_FRAMES` frames and return `Canceled`. Output is published only by the
 /// engine. `reset` returns all internal history to its initial state (called when a block is
-/// discarded, because the history then contains unpublished samples).
+/// discarded, because the history then contains unpublished samples). `commit` is the opposite
+/// signal: the engine calls it once a block has been published, so processors that keep a
+/// rollback snapshot of the pre-block state (for example [`RampedGain`](crate::RampedGain)) can
+/// drop it and a later `reset` of a stage that never ran in a discarded block is a no-op.
+/// Wrappers around another processor must forward `reset` and `commit`.
 pub trait Processor {
     /// Delay, in samples, between an input sample and its place in the output stream.
     fn latency_samples(&self) -> u32;
@@ -37,6 +41,9 @@ pub trait Processor {
         cancel: &CancellationToken,
     ) -> Result<(), ScoreError>;
     fn reset(&mut self) {}
+    /// The block this processor last processed has been published; its pre-block rollback state
+    /// (if any) is no longer needed. Default: nothing to commit.
+    fn commit(&mut self) {}
 }
 
 /// Explicit request identity. `actor: None` is rejected before any PCM access.
@@ -249,6 +256,7 @@ impl Engine {
             proc.reset();
             return Err(error);
         }
+        proc.commit();
 
         let receipt = BlockReceipt::measure(
             out,

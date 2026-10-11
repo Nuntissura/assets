@@ -9,12 +9,22 @@ use hsk_studio_accord::CancellationToken;
 /// `volume` (STU-FX-137) never steps. Frame `n` of an `N`-frame block uses
 /// `g(n) = current + (target - current) * n / N` (computed in f64); the block ends one step short
 /// of the target, so the next block starts exactly on it. After a successful block `current`
-/// becomes `target`. When the engine discards a block, `reset` restores the pre-block value.
+/// becomes `target`.
+///
+/// Discard semantics. The pre-block value is snapshotted as the very first act of `process`, before
+/// the cancel poll, and stays a live rollback only while the block it belongs to is unpublished.
+/// `reset` (the engine discarded the block) restores that snapshot; once the block is published
+/// (`commit`, or the start of the next `process`) the snapshot is dropped and `reset` is a no-op.
+/// So a canceled or discarded block leaves `current` exactly as it was before the block, and a
+/// stage that never ran in the discarded block (later stages of a canceled `Chain`) keeps the value
+/// of the last published block instead of reverting a ramp that was already audible.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RampedGain {
     before: f32,
     current: f32,
     target: f32,
+    /// `true` while the last processed block is not yet known to be published.
+    uncommitted: bool,
 }
 
 impl RampedGain {
@@ -24,6 +34,7 @@ impl RampedGain {
                 before: linear,
                 current: linear,
                 target: linear,
+                uncommitted: false,
             })
         } else {
             Err(ScoreError::NotFinite)
@@ -65,8 +76,12 @@ impl Processor for RampedGain {
         out: &mut OutputBlock,
         cancel: &CancellationToken,
     ) -> Result<(), ScoreError> {
-        poll(cancel)?;
+        // A new block starts only after the previous one was published (a discard calls `reset`),
+        // so that block is committed; snapshot before any early return so a cancel at the poll
+        // below or inside `per_channel` restores exactly this value.
+        self.uncommitted = false;
         self.before = self.current;
+        poll(cancel)?;
         let (start, delta) = (
             f64::from(self.current),
             f64::from(self.target) - f64::from(self.current),
@@ -85,9 +100,16 @@ impl Processor for RampedGain {
             at += src.len();
         })?;
         self.current = self.target;
+        self.uncommitted = true;
         Ok(())
     }
     fn reset(&mut self) {
-        self.current = self.before;
+        if self.uncommitted {
+            self.current = self.before;
+            self.uncommitted = false;
+        }
+    }
+    fn commit(&mut self) {
+        self.uncommitted = false;
     }
 }

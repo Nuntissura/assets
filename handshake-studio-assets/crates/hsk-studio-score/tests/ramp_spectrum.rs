@@ -155,3 +155,109 @@ fn spectrum_matches_direct_dft_and_known_bins() {
         assert_eq!(analyzer.analyze(&signal, &canceled).unwrap_err(), ScoreError::Canceled);
     });
 }
+
+/// Cancels its token the moment a block reaches it, then forwards to the ramp, so the ramp's own
+/// first poll sees the cancel (the early-return path before any sample work).
+struct CancelAtEntry<'a>(&'a mut RampedGain, &'a CancellationToken);
+impl Processor for CancelAtEntry<'_> {
+    fn latency_samples(&self) -> u32 {
+        0
+    }
+    fn accepts(&self, i: &ChannelLayout, o: &ChannelLayout) -> bool {
+        self.0.accepts(i, o)
+    }
+    fn process(&mut self, input: &InputBlock<'_>, out: &mut OutputBlock, cancel: &CancellationToken) -> Result<(), ScoreError> {
+        self.1.cancel();
+        self.0.process(input, out, cancel)
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+    fn commit(&mut self) {
+        self.0.commit();
+    }
+}
+
+/// Passes audio through; when armed it cancels and refuses, so every stage after it never runs.
+struct Fuse(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Processor for Fuse {
+    fn identity(&self) -> String {
+        String::from("fuse")
+    }
+    fn latency_samples(&self) -> u32 {
+        0
+    }
+    fn accepts(&self, i: &ChannelLayout, o: &ChannelLayout) -> bool {
+        i == o
+    }
+    fn process(&mut self, input: &InputBlock<'_>, out: &mut OutputBlock, cancel: &CancellationToken) -> Result<(), ScoreError> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            cancel.cancel();
+            return Err(ScoreError::Canceled);
+        }
+        Unity.process(input, out, cancel)
+    }
+}
+
+#[test]
+fn canceled_ramp_block_never_steps_alone_or_in_a_chain() {
+    bounded_case("canceled_ramp_block_never_steps_alone_or_in_a_chain", || {
+        let engine = Engine::new(DomainId::parse(RESOURCE).unwrap(), 1);
+        let ones = [1.0_f32; 4];
+        let sp = BlockSpec { sample_rate_hz: 48_000, layout: mono(), frames: 4, start_sample: 0 };
+        let channels: [&[f32]; 1] = [&ones];
+        let input = InputBlock::new(&sp, &channels);
+        let mut out = OutputBlock::with_capacity(mono(), 4).unwrap();
+
+        // Alone: A ramps 0 -> 1 and publishes; B is canceled at the ramp's first poll (before the
+        // pre-block value used to be saved); C must continue flat at 1.0, not re-ramp from 0.
+        let mut ramp = RampedGain::new(0.0).unwrap();
+        ramp.set_target(1.0).unwrap();
+        engine.process(&ctx(), &input, &mut ramp, &mut out, &CancellationToken::default()).unwrap();
+        assert_eq!(out.published_channel(0).unwrap(), &[0.0, 0.25, 0.5, 0.75]);
+        ramp.set_target(0.0).unwrap();
+        let before = ramp.identity();
+        let token = CancellationToken::default();
+        let refused = engine.process(&ctx(), &input, &mut CancelAtEntry(&mut ramp, &token), &mut out, &token);
+        assert_eq!(refused.unwrap_err(), ScoreError::Canceled);
+        assert_eq!(ramp.identity(), before, "a canceled block leaves the ramp exactly as before the block");
+        assert_eq!((ramp.current(), ramp.target()), (1.0, 0.0));
+        engine.process(&ctx(), &input, &mut ramp, &mut out, &CancellationToken::default()).unwrap();
+        assert_eq!(out.published_channel(0).unwrap(), &[1.0, 0.75, 0.5, 0.25], "ramp resumes from the published value");
+
+        // A direct reset with nothing in flight (bounce start, bypass toggle) changes nothing.
+        let settled = ramp.identity();
+        ramp.reset();
+        assert_eq!(ramp.identity(), settled);
+
+        // In a chain [ramp, fuse, ramp]: the canceled block runs the first ramp but never reaches
+        // the second. Chain::reset touches every stage; the second must keep its published value.
+        let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut first, mut last) = (RampedGain::new(0.0).unwrap(), RampedGain::new(0.0).unwrap());
+        first.set_target(1.0).unwrap();
+        last.set_target(1.0).unwrap();
+        let stage = |processor: Box<dyn Processor + Send>| ChainStage { processor, output: mono() };
+        let mut chain = Chain::new(
+            mono(),
+            4,
+            vec![stage(Box::new(first)), stage(Box::new(Fuse(armed.clone()))), stage(Box::new(last))],
+        )
+        .unwrap();
+        engine.process(&ctx(), &input, &mut chain, &mut out, &CancellationToken::default()).unwrap();
+        assert_eq!(out.published_channel(0).unwrap(), &[0.0, 0.0625, 0.25, 0.5625], "both ramps 0 -> 1: (n/4)^2");
+        let after_a = chain.identity();
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let refused = engine.process(&ctx(), &input, &mut chain, &mut out, &CancellationToken::default());
+        assert_eq!(refused.unwrap_err(), ScoreError::Canceled);
+        assert_eq!(chain.identity(), after_a, "canceled block: every stage keeps its pre-block state");
+        armed.store(false, std::sync::atomic::Ordering::SeqCst);
+        engine.process(&ctx(), &input, &mut chain, &mut out, &CancellationToken::default()).unwrap();
+        assert_eq!(out.published_channel(0).unwrap(), &[1.0; 4], "no gain step after the canceled block");
+
+        // A block discarded at the publication gate still reverts the ramp that ran in it
+        // (covered above by CancelAfter); a published block is never reverted by a later reset.
+        let published = chain.identity();
+        chain.reset();
+        assert_eq!(chain.identity(), published);
+    });
+}

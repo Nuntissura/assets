@@ -49,8 +49,12 @@ impl std::fmt::Debug for ClipResampler {
 
 /// Result of one resampled clip: the output block receipt plus exact frame accounting.
 /// `block.processed_frames` is the ACTUAL output frame count and equals
-/// `requested_output_frames = ceil(input_frames * output_rate / input_rate)`; nothing is clamped
-/// or truncated silently.
+/// `requested_output_frames = ceil(input_frames * output_rate / input_rate)`, computed in integer
+/// arithmetic (u128), never from rubato's f64 ratio (which can round a mathematically exact count
+/// up by one frame, e.g. 44100 frames at 44.1 kHz to 48 kHz). Frames rubato produced beyond that
+/// count are cut off after the alignment drop, zeroed in the output buffer, and reported in
+/// `trimmed_tail_frames`; a producer that falls short of the exact count is refused
+/// (`ResampleFailed`), never zero-padded.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResampleReceipt {
     pub block: BlockReceipt,
@@ -63,6 +67,9 @@ pub struct ResampleReceipt {
     pub pad_input_frames: usize,
     /// Output frames dropped after rubato's trim for exact alignment.
     pub drop_output_frames: usize,
+    /// Frames rubato produced past `drop_output_frames + requested_output_frames`; trimmed so the
+    /// published count is exactly `requested_output_frames`.
+    pub trimmed_tail_frames: usize,
 }
 
 impl ResampleReceipt {
@@ -253,24 +260,35 @@ impl Engine {
                 None,
             )
         };
+        // `produced` is rubato's valid-frame count after its own startup trim. The published
+        // count is the exact integer `requested`; any excess is the recorded tail.
         let settled = produced
             .map_err(|_| ScoreError::ResampleFailed)
             .and_then(|(_, frames)| {
-                if frames < requested + drop {
+                if frames < requested + drop || frames > capacity {
                     Err(ScoreError::ResampleFailed)
                 } else {
-                    self.settle(ctx, cancel)
+                    self.settle(ctx, cancel).map(|()| frames)
                 }
             });
-        if let Err(error) = settled {
-            resampler.inner.reset();
-            return Err(error);
-        }
-        if drop > 0 {
+        let rubato_frames = match settled {
+            Ok(frames) => frames,
+            Err(error) => {
+                resampler.inner.reset();
+                return Err(error);
+            }
+        };
+        let trimmed_tail_frames = rubato_frames - requested - drop;
+        {
             let backing = out.backing_mut();
             for ch in 0..channels {
                 let base = ch * capacity;
-                backing.copy_within(base + drop..base + drop + requested, base);
+                if drop > 0 {
+                    backing.copy_within(base + drop..base + drop + requested, base);
+                }
+                // Nothing past the published count survives: the shifted-over originals, the
+                // trimmed tail and anything rubato wrote beyond its reported count are zeroed.
+                backing[base + requested..base + capacity].fill(0.0);
             }
         }
         let end_sample = u64::try_from(requested)
@@ -297,6 +315,7 @@ impl Engine {
             delay_trimmed_frames,
             pad_input_frames: pad,
             drop_output_frames: drop,
+            trimmed_tail_frames,
         })
     }
 }
