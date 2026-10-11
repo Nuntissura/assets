@@ -818,7 +818,7 @@ fn rtl_cjk_cyclic_dangling_cancel_stale() {
          <ParagraphStyleRange AppliedParagraphStyle=\"ParagraphStyle/$ID/NormalParagraphStyle\" ParagraphDirection=\"RightToLeftDirection\">\
          <CharacterStyleRange AppliedLanguage=\"$ID/Arabic\"><Content>\u{645}\u{631}\u{62d}\u{628}\u{627}</Content></CharacterStyleRange>\
          <CharacterStyleRange AppliedLanguage=\"$ID/Japanese\" KinsokuSet=\"KinsokuTable/$ID/Hard\"><Content>\u{65e5}\u{672c}\u{8a9e}</Content></CharacterStyleRange>\
-         </ParagraphStyleRange></Story>"
+         </ParagraphStyleRange></Story>",
     );
     let mut p = parts();
     set(&mut p, "designmap.xml", designmap(&["ua1", "ua2"]));

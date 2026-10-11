@@ -18,7 +18,7 @@ use std::ops::Range;
 
 const XML_DECL: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
 
-fn esc(s: &str, attribute: bool) -> String {
+pub(crate) fn esc(s: &str, attribute: bool) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -36,10 +36,10 @@ fn esc(s: &str, attribute: bool) -> String {
     out
 }
 
-fn num(v: f64) -> String {
+pub(crate) fn num(v: f64) -> String {
     format!("{v}")
 }
-fn nums(v: &[f64]) -> String {
+pub(crate) fn nums(v: &[f64]) -> String {
     v.iter().map(|x| num(*x)).collect::<Vec<_>>().join(" ")
 }
 fn attr_out(out: &mut String, key: &str, value: &str) {

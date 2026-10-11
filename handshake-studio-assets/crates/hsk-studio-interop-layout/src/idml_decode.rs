@@ -372,6 +372,20 @@ fn read_spread(
                     LossKind::PreservedOpaque,
                     page_item_code(other),
                 );
+                // Frames inside groups (at any depth) are not decoded: their group transforms are
+                // not composed. Each one is counted so a story that flows through them is never
+                // silently shorter than the source; the group itself stays verbatim.
+                for _ in c
+                    .descendants()
+                    .filter(|d| d.is_element() && name(*d) == "TextFrame")
+                {
+                    loss.note(
+                        &part.name,
+                        "TextFrame",
+                        LossKind::PreservedOpaque,
+                        "text_frame_in_group_not_decoded",
+                    );
+                }
                 m.items.push(SpreadItem::Opaque(opaque(c, text)));
             }
         }
@@ -537,13 +551,13 @@ fn read_path(frame: Node, part: &str, loss: &mut LossBook) -> Result<(Vec<PathPo
     Ok((points, attr(*first, "PathOpen") == Some("true")))
 }
 
-const VJ: [(&str, VerticalJustification); 4] = [
+pub(crate) const VJ: [(&str, VerticalJustification); 4] = [
     ("TopAlign", VerticalJustification::Top),
     ("CenterAlign", VerticalJustification::Center),
     ("BottomAlign", VerticalJustification::Bottom),
     ("JustifyAlign", VerticalJustification::Justify),
 ];
-const FB: [(&str, FirstBaseline); 6] = [
+pub(crate) const FB: [(&str, FirstBaseline); 6] = [
     ("AscentOffset", FirstBaseline::Ascent),
     ("CapHeight", FirstBaseline::CapHeight),
     ("LeadingOffset", FirstBaseline::Leading),
@@ -551,7 +565,7 @@ const FB: [(&str, FirstBaseline); 6] = [
     ("XHeight", FirstBaseline::XHeight),
     ("FixedHeight", FirstBaseline::Fixed),
 ];
-const AS: [(&str, AutoSizing); 5] = [
+pub(crate) const AS: [(&str, AutoSizing); 5] = [
     ("Off", AutoSizing::Off),
     ("HeightOnly", AutoSizing::HeightOnly),
     ("WidthOnly", AutoSizing::WidthOnly),
@@ -662,7 +676,7 @@ fn language_class(value: &str) -> Option<&'static str> {
     }
 }
 
-fn classify(key: &str, value: &str, out: &mut BTreeSet<&'static str>) {
+pub(crate) fn classify(key: &str, value: &str, out: &mut BTreeSet<&'static str>) {
     const CJK: [&str; 6] = [
         "Kinsoku",
         "Ruby",

@@ -14,7 +14,7 @@ use hsk_studio_folio::{
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-struct Known<'a>(&'a BTreeSet<String>);
+pub(crate) struct Known<'a>(pub(crate) &'a BTreeSet<String>);
 impl Resolver for Known<'_> {
     fn primitive(&self, schema_id: &str, object_id: &str) -> Resolution {
         if schema_id == SCHEMA_STUDIO_TEXT_STORY && self.0.contains(object_id) {
@@ -40,7 +40,7 @@ impl Resolver for Known<'_> {
     }
 }
 
-fn folio_err(d: Diagnostic) -> IdmlError {
+pub(crate) fn folio_err(d: Diagnostic) -> IdmlError {
     if d.code == Code::Canceled {
         IdmlError::Canceled
     } else {
@@ -93,7 +93,7 @@ fn key_of(raw: &str, seen: &mut BTreeSet<String>) -> String {
     k
 }
 
-fn language_key(raw: &str) -> Option<String> {
+pub(crate) fn language_key(raw: &str) -> Option<String> {
     let t = raw
         .trim()
         .trim_start_matches("Language/")
