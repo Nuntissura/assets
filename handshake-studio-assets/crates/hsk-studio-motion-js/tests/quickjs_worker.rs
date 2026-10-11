@@ -266,7 +266,10 @@ fn worker_crash_is_typed_contained_and_respawn_is_bounded() {
             // the worker process. The evaluation fails typed, the test process survives, and the next
             // call runs on a respawned worker. The deadline is the 10 s ceiling because Windows error
             // reporting keeps an aborted process alive for about 5 s before it exits; a worker still
-            // alive at the deadline is killed and reported as a deadline denial instead.
+            // alive at the deadline is killed and reported as a deadline denial instead. The hold ranges
+            // from about 5 s to past the 10 s ceiling on the build host (the R5 flaky finding), so
+            // both typed outcomes are accepted; only the first proves engine_crashed for a native
+            // abort, and the second prints a NOT_PROVEN line (V4-03) instead of passing silently.
             let aborting = provider(
                 QuotaSpec {
                     deadline: Duration::from_secs(10),
@@ -275,7 +278,34 @@ fn worker_crash_is_typed_contained_and_respawn_is_bounded() {
                 worker_options(WorkerTestFault::AsyncAbort, 4),
             );
             assert_eq!(eval(&aborting, "1+2", 1), Ok(vec![3.0]));
-            crashed(&aborting, "async function f(){} 1", 1, None);
+            match code(eval(&aborting, "async function f(){} 1", 1)) {
+                ExprErrorCode::Unsupported => {
+                    let (stats, workers) = (aborting.stats(), worker_stats(&aborting));
+                    assert_eq!(
+                        (stats.faulted(EngineFault::Crashed), workers.crashed),
+                        (1, 1)
+                    );
+                    assert!(matches!(workers.last_crash_exit_code, Some(c) if c != 0));
+                }
+                ExprErrorCode::Budget => {
+                    println!(
+                        "NOT_PROVEN: engine_crashed for a native abort: the platform crash reporter held the aborted worker past the 10 s deadline, so it was killed and reported as a deadline denial"
+                    );
+                    let (stats, workers) = (aborting.stats(), worker_stats(&aborting));
+                    assert_eq!(
+                        (
+                            stats.denied(BudgetKind::Deadline),
+                            workers.killed_deadline,
+                            workers.crashed
+                        ),
+                        (1, 1, 0)
+                    );
+                }
+                other => panic!("a native abort must stay typed and contained, got {other:?}"),
+            }
+            assert!(!aborting.is_poisoned());
+            let stats = aborting.stats();
+            assert_eq!(stats.realms_started, stats.realms_retired);
             assert_eq!(
                 eval(
                     &aborting,
