@@ -2,6 +2,7 @@
 //! (STU-CON-043..045). Scalar oracle only: written products, no FMA, checked arithmetic.
 use crate::DevelopError;
 use crate::convert::{ConversionStats, ProfileConverter};
+use crate::par::{Threads, band_rows, for_each_band, run_indexed};
 use crate::recipe::{
     DEMOSAIC_ALGORITHM, DevelopRecipe, ENGINE_VERSION, MATH_TOKEN, PROCESS_VERSION,
     PreparedRecipe,
@@ -329,25 +330,55 @@ fn reflect(coordinate: i64, extent: usize) -> usize {
 }
 
 /// Normalised measured sample per site: binary64((s-black)/(white-black)) then one binary32
-/// rounding; a nonzero value rounding to zero refuses.
-fn normalize(plane: &CfaPlane, cancel: &CancellationToken) -> Result<Vec<f32>, DevelopError> {
+/// rounding; a nonzero value rounding to zero refuses. Rows are independent, so bands of rows run
+/// on up to `threads` workers; every site is computed by the same expression whatever the count.
+///
+/// The per-site black level and denominator come from per-row-phase tables, which leaves a
+/// branch-free inner loop (the refusal is accumulated and raised after the row). The compiler may
+/// vectorise it with plain IEEE binary64 division and binary32 conversion, which are correctly
+/// rounded per lane, so the result is bit-identical to the scalar definition (no `unsafe`, no
+/// arch intrinsics, no FMA; pinned by the byte-identity digests). This is not an execution route.
+fn normalize(
+    plane: &CfaPlane,
+    threads: Threads,
+    cancel: &CancellationToken,
+) -> Result<Vec<f32>, DevelopError> {
     let (w, h) = (plane.width as usize, plane.height as usize);
     let denominator: [f64; 3] = std::array::from_fn(|ch| f64::from(plane.white[ch] - plane.black[ch]));
-    let mut norm = Vec::with_capacity(w * h);
-    for y in 0..h {
-        cancel.check()?;
-        let lut_row = &plane.lut[usize::from(plane.row_phase[y])];
-        for (x, sample) in plane.row_samples(y).enumerate() {
-            let ch = usize::from(lut_row[usize::from(plane.col_phase[x])]);
-            let numerator = f64::from(sample - plane.black[ch]);
-            let value = numerator / denominator[ch];
-            let rounded = value as f32;
-            if value != 0.0 && rounded == 0.0 {
+    let period = plane.cfa.pattern.period();
+    let tables: Vec<(Vec<u16>, Vec<f64>)> = (0..period)
+        .map(|row_phase| {
+            let lut_row = &plane.lut[row_phase];
+            (0..w)
+                .map(|x| {
+                    let ch = usize::from(lut_row[usize::from(plane.col_phase[x])]);
+                    (plane.black[ch], denominator[ch])
+                })
+                .unzip()
+        })
+        .collect();
+    let mut norm = vec![0.0f32; w * h];
+    let rows = band_rows(w);
+    for_each_band(&mut norm, rows * w, threads, cancel, |band, out| {
+        for (offset, out_row) in out.chunks_exact_mut(w).enumerate() {
+            let y = band * rows + offset;
+            let (black, den) = &tables[usize::from(plane.row_phase[y])];
+            let start = y * plane.stride_bytes as usize;
+            let samples = plane.bytes[start..start + w * 2].chunks_exact(2);
+            let mut underflow = false;
+            for (((slot, sample), black), den) in out_row.iter_mut().zip(samples).zip(black).zip(den) {
+                let numerator = f64::from(u16::from_le_bytes([sample[0], sample[1]]) - *black);
+                let value = numerator / *den;
+                let rounded = value as f32;
+                underflow |= (value != 0.0) & (rounded == 0.0);
+                *slot = rounded;
+            }
+            if underflow {
                 return Err(DevelopError::NormalizationUnderflow);
             }
-            norm.push(rounded);
         }
-    }
+        Ok(())
+    })?;
     Ok(norm)
 }
 
@@ -478,21 +509,36 @@ impl<'a> Demosaic<'a> {
 }
 
 /// Full-plane normalised demosaic (scalar oracle). Crop and tile boundaries never change it.
+/// Runs on `Threads::auto()`; the result does not depend on the thread count.
 pub fn demosaic_normalized(
     plane: &CfaPlane,
     cancel: &CancellationToken,
 ) -> Result<Vec<[f32; 3]>, DevelopError> {
+    demosaic_normalized_threads(plane, Threads::auto(), cancel)
+}
+
+/// [`demosaic_normalized`] on an explicit number of worker threads (bands of rows; cancellation is
+/// checked between bands and a cancelled run returns no pixels).
+pub fn demosaic_normalized_threads(
+    plane: &CfaPlane,
+    threads: Threads,
+    cancel: &CancellationToken,
+) -> Result<Vec<[f32; 3]>, DevelopError> {
     cancel.check()?;
-    let norm = normalize(plane, cancel)?;
+    let norm = normalize(plane, threads, cancel)?;
     let demosaic = Demosaic::new(plane, &norm);
     let (w, h) = (plane.width as usize, plane.height as usize);
-    let mut out = Vec::with_capacity(w * h);
-    for y in 0..h {
-        cancel.check()?;
-        for x in 0..w {
-            out.push(demosaic.pixel(x, y)?);
+    let mut out = vec![[0.0f32; 3]; w * h];
+    let rows = band_rows(w);
+    for_each_band(&mut out, rows * w, threads, cancel, |band, pixels| {
+        for (offset, row) in pixels.chunks_exact_mut(w).enumerate() {
+            let y = band * rows + offset;
+            for (x, slot) in row.iter_mut().enumerate() {
+                *slot = demosaic.pixel(x, y)?;
+            }
         }
-    }
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -668,14 +714,129 @@ fn checked_i64(value: i128) -> Result<i64, DevelopError> {
     i64::try_from(value).map_err(|_| DevelopError::Overflow)
 }
 
+/// Tiles of stage A held at once on the converter route, per worker thread.
+const BATCH_TILES_PER_THREAD: usize = 4;
+
+/// One grid tile's bounds and the part of it inside the mapped crop.
+#[derive(Clone, Copy)]
+struct TileGeometry {
+    bounds: Rect,
+    developed: Rect,
+}
+
+impl TileGeometry {
+    fn pixels(&self) -> usize {
+        self.developed.width as usize * self.developed.height as usize
+    }
+}
+
+/// Everything a tile job reads; all of it is immutable, so workers share it freely.
+struct TileJob<'a> {
+    demosaic: &'a Demosaic<'a>,
+    prepared: &'a PreparedRecipe,
+    stage_a_total: bool,
+    identity_finish: bool,
+    grid: Grid,
+    output: Rect,
+    /// Source pixel of the crop's top-left corner.
+    source_origin: (usize, usize),
+    tile_width: usize,
+    tile_pixels: usize,
+    first_column: i128,
+    first_row: i128,
+    columns: usize,
+}
+
+impl TileJob<'_> {
+    /// Geometry of tile `index` (row-major over the grid tiles that touch the crop).
+    fn geometry(&self, index: usize) -> Result<TileGeometry, DevelopError> {
+        let column = self.first_column + (index % self.columns) as i128;
+        let row = self.first_row + (index / self.columns) as i128;
+        let bounds = self
+            .grid
+            .bounds(checked_i64(column)?, checked_i64(row)?)
+            .map_err(|_| DevelopError::Overflow)?;
+        let developed = bounds
+            .intersect(self.output)
+            .map_err(|_| DevelopError::Overflow)?
+            .ok_or(DevelopError::EmptyCrop)?;
+        Ok(TileGeometry { bounds, developed })
+    }
+
+    /// Stage A over the developed region of a tile into `working` (row-major).
+    fn stage_a(
+        &self,
+        geometry: &TileGeometry,
+        working: &mut Vec<[f32; 3]>,
+    ) -> Result<(), DevelopError> {
+        let developed = geometry.developed;
+        let (developed_w, developed_h) = (developed.width as usize, developed.height as usize);
+        working.clear();
+        working.reserve(developed_w * developed_h);
+        let source_x = self.source_origin.0 + (developed.x - self.output.x) as usize;
+        let source_y = self.source_origin.1 + (developed.y - self.output.y) as usize;
+        for sy in source_y..source_y + developed_h {
+            for sx in source_x..source_x + developed_w {
+                working.push(working_pixel(
+                    self.prepared,
+                    self.stage_a_total,
+                    self.demosaic.pixel(sx, sy)?,
+                )?);
+            }
+        }
+        Ok(())
+    }
+
+    /// Stage C: exposure and curves per pixel, then the tile's colour, alpha and coverage planes.
+    fn stage_c(
+        &self,
+        geometry: &TileGeometry,
+        working: &[[f32; 3]],
+    ) -> Result<DevelopedTile, DevelopError> {
+        let TileGeometry { bounds, developed } = *geometry;
+        let developed_w = developed.width as usize;
+        let mut colour = vec![0u8; self.tile_pixels * 12];
+        let mut alpha = vec![0u8; self.tile_pixels * 4];
+        let mut coverage = vec![0u8; self.tile_pixels];
+        let first_x = (developed.x - bounds.x) as usize;
+        let first_y = (developed.y - bounds.y) as usize;
+        for (dy, source_row) in working.chunks_exact(developed_w).enumerate() {
+            let first = (first_y + dy) * self.tile_width + first_x;
+            let colour_row = &mut colour[first * 12..(first + developed_w) * 12];
+            for (cell, w) in colour_row.chunks_exact_mut(12).zip(source_row) {
+                let rgb = if self.identity_finish {
+                    finish_pixel_identity(*w)?
+                } else {
+                    finish_pixel(self.prepared, *w)?
+                };
+                for (slot, value) in cell.chunks_exact_mut(4).zip(rgb) {
+                    slot.copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            for cell in alpha[first * 4..(first + developed_w) * 4].chunks_exact_mut(4) {
+                cell.copy_from_slice(&1.0f32.to_le_bytes());
+            }
+            coverage[first..first + developed_w].fill(255);
+        }
+        Ok(DevelopedTile {
+            bounds,
+            developed,
+            colour,
+            alpha,
+            coverage,
+        })
+    }
+}
+
 /// Run the develop stages over the crop and hand tiles to `sink` after ALL tiles computed
 /// (atomic: any refusal, cancel or sink error leaves no receipt; the plane is only borrowed).
+/// Tiles are computed on `Threads::auto()` workers; the output does not depend on the count.
 pub fn develop(
     request: &DevelopRequest<'_>,
     cancel: &CancellationToken,
     sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
 ) -> Result<DevelopReceipt, DevelopError> {
-    develop_with(request, None, cancel, sink)
+    develop_with_threads(request, None, Threads::auto(), cancel, sink)
 }
 
 /// [`develop`] with an optional working -> output profile converter (admitted inspection, wide Prism transform).
@@ -684,7 +845,23 @@ pub fn develop(
 /// before any pixel is computed, and identical profiles skip the transform only after that.
 pub fn develop_with(
     request: &DevelopRequest<'_>,
+    converter: Option<&mut dyn ProfileConverter>,
+    cancel: &CancellationToken,
+    sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
+) -> Result<DevelopReceipt, DevelopError> {
+    develop_with_threads(request, converter, Threads::auto(), cancel, sink)
+}
+
+/// [`develop_with`] on an explicit number of worker threads. Determinism contract: tiles, receipt
+/// and refusals are identical for every thread count (including `Threads::single()`, which spawns
+/// nothing). Tiles are independent, so workers take tiles from a shared counter; the converter is
+/// a single stateful port and is always driven from the calling thread in tile order, with stage A
+/// of a batch of tiles computed in parallel before it and stage C after it. Cancellation is checked
+/// between tiles; when several tiles fail, the lowest tile's error is returned, as in a serial run.
+pub fn develop_with_threads(
+    request: &DevelopRequest<'_>,
     mut converter: Option<&mut dyn ProfileConverter>,
+    threads: Threads,
     cancel: &CancellationToken,
     sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
 ) -> Result<DevelopReceipt, DevelopError> {
@@ -751,76 +928,80 @@ pub fn develop_with(
         return Err(DevelopError::OutputTooLarge);
     }
 
-    let norm = normalize(plane, cancel)?;
+    let norm = normalize(plane, threads, cancel)?;
     let demosaic = Demosaic::new(plane, &norm);
-    let stage_a_total = stage_a_is_total(&prepared);
-    let identity_finish =
-        prepared.exposure_gain == 1.0 && prepared.curves.iter().all(Option::is_none);
     let tile_width = grid.tile_width as usize;
-    let tile_pixels = tile_width * grid.tile_height as usize;
-    let mut tiles = Vec::with_capacity(tile_count as usize);
-    let mut working: Vec<[f32; 3]> = Vec::new();
-    for row in row_first..=row_last {
-        for column in col_first..=col_last {
-            cancel.check()?;
-            let bounds = grid
-                .bounds(checked_i64(column)?, checked_i64(row)?)
-                .map_err(|_| DevelopError::Overflow)?;
-            let developed = bounds
-                .intersect(output)
-                .map_err(|_| DevelopError::Overflow)?
-                .ok_or(DevelopError::EmptyCrop)?;
-            let (developed_w, developed_h) = (developed.width as usize, developed.height as usize);
-            let mut colour = vec![0u8; tile_pixels * 12];
-            let mut alpha = vec![0u8; tile_pixels * 4];
-            let mut coverage = vec![0u8; tile_pixels];
-            // Stage A for the whole developed region (row-major), then the optional conversion.
-            working.clear();
-            working.reserve(developed_w * developed_h);
-            let source_x = x0 as usize + (developed.x - ox) as usize;
-            let source_y = y0 as usize + (developed.y - oy) as usize;
-            for sy in source_y..source_y + developed_h {
-                for sx in source_x..source_x + developed_w {
-                    working.push(working_pixel(&prepared, stage_a_total, demosaic.pixel(sx, sy)?)?);
-                }
-            }
-            if prepared.profile_transform
-                && let Some(c) = converter.as_deref_mut()
-            {
-                working = c.convert(&working, cancel)?;
-                if working.len() != developed_w * developed_h {
-                    return Err(DevelopError::InvalidLength);
-                }
-            }
-            let first_x = (developed.x - bounds.x) as usize;
-            let first_y = (developed.y - bounds.y) as usize;
-            for (dy, source_row) in working.chunks_exact(developed_w).enumerate() {
-                let first = (first_y + dy) * tile_width + first_x;
-                let colour_row = &mut colour[first * 12..(first + developed_w) * 12];
-                for (cell, w) in colour_row.chunks_exact_mut(12).zip(source_row) {
-                    let rgb = if identity_finish {
-                        finish_pixel_identity(*w)?
-                    } else {
-                        finish_pixel(&prepared, *w)?
-                    };
-                    for (slot, value) in cell.chunks_exact_mut(4).zip(rgb) {
-                        slot.copy_from_slice(&value.to_le_bytes());
+    let job = TileJob {
+        demosaic: &demosaic,
+        prepared: &prepared,
+        stage_a_total: stage_a_is_total(&prepared),
+        identity_finish: prepared.exposure_gain == 1.0 && prepared.curves.iter().all(Option::is_none),
+        grid,
+        output,
+        source_origin: (x0 as usize, y0 as usize),
+        tile_width,
+        tile_pixels: tile_width * grid.tile_height as usize,
+        first_column: col_first,
+        first_row: row_first,
+        columns: (col_last - col_first + 1) as usize,
+    };
+    let tile_total = tile_count as usize;
+    let tiles: Vec<DevelopedTile> = match converter
+        .as_deref_mut()
+        .filter(|_| prepared.profile_transform)
+    {
+        // No conversion: each tile is one job (stage A then stage C on the worker's scratch).
+        None => run_indexed(tile_total, threads, cancel, Vec::new, |working, index| {
+            let geometry = job.geometry(index)?;
+            job.stage_a(&geometry, working)?;
+            job.stage_c(&geometry, working)
+        })?,
+        Some(convert) => {
+            let mut tiles = Vec::with_capacity(tile_total);
+            let batch = threads.get().saturating_mul(BATCH_TILES_PER_THREAD).max(1);
+            let mut start = 0usize;
+            while start < tile_total {
+                let end = tile_total.min(start + batch);
+                // Stage A of the batch in parallel. A tile's own failure is held back as its value,
+                // so it is reported only when that tile is reached in order (as in a serial run).
+                let staged = run_indexed(end - start, threads, cancel, Vec::new, |working, offset| {
+                    Ok(job.geometry(start + offset).and_then(|geometry| {
+                        job.stage_a(&geometry, working)?;
+                        Ok((geometry, std::mem::take(working)))
+                    }))
+                })?;
+                // The converter is driven here, serially, in tile order.
+                let mut ready = Vec::with_capacity(staged.len());
+                let mut stopped = None;
+                for item in staged {
+                    let converted = item.and_then(|(geometry, working)| {
+                        cancel.check()?;
+                        let pixels = convert.convert(&working, cancel)?;
+                        if pixels.len() != geometry.pixels() {
+                            return Err(DevelopError::InvalidLength);
+                        }
+                        Ok((geometry, pixels))
+                    });
+                    match converted {
+                        Ok(pair) => ready.push(pair),
+                        Err(error) => {
+                            stopped = Some(error);
+                            break;
+                        }
                     }
                 }
-                for cell in alpha[first * 4..(first + developed_w) * 4].chunks_exact_mut(4) {
-                    cell.copy_from_slice(&1.0f32.to_le_bytes());
+                // Stage C of every tile before a stopped one: their failures come first in order.
+                tiles.extend(run_indexed(ready.len(), threads, cancel, || (), |(), index| {
+                    job.stage_c(&ready[index].0, &ready[index].1)
+                })?);
+                if let Some(error) = stopped {
+                    return Err(error);
                 }
-                coverage[first..first + developed_w].fill(255);
+                start = end;
             }
-            tiles.push(DevelopedTile {
-                bounds,
-                developed,
-                colour,
-                alpha,
-                coverage,
-            });
+            tiles
         }
-    }
+    };
 
     let delivered = tiles.len() as u32;
     for tile in tiles {
@@ -858,15 +1039,28 @@ pub struct DevelopedImage {
 
 /// Convenience over [`develop`]: whole crop into one image at output origin (0, 0), tiled at the
 /// plane limits' tile edge. Same atomic/refusal behaviour; the receipt is returned unchanged.
+/// Runs on `Threads::auto()`; the image does not depend on the thread count.
 pub fn develop_to_image(
     plane: &CfaPlane,
     recipe: &DevelopRecipe,
     recipe_revision: u64,
     cancel: &CancellationToken,
 ) -> Result<(DevelopedImage, DevelopReceipt), DevelopError> {
+    develop_to_image_threads(plane, recipe, recipe_revision, Threads::auto(), cancel)
+}
+
+/// [`develop_to_image`] on an explicit number of worker threads (tiles, then bands of tile rows
+/// copied into the image).
+pub fn develop_to_image_threads(
+    plane: &CfaPlane,
+    recipe: &DevelopRecipe,
+    recipe_revision: u64,
+    threads: Threads,
+    cancel: &CancellationToken,
+) -> Result<(DevelopedImage, DevelopReceipt), DevelopError> {
     let edge = plane.limits.max_tile_edge;
     let mut tiles = Vec::new();
-    let receipt = develop(
+    let receipt = develop_with_threads(
         &DevelopRequest {
             plane,
             recipe,
@@ -881,27 +1075,47 @@ pub fn develop_to_image(
             output_origin: (0, 0),
             execution_hint: ExecutionHint::Auto,
         },
+        None,
+        threads,
         cancel,
         &mut |tile| {
             tiles.push(tile);
             Ok(())
         },
     )?;
-    let (width, height) = (receipt.output.width, receipt.output.height);
-    let mut rgb = vec![0.0f32; width as usize * height as usize * 3];
-    for tile in &tiles {
-        let d = tile.developed;
-        let row_pixels = d.width as usize;
-        for y in 0..d.height as usize {
-            let tx = (d.x - tile.bounds.x) as usize;
-            let ty = (d.y - tile.bounds.y) as usize + y;
-            let from = (ty * edge as usize + tx) * 12;
-            let to = ((d.y as usize + y) * width as usize + d.x as usize) * 3;
-            let source = tile.colour[from..from + row_pixels * 12].chunks_exact(4);
-            for (slot, b) in rgb[to..to + row_pixels * 3].iter_mut().zip(source) {
-                *slot = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    let (width, height) = (receipt.output.width as usize, receipt.output.height as usize);
+    let edge = edge as usize;
+    let columns = width.div_ceil(edge);
+    if tiles.len() != columns * height.div_ceil(edge) {
+        return Err(DevelopError::InvalidLength);
+    }
+    let mut rgb = vec![0.0f32; width * height * 3];
+    // The grid is anchored at (0, 0) like the output, so tile row `r` holds output rows
+    // `r * edge ..`: one band of the image per tile row, each written by exactly one worker.
+    for_each_band(&mut rgb, edge * width * 3, threads, cancel, |tile_row, band| {
+        let first_row = tile_row * edge;
+        for tile in &tiles[tile_row * columns..(tile_row + 1) * columns] {
+            let d = tile.developed;
+            let row_pixels = d.width as usize;
+            for y in 0..d.height as usize {
+                let tx = (d.x - tile.bounds.x) as usize;
+                let ty = (d.y - tile.bounds.y) as usize + y;
+                let from = (ty * edge + tx) * 12;
+                let to = ((d.y as usize + y - first_row) * width + d.x as usize) * 3;
+                let source = tile.colour[from..from + row_pixels * 12].chunks_exact(4);
+                for (slot, b) in band[to..to + row_pixels * 3].iter_mut().zip(source) {
+                    *slot = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                }
             }
         }
-    }
-    Ok((DevelopedImage { width, height, rgb }, receipt))
+        Ok(())
+    })?;
+    Ok((
+        DevelopedImage {
+            width: receipt.output.width,
+            height: receipt.output.height,
+            rgb,
+        },
+        receipt,
+    ))
 }

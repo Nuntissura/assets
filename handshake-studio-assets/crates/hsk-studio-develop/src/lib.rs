@@ -4,6 +4,11 @@
 //!
 //! Slice 1: native process 1.0 / engine 1.0 (`native_cfa_bilinear_hermite_v1`) over caller-granted
 //! decoded camera CFA bytes (STU-CON-042..045). Scalar oracle only; no SIMD, no unsafe.
+//!
+//! Throughput: normalisation row bands and output tiles run on std scoped threads
+//! ([`Threads`], default `min(available_parallelism, 16)`; the `*_threads` entry points take an
+//! explicit count). The thread count never changes a result: tiles, receipts and refusals are
+//! byte-identical for every count, and the lowest failing tile decides the error.
 #![forbid(unsafe_code)]
 
 pub mod color;
@@ -13,6 +18,7 @@ pub mod dng;
 pub mod pipeline;
 pub mod recipe;
 pub mod ljpeg;
+mod par;
 mod tiff;
 
 use hsk_studio_accord::CancellationToken;
@@ -24,11 +30,12 @@ pub use convert::{
 };
 pub use curves::{Curve, PreparedCurve};
 pub use dng::{ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
+pub use par::{DEFAULT_THREAD_CAP, MAX_THREADS, Threads};
 pub use pipeline::{
     Bayer, Cfa, CfaPattern, CfaPlane, DevelopReceipt, DevelopRequest, DevelopedTile,
-    DevelopedImage, ExecutionHint, Limits, PlaneInit, SinkError, demosaic_normalized, develop,
-    develop_with,
-    develop_to_image,
+    DevelopedImage, ExecutionHint, Limits, PlaneInit, SinkError, demosaic_normalized,
+    demosaic_normalized_threads, develop, develop_to_image, develop_to_image_threads, develop_with,
+    develop_with_threads,
 };
 pub use recipe::{
     DEMOSAIC_ALGORITHM, DevelopRecipe, ENGINE_VERSION, Enables, MATH_TOKEN, NormalizedCrop,
@@ -227,4 +234,4 @@ pub fn report(
     )
 }
 
-pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-develop","module":"develop","slice":1,"scope":"source-only decoded-CFA develop over caller-granted bytes plus an own DNG reader (classic TIFF, uncompressed 8/16-bit or lossless JPEG, strips or tiles, ColorMatrix/ForwardMatrix); no catalog, no persistence, no host wiring","process_version":"1.0","engine_version":"1.0","math_token":"native_cfa_bilinear_hermite_v1","demosaic_algorithm":"bilinear_reflect_native_v1","cfa":["RGGB","BGGR","GRBG","GBRG","xtrans_6x6"],"white_balance_modes":["as_shot"],"profile_transform":{"identity":"working equals output (inspected when a converter is supplied)","prism_admitted_wide":"develop_with + PrismConverter; both profiles inspected through the admitted Prism route (linear-light RGB profiles only), pixels converted by Prism WideEngine in requests of at most 262144 pixels (limit 2097152) with a plan cache (each profile parsed once per cached plan; receipt profile_stats = plan hits/misses/parses); working RGB must be finite in 0..1 else prism refuses (never clipped); relative colorimetric, BPC off; output unclamped, destination values outside 0..1 counted in profile_stats.clip; exposure and curves run after conversion; the wide transform is not charged to the caller admission ledger"},"curves":"monotone_hermite_2_to_32_points_linear_output_domain","execution":{"supported":["scalar","auto"],"auto_route":"scalar","unsupported":["sse2"]},"limits":{"spec_v1":{"side_min_bayer":2,"side_min_xtrans":6,"side_max":256,"stride_max_bytes":1024,"plane_max_bytes":262144,"tile_edge_max":64,"tiles_max":16,"output_max_bytes":16777216}},"output":{"colour":"rgb_f32le linear_light","alpha":"f32le straight, 1.0 inside crop only","coverage":"coverage_u8"},"supported_enables":["enable_tone_curve"],"refusals":"typed, stable snake_case codes; nothing clipped, defaulted or silently zeroed","pending":["spec STU-CON-044 text still names admitted 64-pixel chunks (enrichment for the wide route)","SIMD route","non-linear (encoded) profiles and BPC in Prism","host grants and publication","DNG compressions other than none and lossless JPEG (deflate, lossy JPEG)","proprietary RAW containers (decoder_unavailable)"]}"#;
+pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-develop","module":"develop","slice":1,"scope":"source-only decoded-CFA develop over caller-granted bytes plus an own DNG reader (classic TIFF, uncompressed 8/16-bit or lossless JPEG, strips or tiles, ColorMatrix/ForwardMatrix); no catalog, no persistence, no host wiring","process_version":"1.0","engine_version":"1.0","math_token":"native_cfa_bilinear_hermite_v1","demosaic_algorithm":"bilinear_reflect_native_v1","cfa":["RGGB","BGGR","GRBG","GBRG","xtrans_6x6"],"white_balance_modes":["as_shot"],"profile_transform":{"identity":"working equals output (inspected when a converter is supplied)","prism_admitted_wide":"develop_with + PrismConverter; both profiles inspected through the admitted Prism route (linear-light RGB profiles only), pixels converted by Prism WideEngine in requests of at most 262144 pixels (limit 2097152) with a plan cache (each profile parsed once per cached plan; receipt profile_stats = plan hits/misses/parses); working RGB must be finite in 0..1 else prism refuses (never clipped); relative colorimetric, BPC off; output unclamped, destination values outside 0..1 counted in profile_stats.clip; exposure and curves run after conversion; the wide transform is not charged to the caller admission ledger"},"curves":"monotone_hermite_2_to_32_points_linear_output_domain","execution":{"supported":["scalar","auto"],"auto_route":"scalar","unsupported":["sse2"],"threads":{"api":"develop_with_threads / develop_to_image_threads / demosaic_normalized_threads (Threads)","default":"min(available_parallelism, 16)","max":64,"unit":"normalisation row bands and output tiles (std scoped threads, no unsafe)","deterministic":"tiles, receipt and refusals are identical for every thread count; the lowest failing tile decides the error; cancellation between bands and tiles returns canceled with no partial output","converter":"the Prism converter is driven from the calling thread in tile order (stage A of a tile batch parallel before it, stage C after it)"}},"limits":{"spec_v1":{"side_min_bayer":2,"side_min_xtrans":6,"side_max":256,"stride_max_bytes":1024,"plane_max_bytes":262144,"tile_edge_max":64,"tiles_max":16,"output_max_bytes":16777216}},"output":{"colour":"rgb_f32le linear_light","alpha":"f32le straight, 1.0 inside crop only","coverage":"coverage_u8"},"supported_enables":["enable_tone_curve"],"refusals":"typed, stable snake_case codes; nothing clipped, defaulted or silently zeroed","pending":["spec STU-CON-044 text still names admitted 64-pixel chunks (enrichment for the wide route)","SIMD route","non-linear (encoded) profiles and BPC in Prism","host grants and publication","DNG compressions other than none and lossless JPEG (deflate, lossy JPEG)","proprietary RAW containers (decoder_unavailable)"]}"#;
