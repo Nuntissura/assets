@@ -431,8 +431,10 @@ fn ascii85(data: &[u8], cap: usize) -> Result<Vec<u8>> {
         for g in group.iter_mut().skip(n) {
             *g = 84;
         }
-        // The group padded with 'u' may pass 2^32; only its leading bytes are kept, as before.
-        let bytes = (ascii85_value(&group) as u32).to_be_bytes();
+        // A final group of n digits encodes n - 1 bytes; padded with 'u' it stays below 2^32 for any
+        // valid encoder, so a larger value is refused instead of truncated.
+        let v = u32::try_from(ascii85_value(&group)).map_err(|_| PressError::Malformed("ascii85"))?;
+        let bytes = v.to_be_bytes();
         out.extend_from_slice(bytes.get(..n.saturating_sub(1)).unwrap_or(&[]));
         if out.len() > cap {
             return Err(PressError::InputLimit("decoded_bytes"));
@@ -469,3 +471,4 @@ fn run_length(data: &[u8], cap: usize) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+

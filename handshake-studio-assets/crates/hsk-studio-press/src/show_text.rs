@@ -13,7 +13,7 @@ use crate::filters;
 use crate::reader::Entry;
 use crate::redaction::res;
 use crate::syntax::{Dict, Object};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 pub(crate) type Objs = BTreeMap<u32, Entry>;
@@ -202,4 +202,70 @@ pub(crate) fn content_resources(objs: &Objs) -> BTreeMap<u32, &Dict> {
         }
     }
     out
+}
+
+/// Page-tree depth the walk in [`kept_text_streams`] follows.
+const PAGE_TREE_DEPTH: usize = 64;
+
+/// Object numbers of the streams that draw the document's KEPT text: the `/Contents` of every page
+/// reached from `/Root /Pages` and the form XObjects reachable from those pages' `/Resources
+/// /XObject` dictionaries (recursively through each form's own resources). Only these streams may
+/// repeat a removed word as legitimate page text; any other stream, however it looks, is payload
+/// (test `stray_streams_and_hidden_payloads_are_not_kept_text`). Reachability is by dictionary,
+/// not by a `Do` in the content: a form listed in a page's resources but never drawn still counts
+/// as kept text.
+pub(crate) fn kept_text_streams(objs: &Objs, trailer: &Dict) -> BTreeSet<u32> {
+    let mut out = BTreeSet::new();
+    let Some(pages) = trailer.get("Root").map(|r| res(objs, r)).and_then(Object::as_dict).and_then(|c| c.get("Pages")).and_then(Object::as_ref)
+    else {
+        return out;
+    };
+    let mut seen = BTreeSet::new();
+    let mut forms: Vec<u32> = Vec::new();
+    let mut stack = vec![(pages.num, 1usize)];
+    while let Some((n, depth)) = stack.pop() {
+        if depth > PAGE_TREE_DEPTH || !seen.insert(n) {
+            continue;
+        }
+        let Some(d) = objs.get(&n).and_then(|e| e.obj.as_dict()) else { continue };
+        if let Some(Object::Array(kids)) = d.get("Kids").map(|k| res(objs, k)) {
+            stack.extend(kids.iter().filter_map(Object::as_ref).map(|r| (r.num, depth.saturating_add(1))));
+            continue;
+        }
+        match d.get("Contents") {
+            Some(Object::Ref(rf)) => match objs.get(&rf.num).map(|x| &x.obj) {
+                Some(Object::Array(a)) => out.extend(a.iter().filter_map(Object::as_ref).map(|x| x.num)),
+                _ => {
+                    out.insert(rf.num);
+                }
+            },
+            Some(Object::Array(a)) => out.extend(a.iter().filter_map(Object::as_ref).map(|x| x.num)),
+            _ => {}
+        }
+        if let Some(r) = inherited_resources(objs, d) {
+            forms_of(objs, r, &mut forms);
+        }
+    }
+    let mut done = BTreeSet::new();
+    while let Some(f) = forms.pop() {
+        if !done.insert(f) {
+            continue;
+        }
+        let Some(Object::Stream(st)) = objs.get(&f).map(|e| &e.obj) else { continue };
+        if !st.dict.get("Subtype").is_some_and(|t| t.is_name("Form")) {
+            continue;
+        }
+        out.insert(f);
+        if let Some(r) = st.dict.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict) {
+            forms_of(objs, r, &mut forms);
+        }
+    }
+    out
+}
+
+/// Object numbers listed in the `/XObject` dictionary of a resources dictionary.
+fn forms_of(objs: &Objs, resources: &Dict, out: &mut Vec<u32>) {
+    if let Some(xo) = resources.get("XObject").map(|x| res(objs, x)).and_then(Object::as_dict) {
+        out.extend(xo.entries.iter().filter_map(|(_, v)| v.as_ref()).map(|r| r.num));
+    }
 }

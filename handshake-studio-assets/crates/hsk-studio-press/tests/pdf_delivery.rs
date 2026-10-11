@@ -1923,3 +1923,88 @@ fn opaque_composite_text_blocks_the_proof() {
     assert_eq!(fields.not_proven_reasons(), vec![NotProven::OpaqueText]);
     assert!(!fields.is_proven());
 }
+
+
+// ------------------------------------------------- remediation R6 (review B, SMB-PRESS)
+
+#[test]
+fn stray_streams_and_hidden_payloads_are_not_kept_text() {
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let page = format!("{TEXT_IN_REGION}\nBT /F1 12 Tf 72 400 Td (Public) Tj ET");
+    let run = |pdf: &[u8]| {
+        let mut doc = open(pdf);
+        redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap()
+    };
+
+    // The control: the page alone is proven.
+    let control = run(&build(&base_objs(page.as_bytes(), "<< /Title (T) >>"), "/Info 7 0 R", b""));
+    assert!(control.is_proven(), "{:?}", control.not_proven_reasons());
+
+    // Class 1 (finding 1): a catalog-reachable stream that is neither a page content stream nor a
+    // form drawn from page resources, Flate-encoded and holding the removed string as a Tj operand.
+    // Its text is not kept page text: the needle is a leak, not a collision.
+    let stray = |stream: Vec<u8>| {
+        let mut objs = base_objs(page.as_bytes(), "<< /Title (T) >>");
+        objs[0].1 = b"<< /Type /Catalog /Pages 2 0 R /Hidden 20 0 R >>".to_vec();
+        objs.push((20, stream));
+        build(&objs, "/Info 7 0 R", b"")
+    };
+    let body = miniz_oxide::deflate::compress_to_vec_zlib(b"BT /F1 12 Tf 72 700 Td (SECRET-ALPHA) Tj ET", 6);
+    for dict in ["/Filter /FlateDecode", "/Filter /FlateDecode /Subtype /Form /BBox [0 0 9 9]", "/Filter /FlateDecode /Type /Pattern /PatternType 1"] {
+        let out = run(&stray(stream_body(dict, &body)));
+        assert!(
+            out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 20, .. })),
+            "{dict}: {:?}",
+            out.proof.hits
+        );
+        assert!(!out.is_proven() && out.not_proven_reasons().contains(&NotProven::Leak), "{dict}");
+        assert!(out.region_cleared(), "the in-region instance itself is gone: {dict}");
+    }
+
+    // A form drawn from the page's resources stays kept text: the same word there is a collision.
+    let mut objs = base_objs(format!("{page}\nq 1 0 0 1 0 0 cm /Fm1 Do Q").as_bytes(), "<< /Title (T) >>");
+    objs[2].1 = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R] /Resources << /Font << /F1 6 0 R >> /XObject << /Fm1 20 0 R >> >> >>"
+        .to_vec();
+    objs.push((20, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 612 792]", b"BT /F1 12 Tf 300 300 Td (SECRET-ALPHA) Tj ET")));
+    let out = run(&build(&objs, "/Info 7 0 R", b""));
+    assert!(out.proof.hits.is_empty() && out.proof.kept_text_collisions.iter().any(|c| c.object == 20), "{:?}", out.proof);
+
+    // Class 2 (finding 4): an image XObject whose codec input is a zlib stream of the removed string.
+    let hidden = miniz_oxide::deflate::compress_to_vec_zlib(b"hidden SECRET-ALPHA payload", 6);
+    for codec in ["JBIG2Decode", "CCITTFaxDecode", "DCTDecode", "JPXDecode"] {
+        let out = run(&raster_doc(&format!("/Filter /{codec}"), &hidden, &page));
+        assert!(
+            out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 8, .. })),
+            "{codec}: {:?}",
+            out.proof.hits
+        );
+        assert!(!out.is_proven() && out.proof.raster_streams.len() == 1, "{codec}");
+    }
+    // ... and a zlib bomb behind a raster filter name is refused like any bomb.
+    let bomb = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0u8; 8 << 20], 6);
+    let small = Limits { max_decoded_bytes: 1 << 20, ..Limits::default() };
+    let pdf = raster_doc("/Filter /JBIG2Decode", &bomb, &page);
+    assert_eq!(verify_payload_absent(&pdf, &[b"zzzzzz".to_vec()], &small, &token()).unwrap_err(), PressError::InputLimit("decoded_bytes"));
+
+    // Class 3 (finding 5): a glyph box that cannot be computed (the CTM overflowed to infinity and
+    // NaN) reads as touching the region, so the string is removed instead of silently kept.
+    let scale = format!("1{} 0 0 1{} 0 0 cm\n", "0".repeat(38), "0".repeat(38));
+    let nan_page = format!("{}{TEXT_IN_REGION}", scale.repeat(9));
+    let out = run(&build(&base_objs(nan_page.as_bytes(), "<< /Title (T) >>"), "/Info 7 0 R", b""));
+    assert!(independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-ALPHA").is_none()), "the unlocatable string was kept");
+    assert!(out.reports[0].removed_text.iter().any(|t| find(t, b"SECRET-ALPHA").is_some()), "{:?}", out.reports[0]);
+
+    // Class 4 (cancellation windows): a needle across the 1 MiB search-window edge is found once.
+    let objs = base_objs(page.as_bytes(), "<< /Title (T) >>");
+    let at = find(&build(&objs, "/Info 7 0 R", b""), b"xref\n0 ").unwrap();
+    let needle = b"straddle-needle-77";
+    let edge = 2usize << 20;
+    let mut junk = format!("%{}", " ".repeat(edge - 9 - at - 1)).into_bytes();
+    junk.extend_from_slice(needle);
+    junk.push(b'\n');
+    let pdf = build(&objs, "/Info 7 0 R", &junk);
+    let proof = verify_payload_absent(&pdf, &[needle.to_vec()], &Limits::default(), &token()).unwrap();
+    let raw: Vec<usize> = proof.hits.iter().filter_map(|h| if let PayloadLocation::RawBytes { offset } = h.location { Some(offset) } else { None }).collect();
+    assert_eq!(raw, vec![edge - 9], "{:?}", proof.hits);
+    assert_eq!(find(&pdf, needle), Some(edge - 9));
+}

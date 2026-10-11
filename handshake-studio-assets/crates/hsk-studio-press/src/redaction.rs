@@ -92,7 +92,13 @@ fn apply(m: &Mat, x: f64, y: f64) -> (f64, f64) {
 fn translate(tx: f64, ty: f64) -> Mat {
     [1.0, 0.0, 0.0, 1.0, tx, ty]
 }
+/// Box of `points`. A non-finite point (a CTM that overflowed) makes the box unbounded: `f64::min`
+/// and `f64::max` would silently drop a NaN, and a mark whose position cannot be computed must read
+/// as touching every region (fail closed; test `stray_streams_and_hidden_payloads_are_not_kept_text`).
 fn bbox(points: &[(f64, f64)]) -> [f64; 4] {
+    if points.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+        return [f64::NEG_INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY];
+    }
     let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
     for (x, y) in points {
         b[0] = b[0].min(*x);
@@ -103,6 +109,9 @@ fn bbox(points: &[(f64, f64)]) -> [f64; 4] {
     b
 }
 fn touches(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    if a.iter().any(|v| v.is_nan()) {
+        return true;
+    }
     a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1]
 }
 

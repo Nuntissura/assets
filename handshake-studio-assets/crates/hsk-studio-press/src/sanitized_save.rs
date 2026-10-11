@@ -19,10 +19,10 @@ use crate::content::parse_content;
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
 use crate::pdf_edit::PdfDoc;
-use crate::raster::{InlineClass, RASTER_CLASS, classify_inline, decode_prefix, raster_tail};
+use crate::raster::{InlineClass, RASTER_CLASS, classify_inline, decode_prefix, hidden_zlib, raster_tail};
 use crate::reader::{check_cancel, find, parse_document};
 use crate::redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
-use crate::show_text::{FontCache, content_resources, show_text_ops};
+use crate::show_text::{FontCache, content_resources, kept_text_streams, show_text_ops};
 use crate::syntax::{Dict, Object};
 use crate::text_codec::{Enc, decode_text, pdfdoc_byte, utf16be_bytes};
 use crate::text_fields::{TextFieldPolicy, TextFieldReport, appearance_stream_nums};
@@ -271,22 +271,55 @@ fn text_found(hay: &[char], needle: &[char], token: bool) -> bool {
     })
 }
 
-fn scan(hay: &[u8], vars: &[Variant]) -> Vec<(usize, usize)> {
+/// Window of one search step: cancellation is polled between windows (a 64 MiB file is 64 polls).
+const SCAN_CHUNK: usize = 1 << 20;
+
+/// Every occurrence of every variant (whole-token rule applied), in variant order then position
+/// order. The haystack is searched in windows that overlap by the needle length minus one, so a hit
+/// is found exactly once whatever the window edges are; the token is polled between windows.
+fn scan(hay: &[u8], vars: &[Variant], cancel: &CancellationToken) -> Result<Vec<(usize, usize)>> {
     let mut hits = Vec::new();
     for v in vars {
-        let mut from = 0usize;
-        while let Some(at) = find(hay.get(from..).unwrap_or(&[]), &v.bytes) {
-            let pos = from.saturating_add(at);
-            if at_boundary(hay, pos, v) {
-                hits.push((v.needle_index, pos));
+        let overlap = v.bytes.len().saturating_sub(1);
+        let mut start = 0usize;
+        while start < hay.len() {
+            check_cancel(cancel)?;
+            let window_end = start.saturating_add(SCAN_CHUNK).min(hay.len());
+            let slice = hay.get(start..window_end.saturating_add(overlap).min(hay.len())).unwrap_or(&[]);
+            let mut from = 0usize;
+            while let Some(at) = find(slice.get(from..).unwrap_or(&[]), &v.bytes) {
+                let rel = from.saturating_add(at);
+                let pos = start.saturating_add(rel);
+                if pos >= window_end {
+                    break; // starts in the next window
+                }
+                if at_boundary(hay, pos, v) {
+                    hits.push((v.needle_index, pos));
+                    if hits.len() >= MAX_HITS {
+                        return Ok(hits);
+                    }
+                }
+                from = rel.saturating_add(1);
             }
-            from = pos.saturating_add(1);
-            if hits.len() >= MAX_HITS {
-                return hits;
-            }
+            start = window_end;
         }
     }
-    hits
+    Ok(hits)
+}
+
+/// Number of non-overlapping-start occurrences of `marker`, polling the token between windows.
+fn count_marker(hay: &[u8], marker: &[u8], cancel: &CancellationToken) -> Result<usize> {
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while start < hay.len() {
+        check_cancel(cancel)?;
+        let window_end = start.saturating_add(SCAN_CHUNK).min(hay.len());
+        let slice = hay.get(start..window_end.saturating_add(marker.len().saturating_sub(1)).min(hay.len())).unwrap_or(&[]);
+        let width = window_end.saturating_sub(start);
+        n = n.saturating_add(slice.windows(marker.len().max(1)).take(width).filter(|w| *w == marker).count());
+        start = window_end;
+    }
+    Ok(n)
 }
 
 fn contains(s: &[u8], vars: &[Variant]) -> Option<usize> {
@@ -318,7 +351,8 @@ fn looks_like_content(d: &Dict) -> bool {
 /// needles are ignored.
 ///
 /// Context rule (what makes the proof usable for natural-language documents without weakening
-/// it): in decoded page/form content streams a needle that appears as (part of) a TEXT-SHOWING
+/// it): in the decoded page content streams and the form XObjects reachable from page resources
+/// (`kept_text_streams`; no other stream, whatever it looks like) a needle that appears as (part of) a TEXT-SHOWING
 /// operand (Tj, TJ, ', ") is a kept-text collision, reported in `kept_text_collisions`, because
 /// the same word legitimately occurs in kept text (the in-region instance is proven gone by the
 /// residual pass in [`redact_and_save`]). A needle anywhere else is a leak and lands in `hits`:
@@ -367,16 +401,19 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         hits: Vec::new(),
         kept_text_collisions: Vec::new(),
     };
-    let raw_hits = scan(output, &vars);
+    let raw_hits = scan(output, &vars, cancel)?;
     let live = reachable(&parsed.objects, &trailer_roots(&parsed.trailer));
     proof.unreachable_objects = parsed.objects.keys().copied().filter(|n| !live.contains(n)).collect();
-    let markers = output.windows(6).filter(|w| *w == b"endobj").count();
+    let markers = count_marker(output, b"endobj", cancel)?;
     let listed = parsed.objects.values().filter(|e| e.span.is_some()).count();
     proof.unlisted_object_markers = u32::try_from(markers.saturating_sub(listed)).unwrap_or(u32::MAX);
 
     // Annotation appearance streams hold annotation text, not kept page text: a needle in their
     // show operands is a leak (hit), not a kept-text collision.
     let ap_streams = appearance_stream_nums(&parsed.objects);
+    // Streams that draw the document's kept text (page contents, forms reachable from page resources).
+    // Only they may repeat a removed word as legitimate text; every other stream is payload.
+    let kept_streams = kept_text_streams(&parsed.objects, &parsed.trailer);
     // Text needles for ToUnicode-read text, and the resources that apply to each content stream.
     let texts: Vec<(usize, Vec<char>, bool)> =
         vars.iter().filter_map(|v| v.text.as_ref().map(|t| (v.needle_index, t.chars().collect(), v.token))).collect();
@@ -426,6 +463,16 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         let decoded = if raster.is_some() { decode_prefix(s, limits, &mut budget) } else { filters::decode_stream(s, limits, &mut budget) };
         match decoded {
             Ok(bytes) => {
+                // A "raster" stream whose codec input is itself a zlib stream is not pixel data: the
+                // inflated bytes are scanned like any decoded stream (test
+                // stray_streams_and_hidden_payloads_are_not_kept_text).
+                if raster.is_some()
+                    && let Some(inner) = hidden_zlib(&bytes, limits, &mut budget)?
+                {
+                    for (needle, offset) in scan(&inner, &vars, cancel)? {
+                        proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedStream { object: *num, offset } });
+                    }
+                }
                 match raster {
                     Some(filter) => proof.raster_streams.push(RasterStream { object: *num, class: RASTER_CLASS, filter, inline: false }),
                     None => proof.streams_decoded = proof.streams_decoded.saturating_add(1),
@@ -433,9 +480,9 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
                 if let Some(span) = entry.span {
                     covered.push(span);
                 }
-                let ops = if looks_like_content(&s.dict) { parse_content(&bytes, limits).ok() } else { None };
-                let is_show = |name: &[u8]| matches!(name, b"Tj" | b"TJ" | b"'" | b"\"");
                 let is_ap = ap_streams.contains(num);
+                let ops = if (kept_streams.contains(num) || is_ap) && looks_like_content(&s.dict) { parse_content(&bytes, limits).ok() } else { None };
+                let is_show = |name: &[u8]| matches!(name, b"Tj" | b"TJ" | b"'" | b"\"");
                 if let Some(list) = &ops {
                     for op in list.iter().filter(|op| op.name == b"BI") {
                         match classify_inline(&op.operands) {
@@ -469,7 +516,7 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
                 } else {
                     ops.iter().flatten().filter(|op| is_show(&op.name)).map(|op| (op.start, op.end)).collect()
                 };
-                for (needle, offset) in scan(&bytes, &vars) {
+                for (needle, offset) in scan(&bytes, &vars, cancel)? {
                     if !show_spans.iter().any(|(a, b)| offset >= *a && offset < *b) {
                         proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedStream { object: *num, offset } });
                     }

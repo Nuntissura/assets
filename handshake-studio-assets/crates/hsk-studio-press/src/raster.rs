@@ -7,7 +7,9 @@
 //! class and block the proof (`PayloadProof::streams_not_decodable`).
 //! The part of the chain that can be decoded (the prefix before the raster codec) is still decoded
 //! and scanned as bytes: a needle in a JPEG comment segment is a hit; only a needle drawn as pixels
-//! is out of reach, and that is what region removal of the image is for.
+//! is out of reach, and that is what region removal of the image is for. A codec input that is a
+//! complete zlib stream is not pixel data: `hidden_zlib` inflates it and the proof scans the result
+//! (test `stray_streams_and_hidden_payloads_are_not_kept_text`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
@@ -96,4 +98,23 @@ pub(crate) fn decode_prefix(stream: &Stream, limits: &Limits, budget: &mut usize
     // An explicit (possibly empty) array so the file-specification key `/F` is not read as a filter.
     dict.set("Filter", Object::Array(head.iter().map(|n| Object::Name(n.clone())).collect()));
     filters::decode_stream(&Stream { dict, data: stream.data.clone() }, limits, budget)
+}
+
+/// A raster stream whose codec input is itself a complete zlib stream is not pixel data (JPEG,
+/// JPEG 2000, CCITT and JBIG2 streams are never valid zlib streams): returns the inflated bytes so
+/// the proof scans them, bounded like any decode (a bomb is `InputLimit`). Without this, zlib bytes
+/// of a removed string behind a raster filter name would read as unsearchable pixels.
+pub(crate) fn hidden_zlib(codec_input: &[u8], limits: &Limits, budget: &mut usize) -> Result<Option<Vec<u8>>> {
+    let cap = limits.max_decoded_bytes.min(*budget);
+    match miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(codec_input, cap) {
+        Ok(v) => {
+            *budget = budget.saturating_sub(v.len());
+            Ok(Some(v))
+        }
+        Err(e) if e.status == miniz_oxide::inflate::TINFLStatus::HasMoreOutput => {
+            *budget = budget.saturating_sub(cap);
+            Err(PressError::InputLimit(if cap < limits.max_decoded_bytes { "decoded_total" } else { "decoded_bytes" }))
+        }
+        Err(_) => Ok(None),
+    }
 }
