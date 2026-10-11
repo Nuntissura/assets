@@ -1661,8 +1661,10 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
         true
     }
     /// The envelope operators implement pigment's formulas verbatim (`adjust_math`,
-    /// `coverage_math`, `effect_math`), so this backend adds no loss of its own: the receipt class is pigment's
-    /// intrinsic one (Approximate). Knockout, effect kinds beyond wave 1 and any operator this
+    /// `coverage_math`, `effect_math`) and pigment owns their exactness (CX-CAP-001): a supported
+    /// operator reports exactly pigment's declared class (`ExtOperator::intrinsic`, Approximate for
+    /// everything but Invert), never a better one; bit-identity with pigment's reference is a
+    /// separate fact (the parity tests). Knockout, effect kinds beyond wave 1 and any operator this
     /// build does not know are Unsupported (typed refusal at admission).
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
         match operator {
@@ -1673,7 +1675,7 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             | ExtOperator::MaskFeather
             | ExtOperator::Effect(EffectKind::DropShadow)
             | ExtOperator::Effect(EffectKind::ColourOverlay)
-            | ExtOperator::Effect(EffectKind::Stroke) => Exactness::Exact,
+            | ExtOperator::Effect(EffectKind::Stroke) => operator.intrinsic(),
             // Effect kinds added after wave 1 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }

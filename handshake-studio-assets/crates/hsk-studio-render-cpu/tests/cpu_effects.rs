@@ -460,15 +460,23 @@ fn effect_refusals_and_scratch_charge_stay_typed() {
             kind,
             EffectKind::DropShadow | EffectKind::ColourOverlay | EffectKind::Stroke
         );
+        // A supported kind reports pigment's declared class (Approximate, D5 12-14), never a
+        // better one: pigment owns the exactness (CX-CAP-001).
         assert_eq!(
             backend.extension_exactness(ExtOperator::Effect(kind)),
             if wave1 {
-                Exactness::Exact
+                ExtOperator::Effect(kind).intrinsic()
             } else {
                 Exactness::Unsupported
             },
             "{kind:?}"
         );
+        if wave1 {
+            assert_eq!(
+                backend.extension_exactness(ExtOperator::Effect(kind)),
+                Exactness::Approximate
+            );
+        }
     }
     let refused = |p: &RenderPlan, ext: &PlanExtensions, min: Exactness| {
         let (result, grid) = run_ext(

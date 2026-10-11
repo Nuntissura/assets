@@ -7,7 +7,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::adjust_math::{
-    AdjustmentOp, BrightnessContrast, Curves, Exposure, HueSaturation, Levels, LevelsRecord,
+    AdjustmentKind, AdjustmentOp, BrightnessContrast, Curves, Exposure, HueSaturation, Levels,
+    LevelsRecord,
 };
 use hsk_studio_pigment::blend_math::{BlendContext, PixelSite, Rgba, StackNode, evaluate_stack};
 use hsk_studio_pigment::coverage_math::{BlendChannel, BlendRangeEntry, IDENTITY_RANGE};
@@ -562,17 +563,29 @@ fn mask_feather_hand_values_budget_and_aggregate() {
 #[test]
 fn refusals_stay_typed_and_the_v1_path_is_unchanged() {
     let renderer = Renderer::new(1).unwrap();
-    // Capability classes: the five operators implement pigment's formulas verbatim; knockout is
-    // refused. (Receipts report pigment's intrinsic class, Approximate for all of them.)
+    // Capability classes: pigment owns the exactness of every operator (CX-CAP-001), so a
+    // supported operator reports exactly pigment's declared class, never a better one (invert is
+    // Exact there, the rest Approximate); knockout is refused.
     let backend: &dyn RenderBackend = &renderer;
-    for op in [
+    let supported = [
         ExtOperator::AdjustmentLayer,
         ExtOperator::BlendIf,
         ExtOperator::MaskDensity,
         ExtOperator::MaskFeather,
-    ] {
-        assert_eq!(backend.extension_exactness(op), Exactness::Exact);
+    ]
+    .into_iter()
+    .chain(AdjustmentKind::ALL.map(ExtOperator::Adjustment));
+    for op in supported {
+        assert_eq!(backend.extension_exactness(op), op.intrinsic(), "{op:?}");
     }
+    assert_eq!(
+        backend.extension_exactness(ExtOperator::Adjustment(AdjustmentKind::Invert)),
+        Exactness::Exact
+    );
+    assert_eq!(
+        backend.extension_exactness(ExtOperator::MaskFeather),
+        Exactness::Approximate
+    );
     for depth in [Knockout::Shallow, Knockout::Deep] {
         assert_eq!(
             backend.extension_exactness(ExtOperator::Knockout(depth)),
