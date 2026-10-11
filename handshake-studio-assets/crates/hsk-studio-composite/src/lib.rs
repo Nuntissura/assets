@@ -3,6 +3,7 @@
 //! dependency in the static render closure.
 #![forbid(unsafe_code)]
 pub mod evaluate_static;
+pub mod lower_extensions;
 pub mod lower_plan;
 pub mod lower_render_plan;
 
@@ -21,14 +22,16 @@ pub use hsk_studio_pigment::blend_math::{
     StudioBlendMode,
 };
 pub use evaluate_static::{
-    EvalReport, RenderReceipt, StepEval, StepStatus, Unavailable, evaluate,
+    EvalReport, RenderReceipt, StepEval, StepStatus, Unavailable, evaluate, evaluate_extended,
 };
+pub use lower_extensions::LoweringNote;
 pub use lower_plan::{
     Limits, LoweredPlan, NodeAddr, SourceValue, Step, StepAppearance, layer_projection, lower,
     node_projection,
 };
 pub use lower_render_plan::{
-    MaskTable, RenderLowering, SourceTable, TileInfo, TileInfoSource, lower_to_render_plan,
+    ExtendedLowering, MaskTable, RenderLowering, SourceTable, TileInfo, TileInfoSource,
+    lower_to_render_plan, lower_to_render_plan_extended,
 };
 
 /// Composite failures. Every variant is a typed, stable code; none degrades silently.
@@ -115,6 +118,14 @@ pub fn outcome_of<T>(result: &Result<T, CompositeError>) -> Outcome {
 /// Observe outcome for an evaluation: an `Ok` report with unavailable parts is NOT success.
 pub fn eval_outcome(result: &Result<EvalReport, CompositeError>) -> Outcome {
     match result {
+        // A plan that uses an operator of class `Unsupported` (for example knockout, carried in
+        // the envelope and refused by pigment's admission) is not a success either.
+        Ok(report)
+            if report.require_ready().is_ok()
+                && report.receipt.exactness.lowest == Exactness::Unsupported =>
+        {
+            Outcome::Failure(FailureCode::Unsupported)
+        }
         Ok(report) => outcome_of(&report.require_ready().map(|()| report)),
         Err(e) => outcome_of::<EvalReport>(&Err(e.clone())),
     }

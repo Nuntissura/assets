@@ -11,6 +11,7 @@ use hsk_studio_folio::{
     OperationKind, PortAddress, ProfileBinding, Snapshot, StudioLayer, ValueType,
 };
 use hsk_studio_pigment::blend_math::{BlendSpace, Exactness, StudioBlendMode};
+use hsk_studio_pigment::render_plan::{MaskFormat, Operator};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Authored address of one output port (`layer_id`, `operation_key`, `port_key`).
@@ -93,19 +94,26 @@ impl StepAppearance {
     pub fn is_neutral_over_transparent(&self) -> bool {
         self.opacity >= 1.0 && self.fill_opacity >= 1.0 && !self.mask && !self.clipped
     }
-    /// Lowest class over everything this appearance uses. Mirrors pigment's `Operator` accounting:
-    /// fill opacity with a non-Normal mode and pass-through below full opacity are Approximate;
-    /// clipping (pigment's clip-to-base route, Photoshop rule UNVERIFIED) is Approximate.
+    /// Lowest class over everything this appearance uses, read from pigment's `Operator`
+    /// accounting (`intrinsic()`): fill opacity with a non-Normal layer mode, pass-through below
+    /// full opacity and clipping (pigment's clip-to-base route, Photoshop rule UNVERIFIED) carry
+    /// pigment's class. A pass-through layer with fill below 1 has no group result for fill to
+    /// scale: pigment's shared admission refuses it for every backend
+    /// (`PASS_THROUGH_FILL_OPERATOR`), so it is `Unsupported` here too.
     pub fn exactness(&self) -> Exactness {
         let mut lowest = self.mode.facts().exactness;
-        if self.fill_opacity < 1.0 && self.mode != StudioBlendMode::Normal {
-            lowest = lowest.lowest_of(Exactness::Approximate);
-        }
-        if self.opacity < 1.0 && self.mode == StudioBlendMode::PassThrough {
-            lowest = lowest.lowest_of(Exactness::Approximate);
+        if self.mode == StudioBlendMode::PassThrough {
+            if self.fill_opacity < 1.0 {
+                lowest = lowest.lowest_of(Exactness::Unsupported);
+            }
+            if self.opacity < 1.0 {
+                lowest = lowest.lowest_of(Operator::PassThroughOpacity.intrinsic());
+            }
+        } else if self.fill_opacity < 1.0 && self.mode != StudioBlendMode::Normal {
+            lowest = lowest.lowest_of(Operator::FillOpacity.intrinsic());
         }
         if self.clipped {
-            lowest = lowest.lowest_of(Exactness::Approximate);
+            lowest = lowest.lowest_of(Operator::Mask(MaskFormat::BaseAlpha).intrinsic());
         }
         lowest
     }

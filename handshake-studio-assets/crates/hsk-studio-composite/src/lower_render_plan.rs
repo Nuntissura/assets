@@ -27,17 +27,32 @@
 //! honoured by wrapping it in one synthetic isolated group when it is not neutral over a
 //! transparent backdrop (opacity or fill below 1, or an enabled mask); the blend mode itself is
 //! irrelevant over a transparent backdrop (W3C `ab = 0` gives `Cs' = Cs`).
+//!
+//! Extended lowering ([`lower_to_render_plan_extended`], decision record
+//! `diagnostics/adjustments-advanced-blending.md`): the same plan plus a pigment `PlanExtensions`
+//! envelope built from Folio's `StudioRasterRecords`: adjustment layers (a transparent `Solid`
+//! placeholder in the group plus `LayerExtension.adjustment`), mask density / invert / feather,
+//! Blend-If and knockout. The envelope is built with pigment's constructors only; composite adds
+//! no formula and no class. A feature the envelope cannot carry is `Unavailable` (enabled effect
+//! stack, hue bands, threshold colours, channel enablement); knockout and modern
+//! brightness/contrast are carried and refused by pigment's `admit_extended`.
 use crate::{
     CompositeError,
     evaluate_static::{EvalReport, StepStatus, tile_rects, union},
+    lower_extensions::{
+        AdjustmentOp, LayerFeatures, LoweringNote, adjustment_for, is_adjustment_layer,
+    },
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step, StepAppearance},
 };
-use hsk_studio_folio::{Payload, Snapshot, StudioLayer, TileRef};
-use hsk_studio_pigment::blend_math::{ExactnessLedger, StudioBlendMode};
+use hsk_studio_folio::{Parent, Payload, Snapshot, StudioLayer, StudioRasterRecords, TileRef};
+use hsk_studio_pigment::blend_math::{Exactness, ExactnessLedger, StudioBlendMode};
+use hsk_studio_pigment::coverage_math::BlendRangeEntry;
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, Group, Layer, MaskFormat, MaskInput, OutputTarget, PlanError, PlanLimits,
-    PlanNode, PlanNodeId, RenderPlan, SampleFormat, SourceKey, TileInput,
+    AlphaConvention, ExtOperator, Group, Knockout, Layer, LayerExtension, MaskFormat, MaskInput,
+    OutputTarget, PlanError, PlanExtensions, PlanLimits, PlanNode, PlanNodeId, RenderPlan,
+    SampleFormat, SourceKey, TileInput,
 };
+use hsk_studio_pigment::Rect;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What the caller knows about one resolved tile that Folio's authored `TileRef` cannot state:
@@ -82,6 +97,24 @@ pub struct RenderLowering {
     pub exactness: ExactnessLedger,
 }
 
+/// Result of [`lower_to_render_plan_extended`]: the plan next to its envelope. Execute it with
+/// `RenderBackend::execute_extended`; a backend that has not opted in to an envelope operator
+/// refuses it at `admit_extended`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExtendedLowering {
+    pub plan: RenderPlan,
+    pub extensions: PlanExtensions,
+    pub sources: SourceTable,
+    pub mask_sources: MaskTable,
+    /// Intrinsic class of every v1 and envelope operator the plan uses, plus the classes of the
+    /// recorded approximations (`notes`). An envelope operator pigment refuses (knockout, modern
+    /// brightness/contrast) is recorded `Unsupported`.
+    pub exactness: ExactnessLedger,
+    /// The lowering report: every approximation the conversion made (curve corner flags dropped,
+    /// exposure linearisation exponent), never silent.
+    pub notes: Vec<LoweringNote>,
+}
+
 struct Emitter<'a> {
     nodes: Vec<PlanNode>,
     sources: SourceTable,
@@ -103,12 +136,14 @@ impl Emitter<'_> {
     }
     /// The referencing layer: the referenced layer's authored appearance plus its mask. A clipped
     /// layer carries pigment's clip-to-base route in its single mask slot, so a clipped layer
-    /// with its own mask is refused (evaluation already marks it unavailable).
+    /// with its own mask is refused (evaluation already marks it unavailable). `mask_params`:
+    /// the layer's density / invert (extended lowering; `None` = density 1, not inverted).
     fn layer(
         &mut self,
         input: PlanNodeId,
         appearance: &StepAppearance,
         layer: &StudioLayer,
+        mask_params: Option<crate::lower_extensions::MaskParams>,
     ) -> Result<Layer, CompositeError> {
         let mask = match (appearance.clipped, appearance.mask) {
             (true, true) => {
@@ -118,7 +153,7 @@ impl Emitter<'_> {
                 )));
             }
             (true, false) => Some(MaskInput::clip_to_base()),
-            (false, true) => Some(self.mask(layer)?),
+            (false, true) => Some(self.mask(layer, mask_params)?),
             (false, false) => None,
         };
         Ok(Layer {
@@ -129,7 +164,11 @@ impl Emitter<'_> {
             mask,
         })
     }
-    fn mask(&mut self, layer: &StudioLayer) -> Result<MaskInput, CompositeError> {
+    fn mask(
+        &mut self,
+        layer: &StudioLayer,
+        params: Option<crate::lower_extensions::MaskParams>,
+    ) -> Result<MaskInput, CompositeError> {
         let tiles = layer
             .appearance
             .as_ref()
@@ -155,8 +194,8 @@ impl Emitter<'_> {
             placement,
             format,
             sha256,
-            inverted: false,
-            density: 1.0,
+            inverted: params.is_some_and(|p| p.inverted),
+            density: params.map_or(1.0, |p| p.density),
         })
     }
 }
@@ -174,6 +213,107 @@ fn mask_format(tiles: &[TileRef]) -> Result<MaskFormat, CompositeError> {
     }
 }
 
+/// One layer's envelope entry before its group node id is known.
+struct EntryParts {
+    layer: u32,
+    adjustment: Option<AdjustmentOp>,
+    blend_if: Vec<BlendRangeEntry>,
+    feather_px: f32,
+    knockout: Knockout,
+}
+
+impl EntryParts {
+    fn new(
+        layer_index: usize,
+        features: &LayerFeatures,
+        coverage_mask: bool,
+        adjustment: Option<AdjustmentOp>,
+    ) -> Result<Self, CompositeError> {
+        Ok(Self {
+            layer: u32::try_from(layer_index).map_err(|_| CompositeError::Overflow)?,
+            adjustment,
+            blend_if: features.blend_if.clone(),
+            // Feather blurs a coverage plane: it needs an enabled, unclipped mask on the layer.
+            feather_px: features
+                .mask
+                .filter(|_| coverage_mask)
+                .map_or(0.0, |m| m.feather_px),
+            knockout: features.knockout,
+        })
+    }
+    fn is_empty(&self) -> bool {
+        self.adjustment.is_none()
+            && self.blend_if.is_empty()
+            && self.feather_px <= 0.0
+            && self.knockout == Knockout::None
+    }
+    fn into_extension(self, group: PlanNodeId) -> LayerExtension {
+        let mut e = LayerExtension::new(group, self.layer);
+        if let Some(op) = self.adjustment {
+            e = e.with_adjustment(op);
+        }
+        if !self.blend_if.is_empty() {
+            e = e.with_blend_if(self.blend_if);
+        }
+        if self.feather_px > 0.0 {
+            e = e.with_mask_feather(self.feather_px);
+        }
+        if self.knockout != Knockout::None {
+            e = e.with_knockout(self.knockout);
+        }
+        e
+    }
+}
+
+/// What a group input contributes at its position.
+enum Slot {
+    /// Hidden, empty or (adjustment in an empty isolated group) nothing to act on.
+    Empty,
+    Node(PlanNodeId),
+    /// An adjustment layer; the rectangle bounds where it applies.
+    Adjustment(Rect),
+}
+
+fn record_ext(ledger: &mut ExactnessLedger, op: ExtOperator) {
+    ledger.record(op.key(), op.intrinsic());
+}
+
+/// Fold the envelope into the ledger and validate it, entry by entry. Knockout and an adjustment
+/// feature without a formula (modern brightness/contrast) are carried, not lowering errors:
+/// pigment's `admit_extended` refuses them with their operator name (`tests/render_plan_lowering.rs`
+/// `knockout_and_effect_stack_are_refused`), and the ledger says `Unsupported`. Every other
+/// envelope defect is a typed lowering error.
+fn record_envelope(
+    render: &RenderPlan,
+    extensions: &PlanExtensions,
+    ledger: &mut ExactnessLedger,
+) -> Result<(), CompositeError> {
+    for e in &extensions.layers {
+        let mut probe = e.clone();
+        if probe.knockout != Knockout::None {
+            record_ext(ledger, ExtOperator::Knockout(probe.knockout));
+            probe.knockout = Knockout::None;
+        }
+        match PlanExtensions::from_layers(vec![probe]).validate(render) {
+            Ok(ops) => {
+                for op in ops {
+                    record_ext(ledger, op);
+                }
+            }
+            Err(PlanError::AdjustmentUnsupported { kind, .. }) => {
+                record_ext(ledger, ExtOperator::AdjustmentLayer);
+                record_ext(ledger, ExtOperator::Adjustment(kind));
+                ledger.record(kind.key(), Exactness::Unsupported);
+            }
+            Err(other) => return Err(CompositeError::Plan(other)),
+        }
+    }
+    if render.has_mask_density() {
+        record_ext(ledger, ExtOperator::MaskDensity);
+    }
+    Ok(())
+}
+
 /// Lower `root` of an evaluated plan. The result has passed `RenderPlan::validate`.
 ///
 /// Fails `Unavailable` when the blending profile is unbound, when any step reachable from `root`
@@ -189,6 +329,65 @@ pub fn lower_to_render_plan(
     target: OutputTarget,
     info: &dyn TileInfoSource,
 ) -> Result<RenderLowering, CompositeError> {
+    let (lowering, _, _) = lower_inner(plan, report, snap, None, root, target, info)?;
+    Ok(lowering)
+}
+
+/// [`lower_to_render_plan`] plus the pigment extension envelope built from `records` (the
+/// document's `StudioRasterRecords`, `records.document_id` = the snapshot's document). Use
+/// `evaluate_extended` for the report: it refuses the same cases. Layout of the result:
+///
+/// - Adjustment layer: a `Layer` in its group whose input is a transparent `Solid` placeholder
+///   (`rgba [0; 4]`) over the group's content extent (an isolated group) or the target extent (a
+///   pass-through group, whose backdrop is the parent's), with `LayerExtension.adjustment`. In an
+///   isolated group with no content to act on it is dropped (it changes nothing there).
+/// - Mask parameters: `density / 100` and `inverted` on the `MaskInput`, `feather` in
+///   `LayerExtension.mask_feather_px` (an enabled coverage mask only).
+/// - Blend-If: `level / 255` ranges `[black_start, black_end, white_start, white_end]`, source
+///   then destination, per gray/red/green/blue entry; identity entries are dropped.
+/// - Knockout: `Enabled` (and an `Inherited` that resolves to enabled) is `Knockout::Shallow`.
+///
+/// Fails `Unavailable` for an enabled effect stack (`layer_effects_not_rendered`, effects wave 1
+/// pending), hue bands, threshold colours, exposure `use_legacy`, channel enablement other than
+/// all on, a clipped layer whose base is an adjustment layer, and a visible adjustment layer that
+/// the composition graph does not place in its (rendered) parent group: Folio currently defines no
+/// graph operation for it, so it has no authored stack position and the spec forbids inferring
+/// one from storage order or containment (STU-CMP-092; `adjustment_not_in_composition_graph`).
+pub fn lower_to_render_plan_extended(
+    plan: &LoweredPlan,
+    report: &EvalReport,
+    snap: &Snapshot,
+    records: &StudioRasterRecords,
+    root: &NodeAddr,
+    target: OutputTarget,
+    info: &dyn TileInfoSource,
+) -> Result<ExtendedLowering, CompositeError> {
+    if records.document_id != snap.document().document_id {
+        return Err(CompositeError::UnsupportedDescriptor(
+            "raster_records_document_mismatch".into(),
+        ));
+    }
+    let (lowering, extensions, notes) =
+        lower_inner(plan, report, snap, Some(records), root, target, info)?;
+    Ok(ExtendedLowering {
+        plan: lowering.plan,
+        extensions,
+        sources: lowering.sources,
+        mask_sources: lowering.mask_sources,
+        exactness: lowering.exactness,
+        notes,
+    })
+}
+
+fn lower_inner(
+    plan: &LoweredPlan,
+    report: &EvalReport,
+    snap: &Snapshot,
+    records: Option<&StudioRasterRecords>,
+    root: &NodeAddr,
+    target: OutputTarget,
+    info: &dyn TileInfoSource,
+) -> Result<(RenderLowering, PlanExtensions, Vec<LoweringNote>), CompositeError> {
     let doc = snap.document();
     for revision in [plan.revision, report.receipt.revision] {
         if revision != doc.revision {
@@ -226,6 +425,18 @@ pub fn lower_to_render_plan(
         return Err(CompositeError::Unavailable(format!(
             "{}:clip_without_base",
             root.text()
+        )));
+    }
+    let layers: BTreeMap<&str, &StudioLayer> = doc
+        .layers
+        .iter()
+        .map(|l| (l.layer_id.as_str(), l))
+        .collect();
+    if records.is_some() && layers.get(root.layer_id.as_str()).is_some_and(|l| is_adjustment_layer(l)) {
+        // An adjustment acts on a backdrop; a root has none.
+        return Err(CompositeError::Unavailable(format!(
+            "{}:adjustment_layer_as_root",
+            root.layer_id
         )));
     }
 
@@ -292,13 +503,28 @@ pub fn lower_to_render_plan(
             }
         }
     }
+    if records.is_some() {
+        // A visible adjustment layer contained in a rendered group but absent from the group's
+        // composition inputs would vanish from the render: refuse it (no stack position exists).
+        let in_plan: BTreeSet<&str> = plan.steps.iter().map(|s| s.addr().layer_id.as_str()).collect();
+        let groups: BTreeSet<&str> = reachable
+            .iter()
+            .filter(|i| matches!(plan.steps[**i], Step::Composite { .. }))
+            .map(|i| plan.steps[*i].addr().layer_id.as_str())
+            .collect();
+        for l in &doc.layers {
+            let contained = matches!(&l.parent, Parent::Node(p) if groups.contains(p.node_id.as_str()));
+            if l.visible && contained && is_adjustment_layer(l) && !in_plan.contains(l.layer_id.as_str())
+            {
+                return Err(CompositeError::Unavailable(format!(
+                    "{}:adjustment_not_in_composition_graph",
+                    l.layer_id
+                )));
+            }
+        }
+    }
 
     // Phase 2: emit nodes in step order (every reference points to an earlier node).
-    let layers: BTreeMap<&str, &StudioLayer> = doc
-        .layers
-        .iter()
-        .map(|l| (l.layer_id.as_str(), l))
-        .collect();
     let mut out = Emitter {
         nodes: Vec::new(),
         sources: Vec::new(),
@@ -307,16 +533,33 @@ pub fn lower_to_render_plan(
         info,
     };
     let mut node_of: BTreeMap<usize, PlanNodeId> = BTreeMap::new();
+    let root_features = records.map(|r| LayerFeatures::of(&layers, r, &root.layer_id));
+    if let Some(reason) = root_features.as_ref().and_then(LayerFeatures::refusal) {
+        return Err(CompositeError::Unavailable(format!(
+            "{}:{reason}",
+            root.layer_id
+        )));
+    }
+    // Blend-If or knockout on the root change its own source alpha even over a transparent
+    // backdrop, so such a root is wrapped (the wrapper layer carries the entry).
     let root_neutral = plan.steps[root_index]
         .appearance()
-        .is_neutral_over_transparent();
+        .is_neutral_over_transparent()
+        && root_features.as_ref().is_none_or(LayerFeatures::is_neutral);
+    let mut entries: Vec<LayerExtension> = Vec::new();
+    let mut notes: Vec<LoweringNote> = Vec::new();
     for (i, step) in plan.steps.iter().enumerate() {
         if !reachable.contains(&i) {
             continue;
         }
         match step {
             Step::Source { addr, value, .. } => {
-                let (SourceValue::Image, Some(Payload::Raster { tiles: records })) = (
+                if records.is_some() && layers.get(addr.layer_id.as_str()).is_some_and(|l| is_adjustment_layer(l)) {
+                    // An adjustment layer has no node of its own: its placeholder is emitted in
+                    // the group that composites it (it needs that group's extent).
+                    continue;
+                }
+                let (SourceValue::Image, Some(Payload::Raster { tiles: tile_records })) = (
                     value,
                     layers.get(addr.layer_id.as_str()).map(|l| &l.payload),
                 ) else {
@@ -325,9 +568,9 @@ pub fn lower_to_render_plan(
                         addr.text()
                     )));
                 };
-                let rects = tile_rects(records)?;
-                let mut tile_nodes = Vec::with_capacity(records.len());
-                for (record, rect) in records.iter().zip(rects) {
+                let rects = tile_rects(tile_records)?;
+                let mut tile_nodes = Vec::with_capacity(tile_records.len());
+                for (record, rect) in tile_records.iter().zip(rects) {
                     let found = out.info.tile_info(record).ok_or_else(|| {
                         CompositeError::Unavailable(format!(
                             "{}/tile/{}:tile_info",
@@ -370,27 +613,54 @@ pub fn lower_to_render_plan(
                     }
                 }
             }
-            Step::Composite {
-                inputs, appearance, ..
-            } => {
+            Step::Composite { inputs, appearance, .. } => {
+                let is_root = i == root_index;
+                // A neutral root renders over a transparent backdrop, where isolated and
+                // pass-through are equivalent; every other group follows its mode.
+                let group_isolated = (is_root && root_neutral)
+                    || appearance.mode != StudioBlendMode::PassThrough;
+                // Where an adjustment layer of this group acts: an isolated group starts from a
+                // transparent backdrop, so only where its own content is (`None`: nowhere); a
+                // pass-through group sees the parent's backdrop, i.e. the whole target.
+                let adjustment_area: Option<Rect> = if group_isolated {
+                    report.steps[i].extent
+                } else {
+                    Some(target.extent)
+                };
                 let mut group_layers = Vec::with_capacity(inputs.len());
+                let mut parts: Vec<EntryParts> = Vec::new();
                 // Was the nearest unclipped input below emitted? (`None`: no unclipped input yet.)
                 let mut base_emitted: Option<bool> = None;
                 // Is that base a pass-through group (no isolated content to take a base alpha from)?
                 let mut base_pass_through = false;
+                // Is that base a (visible) adjustment layer (no base alpha to clip to)?
+                let mut base_adjustment = false;
                 for input in inputs {
                     let child = index[input];
-                    let emitted = if plan.steps[child].visible() {
-                        node_of.get(&child).copied()
+                    let child_visible = plan.steps[child].visible();
+                    let child_layer = layers.get(input.layer_id.as_str()).copied();
+                    let adjustment = records.is_some() && child_layer.is_some_and(is_adjustment_layer);
+                    let slot = if !child_visible {
+                        Slot::Empty
+                    } else if adjustment {
+                        adjustment_area.map_or(Slot::Empty, Slot::Adjustment)
                     } else {
-                        None
+                        node_of.get(&child).map_or(Slot::Empty, |id| Slot::Node(*id))
                     };
+                    let present = !matches!(slot, Slot::Empty);
                     if plan.steps[child].appearance().clipped {
                         // Emitted clipped layer on a pass-through base: backends refuse it, and
                         // Photoshop's semantics are UNVERIFIED (oracle pending), so never guess.
-                        if base_pass_through && emitted.is_some() {
+                        if base_pass_through && present {
                             return Err(CompositeError::Unavailable(format!(
                                 "{}:clip_base_pass_through",
+                                input.text()
+                            )));
+                        }
+                        // Pigment: an adjustment layer cannot be a clip base.
+                        if base_adjustment && present {
+                            return Err(CompositeError::Unavailable(format!(
+                                "{}:clip_base_adjustment",
                                 input.text()
                             )));
                         }
@@ -406,31 +676,75 @@ pub fn lower_to_render_plan(
                             Some(true) => {}
                         }
                     } else {
-                        base_emitted = Some(emitted.is_some());
-                        base_pass_through = emitted.is_some()
+                        base_emitted = Some(present);
+                        base_pass_through = present
                             && plan.steps[child].appearance().mode == StudioBlendMode::PassThrough;
+                        base_adjustment = adjustment && child_visible;
                     }
-                    let Some(id) = emitted.as_ref() else {
-                        continue;
+                    let input_id = match slot {
+                        Slot::Empty => continue,
+                        Slot::Node(id) => id,
+                        Slot::Adjustment(rect) => out.push(PlanNode::Solid {
+                            rect,
+                            rgba: [0.0; 4],
+                        })?,
                     };
-                    let layer = layers
-                        .get(input.layer_id.as_str())
+                    let layer = child_layer
                         .ok_or_else(|| CompositeError::DanglingInput(input.text()))?;
-                    group_layers.push(out.layer(*id, plan.steps[child].appearance(), layer)?);
+                    let child_appearance = plan.steps[child].appearance();
+                    let features = records.map(|r| LayerFeatures::of(&layers, r, &layer.layer_id));
+                    if let Some(reason) = features.as_ref().and_then(LayerFeatures::refusal) {
+                        return Err(CompositeError::Unavailable(format!(
+                            "{}:{reason}",
+                            layer.layer_id
+                        )));
+                    }
+                    let adjustment_op = match (adjustment, records) {
+                        (true, Some(r)) => {
+                            let converted = adjustment_for(r, &layer.layer_id, plan.blend_space)
+                                .map_err(|code| {
+                                    CompositeError::Unavailable(format!(
+                                        "{}:{code}",
+                                        layer.layer_id
+                                    ))
+                                })?;
+                            for (key, exactness, detail) in converted.notes {
+                                notes.push(LoweringNote {
+                                    layer_id: layer.layer_id.clone(),
+                                    key,
+                                    exactness,
+                                    detail,
+                                });
+                            }
+                            Some(converted.op)
+                        }
+                        _ => None,
+                    };
+                    let emitted_layer = out.layer(
+                        input_id,
+                        child_appearance,
+                        layer,
+                        features.as_ref().and_then(|f| f.mask),
+                    )?;
+                    if let Some(f) = &features {
+                        let coverage_mask = child_appearance.mask && !child_appearance.clipped;
+                        let p =
+                            EntryParts::new(group_layers.len(), f, coverage_mask, adjustment_op)?;
+                        if !p.is_empty() {
+                            parts.push(p);
+                        }
+                    }
+                    group_layers.push(emitted_layer);
                 }
-                let is_root = i == root_index;
                 if group_layers.is_empty() && !is_root {
                     continue;
                 }
                 let group = Group {
-                    // A neutral root renders over a transparent backdrop, where isolated and
-                    // pass-through are equivalent; every other group follows its mode.
-                    isolated: (is_root && root_neutral)
-                        || appearance.mode
-                            != StudioBlendMode::PassThrough,
+                    isolated: group_isolated,
                     layers: group_layers,
                 };
                 let id = out.push(PlanNode::Group(group))?;
+                entries.extend(parts.into_iter().map(|p| p.into_extension(id)));
                 node_of.insert(i, id);
             }
         }
@@ -443,11 +757,23 @@ pub fn lower_to_render_plan(
         let root_layer = layers
             .get(root.layer_id.as_str())
             .ok_or_else(|| CompositeError::DanglingInput(root.text()))?;
-        let layer = out.layer(root_node, plan.steps[root_index].appearance(), root_layer)?;
+        let root_appearance = plan.steps[root_index].appearance();
+        let layer = out.layer(
+            root_node,
+            root_appearance,
+            root_layer,
+            root_features.as_ref().and_then(|f| f.mask),
+        )?;
         root_node = out.push(PlanNode::Group(Group {
             isolated: true,
             layers: vec![layer],
         }))?;
+        if let Some(f) = &root_features {
+            let p = EntryParts::new(0, f, root_appearance.mask, None)?;
+            if !p.is_empty() {
+                entries.push(p.into_extension(root_node));
+            }
+        }
     }
     let render = RenderPlan {
         revision: plan.revision,
@@ -462,10 +788,21 @@ pub fn lower_to_render_plan(
     for op in operators {
         exactness.record(op.key(), op.intrinsic());
     }
-    Ok(RenderLowering {
-        plan: render,
-        sources: out.sources,
-        mask_sources: out.mask_sources,
-        exactness,
-    })
+    let extensions = PlanExtensions::from_layers(entries);
+    if records.is_some() {
+        record_envelope(&render, &extensions, &mut exactness)?;
+        for n in &notes {
+            exactness.record(n.key, n.exactness);
+        }
+    }
+    Ok((
+        RenderLowering {
+            plan: render,
+            sources: out.sources,
+            mask_sources: out.mask_sources,
+            exactness,
+        },
+        extensions,
+        notes,
+    ))
 }

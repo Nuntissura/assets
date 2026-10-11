@@ -5,12 +5,19 @@
 //! never faked, skipped or treated as Normal.
 use crate::{
     CompositeError,
+    lower_extensions::{ConvertedAdjustment, LayerFeatures, adjustment_for, is_adjustment_layer},
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step},
 };
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{Length, Payload, ProfileBinding, Resolution, Snapshot, TileRef};
+use hsk_studio_folio::{
+    Length, Payload, ProfileBinding, Resolution, Snapshot, StudioRasterRecords, TileRef,
+};
+use hsk_studio_pigment::adjust_math::AdjustError;
 use hsk_studio_pigment::blend_math::{
     Applicability, BlendError, BlendSpace, Exactness, ExactnessLedger, StudioBlendMode,
+};
+use hsk_studio_pigment::render_plan::{
+    ExtOperator, MaskFormat, Operator, PASS_THROUGH_FILL_OPERATOR, PlanError,
 };
 use hsk_studio_pigment::{Grid, Rect};
 use std::collections::{BTreeMap, BTreeSet};
@@ -178,23 +185,42 @@ fn check_applicability(mode: StudioBlendMode, composite: bool) -> Result<(), Com
     }
 }
 
-/// Everything a step uses, keyed like pigment's `Operator`s so ledgers read the same way.
-fn record_appearance(ledger: &mut ExactnessLedger, step: &Step) {
-    if matches!(step, Step::Source { .. }) {
+/// Record a pigment operator: key and class both come from pigment (CX-CAP-001; R5 composite
+/// literal drift; test `tests/render_plan_lowering.rs`
+/// `evaluation_ledger_keys_and_classes_are_pigments`).
+fn record_operator(ledger: &mut ExactnessLedger, op: Operator) {
+    ledger.record(op.key(), op.intrinsic());
+}
+/// Same for an envelope operator.
+fn record_ext(ledger: &mut ExactnessLedger, op: ExtOperator) {
+    ledger.record(op.key(), op.intrinsic());
+}
+
+/// Everything a step uses, keyed like pigment's `Operator`s so ledgers read the same way. The only
+/// keys composite owns are `source` (an evaluation concept; pigment names the same thing `tile`)
+/// and the refusal key `clip_base_pass_through` (pigment has no operator for it).
+fn record_appearance(ledger: &mut ExactnessLedger, step: &Step, adjustment: bool) {
+    if matches!(step, Step::Source { .. }) && !adjustment {
         ledger.record("source", Exactness::Exact);
     }
     let a = step.appearance();
     let facts = a.mode.facts();
     ledger.record(facts.key, facts.exactness);
-    if a.fill_opacity < 1.0 && a.mode != StudioBlendMode::Normal {
-        ledger.record("fill_opacity", Exactness::Approximate);
-    }
-    if a.opacity < 1.0 && a.mode == StudioBlendMode::PassThrough {
-        ledger.record("group_pass_through_opacity", Exactness::Approximate);
+    if a.mode == StudioBlendMode::PassThrough {
+        if a.fill_opacity < 1.0 {
+            // Pigment: a pass-through layer has no group result for fill to scale, so shared
+            // admission refuses it for every backend (`PASS_THROUGH_FILL_OPERATOR`).
+            ledger.record(PASS_THROUGH_FILL_OPERATOR, Exactness::Unsupported);
+        }
+        if a.opacity < 1.0 {
+            record_operator(ledger, Operator::PassThroughOpacity);
+        }
+    } else if a.fill_opacity < 1.0 && a.mode != StudioBlendMode::Normal {
+        record_operator(ledger, Operator::FillOpacity);
     }
     if a.clipped {
         // Pigment's clip-to-base route; the Photoshop clipping-group rule is UNVERIFIED.
-        ledger.record("clip_to_base", Exactness::Approximate);
+        record_operator(ledger, Operator::Mask(MaskFormat::BaseAlpha));
     }
 }
 
@@ -207,6 +233,9 @@ fn appearance_block(
     step: &Step,
 ) -> Option<&'static str> {
     let a = step.appearance();
+    if a.mode == StudioBlendMode::PassThrough && a.fill_opacity < 1.0 {
+        return Some(PASS_THROUGH_FILL_OPERATOR);
+    }
     if a.clipped && a.mask {
         return Some("clipped_with_mask_unsupported");
     }
@@ -234,6 +263,35 @@ pub fn evaluate(
     snap: &Snapshot,
     cancel: &CancellationToken,
 ) -> Result<EvalReport, CompositeError> {
+    evaluate_with(plan, snap, None, cancel)
+}
+
+/// [`evaluate`] with the document's raster records (adjustment layers, mask parameters, Blend-If,
+/// knockout, effect stacks). Every envelope operator a visible layer uses is recorded in the
+/// ledger under pigment's `ExtOperator::key()` at its `intrinsic()` class; a feature the envelope
+/// cannot carry makes the step `Unavailable` with the same code the lowering returns. Knockout and
+/// modern brightness/contrast are carried, not blocked: pigment's admission refuses them and the
+/// ledger says `Unsupported`. `records.document_id` must be the snapshot's document.
+pub fn evaluate_extended(
+    plan: &LoweredPlan,
+    snap: &Snapshot,
+    records: &StudioRasterRecords,
+    cancel: &CancellationToken,
+) -> Result<EvalReport, CompositeError> {
+    if records.document_id != snap.document().document_id {
+        return Err(CompositeError::UnsupportedDescriptor(
+            "raster_records_document_mismatch".into(),
+        ));
+    }
+    evaluate_with(plan, snap, Some(records), cancel)
+}
+
+fn evaluate_with(
+    plan: &LoweredPlan,
+    snap: &Snapshot,
+    records: Option<&StudioRasterRecords>,
+    cancel: &CancellationToken,
+) -> Result<EvalReport, CompositeError> {
     cancel.check().map_err(|_| CompositeError::Canceled)?;
     let doc = snap.document();
     if plan.revision != doc.revision {
@@ -251,6 +309,9 @@ pub fn evaluate(
 
     let mut ledger = ExactnessLedger::default();
     let mut evals: Vec<StepEval> = Vec::with_capacity(plan.steps.len());
+    // Index-aligned with `evals`: the step is an adjustment layer (it has no extent of its own and
+    // applies to whatever lies below it, so it is never "empty").
+    let mut adjustment_steps: Vec<bool> = Vec::with_capacity(plan.steps.len());
     let mut seen: BTreeMap<&NodeAddr, usize> = BTreeMap::new();
     for step in &plan.steps {
         cancel.check().map_err(|_| CompositeError::Canceled)?;
@@ -258,7 +319,37 @@ pub fn evaluate(
             step.appearance().mode,
             matches!(step, Step::Composite { .. }),
         )?;
-        record_appearance(&mut ledger, step);
+        let layer = layers.get(step.addr().layer_id.as_str()).copied();
+        // An adjustment layer is a graph source whose payload is its own primitive reference; it
+        // is only understood together with the raster records.
+        let converted: Option<Result<ConvertedAdjustment, &'static str>> = match (records, layer, step)
+        {
+            (Some(recs), Some(l), Step::Source { value: SourceValue::Image, .. })
+                if is_adjustment_layer(l) =>
+            {
+                Some(adjustment_for(recs, &l.layer_id, plan.blend_space))
+            }
+            _ => None,
+        };
+        record_appearance(&mut ledger, step, converted.is_some());
+        let mut ext_block: Option<&'static str> = None;
+        if let (Some(recs), Some(l), true) = (records, layer, step.visible()) {
+            if let Some(Ok(c)) = &converted {
+                record_ext(&mut ledger, ExtOperator::AdjustmentLayer);
+                record_ext(&mut ledger, ExtOperator::Adjustment(c.op.kind()));
+                // Pigment decides what it cannot evaluate (modern brightness/contrast).
+                if matches!(c.op.prepare(), Err(AdjustError::Unsupported(_))) {
+                    ledger.record(c.op.kind().key(), Exactness::Unsupported);
+                }
+            }
+            let features = LayerFeatures::of(&layers, recs, &l.layer_id);
+            let a = step.appearance();
+            for op in features.operators(a.mask && !a.clipped) {
+                record_ext(&mut ledger, op);
+            }
+            ext_block = features.refusal();
+        }
+        adjustment_steps.push(converted.is_some());
         let eval = match step {
             Step::Source {
                 addr,
@@ -267,15 +358,17 @@ pub fn evaluate(
                 ..
             } => {
                 let payload = layers.get(addr.layer_id.as_str()).map(|l| &l.payload);
-                let (extent, status) = match (value, payload) {
-                    (SourceValue::Image, Some(Payload::Raster { tiles })) => {
+                let (extent, status) = match (&converted, value, payload) {
+                    (Some(Ok(_)), _, _) => (None, StepStatus::Ready),
+                    (Some(Err(code)), _, _) => (None, StepStatus::Unavailable((*code).into())),
+                    (None, SourceValue::Image, Some(Payload::Raster { tiles })) => {
                         (raster_extent(tiles)?, StepStatus::Ready)
                     }
-                    (SourceValue::Vector, _) => (
+                    (None, SourceValue::Vector, _) => (
                         None,
                         StepStatus::Unavailable("vector_to_image_conversion".into()),
                     ),
-                    (SourceValue::Text, _) => (
+                    (None, SourceValue::Text, _) => (
                         None,
                         StepStatus::Unavailable("text_to_image_conversion".into()),
                     ),
@@ -302,6 +395,8 @@ pub fn evaluate(
                 // The current clip base is hidden or empty: its clipped run is dropped with it
                 // (the lowering rule), so those layers neither block the parent nor count.
                 let mut base_dropped = false;
+                // The current clip base is a visible adjustment layer (pigment refuses it).
+                let mut adjustment_base = false;
                 for input in inputs {
                     let Some(&i) = seen.get(input) else {
                         return Err(if all.contains(input) {
@@ -324,11 +419,15 @@ pub fn evaluate(
                     // A pass-through group has no isolated content to take a base alpha from, and
                     // the backends refuse it; Photoshop's semantics for it are UNVERIFIED (oracle
                     // pending). A hidden or empty base (or clipped layer) is dropped, not refused.
-                    let rendered = child.visible && child.extent.is_some();
+                    // An adjustment layer has no extent of its own but is rendered (it acts on
+                    // whatever lies below it), so it is neither empty nor a droppable base.
+                    let adjustment = adjustment_steps[i];
+                    let rendered = child.visible && (child.extent.is_some() || adjustment);
                     if !clipped {
                         pass_through_base =
                             rendered && plan.steps[i].appearance().mode == StudioBlendMode::PassThrough;
-                        base_dropped = !child.visible || child.is_ready_and_empty();
+                        adjustment_base = child.visible && adjustment;
+                        base_dropped = !child.visible || (child.is_ready_and_empty() && !adjustment);
                     } else if base_dropped {
                         // Dropped with its hidden or empty base: not refused, not unavailable, no
                         // extent (R3: it used to block the parent through the status match below).
@@ -337,6 +436,16 @@ pub fn evaluate(
                         ledger.record("clip_base_pass_through", Exactness::Unsupported);
                         blocked.get_or_insert_with(|| {
                             format!("clip_base_pass_through:{}", child.addr.text())
+                        });
+                    } else if adjustment_base && rendered {
+                        // Pigment: an adjustment layer has no base alpha to clip to
+                        // (`PlanError::AdjustmentClipBase`), refused for every backend.
+                        ledger.record(
+                            PlanError::AdjustmentClipBase { node: 0 }.code(),
+                            Exactness::Unsupported,
+                        );
+                        blocked.get_or_insert_with(|| {
+                            format!("clip_base_adjustment:{}", child.addr.text())
                         });
                     }
                     if !child.visible {
@@ -372,7 +481,7 @@ pub fn evaluate(
             }
         };
         // Appearance the renderer cannot honour yet makes the step unavailable (never ignored).
-        let eval = match appearance_block(&layers, step) {
+        let eval = match appearance_block(&layers, step).or(ext_block) {
             Some(reason) => StepEval {
                 extent: None,
                 status: StepStatus::Unavailable(reason.into()),
