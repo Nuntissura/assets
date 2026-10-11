@@ -20,6 +20,7 @@
 //! with `catch_unwind`). Untrusted media is therefore never routed here: the default route sends it to an
 //! external (isolated) decoder, e.g. `hsk-studio-reel-native`'s worker process, or refuses it with
 //! `CodecUnavailable`. `Av1Decoder` stays public because that worker hosts it.
+#![deny(clippy::arithmetic_side_effects)]
 mod ffi;
 
 use crate::av1_config::av1_descriptor;

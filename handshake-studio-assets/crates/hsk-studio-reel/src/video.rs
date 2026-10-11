@@ -19,6 +19,7 @@
 //! from the container, pictures are matched to packets by tag, pre-roll pictures are dropped, a mid-segment
 //! format change and any picture whose planes disagree with its declared format are refused, and the
 //! receipt names the decoder that actually ran (`DecoderIdentity`).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::av1_config::parse_av1c;
 use crate::error::{DecoderFault, ReelError, check_cancel};
 use crate::isobmff::{ColorTag, TrackIndex, deliver_packets};
@@ -319,7 +320,7 @@ impl PictureSink for Forward<'_> {
             trim_start: meta.trim_start,
             bytes: &self.packed,
         })?;
-        self.delivered += 1;
+        self.delivered = self.delivered.saturating_add(1);
         Ok(())
     }
 }

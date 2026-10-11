@@ -1,6 +1,7 @@
 //! Pure (no decoder) AV1 facts: the `AV1CodecConfigurationRecord` parser and the capability descriptor.
 //! Always compiled, so a build that routes AV1 to an external decoder (see `video`) validates the same
 //! record and describes the same capability without linking the in-process rav1d decoder (feature `av1`).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::ReelError;
 use crate::model::{CodecDescriptor, MediaKind};
 
@@ -51,8 +52,16 @@ impl Av1Config {
                 _ => 6,
             }
         };
-        let bytes_x2 = samples_x2 * if self.high_bitdepth { 2 } else { 1 };
-        let pixels = (max_frame_bytes as u64).saturating_mul(2) / bytes_x2;
+        let bytes_x2 = if self.high_bitdepth {
+            samples_x2.saturating_mul(2)
+        } else {
+            samples_x2
+        };
+        // `bytes_x2` is 2..=12, never zero.
+        let pixels = (max_frame_bytes as u64)
+            .saturating_mul(2)
+            .checked_div(bytes_x2)
+            .unwrap_or(0);
         u32::try_from(pixels).unwrap_or(u32::MAX)
     }
 }

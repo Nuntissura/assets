@@ -246,11 +246,18 @@ impl Rav1d {
                 .cast::<u8>()
                 .cast_const();
             let stride = picture.stride[usize::from(index > 0)];
-            let row_bytes = pw * bytes_per_sample;
+            let row_bytes = pw
+                .checked_mul(bytes_per_sample)
+                .ok_or(corrupt("av1-plane-stride"))?;
             if stride.unsigned_abs() < row_bytes {
                 return Err(corrupt("av1-plane-stride"));
             }
-            let mut plane = Vec::with_capacity(row_bytes * ph);
+            // `total` above was computed checked, so this product fits; stay explicit anyway.
+            let mut plane = Vec::with_capacity(
+                row_bytes
+                    .checked_mul(*ph)
+                    .ok_or(corrupt("av1-plane-stride"))?,
+            );
             for row in 0..*ph {
                 let step = isize::try_from(row)
                     .ok()
