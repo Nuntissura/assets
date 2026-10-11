@@ -411,6 +411,10 @@ impl MediaProvider for Y4mProvider {
             let Some(units) = source.next_chunk(&mut buf)? else {
                 break;
             };
+            if check_cancel(cancel).is_err() {
+                canceled = true;
+                break;
+            }
             if units == 0 || buf.len() as u64 != units * frame_bytes {
                 return Err(ReelError::Corrupt {
                     what: "chunk-size-mismatch",

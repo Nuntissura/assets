@@ -422,6 +422,10 @@ impl MediaProvider for WavProvider {
             let Some(units) = source.next_chunk(&mut buf)? else {
                 break;
             };
+            if check_cancel(cancel).is_err() {
+                canceled = true;
+                break;
+            }
             if buf.len() as u64 != units * u64::from(block) {
                 return Err(ReelError::Corrupt {
                     what: "chunk-size-mismatch",

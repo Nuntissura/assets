@@ -13,3 +13,7 @@ hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", defau
 
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "reel-consumer"
+path = "examples/reel-consumer.rs"
