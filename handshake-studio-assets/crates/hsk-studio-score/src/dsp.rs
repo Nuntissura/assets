@@ -29,7 +29,7 @@ pub(crate) fn poll(cancel: &CancellationToken) -> Result<(), ScoreError> {
 }
 
 /// Runs `kernel(channel, src, dst)` over matching channels in cancel-polled chunks.
-fn per_channel(
+pub(crate) fn per_channel(
     input: &InputBlock<'_>,
     out: &mut OutputBlock,
     cancel: &CancellationToken,
