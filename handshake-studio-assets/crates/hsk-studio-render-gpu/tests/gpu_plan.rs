@@ -27,13 +27,11 @@ use std::time::Instant;
 /// predicate cannot silently widen or shrink: structural (pass_through is a group), stochastic
 /// (dissolve: the plan carries no seed), tool-only and unspecified modes. Every other pigment mode
 /// is generated and parity-tested; a refused mode is never replaced by Normal.
-const REFUSED_MODES: [StudioBlendMode; 11] = [
+const REFUSED_MODES: [StudioBlendMode; 9] = [
     StudioBlendMode::PassThrough,
     StudioBlendMode::Dissolve,
     StudioBlendMode::Behind,
     StudioBlendMode::Clear,
-    StudioBlendMode::DarkerColour,
-    StudioBlendMode::LighterColour,
     StudioBlendMode::Average,
     StudioBlendMode::Negation,
     StudioBlendMode::Reflect,
@@ -443,8 +441,8 @@ fn admission_refusals_run_without_adapter() {
             found: 5
         })
     );
-    // modes the shader does not implement (stochastic dissolve, whole-pixel, unspecified) are
-    // refused at admission, naming the operator, never replaced by Normal
+    // modes the shader does not implement (stochastic dissolve, unspecified) are refused at
+    // admission, naming the operator, never replaced by Normal
     for mode in REFUSED_MODES
         .iter()
         .copied()
@@ -528,6 +526,7 @@ fn admission_refusals_run_without_adapter() {
     for (mode, floor) in [
         (StudioBlendMode::LinearBurn, Exactness::Approximate),
         (StudioBlendMode::Divide, Exactness::Approximate),
+        (StudioBlendMode::DarkerColour, Exactness::Approximate),
         (StudioBlendMode::Hue, Exactness::Fitted),
         (StudioBlendMode::Saturation, Exactness::Approximate),
     ] {
@@ -2047,13 +2046,15 @@ fn gpu_modes_masks_groups_clip_parity() {
 // ---- slice 3: non-separable family and Approximate separable modes ------------------------------
 
 /// The modes slice 3 added, taken from pigment's facts (not listed here): the non-separable family
-/// (class Exact in pigment) and the separable modes pigment marks Approximate.
+/// (class Exact in pigment), the separable modes pigment marks Approximate and the whole-pixel
+/// darker/lighter colour (Approximate).
 fn slice3_modes() -> Vec<StudioBlendMode> {
     MODES
         .iter()
         .filter(|f| {
             f.applicability == Applicability::Layer
                 && (f.family == Family::NonSeparable
+                    || f.family == Family::WholePixel
                     || (f.family == Family::Separable && f.exactness == Exactness::Approximate))
         })
         .map(|f| f.mode)
@@ -2091,7 +2092,7 @@ fn slice3_hand_oracles_and_lattice_parity() {
     type Hand = (StudioBlendMode, [f32; 3], [f32; 3], [f32; 3]);
     let cb = [0.2_f32, 0.4, 0.6];
     let cs = [0.8_f32, 0.4, 0.2];
-    let hand: [Hand; 14] = [
+    let hand: [Hand; 18] = [
         (
             StudioBlendMode::Hue,
             cb,
@@ -2161,12 +2162,38 @@ fn slice3_hand_oracles_and_lattice_parity() {
             [0.9, 0.3, 0.45],
             [1.0, 0.0, 1.0],
         ),
+        // whole pixel: channel sums Cb 1.2, Cs 0.9 / 1.4 (darker takes the source only when its
+        // sum is smaller, lighter only when larger; otherwise the backdrop stays)
+        (
+            StudioBlendMode::DarkerColour,
+            cb,
+            [0.1, 0.3, 0.5],
+            [0.1, 0.3, 0.5],
+        ),
+        (
+            StudioBlendMode::DarkerColour,
+            cb,
+            [0.8, 0.4, 0.2],
+            [0.2, 0.4, 0.6],
+        ),
+        (
+            StudioBlendMode::LighterColour,
+            cb,
+            [0.8, 0.4, 0.2],
+            [0.8, 0.4, 0.2],
+        ),
+        (
+            StudioBlendMode::LighterColour,
+            cb,
+            [0.1, 0.3, 0.5],
+            [0.2, 0.4, 0.6],
+        ),
     ];
     let modes = slice3_modes();
     assert_eq!(
         modes.len(),
-        12,
-        "slice 3 = hue, saturation, colour, luminosity + 8 Approximate separable modes: {modes:?}"
+        14,
+        "slice 3 = hue, saturation, colour, luminosity + 8 Approximate separable + darker/lighter colour: {modes:?}"
     );
     for (mode, b, s, expect) in hand {
         assert!(modes.contains(&mode), "{mode:?} is a slice-3 mode");
@@ -2322,7 +2349,7 @@ fn slice3_hand_oracles_and_lattice_parity() {
         }
     }
     eprintln!(
-        "SLICE3 max_err: hand {worst_hand:e}, lattice non-separable {worst_nonsep:e}, lattice approximate-separable {worst_approx:e} (tolerance {:e})",
+        "SLICE3 max_err: hand {worst_hand:e}, lattice non-separable {worst_nonsep:e}, lattice approximate (separable + whole-pixel) {worst_approx:e} (tolerance {:e})",
         2.0 * TOL_PER_LAYER
     );
     assert_eq!(backend.resident_bytes(), 0);

@@ -2,8 +2,8 @@
 //! work), source verification, then bounded `chunk x chunk` execution of one WGSL compute pass per
 //! layer (and per nested-group composite), read back into the caller's `TileSink`.
 //!
-//! Scope: `Solid` and `Tile` leaves; every layer-applicable separable or non-separable blend mode
-//! with a usable pigment formula (class Exact or Approximate) plus Normal (the list is derived
+//! Scope: `Solid` and `Tile` leaves; every layer-applicable separable, non-separable or
+//! whole-pixel blend mode with a usable pigment formula (class Exact or Approximate) plus Normal (the list is derived
 //! from pigment's mode facts in `kernel.rs`; an Approximate mode keeps pigment's class in the
 //! receipt, the backend only lowers a class); layer opacity times fill
 //! opacity; coverage masks (`coverage_u8` / `coverage_u16le`, inversion, density 1); isolated

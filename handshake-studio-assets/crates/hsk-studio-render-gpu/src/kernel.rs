@@ -80,7 +80,8 @@ const FORMULAS: &[(StudioBlendMode, &str)] = &[
 ];
 
 /// WGSL bodies of `fn blend_<key>(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32>` for the modes whose
-/// result mixes channels (W3C Compositing 1 s10.2 non-separable family). They call the helpers
+/// result mixes channels (W3C Compositing 1 s10.2 non-separable family, and the whole-pixel
+/// darker/lighter colour). The non-separable bodies call the helpers
 /// `hsk_lum`, `hsk_set_lum`, `hsk_sat`, `hsk_set_sat` of `kernel.wgsl`, which follow
 /// `blend_math::{lum, set_lum, sat, set_sat}` operation for operation.
 const FORMULAS_RGB: &[(StudioBlendMode, &str)] = &[
@@ -100,6 +101,16 @@ const FORMULAS_RGB: &[(StudioBlendMode, &str)] = &[
         StudioBlendMode::Luminosity,
         "return hsk_set_lum(cb, hsk_lum(cs));",
     ),
+    // whole-pixel modes (pigment class Approximate): channel sums compared left to right as
+    // `Iterator::sum` does; a tie keeps the backdrop
+    (
+        StudioBlendMode::DarkerColour,
+        "if (cs.x + cs.y + cs.z < cb.x + cb.y + cb.z) { return cs; } return cb;",
+    ),
+    (
+        StudioBlendMode::LighterColour,
+        "if (cs.x + cs.y + cs.z > cb.x + cb.y + cb.z) { return cs; } return cb;",
+    ),
 ];
 
 fn formula(mode: StudioBlendMode) -> Option<&'static str> {
@@ -117,16 +128,19 @@ fn formula_rgb(mode: StudioBlendMode) -> Option<&'static str> {
 }
 
 /// Does pigment's fact table say the GPU backend should implement `mode`? Layer-applicable, a
-/// usable formula (class Exact or Approximate, never Unsupported), and `Normal`, the separable or
-/// the non-separable family. Stochastic (dissolve), whole-pixel, structural, tool-only and
-/// unspecified modes are not in the list. This is the single source of the supported list; the
-/// class itself stays pigment's (`facts().exactness`).
+/// usable formula (class Exact or Approximate, never Unsupported), and `Normal`, the separable,
+/// the non-separable or the whole-pixel family. Stochastic (dissolve: the plan carries no seed),
+/// structural, tool-only and unspecified modes are not in the list. This is the single source of
+/// the supported list; the class itself stays pigment's (`facts().exactness`).
 pub fn gpu_blend_qualifies(mode: StudioBlendMode) -> bool {
     let facts = mode.facts();
     facts.applicability == Applicability::Layer
         && facts.exactness != Exactness::Unsupported
         && (mode == StudioBlendMode::Normal
-            || matches!(facts.family, Family::Separable | Family::NonSeparable))
+            || matches!(
+                facts.family,
+                Family::Separable | Family::NonSeparable | Family::WholePixel
+            ))
 }
 
 /// Qualifies by pigment's facts AND has a WGSL body here (`Normal` needs none). Only these modes
