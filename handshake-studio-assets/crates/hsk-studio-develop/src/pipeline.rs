@@ -104,12 +104,31 @@ impl Limits {
         max_tiles: 1 << 16,
         max_output_bytes: 1 << 32,
     };
-    pub const fn name(&self) -> &'static str {
-        if self.max_side == Self::SPEC_V1.max_side {
+    pub fn name(&self) -> &'static str {
+        if *self == Self::SPEC_V1 {
             "spec_v1"
-        } else {
+        } else if *self == Self::LARGE {
             "large"
+        } else {
+            "custom"
         }
+    }
+
+    /// Caller-supplied limits may tighten the presets but can never reopen a panic: Bayer sides
+    /// below 2 or X-Trans sides below 6 have no reflect period, and zero caps admit nothing.
+    pub fn validate(&self) -> Result<(), DevelopError> {
+        if self.min_bayer_side < 2
+            || self.min_xtrans_side < 6
+            || self.max_side < self.min_bayer_side
+            || self.max_tile_edge == 0
+            || self.max_tiles == 0
+            || self.max_stride_bytes < 4
+            || self.max_plane_bytes == 0
+            || self.max_output_bytes == 0
+        {
+            return Err(DevelopError::InvalidLimits);
+        }
+        Ok(())
     }
 }
 
@@ -153,6 +172,7 @@ impl CfaPlane {
     }
 
     pub fn with_limits(init: PlaneInit, limits: Limits) -> Result<Self, DevelopError> {
+        limits.validate()?;
         let PlaneInit {
             width,
             height,

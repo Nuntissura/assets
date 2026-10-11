@@ -415,6 +415,12 @@ fn unsupported_process_version_and_cancel_stale() {
 #[test]
 fn limits_and_range() {
     bounded_case("limits_and_range", || {
+        // Public limits cannot reopen the reflect(.., 1) panic (review R2): refused at admission.
+        let tight = Limits { min_bayer_side: 1, ..Limits::SPEC_V1 };
+        assert_eq!(CfaPlane::with_limits(init(1, 4, &[0; 4]), tight).err(), Some(DevelopError::InvalidLimits));
+        assert_eq!(CfaPlane::with_limits(init(4, 4, &[0; 16]), Limits { max_tiles: 0, ..Limits::SPEC_V1 }).err(), Some(DevelopError::InvalidLimits));
+        assert!(Limits::SPEC_V1.validate().is_ok() && Limits::LARGE.validate().is_ok());
+        assert_eq!((Limits::SPEC_V1.name(), Limits::LARGE.name(), tight.name()), ("spec_v1", "large", "custom"));
         let bad = |mutate: &dyn Fn(&mut PlaneInit), want: DevelopError| {
             let mut i = init(4, 4, &[32; 16]);
             mutate(&mut i);

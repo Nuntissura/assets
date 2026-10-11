@@ -276,6 +276,11 @@ pub fn decode(data: &[u8], max_samples: usize) -> Result<LjpegImage, DevelopErro
                 if total > max_samples {
                     return Err(DevelopError::InvalidDimensions);
                 }
+                // Every sample costs at least one Huffman bit: a stream cannot honestly declare more
+                // samples than eight times its own length (blocks a tiny-file allocation bomb).
+                if total > data.len().saturating_mul(8) {
+                    return Err(DevelopError::InvalidContainer);
+                }
                 let used: Vec<&Huffman> = selectors
                     .iter()
                     .map(|s| tables.get(*s).and_then(|t| t.as_ref()).ok_or(DevelopError::InvalidContainer))

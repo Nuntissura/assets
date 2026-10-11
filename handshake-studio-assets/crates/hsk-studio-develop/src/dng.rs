@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 
 pub const MAX_DNG_PIXELS: u64 = 1 << 28;
 const MAX_BLOCKS: usize = 1 << 20;
+const MAX_BLOCK_DIM: u32 = 65_535;
 
 mod tag {
     pub const NEW_SUBFILE_TYPE: u16 = 254;
@@ -43,6 +44,8 @@ mod tag {
     pub const LINEARIZATION_TABLE: u16 = 50712;
     pub const BLACK_LEVEL_REPEAT_DIM: u16 = 50713;
     pub const BLACK_LEVEL: u16 = 50714;
+    pub const BLACK_LEVEL_DELTA_H: u16 = 50715;
+    pub const BLACK_LEVEL_DELTA_V: u16 = 50716;
     pub const WHITE_LEVEL: u16 = 50717;
     pub const ORIENTATION: u16 = 274;
     pub const DEFAULT_SCALE: u16 = 50718;
@@ -120,6 +123,10 @@ pub struct DngRaw {
     pub default_crop: Option<PlaneWindow>,
     pub black_repeat: (u32, u32),
     pub black_level: Vec<f64>,
+    /// BlackLevelDeltaH: one offset per active-area column (empty when absent).
+    pub black_delta_h: Vec<f64>,
+    /// BlackLevelDeltaV: one offset per active-area row (empty when absent).
+    pub black_delta_v: Vec<f64>,
     pub white_level: u32,
     pub linearized: bool,
     pub color: DngColor,
@@ -150,8 +157,20 @@ struct Lookup<'a> {
 }
 
 impl<'a> Lookup<'a> {
+    /// Raw-IFD-scoped tags never fall back to IFD0 (a raw SubIFD must not inherit the preview's
+    /// layout, levels or CFA description); colour, version and model tags may.
     fn get(&self, tag: u16) -> Option<&'a Entry> {
-        self.raw.find(tag).or_else(|| self.root.find(tag))
+        let raw_scoped = matches!(
+            tag,
+            256..=259 | 262 | 273 | 277..=279 | 322..=325 | 339 | 33421 | 33422 | 50710..=50717
+                | 50719 | 50720 | 50829 | 50830
+        );
+        let found = self.raw.find(tag);
+        if raw_scoped {
+            found
+        } else {
+            found.or_else(|| self.root.find(tag))
+        }
     }
 }
 
@@ -276,7 +295,12 @@ fn layout(tiff: &Tiff<'_>, l: &Lookup<'_>, width: u32, height: u32) -> Result<La
     let layout = if let Some(tw) = l.get(tag::TILE_WIDTH) {
         let block_w = first_u32(tiff, tw)?;
         let block_h = first_u32(tiff, l.get(tag::TILE_LENGTH).ok_or(DevelopError::InvalidContainer)?)?;
-        if block_w == 0 || block_h == 0 {
+        if block_w == 0
+            || block_h == 0
+            || block_w > MAX_BLOCK_DIM
+            || block_h > MAX_BLOCK_DIM
+            || u64::from(block_w) * u64::from(block_h) > MAX_DNG_PIXELS
+        {
             return Err(DevelopError::InvalidContainer);
         }
         Layout {
@@ -396,16 +420,37 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     // Strip / tile payloads: uncompressed byte-aligned samples in file byte order, or one
     // lossless-JPEG stream per block (components interleave along the block row).
     let layout = layout(&tiff, &l, width, height)?;
-    let bytes_per_sample = usize::from(bits.div_ceil(8));
+    let bytes_per_sample = u64::from(bits.div_ceil(8));
+    let block_height = |block_row: u32| {
+        if layout.tiled {
+            layout.block_h
+        } else {
+            layout.block_h.min(height - block_row * layout.block_h)
+        }
+    };
+    // Checked payload size of one uncompressed block (hostile tile sizes must not wrap).
+    let uncompressed_len = |block_row: u32| -> Result<u64, DevelopError> {
+        u64::from(layout.block_w)
+            .checked_mul(u64::from(block_height(block_row)))
+            .and_then(|v| v.checked_mul(bytes_per_sample))
+            .ok_or(DevelopError::InvalidContainer)
+    };
+    // Every block must lie inside the file before the frame is allocated, so a tiny file cannot
+    // force a large allocation.
+    for block_row in 0..layout.down {
+        for block_col in 0..layout.across {
+            let index = (block_row * layout.across + block_col) as usize;
+            let stream = tiff.region(u64::from(layout.offsets[index]), u64::from(layout.counts[index]))?;
+            if !lossless_jpeg && (stream.len() as u64) < uncompressed_len(block_row)? {
+                return Err(DevelopError::InvalidContainer);
+            }
+        }
+    }
     let mut samples = vec![0u16; width as usize * height as usize];
     for block_row in 0..layout.down {
         for block_col in 0..layout.across {
             let index = (block_row * layout.across + block_col) as usize;
-            let block_h = if layout.tiled {
-                layout.block_h
-            } else {
-                layout.block_h.min(height - block_row * layout.block_h)
-            };
+            let block_h = block_height(block_row);
             let block_w = layout.block_w as usize;
             let decoded: Vec<u16>;
             let uncompressed: &[u8];
@@ -423,7 +468,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
                 decoded = image.samples;
                 uncompressed = &[];
             } else {
-                let expected = block_w as u64 * u64::from(block_h) * bytes_per_sample as u64;
+                let expected = uncompressed_len(block_row)?;
                 if u64::from(layout.counts[index]) < expected {
                     return Err(DevelopError::InvalidContainer);
                 }
@@ -446,8 +491,11 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
                     samples[y as usize * width as usize + x as usize] = if lossless_jpeg {
                         decoded[at]
                     } else {
-                        let o = at * bytes_per_sample;
-                        read_sample(&uncompressed[o..o + bytes_per_sample], bits, tiff.is_big_endian())
+                        let o = at * bytes_per_sample as usize;
+                        let sample = uncompressed
+                            .get(o..o + bytes_per_sample as usize)
+                            .ok_or(DevelopError::InvalidContainer)?;
+                        read_sample(sample, bits, tiff.is_big_endian())
                     };
                 }
             }
@@ -520,6 +568,24 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         return Err(DevelopError::UnsupportedActiveArea);
     }
 
+    // BlackLevelDeltaH / DeltaV: per active-area column / row offsets added to the repeating
+    // BlackLevel (DNG spec). Lengths must match the active area exactly.
+    let delta = |t: u16, len: u32| -> Result<Vec<f64>, DevelopError> {
+        match l.get(t) {
+            None => Ok(Vec::new()),
+            Some(e) => {
+                let v = tiff.f64s(e)?;
+                if v.len() == len as usize {
+                    Ok(v)
+                } else {
+                    Err(DevelopError::InvalidContainer)
+                }
+            }
+        }
+    };
+    let black_delta_h = delta(tag::BLACK_LEVEL_DELTA_H, active_area.right - active_area.left)?;
+    let black_delta_v = delta(tag::BLACK_LEVEL_DELTA_V, active_area.bottom - active_area.top)?;
+
     let default_crop = match (l.get(tag::DEFAULT_CROP_ORIGIN), l.get(tag::DEFAULT_CROP_SIZE)) {
         (Some(o), Some(s)) => {
             let (o, s) = (tiff.f64s(o)?, tiff.f64s(s)?);
@@ -590,6 +656,8 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         default_crop,
         black_repeat,
         black_level,
+        black_delta_h,
+        black_delta_v,
         white_level,
         linearized,
         color,
@@ -617,7 +685,14 @@ impl DngRaw {
         let (rr, rc) = self.black_repeat;
         let row = (y - self.active_area.top) % rr;
         let col = (x - self.active_area.left) % rc;
-        self.black_level[(row * rc + col) as usize]
+        let mut black = self.black_level[(row * rc + col) as usize];
+        if let Some(d) = self.black_delta_h.get((x - self.active_area.left) as usize) {
+            black += d;
+        }
+        if let Some(d) = self.black_delta_v.get((y - self.active_area.top) as usize) {
+            black += d;
+        }
+        black
     }
 
     /// Default crop window (raw coordinates) when authored, else the whole active area.

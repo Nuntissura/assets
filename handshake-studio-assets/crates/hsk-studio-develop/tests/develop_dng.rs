@@ -138,6 +138,10 @@ struct Spec {
     lin_table: Option<Vec<u16>>,
     extra: Vec<(u16, u32)>,
     baseline: Option<f64>,
+    analog: Option<[f64; 3]>,
+    calib: [Option<Mat3>; 2],
+    delta_h: Option<Vec<f64>>,
+    delta_v: Option<Vec<f64>>,
     lj: (usize, u8, u8, u32, usize),
 }
 
@@ -145,6 +149,7 @@ struct Built {
     bytes: Vec<u8>,
     ifd0_at: usize,
     ifd0_entries: usize,
+    raw_at: usize,
 }
 
 fn inverse(m: &Mat3) -> Mat3 {
@@ -176,6 +181,10 @@ fn base() -> Spec {
         lin_table: None,
         extra: vec![],
         baseline: None,
+        analog: None,
+        calib: [None, None],
+        delta_h: None,
+        delta_v: None,
         lj: (2, 1, 16, 0, 0),
     }
 }
@@ -242,6 +251,14 @@ fn build(s: &Spec) -> Built {
                 t0.push(enc.short(50778 + i as u16, &[*c]));
             }
         }
+        if let Some(ab) = s.analog {
+            t0.push(enc.rational(50727, &ab, 10_000_000));
+        }
+        for (i, m) in s.calib.iter().enumerate() {
+            if let Some(m) = m {
+                t0.push(enc.srational(50723 + i as u16, m, 10_000_000));
+            }
+        }
         if let Some(b) = s.baseline {
             t0.push(enc.srational(50730, &[b], 10_000));
         }
@@ -281,6 +298,11 @@ fn build(s: &Spec) -> Built {
         if let Some((o, z)) = s.crop {
             t1.extend([enc.short(50719, &o), enc.short(50720, &z)]);
         }
+        for (tag, v) in [(50715u16, &s.delta_h), (50716u16, &s.delta_v)] {
+            if let Some(v) = v {
+                t1.push(enc.srational(tag, v, 1));
+            }
+        }
         for (tag, value) in &s.extra {
             t1.push(enc.long(*tag, &[*value]));
         }
@@ -308,7 +330,7 @@ fn build(s: &Spec) -> Built {
     for blk in &blocks {
         bytes.extend_from_slice(blk);
     }
-    Built { bytes, ifd0_at, ifd0_entries: t0.len() }
+    Built { bytes, ifd0_at, ifd0_entries: t0.len(), raw_at }
 }
 
 fn profile() -> ProfileBinding {
@@ -461,19 +483,48 @@ fn dng_colour_solution_paths() {
         };
         let odd = decode_container(&build(&odd).bytes).unwrap();
         assert_eq!(odd.solve_colour().err(), Some(DevelopError::UnsupportedIlluminant));
-        // neutral (0.5, 1, 0.8): gains 2, 1, 1.25 are folded out of the matrix, so a camera pixel
-        // equal to the neutral maps to the same white as neutral (1,1,1) does for (1,1,1).
-        let warm = Spec { neutral: Some([0.5, 1.0, 0.8]), ..base() };
-        let raw = decode_container(&build(&warm).bytes).unwrap();
-        let (recipe, sol) = raw.recipe(&color::xyz_d50_to_linear_srgb().unwrap(), profile(), BaselineExposure::Ignore).unwrap();
-        assert_eq!(recipe.as_shot_neutral, [0.5, 1.0, 0.8]);
-        let gain = hsk_studio_develop::recipe::as_shot_gain([0.5, 1.0, 0.8]).unwrap();
-        let balanced = [0.5 * gain[0], 1.0 * gain[1], 0.8 * gain[2]];
-        assert!(balanced.iter().all(|v| (v - balanced[0]).abs() < 1e-12));
-        let rgb = color::mul_vec(&recipe.camera_to_profile_rgb, &balanced);
-        let expect = color::mul_vec(&color::mul(&color::xyz_d50_to_linear_srgb().unwrap(), &sol.camera_to_xyz_d50), &[0.5, 1.0, 0.8]);
+        // Invariants worked out independently of the D / AnalogBalance derivation under test:
+        // the ForwardMatrix path maps the camera neutral to FM * (1,1,1), i.e. the row sums of the
+        // published sRGB D50 matrix = D50 white (0.96422, 1, 0.82521). Dropping the D factor
+        // (diag(1/ReferenceNeutral)) breaks this for any neutral != (1,1,1).
+        let d50 = [0.96422, 1.0, 0.82521];
+        let neutral = [0.5, 1.0, 0.8];
+        let warm = decode_container(&build(&Spec { neutral: Some(neutral), ..base() }).bytes).unwrap();
+        let sol = warm.solve_colour().unwrap();
+        assert!(sol.used_forward_matrix);
+        let white = color::mul_vec(&sol.camera_to_xyz_d50, &neutral);
         for i in 0..3 {
-            assert!((rgb[i] - expect[i]).abs() < 1e-9, "channel {i}");
+            assert!((white[i] - d50[i]).abs() < 1e-5, "FM path white {white:?}");
+        }
+        // AnalogBalance (1.25, 1, 0.8), CameraCalibration absent (identity): ReferenceNeutral =
+        // inv(AB)*n = (0.4, 1, 1), D = diag(2.5, 1, 1), inv(AB) = diag(0.8, 1, 1.25) => C2X = FM *
+        // diag(2, 1, 1.25), worked out by hand.
+        let ab = decode_container(&build(&Spec { neutral: Some(neutral), analog: Some([1.25, 1.0, 0.8]), ..base() }).bytes).unwrap();
+        let sol_ab = ab.solve_colour().unwrap();
+        for row in 0..3 {
+            for (col, scale) in [2.0, 1.0, 1.25].into_iter().enumerate() {
+                let want = SRGB_D50[row * 3 + col] * scale;
+                let got = sol_ab.camera_to_xyz_d50[row * 3 + col];
+                assert!((got - want).abs() < 1e-5, "AB case [{row}][{col}]: {got} vs {want}");
+            }
+        }
+        // ColorMatrix-only path uses the same convention: neutral -> D50 white with Y = 1, whatever
+        // the magnitude of ColorMatrix * neutral.
+        let cm = decode_container(&build(&Spec { neutral: Some(neutral), forward: [None, None], ..base() }).bytes).unwrap();
+        let sol_cm = cm.solve_colour().unwrap();
+        assert!(!sol_cm.used_forward_matrix);
+        let white = color::mul_vec(&sol_cm.camera_to_xyz_d50, &neutral);
+        for i in 0..3 {
+            assert!((white[i] - d50[i]).abs() < 1e-4, "CM path white {white:?}");
+        }
+        // Recipe level: gain-balanced neutral through the recipe matrix is linear-sRGB white.
+        let (recipe, _) = warm.recipe(&color::xyz_d50_to_linear_srgb().unwrap(), profile(), BaselineExposure::Ignore).unwrap();
+        assert_eq!(recipe.as_shot_neutral, neutral);
+        let gain = hsk_studio_develop::recipe::as_shot_gain(neutral).unwrap();
+        let balanced = [neutral[0] * gain[0], neutral[1] * gain[1], neutral[2] * gain[2]];
+        let rgb = color::mul_vec(&recipe.camera_to_profile_rgb, &balanced);
+        for (i, v) in rgb.iter().enumerate() {
+            assert!((v - 1.0).abs() < 1e-5, "channel {i}: {v}");
         }
     });
 }
@@ -521,6 +572,25 @@ fn dng_tiles_active_area_black_levels() {
         assert_eq!(raw.cfa_plane(window, RangePolicy::Refuse, 3, Limits::SPEC_V1).err(), Some(DevelopError::SampleOutOfRange));
         let (plane, report) = raw.cfa_plane(window, RangePolicy::ClampReported, 3, Limits::SPEC_V1).unwrap();
         assert_eq!((report.clamped_below, report.clamped_above, at_plane(&plane, 0, 0)), (1, 0, 64));
+        // BlackLevelDeltaH/V are applied per active-area column/row (review R2: they were ignored).
+        // Black 64 + deltaH [0,1,2,3] + deltaV [0,10,0,0], every raw sample 200. Channel black is the
+        // first site's effective black; every other site is shifted by its difference:
+        // R first (0,0)=64; G first (1,0)=65; B first (1,1)=75. G (0,1) effective 64+0+10=74 -> 200-(74-65)=191;
+        // B (1,3) effective 64+1+0=65 -> 200-(65-75)=210.
+        let deltas = Spec {
+            samples: vec![200; 16],
+            white: Some(1023),
+            delta_h: Some(vec![0.0, 1.0, 2.0, 3.0]),
+            delta_v: Some(vec![0.0, 10.0, 0.0, 0.0]),
+            black: vec![64.0],
+            ..base()
+        };
+        let raw = decode_container(&build(&deltas).bytes).unwrap();
+        assert_eq!((raw.black_delta_h.len(), raw.black_delta_v.len()), (4, 4));
+        let (plane, report) = raw.cfa_plane(raw.default_window(), RangePolicy::Refuse, 1, Limits::SPEC_V1).unwrap();
+        assert_eq!(plane.black(), [64, 65, 75]);
+        assert!(report.black_site_adjusted);
+        assert_eq!((at_plane(&plane, 0, 1), at_plane(&plane, 1, 3), at_plane(&plane, 2, 0)), (191, 210, 198));
     });
 }
 
@@ -559,6 +629,42 @@ fn dng_refusals() {
         refuse(&cyclic, DevelopError::InvalidContainer);
         refuse(b"RIFF....WEBP", DevelopError::DecoderUnavailable);
         refuse(b"II*\0\x08\0\0\0", DevelopError::InvalidContainer);
+        // Hostile tiled DNG (review R2): tile dimensions whose byte product overflows u64 must be a
+        // typed refusal in every build profile, never a panic; and no frame is allocated for blocks
+        // that do not fit in the file.
+        let tiled = build(&Spec { tiles: Some((4, 4)), ..base() });
+        let patch = |bytes: &[u8], tag: u16, value: u32| -> Vec<u8> {
+            let mut out = bytes.to_vec();
+            let n = u16::from_le_bytes([out[tiled.raw_at], out[tiled.raw_at + 1]]) as usize;
+            let mut patched = false;
+            for i in 0..n {
+                let at = tiled.raw_at + 2 + 12 * i;
+                if u16::from_le_bytes([out[at], out[at + 1]]) == tag {
+                    out[at + 8..at + 12].copy_from_slice(&value.to_le_bytes());
+                    patched = true;
+                }
+            }
+            assert!(patched, "tag {tag} not found");
+            out
+        };
+        let hostile = patch(&patch(&tiled.bytes, 322, (1 << 31) + 32_768), 323, u32::MAX - 65_534);
+        refuse(&hostile, DevelopError::InvalidContainer);
+        refuse(&patch(&patch(&tiled.bytes, 322, 65_535), 323, 65_535), DevelopError::InvalidContainer); // > pixel cap
+        refuse(&patch(&patch(&tiled.bytes, 322, 16_384), 323, 16_384), DevelopError::InvalidContainer); // block not in file
+        // Declared sample count far beyond the stream length (allocation bomb) refuses before decoding.
+        // BlackLevelDelta arrays must match the active area exactly.
+        refuse(&build(&Spec { delta_h: Some(vec![0.0; 3]), ..base() }).bytes, DevelopError::InvalidContainer);
+        refuse(&build(&Spec { delta_v: Some(vec![0.0; 5]), ..base() }).bytes, DevelopError::InvalidContainer);
+        // Limits that would reopen the reflect(.., 1) panic are refused at admission.
+        let raw = decode_container(&build(&base()).bytes).unwrap();
+        for bad in [
+            Limits { min_bayer_side: 1, ..Limits::SPEC_V1 },
+            Limits { min_xtrans_side: 5, ..Limits::SPEC_V1 },
+            Limits { max_tiles: 0, ..Limits::SPEC_V1 },
+        ] {
+            assert_eq!(raw.cfa_plane(raw.default_window(), RangePolicy::Refuse, 1, bad).err(), Some(DevelopError::InvalidLimits));
+        }
+        assert_eq!(Limits { max_side: 128, ..Limits::SPEC_V1 }.name(), "custom");
         // linearization: table maps raw values; WhiteLevel must then be explicit.
         let table: Vec<u16> = (0..=100u16).map(|i| i * 5).collect();
         let lin = Spec { samples: vec![20; 16], lin_table: Some(table.clone()), white: Some(500), ..base() };
@@ -711,6 +817,10 @@ fn dng_lossless_jpeg() {
         bad[ss] = 9;
         assert_eq!(ljpeg::decode(&bad, 1 << 10).err(), Some(DevelopError::InvalidContainer));
         assert_eq!(ljpeg::decode(&vector, 2).err(), Some(DevelopError::InvalidDimensions));
+        // A tiny stream declaring a 65535 x 65535 frame is refused before any allocation (>= 1 bit per sample).
+        let mut bomb = vector.clone();
+        bomb[7..11].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(ljpeg::decode(&bomb, usize::MAX).err(), Some(DevelopError::InvalidContainer));
 
         // Round trips through DNG strips and tiles: every predictor, 1/2/4 components, 12/14/16-bit,
         // point transform, restart per row; the decoded frame must equal the source exactly.

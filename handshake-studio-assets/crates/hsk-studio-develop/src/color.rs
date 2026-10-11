@@ -177,7 +177,12 @@ pub fn cct_from_xy(xy: [f64; 2]) -> Result<f64, DevelopError> {
     Err(DevelopError::ColorNoConvergence)
 }
 
-/// DNG `LightSource` code -> CCT (kelvin) for the calibration illuminants.
+/// DNG `LightSource` code -> CCT (kelvin) for the calibration illuminants. Provenance: CIE
+/// correlated temperatures for the standard illuminants (A 2856, B 4874, C 6774, D50 5003, D55
+/// 5503, D65 6504, D75 7504) and ISO studio tungsten (3200); nominal EXIF-style values for the
+/// daylight / flash / cloudy / shade / fluorescent codes. UNVERIFIED: the Adobe DNG SDK table may
+/// differ; the value only sets a mired-linear blend weight, so a mismatch moves weights by a few
+/// percent, never the matrices themselves.
 pub fn illuminant_cct(code: u16) -> Result<f64, DevelopError> {
     Ok(match code {
         1 | 4 | 9 => 5500.0,
@@ -387,7 +392,20 @@ pub fn solve(color: &DngColor) -> Result<CameraSolution, DevelopError> {
         None => {
             let to_xyz = invert(&m_xyz_to_camera)?;
             let adapt = bradford(&xy_to_xyz(xy), &D50_XYZ)?;
-            (mul(&adapt, &to_xyz), false)
+            let c2x = mul(&adapt, &to_xyz);
+            // Same convention as the ForwardMatrix path: a raw value equal to the camera neutral
+            // maps to the D50 white with Y = 1. Without this the result would scale with the
+            // arbitrary magnitude implied by ColorMatrix * neutral.
+            let white = mul_vec(&c2x, &neutral);
+            if !white[1].is_finite() || white[1] <= 0.0 {
+                return Err(DevelopError::NonFinite);
+            }
+            let scale = 1.0 / white[1];
+            let mut scaled = c2x;
+            for v in scaled.iter_mut() {
+                *v *= scale;
+            }
+            (scaled, false)
         }
     };
     Ok(CameraSolution {
