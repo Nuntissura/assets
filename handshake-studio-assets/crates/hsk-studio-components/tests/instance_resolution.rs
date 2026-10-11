@@ -777,6 +777,50 @@ fn alias_type_disjoint_stale_cancel() {
             })
         );
 
+        // The successor must validate in Folio before it is proposed. An out-of-range scale factor
+        // resolves fine, but the proposal is refused with Folio's code and path.
+        let folio_refusal = |path: &str| {
+            Err(E::Folio(folio::Diagnostic {
+                code: folio::Code::InvalidField,
+                target: format!("{}/{path}", id("SCIN", 1)),
+            }))
+        };
+        let mut off_scale = instance(1, &id("SCMP", 12));
+        off_scale.scale_factor = 0.0;
+        assert!(resolve_instance(&off_scale, &design, &no_modes(), 3, &limits, &cancel).is_ok());
+        assert_eq!(
+            propose_overrides(
+                &off_scale,
+                std::slice::from_ref(&edit),
+                &design,
+                &no_modes(),
+                3,
+                &limits,
+                &cancel
+            ),
+            folio_refusal("scale_factor")
+        );
+        // A set id resolves to its default variant, but Folio accepts only a component as `main`.
+        let on_set = instance(1, &id("SCMP", 10));
+        let small_label = OverrideEdit {
+            node_id: id("SLYR", 2),
+            field: "characters".into(),
+            value: s("Hi"),
+        };
+        assert!(resolve_instance(&on_set, &design, &no_modes(), 3, &limits, &cancel).is_ok());
+        assert_eq!(
+            propose_overrides(
+                &on_set,
+                &[small_label],
+                &design,
+                &no_modes(),
+                3,
+                &limits,
+                &cancel
+            ),
+            folio_refusal("main_component_id")
+        );
+
         // A cancelled token produces no resolution and no proposal.
         let stop = CancellationToken::default();
         stop.cancel();
