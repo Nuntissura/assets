@@ -13,6 +13,9 @@ const DIGEST_DOMAIN: &[u8] = b"hsk-studio-score/bounce-digest@1";
 const IDENTITY_DOMAIN: &[u8] = b"hsk-studio-score/chain-identity@1";
 
 /// A whole clip to render: planar samples on one timeline, rendered in blocks of `block_frames`.
+/// `layout` describes the INPUT channels; the OUTPUT channels (sink chunks, receipt labels, meters
+/// and digest) follow the layout of the caller's [`OutputBlock`], which the processor must accept
+/// together with `layout`.
 #[derive(Clone, Copy)]
 pub struct BounceRequest<'a> {
     pub sample_rate_hz: u32,
@@ -22,8 +25,9 @@ pub struct BounceRequest<'a> {
     pub block_frames: usize,
 }
 
-/// A run of retained output frames handed to the sink. `start_sample` is on the INPUT timeline
-/// (latency already compensated), so the first chunk starts at `BounceRequest::start_sample`.
+/// A run of retained output frames handed to the sink, one slice per OUTPUT channel.
+/// `start_sample` is on the INPUT timeline (latency already compensated), so the first chunk
+/// starts at `BounceRequest::start_sample`.
 pub struct BounceChunk<'a> {
     pub start_sample: u64,
     pub channels: &'a [&'a [f32]],
@@ -35,9 +39,11 @@ pub struct BounceChunk<'a> {
 /// * `requested_frames` = input frames; `actual_frames` = frames delivered to the sink; the bounce
 ///   renders `latency` extra silent frames through the processor and drops the first `latency`
 ///   output frames, so both are equal unless something is wrong, and neither is clamped.
-/// * `digest` = `SHA-256(DOMAIN || channels u16 LE || for each channel in layout order:
+/// * `digest` = `SHA-256(DOMAIN || channels u16 LE || for each channel in OUTPUT layout order:
 ///   label u16 LE || frames u64 LE || SHA-256(that channel's retained samples as f32 LE bytes))`
 ///   with `DOMAIN = "hsk-studio-score/bounce-digest@1"`; it does not depend on the block size.
+///   `channels`, `labels()`, `peak()` and `rms()` describe the output layout, which equals the
+///   input layout for layout-preserving chains.
 /// * `chain_identity` = `SHA-256("hsk-studio-score/chain-identity@1" || crate version || 0x00 ||
 ///   Processor::identity())`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -112,6 +118,9 @@ impl Engine {
         let _slot = self.admit(ctx, cancel)?;
 
         let channels = request.layout.channels();
+        // Output side: the layout the processor writes, fixed by the caller's output block.
+        let out_labels: Vec<u16> = out.layout().labels().to_vec();
+        let out_channels = out_labels.len();
         let frames = request.channels.first().map_or(0, |c| c.len());
         if frames == 0 {
             return Err(ScoreError::OutOfRange);
@@ -170,7 +179,7 @@ impl Engine {
 
         proc.reset();
         let mut run = BounceRun {
-            digests: vec![Sha256::new(); channels],
+            digests: vec![Sha256::new(); out_channels],
             peak: [0.0; MAX_CHANNELS],
             energy: [0.0; MAX_CHANNELS],
             actual: 0,
@@ -186,7 +195,7 @@ impl Engine {
 
         let mut channel_digests = Sha256::new();
         channel_digests.update(DIGEST_DOMAIN);
-        channel_digests.update(&(channels as u16).to_le_bytes());
+        channel_digests.update(&(out_channels as u16).to_le_bytes());
         let mut receipt = BounceReceipt {
             requested_frames: frames_u64,
             actual_frames: run.actual,
@@ -200,12 +209,12 @@ impl Engine {
             latency_dropped_frames: proc.latency_samples(),
             chain_identity: identity_digest(&proc.identity()),
             digest: [0; 32],
-            channels,
+            channels: out_channels,
             labels: [0; MAX_CHANNELS],
             peak: run.peak,
             rms: [0.0; MAX_CHANNELS],
         };
-        for (ch, (hasher, label)) in run.digests.into_iter().zip(request.layout.labels()).enumerate() {
+        for (ch, (hasher, label)) in run.digests.into_iter().zip(&out_labels).enumerate() {
             receipt.labels[ch] = *label;
             receipt.rms[ch] = (run.energy[ch] / run.actual.max(1) as f64).sqrt() as f32;
             channel_digests.update(&label.to_le_bytes());
@@ -231,6 +240,7 @@ impl Engine {
         run: &mut BounceRun,
     ) -> Result<(), ScoreError> {
         let channels = request.layout.channels();
+        let out_channels = out.layout().channels();
         let block = request.block_frames;
         let mut stage = vec![0.0_f32; channels * block];
         let mut spec = BlockSpec {
@@ -261,11 +271,11 @@ impl Engine {
             let (lo, hi) = (at.max(latency), (at + len).min(latency + frames));
             if lo < hi {
                 let mut kept: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-                for (ch, slot) in kept.iter_mut().enumerate().take(channels) {
+                for (ch, slot) in kept.iter_mut().enumerate().take(out_channels) {
                     let samples = out.published_channel(ch).ok_or(ScoreError::ChannelMismatch)?;
                     *slot = &samples[lo - at..hi - at];
                 }
-                for (ch, samples) in kept[..channels].iter().enumerate() {
+                for (ch, samples) in kept[..out_channels].iter().enumerate() {
                     for sample in *samples {
                         run.digests[ch].update(&sample.to_le_bytes());
                         run.peak[ch] = run.peak[ch].max(sample.abs());
@@ -274,7 +284,7 @@ impl Engine {
                 }
                 sink(BounceChunk {
                     start_sample: request.start_sample + (lo - latency) as u64,
-                    channels: &kept[..channels],
+                    channels: &kept[..out_channels],
                 })?;
                 run.actual += (hi - lo) as u64;
             }
