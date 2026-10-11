@@ -15,18 +15,21 @@
 //! alpha is `G`'s own alpha (it never changes during the run), so a clipped layer needs no plane.
 //!
 //! Envelope operators (`RenderBackend::execute_extended`: adjustment layers, Blend-If, mask density
-//! and feather) live in the `extended` submodule and call pigment's maths; a plan without an
-//! envelope takes the unchanged v1 path.
+//! and feather) live in the `extended` submodule and layer effects (wave 1) in `effects`; both call
+//! pigment's maths. A plan without an envelope takes the unchanged v1 path.
 //!
 //! Workflow v4 V4-01: this module and `px` deny unchecked integer arithmetic; plan-derived sizes
 //! and coordinates go through the checked helpers of `crate::px`.
 #![deny(clippy::arithmetic_side_effects)]
+mod effects;
 mod extended;
 
 use crate::coverage::PreparedPath;
-use crate::px::{add_u, area, end, index_in, intersect, mul_u, offset, overflow, to_i64, union};
+use crate::px::{
+    add_u, area, end, grow_rect, index_in, intersect, mul_u, offset, overflow, to_i64, union,
+};
 use crate::vector::VectorSource;
-use extended::{ExtPrep, Fx, LayerFx, blend_weight, coverage_error};
+use extended::{ExtPrep, FrameShape, Fx, LayerFx, blend_weight, coverage_error};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_nib::PathLimits;
 use hsk_studio_pigment::Rect;
@@ -245,6 +248,25 @@ fn mask_value(
     mask.effective(raw)
 }
 
+/// [`mask_value`] for an effect frame: a frame reaches beyond the mask plane (the layer bounds plus
+/// the effect margin), where the border coverage continues, as for the feather taps.
+fn mask_value_clamped(
+    layer: &PLayer<'_>,
+    plane: Option<&[f32]>,
+    x: i64,
+    y: i64,
+    at: usize,
+) -> Result<f32, RenderError> {
+    let Some(mask) = layer.mask else {
+        return Ok(1.0);
+    };
+    let raw = match plane {
+        Some(plane) => *plane.get(at).ok_or_else(overflow)?,
+        None => mask.raw_clamped(x, y)?,
+    };
+    mask.effective(raw)
+}
+
 struct PLayer<'a> {
     input: usize,
     mode: StudioBlendMode,
@@ -254,8 +276,12 @@ struct PLayer<'a> {
     mask: Option<MaskView<'a>>,
     /// Clip-to-base layer: its coverage is the alpha of the run's base (no plane, `mask` is None).
     clipped: bool,
-    /// Envelope state (adjustment layer, Blend-If, feather); default on a v1 layer.
+    /// Envelope state (adjustment layer, Blend-If, feather, effects); default on a v1 layer.
     fx: LayerFx,
+    /// `Layer.opacity` and `Layer.fill_opacity` as given (`opacity` above is their product); the
+    /// effects composition takes them separately.
+    layer_opacity: f32,
+    fill_opacity: f32,
 }
 fn is_clipped(layer: &Layer) -> bool {
     layer.mask.as_ref().is_some_and(MaskInput::is_clip_to_base)
@@ -401,7 +427,7 @@ fn verify_tile(
 fn prepare<'a, V: VectorSource>(
     plan: &RenderPlan<V>,
     sources: &'a dyn PlanSources,
-    ext: ExtPrep,
+    mut ext: ExtPrep,
 ) -> Result<Prepared<'a>, RenderError> {
     let target = plan.target;
     if target.alpha != AlphaConvention::Straight {
@@ -426,11 +452,15 @@ fn prepare<'a, V: VectorSource>(
     let mut nodes: Vec<PNode<'a>> = Vec::with_capacity(n);
     let mut bounds: Vec<Option<Rect>> = Vec::with_capacity(n);
     let mut need: Vec<usize> = Vec::with_capacity(n);
+    // Does the node's subtree hold a layer with effects? (An effect layer's content may not.)
+    let mut has_effects: Vec<bool> = Vec::with_capacity(n);
     for (i, node) in plan.nodes.iter().enumerate() {
+        let mut group_has_effects = false;
         if !reach[i] {
             nodes.push(PNode::Unused);
             bounds.push(None);
             need.push(0);
+            has_effects.push(false);
             continue;
         }
         let (pnode, node_bounds, node_need) = match node {
@@ -474,6 +504,7 @@ fn prepare<'a, V: VectorSource>(
                 let mut layers = Vec::with_capacity(g.layers.len());
                 let mut group_bounds = None;
                 let mut group_need = 0;
+                let mut group_effects = false;
                 // Scratch beneath the compositing buffer of the clip run being read (None outside
                 // a run): the base evaluates straight into the run buffer, clipped members after.
                 let mut run_need: Option<usize> = None;
@@ -514,6 +545,24 @@ fn prepare<'a, V: VectorSource>(
                             return Err(unsupported("blend_mode"));
                         }
                     }
+                    let layer_fx = ext.layer(i, li);
+                    // Layer effects (wave 1): the content is evaluated per tile of a frame (the tile
+                    // plus the effect margin) and composed by pigment's `render_layer_reference`.
+                    let mut layer_bounds = bounds[input];
+                    if let Some(effect) = layer_fx.effect.and_then(|e| ext.effect(e)) {
+                        if layer_fx.blend_if.is_some() {
+                            return Err(unsupported("effects_with_blend_if"));
+                        }
+                        if has_effects[input] {
+                            return Err(unsupported("effects_nested"));
+                        }
+                        // The shadow and stroke reach beyond the content bounds by the margin.
+                        layer_bounds = layer_bounds
+                            .map(|b| grow_rect(b, effect.margin))
+                            .transpose()?;
+                        ext.frame_depth = ext.frame_depth.max(need[input]);
+                    }
+                    group_effects |= layer_fx.effect.is_some() || has_effects[input];
                     let mask = match &l.mask {
                         None => None,
                         // Canonical clip-to-base encoding (pigment validated): no plane to resolve.
@@ -581,7 +630,7 @@ fn prepare<'a, V: VectorSource>(
                         if let Some(r) = run_need.take() {
                             group_need = group_need.max(r.saturating_add(1));
                         }
-                        group_bounds = union(group_bounds, bounds[input])?;
+                        group_bounds = union(group_bounds, layer_bounds)?;
                         if starts_run {
                             run_need = Some(need[input]);
                         } else {
@@ -594,12 +643,15 @@ fn prepare<'a, V: VectorSource>(
                         opacity: l.opacity * l.fill_opacity,
                         mask,
                         clipped,
-                        fx: ext.layer(i, li),
+                        fx: layer_fx,
+                        layer_opacity: l.opacity,
+                        fill_opacity: l.fill_opacity,
                     });
                 }
                 if let Some(r) = run_need {
                     group_need = group_need.max(r.saturating_add(1));
                 }
+                group_has_effects = group_effects;
                 (
                     PNode::Group {
                         layers,
@@ -613,6 +665,7 @@ fn prepare<'a, V: VectorSource>(
         nodes.push(pnode);
         bounds.push(node_bounds);
         need.push(node_need);
+        has_effects.push(group_has_effects);
     }
     Ok(Prepared {
         nodes,
@@ -704,6 +757,8 @@ impl Eval<'_, '_> {
                 blend_if: base.fx.blend_if,
                 ..LayerFx::default()
             },
+            layer_opacity: base.layer_opacity,
+            fill_opacity: base.fill_opacity,
         };
         let result: &[[f32; 4]] = run;
         self.composite(&group, region, chunk, dst, fx, |_, _, at| {
@@ -863,6 +918,10 @@ impl Eval<'_, '_> {
         spare: &mut [Vec<[f32; 4]>],
         fx: &mut Fx,
     ) -> Result<(), RenderError> {
+        // A layer with effects is evaluated per tile of an effect frame (see `effects`).
+        if layer.fx.effect.is_some() {
+            return self.effect_layer(layer, chunk, dst, fx);
+        }
         let Some(region) = self.prepared.bounds[layer.input]
             .map(|b| intersect(b, chunk))
             .transpose()?
@@ -1007,6 +1066,8 @@ struct ScratchShape {
     depth: usize,
     fx_plane: usize,
     fx_tmp: usize,
+    /// Effect frame (layers with effects); `None` on the v1 path.
+    frame: Option<FrameShape>,
 }
 impl ScratchShape {
     /// v1 shape: no feather scratch.
@@ -1017,6 +1078,7 @@ impl ScratchShape {
             depth,
             fx_plane: 0,
             fx_tmp: 0,
+            frame: None,
         }
     }
 }
@@ -1038,7 +1100,7 @@ impl Scratch {
         Self {
             work: vec![[0.0; 4]; pixels],
             spare: (0..shape.depth).map(|_| vec![[0.0; 4]; pixels]).collect(),
-            fx: Fx::new(shape.fx_plane, shape.fx_tmp),
+            fx: Fx::new(shape.fx_plane, shape.fx_tmp, shape.frame),
             colour: Vec::with_capacity(bytes(12)),
             alpha: Vec::with_capacity(bytes(4)),
         }
@@ -1130,6 +1192,8 @@ fn compute_chunk(
             mask: None,
             clipped: false,
             fx: LayerFx::default(),
+            layer_opacity: 1.0,
+            fill_opacity: 1.0,
         };
         eval.layer(&root_layer, rect, work, &mut scratch.spare, &mut scratch.fx)?;
     }
@@ -1369,10 +1433,16 @@ impl Renderer {
         // horizontal pass with its `feather_support` margin rows) per worker. Zero on the v1 path.
         let (columns, rows) = (side_len(side_x)?, side_len(side_y)?);
         let (fx_plane, fx_tmp) = prepared.ext.feather_dims(columns, rows)?;
+        let frame = prepared.ext.frame_shape(columns.max(rows))?;
+        let frame_bytes = match &frame {
+            Some(shape) => prepared.ext.frame_scratch_bytes(shape)?,
+            None => 0,
+        };
         let scratch_bytes = prepared
             .ext
             .feather_scratch_bytes(columns, rows)?
-            .checked_mul(workers as u64)
+            .checked_add(frame_bytes)
+            .and_then(|per_worker| per_worker.checked_mul(workers as u64))
             .and_then(|fx| fx.checked_add(prepared.ext.resident_bytes))
             .and_then(|fx| fx.checked_add(base))
             .ok_or(BackendError::Overflow)?;
@@ -1386,6 +1456,7 @@ impl Renderer {
             depth,
             fx_plane,
             fx_tmp,
+            frame,
         };
 
         let chunks = if workers == 1 {
@@ -1589,7 +1660,7 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
         true
     }
     /// The envelope operators implement pigment's formulas verbatim (`adjust_math`,
-    /// `coverage_math`), so this backend adds no loss of its own: the receipt class is pigment's
+    /// `coverage_math`, `effect_math`), so this backend adds no loss of its own: the receipt class is pigment's
     /// intrinsic one (Approximate). Knockout and any operator this build does not know are
     /// Unsupported (typed refusal at admission).
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
@@ -1598,7 +1669,8 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             | ExtOperator::Adjustment(_)
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
-            | ExtOperator::MaskFeather => Exactness::Exact,
+            | ExtOperator::MaskFeather
+            | ExtOperator::Effect(_) => Exactness::Exact,
             _ => Exactness::Unsupported,
         }
     }

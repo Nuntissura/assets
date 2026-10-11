@@ -9,7 +9,8 @@
 //! `ExecuteRequest::max_working_bytes` as a running aggregate BEFORE it is allocated, and the
 //! per-worker feather scratch (a coverage plane for the chunk plus a horizontal-pass buffer that
 //! also holds the `feather_support` margin rows) is part of the reserved scratch, so a feather wider
-//! than the budget is refused with `BudgetExceeded` before the first sink call.
+//! than the budget is refused with `BudgetExceeded` before the first sink call. Layer effects
+//! (wave 1) keep their tables here and are evaluated in the `effects` submodule.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{Eval, MaskView, PLayer, RenderError, blend_error, unsupported};
 use crate::px::{
@@ -24,6 +25,9 @@ use hsk_studio_pigment::coverage_math::{
     BlendRangeEntry, CoverageError, IDENTITY_RANGE, blend_if_weight, feather_kernel,
     feather_support,
 };
+use hsk_studio_pigment::effect_math::{
+    EffectError, EffectOp, MAX_REFERENCE_SIDE, effect_support_px,
+};
 use hsk_studio_pigment::render_plan::{BackendError, PlanExtensions};
 use std::collections::BTreeMap;
 
@@ -34,6 +38,13 @@ const ADJUSTMENT_STATE_BYTES: u64 = 2_048;
 const BLEND_ENTRY_BYTES: u64 = 40;
 /// Bytes of one feather tap or scratch sample (`f32`).
 const SAMPLE_BYTES: u64 = 4;
+/// Resident bytes charged per effect instance (the `EffectOp` record).
+const EFFECT_OP_BYTES: u64 = 64;
+/// Pigment's reference planes have at most `MAX_REFERENCE_SIDE` (64) pixels per side, so a tile and
+/// its margin must fit one plane. The reference recomputes the margin of every tile, so the cost of
+/// a layer grows with `(64 / tile side)^2`; a margin of 24 px keeps tiles of at least 16 px. A
+/// larger margin needs a windowed matte API in pigment and is refused as `effect_margin`.
+pub(super) const MAX_EFFECT_MARGIN: usize = 24;
 
 /// Envelope state of one layer: indices into the tables of [`ExtPrep`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -41,6 +52,13 @@ pub(super) struct LayerFx {
     pub(super) adjustment: Option<usize>,
     pub(super) blend_if: Option<usize>,
     pub(super) feather: Option<usize>,
+    pub(super) effect: Option<usize>,
+}
+
+/// The effects of one layer (list order) and the margin around its content they read.
+pub(super) struct EffectLayer {
+    pub(super) ops: Vec<EffectOp>,
+    pub(super) margin: usize,
 }
 
 /// One normalised feather kernel: `2 * support + 1` taps.
@@ -56,6 +74,12 @@ pub(super) struct ExtPrep {
     adjustments: Vec<PreparedAdjustment>,
     blend_sets: Vec<Vec<BlendRangeEntry>>,
     kernels: Vec<Kernel>,
+    effects: Vec<EffectLayer>,
+    /// Widest effect margin and longest effect list over all layers.
+    max_margin: usize,
+    max_effects: usize,
+    /// Deepest isolated-group nesting under an effect layer's content (set by `prepare`).
+    pub(super) frame_depth: usize,
     /// Bytes of the tables above, reserved for the whole run.
     pub(super) resident_bytes: u64,
     /// Widest kernel support over all feathered layers (the margin the scratch must hold).
@@ -81,6 +105,19 @@ fn layer_error(error: AdjustLayerError) -> RenderError {
     match error {
         AdjustLayerError::Adjust(e) => adjust_error(e),
         AdjustLayerError::Blend(e) => blend_error(e),
+    }
+}
+
+pub(super) fn effect_error(error: EffectError) -> RenderError {
+    match error {
+        EffectError::SizeOutOfRange | EffectError::DistanceOutOfRange => {
+            unsupported("effect_limit")
+        }
+        EffectError::PlaneShape => unsupported("effect_plane_shape"),
+        EffectError::OverBudget => unsupported("effect_over_budget"),
+        EffectError::Overflow => overflow(),
+        EffectError::Blend(e) => blend_error(e),
+        _ => unsupported("effect_parameter"),
     }
 }
 
@@ -137,6 +174,31 @@ impl ExtPrep {
                 prep.charge(bytes, limit)?;
                 fx.blend_if = Some(prep.blend_sets.len());
                 prep.blend_sets.push(e.blend_if.clone());
+            }
+            if !e.effects.is_empty() {
+                // The margin an effect reads around the layer content: pigment's reference planes
+                // hold at most MAX_REFERENCE_SIDE pixels per side, so a tile of the layer plus its
+                // margin must fit one plane.
+                let mut margin = 0_usize;
+                for op in &e.effects {
+                    let support = effect_support_px(op).map_err(effect_error)?;
+                    margin = margin.max(to_usize(u64::from(support))?);
+                }
+                if margin > MAX_EFFECT_MARGIN {
+                    return Err(unsupported("effect_margin"));
+                }
+                let bytes = u64::try_from(e.effects.len())
+                    .ok()
+                    .and_then(|n| n.checked_mul(EFFECT_OP_BYTES))
+                    .ok_or_else(overflow)?;
+                prep.charge(bytes, limit)?;
+                prep.max_margin = prep.max_margin.max(margin);
+                prep.max_effects = prep.max_effects.max(e.effects.len());
+                fx.effect = Some(prep.effects.len());
+                prep.effects.push(EffectLayer {
+                    ops: e.effects.clone(),
+                    margin,
+                });
             }
             if e.mask_feather_px > 0.0 {
                 let px = e.mask_feather_px;
@@ -211,17 +273,102 @@ impl ExtPrep {
     }
 }
 
+/// Sizes of the per-worker effect frame: the working rectangle of one effect tile (the tile plus
+/// the effect margin on every side, at most `MAX_REFERENCE_SIDE` per side).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FrameShape {
+    pub(super) pixels: usize,
+    /// Levels of isolated-group nesting the layer content needs.
+    pub(super) depth: usize,
+    /// Feather scratch for the frame (zero without a feathered layer).
+    pub(super) fx_plane: usize,
+    pub(super) fx_tmp: usize,
+    /// Largest tile side (the chunk side).
+    pub(super) tile_cap: usize,
+    /// Effects per layer (sizes the matte allocations of the reference).
+    pub(super) effects: usize,
+}
+
+impl ExtPrep {
+    /// The frame shape for chunks of side at most `chunk_side`; `None` without effect layers.
+    pub(super) fn frame_shape(&self, chunk_side: usize) -> Result<Option<FrameShape>, RenderError> {
+        if self.effects.is_empty() {
+            return Ok(None);
+        }
+        let side = add_u(chunk_side, mul_u(self.max_margin, 2)?)?
+            .min(usize::try_from(MAX_REFERENCE_SIDE).map_err(|_| overflow())?);
+        let (fx_plane, fx_tmp) = self.feather_dims(side, side)?;
+        Ok(Some(FrameShape {
+            pixels: mul_u(side, side)?,
+            depth: self.frame_depth,
+            fx_plane,
+            fx_tmp,
+            tile_cap: chunk_side,
+            effects: self.max_effects,
+        }))
+    }
+
+    /// Upper bound of one worker's effect scratch in bytes: the content frame and its group levels
+    /// (16 bytes per pixel each), the three reference planes (backdrop, content, result: 16 bytes
+    /// per pixel each), the mattes and the reference's temporaries (4 bytes per pixel for each
+    /// effect plus 12), and the frame's feather scratch. An estimate of the allocations of
+    /// `render_layer_reference`, which allocates internally; not a measured value.
+    pub(super) fn frame_scratch_bytes(&self, shape: &FrameShape) -> Result<u64, RenderError> {
+        let to_u64 = |n: usize| u64::try_from(n).map_err(|_| overflow());
+        let per_pixel = to_u64(shape.depth)?
+            .checked_mul(16)
+            .and_then(|d| d.checked_add(16 + 48))
+            .and_then(|d| {
+                to_u64(shape.effects.checked_add(12)?)
+                    .ok()?
+                    .checked_mul(4)?
+                    .checked_add(d)
+            })
+            .ok_or_else(overflow)?;
+        let fx = to_u64(add_u(shape.fx_plane, shape.fx_tmp)?)?
+            .checked_mul(SAMPLE_BYTES)
+            .ok_or_else(overflow)?;
+        to_u64(shape.pixels)?
+            .checked_mul(per_pixel)
+            .and_then(|b| b.checked_add(fx))
+            .ok_or_else(overflow)
+    }
+
+    pub(super) fn effect(&self, index: usize) -> Option<&EffectLayer> {
+        self.effects.get(index)
+    }
+}
+
 /// Per-worker feather scratch: the feathered coverage of the layer being composited (chunk-indexed)
 /// and the horizontal-pass buffer. Sized once, charged with the rest of the scratch, never grown.
+/// `frame` is the effect frame (only on the chunk-level scratch of a worker, `None` inside it, so a
+/// layer with effects inside the content of a layer with effects is a typed refusal).
 pub(super) struct Fx {
     pub(super) plane: Vec<f32>,
     tmp: Vec<f32>,
+    pub(super) frame: Option<Box<Frame>>,
+}
+/// Working memory of one effect tile (see `effects.rs`): the layer content over the frame, the
+/// group levels beneath it, and a frame-sized feather scratch for the layer's mask.
+pub(super) struct Frame {
+    pub(super) content: Vec<[f32; 4]>,
+    pub(super) spare: Vec<Vec<[f32; 4]>>,
+    pub(super) fx: Fx,
+    pub(super) tile_cap: usize,
 }
 impl Fx {
-    pub(super) fn new(plane: usize, tmp: usize) -> Self {
+    pub(super) fn new(plane: usize, tmp: usize, frame: Option<FrameShape>) -> Self {
         Self {
             plane: vec![0.0; plane],
             tmp: vec![0.0; tmp],
+            frame: frame.map(|s| {
+                Box::new(Frame {
+                    content: vec![[0.0; 4]; s.pixels],
+                    spare: (0..s.depth).map(|_| vec![[0.0; 4]; s.pixels]).collect(),
+                    fx: Fx::new(s.fx_plane, s.fx_tmp, None),
+                    tile_cap: s.tile_cap,
+                })
+            }),
         }
     }
 }

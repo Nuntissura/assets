@@ -87,3 +87,20 @@ pub(crate) fn to_i64(value: usize) -> Result<i64, RenderError> {
 pub(crate) fn to_usize(value: u64) -> Result<usize, RenderError> {
     usize::try_from(value).map_err(|_| overflow())
 }
+
+/// `rect` grown by `margin` pixels on every side.
+pub(crate) fn grow_rect(rect: Rect, margin: usize) -> Result<Rect, RenderError> {
+    let m = to_i64(margin)?;
+    let side = |len: u32| -> Result<u32, RenderError> {
+        m.checked_mul(2)
+            .and_then(|twice| i64::from(len).checked_add(twice))
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(overflow)
+    };
+    Ok(Rect {
+        x: rect.x.checked_sub(m).ok_or_else(overflow)?,
+        y: rect.y.checked_sub(m).ok_or_else(overflow)?,
+        width: side(rect.width)?,
+        height: side(rect.height)?,
+    })
+}
