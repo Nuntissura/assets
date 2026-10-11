@@ -81,6 +81,13 @@ impl Enc {
             .collect();
         T { tag, typ: 10, count: v.len() as u32, data }
     }
+    fn double(&self, tag: u16, v: &[f64]) -> T {
+        let data = v
+            .iter()
+            .flat_map(|x| if self.be { x.to_be_bytes() } else { x.to_le_bytes() })
+            .collect();
+        T { tag, typ: 12, count: v.len() as u32, data }
+    }
     fn ifd_len(&self, tags: &[T]) -> usize {
         2 + 12 * tags.len() + 4 + tags.iter().map(|t| if t.data.len() > 4 { t.data.len() + (t.data.len() & 1) } else { 0 }).sum::<usize>()
     }
@@ -142,6 +149,8 @@ struct Spec {
     calib: [Option<Mat3>; 2],
     delta_h: Option<Vec<f64>>,
     delta_v: Option<Vec<f64>>,
+    /// Encode the BlackLevelDelta arrays as DOUBLE instead of SRATIONAL (hostile magnitudes).
+    delta_double: bool,
     lj: (usize, u8, u8, u32, usize),
 }
 
@@ -185,6 +194,7 @@ fn base() -> Spec {
         calib: [None, None],
         delta_h: None,
         delta_v: None,
+        delta_double: false,
         lj: (2, 1, 16, 0, 0),
     }
 }
@@ -300,7 +310,7 @@ fn build(s: &Spec) -> Built {
         }
         for (tag, v) in [(50715u16, &s.delta_h), (50716u16, &s.delta_v)] {
             if let Some(v) = v {
-                t1.push(enc.srational(tag, v, 1));
+                t1.push(if s.delta_double { enc.double(tag, v) } else { enc.srational(tag, v, 1) });
             }
         }
         for (tag, value) in &s.extra {
@@ -596,6 +606,38 @@ fn dng_tiles_active_area_black_levels() {
 
 fn at_plane(plane: &CfaPlane, x: usize, y: usize) -> u16 {
     plane.sample(x, y)
+}
+
+/// Review R3 (SMB-DEVELOP): finite but absurd BlackLevelDelta values saturate the rounded site
+/// black at an i64 limit; the per-site shift used to overflow (panic in debug, wrap in release).
+#[test]
+fn dng_black_level_delta_overflow_is_a_typed_refusal() {
+    bounded_case("dng_black_level_delta_overflow", || {
+        // 4x4 RGGB: R sites are columns 0 and 2. [-1e300, 0, 1e300, 0] puts one R site at i64::MIN
+        // (the channel reference) and the next at i64::MAX: the shift overflows under either policy.
+        // [1e300, 0, 0, 0] makes the reference i64::MAX: Refuse stops at the first site (below the
+        // channel black); ClampReported clamps it and the other R site shifts by -i64::MAX, where
+        // `sample - shift` would overflow.
+        let cases = [
+            (vec![-1e300, 0.0, 1e300, 0.0], RangePolicy::Refuse, DevelopError::InvalidLevels),
+            (vec![-1e300, 0.0, 1e300, 0.0], RangePolicy::ClampReported, DevelopError::InvalidLevels),
+            (vec![1e300, 0.0, 0.0, 0.0], RangePolicy::Refuse, DevelopError::SampleOutOfRange),
+            (vec![1e300, 0.0, 0.0, 0.0], RangePolicy::ClampReported, DevelopError::InvalidLevels),
+        ];
+        for (deltas, policy, want) in cases {
+            let spec = Spec { delta_h: Some(deltas.clone()), delta_double: true, ..base() };
+            let raw = decode_container(&build(&spec).bytes).unwrap();
+            let got = raw.cfa_plane(raw.default_window(), policy, 1, Limits::SPEC_V1).err();
+            assert_eq!(got, Some(want), "{deltas:?} {policy:?}");
+        }
+        // A delta that is large but representable keeps its old behaviour: the site is out of range.
+        let spec = Spec { delta_h: Some(vec![0.0, 0.0, 1e15, 0.0]), delta_double: true, ..base() };
+        let raw = decode_container(&build(&spec).bytes).unwrap();
+        assert_eq!(
+            raw.cfa_plane(raw.default_window(), RangePolicy::Refuse, 1, Limits::SPEC_V1).err(),
+            Some(DevelopError::SampleOutOfRange)
+        );
+    });
 }
 
 #[test]

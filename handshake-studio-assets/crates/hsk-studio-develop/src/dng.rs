@@ -741,7 +741,15 @@ impl DngRaw {
                 if site_black != channel {
                     report.black_site_adjusted = true;
                 }
-                let mut value = i64::from(self.sample(x, y)) - (site_black - channel);
+                // Authored BlackLevel / BlackLevelDelta values are only checked for finiteness at
+                // decode, so the rounded black can sit at an i64 limit: shifts that cannot be
+                // represented are a typed refusal, never an overflow (panic in debug, wrap in release).
+                let shift = site_black
+                    .checked_sub(channel)
+                    .ok_or(DevelopError::InvalidLevels)?;
+                let mut value = i64::from(self.sample(x, y))
+                    .checked_sub(shift)
+                    .ok_or(DevelopError::InvalidLevels)?;
                 if value < channel {
                     match policy {
                         RangePolicy::Refuse => return Err(DevelopError::SampleOutOfRange),

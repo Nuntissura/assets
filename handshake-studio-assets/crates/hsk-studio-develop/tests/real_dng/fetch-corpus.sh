@@ -6,7 +6,11 @@
 # (license link https://creativecommons.org/publicdomain/zero/1.0/ for each id below, checked 2026-10-11).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-DEST="${STUDIO_DNG_CORPUS:-$HERE/../../../../../Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/dng}"
+CRATE="$(cd "$HERE/../.." && pwd)"
+# Identical to CORPUS_RELATIVE in tests/real_dng.rs (guard test fetch_script_default_matches_test_default):
+# the sibling Handshake_Artifacts root next to the worktrees, outside the git worktree. Override: STUDIO_DNG_CORPUS.
+CORPUS_RELATIVE="../../../../Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/dng"
+DEST="${STUDIO_DNG_CORPUS:-$(realpath -m "$CRATE/$CORPUS_RELATIVE")}"
 # id | local name | sha256 | bytes (approx MB) | remote name (as served by getfile.php/<id>/nice/)
 SAMPLES=(
   "2204|canon-eos-5d3-mlv-14bit-lossless.dng|1d77dcc6cdb839b10c1948f0b4471984ab48cf15e973fb77520584cee72b603e|1.47MB|Canon%20-%20EOS%205D%20Mark%20III%20-%2014bit%2014bit%20%282.3471882640587%29.dng"

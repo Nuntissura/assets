@@ -84,12 +84,33 @@ const CORPUS: &[Facts] = &[
     },
 ];
 
+/// Default corpus location relative to this crate: the sibling `Handshake_Artifacts` root next to
+/// the worktrees, outside the git worktree. `real_dng/fetch-corpus.sh` carries the identical string;
+/// `fetch_script_default_matches_test_default` keeps the two from drifting.
+const CORPUS_RELATIVE: &str = "../../../../Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/dng";
+
 fn corpus_dir() -> PathBuf {
     match std::env::var_os("STUDIO_DNG_CORPUS") {
         Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/dng"),
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CORPUS_RELATIVE),
     }
+}
+
+/// The fetch script and this harness must resolve the same default (R3 finding: they differed by
+/// one directory level, so an approved fetch would have landed inside the repo).
+#[test]
+fn fetch_script_default_matches_test_default() {
+    let script = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/real_dng/fetch-corpus.sh"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    let relative = format!("CORPUS_RELATIVE=\"{CORPUS_RELATIVE}\"\n");
+    assert!(script.contains(&relative), "script must define {relative}");
+    // The script resolves it from the crate directory (HERE/../..), exactly as CARGO_MANIFEST_DIR.
+    assert!(script.contains("CRATE=\"$(cd \"$HERE/../..\" && pwd)\"\n"));
+    assert!(script.contains("\"$CRATE/$CORPUS_RELATIVE\""));
+    assert!(!script.contains("$HERE/../../../../.."), "no second, independent default");
 }
 
 /// `exiftool -a -s -G1 -n` -> (group, tag, value) in file order.
