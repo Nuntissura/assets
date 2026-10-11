@@ -32,8 +32,8 @@
 //! `diagnostics/adjustments-advanced-blending.md`): the same plan plus a pigment `PlanExtensions`
 //! envelope built from Folio's `StudioRasterRecords`: adjustment layers (a transparent `Solid`
 //! placeholder in the group plus `LayerExtension.adjustment`), mask density / invert / feather,
-//! Blend-If, knockout and effects wave 1 (drop shadow, colour overlay, solid stroke ->
-//! `LayerExtension.effects`). The envelope is built with pigment's constructors only; composite
+//! Blend-If, knockout and effects waves 1 and 2 (drop shadow, colour overlay, solid stroke, inner
+//! shadow, outer glow, inner glow with a colour source -> `LayerExtension.effects`). The envelope is built with pigment's constructors only; composite
 //! adds no formula and no class. A feature the envelope cannot carry is `Unavailable` (effect
 //! kinds pigment does not render, effects on adjustment / pass-through / clipped / clip-base
 //! layers, non-linear contour, noise, gradient or pattern stroke fill, unresolved Global Light,
@@ -366,10 +366,12 @@ pub fn lower_to_render_plan(
 /// - Knockout: `Enabled` (and an `Inherited` that resolves to enabled) is `Knockout::Shallow`.
 /// - Effects: the enabled instances of an enabled stack at 100 percent scale, in list order, as
 ///   pigment `EffectOp`s (percent / 100; a drop shadow resolves Global Light into its angle;
-///   spread is read as a percent of the size and noted). Drop shadow, colour overlay and a solid
-///   stroke only.
+///   spread and choke are read as a percent of the size and noted). Drop shadow, colour overlay,
+///   solid stroke, inner shadow, outer glow and inner glow (colour source) only.
 ///
 /// Fails `Unavailable` for an enabled effect of any other kind (`layer_effects_not_rendered`), a
+/// gradient glow, a glow range other than 100 percent or the Precise technique (pigment's
+/// `glow_gradient` / `glow_range` / `glow_technique_precise`), a
 /// stack scale other than 100, a contour other than linear, noise above zero, a gradient or
 /// pattern or overprint stroke, a drop shadow that follows an absent Global Light, an effect
 /// colour in another profile (or mid-tone in a linear-light plan), effects on an adjustment,
