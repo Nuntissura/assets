@@ -974,22 +974,28 @@ enum HttpEquiv {
 /// Every asset-bearing reference in the document, in document order, with the decision for each. The carriers are the
 /// rows of the carrier inventory (`carriers::CARRIERS`, each with its specification source and a fixture proving its
 /// path: `carriers::tests::every_row_has_a_path_and_a_fixture`): URL attributes (`href`/`xlink:href` on any element,
-/// `src` on `img image source video audio iframe frame embed track input script`, `poster`, `object
-/// data/codebase/classid/archive`, `form action`, `formaction`, `cite`, `ping`, `attributionsrc`,
+/// `src` on `img image source video audio iframe frame embed track input script`, `mglyph src`, `poster`, `object
+/// data/classid/archive`, `form action`, `formaction`, `cite`, `ping`, `attributionsrc`,
 /// `srcset`/`imagesrcset` candidates, obsolete `background longdesc lowsrc manifest profile`, `<meta
-/// http-equiv=refresh>` URL), `<base href>` and `xml:base`, `iframe srcdoc` and `<script type=speculationrules>`
-/// (reported denied), CSS text (`style` attributes, SVG presentation attributes `fill stroke clip-path cursor filter mask
+/// http-equiv=refresh>` URL, legacy-plugin `param value`s: reported and denied), `<base href>`, `xml:base` and `object
+/// codebase`, `iframe srcdoc`, `<script type=speculationrules>` and `<meta http-equiv=link>` (reported denied), CSS text (`style` attributes, SVG presentation attributes `fill stroke clip-path cursor filter mask
 /// marker-*`, `<style>` contents), and the `to from by values` of SVG `set animate animateMotion animateTransform
 /// animateColor` whose `attributeName` is `href`, `xlink:href`, `src` or any CSS property of the inventory (incl. the
 /// `marker` shorthand; `values` split on every `;` like the engines: tests `r11_f1_animation_values_are_split_like_the_engines`,
 /// `r11_f2_every_css_property_is_an_animation_target`). In CSS text every URL a browser loads: url tokens, the strings
 /// of the inventory's URL functions and `@import`, bad-url tokens (denied) and computed URLs (`Denied(ComputedUrl)`),
 /// read by the CSS Syntax 3 tokenizer in `cssurl` (tests: `tests/css_url_gate.rs`); `@namespace` URLs are not loaded and
-/// not reported. A `data:` URL is decided by its type and the carrier's load context (`datauri`): CSS payloads (and, in
-/// style sheet carriers, every type a browser may read as CSS) are scanned recursively, at most `MAX_DATA_NESTING` deep
-/// and `Limits::max_bytes` encoded bytes in total (refused typed beyond either); payloads that load further URLs as
-/// documents, scripts, tracks or playlists are `Denied(InlineDocument)`; the rest are `Inline` (tests: `data_*` in
-/// `tests/css_url_gate.rs`). `srcdoc` and speculation rules contents and script text are not scanned.
+/// not reported. The carrier's load context decides first (`carriers::Load`: a `link` has one per `rel` keyword and
+/// `preload` `as`, `carriers::link_loads`; an animated URL takes the context of the animated element), the URL's scheme
+/// and a `data:` payload's type within it (`datauri::decide_all`): CSS payloads (and, in style sheet carriers, every type
+/// a browser may read as CSS) are scanned recursively, at most `MAX_DATA_NESTING` deep and `Limits::max_bytes` encoded
+/// bytes in total (refused typed beyond either); payloads that load further URLs as documents, scripts (including
+/// `text/css` in a script carrier), tracks, manifests or playlists are `Denied(InlineDocument)`; the rest are `Inline`
+/// (tests: `data_*` and `r12_*` in `tests/css_url_gate.rs`, `datauri::tests::load_context_decides_before_the_type`). A
+/// reference to the document itself (`#...`, or empty after the URL parser's stripping) is `SameDocument`, except from a
+/// carrier whose browser reads the document's own text as a style sheet, script, text track or manifest:
+/// `Denied(SelfReference)` (test `r12_f2_self_references_from_style_sheet_and_script_carriers_are_denied`). `srcdoc` and
+/// speculation rules contents and script text are not scanned.
 pub fn collect_assets(
     doc: &WebDoc,
     port: &dyn AssetPort,

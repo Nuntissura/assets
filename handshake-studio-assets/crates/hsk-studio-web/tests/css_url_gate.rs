@@ -1235,9 +1235,7 @@ fn r12_p2_engine_only_carriers_are_reported_or_denied() {
             EXTERNAL,
         );
         assert_reports(
-            &format!(
-                "<object codebase=\"&#x68;ttps://evil.example/p.png\" data=\"a.png\"></object>"
-            ),
+            "<object codebase=\"&#x68;ttps://evil.example/p.png\" data=\"a.png\"></object>",
             EVIL,
             EXTERNAL,
         );

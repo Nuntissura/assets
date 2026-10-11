@@ -781,3 +781,30 @@ fn only_http_equiv_rows_share_an_element_and_name() {
         }
     }
 }
+
+/// V4-07: the DESCRIPTOR's inventory and outcome claims state what the table and the enum hold.
+#[test]
+fn descriptor_counts_the_inventory() {
+    let d = crate::DESCRIPTOR;
+    assert!(
+        d.contains(&format!("carriers::CARRIERS ({} rows;", CARRIERS.len())),
+        "{} rows",
+        CARRIERS.len()
+    );
+    let start = d.find("\"Denied(").expect("Denied classes");
+    let list = &d[start..start + d[start..].find(")\"").expect("end of the list")];
+    for reason in [
+        crate::DenyReason::ExternalScheme,
+        crate::DenyReason::ProtocolRelative,
+        crate::DenyReason::FileScheme,
+        crate::DenyReason::ScriptScheme,
+        crate::DenyReason::NotGranted,
+        crate::DenyReason::BaseHref,
+        crate::DenyReason::InlineDocument,
+        crate::DenyReason::AmbiguousPath,
+        crate::DenyReason::ComputedUrl,
+        crate::DenyReason::SelfReference,
+    ] {
+        assert!(list.contains(reason.code()), "{}", reason.code());
+    }
+}
