@@ -10,7 +10,11 @@
 //!   brightness_contrast, exposure, invert, threshold, posterize) on a layer of kind `adjustment`
 //!   whose payload is `PrimitiveReference { schema_id: "hsk.studio.adjustment@1", object_id: <its own
 //!   layer id> }` (Accord defines no identity prefix for that schema, so the adjustment is keyed by
-//!   its hosting layer; STU-RAS-007: one adjustment per adjustment layer).
+//!   its hosting layer; STU-RAS-007: one adjustment per adjustment layer). Such a layer may be a
+//!   `source` operation of the composition graph (image output) and an edge source into a group's
+//!   `inputs`, so `input_ordinal` gives it its stack position (STU-CMP-092); the document validator
+//!   checks the payload names the layer's own id and refuses a layer clipped to an adjustment layer
+//!   (`validate_adjustment_clip_bases`). Test: `tests/adjustment_graph_contract.rs`.
 //! - `StudioMaskParameters` (STU-RAS-115/124: density percent `0..=100`, feather px `0..=10000`,
 //!   invert) for a layer whose `appearance.mask` is present.
 //! - `StudioAdvancedBlending` (STU-RAS-041/159: Blend-If eight values per channel, knockout as the
@@ -36,7 +40,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use super::{
     BLEND_LAST, BLEND_PASS_THROUGH, BLEND_TOOL_ONLY, Budget, Code, Payload, ResolutionIssue,
-    Resolver, Result, StudioDocument, err, id, key,
+    Resolver, Result, StudioDocument, StudioLayer, canceled, err, id, key,
     values::{Ctx, StudioColor, label, percent},
 };
 use hsk_studio_accord::CancellationToken;
@@ -926,6 +930,58 @@ fn validate_effects(s: &StudioEffectStack, target: &str, cx: &mut Ctx) -> Result
                 &t,
                 "drop_shadow",
             )?,
+        }
+    }
+    Ok(())
+}
+
+/// Clip-base rule for adjustment layers that take part in the composition graph (called by the
+/// document validator once the edges are valid). Each group's `inputs` are walked in
+/// `input_ordinal` order, the sole stack order (STU-CMP-092), bottom first. The base of a clipped
+/// layer is the nearest earlier input that is not itself clipped. A clipped layer whose base is an
+/// `adjustment` layer is refused with [`Code::AdjustmentClipBase`], target = the clipped layer.
+///
+/// Reading of the spec: STU-RAS-015 defines a clipping mask as "a base layer's content/alpha"
+/// clipping the layers above it, and STU-RAS-007 says an adjustment layer is applied to the layers
+/// below "(or clipped to its parent)", which makes the adjustment layer the clipped layer, not the
+/// base. No clause names an adjustment layer as a base, so the arrangement is refused (the pigment
+/// render-plan IR refuses it too as `AdjustmentClipBase`); Photoshop behaviour is UNVERIFIED. An
+/// adjustment layer that is itself clipped is accepted and is not a base for the layers above it.
+/// Documents without adjustment layers in the graph are unaffected (test
+/// `adjustment_clip_base_rule`).
+pub(crate) fn validate_adjustment_clip_bases(
+    d: &StudioDocument,
+    token: &CancellationToken,
+) -> Result<()> {
+    if !d.layers.iter().any(|l| l.kind == "adjustment") {
+        return Ok(());
+    }
+    let layers: BTreeMap<&str, &StudioLayer> =
+        d.layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();
+    // (group layer, operation key) -> (input_ordinal, source layer) in the order of the edges.
+    let mut stacks: BTreeMap<(&str, &str), Vec<(u64, &str)>> = BTreeMap::new();
+    for e in &d.graph.edges {
+        canceled(token)?;
+        stacks
+            .entry((&e.target.layer_id, &e.target.operation_key))
+            .or_default()
+            .push((e.input_ordinal, &e.source.layer_id));
+    }
+    for stack in stacks.values_mut() {
+        canceled(token)?;
+        stack.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+        let mut base: Option<&StudioLayer> = None;
+        for (_, source) in stack.iter() {
+            let Some(layer) = layers.get(source) else {
+                continue;
+            };
+            if layer.appearance.as_ref().is_some_and(|a| a.clipped) {
+                if base.is_some_and(|b| b.kind == "adjustment") {
+                    return Err(err(Code::AdjustmentClipBase, &layer.layer_id));
+                }
+            } else {
+                base = Some(layer);
+            }
         }
     }
     Ok(())
