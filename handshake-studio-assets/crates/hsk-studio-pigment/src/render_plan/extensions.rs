@@ -8,13 +8,17 @@
 //! its envelope; a backend opts in per operator through
 //! [`RenderBackend::extension_exactness`] (default: nothing supported).
 use super::{
-    Applicability, BackendError, ExactnessLedger, ExecuteRequest, MaskFormat, PlanError, PlanNode,
-    PlanNodeId, RenderBackend, RenderPlan, admit_core,
+    Applicability, BackendError, ExactnessLedger, ExecuteRequest, MaskFormat, Operator, PlanError,
+    PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core,
 };
 use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
 use crate::blend_math::{Exactness, StudioBlendMode};
 use crate::coverage_math::{
     BlendRangeEntry, COVERAGE_EXACTNESS, CoverageError, IDENTITY_RANGE, MAX_FEATHER_PX, check_range,
+};
+use crate::effect_math::{
+    EFFECT_EXACTNESS, EffectError, EffectKind, EffectOp, MAX_EFFECTS_PER_LAYER,
+    MAX_EFFECTS_PER_PLAN,
 };
 use hsk_studio_accord::CancellationToken;
 use serde::Serialize;
@@ -53,6 +57,10 @@ impl Knockout {
 /// - `mask_feather_px`: Gaussian feather radius of the layer's coverage mask
 ///   ([`crate::coverage_math::feather_kernel`], applied before density); `0` = none.
 /// - `knockout`: only `Knockout::None` is admitted.
+/// - `effects`: layer effects of wave 1 ([`crate::effect_math`]: drop shadow, colour overlay,
+///   solid stroke), rendered in list order within each placement (behind the content, over the
+///   content). Not allowed on an adjustment layer, a pass-through layer, a clipped layer or the
+///   base of a clipping run. Empty = no effects (and absent from the digest).
 ///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
 /// [`LayerExtension::new`] and the `with_*` methods or field assignment.
@@ -65,6 +73,8 @@ pub struct LayerExtension {
     pub blend_if: Vec<BlendRangeEntry>,
     pub mask_feather_px: f32,
     pub knockout: Knockout,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<EffectOp>,
 }
 impl LayerExtension {
     /// An extension that changes nothing (fill in the fields you need).
@@ -76,6 +86,7 @@ impl LayerExtension {
             blend_if: Vec::new(),
             mask_feather_px: 0.0,
             knockout: Knockout::None,
+            effects: Vec::new(),
         }
     }
     pub fn with_adjustment(mut self, op: AdjustmentOp) -> Self {
@@ -92,6 +103,10 @@ impl LayerExtension {
     }
     pub fn with_knockout(mut self, knockout: Knockout) -> Self {
         self.knockout = knockout;
+        self
+    }
+    pub fn with_effects(mut self, effects: Vec<EffectOp>) -> Self {
+        self.effects = effects;
         self
     }
 }
@@ -119,6 +134,10 @@ pub enum ExtOperator {
     /// Not reported by `validate`, which refuses knockout (`tests/plan_extensions.rs`
     /// `envelope_validation_rules`); present for capability queries.
     Knockout(Knockout),
+    /// One layer-effect kind (wave 1: drop shadow, colour overlay, stroke). The blend modes the
+    /// effects use are admitted separately by [`admit_extended`] through the backend's v1
+    /// [`Operator::Blend`] classes.
+    Effect(EffectKind),
 }
 impl ExtOperator {
     pub const fn key(self) -> &'static str {
@@ -129,6 +148,7 @@ impl ExtOperator {
             Self::MaskDensity => "mask_density",
             Self::MaskFeather => "mask_feather",
             Self::Knockout(k) => k.key(),
+            Self::Effect(k) => k.key(),
         }
     }
     /// Class independent of any backend (formula provenance).
@@ -139,6 +159,7 @@ impl ExtOperator {
             Self::BlendIf | Self::MaskDensity | Self::MaskFeather => COVERAGE_EXACTNESS,
             Self::Knockout(Knockout::None) => Exactness::Exact,
             Self::Knockout(_) => Exactness::Unsupported,
+            Self::Effect(_) => EFFECT_EXACTNESS,
         }
     }
 }
@@ -174,6 +195,7 @@ impl PlanExtensions {
             }
         };
         let mut seen = BTreeSet::new();
+        let mut total_effects = 0usize;
         for e in &self.layers {
             let node = e.group.0;
             let Some(PlanNode::Group(g)) = plan.nodes.get(node as usize) else {
@@ -221,6 +243,34 @@ impl PlanExtensions {
                 add(ExtOperator::AdjustmentLayer);
                 add(ExtOperator::Adjustment(op.kind()));
             }
+            if !e.effects.is_empty() {
+                if e.adjustment.is_some() {
+                    return Err(PlanError::EffectOnAdjustment { node });
+                }
+                if layer.mode == StudioBlendMode::PassThrough {
+                    return Err(PlanError::EffectPassThrough { node });
+                }
+                if is_clip(layer) || g.layers.get(e.layer as usize + 1).is_some_and(is_clip) {
+                    return Err(PlanError::EffectClipRun { node });
+                }
+                total_effects = total_effects.saturating_add(e.effects.len());
+                if e.effects.len() > MAX_EFFECTS_PER_LAYER || total_effects > MAX_EFFECTS_PER_PLAN
+                {
+                    return Err(PlanError::EffectLimit { node });
+                }
+                for effect in &e.effects {
+                    effect.validate().map_err(|err| match err {
+                        EffectError::SizeOutOfRange | EffectError::DistanceOutOfRange => {
+                            PlanError::EffectLimit { node }
+                        }
+                        EffectError::ModeNotApplicable(mode) => {
+                            PlanError::ModeNotApplicable { node, mode }
+                        }
+                        _ => PlanError::EffectParameter { node },
+                    })?;
+                    add(ExtOperator::Effect(effect.kind()));
+                }
+            }
             if !e.blend_if.is_empty() {
                 if layer.mode == StudioBlendMode::PassThrough {
                     return Err(PlanError::BlendIfPassThrough { node });
@@ -267,6 +317,18 @@ impl PlanExtensions {
         Ok(ops)
     }
 
+    /// The distinct blend modes the envelope's effects composite with, in first-use order
+    /// ([`admit_extended`] asks the backend for each mode's v1 [`Operator::Blend`] class).
+    pub fn effect_modes(&self) -> Vec<StudioBlendMode> {
+        let mut modes: Vec<StudioBlendMode> = Vec::new();
+        for effect in self.layers.iter().flat_map(|e| e.effects.iter()) {
+            if !modes.contains(&effect.mode()) {
+                modes.push(effect.mode());
+            }
+        }
+        modes
+    }
+
     /// SHA-256 binding a receipt to the plan and its envelope. An empty envelope digests exactly
     /// like the plain plan ([`RenderPlan::digest`]).
     pub fn digest_with<V: Serialize>(
@@ -308,6 +370,20 @@ pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
     })?;
     for op in operators {
         let class = op.intrinsic().lowest_of(backend.extension_exactness(op));
+        if class == Exactness::Unsupported || class.rank() > request.min_exactness.rank() {
+            return Err(BackendError::Unsupported {
+                operator: op.key(),
+                exactness: class,
+            });
+        }
+        ledger.record(op.key(), class);
+    }
+    // An effect composites with its own blend mode: the backend's v1 class for that mode applies
+    // (an effect is refused when its mode is: `tests/effects.rs`
+    // `effect_without_backend_support_is_refused_before_the_sink`).
+    for mode in extensions.effect_modes() {
+        let op = Operator::Blend(mode);
+        let class = op.intrinsic().lowest_of(backend.exactness(op));
         if class == Exactness::Unsupported || class.rank() > request.min_exactness.rank() {
             return Err(BackendError::Unsupported {
                 operator: op.key(),

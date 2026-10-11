@@ -5,6 +5,7 @@ pub mod allocation;
 pub mod blend_math;
 pub mod caller;
 pub mod coverage_math;
+pub mod effect_math;
 pub mod masked_patch;
 pub mod render_plan;
 pub mod tile;
