@@ -883,7 +883,10 @@ fn parse_block(
     let rest = payload_len
         .checked_sub(p as u64)
         .ok_or(corrupt("lace-header-truncated"))?;
-    let used: u64 = sizes.iter().sum();
+    let used = sizes
+        .iter()
+        .try_fold(0u64, |acc, size| acc.checked_add(*size))
+        .ok_or(corrupt("lace-sizes-exceed-block"))?;
     let last = rest
         .checked_sub(used)
         .ok_or(corrupt("lace-sizes-exceed-block"))?;
@@ -1042,11 +1045,11 @@ fn finish_durations(samples: &mut [SampleEntry], end_hint: Option<i64>) {
         let pts = samples[i].pts;
         let next = order
             .get(w + 1)
-            .map(|&j| samples[j].pts - pts)
+            .and_then(|&j| samples[j].pts.checked_sub(pts))
             .filter(|d| *d > 0);
         let fallback = || {
             end_hint
-                .map(|e| e - pts)
+                .and_then(|e| e.checked_sub(pts))
                 .filter(|d| *d > 0)
                 .or_else(|| {
                     w.checked_sub(1)
