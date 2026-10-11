@@ -640,6 +640,72 @@ impl Builder<'_, '_, '_> {
         Ok(())
     }
 
+    /// Two Photoshop clipping-run properties the render-plan IR does not model, reported per stack so a
+    /// consumer is told before rendering refuses (`panel_order` is one stack, top-first, after
+    /// [`Self::unclip_adjustment_bases`]; roles follow the clip flag written to Folio, as pigment's
+    /// `Group::clip_role` does: Clipped carries it, Base is unclipped with a clipped layer directly above).
+    ///
+    /// - Non-identity Blend-If ranges on a Base or a Clipped layer: pigment refuses both for every backend
+    ///   (`blend_if_clip_base`, `blend_if_clipped_layer`) because no public source defines them. The ranges
+    ///   stay in the Folio record; the entry is `Unsupported`, its code is pigment's key and its path names the
+    ///   layer id (and, for a clipped layer, its base). Only ranges that reached the record count: a range
+    ///   held only as preserved opaque bytes is not a Blend-If pigment sees.
+    /// - Blend Clipped Layers as Group switched off (`clbl = 0`) on a Base: pigment's clip rule is the
+    ///   switched-on reading, so the file's setting is not modelled. The record keeps the toggle.
+    ///
+    /// Tests `blend_if_on_a_clip_base_or_a_clipped_layer_keeps_the_ranges_and_reports_the_refusal` and
+    /// `blend_clipped_layers_as_group_off_is_a_typed_loss_on_a_clip_base`.
+    fn note_clip_role_gaps(&mut self, panel_order: &[StackEntry]) {
+        let written: Vec<bool> = panel_order
+            .iter()
+            .map(|e| {
+                self.layers
+                    .get(e.slot)
+                    .and_then(|l| l.get("appearance"))
+                    .and_then(|a| a.get("clipped"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .collect();
+        let doc = self.doc;
+        for (k, entry) in panel_order.iter().enumerate() {
+            let clipped = written.get(k).copied().unwrap_or(false);
+            let run_above = k.checked_sub(1).and_then(|above| written.get(above)).copied().unwrap_or(false);
+            let is_base = !clipped && run_above;
+            if !(clipped || is_base) {
+                continue;
+            }
+            let ranges_recorded = self.records.iter().any(|r| {
+                r.layer_id == entry.layer_id && r.advanced_blending.as_ref().is_some_and(|a| !a.blend_ranges.is_empty())
+            });
+            if ranges_recorded {
+                let at = entry.psd_index;
+                let (code, path) = if clipped {
+                    let base = panel_order
+                        .iter()
+                        .zip(&written)
+                        .skip(k.saturating_add(1))
+                        .find(|(_, c)| !**c)
+                        .map_or("none", |(b, _)| b.layer_id.as_str());
+                    (
+                        "blend_if_clipped_layer",
+                        format!("layer[{at}]/blend_ranges(layer_id={},base_layer_id={base})", entry.layer_id),
+                    )
+                } else {
+                    ("blend_if_clip_base", format!("layer[{at}]/blend_ranges(layer_id={})", entry.layer_id))
+                };
+                self.note(path, LossKind::Unsupported, code);
+            }
+            if is_base && doc.layers().get(entry.psd_index).and_then(PsdLayer::blend_clipped_elements) == Some(false) {
+                self.note(
+                    format!("layer[{}]/tagged/clbl(layer_id={})", entry.psd_index, entry.layer_id),
+                    LossKind::Unsupported,
+                    "blend_clipped_layers_as_group_off_not_modelled",
+                );
+            }
+        }
+    }
+
     fn note(&mut self, path: String, kind: LossKind, code: &'static str) {
         self.loss.entries.push(crate::loss::LossEntry { path, kind, code });
     }
@@ -694,6 +760,7 @@ impl Builder<'_, '_, '_> {
             }
         }
         self.unclip_adjustment_bases(&entries)?;
+        self.note_clip_role_gaps(&entries);
         Ok(entries)
     }
 
