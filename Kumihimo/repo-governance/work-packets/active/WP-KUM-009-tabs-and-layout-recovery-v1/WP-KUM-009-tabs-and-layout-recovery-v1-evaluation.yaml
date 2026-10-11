@@ -337,9 +337,9 @@ source_review:
   status: complete_no_blocking_source_findings
   observed_at: '2026-10-12'
   product_file_count: 31
-  product_manifest_sha256: 48f3e2d0bcf0b7ddcfcc7aa422e1194462919ffb94bf5bb896f3ef66c82d36b7
+  product_manifest_sha256: 85ebf91298e9467a2fcbea286f4a815042bd7d7d856611a46fe4fdd6569130e9
   manifest_algorithm: SHA256 of ordinal-sorted lowercase POSIX product/path plus colon plus lowercase SHA256 of raw file bytes, joined with LF and no final LF
-  source_state: Frozen test-only remediation over candidate50563242c7f146a3534ff73bdff7a5b8a9626c99; unchanged source review reused; no product edits or Cargo by evaluator
+  source_state: Frozen second test-only migration remediation; unchanged runtime source review reused; no product edits or Cargo by evaluator
   contract_refs: [WP009-R002, WP009-R003, WP009-R004, WP009-R005, WP009-R006, WP009-R007, WP009-R008, WP009-R009, WP009-R010, WP009-R011, WP009-R012, WP009-R013, WP009-R014, WP009-R015, WP009-R016, WP009-R017, WP009-R018, WP009-R019, WP009-R020, WP009-R021, WP009-R022]
   cases: [EVAL-KUM-009-001, EVAL-KUM-009-002, EVAL-KUM-009-003, EVAL-KUM-009-004, EVAL-KUM-009-005, EVAL-KUM-009-006, EVAL-KUM-009-007, EVAL-KUM-009-008, EVAL-KUM-009-009, EVAL-KUM-009-010, EVAL-KUM-009-011]
   inspected_paths:
@@ -391,6 +391,15 @@ source_review:
     observation: Existing reject helper retains the complete own-Core pre/post Snapshot check; allocated provider IDs remain compared. New assertions prove both original identities unchanged, matching lineage and different incarnations before normalizing only the cloned control identity for full arrangement comparison. Sole product diff against prior candidate is this test file.
     verdict: No blocking finding in the exact test-only remediation; no production input changed and no runtime pass claimed
     next_proof: Lead publishes the rebound candidate, reruns the failing ownership target and completes the pending contracted workspace and example proof
+  second_remediation:
+    status: limited_assertion_review_complete_runtime_pending
+    prior_product_manifest_sha256: 48f3e2d0bcf0b7ddcfcc7aa422e1194462919ffb94bf5bb896f3ef66c82d36b7
+    lead_reported_failure: Two layout_contracts independent-fixture comparisons differed in deliberately distinct incarnations and provider keys generated from separate line! sites; runtime logs not yet independently dispatched
+    changed_path: product/kumihimo-core/tests/layout_contracts.rs
+    inspected_functions: [reject, new_core, malformed_plans_and_arithmetic_rejections_preserve_allocation, previews_preserve_entity_allocation_and_tool_policy_stales_tokens]
+    observation: Sole current product diff changes the two paired commands to genuinely equal allocation-control or preview-control provider keys, proves each original identity unchanged and distinct incarnation, then normalizes only detached cloned control identity for complete arrangement comparison. Own-Core rejection snapshot, next-ID, preview snapshot/ledger, policy-generation and stale-token assertions remain present.
+    verdict: No blocking finding in the exact second test-only migration remediation; no production source changed and no runtime pass claimed
+    next_proof: Lead publishes rebound candidate, runs focused layout target, and completes pending contracted tests and examples
 prepared_binding:
   contract_sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
   master_spec_sha256: f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b

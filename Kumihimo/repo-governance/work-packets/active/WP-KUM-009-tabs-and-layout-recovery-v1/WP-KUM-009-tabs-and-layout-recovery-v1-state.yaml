@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-generation: 9
+generation: 10
 phase: active
 owner: coder_02
 changed_files:
@@ -94,6 +94,12 @@ proof:
     snapshot assertion RED only differing incarnation. Exact contracts.rs-only migration fix preserves rejection
     whole-state and next-ID checks, independently asserts both identities before detached-control identity normalization.
     Production unchanged; focused ownership and remaining targets/examples pending.
+- kind: layout_fixture_remediation
+  source_revision: 31c8b45fb16966111d7eaa785fa9276fbb7af3be
+  observed: Ownership9 green; check green; layout10 green/2RED independent scope and differing line-based provider
+    keys. Only layout_contracts.rs corrected to identical paired command keys plus explicit original-scope assertions
+    and detached identity normalization; next-ID and own-Core atomicity unchanged. Later suites pending.
+  product_content_hash: 85ebf91298e9467a2fcbea286f4a815042bd7d7d856611a46fe4fdd6569130e9
 blockers: []
-next_action: Publish test-only corrective candidate; focused ownership gate then remaining full workspace and examples;
-  reuse unchanged default-core proof
+next_action: Publish layout-test corrective candidate; focused layout gate, pending no-fail-fast workspace batch
+  and examples

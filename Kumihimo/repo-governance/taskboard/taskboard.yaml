@@ -72,8 +72,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
-  next_action: Publish test-only corrective candidate; focused ownership gate then remaining full workspace and
-    examples; reuse unchanged default-core proof
+  next_action: Publish layout-test corrective candidate; focused layout gate, pending no-fail-fast workspace batch
+    and examples
   blockers: []
 - wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
   title: Implement replaceable content and lifecycle contracts

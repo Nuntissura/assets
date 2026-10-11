@@ -464,6 +464,8 @@ fn nested_plans_and_legacy_moves_reconcile_without_losing_subtrees() {
 fn malformed_plans_and_arithmetic_rejections_preserve_allocation() {
     let mut f = fixture();
     let mut control = fixture();
+    let identity = f.core.snapshot().identity.clone();
+    let control_identity = control.core.snapshot().identity.clone();
     let mut plans = vec![];
     let mut duplicate = split_plan(f.a, f.b);
     duplicate
@@ -519,19 +521,25 @@ fn malformed_plans_and_arithmetic_rejections_preserve_allocation() {
     let first = create(
         &mut f.core,
         Command::RegisterProvider {
-            key: format!("provider-at-{}", line!()),
+            key: "allocation-control".into(),
             supports_shared_views: false,
         },
     );
     let other = create(
         &mut control.core,
         Command::RegisterProvider {
-            key: format!("provider-at-{}", line!()),
+            key: "allocation-control".into(),
             supports_shared_views: false,
         },
     );
     assert_eq!(first, other);
-    assert_eq!(f.core.snapshot(), control.core.snapshot());
+    assert_eq!(f.core.snapshot().identity, identity);
+    assert_eq!(control.core.snapshot().identity, control_identity);
+    assert_eq!(identity.lineage, control_identity.lineage);
+    assert_ne!(identity.incarnation, control_identity.incarnation);
+    let mut expected = control.core.snapshot().clone();
+    expected.identity = identity;
+    assert_eq!(f.core.snapshot(), &expected);
 }
 
 #[test]
@@ -975,6 +983,8 @@ fn floating_uses_an_eligible_return_and_requires_a_return_path() {
 fn previews_preserve_entity_allocation_and_tool_policy_stales_tokens() {
     let mut f = fixture();
     let mut control = fixture();
+    let identity = f.core.snapshot().identity.clone();
+    let control_identity = control.core.snapshot().identity.clone();
     let c = context(&f, 300.0, 150.0);
     configure(&mut f, c.clone());
     configure(&mut control, c);
@@ -994,19 +1004,25 @@ fn previews_preserve_entity_allocation_and_tool_policy_stales_tokens() {
     let id = create(
         &mut f.core,
         Command::RegisterProvider {
-            key: format!("provider-at-{}", line!()),
+            key: "preview-control".into(),
             supports_shared_views: false,
         },
     );
     let control_id = create(
         &mut control.core,
         Command::RegisterProvider {
-            key: format!("provider-at-{}", line!()),
+            key: "preview-control".into(),
             supports_shared_views: false,
         },
     );
     assert_eq!(id, control_id);
-    assert_eq!(f.core.snapshot(), control.core.snapshot());
+    assert_eq!(f.core.snapshot().identity, identity);
+    assert_eq!(control.core.snapshot().identity, control_identity);
+    assert_eq!(identity.lineage, control_identity.lineage);
+    assert_ne!(identity.incarnation, control_identity.incarnation);
+    let mut expected = control.core.snapshot().clone();
+    expected.identity = identity;
+    assert_eq!(f.core.snapshot(), &expected);
     let placement = ToolPlacement::Edge {
         anchor: ToolAnchor::Workspace(f.w),
         edge: Edge::Top,
