@@ -33,6 +33,12 @@ pub fn curv(gamma: Option<f64>) -> Vec<u8> {
     }
     t
 }
+/// `para` type 0 with gamma exactly 1: an analytic identity curve.
+pub fn para_identity() -> Vec<u8> {
+    let mut t = b"para\0\0\0\0\0\0\0\0".to_vec();
+    t.extend_from_slice(&s15(1.0));
+    t
+}
 /// Assemble a profile; `tags` reference blobs by index so several tags may share one table.
 pub fn assemble(
     version: u32,
@@ -184,7 +190,7 @@ pub fn matrix_v2(gamma: f64) -> Vec<u8> {
 /// to PCS XYZ by `xyz(r, g, b)`; XYZ is stored u1Fixed15.
 pub fn mab_rgb_profile(grid: u8, xyz: impl Fn(f64, f64, f64) -> [f64; 3]) -> Vec<u8> {
     let g = grid as usize;
-    let identity = curv(None);
+    let identity = para_identity();
     let mut t = b"mAB \0\0\0\0".to_vec();
     t.extend_from_slice(&[3, 3, 0, 0]);
     let (b_off, clut_off) = (32u32, 32 + 3 * identity.len() as u32);
@@ -201,6 +207,7 @@ pub fn mab_rgb_profile(grid: u8, xyz: impl Fn(f64, f64, f64) -> [f64; 3]) -> Vec
             }
         }
     }
+    clut.resize(clut.len().div_ceil(4) * 4, 0);
     let a_off = clut_off + clut.len() as u32;
     for off in [b_off, 0, 0, clut_off, a_off] {
         t.extend_from_slice(&be32(off));
@@ -300,4 +307,19 @@ pub fn srgb_encode(v: f64) -> f64 {
 /// Y of a neutral with CIELAB lightness `l`.
 pub fn y_of_l(l: f64) -> f64 {
     if l > 8.0 { ((l + 16.0) / 116.0).powi(3) } else { l * ((8.0 + 16.0) / 116.0_f64).powi(3) / 8.0 }
+}
+/// CIELAB L* of relative luminance `y`.
+pub fn l_of_y(y: f64) -> f64 {
+    if y > 216.0 / 24389.0 { 116.0 * y.cbrt() - 16.0 } else { 24389.0 / 27.0 * y }
+}
+/// Inverse sRGB encoding.
+pub fn srgb_decode(v: f64) -> f64 {
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+/// CMYK printer whose K ramp runs L* 100 (K 0) to `black_l` (K 1); C, M, Y do not matter. B2A inverts it.
+pub fn cmyk_k_profile(grid: u8, intents: usize, black_l: f64) -> Vec<u8> {
+    let span = 100.0 - black_l;
+    let a2b = cmyk_a2b(grid, |_, _, _, k| (100.0 - span * k, 0.0, 0.0));
+    let b2a = cmyk_b2a(6, |l, _, _| [0.0, 0.0, 0.0, (100.0 - l) / span]);
+    cmyk_profile(a2b, Some(b2a), intents, D50)
 }

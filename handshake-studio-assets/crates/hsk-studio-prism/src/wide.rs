@@ -16,8 +16,8 @@ use crate::{
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::{Budget, FailureCode, Observation, Observe, Outcome, SinkPort};
 use moxcms::{
-    ColorProfile, DataColorSpace, Layout, ParsingOptions, ProfileClass, RenderingIntent,
-    TransformF32Executor, TransformOptions,
+    BarycentricWeightScale, ColorProfile, DataColorSpace, InterpolationMethod, Layout,
+    ParsingOptions, ProfileClass, RenderingIntent, TransformF32Executor, TransformOptions,
 };
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -479,14 +479,16 @@ pub struct EngineBuild {
     /// changes low result bits between builds; true marks the numeric path as build-dependent.
     pub fma_contraction: bool,
     pub interpolation: &'static str,
+    pub barycentric_weights: &'static str,
     pub fixed_point: bool,
 }
 pub const fn engine_build() -> EngineBuild {
     EngineBuild {
-        features: "extended_range+lut",
+        features: "extended_range+lut+options",
         simd: false,
         fma_contraction: cfg!(any(target_feature = "fma", target_feature = "neon")),
-        interpolation: "linear",
+        interpolation: "tetrahedral",
+        barycentric_weights: "binned_65536",
         fixed_point: false,
     }
 }
@@ -501,6 +503,9 @@ pub struct BpcReport {
     pub source_black_lstar: Option<f64>,
     pub destination_black_lstar: Option<f64>,
     pub scale: Option<f64>,
+    /// moxcms would have applied its own hard-coded black-point scaling to this pair (RGB v4 tables,
+    /// perceptual or saturation); Prism's legs bypass it, so it never double-applies.
+    pub engine_builtin_suppressed: bool,
 }
 /// Absolute colorimetric media-white scaling outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -586,6 +591,10 @@ pub(crate) fn options(intent: Intent) -> TransformOptions {
         allow_use_cicp_transfer: false,
         prefer_fixed_point: false,
         allow_extended_range_rgb_xyz: true,
+        // moxcms's default (`Linear` with `Low` weights) quantises float LUT inputs to 256 bins; the
+        // declared path is tetrahedral with 65536-bin weights.
+        interpolation_method: InterpolationMethod::Tetrahedral,
+        barycentric_weight_scale: BarycentricWeightScale::High,
         ..Default::default()
     }
 }

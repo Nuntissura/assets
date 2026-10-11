@@ -107,13 +107,13 @@ fn cmyk_to_srgb_k_ramp_matches_lab_definition_and_missing_table_is_typed() {
         for (i, e) in expected.iter().enumerate() {
             for c in 0..3 {
                 let v = f64::from(result.pixels[i * 3 + c]);
-                assert!((v - e).abs() < 2e-3, "pixel {i} channel {c}: {v} vs {e}");
+                assert!((v - e).abs() < 1e-3, "pixel {i} channel {c}: {v} vs {e}");
             }
         }
         let r = &result.receipt;
         assert_eq!((r.source_kind, r.destination_kind), (ProfileKind::LegacyLut, ProfileKind::MatrixTrc));
         assert_eq!((r.source_space, r.destination_space), (DeviceSpace::Cmyk, DeviceSpace::Rgb));
-        assert!(!r.engine_build.simd && r.engine_build.interpolation == "linear" && !r.options.prefer_fixed_point);
+        assert!(!r.engine_build.simd && r.engine_build.interpolation == "tetrahedral" && !r.options.prefer_fixed_point);
         assert_eq!(result.delivery.outcome, Outcome::Success);
         // Deterministic and cached: same bits, same digest, second call is a cache hit.
         let again = run(&mut eng, &ctx, &cmyk, SRGB, &pixels, Intent::RelativeColorimetric, false).unwrap();
