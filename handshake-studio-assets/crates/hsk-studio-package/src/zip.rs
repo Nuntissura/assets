@@ -76,6 +76,15 @@ pub(crate) fn validate_name(raw: &[u8], max_len: u16) -> Result<String, PackageE
     if raw.len() > usize::from(max_len) {
         return Err(PackageError::NameTooLong);
     }
+    if raw[0] == b'/' || raw[0] == b'\\' || raw.get(1) == Some(&b':') {
+        return Err(PackageError::AbsoluteName);
+    }
+    if raw
+        .split(|b| matches!(*b, b'/' | b'\\'))
+        .any(|component| component == b"..")
+    {
+        return Err(PackageError::TraversalName);
+    }
     let allowed = |b: &u8| b.is_ascii_alphanumeric() || matches!(*b, b'.' | b'_' | b'-' | b'/');
     if !raw.iter().all(allowed) {
         return Err(PackageError::UnsafeName);

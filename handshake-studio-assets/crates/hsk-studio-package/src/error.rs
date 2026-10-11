@@ -31,6 +31,8 @@ pub enum PackageError {
     /// Structurally invalid archive; the detail is a fixed diagnostic token.
     Malformed(&'static str),
     UnsafeName,
+    AbsoluteName,
+    TraversalName,
     DuplicateName,
     CaseFoldDuplicate,
     PathConflict,
@@ -63,6 +65,8 @@ impl PackageError {
             Self::NameTooLong => "name_too_long",
             Self::Malformed(_) => "malformed_archive",
             Self::UnsafeName => "unsafe_name",
+            Self::AbsoluteName => "absolute_name",
+            Self::TraversalName => "traversal_name",
             Self::DuplicateName => "duplicate_name",
             Self::CaseFoldDuplicate => "case_fold_duplicate",
             Self::PathConflict => "path_conflict",
