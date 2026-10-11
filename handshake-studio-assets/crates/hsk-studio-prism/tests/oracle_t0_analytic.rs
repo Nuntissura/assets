@@ -232,6 +232,7 @@ fn every_fixture_case_has_a_test() {
 
 // ---- Bradford derivation, re-implemented here in f64 and compared with the Python (exact rational) one.
 type M3 = [[f64; 3]; 3];
+#[allow(clippy::needless_range_loop)]
 fn mul(a: &M3, b: &M3) -> M3 {
     let mut o = [[0.0; 3]; 3];
     for i in 0..3 {
@@ -244,6 +245,7 @@ fn mul(a: &M3, b: &M3) -> M3 {
 fn mv(a: &M3, v: [f64; 3]) -> [f64; 3] {
     [0, 1, 2].map(|i| (0..3).map(|k| a[i][k] * v[k]).sum())
 }
+#[allow(clippy::needless_range_loop)]
 fn inv(m: &M3) -> M3 {
     let c = |i: usize, j: usize| {
         m[(i + 1) % 3][(j + 1) % 3] * m[(i + 2) % 3][(j + 2) % 3]
@@ -261,6 +263,7 @@ fn inv(m: &M3) -> M3 {
 fn xy(x: f64, y: f64) -> [f64; 3] {
     [x / y, 1.0, (1.0 - x - y) / y]
 }
+#[allow(clippy::needless_range_loop)]
 #[test]
 fn bradford_d50_colorants_agree_with_the_independent_python_derivation() {
     let doc = load();
@@ -300,6 +303,7 @@ fn bradford_d50_colorants_agree_with_the_independent_python_derivation() {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 #[test]
 fn published_srgb_v4_fixture_colorants_versus_derived() {
     // Cross-check of the repo's CC0 sRGB-v4.icc colorants against the Bradford derivation (profile
@@ -341,4 +345,38 @@ fn ciede2000_reproduces_published_reference_pairs() {
         assert!((got - want).abs() < 6e-5, "dE00 {a:?} vs {b:?}: {got} want {want}");
         assert!((delta_e_2000(*b, *a) - got).abs() < 1e-12, "symmetry {a:?} {b:?}");
     }
+}
+
+const SRGB_LINEAR_V4: &[u8] = include_bytes!("profiles/sRGB-linear-v4.icc");
+
+/// Exact repro from the interop-psd report (PRISM-GRAY-BPC-001): v2.1 mntr GRAY/XYZ profile, wtpt D50, kTRC curv
+/// count=1 gamma u8Fixed8 0x0200, destination sRGB-linear-v4, relative colorimetric, pixels [0, 0.5, 1]. BPC off is
+/// the control; with BPC on the black point must stay L* 0 (scale 1). The defect is present: this test passes while
+/// it reproduces and FAILS once BPC on matches the control (then delete it and the KNOWN_FINDINGS gray entries).
+#[test]
+fn interop_psd_gray_bpc_repro_still_reproduces() {
+    bounded("interop_psd_gray_bpc_repro", 60, || {
+        let gray = assemble(
+            0x0210_0000,
+            b"mntr",
+            b"GRAY",
+            b"XYZ ",
+            &[xyz_tag(D50), curv(Some(2.0))],
+            &[(b"wtpt", 0), (b"kTRC", 1)],
+        );
+        let ctx = Ctx::new();
+        let mut eng = WideEngine::new(ctx.actor.clone(), 4).unwrap();
+        let pixels = [0.0f32, 0.5, 1.0];
+        let off = run(&mut eng, &ctx, &gray, SRGB_LINEAR_V4, &pixels, Intent::RelativeColorimetric, false).unwrap();
+        let on = run(&mut eng, &ctx, &gray, SRGB_LINEAR_V4, &pixels, Intent::RelativeColorimetric, true).unwrap();
+        let worst = off.pixels.iter().zip(&on.pixels).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        eprintln!(
+            "ORACLE_T0_FINDING interop_psd_gray_bpc_repro: PRISM-GRAY-BPC-001: BPC off {:?} BPC on {:?} source_black_lstar {:?} scale {:?}",
+            off.pixels, on.pixels, on.receipt.bpc.source_black_lstar, on.receipt.bpc.scale
+        );
+        assert!(
+            worst > 0.05,
+            "PRISM-GRAY-BPC-001 no longer reproduces (BPC on matches BPC off within {worst}): remove this test and the KNOWN_FINDINGS gray entries"
+        );
+    });
 }

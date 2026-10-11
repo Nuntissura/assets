@@ -11,12 +11,25 @@
 //!   * `src_leg_*`  source profile -> PCS XYZ (relative, no BPC) against lcms2, unclamped;
 //!   * `dst_leg_*`  PCS Lab -> destination device values for every intent (no BPC), clamped to 0..1;
 //!   * `<pair>`     whole conversions, 4 intents x BPC on/off.
+//!
 //! Metric: CIEDE2000 in destination Lab (D50). Device outputs are clamped to 0..1 and evaluated through the
 //! SAME destination-to-XYZ leg for engine and lcms2 (the destination profile read as a source by WideEngine,
 //! identity-colorant XYZ target), so the number measures the difference between two device vectors. The
 //! stored lcms2 Lab of its own output is compared as well (`ref_consistency`, `de_vs_lcms_lab`) to expose
 //! evaluation differences in that leg. Thresholds (fixture `thresholds`): matrix pairs max <= 0.1; LUT/CMYK
 //! pairs mean <= 0.5 and max <= 1.5. They are never tuned to the engine.
+//!
+//! RGB matrix destinations are scored on the patches lcms2 can reproduce (fixture `in_gamut_patches`, a round-trip
+//! mask): clipping of the rest is a convention, not a conversion. `KNOWN_FINDINGS` lists combinations that currently
+//! violate their threshold, each with a finding id; such a combination must keep violating (the test fails when it
+//! starts passing: delete the entry, the finding is closed) and every other combination must pass.
+//!
+//! Reading a run: `-- --nocapture --test-threads=1` prints one `ORACLE_T1 {json}` line per pair x intent x BPC
+//! (dE2000 mean/max, worst patch, BPC and absolute receipts), `ORACLE_T1_WORST` (three worst patches) and
+//! `ORACLE_T1_FINDING`. Installed Windows/Adobe profiles are searched in env `HSK_PRISM_ORACLE_PROFILE_DIRS`, then the
+//! fixture's default locations. Regenerate the fixture offline with `prism-oracle/gen/t1_generate.py <this
+//! tests/oracle dir> [adobe-color-root]` (and `t0_generate.py <dir>/t0_analytic.json`) from the venv under
+//! `Handshake_Artifacts/WP-KERNEL-STUDIO/prism-oracle`; output is deterministic apart from `generated_utc`.
 mod oracle_support;
 mod wide_support;
 use hsk_studio_prism::*;
