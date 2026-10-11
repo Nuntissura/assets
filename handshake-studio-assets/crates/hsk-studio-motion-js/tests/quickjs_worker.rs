@@ -396,3 +396,49 @@ fn worker_is_killed_at_wall_deadline_and_on_cancel() {
         assert!(slow.retire().is_clean());
     });
 }
+
+/// R7 carried PLAUSIBLE (uncancellable HELLO wait): the host waited for a new worker's HELLO for the
+/// whole `spawn_timeout` without looking at the cancel token. A worker that stalls before its HELLO
+/// (here 60 s, with a 30 s spawn timeout) must not hold a canceled evaluation: the wait is polled, the
+/// stalled worker is killed and reaped, and the call answers Canceled within a few hundred ms.
+#[test]
+fn canceled_evaluation_does_not_wait_for_a_stalled_hello() {
+    bounded_case("canceled_evaluation_does_not_wait_for_a_stalled_hello", || {
+        let mut options = worker_options(WorkerTestFault::StallHello, 4);
+        options.worker.spawn_timeout = Duration::from_secs(30);
+        let stalled = provider(QuotaSpec::default(), options);
+        let token = CancellationToken::default();
+        let canceller = {
+            let token = token.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(300));
+                token.cancel();
+            })
+        };
+        let started = Instant::now();
+        let (result, _) = run(&stalled, "1+2", 1, 1000, 0, &token);
+        let waited = started.elapsed();
+        canceller.join().unwrap();
+        assert_eq!(code(result), ExprErrorCode::Canceled);
+        assert!(waited < Duration::from_secs(5), "the HELLO wait ignored the cancel: {waited:?}");
+        let workers = worker_stats(&stalled);
+        assert_eq!(
+            (workers.spawned, workers.killed_canceled, workers.spawn_failed, workers.crashed),
+            (1, 1, 0, 0),
+            "{workers:?}"
+        );
+        assert!(!stalled.is_poisoned());
+        assert!(stalled.retire().is_clean());
+
+        // Without a cancel the spawn timeout still bounds the wait (typed spawn fault, not a hang).
+        let mut options = worker_options(WorkerTestFault::StallHello, 4);
+        options.worker.spawn_timeout = Duration::from_millis(400);
+        let timed_out = provider(QuotaSpec::default(), options);
+        let started = Instant::now();
+        assert_eq!(code(eval(&timed_out, "1+2", 1)), ExprErrorCode::Unsupported);
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert_eq!(timed_out.stats().faulted(EngineFault::SpawnFailed), 1);
+        assert!(!timed_out.is_poisoned());
+        assert!(timed_out.retire().is_clean());
+    });
+}

@@ -24,6 +24,14 @@
 //!
 //! Positions: line and column are 1-based; a line break is LF, CR, CRLF (one break), U+2028 or U+2029;
 //! a column counts Unicode scalar values from the start of the line.
+//!
+//! U+0000 is refused ANYWHERE in the source (string literal, comment, escape position or outside
+//! both): the QuickJS wrapper hands the source to the engine as a NUL-terminated C string and fails
+//! with `Error::InvalidString` on an interior NUL (`rquickjs-core-0.14.0/src/context/ctx.rs:144`,
+//! `CString::new(src)?`; the only source-derived `InvalidString` site on the evaluation path). The
+//! check is a whole-source precondition like the byte bound, run before the scan, so no lexical
+//! construct can hide a NUL. A NUL written as an ESCAPE (backslash-zero, `\x00`, `\u0000`) is not a
+//! NUL character in the source and stays admitted.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::{engine::BudgetKind, limits::ConfigError};
 use hsk_studio_motion::SourceSpan;
@@ -80,6 +88,8 @@ pub enum ViolationKind {
     InvalidNumber,
     LegacyOctal,
     InvalidCharacter,
+    /// A raw U+0000 anywhere in the source (the engine takes NUL-terminated source).
+    NulCharacter,
     UnbalancedBracket,
     UnexpectedEnd,
     // Unsupported class: well formed but outside the admitted profile.
@@ -120,6 +130,7 @@ impl ViolationKind {
             Self::InvalidNumber => "invalid_number",
             Self::LegacyOctal => "legacy_octal",
             Self::InvalidCharacter => "invalid_character",
+            Self::NulCharacter => "nul_character",
             Self::UnbalancedBracket => "unbalanced_bracket",
             Self::UnexpectedEnd => "unexpected_end",
             Self::DeniedKeyword => "denied_keyword",
@@ -151,6 +162,7 @@ impl ViolationKind {
             | Self::InvalidNumber
             | Self::LegacyOctal
             | Self::InvalidCharacter
+            | Self::NulCharacter
             | Self::UnbalancedBracket
             | Self::UnexpectedEnd => ViolationClass::Parse,
             Self::DeniedKeyword
@@ -253,6 +265,9 @@ impl ProfileValidator {
         let limits = self.limits;
         if source.len() > limits.max_bytes {
             return Err(fail(ViolationKind::SourceTooLarge, FIRST, 0));
+        }
+        if let Some(span) = nul_span(source) {
+            return Err(fail(ViolationKind::NulCharacter, span, 1));
         }
         let mut scan = Scan {
             src: source,
@@ -362,6 +377,26 @@ impl ProfileValidator {
 }
 
 const FIRST: SourceSpan = SourceSpan { line: 1, column: 1 };
+
+/// Position (1-based line and column, counted exactly as the scanner counts) of the first raw U+0000
+/// in `source`, or `None`. Shared with the QuickJS backend so both layers report the same span.
+pub(crate) fn nul_span(source: &str) -> Option<SourceSpan> {
+    let end = source.find('\0')?;
+    let (mut line, mut column) = (1_u32, 1_u32);
+    let mut chars = source.get(..end).unwrap_or("").chars().peekable();
+    while let Some(c) = chars.next() {
+        if is_line_terminator(c) {
+            if c == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            line = line.saturating_add(1);
+            column = 1;
+        } else {
+            column = column.saturating_add(1);
+        }
+    }
+    Some(SourceSpan { line, column })
+}
 
 fn fail(kind: ViolationKind, span: SourceSpan, len: u32) -> ProfileViolation {
     ProfileViolation { kind, span, len }

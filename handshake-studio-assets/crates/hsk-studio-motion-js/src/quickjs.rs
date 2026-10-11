@@ -61,10 +61,11 @@ use crate::{
     },
     limits::Quotas,
     os_caps::{OsCapStatus, OsLimits},
+    profile::nul_span,
     quickjs_worker::{WorkerConfig, WorkerEngine, WorkerStats},
 };
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_motion::{EvalTick, ExprError, ExprErrorCode, SourceSpan};
+use hsk_studio_motion::{EvalTick, ExprError, ExprErrorCode, MAX_PATH_BYTES, SourceSpan};
 use rquickjs::{
     Array, Context, Ctx, Function, Runtime, Value,
     context::{EvalOptions, intrinsic},
@@ -231,6 +232,9 @@ pub enum WorkerTestFault {
     /// The interrupt handler is not installed, so only the process-level deadline can stop a script
     /// (models a script stuck in a long C builtin that never reaches an engine poll).
     DeafInterrupt,
+    /// The worker sleeps for a long time before it sends its HELLO (a worker that starts slowly or
+    /// hangs at startup): the host's handshake wait must stay cancelable.
+    StallHello,
 }
 
 #[cfg(feature = "test-faults")]
@@ -243,6 +247,7 @@ impl WorkerTestFault {
             Self::ExitMidRequest => Some("exit_mid_request"),
             Self::AsyncAbort => Some("async_abort"),
             Self::DeafInterrupt => Some("deaf_interrupt"),
+            Self::StallHello => Some("stall_hello"),
         }
     }
 
@@ -251,6 +256,7 @@ impl WorkerTestFault {
             Ok("exit_mid_request") => Self::ExitMidRequest,
             Ok("async_abort") => Self::AsyncAbort,
             Ok("deaf_interrupt") => Self::DeafInterrupt,
+            Ok("stall_hello") => Self::StallHello,
             _ => Self::None,
         }
     }
@@ -532,6 +538,15 @@ fn install_host(
             if read_shared.stop.get() {
                 return Vec::new();
             }
+            // A path above the Motion path bound can never be valid (`PropertyPath::new` refuses it),
+            // and it must not travel: the worker reply cap relies on every path being at most
+            // `MAX_PATH_BYTES` (`quickjs_wire::response_cap`, test
+            // `quickjs_overlong_host_read_path_is_a_reference_error_not_an_oversize_kill`). Same typed
+            // outcome the host gives an invalid path, identical for both backends.
+            if path.len() > MAX_PATH_BYTES {
+                read_shared.record(Pending::Failure(invalid_argument()));
+                return Vec::new();
+            }
             let tick = match tick.0 {
                 None => None,
                 Some(t) if t.is_finite() && t.fract() == 0.0 && t.abs() <= 9.0e15 => Some(t as i64),
@@ -612,13 +627,13 @@ fn evaluate<'js>(
         return RunEnd::Failure(EngineFailure::Internal);
     }
     match result {
-        Err(error) => RunEnd::Failure(classify(ctx, shared, tools, error)),
+        Err(error) => RunEnd::Failure(classify(ctx, shared, tools, error, input.source)),
         Ok(value) => match tools
             .extract
             .call::<_, Value<'js>>((value, input.max_nodes))
         {
             Ok(extracted) => convert(extracted),
-            Err(error) => RunEnd::Failure(classify(ctx, shared, tools, error)),
+            Err(error) => RunEnd::Failure(classify(ctx, shared, tools, error, input.source)),
         },
     }
 }
@@ -658,11 +673,22 @@ fn span_of(stack: &str) -> Option<SourceSpan> {
 /// script can write selects a class, and no property of a thrown value is read through
 /// user-reachable code. A catchable QuickJS stack- or heap-limit error is indistinguishable from a
 /// user throw (diagnostics/motion-js-classify.md) and is therefore `Thrown { Other }`.
+///
+/// Wrapper errors that are not exceptions (STUDIO-R7 pre-review B, class "input-caused engine error
+/// classified as Internal/poisoning"): `Error::Allocation` is a wrapper allocation failure (Memory);
+/// `Error::InvalidString` is raised by `CString::new(src)?` when the SUBMITTED SOURCE holds a raw
+/// U+0000 (`rquickjs-core-0.14.0/src/context/ctx.rs:144`, before the engine ran; the only other
+/// `CString::new` on this path is the constant filename, `ctx.rs:187`). That is a refusal of this one
+/// call (`Parse` at the NUL position, the same span the profile validator reports), never `Internal`.
+/// It counts only when the source really contains a NUL; an `InvalidString` the source cannot explain
+/// stays an adapter invariant failure. Every other wrapper error cannot be produced by source text and
+/// keeps failing closed as `Internal`.
 fn classify<'js>(
     ctx: &Ctx<'js>,
     shared: &Rc<Shared>,
     tools: &Tools<'js>,
     error: rquickjs::Error,
+    source: &str,
 ) -> EngineFailure {
     let thrown = matches!(error, rquickjs::Error::Exception).then(|| ctx.catch());
     match shared.tripped.get() {
@@ -674,6 +700,10 @@ fn classify<'js>(
     let Some(thrown) = thrown else {
         return match error {
             rquickjs::Error::Allocation => EngineFailure::Budget(BudgetKind::Memory),
+            rquickjs::Error::InvalidString(_) => match nul_span(source) {
+                Some(span) => EngineFailure::Parse(Some(span)),
+                None => EngineFailure::Internal,
+            },
             _ => EngineFailure::Internal,
         };
     };

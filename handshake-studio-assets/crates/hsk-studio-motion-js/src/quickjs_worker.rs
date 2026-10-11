@@ -52,7 +52,7 @@ use hsk_studio_accord::CancellationToken;
 use std::{
     collections::VecDeque,
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
@@ -89,8 +89,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Worker-process policy.
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
-    /// Worker executable. `None`: `motion-js-worker` next to the running executable (or one
-    /// directory above it, for test and example binaries).
+    /// Worker executable. `None`: `motion-js-worker` in the directory of the running executable
+    /// (that directory only; a layout with the worker elsewhere passes the path explicitly).
     pub program: Option<PathBuf>,
     /// Bounded respawn rate: at most this many workers start per `spawn_window`.
     pub max_spawns: u32,
@@ -281,17 +281,16 @@ fn quiet(command: &mut Command) {
 #[cfg(not(windows))]
 fn quiet(_command: &mut Command) {}
 
-fn discover_program() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+/// The worker executable inside the directory of `exe` and nowhere else: no parent directory and no
+/// search path, so a file planted in a directory above the host's own cannot be executed (test
+/// `worker_is_found_only_beside_the_running_executable`; same rule as the score-plugin worker).
+fn discover_beside(exe: &Path) -> Option<PathBuf> {
     let name = format!("{WORKER_PROGRAM}{}", std::env::consts::EXE_SUFFIX);
-    let dir = exe.parent()?;
-    [
-        Some(dir.join(&name)),
-        dir.parent().map(|parent| parent.join(&name)),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|candidate| candidate.is_file())
+    Some(exe.parent()?.join(name)).filter(|candidate| candidate.is_file())
+}
+
+fn discover_program() -> Option<PathBuf> {
+    discover_beside(&std::env::current_exe().ok()?)
 }
 
 /// Process-isolated QuickJS engine (host side).
@@ -405,7 +404,7 @@ impl WorkerEngine {
         Ok(())
     }
 
-    fn spawn(&self) -> Result<Session, EngineFailure> {
+    fn spawn(&self, cancel: &CancellationToken) -> Result<Session, EngineFailure> {
         self.admit_spawn()?;
         let spawn_failed = || {
             bump(&self.counters.spawn_failed);
@@ -458,20 +457,40 @@ impl WorkerEngine {
         if io_thread.is_err() {
             return Err(spawn_failed());
         }
-        match session.frames.recv_timeout(self.spawn_timeout) {
-            Ok(Ok(hello)) if wire::decode_hello(&hello).is_ok() => Ok(session),
-            Ok(Ok(_)) => {
+        // The HELLO wait is polled in short slices so the caller's cancel is honoured within
+        // `WAIT_SLICE` (a stalled or slow-starting worker must not hold a canceled evaluation for the
+        // whole `spawn_timeout`); `spawn_timeout` still bounds the wait. A canceled spawn drops the
+        // session, which kills and reaps the child. Test `canceled_evaluation_does_not_wait_for_a_stalled_hello`.
+        let hello_by = deadline_after(self.spawn_timeout);
+        let hello = loop {
+            match session.frames.recv_timeout(WAIT_SLICE) {
+                Ok(frame) => break frame,
+                Err(RecvTimeoutError::Timeout) => {
+                    if cancel.check().is_err() {
+                        bump(&self.counters.killed_canceled);
+                        return Err(EngineFailure::Canceled);
+                    }
+                    if Instant::now() >= hello_by {
+                        return Err(spawn_failed());
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => return Err(spawn_failed()),
+            }
+        };
+        match hello {
+            Ok(hello) if wire::decode_hello(&hello).is_ok() => Ok(session),
+            Ok(_) => {
                 bump(&self.counters.protocol_faults);
                 Err(EngineFailure::Faulted(EngineFault::Protocol))
             }
-            _ => Err(spawn_failed()),
+            Err(_) => Err(spawn_failed()),
         }
     }
 
-    fn checkout(&self) -> Result<Session, EngineFailure> {
+    fn checkout(&self, cancel: &CancellationToken) -> Result<Session, EngineFailure> {
         loop {
             let Some(mut session) = lock(&self.idle).pop() else {
-                return self.spawn();
+                return self.spawn(cancel);
             };
             if session.is_alive() {
                 return Ok(session);
@@ -551,7 +570,7 @@ impl WorkerEngine {
     fn run_once(&self, input: Input<'_>) -> RunOutcome {
         let failed = |failure, dropped| RunOutcome::Failed { failure, dropped };
         let before_ns = input.clock.now_ns();
-        let mut session = match self.checkout() {
+        let mut session = match self.checkout(&input.cancel) {
             Ok(session) => session,
             // No process exists, so there is nothing left to retire.
             Err(failure) => return failed(failure, true),
@@ -601,7 +620,7 @@ impl WorkerEngine {
 
     /// Applies the configured limits to a throw-away runtime inside a worker and reads them back.
     pub(crate) fn verify_limits(&self) -> Result<LimitReadback, EngineFailure> {
-        let mut session = self.checkout()?;
+        let mut session = self.checkout(&CancellationToken::default())?;
         let id = self.request_ids.fetch_add(1, Ordering::AcqRel);
         let frame = wire::encode_verify(
             id,
@@ -731,6 +750,12 @@ fn verify(memory: u64, stack: u64) -> Result<LimitReadback, ()> {
 /// frames from stdin, writes reply frames to stdout, and exits 0 when stdin closes.
 pub fn worker_main() -> i32 {
     harden_worker_process();
+    #[cfg(feature = "test-faults")]
+    {
+        if injected_fault() == WorkerTestFault::StallHello {
+            thread::sleep(Duration::from_secs(60));
+        }
+    }
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let stdout = io::stdout();
@@ -757,5 +782,41 @@ pub fn worker_main() -> i32 {
         if wire::write_frame(&mut output, &reply).is_err() {
             return 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Removes the scratch tree even when an assertion fails.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// R7 carried PLAUSIBLE (parent-directory worker lookup): a worker file planted in the directory
+    /// ABOVE the host executable's own directory is never selected; only the executable's directory is.
+    #[test]
+    fn worker_is_found_only_beside_the_running_executable() {
+        let root = std::env::temp_dir().join(format!("hsk-motion-js-discover-{}", std::process::id()));
+        let _guard = Scratch(root.clone());
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("scratch directory");
+        let name = format!("{WORKER_PROGRAM}{}", std::env::consts::EXE_SUFFIX);
+        let host = bin.join(format!("host{}", std::env::consts::EXE_SUFFIX));
+
+        fs::write(root.join(&name), b"decoy above the executable directory").expect("decoy");
+        assert_eq!(discover_beside(&host), None, "the parent directory must not be searched");
+        fs::create_dir_all(bin.join(&name)).expect("a directory named like the worker");
+        assert_eq!(discover_beside(&host), None, "a directory is not a worker program");
+        fs::remove_dir_all(bin.join(&name)).expect("remove the directory");
+        fs::write(bin.join(&name), b"beside the executable").expect("worker beside the host");
+        assert_eq!(discover_beside(&host), Some(bin.join(&name)));
+        assert_eq!(discover_beside(Path::new("")), None, "no parent, no lookup");
     }
 }

@@ -1,6 +1,7 @@
 //! MotionJS-local consumer. Default engine: the deterministic scripted test double (not JavaScript).
 //! With `--features quickjs`: `--engine quickjs` evaluates real JavaScript in the isolated
-//! `motion-js-worker` process (must sit next to this executable or one directory above it);
+//! `motion-js-worker` process (found in the cargo layout `target/<profile>/`, otherwise beside this
+//! executable; the library itself looks only beside the running executable);
 //! `--engine quickjs-unsafe-in-process` is the test-only in-process engine (hostile source can abort
 //! this process); it exists only with `--features quickjs,test-faults`, otherwise `engine_unavailable`.
 //! `motion-js-consumer --eval "num:3" [--engine scripted|quickjs|quickjs-unsafe-in-process] [--fuel N] [--dimension N]`
@@ -25,6 +26,14 @@ fn evaluate<E: Engine>(engine: E, quotas: Quotas, source: &str, fuel: u64, dimen
     println!("result={result:?}");
     println!("fuel_used={} stats={:?}", fuel.used(), provider.stats());
     println!("retire={:?}", provider.retire());
+}
+
+/// `target/<profile>/<worker>` when this example runs from `target/<profile>/examples/`.
+#[cfg(feature = "quickjs")]
+fn cargo_layout_worker() -> Option<std::path::PathBuf> {
+    let exe = env::current_exe().ok()?;
+    let name = format!("{WORKER_PROGRAM}{}", env::consts::EXE_SUFFIX);
+    Some(exe.parent()?.parent()?.join(name)).filter(|path| path.is_file())
 }
 
 fn run() -> Result<(), String> {
@@ -75,7 +84,14 @@ fn run() -> Result<(), String> {
         "scripted" => evaluate(ScriptedEngine::new(), quotas, &source, fuel, dimension),
         #[cfg(feature = "quickjs")]
         "quickjs" => {
-            let engine = QuickJsBackend::new(&quotas, QuickJsOptions::default()).map_err(|error| error.code().to_owned())?;
+            let mut options = QuickJsOptions::default();
+            // Cargo layout: this example sits in `target/<profile>/examples/`, its worker in
+            // `target/<profile>/`. The library itself looks only beside the running executable, so the
+            // developer layout is chosen here, explicitly.
+            if let Some(program) = cargo_layout_worker() {
+                options = options.with_worker_program(program);
+            }
+            let engine = QuickJsBackend::new(&quotas, options).map_err(|error| error.code().to_owned())?;
             evaluate(engine, quotas, &source, fuel, dimension);
         }
         #[cfg(all(feature = "quickjs", feature = "test-faults"))]

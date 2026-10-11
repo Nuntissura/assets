@@ -257,3 +257,87 @@ fn profile_bounds_hostile_sizes_and_refusal_precedes_the_engine() {
         assert_eq!(Counting(runs).source_language(), SourceLanguage::JavaScript);
     });
 }
+
+/// STUDIO-R7 pre-review B, SMB-MOTION-JS N1: a raw U+0000 inside a string literal or a comment used to
+/// pass the validator and then fail the engine wrapper (`CString::new`), which poisoned the provider.
+/// The validator now refuses a raw NUL anywhere with the exact position of the NUL; a NUL written as an
+/// ESCAPE is a different source text (no NUL character in it) and stays admitted. Expectations are
+/// hand-counted from the literals (1-based; columns count scalar values).
+#[test]
+fn profile_refuses_a_raw_nul_anywhere_and_keeps_nul_escapes() {
+    bounded_case("profile_refuses_a_raw_nul_anywhere_and_keeps_nul_escapes", || {
+        let validator = ProfileValidator::default();
+        // (source, line, column of the NUL)
+        let cases: &[(&str, u32, u32)] = &[
+            ("var s = \"a\0b\"; 1", 1, 11),
+            ("var s = 'a\0b'; 1", 1, 11),
+            ("1 // \0", 1, 6),
+            ("1 // \0 trailing", 1, 6),
+            ("1 /* \0 */", 1, 6),
+            ("/* a\n b\r\n \0 */ 1", 3, 2),
+            ("1 +\r\n\"x\0\"", 2, 3),
+            ("1;\u{2028}\u{2028}'\0'", 3, 2),
+            ("'\\\0'", 1, 3),
+            ("1 +\0 2", 1, 4),
+            ("ab\0c", 1, 3),
+            ("'\u{e9}\0'", 1, 3),
+            ("\0", 1, 1),
+            ("1\r\0", 2, 1),
+            // The NUL check is a whole-source precondition (like the byte bound): it is reported even
+            // when an earlier token is also outside the profile.
+            ("eval(1) // \0", 1, 12),
+        ];
+        for (source, line, column) in cases {
+            let violation = validator
+                .validate(source)
+                .expect_err(&format!("a raw NUL must be refused: {source:?}"));
+            assert_eq!(
+                (violation.kind.code(), violation.span.line, violation.span.column, violation.len),
+                ("nul_character", *line, *column, 1),
+                "{source:?}"
+            );
+            assert_eq!(violation.kind.class(), ViolationClass::Parse, "{source:?}");
+        }
+        // A NUL written as an escape is not a NUL in the source: admitted (and the engine test
+        // quickjs_nul_in_source_is_a_refusal_not_a_poison proves it still evaluates).
+        for source in ["'a\\0b'.length", "'a\\x00b'", "'a\\u0000b'", "'a\\u{0}b'", "'\\0'", "\"\\0\" + \"\\0\""] {
+            assert!(validator.validate(source).is_ok(), "{source:?}: {:?}", validator.validate(source));
+        }
+        // The byte bound still outranks the NUL scan (hostile size first, nothing scanned).
+        let limits = validator.limits();
+        let huge = format!("{}\0", "1".repeat(limits.max_bytes));
+        assert_eq!(
+            validator.validate(&huge).expect_err("oversize").kind.code(),
+            "source_too_large"
+        );
+    });
+}
+
+/// The provider refuses a NUL-bearing source BEFORE the engine, typed Parse with the NUL position, and
+/// stays usable (not poisoned) after each refusal.
+#[test]
+fn profile_nul_refusal_precedes_the_engine_and_never_poisons() {
+    bounded_case("profile_nul_refusal_precedes_the_engine_and_never_poisons", || {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let provider = MotionJsProvider::new(Counting(Arc::clone(&runs)), Quotas::default());
+        assert_eq!(evaluate(&provider, "1+2"), Ok(vec![1.0]));
+        let (mut engine_runs, mut refused) = (1_usize, 0_u64);
+        assert_eq!(runs.load(Ordering::Acquire), engine_runs);
+        let sources: &[(&str, u32, u32)] = &[("var s = \"a\0b\"; 1", 1, 11), ("1 // \0", 1, 6), ("1 /* \0 */", 1, 6)];
+        for (source, line, column) in sources {
+            assert_eq!(
+                evaluate(&provider, source),
+                Err(ExprError::at(ExprErrorCode::Parse, *line, *column)),
+                "{source:?}"
+            );
+            refused += 1;
+            assert!(!provider.is_poisoned(), "poisoned by {source:?}");
+            assert_eq!(runs.load(Ordering::Acquire), engine_runs, "the engine saw {source:?}");
+            assert_eq!(provider.stats().validation_rejected, refused);
+            assert_eq!(evaluate(&provider, "1+2"), Ok(vec![1.0]), "provider unusable after {source:?}");
+            engine_runs += 1;
+        }
+        let report = provider.retire();
+        assert!(report.is_clean(), "{report:?}");
+    });
+}

@@ -395,3 +395,95 @@ fn quickjs_user_error_names_cannot_poison_provider() {
         assert!(report.is_clean(), "{report:?}");
     });
 }
+
+/// STUDIO-R7 pre-review B (SMB-MOTION-JS N1, third report of the class "script input poisons the
+/// provider"): a raw U+0000 in the source makes the wrapper fail (`CString::new`, rquickjs-core 0.14.0
+/// `src/context/ctx.rs:144` -> `Error::InvalidString`) before the engine runs. That error is caused by
+/// the SUBMITTED SOURCE, so it must be a typed refusal of that one call, never `Internal`, which
+/// poisons the provider for good. The engine layer is tested without the validator (the validator
+/// layer is tests/profile_contract.rs); the NUL span is the validator's span.
+#[test]
+fn quickjs_nul_in_source_is_a_refusal_not_a_poison() {
+    bounded_case("quickjs_nul_in_source_is_a_refusal_not_a_poison", || {
+        // (source, line, column of the first raw NUL)
+        let cases: &[(&str, u32, u32)] = &[
+            ("var s = \"a\0b\"; 1", 1, 11),
+            ("1 // \0", 1, 6),
+            ("1 /* \0 */", 1, 6),
+            ("1 +\r\n\"x\0\"", 2, 3),
+            ("'\\\0'", 1, 3),
+            ("1 +\0 2", 1, 4),
+            ("throw 5; // \0", 1, 13),
+        ];
+        let provider = provider_with(QuotaSpec::default());
+        assert!(provider.validator().is_none());
+        for (source, line, column) in cases {
+            assert_eq!(
+                eval(&provider, source, 1),
+                Err(ExprError::at(ExprErrorCode::Parse, *line, *column)),
+                "{source:?}"
+            );
+            assert!(!provider.is_poisoned(), "poisoned by {source:?}");
+            assert_eq!(eval(&provider, "1+2", 1), Ok(vec![3.0]), "unusable after {source:?}");
+        }
+        let stats = provider.stats();
+        assert_eq!(stats.denials, [0; BudgetKind::COUNT], "{stats:?}");
+        assert_eq!(stats.faults, [0; EngineFault::COUNT], "{stats:?}");
+        assert_eq!(stats.validation_rejected, 0, "no validator ran: the engine layer classified");
+        assert_eq!(stats.realms_started, stats.realms_retired);
+        // In worker mode the refusal travels the wire as a typed Parse failure: the same worker
+        // process serves every request (no kill, no crash, no respawn).
+        if let Some(worker) = provider.engine().worker_stats() {
+            assert_eq!((worker.spawned, worker.crashed, worker.protocol_faults), (1, 0, 0), "{worker:?}");
+            assert_eq!((worker.killed_deadline, worker.killed_oversize, worker.killed_canceled), (0, 0, 0));
+        }
+
+        // A NUL written as an escape is no NUL character in the source: it evaluates as JavaScript says.
+        assert_eq!(eval(&provider, "'a\\0b'.length", 1), Ok(vec![3.0]));
+        assert_eq!(eval(&provider, "'a\\x00b'.length", 1), Ok(vec![3.0]));
+        assert_eq!(eval(&provider, "'a\\u0000b'.length", 1), Ok(vec![3.0]));
+        assert_eq!(eval(&provider, "'\\0'.charCodeAt(0)", 1), Ok(vec![0.0]));
+        let report = provider.retire();
+        assert!(report.is_clean(), "{report:?}");
+
+        // Default configuration (validator in front): refused before any realm exists, same span.
+        let quotas = Quotas::default();
+        let validated = MotionJsProvider::new(QuickJsBackend::new(&quotas, options()).unwrap(), quotas);
+        assert!(validated.validator().is_some());
+        for (index, (source, line, column)) in cases.iter().enumerate() {
+            assert_eq!(
+                eval(&validated, source, 1),
+                Err(ExprError::at(ExprErrorCode::Parse, *line, *column)),
+                "{source:?}"
+            );
+            assert_eq!(validated.stats().validation_rejected, u64::try_from(index + 1).unwrap());
+        }
+        assert_eq!(validated.stats().realms_started, 0, "the engine saw a NUL-bearing source");
+        assert!(!validated.is_poisoned());
+        assert_eq!(eval(&validated, "'a\\0b'.length", 1), Ok(vec![3.0]));
+        assert!(validated.retire().is_clean());
+    });
+}
+
+/// R7 carried PLAUSIBLE (response_cap): the worker reply cap assumed a host-read path no longer than the
+/// source, but a script builds a longer path at run time. With the smallest output quota the cap is
+/// 8 + 4096 bytes, so a 5000-byte path used to be an oversize reply: the worker was killed and the call
+/// answered OutputType. The realm now refuses a path above the Motion bound itself (ReferenceMissing,
+/// the answer the host gives any invalid path), identically for both backends and without a kill.
+#[test]
+fn quickjs_overlong_host_read_path_is_a_reference_error_not_an_oversize_kill() {
+    bounded_case("quickjs_overlong_host_read_path_is_a_reference_error_not_an_oversize_kill", || {
+        let provider = provider_with(QuotaSpec { max_output_nodes: 1, ..QuotaSpec::default() });
+        for length in [256_usize, 257, 5000, 100_000] {
+            let source = format!("hostRead('a'.repeat({length}))");
+            assert!(source.len() < 64, "the path must be built at run time, not written in the source");
+            assert_eq!(code(eval(&provider, &source, 1)).0, ExprErrorCode::ReferenceMissing, "{source}");
+            assert!(!provider.is_poisoned(), "poisoned by {source}");
+        }
+        assert_eq!(eval(&provider, "1+2", 1), Ok(vec![3.0]));
+        if let Some(worker) = provider.engine().worker_stats() {
+            assert_eq!((worker.spawned, worker.killed_oversize, worker.crashed), (1, 0, 0), "{worker:?}");
+        }
+        assert!(provider.retire().is_clean());
+    });
+}

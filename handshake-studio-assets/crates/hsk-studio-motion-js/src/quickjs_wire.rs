@@ -11,7 +11,7 @@ use crate::{
     engine::{BudgetKind, EngineFailure, JsValue, ThrownKind},
     quickjs::{ENGINE_VERSION, Input, LimitReadback, Pending, ReadKey, RunEnd, RunReport},
 };
-use hsk_studio_motion::{ExprError, ExprErrorCode, SourceSpan};
+use hsk_studio_motion::{ExprError, ExprErrorCode, MAX_PATH_BYTES, SourceSpan};
 use std::{
     collections::HashMap,
     io::{self, Read, Write},
@@ -544,14 +544,22 @@ pub(crate) fn decode_limits(frame: &[u8], expected_id: u64) -> Res<Option<LimitR
     }))
 }
 
-/// Upper bound of a well-formed reply to `input` (array of `max_nodes` numbers, or a host-read path
-/// no longer than the source) plus the fixed fields.
+/// Fixed part of every reply cap: header, counters, a typed failure with its span, and a host-read
+/// request (path text plus tick) all fit below it.
+const REPLY_SLACK: usize = 4096;
+// The realm refuses a host-read path above `MAX_PATH_BYTES` before it can reach a reply
+// (`quickjs::install_host`), so a well-formed reply never carries more path text than this.
+const _: () = assert!(MAX_PATH_BYTES.saturating_add(128) <= REPLY_SLACK);
+
+/// Upper bound of a well-formed reply to `input`: an array of `max_nodes` numbers plus the fixed
+/// fields. It does not depend on the source: the only other variable-size field is a host-read path,
+/// which the realm bounds at `MAX_PATH_BYTES` (R7 carried PLAUSIBLE: the old bound assumed a path no
+/// longer than the source, but a script can build a longer one at run time).
 pub(crate) fn response_cap(input: &Input<'_>) -> usize {
     input
-        .source
-        .len()
-        .saturating_add(input.max_nodes.saturating_mul(8))
-        .saturating_add(4096)
+        .max_nodes
+        .saturating_mul(8)
+        .saturating_add(REPLY_SLACK)
         .min(MAX_REQUEST_FRAME)
 }
 
@@ -672,6 +680,47 @@ mod tests {
         other_version[1] ^= 1;
         assert_eq!(decode_hello(&other_version), Err(WireError::Malformed));
         assert!(decode_request(&[KIND_EVAL, 1, 0]).is_err());
+    }
+
+    /// The reply cap holds the largest reply the realm can produce for a tiny source and the smallest
+    /// output quota: a host-read request with a path of exactly `MAX_PATH_BYTES` (the realm refuses
+    /// longer ones) and a typed failure with a span; it never depends on the source length.
+    #[test]
+    fn reply_cap_covers_the_longest_realm_reply_for_a_tiny_source() {
+        let cache = HashMap::new();
+        let input = Input {
+            source: "1",
+            max_nodes: 1,
+            memory_bytes: 16 << 20,
+            stack_bytes: 512 << 10,
+            allowance: 1,
+            cancel: CancellationToken::default(),
+            clock: Arc::new(ManualClock::new()),
+            deadline_ns: 5,
+            cache: &cache,
+            utc: None,
+            #[cfg(feature = "test-faults")]
+            fault: WorkerTestFault::None,
+        };
+        let cap = response_cap(&input);
+        assert_eq!(cap, 8 + 4096, "cap = 8 bytes per output node + the fixed slack");
+        let longest_read = encode_report(
+            u64::MAX,
+            &report(RunEnd::Pending(Pending::Read(ReadKey {
+                path: "p".repeat(MAX_PATH_BYTES),
+                tick: Some(i64::MIN),
+            }))),
+        );
+        assert!(longest_read.len() <= cap, "{} > {cap}", longest_read.len());
+        let failure = encode_report(
+            u64::MAX,
+            &report(RunEnd::Failure(EngineFailure::Host(ExprError::at(
+                ExprErrorCode::Ambiguous,
+                u32::MAX,
+                u32::MAX,
+            )))),
+        );
+        assert!(failure.len() <= cap, "{} > {cap}", failure.len());
     }
 
     fn ends() -> Vec<RunEnd> {
