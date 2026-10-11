@@ -88,6 +88,8 @@ struct IdempotencyEntry {
 #[derive(Default)]
 struct State {
     grants: BTreeSet<GrantKey>,
+    /// Grants that stood and were withdrawn (answered as `revoked`, not `missing`).
+    revoked: BTreeSet<GrantKey>,
     /// Token issued for a currently standing grant (revocation removes it).
     tokens: BTreeMap<GrantKey, u64>,
     next_token: u64,
@@ -141,13 +143,18 @@ impl TransientHost {
     // ----- control (the "host operator" side; not reachable over the wire) ---------------------
 
     pub fn grant(&self, actor: &ActorContext, resource: &DomainId, action: Action) {
-        self.lock().grants.insert(grant_key(actor, resource, action));
+        let key = grant_key(actor, resource, action);
+        let mut state = self.lock();
+        state.revoked.remove(&key);
+        state.grants.insert(key);
     }
 
     pub fn revoke(&self, actor: &ActorContext, resource: &DomainId, action: Action) {
         let key = grant_key(actor, resource, action);
         let mut state = self.lock();
-        state.grants.remove(&key);
+        if state.grants.remove(&key) {
+            state.revoked.insert(key.clone());
+        }
         state.tokens.remove(&key);
     }
 
@@ -250,10 +257,15 @@ impl TransientHost {
             action,
         );
         if !state.grants.contains(&key) {
+            let reason = if state.revoked.contains(&key) {
+                DenyReason::Revoked
+            } else {
+                DenyReason::Missing
+            };
             return ReplyBody::Grant(GrantDecision {
                 granted: false,
                 token: 0,
-                reason: Some(DenyReason::Missing),
+                reason: Some(reason),
             });
         }
         let token = match state.tokens.get(&key) {
@@ -311,7 +323,9 @@ impl TransientHost {
             ActionWire::Edit,
         );
         if fault == Some(Fault::RevokeBeforeCommit) {
-            state.grants.remove(&edit_key);
+            if state.grants.remove(&edit_key) {
+                state.revoked.insert(edit_key.clone());
+            }
             state.tokens.remove(&edit_key);
         }
         if fault == Some(Fault::BumpEpoch) {

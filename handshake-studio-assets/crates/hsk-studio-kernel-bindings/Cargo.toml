@@ -19,3 +19,7 @@ hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-f
 
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "kernel-bindings-consumer"
+path = "examples/kernel-bindings-consumer.rs"

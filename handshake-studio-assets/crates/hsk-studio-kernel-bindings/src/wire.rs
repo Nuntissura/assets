@@ -544,6 +544,13 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], limits: &Limits) -> Result<T, WireE
     if bytes.len() > limits.max_bytes {
         return Err(WireError::Oversize);
     }
+    // A message is exactly one JSON object: nothing (not even whitespace) outside the braces.
+    if bytes[0] != b'{' {
+        return Err(WireError::Syntax);
+    }
+    if bytes[bytes.len() - 1].is_ascii_whitespace() {
+        return Err(WireError::TrailingBytes);
+    }
     // The generation is read first and alone: a foreign version is `wrong_version`, never a
     // misleading unknown-field error from a schema this decoder does not speak.
     let probe = VersionProbe::deserialize(&mut serde_json::Deserializer::from_slice(bytes))
