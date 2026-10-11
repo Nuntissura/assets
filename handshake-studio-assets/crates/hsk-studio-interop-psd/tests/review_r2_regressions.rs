@@ -173,11 +173,15 @@ fn unreadable_unicode_layer_name_is_a_typed_loss() {
         let too_long = layer_with(&"u".repeat(limits.max_name_units + 1));
         let doc = read(&too_long);
         assert_eq!(doc.layers()[0].name, "pascal", "the Pascal name stands in");
-        assert!(doc
-            .loss_report(&limits)
-            .entries
-            .iter()
-            .any(|e| e.path == "layer[0]/name" && e.code == "layer_name_unicode_unreadable" && e.kind == LossKind::Transformed));
+        let report = doc.loss_report(&limits);
+        assert!(
+            report
+                .entries
+                .iter()
+                .any(|e| e.path == "layer[0]/name" && e.code == "layer_name_unicode_unreadable" && e.kind == LossKind::Transformed),
+            "{}",
+            report.to_json()
+        );
         assert_eq!(write_psd(&doc, &limits).unwrap(), too_long, "the unreadable block is preserved");
 
         let fine = read(&layer_with("readable"));
