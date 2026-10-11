@@ -32,25 +32,16 @@ pub fn unhex(s: &str) -> Vec<u8> {
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
         .collect()
 }
-/// Pinned MT-35536 evidence root: the nearest ancestor of this crate's manifest directory that
-/// holds it, so the worktree and any export below the same root resolve it without env vars.
+/// Byte-identical, hash-pinned test evidence checked into this crate (see
+/// tests/fixtures/FIXTURES_PROVENANCE.json), so the crate's tests run from its own repo alone.
+pub fn fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+/// Pinned MT-35536 evidence root; HSK_TYPE_RESEARCH_ROOT is an optional override only.
 pub fn research() -> PathBuf {
-    const RELATIVE: &str =
-        "Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research";
-    if let Some(root) = std::env::var_os("HSK_TYPE_RESEARCH_ROOT") {
-        return PathBuf::from(root);
-    }
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .ancestors()
-        .map(|ancestor| ancestor.join(RELATIVE))
-        .find(|root| root.join("type-exact-oracle-recipe.json").is_file())
-        .unwrap_or_else(|| {
-            panic!(
-                "required evidence root {RELATIVE} not found above {}",
-                manifest.display()
-            )
-        })
+    std::env::var_os("HSK_TYPE_RESEARCH_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fixtures().join("evidence"))
 }
 pub fn json(path: &Path) -> Value {
     serde_json::from_slice(
@@ -211,7 +202,7 @@ impl AdmissionPort for Ledger {
 pub fn font_root() -> PathBuf {
     std::env::var_os("HSK_TYPE_FONT_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts"))
+        .unwrap_or_else(|| fixtures().join("fonts"))
 }
 pub struct Fonts {
     data: [Vec<u8>; 4],
@@ -1294,14 +1285,7 @@ pub fn reference_file() -> Value {
     const EXPECTED: &str = "6579f9a90162edaf6dc1bcb91b964d8014eaeaf8d7fef7536243e55bd52c2bbe";
     let path = std::env::var_os("HSK_TYPE_REFERENCE_FILE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            research()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("studio-assets-validator/type-reference-producer/type-reference-corrected-with-dlig.json")
-        });
+        .unwrap_or_else(|| fixtures().join("evidence/type-reference-corrected-with-dlig.json"));
     if let Ok(binding) = std::env::var("HSK_TYPE_REFERENCE_SHA256") {
         assert_eq!(
             binding, EXPECTED,

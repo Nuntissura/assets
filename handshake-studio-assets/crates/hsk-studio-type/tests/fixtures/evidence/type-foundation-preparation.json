@@ -1,0 +1,165 @@
+{
+  "scope": "READ_ONLY_PREPARATION_MT35536",
+  "spec_version": "v02.213",
+  "source_identities": [
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wt-gov-kernel/.GOV/task_packets/WP-KERNEL-STUDIO/MT-35536.json",
+      "sha256": "29a53d4a5fc8e1f8a85e79bad1afebcc96012b118b4856164dc014a0749a7b90"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wt-gov-kernel/.GOV/task_packets/WP-KERNEL-STUDIO/STUDIO_MODULES.json",
+      "sha256": "1112e338e4a4146eaa8fa4cd619bb2771490e4921992618d4ef4f34f129a1268"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wt-gov-kernel/.GOV/spec/master-spec-v02.213/spec-modules/14-studio-creative-suite.md",
+      "sha256": "10be1ee3df5c0fa1e392fb7e88d34fedef649e0312505fa37cca0f1ec888ecca"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wt-studio-assets/handshake-studio-assets/crates/hsk-studio-accord/src/lib.rs",
+      "sha256": "09cfed2a49a5be0062e8a6241c73cf58158d50ba26cc7dde1d62004a7d53ab7f"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wt-studio-assets/handshake-studio-assets/crates/hsk-studio-observe/src/lib.rs",
+      "sha256": "bee70b407ed915408cd978fde61157e7c074666d994175c2a3594eeabc5146a6"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wt-studio-assets/handshake-studio-assets/crates/hsk-studio-folio/src/lib.rs",
+      "sha256": "6c37f2f2ec7718efc9510b9d5a91e152bdce080e6777de9d6dba514362a14dd4"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/src/text_intl/bidi.rs",
+      "sha256": "d0659ff72bcb2965e8a45e837c5a0c6026ad7047d329fd09e3cfa99a4c848539"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/src/app.rs",
+      "sha256": "2a1360257a4199183f0a1b239e5f44b1d93442f171a370b50f6a9bbe99bbeec5"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/OFL.txt",
+      "sha256": "156202d7470eec0af1427ea332098720cb88212bacf669791d7575db2ba8a7aa"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/NotoSans-OFL.txt",
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+    }
+  ],
+  "fonts": [
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/Inter-Regular.ttf",
+      "length": 680240,
+      "sha256": "529be850e06f62f8904f22bda77e45bde4834498fdbec4ff4201fa3177447a3a",
+      "table_tags": [
+        "GDEF",
+        "GPOS",
+        "GSUB",
+        "OS/2",
+        "cmap",
+        "cvt ",
+        "fpgm",
+        "gasp",
+        "glyf",
+        "head",
+        "hhea",
+        "hmtx",
+        "loca",
+        "maxp",
+        "name",
+        "post",
+        "prep"
+      ],
+      "fvar_present": false,
+      "provenance": "Existing explicit bundled host source; app.rs7924/7968/8003; upstream source revision/byte equality NOT_VERIFIED",
+      "license_file": "OFL.txt"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/NotoSansArabic-Regular.ttf",
+      "length": 234892,
+      "sha256": "bdff3e5659d67e67def05b33f749683b9376ae819d65d3dd62ac4640b3aaef48",
+      "table_tags": [
+        "GDEF",
+        "GPOS",
+        "GSUB",
+        "OS/2",
+        "cmap",
+        "cvt ",
+        "fpgm",
+        "gasp",
+        "glyf",
+        "head",
+        "hhea",
+        "hmtx",
+        "loca",
+        "maxp",
+        "name",
+        "post",
+        "prep"
+      ],
+      "fvar_present": false,
+      "provenance": "Existing explicit bundled host source; app.rs7924/7968/8003; upstream source revision/byte equality NOT_VERIFIED",
+      "license_file": "NotoSans-OFL.txt"
+    },
+    {
+      "path": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/NotoSansSC-Regular.otf",
+      "length": 8331336,
+      "sha256": "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9",
+      "table_tags": [
+        "BASE",
+        "CFF ",
+        "DSIG",
+        "GDEF",
+        "GPOS",
+        "GSUB",
+        "OS/2",
+        "VORG",
+        "cmap",
+        "head",
+        "hhea",
+        "hmtx",
+        "maxp",
+        "name",
+        "post",
+        "vhea",
+        "vmtx"
+      ],
+      "fvar_present": false,
+      "provenance": "Existing explicit bundled host source; app.rs7924/7968/8003; upstream source revision/byte equality NOT_VERIFIED",
+      "license_file": "NotoSans-OFL.txt"
+    }
+  ],
+  "owners": {
+    "folio": "Opaque story_id references only, no text primitive fork or Type->Folio edge",
+    "type": "Catalog modules7 existing declared owner, source root not materialized",
+    "host": "No TextEngine/FontResolver scoped source match; text_intl bidi implementation explicitly lacks complex-script shaping",
+    "observe": "Existing generic emit SinkPort, closed failure/cancel and state; text telemetry detail not defined",
+    "accord": "DomainId,STXTschema,ActorContext,Length,CancellationToken reused"
+  },
+  "canonical_refs": [
+    "STU-ARC-002",
+    "STU-TYP-008",
+    "STU-TYP-110..115",
+    "STU-TYP-126..132",
+    "STU-TYP-176..180"
+  ],
+  "provider_candidates": {
+    "cosmic_text": "Currentmain manifest0.19.0 usesharfrust0.5.0; defaultfontconfig/std andsys-locale/fontdbmemmap stdsurface not automatically suitable. No provider choice claimed.",
+    "harfrust": {
+      "api": "src/lib.rs Font/ShaperFont/Buffer/GlyphInfo/GlyphPosition/shape; src/shape.rs10 Result<(),ShapeError>; options.rs features; distinct bidi/run resolution still needed",
+      "license": "MIT",
+      "features": "Candidate defaultfalse/std, not selected/bound",
+      "archive_verified": true,
+      "version": "0.14.0",
+      "checksum": "86aa776d6d32b072119e1f1650f4db843ff4382a4aaa6a2c9c4e35703cd377cb"
+    },
+    "rustybuzz": "Archived/unmaintained July26,2026 primaryREADME recommendsHarfRust"
+  },
+  "unresolved": [
+    "Exact owner provider versions/features/closure, budget and cancellation behavior before release",
+    "Independent pinned glyph/cluster/bidi/ligature/variable-axis reference oracle; no oracle output generated or accepted",
+    "Canonical public TextEngine/FontResolver derived local input/output transport binding absent: cluster index basis, advance/offset units/scaling, run direction/order, feature ranges/tags, variation axes, missing-font deterministic substitution and composition_version semantics",
+    "Caller revision/readset/resource limits/resolver generation/revocation and required telemetry delivery contracts require owning MT binding",
+    "Exact upstream revision/byte/license attribution for existingNoto assets not yet verified; adjacentOFL andrealbytes verified"
+  ],
+  "preserved_scope": "Latin Arabic CJK mixedbidi/ligature/variableaxis/tworundet required; fullcrosshost/raster/paragraphcomposition/hostadoption remains pending separatefeatureproof, never claimed",
+  "actions": "No product/Gov/Git/Cargo/compiler/runtime edits or commands; only this assigned externalresearch directory written",
+  "variable_fixture_resolution": "type-variable-fixture-and-oracle.json: exactInter4.1archive+Googlepinnedbytes/OFL/fvarverified; originalfixturesuntouched"
+}
