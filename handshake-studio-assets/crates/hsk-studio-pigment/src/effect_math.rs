@@ -1,13 +1,14 @@
-//! Single owner (CX-CAP-001) of the layer-effect maths of effects wave 1 (STU-RAS-040, 156-158):
-//! drop shadow, colour overlay and solid stroke. Brief: work-folder
-//! `builders/briefs/lane-effects-wave-1.md`; envelope design: `diagnostics/adjustments-advanced-blending.md`.
+//! Single owner (CX-CAP-001) of the layer-effect maths of effects waves 1 and 2 (STU-RAS-040,
+//! 156-158): drop shadow, colour overlay, solid stroke (wave 1), inner shadow, outer glow and inner
+//! glow (wave 2, colour source only). Brief: work-folder `builders/briefs/lane-effects-wave-1.md`;
+//! envelope design: `diagnostics/adjustments-advanced-blending.md`.
 //! render-cpu and render-gpu (WGSL tested against this module) consume the matte and the layer
 //! composition order defined here; composite lowers `StudioEffectStack` instances to [`EffectOp`].
 //!
 //! Scope: scalar reference maths on small planes of STRAIGHT colours in `[0, 1]` in the plan's blend
 //! space (STU-COL-163: nothing here converts profiles or transfer curves). Photoshop does not
 //! publish its effect maths, so every operator is class `Approximate` and the parity questions are
-//! on the D5 oracle list (cases 12-14, see [`EffectKind::facts`]). Non-finite or out-of-range
+//! on the D5 oracle list (cases 12-17, see [`EffectKind::facts`]). Non-finite or out-of-range
 //! parameters are a typed refusal and are not clamped in (`tests/effects.rs`
 //! `effect_limits_validation_and_budget`).
 //!
@@ -51,7 +52,34 @@ pub const MAX_REFERENCE_SIDE: u32 = 64;
 /// Budget for the reference neighbourhood work: `pixels * window area` visits per operation.
 pub const REFERENCE_WORK_BUDGET: u64 = 100_000_000;
 
+/// A recognised effect feature that this slice refuses instead of approximating (typed; see
+/// `tests/effects_wave2.rs` `glow_refusals_envelope_admission_and_budget`). Each has a stable key
+/// that admission reports as the refused operator.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EffectFeature {
+    /// A glow filled from a gradient (colour source only).
+    GlowGradient,
+    /// A glow whose range is not the full 100 % (Photoshop's range semantics are UNVERIFIED, D5 16).
+    GlowRange,
+    /// A glow with jitter above 0 (Adobe-side evidence says jitter only acts on gradients).
+    GlowJitter,
+    /// The Precise glow technique (Photoshop uses a distance transform there; Softer only).
+    GlowTechniquePrecise,
+}
+impl EffectFeature {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::GlowGradient => "glow_gradient",
+            Self::GlowRange => "glow_range",
+            Self::GlowJitter => "glow_jitter",
+            Self::GlowTechniquePrecise => "glow_technique_precise",
+        }
+    }
+}
+
 /// Typed failure of an effect operation.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectError {
     /// A colour, opacity, spread or plane sample was non-finite or outside its range, or an
@@ -73,6 +101,8 @@ pub enum EffectError {
     Overflow,
     /// The compositing step refused.
     Blend(BlendError),
+    /// A recognised feature this slice refuses (see [`EffectFeature`]).
+    Unsupported(EffectFeature),
 }
 impl EffectError {
     pub const fn code(self) -> &'static str {
@@ -86,6 +116,7 @@ impl EffectError {
             Self::OverBudget => "effect_over_budget",
             Self::Overflow => "effect_overflow",
             Self::Blend(e) => e.code(),
+            Self::Unsupported(_) => "effect_unsupported",
         }
     }
 }
@@ -94,6 +125,7 @@ impl fmt::Display for EffectError {
         match self {
             Self::ModeNotApplicable(m) => write!(f, "{}:{}", self.code(), m.key()),
             Self::Blend(e) => write!(f, "{e}"),
+            Self::Unsupported(feature) => write!(f, "{}:{}", self.code(), feature.key()),
             _ => f.write_str(self.code()),
         }
     }
@@ -105,13 +137,16 @@ impl From<BlendError> for EffectError {
     }
 }
 
-/// The effect kinds of wave 1, with STU-RAS-157 keys.
+/// The effect kinds of waves 1 and 2, with STU-RAS-157 keys.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum EffectKind {
     DropShadow,
     ColourOverlay,
     Stroke,
+    InnerShadow,
+    OuterGlow,
+    InnerGlow,
 }
 
 /// Static facts of one kind: key, formula-provenance class and reference.
@@ -123,7 +158,14 @@ pub struct EffectFacts {
     pub reference: &'static str,
 }
 impl EffectKind {
-    pub const ALL: [Self; 3] = [Self::DropShadow, Self::ColourOverlay, Self::Stroke];
+    pub const ALL: [Self; 6] = [
+        Self::DropShadow,
+        Self::ColourOverlay,
+        Self::Stroke,
+        Self::InnerShadow,
+        Self::OuterGlow,
+        Self::InnerGlow,
+    ];
     pub const fn facts(self) -> EffectFacts {
         let (key, reference) = match self {
             Self::DropShadow => (
@@ -137,6 +179,18 @@ impl EffectKind {
             Self::Stroke => (
                 "stroke",
                 "solid stroke from a Euclidean distance field of the layer alpha thresholded at 0.5: outside = dilated minus alpha, inside = alpha minus eroded, centre = both halves; one-pixel linear ramp for anti-aliasing; corners are round; Photoshop stroke corner shape and anti-aliasing UNVERIFIED (D5 13)",
+            ),
+            Self::InnerShadow => (
+                "inner_shadow",
+                "matte = 1 - layer alpha (beyond the plane counts as transparent, so 1), choke_px = choke*size grown as a hard disc, blur = size - choke_px by a Gaussian, offset like the drop shadow, then clipped to the layer alpha (multiplied by it), composited over the content. Structure from Krita kis_ls_drop_shadow_filter.cpp (same pipeline for inner shadow, outer and inner glow; the choke uses the spread slot; behaviour reference only, GPL, no code copied); Adobe: choke trims the matte before the blur, Tuts+: choke 100 % gives a hard-edged inner stroke. Direction convention, choke model, clip by alpha vs threshold UNVERIFIED (D5 15)",
+            ),
+            Self::OuterGlow => (
+                "outer_glow",
+                "colour glow behind the content: the drop-shadow matte chain with zero offset and no knockout (spread_px = spread*size grown, blur = the rest); technique Softer only. Krita pipeline as for the drop shadow; Precise is a distance transform in Photoshop (ImageMagick forum report on a Photoshop layer-styles port) and is refused, as are gradient fill, range other than 100 % and jitter. Softer is not a plain blur in Photoshop (same report), so Approximate; UNVERIFIED (D5 16)",
+            ),
+            Self::InnerGlow => (
+                "inner_glow",
+                "colour glow over the content, clipped to the layer alpha: source edge = the inner-shadow chain with zero offset (inverted matte, choke grown, blurred); source centre = 1 - that edge matte (Krita inverts the selection again after the blur for a centre source); technique Softer only; gradient, range other than 100 % and jitter refused. Tuts+: edge radiates inward from the outline, centre radiates from the middle; choke 100 % is a hard-edged inner stroke. UNVERIFIED (D5 17)",
             ),
         };
         EffectFacts {
@@ -166,6 +220,28 @@ pub enum StrokePosition {
     Inside,
     Outside,
     Centre,
+}
+
+/// Glow technique (STU-RAS-157 `technique`). Only `Softer` renders; `Precise` is refused as
+/// [`EffectFeature::GlowTechniquePrecise`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum GlowTechnique {
+    Softer,
+    Precise,
+}
+/// Where an inner glow starts (STU-RAS-157 `source`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum GlowSource {
+    Edge,
+    Centre,
+}
+/// What fills a glow. Only `Colour` renders (the op's `colour`); `Gradient` is refused as
+/// [`EffectFeature::GlowGradient`], so a gradient glow is not drawn as a flat colour.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+pub enum GlowFill {
+    Colour,
+    Gradient,
 }
 
 /// Drop shadow. `angle_deg` is the absolute angle (the builder resolves Global Light into it),
@@ -261,13 +337,177 @@ impl StrokeOp {
     }
 }
 
-/// One effect instance of the envelope (wave 1).
+/// Inner shadow: the shadow cast INSIDE the layer shape. `choke` is the fraction of `size_px` that
+/// is hard (the inner counterpart of the drop shadow `spread`); the offset convention is the drop
+/// shadow's. Composited over the content, clipped to the layer alpha.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct InnerShadowOp {
+    pub colour: [f32; 3],
+    pub mode: StudioBlendMode,
+    pub opacity: f32,
+    pub angle_deg: f32,
+    pub distance_px: f32,
+    pub choke: f32,
+    pub size_px: f32,
+}
+impl InnerShadowOp {
+    /// A shadow with zero offset, choke and size.
+    pub const fn new(colour: [f32; 3], mode: StudioBlendMode, opacity: f32) -> Self {
+        Self {
+            colour,
+            mode,
+            opacity,
+            angle_deg: 0.0,
+            distance_px: 0.0,
+            choke: 0.0,
+            size_px: 0.0,
+        }
+    }
+    pub const fn with_offset(mut self, angle_deg: f32, distance_px: f32) -> Self {
+        self.angle_deg = angle_deg;
+        self.distance_px = distance_px;
+        self
+    }
+    pub const fn with_choke(mut self, choke: f32) -> Self {
+        self.choke = choke;
+        self
+    }
+    pub const fn with_size(mut self, size_px: f32) -> Self {
+        self.size_px = size_px;
+        self
+    }
+}
+
+/// Outer glow, composited BEHIND the content. `range` is the fraction `(0, 1]` and `jitter` the
+/// fraction `[0, 1]` of the source parameters; only `range == 1`, `jitter == 0`, `Softer` and a
+/// `Colour` fill render, everything else is refused with an [`EffectFeature`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct OuterGlowOp {
+    pub colour: [f32; 3],
+    pub fill: GlowFill,
+    pub mode: StudioBlendMode,
+    pub opacity: f32,
+    pub spread: f32,
+    pub size_px: f32,
+    pub technique: GlowTechnique,
+    pub range: f32,
+    pub jitter: f32,
+}
+impl OuterGlowOp {
+    /// A Softer colour glow with zero spread and size, full range, no jitter.
+    pub const fn new(colour: [f32; 3], mode: StudioBlendMode, opacity: f32) -> Self {
+        Self {
+            colour,
+            fill: GlowFill::Colour,
+            mode,
+            opacity,
+            spread: 0.0,
+            size_px: 0.0,
+            technique: GlowTechnique::Softer,
+            range: 1.0,
+            jitter: 0.0,
+        }
+    }
+    pub const fn with_spread(mut self, spread: f32) -> Self {
+        self.spread = spread;
+        self
+    }
+    pub const fn with_size(mut self, size_px: f32) -> Self {
+        self.size_px = size_px;
+        self
+    }
+    pub const fn with_fill(mut self, fill: GlowFill) -> Self {
+        self.fill = fill;
+        self
+    }
+    pub const fn with_technique(mut self, technique: GlowTechnique) -> Self {
+        self.technique = technique;
+        self
+    }
+    pub const fn with_range(mut self, range: f32) -> Self {
+        self.range = range;
+        self
+    }
+    pub const fn with_jitter(mut self, jitter: f32) -> Self {
+        self.jitter = jitter;
+        self
+    }
+}
+
+/// Inner glow, composited OVER the content and clipped to the layer alpha; same refusals as
+/// [`OuterGlowOp`]. `choke` is the fraction of `size_px` that is hard.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct InnerGlowOp {
+    pub colour: [f32; 3],
+    pub fill: GlowFill,
+    pub mode: StudioBlendMode,
+    pub opacity: f32,
+    pub choke: f32,
+    pub size_px: f32,
+    pub source: GlowSource,
+    pub technique: GlowTechnique,
+    pub range: f32,
+    pub jitter: f32,
+}
+impl InnerGlowOp {
+    /// A Softer colour glow from the edge with zero choke and size, full range, no jitter.
+    pub const fn new(colour: [f32; 3], mode: StudioBlendMode, opacity: f32) -> Self {
+        Self {
+            colour,
+            fill: GlowFill::Colour,
+            mode,
+            opacity,
+            choke: 0.0,
+            size_px: 0.0,
+            source: GlowSource::Edge,
+            technique: GlowTechnique::Softer,
+            range: 1.0,
+            jitter: 0.0,
+        }
+    }
+    pub const fn with_choke(mut self, choke: f32) -> Self {
+        self.choke = choke;
+        self
+    }
+    pub const fn with_size(mut self, size_px: f32) -> Self {
+        self.size_px = size_px;
+        self
+    }
+    pub const fn with_source(mut self, source: GlowSource) -> Self {
+        self.source = source;
+        self
+    }
+    pub const fn with_fill(mut self, fill: GlowFill) -> Self {
+        self.fill = fill;
+        self
+    }
+    pub const fn with_technique(mut self, technique: GlowTechnique) -> Self {
+        self.technique = technique;
+        self
+    }
+    pub const fn with_range(mut self, range: f32) -> Self {
+        self.range = range;
+        self
+    }
+    pub const fn with_jitter(mut self, jitter: f32) -> Self {
+        self.jitter = jitter;
+        self
+    }
+}
+
+/// One effect instance of the envelope (waves 1 and 2).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum EffectOp {
     DropShadow(DropShadowOp),
     ColourOverlay(ColourOverlayOp),
     Stroke(StrokeOp),
+    InnerShadow(InnerShadowOp),
+    OuterGlow(OuterGlowOp),
+    InnerGlow(InnerGlowOp),
 }
 
 fn unit(v: f32) -> bool {
@@ -299,15 +539,22 @@ impl EffectOp {
             Self::DropShadow(_) => EffectKind::DropShadow,
             Self::ColourOverlay(_) => EffectKind::ColourOverlay,
             Self::Stroke(_) => EffectKind::Stroke,
+            Self::InnerShadow(_) => EffectKind::InnerShadow,
+            Self::OuterGlow(_) => EffectKind::OuterGlow,
+            Self::InnerGlow(_) => EffectKind::InnerGlow,
         }
     }
-    /// Fixed by the kind: the shadow sits behind the content, overlays and strokes over it. List
+    /// Fixed by the kind: the drop shadow and outer glow sit behind the content, overlays, strokes,
+    /// the inner shadow and the inner glow over it. List
     /// order is the render order within each placement (STU-RAS-156). Whether Photoshop's fixed
     /// kind order may differ from a stored list order is a spec question recorded in the lane notes.
     pub const fn placement(&self) -> EffectOrder {
         match self {
-            Self::DropShadow(_) => EffectOrder::BehindContent,
-            Self::ColourOverlay(_) | Self::Stroke(_) => EffectOrder::OverContent,
+            Self::DropShadow(_) | Self::OuterGlow(_) => EffectOrder::BehindContent,
+            Self::ColourOverlay(_)
+            | Self::Stroke(_)
+            | Self::InnerShadow(_)
+            | Self::InnerGlow(_) => EffectOrder::OverContent,
         }
     }
     pub const fn mode(&self) -> StudioBlendMode {
@@ -315,6 +562,9 @@ impl EffectOp {
             Self::DropShadow(o) => o.mode,
             Self::ColourOverlay(o) => o.mode,
             Self::Stroke(o) => o.mode,
+            Self::InnerShadow(o) => o.mode,
+            Self::OuterGlow(o) => o.mode,
+            Self::InnerGlow(o) => o.mode,
         }
     }
     pub const fn opacity(&self) -> f32 {
@@ -322,6 +572,9 @@ impl EffectOp {
             Self::DropShadow(o) => o.opacity,
             Self::ColourOverlay(o) => o.opacity,
             Self::Stroke(o) => o.opacity,
+            Self::InnerShadow(o) => o.opacity,
+            Self::OuterGlow(o) => o.opacity,
+            Self::InnerGlow(o) => o.opacity,
         }
     }
     pub const fn colour(&self) -> [f32; 3] {
@@ -329,6 +582,9 @@ impl EffectOp {
             Self::DropShadow(o) => o.colour,
             Self::ColourOverlay(o) => o.colour,
             Self::Stroke(o) => o.colour,
+            Self::InnerShadow(o) => o.colour,
+            Self::OuterGlow(o) => o.colour,
+            Self::InnerGlow(o) => o.colour,
         }
     }
     /// Parameter validation shared by the envelope and the reference.
@@ -356,12 +612,67 @@ impl EffectOp {
             Self::Stroke(o) => {
                 bounded(o.size_px, MAX_EFFECT_SIZE_PX, EffectError::SizeOutOfRange)?;
             }
+            Self::InnerShadow(o) => {
+                angle_ok(o.angle_deg)?;
+                bounded(
+                    o.distance_px,
+                    MAX_EFFECT_DISTANCE_PX,
+                    EffectError::DistanceOutOfRange,
+                )?;
+                bounded(o.size_px, MAX_EFFECT_SIZE_PX, EffectError::SizeOutOfRange)?;
+                if !unit(o.choke) {
+                    return Err(EffectError::OutOfDomain);
+                }
+            }
+            Self::OuterGlow(o) => {
+                bounded(o.size_px, MAX_EFFECT_SIZE_PX, EffectError::SizeOutOfRange)?;
+                if !unit(o.spread) {
+                    return Err(EffectError::OutOfDomain);
+                }
+                glow_ok(o.fill, o.technique, o.range, o.jitter)?;
+            }
+            Self::InnerGlow(o) => {
+                bounded(o.size_px, MAX_EFFECT_SIZE_PX, EffectError::SizeOutOfRange)?;
+                if !unit(o.choke) {
+                    return Err(EffectError::OutOfDomain);
+                }
+                glow_ok(o.fill, o.technique, o.range, o.jitter)?;
+            }
         }
         Ok(())
     }
 }
 
-/// `(spread_px, blur_px)` of a drop shadow: `spread_px = spread * size` is grown as a hard disc,
+/// Glow-only parameters: domain first (`range` in `(0, 1]`, `jitter` in `[0, 1]`), then the typed
+/// refusals of the features this slice does not render.
+fn glow_ok(
+    fill: GlowFill,
+    technique: GlowTechnique,
+    range: f32,
+    jitter: f32,
+) -> Result<(), EffectError> {
+    if !range.is_finite() || range <= 0.0 || range > 1.0 || !unit(jitter) {
+        return Err(EffectError::OutOfDomain);
+    }
+    if fill == GlowFill::Gradient {
+        return Err(EffectError::Unsupported(EffectFeature::GlowGradient));
+    }
+    if technique == GlowTechnique::Precise {
+        return Err(EffectError::Unsupported(
+            EffectFeature::GlowTechniquePrecise,
+        ));
+    }
+    if range != 1.0 {
+        return Err(EffectError::Unsupported(EffectFeature::GlowRange));
+    }
+    if jitter != 0.0 {
+        return Err(EffectError::Unsupported(EffectFeature::GlowJitter));
+    }
+    Ok(())
+}
+
+/// `(spread_px, blur_px)` of a drop shadow, outer glow, inner shadow or inner glow (pass the choke
+/// as `spread` for the inner ones): `spread_px = spread * size` is grown as a hard disc,
 /// `blur_px = size - spread_px` is blurred (Krita `kis_ls_drop_shadow_filter.cpp` split, without its
 /// integer rounding). Spread 1 is a hard matte grown by the full size.
 pub fn shadow_split(size_px: f32, spread: f32) -> (f32, f32) {
@@ -390,8 +701,9 @@ pub fn shadow_offset(angle_deg: f32, distance_px: f32) -> Result<(i32, i32), Eff
 
 /// Pixels of margin around the layer bounds that the effect reads and writes: the matte at a pixel
 /// depends only on layer alpha within this many pixels (a backend extends its working rectangle by
-/// it per side). Drop shadow: offset + spread growth + blur kernel half-width; overlay: 0; stroke:
-/// the distance window (`size`, or `size / 2` for the centre position).
+/// it per side). Drop shadow, inner shadow: offset + spread (choke) growth + blur kernel half-width;
+/// outer and inner glow: the same without offset; overlay: 0; stroke: the distance window (`size`,
+/// or `size / 2` for the centre position).
 pub fn effect_support_px(op: &EffectOp) -> Result<u32, EffectError> {
     op.validate()?;
     let ceil = |v: f32| v.ceil() as u32;
@@ -404,12 +716,25 @@ pub fn effect_support_px(op: &EffectOp) -> Result<u32, EffectError> {
                 .and_then(|v| v.checked_add(blur))
                 .ok_or(EffectError::Overflow)
         }
+        EffectOp::InnerShadow(o) => grown_support(o.size_px, o.choke, ceil(o.distance_px)),
+        EffectOp::OuterGlow(o) => grown_support(o.size_px, o.spread, 0),
+        EffectOp::InnerGlow(o) => grown_support(o.size_px, o.choke, 0),
         EffectOp::ColourOverlay(_) => Ok(0),
         EffectOp::Stroke(o) => Ok(match o.position {
             StrokePosition::Centre => ceil(o.size_px / 2.0),
             _ => ceil(o.size_px),
         }),
     }
+}
+
+/// `offset + ceil(grown) + blur half-width` of a grown-then-blurred matte.
+fn grown_support(size_px: f32, grow: f32, offset: u32) -> Result<u32, EffectError> {
+    let (grown_px, blur_px) = shadow_split(size_px, grow);
+    let blur = feather_support(blur_px).map_err(|_| EffectError::SizeOutOfRange)?;
+    offset
+        .checked_add(grown_px.ceil() as u32)
+        .and_then(|v| v.checked_add(blur))
+        .ok_or(EffectError::Overflow)
 }
 
 /// A straight-RGBA reference plane of at most [`MAX_REFERENCE_SIDE`] x [`MAX_REFERENCE_SIDE`]
@@ -559,9 +884,11 @@ fn dilate(src: &[f32], g: Grid, r: f32, outside: f32) -> Result<Vec<f32>, Effect
     Ok(out)
 }
 
-/// Separable convolution with `kernel` (odd length), samples beyond the plane read 0 (the plane is
-/// the layer bounds plus its effect margin, so beyond it the layer is transparent). f64 accumulation.
-fn blur_zero(src: &[f32], g: Grid, kernel: &[f32]) -> Result<Vec<f32>, EffectError> {
+/// Separable convolution with `kernel` (odd length), samples beyond the plane read `outside` (the
+/// plane is the layer bounds plus its effect margin, so beyond it the layer is transparent: the
+/// matte of a shadow or outer glow reads 0 there, the inverted matte of an inner effect reads 1).
+/// f64 accumulation.
+fn blur_ext(src: &[f32], g: Grid, kernel: &[f32], outside: f32) -> Result<Vec<f32>, EffectError> {
     let half = i64::try_from(kernel.len() / 2).map_err(|_| EffectError::Overflow)?;
     let pass = |input: &[f32], horizontal: bool| -> Result<Vec<f32>, EffectError> {
         let mut out = vec![0.0f32; g.len()?];
@@ -578,7 +905,7 @@ fn blur_zero(src: &[f32], g: Grid, kernel: &[f32]) -> Result<Vec<f32>, EffectErr
                     } else {
                         (x, y.checked_add(off).ok_or(EffectError::Overflow)?)
                     };
-                    acc += f64::from(*tap) * f64::from(g.get(input, sx, sy).unwrap_or(0.0));
+                    acc += f64::from(*tap) * f64::from(g.get(input, sx, sy).unwrap_or(outside));
                 }
                 if let Some(slot) = g.idx(x, y).and_then(|i| out.get_mut(i)) {
                     *slot = acc as f32;
@@ -591,20 +918,46 @@ fn blur_zero(src: &[f32], g: Grid, kernel: &[f32]) -> Result<Vec<f32>, EffectErr
     pass(&h, false)
 }
 
-fn shift_zero(src: &[f32], g: Grid, dx: i32, dy: i32) -> Result<Vec<f32>, EffectError> {
+/// `out(x, y) = src(x - dx, y - dy)`, samples from beyond the plane read `outside`.
+fn shift_ext(
+    src: &[f32],
+    g: Grid,
+    dx: i32,
+    dy: i32,
+    outside: f32,
+) -> Result<Vec<f32>, EffectError> {
     let mut out = vec![0.0f32; g.len()?];
     for y in 0..g.h {
         for x in 0..g.w {
             let sx = x.checked_sub(i64::from(dx)).ok_or(EffectError::Overflow)?;
             let sy = y.checked_sub(i64::from(dy)).ok_or(EffectError::Overflow)?;
-            if let (Some(v), Some(slot)) =
-                (g.get(src, sx, sy), g.idx(x, y).and_then(|i| out.get_mut(i)))
-            {
+            let v = g.get(src, sx, sy).unwrap_or(outside);
+            if let Some(slot) = g.idx(x, y).and_then(|i| out.get_mut(i)) {
                 *slot = v;
             }
         }
     }
     Ok(out)
+}
+
+/// The matte chain shared by the drop shadow, the inner shadow and both glows: grow `matte` by
+/// `grown_px` as a hard disc, blur by `blur_px`, move by `offset`; samples beyond the plane read
+/// `outside`.
+fn matte_chain(
+    matte: &[f32],
+    g: Grid,
+    (grown_px, blur_px): (f32, f32),
+    (dx, dy): (i32, i32),
+    outside: f32,
+) -> Result<Vec<f32>, EffectError> {
+    let grown = if grown_px > 0.0 {
+        dilate(matte, g, grown_px, outside)?
+    } else {
+        matte.to_vec()
+    };
+    let kernel = feather_kernel(blur_px).map_err(|_| EffectError::SizeOutOfRange)?;
+    let blurred = blur_ext(&grown, g, &kernel, outside)?;
+    shift_ext(&blurred, g, dx, dy, outside)
 }
 
 /// One half of a stroke: `outside` = region dilated by `w` minus the alpha, otherwise the alpha
@@ -639,6 +992,11 @@ fn stroke_half(alpha: &[f32], g: Grid, w: f32, outside: bool) -> Result<Vec<f32>
 ///   [`shadow_offset`], then with `layer_knocks_out` multiply by `1 - alpha`.
 /// - Colour overlay: the alpha.
 /// - Stroke: see [`EffectKind::facts`]; size 0 is an empty matte.
+/// - Outer glow: the drop-shadow chain with zero offset and no knockout.
+/// - Inner shadow: the chain on `1 - alpha` (choke as the grown share of `size`, beyond the plane
+///   reads 1), then multiplied by the alpha.
+/// - Inner glow: the inner-shadow chain with zero offset; source edge multiplies by the alpha,
+///   source centre multiplies `1 - chain` by the alpha.
 pub fn reference_matte(plane: &EffectPlane, op: &EffectOp) -> Result<Vec<f32>, EffectError> {
     op.validate()?;
     let g = Grid::of(plane);
@@ -646,22 +1004,36 @@ pub fn reference_matte(plane: &EffectPlane, op: &EffectOp) -> Result<Vec<f32>, E
     match op {
         EffectOp::ColourOverlay(_) => Ok(alpha.to_vec()),
         EffectOp::DropShadow(o) => {
-            let (spread_px, blur_px) = shadow_split(o.size_px, o.spread);
-            let grown = if spread_px > 0.0 {
-                dilate(alpha, g, spread_px, 0.0)?
-            } else {
-                alpha.to_vec()
-            };
-            let kernel = feather_kernel(blur_px).map_err(|_| EffectError::SizeOutOfRange)?;
-            let blurred = blur_zero(&grown, g, &kernel)?;
-            let (dx, dy) = shadow_offset(o.angle_deg, o.distance_px)?;
-            let mut matte = shift_zero(&blurred, g, dx, dy)?;
+            let split = shadow_split(o.size_px, o.spread);
+            let offset = shadow_offset(o.angle_deg, o.distance_px)?;
+            let mut matte = matte_chain(alpha, g, split, offset, 0.0)?;
             if o.layer_knocks_out {
                 for (m, a) in matte.iter_mut().zip(alpha) {
                     *m *= 1.0 - a;
                 }
             }
             Ok(matte)
+        }
+        EffectOp::OuterGlow(o) => {
+            matte_chain(alpha, g, shadow_split(o.size_px, o.spread), (0, 0), 0.0)
+        }
+        EffectOp::InnerShadow(o) => {
+            let offset = shadow_offset(o.angle_deg, o.distance_px)?;
+            let inverted: Vec<f32> = alpha.iter().map(|a| 1.0 - a).collect();
+            let matte = matte_chain(&inverted, g, shadow_split(o.size_px, o.choke), offset, 1.0)?;
+            Ok(matte.iter().zip(alpha).map(|(m, a)| m * a).collect())
+        }
+        EffectOp::InnerGlow(o) => {
+            let inverted: Vec<f32> = alpha.iter().map(|a| 1.0 - a).collect();
+            let edge = matte_chain(&inverted, g, shadow_split(o.size_px, o.choke), (0, 0), 1.0)?;
+            Ok(edge
+                .iter()
+                .zip(alpha)
+                .map(|(m, a)| match o.source {
+                    GlowSource::Edge => m * a,
+                    GlowSource::Centre => (1.0 - m) * a,
+                })
+                .collect())
         }
         EffectOp::Stroke(o) => match o.position {
             StrokePosition::Outside => stroke_half(alpha, g, o.size_px, true),

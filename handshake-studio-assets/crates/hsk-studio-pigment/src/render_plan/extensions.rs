@@ -57,9 +57,9 @@ impl Knockout {
 /// - `mask_feather_px`: Gaussian feather radius of the layer's coverage mask
 ///   ([`crate::coverage_math::feather_kernel`], applied before density); `0` = none.
 /// - `knockout`: only `Knockout::None` is admitted.
-/// - `effects`: layer effects of wave 1 ([`crate::effect_math`]: drop shadow, colour overlay,
-///   solid stroke), rendered in list order within each placement (behind the content, over the
-///   content). Not allowed on an adjustment layer, a pass-through layer, a clipped layer or the
+/// - `effects`: layer effects of waves 1 and 2 ([`crate::effect_math`]: drop shadow, colour
+///   overlay, solid stroke, inner shadow, outer glow, inner glow), rendered in list order within
+///   each placement (behind the content, over the content). Not allowed on an adjustment layer, a pass-through layer, a clipped layer or the
 ///   base of a clipping run. Empty = no effects (and absent from the digest).
 ///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
@@ -134,7 +134,8 @@ pub enum ExtOperator {
     /// Not reported by `validate`, which refuses knockout (`tests/plan_extensions.rs`
     /// `envelope_validation_rules`); present for capability queries.
     Knockout(Knockout),
-    /// One layer-effect kind (wave 1: drop shadow, colour overlay, stroke). The blend modes the
+    /// One layer-effect kind (drop shadow, colour overlay, stroke, inner shadow, outer glow, inner
+    /// glow; keys are `EffectKind::key`). The blend modes the
     /// effects use are admitted separately by [`admit_extended`] through the backend's v1
     /// [`Operator::Blend`] classes.
     Effect(EffectKind),
@@ -266,6 +267,9 @@ impl PlanExtensions {
                         EffectError::ModeNotApplicable(mode) => {
                             PlanError::ModeNotApplicable { node, mode }
                         }
+                        EffectError::Unsupported(feature) => {
+                            PlanError::EffectUnsupported { node, feature }
+                        }
                         _ => PlanError::EffectParameter { node },
                     })?;
                     add(ExtOperator::Effect(effect.kind()));
@@ -364,6 +368,10 @@ pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
         },
         PlanError::AdjustmentUnsupported { kind, .. } => BackendError::Unsupported {
             operator: kind.key(),
+            exactness: Exactness::Unsupported,
+        },
+        PlanError::EffectUnsupported { feature, .. } => BackendError::Unsupported {
+            operator: feature.key(),
             exactness: Exactness::Unsupported,
         },
         other => BackendError::InvalidPlan(other),
