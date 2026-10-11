@@ -10,6 +10,9 @@ use std::{ffi::c_void, io, mem, os::windows::io::AsRawHandle, process::Child, pt
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
     System::{
+        Diagnostics::Debug::{
+            SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX, SetErrorMode,
+        },
         IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED},
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
@@ -31,6 +34,30 @@ const MSG_PROCESS_MEMORY_LIMIT: u32 = 9;
 const MSG_JOB_MEMORY_LIMIT: u32 = 10;
 /// Upper bound on packets read per drain (new/exit-process notices also arrive on the port).
 const MAX_PACKETS: usize = 4096;
+
+// `abort()` flags from the Windows SDK `ucrt/stdlib.h` (10.0.26100.0): _WRITE_ABORT_MSG 0x1,
+// _CALL_REPORTFAULT 0x2. Microsoft Learn `_set_abort_behavior`: with _CALL_REPORTFAULT clear and no
+// Windows Error Reporting handler, `abort` calls `_exit` and ends the process with exit code 3.
+const ABORT_WRITE_MSG: u32 = 0x1;
+const ABORT_CALL_REPORTFAULT: u32 = 0x2;
+
+unsafe extern "C" {
+    /// UCRT `_set_abort_behavior(flags, mask)`; returns the old flags.
+    fn _set_abort_behavior(flags: u32, mask: u32) -> u32;
+}
+
+/// Runs inside the worker process before it serves a request: no critical-error or crash-reporting
+/// dialog (`SetErrorMode`, Microsoft Learn: SEM_NOGPFAULTERRORBOX means the system does not invoke
+/// Windows Error Reporting) and an `abort()` that ends the process at once with exit code 3 instead of
+/// handing it to the crash reporter. The reporter otherwise kept an aborted worker alive for 5 s to
+/// past 10 s (SANDBOX-2 finding), so a native abort surfaced as a deadline kill instead of a crash.
+pub(crate) fn harden_worker_process() {
+    // SAFETY: both calls only change process-wide error and abort policy; no pointers are passed.
+    unsafe {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+        _set_abort_behavior(0, ABORT_WRITE_MSG | ABORT_CALL_REPORTFAULT);
+    }
+}
 
 fn size_of<T>() -> u32 {
     u32::try_from(mem::size_of::<T>()).unwrap_or(u32::MAX)

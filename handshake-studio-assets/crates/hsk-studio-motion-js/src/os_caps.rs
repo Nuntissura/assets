@@ -154,7 +154,11 @@ pub(crate) const fn platform_status() -> OsCapStatus {
 }
 
 #[cfg(windows)]
-pub(crate) use crate::job_object::WorkerJob;
+pub(crate) use crate::job_object::{WorkerJob, harden_worker_process};
+
+/// Worker-process start-up hardening against the platform crash reporter (Windows only).
+#[cfg(not(windows))]
+pub(crate) fn harden_worker_process() {}
 
 /// Placeholder so the worker code type-checks on platforms without an implementation; it is never
 /// constructed there because `platform_status` is `Unavailable`.

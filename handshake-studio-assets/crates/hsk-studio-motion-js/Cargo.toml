@@ -14,7 +14,7 @@ hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default
 hsk-studio-motion = { path = "../hsk-studio-motion", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"], optional = true }
-windows-sys = { version = "=0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"], optional = true }
+windows-sys = { version = "=0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_Debug", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"], optional = true }
 
 [lib]
 path = "src/lib.rs"

@@ -37,7 +37,8 @@ use crate::{
     },
     limits::{OUTPUT_NODES_CEILING, Quotas},
     os_caps::{
-        OsCapConfig, OsCapPolicy, OsCapStatus, OsEvents, OsLimits, WorkerJob, platform_status,
+        OsCapConfig, OsCapPolicy, OsCapStatus, OsEvents, OsLimits, WorkerJob, harden_worker_process,
+        platform_status,
     },
     quickjs::{
         ENGINE_VERSION, Input, LimitReadback, QuickJsConfigError, QuickJsEngine, RunOutcome,
@@ -729,6 +730,7 @@ fn verify(memory: u64, stack: u64) -> Result<LimitReadback, ()> {
 /// Entry point of the `motion-js-worker` binary; returns the process exit code. Reads request
 /// frames from stdin, writes reply frames to stdout, and exits 0 when stdin closes.
 pub fn worker_main() -> i32 {
+    harden_worker_process();
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let stdout = io::stdout();
