@@ -152,21 +152,21 @@ fn admission_order_matrix_v4_matrix_v2_mab_and_installed_profiles() {
         let mab = inspect(&mab_rgb_profile(2, |r, g, b| [0.4360 * r + 0.3851 * g + 0.1431 * b, 0.2225 * r + 0.7169 * g + 0.0606 * b, 0.0139 * r + 0.0971 * g + 0.7141 * b]));
         assert_eq!((mab.kind, mab.device, mab.pcs, mab.version_major), (ProfileKind::MultiDimensional, DeviceSpace::Rgb, PcsKind::Xyz, 4));
         assert!(mab.device_to_pcs.perceptual && mab.device_to_pcs.colorimetric && !mab.device_to_pcs.saturation && !mab.pcs_to_device.colorimetric);
-        // Real installed profiles are optional evidence: absent files skip with a typed reason.
-        let adobe = "C:/Program Files (x86)/Common Files/Adobe/Color";
+        // Real installed profiles come from the oracle corpus root (tests/oracle/corpus.json, never system
+        // directories); an absent file is a counted NOT_PROVEN (a failure when the corpus is required).
         let installed = [
-            (format!("{adobe}/Profiles/Recommended/USWebCoatedSWOP.icc"), ProfileKind::LegacyLut, DeviceSpace::Cmyk),
-            (format!("{adobe}/Profiles/Recommended/CoatedFOGRA39.icc"), ProfileKind::LegacyLut, DeviceSpace::Cmyk),
-            (format!("{adobe}/MPProfiles/Rec2100HLG203.icc"), ProfileKind::MultiDimensional, DeviceSpace::Rgb),
+            ("USWebCoatedSWOP.icc", ProfileKind::LegacyLut, DeviceSpace::Cmyk),
+            ("CoatedFOGRA39.icc", ProfileKind::LegacyLut, DeviceSpace::Cmyk),
+            ("Rec2100HLG203.icc", ProfileKind::MultiDimensional, DeviceSpace::Rgb),
         ];
-        for (path, kind, space) in installed {
-            match std::fs::read(&path) {
+        for (file, kind, space) in installed {
+            match corpus_read(file, None) {
                 Ok(bytes) => {
                     let d = inspect(&bytes);
-                    assert_eq!((d.kind, d.device), (kind, space), "{path}");
+                    assert_eq!((d.kind, d.device), (kind, space), "{file}");
                     assert!(d.bytes > MAX_PROFILE_BYTES);
                 }
-                Err(e) => eprintln!("SKIP installed_profile_absent path={path} reason={:?}", e.kind()),
+                Err(reason) => not_proven("wide_profiles", &format!("installed={file}"), &reason),
             }
         }
     });

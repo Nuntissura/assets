@@ -362,3 +362,50 @@ pub fn xyz_to_linear_srgb(xyz: [f64; 3]) -> [f64; 3] {
 pub fn xyz_to_srgb(xyz: [f64; 3]) -> [f64; 3] {
     xyz_to_linear_srgb(xyz).map(|v| srgb_encode(v.clamp(0.0, 1.0)))
 }
+
+// -------------------------------------------------------------------------------------------------
+// Oracle corpus: third-party ICC profiles (never committed) under the external root named in
+// `tests/oracle/corpus.json` (populated by `tests/oracle/populate_corpus.py`). Tests never read system
+// directories; a missing profile is a counted NOT_PROVEN, and a failure when the corpus is required.
+// -------------------------------------------------------------------------------------------------
+const CORPUS_CONFIG: &str = include_str!("../oracle/corpus.json");
+
+fn corpus_string(key: &str) -> &'static str {
+    let pat = format!("\"{key}\": \"");
+    let start = CORPUS_CONFIG.find(&pat).unwrap_or_else(|| panic!("corpus.json lacks {key}")) + pat.len();
+    let len = CORPUS_CONFIG[start..].find('"').expect("closing quote");
+    &CORPUS_CONFIG[start..start + len]
+}
+/// Search order: the override env var (OS path list), then the configured root relative to the crate.
+pub fn corpus_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os(corpus_string("override_env"))
+        .map(|v| std::env::split_paths(&v).collect())
+        .unwrap_or_default();
+    dirs.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(corpus_string("icc_root")));
+    dirs
+}
+pub fn corpus_required() -> bool {
+    CORPUS_CONFIG.contains("\"require_corpus\": true")
+        || std::env::var(corpus_string("require_env")).is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+/// Bytes of corpus profile `file`, SHA-256 verified when `sha256_hex` is given; `Err` carries the typed reason.
+pub fn corpus_read(file: &str, sha256_hex: Option<&str>) -> Result<Vec<u8>, String> {
+    let dirs = corpus_dirs();
+    for dir in &dirs {
+        if let Ok(bytes) = std::fs::read(dir.join(file)) {
+            let got = hash_hex(&profile_hash(&bytes));
+            return match sha256_hex {
+                Some(want) if want != got => Err(format!("profile_sha256_mismatch file={file} found={got} recorded={want}")),
+                _ => Ok(bytes),
+            };
+        }
+    }
+    Err(format!("installed_profile_absent file={file} searched={dirs:?}"))
+}
+/// A case that cannot be judged: one `NOT_PROVEN:` line on the real stderr (not captured by the test
+/// harness, so a round always sees it); fails the test when the corpus is required.
+pub fn not_proven(test: &str, case: &str, reason: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "NOT_PROVEN: {test} {case} reason={reason}");
+    assert!(!corpus_required(), "NOT_PROVEN with require_corpus: {test} {case} reason={reason}");
+}

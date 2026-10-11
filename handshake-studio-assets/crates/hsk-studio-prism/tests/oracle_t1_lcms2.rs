@@ -3,9 +3,11 @@
 //! The reference numbers in `oracle/t1_lcms2.json` were produced OFFLINE by `prism-oracle/gen/t1_generate.py`
 //! (lcms2 as bundled in the `imagecodecs` wheel, version recorded in the fixture). Nothing here links or
 //! runs LittleCMS: the repository holds numbers, profile SHA-256 values and provenance only (STU-COL-140,
-//! STU-COL-325). Installed Windows/Adobe profiles are read at test time from disk, checked against the
-//! recorded SHA-256, and a pair whose profile is absent or different SKIPS with a typed reason. The three
-//! synthetic profiles are committed (built from scratch, no licence question).
+//! STU-COL-325). Installed Windows/Adobe profiles are read at test time from the oracle corpus root
+//! (`oracle/corpus.json`, an external directory beside the worktrees, filled by `oracle/populate_corpus.py`), checked
+//! against the recorded SHA-256; a case whose profile is absent or different prints `NOT_PROVEN: oracle_t1 <case>
+//! reason=...` (counted by the round, never a silent pass) and FAILS when `HSK_PRISM_REQUIRE_CORPUS=1` or
+//! `require_corpus` is set. The three synthetic profiles are committed (built from scratch, no licence question).
 //!
 //! Three families of tests, so a failure can be attributed:
 //!   * `src_leg_*`  source profile -> PCS XYZ (relative, no BPC) against lcms2, unclamped;
@@ -27,7 +29,7 @@
 //! Reading a run: `-- --nocapture --test-threads=1` prints one `ORACLE_T1 {json}` line per pair x intent x BPC
 //! (dE2000 mean/max, worst patch, BPC and absolute receipts), `ORACLE_T1_WORST` (three worst patches) and
 //! `ORACLE_T1_FINDING`. Installed Windows/Adobe profiles are searched in env `HSK_PRISM_ORACLE_PROFILE_DIRS`, then the
-//! fixture's default locations. Regenerate the fixture offline with `prism-oracle/gen/t1_generate.py <this
+//! corpus root; the fixture's `default_locations` are provenance for the copy script only. Regenerate the fixture offline with `prism-oracle/gen/t1_generate.py <this
 //! tests/oracle dir> [adobe-color-root]` (and `t0_generate.py <dir>/t0_analytic.json`) from the venv under
 //! `Handshake_Artifacts/WP-KERNEL-STUDIO/prism-oracle`; output is deterministic apart from `generated_utc`.
 mod oracle_support;
@@ -35,7 +37,6 @@ mod wide_support;
 use hsk_studio_prism::*;
 use oracle_support::*;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use wide_support::*;
 
 const FIXTURE: &str = include_str!("oracle/t1_lcms2.json");
@@ -118,22 +119,12 @@ fn resolve(doc: &Json, key: &str) -> Resolved {
         assert_eq!(sha256_hex(bytes), spec.get("sha256").str(), "{key}: committed profile differs from the fixture record");
         return Resolved::Bytes(bytes.to_vec());
     }
-    let file = spec.get("file").str();
-    let mut dirs: Vec<PathBuf> = std::env::var_os(doc.get("search_env_var").str())
-        .map(|v| std::env::split_paths(&v).collect())
-        .unwrap_or_default();
-    dirs.extend(spec.get("default_locations").arr().iter().map(|d| PathBuf::from(d.str())));
-    for dir in dirs {
-        if let Ok(bytes) = std::fs::read(dir.join(file)) {
-            let got = sha256_hex(&bytes);
-            return if got == spec.get("sha256").str() {
-                Resolved::Bytes(bytes)
-            } else {
-                Resolved::Skip(format!("profile_sha256_mismatch file={file} found={got} recorded={}", spec.get("sha256").str()))
-            };
-        }
+    // Installed third-party profiles come only from the oracle corpus root (tests/oracle/corpus.json), never from
+    // the system directories recorded in `default_locations` (those are where populate_corpus.py copies from).
+    match corpus_read(spec.get("file").str(), Some(spec.get("sha256").str())) {
+        Ok(bytes) => Resolved::Bytes(bytes),
+        Err(reason) => Resolved::Skip(reason),
     }
-    Resolved::Skip(format!("installed_profile_absent file={file}"))
 }
 
 /// Resolve every key or return the typed skip reason of the first unavailable profile.
@@ -281,7 +272,7 @@ fn run_pair(id: &'static str) {
         let bytes = match resolve_all(&doc, &[src_key, dst_key]) {
             Ok(b) => b,
             Err(reason) => {
-                eprintln!("SKIP oracle_t1 pair={id} reason={reason}");
+                not_proven("oracle_t1", &format!("pair={id}"), &reason);
                 return;
             }
         };
@@ -382,7 +373,7 @@ fn run_src_leg(id: &'static str, key: &'static str) {
         let bytes = match resolve_all(&doc, &[key]) {
             Ok(b) => b,
             Err(reason) => {
-                eprintln!("SKIP oracle_t1 leg={id} reason={reason}");
+                not_proven("oracle_t1", &format!("leg={id}"), &reason);
                 return;
             }
         };
@@ -428,7 +419,7 @@ fn run_dst_leg(id: &'static str, key: &'static str) {
         let bytes = match resolve_all(&doc, &[key]) {
             Ok(b) => b,
             Err(reason) => {
-                eprintln!("SKIP oracle_t1 leg={id} reason={reason}");
+                not_proven("oracle_t1", &format!("leg={id}"), &reason);
                 return;
             }
         };
