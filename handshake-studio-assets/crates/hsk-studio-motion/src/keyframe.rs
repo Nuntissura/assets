@@ -221,7 +221,9 @@ fn shape(k0: &Keyframe, k1: &Keyframe, component: usize, dts: f64, interpolable:
 }
 
 /// x'(s)/3 = a(1-s)^2 + 2b s(1-s) + c s^2 with a = io, b = (1-ii) - io, c = ii; with a, c >= 0 this
-/// is non-negative on [0, 1] iff b >= 0 or b^2 <= a*c.
+/// is non-negative on [0, 1] iff b >= 0 or b^2 <= a*c. For influences in `0..=1` this always holds
+/// (hand proof: (io+ii-1)^2 - io*ii is convex and 0 at the three corners of the io+ii > 1 triangle),
+/// so `NonMonotoneTime` is a defensive invariant guard against future relaxation of the range.
 fn time_curve_monotone(cubic: &Cubic) -> bool {
     let a = cubic.x1;
     let b = cubic.x2 - cubic.x1;
