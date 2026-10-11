@@ -34,7 +34,10 @@ fn tile_px(w: u32, h: u32, x: u32, y: u32) -> [f32; 4] {
     let ratio = |n: u32, d: u32| {
         f32::from(u16::try_from(n).unwrap()) / f32::from(u16::try_from(d).unwrap())
     };
-    let hole = x.wrapping_mul(3).wrapping_add(y.wrapping_mul(5)) % 7 == 0;
+    let hole = x
+        .wrapping_mul(3)
+        .wrapping_add(y.wrapping_mul(5))
+        .is_multiple_of(7);
     let steps = x.wrapping_add(y) % 5;
     let alpha = if hole {
         0.0
@@ -197,7 +200,7 @@ fn parity_with_reference_across_chunkings_and_threads() {
             for y in 0..44_u32 {
                 for x in 0..48_u32 {
                     let got = grid.at(i64::from(x), i64::from(y));
-                    let inside = x >= 5 && x < 40 && y >= 5 && y < 36;
+                    let inside = (5..40).contains(&x) && (5..36).contains(&y);
                     if inside || opaque {
                         let w = want.pixel(x, y).unwrap();
                         assert_eq!(
