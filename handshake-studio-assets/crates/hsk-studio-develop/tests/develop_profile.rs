@@ -379,6 +379,42 @@ fn wide_requests_are_chunk_invariant_and_report_plan_cache_and_clip() {
         let (receipt, tiles) = run_tiled(&plane, &recipe, &mut converter, 8);
         assert_eq!((tiles.len(), receipt.profile_calls, receipt.profile_stats.plan_hits, receipt.profile_stats.plan_parses), (4, 4, 4, 0));
 
+        // A converter that returns a different pixel count is a typed refusal, never an index panic
+        // or silently uncovered pixels (R3 PLAUSIBLE); no tile is delivered.
+        struct Resizing<'a>(&'a ProfileBinding, &'a ProfileBinding, isize);
+        impl ProfileConverter for Resizing<'_> {
+            fn source(&self) -> &ProfileBinding { self.0 }
+            fn destination(&self) -> &ProfileBinding { self.1 }
+            fn inspect(&mut self, _: &CancellationToken) -> Result<(), DevelopError> { Ok(()) }
+            fn convert(&mut self, pixels: &[[f32; 3]], _: &CancellationToken) -> Result<Vec<[f32; 3]>, DevelopError> {
+                let mut out = pixels.to_vec();
+                if self.2 < 0 { out.pop(); } else { out.push([0.0; 3]); }
+                Ok(out)
+            }
+            fn calls(&self) -> u32 { 0 }
+        }
+        for delta in [-1isize, 1] {
+            let mut tiles = Vec::new();
+            let result = develop_with(
+                &DevelopRequest {
+                    plane: &plane,
+                    recipe: &recipe,
+                    recipe_revision: 1,
+                    expected_source_revision: 1,
+                    grid: Grid { origin_x: 0, origin_y: 0, tile_width: 16, tile_height: 16 },
+                    output_origin: (0, 0),
+                    execution_hint: ExecutionHint::Auto,
+                },
+                Some(&mut Resizing(&p3, &srgb, delta)),
+                &CancellationToken::default(),
+                &mut |t| {
+                    tiles.push(t);
+                    Ok(())
+                },
+            );
+            assert_eq!((result.err(), tiles.len()), (Some(DevelopError::InvalidLength), 0), "delta {delta}");
+        }
+
         // The request cap is bounded by the wide engine's own limit.
         for bad in [0, hsk_studio_prism::MAX_WIDE_PIXELS + 1] {
             let converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
