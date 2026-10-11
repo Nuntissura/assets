@@ -121,6 +121,8 @@ pub struct Run {
     classes: BTreeMap<(Category, &'static str, String), Class>,
     unminimised: usize,
     disagreeing_inputs: usize,
+    /// (label, input, first category and signature) of the first disagreeing inputs, printed when there are few.
+    failing: Vec<(String, String, String)>,
 }
 
 const MAX_MINIMISATIONS: usize = 80;
@@ -134,6 +136,7 @@ impl Run {
             classes: BTreeMap::new(),
             unminimised: 0,
             disagreeing_inputs: 0,
+            failing: Vec::new(),
         }
     }
 
@@ -146,6 +149,14 @@ impl Run {
                     return;
                 }
                 self.disagreeing_inputs += 1;
+                if self.failing.len() < 80 {
+                    let first = &found[0];
+                    self.failing.push((
+                        label.to_owned(),
+                        input.to_owned(),
+                        format!("{}/{}", first.category, first.sub),
+                    ));
+                }
                 for d in found {
                     let key = (d.category, d.sub, d.scripting);
                     let minimal = if self.classes.len() < MAX_MINIMISATIONS {
@@ -234,6 +245,12 @@ impl Run {
                     best.minimal,
                     best.detail
                 );
+            }
+        }
+        if self.disagreeing_inputs <= 80 {
+            let _ = writeln!(summary, "  disagreeing inputs ({}):", self.failing.len());
+            for (label, input, what) in &self.failing {
+                let _ = writeln!(summary, "      {label}: {input:?} -> {what}");
             }
         }
         if self.unminimised > 0 {

@@ -10,13 +10,15 @@
 //! values as the crate decodes them), decoded text, raw-text / RCDATA / script / `noscript` bodies (source slices are
 //! compared after newline normalisation and, for RCDATA, character-reference decoding), comments, CDATA and bogus
 //! comments. Not expressible through the public model: attribute namespaces and prefixes, SVG tag and attribute case
-//! adjustment (compared lowercase), the markup reading of `noscript` under scripting (compared as the source slice),
-//! optional-tag inference (the crate refuses it typed), tree-construction reparenting (tables, forms, adoption agency).
+//! adjustment (compared lowercase), the markup reading of `noscript` under scripting (compared as the source slice).
+//! The generator keeps to tags whose tree construction does not restructure well-nested markup (no `p`, tables, forms,
+//! nested `a`, headings, `select`); that area has its own hand-written group.
 //!
 //! Recorded product disagreements (this lane does not fix product code; see lane SMB-WEB-DIFFTEST notes.disagreements):
-//! `image_start_tag_is_read_as_img`, `null_bytes_and_newline_normalisation`, `generated_null_and_cr_noise` and
-//! `leading_newline_after_pre_listing_textarea` fail until the crate follows the HTML Standard there. Every other test
-//! in this target is expected to pass. `HSK_DIFFTEST_SCALE=<n>` multiplies the generated corpora for soak runs.
+//! `image_start_tag_is_read_as_img`, `null_bytes_and_newline_normalisation`, `generated_null_and_cr_noise`,
+//! `leading_newline_after_pre_listing_textarea` and `tree_construction_restructuring_is_refused_or_read_like_a_browser`
+//! fail until the crate follows the HTML Standard there (or refuses the input typed). Every other test in this target is
+//! expected to pass. `HSK_DIFFTEST_SCALE=<n>` multiplies the generated corpora for soak runs.
 
 mod corpus;
 mod events;
