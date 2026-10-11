@@ -124,12 +124,17 @@ pub struct ProposalConfig<'a> {
     /// validation (`validate_raster_records`, which charges one node per record layer and one per kept effect
     /// instance) gets `nodes = max(nodes, records + kept effect instances)`. That need is bounded by the importer,
     /// not by this field: records by `Limits::max_layers`, kept effect instances by pigment's `MAX_EFFECTS_PER_PLAN`
-    /// (instances a render plan counts) plus the crate's equal bound on the instances no plan counts, so it is at
-    /// most `limits.max_layers + 2 * MAX_EFFECTS_PER_PLAN` (16384 with the default limits) and a smaller `nodes`
-    /// is raised to it for that one validation. Effect stacks beyond those bounds are typed losses, never an error
-    /// (tests `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`,
-    /// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on` and
-    /// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`).
+    /// (instances a render plan counts) plus the crate's equal bound on the instances no plan counts (hidden,
+    /// master-off and switched-off ones), so it is at most `limits.max_layers + 2 * MAX_EFFECTS_PER_PLAN` (16384
+    /// with the default limits) and a smaller `nodes` is raised to it for that one validation. Effect stacks beyond
+    /// those bounds are typed losses, never an error; each bound cuts only its own category (the bound on the
+    /// instances no plan counts never costs a stack its counted instances: a stack that has some keeps them and
+    /// loses only its switched-off ones). Tests
+    /// `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`,
+    /// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on`,
+    /// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`,
+    /// `the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects` and
+    /// `the_counted_bound_never_costs_a_stack_without_counted_instances_its_record`.
     /// A host that validates `ImportProposal::raster_records` again with its own budget needs `nodes` of at least
     /// `raster_records.layers.len()` plus the effect instances they hold.
     pub budget: Budget,
@@ -498,10 +503,16 @@ impl Builder<'_, '_, '_> {
     /// rule and evidence at the top of `effects.rs`). A stack that does not fit is not mapped, its `lfx2` block
     /// stays in the document, and the layer reports a typed loss whose path names the layer id:
     /// `effects_over_budget` (per layer), `effects_over_document_budget` (counted instances past the per-plan
-    /// limit; this stack and every later non-empty stack) or `effects_unrendered_over_document_budget` (kept
-    /// instances no plan counts past the crate's bound; same cut). The import itself never fails on an effect
-    /// count. Tests `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on` and
-    /// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`.
+    /// limit; this stack and every later stack that has counted instances) or
+    /// `effects_unrendered_over_document_budget` (instances no plan counts past the crate's bound; this stack and
+    /// every later stack that has NO counted instances). Each bound cuts only its own category: a stack that has
+    /// counted instances is never refused for the uncounted bound; past it the stack is mapped with its counted
+    /// instances and without its switched-off ones, and the layer reports
+    /// `effects_unrendered_dropped_over_document_budget` (kind `Transformed`). The import itself never fails on an
+    /// effect count. Tests `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on`,
+    /// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`,
+    /// `the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects` and
+    /// `the_counted_bound_never_costs_a_stack_without_counted_instances_its_record`.
     fn collect_records(
         &mut self,
         index: usize,
@@ -550,9 +561,14 @@ impl Builder<'_, '_, '_> {
             let visible = layer.visible() && self.hidden_groups == 0;
             let mint = &mut *self.mint;
             match effects::effect_stack(layer, visible, &self.effect_tally, || mint.effect_stack_id(layer_id), limits) {
-                Some(Ok(m)) => {
-                    self.effect_tally.charge(effects::StackShape::of(m.value.enabled, &m.value.effects, visible));
+                Some(Ok((m, fit))) => {
+                    self.effect_tally.charge(effects::StackShape::of(m.value.enabled, &m.value.effects, visible), fit);
                     self.notes(&path, m.notes);
+                    if fit == effects::Fit::CountedOnly {
+                        // The stack is mapped with its counted instances; its switched-off ones are not recorded.
+                        let dropped = effects::EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET;
+                        self.note(format!("{path}(layer_id={layer_id})"), LossKind::Transformed, dropped);
+                    }
                     self.note(path, LossKind::Preserved, "effects_mapped_to_record_not_rendered");
                     record.effects = Some(m.value);
                 }
@@ -1764,12 +1780,14 @@ pub fn to_proposal(
         // Folio charges one node per record layer and one per effect instance (`validate_raster_records`).
         // Both counts are the importer's own and are bounded before this point: record layers by
         // `Limits::max_layers`, kept effect instances by `MAX_EFFECTS_PER_PLAN` counted plus
-        // `MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT` not counted (`Builder::collect_records`), so
+        // `MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT` not counted (`Builder::collect_records`; past the second bound a
+        // stack with counted instances is kept with its counted instances only), so
         // need <= `Limits::max_layers` + 2 * `MAX_EFFECTS_PER_PLAN`. The node budget of THIS validation is
         // sized to that need (never lowered below the caller's `nodes`; see `ProposalConfig::budget`); the
         // caller's other dimensions apply unchanged. The input cannot exhaust it (tests/effects_budget.rs
-        // `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input` and
-        // `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`).
+        // `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`,
+        // `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded` and
+        // `the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects`).
         let needed = raster_records.layers.len().checked_add(b.effect_tally.kept()).ok_or(PsdError::Overflow)?;
         let records_budget = Budget { nodes: cfg.budget.nodes.max(needed), ..cfg.budget };
         // The parsers pre-check the Folio ranges; a rejection here is a mapping defect, not input

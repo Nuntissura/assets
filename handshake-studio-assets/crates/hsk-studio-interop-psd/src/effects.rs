@@ -45,18 +45,29 @@ use crate::adjust::{Mapped, Note, Reason};
 // its groups are visible, and as 0 otherwise. Counted instances are limited per layer and per document by pigment's
 // numbers. Every kept instance, counted or not, is still held in memory and charged by Folio's record validation, so
 // the kept instances no plan counts are bounded too (`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`, this crate's own bound).
+// Each bound cuts only what it bounds (R10): the counted bounds decide the fate of counted instances, the
+// uncounted bound decides the fate of uncounted instances, and passing one never costs a stack the other category.
 // A stack that does not fit is not mapped (its `lfx2` block stays byte-exact in the document) and is reported as a
-// typed loss; the layer and the rest of the document import. Tests `tests/effects_budget.rs`.
+// typed loss; the layer and the rest of the document import. The one exception is the switched-off part of a stack
+// that has counted instances: past the uncounted bound it is dropped from the record (the stack keeps every counted
+// instance) with a typed loss. Tests `tests/effects_budget.rs`.
 
 /// Loss code of a stack whose layer has more counted instances than [`MAX_EFFECTS_PER_LAYER`], or more mapped
 /// instances than Folio's own per-stack ceiling (`MAX_EFFECTS`, which is above pigment's).
 pub(crate) const EFFECTS_OVER_BUDGET: Reason = "effects_over_budget";
 /// Loss code of a stack that would take the counted instances of the document past [`MAX_EFFECTS_PER_PLAN`], and of
-/// every later non-empty stack (the cut is a prefix of the import order, see [`EffectTally`]).
+/// every later stack that has counted instances (the cut is a prefix of the import order, see [`EffectTally`]).
 pub(crate) const EFFECTS_OVER_DOCUMENT_BUDGET: Reason = "effects_over_document_budget";
-/// Loss code of a stack that would take the kept instances no plan counts past
-/// [`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`], and of every later non-empty stack.
+/// Loss code of a stack that has NO counted instances (hidden layer or group, switched-off stack, all instances
+/// switched off) and would take the kept uncounted instances past [`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`], and of
+/// every later such stack. A stack with counted instances is never refused for this bound
+/// ([`EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET`]).
 pub(crate) const EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET: Reason = "effects_unrendered_over_document_budget";
+/// Loss code (kind `Transformed`, the stack IS mapped) of a stack with counted instances whose switched-off
+/// instances do not fit [`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`]: the record keeps its counted instances and none of
+/// its switched-off ones.
+pub(crate) const EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET: Reason =
+    "effects_unrendered_dropped_over_document_budget";
 /// Kept effect instances no render plan counts (hidden layer or group, switched-off stack, switched-off instance)
 /// that one document may hold. This bound is the crate's, not pigment's; it is the size of pigment's own plan limit
 /// so that the memory and the record-validation work of the instances nobody renders stay as bounded as those that
@@ -87,51 +98,79 @@ impl StackShape {
     }
 }
 
+/// How much of a stack the tally keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Fit {
+    /// The whole stack.
+    Whole,
+    /// Its counted instances only: it has counted instances and its switched-off ones do not fit the uncounted bound.
+    CountedOnly,
+}
+
 /// The running effect totals of one import, in import order (panel order, top-most first, a group before its
-/// children). A stack is kept only when it fits; the first stack that does not fit over a DOCUMENT total closes the
-/// tally, and every later non-empty stack is refused with the same code (a prefix of the import order is kept, so
-/// what is kept does not depend on how the later stacks happen to be sized). A refusal for the per-layer limit does
-/// not close it, and a later stack over the per-layer limit keeps that code. Tests
-/// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on` and
-/// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`.
+/// children). Two independent bounds, each cutting only what it bounds:
+/// - COUNTED instances (per layer [`MAX_EFFECTS_PER_LAYER`], per document [`MAX_EFFECTS_PER_PLAN`]): the first stack
+///   that would take the counted total past the plan limit closes the counted side, and every later stack with
+///   counted instances is refused ([`EFFECTS_OVER_DOCUMENT_BUDGET`]). A stack with none is not affected;
+/// - UNCOUNTED instances ([`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`]): the first stack whose uncounted instances do not
+///   fit closes the uncounted side. Later stacks WITHOUT counted instances are refused
+///   ([`EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET`]); a stack WITH counted instances is never refused for this bound,
+///   it keeps its counted instances and drops its switched-off ones ([`Fit::CountedOnly`]).
+///
+/// Each side keeps a prefix of the import order, so what is kept does not depend on how the later stacks happen to
+/// be sized. A refusal for the per-layer limit closes neither side, and a later stack over the per-layer limit keeps
+/// that code. Kept counted <= [`MAX_EFFECTS_PER_PLAN`] and kept uncounted <= [`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`]
+/// always, so [`Self::kept`] <= their sum. Tests
+/// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on`,
+/// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`,
+/// `the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects` and
+/// `the_counted_bound_never_costs_a_stack_without_counted_instances_its_record`.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct EffectTally {
     counted: usize,
     uncounted: usize,
-    closed: Option<Reason>,
+    counted_closed: bool,
+    uncounted_closed: bool,
 }
 
 impl EffectTally {
-    /// Whether a stack of this shape fits. Does not charge it.
-    pub(crate) fn admit(&self, shape: StackShape) -> Result<(), Reason> {
+    /// Whether, and how much of, a stack of this shape fits. Does not charge it.
+    pub(crate) fn admit(&self, shape: StackShape) -> Result<Fit, Reason> {
         if shape.counted == 0 && shape.uncounted == 0 {
-            return Ok(());
+            return Ok(Fit::Whole);
         }
         if shape.counted > MAX_EFFECTS_PER_LAYER {
             return Err(EFFECTS_OVER_BUDGET);
         }
-        if let Some(reason) = self.closed {
-            return Err(reason);
+        let uncounted_fits = !self.uncounted_closed
+            && self.uncounted.checked_add(shape.uncounted).is_some_and(|total| total <= MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT);
+        if shape.counted == 0 {
+            // No counted instances: only the uncounted bound applies, the counted side is not consulted.
+            return if uncounted_fits { Ok(Fit::Whole) } else { Err(EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET) };
         }
-        if self.counted.checked_add(shape.counted).is_none_or(|total| total > MAX_EFFECTS_PER_PLAN) {
+        // Counted instances: the counted bounds decide whether the stack is kept; the uncounted bound only decides
+        // whether its switched-off instances go with it, never whether the stack is.
+        if self.counted_closed || self.counted.checked_add(shape.counted).is_none_or(|total| total > MAX_EFFECTS_PER_PLAN) {
             return Err(EFFECTS_OVER_DOCUMENT_BUDGET);
         }
-        if self.uncounted.checked_add(shape.uncounted).is_none_or(|total| total > MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT) {
-            return Err(EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET);
-        }
-        Ok(())
+        Ok(if shape.uncounted == 0 || uncounted_fits { Fit::Whole } else { Fit::CountedOnly })
     }
 
-    /// Charges a stack that was kept.
-    pub(crate) fn charge(&mut self, shape: StackShape) {
+    /// Charges a stack that was kept: `shape` is the shape of what the record holds, `fit` what [`Self::admit`] said.
+    pub(crate) fn charge(&mut self, shape: StackShape, fit: Fit) {
         self.counted = self.counted.saturating_add(shape.counted);
         self.uncounted = self.uncounted.saturating_add(shape.uncounted);
+        if fit == Fit::CountedOnly {
+            self.uncounted_closed = true;
+        }
     }
 
-    /// Records why a stack was refused: a document-total refusal closes the tally.
+    /// Records why a stack was refused: a document-total refusal closes its side.
     pub(crate) fn refused(&mut self, reason: Reason) {
-        if reason == EFFECTS_OVER_DOCUMENT_BUDGET || reason == EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET {
-            self.closed.get_or_insert(reason);
+        if reason == EFFECTS_OVER_DOCUMENT_BUDGET {
+            self.counted_closed = true;
+        } else if reason == EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET {
+            self.uncounted_closed = true;
         }
     }
 
@@ -446,7 +485,9 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
 /// Maps the effects block of `layer`. `None` when it has no `lfx2` / `lmfx` block; `Err` when the
 /// descriptor cannot be read or the stack does not fit: more mapped instances than Folio's per-stack ceiling, more
 /// counted instances than [`MAX_EFFECTS_PER_LAYER`] ([`EFFECTS_OVER_BUDGET`]), or past a document total of `tally`
-/// ([`EFFECTS_OVER_DOCUMENT_BUDGET`], [`EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET`]). `visible` is the layer's own
+/// ([`EFFECTS_OVER_DOCUMENT_BUDGET`] for a stack with counted instances, [`EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET`]
+/// for one without). A stack with counted instances whose switched-off instances do not fit the uncounted bound is
+/// `Ok` with [`Fit::CountedOnly`]: the stack holds its counted instances only. `visible` is the layer's own
 /// visibility and that of all its groups (see the rule at the top of this file). `stack_id` mints the `SEFX`
 /// identity and is only called once the descriptor parsed and the stack fits, so a refused stack consumes no id.
 pub(crate) fn effect_stack(
@@ -455,7 +496,7 @@ pub(crate) fn effect_stack(
     tally: &EffectTally,
     stack_id: impl FnOnce() -> Option<String>,
     limits: &Limits,
-) -> Option<Result<Mapped<StudioEffectStack>, Reason>> {
+) -> Option<Result<(Mapped<StudioEffectStack>, Fit), Reason>> {
     let block = layer.block(b"lfx2").or_else(|| layer.block(b"lmfx"))?;
     Some(map_stack(&block.data, visible, tally, stack_id, limits))
 }
@@ -466,7 +507,7 @@ fn map_stack(
     tally: &EffectTally,
     stack_id: impl FnOnce() -> Option<String>,
     limits: &Limits,
-) -> Result<Mapped<StudioEffectStack>, Reason> {
+) -> Result<(Mapped<StudioEffectStack>, Fit), Reason> {
     let root = descriptor::parse_versioned(data, &[0, 16], limits)?;
     let mut notes: Vec<Note> = Vec::new();
     let enabled = flag(&root, "masterFXSwitch", true)?;
@@ -520,8 +561,13 @@ fn map_stack(
     if singles.iter().zip(&multis).any(|(single, multi)| *single && *multi) {
         notes.push((LossKind::Transformed, "effect_single_and_multi_slots_merged"));
     }
-    tally.admit(StackShape::of(enabled, &effects, visible))?;
+    let fit = tally.admit(StackShape::of(enabled, &effects, visible))?;
+    if fit == Fit::CountedOnly {
+        // Only a stack with counted instances gets here: `enabled` and `visible`, so the live instances are exactly
+        // the enabled ones, in their stack order. The instances that are switched off are not recorded.
+        effects.retain(|effect| effect.enabled);
+    }
     notes.push((LossKind::Transformed, "effect_colour_profile_unassigned"));
     let effect_stack_id = stack_id().ok_or("effect_stack_id_unavailable")?;
-    Ok(Mapped { value: StudioEffectStack { effect_stack_id, enabled, scale, effects }, notes })
+    Ok((Mapped { value: StudioEffectStack { effect_stack_id, enabled, scale, effects }, notes }, fit))
 }

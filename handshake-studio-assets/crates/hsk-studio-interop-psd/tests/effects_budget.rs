@@ -6,7 +6,11 @@
 //! way. A stack that does not fit is not mapped (its `lfx2` block stays byte-exact) and the layer reports a typed
 //! loss: `effects_over_budget` (per layer, or past Folio's own per-stack ceiling),
 //! `effects_over_document_budget` (counted instances past the plan limit: the crossing stack and every later
-//! stack) or `effects_unrendered_over_document_budget` (the kept instances no plan counts are bounded too). Folio's
+//! stack that has counted instances) or `effects_unrendered_over_document_budget` (the kept instances no plan counts
+//! are bounded too: the crossing stack and every later stack that has NO counted instances). Each bound cuts only
+//! its own category (R10): a stack with counted instances is never refused for the unrendered bound (past it the
+//! stack keeps its counted instances and loses its switched-off ones, `effects_unrendered_dropped_over_document_budget`),
+//! and a stack without counted instances is never refused for the counted bound. Folio's
 //! record-validation node budget (records + kept instances, `validate_raster_records`) is sized from the input
 //! inside those bounds. All inputs are synthetic byte fixtures built here, independently of the crate's encoder.
 
@@ -23,6 +27,7 @@ use hsk_studio_pigment::effect_math::{MAX_EFFECTS_PER_LAYER, MAX_EFFECTS_PER_PLA
 const OVER_LAYER: &str = "effects_over_budget";
 const OVER_DOCUMENT: &str = "effects_over_document_budget";
 const OVER_UNRENDERED: &str = "effects_unrendered_over_document_budget";
+const DROPPED_UNRENDERED: &str = "effects_unrendered_dropped_over_document_budget";
 
 /// Host identity minting; `stacks` counts the `SEFX` ids it was asked for.
 struct Mint {
@@ -358,19 +363,25 @@ fn effect_count_of(p: &ImportProposal, psd_index: usize) -> Option<usize> {
 enum Fate {
     /// Mapped to a record with this many instances (and no budget loss entry).
     Kept(usize),
+    /// Mapped to a record with this many instances, all of them enabled: the switched-off instances did not fit and
+    /// the single typed loss entry (kind `Transformed`, `effects_unrendered_dropped_over_document_budget`) names the
+    /// layer.
+    CountedOnly(usize),
     /// Not mapped; the single typed loss entry names the layer and has this code.
     Lost(&'static str),
 }
-fn fate(p: &ImportProposal, name: &str) -> Fate {
-    let id = p
-        .snapshot
+fn layer_id_by_name(p: &ImportProposal, name: &str) -> String {
+    p.snapshot
         .document()
         .layers
         .iter()
         .find(|l| l.name == name)
         .unwrap_or_else(|| panic!("layer {name} is in the document"))
         .layer_id
-        .clone();
+        .clone()
+}
+fn fate(p: &ImportProposal, name: &str) -> Fate {
+    let id = layer_id_by_name(p, name);
     let suffix = format!("lfx2(layer_id={id})");
     let entries: Vec<&LossEntry> = p
         .loss
@@ -379,13 +390,20 @@ fn fate(p: &ImportProposal, name: &str) -> Fate {
         .filter(|e| e.path.ends_with(&suffix))
         .collect();
     match p.raster_records.layer(&id).and_then(|r| r.effects.as_ref()) {
-        Some(stack) => {
-            assert!(
-                entries.is_empty(),
-                "{name}: a kept stack has no budget loss entry: {entries:?}"
-            );
-            Fate::Kept(stack.effects.len())
-        }
+        Some(stack) => match entries.as_slice() {
+            [] => Fate::Kept(stack.effects.len()),
+            [entry] => {
+                assert_eq!(entry.kind, LossKind::Transformed, "{name}");
+                assert_eq!(entry.code, DROPPED_UNRENDERED, "{name}");
+                assert!(entry.path.starts_with("layer["), "{name}: {}", entry.path);
+                assert!(
+                    stack.effects.iter().all(|effect| effect.enabled),
+                    "{name}: only the counted instances are recorded"
+                );
+                Fate::CountedOnly(stack.effects.len())
+            }
+            _ => panic!("{name}: at most one budget loss entry is expected, got {entries:?}"),
+        },
         None => {
             let [entry] = entries.as_slice() else {
                 panic!(
@@ -402,6 +420,36 @@ fn assert_fates(p: &ImportProposal, expected: &[(usize, Fate)]) {
     for (n, want) in expected {
         assert_eq!(&fate(p, &name_of(*n)), want, "layer {}", name_of(*n));
     }
+}
+/// Effect stacks held by the records (one `SEFX` id is minted for each).
+fn kept_stacks(p: &ImportProposal) -> usize {
+    p.raster_records
+        .layers
+        .iter()
+        .filter(|r| r.effects.is_some())
+        .count()
+}
+/// The source ordinals of the instances a kept stack holds (an instance id is `<key>-<ordinal>`, the ordinal is the
+/// instance's position in the descriptor's stack, switched-off instances included).
+fn kept_ordinals(p: &ImportProposal, name: &str) -> Vec<usize> {
+    let id = layer_id_by_name(p, name);
+    let stack = p
+        .raster_records
+        .layer(&id)
+        .and_then(|r| r.effects.as_ref())
+        .unwrap_or_else(|| panic!("{name} holds a stack"));
+    stack
+        .effects
+        .iter()
+        .map(|effect| {
+            effect
+                .instance_id
+                .rsplit('-')
+                .next()
+                .and_then(|ordinal| ordinal.parse().ok())
+                .unwrap_or_else(|| panic!("{name}: instance id {}", effect.instance_id))
+        })
+        .collect()
 }
 /// Effect instances held by the records.
 fn kept_total(p: &ImportProposal) -> usize {
@@ -761,9 +809,11 @@ fn a_stack_past_folios_ceiling_is_a_typed_loss_not_a_rejected_import() {
 
 /// The kept instances no plan counts are bounded too (the crate's own bound, the size of pigment's plan limit), so
 /// the memory and the record-validation work of the instances nobody renders stay bounded: 64 hidden layers x 64
-/// are kept, the next hidden stack crosses and is lost with `effects_unrendered_over_document_budget`, and so is
-/// every later stack, counted or not (the cut is a prefix). With the counted bound filled as well, the whole
-/// document holds at most 2 x 4096 instances, and the node budget the importer gives the record validation is
+/// are kept, the next hidden stack crosses and is lost with `effects_unrendered_over_document_budget`. A VISIBLE
+/// stack after the crossing is not touched by that bound (R10: it is governed by the counted bounds alone, see
+/// `the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects`). With the counted bound
+/// filled as well, the whole document holds at most 2 x 4096 instances (a visible stack after that is lost to the
+/// COUNTED bound, `effects_over_document_budget`), and the node budget the importer gives the record validation is
 /// exactly records + those instances, far above the caller's 4096: the importer sizes it, the caller's `nodes` does
 /// not bound it (documented on `ProposalConfig::budget`).
 #[test]
@@ -779,7 +829,8 @@ fn instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_val
                 )
             };
 
-            // the bound alone: 4096 hidden instances kept, then a hidden stack and a visible one are lost
+            // the bound alone: 4096 hidden instances kept, then a hidden stack is lost; the visible stack after it
+            // has counted instances and a counted total of 0, so it is kept (R10)
             let mut panel = layers_of(hidden());
             panel.extend(layers_of([Fx::live(1).hidden(), Fx::live(1)]));
             let (_, p) = import(&build(&panel)).expect("imports");
@@ -788,10 +839,10 @@ fn instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_val
                 .collect();
             want.extend([
                 (MAX_EFFECTS_PLAN_LAYERS, Fate::Lost(OVER_UNRENDERED)),
-                (MAX_EFFECTS_PLAN_LAYERS + 1, Fate::Lost(OVER_UNRENDERED)),
+                (MAX_EFFECTS_PLAN_LAYERS + 1, Fate::Kept(1)),
             ]);
             assert_fates(&p, &want);
-            assert_eq!(kept_total(&p), MAX_EFFECTS_PER_PLAN);
+            assert_eq!(kept_total(&p), MAX_EFFECTS_PER_PLAN + 1);
 
             // both bounds full: 64 visible + 64 hidden stacks of 64, then one more of each kind
             let mut panel = layers_of(repeated(
@@ -807,7 +858,7 @@ fn instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_val
                 .collect();
             want.extend([
                 (layers, Fate::Lost(OVER_UNRENDERED)),
-                (layers + 1, Fate::Lost(OVER_UNRENDERED)),
+                (layers + 1, Fate::Lost(OVER_DOCUMENT)),
             ]);
             assert_fates(&p, &want);
             assert_eq!(kept_total(&p), 2 * MAX_EFFECTS_PER_PLAN);
@@ -821,6 +872,199 @@ fn instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_val
                 needed > budget().nodes,
                 "the caller's default nodes did not bound it"
             );
+        },
+    );
+}
+
+/// R10 (review A, lead clarification): the 4096 bound on the instances no plan counts (hidden layers and groups,
+/// master-off stacks, switched-off instances) bounds ONLY those. Once it is crossed in panel order, a later stack that
+/// has counted instances keeps them: it is governed by the counted bounds (64 per layer, 4096 per document) alone. A
+/// later stack with NO counted instances is lost with `effects_unrendered_over_document_budget`, and the cut is a
+/// prefix (a later small uncounted stack that would still fit is lost with it). A stack with counted instances whose
+/// own switched-off instances do not fit is mapped with its counted instances in their stack order and without the
+/// switched-off ones, with a `Transformed` entry `effects_unrendered_dropped_over_document_budget`; that also closes
+/// the unrendered side. So the memory bound (records + at most 2 x 4096 instances) holds without a rendered effect
+/// ever being lost to the count of unrendered ones.
+#[test]
+fn the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects() {
+    bounded_case(
+        "the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects",
+        || {
+            let hidden = || {
+                repeated(
+                    MAX_EFFECTS_PLAN_LAYERS,
+                    Fx::live(MAX_EFFECTS_PER_LAYER).hidden(),
+                )
+            };
+            let kept_64 = |count: usize| -> Vec<(usize, Fate)> {
+                (0..count)
+                    .map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER)))
+                    .collect()
+            };
+            let first = MAX_EFFECTS_PLAN_LAYERS;
+
+            // A: the bound is crossed early in panel order by a hidden stack (L64); every visible stack after it
+            // with counted instances keeps its effects, every stack without counted instances after it is lost
+            let mut panel = layers_of(hidden());
+            panel.extend(layers_of([
+                Fx::live(1).hidden(),
+                Fx::live(5),
+                Fx::live(1).hidden(),
+                Fx::disabled(2),
+                Fx::live(2).master_off(),
+            ]));
+            panel.push(Node::Group {
+                hidden: true,
+                children: vec![Fx::live(2)],
+            });
+            panel.push(Node::Group {
+                hidden: false,
+                children: vec![Fx::live(2)],
+            });
+            panel.push(Node::Layer(Fx::live(MAX_EFFECTS_PER_LAYER)));
+            let bytes = build(&panel);
+            let (doc, p, minted) = import_counting(&bytes).expect("imports");
+            let mut want = kept_64(first);
+            want.extend([
+                (first, Fate::Lost(OVER_UNRENDERED)),
+                (first + 1, Fate::Kept(5)),
+                (first + 2, Fate::Lost(OVER_UNRENDERED)),
+                (first + 3, Fate::Lost(OVER_UNRENDERED)),
+                (first + 4, Fate::Lost(OVER_UNRENDERED)),
+                (first + 5, Fate::Lost(OVER_UNRENDERED)),
+                (first + 6, Fate::Kept(2)),
+                (first + 7, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+            ]);
+            assert_fates(&p, &want);
+            assert_eq!(kept_total(&p), MAX_EFFECTS_PER_PLAN + 5 + 2 + 64);
+            assert_eq!(minted, kept_stacks(&p), "one SEFX id per kept stack");
+            assert_eq!(kept_stacks(&p), first + 3);
+            assert_eq!(
+                write_psd(&doc, &Limits::default()).unwrap(),
+                bytes,
+                "the lfx2 blocks of the lost stacks stay in the document"
+            );
+            assert_record_need_is_exact(&p);
+
+            // B: the bound exactly full; a stack with counted instances whose switched-off instances do not fit
+            // keeps its counted ones only, in their stack order; a stack with no switched-off instance is whole
+            let interleaved = Fx {
+                enabled: vec![false, true, false, true, true],
+                master: true,
+                hidden: false,
+            };
+            let mut panel = layers_of(hidden());
+            panel.extend(layers_of([
+                Fx::mixed(3, 5),
+                interleaved,
+                Fx::mixed(2, 0),
+                Fx::mixed(4, 1),
+                Fx::live(1).hidden(),
+            ]));
+            let (_, p, minted) = import_counting(&build(&panel)).expect("imports");
+            let mut want = kept_64(first);
+            want.extend([
+                (first, Fate::CountedOnly(3)),
+                (first + 1, Fate::CountedOnly(3)),
+                (first + 2, Fate::Kept(2)),
+                (first + 3, Fate::CountedOnly(4)),
+                (first + 4, Fate::Lost(OVER_UNRENDERED)),
+            ]);
+            assert_fates(&p, &want);
+            assert_eq!(
+                kept_ordinals(&p, &name_of(first + 1)),
+                [1, 3, 4],
+                "the enabled instances, in their source order"
+            );
+            assert_eq!(kept_total(&p), MAX_EFFECTS_PER_PLAN + 3 + 3 + 2 + 4);
+            assert_eq!(minted, kept_stacks(&p));
+            assert_record_need_is_exact(&p);
+
+            // C: the cut is a prefix. 4090 unrendered instances are kept; the stack with counted instances whose
+            // 10 switched-off instances would pass the bound (4100) keeps its counted one and closes the side; a
+            // later hidden stack that would still fit (4091) is lost with it
+            let mut panel = layers_of(repeated(
+                first - 1,
+                Fx::live(MAX_EFFECTS_PER_LAYER).hidden(),
+            ));
+            panel.extend(layers_of([
+                Fx::live(58).hidden(),
+                Fx::mixed(1, 10),
+                Fx::live(1).hidden(),
+                Fx::disabled(1),
+                Fx::live(2),
+                Fx::mixed(2, 3),
+            ]));
+            let (_, p, minted) = import_counting(&build(&panel)).expect("imports");
+            let last = first - 1;
+            let mut want = kept_64(last);
+            want.extend([
+                (last, Fate::Kept(58)),
+                (last + 1, Fate::CountedOnly(1)),
+                (last + 2, Fate::Lost(OVER_UNRENDERED)),
+                (last + 3, Fate::Lost(OVER_UNRENDERED)),
+                (last + 4, Fate::Kept(2)),
+                (last + 5, Fate::CountedOnly(2)),
+            ]);
+            assert_fates(&p, &want);
+            assert_eq!(kept_total(&p), 4090 + 1 + 2 + 2);
+            assert_eq!(minted, kept_stacks(&p));
+            assert_record_need_is_exact(&p);
+        },
+    );
+}
+
+/// The counted bounds cut only stacks that have counted instances (R10, the same class from the other side): with the
+/// counted total at the plan limit, a later stack with counted instances is lost with
+/// `effects_over_document_budget` (whole: its switched-off instances go with it), while hidden layers and groups,
+/// master-off stacks and stacks with every instance switched off keep their stacks up to the unrendered bound. The
+/// refused stack with counted instances does not close the unrendered side.
+#[test]
+fn the_counted_bound_never_costs_a_stack_without_counted_instances_its_record() {
+    bounded_case(
+        "the_counted_bound_never_costs_a_stack_without_counted_instances_its_record",
+        || {
+            let first = MAX_EFFECTS_PLAN_LAYERS;
+            let mut panel = layers_of(repeated(first, Fx::live(MAX_EFFECTS_PER_LAYER)));
+            panel.extend(layers_of([
+                Fx::live(1),
+                Fx::live(MAX_EFFECTS_PER_LAYER).hidden(),
+                Fx::disabled(5),
+                Fx::mixed(1, 2),
+                Fx::live(MAX_EFFECTS_PER_LAYER).master_off(),
+            ]));
+            panel.push(Node::Group {
+                hidden: true,
+                children: vec![Fx::live(2)],
+            });
+            panel.push(Node::Layer(Fx::live(2)));
+            let bytes = build(&panel);
+            let (doc, p, minted) = import_counting(&bytes).expect("imports");
+            let mut want: Vec<(usize, Fate)> = (0..first)
+                .map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER)))
+                .collect();
+            want.extend([
+                (first, Fate::Lost(OVER_DOCUMENT)),
+                (first + 1, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                (first + 2, Fate::Kept(5)),
+                (first + 3, Fate::Lost(OVER_DOCUMENT)),
+                (first + 4, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                (first + 5, Fate::Kept(2)),
+                (first + 6, Fate::Lost(OVER_DOCUMENT)),
+            ]);
+            assert_fates(&p, &want);
+            assert_eq!(
+                kept_total(&p),
+                MAX_EFFECTS_PER_PLAN + 64 + 5 + 64 + 2,
+                "4096 counted + the stacks no plan counts"
+            );
+            assert_eq!(minted, kept_stacks(&p), "one SEFX id per kept stack");
+            assert_eq!(
+                write_psd(&doc, &Limits::default()).unwrap(),
+                bytes,
+                "the lfx2 blocks of the lost stacks stay in the document"
+            );
+            assert_record_need_is_exact(&p);
         },
     );
 }
