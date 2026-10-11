@@ -25,17 +25,19 @@
 //! all modes (a conservative reading of STU-DS-175).
 use super::{
     Budget, Code, NodeKind, NodeRef, Parent, Payload, ResolutionIssue, Resolver, Result,
-    StudioDocument, canceled, err, id,
+    StudioDocument,
     autolayout::{
-        StudioAutoLayout, StudioChildLayout, StudioConstraint, StudioSizeClamps,
-        validate_auto_layout, validate_clamps, ChildPositioning,
+        ChildPositioning, StudioAutoLayout, StudioChildLayout, StudioConstraint, StudioSizeClamps,
+        validate_auto_layout, validate_clamps,
     },
+    canceled,
     components::{
         ComponentPropertyType, StudioComponent, StudioComponentInstance, StudioComponentProperty,
         StudioComponentSet, StudioPropertyValue, StudioVariable, StudioVariableCollection,
         validate_collection, validate_component, validate_instance, validate_set,
         validate_variable,
     },
+    err, id,
     paint::{StudioPaintStyle, validate_style},
     reactions::{StudioReaction, validate_reactions},
     values::{Ctx, VariableType, label},
@@ -260,12 +262,21 @@ fn check_variables(r: &StudioDesignRecords, refs: &Refs, c: &mut Ctx) -> Result<
         let collection = refs
             .collections
             .get(v.variable_collection_id.as_str())
-            .ok_or_else(|| err(Code::DanglingReference, format!("{vid}/variable_collection_id")))?;
+            .ok_or_else(|| {
+                err(
+                    Code::DanglingReference,
+                    format!("{vid}/variable_collection_id"),
+                )
+            })?;
         members
             .entry(collection.collection_id.as_str())
             .or_default()
             .insert(vid);
-        let modes: BTreeSet<&str> = collection.modes.iter().map(|m| m.mode_id.as_str()).collect();
+        let modes: BTreeSet<&str> = collection
+            .modes
+            .iter()
+            .map(|m| m.mode_id.as_str())
+            .collect();
         let have: BTreeSet<&str> = v.values_by_mode.keys().map(String::as_str).collect();
         if modes != have {
             return Err(err(Code::InvalidField, format!("{vid}/values_by_mode")));
@@ -292,7 +303,10 @@ fn check_variables(r: &StudioDesignRecords, refs: &Refs, c: &mut Ctx) -> Result<
                 .get(alias)
                 .ok_or_else(|| err(Code::DanglingReference, format!("{vid}/values_by_mode")))?;
             if target.resolved_type != value.resolved_type() {
-                return Err(err(Code::InvalidField, format!("{vid}/values_by_mode/type")));
+                return Err(err(
+                    Code::InvalidField,
+                    format!("{vid}/values_by_mode/type"),
+                ));
             }
             targets.push(target.variable_id.as_str());
         }
@@ -339,7 +353,10 @@ fn check_components(
             .iter()
             .any(|k| k.component_id == s.default_variant_id)
         {
-            return Err(err(Code::DanglingReference, format!("{sid}/default_variant_id")));
+            return Err(err(
+                Code::DanglingReference,
+                format!("{sid}/default_variant_id"),
+            ));
         }
         let mut assignments: BTreeSet<Vec<(&str, &str)>> = BTreeSet::new();
         for k in members {
@@ -502,7 +519,10 @@ fn check_nodes(
         if let Some(k) = &n.child_layout
             && k.layout_grow > 1
         {
-            return Err(err(Code::InvalidField, format!("{nid}/child_layout/layout_grow")));
+            return Err(err(
+                Code::InvalidField,
+                format!("{nid}/child_layout/layout_grow"),
+            ));
         }
         if n.constraints.is_some() {
             let absolute = n
@@ -515,8 +535,8 @@ fn check_nodes(
         }
         validate_reactions(&n.reactions, nid, refs, c)?;
         if !n.component_property_references.is_empty() {
-            let inside_definition = found.kind == NodeKind::Layer
-                && definitions.iter().any(|d| inside(nodes, nid, d));
+            let inside_definition =
+                found.kind == NodeKind::Layer && definitions.iter().any(|d| inside(nodes, nid, d));
             if !inside_definition || n.component_property_references.len() > 256 {
                 return Err(err(
                     Code::InvalidField,

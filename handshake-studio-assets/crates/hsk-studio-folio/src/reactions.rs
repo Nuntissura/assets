@@ -309,7 +309,10 @@ fn action(a: &StudioAction, target: &str, refs: &Refs, c: &mut Ctx) -> Result<()
                 .get(variable_collection_id.as_str())
                 .ok_or_else(|| err(Code::DanglingReference, &ctarget))?;
             if !label(variable_mode_id)
-                || !collection.modes.iter().any(|m| &m.mode_id == variable_mode_id)
+                || !collection
+                    .modes
+                    .iter()
+                    .any(|m| &m.mode_id == variable_mode_id)
             {
                 return Err(err(
                     Code::DanglingReference,

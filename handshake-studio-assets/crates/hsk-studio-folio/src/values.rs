@@ -237,7 +237,10 @@ pub struct StudioEasing {
 impl StudioEasing {
     pub(crate) fn validate(&self, target: &str) -> Result<()> {
         let target = format!("{target}/easing");
-        let ok = match (&self.easing_function_cubic_bezier, &self.easing_function_spring) {
+        let ok = match (
+            &self.easing_function_cubic_bezier,
+            &self.easing_function_spring,
+        ) {
             (Some(b), None) => {
                 [b.x1, b.x2].into_iter().all(unit_interval)
                     && [b.y1, b.y2]
@@ -267,7 +270,9 @@ impl StudioEasing {
 }
 
 /// STU-DS-125 resolved variable type enumeration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum VariableType {
     Boolean,

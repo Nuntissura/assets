@@ -290,7 +290,9 @@ fn property_value(
     match (t, v) {
         (_, StudioPropertyValue::Alias(a)) => id(&a.id, "SVAR", target),
         (ComponentPropertyType::Boolean, StudioPropertyValue::Boolean(_)) => Ok(()),
-        (ComponentPropertyType::InstanceSwap, StudioPropertyValue::Text(s)) => id(s, "SCMP", target),
+        (ComponentPropertyType::InstanceSwap, StudioPropertyValue::Text(s)) => {
+            id(s, "SCMP", target)
+        }
         (
             ComponentPropertyType::Text
             | ComponentPropertyType::Variant
@@ -334,12 +336,7 @@ fn definitions(defs: &[StudioComponentProperty], owner: &str, c: &mut Ctx) -> Re
     Ok(())
 }
 
-fn identity(
-    publishing: &StudioPublishing,
-    owner: &str,
-    layer_id: &str,
-    c: &mut Ctx,
-) -> Result<()> {
+fn identity(publishing: &StudioPublishing, owner: &str, layer_id: &str, c: &mut Ctx) -> Result<()> {
     id(layer_id, "SLYR", &format!("{owner}/layer_id"))?;
     publishing.validate(owner, c)
 }
@@ -434,16 +431,26 @@ pub(crate) fn validate_instance(i: &StudioComponentInstance, c: &mut Ctx) -> Res
     for (n, o) in i.overrides.iter().enumerate() {
         c.tick()?;
         let target = format!("{iid}/overrides/{n}");
-        id(&o.overridden_node_id, "SLYR", &format!("{target}/overridden_node_id"))?;
+        id(
+            &o.overridden_node_id,
+            "SLYR",
+            &format!("{target}/overridden_node_id"),
+        )?;
         if !nodes.insert(o.overridden_node_id.as_str()) {
-            return Err(err(Code::DuplicateIdentity, format!("{target}/overridden_node_id")));
+            return Err(err(
+                Code::DuplicateIdentity,
+                format!("{target}/overridden_node_id"),
+            ));
         }
         let fields: BTreeSet<&str> = o.overridden_fields.iter().map(String::as_str).collect();
         if o.overridden_fields.is_empty()
             || fields.len() != o.overridden_fields.len()
             || !fields.iter().all(|f| OVERRIDABLE_FIELDS.contains(f))
         {
-            return Err(err(Code::InvalidField, format!("{target}/overridden_fields")));
+            return Err(err(
+                Code::InvalidField,
+                format!("{target}/overridden_fields"),
+            ));
         }
         for (field, value) in &o.values {
             if !fields.contains(field.as_str()) {
@@ -466,7 +473,10 @@ pub(crate) fn validate_collection(k: &StudioVariableCollection, c: &mut Ctx) -> 
     c.text(&k.name, cid)?;
     k.publishing.validate(cid, c)?;
     if k.is_extension {
-        return Err(err(Code::UnsupportedDescriptor, format!("{cid}/is_extension")));
+        return Err(err(
+            Code::UnsupportedDescriptor,
+            format!("{cid}/is_extension"),
+        ));
     }
     if k.modes.is_empty() || k.modes.len() > MAX_MODES {
         return Err(err(Code::InvalidField, format!("{cid}/modes")));
@@ -481,7 +491,10 @@ pub(crate) fn validate_collection(k: &StudioVariableCollection, c: &mut Ctx) -> 
         c.text(&m.name, cid)?;
     }
     if !modes.contains(k.default_mode_id.as_str()) {
-        return Err(err(Code::DanglingReference, format!("{cid}/default_mode_id")));
+        return Err(err(
+            Code::DanglingReference,
+            format!("{cid}/default_mode_id"),
+        ));
     }
     let mut variables = BTreeSet::new();
     for v in &k.variable_ids {
