@@ -156,3 +156,47 @@ const EXPECTED: [&str; 15] = [
     "rggb_64x48 curve_tiles16 e7b33967ddcc00669ea3d3d717918fb72bac7ae2f132e43b70851e219177604c",
     "rggb_64x48 wide_image c4ba41594dcd0c72f295aa0284985704323a9222f72de5a9d495476ffca00849",
 ];
+
+/// Curve evaluation at the domain ends, every control point, its f64 neighbours and a dense sweep.
+#[test]
+fn curve_eval_is_byte_identical_to_the_pre_rewrite_oracle() {
+    let curves = [
+        Curve::new(vec![(0.0, 0.0), (255.0, 255.0)]).unwrap(),
+        Curve::new(vec![(0.0, 0.0), (64.0, 48.0), (192.0, 208.0), (255.0, 255.0)]).unwrap(),
+        Curve::new(vec![(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (21.0, 200.0), (200.0, 200.0), (254.0, 255.0), (255.0, 255.0)]).unwrap(),
+        Curve::new((0..32).map(|i| (f64::from(i) * 255.0 / 31.0, (f64::from(i) * 255.0 / 31.0).powi(2) / 255.0)).collect()).unwrap(),
+    ];
+    let mut lines = Vec::new();
+    for (index, curve) in curves.iter().enumerate() {
+        let prepared = curve.prepare().unwrap();
+        let mut inputs: Vec<f64> = vec![0.0, 1.0, f64::MIN_POSITIVE, 1.0 - f64::EPSILON / 2.0];
+        for (x, _) in curve.points() {
+            let x = x / 255.0;
+            inputs.extend([x, f64::from_bits(x.to_bits() + 1), f64::from_bits(x.to_bits().saturating_sub(1))]);
+        }
+        inputs.extend((0..=997).map(|k| f64::from(k) / 997.0));
+        let mut hasher = Sha256::new();
+        let mut refused = 0u32;
+        for v in inputs.iter().copied().filter(|v| (0.0..=1.0).contains(v)) {
+            match prepared.eval(v) {
+                Ok(y) => hasher.update(y.to_bits().to_le_bytes()),
+                Err(_) => {
+                    refused += 1;
+                    hasher.update([0xFF; 8]);
+                }
+            }
+        }
+        for v in [-1e-12, 1.0 + 1e-12, f64::NAN, f64::INFINITY] {
+            assert_eq!(prepared.eval(v), Err(DevelopError::CurveDomain));
+        }
+        lines.push(format!("curve{index} {} refused={refused}", hex(&hasher.finalize())));
+    }
+    assert_eq!(lines.join("\n"), CURVE_EXPECTED.join("\n"), "curve digest drift");
+}
+
+const CURVE_EXPECTED: [&str; 4] = [
+    "curve0 1f0753411a11b7e1302190f599c21f989b99a93ca7fff8953a226ff205b71486 refused=0",
+    "curve1 83ae1952df4a0c9bad160397bca4d0fcf7e26993a1c1ae393d76aee1b7a20b93 refused=0",
+    "curve2 7abe095987fabc5069ef52b304f3193ae8451fd51b2e64609b958499b037a864 refused=0",
+    "curve3 162a7113d16aff4d18572025420553b52e23c1a31076b29e82436534bd7d9cd3 refused=0",
+];
