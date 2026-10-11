@@ -1,5 +1,6 @@
 //! `PdfDoc`: the bounded PDF object view. PDF bytes are provider transport; this type is a typed
 //! projection of one opened input and holds no document state beyond it.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Limits, PressError, Result, SinkError};
 use crate::reader::{Entry, Parsed, check_cancel, parse_document};
 use crate::syntax::{Dict, ObjRef, Object};
@@ -232,7 +233,7 @@ impl PdfDoc {
                 Some(Object::Array(kids)) => {
                     for kid in kids.iter().rev() {
                         let r = kid.as_ref().ok_or(PressError::Malformed("page_kid"))?;
-                        stack.push((r.num, depth + 1));
+                        stack.push((r.num, depth.saturating_add(1)));
                     }
                 }
                 Some(_) => return Err(PressError::Malformed("page_kids")),
@@ -529,7 +530,7 @@ impl PdfDoc {
                 }
             }
             for kid in kids.iter().rev() {
-                stack.push((*kid, name.clone(), ft.clone(), ff, depth + 1));
+                stack.push((*kid, name.clone(), ft.clone(), ff, depth.saturating_add(1)));
             }
         }
         Ok((fields, sigs))

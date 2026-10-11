@@ -1,4 +1,5 @@
 //! Typed refusals and hostile-input limits. Messages are static strings and carry no document text.
+#![deny(clippy::arithmetic_side_effects)]
 use std::fmt;
 
 /// Hostile-input limits. Every allocation the reader or writer makes is bounded by one of these.
