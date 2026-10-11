@@ -45,6 +45,20 @@ impl Dict {
             self.entries.push((key.as_bytes().to_vec(), value));
         }
     }
+    pub fn get_key(&self, key: &[u8]) -> Option<&Object> {
+        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+    pub fn set_key(&mut self, key: &[u8], value: Object) {
+        if let Some(slot) = self.entries.iter_mut().find(|(k, _)| k == key) {
+            slot.1 = value;
+        } else {
+            self.entries.push((key.to_vec(), value));
+        }
+    }
+    pub fn remove_key(&mut self, key: &[u8]) -> Option<Object> {
+        let at = self.entries.iter().position(|(k, _)| k == key)?;
+        Some(self.entries.remove(at).1)
+    }
     pub fn remove(&mut self, key: &str) -> Option<Object> {
         let at = self.entries.iter().position(|(k, _)| k == key.as_bytes())?;
         Some(self.entries.remove(at).1)

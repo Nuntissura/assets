@@ -284,11 +284,11 @@ fn signed_readonly_cancel_stale_save_fault() {
     // Unsupported stream filter on the page content is a typed refusal.
     let lzw = base_objs(b"\x80\x0b\x60\x50\x22", "");
     let mut lzw_objs = lzw;
-    lzw_objs[3].1 = stream_body("/Filter /LZWDecode", b"\x80\x0b\x60\x50\x22");
+    lzw_objs[3].1 = stream_body("/Filter /DCTDecode", b"\x80\x0b\x60\x50\x22");
     let mut doc = open(&build(&lzw_objs, "", b""));
     assert_eq!(
         doc.redact_region(&region, UnsupportedPolicy::Refuse, &token()).unwrap_err(),
-        PressError::UnsupportedFilter("LZWDecode".into())
+        PressError::UnsupportedFilter("DCTDecode".into())
     );
 
     // Save fault: commit fails -> abort called, last-good artifact untouched.
@@ -435,4 +435,255 @@ fn xref_stream_object_stream_predictor_and_object_model() {
     assert_eq!(again.inspect().page_count, 1);
     assert_eq!(again.proposal(&token()).unwrap().form_fields.len(), 2);
     assert!(find(&saved, b"(Ada)").is_some());
+}
+
+// ----------------------------------------------------------------- slice 2
+
+use hsk_studio_press::{PayloadLocation, SanitizePolicy, sanitize_full_rewrite};
+
+fn count(hay: &[u8], needle: &[u8]) -> usize {
+    hay.windows(needle.len()).filter(|w| *w == needle).count()
+}
+
+fn form_doc(page_content: &str, extra: Vec<(u32, Vec<u8>)>, xobjects: &str) -> Vec<u8> {
+    let mut objs = base_objs(page_content.as_bytes(), "<< /Title (T) >>");
+    objs[2].1 = format!(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> /XObject << {xobjects} >> >> >>"
+    )
+    .into_bytes();
+    objs.extend(extra);
+    build(&objs, "/Info 7 0 R", b"")
+}
+
+#[test]
+fn form_xobject_text_redaction_copy_on_write() {
+    let form = |content: &[u8], extra_res: &str| {
+        stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 300 40] /Resources << /Font << /F1 6 0 R >> {extra_res} >>"), content)
+    };
+    let region = RedactionRegion { page_index: 0, rect: [40.0, 640.0, 400.0, 700.0] };
+
+    // Two uses of one form: only the use under the region is rewritten (copy-on-write).
+    let two = form_doc(
+        "q 1 0 0 1 50 650 cm /Fm1 Do Q\nq 1 0 0 1 50 300 cm /Fm1 Do Q\nBT /F1 12 Tf 72 100 Td (page text) Tj ET",
+        vec![(9, form(b"BT /F1 12 Tf 10 10 Td (SECRET-FORM) Tj ET", ""))],
+        "/Fm1 9 0 R",
+    );
+    let mut doc = open(&two);
+    let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
+    assert_eq!(out.reports[0].removed_text, vec![b"SECRET-FORM".to_vec()]);
+    let streams = independent_streams(&out.bytes);
+    assert_eq!(
+        streams.iter().map(|s| count(s, b"SECRET-FORM")).sum::<usize>(),
+        1,
+        "only the unredacted second use keeps the original form"
+    );
+    let page = streams.iter().find(|s| find(s, b"(page text)").is_some()).expect("page content");
+    assert_eq!((count(page, b"/Fm1 Do"), count(page, b"/HskRd0 Do")), (1, 1));
+    assert!(out.proof.hits.is_empty() && out.proof.kept_text_collisions.len() == 1 && out.residual_in_region == 0, "{:?}", out.proof);
+    assert!(out.is_proven());
+
+    // One use with a nested form: both strings vanish from every byte, the old forms are dropped.
+    let one = form_doc(
+        "q 1 0 0 1 50 650 cm /Fm1 Do Q\nBT /F1 12 Tf 72 100 Td (page text) Tj ET",
+        vec![
+            (9, form(b"BT /F1 12 Tf 10 10 Td (SECRET-FORM) Tj ET\n/Fm3 Do", "/XObject << /Fm3 10 0 R >>")),
+            (
+                10,
+                stream_body(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 100 20] /Resources << /Font << /F1 6 0 R >> >>",
+                    b"BT /F1 12 Tf 0 0 Td (SECRET-NESTED) Tj ET",
+                ),
+            ),
+        ],
+        "/Fm1 9 0 R",
+    );
+    let mut doc = open(&one);
+    let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
+    let mut removed = out.reports[0].removed_text.clone();
+    removed.sort();
+    assert_eq!(removed, vec![b"SECRET-FORM".to_vec(), b"SECRET-NESTED".to_vec()]);
+    let streams = independent_streams(&out.bytes);
+    for n in [&b"SECRET-FORM"[..], b"SECRET-NESTED"] {
+        assert!(find(&out.bytes, n).is_none());
+        assert!(streams.iter().all(|s| find(s, n).is_none()));
+    }
+    assert!(streams.iter().any(|s| find(s, b"(page text)").is_some()));
+    assert!(out.proof.hits.is_empty() && out.proof.kept_text_collisions.is_empty());
+    assert!(out.is_proven());
+}
+
+#[test]
+fn sanitize_removes_thumb_pieceinfo_metadata_from_all_bytes() {
+    let deflate = |d: &[u8]| miniz_oxide::deflate::compress_to_vec_zlib(d, 6);
+    let mut objs = base_objs(CONTENT.as_bytes(), "<< /Title (SECRET-INFO) >>");
+    objs[0].1 = b"<< /Type /Catalog /Pages 2 0 R /Metadata 20 0 R /PieceInfo << /App << /Data 21 0 R >> >> /Names << /EmbeddedFiles << /Names [(a.txt) 22 0 R] >> /JavaScript << /Names [(js) 23 0 R] >> >> /OpenAction 23 0 R >>".to_vec();
+    objs[2].1 = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Thumb 24 0 R /PieceInfo 25 0 R /Resources << /Font << /F1 6 0 R >> >> >>".to_vec();
+    objs.push((20, stream_body("/Type /Metadata /Subtype /XML", b"<x:xmpmeta>SECRET-XMP</x:xmpmeta>")));
+    objs.push((21, stream_body("/Filter /FlateDecode", &deflate(b"private SECRET-PIECE-DATA"))));
+    objs.push((22, b"<< /Type /Filespec /F (a.txt) /EF << /F 26 0 R >> >>".to_vec()));
+    objs.push((23, b"<< /S /JavaScript /JS (app.alert\\('SECRET-JS'\\)) >>".to_vec()));
+    objs.push((24, stream_body("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"SECRET-THUMB")));
+    objs.push((25, b"<< /App << /Private (SECRET-PAGE-PIECE) >> >>".to_vec()));
+    objs.push((26, stream_body("/Type /EmbeddedFile /Filter /FlateDecode", &deflate(b"SECRET-EMBEDDED payload"))));
+    let needles: [&[u8]; 7] =
+        [b"SECRET-INFO", b"SECRET-XMP", b"SECRET-PIECE-DATA", b"SECRET-PAGE-PIECE", b"SECRET-JS", b"SECRET-THUMB", b"SECRET-EMBEDDED"];
+    let input = build(&objs, "/Info 7 0 R", b"");
+
+    // Non-vacuous: every payload is in the input (raw, or after an independent inflate).
+    let in_streams = independent_streams(&input);
+    for n in needles {
+        assert!(
+            find(&input, n).is_some() || in_streams.iter().any(|s| find(s, n).is_some()),
+            "input lacks {}",
+            String::from_utf8_lossy(n)
+        );
+    }
+
+    let doc = open(&input);
+    let (out, report) = sanitize_full_rewrite(&doc, &SanitizePolicy::ALL, &token()).unwrap();
+    let out_streams = independent_streams(&out);
+    for n in needles {
+        assert!(find(&out, n).is_none(), "raw bytes still hold {}", String::from_utf8_lossy(n));
+        assert!(out_streams.iter().all(|s| find(s, n).is_none()), "a decoded stream still holds {}", String::from_utf8_lossy(n));
+    }
+    let wide: Vec<Vec<u8>> = needles.iter().map(|n| n.to_vec()).collect();
+    let proof = verify_payload_absent(&out, &wide, &Limits::default(), &token()).unwrap();
+    assert!(proof.is_clean() && proof.hits.is_empty() && proof.kept_text_collisions.is_empty(), "{proof:?}");
+    let classes: Vec<&str> = report.removed.iter().map(|(c, _)| c.as_str()).collect();
+    for c in ["info_metadata", "xmp", "embedded_files", "javascript", "thumbnails", "private_data"] {
+        assert!(classes.contains(&c), "report lacks {c}: {classes:?}");
+    }
+    assert_eq!(open(&out).inspect().page_count, 1);
+    assert!(out_streams.iter().any(|s| find(s, b"[(Public ) -250 (text)] TJ").is_some()), "public content intact");
+
+    // The policy is selective: keeping XMP keeps exactly that payload.
+    let (kept, _) = sanitize_full_rewrite(&doc, &SanitizePolicy { drop_xmp: false, ..SanitizePolicy::ALL }, &token()).unwrap();
+    assert!(find(&kept, b"SECRET-XMP").is_some() && find(&kept, b"SECRET-THUMB").is_none());
+}
+
+/// PDF LZW (EarlyChange 1) encoder; the decoder's code-width rule is mirrored exactly.
+fn lzw_encode(data: &[u8]) -> Vec<u8> {
+    struct Bits {
+        out: Vec<u8>,
+        acc: u32,
+        n: u32,
+    }
+    impl Bits {
+        fn put(&mut self, code: u16, width: u32) {
+            self.acc = (self.acc << width) | u32::from(code);
+            self.n += width;
+            while self.n >= 8 {
+                self.out.push((self.acc >> (self.n - 8)) as u8);
+                self.n -= 8;
+                self.acc &= (1 << self.n) - 1;
+            }
+        }
+    }
+    // The decoder lags the encoder by one table entry, and adds nothing for the first code.
+    let width = |emitted: u32| {
+        let d = 258 + emitted.saturating_sub(1);
+        match d + 1 {
+            ..512 => 9,
+            512..1024 => 10,
+            1024..2048 => 11,
+            _ => 12,
+        }
+    };
+    let mut bits = Bits { out: Vec::new(), acc: 0, n: 0 };
+    let mut dict: std::collections::HashMap<(u16, u8), u16> = std::collections::HashMap::new();
+    let (mut next, mut emitted) = (258u16, 0u32);
+    bits.put(256, 9);
+    let mut w: Option<u16> = None;
+    for &b in data {
+        match w {
+            None => w = Some(u16::from(b)),
+            Some(c) => {
+                if let Some(&code) = dict.get(&(c, b)) {
+                    w = Some(code);
+                } else {
+                    bits.put(c, width(emitted));
+                    emitted += 1;
+                    dict.insert((c, b), next);
+                    next += 1;
+                    w = Some(u16::from(b));
+                    if next >= 4000 {
+                        bits.put(256, width(emitted));
+                        emitted = 0;
+                        dict.clear();
+                        next = 258;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(c) = w {
+        bits.put(c, width(emitted));
+        emitted += 1;
+    }
+    bits.put(257, width(emitted));
+    if bits.n > 0 {
+        bits.out.push((bits.acc << (8 - bits.n)) as u8);
+    }
+    bits.out
+}
+
+#[test]
+fn lzw_filter_decodes_and_is_bomb_bounded() {
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let mut content = String::new();
+    for i in 0..400 {
+        content.push_str(&format!("q 1 0 0 1 {} {} cm Q\n", i, i * 3));
+    }
+    content.push_str("BT /F1 12 Tf 72 700 Td (SECRET-LZW) Tj ET");
+    let mut objs = base_objs(b"", "");
+    objs[3].1 = stream_body("/Filter /LZWDecode", &lzw_encode(content.as_bytes()));
+    let mut doc = open(&build(&objs, "", b""));
+    let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
+    assert_eq!(out.reports[0].removed_text, vec![b"SECRET-LZW".to_vec()]);
+    let streams = independent_streams(&out.bytes);
+    assert!(
+        streams.iter().any(|s| find(s, b"1 0 0 1 399 1197 cm").is_some()),
+        "whole LZW stream decoded across code-width changes"
+    );
+    assert!(streams.iter().all(|s| find(s, b"SECRET-LZW").is_none()));
+
+    // Decompression bomb: 4 MiB of zeros in a few KB, 64 KiB cap.
+    let bomb = lzw_encode(&vec![0u8; 4 << 20]);
+    assert!(bomb.len() < 16 * 1024, "bomb is {} bytes", bomb.len());
+    let mut objs = base_objs(b"", "");
+    objs[3].1 = stream_body("/Filter /LZWDecode", &bomb);
+    let limits = Limits { max_decoded_bytes: 64 * 1024, ..Limits::default() };
+    let mut doc = PdfDoc::open(&build(&objs, "", b""), &limits, &token()).unwrap();
+    assert_eq!(doc.redact_region(&region, UnsupportedPolicy::Refuse, &token()).unwrap_err(), PressError::InputLimit("decoded_bytes"));
+}
+
+#[test]
+fn proof_context_rule_kept_text_collision_is_not_a_leak() {
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let run = |content: &str, info: &str| {
+        let mut doc = open(&build(&base_objs(content.as_bytes(), info), "/Info 7 0 R", b""));
+        redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap()
+    };
+    let natural = "BT /F1 12 Tf 72 700 Td (budget plan) Tj ET\nBT /F1 12 Tf 72 400 Td (the budget plan is on page two) Tj ET";
+
+    // The same words occur in kept text: a collision, reported, not a leak; the document is proven.
+    let out = run(natural, "<< /Title (T) >>");
+    assert_eq!(out.reports[0].removed_text, vec![b"budget plan".to_vec()]);
+    assert!(out.proof.hits.is_empty());
+    assert_eq!(out.proof.kept_text_collisions.len(), 1);
+    assert_eq!(out.proof.kept_text_collisions[0].count, 1);
+    assert_eq!(out.residual_in_region, 0);
+    assert!(out.is_proven());
+
+    // The same words in metadata are a leak, whatever the kept text says.
+    let leak = run(natural, "<< /Title (T) /Subject (the budget plan memo) >>");
+    assert_eq!(leak.proof.kept_text_collisions.len(), 1);
+    assert!(leak.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 7 })));
+    assert!(!leak.is_proven());
+
+    // ... and so are non-show content operands (marked-content properties).
+    let actual = "BT /F1 12 Tf 72 700 Td (budget plan) Tj ET\n/Span << /ActualText (budget plan) >> BDC\nBT /F1 12 Tf 72 400 Td (page two) Tj ET\nEMC";
+    let leak = run(actual, "<< /Title (T) >>");
+    assert!(leak.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::ContentString { .. })));
+    assert!(leak.proof.kept_text_collisions.is_empty() && !leak.is_proven());
 }

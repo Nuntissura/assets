@@ -130,6 +130,30 @@ struct Interp<'a> {
     unsupported: Vec<RedactionClass>,
     removed: Vec<Vec<u8>>,
     layout_shift: bool,
+    /// Remaining decoded-byte allowance for form-XObject content.
+    budget: usize,
+    next_num: u32,
+    /// Copy-on-write form XObjects created by this pass.
+    new_objects: Vec<(u32, Entry)>,
+    name_counter: u32,
+}
+
+/// Result of interpreting one content level (page or form).
+struct Pass {
+    out: Vec<u8>,
+    changed: bool,
+    /// New `/XObject` resource names for rewritten `Do` uses.
+    additions: Vec<(Vec<u8>, ObjRef)>,
+    /// Resource names whose every use at this level was rewritten.
+    removals: Vec<Vec<u8>>,
+}
+
+const MAX_FORM_DEPTH: usize = 8;
+
+struct XObj<'a> {
+    /// `Some((stream, matrix))` for a form XObject; `None` for an image.
+    form: Option<(&'a Stream, Mat)>,
+    bbox: [f64; 4],
 }
 
 fn num(op: &Op, i: usize) -> Result<f64> {
@@ -140,8 +164,12 @@ fn matrix(op: &Op) -> Result<Mat> {
 }
 
 impl<'a> Interp<'a> {
-    fn new(doc: &'a PdfDoc, resources: Option<&'a Dict>, region: [f64; 4]) -> Self {
+    fn new(doc: &'a PdfDoc, resources: Option<&'a Dict>, region: [f64; 4], budget: usize) -> Self {
         Self {
+            budget,
+            next_num: doc.objects.keys().next_back().copied().unwrap_or(0).saturating_add(1),
+            new_objects: Vec::new(),
+            name_counter: 0,
             doc,
             resources,
             region,
@@ -258,12 +286,14 @@ impl<'a> Interp<'a> {
         }
     }
 
-    fn xobject_box(&self, name: &[u8]) -> Option<(bool, [f64; 4])> {
+    fn xobject(&self, name: &[u8]) -> Option<XObj<'a>> {
         let doc = self.doc;
         let xo = self.resources?.get("XObject").map(|x| doc.resolve(x)).and_then(Object::as_dict)?;
         let obj = xo.entries.iter().find(|(k, _)| k == name).map(|(_, v)| doc.resolve(v))?;
+        let everything = [f64::MIN, f64::MIN, f64::MAX, f64::MAX];
         let d = obj.as_dict()?;
         if d.get("Subtype").is_some_and(|s| s.is_name("Form")) {
+            let Object::Stream(stream) = obj else { return None };
             let m: Mat = match d.get("Matrix").map(|m| doc.resolve(m)).and_then(Object::as_array) {
                 Some(a) if a.len() == 6 => {
                     let mut out = IDENT;
@@ -271,7 +301,7 @@ impl<'a> Interp<'a> {
                         match doc.resolve(v).as_f64() {
                             Some(x) => *slot = x,
                             // Unreadable matrix: assume the form covers everything (fail closed).
-                            None => return Some((true, [f64::MIN, f64::MIN, f64::MAX, f64::MAX])),
+                            None => return Some(XObj { form: Some((stream, IDENT)), bbox: everything }),
                         }
                     }
                     out
@@ -279,23 +309,112 @@ impl<'a> Interp<'a> {
                 _ => IDENT,
             };
             let full = mul(&m, &self.g.ctm);
-            let b = doc.rect_of(d.get("BBox"));
-            let pts: Vec<(f64, f64)> = match b {
-                Some(b) => vec![apply(&full, b[0], b[1]), apply(&full, b[2], b[1]), apply(&full, b[0], b[3]), apply(&full, b[2], b[3])],
-                None => return Some((true, [f64::MIN, f64::MIN, f64::MAX, f64::MAX])),
+            let area = match doc.rect_of(d.get("BBox")) {
+                Some(b) => bbox(&[apply(&full, b[0], b[1]), apply(&full, b[2], b[1]), apply(&full, b[0], b[3]), apply(&full, b[2], b[3])]),
+                None => everything,
             };
-            Some((true, bbox(&pts)))
+            Some(XObj { form: Some((stream, m)), bbox: area })
         } else if d.get("Subtype").is_some_and(|s| s.is_name("Image")) {
             let c = &self.g.ctm;
-            Some((false, bbox(&[apply(c, 0.0, 0.0), apply(c, 1.0, 0.0), apply(c, 0.0, 1.0), apply(c, 1.0, 1.0)])))
+            Some(XObj { form: None, bbox: bbox(&[apply(c, 0.0, 0.0), apply(c, 1.0, 0.0), apply(c, 0.0, 1.0), apply(c, 1.0, 1.0)]) })
         } else {
             None
         }
     }
 
-    fn run(&mut self, ops: &[Op], data: &[u8], cancel: &CancellationToken) -> Result<(Vec<u8>, bool)> {
+    fn alloc(&mut self) -> Result<u32> {
+        let n = self.next_num;
+        self.next_num = n.checked_add(1).ok_or(PressError::InputLimit("max_objects"))?;
+        Ok(n)
+    }
+
+    fn fresh_name(&mut self, additions: &[(Vec<u8>, ObjRef)]) -> Vec<u8> {
+        let doc = self.doc;
+        loop {
+            let candidate = format!("HskRd{}", self.name_counter).into_bytes();
+            self.name_counter += 1;
+            let in_resources = self
+                .resources
+                .and_then(|r| r.get("XObject"))
+                .map(|x| doc.resolve(x))
+                .and_then(Object::as_dict)
+                .is_some_and(|x| x.get_key(&candidate).is_some());
+            if !in_resources && !additions.iter().any(|(n, _)| *n == candidate) {
+                return candidate;
+            }
+        }
+    }
+
+    /// Direct copy of `base` whose `/XObject` entry gains `additions` and loses `removals`.
+    fn resources_with(&self, base: Option<&Dict>, additions: &[(Vec<u8>, ObjRef)], removals: &[Vec<u8>]) -> Dict {
+        let mut res = base.cloned().unwrap_or_default();
+        let mut xo = res.get("XObject").map(|x| self.doc.resolve(x)).and_then(Object::as_dict).cloned().unwrap_or_default();
+        for name in removals {
+            xo.remove_key(name);
+        }
+        for (name, r) in additions {
+            xo.set_key(name, Object::Ref(*r));
+        }
+        res.set("XObject", Object::Dict(xo));
+        res
+    }
+
+    /// Interprets a form XObject under the current CTM. Returns a copy-on-write replacement form
+    /// when text inside it was removed; the original form is never modified.
+    fn run_form(&mut self, stream: &'a Stream, matrix: Mat, cancel: &CancellationToken, depth: usize) -> Result<Option<ObjRef>> {
+        let data = filters::decode_stream(stream, &self.doc.limits, &mut self.budget)?;
+        let ops = parse_content(&data, &self.doc.limits)?;
+        let doc = self.doc;
+        let own_resources = stream.dict.get("Resources").map(|r| doc.resolve(r)).and_then(Object::as_dict);
+        let parent_resources = self.resources;
+        let saved = (
+            self.g.clone(),
+            std::mem::take(&mut self.stack),
+            self.tm,
+            self.tlm,
+            self.path.take(),
+            std::mem::take(&mut self.fonts),
+        );
+        self.g.ctm = mul(&matrix, &self.g.ctm);
+        if own_resources.is_some() {
+            self.resources = own_resources;
+        }
+        let pass = self.run(&ops, &data, cancel, depth);
+        let effective = self.resources;
+        (self.g, self.stack, self.tm, self.tlm, self.path, self.fonts) = saved;
+        self.resources = parent_resources;
+        let pass = pass?;
+        if !pass.changed {
+            return Ok(None);
+        }
+        let mut dict = stream.dict.clone();
+        for key in ["Filter", "DecodeParms", "Length", "DL"] {
+            dict.remove(key);
+        }
+        dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+        if !pass.additions.is_empty() || !pass.removals.is_empty() {
+            let rebuilt = self.resources_with(effective, &pass.additions, &pass.removals);
+            dict.set("Resources", Object::Dict(rebuilt));
+        }
+        let data = miniz_oxide::deflate::compress_to_vec_zlib(&pass.out, 6);
+        let num = self.alloc()?;
+        self.new_objects.push((num, Entry { generation: 0, obj: Object::Stream(Box::new(Stream { dict, data })), span: None }));
+        Ok(Some(ObjRef { num, generation: 0 }))
+    }
+
+    fn run(&mut self, ops: &[Op], data: &[u8], cancel: &CancellationToken, depth: usize) -> Result<Pass> {
         let mut out: Vec<u8> = Vec::with_capacity(data.len());
         let mut changed = false;
+        let mut additions: Vec<(Vec<u8>, ObjRef)> = Vec::new();
+        let mut rewritten: BTreeSet<Vec<u8>> = BTreeSet::new();
+        let mut uses: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+        for op in ops {
+            if op.name == b"Do"
+                && let Some(n) = op.operands.first().and_then(Object::as_name)
+            {
+                *uses.entry(n.to_vec()).or_default() += 1;
+            }
+        }
         for (i, op) in ops.iter().enumerate() {
             if i % 1024 == 0 {
                 check_cancel(cancel)?;
@@ -444,11 +563,29 @@ impl<'a> Interp<'a> {
                 }
                 b"Do" => {
                     let name = op.operands.first().and_then(Object::as_name).ok_or(PressError::Malformed("content_operands"))?;
-                    match self.xobject_box(name) {
-                        Some((is_form, b)) if touches(&b, &self.region) => {
-                            self.mark(if is_form { RedactionClass::FormXObject } else { RedactionClass::Image });
+                    if let Some(x) = self.xobject(name)
+                        && touches(&x.bbox, &self.region)
+                    {
+                        match x.form {
+                            None => self.mark(RedactionClass::Image),
+                            Some(_) if depth >= MAX_FORM_DEPTH => self.mark(RedactionClass::FormXObject),
+                            Some((stream, matrix)) => {
+                                if let Some(copy) = self.run_form(stream, matrix, cancel, depth + 1)? {
+                                    let fresh = self.fresh_name(&additions);
+                                    out.push(b'/');
+                                    write_name_bytes(&fresh, &mut out);
+                                    out.extend_from_slice(b" Do
+");
+                                    if let Some(count) = uses.get_mut(name) {
+                                        *count = count.saturating_sub(1);
+                                    }
+                                    rewritten.insert(name.to_vec());
+                                    additions.push((fresh, copy));
+                                    changed = true;
+                                    keep = false;
+                                }
+                            }
                         }
-                        _ => {}
                     }
                 }
                 _ => {}
@@ -458,8 +595,15 @@ impl<'a> Interp<'a> {
                 out.push(b'\n');
             }
         }
-        Ok((out, changed))
+        let removals: Vec<Vec<u8>> = rewritten.into_iter().filter(|n| uses.get(n).copied().unwrap_or(0) == 0).collect();
+        Ok(Pass { out, changed, additions, removals })
     }
+}
+
+fn write_name_bytes(name: &[u8], out: &mut Vec<u8>) {
+    let mut tmp = Vec::new();
+    write_object(&Object::Name(name.to_vec()), &mut tmp);
+    out.extend_from_slice(&tmp[1..]); // drop the leading '/', already written by the caller
 }
 
 fn res<'a>(m: &'a BTreeMap<u32, Entry>, mut o: &'a Object) -> &'a Object {
@@ -568,9 +712,15 @@ impl PdfDoc {
         }
         let ops = parse_content(&data, &self.limits)?;
         let resources = self.inherited(page_num, "Resources").and_then(Object::as_dict);
-        let mut interp = Interp::new(self, resources, rect);
-        let (new_content, changed) = interp.run(&ops, &data, cancel)?;
-        let Interp { unsupported, removed, layout_shift, .. } = interp;
+        let mut interp = Interp::new(self, resources, rect, budget);
+        let pass = interp.run(&ops, &data, cancel, 0)?;
+        let page_resources = if pass.additions.is_empty() && pass.removals.is_empty() {
+            None
+        } else {
+            Some(interp.resources_with(resources, &pass.additions, &pass.removals))
+        };
+        let Interp { unsupported, removed, layout_shift, new_objects, next_num, .. } = interp;
+        let (new_content, changed) = (pass.out, pass.changed);
         if policy == UnsupportedPolicy::Refuse
             && let Some(class) = unsupported.first()
         {
@@ -579,8 +729,9 @@ impl PdfDoc {
 
         // 2. Stage every mutation on a copy; commit only after the reachability proof.
         let mut staged = self.objects.clone();
+        staged.extend(new_objects);
         if changed {
-            let new_num = staged.keys().next_back().copied().unwrap_or(0).checked_add(1).ok_or(PressError::InputLimit("max_objects"))?;
+            let new_num = next_num;
             let mut dict = Dict::default();
             dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
             let data = miniz_oxide::deflate::compress_to_vec_zlib(&new_content, 6);
@@ -588,6 +739,9 @@ impl PdfDoc {
             let page = staged.get_mut(&page_num).ok_or(PressError::NoSuchPage)?;
             if let Object::Dict(d) = &mut page.obj {
                 d.set("Contents", Object::Ref(ObjRef { num: new_num, generation: 0 }));
+                if let Some(rebuilt) = page_resources {
+                    d.set("Resources", Object::Dict(rebuilt));
+                }
             }
             page.span = None;
         }

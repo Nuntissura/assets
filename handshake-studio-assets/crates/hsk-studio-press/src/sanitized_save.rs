@@ -37,6 +37,15 @@ pub struct PayloadHit {
     pub location: PayloadLocation,
 }
 
+/// A needle found as (part of) a text-showing operand of a decoded content stream: the same text
+/// legitimately occurs in kept content. Reported separately; never counted as a leak.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextCollision {
+    pub needle: usize,
+    pub object: u32,
+    pub count: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayloadProof {
     pub raw_bytes_scanned: usize,
@@ -50,7 +59,10 @@ pub struct PayloadProof {
     pub unreachable_objects: Vec<u32>,
     /// `endobj` markers beyond the objects the cross-reference table lists (orphan bodies).
     pub unlisted_object_markers: u32,
+    /// Leaks: needle found outside kept text-showing operands (see `verify_payload_absent`).
     pub hits: Vec<PayloadHit>,
+    /// Needle also present as kept text-showing operand text (not a leak).
+    pub kept_text_collisions: Vec<TextCollision>,
 }
 
 impl PayloadProof {
@@ -113,6 +125,16 @@ fn looks_like_content(d: &Dict) -> bool {
 
 /// Scans the saved bytes for `needles` (see module docs). Needles are raw string bytes; empty
 /// needles are ignored.
+///
+/// Context rule (what makes the proof usable for natural-language documents without weakening
+/// it): in decoded page/form content streams a needle that appears as (part of) a TEXT-SHOWING
+/// operand (Tj, TJ, ', ") is a kept-text collision, reported in `kept_text_collisions`, because
+/// the same word legitimately occurs in kept text (the in-region instance is proven gone by the
+/// residual pass in [`redact_and_save`]). A needle anywhere else is a leak and lands in `hits`:
+/// raw bytes outside decoded streams (headers, object text, xref, orphan bodies), string/name
+/// objects (metadata, annotation contents, outlines, ActualText), non-show content operands
+/// (marked-content properties), inline-image data, comments, and every decoded non-content stream
+/// (XMP, embedded files, thumbnails, private data, object streams).
 pub fn verify_payload_absent(
     output: &[u8],
     needles: &[Vec<u8>],
@@ -130,16 +152,18 @@ pub fn verify_payload_absent(
         unreachable_objects: Vec::new(),
         unlisted_object_markers: 0,
         hits: Vec::new(),
+        kept_text_collisions: Vec::new(),
     };
-    for (needle, offset) in scan(output, &vars) {
-        proof.hits.push(PayloadHit { needle, location: PayloadLocation::RawBytes { offset } });
-    }
+    let raw_hits = scan(output, &vars);
     let live = reachable(&parsed.objects, &trailer_roots(&parsed.trailer));
     proof.unreachable_objects = parsed.objects.keys().copied().filter(|n| !live.contains(n)).collect();
     let markers = output.windows(6).filter(|w| *w == b"endobj").count();
     let listed = parsed.objects.values().filter(|e| e.span.is_some()).count();
     proof.unlisted_object_markers = markers.saturating_sub(listed) as u32;
 
+    // Raw spans of streams that decode successfully: their bytes are judged in decoded context.
+    let mut covered: Vec<(usize, usize)> = Vec::new();
+    let mut collisions: BTreeMap<(usize, u32), u32> = BTreeMap::new();
     let mut budget = limits.max_decoded_total;
     for (i, (num, entry)) in parsed.objects.iter().enumerate() {
         if i % 64 == 0 {
@@ -177,24 +201,35 @@ pub fn verify_payload_absent(
         match filters::decode_stream(s, limits, &mut budget) {
             Ok(bytes) => {
                 proof.streams_decoded += 1;
-                for (needle, offset) in scan(&bytes, &vars) {
-                    proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedStream { object: *num, offset } });
+                if let Some(span) = entry.span {
+                    covered.push(span);
                 }
-                if looks_like_content(&s.dict)
-                    && let Ok(ops) = parse_content(&bytes, limits)
-                {
-                    for op in &ops {
-                        let mut st: Vec<&Object> = op.operands.iter().collect();
-                        while let Some(o) = st.pop() {
-                            match o {
-                                Object::Str(x) => {
-                                    if let Some(needle) = contains(x, &vars) {
+                let ops = if looks_like_content(&s.dict) { parse_content(&bytes, limits).ok() } else { None };
+                let is_show = |name: &[u8]| matches!(name, b"Tj" | b"TJ" | b"'" | b"\"");
+                let show_spans: Vec<(usize, usize)> =
+                    ops.iter().flatten().filter(|op| is_show(&op.name)).map(|op| (op.start, op.end)).collect();
+                for (needle, offset) in scan(&bytes, &vars) {
+                    if !show_spans.iter().any(|(a, b)| offset >= *a && offset < *b) {
+                        proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedStream { object: *num, offset } });
+                    }
+                }
+                for op in ops.iter().flatten() {
+                    let show = is_show(&op.name);
+                    let mut st: Vec<&Object> = op.operands.iter().collect();
+                    while let Some(o) = st.pop() {
+                        match o {
+                            Object::Str(x) => {
+                                if let Some(needle) = contains(x, &vars) {
+                                    if show {
+                                        *collisions.entry((needle, *num)).or_default() += 1;
+                                    } else {
                                         proof.hits.push(PayloadHit { needle, location: PayloadLocation::ContentString { object: *num } });
                                     }
                                 }
-                                Object::Array(a) => st.extend(a.iter()),
-                                _ => {}
                             }
+                            Object::Array(a) => st.extend(a.iter()),
+                            Object::Dict(d) => st.extend(d.entries.iter().map(|(_, v)| v)),
+                            _ => {}
                         }
                     }
                 }
@@ -207,6 +242,13 @@ pub fn verify_payload_absent(
             break;
         }
     }
+    for (needle, offset) in raw_hits {
+        if !covered.iter().any(|(a, b)| offset >= *a && offset < *b) {
+            proof.hits.push(PayloadHit { needle, location: PayloadLocation::RawBytes { offset } });
+        }
+    }
+    proof.hits.truncate(MAX_HITS);
+    proof.kept_text_collisions = collisions.into_iter().map(|((needle, object), count)| TextCollision { needle, object, count }).collect();
     Ok(proof)
 }
 
@@ -283,10 +325,21 @@ pub struct SanitizePolicy {
     pub drop_xmp: bool,
     pub drop_embedded_files: bool,
     pub drop_javascript: bool,
+    /// Page and form `/Thumb` thumbnail images.
+    pub drop_thumbnails: bool,
+    /// Application private data: `/PieceInfo` on the catalog, pages and forms.
+    pub drop_private_data: bool,
 }
 
 impl SanitizePolicy {
-    pub const ALL: Self = Self { drop_info_metadata: true, drop_xmp: true, drop_embedded_files: true, drop_javascript: true };
+    pub const ALL: Self = Self {
+        drop_info_metadata: true,
+        drop_xmp: true,
+        drop_embedded_files: true,
+        drop_javascript: true,
+        drop_thumbnails: true,
+        drop_private_data: true,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -354,6 +407,12 @@ pub fn sanitize_full_rewrite(
                 };
                 if policy.drop_xmp {
                     hit("Metadata", "xmp", d);
+                }
+                if policy.drop_thumbnails {
+                    hit("Thumb", "thumbnails", d);
+                }
+                if policy.drop_private_data {
+                    hit("PieceInfo", "private_data", d);
                 }
                 if policy.drop_embedded_files {
                     hit("EmbeddedFiles", "embedded_files", d);

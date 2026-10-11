@@ -49,7 +49,16 @@ pub(crate) fn is_decodable(dict: &Dict) -> bool {
         Ok(names) => names.iter().all(|n| {
             matches!(
                 n.as_slice(),
-                b"FlateDecode" | b"Fl" | b"ASCIIHexDecode" | b"AHx" | b"ASCII85Decode" | b"A85" | b"RunLengthDecode" | b"RL"
+                b"FlateDecode"
+                    | b"Fl"
+                    | b"LZWDecode"
+                    | b"LZW"
+                    | b"ASCIIHexDecode"
+                    | b"AHx"
+                    | b"ASCII85Decode"
+                    | b"A85"
+                    | b"RunLengthDecode"
+                    | b"RL"
             )
         }),
         Err(_) => false,
@@ -74,6 +83,14 @@ pub(crate) fn decode_stream(stream: &Stream, limits: &Limits, budget: &mut usize
                     }
                 })?;
                 apply_predictor(inflated, parm.as_ref(), cap)?
+            }
+            b"LZWDecode" | b"LZW" => {
+                let early = parm_int(parm.as_ref(), "EarlyChange", 1);
+                if !(0..=1).contains(&early) {
+                    return Err(PressError::Malformed("lzw_early_change"));
+                }
+                let out = lzw(&data, early as usize, cap)?;
+                apply_predictor(out, parm.as_ref(), cap)?
             }
             b"ASCIIHexDecode" | b"AHx" => ascii_hex(&data, cap)?,
             b"ASCII85Decode" | b"A85" => ascii85(&data, cap)?,
@@ -166,6 +183,111 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
         b
     } else {
         c
+    }
+}
+
+/// PDF LZWDecode: MSB-first codes of 9..=12 bits, 256 = clear, 257 = end of data. Dictionary
+/// entries are (prefix code, byte, length) triples (max 4096), so memory is constant and the
+/// output is bounded by `cap`.
+fn lzw(data: &[u8], early: usize, cap: usize) -> Result<Vec<u8>> {
+    let mut prefix = [0u16; 4096];
+    let mut byte = [0u8; 4096];
+    let mut length = [0u16; 4096];
+    for i in 0..256usize {
+        byte[i] = i as u8;
+        length[i] = 1;
+    }
+    let mut out: Vec<u8> = Vec::new();
+    let mut next = 258usize;
+    let mut width = 9usize;
+    let mut prev: Option<usize> = None;
+    let (mut acc, mut nbits) = (0u32, 0usize);
+    let mut pos = 0usize;
+    let first_byte = |code: usize, prefix: &[u16; 4096], byte: &[u8; 4096], length: &[u16; 4096]| -> u8 {
+        let mut c = code;
+        while length[c] > 1 {
+            c = usize::from(prefix[c]);
+        }
+        byte[c]
+    };
+    loop {
+        while nbits < width {
+            let Some(&b) = data.get(pos) else {
+                return Ok(out); // tolerate a missing EOD
+            };
+            pos += 1;
+            acc = (acc << 8) | u32::from(b);
+            nbits += 8;
+        }
+        let code = ((acc >> (nbits - width)) & ((1 << width) - 1)) as usize;
+        nbits -= width;
+        acc &= (1u32 << nbits) - 1;
+        match code {
+            257 => return Ok(out),
+            256 => {
+                next = 258;
+                width = 9;
+                prev = None;
+                continue;
+            }
+            _ => {}
+        }
+        let entry_len;
+        let kwkwk;
+        if code < 256 || (code >= 258 && code < next) {
+            entry_len = usize::from(length[code]);
+            kwkwk = false;
+        } else if code == next && next < 4096 {
+            let Some(p) = prev else {
+                return Err(PressError::Malformed("lzw_code"));
+            };
+            entry_len = usize::from(length[p]) + 1;
+            kwkwk = true;
+        } else {
+            return Err(PressError::Malformed("lzw_code"));
+        }
+        if out.len().saturating_add(entry_len) > cap {
+            return Err(PressError::InputLimit("decoded_bytes"));
+        }
+        let start = out.len();
+        out.resize(start + entry_len, 0);
+        let first;
+        if kwkwk {
+            // string(prev) followed by its own first byte
+            let p = prev.unwrap_or(0);
+            first = first_byte(p, &prefix, &byte, &length);
+            out[start + entry_len - 1] = first;
+            let mut c = p;
+            for slot in out[start..start + entry_len - 1].iter_mut().rev() {
+                *slot = byte[c];
+                c = usize::from(prefix[c]);
+            }
+        } else {
+            let mut c = code;
+            for slot in out[start..start + entry_len].iter_mut().rev() {
+                *slot = byte[c];
+                c = usize::from(prefix[c]);
+            }
+            first = out[start];
+        }
+        if let Some(p) = prev
+            && next < 4096
+        {
+            prefix[next] = p as u16;
+            byte[next] = first;
+            length[next] = length[p] + 1;
+            next += 1;
+        }
+        prev = Some(code);
+        width = if next + early >= 2048 {
+            12
+        } else if next + early >= 1024 {
+            11
+        } else if next + early >= 512 {
+            10
+        } else {
+            9
+        };
     }
 }
 
