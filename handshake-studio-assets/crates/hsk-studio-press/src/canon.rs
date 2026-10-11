@@ -517,6 +517,149 @@ mod tests {
         assert!(same(&parse(&t).ops, &p.ops), "transport form reads back");
     }
 
+    /// String literals of the crate's integration tests (the content of its PDF fixtures), unescaped.
+    fn fixture_strings() -> Vec<Vec<u8>> {
+        let b = include_str!("../tests/pdf_delivery.rs").as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < b.len() {
+            if b[i] != b'"' || (i > 0 && b[i - 1] == b'\'') {
+                i += 1;
+                continue;
+            }
+            let raw = i > 0 && b[i - 1] == b'r';
+            let mut s = Vec::new();
+            let mut j = i + 1;
+            while j < b.len() && b[j] != b'"' {
+                if !raw && b[j] == b'\\' && j + 1 < b.len() {
+                    j += 1;
+                    match b[j] {
+                        b'n' => s.push(b'\n'),
+                        b'r' => s.push(b'\r'),
+                        b't' => s.push(b'\t'),
+                        b'0' => s.push(0),
+                        b'\n' => {
+                            while j + 1 < b.len() && b[j + 1].is_ascii_whitespace() {
+                                j += 1;
+                            }
+                        }
+                        b'x' if j + 2 < b.len() => {
+                            s.push(u8::from_str_radix(std::str::from_utf8(&b[j + 1..j + 3]).unwrap_or("00"), 16).unwrap_or(0));
+                            j += 2;
+                        }
+                        b'u' => {
+                            let end = b[j..].iter().position(|c| *c == b'}').map_or(j, |e| j + e);
+                            let hex = std::str::from_utf8(b.get(j + 2..end).unwrap_or(b"0")).unwrap_or("0");
+                            let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32).unwrap_or('?');
+                            s.extend_from_slice(c.to_string().as_bytes());
+                            j = end;
+                        }
+                        other => s.push(other),
+                    }
+                } else {
+                    s.push(b[j]);
+                }
+                j += 1;
+            }
+            out.push(s);
+            i = j + 1;
+        }
+        out
+    }
+
+    /// A small deterministic generator (64-bit LCG, Knuth's MMIX constants).
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n.max(1)
+        }
+        fn bytes(&mut self, max: u64) -> Vec<u8> {
+            (0..self.below(max)).map(|_| self.below(256) as u8).collect()
+        }
+        fn number(&mut self) -> Object {
+            match self.below(4) {
+                0 => Object::Int(self.below(2_000_001) as i64 - 1_000_000),
+                1 => Object::Real((self.below(2_000_001) as f64 - 1_000_000.0) / 1000.0),
+                2 => Object::Real(self.below(1000) as f64 * 1.0e-7),
+                _ => Object::Int(i64::MIN + self.below(3) as i64),
+            }
+        }
+        fn object(&mut self, depth: u32) -> Object {
+            match self.below(if depth > 2 { 4 } else { 6 }) {
+                0 => self.number(),
+                1 => Object::Str(self.bytes(24)),
+                2 => Object::Name(self.bytes(12)),
+                3 => Object::Bool(self.below(2) == 0),
+                4 => Object::Array((0..self.below(4)).map(|_| self.object(depth + 1)).collect()),
+                _ => {
+                    let mut d = Dict::default();
+                    for _ in 0..self.below(4) {
+                        let key = self.bytes(6);
+                        let value = self.object(depth + 1);
+                        d.set_key(&key, value);
+                    }
+                    Object::Dict(d)
+                }
+            }
+        }
+    }
+
+    /// parse(write(parse(x))) == parse(x), and the written form is a fixed point (canonical), on every
+    /// content fixture of the crate's tests that parses strictly, and on generated operation lists of
+    /// every operand shape.
+    #[test]
+    fn canonical_rewrite_round_trips() {
+        let mut checked = 0usize;
+        for s in fixture_strings() {
+            let mut budget = usize::MAX;
+            let Ok(first) = parse_strict(&s, &Limits::default(), &no_color_spaces, &mut budget) else { continue };
+            if first.ops.is_empty() || first.ops.iter().any(|op| op.name == b"BI") || first.trailing_operands {
+                continue;
+            }
+            let written = write_ops(&first.ops, &s).unwrap();
+            let again = parse(&written);
+            assert!(same(&first.ops, &again.ops), "{}", String::from_utf8_lossy(&s));
+            assert!(is_canonical(&written, &again), "{}", String::from_utf8_lossy(&written));
+            checked += 1;
+        }
+        assert!(checked >= 40, "only {checked} fixtures parsed: the property would be vacuous");
+        let mut g = Lcg(0x5EED_0010);
+        for _ in 0..3000 {
+            let mut ops = Vec::new();
+            for _ in 0..1 + g.below(12) {
+                let (name, operands): (&[u8], Vec<Object>) = match g.below(12) {
+                    0 => (b"Tj", vec![Object::Str(g.bytes(40))]),
+                    1 => (b"TJ", vec![Object::Array((0..g.below(6)).map(|k| if k % 2 == 0 { Object::Str(g.bytes(8)) } else { g.number() }).collect())]),
+                    2 => (b"Tf", vec![Object::Name(g.bytes(10)), g.number()]),
+                    3 => (b"cm", (0..6).map(|_| g.number()).collect()),
+                    4 => (b"\"", vec![g.number(), g.number(), Object::Str(g.bytes(10))]),
+                    5 => (b"BDC", vec![Object::Name(g.bytes(6)), g.object(0)]),
+                    6 => (b"d", vec![Object::Array((0..g.below(4)).map(|_| g.number()).collect()), g.number()]),
+                    7 => {
+                        let mut v: Vec<Object> = (0..1 + g.below(4)).map(|_| g.number()).collect();
+                        v.push(Object::Name(g.bytes(5)));
+                        (b"scn", v)
+                    }
+                    8 => (b"Do", vec![Object::Name(g.bytes(8))]),
+                    9 => (b"q", Vec::new()),
+                    10 => (b"re", (0..4).map(|_| g.number()).collect()),
+                    _ => (b"ET", Vec::new()),
+                };
+                if name != b"BDC" || matches!(operands.get(1), Some(Object::Name(_) | Object::Dict(_))) {
+                    ops.push(Op { name: name.to_vec(), operands, start: 0, end: 0, inline_data: None });
+                }
+            }
+            let written = write_ops(&ops, &[]).unwrap();
+            let again = parse(&written);
+            assert!(same(&ops, &again.ops), "{}", String::from_utf8_lossy(&written));
+            assert!(is_canonical(&written, &again));
+        }
+    }
+
     #[test]
     fn inline_images_become_xobjects() {
         let img: &[u8] = b"BI /W 1 /H 1 /BPC 8 /CS /CS0 /F /AHx /I true ID 41> EI";
