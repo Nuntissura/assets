@@ -190,13 +190,28 @@ impl ExtPrep {
 
     /// Prepares the envelope of a plan that `admit_extended` already validated: adjustments are
     /// prepared once per plan (`AdjustmentOp::prepare`), identical feather radii share a kernel.
-    pub(super) fn build(extensions: &PlanExtensions, limit: u64) -> Result<Self, RenderError> {
+    /// Only the entries of groups in `reach` (the nodes the root reaches, as `prepare` computes
+    /// them) are prepared: an entry on any other group is never looked up, renders nothing and
+    /// charges nothing to `limit` (pigment's admission skips its operators the same way).
+    pub(super) fn build(
+        extensions: &PlanExtensions,
+        reach: &[bool],
+        limit: u64,
+    ) -> Result<Self, RenderError> {
         let mut prep = Self {
             allow_density: true,
             ..Self::default()
         };
         let mut kernel_of: BTreeMap<u32, usize> = BTreeMap::new();
         for e in &extensions.layers {
+            if !usize::try_from(e.group.0)
+                .ok()
+                .and_then(|group| reach.get(group))
+                .copied()
+                .unwrap_or(false)
+            {
+                continue;
+            }
             let mut fx = LayerFx::default();
             if let Some(op) = &e.adjustment {
                 prep.charge(ADJUSTMENT_STATE_BYTES, limit)?;

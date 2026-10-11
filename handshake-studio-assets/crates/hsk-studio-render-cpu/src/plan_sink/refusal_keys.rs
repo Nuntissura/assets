@@ -21,7 +21,8 @@ use hsk_studio_pigment::effect_math::{
     ColourOverlayOp, EffectError, EffectFeature, EffectOp, GlowFill, GlowTechnique, OuterGlowOp,
 };
 use hsk_studio_pigment::render_plan::{
-    BlendSpace, ColourTag, Group, LayerExtension, NoVector, OutputTarget, PlanNodeId,
+    BlendSpace, ColourTag, Group, LayerExtension, NoVector, OutputTarget, PlanNodeId, admit,
+    admit_extended,
 };
 
 struct NoSources;
@@ -270,7 +271,7 @@ fn defence_in_depth_refusal_keys_are_pigments() {
             refusal(feature.key()),
             "pigment admission, {feature:?}"
         );
-        let prepared = ExtPrep::build(&envelope, 1 << 20)
+        let prepared = ExtPrep::build(&envelope, &reachable(&glow_plan), 1 << 20)
             .err()
             .expect("envelope preparation refuses the feature on its own");
         assert_eq!(
@@ -444,7 +445,8 @@ fn fx_ops_declarations_and_refusals_equal_pigments() {
         )
         .expect_err("shared admission refuses the rule");
         assert_eq!(admitted, refusal(key), "pigment admission, {rule}");
-        let ext = ExtPrep::build(&envelope, 1 << 20).expect("envelope preparation");
+        let ext =
+            ExtPrep::build(&envelope, &reachable(&plan), 1 << 20).expect("envelope preparation");
         let prepared = prepare(&plan, &NoSources, ext)
             .err()
             .expect("prepare refuses the rule on its own");

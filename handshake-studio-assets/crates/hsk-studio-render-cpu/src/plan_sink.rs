@@ -45,9 +45,9 @@ use hsk_studio_pigment::render_plan::{
     AlphaConvention, Applicability, BackendError, BackendIdentity, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Layer, MASK_DENSITY_OPERATOR, MaskFormat,
     MaskInput, Operator, PASS_THROUGH_FILL_OPERATOR, PASS_THROUGH_MASK_OPERATOR, PlanError,
-    PlanExtensions, PlanNode, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
+    PlanExtensions, PlanLimits, PlanNode, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
     SAMPLE_RANGE_OPERATOR, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
-    TileSink, admit, admit_extended,
+    TileSink, admit_extended_with_limits, admit_with_limits,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -169,6 +169,9 @@ pub fn blend_supported(mode: StudioBlendMode) -> bool {
 pub struct Renderer {
     chunk: u32,
     threads: usize,
+    /// Plan budgets handed to shared admission: the maxima unless the host tightened them with
+    /// [`Renderer::with_plan_limits`].
+    limits: PlanLimits,
     live: AtomicU64,
     peak: AtomicU64,
 }
@@ -441,6 +444,26 @@ fn verify_tile(
     Ok(())
 }
 
+/// `reach[i]`: node `i` is the root or the input of a layer of a reachable group. Admission
+/// guarantees every index is in range and every input an earlier node, so one reverse sweep
+/// visits each group after all the groups that reference it. This is the set `prepare` executes
+/// and the set the envelope entries are prepared for.
+fn reachable<V>(plan: &RenderPlan<V>) -> Vec<bool> {
+    let n = plan.nodes.len();
+    let mut reach = vec![false; n];
+    reach[plan.root.0 as usize] = true;
+    for i in (0..n).rev() {
+        if reach[i]
+            && let PlanNode::Group(g) = &plan.nodes[i]
+        {
+            for l in &g.layers {
+                reach[l.input.0 as usize] = true;
+            }
+        }
+    }
+    reach
+}
+
 fn prepare<'a, V: VectorSource>(
     plan: &RenderPlan<V>,
     sources: &'a dyn PlanSources,
@@ -455,17 +478,7 @@ fn prepare<'a, V: VectorSource>(
     }
     let n = plan.nodes.len();
     let root = plan.root.0 as usize;
-    let mut reach = vec![false; n];
-    reach[root] = true;
-    for i in (0..n).rev() {
-        if reach[i]
-            && let PlanNode::Group(g) = &plan.nodes[i]
-        {
-            for l in &g.layers {
-                reach[l.input.0 as usize] = true;
-            }
-        }
-    }
+    let reach = reachable(plan);
     let mut nodes: Vec<PNode<'a>> = Vec::with_capacity(n);
     let mut bounds: Vec<Option<Rect>> = Vec::with_capacity(n);
     let mut need: Vec<usize> = Vec::with_capacity(n);
@@ -1319,6 +1332,7 @@ impl Renderer {
         Ok(Self {
             chunk,
             threads,
+            limits: PlanLimits::default(),
             live: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         })
@@ -1327,9 +1341,30 @@ impl Renderer {
         Self {
             chunk,
             threads: 1,
+            limits: PlanLimits::default(),
             live: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         }
+    }
+    /// Tightens the plan budgets (nodes, layers, nesting depth) that shared admission enforces for
+    /// every plan this renderer executes: [`Renderer::execute_detailed`],
+    /// [`Renderer::execute_extended_detailed`] and the `RenderBackend` methods that call them hand
+    /// `limits` to pigment's `admit_with_limits` / `admit_extended_with_limits`, so a plan above a
+    /// tightened budget is refused as `InvalidPlan` before any source lookup or sink call. Limits
+    /// only tighten: a field above [`PlanLimits::MAXIMUM`] is `InvalidConfig("plan_limits")`, never
+    /// clamped. A renderer that was not given limits uses the maxima, exactly as before (tests
+    /// `tests/cpu_plan_limits.rs` `tightened_plan_limits_refuse_before_any_sink_call` and
+    /// `default_plan_limits_are_unchanged`).
+    pub fn with_plan_limits(mut self, limits: PlanLimits) -> Result<Self, RenderError> {
+        limits
+            .within_maximum()
+            .map_err(|_| RenderError::InvalidConfig("plan_limits"))?;
+        self.limits = limits;
+        Ok(self)
+    }
+    /// The plan budgets this renderer hands to shared admission.
+    pub fn plan_limits(&self) -> PlanLimits {
+        self.limits
     }
     pub fn chunk(&self) -> u32 {
         self.chunk
@@ -1392,7 +1427,7 @@ impl Renderer {
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<RenderReceipt, RenderError> {
-        let ledger = admit::<V>(plan, self, request, cancel)?;
+        let ledger = admit_with_limits::<V>(plan, &self.limits, self, request, cancel)?;
         self.run(
             plan,
             ExtPrep::default(),
@@ -1408,8 +1443,12 @@ impl Renderer {
     /// [`Renderer::execute_detailed`] for a plan with its envelope: adjustment layers, Blend-If,
     /// mask feather and mask density (`tests/cpu_extended.rs`). Order: `admit_extended` (shared
     /// admission; knockout and unsupported adjustments are refused before any work), envelope
-    /// preparation (resident state charged to `max_working_bytes` as a running aggregate), source
-    /// verification, then the same chunked loop. An empty envelope is the plain v1 plan and takes
+    /// preparation (resident state charged to `max_working_bytes` as a running aggregate, for the
+    /// entries of groups the root reaches only: an entry on any other group renders nothing and
+    /// asks nothing, `tests/cpu_envelope_reach.rs`
+    /// `unreachable_envelope_entries_are_neither_admitted_nor_prepared`), source
+    /// verification, then the same chunked loop. Admission uses the plan budgets of
+    /// [`Renderer::with_plan_limits`] (the maxima by default). An empty envelope is the plain v1 plan and takes
     /// the unchanged v1 path, except that a coverage mask with `density < 1` (no v1 operator) goes
     /// through the envelope admission, which admits it as `mask_density`.
     pub fn execute_extended_detailed<V: VectorSource + Serialize + Send + Sync>(
@@ -1424,8 +1463,19 @@ impl Renderer {
         if extensions.is_empty() && !plan.has_mask_density() {
             return self.execute_detailed(plan, request, sources, cancel, sink);
         }
-        let ledger = admit_extended::<V, Self>(plan, extensions, self, request, cancel)?;
-        let ext = ExtPrep::build(extensions, request.max_working_bytes)?;
+        let ledger = admit_extended_with_limits::<V, Self>(
+            plan,
+            extensions,
+            &self.limits,
+            self,
+            request,
+            cancel,
+        )?;
+        // The plan passed admission, so its indexes are valid. Only the entries of groups the root
+        // reaches are prepared, like the layers `prepare` visits: an entry on any other group
+        // renders nothing, so it charges no resident bytes and cannot be refused here.
+        let reach = reachable(plan);
+        let ext = ExtPrep::build(extensions, &reach, request.max_working_bytes)?;
         self.run(
             plan,
             ext,
