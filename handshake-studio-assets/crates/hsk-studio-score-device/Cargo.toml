@@ -6,11 +6,13 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+cpal-backend = ["dep:cpal"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false }
+cpal = { version = "=0.18.2", default-features = false, features = [], optional = true }
 
 [lib]
 path = "src/lib.rs"

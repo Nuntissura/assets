@@ -171,3 +171,16 @@ impl DeviceGrant {
         self.output || self.input
     }
 }
+
+/// Grant gate shared by every provider: no grant, or a grant that does not cover this direction
+/// and device, is `Unauthorized`. Runs before anything is created.
+pub(crate) fn authorize(
+    grant: Option<&DeviceGrant>,
+    direction: Direction,
+    device: &DeviceId,
+) -> Result<(), DeviceError> {
+    match grant {
+        Some(g) if g.permits(direction, device) => Ok(()),
+        _ => Err(DeviceError::Unauthorized),
+    }
+}

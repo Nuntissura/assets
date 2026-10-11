@@ -4,7 +4,7 @@
 //! real device).
 use crate::callback::{capture_callback, render_callback};
 use crate::config::{
-    DeviceGrant, DeviceId, DeviceInfo, Direction, Limits, RingGeometry, StreamConfig,
+    DeviceGrant, DeviceId, DeviceInfo, Direction, Limits, RingGeometry, StreamConfig, authorize,
 };
 use crate::counters::Counters;
 use crate::error::DeviceError;
@@ -298,10 +298,7 @@ impl SoftwareProvider {
         cancel: &CancellationToken,
     ) -> Result<(RingGeometry, Permit), DeviceError> {
         cancel.check().map_err(|_| DeviceError::Canceled)?;
-        let grant = grant.ok_or(DeviceError::Unauthorized)?;
-        if !grant.permits(direction, device) {
-            return Err(DeviceError::Unauthorized);
-        }
+        authorize(grant, direction, device)?;
         let known = match direction {
             Direction::Output => SOFTWARE_OUTPUT_DEVICE,
             Direction::Input => SOFTWARE_INPUT_DEVICE,

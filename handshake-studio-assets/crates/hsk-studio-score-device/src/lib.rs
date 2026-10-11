@@ -16,6 +16,8 @@
 mod callback;
 mod config;
 mod counters;
+#[cfg(feature = "cpal-backend")]
+mod cpal_backend;
 mod error;
 mod provider;
 mod report;
@@ -28,6 +30,8 @@ pub use config::{
     SAMPLE_BYTES, StreamConfig,
 };
 pub use counters::{CounterSnapshot, Counters};
+#[cfg(feature = "cpal-backend")]
+pub use cpal_backend::{CPAL_DEFAULT_OUTPUT, CpalProvider, NativeFormat};
 pub use error::{DeviceError, PushError};
 pub use provider::{
     Admission, CloseReport, DeviceProvider, InputStream, OutputStream, Permit, StreamBackend,
