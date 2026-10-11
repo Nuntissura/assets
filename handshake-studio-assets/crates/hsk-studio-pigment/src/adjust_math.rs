@@ -55,27 +55,27 @@ impl AdjustmentKind {
             Self::Levels => (
                 "levels",
                 Approximate,
-                "GIMP levels map (input stretch, clamp, ^(1/gamma), output lerp); Photoshop record order UNVERIFIED (D5 2)",
+                "GIMP app/operations/gimpoperationlevels.c levels map + psd-tools composite/adjustments.py apply_levels (channel record then composite record); Photoshop order UNVERIFIED (D5 2)",
             ),
             Self::Curves => (
                 "curves",
                 Approximate,
-                "natural cubic spline through the points, flat outside, clamped; Photoshop interpolation unpublished (D5 3)",
+                "natural cubic spline, flat outside, clamped, channel then composite (psd-tools apply_curves scipy CubicSpline natural; Krita kis_cubic_curve); Photoshop interpolation unpublished (D5 3)",
             ),
             Self::HueSaturation => (
                 "hue_saturation",
                 Approximate,
-                "HSL hue rotation, saturation and lightness scaling; Photoshop maths unpublished (D5 4)",
+                "psd-tools composite/adjustments.py _huesaturation master path (RGB lightness, HSL hue rotate, s/(1.01-S) or s(1+S)) and colorize; empirical, Photoshop maths unpublished (D5 4)",
             ),
             Self::BrightnessContrast => (
                 "brightness_contrast",
                 Approximate,
-                "documented stand-in formulas; Photoshop modern and legacy curves unpublished (D5 5)",
+                "legacy only: per-channel shift + linear contrast about 0.5 (Photoshop-team statement relayed on W3C public-fx 2012; photocraft PR 2615 measurement); modern curve unpublished -> refused (D5 5)",
             ),
             Self::Exposure => (
                 "exposure",
                 Approximate,
-                "(x * 2^ev + offset)^(1/gamma) on the given numbers; Photoshop linearisation UNVERIFIED (D5 6)",
+                "psd-tools apply_exposure: x^g, *2^ev, +offset, clamp, ^(1/gamma), ^(1/g) with g = linearize_gamma; Photoshop linearisation UNVERIFIED (D5 6)",
             ),
             Self::Invert => (
                 "invert",
@@ -85,12 +85,12 @@ impl AdjustmentKind {
             Self::Threshold => (
                 "threshold",
                 Approximate,
-                "lum(x) >= level -> white else black; Photoshop brightness metric UNVERIFIED (D5 7)",
+                "lum(x) >= level -> white else black (psd-tools apply_threshold, 0.3/0.59/0.11); Photoshop metric UNVERIFIED (D5 7)",
             ),
             Self::Posterize => (
                 "posterize",
                 Approximate,
-                "round(x (n-1)) / (n-1) per channel (GIMP); Photoshop mapping UNVERIFIED (D5 8)",
+                "floor(x n 255/256) / (n-1) per channel (psd-tools apply_posterize, 8-bit LUT correction fitted toward Photoshop); Photoshop mapping UNVERIFIED (D5 8)",
             ),
         };
         AdjustmentFacts {
@@ -170,7 +170,10 @@ impl LevelsRecord {
             unit(self.input_black) && unit(self.input_white) && self.input_black < self.input_white,
             "levels.input",
         )?;
-        param(unit(self.output_black) && unit(self.output_white), "levels.output")?;
+        param(
+            unit(self.output_black) && unit(self.output_white),
+            "levels.output",
+        )?;
         param(
             self.gamma.is_finite() && (0.1..=9.99).contains(&self.gamma),
             "levels.gamma",
@@ -179,7 +182,8 @@ impl LevelsRecord {
     /// GIMP `gimp_operation_levels_map`: `v = clamp((x - ib) / (iw - ib))`, `v = v^(1/gamma)`,
     /// `out = ob + v (ow - ob)`, clamped.
     pub fn map_value(&self, x: f32) -> f32 {
-        let mut v = ((x - self.input_black) / (self.input_white - self.input_black)).clamp(0.0, 1.0);
+        let mut v =
+            ((x - self.input_black) / (self.input_white - self.input_black)).clamp(0.0, 1.0);
         if self.gamma != 1.0 && v > 0.0 {
             v = v.powf(1.0 / self.gamma);
         }
@@ -273,9 +277,10 @@ impl PreparedCurve {
     }
 }
 
-/// Hue/Saturation, master settings only (STU-RAS-151 `hue_saturation`): hue in degrees
-/// `[-180, 180]`, saturation and lightness in percent `[-100, 100]`. Colour bands and colorize
-/// are recognised but refused in this slice.
+/// Hue/Saturation, master settings (STU-RAS-151 `hue_saturation`): hue in degrees `[-180, 180]`,
+/// saturation and lightness in percent `[-100, 100]`. With `colorize` the three values are the
+/// colorization hue/saturation/lightness (saturation `[0, 100]`, PSD `hue2` colorization block).
+/// Colour bands are not part of this op (refused upstream until implemented).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct HueSaturation {
     pub hue: f32,
@@ -285,7 +290,8 @@ pub struct HueSaturation {
 }
 
 /// Brightness/Contrast (STU-RAS-151 `brightness_contrast`): brightness `[-150, 150]`, contrast
-/// `[-50, 100]` (modern) or both `[-100, 100]` (legacy), plus the shipped `use_legacy` switch.
+/// `[-50, 100]` (modern) or both `[-100, 100]` (legacy, levels units), plus the shipped
+/// `use_legacy` switch. Only the legacy transfer is implemented; modern is a typed refusal.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct BrightnessContrast {
     pub brightness: f32,
@@ -294,11 +300,15 @@ pub struct BrightnessContrast {
 }
 
 /// Exposure (STU-RAS-151 `exposure`): stops `[-20, 20]`, offset `[-0.5, 0.5]`, gamma `[0.01, 9.99]`.
+/// `linearize_gamma` (`[1, 3]`, IR-only, set by the builder from the plan's blend space): `1` when
+/// the values are linear light; psd-tools uses `2.2` for encoded RGB documents (a power-law stand-in
+/// for the document transfer curve, UNVERIFIED).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Exposure {
     pub exposure: f32,
     pub offset: f32,
     pub gamma: f32,
+    pub linearize_gamma: f32,
 }
 
 /// One adjustment with its parameters, as carried by the render-plan extension envelope.
@@ -311,9 +321,13 @@ pub enum AdjustmentOp {
     Exposure(Exposure),
     Invert,
     /// Threshold level as a fraction (`level / 255`, PSD 1..=255).
-    Threshold { level: f32 },
+    Threshold {
+        level: f32,
+    },
     /// Posterize level count, 2..=255.
-    Posterize { levels: u16 },
+    Posterize {
+        levels: u16,
+    },
 }
 
 /// An [`AdjustmentOp`] with prepared state (splines), ready for per-pixel evaluation.
@@ -362,18 +376,19 @@ impl AdjustmentOp {
                 ]);
             }
             Self::HueSaturation(h) => {
-                param(h.hue.is_finite() && (-180.0..=180.0).contains(&h.hue), "hue_saturation.hue")?;
                 param(
-                    h.saturation.is_finite() && (-100.0..=100.0).contains(&h.saturation),
+                    h.hue.is_finite() && (-180.0..=180.0).contains(&h.hue),
+                    "hue_saturation.hue",
+                )?;
+                let smin = if h.colorize { 0.0 } else { -100.0 };
+                param(
+                    h.saturation.is_finite() && (smin..=100.0).contains(&h.saturation),
                     "hue_saturation.saturation",
                 )?;
                 param(
                     h.lightness.is_finite() && (-100.0..=100.0).contains(&h.lightness),
                     "hue_saturation.lightness",
                 )?;
-                if h.colorize {
-                    return Err(AdjustError::Unsupported("hue_saturation.colorize"));
-                }
             }
             Self::BrightnessContrast(b) => {
                 let (bmax, cmin, cmax) = if b.use_legacy {
@@ -389,15 +404,27 @@ impl AdjustmentOp {
                     b.contrast.is_finite() && (cmin..=cmax).contains(&b.contrast),
                     "brightness_contrast.contrast",
                 )?;
-                return Err(AdjustError::Unsupported("brightness_contrast"));
+                if !b.use_legacy {
+                    return Err(AdjustError::Unsupported("brightness_contrast.modern"));
+                }
             }
             Self::Exposure(e) => {
                 param(
                     e.exposure.is_finite() && (-20.0..=20.0).contains(&e.exposure),
                     "exposure.exposure",
                 )?;
-                param(e.offset.is_finite() && (-0.5..=0.5).contains(&e.offset), "exposure.offset")?;
-                param(e.gamma.is_finite() && (0.01..=9.99).contains(&e.gamma), "exposure.gamma")?;
+                param(
+                    e.offset.is_finite() && (-0.5..=0.5).contains(&e.offset),
+                    "exposure.offset",
+                )?;
+                param(
+                    e.gamma.is_finite() && (0.01..=9.99).contains(&e.gamma),
+                    "exposure.gamma",
+                )?;
+                param(
+                    e.linearize_gamma.is_finite() && (1.0..=3.0).contains(&e.linearize_gamma),
+                    "exposure.linearize_gamma",
+                )?;
             }
             Self::Invert => {}
             Self::Threshold { level } => {
@@ -428,7 +455,11 @@ fn rgb_to_hsl(c: [f32; 3]) -> [f64; 3] {
         return [0.0, 0.0, l];
     }
     let d = max - min;
-    let s = if l <= 0.5 { d / (max + min) } else { d / (2.0 - max - min) };
+    let s = if l <= 0.5 {
+        d / (max + min)
+    } else {
+        d / (2.0 - max - min)
+    };
     let mut h = if max == r {
         (g - b) / d
     } else if max == g {
@@ -447,7 +478,11 @@ fn hsl_to_rgb(hsl: [f64; 3]) -> [f32; 3] {
         let v = l as f32;
         return [v, v, v];
     }
-    let m2 = if l <= 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let m2 = if l <= 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
     let m1 = 2.0 * l - m2;
     let ch = |mut t: f64| -> f32 {
         if t < 0.0 {
@@ -470,6 +505,45 @@ fn hsl_to_rgb(hsl: [f64; 3]) -> [f32; 3] {
     [ch(h + 1.0 / 3.0), ch(h), ch(h - 1.0 / 3.0)]
 }
 
+/// psd-tools `_apply_lightness`: `L > 0` lifts toward white `x (1 - L) + L`, `L < 0` scales `x (1 + L)`.
+fn lightness_shift(x: f64, l: f64) -> f64 {
+    let v = if l > 0.0 {
+        x * (1.0 - l) + l
+    } else if l < 0.0 {
+        x * (1.0 + l)
+    } else {
+        x
+    };
+    v.clamp(0.0, 1.0)
+}
+
+/// Legacy Brightness/Contrast per channel, pivot 0.5: brightness `b` (fraction) is a shift;
+/// contrast `c` (fraction): `c >= 0` -> `(x + b - 0.5) / (1 - c) + 0.5` (brightness before the
+/// stretch; `c == 1` is a hard step at the pivot), `c < 0` -> `(x - 0.5)(1 + c) + 0.5 + b`
+/// (brightness after). Basis: a Photoshop-team statement relayed on the W3C public-fx list
+/// (2012-01..03, msg 0060: brightness adds n, contrast linear, +100 -> 0/255, -100 -> 127, -100
+/// with brightness +100 -> 227) and the photocraft PR 2615 measurement (pivot 128/255 there; the
+/// relayed 127 and the measured 128 disagree, 0.5 is used). UNVERIFIED (D5 5).
+fn legacy_brightness_contrast(rgb: [f32; 3], b: f32, c: f32) -> [f32; 3] {
+    rgb.map(|x| {
+        let v = if c >= 1.0 {
+            let t = x + b;
+            if t > 0.5 {
+                1.0
+            } else if t < 0.5 {
+                0.0
+            } else {
+                0.5
+            }
+        } else if c >= 0.0 {
+            (x + b - 0.5) / (1.0 - c) + 0.5
+        } else {
+            (x - 0.5) * (1.0 + c) + 0.5 + b
+        };
+        v.clamp(0.0, 1.0)
+    })
+}
+
 impl PreparedAdjustment {
     pub fn op(&self) -> &AdjustmentOp {
         &self.op
@@ -486,39 +560,72 @@ impl PreparedAdjustment {
                 [0, 1, 2].map(|i| l.composite.map_value(ch[i].map_value(rgb[i])))
             }
             AdjustmentOp::Curves(_) => {
-                let c = self.curves.as_ref().ok_or(AdjustError::Unsupported("curves.unprepared"))?;
+                let c = self
+                    .curves
+                    .as_ref()
+                    .ok_or(AdjustError::Unsupported("curves.unprepared"))?;
                 let eval = |p: &Option<PreparedCurve>, x: f32| p.as_ref().map_or(x, |p| p.eval(x));
                 [0, 1, 2].map(|i| eval(&c[0], eval(&c[i + 1], rgb[i])))
             }
             AdjustmentOp::HueSaturation(h) => {
-                let mut hsl = rgb_to_hsl(rgb);
-                hsl[0] = (hsl[0] + f64::from(h.hue) / 360.0).rem_euclid(1.0);
-                let s = f64::from(h.saturation) / 100.0;
-                hsl[1] = if s < 0.0 { hsl[1] * (1.0 + s) } else { hsl[1] + (1.0 - hsl[1]) * s };
-                hsl[1] = hsl[1].clamp(0.0, 1.0);
-                let l = f64::from(h.lightness) / 100.0;
-                hsl[2] = if l < 0.0 { hsl[2] * (1.0 + l) } else { hsl[2] + (1.0 - hsl[2]) * l };
-                hsl_to_rgb(hsl)
+                let hue = (f64::from(h.hue) / 360.0).rem_euclid(1.0);
+                let sat = f64::from(h.saturation) / 100.0;
+                let light = f64::from(h.lightness) / 100.0;
+                if h.colorize {
+                    // psd-tools `_huesaturation_colorize`: hue and saturation replaced, lightness
+                    // applied to the HSL lightness.
+                    let hsl = rgb_to_hsl(rgb);
+                    hsl_to_rgb([hue, sat, lightness_shift(hsl[2], light)])
+                } else {
+                    // psd-tools `_huesaturation` master path: lightness on RGB first, then HSL
+                    // hue rotation and saturation `s / (1 - S + 0.01)` (S > 0) or `s (1 + S)`.
+                    let lit = rgb.map(|x| lightness_shift(f64::from(x), light) as f32);
+                    let mut hsl = rgb_to_hsl(lit);
+                    hsl[0] = (hsl[0] + hue).rem_euclid(1.0);
+                    hsl[1] = if sat > 0.0 {
+                        hsl[1] / (1.0 - sat + 0.01)
+                    } else {
+                        hsl[1] * (1.0 + sat)
+                    }
+                    .clamp(0.0, 1.0);
+                    hsl_to_rgb(hsl)
+                }
             }
-            AdjustmentOp::BrightnessContrast(_) => {
-                return Err(AdjustError::Unsupported("brightness_contrast"));
+            AdjustmentOp::BrightnessContrast(b) => {
+                if !b.use_legacy {
+                    return Err(AdjustError::Unsupported("brightness_contrast.modern"));
+                }
+                legacy_brightness_contrast(rgb, b.brightness / 255.0, b.contrast / 100.0)
             }
             AdjustmentOp::Exposure(e) => {
                 let gain = 2f32.powf(e.exposure);
+                let g = e.linearize_gamma;
                 rgb.map(|x| {
-                    let v = (x * gain + e.offset).max(0.0);
-                    let v = if e.gamma != 1.0 && v > 0.0 { v.powf(1.0 / e.gamma) } else { v };
+                    let lin = if g != 1.0 { x.powf(g) } else { x };
+                    let mut v = (lin * gain + e.offset).clamp(0.0, 1.0);
+                    if e.gamma != 1.0 && v > 0.0 {
+                        v = v.powf(1.0 / e.gamma);
+                    }
+                    if g != 1.0 && v > 0.0 {
+                        v = v.powf(1.0 / g);
+                    }
                     v.clamp(0.0, 1.0)
                 })
             }
             AdjustmentOp::Invert => rgb.map(|x| 1.0 - x),
             AdjustmentOp::Threshold { level } => {
-                let v = if crate::blend_math::lum(rgb) >= *level { 1.0 } else { 0.0 };
+                let v = if crate::blend_math::lum(rgb) >= *level {
+                    1.0
+                } else {
+                    0.0
+                };
                 [v, v, v]
             }
             AdjustmentOp::Posterize { levels } => {
-                let n = f32::from(*levels - 1);
-                rgb.map(|x| (x * n).round() / n)
+                // psd-tools `apply_posterize` with its 8-bit LUT correction 255/256: equal-width
+                // floor bins, the top bin maps to 1.
+                let n = f32::from(*levels);
+                rgb.map(|x| ((x * n * (255.0 / 256.0)).floor() / (n - 1.0)).min(1.0))
             }
         };
         Ok(out.map(|v| v.clamp(0.0, 1.0)))

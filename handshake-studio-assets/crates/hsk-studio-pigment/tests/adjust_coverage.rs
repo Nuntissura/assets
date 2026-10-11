@@ -25,7 +25,10 @@ fn mask_density_invert_feather_and_blend_if() {
     assert!(close(mask_coverage(0.25, true, 0.5).unwrap(), 0.875));
     assert!(close(mask_coverage(0.25, false, 1.0).unwrap(), 0.25));
     assert!(close(mask_coverage(0.25, false, 0.0).unwrap(), 1.0));
-    assert_eq!(mask_coverage(1.5, false, 1.0), Err(CoverageError::OutOfDomain));
+    assert_eq!(
+        mask_coverage(1.5, false, 1.0),
+        Err(CoverageError::OutOfDomain)
+    );
 
     // Feather radius 2 -> sigma 1, support 3, centre tap 1 / (1 + 2 (e^-0.5 + e^-2 + e^-4.5))
     // = 1 / 2.5059499 = 0.3990503.
@@ -34,7 +37,10 @@ fn mask_density_invert_feather_and_blend_if() {
     assert_eq!(k.len(), 7);
     assert!(close(k[3], 0.399_050_3));
     assert!(close(k.iter().sum::<f32>(), 1.0));
-    assert_eq!(feather_sigma(10_001.0), Err(CoverageError::FeatherOutOfRange));
+    assert_eq!(
+        feather_sigma(10_001.0),
+        Err(CoverageError::FeatherOutOfRange)
+    );
 
     // Range [0.2, 0.4, 0.6, 1.0]: 0.1 -> 0; 0.3 -> (0.3-0.2)/0.2 = 0.5; 0.5 -> 1;
     // 0.8 -> (1.0-0.8)/0.4 = 0.5. Collapsed black pair 0.5: 0.49 -> 0, 0.5 -> 1.
@@ -43,10 +49,16 @@ fn mask_density_invert_feather_and_blend_if() {
     assert!(close(range_weight(0.3, r).unwrap(), 0.5));
     assert!(close(range_weight(0.5, r).unwrap(), 1.0));
     assert!(close(range_weight(0.8, r).unwrap(), 0.5));
-    assert!(close(range_weight(0.49, [0.5, 0.5, 1.0, 1.0]).unwrap(), 0.0));
+    assert!(close(
+        range_weight(0.49, [0.5, 0.5, 1.0, 1.0]).unwrap(),
+        0.0
+    ));
     assert!(close(range_weight(0.5, [0.5, 0.5, 1.0, 1.0]).unwrap(), 1.0));
     assert!(close(range_weight(1.0, IDENTITY_RANGE).unwrap(), 1.0));
-    assert_eq!(range_weight(0.5, [0.4, 0.3, 1.0, 1.0]), Err(CoverageError::RangeOrder));
+    assert_eq!(
+        range_weight(0.5, [0.4, 0.3, 1.0, 1.0]),
+        Err(CoverageError::RangeOrder)
+    );
 
     // Gray source range on lum([0.3; 3]) = 0.3 -> 0.5; red destination [0, 0, 0.5, 0.5]:
     // backdrop red 0.4 -> 1 (product 0.5), backdrop red 0.6 -> 0 (product 0).
@@ -62,9 +74,18 @@ fn mask_density_invert_feather_and_blend_if() {
             destination: [0.0, 0.0, 0.5, 0.5],
         },
     ];
-    assert!(close(blend_if_weight(&entries, [0.3; 3], [0.4, 0.9, 0.1]).unwrap(), 0.5));
-    assert!(close(blend_if_weight(&entries, [0.3; 3], [0.6, 0.9, 0.1]).unwrap(), 0.0));
-    assert!(close(blend_if_weight(&[], [0.3; 3], [0.6, 0.9, 0.1]).unwrap(), 1.0));
+    assert!(close(
+        blend_if_weight(&entries, [0.3; 3], [0.4, 0.9, 0.1]).unwrap(),
+        0.5
+    ));
+    assert!(close(
+        blend_if_weight(&entries, [0.3; 3], [0.6, 0.9, 0.1]).unwrap(),
+        0.0
+    ));
+    assert!(close(
+        blend_if_weight(&[], [0.3; 3], [0.6, 0.9, 0.1]).unwrap(),
+        1.0
+    ));
 }
 
 #[test]
@@ -79,8 +100,18 @@ fn levels_curves_and_point_adjustments() {
         output_white: 0.9,
     };
     let id = LevelsRecord::IDENTITY;
-    let lv = |composite, red| AdjustmentOp::Levels(Levels { composite, red, green: id, blue: id });
-    assert!(close3(lv(rec, id).apply([0.5, 0.1, 0.9]).unwrap(), [0.665_685_4, 0.1, 0.9]));
+    let lv = |composite, red| {
+        AdjustmentOp::Levels(Levels {
+            composite,
+            red,
+            green: id,
+            blue: id,
+        })
+    };
+    assert!(close3(
+        lv(rec, id).apply([0.5, 0.1, 0.9]).unwrap(),
+        [0.665_685_4, 0.1, 0.9]
+    ));
     // Channel record first, then composite: red record (0, 0.5) maps 0.1 -> 0.2; the inverting
     // composite (output 1 -> 0) gives 0.8; green 0.1 -> 0.9. Composite-first would give red 1.0.
     let invert_out = LevelsRecord {
@@ -92,7 +123,10 @@ fn levels_curves_and_point_adjustments() {
         input_white: 0.5,
         ..id
     };
-    assert!(close3(lv(invert_out, red_half).apply([0.1, 0.1, 0.1]).unwrap(), [0.8, 0.9, 0.9]));
+    assert!(close3(
+        lv(invert_out, red_half).apply([0.1, 0.1, 0.1]).unwrap(),
+        [0.8, 0.9, 0.9]
+    ));
     let bad = LevelsRecord { gamma: 0.0, ..id };
     assert_eq!(
         lv(bad, id).apply([0.5; 3]),
@@ -103,23 +137,54 @@ fn levels_curves_and_point_adjustments() {
     // (0,0),(0.5,0.75),(1,1): interior second derivative m1 = -3 (6 * (0.5 - 1.5) / 2); at 0.25,
     // a = b = 0.5: 0.375 + (0.125 - 0.5) * (-3) * 0.25 / 6 = 0.421875; at a knot 0.5 -> 0.75.
     let cv = |composite: Vec<[f32; 2]>| {
-        AdjustmentOp::Curves(Curves { composite, red: vec![], green: vec![], blue: vec![] })
+        AdjustmentOp::Curves(Curves {
+            composite,
+            red: vec![],
+            green: vec![],
+            blue: vec![],
+        })
     };
-    assert!(close3(cv(vec![[0.0, 1.0], [1.0, 0.0]]).apply([0.25; 3]).unwrap(), [0.75; 3]));
+    assert!(close3(
+        cv(vec![[0.0, 1.0], [1.0, 0.0]]).apply([0.25; 3]).unwrap(),
+        [0.75; 3]
+    ));
     let s = cv(vec![[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]]);
-    assert!(close3(s.apply([0.25, 0.5, 1.0]).unwrap(), [0.421_875, 0.75, 1.0]));
+    assert!(close3(
+        s.apply([0.25, 0.5, 1.0]).unwrap(),
+        [0.421_875, 0.75, 1.0]
+    ));
     assert_eq!(
         cv(vec![[0.5, 0.0], [0.5, 1.0]]).apply([0.2; 3]),
         Err(AdjustError::InvalidParameter("curves.points"))
     );
 
-    // Exposure +1 EV: 0.25 -> 0.5. Offset -0.1, gamma 2: sqrt(0.4) = 0.63245553.
-    let ex = |exposure, offset, gamma| AdjustmentOp::Exposure(Exposure { exposure, offset, gamma });
-    assert!(close3(ex(1.0, 0.0, 1.0).apply([0.25; 3]).unwrap(), [0.5; 3]));
-    assert!(close3(ex(0.0, -0.1, 2.0).apply([0.5; 3]).unwrap(), [0.632_455_5; 3]));
+    // Exposure +1 EV: 0.25 -> 0.5. Offset -0.1, gamma 2: sqrt(0.4) = 0.63245553. Linearised
+    // with g = 2.2: (0.5^2.2 * 2)^(1/2.2) = 0.5 * 2^(1/2.2) = 0.5 * 1.3703509 = 0.68517545.
+    let ex = |exposure, offset, gamma, linearize_gamma| {
+        AdjustmentOp::Exposure(Exposure {
+            exposure,
+            offset,
+            gamma,
+            linearize_gamma,
+        })
+    };
+    assert!(close3(
+        ex(1.0, 0.0, 1.0, 1.0).apply([0.25; 3]).unwrap(),
+        [0.5; 3]
+    ));
+    assert!(close3(
+        ex(0.0, -0.1, 2.0, 1.0).apply([0.5; 3]).unwrap(),
+        [0.632_455_5; 3]
+    ));
+    assert!(close3(
+        ex(1.0, 0.0, 1.0, 2.2).apply([0.5; 3]).unwrap(),
+        [0.685_175_4; 3]
+    ));
 
     // Invert: 0.25 -> 0.75; 8-bit 5 -> 250 (Adobe help example).
-    let inv = AdjustmentOp::Invert.apply([0.25, 5.0 / 255.0, 1.0]).unwrap();
+    let inv = AdjustmentOp::Invert
+        .apply([0.25, 5.0 / 255.0, 1.0])
+        .unwrap();
     assert!(close3(inv, [0.75, 250.0 / 255.0, 0.0]));
     assert_eq!(AdjustmentKind::Invert.facts().exactness, Exactness::Exact);
 
@@ -128,9 +193,17 @@ fn levels_curves_and_point_adjustments() {
     assert_eq!(th.apply([0.6; 3]).unwrap(), [1.0; 3]);
     assert_eq!(th.apply([1.0, 0.0, 0.0]).unwrap(), [0.0; 3]);
 
-    // Posterize 4 (n - 1 = 3): 0.4 -> round(1.2) / 3 = 1/3; 0.5 -> round(1.5) / 3 = 2/3.
+    // Posterize 4, floor(x * 4 * 255/256) / 3: 0.2 -> floor(0.797) = 0; 0.5 -> floor(1.992) = 1
+    // -> 1/3; 0.6 -> floor(2.391) = 2 -> 2/3; 1.0 -> floor(3.984) = 3 -> 1. 8-bit code 85 at 3
+    // levels: 85 * 3 / 256 = 0.996 -> 0 (round-based GIMP would give 0.5).
     let po = AdjustmentOp::Posterize { levels: 4 };
-    assert!(close3(po.apply([0.4, 0.5, 1.0]).unwrap(), [1.0 / 3.0, 2.0 / 3.0, 1.0]));
+    assert!(close3(
+        po.apply([0.2, 0.5, 0.6]).unwrap(),
+        [0.0, 1.0 / 3.0, 2.0 / 3.0]
+    ));
+    assert!(close3(po.apply([1.0; 3]).unwrap(), [1.0; 3]));
+    let po3 = AdjustmentOp::Posterize { levels: 3 };
+    assert!(close3(po3.apply([85.0 / 255.0; 3]).unwrap(), [0.0; 3]));
     assert_eq!(
         AdjustmentOp::Posterize { levels: 1 }.apply([0.5; 3]),
         Err(AdjustError::InvalidParameter("posterize.levels"))
@@ -140,31 +213,86 @@ fn levels_curves_and_point_adjustments() {
 #[test]
 fn hue_saturation_master_and_refusals() {
     let hs = |hue, saturation, lightness| {
-        AdjustmentOp::HueSaturation(HueSaturation { hue, saturation, lightness, colorize: false })
+        AdjustmentOp::HueSaturation(HueSaturation {
+            hue,
+            saturation,
+            lightness,
+            colorize: false,
+        })
     };
     // Red (h 0, s 1, l 0.5) rotated +120 deg is green; saturation -100 is gray 0.5; lightness
     // +100 is white; lightness -50: l 0.25, m2 0.5, m1 0 -> [0.5, 0, 0].
-    assert!(close3(hs(120.0, 0.0, 0.0).apply([1.0, 0.0, 0.0]).unwrap(), [0.0, 1.0, 0.0]));
-    assert!(close3(hs(0.0, -100.0, 0.0).apply([1.0, 0.0, 0.0]).unwrap(), [0.5; 3]));
-    assert!(close3(hs(0.0, 0.0, 100.0).apply([1.0, 0.0, 0.0]).unwrap(), [1.0; 3]));
-    assert!(close3(hs(0.0, 0.0, -50.0).apply([1.0, 0.0, 0.0]).unwrap(), [0.5, 0.0, 0.0]));
+    assert!(close3(
+        hs(120.0, 0.0, 0.0).apply([1.0, 0.0, 0.0]).unwrap(),
+        [0.0, 1.0, 0.0]
+    ));
+    assert!(close3(
+        hs(0.0, -100.0, 0.0).apply([1.0, 0.0, 0.0]).unwrap(),
+        [0.5; 3]
+    ));
+    assert!(close3(
+        hs(0.0, 0.0, 100.0).apply([1.0, 0.0, 0.0]).unwrap(),
+        [1.0; 3]
+    ));
+    assert!(close3(
+        hs(0.0, 0.0, -50.0).apply([1.0, 0.0, 0.0]).unwrap(),
+        [0.5, 0.0, 0.0]
+    ));
+    // Saturation +50 on (0.6, 0.4, 0.4): HSL l 0.5, s 0.2 / 1.0 = 0.2; s' = 0.2 / (1 - 0.5 + 0.01)
+    // = 0.39215686; m2 = 0.5 * 1.39215686 = 0.69607843, m1 = 0.30392157 -> (m2, m1, m1).
+    let pink = [0.6, 0.4, 0.4];
+    assert!(close3(
+        hs(0.0, 50.0, 0.0).apply(pink).unwrap(),
+        [0.696_078_4, 0.303_921_6, 0.303_921_6]
+    ));
+    // Colorize hue 120, saturation 50, lightness 0: (h 1/3, s 0.5, l 0.5) -> m2 0.75, m1 0.25.
     let colorize = AdjustmentOp::HueSaturation(HueSaturation {
-        hue: 0.0,
-        saturation: 0.0,
+        hue: 120.0,
+        saturation: 50.0,
         lightness: 0.0,
         colorize: true,
     });
-    assert_eq!(colorize.apply([0.5; 3]), Err(AdjustError::Unsupported("hue_saturation.colorize")));
-    let bc = AdjustmentOp::BrightnessContrast(BrightnessContrast {
-        brightness: 500.0,
-        contrast: 0.0,
-        use_legacy: false,
-    });
+    assert!(close3(colorize.apply(pink).unwrap(), [0.25, 0.75, 0.25]));
+    // Legacy brightness/contrast: contrast -100 with brightness +100 -> 0.5 + 100/255 = 0.8921569
+    // (relayed Photoshop example 227 of 255); contrast +100 is a step at 0.5; contrast +50 on 0.6:
+    // 0.1 / 0.5 + 0.5 = 0.7; brightness +20 on 0.5: 0.5 + 20/255 = 0.5784314.
+    let bc = |brightness, contrast, use_legacy| {
+        AdjustmentOp::BrightnessContrast(BrightnessContrast {
+            brightness,
+            contrast,
+            use_legacy,
+        })
+    };
+    assert!(close3(
+        bc(100.0, -100.0, true).apply([0.1, 0.5, 0.9]).unwrap(),
+        [0.892_156_9; 3]
+    ));
+    assert!(close3(
+        bc(0.0, 100.0, true).apply([0.4, 0.6, 0.6]).unwrap(),
+        [0.0, 1.0, 1.0]
+    ));
+    assert!(close3(
+        bc(0.0, 50.0, true).apply([0.6; 3]).unwrap(),
+        [0.7; 3]
+    ));
+    assert!(close3(
+        bc(20.0, 0.0, true).apply([0.5; 3]).unwrap(),
+        [0.578_431_4; 3]
+    ));
     assert_eq!(
-        bc.apply([0.5; 3]),
-        Err(AdjustError::InvalidParameter("brightness_contrast.brightness"))
+        bc(20.0, 0.0, false).apply([0.5; 3]),
+        Err(AdjustError::Unsupported("brightness_contrast.modern"))
     );
-    assert_eq!(AdjustmentOp::Invert.apply([1.5, 0.0, 0.0]), Err(AdjustError::OutOfDomain));
+    assert_eq!(
+        bc(500.0, 0.0, false).apply([0.5; 3]),
+        Err(AdjustError::InvalidParameter(
+            "brightness_contrast.brightness"
+        ))
+    );
+    assert_eq!(
+        AdjustmentOp::Invert.apply([1.5, 0.0, 0.0]),
+        Err(AdjustError::OutOfDomain)
+    );
 }
 
 #[test]

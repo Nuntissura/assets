@@ -201,7 +201,11 @@ pub fn blend_if_weight(
     source_rgb: [f32; 3],
     backdrop_rgb: [f32; 3],
 ) -> Result<f32, CoverageError> {
-    if !source_rgb.iter().chain(backdrop_rgb.iter()).all(|v| unit(*v)) {
+    if !source_rgb
+        .iter()
+        .chain(backdrop_rgb.iter())
+        .all(|v| unit(*v))
+    {
         return Err(CoverageError::OutOfDomain);
     }
     let mut w = 1.0f32;

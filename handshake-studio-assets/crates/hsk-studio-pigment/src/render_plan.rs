@@ -13,6 +13,9 @@ pub use crate::blend_math::{
     StudioBlendMode,
 };
 
+mod extensions;
+pub use extensions::{ExtOperator, Knockout, LayerExtension, PlanExtensions, admit_extended};
+
 /// Blending profile + linearity every plan input must already be in (STU-COL-162/163).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct ColourTag {
@@ -249,6 +252,26 @@ pub enum PlanError {
     /// PassThrough mode: a pass-through group has no isolated content to take a base alpha from,
     /// and the run is composited with the BASE layer's mode, which is undefined for PassThrough.
     ClipBasePassThrough { node: u32 },
+    /// Envelope entry names a node that is not a group, or a layer index out of range.
+    ExtensionTarget { node: u32 },
+    /// Two envelope entries for the same `(group, layer)`.
+    ExtensionDuplicate { node: u32 },
+    /// Knockout other than `None` (not implemented; refused, never ignored).
+    KnockoutUnsupported { node: u32, depth: Knockout },
+    /// An adjustment layer's input is not the canonical transparent `Solid` placeholder.
+    AdjustmentInput { node: u32 },
+    /// Adjustment parameters out of their declared range.
+    AdjustmentParameter { node: u32 },
+    /// A recognised adjustment feature without a formula in this slice.
+    AdjustmentUnsupported { node: u32, kind: crate::adjust_math::AdjustmentKind },
+    /// An adjustment layer is the base of a clipping run (no defined base alpha).
+    AdjustmentClipBase { node: u32 },
+    /// Blend-If on a pass-through layer (no isolated source to weigh).
+    BlendIfPassThrough { node: u32 },
+    /// Blend-If range pair unordered or channel listed twice.
+    BlendIfRange { node: u32 },
+    /// Mask feather on a layer without a coverage mask.
+    FeatherWithoutMask { node: u32 },
 }
 impl PlanError {
     pub const fn code(self) -> &'static str {
@@ -267,6 +290,16 @@ impl PlanError {
             Self::ClipFields { .. } => "plan_clip_fields",
             Self::ClipPassThrough { .. } => "plan_clip_pass_through",
             Self::ClipBasePassThrough { .. } => "plan_clip_base_pass_through",
+            Self::ExtensionTarget { .. } => "plan_extension_target",
+            Self::ExtensionDuplicate { .. } => "plan_extension_duplicate",
+            Self::KnockoutUnsupported { .. } => "plan_knockout_unsupported",
+            Self::AdjustmentInput { .. } => "plan_adjustment_input",
+            Self::AdjustmentParameter { .. } => "plan_adjustment_parameter",
+            Self::AdjustmentUnsupported { .. } => "plan_adjustment_unsupported",
+            Self::AdjustmentClipBase { .. } => "plan_adjustment_clip_base",
+            Self::BlendIfPassThrough { .. } => "plan_blend_if_pass_through",
+            Self::BlendIfRange { .. } => "plan_blend_if_range",
+            Self::FeatherWithoutMask { .. } => "plan_feather_without_mask",
         }
     }
 }
@@ -374,7 +407,12 @@ impl<V> RenderPlan<V> {
                                 add(Operator::Blend(l.mode));
                             }
                         }
-                        if l.fill_opacity < 1.0 && l.mode != StudioBlendMode::Normal {
+                        // A pass-through layer has no group result for fill to scale: not the
+                        // generic FillOpacity operator; `admit` refuses it uniformly (R5).
+                        if l.fill_opacity < 1.0
+                            && l.mode != StudioBlendMode::Normal
+                            && l.mode != StudioBlendMode::PassThrough
+                        {
                             add(Operator::FillOpacity);
                         }
                         if let Some(m) = &l.mask
@@ -416,6 +454,23 @@ impl<V> RenderPlan<V> {
             }
         }
         Ok(ops)
+    }
+}
+/// Operator key of the shared refusal of a pass-through layer with `fill_opacity < 1` (the key
+/// render-cpu already reports; one refusal for every backend, made by [`admit`]).
+pub const PASS_THROUGH_FILL_OPERATOR: &str = "group_pass_through_fill_opacity";
+impl<V> RenderPlan<V> {
+    /// Does any group layer composite a pass-through group with `fill_opacity < 1`? Fill on a
+    /// non-isolated group is undefined (no group result to scale, like opacity), so it is
+    /// intrinsically Unsupported and [`admit`] refuses it for every backend.
+    pub fn has_pass_through_fill(&self) -> bool {
+        self.nodes.iter().any(|n| match n {
+            PlanNode::Group(g) => g
+                .layers
+                .iter()
+                .any(|l| l.mode == StudioBlendMode::PassThrough && l.fill_opacity < 1.0),
+            _ => false,
+        })
     }
 }
 impl<V: Serialize> RenderPlan<V> {
@@ -612,6 +667,32 @@ pub trait RenderBackend<V = NoVector>: Send + Sync {
     fn supports_clip_to_base(&self) -> bool {
         false
     }
+    /// Capability query for envelope operators ([`PlanExtensions`]). Default: nothing supported,
+    /// so [`admit_extended`] refuses any non-empty envelope for a backend written before it.
+    fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
+        let _ = operator;
+        Exactness::Unsupported
+    }
+    /// Execute a plan together with its envelope. Default: an empty envelope is the v1 plan
+    /// ([`RenderBackend::execute`]); otherwise [`admit_extended`] runs and refuses for a backend
+    /// that does not support the envelope's operators. A backend that reports support overrides
+    /// this method; if it does not, the call is `Unavailable`, never a render that ignores the
+    /// envelope.
+    fn execute_extended(
+        &self,
+        plan: &RenderPlan<V>,
+        extensions: &PlanExtensions,
+        request: &ExecuteRequest,
+        sources: &dyn PlanSources,
+        cancel: &CancellationToken,
+        sink: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, BackendError> {
+        if extensions.is_empty() {
+            return self.execute(plan, request, sources, cancel, sink);
+        }
+        admit_extended(plan, extensions, self, request, cancel)?;
+        Err(BackendError::Unavailable("execute_extended_not_implemented"))
+    }
     /// Must call [`admit`] before any work; emits chunks to `sink`, receipt only on full success.
     fn execute(
         &self,
@@ -625,7 +706,9 @@ pub trait RenderBackend<V = NoVector>: Send + Sync {
 
 /// Shared admission: cancel, stale revision, structural validation, then per-operator class =
 /// intrinsic lowered by the backend's class; refuses Unsupported or below `min_exactness` before
-/// any sink call. Returns the ledger for the receipt.
+/// any sink call, and refuses a pass-through layer with `fill_opacity < 1`
+/// ([`PASS_THROUGH_FILL_OPERATOR`], intrinsically Unsupported) for every backend. Returns the
+/// ledger for the receipt.
 pub fn admit<V>(
     plan: &RenderPlan<V>,
     backend: &(impl RenderBackend<V> + ?Sized),
@@ -660,7 +743,13 @@ pub fn admit<V>(
         }
         ledger.record(op.key(), class);
     }
+    if plan.has_pass_through_fill() {
+        return Err(BackendError::Unsupported {
+            operator: PASS_THROUGH_FILL_OPERATOR,
+            exactness: Exactness::Unsupported,
+        });
+    }
     Ok(ledger)
 }
 
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference, no pass-through base; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pending":["STU-CMP-020 members without discriminant","STU-CMP-020a stencil/silhouette node kinds","knockout, blend-if, effects, mattes, time","clipped layer with its own mask"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference, no pass-through base; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pass_through_fill":"a pass-through layer with fill_opacity < 1 is intrinsically unsupported: admit refuses it for every backend as group_pass_through_fill_opacity (validate no longer rates it fill_opacity)","extensions":"PlanExtensions envelope next to the unchanged v1 plan (v1 types are literal-built/exhaustively matched by dependents): per (group, layer) adjustment layer (AdjustmentOp on a transparent Solid placeholder; colour lerp(Cb, B(Cb, f(Cb)), k), alpha kept), Blend-If entries (coverage_math), mask feather px, knockout (anything but none refused); ExtOperator classes; admit_extended; RenderBackend::extension_exactness (default unsupported) and execute_extended (default: empty envelope = execute, else refuse); digest_with","pending":["STU-CMP-020 members without discriminant","STU-CMP-020a stencil/silhouette node kinds","knockout shallow/deep, effects, mattes, time","clipped layer with its own mask","backend implementations of the envelope operators"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;

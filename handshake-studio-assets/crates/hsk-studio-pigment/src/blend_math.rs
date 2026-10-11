@@ -268,6 +268,8 @@ pub enum BlendError {
     OutOfDomain,
     /// Group nesting exceeded `MAX_STACK_DEPTH`.
     TooDeep,
+    /// An adjustment node refused (parameters, domain or unsupported feature).
+    Adjustment(crate::adjust_math::AdjustError),
 }
 impl BlendError {
     pub const fn code(self) -> &'static str {
@@ -278,6 +280,7 @@ impl BlendError {
             Self::UnknownDiscriminant(_) => "blend_unknown_discriminant",
             Self::OutOfDomain => "blend_out_of_domain",
             Self::TooDeep => "blend_too_deep",
+            Self::Adjustment(e) => e.code(),
         }
     }
 }
@@ -289,6 +292,7 @@ impl fmt::Display for BlendError {
             }
             Self::UnknownDiscriminant(d) => write!(f, "{}:{d}", self.code()),
             Self::OutOfDomain | Self::TooDeep => f.write_str(self.code()),
+            Self::Adjustment(e) => write!(f, "{e}"),
         }
     }
 }
@@ -691,6 +695,13 @@ pub enum StackNode {
         mode: StudioBlendMode,
         opacity: f32,
     },
+    /// Adjustment layer: `f(backdrop)` blended back with `mode` at `opacity` (opacity x fill x
+    /// mask x Blend-If), alpha unchanged (`adjust_math::composite_adjustment`).
+    Adjustment {
+        op: crate::adjust_math::AdjustmentOp,
+        mode: StudioBlendMode,
+        opacity: f32,
+    },
 }
 /// Evaluation inputs that are part of the document, not preferences.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -758,6 +769,24 @@ fn fold_nodes(
                     ledger.record(facts.key, facts.exactness);
                     out
                 }
+            }
+            StackNode::Adjustment { op, mode, opacity } => {
+                use crate::adjust_math::{
+                    ADJUSTMENT_LAYER_EXACTNESS, AdjustLayerError, composite_adjustment,
+                };
+                let prepared = op.prepare().map_err(BlendError::Adjustment)?;
+                let out = composite_adjustment(*mode, backdrop, &prepared, *opacity).map_err(
+                    |e| match e {
+                        AdjustLayerError::Adjust(a) => BlendError::Adjustment(a),
+                        AdjustLayerError::Blend(b) => b,
+                    },
+                )?;
+                let kind = op.kind().facts();
+                let facts = mode.facts();
+                ledger.record("adjustment_layer", ADJUSTMENT_LAYER_EXACTNESS);
+                ledger.record(kind.key, kind.exactness);
+                ledger.record(facts.key, facts.exactness);
+                out
             }
         };
     }
