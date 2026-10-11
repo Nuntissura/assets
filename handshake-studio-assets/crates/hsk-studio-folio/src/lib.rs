@@ -30,6 +30,8 @@ schema_token!(ArtboardSchema, "hsk.studio.artboard@1");
 schema_token!(PageSpreadSchema, "hsk.studio.page_spread@1");
 schema_token!(GraphSchema, "hsk.studio.layer_graph@1");
 schema_token!(TileSchema, "hsk.studio.raster_tile@1");
+mod appearance;
+pub use appearance::*;
 mod timeline;
 pub use timeline::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -159,6 +161,10 @@ pub struct StudioLayer {
     pub kind: String,
     pub payload: Payload,
     pub visible: bool,
+    /// Opacity, fill opacity, blend mode, clipping, group isolation and mask reference. Absent is
+    /// the kind's identity default and is not encoded; see [`StudioLayer::effective_appearance`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<LayerAppearance>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "payload_kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -354,6 +360,12 @@ pub enum Code {
     Canceled,
     BudgetExceeded,
     UnsupportedMutation,
+    /// Appearance values out of range or inconsistent (opacity percent, isolation, mask tiles).
+    InvalidAppearance,
+    /// Blend discriminant outside the known `StudioBlendMode` set `1..=35`.
+    UnknownBlendMode,
+    /// Known blend mode that a layer cannot take (tool-only, or group-only on a leaf).
+    InapplicableBlendMode,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -699,6 +711,7 @@ fn validate(
             }
             _ => return Err(err(Code::PayloadMismatch, &l.layer_id)),
         }
+        appearance::validate_layer(l, group, b, token, r, &mut payload_size, &mut issues)?;
         if payload_size > b.payload_bytes {
             return Err(err(Code::BudgetExceeded, &l.layer_id));
         }
@@ -1212,7 +1225,19 @@ fn extension(v: &Value, target: &str, t: &CancellationToken) -> Result<Option<Di
                 "kind",
                 "payload",
                 "visible",
+                "appearance",
             ])
+        } else if o.contains_key("fill_opacity") {
+            Some(&[
+                "opacity",
+                "fill_opacity",
+                "blend_mode",
+                "clipped",
+                "isolation",
+                "mask",
+            ])
+        } else if o.contains_key("tiles") && o.contains_key("linked") {
+            Some(&["tiles", "enabled", "linked"])
         } else if o.contains_key("payload_kind") {
             match o.get("payload_kind").and_then(Value::as_str) {
                 Some("group") => Some(&["payload_kind"]),
@@ -1349,4 +1374,4 @@ pub fn document_schema() -> schemars::Schema {
         .into_generator()
         .into_root_schema_for::<StudioDocument>()
 }
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-FOLIO","version":1,"api":"inspect_bytes / validate_document / Snapshot::rename","consumer":"folio-consumer --input FILE --expected-revision U64 [--rename ID --name TEXT --successor U64] [--cancel] [--report] [--max-bytes N --max-nodes N --max-edges N --max-payload-bytes N]; --schema; --descriptor","input":"Published CON015-021 typed document; all nullable profiles and parents explicitly present; caller revision and limits required at mutation; optional timeline members sequences/tracks/clips (STU-VID-010/020/021, integer Ticks, ordered non-overlapping clips, content-addressed media) counted against Budget.nodes","output":"Immutable source-local document or typed rejection; unknown schema/fields preserve complete original bytes read-only; ordered composition edge projection","recovery":"Correct invalid fields; refresh caller revision; obtain typed domain/profile/ArtifactManifest resolver from existing owner; unavailable meaning blocks dependent operations; canceled or rejected edits preserve original bytes","manual":"Same pure wire contract and generated draft2020-12 schema for human/model/API consumers; no hidden defaults or private catalog","argus":{"inspect":"snapshot bytes, revision, resolution dispositions, stable diagnostic address","steer":"same bounded rename API","state":"immutable graph and ordered input projection","capture":"caller-owned granted capture of actual output"},"diagnostics":"Pure typed codes and target addresses adapted by caller through Observe/FlightRecorder/internal diagnostics/Palmistry; private document names/content are not diagnostic text","authority":"Caller revision is not host authority; grants, CKC/ArtifactService, Chronicle, Package, native GUI, color/render, DB, CRDT and EventLedger acceptance remain pending"}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-FOLIO","version":1,"api":"inspect_bytes / validate_document / Snapshot::rename","consumer":"folio-consumer --input FILE --expected-revision U64 [--rename ID --name TEXT --successor U64] [--cancel] [--report] [--max-bytes N --max-nodes N --max-edges N --max-payload-bytes N]; --schema; --descriptor","input":"Published CON015-021 typed document; all nullable profiles and parents explicitly present; caller revision and limits required at mutation; optional timeline members sequences/tracks/clips (STU-VID-010/020/021, integer Ticks, ordered non-overlapping clips, content-addressed media) counted against Budget.nodes; optional per-layer appearance (opacity and fill_opacity percent 0..=100, blend_mode StudioBlendMode discriminant 1..=35, clipped, isolation, StudioMask coverage tiles with enabled/linked; absent = identity default, not encoded)","output":"Immutable source-local document or typed rejection; unknown schema/fields preserve complete original bytes read-only; ordered composition edge projection","recovery":"Correct invalid fields; refresh caller revision; obtain typed domain/profile/ArtifactManifest resolver from existing owner; unavailable meaning blocks dependent operations; canceled or rejected edits preserve original bytes","manual":"Same pure wire contract and generated draft2020-12 schema for human/model/API consumers; no hidden defaults or private catalog","argus":{"inspect":"snapshot bytes, revision, resolution dispositions, stable diagnostic address","steer":"same bounded rename API","state":"immutable graph and ordered input projection","capture":"caller-owned granted capture of actual output"},"diagnostics":"Pure typed codes and target addresses adapted by caller through Observe/FlightRecorder/internal diagnostics/Palmistry; private document names/content are not diagnostic text","authority":"Caller revision is not host authority; grants, CKC/ArtifactService, Chronicle, Package, native GUI, color/render, DB, CRDT and EventLedger acceptance remain pending"}"#;
