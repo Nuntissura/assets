@@ -12,6 +12,7 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{AutoSizing, FirstBaseline, VerticalJustification};
 use roxmltree::{Document, Node, ParsingOptions};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// `(spread index, frame index)`.
 pub(crate) type Pos = (usize, usize);
@@ -97,6 +98,17 @@ fn opaque(n: Node, text: &str) -> Opaque {
         element: name(n).to_owned(),
         xml: text[n.range()].to_owned(),
     }
+}
+/// Fixed bytes charged per paragraph / run on top of the shared range data and the run text: the
+/// tags canonical export writes around them plus the size of the model record itself.
+const PARA_OVERHEAD: u64 = 128;
+const RUN_OVERHEAD: u64 = 192;
+
+/// What canonical export writes for one use of a range's shared data: style name, attributes and
+/// verbatim `Properties` XML.
+fn range_weight(style: &str, attrs: &Attrs, props: Option<&Opaque>) -> u64 {
+    let attrs: usize = attrs.iter().map(|(k, v)| k.len() + v.len() + 4).sum();
+    (style.len() + attrs + props.map_or(0, |p| p.xml.len())) as u64
 }
 fn link(v: Option<&str>) -> Option<String> {
     v.filter(|s| !s.is_empty() && *s != "n").map(str::to_owned)
@@ -263,10 +275,11 @@ fn read_model(
         spreads.push(read_spread(part, limits, loss, cancel)?);
     }
     let mut stories = Vec::new();
+    let mut charged = 0u64;
     for src in story_parts {
         canceled(cancel)?;
         let part = package.part(src).ok_or(IdmlError::DanglingPart)?;
-        stories.push(read_story(part, limits, loss, cancel)?);
+        stories.push(read_story(part, limits, loss, &mut charged, cancel)?);
     }
     Ok(IdmlModel {
         dom_version: attr(root, "DOMVersion").unwrap_or_default().to_owned(),
@@ -717,29 +730,45 @@ struct StoryBuilder<'a> {
     comp: BTreeSet<&'static str>,
     paras: Vec<ParaModel>,
     open: bool,
+    /// Logical model bytes charged so far across all stories (see `Limits::max_model_bytes`).
+    charged: &'a mut u64,
+    max_charged: u64,
 }
 
 impl StoryBuilder<'_> {
-    fn ensure_paragraph(&mut self, template: &ParaModel) {
+    /// Every paragraph and run is charged what its export writes, shared data included, so the
+    /// size of anything this model can later be exported to is bounded by `max_model_bytes`.
+    fn charge(&mut self, bytes: u64) -> Result<()> {
+        *self.charged = self.charged.saturating_add(bytes);
+        if *self.charged > self.max_charged {
+            return Err(IdmlError::BudgetExceeded("model_bytes"));
+        }
+        Ok(())
+    }
+
+    /// Opens a paragraph from the range template. The template's style, attributes and
+    /// `Properties` are shared (`Arc`), so a new paragraph costs pointers, not a copy.
+    fn ensure_paragraph(&mut self, template: &ParaModel, weight: u64) -> Result<()> {
         if !self.open || self.paras.is_empty() {
+            self.charge(weight.saturating_add(PARA_OVERHEAD))?;
             self.paras.push(template.clone());
             self.open = true;
         }
+        Ok(())
     }
 
-    fn paragraph_range(&mut self, n: Node) {
+    fn paragraph_range(&mut self, n: Node) -> Result<()> {
         scan_composition(n, &mut self.comp);
         let template = ParaModel {
-            style: attr(n, "AppliedParagraphStyle")
-                .unwrap_or_default()
-                .to_owned(),
-            attrs: extras(n, &["AppliedParagraphStyle"]),
-            props: child(n, "Properties").map(|p| opaque(p, self.text)),
+            style: Arc::from(attr(n, "AppliedParagraphStyle").unwrap_or_default()),
+            attrs: Arc::new(extras(n, &["AppliedParagraphStyle"])),
+            props: child(n, "Properties").map(|p| Arc::new(opaque(p, self.text))),
             runs: Vec::new(),
         };
+        let weight = range_weight(&template.style, &template.attrs, template.props.as_deref());
         for c in elements(n) {
             match name(c) {
-                "CharacterStyleRange" => self.character_range(c, &template),
+                "CharacterStyleRange" => self.character_range(c, &template, weight)?,
                 "Properties" => {}
                 other => self.loss.note(
                     self.part,
@@ -749,29 +778,32 @@ impl StoryBuilder<'_> {
                 ),
             }
         }
+        Ok(())
     }
 
-    fn character_range(&mut self, n: Node, template: &ParaModel) {
+    fn character_range(&mut self, n: Node, template: &ParaModel, para_weight: u64) -> Result<()> {
         scan_composition(n, &mut self.comp);
         let props = child(n, "Properties");
-        let language = attr(n, "AppliedLanguage").map(str::to_owned).or_else(|| {
-            props
-                .and_then(|p| child(p, "AppliedLanguage"))
-                .and_then(|l| l.text())
-                .map(|s| s.trim().to_owned())
-        });
+        let language = attr(n, "AppliedLanguage")
+            .map(Arc::<str>::from)
+            .or_else(|| {
+                props
+                    .and_then(|p| child(p, "AppliedLanguage"))
+                    .and_then(|l| l.text())
+                    .map(|s| Arc::from(s.trim()))
+            });
+        // Built once per range; each Content / Br below clones pointers only.
         let proto = RunModel {
-            char_style: attr(n, "AppliedCharacterStyle")
-                .unwrap_or_default()
-                .to_owned(),
-            attrs: extras(n, &["AppliedCharacterStyle"]),
-            props: props.map(|p| opaque(p, self.text)),
+            char_style: Arc::from(attr(n, "AppliedCharacterStyle").unwrap_or_default()),
+            attrs: Arc::new(extras(n, &["AppliedCharacterStyle"])),
+            props: props.map(|p| Arc::new(opaque(p, self.text))),
             text: String::new(),
             br: false,
             special: false,
             language,
             span: None,
         };
+        let weight = range_weight(&proto.char_style, &proto.attrs, proto.props.as_deref());
         let mut unterminated: Option<usize> = None;
         for c in elements(n) {
             match name(c) {
@@ -793,7 +825,12 @@ impl StoryBuilder<'_> {
                         );
                     }
                     run.span = Some(c.range());
-                    self.ensure_paragraph(template);
+                    self.ensure_paragraph(template, para_weight)?;
+                    self.charge(
+                        weight
+                            .saturating_add(RUN_OVERHEAD)
+                            .saturating_add(run.text.len() as u64),
+                    )?;
                     if let Some(p) = self.paras.last_mut() {
                         p.runs.push(run);
                         unterminated = Some(p.runs.len() - 1);
@@ -807,7 +844,8 @@ impl StoryBuilder<'_> {
                             }
                         }
                         None => {
-                            self.ensure_paragraph(template);
+                            self.ensure_paragraph(template, para_weight)?;
+                            self.charge(weight.saturating_add(RUN_OVERHEAD))?;
                             if let Some(p) = self.paras.last_mut() {
                                 p.runs.push(RunModel {
                                     br: true,
@@ -827,6 +865,7 @@ impl StoryBuilder<'_> {
                 ),
             }
         }
+        Ok(())
     }
 }
 
@@ -834,6 +873,7 @@ fn read_story(
     part: &IdmlPart,
     limits: &Limits,
     loss: &mut LossBook,
+    charged: &mut u64,
     cancel: &CancellationToken,
 ) -> Result<StoryModel> {
     let text = text_of(part)?;
@@ -849,13 +889,15 @@ fn read_story(
         comp: BTreeSet::new(),
         paras: Vec::new(),
         open: false,
+        charged,
+        max_charged: limits.max_model_bytes,
     };
     scan_composition(story, &mut b.comp);
     let (mut head, mut right_to_left) = (Vec::new(), false);
     for c in elements(story) {
         canceled(cancel)?;
         if name(c) == "ParagraphStyleRange" {
-            b.paragraph_range(c);
+            b.paragraph_range(c)?;
             continue;
         }
         if name(c) == "StoryPreference" {

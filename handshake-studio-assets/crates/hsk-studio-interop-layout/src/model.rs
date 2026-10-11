@@ -10,6 +10,7 @@ use hsk_studio_folio::{
 };
 use sha2::{Digest, Sha256};
 use std::ops::Range;
+use std::sync::Arc;
 
 /// IDML / PostScript affine `[a b c d tx ty]` (point = (a*x + c*y + tx, b*x + d*y + ty)).
 pub type Affine = [f64; 6];
@@ -29,6 +30,12 @@ pub struct Limits {
     pub max_ratio: u64,
     /// roxmltree node limit per XML part.
     pub xml_nodes: u32,
+    /// Logical size of the decoded text model: for every paragraph and run, the bytes its
+    /// canonical export writes (the shared range data it references, counted once per use, plus
+    /// its text and a fixed per-record overhead). Bounds what `export_idml` can write for the
+    /// supported subset, so a package that repeats one large `Properties` block over many
+    /// `Content` elements is refused with `BudgetExceeded("model_bytes")`.
+    pub max_model_bytes: u64,
     /// Budget handed to Folio when it validates the proposal.
     pub folio: Budget,
 }
@@ -41,6 +48,7 @@ impl Default for Limits {
             max_inflated_bytes: 256 << 20,
             max_ratio: 100,
             xml_nodes: 1_000_000,
+            max_model_bytes: 256 << 20,
             folio: Budget {
                 input_bytes: 32 << 20,
                 nodes: 100_000,
@@ -241,25 +249,30 @@ pub struct StoryModel {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParaModel {
     /// `AppliedParagraphStyle` as written, for example `ParagraphStyle/$ID/NormalParagraphStyle`.
-    pub style: String,
-    /// `ParagraphStyleRange` attributes except `AppliedParagraphStyle`.
-    pub attrs: Attrs,
-    pub props: Option<Opaque>,
+    /// Shared (`Arc`) by every paragraph the same `ParagraphStyleRange` yields.
+    pub style: Arc<str>,
+    /// `ParagraphStyleRange` attributes except `AppliedParagraphStyle`; shared like `style`.
+    pub attrs: Arc<Attrs>,
+    /// The range's `Properties` element, verbatim; shared like `style`.
+    pub props: Option<Arc<Opaque>>,
     pub runs: Vec<RunModel>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunModel {
-    pub char_style: String,
-    pub attrs: Attrs,
-    pub props: Option<Opaque>,
+    /// `AppliedCharacterStyle` as written. `char_style`, `attrs`, `props` and `language` are shared
+    /// (`Arc`) by every run the same `CharacterStyleRange` yields: one `Content` or `Br` costs a
+    /// pointer, never a copy of the range's attributes or `Properties` XML.
+    pub char_style: Arc<str>,
+    pub attrs: Arc<Attrs>,
+    pub props: Option<Arc<Opaque>>,
     pub text: String,
     /// A `Br` ends the paragraph after this run's text.
     pub br: bool,
     /// The `Content` held special-character processing instructions that are not in `text`.
     pub special: bool,
     /// `derived`: `AppliedLanguage` as written.
-    pub language: Option<String>,
+    pub language: Option<Arc<str>>,
     /// Byte range of the `Content` element in the story part (`None` for a bare `Br`).
     pub span: Option<Range<usize>>,
 }

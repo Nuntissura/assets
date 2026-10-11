@@ -233,6 +233,25 @@ pub(crate) fn read(
         if take(bytes, e.local + 30, n)? != e.name.as_bytes() {
             return Err(IdmlError::Zip("local_name_mismatch"));
         }
+        // A reader that trusts the local header must see the same entry as this one (central
+        // directory): same method, CRC and sizes. A data descriptor (flag bit 3) may defer the
+        // CRC and sizes, in which case the local fields are all zero.
+        let (flags, method) = (le16(bytes, e.local + 6)?, le16(bytes, e.local + 8)?);
+        if flags & (1 | 0x40 | 0x2000) != 0 {
+            return Err(IdmlError::Zip("encrypted"));
+        }
+        if method != e.method {
+            return Err(IdmlError::Zip("local_method_mismatch"));
+        }
+        let (crc, comp, uncomp) = (
+            le32(bytes, e.local + 14)?,
+            le32(bytes, e.local + 18)?,
+            le32(bytes, e.local + 22)?,
+        );
+        let deferred = flags & 8 != 0 && (crc, comp, uncomp) == (0, 0, 0);
+        if !deferred && (crc, u64::from(comp), u64::from(uncomp)) != (e.crc, e.comp, e.uncomp) {
+            return Err(IdmlError::Zip("local_header_mismatch"));
+        }
         let start = e.local + 30 + n + m;
         let end = start
             .checked_add(e.comp as usize)

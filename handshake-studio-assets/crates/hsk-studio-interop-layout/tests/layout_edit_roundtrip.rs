@@ -674,6 +674,46 @@ fn zip_traversal_duplicate_inflate_xml_entity() {
         IdmlError::Zip(_)
     ));
 
+    // Local headers must agree with the central directory (the first entry, `mimetype`, starts at
+    // offset 0: flags at 6, method at 8, CRC at 14, compressed size at 18, size at 22).
+    let patched = |edit: &dyn Fn(&mut [u8])| {
+        let mut b = whole.clone();
+        edit(&mut b);
+        open(&b, &limits())
+    };
+    assert_eq!(
+        patched(&|b| b[8] = 8).unwrap_err(),
+        IdmlError::Zip("local_method_mismatch")
+    );
+    for at in [14, 18, 22] {
+        assert_eq!(
+            patched(&|b| b[at] ^= 1).unwrap_err(),
+            IdmlError::Zip("local_header_mismatch"),
+            "local field at {at}"
+        );
+    }
+    // Encryption flag in the local header only.
+    assert_eq!(
+        patched(&|b| b[6] |= 1).unwrap_err(),
+        IdmlError::Zip("encrypted")
+    );
+    // Data descriptor flag: zeroed local CRC and sizes are the deferred form and are accepted;
+    // the flag with non-matching non-zero values is still a mismatch.
+    let deferred = patched(&|b| {
+        b[6] |= 8;
+        b[14..26].fill(0);
+    })
+    .expect("deferred local CRC and sizes");
+    assert_eq!(deferred, open(&whole, &limits()).expect("unpatched"));
+    assert_eq!(
+        patched(&|b| {
+            b[6] |= 8;
+            b[14] ^= 1;
+        })
+        .unwrap_err(),
+        IdmlError::Zip("local_header_mismatch")
+    );
+
     // XML: DOCTYPE with an entity declaration or an external id is refused; malformed XML is typed.
     let bomb = format!(
         "{DECL}<!DOCTYPE Story [<!ENTITY a \"bbbbbbbbbb\"><!ENTITY b \"&a;&a;&a;&a;\">]><idPkg:Story xmlns:idPkg=\"{NS}\"><Story Self=\"ua1\"><ParagraphStyleRange><CharacterStyleRange><Content>&b;</Content></CharacterStyleRange></ParagraphStyleRange></Story></idPkg:Story>"

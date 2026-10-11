@@ -69,7 +69,10 @@ impl IdmlImport {
                 if let Some(raw) = &run.language
                     && let Some(key) = crate::proposal::language_key(raw)
                 {
-                    names.languages.entry(key).or_insert_with(|| raw.clone());
+                    names
+                        .languages
+                        .entry(key)
+                        .or_insert_with(|| raw.to_string());
                 }
             }
         }
@@ -136,13 +139,13 @@ fn run_of(
         classify("AppliedLanguage", l, composition);
     }
     RunModel {
-        char_style,
-        attrs,
+        char_style: char_style.into(),
+        attrs: attrs.into(),
         props: None,
         text: String::new(),
         br: false,
         special: false,
-        language,
+        language: language.map(Into::into),
         span: None,
     }
 }
@@ -246,8 +249,8 @@ fn story_model(
                     });
                     let mut run = holder.map_or_else(
                         || RunModel {
-                            char_style: NO_CHARACTER_STYLE.to_owned(),
-                            attrs: Attrs::new(),
+                            char_style: NO_CHARACTER_STYLE.into(),
+                            attrs: Attrs::new().into(),
                             props: None,
                             text: String::new(),
                             br: false,
@@ -263,8 +266,8 @@ fn story_model(
             }
         }
         paragraphs.push(ParaModel {
-            style,
-            attrs,
+            style: style.into(),
+            attrs: attrs.into(),
             props: None,
             runs,
         });
