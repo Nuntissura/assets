@@ -18,8 +18,11 @@ const ORACLE: [&str; 3] = [
     "c7d6df9a67f2b718788ff80c36a4692f2916a0ccff393bf5bef02a92d872b099",
     "8059c70336722e95b8b1514f79fa12772669a2c932f80b16afea4900d79ecf32",
 ];
-/// 24 fps in Pulse ticks per frame (254_016_000_000 / 24).
-const FRAME: u64 = 10_584_000_000;
+const MS: u64 = 254_016_000; // Pulse ticks per millisecond
+/// Presentation times in ticks. MP4 keeps the exact 1/24 s grid; ffmpeg's Matroska muxer rounds frame
+/// times to whole milliseconds (0, 42, 83 ms), which the Matroska index reports exactly as stored.
+const PTS_MP4: [u64; 3] = [0, 10_584_000_000, 21_168_000_000];
+const PTS_MKV: [u64; 3] = [0, 42 * MS, 83 * MS];
 
 #[derive(Debug, Default)]
 struct Collect {
@@ -80,7 +83,7 @@ fn hash(bytes: &[u8]) -> String {
 
 #[test]
 fn av1_decodes_frames_with_layout_color_and_decoder_receipt_from_both_containers() {
-    for (name, bytes) in [("mp4", MP4), ("mkv", MKV)] {
+    for (name, bytes, pts) in [("mp4", MP4, PTS_MP4), ("mkv", MKV, PTS_MKV)] {
         let (receipt, sink) = decode(bytes, 0, 3, &Limits::default()).unwrap();
         assert_eq!(sink.frames.len(), 3, "{name}");
         assert_eq!(receipt.actual.units, 3, "{name}");
@@ -98,8 +101,8 @@ fn av1_decodes_frames_with_layout_color_and_decoder_receipt_from_both_containers
         assert_eq!(video.color.origin, ColorOrigin::SequenceHeader, "{name}");
         assert_eq!(video.color.matrix, 1, "{name}");
         assert!(!video.color.full_range, "{name}");
-        for (k, (pts, sync, planes)) in sink.frames.iter().enumerate() {
-            assert_eq!(*pts, (k as u64 * FRAME) as i64, "{name} frame {k}");
+        for (k, (got, sync, planes)) in sink.frames.iter().enumerate() {
+            assert_eq!(*got as u64, pts[k], "{name} frame {k}");
             assert_eq!(*sync, k == 0, "{name} frame {k}");
             assert_eq!(planes.len(), 384, "{name} frame {k}");
         }
@@ -120,16 +123,16 @@ fn av1_output_is_bit_exact_against_dav1d_oracle_deterministic_and_seekable() {
             .map(|(_, _, b)| hash(b))
             .collect()
     };
-    for (name, bytes) in [("mp4", MP4), ("mkv", MKV)] {
+    for (name, bytes, pts) in [("mp4", MP4, PTS_MP4), ("mkv", MKV, PTS_MKV)] {
         // Every frame equals libdav1d's output, bit for bit, and a second decode is identical.
         let first = digests(bytes, 0, 3);
         assert_eq!(first, ORACLE, "{name}");
         assert_eq!(digests(bytes, 0, 3), first, "{name} second decode");
         // Random access: start on the last frame; the two earlier frames are decoded as pre-roll only.
-        let (receipt, sink) = decode(bytes, 2 * FRAME, 1, &Limits::default()).unwrap();
+        let (receipt, sink) = decode(bytes, pts[2], 1, &Limits::default()).unwrap();
         assert_eq!(sink.frames.len(), 1, "{name}");
         assert_eq!(hash(&sink.frames[0].2), ORACLE[2], "{name}");
-        assert_eq!(receipt.actual.start_pts, Ticks::new(2 * FRAME), "{name}");
+        assert_eq!(receipt.actual.start_pts, Ticks::new(pts[2]), "{name}");
         assert_eq!(receipt.actual.units, 1);
     }
 }
