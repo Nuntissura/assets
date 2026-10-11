@@ -25,17 +25,28 @@
 #              [doctest] per-test-timeout-s (.config/round-features.toml), appends TIMEOUT to that line, reports the
 #              unit's doctests without a verdict NOT_RUN, and the unit's run exit is 124. Compiling the crate before
 #              its first doctest is not covered.
-# Results: round.json (identity, env, every unit with exits and passed/failed/skipped/timed_out/not_run counts, per-crate
-#   counts), tests.json (every reported test: unit, crate, binary, name, status, seconds; passing names included),
-#   junit.xml per nextest unit (passing tests' output stored, skipped tests listed: .config/nextest.toml),
-#   metadata.json (cargo metadata --no-deps), units.tsv, step0.*.txt, nextest-store.toml. Once the results dir
-#   exists, round.json is always written: on refusal, step 0 drift, interruption or aggregation failure it is a
-#   minimal record with "complete": false, the exit code and the reason (raw files kept).
+# NOT_PROVEN: a test that cannot prove its claim on this host (no GPU adapter, oracle input absent, ...) prints a
+#   line starting `NOT_PROVEN:` (leading spaces allowed) followed by the reason, and may pass. Every such line in a
+#   nextest unit's captured output (junit system-out/system-err, stored for passing tests) is collected into
+#   round.json "not_proven": [{unit, crate, binary, test, reason}], the unit's not_proven count and tests.json; an
+#   otherwise green round then exits 73 (never 0). Doctest output is not captured per test: doctests cannot report it.
+# Oracle corpus: commit-free external test DATA, located without env vars by .config/oracle-corpus.toml (walk up
+#   from the workspace root to the first ancestor holding its `search` path; the edit tree and every export under
+#   Handshake_Artifacts resolve the same directory). round.json "oracle_corpus" records root, file count and a
+#   sha256 manifest (sorted "<sha256>  <relpath>" lines) so oracle evidence is bound to corpus content.
+# Results: round.json (identity, env, every unit with exits and passed/failed/skipped/timed_out/not_run/not_proven
+#   counts, per-crate counts, not_proven, oracle_corpus), tests.json (every reported test: unit, crate, binary,
+#   name, status, seconds, not_proven reasons; passing names included), junit.xml per nextest unit (passing tests'
+#   output stored, skipped tests listed: .config/nextest.toml), metadata.json (cargo metadata --no-deps),
+#   units.tsv, oracle-corpus.json, step0.*.txt, nextest-store.toml. Once the results dir exists, round.json is
+#   always written: on refusal, step 0 drift, interruption or aggregation failure it is a minimal record with
+#   "complete": false, the exit code and the reason (raw files kept).
 # Env: sets CARGO_TARGET_DIR, TMP/TEMP/TMPDIR (<target-dir>/../tmp), CARGO_PROFILE_{DEV,TEST}_DEBUG,
 #   CARGO_TERM_COLOR; unsets every HSK_* variable. Nothing else is required from the caller (python 3.11+).
 # Exit: 2 refused, 75 step 0 drift (infrastructure), 70 results aggregation failed, else the first failing unit
 #   build's exit code (default unit first), else the first failing test run's exit code (124 = doctest per-test
-#   timeout), else 74 when a declared feature-matrix unit is absent at the candidate, else 0.
+#   timeout), else 74 when a declared feature-matrix unit is absent at the candidate, else 73 when any test
+#   reported NOT_PROVEN, else 0. Validators gate on round.json "exit" (== process exit) and "not_proven".
 set -euo pipefail
 
 reason=""
@@ -201,6 +212,48 @@ for kind, crate, feats, status in feature_units + doc_units:
     print(f"{kind}\t{crate}\t{feats or '-'}\t{status}")
 PY
 
+# Oracle corpus (read-only): resolve the commit-free root as tests do (.config/oracle-corpus.toml) and bind its
+# content (oracle-corpus.json + oracle-corpus.manifest.txt); an absent root is recorded, not a failure here.
+"$py" -X utf8 -I - "$root" "$root/.config/oracle-corpus.toml" "$results/oracle-corpus.manifest.txt" \
+  >"$results/oracle-corpus.json" <<'PY' || die "invalid .config/oracle-corpus.toml (see above)"
+import hashlib, json, pathlib, re, sys
+
+sys.stdout.reconfigure(newline="\n")
+root, cfg, manifest_out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+if not cfg.exists():
+    print(json.dumps({"config": None, "present": False}))
+    sys.exit(0)
+kv = {}
+for line in cfg.read_text(encoding="utf-8").splitlines():
+    m = re.fullmatch(r'\s*([A-Za-z0-9_-]+)\s*=\s*(?:"([^"]*)"|(\d+))\s*', line)
+    if m:
+        kv[m.group(1)] = m.group(2) if m.group(2) is not None else int(m.group(3))
+    elif line.strip() and not line.lstrip().startswith("#"):
+        sys.exit(f"run-round: oracle-corpus.toml: not a `key = value` line: {line!r}")
+if kv.get("schema") != "hsk.studio.oracle-corpus@1" or not isinstance(kv.get("search"), str) \
+        or not isinstance(kv.get("max-ancestors"), int):
+    sys.exit("run-round: oracle-corpus.toml needs schema hsk.studio.oracle-corpus@1, search, max-ancestors")
+search, limit = kv["search"], kv["max-ancestors"]
+if pathlib.PurePosixPath(search).is_absolute() or ".." in pathlib.PurePosixPath(search).parts or ":" in search:
+    sys.exit("run-round: oracle-corpus.toml search must be a relative path without '..'")
+found = next((a / search for a in [root, *root.parents][: limit + 1] if (a / search).is_dir()), None)
+out = {"config": ".config/oracle-corpus.toml", "search": search, "max_ancestors": limit, "present": found is not None,
+       "root": found.as_posix() if found else None}
+if found:
+    lines, total = [], 0
+    for f in sorted((p for p in found.rglob("*") if p.is_file()), key=lambda p: p.relative_to(found).as_posix()):
+        h = hashlib.sha256()
+        with open(f, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        total += f.stat().st_size
+        lines.append(f"{h.hexdigest()}  {f.relative_to(found).as_posix()}\n")
+    manifest_out.write_text("".join(lines), encoding="utf-8", newline="\n")
+    out.update(file_count=len(lines), bytes=total, manifest_file="oracle-corpus.manifest.txt",
+               manifest_sha256=hashlib.sha256("".join(lines).encode("utf-8")).hexdigest())
+print(json.dumps(out))
+PY
+
 profile=default
 [ $canary -eq 1 ] && profile=canary
 units="$results/units.tsv"   # unit kind crate features status build_exit run_exit dir ('-' = none)
@@ -346,6 +399,7 @@ def summary(d):
         if p.exists():
             lines += [l.strip() for l in p.read_text(encoding="utf-8", errors="replace").splitlines() if re.match(r"^ *Summary ", l)]
     return lines[-1] if lines else ""
+NP = re.compile(r"^[ \t]*NOT_PROVEN:[ \t]*(.*?)[ \t\r]*$", re.M)
 def junit(path, unit, feats):
     out = []
     if not path.exists():
@@ -355,9 +409,10 @@ def junit(path, unit, feats):
         for case in suite.iter("testcase"):
             tags = {c.tag for c in case}
             status = "failed" if tags & {"failure", "error"} else "skipped" if "skipped" in tags else "passed"
+            text = "\n".join(c.text or "" for c in case if c.tag in ("system-out", "system-err"))
             out.append({"unit": unit, "kind": "nextest", "crate": binary.split("::")[0], "features": feats,
                         "binary": binary, "name": case.get("name", ""), "status": status,
-                        "seconds": float(case.get("time") or 0)})
+                        "seconds": float(case.get("time") or 0), "not_proven": NP.findall(text)})
     return out
 DOC = re.compile(r"^test (.+?) +\.\.\. (ok|FAILED|ignored|TIMEOUT|NOT_RUN)\b")
 DOC_STATUS = {"ok": "passed", "FAILED": "failed", "ignored": "skipped", "TIMEOUT": "timed_out", "NOT_RUN": "not_run"}
@@ -368,7 +423,7 @@ def doctests(path, unit, crate, feats):
             m = DOC.match(line)
             if m:
                 out.append({"unit": unit, "kind": "doctest", "crate": crate, "features": feats, "binary": "doctest",
-                            "name": m.group(1), "status": DOC_STATUS[m.group(2)], "seconds": None})
+                            "name": m.group(1), "status": DOC_STATUS[m.group(2)], "seconds": None, "not_proven": []})
     return out
 
 units, tests = [], []
@@ -386,6 +441,7 @@ for line in (res / "units.tsv").read_text(encoding="utf-8").splitlines():
         got = doctests(res / f"{d}.stdout.txt", unit, crate, feats)
     for k in STATUSES:
         u[k] = sum(t["status"] == k for t in got)
+    u["not_proven"] = sum(len(t["not_proven"]) for t in got)
     units.append(u)
     tests += got
 per_crate = {}
@@ -394,6 +450,13 @@ for t in tests:
         c = per_crate.setdefault(t["crate"], {k: 0 for k in STATUSES})
         c[t["status"]] += 1
 default = units[0]
+not_proven = [{"unit": t["unit"], "crate": t["crate"], "binary": t["binary"], "test": t["name"], "reason": r}
+              for t in tests for r in t["not_proven"]]
+code = int(E["RR_EXIT"])
+if code == 0 and not_proven:
+    code = 73
+corpus_file = res / "oracle-corpus.json"
+corpus = json.loads(corpus_file.read_text(encoding="utf-8")) if corpus_file.exists() else {"present": False}
 mx = matrix.read_bytes() if matrix.exists() else b""
 absent = [u["unit"] + " (" + u["status"] + ")" for u in units if u["status"].startswith(("feature_absent", "crate_absent"))]
 round_json = {
@@ -404,7 +467,8 @@ round_json = {
     "lock_sha256": E["RR_LOCK_SHA"], "edit_tree_dirty_entries": E["RR_DIRTY"],
     "started_at": E["RR_STARTED"], "ended_at": E["RR_ENDED"],
     "build_exit": default["build_exit"], "run_exit": default["run_exit"], "summary": default.get("summary", ""),
-    "canary_filter": E["RR_FILTER"], "exit": int(E["RR_EXIT"]),
+    "canary_filter": E["RR_FILTER"], "exit": code,
+    "not_proven": not_proven, "oracle_corpus": corpus,
     "absent_units": absent,
     "timed_out_tests": [t["unit"] + ": " + t["name"] for t in tests if t["status"] == "timed_out"],
     "feature_matrix": {"file": ".config/round-features.toml", "sha256": hashlib.sha256(mx).hexdigest() if mx else None},
@@ -420,12 +484,19 @@ round_json = {
                                            indent=1) + "\n", encoding="utf-8", newline="\n")
 (res / "round.json").write_text(json.dumps(round_json, indent=1) + "\n", encoding="utf-8", newline="\n")
 for u in units:
-    print("  %-48s %-24s build=%s run=%s pass=%d fail=%d skip=%d timeout=%d not_run=%d" % (u["unit"], u["status"],
-          u["build_exit"], u["run_exit"], u["passed"], u["failed"], u["skipped"], u["timed_out"], u["not_run"]))
+    print("  %-48s %-24s build=%s run=%s pass=%d fail=%d skip=%d timeout=%d not_run=%d not_proven=%d" % (u["unit"],
+          u["status"], u["build_exit"], u["run_exit"], u["passed"], u["failed"], u["skipped"], u["timed_out"],
+          u["not_run"], u["not_proven"]))
+for n in not_proven:
+    print("  NOT_PROVEN %s %s: %s" % (n["unit"], n["test"], n["reason"]))
+print("SUMMARY exit=%d units=%d not_proven=%d absent=%d timed_out=%d oracle_corpus=%s" % (code, len(units),
+      len(not_proven), len(round_json["absent_units"]), len(round_json["timed_out_tests"]),
+      corpus.get("root") or "absent"))
 PY
   reason="results aggregation failed (raw files kept)"
   echo "run-round: $reason" >&2
   exit 70
 fi
+code=$(sed -n 's/^ "exit": \([0-9][0-9]*\),$/\1/p' "$results/round.json")
 echo "run-round: exit=$code -> $results/round.json"
 exit "$code"

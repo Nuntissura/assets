@@ -13,7 +13,10 @@ import json, pathlib, re, sys, tomllib
 
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
 DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
-NATIVE_FFI_EXTRA: set[str] = set()  # non -sys names the steward labels native-ffi (only valid in native owners)
+# Non -sys names the steward labels native-ffi (only valid in native owners; the probe rejects them elsewhere;
+# the steward license gate reads this one-line set). cpal: OS audio FFI provider (WASAPI/ALSA/CoreAudio) of
+# hsk-studio-score-device feature cpal-backend (lead decision 2026-10-11T01:40Z, native per designated owner).
+NATIVE_FFI_EXTRA: set[str] = {"cpal"}
 
 
 def fail(code, msg):

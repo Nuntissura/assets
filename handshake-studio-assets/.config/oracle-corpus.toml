@@ -1,0 +1,13 @@
+# Oracle corpus: commit-free external test DATA (public downloads, Adobe-exported references, installed ICC profiles).
+# Never committed; tests and tools locate it WITHOUT env vars:
+#   start at the workspace root (the dir holding the root Cargo.toml; from a test: env!("CARGO_MANIFEST_DIR")/../..),
+#   walk up at most `max-ancestors` parents, and take the first ancestor A where A/<search> is a directory.
+# From the edit tree (wt-studio-assets/handshake-studio-assets) that is ../Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus
+# beside the git worktree; round exports under Handshake_Artifacts/WP-KERNEL-STUDIO/<owner>/src resolve the same directory.
+# Layout: one subdirectory per data kind (icc/, dng/, psd/, ...); a test pins every file it reads by sha256 and prints
+# `NOT_PROVEN: <test> <case> reason=...` when the root, the file or its hash is absent or different (tools/run-round.sh).
+# Format: plain `key = value` lines, no tables, so a test can read it without a TOML crate.
+# Owner: workspace steward (root .config); data-kind subdirectories are owned by the lanes that use them.
+schema = "hsk.studio.oracle-corpus@1"
+search = "Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus"
+max-ancestors = 8
