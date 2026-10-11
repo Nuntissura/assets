@@ -118,6 +118,20 @@ impl SourceIdentity {
 
 pub struct ProposalConfig<'a> {
     pub limits: &'a Limits,
+    /// Folio budget of the import. The document is validated with it unchanged (`inspect_bytes`), and
+    /// `input_bytes`, `payload_bytes`, `edges` and `depth` apply to the validation of the raster records unchanged
+    /// too. `nodes` does NOT bound the raster records: they are built before they are validated, and their
+    /// validation (`validate_raster_records`, which charges one node per record layer and one per kept effect
+    /// instance) gets `nodes = max(nodes, records + kept effect instances)`. That need is bounded by the importer,
+    /// not by this field: records by `Limits::max_layers`, kept effect instances by pigment's `MAX_EFFECTS_PER_PLAN`
+    /// (instances a render plan counts) plus the crate's equal bound on the instances no plan counts, so it is at
+    /// most `limits.max_layers + 2 * MAX_EFFECTS_PER_PLAN` (16384 with the default limits) and a smaller `nodes`
+    /// is raised to it for that one validation. Effect stacks beyond those bounds are typed losses, never an error
+    /// (tests `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`,
+    /// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on` and
+    /// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`).
+    /// A host that validates `ImportProposal::raster_records` again with its own budget needs `nodes` of at least
+    /// `raster_records.layers.len()` plus the effect instances they hold.
     pub budget: Budget,
     pub resolver: &'a dyn Resolver,
     /// Interpretation of 16-bit samples (UNVERIFIED which one Photoshop uses; default full range).
@@ -454,8 +468,11 @@ struct Builder<'a, 'm, 'c> {
     tile_bytes: usize,
     /// Raster records collected per layer (adjustment, mask parameters, Blend-If, effects).
     records: Vec<StudioRasterLayerRecord>,
-    /// Effect instances held by `records` (the running aggregate against pigment's per-plan limit).
-    effect_instances: usize,
+    /// Effect instances held by `records`: the running totals against pigment's per-plan limit (counted) and the
+    /// crate's bound on the instances no plan counts (see `effects.rs`).
+    effect_tally: effects::EffectTally,
+    /// Hidden groups around the layer being mapped (a layer inside a hidden group is in no render plan).
+    hidden_groups: usize,
 }
 
 /// Flags of the mask whose coverage is mapped: the real user mask's when one exists.
@@ -476,10 +493,15 @@ impl Builder<'_, '_, '_> {
     /// and group layers) its effect stack. Every source block stays in the document; what a record
     /// does not hold is reported through the notes of the mapping.
     ///
-    /// Effect limits are pigment's (`MAX_EFFECTS_PER_LAYER`, `MAX_EFFECTS_PER_PLAN`): a stack over the
-    /// per-layer limit is not mapped and the layer reports `effects_over_budget` (path names the layer
-    /// id); once the mapped instances of the document pass the per-plan limit the import is refused
-    /// with [`PsdError::EffectLimit`]. Test `effects_over_the_plan_limit_are_a_typed_input_error_not_a_mapping_defect`.
+    /// Effect limits are pigment's (`MAX_EFFECTS_PER_LAYER`, `MAX_EFFECTS_PER_PLAN`) applied to the instances a
+    /// render plan counts (enabled instances of an enabled stack on a layer that is visible with all its groups:
+    /// rule and evidence at the top of `effects.rs`). A stack that does not fit is not mapped, its `lfx2` block
+    /// stays in the document, and the layer reports a typed loss whose path names the layer id:
+    /// `effects_over_budget` (per layer), `effects_over_document_budget` (counted instances past the per-plan
+    /// limit; this stack and every later non-empty stack) or `effects_unrendered_over_document_budget` (kept
+    /// instances no plan counts past the crate's bound; same cut). The import itself never fails on an effect
+    /// count. Tests `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on` and
+    /// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`.
     fn collect_records(
         &mut self,
         index: usize,
@@ -524,19 +546,18 @@ impl Builder<'_, '_, '_> {
         if allow_effects {
             let path = format!("layer[{index}]/tagged/lfx2");
             let limits = self.cfg.limits;
+            // A hidden layer, and a layer inside a hidden group, is in no render plan: its instances are not counted.
+            let visible = layer.visible() && self.hidden_groups == 0;
             let mint = &mut *self.mint;
-            match effects::effect_stack(layer, || mint.effect_stack_id(layer_id), limits) {
+            match effects::effect_stack(layer, visible, &self.effect_tally, || mint.effect_stack_id(layer_id), limits) {
                 Some(Ok(m)) => {
-                    self.effect_instances = self
-                        .effect_instances
-                        .checked_add(m.value.effects.len())
-                        .filter(|total| *total <= effects::MAX_EFFECTS_PER_PLAN)
-                        .ok_or(PsdError::EffectLimit)?;
+                    self.effect_tally.charge(effects::StackShape::of(m.value.enabled, &m.value.effects, visible));
                     self.notes(&path, m.notes);
                     self.note(path, LossKind::Preserved, "effects_mapped_to_record_not_rendered");
                     record.effects = Some(m.value);
                 }
-                Some(Err(reason)) if reason == effects::EFFECTS_OVER_BUDGET => {
+                Some(Err(reason)) if effects::is_budget_reason(reason) => {
+                    self.effect_tally.refused(reason);
                     self.note(format!("{path}(layer_id={layer_id})"), LossKind::Unsupported, reason);
                 }
                 Some(Err(reason)) => self.note(path, LossKind::Unsupported, reason),
@@ -839,7 +860,16 @@ impl Builder<'_, '_, '_> {
         self.record(&id, folder, layer, mask_default);
         self.collect_records(folder, layer, &id, has_mask, None, true)?;
         let inner_parent = json!({"node_kind": "layer", "node_id": id});
+        // The children of a hidden group are in no render plan (`effects.rs`: what a plan counts). An error ends the
+        // whole import, so the count needs no restoring on the `?` path.
+        let hidden = !layer.visible();
+        if hidden {
+            self.hidden_groups = self.hidden_groups.saturating_add(1);
+        }
         let children = self.walk(children, &inner_parent)?;
+        if hidden {
+            self.hidden_groups = self.hidden_groups.saturating_sub(1);
+        }
         self.operations.push(json!({
             "layer_id": id, "operation_key": "mix", "operation_kind": "composite",
             "inputs": [port("inputs", "many", "ordered_composite")],
@@ -1572,7 +1602,8 @@ pub fn to_proposal(
         loss: doc.loss_report(cfg.limits),
         tile_bytes: 0,
         records: Vec::new(),
-        effect_instances: 0,
+        effect_tally: effects::EffectTally::default(),
+        hidden_groups: 0,
     };
     let converter_present = b.converter.is_some();
     // Panel order is top-first; graph outputs follow the group convention (bottom-most first).
@@ -1731,12 +1762,15 @@ pub fn to_proposal(
     raster_records.layers = std::mem::take(&mut b.records);
     if !raster_records.layers.is_empty() {
         // Folio charges one node per record layer and one per effect instance (`validate_raster_records`).
-        // Both counts are the importer's own and are bounded before this point (layers by `Limits::max_layers`,
-        // effect instances by pigment's per-plan limit, `Builder::collect_records`), so the node budget of
-        // THIS validation is sized to that need (not lowered below the caller's `nodes`); the caller's other
-        // dimensions apply unchanged. The input cannot exhaust it (tests/effects_budget.rs
-        // `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`).
-        let needed = raster_records.layers.len().checked_add(b.effect_instances).ok_or(PsdError::Overflow)?;
+        // Both counts are the importer's own and are bounded before this point: record layers by
+        // `Limits::max_layers`, kept effect instances by `MAX_EFFECTS_PER_PLAN` counted plus
+        // `MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT` not counted (`Builder::collect_records`), so
+        // need <= `Limits::max_layers` + 2 * `MAX_EFFECTS_PER_PLAN`. The node budget of THIS validation is
+        // sized to that need (never lowered below the caller's `nodes`; see `ProposalConfig::budget`); the
+        // caller's other dimensions apply unchanged. The input cannot exhaust it (tests/effects_budget.rs
+        // `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input` and
+        // `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`).
+        let needed = raster_records.layers.len().checked_add(b.effect_tally.kept()).ok_or(PsdError::Overflow)?;
         let records_budget = Budget { nodes: cfg.budget.nodes.max(needed), ..cfg.budget };
         // The parsers pre-check the Folio ranges; a rejection here is a mapping defect, not input
         // (tests/adjustment_records.rs `non_finite_descriptor_numbers_are_typed_losses_not_import_failures`).

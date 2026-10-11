@@ -21,10 +21,6 @@ pub enum PsdError {
     TaggedBlockLimit,
     NameLimit,
     ResourceLimit,
-    /// The mapped layer-effect instances of the whole document exceed pigment's per-plan limit
-    /// (`MAX_EFFECTS_PER_PLAN`): an input limit like [`Self::LayerLimit`], not a mapping defect (test
-    /// `effects_over_the_plan_limit_are_a_typed_input_error_not_a_mapping_defect`).
-    EffectLimit,
     LayerRect,
     ChannelLength,
     BadCompression(u16),
@@ -61,7 +57,6 @@ impl PsdError {
             Self::TaggedBlockLimit => "psd_tagged_block_limit",
             Self::NameLimit => "psd_name_limit",
             Self::ResourceLimit => "psd_resource_limit",
-            Self::EffectLimit => "psd_effect_limit",
             Self::LayerRect => "psd_layer_rect",
             Self::ChannelLength => "psd_channel_length",
             Self::BadCompression(_) => "psd_bad_compression",

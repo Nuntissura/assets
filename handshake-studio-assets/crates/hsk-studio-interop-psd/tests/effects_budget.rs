@@ -1,18 +1,28 @@
-//! SMB-INTEROP-PSD-BUDGET (PLR-053): an effects-heavy but structurally valid PSD must not fail the whole
-//! import under a mapping-defect code. Pigment owns the effect limits (`MAX_EFFECTS_PER_LAYER` = 64,
-//! `MAX_EFFECTS_PER_PLAN` = 4096): a layer over its limit keeps the document and loses only its stack
-//! (typed loss `effects_over_budget`, the `lfx2` block stays byte-exact); more mapped effects than the plan
-//! limit is the typed input error `psd_effect_limit`; Folio's record-validation node budget (records +
-//! effect instances, `validate_raster_records`) is sized from the input inside those limits.
-//! All inputs are synthetic byte fixtures built here, independently of the crate's encoder.
+//! SMB-INTEROP-PSD-BUDGET (PLR-053, R9 remediation): an effects-heavy but structurally valid PSD never fails the
+//! import because of its effect count, under any code. Pigment owns the effect limits (`MAX_EFFECTS_PER_LAYER` = 64,
+//! `MAX_EFFECTS_PER_PLAN` = 4096). A render plan counts only the ENABLED instances of an ENABLED stack on a layer
+//! that is VISIBLE with all its groups (composite `convert_effects` and `lower_inner`, pigment
+//! `PlanExtensions::validate`; the evidence is at the top of `src/effects.rs`), and the importer counts the same
+//! way. A stack that does not fit is not mapped (its `lfx2` block stays byte-exact) and the layer reports a typed
+//! loss: `effects_over_budget` (per layer, or past Folio's own per-stack ceiling),
+//! `effects_over_document_budget` (counted instances past the plan limit: the crossing stack and every later
+//! stack) or `effects_unrendered_over_document_budget` (the kept instances no plan counts are bounded too). Folio's
+//! record-validation node budget (records + kept instances, `validate_raster_records`) is sized from the input
+//! inside those bounds. All inputs are synthetic byte fixtures built here, independently of the crate's encoder.
 
 mod common;
 
 use common::*;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{Budget, Code, Resolution, Resolver, TileRef, validate_raster_records};
+use hsk_studio_folio::{
+    Budget, Code, MAX_EFFECTS, Resolution, Resolver, TileRef, validate_raster_records,
+};
 use hsk_studio_interop_psd::*;
 use hsk_studio_pigment::effect_math::{MAX_EFFECTS_PER_LAYER, MAX_EFFECTS_PER_PLAN};
+
+const OVER_LAYER: &str = "effects_over_budget";
+const OVER_DOCUMENT: &str = "effects_over_document_budget";
+const OVER_UNRENDERED: &str = "effects_unrendered_over_document_budget";
 
 struct Mint(u64);
 impl Mint {
@@ -110,10 +120,20 @@ fn v_enum(type_id: &str, value: &str) -> Vec<u8> {
     v.extend(ds_key(value));
     tagged(b"enum", v)
 }
+fn v_bool(value: bool) -> Vec<u8> {
+    tagged(b"bool", vec![u8::from(value)])
+}
 
 /// The smallest mappable effect: its blend mode is the only required item (everything else defaults).
 fn minimal_effect() -> Vec<u8> {
     v_objc("null", vec![("Md  ", v_enum("BlnM", "Mltp"))])
+}
+/// The smallest mappable effect with its own enable switch.
+fn switched_effect(enabled: bool) -> Vec<u8> {
+    v_objc(
+        "null",
+        vec![("Md  ", v_enum("BlnM", "Mltp")), ("enab", v_bool(enabled))],
+    )
 }
 /// An `lfx2` block of exactly `count` effects. They are spread over three multi lists so that no list passes
 /// the descriptor reader's 512 items per container (the reader's own bound, unchanged by this lane).
@@ -130,24 +150,18 @@ fn lfx2_with(count: usize) -> Vec<u8> {
         }
     }
     assert_eq!(left, 0);
+    lfx2_block(items)
+}
+fn lfx2_block(items: Vec<(&str, Vec<u8>)>) -> Vec<u8> {
     let mut v = be32(0);
     v.extend(be32(16));
     v.extend(ds_object("null", items));
     v
 }
 
-/// A 1x1 RGB 8-bit document whose raster layers carry `lfx2` blocks of the given effect counts, in file order.
-fn doc_with_effect_counts(counts: &[usize]) -> Vec<u8> {
-    let layers: Vec<TLayer> = counts
-        .iter()
-        .map(|&count| {
-            let mut l = TLayer::new("fx", [0, 0, 1, 1]);
-            l.channels = vec![(0, 0, vec![10]), (1, 0, vec![20]), (2, 0, vec![30])];
-            l.blocks = vec![layer_block(b"lfx2", &lfx2_with(count), false)];
-            l
-        })
-        .collect();
-    let info = layer_info(&layers, false, false);
+/// A 1x1 RGB 8-bit document from layers in FILE order (bottom to top).
+fn doc_of(layers: &[TLayer]) -> Vec<u8> {
+    let info = layer_info(layers, false, false);
     Doc {
         version: 1,
         channels: 3,
@@ -162,6 +176,143 @@ fn doc_with_effect_counts(counts: &[usize]) -> Vec<u8> {
     }
     .bytes()
 }
+/// A raster layer with an `lfx2` block. It has no pixels (an empty rectangle): every layer with pixels costs one
+/// tile (about 1 MiB of f32 samples plus its SHA-256) in the proposal, which would make the 130-layer cases slow
+/// without testing anything about effects.
+fn effects_layer(name: &'static str, hidden: bool, lfx2: Vec<u8>) -> TLayer {
+    let mut l = TLayer::new(name, [0, 0, 0, 0]);
+    l.channels = empty_channels(&[0, 1, 2]);
+    l.blocks = vec![layer_block(b"lfx2", &lfx2, false)];
+    if hidden {
+        l.flags |= 0x02;
+    }
+    l
+}
+
+/// A 1x1 RGB 8-bit document whose raster layers carry `lfx2` blocks of the given effect counts, in file order.
+fn doc_with_effect_counts(counts: &[usize]) -> Vec<u8> {
+    let layers: Vec<TLayer> = counts
+        .iter()
+        .map(|&count| effects_layer("fx", false, lfx2_with(count)))
+        .collect();
+    doc_of(&layers)
+}
+
+// ---- stacks with switches, layers and groups in PANEL order (top-most first) ------------------
+
+/// One effect stack: the enable switch of each instance, the stack's master switch, the layer's visibility.
+#[derive(Clone)]
+struct Fx {
+    enabled: Vec<bool>,
+    master: bool,
+    hidden: bool,
+}
+impl Fx {
+    /// `n` enabled instances in an enabled stack on a visible layer.
+    fn live(n: usize) -> Self {
+        Self::mixed(n, 0)
+    }
+    /// `live` enabled and `off` switched-off instances.
+    fn mixed(live: usize, off: usize) -> Self {
+        let mut enabled = vec![true; live];
+        enabled.extend(vec![false; off]);
+        Self {
+            enabled,
+            master: true,
+            hidden: false,
+        }
+    }
+    /// `n` switched-off instances.
+    fn disabled(n: usize) -> Self {
+        Self::mixed(0, n)
+    }
+    fn hidden(mut self) -> Self {
+        self.hidden = true;
+        self
+    }
+    fn master_off(mut self) -> Self {
+        self.master = false;
+        self
+    }
+    fn lfx2(&self) -> Vec<u8> {
+        let keys = ["dropShadowMulti", "innerShadowMulti", "solidFillMulti"];
+        let per_list = self.enabled.len().div_ceil(keys.len()).max(1);
+        let mut items = Vec::new();
+        if !self.master {
+            items.push(("masterFXSwitch", v_bool(false)));
+        }
+        for (key, chunk) in keys.iter().zip(self.enabled.chunks(per_list)) {
+            items.push((
+                *key,
+                v_list(chunk.iter().map(|&on| switched_effect(on)).collect()),
+            ));
+        }
+        lfx2_block(items)
+    }
+}
+enum Node {
+    Layer(Fx),
+    Group { hidden: bool, children: Vec<Fx> },
+}
+/// The name of the `n`th stack layer of a [`build`] document, counting in panel order.
+fn name_of(n: usize) -> String {
+    format!("L{n}")
+}
+fn leaked(name: String) -> &'static str {
+    Box::leak(name.into_boxed_str())
+}
+fn divider() -> TLayer {
+    let mut l = TLayer::new("</Layer group>", [0, 0, 0, 0]);
+    l.channels = empty_channels(&[0, 1, 2]);
+    l.blocks = vec![layer_block(b"lsct", &be32(3), false)];
+    l
+}
+fn folder(hidden: bool) -> TLayer {
+    let mut l = TLayer::new("G", [0, 0, 0, 0]);
+    l.channels = empty_channels(&[0, 1, 2]);
+    let mut lsct = be32(1);
+    lsct.extend_from_slice(b"8BIM");
+    lsct.extend_from_slice(b"norm");
+    l.blocks = vec![layer_block(b"lsct", &lsct, false)];
+    if hidden {
+        l.flags |= 0x02;
+    }
+    l
+}
+/// The document of `nodes` given in panel order (top-most first); the stack layers are named `L0`, `L1`, ... in
+/// that order, a group's children continuing the numbering.
+fn build(nodes: &[Node]) -> Vec<u8> {
+    let mut next = 0usize;
+    let mut stack_layer = |fx: &Fx| {
+        let layer = effects_layer(leaked(name_of(next)), fx.hidden, fx.lfx2());
+        next += 1;
+        layer
+    };
+    let mut panel: Vec<Vec<TLayer>> = Vec::new();
+    for node in nodes {
+        panel.push(match node {
+            Node::Layer(fx) => vec![stack_layer(fx)],
+            Node::Group { hidden, children } => {
+                let kids: Vec<TLayer> = children.iter().map(&mut stack_layer).collect();
+                // file order of one group: bounding divider, children bottom to top, folder
+                let mut file = vec![divider()];
+                file.extend(kids.into_iter().rev());
+                file.push(folder(*hidden));
+                file
+            }
+        });
+    }
+    let file: Vec<TLayer> = panel.into_iter().rev().flatten().collect();
+    doc_of(&file)
+}
+fn layers_of(fxs: impl IntoIterator<Item = Fx>) -> Vec<Node> {
+    fxs.into_iter().map(Node::Layer).collect()
+}
+fn repeated(n: usize, fx: Fx) -> impl Iterator<Item = Fx> {
+    std::iter::repeat_n(fx, n)
+}
+
+// ---- import and inspection helpers ----------------------------------------------------------
 
 fn import(bytes: &[u8]) -> Result<(PsdDocument, ImportProposal)> {
     let limits = Limits::default();
@@ -192,11 +343,97 @@ fn effect_count_of(p: &ImportProposal, psd_index: usize) -> Option<usize> {
         .map(|s| s.effects.len())
 }
 
+/// What became of the effect stack of a layer.
+#[derive(Debug, PartialEq, Eq)]
+enum Fate {
+    /// Mapped to a record with this many instances (and no budget loss entry).
+    Kept(usize),
+    /// Not mapped; the single typed loss entry names the layer and has this code.
+    Lost(&'static str),
+}
+fn fate(p: &ImportProposal, name: &str) -> Fate {
+    let id = p
+        .snapshot
+        .document()
+        .layers
+        .iter()
+        .find(|l| l.name == name)
+        .unwrap_or_else(|| panic!("layer {name} is in the document"))
+        .layer_id
+        .clone();
+    let suffix = format!("lfx2(layer_id={id})");
+    let entries: Vec<&LossEntry> = p
+        .loss
+        .entries
+        .iter()
+        .filter(|e| e.path.ends_with(&suffix))
+        .collect();
+    match p.raster_records.layer(&id).and_then(|r| r.effects.as_ref()) {
+        Some(stack) => {
+            assert!(
+                entries.is_empty(),
+                "{name}: a kept stack has no budget loss entry: {entries:?}"
+            );
+            Fate::Kept(stack.effects.len())
+        }
+        None => {
+            let [entry] = entries.as_slice() else {
+                panic!(
+                    "{name}: exactly one loss entry naming the layer is expected, got {entries:?}"
+                );
+            };
+            assert_eq!(entry.kind, LossKind::Unsupported, "{name}");
+            assert!(entry.path.starts_with("layer["), "{name}: {}", entry.path);
+            Fate::Lost(entry.code)
+        }
+    }
+}
+fn assert_fates(p: &ImportProposal, expected: &[(usize, Fate)]) {
+    for (n, want) in expected {
+        assert_eq!(&fate(p, &name_of(*n)), want, "layer {}", name_of(*n));
+    }
+}
+/// Effect instances held by the records.
+fn kept_total(p: &ImportProposal) -> usize {
+    p.raster_records
+        .layers
+        .iter()
+        .map(|r| r.effects.as_ref().map_or(0, |s| s.effects.len()))
+        .sum()
+}
+/// Folio's verdict on the records with `nodes` as the node budget: `Ok` or its error code.
+fn validate_with_nodes(p: &ImportProposal, nodes: usize) -> std::result::Result<(), Code> {
+    validate_raster_records(
+        &p.raster_records,
+        p.snapshot.document(),
+        Budget { nodes, ..budget() },
+        &CancellationToken::default(),
+        &Host,
+    )
+    .map(|_| ())
+    .map_err(|d| d.code)
+}
+/// Folio charges one node per record layer and one per effect instance: the need is exactly records + instances.
+fn assert_record_need_is_exact(p: &ImportProposal) -> usize {
+    let needed = p.raster_records.layers.len() + kept_total(p);
+    assert_eq!(
+        validate_with_nodes(p, needed),
+        Ok(()),
+        "records + kept instances is the whole node need"
+    );
+    assert_eq!(
+        validate_with_nodes(p, needed - 1),
+        Err(Code::BudgetExceeded),
+        "one node less is Folio's budget error"
+    );
+    needed
+}
+
 /// The reviewer's case (R8 review B, PLR-053): several layers whose stacks are far past any limit used to
 /// fail the WHOLE import as `raster_records_rejected` (Folio's node budget ran out), a code the crate itself
 /// documents as a mapping defect. Now each such layer keeps the document and loses only its stack, with a
 /// typed loss naming the layer; the layers at and under the limit keep theirs. The six degraded layers carry
-/// 4200 effects together, more than the plan limit, and still add nothing to the plan total (only mapped
+/// 4200 effects together, more than the plan limit, and still add nothing to the plan total (only kept
 /// instances count).
 #[test]
 fn effects_heavy_layers_lose_their_stack_with_a_typed_loss_and_the_document_imports() {
@@ -235,7 +472,7 @@ fn effects_heavy_layers_lose_their_stack_with_a_typed_loss_and_the_document_impo
                     .loss
                     .entries
                     .iter()
-                    .filter(|e| e.code == "effects_over_budget")
+                    .filter(|e| e.code == OVER_LAYER)
                     .filter(|e| e.path == format!("layer[{index}]/tagged/lfx2(layer_id={id})"))
                     .collect();
                 if count > MAX_EFFECTS_PER_LAYER {
@@ -270,7 +507,7 @@ fn effects_heavy_layers_lose_their_stack_with_a_typed_loss_and_the_document_impo
                 p.loss
                     .entries
                     .iter()
-                    .filter(|e| e.code == "effects_over_budget")
+                    .filter(|e| e.code == OVER_LAYER)
                     .count(),
                 7
             );
@@ -303,34 +540,14 @@ fn effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from
             let bytes = doc_with_effect_counts(&vec![MAX_EFFECTS_PER_LAYER; layers]);
             let (_, p) = import(&bytes).expect("a document exactly at the plan limit imports");
             assert_eq!(p.raster_records.layers.len(), layers);
-            let total: usize = p
-                .raster_records
-                .layers
-                .iter()
-                .map(|r| r.effects.as_ref().map_or(0, |s| s.effects.len()))
-                .sum();
-            assert_eq!(total, MAX_EFFECTS_PER_PLAN);
+            assert_eq!(kept_total(&p), MAX_EFFECTS_PER_PLAN);
             assert!(
-                !p.loss.has_code("effects_over_budget"),
+                !p.loss.has_code(OVER_LAYER) && !p.loss.has_code(OVER_DOCUMENT),
                 "nothing at the limit is degraded"
             );
 
-            let needed = layers + total;
-            let check = |nodes: usize| {
-                validate_raster_records(
-                    &p.raster_records,
-                    p.snapshot.document(),
-                    Budget { nodes, ..budget() },
-                    &CancellationToken::default(),
-                    &Host,
-                )
-            };
-            check(needed).expect("records + effect instances is the whole node need");
-            assert_eq!(
-                check(needed - 1).unwrap_err().code,
-                Code::BudgetExceeded,
-                "one node less is Folio's budget error"
-            );
+            let needed = assert_record_need_is_exact(&p);
+            assert_eq!(needed, layers + MAX_EFFECTS_PER_PLAN);
             assert!(
                 needed > budget().nodes,
                 "the caller's default budget alone could not have admitted this document"
@@ -339,30 +556,256 @@ fn effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from
     );
 }
 
-/// More mapped effects than pigment's per-plan limit is the document's own hard cap: a typed INPUT error
-/// (`psd_effect_limit`, like `psd_layer_limit`), not `Proposal(..)`, which the crate reserves for mapping
-/// defects. One effect over fails; the same document one effect under is the previous test.
+/// More counted instances than pigment's per-plan limit never fail the import: the stack that takes the total past
+/// the limit and every stack after it are typed losses naming their layers (`effects_over_document_budget`), the
+/// stacks before it are intact, and the `lfx2` blocks of the lost stacks stay in the document. Import order is panel
+/// order, top-most first (a group before its children). R9: the first version of this lane failed the whole import
+/// with `psd_effect_limit` here (`PsdError::EffectLimit`, now gone), counting hidden and disabled instances too.
 #[test]
-fn effects_over_the_plan_limit_are_a_typed_input_error_not_a_mapping_defect() {
+fn effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on() {
     bounded_case(
-        "effects_over_the_plan_limit_are_a_typed_input_error_not_a_mapping_defect",
+        "effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on",
         || {
-            let over_by_a_layer = vec![MAX_EFFECTS_PER_LAYER; MAX_EFFECTS_PLAN_LAYERS + 1];
-            let mut over_by_one = vec![MAX_EFFECTS_PER_LAYER; MAX_EFFECTS_PLAN_LAYERS];
-            over_by_one.push(1);
-            for (name, counts) in [
-                ("a whole layer over", over_by_a_layer),
-                ("one effect over", over_by_one),
-            ] {
-                let total: usize = counts.iter().sum();
-                assert!(total > MAX_EFFECTS_PER_PLAN, "{name}: {total}");
-                let err = import(&doc_with_effect_counts(&counts)).expect_err(name);
-                assert_eq!(err.code(), "psd_effect_limit", "{name}: {err}");
-                assert!(
-                    !matches!(err, PsdError::Proposal(_)),
-                    "{name}: an input limit is not a mapping defect"
-                );
-            }
+            // 4097 counted instances over 65 layers: 64 x 64 fill the plan limit, the 65th stack is one over
+            let mut panel = layers_of(repeated(
+                MAX_EFFECTS_PLAN_LAYERS,
+                Fx::live(MAX_EFFECTS_PER_LAYER),
+            ));
+            panel.push(Node::Layer(Fx::live(1)));
+            let bytes = build(&panel);
+            let (doc, p) = import(&bytes).expect("4097 counted effects: the import continues");
+            assert_eq!(
+                p.snapshot.document().layers.len(),
+                MAX_EFFECTS_PLAN_LAYERS + 1,
+                "every layer is in the document"
+            );
+            let mut want: Vec<(usize, Fate)> = (0..MAX_EFFECTS_PLAN_LAYERS)
+                .map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER)))
+                .collect();
+            want.push((MAX_EFFECTS_PLAN_LAYERS, Fate::Lost(OVER_DOCUMENT)));
+            assert_fates(&p, &want);
+            assert_eq!(
+                kept_total(&p),
+                MAX_EFFECTS_PER_PLAN,
+                "the earlier stacks are intact"
+            );
+            assert_eq!(
+                write_psd(&doc, &Limits::default()).unwrap(),
+                bytes,
+                "the lost stack's lfx2 block is still in the document"
+            );
+            assert_record_need_is_exact(&p);
+
+            // The cut is a prefix of the import order: 63 x 64 + 60 = 4092 kept; the next stack (10) crosses; the
+            // 2 after it WOULD fit (4094) and is lost with it; a later stack over the per-layer limit keeps its
+            // own code; the last stack (1) is lost with the cut.
+            let mut counts: Vec<usize> = vec![MAX_EFFECTS_PER_LAYER; 63];
+            counts.extend([60, 10, 2, MAX_EFFECTS_PER_LAYER + 6, 1]);
+            let (_, p) = import(&build(&layers_of(counts.iter().map(|&n| Fx::live(n)))))
+                .expect("a prefix is kept and the import continues");
+            let mut want: Vec<(usize, Fate)> = (0..63)
+                .map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER)))
+                .collect();
+            want.extend([
+                (63, Fate::Kept(60)),
+                (64, Fate::Lost(OVER_DOCUMENT)),
+                (65, Fate::Lost(OVER_DOCUMENT)),
+                (66, Fate::Lost(OVER_LAYER)),
+                (67, Fate::Lost(OVER_DOCUMENT)),
+            ]);
+            assert_fates(&p, &want);
+            assert_eq!(kept_total(&p), 63 * MAX_EFFECTS_PER_LAYER + 60);
+            assert_record_need_is_exact(&p);
+        },
+    );
+}
+
+/// The count is the render plan's, not the number of mapped instances: with the counted total exactly at the plan
+/// limit, a hidden layer, a layer whose stack master switch is off, a stack whose instances are all switched off and
+/// a layer inside a hidden group are all kept (no plan lowers or counts them), while one more live instance on a
+/// visible layer crosses the cap, and so does the same stack inside a VISIBLE group. Evidence for the rule:
+/// `src/effects.rs` (composite `convert_effects` keeps enabled instances of an enabled stack; `lower_inner` lowers
+/// only layers reachable through visible inputs; pigment `PlanExtensions::validate` counts what a plan carries).
+#[test]
+fn hidden_layers_and_disabled_effects_do_not_count_toward_the_document_cap() {
+    bounded_case(
+        "hidden_layers_and_disabled_effects_do_not_count_toward_the_document_cap",
+        || {
+            let full = || repeated(MAX_EFFECTS_PLAN_LAYERS, Fx::live(MAX_EFFECTS_PER_LAYER));
+            let mut panel = layers_of(full());
+            panel.extend(layers_of([
+                Fx::live(MAX_EFFECTS_PER_LAYER).hidden(),
+                Fx::live(MAX_EFFECTS_PER_LAYER).master_off(),
+                Fx::disabled(MAX_EFFECTS_PER_LAYER),
+            ]));
+            panel.push(Node::Group {
+                hidden: true,
+                children: vec![Fx::live(MAX_EFFECTS_PER_LAYER)],
+            });
+            panel.push(Node::Layer(Fx::live(1)));
+            let (_, p) =
+                import(&build(&panel)).expect("hidden and disabled instances are not counted");
+            let first = MAX_EFFECTS_PLAN_LAYERS;
+            let mut want: Vec<(usize, Fate)> = (0..first)
+                .map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER)))
+                .collect();
+            want.extend([
+                (first, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                (first + 1, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                (first + 2, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                (first + 3, Fate::Kept(MAX_EFFECTS_PER_LAYER)),
+                (first + 4, Fate::Lost(OVER_DOCUMENT)),
+            ]);
+            assert_fates(&p, &want);
+            assert_eq!(
+                kept_total(&p),
+                MAX_EFFECTS_PER_PLAN + 4 * MAX_EFFECTS_PER_LAYER,
+                "4096 counted + 4 x 64 kept that no plan counts"
+            );
+            assert_record_need_is_exact(&p);
+
+            // counterfactual for the group rule: the same child in a VISIBLE group counts and crosses the cap
+            let mut panel = layers_of(full());
+            panel.push(Node::Group {
+                hidden: false,
+                children: vec![Fx::live(MAX_EFFECTS_PER_LAYER)],
+            });
+            let (_, p) = import(&build(&panel)).expect("imports");
+            assert_fates(&p, &[(first, Fate::Lost(OVER_DOCUMENT))]);
+        },
+    );
+}
+
+/// The per-layer limit counts the same way: 64 LIVE instances of a visible layer. A stack of 100 instances of
+/// which 36 are switched off is within pigment's limit (composite `convert_effects` refuses a layer over 64 live
+/// instances, not over 64 mapped ones) and is kept whole; 65 live is over; a hidden layer, or a stack with its
+/// master switch off, counts nothing and keeps 100 live instances.
+#[test]
+fn the_per_layer_limit_counts_live_instances_of_visible_layers() {
+    bounded_case(
+        "the_per_layer_limit_counts_live_instances_of_visible_layers",
+        || {
+            let panel = layers_of([
+                Fx::mixed(24, 76),
+                Fx::mixed(MAX_EFFECTS_PER_LAYER + 1, 35),
+                Fx::live(100).hidden(),
+                Fx::live(100).master_off(),
+                Fx::mixed(MAX_EFFECTS_PER_LAYER, 36),
+                Fx::mixed(MAX_EFFECTS_PER_LAYER + 1, 0),
+            ]);
+            let (_, p) = import(&build(&panel)).expect("imports");
+            assert_fates(
+                &p,
+                &[
+                    (0, Fate::Kept(100)),
+                    (1, Fate::Lost(OVER_LAYER)),
+                    (2, Fate::Kept(100)),
+                    (3, Fate::Kept(100)),
+                    (4, Fate::Kept(100)),
+                    (5, Fate::Lost(OVER_LAYER)),
+                ],
+            );
+            assert_record_need_is_exact(&p);
+        },
+    );
+}
+
+/// Folio refuses a stack of more than `MAX_EFFECTS` (1024) instances, whether or not any is live: that would be
+/// a rejected import (`raster_records_rejected`). The importer does not map such a stack, whatever its switches,
+/// and reports the layer; a stack of exactly 1024 switched-off instances is kept.
+#[test]
+fn a_stack_past_folios_ceiling_is_a_typed_loss_not_a_rejected_import() {
+    bounded_case(
+        "a_stack_past_folios_ceiling_is_a_typed_loss_not_a_rejected_import",
+        || {
+            let panel = layers_of([
+                Fx::disabled(MAX_EFFECTS),
+                Fx::disabled(MAX_EFFECTS + 1),
+                Fx::live(MAX_EFFECTS + 1).hidden(),
+            ]);
+            let (_, p) = import(&build(&panel)).expect("imports");
+            assert_fates(
+                &p,
+                &[
+                    (0, Fate::Kept(MAX_EFFECTS)),
+                    (1, Fate::Lost(OVER_LAYER)),
+                    (2, Fate::Lost(OVER_LAYER)),
+                ],
+            );
+            validate_raster_records(
+                &p.raster_records,
+                p.snapshot.document(),
+                budget(),
+                &CancellationToken::default(),
+                &Host,
+            )
+            .expect("what was kept validates under the caller's own budget");
+        },
+    );
+}
+
+/// The kept instances no plan counts are bounded too (the crate's own bound, the size of pigment's plan limit), so
+/// the memory and the record-validation work of the instances nobody renders stay bounded: 64 hidden layers x 64
+/// are kept, the next hidden stack crosses and is lost with `effects_unrendered_over_document_budget`, and so is
+/// every later stack, counted or not (the cut is a prefix). With the counted bound filled as well, the whole
+/// document holds at most 2 x 4096 instances, and the node budget the importer gives the record validation is
+/// exactly records + those instances, far above the caller's 4096: the importer sizes it, the caller's `nodes` does
+/// not bound it (documented on `ProposalConfig::budget`).
+#[test]
+fn instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded()
+ {
+    bounded_case(
+        "instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded",
+        || {
+            let hidden = || {
+                repeated(
+                    MAX_EFFECTS_PLAN_LAYERS,
+                    Fx::live(MAX_EFFECTS_PER_LAYER).hidden(),
+                )
+            };
+
+            // the bound alone: 4096 hidden instances kept, then a hidden stack and a visible one are lost
+            let mut panel = layers_of(hidden());
+            panel.extend(layers_of([Fx::live(1).hidden(), Fx::live(1)]));
+            let (_, p) = import(&build(&panel)).expect("imports");
+            let mut want: Vec<(usize, Fate)> = (0..MAX_EFFECTS_PLAN_LAYERS)
+                .map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER)))
+                .collect();
+            want.extend([
+                (MAX_EFFECTS_PLAN_LAYERS, Fate::Lost(OVER_UNRENDERED)),
+                (MAX_EFFECTS_PLAN_LAYERS + 1, Fate::Lost(OVER_UNRENDERED)),
+            ]);
+            assert_fates(&p, &want);
+            assert_eq!(kept_total(&p), MAX_EFFECTS_PER_PLAN);
+
+            // both bounds full: 64 visible + 64 hidden stacks of 64, then one more of each kind
+            let mut panel = layers_of(repeated(
+                MAX_EFFECTS_PLAN_LAYERS,
+                Fx::live(MAX_EFFECTS_PER_LAYER),
+            ));
+            panel.extend(layers_of(hidden()));
+            panel.extend(layers_of([Fx::live(1).hidden(), Fx::live(1)]));
+            let (_, p) = import(&build(&panel)).expect("imports");
+            let layers = 2 * MAX_EFFECTS_PLAN_LAYERS;
+            let mut want: Vec<(usize, Fate)> = (0..layers)
+                .map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER)))
+                .collect();
+            want.extend([
+                (layers, Fate::Lost(OVER_UNRENDERED)),
+                (layers + 1, Fate::Lost(OVER_UNRENDERED)),
+            ]);
+            assert_fates(&p, &want);
+            assert_eq!(kept_total(&p), 2 * MAX_EFFECTS_PER_PLAN);
+            let needed = assert_record_need_is_exact(&p);
+            assert_eq!(
+                needed,
+                layers + 2 * MAX_EFFECTS_PER_PLAN,
+                "records + at most 2 x the plan limit"
+            );
+            assert!(
+                needed > budget().nodes,
+                "the caller's default nodes did not bound it"
+            );
         },
     );
 }

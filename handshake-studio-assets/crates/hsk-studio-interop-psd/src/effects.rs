@@ -30,12 +30,117 @@ pub(crate) use hsk_studio_pigment::effect_math::{MAX_EFFECTS_PER_LAYER, MAX_EFFE
 
 use crate::adjust::{Mapped, Note, Reason};
 
-/// The loss code of a layer whose effect stack has more mapped instances than [`MAX_EFFECTS_PER_LAYER`].
-/// The stack is not mapped (the `lfx2` block stays byte-exact in the document); the layer and the rest of the
-/// document import. Pigment owns both effect limits (per layer and per plan); a stack over the first would be
-/// refused by the render plan, and Folio's own ceiling (`MAX_EFFECTS`) is above it, so Folio never has to.
+// ---- effect limits -------------------------------------------------------------------------------------------
+//
+// What a render plan counts (the rule this module matches; nothing here invents it):
+// - composite `convert_effects` (hsk-studio-composite `lower_extensions.rs`, 569-593) keeps the ENABLED instances
+//   of an ENABLED stack (a switched-off stack and a switched-off instance render nothing) and refuses a layer with
+//   more than `MAX_EFFECTS_PER_LAYER` of them;
+// - pigment `PlanExtensions::validate` (`render_plan/extensions.rs`, 326-339) adds the effects of every layer entry
+//   of the plan and refuses the plan over `MAX_EFFECTS_PER_PLAN`;
+// - composite `lower_inner` (`lower_render_plan.rs`, 525-563 and 738-753) lowers only layers reachable through
+//   VISIBLE inputs and builds no effects for a hidden layer, so a hidden layer, or a layer inside a hidden group,
+//   is in no plan.
+// A stack therefore COUNTS as `live` instances (enabled stack, enabled instances) when its layer is visible and all
+// its groups are visible, and as 0 otherwise. Counted instances are limited per layer and per document by pigment's
+// numbers. Every kept instance, counted or not, is still held in memory and charged by Folio's record validation, so
+// the kept instances no plan counts are bounded too (`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`, this crate's own bound).
+// A stack that does not fit is not mapped (its `lfx2` block stays byte-exact in the document) and is reported as a
+// typed loss; the layer and the rest of the document import. Tests `tests/effects_budget.rs`.
+
+/// Loss code of a stack whose layer has more counted instances than [`MAX_EFFECTS_PER_LAYER`], or more mapped
+/// instances than Folio's own per-stack ceiling (`MAX_EFFECTS`, which is above pigment's).
 pub(crate) const EFFECTS_OVER_BUDGET: Reason = "effects_over_budget";
+/// Loss code of a stack that would take the counted instances of the document past [`MAX_EFFECTS_PER_PLAN`], and of
+/// every later non-empty stack (the cut is a prefix of the import order, see [`EffectTally`]).
+pub(crate) const EFFECTS_OVER_DOCUMENT_BUDGET: Reason = "effects_over_document_budget";
+/// Loss code of a stack that would take the kept instances no plan counts past
+/// [`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`], and of every later non-empty stack.
+pub(crate) const EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET: Reason = "effects_unrendered_over_document_budget";
+/// Kept effect instances no render plan counts (hidden layer or group, switched-off stack, switched-off instance)
+/// that one document may hold. This bound is the crate's, not pigment's; it is the size of pigment's own plan limit
+/// so that the memory and the record-validation work of the instances nobody renders stay as bounded as those that
+/// are rendered: kept instances <= `MAX_EFFECTS_PER_PLAN` + this.
+pub(crate) const MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT: usize = MAX_EFFECTS_PER_PLAN;
 const _: () = assert!(MAX_EFFECTS_PER_LAYER <= MAX_EFFECTS, "pigment's per-layer limit must be inside Folio's");
+
+/// Whether `reason` is one of the three effect-budget codes above (a typed loss naming the layer, not a mapping
+/// problem of the descriptor).
+pub(crate) fn is_budget_reason(reason: Reason) -> bool {
+    matches!(reason, EFFECTS_OVER_BUDGET | EFFECTS_OVER_DOCUMENT_BUDGET | EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET)
+}
+
+/// What one mapped stack adds to the document: `counted` instances a plan counts and `uncounted` kept instances it
+/// does not (together the instances Folio charges one node each).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StackShape {
+    counted: usize,
+    uncounted: usize,
+}
+
+impl StackShape {
+    /// `enabled` is the stack's master switch, `visible` is the layer's own visibility and that of all its groups.
+    pub(crate) fn of(enabled: bool, effects: &[StudioEffect], visible: bool) -> Self {
+        let live = if enabled { effects.iter().filter(|e| e.enabled).count() } else { 0 };
+        let counted = if visible { live } else { 0 };
+        Self { counted, uncounted: effects.len().saturating_sub(counted) }
+    }
+}
+
+/// The running effect totals of one import, in import order (panel order, top-most first, a group before its
+/// children). A stack is kept only when it fits; the first stack that does not fit over a DOCUMENT total closes the
+/// tally, and every later non-empty stack is refused with the same code (a prefix of the import order is kept, so
+/// what is kept does not depend on how the later stacks happen to be sized). A refusal for the per-layer limit does
+/// not close it, and a later stack over the per-layer limit keeps that code. Tests
+/// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on` and
+/// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct EffectTally {
+    counted: usize,
+    uncounted: usize,
+    closed: Option<Reason>,
+}
+
+impl EffectTally {
+    /// Whether a stack of this shape fits. Does not charge it.
+    pub(crate) fn admit(&self, shape: StackShape) -> Result<(), Reason> {
+        if shape.counted == 0 && shape.uncounted == 0 {
+            return Ok(());
+        }
+        if shape.counted > MAX_EFFECTS_PER_LAYER {
+            return Err(EFFECTS_OVER_BUDGET);
+        }
+        if let Some(reason) = self.closed {
+            return Err(reason);
+        }
+        if self.counted.checked_add(shape.counted).is_none_or(|total| total > MAX_EFFECTS_PER_PLAN) {
+            return Err(EFFECTS_OVER_DOCUMENT_BUDGET);
+        }
+        if self.uncounted.checked_add(shape.uncounted).is_none_or(|total| total > MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT) {
+            return Err(EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET);
+        }
+        Ok(())
+    }
+
+    /// Charges a stack that was kept.
+    pub(crate) fn charge(&mut self, shape: StackShape) {
+        self.counted = self.counted.saturating_add(shape.counted);
+        self.uncounted = self.uncounted.saturating_add(shape.uncounted);
+    }
+
+    /// Records why a stack was refused: a document-total refusal closes the tally.
+    pub(crate) fn refused(&mut self, reason: Reason) {
+        if reason == EFFECTS_OVER_DOCUMENT_BUDGET || reason == EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET {
+            self.closed.get_or_insert(reason);
+        }
+    }
+
+    /// Every kept instance: the nodes Folio's record validation charges for effects.
+    pub(crate) fn kept(&self) -> usize {
+        self.counted.saturating_add(self.uncounted)
+    }
+}
+
 use crate::blend::studio_blend_for_key;
 use crate::descriptor::{self, Object, Value};
 use crate::layers::PsdLayer;
@@ -339,19 +444,29 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
 }
 
 /// Maps the effects block of `layer`. `None` when it has no `lfx2` / `lmfx` block; `Err` when the
-/// descriptor cannot be read or maps more than [`MAX_EFFECTS_PER_LAYER`] instances
-/// ([`EFFECTS_OVER_BUDGET`]). `stack_id` mints the `SEFX` identity and is only called once the
-/// descriptor parsed and the stack is within its limit.
+/// descriptor cannot be read or the stack does not fit: more mapped instances than Folio's per-stack ceiling, more
+/// counted instances than [`MAX_EFFECTS_PER_LAYER`] ([`EFFECTS_OVER_BUDGET`]), or past a document total of `tally`
+/// ([`EFFECTS_OVER_DOCUMENT_BUDGET`], [`EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET`]). `visible` is the layer's own
+/// visibility and that of all its groups (see the rule at the top of this file). `stack_id` mints the `SEFX`
+/// identity and is only called once the descriptor parsed and the stack fits, so a refused stack consumes no id.
 pub(crate) fn effect_stack(
     layer: &PsdLayer,
+    visible: bool,
+    tally: &EffectTally,
     stack_id: impl FnOnce() -> Option<String>,
     limits: &Limits,
 ) -> Option<Result<Mapped<StudioEffectStack>, Reason>> {
     let block = layer.block(b"lfx2").or_else(|| layer.block(b"lmfx"))?;
-    Some(map_stack(&block.data, stack_id, limits))
+    Some(map_stack(&block.data, visible, tally, stack_id, limits))
 }
 
-fn map_stack(data: &[u8], stack_id: impl FnOnce() -> Option<String>, limits: &Limits) -> Result<Mapped<StudioEffectStack>, Reason> {
+fn map_stack(
+    data: &[u8],
+    visible: bool,
+    tally: &EffectTally,
+    stack_id: impl FnOnce() -> Option<String>,
+    limits: &Limits,
+) -> Result<Mapped<StudioEffectStack>, Reason> {
     let root = descriptor::parse_versioned(data, &[0, 16], limits)?;
     let mut notes: Vec<Note> = Vec::new();
     let enabled = flag(&root, "masterFXSwitch", true)?;
@@ -389,9 +504,11 @@ fn map_stack(data: &[u8], stack_id: impl FnOnce() -> Option<String>, limits: &Li
         for object in objects {
             match map_effect(slot, object, effects.len(), &mut notes) {
                 Ok(effect) => {
-                    // The instance that would be one past the limit refuses the whole stack, before any
-                    // more of the descriptor is mapped (test `effects_heavy_layers_lose_their_stack_...`).
-                    if effects.len() >= MAX_EFFECTS_PER_LAYER {
+                    // The instance that would be one past Folio's per-stack ceiling refuses the whole stack,
+                    // before any more of the descriptor is mapped (test `a_stack_past_folios_ceiling_...`).
+                    // `MAX_EFFECTS_PER_LAYER` counts only the live instances of a visible layer and is judged
+                    // below, once the stack is known.
+                    if effects.len() >= MAX_EFFECTS {
                         return Err(EFFECTS_OVER_BUDGET);
                     }
                     effects.push(effect);
@@ -403,6 +520,7 @@ fn map_stack(data: &[u8], stack_id: impl FnOnce() -> Option<String>, limits: &Li
     if singles.iter().zip(&multis).any(|(single, multi)| *single && *multi) {
         notes.push((LossKind::Transformed, "effect_single_and_multi_slots_merged"));
     }
+    tally.admit(StackShape::of(enabled, &effects, visible))?;
     notes.push((LossKind::Transformed, "effect_colour_profile_unassigned"));
     let effect_stack_id = stack_id().ok_or("effect_stack_id_unavailable")?;
     Ok(Mapped { value: StudioEffectStack { effect_stack_id, enabled, scale, effects }, notes })
