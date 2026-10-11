@@ -21,3 +21,6 @@ path = "src/lib.rs"
 [[example]]
 name = "render-cpu-consumer"
 path = "examples/render-cpu-consumer.rs"
+
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
