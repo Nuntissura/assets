@@ -10,7 +10,8 @@
 //! paints, content under a soft mask, the non-separable blend modes (drawn as Normal), content past the
 //! clip nesting cap or a budget. Absent content is not drawn, and an absent occluder uncovers what it
 //! covered (R13-F3: such content shows in the raster where a viewer shows the occluder; it is the page's
-//! own content). Region pixels are painted after drawing, so this never reaches a region.
+//! own content). Region pixels are painted after drawing, so this does not reach a region (test
+//! `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`).
 //!
 //! Bounds (V4-01/V4-02): the canvas size is checked by the caller against `Limits::max_flatten_pixels`
 //! before this module allocates it; every clip mask is sized to its bounds and charged to a memory cap

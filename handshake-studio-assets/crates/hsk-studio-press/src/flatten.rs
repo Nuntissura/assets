@@ -9,7 +9,8 @@
 //! `/Annots []` (an empty array: pdf.js, which reads `/Annots` through `/Parent`, stops at it, R13-F1).
 //! No `/AA`, `/Thumb`, `/StructParents`, `/Group`, `/Metadata` or any other key is carried.
 //!
-//! Nothing reaches a flattened page by inheritance (R13-F1, R13-F6; [`detach_from_page_tree`]): every
+//! Nothing reaches a flattened page by inheritance (R13-F1, R13-F6; [`detach_from_page_tree`]; test
+//! `flattened_pages_hold_only_the_raster`): every
 //! `/Pages` node on a flattened page's `/Parent` chain keeps only `/Type /Kids /Count /Parent`; the
 //! inheritable attributes it held (`/Resources`, `/MediaBox`, `/CropBox`, `/Rotate`) are first written
 //! explicitly on every OTHER page that inherited them, and every other key it held (`/Annots`, which
@@ -17,7 +18,8 @@
 //! then dropped from the file (`flatten_purge.rs`: its annotations and widgets, the structure elements
 //! that describe it, the images, forms, patterns and shadings no kept content draws).
 //!
-//! Clearing a region is true by construction: whatever any reader would draw there, the raster holds the
+//! Clearing a region is true by construction: whatever any reader would draw there from the file's objects
+//! (content a document script creates at run time is out of scope: DESCRIPTOR `out_of_scope`), the raster holds the
 //! fill colour over the whole region (rounded outwards to whole pixels), and nothing else of the page is
 //! left to draw (tests `flattened_pages_hold_only_the_raster`,
 //! `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`).

@@ -1,15 +1,16 @@
 //! What a flattened page leaves behind in the document (R13-F1, R13-F2, R13-F6, R13-P1; lead decision
 //! 2026-10-11T20:26:55Z): after `flatten.rs` replaced the page and detached it from inheritance, the
 //! redaction save drops everything that described or drew the OLD page and that nothing kept still
-//! draws, so no image, form, annotation, widget value or structure text of a flattened page survives in
-//! the file by being merely listed.
+//! draws, so an image, form, annotation, widget value or structure text of a flattened page does not stay
+//! in the file by being merely listed (tests `painted_sources_under_a_region_do_not_survive`,
+//! `structure_and_widgets_of_flattened_pages_are_removed`).
 //!
 //! - XFA ([`strip_xfa`], R13-F2): `/AcroForm /XFA` and the catalog's `/NeedsRendering` are removed from
 //!   every redaction output. Choice (strip, not refuse): XFA is deprecated in ISO 32000-2 and is a second
 //!   copy of the form (template and datasets) that viewers such as pdf.js render INSTEAD of the PDF
 //!   pages when `/NeedsRendering` is true and `/Fields` is empty (pdf.js `PDFDocument.xfaFactory`);
 //!   stripping makes every viewer draw the PDF pages, the flattened ones included, and removes the
-//!   datasets copy of field values that page redaction never edits. A dynamic (pure) XFA form keeps only
+//!   datasets copy of field values that page redaction does not edit. A dynamic (pure) XFA form keeps only
 //!   its PDF pages (often a placeholder page). Refusing would have blocked every XFA form, static ones
 //!   included. `RedactedOutput::xfa_removed` reports it (test `xfa_is_stripped_from_redaction_outputs`).
 //! - Annotations and widgets ([`remove_annotations`], R13-P1): every annotation a viewer drew on a

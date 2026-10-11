@@ -1,12 +1,14 @@
 //! Bounds on what the flattening renderer receives (R13-F4, R13-F5; lead decision 2026-10-11T20:26:55Z),
 //! checked on the isolated one-page document BEFORE hayro-interpret sees a byte of it. Every violation
-//! is a typed refusal (`PressError::FlattenRefused`), never a fallback to the original page.
+//! is a typed refusal (`PressError::FlattenRefused`) and the document is restored, not a fallback to the
+//! original page (tests `renderer_input_is_bounded_before_rendering`, `renderer_input_images_are_bounded`).
 //!
 //! Why: hayro-syntax 0.7.2 reads arrays and dictionaries recursively without a depth limit
 //! (`Object::skip` / `Array::skip` / `Dict::skip`), hayro-interpret 0.7.0 parses Type 4 function
 //! procedures recursively (`parse_procedure_inner`), and hayro-postscript 0.1.0 (embedded CMaps)
 //! recurses once per `<<` or `>>` token in a row. A Rust stack overflow is not a panic: it ABORTS the
-//! process (no unwinding, `catch_unwind` and the render thread's join never see it), so the nesting
+//! process (it is not unwound, so neither `catch_unwind` nor the render thread's join turns it into a
+//! refusal), so the nesting
 //! bound below is what prevents it; the render thread's large stack (`flatten.rs`) is margin, not the
 //! guard. hayro also allocates an image's full `width x height x components` sample planes whatever
 //! the data length (`get_components`, `fix_image_length`), so image sizes are bounded here as well.
@@ -356,7 +358,7 @@ fn image_bounds(objs: &Objs, img: &ImageInput<'_>, resources: &[Option<&Dict>], 
     Ok(())
 }
 
-/// Streams in a binary role (module docs): never scanned as syntax.
+/// Streams in a binary role (module docs): not scanned as syntax.
 fn binary_streams(objs: &Objs) -> BTreeSet<u32> {
     let mut out = BTreeSet::new();
     for (num, e) in objs {
@@ -567,7 +569,7 @@ mod tests {
         data.extend(vec![b'}'; 5000]);
         m.insert(7, entry(Object::Stream(Box::new(Stream { dict: d, data }))));
         assert_eq!(checked(&m), Err(PressError::FlattenRefused(FlattenCause::NestingDepth)));
-        // A font program is binary: never scanned.
+        // A font program is binary: not scanned.
         let mut fd = Dict::default();
         fd.set("Type", Object::Name(b"FontDescriptor".to_vec()));
         fd.set("FontFile2", Object::Ref(ObjRef { num: 7, generation: 0 }));
