@@ -1,3 +1,105 @@
 //! Publication/page/threaded-frame composition, overset/preflight, tables and multilingual
-//! paragraph algorithms.
+//! paragraph algorithms. Slice 1: page/spread geometry, text frames, frame threading with overset
+//! detection, and a first-fit plus a Knuth-Plass line breaker over Type-shaped Latin
+//! left-to-right paragraphs. Anything else is refused, never mis-laid.
 #![forbid(unsafe_code)]
+
+mod breaker;
+mod geometry;
+mod paragraph;
+mod threaded_reflow;
+
+pub use breaker::{Composer, KnuthPlassParams};
+pub use geometry::{Margins, Page, Rect, Spread, TextFrame};
+pub use paragraph::{
+    Break, BreakKind, LayoutGlyph, ShapedParagraph, SpaceParams, break_opportunities,
+};
+pub use threaded_reflow::{FramePlacement, LayoutProposal, Limits, Line, ReflowRequest, reflow};
+
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
+
+/// Half-open byte range of the story text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub start: u64,
+    pub end: u64,
+}
+impl From<hsk_studio_type::SourceRange> for SourceSpan {
+    fn from(r: hsk_studio_type::SourceRange) -> Self {
+        Self {
+            start: r.start,
+            end: r.end,
+        }
+    }
+}
+
+/// Typed refusals. A refusal never carries a partial proposal and never alters the story input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutError {
+    StaleRevision { expected: u64, current: u64 },
+    CyclicThread,
+    InvalidGeometry,
+    InvalidInput,
+    MissingFont,
+    UnsupportedComposition,
+    BudgetExceeded,
+    Canceled,
+}
+impl LayoutError {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::StaleRevision { .. } => "stale_revision",
+            Self::CyclicThread => "cyclic_thread",
+            Self::InvalidGeometry => "invalid_geometry",
+            Self::InvalidInput => "invalid_input",
+            Self::MissingFont => "missing_font",
+            Self::UnsupportedComposition => "unsupported_composition",
+            Self::BudgetExceeded => "budget_exceeded",
+            Self::Canceled => "canceled",
+        }
+    }
+    /// `None` for cancellation (reported as the Canceled outcome).
+    pub const fn failure_code(self) -> Option<FailureCode> {
+        match self {
+            Self::Canceled => None,
+            Self::MissingFont => Some(FailureCode::Unavailable),
+            Self::UnsupportedComposition => Some(FailureCode::Unsupported),
+            _ => Some(FailureCode::Validation),
+        }
+    }
+}
+impl std::fmt::Display for LayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for LayoutError {}
+
+/// One Observe terminal outcome per call. Overset is a finding inside a successful proposal.
+pub fn report<T>(
+    result: &Result<T, LayoutError>,
+    correlation_id: u64,
+    revision: u64,
+    cancel: &CancellationToken,
+    observe: &mut Observe,
+    sink: &mut (impl SinkPort + ?Sized),
+) -> Result<Receipt, hsk_studio_observe::Error> {
+    let outcome = match result {
+        Ok(_) => Outcome::Success,
+        Err(e) => e.failure_code().map_or(Outcome::Canceled, Outcome::Failure),
+    };
+    observe.emit(
+        Observation {
+            correlation_id,
+            revision,
+            outcome,
+            progress: None,
+            private_project_text: None,
+        },
+        cancel,
+        sink,
+    )
+}
+
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-LAYOUT","version":1,"operation":"reflow: one story of Type-shaped Latin left-to-right paragraphs flows through an ordered chain of text frames on page spreads and returns a revision-bound placement proposal in points with an exact overset span; first-fit and Knuth-Plass line breakers; UAX #14 break opportunities","operator":{"intent":"Place a story into threaded frames and see exactly what does not fit","result":"LayoutProposal {base_revision, frames[{frame_id, spread origin, lines[{baseline, x_start, width, available, hang, source byte span, glyph range, overfull, ratio}]}], overset} or a typed refusal","recovery":"stale_revision: reload and re-run; cyclic_thread: list each frame once; invalid_geometry: use finite positive point sizes and a first baseline inside the frame inset; invalid_input: byte spans must lie on char boundaries of the story text and cluster starts must not decrease; missing_font: resolve the font in Type first; unsupported_composition: right-to-left, CJK, Arabic or other non-Latin runs are not laid out in this slice; budget_exceeded: raise Limits or shorten the story; canceled: nothing was produced"},"model":{"units":"points; frame lines in frame coordinates (origin = frame top-left, y down), frame origin in spread coordinates","composers":"FirstFit = greedy single-line composer; KnuthPlass = optimum fit over the paragraph with badness 100*|r|^3, demerits (line_penalty+badness)^2, fitness classes tight/normal/loose/very loose, three passes (tolerance 200, 10000, overfull allowed); relation to the Adobe Paragraph Composer UNVERIFIED","text_flow":"byte offsets of the story text; hanging trailing whitespace belongs to the line glyph range but not to width_pt; no justification, hyphenation, columns, tables, pages or contour wrap in this slice","determinism":"identical input yields an identical proposal; no hashing, ties resolve to the earlier candidate"},"inputs":"ReflowRequest {text, paragraphs: ShapedParagraph[] (from_type adapts a Type ParagraphResult), spreads, frames, thread, composer, space, expected_revision, current_revision, limits}","limits":{"max_lines":100000,"max_glyphs":1048576,"max_paragraphs":65536},"cancel":"CancellationToken is checked at entry, per paragraph, per 256 line-slot scans and per 256 break candidates","consumer":"layout-consumer [--descriptor] [--advance PT] [--text TEXT] [--frame WxH]... [--composer first-fit|knuth-plass] [--cancel]","argus":{"inspect":"LayoutProposal fields are plain data","action":"the same reflow call with the same token","capture":"caller captures the proposal and Observe frame bytes under a fresh grant"},"diagnostics":"report() emits one Observe terminal outcome; no text, ids or paths are serialized by layout","authority":"Folio has no frame or thread type yet: frames and threads are crate-local until a Folio contract lands; host grants, history and acceptance remain pending"}"#;

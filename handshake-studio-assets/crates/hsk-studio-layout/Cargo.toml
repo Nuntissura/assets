@@ -7,5 +7,15 @@ rust-version = { workspace = true }
 [features]
 default = []
 
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-type = { path = "../hsk-studio-type", version = "=0.1.0", default-features = false }
+unicode-linebreak = { version = "=0.1.5", default-features = false, features = [] }
+
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "layout-consumer"
+path = "examples/layout-consumer.rs"
