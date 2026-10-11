@@ -19,30 +19,9 @@ fn load() -> Json {
 /// Defects the oracle has already captured, as (case, intent, bpc) -> finding id. A listed combination must
 /// STILL violate its expectation (the test fails if it starts passing: remove the entry and the finding is
 /// closed); every other combination must pass. Thresholds are never touched.
-const KNOWN_FINDINGS: &[(&str, &str, bool, &str)] = &[
-    // interop-psd report: Gray kTRC source with BPC on gets a garbage black point (gamma 2.0: L* -3613).
-    ("gray_v21_gamma2_to_srgb_linear", "relative_colorimetric", true, "PRISM-GRAY-BPC-001"),
-    ("gray_v21_gamma18_to_srgb_linear", "relative_colorimetric", true, "PRISM-GRAY-BPC-001"),
-    // curv table TRC is not evaluated by linear interpolation of its entries (ICC curveType; lcms2 agrees
-    // with linear interpolation to 2e-5): 33-entry table off by 1.2e-4 where lcms2 is off by 2e-5.
-    ("curv_table_to_linear", "relative_colorimetric", false, "PRISM-CURV-TABLE-INTERP-001"),
-    ("curv_table_dense_gray_scan", "relative_colorimetric", false, "PRISM-CURV-TABLE-INTERP-001"),
-    // `curv` count=1 gamma below 2.2 (checked 1.5, 1.8, 2.0, 2.1; 1.0, 2.2 and 2.4 are correct): a pixel with an
-    // exact 0.0 channel next to non-zero channels converts to XYZ 0 (2.1: off by up to 4.9e-4). Primaries and
-    // secondaries of any such RGB source are lost; ProPhoto RGB is affected end to end.
-    ("curv_gamma_384_mixed_zero_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
-    ("curv_gamma_461_mixed_zero_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
-    ("curv_gamma_512_mixed_zero_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
-    ("curv_gamma_538_mixed_zero_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
-    ("srgb_curv18_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
-    ("prophoto_curv18_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
-    // Same gamma family on the BPC path: the black point comes out as L* -1.5e11 and the output is destroyed.
-    ("srgb_curv18_bpc_to_srgb_linear", "relative_colorimetric", true, "PRISM-RGB-BPC-CURV-GAMMA-001"),
-    // The source leg clamps PCS XYZ at 0: Display P3 red has Z -0.00105 after Bradford adaptation to D50.
-    ("p3_para3_to_xyz_d50", "relative_colorimetric", false, "PRISM-SOURCE-XYZ-NEGATIVE-CLAMP-001"),
-    // Destination `curv` table inverse: 1024-entry sRGB table, device value off by up to 3.8e-4 (parametric: 3e-6).
-    ("lab_to_srgb_curv_table1024_clipped", "relative_colorimetric", false, "PRISM-TABLE-TRC-INVERSE-001"),
-];
+// SMB-PRISM-ENG-6 closed every T0 finding (curv gamma zero, gray/RGB BPC black, negative PCS clamp, curv table
+// interpolation and inverse): the registry is empty and every combination must pass.
+const KNOWN_FINDINGS: &[(&str, &str, bool, &str)] = &[];
 
 fn known_finding(id: &str, intent: &str, bpc: bool) -> Option<&'static str> {
     KNOWN_FINDINGS.iter().find(|(c, i, b, _)| *c == id && *i == intent && *b == bpc).map(|e| e.3)
@@ -349,12 +328,11 @@ fn ciede2000_reproduces_published_reference_pairs() {
 
 const SRGB_LINEAR_V4: &[u8] = include_bytes!("profiles/sRGB-linear-v4.icc");
 
-/// Exact repro from the interop-psd report (PRISM-GRAY-BPC-001): v2.1 mntr GRAY/XYZ profile, wtpt D50, kTRC curv
-/// count=1 gamma u8Fixed8 0x0200, destination sRGB-linear-v4, relative colorimetric, pixels [0, 0.5, 1]. BPC off is
-/// the control; with BPC on the black point must stay L* 0 (scale 1). The defect is present: this test passes while
-/// it reproduces and FAILS once BPC on matches the control (then delete it and the KNOWN_FINDINGS gray entries).
+/// Exact repro from the interop-psd report (PRISM-GRAY-BPC-001, closed by SMB-PRISM-ENG-6): v2.1 mntr GRAY/XYZ
+/// profile, wtpt D50, kTRC curv count=1 gamma u8Fixed8 0x0200, destination sRGB-linear-v4, relative colorimetric,
+/// pixels [0, 0.5, 1]. Both blacks are L* 0, so BPC is the identity: BPC on equals BPC off and gray 0.5 is Y 0.25.
 #[test]
-fn interop_psd_gray_bpc_repro_still_reproduces() {
+fn interop_psd_gray_bpc_repro_is_fixed() {
     bounded("interop_psd_gray_bpc_repro", 60, || {
         let gray = assemble(
             0x0210_0000,
@@ -370,13 +348,14 @@ fn interop_psd_gray_bpc_repro_still_reproduces() {
         let off = run(&mut eng, &ctx, &gray, SRGB_LINEAR_V4, &pixels, Intent::RelativeColorimetric, false).unwrap();
         let on = run(&mut eng, &ctx, &gray, SRGB_LINEAR_V4, &pixels, Intent::RelativeColorimetric, true).unwrap();
         let worst = off.pixels.iter().zip(&on.pixels).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        eprintln!(
-            "ORACLE_T0_FINDING interop_psd_gray_bpc_repro: PRISM-GRAY-BPC-001: BPC off {:?} BPC on {:?} source_black_lstar {:?} scale {:?}",
-            off.pixels, on.pixels, on.receipt.bpc.source_black_lstar, on.receipt.bpc.scale
-        );
-        assert!(
-            worst > 0.05,
-            "PRISM-GRAY-BPC-001 no longer reproduces (BPC on matches BPC off within {worst}): remove this test and the KNOWN_FINDINGS gray entries"
-        );
+        let b = on.receipt.bpc;
+        assert!(worst <= 1e-6, "BPC on {:?} vs off {:?}", on.pixels, off.pixels);
+        assert_eq!((b.source_black_lstar, b.destination_black_lstar, b.scale, b.applied), (Some(0.0), Some(0.0), Some(1.0), false), "{b:?}");
+        for (i, want) in [0.0f64, 0.25, 1.0].into_iter().enumerate() {
+            for c in 0..3 {
+                let got = f64::from(on.pixels[i * 3 + c]);
+                assert!((got - want).abs() < 1.6e-4, "pixel {i} ch {c}: {got} want {want}");
+            }
+        }
     });
 }

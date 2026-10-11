@@ -3,7 +3,7 @@
 //! own definitions (Lab ramp -> D50 neutral -> sRGB encoding), never from the engine.
 mod wide_support;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_observe::{FailureCode, Outcome};
+use hsk_studio_observe::Outcome;
 use hsk_studio_prism::*;
 use wide_support::*;
 
@@ -121,13 +121,15 @@ fn cmyk_to_srgb_k_ramp_matches_lab_definition_and_missing_table_is_typed() {
         assert_eq!(again.pixels, result.pixels);
         assert_eq!(again.receipt.output_sha256, r.output_sha256);
         assert_eq!(eng.cache_stats().hits, 1);
-        // A profile with only the perceptual A2B0 table: relative colorimetric is refused, typed,
-        // with no silent fallback; perceptual works.
+        // A profile with only the perceptual A2B0 table: ICC.1:2022 8.10.2 c) makes every intent use A2B0
+        // (SMB-PRISM-ENG-6; the table inventory stays visible in WideProfileDescriptor), so relative equals
+        // perceptual bit for bit.
         let only_perceptual = k_ramp_cmyk(5, 1);
-        let refused = run(&mut eng, &ctx, &only_perceptual, SRGB, &pixels, Intent::RelativeColorimetric, false).unwrap_err();
-        assert_eq!(refused.error, WideError::MissingIntentTable);
-        assert_eq!(refused.delivery.unwrap().outcome, Outcome::Failure(FailureCode::Unsupported));
+        let desc = eng.inspect_profile(ctx.input(&ctx.source, &only_perceptual), &CancellationToken::default()).unwrap();
+        assert!(desc.device_to_pcs.perceptual && !desc.device_to_pcs.colorimetric);
+        let relative = run(&mut eng, &ctx, &only_perceptual, SRGB, &pixels, Intent::RelativeColorimetric, false).unwrap();
         let perceptual = run(&mut eng, &ctx, &only_perceptual, SRGB, &pixels, Intent::Perceptual, false).unwrap();
+        assert_eq!(relative.pixels, perceptual.pixels);
         assert!((f64::from(perceptual.pixels[3 * 4 + 1]) - expected[4]).abs() < 2e-3);
         // Bad pixel buffers.
         assert_eq!(run(&mut eng, &ctx, &cmyk, SRGB, &pixels[..6], Intent::RelativeColorimetric, false).unwrap_err().error, WideError::ChannelCount);

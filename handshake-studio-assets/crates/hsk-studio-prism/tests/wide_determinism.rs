@@ -52,19 +52,17 @@ fn build_has_no_simd_no_fma_contraction_and_receipts_name_the_engine() {
         }
         let lock = include_str!("../../../Cargo.lock").replace("\r\n", "\n");
         assert!(lock.contains("name = \"moxcms\"\nversion = \"0.9.1\""), "engine version drifted from the receipt");
-        // Fused multiply-add changes low result bits (moxcms `mlaf` switches on it at compile time).
+        // SMB-PRISM-ENG-6: the wide path is Prism's own f64 arithmetic from IEEE basic operations (no libm, no
+        // `mul_add`); Rust never contracts it to fused multiply-add, whatever the target features.
         let build = engine_build();
-        assert_eq!(build.fma_contraction, cfg!(any(target_feature = "fma", target_feature = "neon")));
-        if std::env::var_os("HSK_PRISM_ALLOW_FMA").is_none() {
-            assert!(!build.fma_contraction, "target feature fma/neon is enabled: outputs are not comparable across hosts");
-        }
-        assert!(!build.simd && !build.fixed_point && build.interpolation == "tetrahedral" && build.barycentric_weights == "binned_65536");
+        assert!(!build.fma_contraction, "the wide path must not depend on fused multiply-add");
+        assert!(!build.simd && !build.fixed_point && build.interpolation == "tetrahedral" && build.barycentric_weights == "exact_f64");
         // The receipt of a real conversion carries the identity and a digest.
         let ctx = Ctx::new();
         let mut eng = engine(&ctx);
         let cmyk = cmyk_k_profile(5, 3, 20.0);
         let r = run(&mut eng, &ctx, &cmyk, SRGB, &[0.1, 0.2, 0.3, 0.4], Intent::RelativeColorimetric, false).unwrap().receipt;
-        assert_eq!((r.engine_name, r.engine_version, r.engine_build), (ENGINE_NAME, ENGINE_VERSION, build));
+        assert_eq!((r.engine_name, r.engine_version, r.engine_build), (WIDE_ENGINE_NAME, WIDE_ENGINE_VERSION, build));
         assert_ne!(r.output_sha256, [0; 32]);
     });
 }
@@ -98,10 +96,11 @@ fn output_is_chunk_repeat_and_cold_start_invariant_with_pinned_digests() {
         let lab = run_lab(&mut eng, &ctx, SRGB, &labs, Intent::AbsoluteColorimetric, false).unwrap();
         let got = [hex(&whole.receipt.output_sha256), hex(&table.receipt.output_sha256), hex(&lab.receipt.output_sha256)];
         eprintln!("DIGESTS cmyk={} mab={} lab={}", got[0], got[1], got[2]);
+        // Re-pinned by SMB-PRISM-ENG-6 (WIDE_ENGINE_VERSION 1: exact f64 evaluation replaced the moxcms legs).
         const PINNED: [&str; 3] = [
-            "f848eec19fb20cf8ed91824046dc55b719530ea9f0116d2dc99399d07027cba2",
-            "d34dc22e7d6cb044fd32ae6fc6f474360bf093d13c4c3ff03881a412b9a042ec",
-            "0f2a4f5a69cc45a89d46adb4dab98569532a3452155f5ba140d4f9aa00d34181",
+            "0ec04bd4fd940e90e9fcd83e39afda261847371633dc99953aa1034553d1ae67",
+            "61bc54cee68d2855db62e857b0f38c2f0f3ad19c1b6824b71377b354b2f2e611",
+            "6c122339644d025b68c23d473aab5132a6a8547351e71c8fe4388a180a58b114",
         ];
         if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
             assert_eq!(got, PINNED, "pinned x86_64-windows digests changed");
