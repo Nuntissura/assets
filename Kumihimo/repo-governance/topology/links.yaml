@@ -36,3 +36,15 @@ edges:
   from: KUM-PRODUCT-MANUAL
   to: KUM-CORE
   relation: explains_operation
+- id: KUM-LINK-WP008-CORE
+  from: WP-KUM-008-layout-and-tool-docking-v1
+  to: KUM-CORE
+  relation: implements
+- id: KUM-LINK-LAYOUT-CONTRACTS
+  from: KUM-LAYOUT-CONTRACTS
+  to: KUM-CORE
+  relation: validates
+- id: KUM-LINK-EVAL008-CONTRACTS
+  from: EVAL-KUM-008-v1
+  to: KUM-LAYOUT-CONTRACTS
+  relation: evaluates

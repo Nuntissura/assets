@@ -1,5 +1,5 @@
 kind: product_topology
-implementation_status: first_core_packet_proven
+implementation_status: layout_candidate_runtime_pending
 nodes:
 - id: KUM-PRODUCT
   path: product/
@@ -7,13 +7,20 @@ nodes:
 - id: KUM-CORE
   manifest_ref: product/kumihimo-core/Cargo.toml
   entrypoint: product/kumihimo-core/src/lib.rs
-  responsibility: Canonical flat ownership records, commands, admission and bounded replay
+  responsibility: Canonical ownership, packing/context/tool records, atomic commands, admission and bounded replay;
+    pure geometry projection
   modules:
   - product/kumihimo-core/src/ids.rs
   - product/kumihimo-core/src/model.rs
   - product/kumihimo-core/src/command.rs
   - product/kumihimo-core/src/core.rs
   - product/kumihimo-core/src/mutation.rs
+  - product/kumihimo-core/src/arrangement.rs
+  - product/kumihimo-core/src/geometry.rs
+  - product/kumihimo-core/src/layout.rs
+  - product/kumihimo-core/src/solver.rs
+  - product/kumihimo-core/src/tools.rs
+  - product/kumihimo-core/src/docking.rs
   integration_boundary: Host-owned provider/resource references; no rendering or engine effects
 - id: KUM-CORE-CONTRACTS
   path: product/kumihimo-core/tests/contracts.rs
@@ -24,3 +31,7 @@ nodes:
 - id: KUM-PRODUCT-MANUAL
   path: product/README.md
   responsibility: No-context API use, diagnostics and recovery
+- id: KUM-LAYOUT-CONTRACTS
+  path: product/kumihimo-core/tests/layout_contracts.rs
+  responsibility: Public consumer packing, geometry, tool docking, preview, float and admission assertions; execution
+    pending

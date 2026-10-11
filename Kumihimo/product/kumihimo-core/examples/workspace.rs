@@ -84,12 +84,70 @@ fn main() -> Result<(), Error> {
             index: 1,
         },
     )?;
+    let placement = ToolPlacement::Edge {
+        anchor: ToolAnchor::Workspace(root),
+        edge: Edge::Top,
+    };
+    let mut context = GeometryContext::new(Rect::new(0.0, 0.0, 640.0, 360.0)?);
+    context.gap = Scalar::new(8.0)?;
+    context.minimums.insert(frame, Size::new(100.0, 80.0)?);
+    context.minimums.insert(nested, Size::new(200.0, 80.0)?);
+    context.frame_weights.insert(nested, Scalar::new(2.0)?);
+    context.allowed_docks = vec![
+        DockLocation::Append { workspace: root },
+        DockLocation::Beside {
+            frame,
+            edge: Edge::Right,
+        },
+    ];
+    run(
+        &mut core,
+        Command::SetGeometryContext {
+            workspace: root,
+            context,
+        },
+    )?;
+    let Change::Created(EntityId::Tool(tool)) = run(
+        &mut core,
+        Command::CreateTool(ToolSpec {
+            owner: provider,
+            origin: view,
+            target: EditingTarget { view, resource },
+            placement,
+            policy: ToolPolicy::new(
+                Size::new(120.0, 24.0)?,
+                Size::new(80.0, 16.0)?,
+                vec![placement],
+            ),
+            state: TargetState {
+                target_visible: true,
+                target_usable: true,
+                applicable: true,
+                ..TargetState::default()
+            },
+        }),
+    )?
+    else {
+        unreachable!()
+    };
+    let preview = core.preview(DockIntent::Frame {
+        frame: nested,
+        location: DockLocation::Beside {
+            frame,
+            edge: Edge::Right,
+        },
+    })?;
+    run(&mut core, Command::CommitPreview(preview))?;
+    let geometry = core.snapshot().geometry(root)?;
     println!(
-        "generation={} root_frames={:?} view={:?} resource={:?}",
+        "generation={} root_frames={:?} view={:?} resource={:?} tool={:?} content={:?} panes={}",
         core.snapshot().generation,
         core.snapshot().workspaces[&root].frames,
         view,
-        core.snapshot().views[&view].resource
+        core.snapshot().views[&view].resource,
+        tool,
+        geometry.content,
+        geometry.frames.len()
     );
     Ok(())
 }

@@ -397,7 +397,8 @@ fn default_admission_is_finite_and_unbounded_policy_is_explicit() {
         Limits {
             max_records: None,
             max_depth: None,
-            max_views_per_frame: None
+            max_views_per_frame: None,
+            max_layout_entries: None
         }
     );
     let core = Core::new(Limits::default(), 2);

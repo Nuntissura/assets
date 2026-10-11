@@ -1,9 +1,30 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-008-layout-and-tool-docking-v1
-generation: 3
+generation: 5
 phase: active
-owner: dev_lead
+owner: coder_01
 changed_files:
+- product/Cargo.lock
+- product/Cargo.toml
+- product/README.md
+- product/kumihimo-core/Cargo.toml
+- product/kumihimo-core/examples/workspace.rs
+- product/kumihimo-core/src/arrangement.rs
+- product/kumihimo-core/src/command.rs
+- product/kumihimo-core/src/core.rs
+- product/kumihimo-core/src/docking.rs
+- product/kumihimo-core/src/geometry.rs
+- product/kumihimo-core/src/ids.rs
+- product/kumihimo-core/src/layout.rs
+- product/kumihimo-core/src/lib.rs
+- product/kumihimo-core/src/model.rs
+- product/kumihimo-core/src/mutation.rs
+- product/kumihimo-core/src/solver.rs
+- product/kumihimo-core/src/tools.rs
+- product/kumihimo-core/tests/contracts.rs
+- product/kumihimo-core/tests/layout_contracts.rs
+- repo-governance/codex/build-rules/current/build-rules.yaml
+- repo-governance/registry/ids.yaml
 - repo-governance/registry/work-packets.yaml
 - repo-governance/sessions/SESSION-KUM-2026-10-11-v1-diagnostics.yaml
 - repo-governance/sessions/current.yaml
@@ -20,6 +41,8 @@ changed_files:
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/spec-modules/roadmap.md
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/specification.yaml
 - repo-governance/taskboard/taskboard.yaml
+- repo-governance/topology/links.yaml
+- repo-governance/topology/product.yaml
 - repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-contract.yaml
 - repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-dependency-readiness.yaml
 - repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-evaluation.yaml
@@ -30,6 +53,15 @@ proof:
 - kind: contract_preparation
   observed: Full R001-R019 contract and spec7 selected from team/current primary source review; all99 accepted requirement
     records unchanged; v6 bundle archived exactly
+- kind: coding_admission
+  source_revision: e63a1a29787f71c00966cd4f90f4b8af1fbd70aa
+  observed: Independent ls-remote matches; exact published contract/manifest/master/roadmap bytes reread and matched
+    current; dependency agent ready_for_zero_runtime_external_dependencies; focused eval cases prepared
+- kind: source_candidate
+  observed: Coder froze product 0.2/Snapshot2; evaluator single source read found float return eligibility issue,
+    remediation inspected; 12 new consumer cases written; runtime pending
+- kind: frozen_dependency_and_source_review
+  observed: Ready std-only dependency report and SOURCE_REVIEW_COMPLETE_RUNTIME_PENDING evaluation inspected; independent
+    19-file manifest matches 3c5ff0f1413ff0d2ab28474b63897e622cf3b153d2cba71cc1f95939dc5845a0
 blockers: []
-next_action: Inspect definitive dependency/eval preparation; publish full packet/spec, independently read remote,
-  then admit coder01
+next_action: Publish active candidate; dev lead owns serial focused proof, then exact-candidate evaluation

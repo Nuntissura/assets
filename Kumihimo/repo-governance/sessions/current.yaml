@@ -40,15 +40,15 @@ roles:
     completed_implementation_wps:
     - WP-KUM-007-core-model-v1
     rotate_after: 2
-    assignment: Read-only WP008 interface deliberation; awaiting full published contract and readiness
+    assignment: Implement published WP008 product scope; second of two packets; no Cargo until lead admission
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
   file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles own
     dispatched reports
 build_lane:
-  owner: null
-  phase: idle
+  owner: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
+  phase: candidate_publication
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -58,5 +58,4 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish full WP008/spec7 with dependency/eval preparation; admit coder01 only after independent remote
-  proof
+next_action: Publish frozen WP008 candidate; run one serial focused check/test/example batch; evaluate exact source

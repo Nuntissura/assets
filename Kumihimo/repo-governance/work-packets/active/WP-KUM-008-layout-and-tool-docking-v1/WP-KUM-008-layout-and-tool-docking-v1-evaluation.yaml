@@ -1,0 +1,142 @@
+schema_version: kumihimo.wp-evaluation.v1
+evaluation_id: EVAL-KUM-008-v1
+wp_id: WP-KUM-008-layout-and-tool-docking-v1
+evaluator: ROLE-KUM-EVALUATION
+phase: candidate_source_and_consumer_review_complete
+verdict: SOURCE_REVIEW_COMPLETE_RUNTIME_PENDING
+cases_frozen: true
+report_frozen_for_publication: true
+baseline_revision: 95cd73be3f7263ca5968dc8635773d20396f9cf2
+contract_revision: e63a1a29787f71c00966cd4f90f4b8af1fbd70aa
+spec_revision: 7
+scope: Headless acceptance cases, single pre-compile source read and final frozen consumer/manual/example binding; runtime/GUI verdict pending
+inspected_sources:
+  - repo-governance/specification/current/spec-modules/master-spec.md (LAYOUT, CHROME, POPOUTS)
+  - repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-contract.yaml
+  - repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-state.yaml
+  - product/kumihimo-core/src/model.rs
+  - product/kumihimo-core/src/command.rs
+  - product/kumihimo-core/src/core.rs
+observed_baseline:
+  - Initial session-start observed clean shared checkout at baseline revision with idle Cargo lane; resumed session-start observed the published contract revision and idle Cargo lane.
+  - Full WP-008 R001-R019 and specification revision 7 resolve the preparation choices; coding admission still requires the dependency readiness verdict under R001.
+  - Inspected WP007 baseline core owns flat frame/workspace/view/resource relations, one mutation generation and bounded complete-envelope replay; that baseline has no layout geometry or tool-surface records.
+acceptance_scenarios:
+  - case_id: EVAL-KUM-008-001
+    refs: [REQ-KUM-LAYOUT-001, REQ-KUM-LAYOUT-002, REQ-KUM-LAYOUT-006]
+    contract_refs: [WP008-R002, WP008-R003, WP008-R004, WP008-R006, WP008-R018, WP008-A001]
+    method: Solve nested horizontal/vertical splits and a weighted regular grid with holes, unequal proportions, gaps and minima. Use original CreateFrame/MoveFrame after configuration, including after-removal indexes, same-parent unchanged order, compatible root append, retained grid/leaf root wrapping, source pruning to empty and a moved subtree with child-local configuration.
+    expected: Exactly one packed leaf represents each non-floating canonical frame; floats remain separately owned and accounted for. Legacy indexes retain Workspace.frames semantics and unchanged order remains a no-op. Changed moves preserve unrelated branches/proportions, retained grid tracks/holes, explicit configured-empty state, child-local plans and resource identities under one owner/generation/receipt. Iterative minima-first allocation yields shared finite DIP boundaries using the documented spare-space rule; solver output owns no second arrangement.
+  - case_id: EVAL-KUM-008-002
+    refs: [REQ-KUM-LAYOUT-002, REQ-KUM-CHROME-005, REQ-KUM-CHROME-010]
+    contract_refs: [WP008-R003, WP008-R005, WP008-R006, WP008-A002]
+    method: Construct scalars from NaN/infinity and both signed zeros; exercise negative and extreme finite dimensions/gaps/minima, nonpositive weights, zero extent and arithmetic overflow. Submit malformed/cyclic/duplicate plans, wrong references and invalid grid cells/orientations through public commands.
+    expected: NaN/infinity reject before command construction; normalized signed zero preserves reflexive exact Envelope equality. Positive weights and nonnegative dimensions/minima/gaps are enforced. Structured command rejection preserves the full model, generation and next entity allocation compared with an untouched control. Successful rectangles and endpoints remain finite with nonnegative extents; constructor failures create no envelope/ledger operation.
+  - case_id: EVAL-KUM-008-003
+    refs: [REQ-KUM-LAYOUT-002, REQ-KUM-LAYOUT-005, REQ-KUM-CHROME-009]
+    contract_refs: [WP008-R007, WP008-R008, WP008-A003]
+    method: Resize below the combined pane/tool minima plus gaps, inspect the declared infeasibility result, then restore usable extent.
+    expected: Reject and scrollable virtual-extent policies are explicit. Rejection preserves records; virtual extent returns required extent, clipping and geometry accounting for every existing pane. Saved frames become geometrically reachable after viewport/policy changes; actual scrolling/reveal UI remains later adapter proof.
+  - case_id: EVAL-KUM-008-004
+    refs: [REQ-KUM-LAYOUT-003, REQ-KUM-LAYOUT-007, REQ-KUM-POPOUTS-001]
+    contract_refs: [WP008-R009, WP008-R011, WP008-R012, WP008-R014, WP008-A007]
+    method: Dock a tool/panel at eligible grid and ancestor-edge destinations; float and redock an in-app frame; request a forbidden edge/orientation and snap to an ineligible boundary.
+    expected: Supported moves retain stable identities; a floating frame retains one workspace owner, explicit in-app kind and return docking location, with its full rectangle/minima inside workspace bounds. Impossible or forbidden destinations reject atomically. Snap candidates use eligible existing edges/shared split boundaries/regular cells with deterministic distance/tie ordering. Exact subdivisions, spans, arbitrary overlap, hysteresis and native popouts remain excluded.
+  - case_id: EVAL-KUM-008-005
+    refs: [REQ-KUM-LAYOUT-007, REQ-KUM-CHROME-006, REQ-KUM-CHROME-007, REQ-KUM-CHROME-008]
+    contract_refs: [WP008-R007, WP008-R009, WP008-R010, WP008-A004, WP008-A005]
+    method: Move a Studio tool to a root edge/cell while two editing views exist; supply tool/Notes focus, target visibility/usability/applicability and hidden/returned target states through canonical context. Exercise pinned default, explicit compatible rebind and incompatible rebind.
+    expected: Placement, original owner/origin, bound view/resource, visibility and applicability remain distinct. Outward movement changes placement only; focus alone does not retarget/hide a visible usable target. Ordinary activation never reveals/substitutes another file; only explicit compatible host rebind changes binding, and incompatible rebind rejects atomically. Provider command execution and actual GUI focus events remain excluded.
+  - case_id: EVAL-KUM-008-006
+    refs: [REQ-KUM-CHROME-009, REQ-KUM-CHROME-010, REQ-KUM-LAYOUT-007]
+    contract_refs: [WP008-R008, WP008-R011, WP008-A004, WP008-A005]
+    method: Hide/restore edge tools under release/retain policies; combine multiple edges, host-order ties, allowed orientations, preferred/minimum sizes, grid-cell conflicts and an undersized workspace.
+    expected: Strips reserve in top,bottom,left,right order, then host order and ToolId ties. Hidden policy changes derived reservation only; placement/target metadata survives, remaining space follows host proportions/minima, and hiding has no lifecycle effect. Reservations/content geometry never silently overlap or become negative; conflicting cells/orientations reject atomically and undersized handling follows the explicit policy.
+  - case_id: EVAL-KUM-008-007
+    refs: [REQ-KUM-LAYOUT-003, REQ-KUM-LAYOUT-007, REQ-KUM-MODEL-001]
+    contract_refs: [WP008-R007, WP008-R013, WP008-R019, WP008-A006]
+    method: Preview valid/invalid docking of existing frames/tools, cancel, commit a current preview and replay it. Independently change topology, viewport, measurement/minimum/gap/proportion inputs, target state and relevant placement/reservation policy between preview and commit; compare allocation with an untouched control.
+    expected: Preview/cancel preserves snapshot, generation, stable entity allocation and ledger. Hypothetical packing-node selectors are plan-local metadata, distinct from stable identities and permitted to change during repair. Every changed preview input invalidates its generation; stale/forbidden commit rejects atomically. Current commit revalidates intent through Envelope/replay and mutates once; caller-supplied geometry never becomes canonical state.
+  - case_id: EVAL-KUM-008-008
+    refs: [REQ-KUM-LAYOUT-001, REQ-KUM-LAYOUT-006, REQ-KUM-MODEL-001]
+    contract_refs: [WP008-R015, WP008-R016, WP008-A002, WP008-A008]
+    method: Vary canonical counts/containment, include tools in aggregate record admission and nodes/tracks/child references/retained context-policy entries in layout admission. Inspect default 65536 layout entries, configurable/unrestricted limits, lowered-budget growth rejection and unchanged/decreasing recovery; exercise retained replay and existing WP007 contracts.
+    expected: Canonical coverage is independent of visible/selected subsets. Lowering limits preserves state; rejected growth preserves full model/generation/next allocation and recovery remains possible. Snapshot version 2/package 0.2 disclose the public extension while local IDs, replay and overflow behavior remain intact. Counts are not byte ceilings; no persistence/migration, GUI-speed or unobserved-host claim follows.
+  - case_id: EVAL-KUM-008-009
+    refs: [REQ-KUM-LAYOUT-004]
+    applicability: Deferred accepted scope; excluded from WP008 runtime acceptance
+    carried_forward_to: WP-KUM-009-tabs-and-layout-recovery-v1
+    method: Inspect the full contract carried_forward field and spec7 scope statement.
+    expected: Equalize, swap, maximize-pane and restore-layout remain accepted outstanding WP009 work; WP008 does not mark them implemented or use their absence as a failure.
+boundary_decisions:
+  - decision_id: EVAL-KUM-008-D01
+    status: resolved_from_full_contract
+    refs: [WP008-R002, WP008-R004, WP008-R007, WP008-R018]
+    decision: Core Snapshot owns semantic packing/tool/context state; all mutations share one generation/ledger, solver output is derived, and original routes reconcile configured packing with legacy ordering preserved.
+  - decision_id: EVAL-KUM-008-D02
+    status: resolved_from_full_contract
+    refs: [WP008-R003, WP008-R005, WP008-R006, WP008-R008, WP008-R014]
+    decision: Flat H/V splits and weighted regular non-spanning grids permit holes; finite f64 DIP uses normalized zero, positive weights and nonnegative dimensions/minima/gaps. Iterative minima-first allocation and explicit reject/virtual extent preserve accounting; exact subdivisions remain excluded.
+  - decision_id: EVAL-KUM-008-D03
+    status: resolved_from_full_contract
+    refs: [WP008-R009, WP008-R010, WP008-R011, WP008-R012]
+    decision: Tool origin/owner/target/placement are separate; pinned default and compatible explicit rebinding use independent target flags. Host orientation/size/eligibility/order and release/retain policies govern top,bottom,left,right strips with host-order/ToolId ties; floats remain bounded in-app frames.
+  - decision_id: EVAL-KUM-008-D04
+    status: resolved_from_full_contract
+    refs: [WP008-R005, WP008-R007, WP008-R013, WP008-R019]
+    decision: Validated finite normalized scalars preserve exact reflexive Eq. All relevant preview inputs belong to canonical context/generation; previews use existing targets without stable allocations/ledger changes, local node selectors are distinct, and commit revalidates intent through Envelope.
+  - decision_id: EVAL-KUM-008-D05
+    status: resolved_from_full_contract
+    refs: [WP008-R015, WP008-R016, REQ-KUM-LAYOUT-004]
+    decision: LAYOUT-004 is carried forward to WP009. Tools join aggregate record admission; aggregate layout entries default to 65536 with configurable/unrestricted policies and lowered-budget recovery. Snapshot 2/package 0.2 declare the unreleased public extension.
+gap_flags:
+  - No blocking contradiction found in full contract R001-R019 against these focused preparation cases; dependency readiness and lead admission remain separate prerequisites.
+  - Frozen source and consumer assertions inspected; no compile/test/example execution result has been inspected yet.
+  - Native popout creation, render/input/accessibility, persistence and actual editor actions remain separate boundaries.
+proof_plan:
+  - Coder owns focused public tests; evaluator inspects meaningful geometry and atomicity assertions against the published contract.
+  - Lead serial lane runs only affected compile/tests/example proof; reuse unchanged WP-007 results where their inputs/asserted behavior remain valid.
+  - Inspect canonical model and solver boundary, including finite-result and negative/infeasible cases; final verdict waits actual artifacts and direct proof.
+precompile_review:
+  phase: single_available_source_read
+  runtime_proof: not_run_by_evaluator
+  inspected_modules: [geometry, layout, tools, solver, docking, arrangement, command, model, ids, lib, core, mutation]
+  excluded: Unfinished consumer tests/manual and final frozen-candidate binding
+frozen_candidate:
+  product_file_count: 19
+  manifest_sha256: 3c5ff0f1413ff0d2ab28474b63897e622cf3b153d2cba71cc1f95939dc5845a0
+  manifest_method: SHA256 of newline-joined product/path:sha256(file-bytes) entries sorted by lowercase POSIX path, with no trailing newline
+  stability_check: Same product manifest before and after final consumer/manual/example inspection
+  focused_public_tests: 12
+  retained_wp007_tests: Nine external ownership contracts unchanged except the explicit max_layout_entries None field; core/replay source has no diff from the published predecessor
+  inspected_final_surfaces:
+    - product/kumihimo-core/tests/layout_contracts.rs
+    - product/kumihimo-core/tests/contracts.rs (affected diff only)
+    - product/kumihimo-core/examples/workspace.rs
+    - product/README.md
+    - product/Cargo.toml
+    - product/kumihimo-core/Cargo.toml
+    - product/Cargo.lock
+  source_observations:
+    - Consumer tests assert actual shared-edge/weighted/minimum geometry, grid holes, legacy reconciliation and child-local configuration rather than only successful return values.
+    - Rejections compare full snapshots; malformed-plan/arithmetic and pure-preview cases independently compare next created identity with an untouched control.
+    - Preview tests inspect snapshot/ledger preservation, commit geometry, retained replay and stale topology/viewport/measurement/gap/eligibility/tool-policy tokens.
+    - Tool tests inspect original owner/target, keyboard-focus independence, release/retain reservations, compatible rebinding, strip ordering and occupied-grid rejection.
+    - F01 test asserts an eligible Left-only return, successful redock and atomic no-return rejection.
+    - Manual/example disclose one canonical owner, version 2/package 0.2, iterative geometry, host policies, count limits, recovery and later adapter boundaries; historical WP007 proof is explicitly distinguished from pending WP008 execution.
+  publication: Pending lead commit/push and exact remote binding
+INDEPENDENT_FINDINGS:
+  - finding_id: EVAL-KUM-008-F01
+    status: source_remediation_inspected_runtime_pending
+    refs: [WP008-R012, WP008-A007, EVAL-KUM-008-004]
+    source: product/kumihimo-core/src/docking.rs
+    anchors: Initial return_location at lines 165-170; dock_frame eligibility at lines 245-252 in the inspected source
+    observed: New floats store Append as their return location without checking allowed_docks; redock requires that stored location to be allowed.
+    failure_case: With allow_floating true and only a same-workspace WorkspaceEdge allowed, a valid float succeeds but its Redock route rejects ForbiddenDestination.
+    remediation: Preserve/select an eligible return location or reject an impossible-return float atomically; exercise float/redock without Append eligibility in the focused consumer proof.
+    remediation_observed: Float now probes saved/append and allowed same-workspace return locations through detached Redock mutation/validation, stores an accepted location or rejects when none succeeds (docking.rs lines 179-194 in the inspected revision).
+    focused_test: floating_uses_an_eligible_return_and_requires_a_return_path inspects Left-only return, redocks, then rejects a float with no allowed destination.
+    proof_limit: Source change and focused test inspected and bound to frozen candidate manifest; compile/execution proof remains pending
+RESIDUAL_UNCERTAINTY:
+  - Exact candidate compilation/tests/example execution and remote publication remain unverified; no dependency or runtime product verdict issued.
+next_action: Lead publishes the frozen candidate/report; inspect exact serialized check/test/example logs and remote identity, including F01 test result, before runtime verdict.

@@ -1,0 +1,204 @@
+schema_version: kumihimo.dependency-readiness.v1
+kind: dependency_readiness
+wp_id: WP-KUM-008-layout-and-tool-docking-v1
+role_id: ROLE-KUM-DEPENDENCIES
+updated_at: '2026-10-11'
+scope: Dependency and canonical ownership readiness for the full WP-008 contract's headless split/grid packing, geometry, tool policy, docking previews, snapping and in-app floats.
+verdict: ready_for_zero_runtime_external_dependencies
+coding_admission:
+  owner: dev_lead
+  status: admitted_by_dev_lead
+  reason: WP008-R001 publication/read preconditions are satisfied at e63a1a29787f71c00966cd4f90f4b8af1fbd70aa; WP008 state generation 4 records coding admission with coder_01 as owner. Lead retains the serial Cargo lane.
+baseline:
+  observed_revision: e63a1a29787f71c00966cd4f90f4b8af1fbd70aa
+  product_source_revision: 95cd73be3f7263ca5968dc8635773d20396f9cf2
+  observed_spec_revision: 7
+  predecessor_wp: WP-KUM-007-core-model-v1
+  observed_contract_kind: full_work_packet_contract
+  publication_proof:
+    command: git ls-remote origin refs/heads/codex/handpick
+    expected_revision: e63a1a29787f71c00966cd4f90f4b8af1fbd70aa
+    observed_revision: e63a1a29787f71c00966cd4f90f4b8af1fbd70aa
+    exact_blob_checks:
+      contract:
+        remote_blob: 1378f6b82878a3526a2474f5cbfe649326acfcad
+        working_copy_blob: 1378f6b82878a3526a2474f5cbfe649326acfcad
+      specification_master:
+        remote_blob: 84d900afd9bd87175d7f11c3aee65bf3cb6da675
+        working_copy_blob: 84d900afd9bd87175d7f11c3aee65bf3cb6da675
+    predecessor_state: WP007 is phase done in the exact published e63 state; its publication proof records 97fc02a566630331adcc3abfa366817e05de5407, an ancestor of e63.
+    product_tree_comparison: No product path differs between the WP008 product baseline 95cd73be3f7263ca5968dc8635773d20396f9cf2 and e63.
+  observed_core:
+    canonical_owner: product/kumihimo-core
+    current_records: [Workspace, Frame, Provider, Resource, View, Group]
+    current_relations: Workspace.frames, Frame.workspace, Frame.child_workspace, Frame.views, Frame.groups, View.frame, View.resource, View.group
+    geometry_or_tool_records: absent
+    mutation_generation_and_replay: existing single Core generation and bounded complete-envelope replay
+    envelope_equality: Command and Envelope derive Eq
+    observed_source_files: [product/kumihimo-core/src/model.rs, product/kumihimo-core/src/command.rs, product/kumihimo-core/src/core.rs, product/kumihimo-core/src/mutation.rs]
+final_product_dependency_surface:
+  candidate_base_revision: e63a1a29787f71c00966cd4f90f4b8af1fbd70aa
+  workspace_manifest:
+    path: product/Cargo.toml
+    members: [kumihimo-core]
+    resolver: '2'
+    sha256: e43c4413c61e33f65870646e491d370bd1d9e2f93df11bb40024dd5987700f48
+  core_package_manifest:
+    path: product/kumihimo-core/Cargo.toml
+    package: kumihimo-core
+    version: 0.2.0
+    edition: '2021'
+    rust_version: '1.91'
+    normal_dependencies: {}
+    dev_dependencies: {}
+    build_dependencies: {}
+    target_specific_dependencies: {}
+    sha256: 46f10cb6920dc44e78266379c53b3c861f9a761be1c5d17ec360b6f1e0733238
+  lockfile:
+    path: product/Cargo.lock
+    format_version: 4
+    packages:
+      - {name: kumihimo-core, version: 0.2.0}
+    external_packages: []
+    sha256: f8a7b44b689953f88b2e4f504ca23cca3a37b45f9aa2e7ebfbe3d0e59b3363ed
+  source_import_scan:
+    scope: product/kumihimo-core/src, product/kumihimo-core/examples, product/kumihimo-core/tests
+    observed_import_roots: [crate, kumihimo_core, std]
+    third_party_import_roots: []
+  candidate_binding:
+    changed_product_file_count: 17
+    manifest_algorithm: Sort changed product paths by repository-relative UTF-8 path; hash each file with SHA-256; hash the UTF-8 concatenation of path, TAB, lowercase file SHA-256 hex, LF for each sorted entry.
+    path_content_manifest_sha256: 8ec22e3a8e97e97ff51367b5f7464bbcf20a74b484eb9f0c2e98a12372bb9afe
+    snapshot_version: 2
+    interpretation: Static manifest, lockfile and import evidence; no Cargo resolver/build/test run is claimed by this readiness record.
+spec_scope:
+  refs:
+    - TOPIC-KUM-LAYOUT
+    - REQ-KUM-LAYOUT-001
+    - REQ-KUM-LAYOUT-002
+    - REQ-KUM-LAYOUT-003
+    - REQ-KUM-LAYOUT-004
+    - REQ-KUM-LAYOUT-005
+    - REQ-KUM-LAYOUT-006
+    - REQ-KUM-LAYOUT-007
+    - TOPIC-KUM-CHROME
+    - REQ-KUM-CHROME-006
+    - REQ-KUM-CHROME-007
+    - REQ-KUM-CHROME-008
+    - REQ-KUM-CHROME-009
+    - REQ-KUM-CHROME-010
+    - TOPIC-KUM-POPOUTS
+    - REQ-KUM-POPOUTS-002
+  bounded_work:
+    - Implement flat horizontal/vertical splits and regular weighted non-spanning row/column grids, explicit holes and plan-local layout selectors; preserve canonical frame membership and order separately from spatial packing.
+    - Compute shared geometry from validated finite f64 logical DIP inputs, iterative minimum/allocation passes, positive weights and checked arithmetic; expose reject or scrollable virtual extent for undersized viewports.
+    - Store canonical viewport/measurement/minimum/gap/proportion/host-target/reservation context through Core commands so every preview input participates in generation validation.
+    - Model tool original owner/origin, pinned editing target, placement, independently supplied visibility/usability/applicability and host edge/grid eligibility; reserve edges deterministically and apply host release/retain policy.
+    - Produce pure previews for existing frames/tools, consume no generation/entity allocation/ledger result, cancel without mutation, and revalidate commits through existing envelope/replay handling.
+    - Support bounded in-app floating frames with one workspace owner and return docking location. Native popouts, temporary/modal overlays, GUI scrolling, rendering/input/accessibility and provider command invocation remain later boundaries.
+    - Carry REQ-KUM-LAYOUT-004 equalize/swap/maximize/restore to WP-KUM-009; this packet does not claim them implemented.
+dependency_decision:
+  runtime_external_dependencies: []
+  selected_implementation_boundary: One cohesive headless product/kumihimo-core package with private layout, geometry, tool-policy and docking modules. Core Snapshot owns semantic state, the single generation and receipt ledger; solver rectangles and caches are derived only.
+  rationale:
+    - WP008-R002..R019 and specification revision 7 bound the algorithms to flat split/regular-grid packing, host constraints, tool strips, eligible existing boundaries and in-app floats; CSS/intrinsic layout, spans, arbitrary overlap, native windows and GUI behavior are excluded.
+    - The accepted math and semantic records fit private standard-library modules. Taffy's broader layout model is unnecessary and a separate crate would duplicate package/API boundaries without a second consumer.
+    - Flat semantic state, one Core generation and one receipt ledger preserve existing ownership and replay; pure solver results cannot become a competing arrangement authority.
+    - Dependency selection is final for this contract: no runtime external dependency, no new generic math crate and no GUI toolkit dependency.
+  contract_choices:
+    - Flat split nodes and regular weighted non-spanning grids use explicit cells/holes; no spans. Each non-floating canonical frame occurs once. Unconfigured packing derives from frame order.
+    - Legacy Workspace.frames indexes keep after-removal order semantics. A changed legacy move repairs custom spatial packing separately; source pruning retains grid tracks/holes and configured-empty state. Explicit docking chooses spatial placement; moved child-workspace packing stays intact.
+    - Logical coordinates use validated finite f64 DIPs with normalized signed zero and reflexive exact envelope equality. Reject NaN/infinity before command construction; weights are positive; dimensions/minima/gaps are nonnegative; arithmetic and constraint errors are structured and atomic.
+    - Core geometry context stores viewport, measurement/minimum/gap/proportion inputs, host target state and relevant policies. Any changed preview input invalidates generation.
+    - Undersized layouts expose explicit reject or scrollable virtual extent with required extent, clipping and geometry for all panes; actual scrolling is adapter work.
+    - Tool strips reserve top, bottom, left, then right; ties use host order then ToolId. Hidden release/retain changes derived reservation only.
+    - Layout entries default to 65,536 and are host-configurable or unrestricted; tools count toward aggregate records. Lowered limits preserve existing state and allow unchanged/decreasing recovery.
+    - Public record/command extension declares Snapshot v2 and unreleased package v0.2; file restore/migration is excluded.
+  alternatives:
+    - option: Taffy as a runtime dependency or optional solver crate
+      decision: defer
+      reason: Current Taffy 0.14 supports caller-owned node storage through TraversePartialTree and has an optional built-in taffy_tree feature, but its flexbox/CSS-grid and style model is broader than this packet. Its algorithm-facing geometry uses f32, adding precision and command-equality policy work. Keep it as a future candidate if the full contract adopts general layout semantics.
+    - option: egui_tiles or egui_dock as the canonical model/dependency
+      decision: reject for core
+      reason: Their useful split/tree, surface, identity and interaction patterns are integrated with egui and its UI geometry. Core is currently portable/headless and owns domain identities and replay. Reuse patterns only; do not import their UI-facing state as another authority.
+    - option: Dockview as the core dependency
+      decision: reject
+      reason: Dockview is a TypeScript/browser docking system and cannot serve as a Rust core dependency. It is a useful behavior reference for groups, floating layouts and drop targets; its repository places smart guides/snapping among Enterprise features, so it does not provide a needed free solver here.
+canonical_ownership:
+  invariant: Core is the single canonical owner of workspace/frame membership, layout nodes or placement references, and tool-surface semantic placement. Any geometry solver/module consumes this state and returns derived rectangles/candidates; it cannot maintain an independent authoritative tree, membership, generation, or operation ledger.
+  required_contract_rules:
+    - Existing CreateFrame and MoveFrame operations must reconcile layout membership atomically with canonical workspace/frame membership; reject without partial record, identity, generation or layout changes.
+    - Every canonical frame in a layout scope must be represented exactly once, with no stale or duplicate leaf references. Derived indexes and geometry caches cannot become an alternate owner.
+    - Tool placement parent, host content owner, bound editing view/resource, focus, visibility, reservation policy and provider lifecycle remain separate fields or decisions. Docking cannot retarget content, and hiding cannot unload it.
+    - A preview is a read-only value tied to all topology, geometry and host-policy inputs used to compute it. Commit must revalidate those inputs and then use the existing Core mutation/replay path.
+numeric_contract_gate:
+  status: resolved_by_WP008-R005_and_R006
+  selected_policy: Validated finite f64 logical DIP scalars, signed-zero normalization and reflexive exact Envelope equality; reject NaN/infinity before command construction; positive weights; nonnegative dimensions, minima and gaps; checked arithmetic/constraint errors; iterative minimum then allocation passes using shared edges.
+  required_results: Successful rectangles/endpoints are finite with nonnegative extents; invalid/impossible calculations reject without canonical mutation; adjacent cells use shared boundaries.
+  remaining_contract_detail: Implement the declared allocation rule in code and focused tests; no dependency or numeric-policy choice remains open.
+research_basis:
+  checked_local_sources:
+    - path: repo-governance/specification/current/spec-modules/master-spec.md
+      observed: Revision 7 topic prose defines flat split/grid packing, frame-order and configured-plan move repair, validated f64 DIP geometry, canonical preview context, undersized virtual extent, tool target/binding independence, snapping and floats; equalize/swap/maximize/restore remain WP009 scope.
+    - path: repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-contract.yaml
+      observed: Full contract WP008-R001..R019, WP008-A001..A009, explicit non-goals, carried-forward work, research basis and proof commands are present. R001 retains publication and exact-read preconditions for coding.
+    - path: repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-evaluation.yaml
+      observed: EVAL-KUM-008-001..009 and boundary decisions D01..D05 identify exact geometry, atomicity, infeasibility, tool policy, preview, boundedness and layout-operation proof needs.
+    - path: product/kumihimo-core/src/model.rs
+      observed: Snapshot/Frame/Workspace are canonical flat ownership records; they contain no geometry or tool-surface model.
+    - path: product/kumihimo-core/src/command.rs
+      observed: Command and Envelope derive Eq, so float-bearing commands require a deliberate equality-safe representation.
+    - path: product/kumihimo-core/src/core.rs
+      observed: Core serializes mutations through generation validation and retained complete-envelope replay.
+    - path: repo-governance/docs/research/window-frame-field-research.md
+      observed: Existing project research records VS Code grid, egui_tiles and Dockview as implementation references for grid constraints, pane layout and docking workflows.
+  checked_primary_upstream_sources:
+    - url: https://github.com/DioxusLabs/taffy/blob/main/examples/custom_tree_vec.rs
+      observed: Taffy demonstrates caller-owned Vec node storage by implementing tree traversal/layout traits and invoking compute_root_layout; a solver need not own the canonical tree.
+    - url: https://github.com/DioxusLabs/taffy/blob/main/Cargo.toml
+      observed: Current manifest is Taffy 0.14.0, Rust 1.71; the built-in TaffyTree is behind taffy_tree and that feature enables optional slotmap. Default features include flexbox, grid, block and float algorithms.
+    - url: https://github.com/rerun-io/egui_tiles/blob/main/src/tiles.rs
+      observed: egui_tiles stores tile records in its own keyed collection and derives rectangle/layout state in a GUI-specific tree; current changelog documents grid movement and stable tile identities. This is a pattern reference, not a suitable headless-core dependency.
+    - url: https://github.com/rerun-io/egui_tiles/blob/main/Cargo.toml
+      observed: egui_tiles is an egui UI crate; its manifest and release notes track egui/Rust version coupling, which would bring presentation integration beyond WP-008.
+    - url: https://github.com/anhosh/egui_dock/blob/main/src/dock_state/mod.rs
+      observed: DockState owns multiple surfaces, each with a tree, and floating window placement is stored as window state; source documents the state as serializable. This illustrates cohesive docking ownership, but the crate exposes egui geometry and UI integration.
+    - url: https://github.com/anhosh/egui_dock/blob/main/src/lib.rs
+      observed: The library exposes DockArea/TabViewer interaction over trees of splits and tabs; it is an egui docking implementation, not a portable headless geometry solver.
+    - url: https://github.com/dockview/dockview
+      observed: Current project describes split/grid views, floating groups, edge groups, serialization, and drop zones; it is a JavaScript/TypeScript implementation. Its feature matrix identifies smart-guide snapping as Enterprise functionality.
+risks_and_mitigations:
+  - risk: A solver or adapter becomes a second layout owner and Core frame moves leave stale geometry membership.
+    mitigation: Keep semantic layout/tool records and generation in Core; derive caches; validate exact frame leaf coverage and reconcile existing CreateFrame/MoveFrame atomically.
+  - risk: Floating-point NaN, infinity, signed zero, or accumulated arithmetic break Eq/replay or produce invalid rectangles.
+    mitigation: Implement validated finite f64 DIP values, signed-zero normalization, exact reflexive envelope equality and checked arithmetic; reject invalid values before envelope creation and test finite output/replay.
+  - risk: Minimum constraints cannot fit a viewport, or multiple retained tools compete for one edge.
+    mitigation: Implement the declared reject/virtual-extent result and deterministic top-bottom-left-right, host-order, ToolId reservation order; return full geometry accounting and preserve canonical records.
+  - risk: Stale preview commits a destination that changed after preview.
+    mitigation: Bind preview to topology/geometry/policy revisions or equivalent complete inputs; revalidate atomically at commit; prove cancel and stale commit leave canonical snapshot/generation unchanged.
+  - risk: Docking a tool moves its content target or focus, or hide/reservation accidentally implies provider disposal.
+    mitigation: Keep placement, owner, bound target, focus, visibility, reservation and provider lifecycle independent; test moves across frame/root edges with multiple editing views.
+  - risk: Work silently omits accepted equalize/swap/maximize/restore semantics or advertises unsupported native popouts.
+    mitigation: Contract carries REQ-KUM-LAYOUT-004 operations to WP-KUM-009 and limits this packet to in-app floats; native popouts remain a separate later surface.
+focused_proof_plan:
+  cases:
+    - case_id: EVAL-KUM-008-001
+      expected: Nested horizontal/vertical splits and unequal host grid tracks share derived boundaries, account for every canonical frame once and respect declared proportions/gaps/minima.
+    - case_id: EVAL-KUM-008-002
+      expected: Reject non-finite, negative, out-of-range and impossible inputs; exercise zero extents and checked arithmetic; assert all successful edges/results are finite and nonnegative, and rejection is atomic.
+    - case_id: EVAL-KUM-008-003
+      expected: Below-minimum extent returns the contract's explicit overflow/reachability status without deleting canonical panes; restoring extent returns usable geometry.
+    - case_ids: [EVAL-KUM-008-004, EVAL-KUM-008-006]
+      expected: Accept only host-eligible edge/grid targets; preserve frame/tool identity; verify reservation release/retain, deterministic competing-edge behavior and in-app float placement.
+    - case_id: EVAL-KUM-008-005
+      expected: Move a tool among frame/root placements while verifying placement, content owner, bound view/resource, focus and visibility remain independent.
+    - case_id: EVAL-KUM-008-007
+      expected: Preview/cancel leaves Snapshot, generation, IDs and ledger unchanged; commit revalidates preview inputs; stale/forbidden commits reject atomically through existing replay semantics.
+    - case_id: EVAL-KUM-008-008
+      expected: Enforce disclosed layout/tool admission and traversal bounds; verify identical retained envelopes replay and changed intent conflicts.
+    - case_id: EVAL-KUM-008-009
+      expected: Confirm REQ-KUM-LAYOUT-004 equalize/swap/maximize/restore remains carried to WP-KUM-009 and is not reported as implemented here.
+  execution_boundary: Coder owns focused headless tests after dev-lead publication/admission. Adapter/UI proof and broader serial-lane validation remain governed by the final contract and project build lane; this preparation report runs no Cargo/build/test commands.
+handoff:
+  next_action: Lead publishes the full contract/specification and reads those exact published artifacts per WP008-R001 before coding; this report records the selected dependency as ready.
+  no_product_or_toolchain_changes: true

@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 26
+  version: 27
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -23,7 +23,7 @@ project_profile:
   - aarch64 Windows development host
   product_workspace:
     manifest_file: product/Cargo.toml
-  implementation_status: first_core_packet_proven
+  implementation_status: layout_candidate_runtime_pending
   gui_applicability: planned
   test_entrypoint: product/Cargo.toml
   build_environment:

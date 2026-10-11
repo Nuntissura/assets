@@ -76,7 +76,7 @@ impl Core {
         }
         Ok(height)
     }
-    pub(crate) fn mutate(&mut self, command: Command) -> Result<Change, Error> {
+    pub(crate) fn mutate_ownership(&mut self, command: Command) -> Result<Change, Error> {
         match command {
             Command::CreateWorkspace { owner } => {
                 if let Some(frame) = owner {
@@ -368,6 +368,7 @@ impl Core {
                 self.model.generation = generation;
                 Ok(Change::LimitsChanged)
             }
+            _ => unreachable!("layout command routed through arrangement transaction"),
         }
     }
 }

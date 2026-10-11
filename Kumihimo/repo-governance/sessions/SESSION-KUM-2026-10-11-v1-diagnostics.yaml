@@ -81,8 +81,8 @@ recommendation:
   shared_pc_contention: If another Rust compile or test run is active and resource contention is material, defer the Cargo run, recheck process and available-memory snapshots, and continue non-build work. Never stop another project's process.
   sccache: Dev-lead commands will set RUSTC_WRAPPER=sccache process-locally. Reuse the available sccache installation and cache; never stop an unowned server or delete the cache as a coordination mechanism.
   incremental_compilation: Set CARGO_INCREMENTAL=0 process-locally for the std-only core while using sccache. sccache's Rust support rejects incremental rustc invocations, so disabling incremental compilation makes eligible invocations cacheable. The tradeoff is loss of rustc's per-crate incremental reuse for changed crates; stable target reuse can retain unchanged Cargo artifacts, but it does not restore that incremental state. sccache only caches eligible invocations with matching inputs and flags, and some crate/linker invocations are unsupported, so no speedup is promised.
-  initial_jobs: 'Keep the first owned Cargo lane at -j 2. The latest snapshot showed 57% CPU load and active rustup, cargo, and rustc processes whose command lines did not reference Kumihimo; defer any new Cargo run until they clear. The sample is instantaneous and does not identify those processes’ owners.'
-  lane_admission: Contention is present in the latest snapshot; defer another Cargo run while the observed Rust processes remain active. Do not stop them. The dev lead retains lane ownership.
+  initial_jobs: 'If the dev lead grants the lane after candidate publication, begin with -j 2. The latest tick snapshot showed 5% CPU load, 70.0 GiB free memory, 3,075.9 GiB free on D:, and no matching Cargo, rustc, linker, or sccache process.'
+  lane_admission: 'The 21:55:41Z resource sample showed no matching build processes and low CPU load. A later coordination read at 21:57:14Z found WP008 state generation 5 active with nonempty changed_files and sessions/current owned by the dev lead in candidate_publication phase. Candidate publication and lane dispatch remain pending; no Cargo command was started.'
   proof_boundary: WP007 check, test, and example outputs are recorded in runtime_observations. The example's 0.01-second dev-profile duration is a single warm run observation, not a benchmark or speedup claim.
   build_lane_configuration: Runtime outcomes are verified from saved logs; the exact process-local Cargo environment values are not recorded in those logs.
 resource_snapshots:
@@ -144,6 +144,73 @@ resource_snapshots:
     - rustc.exe; command line did not reference Kumihimo
     process_filter: cargo, cargo-nextest, rustc, rustup, sccache, link, lld-link, rust-lld, clang, cl
     limitations: CPU load is a single instantaneous WMI sample; process ownership was not determined.
+  - snapshot_id: SNAP-KUM-2026-10-11T212412Z
+    observed_at_utc: '2026-10-11T21:24:12Z'
+    purpose: WP008 session tick; no build candidate or Cargo lane granted
+    cpu_load_percent: 13
+    cpu_sample_count: 1
+    logical_processors: 32
+    free_memory_gib: 70.4
+    total_memory_gib: 127.9
+    target_volume: 'D:'
+    free_disk_gib: 3078.4
+    total_disk_gib: 14902.0
+    matching_processes:
+    - sccache.exe; shared server; command line did not reference Kumihimo
+    cargo_rustc_linker_processes: []
+    process_filter: cargo, cargo-nextest, rustc, rustup, sccache, link, lld-link, rust-lld, clang, cl
+    lane_state: WP008 is planned and unassigned; Kumihimo Cargo lane owner is null and phase is idle.
+    attribution: Shared cache infrastructure is distinct from Kumihimo build activity; no other-team compile activity was observed in this snapshot.
+    limitations: CPU load is a single instantaneous WMI sample; process ownership was not determined.
+  - snapshot_id: SNAP-KUM-2026-10-11T215541Z
+    observed_at_utc: '2026-10-11T21:55:41Z'
+    purpose: WP008 pre-publication resource tick
+    cpu_load_percent: 5
+    cpu_sample_count: 1
+    logical_processors: 32
+    free_memory_gib: 70.0
+    total_memory_gib: 127.9
+    target_volume: 'D:'
+    free_disk_gib: 3075.9
+    total_disk_gib: 14902.0
+    matching_processes: []
+    process_filter: cargo, cargo-nextest, rustc, rustup, sccache, link, lld-link, rust-lld, clang, cl
+    coordination_state_read_at_utc: '2026-10-11T21:57:14Z'
+    lane_state: WP008 generation 5 active with coder_01 and nonempty changed_files; current session assigns the dev lead as lane owner in candidate_publication phase.
+    lane_state_timestamp_note: Resource measurements above remain from 21:55:41Z; this later coordination read does not refresh CPU, memory, disk, or process observations.
+    contention: No matching Rust compiler, Cargo, linker, or sccache process observed; no material contention indicated by this snapshot.
+    limitations: CPU load is a single instantaneous WMI sample; process ownership was not determined.
+tick_observations:
+  resource_observed_at_utc: '2026-10-11T21:55:41Z'
+  coordination_state_read_at_utc: '2026-10-11T21:57:14Z'
+  wp008_phase: active
+  wp008_owner: coder_01
+  wp008_state_generation: 5
+  wp008_changed_files_nonempty: true
+  wp008_candidate: source frozen; candidate publication upcoming; runtime pending
+  cargo_lane_owner: dev_lead
+  cargo_lane_phase: candidate_publication
+  stable_target:
+    path_relative_to_kumihimo_root: .local/cargo-target
+    exists_as_directory: true
+  sccache:
+    executable_available: true
+    version: 0.18.0
+    server_process_observed: false
+    statistics_queried: false
+  diagnostic_shell:
+    CARGO_TARGET_DIR_override_present: false
+    RUSTC_WRAPPER_override_present: false
+  decision: The 21:55:41Z resource snapshot indicated headroom; the later 21:57:14Z coordination read shows candidate_publication with the dev lead owning the lane. Candidate publication is still upcoming; continue preparation and do not launch Cargo before the lead dispatches the published candidate.
+session_start_observation:
+  observed_at_revision: 95cd73be3f7263ca5968dc8635773d20396f9cf2
+  branch: codex/handpick
+  worktree_changes_at_session_start: []
+  wp007: done and published per session-start output
+  active_wp: WP-KUM-008-layout-and-tool-docking-v1
+  wp008_state: planned; owner unassigned; next action is promote the stub and prepare dependency/evaluation
+  cargo_lane: owner null; phase idle; target remains .local/cargo-target relative to Kumihimo project root
+  next_action: Continue WP008 source preparation; take another resource snapshot only when its candidate is ready.
 runtime_observations:
   candidate_revision: a004dbd
   toolchain: stable rustc/cargo 1.91.1; x86_64-pc-windows-msvc

@@ -15,7 +15,8 @@ ids!(
     ViewId,
     ResourceId,
     ProviderId,
-    GroupId
+    GroupId,
+    ToolId
 );
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +27,7 @@ pub enum EntityId {
     Resource(ResourceId),
     Provider(ProviderId),
     Group(GroupId),
+    Tool(ToolId),
 }
 
 /// Operation IDs are sequences scoped to one Core instance, shared by all actors.

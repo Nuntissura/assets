@@ -9,6 +9,8 @@ pub struct Limits {
     /// Root workspace depth is 0; frames add one, owned workspaces share owner depth.
     pub max_depth: Option<usize>,
     pub max_views_per_frame: Option<usize>,
+    /// Aggregate plan/context/tool-policy metadata entries, separate from entity records.
+    pub max_layout_entries: Option<usize>,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -16,6 +18,7 @@ impl Default for Limits {
             max_records: Some(16_384),
             max_depth: None,
             max_views_per_frame: None,
+            max_layout_entries: Some(65_536),
         }
     }
 }
@@ -26,6 +29,7 @@ impl Limits {
             max_records: None,
             max_depth: None,
             max_views_per_frame: None,
+            max_layout_entries: None,
         }
     }
 }
@@ -82,11 +86,15 @@ pub struct Snapshot {
     pub resources: BTreeMap<ResourceId, Resource>,
     pub views: BTreeMap<ViewId, View>,
     pub groups: BTreeMap<GroupId, Group>,
+    pub layouts: BTreeMap<WorkspaceId, crate::LayoutPlan>,
+    pub contexts: BTreeMap<WorkspaceId, crate::GeometryContext>,
+    pub tools: BTreeMap<crate::ToolId, crate::Tool>,
+    pub floats: BTreeMap<FrameId, crate::FloatingFrame>,
 }
 impl Snapshot {
     pub(crate) fn new(limits: Limits) -> Self {
         Self {
-            version: 1,
+            version: 2,
             generation: 0,
             limits,
             workspaces: BTreeMap::new(),
@@ -95,6 +103,10 @@ impl Snapshot {
             resources: BTreeMap::new(),
             views: BTreeMap::new(),
             groups: BTreeMap::new(),
+            layouts: BTreeMap::new(),
+            contexts: BTreeMap::new(),
+            tools: BTreeMap::new(),
+            floats: BTreeMap::new(),
         }
     }
     pub fn record_count(&self) -> usize {
@@ -104,5 +116,6 @@ impl Snapshot {
             + self.resources.len()
             + self.views.len()
             + self.groups.len()
+            + self.tools.len()
     }
 }

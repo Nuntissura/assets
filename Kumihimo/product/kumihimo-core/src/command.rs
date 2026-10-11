@@ -45,6 +45,29 @@ pub enum Command {
         index: usize,
     },
     SetLimits(Limits),
+    SetLayout {
+        workspace: WorkspaceId,
+        plan: crate::LayoutPlan,
+    },
+    SetGeometryContext {
+        workspace: WorkspaceId,
+        context: crate::GeometryContext,
+    },
+    CreateTool(crate::ToolSpec),
+    ConfigureTool {
+        tool: crate::ToolId,
+        policy: crate::ToolPolicy,
+    },
+    SetToolState {
+        tool: crate::ToolId,
+        state: crate::TargetState,
+    },
+    RebindTool {
+        tool: crate::ToolId,
+        target: crate::EditingTarget,
+    },
+    Dock(crate::DockIntent),
+    CommitPreview(crate::DockPreview),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +82,7 @@ pub enum Budget {
     Records,
     Depth,
     ViewsPerFrame,
+    LayoutEntries,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Counter {
@@ -96,6 +120,13 @@ pub enum Error {
     ExpiredOperation(OperationId),
     ZeroOperation,
     Exhausted(Counter),
+    Geometry(crate::GeometryError),
+    ForbiddenDestination,
+    IncompatibleTarget,
+    StalePreview {
+        expected: u64,
+        actual: u64,
+    },
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -112,6 +143,9 @@ pub enum Change {
     Grouped(ViewId),
     LimitsChanged,
     Unchanged,
+    LayoutChanged(WorkspaceId),
+    ContextChanged(WorkspaceId),
+    ToolChanged(crate::ToolId),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
