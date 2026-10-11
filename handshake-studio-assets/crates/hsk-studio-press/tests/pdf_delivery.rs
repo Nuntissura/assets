@@ -679,7 +679,7 @@ fn proof_context_rule_kept_text_collision_is_not_a_leak() {
     let leak = run(natural, "<< /Title (T) /Subject (the budget plan memo) >>");
     assert_eq!(leak.proof.kept_text_collisions.len(), 1);
     assert!(leak.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 7 })));
-    assert!(!leak.is_proven());
+    assert!(!leak.is_proven() && leak.region_cleared(), "the region is clear, the word survives in metadata");
 
     // ... and so are non-show content operands (marked-content properties).
     let actual = "BT /F1 12 Tf 72 700 Td (budget plan) Tj ET\n/Span << /ActualText (budget plan) >> BDC\nBT /F1 12 Tf 72 400 Td (page two) Tj ET\nEMC";

@@ -77,31 +77,57 @@ impl PayloadProof {
     }
 }
 
-fn variants(needles: &[Vec<u8>]) -> Vec<(usize, Vec<u8>)> {
+/// A search pattern: the needle bytes (or their UTF-16BE spelling) and whether the whole-token
+/// boundary rule applies.
+struct Variant {
+    needle_index: usize,
+    bytes: Vec<u8>,
+    token: bool,
+}
+
+fn variants(needles: &[Vec<u8>]) -> Vec<Variant> {
     let mut out = Vec::new();
     for (i, n) in needles.iter().enumerate() {
         if n.is_empty() {
             continue;
         }
-        out.push((i, n.clone()));
+        out.push(Variant { needle_index: i, bytes: n.clone(), token: true });
         if n.is_ascii() {
             let mut u = Vec::with_capacity(n.len() * 2);
             for b in n {
                 u.extend_from_slice(&[0, *b]);
             }
-            out.push((i, u));
+            out.push(Variant { needle_index: i, bytes: u, token: false });
         }
     }
     out
 }
 
-fn scan(hay: &[u8], vars: &[(usize, Vec<u8>)]) -> Vec<(usize, usize)> {
+/// Whole-token rule: a needle that starts (ends) with an ASCII letter or digit only matches when
+/// the byte before (after) is not an ASCII letter or digit. "memory" inside the identifier
+/// `cite.kang2025memoryos` is a different token; "the budget plan memo" contains the token
+/// "budget plan". UTF-16BE spellings match strictly.
+fn at_boundary(hay: &[u8], at: usize, v: &Variant) -> bool {
+    if !v.token {
+        return true;
+    }
+    let (first, last) = (v.bytes[0], v.bytes[v.bytes.len() - 1]);
+    let before = at == 0 || !hay[at - 1].is_ascii_alphanumeric() || !first.is_ascii_alphanumeric();
+    let end = at + v.bytes.len();
+    let after = end >= hay.len() || !hay[end].is_ascii_alphanumeric() || !last.is_ascii_alphanumeric();
+    before && after
+}
+
+fn scan(hay: &[u8], vars: &[Variant]) -> Vec<(usize, usize)> {
     let mut hits = Vec::new();
-    for (i, v) in vars {
+    for v in vars {
         let mut from = 0usize;
-        while let Some(at) = find(&hay[from..], v) {
-            hits.push((*i, from + at));
-            from += at + 1;
+        while let Some(at) = find(&hay[from..], &v.bytes) {
+            let pos = from + at;
+            if at_boundary(hay, pos, v) {
+                hits.push((v.needle_index, pos));
+            }
+            from = pos + 1;
             if hits.len() >= MAX_HITS {
                 return hits;
             }
@@ -110,8 +136,20 @@ fn scan(hay: &[u8], vars: &[(usize, Vec<u8>)]) -> Vec<(usize, usize)> {
     hits
 }
 
-fn contains(s: &[u8], vars: &[(usize, Vec<u8>)]) -> Option<usize> {
-    vars.iter().find(|(_, v)| find(s, v).is_some()).map(|(i, _)| *i)
+fn contains(s: &[u8], vars: &[Variant]) -> Option<usize> {
+    vars.iter().find(|v| scan_one(s, v)).map(|v| v.needle_index)
+}
+
+fn scan_one(hay: &[u8], v: &Variant) -> bool {
+    let mut from = 0usize;
+    while let Some(at) = find(&hay[from..], &v.bytes) {
+        let pos = from + at;
+        if at_boundary(hay, pos, v) {
+            return true;
+        }
+        from = pos + 1;
+    }
+    false
 }
 
 fn looks_like_content(d: &Dict) -> bool {
@@ -274,7 +312,19 @@ impl RedactedOutput {
     /// proof for every distinctive removed string, and a fresh pass over the saved bytes finds
     /// nothing left in the regions.
     pub fn is_proven(&self) -> bool {
-        self.reports.iter().all(|r| r.complete) && self.proof.is_clean() && self.residual_in_region == 0
+        self.region_cleared() && self.proof.hits.is_empty()
+    }
+
+    /// The regions themselves are proven clear: every mark removed, a fresh pass over the saved
+    /// bytes selects nothing, one xref section, no unreachable or unlisted objects. Says nothing
+    /// about the same words legitimately living elsewhere (outline titles, metadata); `is_proven`
+    /// also requires `proof.hits` to be empty.
+    pub fn region_cleared(&self) -> bool {
+        self.reports.iter().all(|r| r.complete)
+            && self.residual_in_region == 0
+            && self.proof.xref_sections <= 1
+            && self.proof.unreachable_objects.is_empty()
+            && self.proof.unlisted_object_markers == 0
     }
 }
 

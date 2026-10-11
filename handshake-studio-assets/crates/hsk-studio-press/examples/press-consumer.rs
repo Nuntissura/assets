@@ -4,7 +4,7 @@
 //!   press-consumer --set-title NEW FILE.pdf OUT.pdf
 //!   press-consumer --redact PAGE X0 Y0 X1 Y1 FILE.pdf OUT.pdf [--partial]
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_press::{Limits, PdfDoc, PdfScalar, RedactionRegion, UnsupportedPolicy, redact_and_save};
+use hsk_studio_press::{Limits, PayloadLocation, PdfDoc, PdfScalar, RedactionRegion, UnsupportedPolicy, redact_and_save};
 use std::process::ExitCode;
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -51,6 +51,30 @@ fn run(args: &[String]) -> Result<(), String> {
             let r = redact_and_save(&mut doc, &[region], policy, &cancel).map_err(|e| e.to_string())?;
             std::fs::write(out, &r.bytes).map_err(|e| format!("write: {e}"))?;
             let rep = &r.reports[0];
+            let (mut raw, mut dec, mut strs, mut cont) = (0, 0, 0, 0);
+            let mut objs = std::collections::BTreeSet::new();
+            for h in &r.proof.hits {
+                match h.location {
+                    PayloadLocation::RawBytes { .. } => raw += 1,
+                    PayloadLocation::DecodedStream { object, .. } => {
+                        dec += 1;
+                        objs.insert(object);
+                    }
+                    PayloadLocation::StringObject { object } => {
+                        strs += 1;
+                        objs.insert(object);
+                    }
+                    PayloadLocation::ContentString { object } => {
+                        cont += 1;
+                        objs.insert(object);
+                    }
+                }
+            }
+            println!(
+                "leaks raw={raw} decoded={dec} string_objects={strs} content_operands={cont} objects={:?} kept_text_collisions={}",
+                objs.iter().take(8).collect::<Vec<_>>(),
+                r.proof.kept_text_collisions.len()
+            );
             println!(
                 "strings_removed={} annotations_removed={} unredacted={:?} complete={} layout_shift={} proven={} hits={} unreachable={} xref_sections={} undecoded_streams={} short_needles={} residual_in_region={}",
                 rep.text_strings_removed,
