@@ -54,6 +54,10 @@ pub(crate) enum Decision {
     Deny,
 }
 
+/// Longest MIME part (UTF-8 bytes before the comma, tabs and newlines removed) that is read; a longer one is an unknown
+/// type (V4-02: no copy of an unbounded header before the payload budget is charged).
+const MAX_HEADER_BYTES: usize = 4096;
+
 fn is_url_ws(c: char) -> bool {
     matches!(c, '\t' | '\n' | '\r')
 }
@@ -226,6 +230,21 @@ pub(crate) fn parse(reference: &str) -> Option<DataUrl<'_>> {
     let rest = t.get(after_scheme?..)?;
     let rest = &rest[..rest.find('#').unwrap_or(rest.len())];
     let comma = rest.find(',')?;
+    let body = &rest[comma.saturating_add(1)..];
+    let header_len = rest[..comma]
+        .bytes()
+        .filter(|b| !matches!(b, b'\t' | b'\n' | b'\r'))
+        .count();
+    if header_len > MAX_HEADER_BYTES {
+        // V4-02: the header is not copied or serialized beyond the bound; its type stays unknown, which every carrier
+        // except images, beacons and identifiers denies (test `oversized_headers_are_an_unknown_type`).
+        return Some(DataUrl {
+            essence: String::new(),
+            charset: None,
+            base64: false,
+            body,
+        });
+    }
     let header = serialized_header(&rest[..comma]);
     let mut mime = header.trim_matches(|c: char| c.is_ascii_whitespace());
     let mut base64 = false;
@@ -248,7 +267,7 @@ pub(crate) fn parse(reference: &str) -> Option<DataUrl<'_>> {
         essence,
         charset,
         base64,
-        body: &rest[comma.saturating_add(1)..],
+        body,
     })
 }
 

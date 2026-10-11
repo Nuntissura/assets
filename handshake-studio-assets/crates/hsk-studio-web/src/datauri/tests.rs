@@ -247,3 +247,46 @@ fn decisions_by_type_and_load_context() {
     assert_eq!(d(Load::Track, "data:text/plain,WEBVTT"), Decision::Deny);
     assert_eq!(d(Load::Track, "data:audio/ogg,x"), Decision::Inline);
 }
+
+/// V4-02: a MIME part longer than `MAX_HEADER_BYTES` is not copied or parsed; it is an unknown type (never CSS, never
+/// inert), so only image, beacon and identifier carriers keep it inline. Tabs and newlines do not count (the URL parser
+/// removes them), multi-byte code points count by their UTF-8 length.
+#[test]
+fn oversized_headers_are_an_unknown_type() {
+    let at = |n: usize, pad: &str| format!("data:text/css;x={},@import 'y'", pad.repeat(n));
+    let fits = at(MAX_HEADER_BYTES - "text/css;x=".len(), "a");
+    let over = at(MAX_HEADER_BYTES - "text/css;x=".len() + 1, "a");
+    assert_eq!(essence(&fits), "text/css");
+    assert_eq!(essence(&over), "");
+    // Tabs inside do not count; a two-byte code point counts twice.
+    assert_eq!(
+        essence(&format!(
+            "data:text/css;x={}\t\t,a",
+            "a".repeat(MAX_HEADER_BYTES - 11)
+        )),
+        "text/css"
+    );
+    assert_eq!(
+        essence(&format!("data:text/css;x={},a", "\u{e9}".repeat(2048))),
+        ""
+    );
+    for load in [
+        Load::Stylesheet,
+        Load::Document,
+        Load::Resource,
+        Load::Script,
+    ] {
+        assert_eq!(
+            decide(load, &parse(&over).unwrap()),
+            Decision::Deny,
+            "{load:?}"
+        );
+    }
+    for load in [Load::Image, Load::Beacon, Load::None] {
+        assert_eq!(
+            decide(load, &parse(&over).unwrap()),
+            Decision::Inline,
+            "{load:?}"
+        );
+    }
+}

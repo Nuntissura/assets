@@ -677,6 +677,10 @@ fn data_payload_css(url: &str, import: bool) -> Option<String> {
     }
     let rest = &chars[5..];
     let comma = rest.iter().position(|c| *c == ',')?;
+    // The gate reads at most 4096 bytes of MIME part; a longer one is an unknown type (never CSS, never inert).
+    if rest[..comma].iter().map(|c| c.len_utf8()).sum::<usize>() > 4096 {
+        return None;
+    }
     // The serialized MIME part: percent-encode what the opaque path / query states encode.
     let mut mime = String::new();
     let mut in_query = false;
