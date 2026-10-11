@@ -228,6 +228,31 @@ pub(crate) fn percent_of_byte(byte: u8) -> f64 {
     (f64::from(byte) * 100.0 / 255.0 * 10.0).round() / 10.0
 }
 
+/// The appearance values the importer derives from a PSD layer record (also what the exporter
+/// compares edits against, so unchanged values are never rewritten).
+pub(crate) struct ImportedLook {
+    pub opacity: f64,
+    pub fill_opacity: f64,
+    pub blend: u16,
+    pub clipped: bool,
+    pub isolation: &'static str,
+}
+
+pub(crate) fn imported_look(layer: &PsdLayer, is_group: bool) -> ImportedLook {
+    let (blend, isolation) = match (is_group, layer.blend_mode()) {
+        (true, Some(StudioBlendMode::PassThrough)) => (1u16, "pass_through"),
+        (_, Some(mode)) => (mode.discriminant(), "isolated"),
+        (_, None) => (2u16, "isolated"),
+    };
+    ImportedLook {
+        opacity: percent_of_byte(layer.opacity),
+        fill_opacity: percent_of_byte(layer.fill_opacity().unwrap_or(255)),
+        blend,
+        clipped: layer.clipping == 1,
+        isolation,
+    }
+}
+
 struct Builder<'a, 'm, 'c> {
     doc: &'a PsdDocument,
     cfg: &'a ProposalConfig<'a>,
@@ -274,17 +299,13 @@ impl Builder<'_, '_, '_> {
     /// structural placeholder `isolated`/normal, with the typed loss entry and the raw key in the
     /// extras.
     fn appearance_json(layer: &PsdLayer, is_group: bool, mask: Option<Value>) -> Value {
-        let (blend, isolation) = match (is_group, layer.blend_mode()) {
-            (true, Some(StudioBlendMode::PassThrough)) => (1u16, "pass_through"),
-            (_, Some(mode)) => (mode.discriminant(), "isolated"),
-            (_, None) => (2u16, "isolated"),
-        };
+        let look = imported_look(layer, is_group);
         let mut a = json!({
-            "opacity": percent_of_byte(layer.opacity),
-            "fill_opacity": percent_of_byte(layer.fill_opacity().unwrap_or(255)),
-            "blend_mode": blend,
-            "clipped": layer.clipping == 1,
-            "isolation": isolation,
+            "opacity": look.opacity,
+            "fill_opacity": look.fill_opacity,
+            "blend_mode": look.blend,
+            "clipped": look.clipped,
+            "isolation": look.isolation,
         });
         if let Some(mask) = mask {
             a["mask"] = mask;

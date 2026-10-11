@@ -11,6 +11,7 @@ use crate::limits::Limits;
 use crate::pixels::Plane;
 use crate::reader::Reader;
 use crate::resources::{ImageResources, VersionInfo};
+use crate::samples::{SixteenBitScale, srgb_to_linear};
 
 const LAYER_INFO_KEYS: [[u8; 4]; 3] = [*b"Lr16", *b"Lr32", *b"Layr"];
 
@@ -127,6 +128,41 @@ impl MergedImage {
                 _ => return Err(PsdError::UnsupportedMode("merged_color_mode")),
             };
             out.extend_from_slice(&[r, g, b, alpha.as_ref().map_or(255, |a| a[i])]);
+        }
+        Ok(out)
+    }
+
+    /// Linear-light RGBA as f32 for RGB or grayscale merged images at any supported depth:
+    /// 8/16-bit samples through the sRGB decoding (assumed profile), 32-bit floats as stored.
+    /// Alpha is the first extra plane only when the file declared merged transparency.
+    pub fn to_linear_rgba_f32(&self, scale: SixteenBitScale) -> Result<Vec<f32>> {
+        let colour_planes = match self.color_mode {
+            ColorMode::Rgb => 3,
+            ColorMode::Grayscale => 1,
+            _ => return Err(PsdError::UnsupportedMode("merged_color_mode")),
+        };
+        if !matches!(self.depth, 8 | 16 | 32) {
+            return Err(PsdError::UnsupportedMode("merged_depth"));
+        }
+        if self.planes.len() < colour_planes {
+            return Err(PsdError::ChannelSize);
+        }
+        let alpha = if self.merged_alpha { self.planes.get(colour_planes) } else { None };
+        let pixels = (self.width as usize).checked_mul(self.height as usize).ok_or(PsdError::Overflow)?;
+        let mut out = Vec::with_capacity(pixels.checked_mul(4).ok_or(PsdError::Overflow)?);
+        let unit = |plane: &Plane, i: usize| plane.unit_at(i, scale).ok_or(PsdError::ChannelSize);
+        let linear = |v: f32| if self.depth == 32 { v } else { srgb_to_linear(v) };
+        for i in 0..pixels {
+            let rgb = if colour_planes == 1 {
+                [linear(unit(&self.planes[0], i)?); 3]
+            } else {
+                [linear(unit(&self.planes[0], i)?), linear(unit(&self.planes[1], i)?), linear(unit(&self.planes[2], i)?)]
+            };
+            out.extend_from_slice(&rgb);
+            out.push(match alpha {
+                Some(plane) => unit(plane, i)?.clamp(0.0, 1.0),
+                None => 1.0,
+            });
         }
         Ok(out)
     }
