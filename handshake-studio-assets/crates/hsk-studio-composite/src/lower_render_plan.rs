@@ -294,17 +294,26 @@ fn record_ext(ledger: &mut ExactnessLedger, op: ExtOperator) {
     ledger.record(op.key(), op.intrinsic());
 }
 
-/// Fold the envelope into the ledger and validate it, entry by entry. Knockout and an adjustment
-/// feature without a formula (modern brightness/contrast) are carried, not lowering errors:
-/// pigment's `admit_extended` refuses them with their operator name (`tests/render_plan_lowering.rs`
-/// `knockout_and_effect_stack_are_refused`), and the ledger says `Unsupported`. Every other
-/// envelope defect is a typed lowering error.
+/// Fold the envelope into the ledger and validate it, first entry by entry and then as a whole.
+/// Knockout and an adjustment feature without a formula (modern brightness/contrast) are carried,
+/// not lowering errors: pigment's `admit_extended` refuses them with their operator name
+/// (`tests/render_plan_lowering.rs` `knockout_and_effect_stack_are_refused`), and the ledger says
+/// `Unsupported`. Every other envelope defect is a typed lowering error: an entry's own defect from
+/// its probe, and a defect only the whole envelope has (more than `MAX_EFFECTS_PER_PLAN` effects
+/// over all layers, a repeated `(group, layer)`) from the whole-envelope validate, as
+/// `CompositeError::Plan` with pigment's own `PlanError`: the lowering and `admit_extended` run the
+/// same validation of the plan and of the whole envelope, so the `InvalidPlan` refusals of
+/// admission are lowering errors here (test
+/// `plan_wide_effect_limit_is_refused_at_lowering_like_pigment_admission`, which compares the
+/// error with admission's for an envelope one effect over the plan limit).
 fn record_envelope(
     render: &RenderPlan,
     extensions: &PlanExtensions,
     ledger: &mut ExactnessLedger,
 ) -> Result<(), CompositeError> {
-    for e in &extensions.layers {
+    // Entries whose adjustment feature pigment refuses (carried above as an `Unsupported` entry).
+    let mut carried_adjustment: BTreeSet<usize> = BTreeSet::new();
+    for (index, e) in extensions.layers.iter().enumerate() {
         let mut probe = e.clone();
         if probe.knockout != Knockout::None {
             record_ext(ledger, ExtOperator::Knockout(probe.knockout));
@@ -317,6 +326,7 @@ fn record_envelope(
                 }
             }
             Err(PlanError::AdjustmentUnsupported { kind, .. }) => {
+                carried_adjustment.insert(index);
                 record_ext(ledger, ExtOperator::AdjustmentLayer);
                 record_ext(ledger, ExtOperator::Adjustment(kind));
                 ledger.record(kind.key(), Exactness::Unsupported);
@@ -327,26 +337,35 @@ fn record_envelope(
     if render.has_mask_density() {
         record_ext(ledger, ExtOperator::MaskDensity);
     }
-    // Nested effects need the whole envelope (the content of a layer holds another layer with
-    // effects), which the entry-by-entry probes above cannot see: pigment's validate of the full
-    // envelope names it. Knockout is carried and refused above, so it is cleared for this probe; an
-    // envelope that does not validate as a whole (a refused adjustment feature) names no nesting.
+    // Rules that need the whole envelope, which the entry-by-entry probes above cannot see: the
+    // effect count over all layers (`PlanError::EffectLimit`), a repeated `(group, layer)`, and
+    // nested effects (the content of a layer holds another layer with effects). Pigment's validate
+    // of the full envelope decides all of them, and admission runs the same validate. The features
+    // carried above are taken out of this probe, so they neither end it early nor hide a defect of
+    // a later entry: knockout is cleared, and a refused adjustment is dropped from its entry (such
+    // an entry holds no effects, `LayerFeatures::refusal`). Any other error is a lowering error.
     let whole = PlanExtensions::from_layers(
         extensions
             .layers
             .iter()
-            .cloned()
-            .map(|mut e| {
+            .enumerate()
+            .map(|(index, e)| {
+                let mut e = e.clone();
                 e.knockout = Knockout::None;
+                if carried_adjustment.contains(&index) {
+                    e.adjustment = None;
+                }
                 e
             })
             .collect(),
     );
-    if whole
-        .validate(render)
-        .is_ok_and(|ops| ops.contains(&ExtOperator::EffectsNested))
-    {
-        record_ext(ledger, ExtOperator::EffectsNested);
+    match whole.validate(render) {
+        Ok(ops) => {
+            if ops.contains(&ExtOperator::EffectsNested) {
+                record_ext(ledger, ExtOperator::EffectsNested);
+            }
+        }
+        Err(other) => return Err(CompositeError::Plan(other)),
     }
     // An effect composites with its own blend mode; pigment's admission asks the backend for that
     // mode's v1 class, so the ledger lists it under the mode's pigment key.
@@ -407,6 +426,13 @@ pub fn lower_to_render_plan(
 /// graph source whose `input_ordinal` is its stack position (Folio ENG-6, STU-CMP-092), so one that
 /// is contained in the group but has no graph operation has no authored position, and the spec
 /// forbids inferring one from storage order or containment (`adjustment_not_in_composition_graph`).
+///
+/// Fails `CompositeError::Plan(PlanError::EffectLimit)` (code `plan_effect_limit`) when the rendered
+/// layers together carry more than pigment's `MAX_EFFECTS_PER_PLAN` effects: each layer is within
+/// `MAX_EFFECTS_PER_LAYER` (`effect_limit`, `Unavailable`), but the count is a rule of the whole
+/// plan, so it depends on the requested root and is decided here, not by `evaluate_extended` (which
+/// reports every step of the document). Any other defect that only the whole envelope has is
+/// returned the same way, as pigment's own `PlanError`.
 pub fn lower_to_render_plan_extended(
     plan: &LoweredPlan,
     report: &EvalReport,

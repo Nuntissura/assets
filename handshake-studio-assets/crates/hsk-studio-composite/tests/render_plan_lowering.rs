@@ -2330,3 +2330,169 @@ fn effects_with_blend_if_and_nested_effects_are_reported_like_pigment() {
         }
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Plan-wide effect limit (R8 FAIL_V2, remediation of lane SMB-COMPOSITE-ADJ). Each layer is within
+// pigment's MAX_EFFECTS_PER_LAYER, but `PlanExtensions::validate` also counts the effects of ALL
+// layers against MAX_EFFECTS_PER_PLAN, so only the whole envelope can see that rule. Lowering used
+// to drop the whole-envelope error and return Ok, which pigment's admission then refused for every
+// backend as InvalidPlan(EffectLimit). The limits below are pigment's constants, never literals.
+// ---------------------------------------------------------------------------------------------
+use hsk_studio_pigment::effect_math::{MAX_EFFECTS_PER_LAYER, MAX_EFFECTS_PER_PLAN};
+
+/// Root group 1 over one raster per entry of `counts` (ids 3.., an 8x8 tile each, in stack order),
+/// and with `modern_adjustment` a modern brightness/contrast adjustment layer (id 2, a graph source
+/// at the bottom of the stack; pigment refuses its kind at admission and composite carries it).
+/// Raster `i` carries `counts[i]` colour overlays. Returns the document and the record entries.
+fn limit_fixture(counts: &[usize], modern_adjustment: bool) -> (Value, Vec<Value>) {
+    let mut doc = mixed();
+    assign_all_profiles(&mut doc);
+    let mut layers = vec![layer(1, "group", json!({"payload_kind":"group"}))];
+    let mut operations = vec![composite(1)];
+    let mut entries = Vec::new();
+    let mut stack: Vec<u8> = Vec::new();
+    if modern_adjustment {
+        layers.push(layer(
+            2,
+            "adjustment",
+            json!({"payload_kind":"primitive_reference","schema_id":"hsk.studio.adjustment@1",
+                "object_id":identity("SLYR",2)}),
+        ));
+        operations.push(source(2, "image"));
+        entries.push(json!({"layer_id":identity("SLYR",2),"adjustment":{"kind":"brightness_contrast",
+            "brightness":10.0,"contrast":10.0,"use_legacy":false}}));
+        stack.push(2);
+    }
+    for (i, count) in counts.iter().enumerate() {
+        let n = u8::try_from(3 + i).expect("fixture layer id fits the identity helper");
+        layers.push(layer(
+            n,
+            "raster",
+            json!({"payload_kind":"raster","tiles":[tile(n, &format!("t{n}"), 0, 0, 8, 8)]}),
+        ));
+        operations.push(source(n, "image"));
+        stack.push(n);
+        if *count > 0 {
+            let effects = (0..*count)
+                .map(|k| {
+                    fx_effect(
+                        &format!("co_{n}_{k}"),
+                        50.0,
+                        fx_colour(1.0, 0.0, 0.0),
+                        false,
+                        json!({"effect_kind":"colour_overlay"}),
+                    )
+                })
+                .collect();
+            entries.push(json!({"layer_id":identity("SLYR", n),"effects":fx_stack(effects)}));
+        }
+    }
+    let edges: Vec<Value> = stack
+        .iter()
+        .enumerate()
+        .map(|(ordinal, n)| {
+            let ordinal = u64::try_from(ordinal).expect("fixture ordinal");
+            edge(address(*n, "source", "out"), address(1, "mix", "inputs"), ordinal)
+        })
+        .collect();
+    doc["layers"] = Value::Array(layers);
+    doc["graph"] = json!({"schema_id":"hsk.studio.layer_graph@1","operations":operations,
+        "edges":edges,"outputs":[address(1,"mix","out")]});
+    (doc, entries)
+}
+/// Evaluate and lower the root of `doc` with the extended path.
+fn limit_flow(doc: &Value, entries: Vec<Value>) -> Result<ExtendedLowering, CompositeError> {
+    let recs = records(Value::Array(entries));
+    let run = run_ext(doc, &recs, false);
+    lower_ext(&run, &recs)
+}
+fn total_effects(low: &ExtendedLowering) -> usize {
+    low.extensions.layers.iter().map(|e| e.effects.len()).sum()
+}
+
+#[test]
+fn plan_wide_effect_limit_is_refused_at_lowering_like_pigment_admission() {
+    bounded_case("plan_wide_effect_limit_is_refused_at_lowering_like_pigment_admission", || {
+        let token = CancellationToken::default();
+        let at_limit = MAX_EFFECTS_PER_PLAN / MAX_EFFECTS_PER_LAYER;
+        assert_eq!(at_limit * MAX_EFFECTS_PER_LAYER, MAX_EFFECTS_PER_PLAN, "exact division");
+        let full = vec![MAX_EFFECTS_PER_LAYER; at_limit];
+        let one_more_layer = [full.clone(), vec![MAX_EFFECTS_PER_LAYER]].concat();
+
+        // Control, exactly at the limit (64 layers x 64 effects): lowers, pigment validates and
+        // admits the lowered envelope.
+        let (doc, entries) = limit_fixture(&full, false);
+        let at = limit_flow(&doc, entries).expect("the limit itself is admissible");
+        assert_eq!(total_effects(&at), MAX_EFFECTS_PER_PLAN);
+        assert!(at.extensions.validate(&at.plan).is_ok());
+        assert!(admit_extended(&at.plan, &at.extensions, &ExtBackend, &request(), &token).is_ok());
+
+        // The reviewed case (65 layers x 64 effects): every layer is within its own limit, the
+        // plan is not. A typed lowering refusal with pigment's own error, not an Ok that pigment's
+        // admission then refuses.
+        let (doc, entries) = limit_fixture(&one_more_layer, false);
+        let refused = match limit_flow(&doc, entries) {
+            Err(CompositeError::Plan(e @ PlanError::EffectLimit { .. })) => e,
+            other => panic!("expected Plan(EffectLimit), got {other:?}"),
+        };
+        assert_eq!(CompositeError::Plan(refused).code(), PlanError::EffectLimit { node: 0 }.code());
+
+        // Parity with pigment's admission on the smallest overshoot (one effect over the limit):
+        // the lowering of that document returns the very error admit_extended gives the envelope
+        // of the same plan. That envelope is the at-limit lowering of a document whose 65th layer
+        // has no effects, plus one more effect on that layer.
+        let mut tail_without_effects = full.clone();
+        tail_without_effects.push(0);
+        let (doc, entries) = limit_fixture(&tail_without_effects, false);
+        let base = limit_flow(&doc, entries).expect("65th layer without effects lowers");
+        let mut over = base.extensions.clone();
+        let one = base.extensions.layers[0].effects[0];
+        over.layers.push(
+            LayerExtension::new(base.extensions.layers[0].group, u32::try_from(at_limit).unwrap())
+                .with_effects(vec![one]),
+        );
+        let admission = admit_extended(&base.plan, &over, &ExtBackend, &request(), &token);
+        let mut smallest = full.clone();
+        smallest.push(1);
+        let (doc, entries) = limit_fixture(&smallest, false);
+        let Err(CompositeError::Plan(lowering)) = limit_flow(&doc, entries) else {
+            panic!("one effect over the plan limit must be a typed lowering refusal")
+        };
+        assert!(matches!(lowering, PlanError::EffectLimit { .. }));
+        assert_eq!(admission, Err(BackendError::InvalidPlan(lowering)));
+
+        // Only the effects of rendered layers count: a hidden layer is not emitted, so 65 layers
+        // of which one is hidden are at the limit and lower.
+        let (mut doc, entries) = limit_fixture(&one_more_layer, false);
+        doc["layers"][1]["visible"] = json!(false);
+        let rendered = limit_flow(&doc, entries).expect("a hidden layer's effects are not counted");
+        assert_eq!(total_effects(&rendered), MAX_EFFECTS_PER_PLAN);
+
+        // Carried features are not allowed to hide the plan-wide defect behind them: an enabled
+        // knockout (carried to pigment, refused there as knockout_shallow) on the first layer, and
+        // a modern brightness/contrast adjustment (carried, refused as brightness_contrast) before
+        // the effect layers each leave the refusal in place.
+        let (doc, mut entries) = limit_fixture(&one_more_layer, false);
+        entries[0]["advanced_blending"] = json!({"blend_ranges":[],"knockout":"enabled",
+            "channel_blend":{"red":true,"green":true,"blue":true},
+            "blend_interior_effects":true,"blend_clipped_effects":true,"transparency_shapes_layer":true});
+        assert!(
+            matches!(limit_flow(&doc, entries), Err(CompositeError::Plan(PlanError::EffectLimit { .. }))),
+            "knockout on the first layer must not hide the limit"
+        );
+        let (doc, entries) = limit_fixture(&one_more_layer, true);
+        assert!(
+            matches!(limit_flow(&doc, entries), Err(CompositeError::Plan(PlanError::EffectLimit { .. }))),
+            "a refused adjustment before the effect layers must not hide the limit"
+        );
+        // ... and without the overshoot those same carried features are still carried, not errors.
+        let (doc, entries) = limit_fixture(&full, true);
+        let carried = limit_flow(&doc, entries).expect("a carried adjustment lowers");
+        assert_eq!(total_effects(&carried), MAX_EFFECTS_PER_PLAN);
+        assert_eq!(carried.exactness.lowest, Exactness::Unsupported);
+        assert_eq!(
+            admit_extended(&carried.plan, &carried.extensions, &ExtBackend, &request(), &token),
+            Err(BackendError::Unsupported { operator: "brightness_contrast", exactness: Exactness::Unsupported })
+        );
+    });
+}
