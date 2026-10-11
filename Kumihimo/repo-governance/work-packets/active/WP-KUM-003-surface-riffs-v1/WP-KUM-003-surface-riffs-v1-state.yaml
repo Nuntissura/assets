@@ -1,0 +1,21 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-003-surface-riffs-v1
+generation: 2
+phase: active
+owner: model_maintainer
+changed_files:
+- repo-governance/docs/research/overlays-grids-and-morphing-borders.md
+- repo-governance/work-packets/active/WP-KUM-003-surface-riffs-v1/
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/registry/
+proof:
+- kind: researched_evaluation
+  observed: Two research agents inspected primary workspace/minimap and border-effect sources; actual note reviewed against operator concepts
+- kind: clarification
+  observed: Operator confirmed draggable viewport rectangle over miniature document beside main document; release restores ordinary scrollbar
+- kind: preparation_boundary
+  observed: git diff --exit-code bc5f95a for product, current specification and repo scripts passed; no implementation or accepted requirement changes
+- kind: source_shape
+  observed: Affected WP YAML and research frontmatter/topic framing parsed successfully
+blockers: []
+next_action: Publish prep note; verify remote; settle this research WP while design iteration remains open

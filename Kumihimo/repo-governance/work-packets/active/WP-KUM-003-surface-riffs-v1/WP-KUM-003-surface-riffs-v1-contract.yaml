@@ -1,0 +1,31 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-003-surface-riffs-v1
+title: Evaluate snapping, morphing borders and transient minimaps
+scope:
+- Prep research and digestible evaluation of the operator's three new concepts; preserve exact intent and open questions
+- Record optional directions, precedents, tradeoffs and focused future evaluation scenarios without adopting new product requirements
+files:
+- repo-governance/docs/research/overlays-grids-and-morphing-borders.md
+- repo-governance/work-packets/active/WP-KUM-003-surface-riffs-v1/
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/registry/
+dependencies:
+- WP-KUM-002-master-spec-v1
+spec_refs:
+- TOPIC-KUM-LAYOUT
+- TOPIC-KUM-POPOUTS
+- TOPIC-KUM-NAVIGATION
+- TOPIC-KUM-RENDER
+requirements:
+- Preserve overlapping central child frames, usable uncovered parent content, adjacent frames, parent-relative adjustable grids and host-exposed settings as separate concepts
+- Evaluate liquid, sand, fire and smoke borders, including effect on inner content and neighboring content
+- Preserve the grab-to-show minimap, viewport-marker drag, release-to-hide gesture and ordinary scrollbar return
+- No product implementation, dependency installation, runtime prototype or acceptance promotion
+acceptance:
+- Reference note records all operator concepts, primary-source precedents and explicitly speculative recommendations with practical tradeoffs
+- Exact minimap gesture and clarified viewport rectangle beside the document are preserved; further iteration remains open
+- Product specification and product files remain unchanged
+proof:
+- Inspect the actual note against operator wording and primary sources
+- Parse affected YAML, check prose metadata/topic framing and inspect owned diff
+status_ref: repo-governance/work-packets/active/WP-KUM-003-surface-riffs-v1/WP-KUM-003-surface-riffs-v1-state.yaml

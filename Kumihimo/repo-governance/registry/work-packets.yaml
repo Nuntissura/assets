@@ -16,3 +16,10 @@ work_packets:
   next_action: Specification complete; next authorized implementation can create a bounded eight-pane prototype
     WP from the current topics
   blockers: []
+- wp_id: WP-KUM-003-surface-riffs-v1
+  title: Evaluate snapping, morphing borders and transient minimaps
+  phase: active
+  contract_ref: repo-governance/work-packets/active/WP-KUM-003-surface-riffs-v1/WP-KUM-003-surface-riffs-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-003-surface-riffs-v1/WP-KUM-003-surface-riffs-v1-state.yaml
+  next_action: Publish prep note; verify remote; settle this research WP while design iteration remains open
+  blockers: []
