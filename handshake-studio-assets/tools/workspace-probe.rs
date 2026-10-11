@@ -499,7 +499,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-session", &["serde_json"]),
     ("hsk-studio-harness", &["serde_json"]),
     ("hsk-studio-kernel-bindings", &["serde", "serde_json"]),
-    ("hsk-studio-press", &["miniz_oxide", "sha2"]),
+    ("hsk-studio-press", &["hayro-interpret", "kurbo", "miniz_oxide", "sha2"]),
     ("hsk-studio-web", &["html5ever", "sha2"]),
     ("hsk-studio-score-device", &["cpal"]),
     ("hsk-studio-score-plugin", &["clack-host", "sha2"]),
