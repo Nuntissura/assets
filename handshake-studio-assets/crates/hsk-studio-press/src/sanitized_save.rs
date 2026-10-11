@@ -64,6 +64,7 @@ use crate::canon::{canonicalize, is_canonical};
 use crate::content::{Op, inline_dict};
 use crate::error::{Limits, PressError, RedactionClass, Result, TextCause};
 use crate::filters;
+use crate::flatten::{FlattenedPage, check_flattened, flatten_region_pages};
 use crate::font::Font;
 use crate::norm::{Escapes, normalize, normalized, normalized_str, visual_order};
 use crate::pdf_edit::PdfDoc;
@@ -1263,6 +1264,11 @@ pub struct RedactedOutput {
     /// 2026-10-11T13:10:26Z removed the 6-byte minimum: one glyph per operator counts; tests
     /// `unreadable_removed_text_is_never_proven`, `glyph_by_glyph_unreadable_text_is_never_proven`).
     pub unreadable_removed: u32,
+    /// Every page carrying a region, as flattened (Operator decision D27, `flatten.rs`): the page's only
+    /// content is a raster with the regions painted opaque; `notes` lists what the renderer did not
+    /// draw (absent from the raster). Tests `flattened_pages_hold_only_the_raster`,
+    /// `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`.
+    pub flattened: Vec<FlattenedPage>,
     /// `(region page index, class)`: text drawn on a region's page in the SAVED file whose glyph
     /// geometry the selector does not compute (Type 3, vertical, unresolved writing mode, unresolved
     /// font), from the determination pass of the proof (sorted, unique). Non-empty makes the region
@@ -1387,12 +1393,15 @@ pub fn redact_and_save_with(
             }
             None => None,
         };
-        // CANONICAL REWRITE (lead decision 2026-10-11T15:00:20Z): every content stream of the document
-        // is re-serialised from this crate's parse before the save (canon.rs).
+        // FLATTEN (Operator decision D27): every page carrying a region becomes a raster of itself with
+        // the regions painted opaque; nothing else of it survives (flatten.rs).
+        let flattened = flatten_region_pages(doc, regions, cancel)?;
+        // CANONICAL REWRITE (lead decision 2026-10-11T15:00:20Z): every other content stream of the
+        // document is re-serialised from this crate's parse before the save (canon.rs).
         canonicalize(&mut doc.objects, &doc.trailer, &doc.limits, cancel)?;
         let bytes = doc.save_full(cancel)?;
         // Fresh re-open of the saved bytes: the region test must now select nothing.
-        let mut saved = PdfDoc::open(&bytes, &doc.limits, cancel)?;
+        let saved = PdfDoc::open(&bytes, &doc.limits, cancel)?;
         let pages: Vec<(u32, u32)> =
             regions.iter().filter_map(|r| saved.pages.get(r.page_index as usize).map(|p| (r.page_index, *p))).collect();
         let page_objects: Vec<u32> = pages.iter().map(|(_, p)| *p).collect();
@@ -1403,15 +1412,24 @@ pub fn redact_and_save_with(
             .collect();
         region_undetermined.sort();
         region_undetermined.dedup();
+        // Every region page is a raster now: the saved page must hold exactly the raster, and every pixel
+        // of every region on it the fill colour (re-read from the saved bytes, flatten::check_flattened).
         let mut residual = 0u32;
-        for region in regions {
-            let again = saved.redact_region(region, UnsupportedPolicy::ReportAndContinue, cancel)?;
-            residual = residual
-                .saturating_add(again.text_strings_removed)
-                .saturating_add(u32::try_from(again.annotations_removed.len()).unwrap_or(u32::MAX))
-                .saturating_add(u32::try_from(again.unredacted.len()).unwrap_or(u32::MAX));
+        for flat in &flattened {
+            let rects: Vec<[f64; 4]> = regions.iter().filter(|r| r.page_index == flat.page_index).map(|r| r.rect).collect();
+            residual = residual.saturating_add(check_flattened(&saved, flat, &rects, cancel)?);
         }
-        Ok(RedactedOutput { bytes, reports, proof, short_needles, residual_in_region: residual, text_fields, unreadable_removed, region_undetermined })
+        Ok(RedactedOutput {
+            bytes,
+            reports,
+            proof,
+            short_needles,
+            residual_in_region: residual,
+            text_fields,
+            unreadable_removed,
+            flattened,
+            region_undetermined,
+        })
     })();
     if result.is_err() {
         doc.objects = backup;

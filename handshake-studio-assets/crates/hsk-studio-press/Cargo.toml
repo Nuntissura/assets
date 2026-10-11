@@ -10,6 +10,8 @@ default = []
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hayro-interpret = { version = "=0.7.0", default-features = false, features = ["embed-fonts"] }
+kurbo = { version = "=0.13.1", default-features = false, features = ["std"] }
 miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
 sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
 

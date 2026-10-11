@@ -1,5 +1,6 @@
 //! Typed refusals and hostile-input limits. Messages are static strings and carry no document text.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::flatten::FlattenCause;
 use std::fmt;
 
 /// Hostile-input limits. Every allocation the reader or writer makes is bounded by one of these.
@@ -28,6 +29,13 @@ pub struct Limits {
     pub max_filters: usize,
     /// Maximum parsed object nodes (every scalar, array element and dictionary value) over one document parse.
     pub max_nodes: usize,
+    /// Resolution (dots per inch) of the raster that replaces a page carrying a redaction region
+    /// (`flatten.rs`, Operator decision D27). 0 refuses every flattening.
+    pub flatten_dpi: u32,
+    /// Largest raster (width x height pixels) one flattened page may have; a larger page at
+    /// `flatten_dpi` is a typed refusal (`PressError::FlattenRefused(FlattenCause::PixelBudget)`,
+    /// checked before anything is allocated; test `flatten_pixel_budget_is_a_typed_refusal`).
+    pub max_flatten_pixels: u64,
 }
 
 /// Hard ceiling for nesting depth and reference hops whatever `Limits` say: the tokenizer and the
@@ -59,6 +67,8 @@ impl Default for Limits {
             max_object_number: 8_388_607,
             max_filters: 8,
             max_nodes: 16 << 20,
+            flatten_dpi: 150,
+            max_flatten_pixels: 1 << 24,
         }
     }
 }
@@ -173,6 +183,9 @@ pub enum PressError {
     RedactionIncomplete,
     NoSuchPage,
     Sink(SinkError),
+    /// A page carrying a redaction region could not be flattened (Operator decision D27): the
+    /// redaction refuses; the original page is never kept instead.
+    FlattenRefused(FlattenCause),
 }
 
 impl PressError {
@@ -193,6 +206,7 @@ impl PressError {
             Self::RedactionIncomplete => "redaction_incomplete",
             Self::NoSuchPage => "no_such_page",
             Self::Sink(_) => "sink_fault",
+            Self::FlattenRefused(_) => "flatten_refused",
         }
     }
 }
@@ -203,6 +217,7 @@ impl fmt::Display for PressError {
             Self::InputLimit(w) | Self::Malformed(w) => write!(f, "{}: {w}", self.code()),
             Self::UnsupportedFilter(n) => write!(f, "{}: {n}", self.code()),
             Self::UnsupportedRedactionClass(c) => write!(f, "{}: {}", self.code(), c.as_str()),
+            Self::FlattenRefused(c) => write!(f, "{}: {}", self.code(), c.as_str()),
             _ => f.write_str(self.code()),
         }
     }

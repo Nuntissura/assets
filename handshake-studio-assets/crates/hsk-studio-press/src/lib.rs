@@ -11,9 +11,11 @@ mod encoding;
 mod encoding_data;
 mod error;
 mod filters;
+mod flatten;
 mod font;
 mod norm;
 mod norm_data;
+mod paint;
 mod pdf_edit;
 mod raster;
 mod reader;
@@ -27,6 +29,7 @@ mod text_fields;
 mod writer;
 
 pub use error::{Limits, PressError, RedactionClass, SinkError, TextCause};
+pub use flatten::{FLATTEN_FILL, FlattenCause, FlattenNote, FlattenedPage};
 pub use redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
 pub use raster::RASTER_CLASS;
 pub use sanitized_save::{
@@ -57,7 +60,8 @@ pub fn outcome_for<T>(result: &Result<T, PressError>) -> Outcome {
             | PressError::Encrypted
             | PressError::PermissionDenied
             | PressError::UnsupportedFilter(_)
-            | PressError::UnsupportedRedactionClass(_),
+            | PressError::UnsupportedRedactionClass(_)
+            | PressError::FlattenRefused(_),
         ) => Outcome::Failure(FailureCode::Unsupported),
         Err(PressError::Sink(_)) => Outcome::Failure(FailureCode::Unavailable),
         Err(_) => Outcome::Failure(FailureCode::Validation),
