@@ -20,6 +20,12 @@ pub trait Processor {
     fn required_sample_rate_hz(&self) -> Option<u32> {
         None
     }
+    /// Canonical, deterministic description of this processor's configuration (kind tag plus
+    /// parameters as exact hexadecimal bit patterns). Bounce receipts hash it into a chain
+    /// identity. Processors that do not override it identify as `unspecified`.
+    fn identity(&self) -> String {
+        String::from("unspecified")
+    }
     /// Largest block the processor can take without allocating (chains own scratch buffers).
     fn max_frames(&self) -> Option<usize> {
         None
@@ -207,7 +213,18 @@ impl Engine {
         cancel: &CancellationToken,
     ) -> Result<BlockReceipt, ScoreError> {
         let _slot = self.admit(ctx, cancel)?;
+        self.run_block(ctx, input, proc, out, cancel)
+    }
 
+    /// Per-block body shared by `process` and `bounce`; the caller already holds the slot.
+    pub(crate) fn run_block(
+        &self,
+        ctx: &RequestContext,
+        input: &InputBlock<'_>,
+        proc: &mut dyn Processor,
+        out: &mut OutputBlock,
+        cancel: &CancellationToken,
+    ) -> Result<BlockReceipt, ScoreError> {
         input.validate()?;
         let spec = input.spec();
         if proc

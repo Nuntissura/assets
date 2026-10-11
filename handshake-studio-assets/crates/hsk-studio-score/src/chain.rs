@@ -118,6 +118,17 @@ impl Chain {
 }
 
 impl Processor for Chain {
+    fn identity(&self) -> String {
+        let stages: Vec<String> = self
+            .stages
+            .iter()
+            .map(|s| {
+                let marker = if s.bypassed { "bypassed:" } else { "" };
+                format!("{marker}{}", s.processor.identity())
+            })
+            .collect();
+        format!("chain:[{}]", stages.join(" > "))
+    }
     fn latency_samples(&self) -> u32 {
         self.stages
             .iter()

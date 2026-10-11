@@ -46,6 +46,13 @@ impl RampedGain {
 }
 
 impl Processor for RampedGain {
+    fn identity(&self) -> String {
+        format!(
+            "ramped_gain:current={:08x};target={:08x}",
+            self.current.to_bits(),
+            self.target.to_bits()
+        )
+    }
     fn latency_samples(&self) -> u32 {
         0
     }

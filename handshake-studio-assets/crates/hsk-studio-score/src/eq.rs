@@ -143,6 +143,7 @@ pub struct Equalizer {
     sections: Vec<Coefficients>,
     state: Vec<[f64; 2]>,
     master: f64,
+    identity: String,
 }
 
 impl Equalizer {
@@ -170,6 +171,23 @@ impl Equalizer {
         for spec in sections {
             spec.validate(sample_rate_hz)?;
         }
+        let described: Vec<String> = sections
+            .iter()
+            .map(|s| {
+                format!(
+                    "{:?}:{:016x}:{:016x}:{:016x}",
+                    s.kind,
+                    s.frequency_hz.to_bits(),
+                    s.gain_db.to_bits(),
+                    s.q.to_bits()
+                )
+            })
+            .collect();
+        let identity = format!(
+            "equalizer:rate={sample_rate_hz};channels={channels};master={:016x};sections=[{}]",
+            master_gain_db.to_bits(),
+            described.join("|")
+        );
         Ok(Self {
             sample_rate_hz,
             channels,
@@ -179,6 +197,7 @@ impl Equalizer {
                 .collect(),
             state: vec![[0.0; 2]; sections.len() * channels],
             master: db_to_linear(master_gain_db),
+            identity,
         })
     }
 
@@ -194,6 +213,9 @@ impl Equalizer {
 }
 
 impl Processor for Equalizer {
+    fn identity(&self) -> String {
+        self.identity.clone()
+    }
     fn latency_samples(&self) -> u32 {
         0
     }

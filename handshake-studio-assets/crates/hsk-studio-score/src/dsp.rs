@@ -53,6 +53,9 @@ pub(crate) fn per_channel(
 pub struct Unity;
 
 impl Processor for Unity {
+    fn identity(&self) -> String {
+        String::from("unity")
+    }
     fn latency_samples(&self) -> u32 {
         0
     }
@@ -95,6 +98,9 @@ impl Gain {
 }
 
 impl Processor for Gain {
+    fn identity(&self) -> String {
+        format!("gain:linear={:08x}", self.linear.to_bits())
+    }
     fn latency_samples(&self) -> u32 {
         0
     }
@@ -158,6 +164,9 @@ impl Pan {
 }
 
 impl Processor for Pan {
+    fn identity(&self) -> String {
+        format!("pan:pan={:08x}", self.pan.to_bits())
+    }
     fn latency_samples(&self) -> u32 {
         0
     }
@@ -236,6 +245,19 @@ impl ChannelMix {
 }
 
 impl Processor for ChannelMix {
+    fn identity(&self) -> String {
+        let coefficients: Vec<String> = self
+            .coefficients
+            .iter()
+            .map(|c| format!("{:08x}", c.to_bits()))
+            .collect();
+        format!(
+            "channel_mix:{}x{}:{}",
+            self.inputs,
+            self.outputs,
+            coefficients.join(",")
+        )
+    }
     fn latency_samples(&self) -> u32 {
         0
     }
@@ -347,6 +369,7 @@ impl HardLimiterParams {
 pub struct HardLimiter {
     sample_rate_hz: u32,
     channels: usize,
+    params: HardLimiterParams,
     ceiling: f32,
     boost: f32,
     release_coeff: f32,
@@ -382,6 +405,7 @@ impl HardLimiter {
         let mut limiter = Self {
             sample_rate_hz,
             channels,
+            params,
             ceiling: db_to_linear(params.max_amp_db) as f32,
             boost: db_to_linear(params.input_boost_db) as f32,
             release_coeff: (-1.0 / release_samples).exp() as f32,
@@ -447,6 +471,17 @@ impl HardLimiter {
 }
 
 impl Processor for HardLimiter {
+    fn identity(&self) -> String {
+        format!(
+            "hard_limiter:rate={};channels={};max_amp={:016x};input_boost={:016x};lookahead={:016x};release={:016x}",
+            self.sample_rate_hz,
+            self.channels,
+            self.params.max_amp_db.to_bits(),
+            self.params.input_boost_db.to_bits(),
+            self.params.lookahead_ms.to_bits(),
+            self.params.release_ms.to_bits()
+        )
+    }
     fn latency_samples(&self) -> u32 {
         self.latency as u32
     }
