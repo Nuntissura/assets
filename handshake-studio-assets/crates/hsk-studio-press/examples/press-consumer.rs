@@ -81,6 +81,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 objs.iter().take(8).collect::<Vec<_>>(),
                 r.proof.kept_text_collisions.len()
             );
+            println!("not_proven={:?}", r.not_proven_reasons().iter().map(|n| n.code()).collect::<Vec<_>>());
             println!(
                 "strings_removed={} annotations_removed={} unredacted={:?} complete={} layout_shift={} proven={} hits={} unreachable={} xref_sections={} undecoded_streams={} short_needles={} residual_in_region={}",
                 rep.text_strings_removed,

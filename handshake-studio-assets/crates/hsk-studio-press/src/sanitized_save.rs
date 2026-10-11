@@ -70,6 +70,42 @@ pub struct RasterStream {
     pub inline: bool,
 }
 
+/// Why a result does not read as proven. Typed so a consumer can tell "a needle was found" from
+/// "some text could not be checked".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotProven {
+    /// A needle was found outside kept text (`hits`).
+    Leak,
+    /// More than one xref section, unreachable objects or orphan object bodies.
+    Structure,
+    /// A stream with an unimplemented filter outside the raster class (`streams_not_decodable`).
+    UndecodableStream,
+    /// A text-needle search was requested and some content draws text with a composite font that
+    /// has no usable `/ToUnicode` (`opaque_text_streams`): that text was not checked.
+    OpaqueText,
+    /// A redaction region still holds a mark that was not removed (an image without
+    /// `RemoveImages`, a vector, a deep form).
+    RegionIncomplete,
+    /// A fresh redaction pass over the saved bytes still selects something in a region.
+    ResidualInRegion,
+    /// The text-field report kept matches by policy or could not verify an appearance.
+    TextFieldsKept,
+}
+
+impl NotProven {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Leak => "leak",
+            Self::Structure => "structure",
+            Self::UndecodableStream => "undecodable_stream",
+            Self::OpaqueText => "opaque_text",
+            Self::RegionIncomplete => "region_incomplete",
+            Self::ResidualInRegion => "residual_in_region",
+            Self::TextFieldsKept => "text_fields_kept",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayloadProof {
     pub raw_bytes_scanned: usize,
@@ -80,8 +116,11 @@ pub struct PayloadProof {
     /// Raster image streams excluded from the text-needle proof (listed, not blocking; test raster_class_is_listed_and_region_images_are_removed).
     pub raster_streams: Vec<RasterStream>,
     /// Content streams that draw text with a composite font having no usable `/ToUnicode`: that
-    /// text is invisible to this proof (listed, not blocking).
+    /// text is invisible to this proof. Blocks `is_clean` when `needles_searched > 0` (reason
+    /// `NotProven::OpaqueText`).
     pub opaque_text_streams: Vec<u32>,
+    /// Distinct needles the proof searched for (0 = no text-needle search was requested).
+    pub needles_searched: u32,
     /// Cross-reference sections in the output (1 = fresh full save, no incremental tail).
     pub xref_sections: u32,
     /// Objects in the cross-reference table that are unreachable from the trailer.
@@ -100,13 +139,35 @@ impl PayloadProof {
     /// this crate does not implement, or a decode error) is only scanned as raw bytes, which says
     /// nothing about a needle stored in its encoded form, so a document holding one is not reported
     /// clean: see `streams_not_decodable` for which streams block the claim. Raster-class streams
-    /// (`raster_streams`) do not block.
+    /// (`raster_streams`) do not block. Unreadable composite text blocks when a needle search ran.
     pub fn is_clean(&self) -> bool {
-        self.hits.is_empty()
-            && self.xref_sections <= 1
-            && self.unreachable_objects.is_empty()
-            && self.unlisted_object_markers == 0
-            && self.fully_decoded()
+        self.not_proven_reasons().is_empty()
+    }
+    /// Text drawn with an unreadable composite font was present while a needle search ran.
+    pub fn opaque_text_blocks(&self) -> bool {
+        self.needles_searched > 0 && !self.opaque_text_streams.is_empty()
+    }
+    /// Every reason this proof is not clean (empty = clean). Test: `opaque_composite_text_blocks_the_proof`.
+    pub fn not_proven_reasons(&self) -> Vec<NotProven> {
+        let mut v = self.structural_reasons();
+        if !self.hits.is_empty() {
+            v.insert(0, NotProven::Leak);
+        }
+        v
+    }
+    /// The reasons that do not depend on what was found: structure, undecodable and opaque text.
+    fn structural_reasons(&self) -> Vec<NotProven> {
+        let mut v = Vec::new();
+        if self.xref_sections > 1 || !self.unreachable_objects.is_empty() || self.unlisted_object_markers != 0 {
+            v.push(NotProven::Structure);
+        }
+        if !self.fully_decoded() {
+            v.push(NotProven::UndecodableStream);
+        }
+        if self.opaque_text_blocks() {
+            v.push(NotProven::OpaqueText);
+        }
+        v
     }
     /// Every stream was decoded and scanned (otherwise see `streams_not_decodable`).
     pub fn fully_decoded(&self) -> bool {
@@ -296,6 +357,10 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         streams_not_decodable: Vec::new(),
         raster_streams: Vec::new(),
         opaque_text_streams: Vec::new(),
+        needles_searched: u32::try_from(
+            vars.iter().filter(|v| !v.bytes.is_empty() || v.text.is_some()).map(|v| v.needle_index).collect::<BTreeSet<_>>().len(),
+        )
+        .unwrap_or(u32::MAX),
         xref_sections: u32::try_from(parsed.xref_sections).unwrap_or(u32::MAX),
         unreachable_objects: Vec::new(),
         unlisted_object_markers: 0,
@@ -474,7 +539,29 @@ impl RedactedOutput {
     /// proof for every distinctive removed string, and a fresh pass over the saved bytes finds
     /// nothing left in the regions.
     pub fn is_proven(&self) -> bool {
-        self.region_cleared() && self.proof.hits.is_empty()
+        self.not_proven_reasons().is_empty()
+    }
+
+    /// Why this result does not read as proven (empty = proven). Test:
+    /// `opaque_composite_text_blocks_the_proof`.
+    pub fn not_proven_reasons(&self) -> Vec<NotProven> {
+        let mut v = self.region_reasons();
+        if !self.proof.hits.is_empty() {
+            v.push(NotProven::Leak);
+        }
+        v
+    }
+
+    fn region_reasons(&self) -> Vec<NotProven> {
+        let mut v = Vec::new();
+        if !self.reports.iter().all(|r| r.complete) {
+            v.push(NotProven::RegionIncomplete);
+        }
+        if self.residual_in_region != 0 {
+            v.push(NotProven::ResidualInRegion);
+        }
+        v.extend(self.proof.structural_reasons());
+        v
     }
 
     /// The regions themselves are proven clear: every mark removed (an image under a region is
@@ -482,16 +569,12 @@ impl RedactedOutput {
     /// fresh pass over the saved bytes selects nothing, one xref section, no unreachable or
     /// unlisted objects, and every stream of the saved file was decoded (an undecodable stream can
     /// still hold a removed string in its encoded form, so the structural claim is withheld:
-    /// `proof.streams_not_decodable` names the blockers; raster-class streams do not block). Says
+    /// `proof.streams_not_decodable` names the blockers; raster-class streams do not block; unreadable
+    /// composite text blocks when a needle search ran, `NotProven::OpaqueText`). Says
     /// nothing about the same words legitimately living elsewhere (outline titles, metadata);
     /// `is_proven` also requires `proof.hits` to be empty.
     pub fn region_cleared(&self) -> bool {
-        self.reports.iter().all(|r| r.complete)
-            && self.residual_in_region == 0
-            && self.proof.xref_sections <= 1
-            && self.proof.unreachable_objects.is_empty()
-            && self.proof.unlisted_object_markers == 0
-            && self.proof.fully_decoded()
+        self.region_reasons().is_empty()
     }
 }
 

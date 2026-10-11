@@ -38,7 +38,7 @@ use crate::filters;
 use crate::pdf_edit::PdfDoc;
 use crate::reader::{Entry, check_cancel};
 use crate::redaction::res;
-use crate::sanitized_save::{PayloadProof, variants_text, verify_with_variants};
+use crate::sanitized_save::{NotProven, PayloadProof, variants_text, verify_with_variants};
 use crate::show_text::{FontCache, show_text};
 use crate::syntax::{Dict, ObjRef, Object, Stream};
 use crate::text_codec::{Enc, decode_text, encode_text};
@@ -247,7 +247,16 @@ impl TextRedactedOutput {
     /// Nothing kept by policy, no leak hit anywhere, one xref section, no unreachable or unlisted
     /// objects.
     pub fn is_proven(&self) -> bool {
-        self.report.complete && self.proof.is_clean()
+        self.not_proven_reasons().is_empty()
+    }
+
+    /// Why this result does not read as proven (empty = proven).
+    pub fn not_proven_reasons(&self) -> Vec<NotProven> {
+        let mut v = self.proof.not_proven_reasons();
+        if !self.report.complete {
+            v.push(NotProven::TextFieldsKept);
+        }
+        v
     }
 }
 

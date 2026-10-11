@@ -1417,7 +1417,8 @@ fn popup_irt_annotations_and_composite_font_appearances() {
     );
     assert_eq!((out.report.annotations_scanned, out.report.unverifiable, out.report.kept_by_policy), (7, 2, 0));
     assert!(!out.report.complete && !out.is_proven());
-    assert!(out.proof.is_clean(), "the byte proof sees nothing readable left: {:?}", out.proof);
+    assert!(out.proof.hits.is_empty(), "the byte proof sees nothing readable left: {:?}", out.proof);
+    assert_eq!(out.proof.not_proven_reasons(), vec![NotProven::OpaqueText], "appearances 15 and 17 draw unreadable composite text");
 
     let strings = all_strings(&out.bytes);
     assert!(strings.iter().any(|s| s == "popup says [redacted]") && strings.iter().any(|s| s == "replied-to: [redacted]"));
@@ -1689,7 +1690,9 @@ fn proof_reads_tounicode_text_and_region_needles() {
     let plain = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
     assert_eq!(plain.reports[0].removed_text, vec![code_bytes.clone()]);
     assert_eq!(plain.reports[0].removed_unicode, vec![Some("Budget Plan".to_string())]);
-    assert!(plain.region_cleared());
+    // The page also draws F3 text that cannot be read: the region is not reported clear.
+    assert!(!plain.region_cleared());
+    assert_eq!(plain.not_proven_reasons(), vec![NotProven::OpaqueText, NotProven::Leak]);
     // The same words in other font codes are found: kept page text is a collision, the same text
     // in an annotation appearance is a hit (it is annotation text), and the page's composite text
     // that cannot be read at all is listed.
@@ -1705,10 +1708,19 @@ fn proof_reads_tounicode_text_and_region_needles() {
     // With a text policy the appearance (found through its ToUnicode) is dropped and the document is proven.
     let mut doc = open(&pdf);
     let fixed = redact_and_save_with(&mut doc, &[region], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
-    assert!(fixed.is_proven(), "{:?}", fixed.proof);
+    assert!(fixed.proof.hits.is_empty());
     assert_eq!(fixed.proof.kept_text_collisions.len(), 1);
     assert_eq!(rows(fixed.text_fields.as_ref().unwrap(), TextRole::Appearance), vec![(5, false, TextOutcomeKind::Dropped, 1)]);
     assert!(find(&fixed.bytes, b"/N 13 0 R").is_none());
+    // The page still draws F3 text that cannot be read at all: not proven, with the typed reason.
+    assert!(!fixed.is_proven() && !fixed.region_cleared());
+    assert_eq!(fixed.not_proven_reasons(), vec![NotProven::OpaqueText]);
+    // Without that text the same document is proven.
+    let mut clear = objs.clone();
+    clear[3].1 = stream_body("", format!("BT /F1 12 Tf 72 700 Td <{a}> Tj ET\nBT /F2 12 Tf 72 400 Td <{b}> Tj ET").as_bytes());
+    let mut doc = open(&build(&clear, "", b""));
+    let clean = redact_and_save_with(&mut doc, &[region], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
+    assert!(clean.is_proven() && clean.proof.opaque_text_streams.is_empty(), "{:?}", clean.not_proven_reasons());
 }
 
 #[test]
@@ -1854,4 +1866,60 @@ fn pdf_string_tokenization_adversarial() {
     }));
     assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 24 })));
     assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::RawBytes { .. })));
+}
+
+// ----------------------------------------------------------------- opaque text blocks the proof
+
+use hsk_studio_press::NotProven;
+
+/// Text drawn with a composite font that has no /ToUnicode map is text the proof cannot check. The
+/// byte scan finds nothing, so without this rule the result would read as proven while the needle
+/// is visibly on the page (the R5 class "proven while some text was never checked").
+#[test]
+fn opaque_composite_text_blocks_the_proof() {
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let doc_with = |kept: &str, removed: &str| {
+        let mut objs = minimal_objs("", "");
+        objs[2].1 = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R /F2 23 0 R >> >> >>".to_vec();
+        objs[3].1 = stream_body("", format!("BT /F1 12 Tf 72 700 Td {removed} Tj ET\n{kept}").as_bytes());
+        objs.extend([
+            (6, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec()),
+            // Identity-H, no /ToUnicode: the codes below are glyph ids, not text.
+            (23, b"<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Identity-H /DescendantFonts [21 0 R] >>".to_vec()),
+            (21, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /T >>".to_vec()),
+        ]);
+        build(&objs, "", b"")
+    };
+    let cid_text = "BT /F2 12 Tf 72 400 Td <010101020103010401050106> Tj ET";
+    let run = |pdf: &[u8]| {
+        let mut doc = open(pdf);
+        redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap()
+    };
+
+    // A needle search ran (SECRET-ALPHA was removed) and the page draws unreadable CID text.
+    let out = run(&doc_with(cid_text, "(SECRET-ALPHA)"));
+    assert_eq!(out.reports[0].removed_text, vec![b"SECRET-ALPHA".to_vec()]);
+    assert!(out.proof.hits.is_empty(), "the byte scan sees nothing: this is the false green of 272909b");
+    assert_eq!(out.proof.needles_searched, 1);
+    assert_eq!(out.proof.opaque_text_streams.len(), 1);
+    assert_eq!(out.not_proven_reasons(), vec![NotProven::OpaqueText]);
+    assert_eq!(NotProven::OpaqueText.code(), "opaque_text");
+    assert!(!out.is_proven() && !out.region_cleared() && !out.proof.is_clean());
+
+    // Control: the same document without the CID text is proven.
+    let out = run(&doc_with("", "(SECRET-ALPHA)"));
+    assert!(out.is_proven() && out.proof.opaque_text_streams.is_empty(), "{:?}", out.not_proven_reasons());
+
+    // No text-needle search requested (the only removed string is shorter than the distinctive
+    // minimum, so nothing was searched for): the unreadable text is listed but does not block.
+    let out = run(&doc_with(cid_text, "(ab)"));
+    assert_eq!((out.proof.needles_searched, out.short_needles), (0, 1));
+    assert_eq!(out.proof.opaque_text_streams.len(), 1);
+    assert!(out.is_proven() && out.region_cleared(), "{:?}", out.not_proven_reasons());
+
+    // The text-field flow gives the same answer.
+    let mut doc = open(&doc_with(cid_text, "(SECRET-ALPHA)"));
+    let fields = redact_text_fields_and_save(&mut doc, &["SECRET-ALPHA".to_string()], &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(fields.not_proven_reasons(), vec![NotProven::OpaqueText]);
+    assert!(!fields.is_proven());
 }
