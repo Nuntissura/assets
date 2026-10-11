@@ -4,7 +4,7 @@
 //! (lcms2 as bundled in the `imagecodecs` wheel, version recorded in the fixture). Nothing here links or
 //! runs LittleCMS: the repository holds numbers, profile SHA-256 values and provenance only (STU-COL-140,
 //! STU-COL-325). Installed Windows/Adobe profiles are read at test time from the oracle corpus root
-//! (`oracle/corpus.json`, an external directory beside the worktrees, filled by `oracle/populate_corpus.py`), checked
+//! (the workspace `.config/oracle-corpus.toml` root + `oracle/corpus.json` icc_subdir, filled by `oracle/populate_corpus.py`), checked
 //! against the recorded SHA-256; a case whose profile is absent or different prints `NOT_PROVEN: oracle_t1 <case>
 //! reason=...` (counted by the round, never a silent pass) and FAILS when `HSK_PRISM_REQUIRE_CORPUS=1` or
 //! `require_corpus` is set. The three synthetic profiles are committed (built from scratch, no licence question).
@@ -28,8 +28,9 @@
 //!
 //! Reading a run: `-- --nocapture --test-threads=1` prints one `ORACLE_T1 {json}` line per pair x intent x BPC
 //! (dE2000 mean/max, worst patch, BPC and absolute receipts), `ORACLE_T1_WORST` (three worst patches) and
-//! `ORACLE_T1_FINDING`. Installed Windows/Adobe profiles are searched in env `HSK_PRISM_ORACLE_PROFILE_DIRS`, then the
-//! corpus root; the fixture's `default_locations` are provenance for the copy script only. Regenerate the fixture offline with `prism-oracle/gen/t1_generate.py <this
+//! `ORACLE_T1_FINDING`. Installed Windows/Adobe profiles are read only from `<workspace oracle corpus root>/icc`
+//! (`.config/oracle-corpus.toml` walk, `oracle/corpus.json` icc_subdir); the fixture's `default_locations` are provenance
+//! for the copy script only. Regenerate the fixture offline with `prism-oracle/gen/t1_generate.py <this
 //! tests/oracle dir> [adobe-color-root]` (and `t0_generate.py <dir>/t0_analytic.json`) from the venv under
 //! `Handshake_Artifacts/WP-KERNEL-STUDIO/prism-oracle`; output is deterministic apart from `generated_utc`.
 mod oracle_support;

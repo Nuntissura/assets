@@ -1,10 +1,13 @@
-"""Populate the Prism oracle corpus (tests/oracle/corpus.json `icc_root`) from installed system profiles.
+"""Populate the Prism oracle corpus (<workspace corpus root>/<corpus.json icc_subdir>) from installed system profiles.
 
 Reads `t1_lcms2.json`: every profile with origin "installed" names a file, its SHA-256 and the system
 directories it was found in (`default_locations`). This script only READS those directories (plus any
 `--from DIR`), copies files whose SHA-256 matches into the corpus root, and writes `MANIFEST.json` there.
 It never builds or runs tests. Exit 1 when a profile could not be provided (the tests then report it as
-NOT_PROVEN). Usage: python tests/oracle/populate_corpus.py [--from DIR]... [--root DIR]
+NOT_PROVEN). The corpus root follows the workspace convention `.config/oracle-corpus.toml` (start at the
+workspace root, walk up at most `max-ancestors` parents, first ancestor A where A/<search> is a directory),
+the same walk the tests do; `--root DIR` names the ICC directory explicitly (e.g. before the root exists).
+Usage: python tests/oracle/populate_corpus.py [--from DIR]... [--root DIR]
 """
 import argparse
 import hashlib
@@ -15,6 +18,26 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CRATE = os.path.dirname(os.path.dirname(HERE))
+WORKSPACE = os.path.dirname(os.path.dirname(CRATE))
+
+
+def corpus_root():
+    """The workspace oracle corpus root per .config/oracle-corpus.toml, or None when no ancestor holds it."""
+    values = {}
+    with open(os.path.join(WORKSPACE, ".config", "oracle-corpus.toml"), encoding="utf-8") as f:
+        for line in f:
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                values[k.strip()] = v.strip().strip('"')
+    at = WORKSPACE
+    for _ in range(int(values["max-ancestors"]) + 1):
+        if os.path.isdir(os.path.join(at, values["search"])):
+            return os.path.join(at, values["search"])
+        parent = os.path.dirname(at)
+        if parent == at:
+            break
+        at = parent
+    return None
 
 
 def sha256(path):
@@ -28,11 +51,18 @@ def sha256(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--from", dest="sources", action="append", default=[], help="extra directory to read profiles from")
-    ap.add_argument("--root", help="corpus root (default: corpus.json icc_root)")
+    ap.add_argument("--root", help="ICC directory (default: <workspace corpus root>/<corpus.json icc_subdir>)")
     args = ap.parse_args()
     corpus = json.load(open(os.path.join(HERE, "corpus.json"), encoding="utf-8"))
     fixture = json.load(open(os.path.join(HERE, "t1_lcms2.json"), encoding="utf-8"))
-    root = os.path.normpath(args.root or os.path.join(CRATE, corpus["icc_root"]))
+    if args.root:
+        root = os.path.normpath(args.root)
+    else:
+        base = corpus_root()
+        if base is None:
+            print("corpus root absent (.config/oracle-corpus.toml walk found no directory); pass --root DIR")
+            return 1
+        root = os.path.normpath(os.path.join(base, corpus["icc_subdir"]))
     os.makedirs(root, exist_ok=True)
     manifest, missing = [], []
     for key, spec in sorted(fixture["profiles"].items()):

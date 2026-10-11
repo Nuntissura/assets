@@ -1,13 +1,11 @@
 {
  "schema": "hsk.prism.oracle_corpus.v1",
- "purpose": "Third-party ICC profiles (Windows/Adobe, never committed) that oracle_t1_lcms2 and wide_profiles compare against. Tests read them ONLY from this external root (and the override env var), never from system directories.",
- "icc_root": "../../../../Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/icc",
- "icc_root_relative_to": "the crate directory (CARGO_MANIFEST_DIR = <worktree>/handshake-studio-assets/crates/hsk-studio-prism); resolves to the Handshake_Artifacts sibling of the worktrees on the same disk",
- "override_env": "HSK_PRISM_ORACLE_PROFILE_DIRS",
- "override_env_meaning": "optional OS path list searched before icc_root",
+ "purpose": "Third-party ICC profiles (Windows/Adobe, never committed) that oracle_t1_lcms2 and wide_profiles compare against. Tests read them ONLY from <workspace corpus root>/icc_subdir, never from system directories or env-var paths.",
+ "icc_subdir": "icc",
+ "root": "the ONE workspace oracle corpus root of .config/oracle-corpus.toml (steward-owned): start at the workspace root (CARGO_MANIFEST_DIR/../..), walk up at most max-ancestors parents, first ancestor A where A/<search> is a directory; resolves from the edit tree and from round exports; no env-var paths",
  "require_env": "HSK_PRISM_REQUIRE_CORPUS",
  "require_corpus": false,
- "missing_profile": "the case prints `NOT_PROVEN: <test> <case> reason=<installed_profile_absent|profile_sha256_mismatch> ...` and returns without a verdict; with require_corpus true or env HSK_PRISM_REQUIRE_CORPUS=1 it fails instead",
- "populate": "python tests/oracle/populate_corpus.py [--from DIR]... (stdlib only; READS the system profile directories named in t1_lcms2.json default_locations, copies only SHA-256-verified files into icc_root, writes icc_root/MANIFEST.json; never builds or tests)",
+ "missing_profile": "the case prints `NOT_PROVEN: <test> <case> reason=<corpus_convention_absent|corpus_root_absent|installed_profile_absent|profile_sha256_mismatch> ...` and returns without a verdict; with require_corpus true or env HSK_PRISM_REQUIRE_CORPUS=1 it fails instead",
+ "populate": "python tests/oracle/populate_corpus.py [--from DIR]... [--root DIR] (stdlib only; READS the system profile directories named in t1_lcms2.json default_locations, copies only SHA-256-verified files into <corpus root>/icc_subdir, writes MANIFEST.json there; never builds or tests)",
  "files": "t1_lcms2.json profiles with origin=installed (name + SHA-256 recorded there)"
 }

@@ -364,9 +364,12 @@ pub fn xyz_to_srgb(xyz: [f64; 3]) -> [f64; 3] {
 }
 
 // -------------------------------------------------------------------------------------------------
-// Oracle corpus: third-party ICC profiles (never committed) under the external root named in
+// Oracle corpus: third-party ICC profiles (never committed) under the ONE workspace corpus root of the
+// steward-owned `.config/oracle-corpus.toml` (start at the workspace root, walk up at most `max-ancestors`
+// parents, take the first ancestor A where A/<search> is a directory), subdirectory `icc_subdir` of
 // `tests/oracle/corpus.json` (populated by `tests/oracle/populate_corpus.py`). Tests never read system
-// directories; a missing profile is a counted NOT_PROVEN, and a failure when the corpus is required.
+// directories or env-var paths; a missing root, convention file or profile is a counted NOT_PROVEN, and a
+// failure when the corpus is required. Resolves the same directory from the edit tree and from round exports.
 // -------------------------------------------------------------------------------------------------
 const CORPUS_CONFIG: &str = include_str!("../oracle/corpus.json");
 
@@ -376,13 +379,39 @@ fn corpus_string(key: &str) -> &'static str {
     let len = CORPUS_CONFIG[start..].find('"').expect("closing quote");
     &CORPUS_CONFIG[start..start + len]
 }
-/// Search order: the override env var (OS path list), then the configured root relative to the crate.
-pub fn corpus_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os(corpus_string("override_env"))
-        .map(|v| std::env::split_paths(&v).collect())
-        .unwrap_or_default();
-    dirs.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(corpus_string("icc_root")));
-    dirs
+/// The workspace root: the directory holding the root Cargo.toml (`CARGO_MANIFEST_DIR/../..`).
+pub fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crate lives in <workspace>/crates/<crate>")
+        .to_path_buf()
+}
+/// `key = value` of the convention file (plain lines, no tables; a quoted value loses its quotes).
+fn convention_value(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (k, v) = line.split_once('=')?;
+        (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+    })
+}
+/// The workspace oracle corpus root per `.config/oracle-corpus.toml`; `Err` carries the typed reason.
+pub fn corpus_root() -> Result<std::path::PathBuf, String> {
+    let ws = workspace_root();
+    let config = ws.join(".config").join("oracle-corpus.toml");
+    let text = std::fs::read_to_string(&config).map_err(|e| format!("corpus_convention_absent file={} error={e}", config.display()))?;
+    let search = convention_value(&text, "search").ok_or("corpus_convention_malformed key=search")?;
+    let max: usize = convention_value(&text, "max-ancestors")
+        .and_then(|v| v.parse().ok())
+        .ok_or("corpus_convention_malformed key=max-ancestors")?;
+    ws.ancestors()
+        .take(max + 1)
+        .map(|a| a.join(&search))
+        .find(|candidate| candidate.is_dir())
+        .ok_or_else(|| format!("corpus_root_absent search={search} from={} max_ancestors={max}", ws.display()))
+}
+/// The ICC profile directory: `<corpus root>/<icc_subdir>`.
+pub fn corpus_icc_dir() -> Result<std::path::PathBuf, String> {
+    Ok(corpus_root()?.join(corpus_string("icc_subdir")))
 }
 pub fn corpus_required() -> bool {
     CORPUS_CONFIG.contains("\"require_corpus\": true")
@@ -390,17 +419,13 @@ pub fn corpus_required() -> bool {
 }
 /// Bytes of corpus profile `file`, SHA-256 verified when `sha256_hex` is given; `Err` carries the typed reason.
 pub fn corpus_read(file: &str, sha256_hex: Option<&str>) -> Result<Vec<u8>, String> {
-    let dirs = corpus_dirs();
-    for dir in &dirs {
-        if let Ok(bytes) = std::fs::read(dir.join(file)) {
-            let got = hash_hex(&profile_hash(&bytes));
-            return match sha256_hex {
-                Some(want) if want != got => Err(format!("profile_sha256_mismatch file={file} found={got} recorded={want}")),
-                _ => Ok(bytes),
-            };
-        }
+    let dir = corpus_icc_dir()?;
+    let bytes = std::fs::read(dir.join(file)).map_err(|_| format!("installed_profile_absent file={file} searched={}", dir.display()))?;
+    let got = hash_hex(&profile_hash(&bytes));
+    match sha256_hex {
+        Some(want) if want != got => Err(format!("profile_sha256_mismatch file={file} found={got} recorded={want}")),
+        _ => Ok(bytes),
     }
-    Err(format!("installed_profile_absent file={file} searched={dirs:?}"))
 }
 /// A case that cannot be judged: one `NOT_PROVEN:` line on the real stderr (not captured by the test
 /// harness, so a round always sees it); fails the test when the corpus is required.
