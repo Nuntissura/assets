@@ -393,6 +393,140 @@ fn blend_if_ramps_hand_values() {
     );
 }
 
+/// Pigment defines no Blend-If on the base of a clipping run or on a clipped layer (work-folder
+/// `diagnostics/adjustments-advanced-blending.md` topic `blend-if-clip-roles`), so a non-identity
+/// range there is refused by shared admission, typed and before the first sink call; render-cpu
+/// applies none. Identity ranges are not Blend-If, and the same ranges on an unclipped layer keep
+/// working (hand-derived values).
+#[test]
+fn blend_if_on_clip_roles_is_refused_before_any_sink_call() {
+    // Root group [0 gray backdrop, 1 clip base (left pixel only), 2 Multiply layer clipped to it,
+    // 3 unclipped layer on top]. Left pixel: base red, Multiply with green gives (0, 0, 0) for the
+    // run; right pixel: the run is empty (no base alpha) and the backdrop stays gray 0.2.
+    let wide = rect(0, 0, 2, 1);
+    let p = plan(
+        wide,
+        vec![
+            solid(wide, [0.2, 0.2, 0.2, 1.0]),
+            solid(rect(0, 0, 1, 1), [1.0, 0.0, 0.0, 1.0]),
+            solid(wide, [0.0, 1.0, 0.0, 1.0]),
+            solid(wide, [0.9, 0.1, 0.1, 1.0]),
+            group(vec![
+                layer(0, StudioBlendMode::Normal, 1.0),
+                layer(1, StudioBlendMode::Normal, 1.0),
+                Layer {
+                    mask: Some(MaskInput::clip_to_base()),
+                    ..layer(2, StudioBlendMode::Multiply, 1.0)
+                },
+                layer(3, StudioBlendMode::Normal, 1.0),
+            ]),
+        ],
+        4,
+    );
+    let PlanNode::Group(roles) = &p.nodes[4] else {
+        panic!("node 4 is the root group");
+    };
+    assert_eq!(
+        [0, 1, 2, 3].map(|i| roles.clip_role(i)),
+        [
+            Some(ClipRole::Unclipped),
+            Some(ClipRole::Base),
+            Some(ClipRole::Clipped),
+            Some(ClipRole::Unclipped)
+        ]
+    );
+    // Gray metric of the top layer: 0.3 * 0.9 + 0.59 * 0.1 + 0.11 * 0.1 = 0.34. With the black pair
+    // [0.24, 0.44] its weight is (0.34 - 0.24) / (0.44 - 0.24) = 0.5.
+    let split = || {
+        vec![BlendRangeEntry {
+            channel: BlendChannel::Gray,
+            source: [0.24, 0.44, 0.9, 1.0],
+            destination: IDENTITY_RANGE,
+        }]
+    };
+    let renderer = Renderer::new(1).unwrap();
+    let run = |ext: &PlanExtensions| {
+        run_ext(
+            &renderer,
+            &p,
+            ext,
+            Exactness::Approximate,
+            1 << 20,
+            &no_sources(),
+        )
+    };
+
+    // Keys and classes are pigment's; this backend reports Unsupported for both operators.
+    let backend: &dyn RenderBackend = &renderer;
+    for (op, key) in [
+        (ExtOperator::BlendIfClipBase, "blend_if_clip_base"),
+        (ExtOperator::BlendIfClippedLayer, "blend_if_clipped_layer"),
+    ] {
+        assert_eq!(op.key(), key);
+        assert_eq!(op.intrinsic(), Exactness::Unsupported);
+        assert_eq!(backend.extension_exactness(op), Exactness::Unsupported);
+    }
+
+    // Refused on the base (layer 1) and on the clipped layer (layer 2), 0 sink calls.
+    for (layer_index, key) in [(1, "blend_if_clip_base"), (2, "blend_if_clipped_layer")] {
+        let ext = envelope(vec![one_layer(4, layer_index).with_blend_if(split())]);
+        let (result, grid) = run(&ext);
+        assert_eq!(
+            result,
+            Err(BackendError::Unsupported {
+                operator: key,
+                exactness: Exactness::Unsupported
+            }),
+            "layer {layer_index}"
+        );
+        assert_eq!(
+            grid.calls, 0,
+            "layer {layer_index}: refusal precedes the sink"
+        );
+    }
+
+    // Identity ranges on both roles are not Blend-If: admitted, the bytes equal the plain plan.
+    let identity = envelope(vec![
+        one_layer(4, 1).with_blend_if(vec![BlendRangeEntry::identity(BlendChannel::Gray)]),
+        one_layer(4, 2).with_blend_if(vec![BlendRangeEntry::identity(BlendChannel::Red)]),
+    ]);
+    let (result, kept) = run(&identity);
+    let receipt = result.unwrap();
+    assert!(
+        receipt
+            .exactness
+            .operators
+            .iter()
+            .all(|o| !o.key.starts_with("blend_if")),
+        "identity ranges are no operator"
+    );
+    let (plain, plain_grid) = run(&PlanExtensions::default());
+    plain.unwrap();
+    for x in 0..2 {
+        assert_eq!(
+            kept.at(x, 0).map(f32::to_bits),
+            plain_grid.at(x, 0).map(f32::to_bits)
+        );
+    }
+    near(plain_grid.at(0, 0), [0.9, 0.1, 0.1, 1.0], 1e-6);
+
+    // Counterfactual: the same ranges on the unclipped top layer (layer 3) still weigh its source
+    // alpha. Left pixel: backdrop black (the run result), 0.5 * (0.9, 0.1, 0.1); right pixel: backdrop
+    // 0.2, 0.5 * (0.9, 0.1, 0.1) + 0.5 * 0.2.
+    let unclipped = envelope(vec![one_layer(4, 3).with_blend_if(split())]);
+    let (result, grid) = run(&unclipped);
+    let receipt = result.unwrap();
+    near(grid.at(0, 0), [0.45, 0.05, 0.05, 1.0], 1e-5);
+    near(grid.at(1, 0), [0.55, 0.15, 0.15, 1.0], 1e-5);
+    assert!(
+        receipt
+            .exactness
+            .operators
+            .iter()
+            .any(|o| o.key == "blend_if" && o.exactness == Exactness::Approximate)
+    );
+}
+
 // ---- 4. mask feather -------------------------------------------------------------------------
 
 #[test]

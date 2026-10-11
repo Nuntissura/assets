@@ -16,7 +16,9 @@
 //!
 //! Envelope operators (`RenderBackend::execute_extended`: adjustment layers, Blend-If, mask density
 //! and feather) live in the `extended` submodule and layer effects (waves 1 and 2) in `effects`; both call
-//! pigment's maths. A plan without an envelope takes the unchanged v1 path.
+//! pigment's maths. Blend-If is applied to unclipped layers only: on a clip base or a clipped layer
+//! pigment defines none and shared admission refuses it before any sink call. A plan without an
+//! envelope takes the unchanged v1 path.
 //!
 //! Workflow v4 V4-01: this module and `px` deny unchecked integer arithmetic; plan-derived sizes
 //! and coordinates go through the checked helpers of `crate::px`.
@@ -751,18 +753,17 @@ impl Eval<'_, '_> {
         for layer in clipped {
             self.clip_layer(layer, chunk, run, deeper, fx)?;
         }
-        // The base's own mask is already in `G`; opacity, fill and mode are the base layer's, and so
-        // is its Blend-If (`G` is the source, the running backdrop the underlying layer).
+        // The base's own mask is already in `G`; opacity, fill and mode are the base layer's. Its
+        // Blend-If is not applied: pigment defines none for a clip base and `admit_extended`
+        // refuses it (`blend_if_clip_base`) before any sink call (test cpu_extended
+        // `blend_if_on_clip_roles_is_refused_before_any_sink_call`).
         let group = PLayer {
             input: base.input,
             mode: base.mode,
             opacity: base.opacity,
             mask: None,
             clipped: false,
-            fx: LayerFx {
-                blend_if: base.fx.blend_if,
-                ..LayerFx::default()
-            },
+            fx: LayerFx::default(),
             layer_opacity: base.layer_opacity,
             fill_opacity: base.fill_opacity,
         };
@@ -868,7 +869,9 @@ impl Eval<'_, '_> {
     }
 
     /// Like [`Eval::composite`] for a clipped layer onto `G`: the source alpha is multiplied by the
-    /// base alpha (`G`'s own alpha), and `G`'s alpha is held at the base alpha afterwards.
+    /// base alpha (`G`'s own alpha), and `G`'s alpha is held at the base alpha afterwards. A clipped
+    /// layer's Blend-If is not applied: pigment defines none and `admit_extended` refuses it
+    /// (`blend_if_clipped_layer`) before any sink call.
     fn composite_clipped(
         &self,
         layer: &PLayer<'_>,
@@ -877,7 +880,6 @@ impl Eval<'_, '_> {
         run: &mut [[f32; 4]],
         mut source: impl FnMut(i64, i64, usize) -> Result<([f32; 4], f32), RenderError>,
     ) -> Result<(), RenderError> {
-        let blend_if = self.blend_set(layer);
         let (x1, y1) = end(region)?;
         for y in region.y..y1 {
             for x in region.x..x1 {
@@ -889,11 +891,7 @@ impl Eval<'_, '_> {
                 }
                 let (rgba, coverage) = source(x, y, at)?;
                 let opacity = layer.opacity * coverage;
-                let mut source_alpha = rgba[3] * base_alpha;
-                if !blend_if.is_empty() {
-                    source_alpha *=
-                        blend_weight(blend_if, [rgba[0], rgba[1], rgba[2]], [b[0], b[1], b[2]])?;
-                }
+                let source_alpha = rgba[3] * base_alpha;
                 if opacity <= 0.0 || source_alpha <= 0.0 {
                     continue;
                 }
@@ -1672,8 +1670,11 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
     /// `refusals_stay_typed_and_the_v1_path_is_unchanged`, cpu_effects
     /// `effect_refusals_and_scratch_charge_stay_typed`, cpu_effects_fx2
     /// `wave2_exactness_refusals_and_budget`); bit-identity with pigment's reference is a separate
-    /// fact (the parity tests). Knockout, effect kinds pigment adds after waves 1 and 2 and any
-    /// operator this build does not know are Unsupported (typed refusal at admission).
+    /// fact (the parity tests). Knockout, Blend-If on a clip base or a clipped layer
+    /// (`BlendIfClipBase`, `BlendIfClippedLayer`: no definition exists, test cpu_extended
+    /// `blend_if_on_clip_roles_is_refused_before_any_sink_call`), effect kinds pigment adds after
+    /// waves 1 and 2 and any operator this build does not know are Unsupported (typed refusal at
+    /// admission).
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
         match operator {
             ExtOperator::AdjustmentLayer
