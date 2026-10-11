@@ -22,10 +22,12 @@
 //! if that thread outlives the request deadline by `WATCHDOG_GRACE` (parent gone or kill missed).
 //! The heap limit is applied inside the worker with readback before any context exists (EXPR-PROVIDER-02).
 //!
-//! NOT_PROVEN: an operating-system memory/CPU cap for the worker (Windows Job Object) needs `unsafe`
-//! FFI, which this crate forbids; the heap limit inside the engine and the wall-clock kill are the
-//! enforced bounds. A worker abort may also trigger the platform crash reporter UI; suppressing it
-//! (`SetErrorMode`) needs the same FFI and is likewise NOT_PROVEN here.
+//! Operating-system caps (`os_caps`, SMB-MOTION-JS-SANDBOX-2): on Windows each worker also runs in a
+//! Job Object with a process memory cap, a per-request CPU time cap, kill-on-close, die-on-unhandled-
+//! exception and a one-process limit. The host drains the job's completion port after every request;
+//! a memory-cap or CPU-cap notice from the kernel makes the attempt `Budget(Memory)` / `Budget(Cpu)`
+//! even if the script swallowed the engine's own error, and the worker is killed. These classes come
+//! from a kernel event, never from script text. Other platforms report `OsCapStatus::Unavailable`.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::{
     clock::SystemClock,
@@ -34,6 +36,9 @@ use crate::{
         JsValue, RealmReceipt,
     },
     limits::{OUTPUT_NODES_CEILING, Quotas},
+    os_caps::{
+        OsCapConfig, OsCapPolicy, OsCapStatus, OsEvents, OsLimits, WorkerJob, platform_status,
+    },
     quickjs::{
         ENGINE_VERSION, Input, LimitReadback, QuickJsConfigError, QuickJsEngine, RunOutcome,
         RunReport, THREAD_STACK_HEADROOM, drive, internal_report, run_realm, validate_limits,
@@ -94,6 +99,8 @@ pub struct WorkerConfig {
     /// Added to the evaluation deadline before the host kills the worker, so a cooperative
     /// in-engine deadline normally answers first.
     pub kill_grace: Duration,
+    /// Operating-system caps for each worker process.
+    pub os: OsCapConfig,
     /// Fault the spawned workers inject (`test-faults` feature only; product builds have no field).
     #[cfg(feature = "test-faults")]
     pub test_fault: WorkerTestFault,
@@ -107,6 +114,7 @@ impl Default for WorkerConfig {
             spawn_window: Duration::from_secs(10),
             spawn_timeout: Duration::from_secs(10),
             kill_grace: Duration::from_millis(250),
+            os: OsCapConfig::default(),
             #[cfg(feature = "test-faults")]
             test_fault: WorkerTestFault::None,
         }
@@ -125,6 +133,10 @@ pub struct WorkerStats {
     pub killed_deadline: u64,
     pub killed_canceled: u64,
     pub killed_oversize: u64,
+    /// Workers killed because the operating system reported the memory cap was hit.
+    pub killed_os_memory: u64,
+    /// Workers killed because the operating system reported the CPU cap was hit.
+    pub killed_os_cpu: u64,
     /// Exit code of the most recent crashed worker (platform value, e.g. an NTSTATUS on Windows).
     pub last_crash_exit_code: Option<i32>,
 }
@@ -139,6 +151,8 @@ struct Counters {
     killed_deadline: AtomicU64,
     killed_canceled: AtomicU64,
     killed_oversize: AtomicU64,
+    killed_os_memory: AtomicU64,
+    killed_os_cpu: AtomicU64,
     last_crash_exit_code: Mutex<Option<i32>>,
 }
 
@@ -160,6 +174,8 @@ type Frames = Result<Vec<u8>, wire::WireError>;
 enum Waited {
     Frame(Vec<u8>),
     Canceled,
+    /// The worker used more CPU than its allowance (kernel job accounting).
+    CpuCap,
     TimedOut,
     Failed(wire::WireError),
 }
@@ -169,9 +185,16 @@ struct Session {
     child: Child,
     jobs: mpsc::Sender<Job>,
     frames: mpsc::Receiver<Frames>,
+    /// Operating-system caps of this worker (`None` where the platform has none).
+    job: Option<WorkerJob>,
 }
 
 impl Session {
+    /// Caps the kernel reported since the last call.
+    fn drain_events(&self) -> OsEvents {
+        self.job.as_ref().map(WorkerJob::drain).unwrap_or_default()
+    }
+
     fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
@@ -188,6 +211,9 @@ impl Session {
                 Err(RecvTimeoutError::Timeout) => {
                     if cancel.check().is_err() {
                         return Waited::Canceled;
+                    }
+                    if self.job.as_ref().is_some_and(WorkerJob::cpu_exceeded) {
+                        return Waited::CpuCap;
                     }
                     if Instant::now() >= wall {
                         return Waited::TimedOut;
@@ -278,6 +304,8 @@ pub(crate) struct WorkerEngine {
     kill_grace: Duration,
     #[cfg(feature = "test-faults")]
     fault_env: Option<&'static str>,
+    os_status: OsCapStatus,
+    os_limits: Option<OsLimits>,
     max_idle: usize,
     idle: Mutex<Vec<Session>>,
     spawn_log: Mutex<VecDeque<Instant>>,
@@ -302,6 +330,14 @@ impl WorkerEngine {
             .or_else(discover_program)
             .filter(|path| path.is_file())
             .ok_or(QuickJsConfigError::WorkerProgramMissing)?;
+        let os_status = platform_status();
+        let os_limits = match (os_status, config.os.policy) {
+            (OsCapStatus::Enforced, _) => Some(config.os.resolve(quotas, config.kill_grace)?),
+            (OsCapStatus::Unavailable(_), OsCapPolicy::Required) => {
+                return Err(QuickJsConfigError::OsCapsUnavailable);
+            }
+            (OsCapStatus::Unavailable(_), OsCapPolicy::WhereAvailable) => None,
+        };
         Ok(Self {
             memory_bytes,
             stack_bytes,
@@ -312,6 +348,8 @@ impl WorkerEngine {
             kill_grace: config.kill_grace,
             #[cfg(feature = "test-faults")]
             fault_env: config.test_fault.env_value(),
+            os_status,
+            os_limits,
             max_idle: usize::try_from(quotas.max_concurrent_realms())
                 .unwrap_or(1)
                 .max(1),
@@ -333,8 +371,20 @@ impl WorkerEngine {
             killed_deadline: c.killed_deadline.load(Ordering::Acquire),
             killed_canceled: c.killed_canceled.load(Ordering::Acquire),
             killed_oversize: c.killed_oversize.load(Ordering::Acquire),
+            killed_os_memory: c.killed_os_memory.load(Ordering::Acquire),
+            killed_os_cpu: c.killed_os_cpu.load(Ordering::Acquire),
             last_crash_exit_code: *lock(&c.last_crash_exit_code),
         }
+    }
+
+    /// Whether worker processes run under operating-system caps.
+    pub(crate) fn os_status(&self) -> OsCapStatus {
+        self.os_status
+    }
+
+    /// The caps applied to each worker process (`None` where the platform has none).
+    pub(crate) fn os_limits(&self) -> Option<OsLimits> {
+        self.os_limits
     }
 
     fn admit_spawn(&self) -> Result<(), EngineFailure> {
@@ -375,6 +425,19 @@ impl WorkerEngine {
         quiet(&mut command);
         let mut child = command.spawn().map_err(|_| spawn_failed())?;
         bump(&self.counters.spawned);
+        // The worker is idle until its first request, so the short window before it joins the job is
+        // unobservable; a failure to apply the caps fails the spawn (fail closed).
+        let job = match self.os_limits {
+            Some(limits) => match WorkerJob::attach(&child, limits) {
+                Ok(job) => Some(job),
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(spawn_failed());
+                }
+            },
+            None => None,
+        };
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         let (frames_tx, frames_rx) = mpsc::channel::<Frames>();
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
@@ -389,6 +452,7 @@ impl WorkerEngine {
             child,
             jobs: jobs_tx,
             frames: frames_rx,
+            job,
         };
         if io_thread.is_err() {
             return Err(spawn_failed());
@@ -437,35 +501,48 @@ impl WorkerEngine {
         } else {
             session.wait(cancel, wall)
         };
-        let (failure, patience) = match waited {
-            Waited::Frame(bytes) => return Ok(bytes),
-            Waited::Canceled => {
-                bump(&self.counters.killed_canceled);
-                (EngineFailure::Canceled, Duration::ZERO)
-            }
-            Waited::TimedOut => {
-                bump(&self.counters.killed_deadline);
-                (EngineFailure::Budget(BudgetKind::Deadline), Duration::ZERO)
-            }
-            Waited::Failed(wire::WireError::TooLarge) => {
-                bump(&self.counters.killed_oversize);
-                (EngineFailure::Output, Duration::ZERO)
-            }
-            Waited::Failed(wire::WireError::Malformed) => {
-                bump(&self.counters.protocol_faults);
-                (
-                    EngineFailure::Faulted(EngineFault::Protocol),
-                    Duration::ZERO,
-                )
-            }
+        let mut events = session.drain_events();
+        let (mut failure, patience) = match waited {
+            Waited::Frame(bytes) if events.is_clear() => return Ok(bytes),
+            // A reply arrived but the kernel reports a cap was hit: the cause below replaces it.
+            Waited::Frame(_) => (EngineFailure::Internal, Duration::ZERO),
+            Waited::Canceled => (EngineFailure::Canceled, Duration::ZERO),
+            Waited::CpuCap => (EngineFailure::Budget(BudgetKind::Cpu), Duration::ZERO),
+            Waited::TimedOut => (EngineFailure::Budget(BudgetKind::Deadline), Duration::ZERO),
+            Waited::Failed(wire::WireError::TooLarge) => (EngineFailure::Output, Duration::ZERO),
+            Waited::Failed(wire::WireError::Malformed) => (
+                EngineFailure::Faulted(EngineFault::Protocol),
+                Duration::ZERO,
+            ),
             Waited::Failed(wire::WireError::Closed) => {
-                bump(&self.counters.crashed);
                 (EngineFailure::Faulted(EngineFault::Crashed), EXIT_PATIENCE)
             }
         };
         let (gone, exit_code) = session.terminate(patience);
         if failure == EngineFailure::Faulted(EngineFault::Crashed) {
-            *lock(&self.counters.last_crash_exit_code) = exit_code;
+            // The kernel may post the cap notice just before the process disappears.
+            events.merge(session.drain_events());
+        }
+        // The caller's own cancel wins; otherwise a kernel-reported cap is the root cause.
+        if failure != EngineFailure::Canceled {
+            if events.memory {
+                failure = EngineFailure::Budget(BudgetKind::Memory);
+            } else if events.cpu {
+                failure = EngineFailure::Budget(BudgetKind::Cpu);
+            }
+        }
+        match failure {
+            EngineFailure::Canceled => bump(&self.counters.killed_canceled),
+            EngineFailure::Budget(BudgetKind::Deadline) => bump(&self.counters.killed_deadline),
+            EngineFailure::Budget(BudgetKind::Memory) => bump(&self.counters.killed_os_memory),
+            EngineFailure::Budget(BudgetKind::Cpu) => bump(&self.counters.killed_os_cpu),
+            EngineFailure::Output => bump(&self.counters.killed_oversize),
+            EngineFailure::Faulted(EngineFault::Protocol) => bump(&self.counters.protocol_faults),
+            EngineFailure::Faulted(EngineFault::Crashed) => {
+                bump(&self.counters.crashed);
+                *lock(&self.counters.last_crash_exit_code) = exit_code;
+            }
+            _ => {}
         }
         Err((failure, gone))
     }
@@ -483,6 +560,14 @@ impl WorkerEngine {
         // deadline.
         let setup_ns = input.clock.now_ns().saturating_sub(before_ns);
         let remaining_ns = input.deadline_ns.saturating_sub(before_ns);
+        if let (Some(job), Some(limits)) = (session.job.as_mut(), self.os_limits)
+            && job.arm_cpu(limits.cpu_time).is_err()
+        {
+            // Without a CPU allowance the worker would run uncapped: fail the attempt, drop the worker.
+            bump(&self.counters.spawn_failed);
+            let (gone, _) = session.terminate(Duration::ZERO);
+            return failed(EngineFailure::Faulted(EngineFault::SpawnFailed), gone);
+        }
         let id = self.request_ids.fetch_add(1, Ordering::AcqRel);
         let frame = wire::encode_eval(id, &input, remaining_ns);
         if frame.len() > wire::MAX_REQUEST_FRAME {

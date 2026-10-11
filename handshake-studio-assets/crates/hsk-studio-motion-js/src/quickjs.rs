@@ -60,6 +60,7 @@ use crate::{
         RealmReceipt, ThrownKind,
     },
     limits::Quotas,
+    os_caps::{OsCapStatus, OsLimits},
     quickjs_worker::{WorkerConfig, WorkerEngine, WorkerStats},
 };
 use hsk_studio_accord::CancellationToken;
@@ -182,8 +183,11 @@ pub enum QuickJsConfigError {
     MemoryLimitUnrepresentable,
     /// No `motion-js-worker` executable at the configured path or next to the running executable.
     WorkerProgramMissing,
-    /// Zero spawn budget, window, timeout or kill grace.
+    /// Zero spawn budget, window, timeout or kill grace, or an explicit OS cap that is zero or below
+    /// the worker's own footprint.
     WorkerPolicyInvalid,
+    /// `OsCapPolicy::Required` on a platform that cannot enforce operating-system caps.
+    OsCapsUnavailable,
 }
 
 impl QuickJsConfigError {
@@ -195,6 +199,7 @@ impl QuickJsConfigError {
             Self::MemoryLimitUnrepresentable => "memory_limit_unrepresentable",
             Self::WorkerProgramMissing => "worker_program_missing",
             Self::WorkerPolicyInvalid => "worker_policy_invalid",
+            Self::OsCapsUnavailable => "os_caps_unavailable",
         }
     }
 }
@@ -885,6 +890,26 @@ impl QuickJsBackend {
             #[cfg(feature = "test-faults")]
             Backend::InProcess(_) => None,
             Backend::Worker(worker) => Some(worker.stats()),
+        }
+    }
+
+    /// Whether the worker processes run under operating-system caps (Job Object on Windows).
+    pub fn os_caps(&self) -> OsCapStatus {
+        match &self.0 {
+            #[cfg(feature = "test-faults")]
+            Backend::InProcess(_) => {
+                OsCapStatus::Unavailable(crate::os_caps::OsCapUnavailable::InProcessEngine)
+            }
+            Backend::Worker(worker) => worker.os_status(),
+        }
+    }
+
+    /// The caps applied to each worker process (`None` when `os_caps` is `Unavailable`).
+    pub fn os_limits(&self) -> Option<OsLimits> {
+        match &self.0 {
+            #[cfg(feature = "test-faults")]
+            Backend::InProcess(_) => None,
+            Backend::Worker(worker) => worker.os_limits(),
         }
     }
 

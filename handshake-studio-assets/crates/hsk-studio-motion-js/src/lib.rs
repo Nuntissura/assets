@@ -1,11 +1,19 @@
 //! Optional JavaScript expression provider; isolate C/FFI/toolchain/runtime quotas from pure Motion
 //! semantics. Shared host sandbox lifecycle; no private script/plugin authority.
-#![forbid(unsafe_code)]
+// `unsafe` exists only in `job_object` (Windows Job Object FFI, quickjs feature); every other build
+// of this crate forbids it.
+#![cfg_attr(not(all(windows, feature = "quickjs")), forbid(unsafe_code))]
+#![cfg_attr(all(windows, feature = "quickjs"), deny(unsafe_code))]
 
 mod clock;
 mod descriptor;
 mod engine;
+#[cfg(all(windows, feature = "quickjs"))]
+#[allow(unsafe_code)]
+mod job_object;
 mod limits;
+#[cfg(feature = "quickjs")]
+mod os_caps;
 mod profile;
 mod provider;
 #[cfg(feature = "quickjs")]
@@ -23,6 +31,11 @@ pub use engine::{
     EvalJob, HostBridge, JsValue, RealmReceipt, SourceLanguage, ThrownKind,
 };
 pub use limits::{ConfigError, QuotaSpec, Quotas};
+#[cfg(feature = "quickjs")]
+pub use os_caps::{
+    DEFAULT_CPU_SLACK, DEFAULT_MEMORY_SLACK_BYTES, MIN_PROCESS_MEMORY_BYTES, OsCapConfig, OsCapPolicy,
+    OsCapStatus, OsCapUnavailable, OsLimits,
+};
 pub use profile::{
     DEFAULT_MAX_DEPTH, DEFAULT_MAX_TOKENS, DENIED_KEYWORDS, DENIED_NAMES, MAX_DEPTH_CEILING,
     ProfileLimits, ProfileValidator, ProfileViolation, ValidatedSource, ViolationClass,
