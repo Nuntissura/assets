@@ -10,7 +10,25 @@ updated_at: '2026-10-11'
 
 A reusable Rust window/frame asset for desktop and web apps: grids, tabs, grouped tabs, docking, popouts and configurable surrounding controls. Hosts provide the actual editors, browsers, media and graphics.
 
-The asset is initialized and specified; Rust packages and working GUI adapters have not been implemented.
+The asset is initialized and specified; Rust packages and working GUI adapters have not been implemented. The researched spec covers 18 planned feature areas with explicit host ownership and focused acceptance scenarios.
+
+</topic>
+
+<topic id="feature-direction">
+
+## What the asset is meant to provide
+
+- A stock eight-pane workspace with resizing, docking, floating frames and supported native popouts.
+- Tabs, named groups and color labels, with usable overflow navigation.
+- Configurable surrounding bars and controls, comfortable scrollbars and host-fed minimaps.
+- Content slots for editors, browser views, tools, media and 2D/3D renderers.
+- Image/video backgrounds with visual settings and provider-aware resource controls.
+- Saved layouts, recovery, touch/pen/keyboard access and structured model commands.
+- Visibility and lifecycle signals for host resource management, including the future Servo browser.
+
+Kumihimo arranges the workspace. The host owns document reflow, scenes, browser pages and actual suspension/unloading. Saved tab records and live content instances have separate budgets. Toolkits, rendering paths and platform compatibility still need proof.
+
+Start with the [master spec](repo-governance/specification/current/spec-modules/master-spec.md), [roadmap](repo-governance/specification/current/spec-modules/roadmap.md), or [field research and optional ideas](repo-governance/docs/research/window-frame-field-research.md). Optional ideas include scrolling workspaces, an overview, edge trays and layout undo; they are not current requirements.
 
 </topic>
 

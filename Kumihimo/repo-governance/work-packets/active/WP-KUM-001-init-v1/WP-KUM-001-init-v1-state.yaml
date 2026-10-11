@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-001-init-v1
-generation: 1
+generation: 2
 phase: done
 owner: model_maintainer
 changed_files:
@@ -12,5 +12,7 @@ proof:
   observed: second apply wrote zero files
 - kind: import
   observed: 62 files byte-verified; no nested .git
+- kind: remote_publication
+  observed: git ls-remote origin refs/heads/codex/handpick matched 62a6aa4b7208044ab0e2c307f9e0c6f313221676 after initialization push
 blockers: []
-next_action: Commit and push initialization; independently read remote before WP-002
+next_action: Initialization published; execute WP-KUM-002-master-spec-v1

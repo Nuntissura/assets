@@ -1,9 +1,24 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-002-master-spec-v1
-generation: 1
-phase: planned
+generation: 3
+phase: active
 owner: model_maintainer
-changed_files: []
-proof: []
+changed_files:
+- README.md
+- repo-governance/specification/current/
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v1-r1-94fc463c9470/
+- repo-governance/docs/research/window-frame-field-research.md
+- repo-governance/registry/
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/work-packets/active/
+proof:
+- kind: spec_source_structure
+  observed: Revision 2 passed; 2 documents, 20 topics, 83 requirements, 18 features and complete roadmap/reference coverage
+- kind: preservation
+  observed: All 6 initial requirement records preserved exactly; archived bundle independently matched initialization commit 62a6aa4
+- kind: inspection
+  observed: Actual prose and all requirements reviewed against requested topics; optional ideas remain proposals; all product features planned
+- kind: focused_checks
+  observed: YAML/prose framing, local links, equal provider routers, owned paths and source projections passed; no runtime proof claimed
 blockers: []
-next_action: After verified initialization push, expand the existing master-spec bundle from research
+next_action: Commit and push researched expansion; independently verify remote revision before marking this WP done

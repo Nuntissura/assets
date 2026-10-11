@@ -1,0 +1,11 @@
+{
+  "kind": "derived_primitive_list",
+  "spec_revision": 1,
+  "primitives": [
+    {
+      "primitive_id": "PRIM-KUM-WORKSPACE",
+      "title": "Reusable window and frame workspace",
+      "contract": "Host-independent identity, configuration and lifecycle contract for reusable window and frame workspace"
+    }
+  ]
+}
