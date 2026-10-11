@@ -1,7 +1,8 @@
 //! Foundation contract of the Lightroom catalog byte decoder (MT-35562 case names). These tests
-//! prove BYTE DECODING only: the fixtures are synthetic lrcat-shaped files written once by
-//! tests/fixtures/generate_fixtures.py (expected values come from its in-memory model and from
-//! Python's own SHA-256, never from this decoder). Hostile images are built by hand below.
+//! prove BYTE DECODING only: the fixtures are synthetic lrcat-shaped files written once by an
+//! offline generator kept outside the product repository (location and SHA-256 in
+//! tests/fixtures/PROVENANCE.json); expected values come from its in-memory model and from
+//! Python's own SHA-256, never from this decoder. Hostile images are built by hand below.
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_interop_lrcat::{
     ByteSource, CatalogProposal, CollectionKind, DESCRIPTOR, Disposition, Grant, LimitKind,
@@ -831,13 +832,13 @@ fn retained_text_budget_counts_every_copy() {
         // One stored 440-byte root path, one folder, one file; every photo row resolves its path
         // through them and its proposal gets its own copy of the root path (and folder/file text).
         let path = "p".repeat(440);
-        let build = |photos: u64| {
+        let build_with = |photos: u64, root: &str| {
             let rows: Vec<Vec<u8>> = (1..=photos)
                 .map(|id| leaf_cell(id, &record(&[V::Text("g"), V::Int(1), V::Int(3)])))
                 .collect();
             tables_image(
                 &[
-                    ("AgLibraryRootFolder", "CREATE TABLE AgLibraryRootFolder(absolutePath)", vec![leaf_cell(1, &record(&[V::Text(&path)]))]),
+                    ("AgLibraryRootFolder", "CREATE TABLE AgLibraryRootFolder(absolutePath)", vec![leaf_cell(1, &record(&[V::Text(root)]))]),
                     ("AgLibraryFolder", "CREATE TABLE AgLibraryFolder(rootFolder,pathFromRoot)", vec![leaf_cell(1, &record(&[V::Int(1), V::Text("a")]))]),
                     (
                         "AgLibraryFile",
@@ -849,6 +850,7 @@ fn retained_text_budget_counts_every_copy() {
                 vec![],
             )
         };
+        let build = |photos: u64| build_with(photos, &path);
         let tight = Limits { max_retained_text_bytes: 9_000, ..Limits::default() };
 
         // Within the default budget the amplification is real: 16 photos, 16 copies of the path.
@@ -859,6 +861,10 @@ fn retained_text_budget_counts_every_copy() {
         // A single photo fits the tight budget; the same stored path referenced by 16 rows does
         // not, because every copy is charged: typed limit, no proposal.
         assert_eq!(extract_with(&build(1), tight).expect("one copy fits").photos.len(), 1);
+        // Same 16 rows and the same budget with a 1-byte root path fit: only the copied text
+        // volume (not the row count) decides, so the cloned text is what is being charged.
+        let short = extract_with(&build_with(16, "p"), tight).expect("16 rows of tiny text fit");
+        assert_eq!(short.photos.len(), 16);
         assert_eq!(
             extract_with(&build(16), tight).unwrap_err(),
             LrcatError::Limit(LimitKind::RetainedText)

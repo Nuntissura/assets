@@ -25,7 +25,10 @@
       "sha256": "9eb25f431b0bb235c82fb2a1c76e5d6eb66308fc615e86e749f02e4d0dc20fd5"
     }
   },
-  "generator": "generate_fixtures.py (hsk-studio-interop-lrcat tests/fixtures)",
+  "generator": "generate_fixtures.py",
+  "generator_location": "kept OUTSIDE the product repository since the R5 review (CX-503R: no SQLite writer in Studio sources): artifact root WP-KERNEL-STUDIO/interop-lrcat/fixtures-gen/generate_fixtures.py",
+  "generator_sha256": "3be3fd4d7fac9c1a6533fc48fbe7d179572e9390be9f7e69d2b6b0223c038d72",
+  "generator_notes": "offline, run once with python -I and the standard sqlite3 module to write these synthetic files; the fixture files and expected TSVs here are the committed outputs; no test or build step runs it",
   "images_main": 300,
   "images_wal": 301,
   "page_size": 512,
