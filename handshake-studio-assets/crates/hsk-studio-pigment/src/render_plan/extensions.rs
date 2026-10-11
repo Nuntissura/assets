@@ -95,7 +95,8 @@ pub enum ExtOperator {
     /// A coverage mask with `density < 1` (the v1 path keeps today's backend refusal).
     MaskDensity,
     MaskFeather,
-    /// Never reported by `validate` (refused there); present for capability queries.
+    /// Not reported by `validate`, which refuses knockout (`tests/plan_extensions.rs`
+    /// `envelope_validation_rules`); present for capability queries.
     Knockout(Knockout),
 }
 impl ExtOperator {

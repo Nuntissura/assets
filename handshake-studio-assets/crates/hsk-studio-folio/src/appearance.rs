@@ -11,8 +11,9 @@
 //! at 100 percent opacity and fill opacity, not clipped, no mask. Old documents therefore stay
 //! valid and re-serialize byte-identically.
 //!
-//! Not stored here (spec parameters that stay pending): mask density and feather
-//! (`StudioMask.density`, `StudioMask.feather`), blend-if ranges, knockout, effect stacks.
+//! Not stored here: mask density, feather and invert (`StudioMask.density`, `StudioMask.feather`),
+//! Blend-If ranges, knockout and effect stacks live in the sidecar `StudioRasterRecords`
+//! (`raster.rs`), so every struct-literal constructor of `LayerAppearance` keeps compiling.
 use super::{
     Budget, Code, Payload, Resolution, ResolutionIssue, Resolver, Result, StudioLayer, TileRef,
     canceled, err, finite_length, id, key,

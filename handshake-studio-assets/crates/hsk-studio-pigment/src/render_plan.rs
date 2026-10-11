@@ -256,7 +256,8 @@ pub enum PlanError {
     ExtensionTarget { node: u32 },
     /// Two envelope entries for the same `(group, layer)`.
     ExtensionDuplicate { node: u32 },
-    /// Knockout other than `None` (not implemented; refused, never ignored).
+    /// Knockout other than `None` (not implemented; refused: `tests/plan_extensions.rs`
+    /// `envelope_validation_rules`, `envelope_admission_and_default_route`).
     KnockoutUnsupported { node: u32, depth: Knockout },
     /// An adjustment layer's input is not the canonical transparent `Solid` placeholder.
     AdjustmentInput { node: u32 },
@@ -676,8 +677,8 @@ pub trait RenderBackend<V = NoVector>: Send + Sync {
     /// Execute a plan together with its envelope. Default: an empty envelope is the v1 plan
     /// ([`RenderBackend::execute`]); otherwise [`admit_extended`] runs and refuses for a backend
     /// that does not support the envelope's operators. A backend that reports support overrides
-    /// this method; if it does not, the call is `Unavailable`, never a render that ignores the
-    /// envelope.
+    /// this method; if it does not, the call is `Unavailable` rather than a render without the
+    /// envelope (`tests/plan_extensions.rs` `envelope_admission_and_default_route`).
     fn execute_extended(
         &self,
         plan: &RenderPlan<V>,

@@ -2,11 +2,11 @@
 //! source-over: mask density / invert (STU-RAS-115/124), the mask feather kernel, and the Blend-If
 //! split-slider weight (STU-RAS-159). Decision: work-folder
 //! `diagnostics/adjustments-advanced-blending.md`. Backends (render-cpu, render-gpu) consume these
-//! functions; they never define a second formula.
+//! functions and do not define a second formula.
 //!
 //! Scope: scalar reference maths on values already in the plan's blend space (STU-COL-163). All
-//! inputs are fractions in `[0, 1]`; non-finite or out-of-range inputs are a typed refusal, never
-//! clamped in. Every operator here is class `Approximate`: the formulas are documented Studio
+//! inputs are fractions in `[0, 1]`; non-finite or out-of-range inputs are a typed refusal, not
+//! clamped in (`tests/adjust_coverage.rs` `mask_density_invert_feather_and_blend_if`). Every operator here is class `Approximate`: the formulas are documented Studio
 //! readings of Adobe help text, not Adobe-published maths (oracle list D5, cases 9-10).
 use crate::blend_math::{Exactness, lum};
 use serde::Serialize;
