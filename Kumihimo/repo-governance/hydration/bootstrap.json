@@ -1,0 +1,252 @@
+{
+  "documentation_moves": [],
+  "generated_files": [
+    ".gitattributes"
+  ],
+  "generated_readmes": [
+    "product/README.md",
+    "repo-governance/README.md",
+    "repo-governance/codex/README.md",
+    "repo-governance/codex/build-rules/README.md",
+    "repo-governance/codex/build-rules/current/README.md",
+    "repo-governance/codex/current/README.md",
+    "repo-governance/codex/protocols/README.md",
+    "repo-governance/codex/protocols/project/README.md",
+    "repo-governance/codex/protocols/shared/README.md",
+    "repo-governance/codex/workflows/README.md",
+    "repo-governance/hydration/README.md",
+    "repo-governance/registry/README.md",
+    "repo-governance/schemas/README.md",
+    "repo-governance/taskboard/README.md",
+    "repo-governance/templates/README.md",
+    "repo-governance/templates/authority/README.md",
+    "repo-governance/templates/repository/README.md",
+    "repo-governance/templates/reuse/README.md",
+    "repo-governance/templates/schemas/README.md",
+    "repo-governance/templates/specification/README.md",
+    "repo-governance/templates/work-system/README.md",
+    "repo-governance/work-packets/README.md",
+    "repo-governance/work-packets/active/README.md"
+  ],
+  "generator": "hs-repo-bootstrap",
+  "generator_version": "2.3.3",
+  "git_actions": [
+    "initialize_if_absent"
+  ],
+  "handshake_runtime_ready": false,
+  "kind": "repository_bootstrap",
+  "machine_local_starters": [],
+  "managed_output_hashes": {
+    ".gitignore": "0248ef3cada8eb6c6cc888804a29ad8c071f7a205c83ef32e16e2a0a2bebc8bb",
+    "AGENTS.md": "76ac1be6e096b36cd794b3a133f70d2fd13d5679adfcf424ebe96a2c1f5d1333",
+    "CLAUDE.md": "76ac1be6e096b36cd794b3a133f70d2fd13d5679adfcf424ebe96a2c1f5d1333",
+    "CODEX.md": "76ac1be6e096b36cd794b3a133f70d2fd13d5679adfcf424ebe96a2c1f5d1333",
+    "README.md": "8c2d338b9929a9b29fb7ad86ce88cce9837aaa2c2593beb4bbbb25ef6f644bfc",
+    "repo-governance/codex/CODEX.md": "674fce95cae567ef431879eb0516c52963a2f94451b10f0dd0f72a4549116351",
+    "repo-governance/codex/build-rules/current/build-rules.yaml": "3f738def3d356dfd73dbd324d5ef08698d8f06d0487f4a0aab89162e5508808a",
+    "repo-governance/codex/current/action-registry.yaml": "469d2fdce671a2bfd9b1d87a57aa38d86be05d3c3a80582bfc251674935ffd13",
+    "repo-governance/codex/current/codex-source.yaml": "d1be3fb133acc3a5d8ca04fb8365886eb99766a0bd3d9cb2fd96d88a3e9a1d52",
+    "repo-governance/codex/protocols/project/minimal.md": "b73cf9754929bc9fce6b16743af4e5ed06b20bd97d6ee9159664230de1fb7a4b",
+    "repo-governance/codex/protocols/shared/minimal.md": "8cd644c58fff4218c6dadef7ca17f5a101d7086f01288f0e1943087edbba2584",
+    "repo-governance/codex/workflows/repository-workflows.md": "6feb056fc59db5101a50b751399315323b9e0f7fb44d87e220d52eacf4783cd1",
+    "repo-governance/registry/work-packets.yaml": "acb849c46d6a3c55c617995154b1d05b36fc66fc4ebbb0f96d053612f8e0b6be",
+    "repo-governance/schemas/gameplan.schema.yaml": "66142648c3a64d2f5caa0d9bc5d20d5021528cae59954afc9b89467da2198d3a",
+    "repo-governance/specification/current/spec-modules/master-spec.md": "8d7f9f2656bb52a64abdf309edfa3d09bac2b1db7a70e09f74fc31492c98dfec",
+    "repo-governance/specification/current/spec-modules/roadmap.md": "e5d363ccebd67be470d8f9537d8b28c7bb8322064bcb8c21264d6471d69e316b",
+    "repo-governance/specification/current/specification.yaml": "22499add8fa40ef4647b8dce1e875124ff90a86c8aea4419ee6d04db1dc2e160",
+    "repo-governance/taskboard/events.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "repo-governance/taskboard/taskboard-config.yaml": "310637c2e1b9d4d3a35056acdce5be79f37bb9bc5587a4934d9f98042c4d9b10",
+    "repo-governance/taskboard/taskboard.yaml": "eb2a8724b3839a50379238f7931047c2b07d6b8e56ef55e41f153e6cf653fbf6",
+    "repo-governance/templates/TEMPLATE-PACK.template.yaml": "6d998cd37cd4178e90d5cf298436ee245e23c2f49ff390fffd3029487e726738",
+    "repo-governance/templates/authority/BUILD-RULES.template.yaml": "5bf32f4fc9d42e72015b13668cf16afd6a2dda5628e519aa4b0ef5d9f400f0d9",
+    "repo-governance/templates/authority/CODEX.template.yaml": "6b59d07f56cb0db7be405c3c7451e804fae86818c1fa0340b4a2d364a7efc1c2",
+    "repo-governance/templates/repository/MODULE.template.yaml": "ec1e5253bfc8835e48093b8535ce2e0170dbf256c9aed32ad9e794c8e0f6377b",
+    "repo-governance/templates/repository/PRODUCT-TOPOLOGY.template.yaml": "880f339b5cdd8465624c6cb930b7bc31e47398277bb5f61c9d6fd1871801c62e",
+    "repo-governance/templates/repository/REPOSITORY-STRUCTURE.template.yaml": "7f585216ecba2da0fd31437c8f4f311b98309a134882f46d7da4a10e55097b2b",
+    "repo-governance/templates/reuse/SOLUTION-BINDINGS.template.yaml": "e71417c67732a44d1baef09f24dfed8944a38f00fe961a911ac8b139f3751860",
+    "repo-governance/templates/reuse/SOLUTION-LOCK.template.yaml": "81f1277cd25dfb2533c7d89d6973a74836f6168e53a557d0a5d60230f976d5ab",
+    "repo-governance/templates/schemas/GAMEPLAN-SCHEMA.template.yaml": "66142648c3a64d2f5caa0d9bc5d20d5021528cae59954afc9b89467da2198d3a",
+    "repo-governance/templates/specification/TECHNICAL-SPECIFICATION.template.yaml": "47d27281e074e0d4e3afaf778121da3a5ba7e54bf898eed25f762c712411ed3d",
+    "repo-governance/templates/work-system/ACTION-REGISTRY.template.yaml": "012431620ccc998188f598ecfa59a4b7beddbb1e7800aa1df3238f5a4eec23d1",
+    "repo-governance/templates/work-system/GAMEPLAN.template.yaml": "9627db500a4bd7318ef8d21b7af8110988cb96a5fc2565798aed0c6a9248e5ae",
+    "repo-governance/templates/work-system/TASKBOARD-CONFIG.template.yaml": "36fb4faf0d16c9bd5c5af6d821c9e33d4980d2c900720e84d1c36d1798cc93e4",
+    "repo-governance/templates/work-system/TASKBOARD-PROJECTION.template.yaml": "b0b537cea2b16461fc12fbaf87ae443e59f970d25a83c501cd67c3e90135850d",
+    "repo-governance/templates/work-system/WORK-PACKET.template.yaml": "a318089beb3779db0dc0810c3f750969c4956a74816d1fd35a31877098a440f4",
+    "repo-governance/templates/work-system/WP-STATE.template.yaml": "68cd519dad71ed08fbb53a610f74511d95526d910fb53d8f3a0d86e68588241b",
+    "topology.yaml": "256799199b818a09a4d6b15202f995cd647a73f3f08d17d1af90450153cb0117"
+  },
+  "model_authority_input_hashes": {},
+  "model_operation_ready": true,
+  "mutable_output_paths": [
+    ".gitignore",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CODEX.md",
+    "README.md",
+    "repo-governance/codex/CODEX.md",
+    "repo-governance/codex/build-rules/current/build-rules.yaml",
+    "repo-governance/codex/current/action-registry.yaml",
+    "repo-governance/codex/current/codex-source.yaml",
+    "repo-governance/codex/protocols/project/minimal.md",
+    "repo-governance/codex/protocols/shared/minimal.md",
+    "repo-governance/codex/workflows/repository-workflows.md",
+    "repo-governance/registry/work-packets.yaml",
+    "repo-governance/specification/current/spec-modules/master-spec.md",
+    "repo-governance/specification/current/spec-modules/roadmap.md",
+    "repo-governance/specification/current/specification.yaml",
+    "repo-governance/taskboard/events.jsonl",
+    "repo-governance/taskboard/taskboard-config.yaml",
+    "repo-governance/taskboard/taskboard.yaml",
+    "topology.yaml"
+  ],
+  "operation_mode": "model_operated",
+  "policy": "model_operation_is_not_handshake_runtime_proof",
+  "preserved_input_hashes": {},
+  "product_execution_allowed": "only_with_scoped_activation_and_applicable_proof",
+  "project_name": "Kumihimo",
+  "required_directories": [
+    "product",
+    "repo-governance",
+    "repo-governance/codex/build-rules/current",
+    "repo-governance/codex/current",
+    "repo-governance/codex/workflows",
+    "repo-governance/specification/current",
+    "repo-governance/taskboard",
+    "repo-governance/templates",
+    "repo-governance/work-packets/active"
+  ],
+  "research_input_hashes": {},
+  "runtime_ready": false,
+  "schema_outputs": [
+    "repo-governance/schemas/gameplan.schema.yaml"
+  ],
+  "scoped_work_requires_activation": true,
+  "seed_work_packet_stub": null,
+  "spec_format_validation": "bundled_template_derived_validator_passed",
+  "spec_input_hashes": {
+    "spec-modules/master-spec.md": "8d7f9f2656bb52a64abdf309edfa3d09bac2b1db7a70e09f74fc31492c98dfec",
+    "spec-modules/roadmap.md": "e5d363ccebd67be470d8f9537d8b28c7bb8322064bcb8c21264d6471d69e316b",
+    "specification.yaml": "22499add8fa40ef4647b8dce1e875124ff90a86c8aea4419ee6d04db1dc2e160"
+  },
+  "stage": "initialized-model-operated",
+  "template_inputs": {
+    "members": [
+      {
+        "payload_sha256": "7f585216ecba2da0fd31437c8f4f311b98309a134882f46d7da4a10e55097b2b",
+        "template_id": "HT-REPO-STRUCTURE-001",
+        "template_version": 15
+      },
+      {
+        "payload_sha256": "47d27281e074e0d4e3afaf778121da3a5ba7e54bf898eed25f762c712411ed3d",
+        "template_id": "HT-SPEC-TECHNICAL-001",
+        "template_version": 6
+      },
+      {
+        "payload_sha256": "5bf32f4fc9d42e72015b13668cf16afd6a2dda5628e519aa4b0ef5d9f400f0d9",
+        "template_id": "HT-AUTH-BUILD-RULES-001",
+        "template_version": 24
+      },
+      {
+        "payload_sha256": "e71417c67732a44d1baef09f24dfed8944a38f00fe961a911ac8b139f3751860",
+        "template_id": "HT-REUSE-BINDINGS-001",
+        "template_version": 4
+      },
+      {
+        "payload_sha256": "81f1277cd25dfb2533c7d89d6973a74836f6168e53a557d0a5d60230f976d5ab",
+        "template_id": "HT-REUSE-LOCK-001",
+        "template_version": 3
+      },
+      {
+        "payload_sha256": "ec1e5253bfc8835e48093b8535ce2e0170dbf256c9aed32ad9e794c8e0f6377b",
+        "template_id": "HT-REPO-MODULE-001",
+        "template_version": 10
+      },
+      {
+        "payload_sha256": "880f339b5cdd8465624c6cb930b7bc31e47398277bb5f61c9d6fd1871801c62e",
+        "template_id": "HT-TOPOLOGY-PRODUCT-001",
+        "template_version": 7
+      },
+      {
+        "payload_sha256": "012431620ccc998188f598ecfa59a4b7beddbb1e7800aa1df3238f5a4eec23d1",
+        "template_id": "HT-WORK-ACTIONS-001",
+        "template_version": 25
+      },
+      {
+        "payload_sha256": "6b59d07f56cb0db7be405c3c7451e804fae86818c1fa0340b4a2d364a7efc1c2",
+        "template_id": "HT-AUTH-CODEX-001",
+        "template_version": 27
+      },
+      {
+        "payload_sha256": "a318089beb3779db0dc0810c3f750969c4956a74816d1fd35a31877098a440f4",
+        "template_id": "HT-WORK-WP-001",
+        "template_version": 16
+      },
+      {
+        "payload_sha256": "68cd519dad71ed08fbb53a610f74511d95526d910fb53d8f3a0d86e68588241b",
+        "template_id": "HT-WORK-STATE-001",
+        "template_version": 12
+      },
+      {
+        "payload_sha256": "9627db500a4bd7318ef8d21b7af8110988cb96a5fc2565798aed0c6a9248e5ae",
+        "template_id": "HT-WORK-GAMEPLAN-001",
+        "template_version": 4
+      },
+      {
+        "payload_sha256": "36fb4faf0d16c9bd5c5af6d821c9e33d4980d2c900720e84d1c36d1798cc93e4",
+        "template_id": "HT-WORK-TASKBOARD-CONFIG-001",
+        "template_version": 6
+      },
+      {
+        "payload_sha256": "b0b537cea2b16461fc12fbaf87ae443e59f970d25a83c501cd67c3e90135850d",
+        "template_id": "HT-WORK-TASKBOARD-PROJECTION-001",
+        "template_version": 6
+      },
+      {
+        "payload_sha256": "66142648c3a64d2f5caa0d9bc5d20d5021528cae59954afc9b89467da2198d3a",
+        "template_id": "HT-SCHEMA-GAMEPLAN-001",
+        "template_version": 3
+      }
+    ],
+    "pack_id": "KUMIHIMO-HSRT-MINIMAL-v1",
+    "payload_sha256": "6d998cd37cd4178e90d5cf298436ee245e23c2f49ff390fffd3029487e726738",
+    "release_gates": [
+      "bootstrap_plan_apply_check",
+      "spec_structure_and_internal_references",
+      "project_scoped_focused_proof"
+    ],
+    "version": 38
+  },
+  "template_provenance": {
+    "bootstrapped_at": "2026-10-11T18:58:21Z",
+    "pack_digest": "sha256:388319d53cb5390bc36dad858e802b0de0609996d9cfc92deca940dc320d5ab7",
+    "pack_version": 38,
+    "source_git_commit": "7bfc9457af77d3f6b6a3fcc3a2738707acbba0c9"
+  },
+  "template_seed_hashes": {
+    "repo-governance/templates/TEMPLATE-PACK.template.yaml": "6d998cd37cd4178e90d5cf298436ee245e23c2f49ff390fffd3029487e726738",
+    "repo-governance/templates/authority/BUILD-RULES.template.yaml": "5bf32f4fc9d42e72015b13668cf16afd6a2dda5628e519aa4b0ef5d9f400f0d9",
+    "repo-governance/templates/authority/CODEX.template.yaml": "6b59d07f56cb0db7be405c3c7451e804fae86818c1fa0340b4a2d364a7efc1c2",
+    "repo-governance/templates/repository/MODULE.template.yaml": "ec1e5253bfc8835e48093b8535ce2e0170dbf256c9aed32ad9e794c8e0f6377b",
+    "repo-governance/templates/repository/PRODUCT-TOPOLOGY.template.yaml": "880f339b5cdd8465624c6cb930b7bc31e47398277bb5f61c9d6fd1871801c62e",
+    "repo-governance/templates/repository/REPOSITORY-STRUCTURE.template.yaml": "7f585216ecba2da0fd31437c8f4f311b98309a134882f46d7da4a10e55097b2b",
+    "repo-governance/templates/reuse/SOLUTION-BINDINGS.template.yaml": "e71417c67732a44d1baef09f24dfed8944a38f00fe961a911ac8b139f3751860",
+    "repo-governance/templates/reuse/SOLUTION-LOCK.template.yaml": "81f1277cd25dfb2533c7d89d6973a74836f6168e53a557d0a5d60230f976d5ab",
+    "repo-governance/templates/schemas/GAMEPLAN-SCHEMA.template.yaml": "66142648c3a64d2f5caa0d9bc5d20d5021528cae59954afc9b89467da2198d3a",
+    "repo-governance/templates/specification/TECHNICAL-SPECIFICATION.template.yaml": "47d27281e074e0d4e3afaf778121da3a5ba7e54bf898eed25f762c712411ed3d",
+    "repo-governance/templates/work-system/ACTION-REGISTRY.template.yaml": "012431620ccc998188f598ecfa59a4b7beddbb1e7800aa1df3238f5a4eec23d1",
+    "repo-governance/templates/work-system/GAMEPLAN.template.yaml": "9627db500a4bd7318ef8d21b7af8110988cb96a5fc2565798aed0c6a9248e5ae",
+    "repo-governance/templates/work-system/TASKBOARD-CONFIG.template.yaml": "36fb4faf0d16c9bd5c5af6d821c9e33d4980d2c900720e84d1c36d1798cc93e4",
+    "repo-governance/templates/work-system/TASKBOARD-PROJECTION.template.yaml": "b0b537cea2b16461fc12fbaf87ae443e59f970d25a83c501cd67c3e90135850d",
+    "repo-governance/templates/work-system/WORK-PACKET.template.yaml": "a318089beb3779db0dc0810c3f750969c4956a74816d1fd35a31877098a440f4",
+    "repo-governance/templates/work-system/WP-STATE.template.yaml": "68cd519dad71ed08fbb53a610f74511d95526d910fb53d8f3a0d86e68588241b"
+  },
+  "template_seed_root": "repo-governance/templates/",
+  "unresolved_runtime_requirements": [
+    "final_selected_schemas",
+    "full_codex_compiler",
+    "action_controller",
+    "exact_hskernelsdk_binding",
+    "module_and_callable_resolution",
+    "applicable_template_pack_release_gates"
+  ]
+}

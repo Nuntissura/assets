@@ -1,0 +1,17 @@
+kind: derived_work_packet_registry
+project_id: KUMIHIMO
+work_packets:
+- wp_id: WP-KUM-001-init-v1
+  title: Initialize Kumihimo minimal workflow
+  phase: done
+  contract_ref: repo-governance/work-packets/active/WP-KUM-001-init-v1/WP-KUM-001-init-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-001-init-v1/WP-KUM-001-init-v1-state.yaml
+  next_action: Commit and push initialization; independently read remote before WP-002
+  blockers: []
+- wp_id: WP-KUM-002-master-spec-v1
+  title: Expand researched master specification
+  phase: planned
+  contract_ref: repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-state.yaml
+  next_action: After verified initialization push, expand the existing master-spec bundle from research
+  blockers: []

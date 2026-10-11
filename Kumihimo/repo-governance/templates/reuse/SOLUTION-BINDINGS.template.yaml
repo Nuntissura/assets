@@ -1,0 +1,72 @@
+schema_version: handshake.solution-bindings.v4
+kind: solution_bindings
+identity:
+  bindings_id: SOLUTION-BINDINGS-PROJECT-v1
+  project_id: PROJECT-REPLACE-ME
+  version: 4
+authority:
+  canonical_project_binding_source: true
+  controller: handshake
+  manual_edits_allowed: false
+library:
+  library_id: HANDSHAKE-SOLUTION-LIBRARY
+  implicit_latest_forbidden: true
+  exact_version_and_digest_required: true
+policy:
+  stable_work_requires_reuse_discovery: true
+  prototypes_may_defer_reconciliation: true
+  stabilization_requires_reconciliation: true
+  silent_copy_without_lineage_forbidden: true
+  allowed_relationships:
+  - instantiate
+  - compose
+  - extend
+  - fork
+  reproducibility_modes:
+  - exact
+  - procedural
+  - semantic
+  stock_coding_workflow:
+    policy_ref: HT-WORK-CODING-001
+    consumer_relationships:
+    - instantiate
+    - compose
+    - extend
+    consumers_configure_or_use_declared_extension_points: true
+    fork_for_consumer_implementation_forbidden: true
+    fork_requires_explicit_non_stock_or_custom_workflow_authorization: true
+    generic_relationship_vocabulary_retains_fork_for_other_explicit_workflows: true
+upgrade_policy:
+  exact_prior_binding_preserved: true
+  automatic_upgrade_forbidden: true
+  compatibility_classification_required: true
+  public_contract_digest_required: true
+  migration_ref_required_when_compatibility_requires_migration: true
+foundation:
+  rule_ref: BR-SDK-BASE-001
+  name: HSKernelSDK
+  binding_ref: BIND-PROJECT-HSKERNELSDK
+  required_for_prototypes: true
+  project_extensions_preserve_baseline_contracts: true
+bindings:
+- binding_id: BIND-PROJECT-HSKERNELSDK
+  solution_id: REPLACE_ME
+  version: REPLACE_ME
+  digest: sha256:REPLACE_ME
+  relationship: instantiate
+  profile_id: REPLACE_ME
+  topology_target_refs: []
+  source_lineage_refs: []
+validation:
+  foundation_binding_must_resolve_exact_library_solution: true
+  unresolved_foundation_blocks_materialization: true
+  selected_profile_must_satisfy_effective_build_rules: true
+  module_and_topology_refs_checked_after_staged_composition: true
+  same_purpose_bindings_target_existing_module_after_verified_semantic_reuse_check: true
+  gui_profile_difference_alone_does_not_create_backend_module: true
+  separate_module_purpose_resolves_from_existing_module_identity: true
+  unresolved_semantic_matches_are_not_assumed_distinct: true
+  empty_foundation_module_selection_blocks_product_readiness: true
+  no_implementation_or_proof_inferred_from_template_placeholders: true
+  stock_coding_consumer_bindings_cannot_fork: true
+  upgrade_requires_pinned_target_compatibility_and_migration_resolution: true

@@ -1,0 +1,13 @@
+kind: governance_topology
+nodes:
+- id: KUM-GOV-AUTH
+  path: repo-governance/codex/current/codex-source.yaml
+- id: KUM-GOV-SPEC
+  path: repo-governance/specification/current/specification.yaml
+- id: KUM-GOV-WP
+  path: repo-governance/work-packets/active/
+- id: KUM-GOV-BOARD
+  path: repo-governance/taskboard/taskboard.yaml
+  derived: true
+- id: KUM-GOV-SYNC
+  path: repo-governance/repo-scripts/sync.py

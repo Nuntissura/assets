@@ -1,0 +1,14 @@
+kind: topology_links
+edges:
+- id: KUM-LINK-SPEC-PRODUCT
+  from: KUM-GOV-SPEC
+  to: KUM-PRODUCT
+  relation: specifies
+- id: KUM-LINK-WP-PRODUCT
+  from: KUM-GOV-WP
+  to: KUM-PRODUCT
+  relation: bounds_future_implementation
+- id: KUM-LINK-SYNC-BOARD
+  from: KUM-GOV-SYNC
+  to: KUM-GOV-BOARD
+  relation: generates

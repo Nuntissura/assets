@@ -1,0 +1,13 @@
+{
+  "kind": "derived_primitive_feature_matrix",
+  "spec_revision": 1,
+  "relations": [
+    {
+      "relation_id": "REL-KUM-WORKSPACE",
+      "primitive_ref": "PRIM-KUM-WORKSPACE",
+      "feature_ref": "FEAT-KUM-WORKSPACE",
+      "relationship": "implements",
+      "constraint_refs": []
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "profile_id": "KUM-MINIMAL-v1",
+  "parent_repository": "https://github.com/Nuntissura/assets",
+  "asset_root": "Kumihimo",
+  "git_boundary": "shared_parent_repository_no_nested_git",
+  "bootstrap_method": "hsrepotemplate standalone staging then byte-verified asset import",
+  "staging_check": "bootstrap_integrity_passed",
+  "idempotent_second_apply": "zero_changes",
+  "initial_import_file_count": 62,
+  "current_runtime_proven": false,
+  "operator_authorization": "2026-10-11 initialize Kumihimo with minimal model-managed workflow",
+  "post_import_customization": "Minimal WP/state/taskboard shapes, portable spec checker and projection sync; original bootstrap hashes describe initial staging only"
+}

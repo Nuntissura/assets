@@ -1,0 +1,764 @@
+schema_version: handshake.repository-structure.v10
+kind: repository_structure_template
+identity:
+  structure_id: REPO-STRUCTURE-STANDARD-v1
+  version: 13
+  status: draft
+path_policy:
+  canonical_paths_are_repository_relative: true
+  blank_spaces_in_generated_names_forbidden: true
+  machine_local_paths_require_local_binding: true
+  empty_optional_directories_forbidden: true
+root_entries:
+- path: AGENTS.md
+  entry_kind: generated_file
+  owner: codex_compiler
+  condition: always
+- path: CLAUDE.md
+  entry_kind: generated_file
+  owner: codex_compiler
+  condition: always
+- path: CODEX.md
+  entry_kind: generated_file
+  owner: codex_compiler
+  condition: always
+- path: README.md
+  entry_kind: project_file
+  owner: project
+  condition: always
+- path: .gitattributes
+  entry_kind: generated_file
+  owner: bootstrap
+  condition: always
+  purpose: 'Line-ending policy: text files LF, *.ps1 *.bat *.cmd CRLF, binary files untouched.'
+  rule_ref: REPO-INIT-009
+- path: topology.yaml
+  entry_kind: generated_file
+  owner: topology_projector
+  condition: always
+- path: repo-governance/
+  entry_kind: directory
+  owner: handshake
+  condition: always
+  purpose: 'Machine-readable repository governance: CODEX, build rules, specification, work packets, taskboard,
+    topology and hydration records.'
+  rule_ref: REPO-INIT-001
+- path: product/
+  entry_kind: directory
+  owner: product
+  condition: always
+  purpose: Project-authored product implementation as a multi-package workspace; one package or crate per module.
+  rule_ref: REPO-PLACE-005
+- path: docs/
+  entry_kind: directory
+  owner: project
+  condition: documentation_exists
+  purpose: Shipped or product-facing manuals and guidebooks.
+  rule_ref: REPO-PLACE-004
+- path: tests/
+  entry_kind: directory
+  owner: product
+  condition: cross_module_tests_exist
+  purpose: Cross-module and end-to-end tests; module tests stay in each module tests/ folder.
+  rule_ref: BR-BUILD-UNIT-001
+- path: tooling/
+  entry_kind: directory
+  owner: product
+  condition: product_tooling_exists
+  purpose: Product build and development tooling.
+  rule_ref: REPO-PLACE-003
+- path: distribution/
+  entry_kind: directory
+  owner: product
+  condition: packaging_exists
+  purpose: Packaging and release definitions.
+  rule_ref: REPO-PLACE-001
+- path: prototypes/
+  entry_kind: directory
+  owner: product
+  condition: prototypes_exist
+  purpose: Prototype work that reaches product only through a work packet.
+  rule_ref: REPO-WORKTREE-004
+- path: infrastructure/
+  entry_kind: directory
+  owner: project
+  condition: content_exists
+  purpose: 'Server and deployment material: provisioning scripts, service units and timers, reverse-proxy and access
+    configuration, backup and restore scripts, infrastructure as code. Never secrets or machine-local values.'
+  rule_ref: REPO-PLACE-006
+- path: worktrees/
+  entry_kind: directory
+  owner: work_controller
+  condition: content_exists
+  version_controlled: false
+  tracked_readme: true
+  purpose: Container for git worktree checkouts, one per activated work packet; each worktree is a full git checkout
+    on its own branch. Only this README is version controlled.
+  rule_ref: REPO-INIT-010
+- path: .temp-target/
+  entry_kind: directory
+  owner: work_controller
+  condition: content_exists
+  version_controlled: false
+  purpose: Disposable per-WP build, test and script output; never version controlled.
+  rule_ref: REPO-TEMP-001
+- path: dependencies/
+  entry_kind: directory
+  owner: dependency_resolver
+  condition: content_exists
+  purpose: Locally materialized dependency packages selected by exact solution bindings.
+  rule_ref: REPO-PLACE-001
+- path: plugins/
+  entry_kind: directory
+  owner: reuse_controller
+  condition: content_exists
+  purpose: Selected installed plugin packages.
+  rule_ref: REPO-PLACE-002
+- path: bridges/
+  entry_kind: directory
+  owner: reuse_controller
+  condition: content_exists
+  purpose: Selected installed bridge packages.
+  rule_ref: REPO-PLACE-002
+- path: repo-runtime-tools/
+  entry_kind: directory
+  owner: project
+  condition: content_exists
+  purpose: Repository runtime support tools.
+  rule_ref: REPO-PLACE-003
+governance_entries:
+- path: repo-governance/codex/CODEX.md
+  entry_kind: generated_file
+  condition: always
+  owner: codex_compiler
+  mode: generated
+- path: repo-governance/codex/workflows/
+  entry_kind: directory
+  condition: always
+  owner: codex_compiler
+  mode: generated
+  purpose: Generated repository workflow instructions projected from the canonical CODEX source.
+  rule_ref: CODEX-MODE-004
+- path: repo-governance/taskboard/
+  entry_kind: directory
+  condition: always
+  owner: taskboard_controller
+  mode: canonical
+  purpose: Taskboard configuration, append-only project event stream and generated board projection.
+  rule_ref: REPO-INIT-001
+- path: repo-governance/docs/
+  entry_kind: directory
+  condition: content_exists
+  owner: project
+  mode: project_owned
+  purpose: Operator and process documentation, research and audits; never product truth.
+  rule_ref: REPO-PLACE-004
+- path: repo-governance/templates/
+  entry_kind: directory
+  condition: always
+  owner: hydration_controller
+  mode: versioned_immutable
+  purpose: Pinned manifest-selected template payload inputs, stored once.
+  rule_ref: REPO-INIT-003
+- path: repo-governance/specification/current/
+  entry_kind: directory
+  condition: always
+  owner: specification_controller
+  mode: canonical
+  purpose: Current accepted specification bundle; the sole product truth.
+  rule_ref: REPO-SPEC-ARCHIVE-001
+- path: repo-governance/specification/spec-archive/
+  entry_kind: directory
+  condition: content_exists
+  owner: specification_controller
+  mode: archive
+  purpose: Immutable snapshots of every previous current specification bundle.
+  rule_ref: REPO-SPEC-ARCHIVE-001
+- path: repo-governance/codex/build-rules/current/
+  entry_kind: directory
+  condition: always
+  owner: rulebook_controller
+  mode: canonical
+  purpose: Current canonical build rulebook.
+  rule_ref: REPO-INIT-001
+- path: repo-governance/codex/build-rules/archive/
+  entry_kind: directory
+  condition: content_exists
+  owner: rulebook_controller
+  mode: archive
+  purpose: Previous build rulebook revisions.
+  rule_ref: REPO-INIT-001
+- path: repo-governance/codex/current/
+  entry_kind: directory
+  condition: always
+  owner: codex_compiler
+  mode: canonical_source
+  purpose: Canonical CODEX source, action registry, role profiles and selected workflow.
+  rule_ref: CODEX-MODE-004
+- path: repo-governance/codex/archive/
+  entry_kind: directory
+  condition: content_exists
+  owner: codex_compiler
+  mode: archive
+  purpose: Previous CODEX source revisions.
+  rule_ref: REPO-INIT-001
+- path: repo-governance/codex/protocols/project/
+  entry_kind: directory
+  condition: content_exists
+  owner: role_controller
+  mode: canonical
+  purpose: Project role and repository-operation protocols.
+  rule_ref: CODEX-MODE-004
+- path: repo-governance/codex/protocols/shared/
+  entry_kind: directory
+  condition: content_exists
+  owner: role_controller
+  mode: selected_shared
+  purpose: Selected shared model-operation protocols.
+  rule_ref: CODEX-MODE-004
+- path: repo-governance/reuse/
+  entry_kind: directory
+  condition: content_exists
+  owner: reuse_controller
+  mode: canonical
+  purpose: Reusable-solution bindings, generated lock and promotion candidates.
+  rule_ref: REPO-PLACE-002
+- path: repo-governance/reuse/bindings.yaml
+  owner: reuse_controller
+  mode: canonical
+- path: repo-governance/reuse/lock.yaml
+  owner: reuse_resolver
+  mode: generated
+- path: repo-governance/reuse/candidates/
+  owner: reuse_controller
+  mode: conditional_candidate
+- path: repo-governance/work-packets/active/
+  entry_kind: directory
+  condition: always
+  owner: work_controller
+  mode: canonical
+  purpose: Work-packet contracts, state, microtasks, receipts and evidence for unsettled work, including non-executable
+    stubs.
+  rule_ref: REPO-INIT-007
+- path: repo-governance/work-packets/archive/
+  entry_kind: directory
+  condition: content_exists
+  owner: work_controller
+  mode: archive
+  purpose: Settled, cancelled or superseded work packets.
+  rule_ref: REPO-INIT-001
+- path: repo-governance/taskboard/taskboard-config.yaml
+  owner: taskboard_controller
+  mode: canonical
+- path: repo-governance/taskboard/events.jsonl
+  owner: taskboard_controller
+  mode: append_only
+- path: repo-governance/taskboard/taskboard.yaml
+  owner: taskboard_projector
+  mode: generated
+- path: repo-governance/taskboard/taskboard.md
+  owner: taskboard_projector
+  mode: generated_optional
+- path: repo-governance/registry/
+  entry_kind: directory
+  condition: content_exists
+  owner: registry_controller
+  mode: canonical
+  purpose: Canonical ID registries such as the work-packet registry.
+  rule_ref: REPO-INIT-007
+- path: repo-governance/topology/
+  entry_kind: directory
+  condition: content_exists
+  owner: topology_controller
+  mode: canonical
+  purpose: Canonical governance topology, product topology and their links.
+  rule_ref: REPO-INIT-001
+- path: repo-governance/topology/governance.yaml
+  owner: topology_controller
+  mode: canonical
+- path: repo-governance/topology/product.yaml
+  owner: topology_controller
+  mode: canonical
+- path: repo-governance/topology/links.yaml
+  owner: topology_controller
+  mode: canonical
+- path: repo-governance/topology/topology.md
+  owner: topology_projector
+  mode: generated
+- path: repo-governance/schemas/
+  entry_kind: directory
+  condition: content_exists
+  owner: schema_controller
+  mode: canonical
+  purpose: JSON-Schema payloads extracted from the pinned pack so the repository validates its artifacts without
+    the template vault.
+  rule_ref: REPO-INIT-008
+- path: repo-governance/hydration/
+  entry_kind: directory
+  condition: content_exists
+  owner: hydration_controller
+  mode: canonical
+  purpose: Bootstrap and hydration records, including template provenance.
+  rule_ref: REPO-INIT-008
+- path: repo-governance/validation/
+  entry_kind: directory
+  condition: content_exists
+  owner: validation_controller
+  mode: canonical
+  purpose: Validation records.
+  rule_ref: REPO-INIT-001
+- path: repo-governance/repo-scripts/
+  entry_kind: directory
+  condition: content_exists
+  owner: governance_runtime
+  mode: version_controlled_code
+  purpose: Governance automation scripts.
+  rule_ref: REPO-PLACE-003
+- path: repo-governance/archive/
+  entry_kind: directory
+  condition: content_exists
+  owner: handshake
+  mode: archive_fallback
+  purpose: Fallback archive for governance artifacts without their own archive owner.
+  rule_ref: REPO-INIT-004
+initialization_policy:
+  rules:
+  - id: REPO-INIT-001
+    rule: Materialize every root_entries or governance_entries directory with condition always, including required
+      containers whose only content is their generated README; materialize other directories only when their declared
+      content or lifecycle condition exists.
+  - id: REPO-INIT-002
+    rule: Required containers do not imply installed dependencies, active protocols, executable work, a resolved
+      SDK or released governance runtime; planning preparation retains its declared readiness boundary.
+  - id: REPO-INIT-003
+    rule: Keep extracted manifest-selected template inputs once in repo-governance/templates/, including WP and
+      MT templates; hydration records pin these inputs without a second template-inputs tree.
+  - id: REPO-INIT-004
+    rule: Migrate superseded layout paths through an inspected preserving migration that updates references and
+      ownership; do not retain competing current directory aliases. Empty superseded directories are removed under
+      REPO-INIT-011.
+  - id: REPO-INIT-005
+    rule: A directory with condition content_exists is created by the controller on the first content write beneath
+      it and never as a landmark; its generated README never creates it alone. An empty or README-only content_exists
+      directory is a defect; an upgrade removes it while it is still empty (REPO-INIT-011).
+  - id: REPO-INIT-006
+    rule: 'Every version-controlled directory the bootstrap creates, and every declared directory entry that already
+      holds content, carries a generated README.md built from its entry purpose and rule_ref, or from its nearest
+      declared ancestor and declared children, linking this structure seed. The README states it is generated and
+      that edits belong in this template; regeneration replaces only a README that still carries the generated marker
+      line, never one without it. Ignored roots and immutable archive snapshots receive none, except an ignored
+      root that declares tracked_readme (REPO-INIT-010). The specification tree (repo-governance/specification/
+      and below) is operator-owned truth compared byte-exactly: bootstrap writes no README or other generated file
+      anywhere in it except the specification_archive snapshot, and an upgrade removes a generated-marker README
+      left there by an older generator.'
+  - id: REPO-INIT-007
+    rule: 'Model-operated initialization seeds seed_work_packet_stub as a non-executable stub with create_wp_stub
+      semantics: a registry entry and stub_drafting state at the declared WP location, with no worktree, contract
+      or microtask. Upgrades never re-seed or overwrite it.'
+  - id: REPO-INIT-008
+    rule: Bootstrap writes every pinned schema payload whose output is under repo-governance/schemas/ so repository
+      artifacts validate without the template vault, and records template_provenance {pack_version, pack_digest,
+      source_git_commit, bootstrapped_at} in its hydration record. It never copies the creation template itself
+      into the repository.
+  - id: REPO-INIT-009
+    rule: 'Bootstrap writes .gitattributes from line_ending_policy so line endings are fixed from the first commit:
+      text files normalise to LF, *.ps1, *.bat and *.cmd keep CRLF, and binary files are never converted. The file
+      starts with a generated marker line; regeneration replaces only a file that still carries it and never overwrites
+      an existing .gitattributes without it.'
+  - id: REPO-INIT-010
+    rule: 'An ignored root that declares tracked_readme keeps only its generated README.md under version control:
+      bootstrap writes /<root>/* and !/<root>/README.md to .gitignore, replacing a whole-directory /<root>/ line,
+      and generates that README. worktrees/ uses this; .temp-target/ and .local/ carry no README.'
+  - id: REPO-INIT-011
+    rule: 'An upgrade plan lists, before apply, every directory it removes and why, and removes only a directory
+      that holds no file, holds no git-tracked file and is one of: a directory declared by the previously pinned
+      structure seed that this structure no longer declares, a path listed in retired_layout_paths, or a content_exists
+      entry that is still empty. Required directories, ancestors of any planned write and ignored roots are never
+      removed. A retired or undeclared directory that holds content is never removed; the plan lists it as legacy_paths_with_content
+      for the operator.'
+  retired_layout_paths:
+  - path: repo-governance/protocols/
+    superseded_by: repo-governance/codex/protocols/
+    rule_ref: REPO-INIT-011
+  seed_work_packet_stub: null
+root_placement:
+  rules:
+  - id: REPO-PLACE-001
+    rule: product/ owns project-authored product implementation; dependencies/ owns locally materialized dependency
+      packages and manifests selected by exact bindings rather than an independent dependency truth store.
+  - id: REPO-PLACE-002
+    rule: plugins/ and bridges/ hold selected installed plugin and bridge packages; project-authored extension and
+      adapter implementations remain in product/ and all selections resolve from the existing solution bindings
+      and module manifests without duplicate installations.
+  - id: REPO-PLACE-003
+    rule: repo-runtime-tools/ holds repository runtime support tools; repo-governance/repo-scripts/ holds governance
+      automation; tooling/ remains product build and development tooling.
+  - id: REPO-PLACE-004
+    rule: repo-governance/docs/ owns operator and process documentation including research and audits; docs/ owns
+      shipped or product-facing manuals and guidebooks.
+  - id: REPO-PLACE-005
+    rule: product/ is a compartmentalised multi-package workspace, never one product-wide package or crate. A workspace
+      manifest at product/, declared per toolchain by build_rulebook.project_profile.product_workspace, lists every
+      module package as a member. Each module is exactly one package per BR-BUILD-UNIT-001, of build_unit_kind own
+      or leaf_data_only; no package groups several modules. Data-only contract modules are leaf packages that depend
+      on nothing.
+  - id: REPO-PLACE-006
+    rule: 'infrastructure/ holds project-authored server and deployment material: provisioning scripts, service
+      units and timers, reverse-proxy and access configuration, backup and restore scripts and infrastructure as
+      code. Product runtime code stays in its product/ zones and packaging in distribution/. Secrets, credentials
+      and machine-local values never enter it; they stay in .local/ or another git-ignored store and infrastructure
+      files reference them by name (BR-SECURITY-001, BR-PORTABLE-001). Bootstrap and upgrades never execute its
+      contents.'
+worktree_policy:
+  required: false
+  selection: explicit WP only
+  shared_parent_repository: true
+temporary_output_policy:
+  path_pattern: .temp-target/{{wp_id}}/
+  binding_phase: wp_activation
+  parameter_sources:
+    wp_id: existing_wp.identity.wp_id
+  retain_unbound_pattern_during_planning_initialization: true
+  root_resolution: canonical_main_git_repository_root
+  version_controlled: false
+  managed_stock_override_ref: managed_stock_artifacts
+  facets:
+  - cargo/
+  - tests/
+  - builds/
+  - scripts/
+  - special_runs/
+  cargo_environment:
+    CARGO_TARGET_DIR: cargo/target/
+    CARGO_BUILD_BUILD_DIR: cargo/build/
+  rules:
+  - id: REPO-TEMP-001
+    rule: Route WP build outputs, test output, Cargo target and build directories, and disposable scripts into its
+      resolved temporary root; create facets only when used, keep reusable scripts and test source at their durable
+      owners.
+  - id: REPO-TEMP-002
+    rule: Resolve cargo_environment paths relative to the WP temporary root when Cargo is used; this layout does
+      not select Cargo or any language for the project.
+  - id: REPO-TEMP-003
+    rule: As part of WP terminal settlement preserve required receipts, evidence and recovery material at their
+      existing durable owners before cleaning that WP temporary root; record cleanup success or the exact blocker
+      in WP state and publish terminal settlement only after required cleanup succeeds.
+  - id: REPO-TEMP-004
+    rule: Cleanup requires verified WP ownership and an absolute resolved target contained beneath the canonical
+      main repository temporary root; reject symlink or reparse escapes, exclude other WPs and product runtime stores,
+      and do not clean an in-use workspace.
+receipt_stream_policy:
+  path_pattern: '{{receipt_stream_path}}'
+  template_ref: HT-WORK-RECEIPT-001
+  binding_phase: receipt_append
+  parameter_sources:
+    receipt_stream_path: scope_streams_selected_by_receipt.receipt_scope
+    wp_id: receipt.wp_id
+  scope_streams:
+    project: repo-governance/taskboard/events.jsonl
+    wp: repo-governance/work-packets/active/{{wp_id}}/receipts/events.jsonl
+    mt: repo-governance/work-packets/active/{{wp_id}}/receipts/events.jsonl
+  retain_unbound_pattern_during_planning_initialization: true
+  root_resolution: canonical_main_git_repository_root
+  mode: append_only
+specification_archive:
+  path_pattern: repo-governance/specification/spec-archive/{{specification_id}}/v{{version}}-r{{revision}}-{{digest}}/
+  binding_phase: specification_update
+  parameter_sources:
+    specification_id: prior_current_specification.identity.specification_id
+    version: prior_current_specification.identity.version
+    revision: prior_current_specification.identity.revision
+    digest: verified_expected_base_specification_bundle_digest_hex_prefix_without_algorithm_prefix
+  retain_unbound_pattern_during_planning_initialization: true
+  parameter_encoding: validated_single_path_components_without_separators_or_reserved_characters
+  source: repo-governance/specification/current/
+  owner: specification_controller
+  mode: versioned_immutable
+  rules:
+  - id: REPO-SPEC-ARCHIVE-001
+    rule: Before changing or version-bumping the current spec, copy and verify its complete prior directory as one
+      immutable archive snapshot, including metadata and all documents; archive failure prevents publication of
+      the update.
+  - id: REPO-SPEC-ARCHIVE-002
+    rule: Archive addresses use the prior specification identity, version, revision and digest; identical retries
+      reuse a verified byte-identical snapshot and conflicting destination bytes block rather than overwrite.
+  - id: REPO-SPEC-ARCHIVE-003
+    rule: The digest path segment is a short hex prefix of the full base-bundle digest (12 hex characters, extended
+      deterministically to 16 then 24 on a recorded prefix collision with different content); the full digest is
+      never stored in the directory name alone and remains recoverable by re-hashing the archived per-file digests,
+      so identity and verification are unaffected by the shortened name. Long full-digest paths were used before
+      this rule; older archives already on disk may keep their existing full-digest directory name and are not required
+      to be renamed.
+work_packet_anatomy:
+  root: repo-governance/work-packets/active/{{wp_id}}/
+  entries:
+  - path: wp-contract.yaml
+    owner: contract_controller
+    mode: versioned_immutable
+  - path: refinement-enrichment.yaml
+    owner: planning_controller
+    mode: versioned_immutable
+  - path: state.yaml
+    owner: state_controller
+    mode: mutable_generation_checked
+  - path: gameplan.yaml
+    owner: state_controller
+    mode: mutable_generation_checked
+    condition: activation_committed
+    purpose: Preparation checks per role and moment, gated before costly actions; checks only, never status or proof.
+    rule_ref: CODEX-GAMEPLAN-001
+    template_ref: HT-WORK-GAMEPLAN-001
+  - path: gameplans/
+    owner: state_controller
+    mode: mutable_generation_checked
+    condition: first_mt_gameplan_step_proposed
+    purpose: One <mt_id>.yaml gameplan per MT that needs its own steps; inherits gameplan.yaml through parent.
+    rule_ref: CODEX-GAMEPLAN-001
+    template_ref: HT-WORK-GAMEPLAN-001
+  - path: microtasks/
+    owner: contract_controller
+    mode: versioned_immutable
+    condition: activation_committed
+  - path: receipts/events.jsonl
+    owner: receipt_controller
+    mode: append_only
+  - path: evidence/manifest.yaml
+    owner: evidence_controller
+    mode: canonical
+    condition: first_artifact_submitted
+  - path: evidence/artifacts/
+    owner: evidence_controller
+    mode: immutable_artifacts
+    condition: first_artifact_submitted
+  - path: evidence/screenshots/
+    owner: evidence_controller
+    mode: immutable_artifacts
+    condition: first_artifact_submitted
+  - path: evidence/test-runs/
+    owner: evidence_controller
+    mode: immutable_artifacts
+    condition: first_test_run_recorded
+    purpose: Structured runner output, one file per validation round or special run.
+    referenced_by: receipt.mechanical.test_run.results_ref
+product_zones:
+  source_of_obligation: effective_build_rulebook
+  nodes:
+  - path: product/kernel/
+    condition: product_code_exists
+    requirement_ref: BR-SDK-BASE-001
+  - path: product/contracts/
+    condition: contracts_selected
+  - path: product/capabilities/
+    condition: capabilities_selected
+  - path: product/adapters/
+    condition: adapters_selected
+  - path: product/extensions/
+    condition: extensions_selected
+  - path: product/shells/gui/
+    condition: gui_selected
+  - path: product/shells/service/
+    condition: service_selected
+  - path: product/shells/worker/
+    condition: worker_selected
+  - path: product/shells/cli/
+    condition: cli_selected
+  - path: product/internal_diagnostics/
+    condition: runnable_product
+    requirement_ref: BR-OBS-SURVIVAL-001
+  - path: product/external_watcher/
+    condition: runnable_product
+    requirement_ref: BR-OBS-WATCHER-001
+  foundation_placement:
+    rule_refs:
+    - BR-ARCH-FOUNDATION-001
+    - BR-SDK-BASE-001
+    kernel_sdk_modules: product/kernel/
+    public_contract_modules: product/contracts/
+    provider_mechanisms: product/adapters/
+    composition_hosts: product/shells/
+    diagnostic_modules: product/internal_diagnostics/
+    independent_supervisor: product/external_watcher/
+    exact_module_names_and_versions_from_solution_bindings: true
+    external_package_bindings_require_local_manifest_reference: true
+    hosted_libraries_declare_host_services_without_own_supervisor: true
+  product_workspace:
+    rule_refs:
+    - REPO-PLACE-005
+    - BR-BUILD-UNIT-001
+    root: product/
+    manifest_binding: build_rulebook.project_profile.product_workspace.manifest_file
+    member_manifest_binding: build_rulebook.project_profile.product_workspace.member_manifest_file
+    members_source: module_manifest.architecture.build_unit_ref
+    one_module_maps_to_one_build_unit: true
+    every_module_is_its_own_package: true
+    data_only_contract_modules_are_leaf_packages: true
+    batched_builds: many_packages_in_one_runner_invocation_over_the_shared_workspace_target
+    single_product_wide_package_forbidden: true
+    toolchain_neutral: true
+  module_minimum:
+  - module.yaml
+  - '{{member_manifest_file}}'
+  - src/
+  - tests/
+  module_package_manifest: member_manifest_binding_at_every_module_root
+  module_test_entrypoint: one_consolidated_test_entrypoint_per_package_aggregating_its_own_tests_folder
+  optional_module_facets:
+  - assets/
+  - diagnostics/
+  - migrations/
+  - fixtures/
+  hosted_instrumentation_policy: Libraries and hosted extensions supply compatible module diagnostics; their runnable
+    host supplies recorder/supervision. Do not create an independent watcher for a hostless library.
+product_workspace_entries:
+- path: product/{{workspace_manifest_file}}
+  entry_kind: project_file
+  owner: product
+  condition: product_code_exists
+  binding: build_rulebook.project_profile.product_workspace.manifest_file
+  purpose: Workspace manifest listing every module package as a member.
+  rule_ref: REPO-PLACE-005
+- path: product/{{test_entrypoint_config_files}}
+  entry_kind: project_file
+  owner: product
+  condition: product_code_exists
+  binding: build_rulebook.project_profile.test_entrypoint.config_files
+  purpose: Checked-in test entrypoint config with env vars, flags, per-test timeouts, runner profiles and build-cache
+    wiring; the only source of test settings.
+  rule_ref: BR-TEST-ENTRY-001
+line_ending_policy:
+  rule_ref: REPO-INIT-009
+  file: .gitattributes
+  default_rule: '* text=auto eol=lf'
+  crlf_patterns:
+  - '*.ps1'
+  - '*.bat'
+  - '*.cmd'
+  binary_patterns:
+  - '*.png'
+  - '*.jpg'
+  - '*.jpeg'
+  - '*.gif'
+  - '*.ico'
+  - '*.webp'
+  - '*.pdf'
+  - '*.zip'
+  - '*.gz'
+  - '*.7z'
+  - '*.woff'
+  - '*.woff2'
+  - '*.ttf'
+  - '*.otf'
+  - '*.exe'
+  - '*.dll'
+  - '*.so'
+  - '*.dylib'
+  regeneration_requires_generated_marker: true
+documentation_entries:
+- docs/internal-manual/index.md
+- docs/internal-manual/workflows/
+- docs/internal-manual/commands/
+- docs/internal-manual/primitives/
+- docs/internal-manual/diagnostics/
+- docs/internal-manual/visual-tools/
+- docs/internal-manual/recovery/
+- docs/gui-guidebook/
+- docs/references/
+- repo-governance/docs/research/
+- repo-governance/docs/audits/
+product_runtime_storage:
+  rule_refs:
+  - BR-CORE-STATE-001
+  - BR-SDK-OP-001
+  - BR-OBS-SURVIVAL-001
+  binding: product_runtime_data_root
+  version_controlled: false
+  authority_owner: selected_sdk_state_and_resource_modules
+  resolved_by: selected_solution_runtime_configuration
+  separate_from_governance_wp_state_and_disposable_test_workspace: true
+  recorder_and_operation_state_may_share_storage_with_distinct_ownership: true
+  cleanup_requires_declared_retention_and_recovery_policy: true
+  remote_stores_use_explicit_configured_bindings: true
+machine_local_workspace:
+  version_controlled: false
+  root: .local/
+  root_resolution: canonical_main_git_repository_root
+  gitignore_entry: .local/
+  bootstrap_starters_if_absent: []
+  starter_values: placeholders_only_never_absolute_machine_paths
+  starters_are_machine_owned_never_hash_managed: true
+  entries:
+  - locks/
+  - claims/
+  - caches/
+  - staging/
+  - runtime-logs/
+  - host-profile.yaml
+  host_profile_owner: this_file_never_version_controlled
+  host_profile_fields:
+  - device_classes
+  - link_device
+  - test_io_device
+  - restart_evidence_source
+  - artifact_root
+  - project_workspace_root
+  - hang_procedure
+  - database_sync_setting
+  - governance_worktree_path
+  artifact_root_and_project_workspace_root_bind_here: true
+  tools_manifest:
+    file: tools.yaml
+    fields:
+    - tool_id
+    - path
+    - version
+    - purpose
+    - invocation
+    - non_interactive
+    - timeout_seconds
+    machine_facts_live_here_never_in_codex_or_build_rules: true
+    referenced_by:
+    - build_rulebook.project_profile.test_environment.tools_manifest_ref
+    - build_rulebook.canonical_commands
+execution_mode_contract_ref: HT-AUTH-CODEX-001.execution_modes
+hydration:
+  manifest_driven: true
+  version_pinned: true
+  staged: true
+  schema_validated: true
+  transactional: true
+  receipt_backed: true
+  rollback_required: true
+  solution_bindings_resolved_before_work_compilation: true
+  solution_lock_is_generated_and_pinned: true
+  kernel_sdk_baseline_binding_required: true
+  baseline_module_manifests_required_for_product_code: true
+  kernel_catalog_views_generated_from_module_declarations: true
+  second_apply_requires_zero_semantic_diff: true
+  bootstrap_history_archive:
+    path_pattern: repo-governance/hydration/bootstrap-archive/{{digest}}/
+    digest: short_hex_prefix_of_prior_bootstrap_record_sha256_extended_12_16_24_on_recorded_collision
+    rule_ref: REPO-SPEC-ARCHIVE-003
+    note: 'Named like the specification archive: a short digest prefix, extended on a recorded prefix collision
+      with different content, never the full 64-character digest, to stay within Windows path-length limits inside
+      worktrees. The full digest remains recoverable from the archived bootstrap record itself. An upgrade renames
+      an existing full-digest bootstrap-archive directory to its short form when free of collision; it never renames
+      existing spec-archive directories.'
+managed_stock_artifacts:
+  rule_id: REPO-STOCK-ART-001
+  when_selected: HT-WORK-CODING-001
+  overrides: temporary_output_policy_root_and_cleanup_containment_only
+  root_source: host_profile.artifact_root_binding
+  portable_binding: relative_to_registered_project_workspace_or_local_configuration
+  absolute_machine_paths_in_stock_payload: forbidden
+  root_verification: resolve_existing_registered_root_or_explicitly_authorized_provisioning_never_ad_hoc_fallback
+  wp_child: controller_allocated_wp_id
+  mt_children: optional_scoped_logs_and_attempts
+  reuse: compatible_wp_batch_cache_with_exclusive_mutable_owner
+  outside:
+  - product_source
+  - repo_governance
+  - durable_product_runtime_storage
+  activation: verify_all_wp_mt_runner_paths_under_same_bound_root_before_release
+  cleanup: verified_inactive_wp_child_beneath_bound_root_no_reparse_escape_or_other_owner
+  retained_evidence: existing_durable_evidence_owner_before_disposable_cleanup
+  default_compatibility_temp_target: not_used_as_fallback_for_unresolved_stock_binding

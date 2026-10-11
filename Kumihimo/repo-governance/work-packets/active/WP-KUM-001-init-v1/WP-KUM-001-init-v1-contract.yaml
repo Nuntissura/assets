@@ -1,0 +1,27 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-001-init-v1
+title: Initialize Kumihimo minimal workflow
+scope:
+- Kumihimo asset initialization and minimum workflow
+files:
+- repo-governance/
+- AGENTS.md
+- CLAUDE.md
+- CODEX.md
+- README.md
+- topology.yaml
+- product/README.md
+dependencies: []
+spec_refs:
+- TOPIC-KUM-WORKSPACE
+requirements:
+- Keep model-managed taskboard, bounded contracts, recoverable state and status; no enrichment phase or long test
+  suites
+acceptance:
+- Bootstrap check passes, second apply changes zero files, import is byte-verified, taskboard and recoverable WP
+  states exist
+proof:
+- Standalone hsrepotemplate bootstrap --check and idempotent --apply
+- Byte comparison during import
+- python repo-governance/repo-scripts/sync.py --check
+status_ref: repo-governance/work-packets/active/WP-KUM-001-init-v1/WP-KUM-001-init-v1-state.yaml

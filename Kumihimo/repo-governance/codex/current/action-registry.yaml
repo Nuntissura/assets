@@ -1,0 +1,38 @@
+schema_version: handshake.action-registry.v10
+kind: action_registry
+execution_mode_contract_ref: repo-governance/codex/current/codex-source.yaml#execution_modes
+identity:
+  registry_id: ACTIONS-KUMIHIMO-v1
+  project_id: KUMIHIMO
+  version: 25
+  status: active_model_operated
+  schema_ref: repo-governance/schemas/action-registry.schema.yaml
+ownership:
+  controller: authorized_model_maintainer
+required_envelope_fields: {}
+admission:
+  evaluator: maintainer checks current contract/state and affected proof
+  scope: Kumihimo only
+checks: {}
+check_registry_policy: {}
+intent_routes: {}
+actions:
+  write_wp:
+    effect: Write bounded contract and initial state
+  activate_wp:
+    effect: Set active only for resolved bounded scope
+  record_progress:
+    effect: Record observed proof, blocker and recovery next action
+  settle_wp:
+    effect: Set done only after acceptance; sync board
+  recover_wp:
+    effect: Reconcile live files and uncertain outcomes before retrying
+rejection_policy: {}
+managed_stock_admission: {}
+model_materialization:
+  operation_mode: model_operated
+  handshake_runtime_ready: false
+  unresolved_binding_values_are_inactive: true
+  stock_rule_obligations_remain_active: true
+  unresolved_field_paths_are_discovery_only: true
+  unresolved_field_paths: []

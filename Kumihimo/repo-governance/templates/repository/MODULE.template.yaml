@@ -1,0 +1,319 @@
+schema_version: handshake.product-module.v8
+kind: product_module
+identity:
+  module_id: MOD-PROJECT-REPLACE-ME
+  zone: REPLACE_ME
+  semantic_role: REPLACE_ME
+  purpose: REPLACE_ME
+  status: REPLACE_ME
+authority:
+  source_spec_refs: []
+  applicable_build_rule_ids: []
+reuse:
+  solution_binding_refs: []
+  promotion_candidate: false
+boundaries:
+  public_surfaces: []
+  internal_roots: []
+  allowed_dependency_module_or_contract_refs: []
+architecture:
+  coding_workflow_policy_ref: HT-WORK-CODING-001
+  composition_layer: null
+  owned_mechanic_ref: null
+  presented_primitive_module_refs: []
+  composed_module_refs: []
+  exposes_presentation: null
+  architecture_profile_refs: []
+  build_unit_ref: null
+  build_unit_kind: null
+  public_contract_refs: []
+  private_implementation_roots: []
+maintenance:
+  contract_version: 1
+  owner_ref: REPLACE_ME
+  unit_kind: code
+  source:
+    canonical_repository_url: REPLACE_ME
+  standalone:
+    source_root_refs: []
+    dependency_closure_ref: REPLACE_ME
+    build_selector_ref: REPLACE_ME
+    test_selector_ref: REPLACE_ME
+    artifact_refs: []
+    entrypoint_ref: REPLACE_ME
+    public_contract_refs: []
+    contract_proof_refs: []
+  operation:
+    resource_limits_contract_ref: REPLACE_ME
+    lifecycle_contract_ref: REPLACE_ME
+    manual_ref: REPLACE_ME
+    model_tools_ref: REPLACE_ME
+    inspection_ref: REPLACE_ME
+    diagnostics_ref: REPLACE_ME
+    recovery_ref: REPLACE_ME
+    gui_contract_ref: null
+  release:
+    version_policy_ref: REPLACE_ME
+    compatibility_contract_ref: REPLACE_ME
+    provenance_ref: REPLACE_ME
+    publication_allowlist_ref: REPLACE_ME
+    private_data_exclusion_ref: REPLACE_ME
+    mirror_policy_ref: REPLACE_ME
+  embedding:
+    adapter_contract_refs: []
+    conformance_proof_refs: []
+    standalone_host_contract_ref: REPLACE_ME
+  evolution:
+    portable_roots_ref: REPLACE_ME
+    upgrade_ref: REPLACE_ME
+    migration_ref: REPLACE_ME
+    rollback_ref: REPLACE_ME
+state:
+  owned_state_refs: []
+external_effects: []
+runtime:
+  host_refs: []
+  kernel_sdk_binding_ref: BIND-PROJECT-HSKERNELSDK
+  provided_service_contract_refs: []
+  required_host_contract_refs: []
+  lifecycle_contract_refs: []
+semantic_code:
+  specification_entity_refs: []
+  canonical_capability_refs: []
+  implementation_symbol_refs: []
+  surface_profiles: []
+invocation:
+  operations: []
+diagnostics:
+  health_refs: []
+  event_refs: []
+  snapshot_refs: []
+proof:
+  contract_check_refs: []
+  module_check_refs: []
+navigation:
+  topology_node_ref: REPLACE_ME
+ownership:
+  controller: module_controller
+  canonical_for:
+  - maintenance
+  - semantic_role
+  - purpose
+  - status
+  - public_surfaces
+  - internal_roots
+  - allowed_dependencies
+  - composition_layer
+  - owned_mechanic_ref
+  - presented_primitive_module_refs
+  - composed_module_refs
+  - exposes_presentation
+  - architecture_profile_refs
+  - build_unit_ref
+  - public_contract_refs
+  - private_implementation_roots
+  - owned_state
+  - external_effects
+  - runtime_hosts
+  - diagnostics
+  - proof_entrypoints
+  - source_spec_refs
+  - solution_binding_refs
+  - callable_operation_declarations
+  - implemented_semantic_entity_refs
+  - canonical_capability_refs
+  - implementation_symbol_refs
+  - surface_profile_bindings
+  - provided_and_required_runtime_contract_refs
+  - runtime_lifecycle_contract_refs
+  - kernel_sdk_binding_ref
+  callable_catalog_is_generated_from: invocation.operations
+  catalog_views_are_non_authoritative: true
+  topology_relations_are_owned_by: product_topology
+  navigation_backlinks_are_non_authoritative: true
+  duplicate_editable_module_facts_in_topology_forbidden: true
+validation:
+  maintenance_contract:
+    check_id: CHK-MODULE-LIFECYCLE-001
+    applies_when: every_new_module_or_explicitly_adopted_existing_module
+    required_schema_versions:
+    - handshake.product-module.v8
+    legacy_absence_is_unassessed_not_compliant: true
+    contract_version: 1
+    instance_placeholders_forbidden: true
+    shape_only_not_runtime_proof: true
+    required_fields:
+      root:
+      - owner_ref
+      - unit_kind
+      source:
+      - canonical_repository_url
+      standalone:
+      - source_root_refs
+      - dependency_closure_ref
+      - build_selector_ref
+      - test_selector_ref
+      - artifact_refs
+      - entrypoint_ref
+      - public_contract_refs
+      - contract_proof_refs
+      operation:
+      - resource_limits_contract_ref
+      - lifecycle_contract_ref
+      - manual_ref
+      - model_tools_ref
+      - inspection_ref
+      - diagnostics_ref
+      - recovery_ref
+      release:
+      - version_policy_ref
+      - compatibility_contract_ref
+      - provenance_ref
+      - publication_allowlist_ref
+      - private_data_exclusion_ref
+      - mirror_policy_ref
+      embedding:
+      - standalone_host_contract_ref
+      evolution:
+      - portable_roots_ref
+      - upgrade_ref
+      - migration_ref
+      - rollback_ref
+    nonempty_list_fields:
+    - standalone.source_root_refs
+    - standalone.artifact_refs
+    - standalone.public_contract_refs
+    - standalone.contract_proof_refs
+    unit_kinds:
+    - code
+    - gui_control
+    - asset
+    gui_control_requires: operation.gui_contract_ref
+    canonical_repository_url_pattern: ^https://github[.]com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:[.]git)?$
+    embedding_adapter_and_conformance_refs_required_together: true
+    referenced_contract_resolution_and_runtime_proof_owned_by_activation_and_validation: true
+  rule_refs:
+  - BR-SDK-CATALOG-001
+  - BR-SDK-CATALOG-002
+  - BR-SDK-LIFECYCLE-001
+  kernel_sdk_binding_must_resolve: true
+  operation_ids_unique_across_project: true
+  operation_refs_must_resolve_to_public_surfaces_and_owned_effects: true
+  operation_record:
+    required_fields:
+    - operation_id
+    - version
+    - purpose
+    - public_surface_ref
+    - input_schema_ref
+    - result_schema_ref
+    - error_schema_ref
+    - resource_contract_refs
+    - effect_refs
+    - authority_policy_ref
+    - examples
+    - support
+    - execution_contract_ref
+    - verification_contract_ref
+    support_keys:
+    - preview
+    - cancellation
+    - streaming
+    - retry
+    - recovery
+    support_entry_required_fields:
+    - status
+    support_entry_optional_fields:
+    - contract_ref
+    - reason
+    support_status_values:
+    - supported
+    - unsupported
+    - conditional
+    conditional_support_requires_contract_ref: true
+    unsupported_support_requires_reason: true
+    examples_validate_against_referenced_schemas: true
+    effectful_operation_requires_nonempty_resource_and_effect_refs: true
+    execution_contract_covers:
+    - identity
+    - commit_boundary
+    - concurrency
+    - limits
+    - idempotency_retention
+    - cancellation
+    - durability
+    - result_retention
+    - hook_contracts
+    verification_contract_declares_observable_boundary_and_limits: true
+    absent_operational_support_must_not_be_inferred: true
+  semantic_code_contract:
+    rule_ref: BR-SEMANTIC-MODULE-001
+    symbol_refs_include_source_revision_and_public_contract_ref: true
+    inferred_symbol_maps_require_verification: true
+    reuse_check_uses_current_semantic_code_and_project_library: true
+    reuse_check_evidence_owned_by_refinement_or_wp: true
+    unresolved_semantic_matches_require_resolution_before_stable_duplicate: true
+    semantic_links_alone_do_not_prove_equivalent_behavior: true
+    same_purpose_and_resource_reuse_existing_module_by_default: true
+    separate_module_requires_distinct_intended_purpose_in_existing_identity_fields: true
+    cosmetic_renaming_does_not_establish_distinct_purpose: true
+    separate_module_preserves_origin_through_binding_and_topology_lineage: true
+    surface_profile_required_fields:
+    - surface_id
+    - specification_surface_ref
+    - semantic_entity_ref
+    - resource_contract_ref
+    - presentation_binding_ref
+    - operation_refs
+    - context_policy_ref
+    surface_operations_must_resolve_to_sdk_catalog: true
+    hidden_operations_are_not_authorization_controls: true
+    shared_entity_reuses_authoritative_state_owner: true
+    different_gui_profiles_share_existing_backend_and_operation_definitions: true
+    canonical_capability_refs_reuse_specification_primitive_ids: true
+    one_active_canonical_owner_per_capability_ref: true
+    canonical_owner_requires_declaration_and_implementation_verification: true
+    semantic_similarity_is_not_automatic_duplicate_detection: true
+  coding_architecture_contract:
+    applies_when: stock_coding_architecture_selected
+    policy_ref: HT-WORK-CODING-001
+    composition_layers:
+    - primitive
+    - control
+    - composite
+    - feature_module
+    - application
+    profile_selects_applicable_layers: true
+    headless_profiles_may_mark_controls_and_composites_not_applicable: true
+    lower_to_higher_source_dependency_forbidden: true
+    applications_consume_or_compose_public_contracts: true
+    consumers_configure_or_use_declared_extension_points: true
+    build_unit_is_optional_and_not_required_per_component: false
+    every_module_is_its_own_package: true
+    data_only_contracts_use_leaf_build_units: true
+    build_unit_kinds:
+    - own
+    - leaf_data_only
+    layer_field_rules:
+      primitive:
+        owned_mechanic_ref: exactly_one_spec_primitive_id
+        exposes_presentation: false
+        owned_state: mechanic_state_only
+      control:
+        presented_primitive_module_refs: non_empty
+      composite:
+        composed_module_refs: non_empty
+        product_workflow_ownership: forbidden
+      feature_module:
+        composed_module_refs: composite_control_or_primitive_modules
+        adapters: through_contracts_only
+      application:
+        zone: product/shells/
+        product_behavior_ownership: forbidden
+    dependency_edges_checked_against: HT-TOPOLOGY-PRODUCT-001.coding_architecture.allowed_layer_dependencies
+    public_private_code_boundaries_resolve_to_declared_contracts_and_roots: true
+  allowed_statuses:
+  - experimental
+  - active
+  - deprecated
+  - retired

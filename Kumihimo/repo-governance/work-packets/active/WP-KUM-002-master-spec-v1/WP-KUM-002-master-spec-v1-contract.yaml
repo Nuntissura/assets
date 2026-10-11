@@ -1,0 +1,28 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-002-master-spec-v1
+title: Expand researched master specification
+scope:
+- Expand all operator window/frame topics from primary research; retain baseline requirements and label proposals
+files:
+- repo-governance/
+- AGENTS.md
+- CLAUDE.md
+- CODEX.md
+- README.md
+- topology.yaml
+- product/README.md
+dependencies:
+- WP-KUM-001-init-v1
+spec_refs:
+- TOPIC-KUM-WORKSPACE
+requirements:
+- Preserve every requested topic; distinguish stock requirements, optional ideas, dependency candidates and unverified
+  runtime capabilities
+acceptance:
+- Expanded spec parses with complete IDs, references, acceptance and roadmap coverage; baseline preserved; research
+  sources and risks recorded; no product implementation claimed
+proof:
+- python repo-governance/repo-scripts/sync.py --check
+- Inspect master spec against operator topics and recorded research
+- git diff --check -- Kumihimo/
+status_ref: repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-state.yaml

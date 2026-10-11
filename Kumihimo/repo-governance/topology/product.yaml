@@ -1,0 +1,6 @@
+kind: product_topology
+implementation_status: not_started
+nodes:
+- id: KUM-PRODUCT
+  path: product/
+  status: planned

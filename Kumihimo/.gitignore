@@ -1,0 +1,7 @@
+.local/
+/worktrees/*
+!/worktrees/README.md
+/.temp-target/
+# Python tooling output is local
+**/__pycache__/
+*.pyc

@@ -1,0 +1,128 @@
+schema_version: handshake.taskboard-config.v5
+kind: taskboard_configuration
+identity:
+  board_id: BOARD-example-v1
+  project_id: PROJECT-example
+  version: 6
+ownership:
+  controller: handshake
+  manual_projection_edits_allowed: false
+  event_log: repo-governance/taskboard/events.jsonl
+sources:
+  action_registry: repo-governance/codex/current/action-registry.yaml
+  wp_registry: repo-governance/registry/work-packets.yaml
+  wp_contract_glob: repo-governance/work-packets/**/wp-contract.yaml
+  wp_state_glob: repo-governance/work-packets/**/state.yaml
+  mt_contract_glob: repo-governance/work-packets/**/microtasks/*.yaml
+  evidence_manifest_glob: repo-governance/work-packets/**/evidence/manifest.yaml
+  specification_pointer: repo-governance/specification/current/specification.yaml
+  build_rules_pointer: repo-governance/codex/build-rules/current/build-rules.yaml
+  product_topology_pointer: repo-governance/topology/product.yaml
+  solution_bindings_pointer: repo-governance/reuse/bindings.yaml
+  solution_lock_pointer: repo-governance/reuse/lock.yaml
+action_availability:
+  rule_ref: ACTION-ELIGIBILITY-001
+  evaluator: handshake.action_eligibility
+  source: sources.action_registry
+  derive_next_action_and_executable_ids_from_same_evaluation: true
+  ready_for_activation_does_not_mean_executable: true
+  planned_or_uncommitted_activation_has_no_executable_microtasks: true
+  availability_result_is_projection_not_mutation_authority: true
+  mutation_rechecks_current_inputs_at_commit: true
+scheduling:
+  priority_tiers:
+  - critical
+  - high
+  - normal
+  - low
+  default_priority: normal
+  sequence_keys_owned_by_controller: true
+  dependency_gates_override_priority: true
+  stale_claim_after: PT15M
+  stale_planning_after: P14D
+  attention_after_no_progress: P3D
+  wip_limits:
+    active_work_packets: 4
+    active_microtasks_per_wp: 8
+    active_microtasks_per_lane: 4
+views:
+- view_id: operator-overview
+  level: work_packet
+  group_by: board_lane
+  fields:
+  - wp_id
+  - title
+  - priority
+  - board_lane
+  - progress
+  - reuse
+  - next_action
+  - attention
+- view_id: execution
+  level: microtask
+  filter: executable_or_claimed
+  group_by: lane
+  fields:
+  - mt_id
+  - wp_id
+  - phase
+  - claim
+  - depends_on
+  - write_scope
+- view_id: attention
+  level: work_packet
+  filter: attention_required
+  group_by: attention_reason
+  fields:
+  - wp_id
+  - title
+  - phase
+  - conditions
+  - blocker
+  - next_action
+- view_id: validation
+  level: work_packet
+  filter: validating_or_closure_blocked
+  group_by: proof_state
+  fields:
+  - wp_id
+  - acceptance_coverage
+  - missing_proof
+  - independent_review
+- view_id: build-order
+  level: work_packet
+  filter: nonterminal
+  group_by: dependency_depth
+  fields:
+  - wp_id
+  - priority
+  - readiness
+  - blocked_by
+  - critical_path
+  - executable_mt_ids
+projection:
+  machine_path: repo-governance/taskboard/taskboard.yaml
+  markdown_path: repo-governance/taskboard/taskboard.md
+  markdown_enabled: true
+  include_archived_by_default: false
+stock_workflow_view:
+  rule_id: BOARD-STOCK-001
+  when_selected: HT-WORK-CODING-001
+  source: canonical_wp_state_stock_execution_state_and_operation_results
+  fields:
+  - phase
+  - assigned_actors
+  - submitted_revision
+  - validated_revision
+  - last_useful_outcome
+  - observed_consumption
+  - reservations
+  - blocker
+  - permitted_next_actions
+  controls:
+  - pause_workflow
+  - resume_workflow
+  - cancel_workflow
+  action_availability: existing_shared_action_eligibility_evaluator
+  stale_projection: retain_last_good_view_with_generation_and_error_never_overwrite_truth
+  activity_spinner_is_not_progress: true

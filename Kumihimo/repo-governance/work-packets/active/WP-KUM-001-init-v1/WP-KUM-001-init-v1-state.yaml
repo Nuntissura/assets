@@ -1,0 +1,16 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-001-init-v1
+generation: 1
+phase: done
+owner: model_maintainer
+changed_files:
+- Kumihimo/**
+proof:
+- kind: bootstrap_integrity
+  observed: passed in standalone staging; no runtime acceptance implied
+- kind: idempotence
+  observed: second apply wrote zero files
+- kind: import
+  observed: 62 files byte-verified; no nested .git
+blockers: []
+next_action: Commit and push initialization; independently read remote before WP-002

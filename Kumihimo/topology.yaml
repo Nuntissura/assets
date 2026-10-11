@@ -1,0 +1,6 @@
+kind: asset_topology
+project_id: KUMIHIMO
+governance: repo-governance/topology/governance.yaml
+product: repo-governance/topology/product.yaml
+links: repo-governance/topology/links.yaml
+mode: shared assets Git repository

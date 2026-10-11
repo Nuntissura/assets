@@ -1,0 +1,215 @@
+schema_version: handshake.wp-contract.v11
+template_version: 16
+kind: work_packet
+instance_policy:
+  omit_empty_optional_fields: true
+  policy_lives_in_rule_refs_not_instance_fields: true
+  schema_ref: repo-governance/schemas/wp-contract.schema.yaml
+rule_refs:
+- CODEX-WORK-005
+- CODEX-MATRIX-001
+- CODEX-MATRIX-002
+- CODEX-DRIFT-003
+- CODEX-DRIFT-005
+- CODEX-REFINE-002
+- CODEX-MODE-MT-001
+- CODEX-STOCK-001
+- BR-MATRIX-001
+- BR-MATRIX-002
+- BR-MATRIX-003
+- WF-OWN-001
+- WF-ACTIVATE-001
+- WF-LIFECYCLE-001
+- WF-ART-001
+- REPO-WORKTREE-004
+- REPO-WORKTREE-005
+- REPO-WORKTREE-006
+- HT-WORK-ACTIONS-001.confirm_merge_containment
+- BR-BUILD-UNIT-001
+- BR-ARCH-GRAPH-001
+- BR-ARCH-GROWTH-001
+- WF-ARCH-001
+- WF-LANE-001
+- CODEX-UNIT-001
+- CODEX-MODULE-LIFECYCLE-001
+- BR-MODULE-LIFECYCLE-001
+- BR-MODULE-LIFECYCLE-002
+- BR-MODULE-LIFECYCLE-003
+- BR-MODULE-LIFECYCLE-004
+- BR-MODULE-LIFECYCLE-005
+- BR-MODULE-LIFECYCLE-006
+- BR-MODULE-LIFECYCLE-007
+- BR-CONTRACT-SYNC-001
+- BR-PILLAR-001
+- CODEX-RULE-SYNC-001
+- CODEX-PILLAR-001
+identity:
+  wp_id: WP-000-example-v1
+  title: Example capability
+  version: 1
+  contract_revision: 1
+  lifecycle_profile: code-development-v1
+  activation_id: null
+refinement_ref:
+  artifact_id: RE-WP-000-example-v1
+  revision: 4
+  digest: sha256:REPLACE_ME
+authority_snapshot:
+  specification:
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+    roadmap_digest: sha256:REPLACE_ME
+  build_rules:
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+    applicable_rule_ids: []
+  build_matrix:
+    matrix_id: BM-PROJECT-001
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  product_topology:
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  governance_topology:
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  solution_bindings:
+    version: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  solution_lock:
+    generation: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  sdk_catalog:
+    digest: sha256:REPLACE_ME
+outcome:
+  problem: ''
+  operator_value: ''
+  expected_behavior: ''
+  completion_statement: ''
+reuse:
+  strategy: REPLACE_ME
+  solution_refs: []
+  reason: ''
+  promotion_candidate: false
+  consumed_capability_refs: []
+  owner_module_refs: []
+  new_capability_refs: []
+scope:
+  included: []
+  excluded: []
+  assumptions: []
+  non_goals: []
+scope_waivers: []
+dependencies:
+  wp_ids: []
+  external_systems: []
+  data_or_migration_preconditions: []
+architecture_binding:
+  boundary_change: none
+  module_lifecycle_refs: []
+  touched_module_refs: []
+  created_module_refs: []
+  touched_build_unit_refs: []
+  target_build_unit_graph_ref: null
+runtime_lanes:
+  applicability: REPLACE_ME
+  lanes: []
+  shared_resource_refs: []
+  concurrency_proof_refs: []
+gui_surface:
+  applicability: REPLACE_ME
+  surface_profile_refs: []
+  inspection_route_refs: []
+  headless_route_refs: []
+  expected_visual_evidence: []
+auth_binding:
+  applicability: REPLACE_ME
+  account_bound_resource_refs: []
+  subprofile_visibility: null
+  authorization_boundary_refs: []
+  default_deny_negative_proof_ref: null
+implementation_contract:
+  required_when: proof_contract.risk_tier in [P2, P3]
+  architecture_decisions: []
+  module_boundaries: []
+  public_interfaces: []
+  data_flows: []
+  concurrency_model: []
+  compatibility_constraints: []
+  migration_plan: []
+  rollout_plan: []
+  rollback_plan: []
+impact_assessment:
+  input_set_digest: sha256:REPLACE_ME
+  universe_digest: sha256:REPLACE_ME
+  universe_components:
+    matrix_revision: REPLACE_ME
+    spec_primitive_feature_mix_digest: sha256:REPLACE_ME
+    product_topology_revision: REPLACE_ME
+  assessed_entry_ids: []
+  mandatory_pillar_entry_ids: []
+  stored_rows: change_verify_only_and_unresolved_only_not_applicable_is_derived
+  rows: []
+hskernelsdk:
+  condition: foundation_binding_resolved
+  ref: BIND-PROJECT-HSKERNELSDK
+requirements:
+- requirement_id: WP-000-REQ-001
+  statement: ''
+  rationale: ''
+  source_refs: []
+  matrix_entry_refs: []
+  acceptance_refs: []
+acceptance_criteria:
+- acceptance_id: WP-000-AC-001
+  requirement_refs:
+  - WP-000-REQ-001
+  matrix_entry_refs: []
+  given: ''
+  when: ''
+  then: ''
+  proof_refs:
+  - WP-000-PROOF-001
+microtask_graph:
+  rule_refs:
+  - CODEX-MT-011
+  - CODEX-MT-012
+  - CODEX-MT-004
+  - CODEX-OUT-003
+  - WF-HEURISTIC-001
+  - WF-LANE-001
+  nodes:
+  - mt_id: WP-000-example-v1-MT-001
+    depends_on: []
+    lane: implementation
+    surface_profile_refs: []
+proof_contract:
+  risk_tier: REPLACE_ME
+  rule_refs:
+  - CODEX-VERIFY-001
+  - CODEX-VERIFY-002
+  - CODEX-OUT-002
+  - CODEX-OUT-003
+  - CODEX-VAL-007
+  - CODEX-GIT-001
+  - CODEX-REMEDIATE-001
+  - CODEX-TEMP-002
+  - WF-PROOF-001
+  checks:
+  - proof_id: WP-000-PROOF-001
+    kind: REPLACE_ME
+    claim_refs:
+    - WP-000-AC-001
+    command_or_method: ''
+    expected: ''
+    timeout_seconds: REPLACE_ME
+    relevant_input_paths: []
+    evidence_required: []
+    independent: false
+risks:
+- risk_id: WP-000-RISK-001
+  scenario: ''
+  impact: ''
+  control: ''
+  acceptance_refs: []
+  mt_refs: []

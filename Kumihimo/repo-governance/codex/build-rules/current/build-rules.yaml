@@ -1,0 +1,165 @@
+schema_version: handshake.build-rules.v9
+kind: build_rulebook
+identity:
+  rulebook_id: RB-KUMIHIMO-BUILD-v1
+  project_id: KUMIHIMO
+  version: 24
+  seed_version: handshake-universal-v9
+  status: active_model_operated
+authority:
+  owner: authorized_model_maintainer
+  stock_reference_is_not_active: true
+precedence: {}
+enforcement: {}
+project_profile:
+  name: Kumihimo
+  primary_languages:
+  - Rust
+  supported_platforms:
+  - Windows desktop
+  - web via adapter
+  supported_architectures:
+  - x86_64 runtime target
+  - aarch64 Windows development host
+  product_workspace:
+    manifest_file: product/Cargo.toml
+  implementation_status: not_started
+  gui_applicability: planned
+  test_entrypoint: null
+  canonical_specification: repo-governance/specification/current/specification.yaml
+canonical_commands:
+  spec_check: python repo-governance/repo-scripts/sync.py --check
+  rust_check: null
+  rust_test: null
+  gui_check: null
+rule_sets: {}
+build_matrix:
+  matrix_id: BM-KUMIHIMO-001
+  revision: 1
+  entries: []
+  policy: Record only actual implemented feature proof; no mandatory pillar universe
+dependency_policy: {}
+rules:
+- rule_id: BR-CORE-TRUTH-001
+  requirement: Never present assumptions, expected output, unexecuted commands, partial checks, or plausibility
+    as verified fact; failures and remaining uncertainty stay visible. State verification scope and assumptions;
+    do not claim formal proof or universal detection of bugs/nontermination without the corresponding method and
+    evidence.
+- rule_id: BR-CORE-INV-001
+  requirement: Identify affected invariants and boundary contracts; define inputs, rejections, preconditions, outputs,
+    postconditions, side effects, failures, ownership, ordering, and concurrency, then enforce them at the strongest
+    practical layer.
+- rule_id: BR-CORE-STATE-001
+  requirement: Give each fact one authoritative owner. Mark caches, indexes, views, projections and generated files
+    as derived, with explicit rebuilding, reconciliation, conflict behavior and allowed state transitions. Module-backed
+    topology nodes resolve module facts from module manifests, never editable duplicates; topology owns the relations;
+    machine navigation views are generated. Canonical operation state owns execution progress; the flight recorder
+    observes linked transitions and never redefines that state or target commit truth. A resumed model reads canonical
+    state, never its conversation summary, as authority.
+- rule_id: BR-CORE-EFFECT-001
+  requirement: Keep decision logic deterministic; isolate time, randomness, configuration, filesystem, network,
+    database, process, and service effects behind explicit injected boundaries without hidden mutable globals.
+- rule_id: BR-CORE-BOUND-001
+  requirement: Define capacity, concurrency, overload, backpressure, timeout, cancellation, retry, ownership, cleanup,
+    and observability; unbounded growth requires proof and explicit approval. HSKernelSDK admission accounts for
+    queued/running reservations as well as completed consumption, including fan-out, context, streams, connection
+    pools and applicable provider usage; delayed external billing is not a precise real-time ceiling. Reserve capacity
+    for cancellation, health, and recovery, and expose estimated versus enforceable limits under operator-selected
+    policy.
+- rule_id: BR-CORE-REPLAY-001
+  requirement: Use stable operation identity with idempotent or deduplicated behavior; distinguish never-started,
+    pre-commit failure, committed-response-lost, partial commit and unknown outcomes. Keep logical operation identity
+    distinct from attempt identity, reject reuse with different intent, declare deduplication retention, and reconcile
+    uncertain effects before retrying. Re-querying a nondeterministic model is a new attempt, not replay of a recorded
+    result. Cancellation intent is distinct from observed termination and cannot undo a committed effect.
+- rule_id: BR-CORE-ATOMIC-001
+  requirement: Make the domain transaction atomic required_if every mutated system joins one supported transaction,
+    else define valid intermediate states, detection, compensation, recovery, restart, consistency and idempotent
+    continuation without assuming external effects roll back. Declare each connector commit boundary. Coordinate
+    state and mandatory event publication through a supported atomic transaction, outbox or explicit recovery protocol.
+    Queued acceptance is not commit; infer no universal exactly-once guarantee across arbitrary connectors.
+- rule_id: BR-CORE-DET-001
+  requirement: Pin declared inputs, dependencies, and reusable-solution bindings; verify capabilities before use,
+    isolate unavoidable nondeterminism, identify generated artifacts and commands, and prevent user paths, hidden
+    tools, uncontrolled network, time, randomness, or machine state from changing results silently.
+- rule_id: BR-ARCH-BOUNDARY-001
+  requirement: Define ownership, public contracts, allowed dependency direction, forbidden reach-through, lifecycle
+    hooks, adapters and contract tests so modules/providers are replaceable without contaminating callers; use process
+    containers only when runtime isolation justifies them.
+- rule_id: BR-QUIET-001
+  requirement: Do not pop foreground windows, steal focus, hijack keyboard or pointer input, interrupt operator
+    processes, or leave orphan workers and terminals; unavoidable foreground work requires a declared controlled
+    path.
+- rule_id: BR-PERF-001
+  requirement: Identify only the performance/resource budgets and scenario dimensions materially affected by the
+    change; preserve interaction-path nonblocking and bounded-work invariants, and benchmark cold, warm, load, race,
+    render, startup, or concurrency scenarios only where they can falsify a changed or at-risk claim.
+- rule_id: BR-SECURITY-001
+  requirement: Validate at trust boundaries, enforce server-side or authoritative-boundary authorization and least
+    privilege, construct commands and queries safely, protect secrets, preserve privacy in logs, and never weaken
+    controls to pass tests.
+- rule_id: BR-ERROR-001
+  requirement: Preserve causal context without leaking secrets; distinguish domain/internal and transient/permanent
+    failures; make fallbacks explicit and observable; preserve original failures through cleanup; never convert
+    failure silently into success. HSKernelSDK returns structured failure class, affected operation/resource, supported
+    recovery route and honest retryability. Fallback providers must preserve required scope and guarantees; errors
+    must not suggest bypassing policy.
+- rule_id: BR-ERROR-002
+  requirement: Deny-by-default behavior must be observable. A denied, dropped or ignored write is surfaced as an
+    explicit denial with its cause; silently accepting and discarding an operation is forbidden because it turns
+    one defect into many test rounds.
+- rule_id: BR-COMPAT-001
+  requirement: Declare compatibility policy, identify breaking changes before completion, define deprecation and
+    migration behavior, and automate consequential backward or forward compatibility proof.
+- rule_id: BR-PORTABLE-001
+  requirement: Use repo-root discovery, relative paths, configuration indirection, and documented external prerequisites;
+    isolate unavoidable machine-local paths and prove move-to-folder and move-to-disk behavior.
+- rule_id: BR-SPEC-SELF-001
+  requirement: Specification documents must contain all product truth and final product decisions needed to interpret
+    their requirements; no authoritative sidecars or outside content dependencies are permitted. Research and suggestions
+    live in the project research folder and carry no product truth, enforcement or final decisions. Adopted meaning
+    must be written completely into the spec; optional provenance and downstream links do not import authority.
+- rule_id: BR-SPEC-FORMAT-001
+  requirement: Every specification topic must have a machine-readable header and inline fenced prose, code examples
+    and structured content. Preserve stable semantic IDs where present; stable IDs are recommended throughout and
+    required for requirements bound into activated WP/MT contracts. Fencing does not demote specification authority.
+- rule_id: KUM-BUILD-001
+  requirement: Keep product packages independently selectable, dependencies explicit, source paths stable and build
+    outputs reusable; record architecture-specific proof without equating ARM development with x64 runtime proof.
+- rule_id: KUM-BUILD-002
+  requirement: For code changes run the affected compile check and focused behavior proof; inspect GUI changes through
+    the actual rendered surface. Broader checks require an affected boundary or explicit WP acceptance.
+- rule_id: KUM-BUILD-003
+  requirement: For specification/governance-only changes use parsing, references, owned diff and declared structural
+    checks; do not run Cargo or fabricate runtime proof.
+- rule_id: KUM-BUILD-004
+  requirement: Use the gameplan skill before costly build/test/destructive commands; do not invent timeout wrappers
+    or stop unowned processes.
+- rule_id: KUM-BUILD-005
+  requirement: Keep host ownership, capability limitations, public interfaces, migration/recovery and a no-context
+    manual explicit; implement diagnostics and adapter conformance with the affected feature.
+rulebook_maintenance: {}
+legacy_migrations: {}
+project_extensions: {}
+exceptions:
+- exception_id: KUM-MINIMAL-v1
+  granted_by: operator
+  scope: Kumihimo only
+  reason: Quickfire model-managed workflow; no enrichment, mandatory long suites, controller/SDK gates or formal
+    role pipeline
+retired_rules: {}
+version_log: {}
+design_resolution: {}
+stock_workflow_bindings: {}
+model_materialization:
+  operation_mode: model_operated
+  model_operation_ready: true
+  handshake_runtime_ready: false
+  project_runtime_proven: false
+  unresolved_binding_values_are_inactive: true
+  stock_rule_obligations_remain_active: false
+  unresolved_field_paths_are_discovery_only: true
+  binding_admission: Resolve action-relevant binding values from project evidence; parameterized path patterns and
+    illustrative examples do not deactivate their enclosing rules.
+  unresolved_field_paths: []
+  selected_project_rules_active: true

@@ -1,0 +1,110 @@
+schema_version: handshake.codex-source.v10
+kind: codex_source
+identity:
+  codex_source_id: CODEX-PROJECT-v1
+  project_id: PROJECT-REPLACE-ME
+  version: 27
+  revision: 22
+  status: draft
+execution_modes:
+  default: model_operated
+  modes:
+    model_operated:
+      bookkeeping_actor: authorized_model_maintainer
+      provider_entry_mode: identical_navigation_routers
+      project_protocol_path: repo-governance/codex/protocols/project/minimal.md
+      shared_protocol_path: repo-governance/codex/protocols/shared/minimal.md
+      role_authorization:
+        maintainer: Owns bounded product and governance work; no compulsory role handoffs
+      transition_registry:
+        phases:
+        - planned
+        - active
+        - blocked
+        - done
+        - cancelled
+        done_requires: WP acceptance evidence; pushed containment when publication is required
+      mechanical_adapter_fields:
+        evaluator: maintainer checks current contract/state and affected proof
+      operating_protocol:
+        start: Read taskboard, selected WP contract/state and relevant specification topics
+        execute: Write a bounded WP directly; activate in state; implement in this checkout
+        recover: Read current Git diff and WP state; reconcile uncertain effects before retrying
+        proof: Run only affected focused checks; broad/slow checks only when explicitly required
+        status: Update WP state then taskboard; never mark unimplemented product behavior done
+      unresolved_project_bindings: []
+      runtime_prerequisites: Resolve only dependencies required by the current WP
+repository_workflows:
+  output_path: repo-governance/codex/workflows/repository-workflows.md
+  authority_source: repo-governance/codex/current/codex-source.yaml
+  steps:
+  - workflow_id: KUM-FLOW-001
+    title: Select and execute a bounded WP
+    required_reads:
+    - taskboard
+    - WP contract/state
+    - relevant spec topics
+    actions:
+    - Write the direct contract; mark active; execute in this checkout
+    - Run affected focused proof; record observed results; sync status
+    proof: Accepted WP outcome is observed; no self-authored status substitutes for proof
+  - workflow_id: KUM-FLOW-002
+    title: Recover and publish
+    required_reads:
+    - WP state
+    - Git status/diff
+    actions:
+    - Reconcile incomplete effects before retrying
+    - Commit only owned paths; push when authorized; verify the exact remote revision
+    proof: Current state and independent remote read agree with reported outcome
+compilation:
+  output_path: repo-governance/codex/CODEX.md
+  provider_entry_mode: semantic_mirror
+  generator_id: handshake-codex-compiler
+  generator_version: REPLACE_ME
+  manual_output_edits_allowed: false
+  stale_output_blocks_product_execution: true
+  repair_admission: registered_action_specific_authority_and_generation_checks
+authority_domains:
+  product: repo-governance/specification/current/
+  engineering: repo-governance/codex/build-rules/current/build-rules.yaml
+  scope: WP contract
+  status_and_recovery: WP state
+  navigation: taskboard projection
+conflict_resolution:
+  operator_minimal_profile_wins_over_stock: true
+  pinned_templates_not_active_authority: true
+mutation_classes: {}
+hydration_bindings: {}
+product_operation_routing: {}
+rules:
+- rule_id: KUM-AUTH-001
+  requirement: Use the selected model-operated minimal profile; stock templates are reference inputs and add no
+    gates.
+- rule_id: KUM-WORK-001
+  requirement: Create a bounded WP with scope, files, dependencies, acceptance and focused proof before execution;
+    mark it active in state. No separate refinement/enrichment phase is required.
+- rule_id: KUM-WORK-002
+  requirement: Use this checkout by default; microtasks, worktrees, leases, receipts and independent review are
+    optional unless the WP explicitly requires them.
+- rule_id: KUM-STATE-001
+  requirement: Persist WP phase, owner, changed files, observed proof, blockers and next action at meaningful milestones;
+    update the taskboard from WP state.
+- rule_id: KUM-RECOVER-001
+  requirement: On resume inspect WP state and current Git diff; reconcile uncertain commits, pushes and external
+    outcomes before repeating effects.
+- rule_id: KUM-SPEC-001
+  requirement: Keep accepted meaning in the current self-contained specification; preserve IDs and snapshot prior
+    revisions. Label proposals and unverified capabilities honestly.
+- rule_id: KUM-SCOPE-001
+  requirement: Execute only the active WP scope; serialize overlapping writes and keep sibling assets untouched.
+- rule_id: KUM-PROOF-001
+  requirement: Use the shortest affected proof that supports the claim; no long checks, ceremonial gate chains or
+    stock compliance audits by default.
+- rule_id: KUM-PORTABLE-001
+  requirement: Use repository-relative paths and ignored local configuration; never hardcode machine paths into
+    project artifacts.
+- rule_id: KUM-PROCESS-001
+  requirement: Do not stop processes this session did not start without the operator process-stop acknowledgment
+    required by global authority.
+stock_workflows: {}

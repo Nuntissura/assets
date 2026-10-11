@@ -1,0 +1,9 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-002-master-spec-v1
+generation: 1
+phase: planned
+owner: model_maintainer
+changed_files: []
+proof: []
+blockers: []
+next_action: After verified initialization push, expand the existing master-spec bundle from research

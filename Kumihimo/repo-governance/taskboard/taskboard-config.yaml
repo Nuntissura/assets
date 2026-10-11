@@ -1,0 +1,6 @@
+schema_version: kumihimo.taskboard-config.v1
+kind: taskboard_config
+source: repo-governance/work-packets/active/*/WP-*-contract.yaml and matching state
+projection: repo-governance/taskboard/taskboard.yaml
+rebuild: python repo-governance/repo-scripts/sync.py
+authority: WP state owns status; board is derived

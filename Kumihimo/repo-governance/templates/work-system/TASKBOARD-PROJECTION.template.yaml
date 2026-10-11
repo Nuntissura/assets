@@ -1,0 +1,110 @@
+schema_version: handshake.taskboard-projection.v5
+kind: taskboard_projection
+projection:
+  projection_id: BOARD-example-v1-GEN-000001
+  board_id: BOARD-example-v1
+  project_id: PROJECT-example
+  generated_at: '2026-09-11T00:00:00Z'
+  generator_version: handshake-taskboard-projector-v3
+  source_set_generation: 1
+  source_set_digest: sha256:REPLACE_ME
+  complete_source_scan: true
+eligibility_contract:
+  rule_ref: ACTION-ELIGIBILITY-001
+  evaluator: handshake.action_eligibility
+  source: repo-governance/codex/current/action-registry.yaml
+  source_generation_and_digest_pin_evaluation_inputs: true
+  planned_or_uncommitted_activation_has_empty_executable_mt_ids: true
+  ready_microtasks_count_only_execution_eligible_ids: true
+  controller_rechecks_before_mutation: true
+summary:
+  total_work_packets: 1
+  by_lane:
+    planning: 0
+    ready: 1
+    needs_rebase: 0
+    active: 0
+    blocked: 0
+    validation: 0
+    merge_pending: 0
+    completed: 0
+    archive: 0
+  ready_microtasks: 0
+  active_claims: 0
+  attention_required: 0
+work_packets:
+- wp_id: WP-000-example-v1
+  title: Example capability
+  version: 1
+  contract_ref: repo-governance/work-packets/active/WP-000-example-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-000-example-v1/state.yaml
+  phase: planned
+  conditions:
+  - type: Ready
+    status: 'true'
+    reason_code: planning_transaction_valid
+  board_lane: ready
+  priority:
+    tier: normal
+    sequence_key: a0
+    source: operator
+  readiness:
+    ready: true
+    meaning: ready_for_activation_not_execution
+    blocked_by_wp_ids: []
+    blocking_reason_codes: []
+  progress:
+    total_microtasks: 4
+    completed_microtasks: 0
+    active_microtasks: 0
+    ready_microtasks: 0
+    failed_microtasks: 0
+    acceptance_coverage_percent: 0
+  reuse:
+    strategy: REPLACE_ME
+    solution_refs: []
+    promotion_candidate: false
+  proof_state:
+    lifecycle_claim: planned
+    closure_verdict: not_started
+    latest_verdict_ref: null
+    containment_proven: false
+  freshness:
+    specification: current
+    build_rules: current
+    topology: current
+    reusable_solutions: current
+    research: current
+  execution:
+    worktree_id: null
+    active_claim_ids: []
+    activation_id: null
+    executable_mt_ids: []
+  attention:
+    required: false
+    reason_codes: []
+  next_action:
+    action_type: request_activation
+    reason_code: ready_for_activation
+    actor_requirement: operator_or_authorized_controller
+    eligibility_source: handshake.action_eligibility
+    observed_generation: 1
+    failed_conditions: []
+    availability_is_advisory: true
+stock_view_shape:
+  rule_id: BOARD-STOCK-SHAPE-001
+  generated_only_when_workflow_selected: true
+  canonical_source_ref: HT-WORK-STATE-001.stock_execution_state
+  fields:
+  - phase
+  - assigned_actors
+  - submitted_revision
+  - validated_revision
+  - last_useful_outcome
+  - observed_consumption
+  - reservations
+  - blocker
+  - permitted_next_actions
+  source_generation_visible: true
+  unknown_usage_visible: true
+  pending_actions_are_not_completed_results: true

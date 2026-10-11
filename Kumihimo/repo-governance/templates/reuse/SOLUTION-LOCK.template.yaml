@@ -1,0 +1,38 @@
+schema_version: handshake.solution-lock.v3
+kind: solution_lock
+identity:
+  lock_id: SOLUTION-LOCK-PROJECT-v1
+  project_id: PROJECT-REPLACE-ME
+  generation: 1
+projection:
+  controller: handshake
+  manual_edits_allowed: false
+  bindings_digest: sha256:REPLACE_ME
+  library_generation: REPLACE_ME
+  library_digest: sha256:REPLACE_ME
+resolved: []
+resolution_contract:
+  scope: complete_declared_dependency_closure_of_every_binding
+  resolved_dependencies_reference_exact_solution_or_delegated_lock_entries: true
+  delegated_ecosystem_locks_reused_without_duplicate_package_inventory: true
+  delegated_lock_required_fields:
+  - lock_ref
+  - digest
+  - resolver_version
+  - normalized_input_digest
+  external_resolution_must_match_delegated_lock: true
+  omitted_or_unresolved_dependencies_block_resolution: true
+  cycles_and_version_conflicts_follow_selected_resolver_and_project_contracts: true
+  forbidden_cycles_or_incompatible_versions_block_resolution: true
+verification:
+  every_binding_resolved: true
+  every_binding_profile_and_transitive_dependency_pinned: true
+  dependency_closure_completeness_verified_against_declarations: true
+  delegated_lock_digests_and_resolution_inputs_verified: true
+  foundation_binding_resolved_from_canonical_bindings: true
+  foundation_profile_and_transitive_dependencies_pinned: true
+  foundation_module_contract_versions_match_resolution: true
+  declaration_digests_included_in_resolved_modules: true
+  every_digest_verified: true
+  implicit_upgrade_forbidden: true
+  same_inputs_require_same_semantic_lock: true
