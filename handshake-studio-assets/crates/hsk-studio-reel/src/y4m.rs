@@ -3,7 +3,7 @@
 //! frame plus the header. Frame rate must map to an exact broadcast tick duration (`FrameRate`).
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
-use hsk_studio_accord::{CancellationToken, FrameRate, TICKS_PER_SECOND, Ticks};
+use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
 use std::io::{SeekFrom, Write};
 
 pub const Y4M_PROVIDER_ID: &str = "y4m";
@@ -63,7 +63,6 @@ struct Y4mInfo {
     header_bytes: u64,
     /// Whole `FRAME` records present in the file.
     complete_frames: u64,
-    ticks_exact: bool,
 }
 
 fn parse_ratio(text: &str) -> Option<(u64, u64)> {
@@ -163,20 +162,9 @@ fn parse_y4m(src: &mut dyn ReadSeek, file_len: u64, limits: &Limits) -> Result<Y
     let (num, den) = rate.ok_or(ReelError::Corrupt {
         what: "y4m-rate-missing",
     })?;
-    // moves to accord (SMB-ACCORD-ENG-2): fps <-> FrameRate ticks mapping
-    let ticks = u128::from(TICKS_PER_SECOND) * u128::from(den);
-    if !ticks.is_multiple_of(u128::from(num)) {
-        return Err(ReelError::Unsupported {
-            what: "frame-rate-not-tick-exact",
-        });
-    }
-    let ticks = u64::try_from(ticks / u128::from(num)).map_err(|_| ReelError::Unsupported {
+    let frame_rate = FrameRate::from_fps(num, den).map_err(|_| ReelError::Unsupported {
         what: "frame-rate-not-broadcast",
     })?;
-    let (frame_rate, normalization) =
-        FrameRate::from_import(ticks).map_err(|_| ReelError::Unsupported {
-            what: "frame-rate-not-broadcast",
-        })?;
     let frame_bytes = chroma
         .frame_bytes(width, height)
         .ok_or(ReelError::LimitExceeded {
@@ -196,7 +184,6 @@ fn parse_y4m(src: &mut dyn ReadSeek, file_len: u64, limits: &Limits) -> Result<Y
         frame_bytes,
         header_bytes,
         complete_frames: file_len.saturating_sub(header_bytes) / record,
-        ticks_exact: !normalization.changed,
     })
 }
 
@@ -351,7 +338,7 @@ impl MediaProvider for Y4mProvider {
             chunks: delivered as u32,
             bytes_read: info.header_bytes + delivered * record,
             complete: true,
-            ticks_exact: info.ticks_exact,
+            ticks_exact: true,
         })
     }
 
@@ -387,20 +374,26 @@ impl MediaProvider for Y4mProvider {
                 what: "y4m-dimensions",
             });
         }
-        FrameRate::from_import(ticks_per_frame).map_err(|_| ReelError::Unsupported {
-            what: "frame-rate-not-broadcast",
-        })?;
+        let (frame_rate, normalization) =
+            FrameRate::from_import(ticks_per_frame).map_err(|_| ReelError::Unsupported {
+                what: "frame-rate-not-broadcast",
+            })?;
+        if normalization.changed {
+            return Err(ReelError::Unsupported {
+                what: "frame-rate-not-broadcast",
+            });
+        }
+        let (fps_num, fps_den) = frame_rate.fps_fraction();
         let frame_bytes = chroma
             .frame_bytes(width, height)
             .filter(|b| *b <= limits.max_chunk_bytes as u64)
             .ok_or(ReelError::LimitExceeded {
                 what: "frame-bytes",
             })?;
-        let g = gcd(TICKS_PER_SECOND, ticks_per_frame);
         let header = format!(
             "YUV4MPEG2 W{width} H{height} F{}:{} Ip A1:1 C{}\n",
-            TICKS_PER_SECOND / g,
-            ticks_per_frame / g,
+            fps_num,
+            fps_den,
             if chroma == Chroma::C420 {
                 "420jpeg"
             } else {
@@ -449,12 +442,4 @@ impl MediaProvider for Y4mProvider {
             canceled,
         })
     }
-}
-
-// moves to accord (SMB-ACCORD-ENG-2)
-fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a
 }

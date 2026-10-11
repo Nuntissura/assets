@@ -307,7 +307,7 @@ impl TrackIndex {
         let t = media_to_ticks(delta, self.media_timescale)?;
         let pts = e
             .presentation_start
-            .checked_add(t.ticks)
+            .checked_add(t.value)
             .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
         Ok((pts, t.exact))
     }
@@ -1109,7 +1109,7 @@ fn build_edits(track: &mut TrackIndex, trak: &[u8], movie_timescale: u32) -> Res
         let start = media_to_ticks(first, track.media_timescale)?;
         track.ticks_exact &= start.exact;
         track.edits.push(EditSegment {
-            presentation_start: start.ticks,
+            presentation_start: start.value,
             duration: i64::MAX,
             media_time: Some(first),
         });
@@ -1155,11 +1155,11 @@ fn build_edits(track: &mut TrackIndex, trak: &[u8], movie_timescale: u32) -> Res
         track.ticks_exact &= duration.exact;
         track.edits.push(EditSegment {
             presentation_start: start,
-            duration: duration.ticks,
+            duration: duration.value,
             media_time: (media_time >= 0).then_some(media_time),
         });
         start = start
-            .checked_add(duration.ticks)
+            .checked_add(duration.value)
             .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
         if track.edits.len() > 4096 {
             return Err(ReelError::LimitExceeded { what: "edit-count" });
@@ -1199,9 +1199,9 @@ fn build_presentation(
                 presented.push(PresentedSample {
                     sample: i,
                     pts: edit.presentation_start,
-                    duration: remain.ticks.max(0) as u64,
+                    duration: remain.value.max(0) as u64,
                     edit: e as u32,
-                    trim_start: trim.ticks.max(0) as u64,
+                    trim_start: trim.value.max(0) as u64,
                 });
             }
         }
@@ -1223,7 +1223,7 @@ fn build_presentation(
             presented.push(PresentedSample {
                 sample: i,
                 pts,
-                duration: dur.ticks.max(0) as u64,
+                duration: dur.value.max(0) as u64,
                 edit: e as u32,
                 trim_start: 0,
             });
@@ -1648,7 +1648,7 @@ pub(crate) fn deliver_packets(
                 let (pts, exact) = track.pts_in_edit(wanted[0].edit, sample.pts)?;
                 ticks_exact &= exact;
                 let d = media_to_ticks(i64::from(sample.duration), track.media_timescale)?;
-                (pts, d.ticks.max(0) as u64, true, 0)
+                (pts, d.value.max(0) as u64, true, 0)
             }
         };
         sink.accept(Chunk {

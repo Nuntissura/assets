@@ -1,6 +1,6 @@
 //! Typed, determinate failures. Codes are stable wire strings; nothing here carries file names, paths,
 //! or parser text.
-use hsk_studio_accord::Ticks;
+use hsk_studio_accord::{Ticks, ValidationError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReelError {
@@ -84,4 +84,21 @@ impl From<std::io::Error> for ReelError {
 /// Cancellation checkpoint shared by every provider loop.
 pub(crate) fn check_cancel(cancel: &hsk_studio_accord::CancellationToken) -> Result<(), ReelError> {
     cancel.check().map_err(|_| ReelError::Canceled)
+}
+
+/// Time conversion errors from accord: a zero timescale is a corrupt header, a result that does not fit
+/// 64-bit ticks is a limit.
+impl From<ValidationError> for ReelError {
+    fn from(error: ValidationError) -> Self {
+        match error {
+            ValidationError::TickOverflow => Self::LimitExceeded { what: "tick-range" },
+            ValidationError::OutOfRange => Self::Corrupt {
+                what: "zero-timescale",
+            },
+            ValidationError::Canceled => Self::Canceled,
+            _ => Self::Corrupt {
+                what: "time-conversion",
+            },
+        }
+    }
 }

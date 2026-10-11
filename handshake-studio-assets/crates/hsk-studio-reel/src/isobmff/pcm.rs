@@ -6,6 +6,7 @@
 //! slices that may span chunk runs. Timing is exact: ticks per audio frame must divide the tick rate.
 use super::*;
 use crate::time::exact_ticks_per_unit;
+use hsk_studio_accord::{Rounding, Timescale};
 
 /// Stored sample layout of a PCM sample entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,17 +246,19 @@ pub(super) fn apply_window(track: &mut TrackIndex) {
             });
         };
         let media_time = edit.media_time.unwrap_or(0);
-        let numerator = i128::from(media_time) * i128::from(rate);
-        let denominator = i128::from(track.media_timescale);
-        if numerator % denominator != 0 {
+        let frame = Timescale::new(track.media_timescale)?.rescale(
+            media_time,
+            Timescale::new(rate)?,
+            Rounding::Floor,
+        )?;
+        if !frame.exact {
             return Err(ReelError::Unsupported {
                 what: "pcm-edit-not-frame-aligned",
             });
         }
-        let first_frame =
-            u64::try_from(numerator / denominator).map_err(|_| ReelError::Corrupt {
-                what: "elst-media-time",
-            })?;
+        let first_frame = u64::try_from(frame.value).map_err(|_| ReelError::Corrupt {
+            what: "elst-media-time",
+        })?;
         let available = total.saturating_sub(first_frame);
         let frames = if edit.duration == i64::MAX {
             available
