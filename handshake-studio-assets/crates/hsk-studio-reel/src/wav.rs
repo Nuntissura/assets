@@ -61,7 +61,7 @@ fn le32(b: &[u8], at: usize) -> Result<u32, ReelError> {
     le_array::<4>(b, at).map(u32::from_le_bytes)
 }
 
-/// `offset + by` for a position in the file: a sum that does not fit u64 is a limit, never a wrap.
+/// `offset + by` for a position in the file: a sum that does not fit u64 is a LimitExceeded, not a wrap.
 fn advance(offset: u64, by: u64) -> Result<u64, ReelError> {
     offset
         .checked_add(by)

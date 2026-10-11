@@ -209,7 +209,7 @@ fn parse_y4m(src: &mut dyn ReadSeek, file_len: u64, limits: &Limits) -> Result<Y
     })
 }
 
-/// Bytes of one `FRAME` record: marker plus pixel bytes (never zero).
+/// Bytes of one `FRAME` record: marker plus pixel bytes (at least the 6-byte marker).
 fn record_bytes(frame_bytes: u64) -> Result<u64, ReelError> {
     frame_bytes
         .checked_add(FRAME_MARKER_LEN)
