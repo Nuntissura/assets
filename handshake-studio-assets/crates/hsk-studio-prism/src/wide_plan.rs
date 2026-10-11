@@ -9,12 +9,18 @@
 //! destination relative value is `x_src * MW_src / MW_dst`. The black point compensation flag is
 //! ignored for this intent (receipt rule `absolute_ignores_bpc`). A profile without `wtpt` is
 //! refused (`MissingMediaWhite`) rather than assumed to be D50.
+//!
+//! Media-white rule: the `wtpt` tag is used as written for every profile (receipt
+//! `absolute.media_white_rule`). LittleCMS 2 reads D50 instead for an ICC v2 display profile; when such a
+//! profile with a non-D50 `wtpt` takes part, the receipt names the registered divergence
+//! (`absolute.divergence` = `ABS_V2_DISPLAY_WTPT_DIVERGENCE`) so no conversion applies one convention silently.
 #![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
 use crate::Intent;
 use crate::bpc::{BpcInputs, compute};
 use crate::icc_eval::{self, D50, Fused};
 use crate::wide::{
-    AbsoluteReport, BpcReport, DeviceSpace, PcsMap, Plan, ProfileKind, WideError, WideProfileDescriptor,
+    ABS_V2_DISPLAY_WTPT_DIVERGENCE, AbsoluteReport, BpcReport, DeviceSpace, MEDIA_WHITE_RULE_WTPT_AS_WRITTEN, PcsMap,
+    Plan, ProfileKind, WTPT_SCALE_TOLERANCE, WideError, WideProfileDescriptor,
 };
 use hsk_studio_accord::CancellationToken;
 use moxcms::ColorProfile;
@@ -65,6 +71,22 @@ pub(crate) fn build(
             return Err(WideError::MissingMediaWhite);
         }
         let scale = [src_mw[0] / dst_mw[0], src_mw[1] / dst_mw[1], src_mw[2] / dst_mw[2]];
+        // The single place that applies absolute colorimetric: every route converts through this plan, so the
+        // rule and the registered divergence are recorded here and nowhere else (tests/wide_r6_plausibles.rs:
+        // absolute_receipt_names_the_media_white_rule_and_the_v2_display_divergence_on_every_route).
+        // The LittleCMS 2 reading of the same pair: a v2 display profile counts as D50, a Lab source as D50.
+        let lcms2_white = |d: &WideProfileDescriptor, written: [f64; 3]| if d.is_v2_display() { D50 } else { written };
+        let alt_src = match source {
+            Some((_, sd)) => lcms2_white(sd, src_mw),
+            None => D50,
+        };
+        let alt_dst = lcms2_white(dd, dst_mw);
+        let alt_scale = [alt_src[0] / alt_dst[0], alt_src[1] / alt_dst[1], alt_src[2] / alt_dst[2]];
+        let divergence = scale
+            .iter()
+            .zip(alt_scale)
+            .any(|(written, alt)| (written - alt).abs() > WTPT_SCALE_TOLERANCE)
+            .then_some(ABS_V2_DISPLAY_WTPT_DIVERGENCE);
         (
             if scale == [1.0; 3] {
                 PcsMap::Identity
@@ -85,6 +107,8 @@ pub(crate) fn build(
                 source_media_white: Some(src_mw),
                 destination_media_white: Some(dst_mw),
                 scale: Some(scale),
+                media_white_rule: MEDIA_WHITE_RULE_WTPT_AS_WRITTEN,
+                divergence,
             },
         )
     } else if black_point_compensation {

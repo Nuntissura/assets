@@ -246,6 +246,29 @@ impl Curve {
             Self::Table(t)
         }
     }
+    /// Whether this curve can serve as the TRC of a DESTINATION matrix/Gray profile, whose inverse `inverse` takes.
+    /// ICC.1:2022 Annex F (normative) F.2 (grayTRC, p.101) and F.3 (redTRC/greenTRC/blueTRC, p.102) say that a
+    /// constant one-dimensional curve cannot be inverted and that the inverse of a non-invertible curve is
+    /// undefined. Constant curves here are
+    /// * a gamma of 0 (`curv` count 1 with u8Fixed8 0, or `para` type 0 with g = 0): y = x^0 = 1;
+    /// * a gamma below 0 (`para` g < 0): x^g exceeds 1 for every x in (0, 1), and clause 10.18 (p.71) clips function
+    ///   values outside [0, 1], so the curve is the constant 1;
+    /// * a `curv` table whose entries are all equal.
+    ///
+    /// Refused: `Gamma(g)` and the exponent `g` of `para` types 1-4 with `g <= 0` (or not finite), and a constant
+    /// table. A table that is not monotonic but not constant is NOT refused here (the standard calls its inverse
+    /// undefined, the exact inverse of a monotonic table is `table_inverse`; recorded in the lane notes).
+    /// Forward (source) use of any of these curves is defined and unchanged.
+    pub(crate) fn require_invertible(&self) -> Result<(), WideError> {
+        let invertible = match self {
+            Self::Identity => true,
+            Self::Gamma(g) => g.is_finite() && *g > 0.0,
+            Self::Table(t) => t.first().is_some_and(|first| t.iter().any(|v| v != first)),
+            Self::Param { p, .. } => p[0].is_finite() && p[0] > 0.0,
+        };
+        if invertible { Ok(()) } else { Err(WideError::NonInvertibleCurve) }
+    }
+
     /// Device -> linear (forward curve). Table input clamps to 0..1; parametric curves are unbounded and
     /// follow the ICC formulas, with 0 (types 0-2) where the power base is not positive.
     pub(crate) fn eval(&self, x: f64) -> f64 {
@@ -925,8 +948,14 @@ pub(crate) fn from_pcs(p: &ColorProfile, d: &WideProfileDescriptor, intent: Inte
     if !matrix_capable(p, d) {
         return Err(WideError::MissingIntentTable);
     }
+    // A destination TRC is inverted, so it must be invertible (ICC.1:2022 Annex F.2/F.3, `Curve::require_invertible`);
+    // refused here, at plan time, before any pixel is touched and before anything is cached.
     Ok(match d.device {
-        DeviceSpace::Gray => FromPcs::Gray(Curve::from_mox(p.gray_trc.as_ref().expect("checked"))?),
+        DeviceSpace::Gray => {
+            let curve = Curve::from_mox(p.gray_trc.as_ref().expect("checked"))?;
+            curve.require_invertible()?;
+            FromPcs::Gray(curve)
+        }
         _ => {
             let mut inv = inverse3(p.colorant_matrix().v).ok_or(WideError::SingularMatrix)?;
             for row in &mut inv {
@@ -934,7 +963,11 @@ pub(crate) fn from_pcs(p: &ColorProfile, d: &WideProfileDescriptor, intent: Inte
                     *v *= w;
                 }
             }
-            FromPcs::Matrix { inv, trc: trc3(p).expect("checked") }
+            let trc = trc3(p).expect("checked");
+            for curve in &trc {
+                curve.require_invertible()?;
+            }
+            FromPcs::Matrix { inv, trc }
         }
     })
 }

@@ -10,16 +10,33 @@
 //! * every request: a transient lease for the per-chunk digest buffer, the Observe frame and the request
 //!   strings, and the output lease, which travels with the returned `AdmittedWideTransform`.
 //!
-//! The byte counts are conservative upper bounds of requested owned allocations derived from the ICC tag
-//! table before parsing (not allocator bookkeeping or RSS):
+//! What is charged, exactly. The byte counts are upper bounds of REQUESTED owned allocations, derived from the ICC
+//! tag table before parsing; the unit is the allocator request size (the unit tests/wide_heap.rs measures with a
+//! counting global allocator), not allocator bookkeeping, stack frames or RSS. "Stored bytes" of a profile are its
+//! length plus the sum of its tag sizes (a tag that shares data with another counts once per referencing tag):
+//! * provider lease: exact, not a bound (actor strings, the plan-cache vector, the lease vector);
 //! * parse (moxcms `ColorProfile`): every tag decodes to at most `PARSE_FACTOR` times its stored size (u8
-//!   and u16 tables keep their width, text widens at most 2x), plus `PARSE_FIXED` per profile; tags that
-//!   share data are counted once per referencing tag;
+//!   and u16 tables keep their width, text widens at most 2x), plus `PARSE_FIXED` per profile;
 //! * plan (Prism stages, f64): a stored table value becomes at most one f64 per stored byte (u8 -> 8 bytes),
 //!   and a fused pair clones its curves once more, so `PLAN_FACTOR` = 8 per stored byte covers both, plus
 //!   `PLAN_FIXED` per profile;
 //! * black point compensation may build up to four extra stages while planning: `BPC_STAGES` x the plan
-//!   bound, plus the 256-point ramp.
+//!   bound, plus the 256-point ramp;
+//! * request: the chunk digest staging buffer, the Observe frame bound and the request strings; output: the
+//!   output vector (count x channels x 4) and the receipt's profile-id strings (x4).
+//!
+//! Measured against those charges (tests/wide_heap.rs: leased_bytes_cover_the_measured_heap_per_lease_kind_for_synthetic_families
+//! and leased_bytes_cover_the_measured_heap_for_installed_cmyk_profiles): across 10 synthetic profile families
+//! (matrix/TRC pair, v2 `curv` gamma, 65 536-entry `curv` tables, 16-bit `mAB `, 16-bit and 8-bit CMYK CLUT tables
+//! as source and destination, BPC on, perceptual and relative) and 12 installed CMYK conversions (SWOP, FOGRA39,
+//! GRACoL as source and destination), the peak heap of every call and the heap that stays alive (output, plan,
+//! job receipt) stayed within the matching lease. Measured / leased: the provider lease 1.00 (exact) and the
+//! output vector 1.00 (0.84-0.87 at 100 pixels with the receipt strings charged 4x); the plan lease 0.75 for
+//! `curv` tables at the parse limit on both sides, 0.0005-0.24 for the other families; the build transient
+//! 0.02-0.32 (0.32 is the `mAB ` case without BPC, the BPC cases charge 4 extra plan stages); the request
+//! transient 0.29-0.35. The parse, plan and build leases therefore over-reserve; only the provider and output
+//! leases are exact, and no lease claims the exact heap of a call. The measured regions exclude the caller's
+//! own ledger and sink.
 //!
 //! Requests are bounded by `MAX_WIDE_PIXELS`; callers wanting smaller resident output split their frame into
 //! several requests, each charged separately, or use a job (`prepare_job`) whose bands live in caller buffers.

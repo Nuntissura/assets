@@ -235,6 +235,29 @@ impl Judge {
             (false, None) => {}
         }
     }
+    /// A combination registered under DIV-ABS-V2-DISPLAY-WTPT-001 is only an expected failure while the attribution
+    /// holds, so the attribution is asserted (R6 review A: the re-attribution was a printed diagnostic, not a gate):
+    /// (1) the same engine with the v2 display `wtpt` forced to D50 (lcms2's reading) passes THIS combination's
+    /// gate, and (2) the receipt of the failing run names the divergence (`absolute.divergence`).
+    fn prove_wtpt_attribution(&mut self, iname: &str, bpc: bool, forced: Option<&Stats>, absolute: AbsoluteReport) {
+        if known_finding(self.id, iname, bpc) != Some(ABS_V2_DISPLAY_WTPT_DIVERGENCE) {
+            return;
+        }
+        match forced {
+            Some(s) if !self.broken(s) => eprintln!(
+                "ORACLE_T1_ATTRIBUTION {} {iname} bpc={bpc}: with the v2 display wtpt read as D50 the engine passes (mean {:.4} max {:.4})",
+                self.id, s.mean, s.max
+            ),
+            Some(s) => self.failures.push(format!(
+                "{ABS_V2_DISPLAY_WTPT_DIVERGENCE} is not the cause of {iname} bpc={bpc}: with wtpt forced to D50 the engine still exceeds the gate (mean {:.4} max {:.4}; limits mean {} max {})",
+                s.mean, s.max, self.mean_limit, self.max_limit
+            )),
+            None => self.failures.push(format!("{iname} bpc={bpc}: the D50-wtpt attribution run was refused")),
+        }
+        if absolute.divergence != Some(ABS_V2_DISPLAY_WTPT_DIVERGENCE) || absolute.media_white_rule != MEDIA_WHITE_RULE_WTPT_AS_WRITTEN {
+            self.failures.push(format!("{iname} bpc={bpc}: registered under {ABS_V2_DISPLAY_WTPT_DIVERGENCE} but the receipt says {absolute:?}"));
+        }
+    }
     fn finish(self) {
         for e in &self.expected_fails {
             eprintln!("ORACLE_T1_FINDING {}: {e}", self.id);
@@ -322,7 +345,8 @@ fn run_pair(id: &'static str) {
             let clipped = out.pixels.iter().filter(|v| **v < -1e-4 || **v > 1.0001).count();
             // Absolute colorimetric attribution: lcms2 reads the wtpt of a v2 display profile as D50. Re-run the
             // engine with wtpt forced to D50 on such profiles; agreement then names the media-white convention.
-            let abs_d50 = if iname == "absolute_colorimetric" && !bpc {
+            // The statistics are judged below for every combination registered under DIV-ABS-V2-DISPLAY-WTPT-001.
+            let abs_d50 = if iname == "absolute_colorimetric" {
                 let patch = |key: &str, b: &Vec<u8>| {
                     let v2_display = doc.get("profiles").get(key).get("icc_version").str().starts_with('2')
                         && doc.get("profiles").get(key).get("class").str() == "mntr";
@@ -330,10 +354,9 @@ fn run_pair(id: &'static str) {
                 };
                 let (ps, pd) = (patch(src_key, src), patch(dst_key, dst));
                 let mut diag = WideEngine::new(ctx.actor.clone(), 2).unwrap();
-                run(&mut diag, &ctx, &ps, &pd, &patches, Intent::AbsoluteColorimetric, false).ok().map(|o| {
+                run(&mut diag, &ctx, &ps, &pd, &patches, Intent::AbsoluteColorimetric, bpc).ok().map(|o| {
                     let lab = device_to_lab(&mut leg, &ctx, dst, &target, &o.pixels);
-                    let st = stats(&lab, &ref_lab_same, kept.as_deref());
-                    (st.mean, st.max)
+                    stats(&lab, &ref_lab_same, kept.as_deref())
                 })
             } else {
                 None
@@ -352,13 +375,14 @@ fn run_pair(id: &'static str) {
                 r.bpc.destination_black_lstar,
                 r.bpc.scale,
                 r.absolute.scale,
-                abs_d50,
+                abs_d50.as_ref().map(|s| (s.mean, s.max)),
                 if judge.broken(&main) { "EXCEEDS" } else { "ok" }
             );
             if judge.broken(&main) {
                 eprintln!("ORACLE_T1_WORST {id} {iname} bpc={bpc}: {}", worst3(&main, cin, cout, &patches, &out.pixels, ref_out));
             }
             judge.record(iname, bpc, &main);
+            judge.prove_wtpt_attribution(iname, bpc, abs_d50.as_ref(), r.absolute);
         }
         judge.finish();
     });
@@ -451,6 +475,24 @@ fn run_dst_leg(id: &'static str, key: &'static str) {
                 kept.as_deref(),
             );
             let clipped = out.pixels.iter().filter(|v| **v < -1e-4 || **v > 1.0001).count();
+            // Same attribution as the pairs: the destination's v2 display wtpt read as D50 (lcms2), judged for the
+            // combinations registered under DIV-ABS-V2-DISPLAY-WTPT-001.
+            let forced = if iname == "absolute_colorimetric" {
+                let spec = doc.get("profiles").get(key);
+                let v2_display = spec.get("icc_version").str().starts_with('2') && spec.get("class").str() == "mntr";
+                let dest = if v2_display { with_d50_wtpt(&bytes[0]).unwrap_or_else(|| bytes[0].clone()) } else { bytes[0].clone() };
+                let mut diag = WideEngine::new(ctx.actor.clone(), 2).unwrap();
+                run_lab(&mut diag, &ctx, &dest, &lab, Intent::AbsoluteColorimetric, false).ok().map(|o| {
+                    stats(
+                        &device_to_lab(&mut evalr, &ctx, &bytes[0], &target, &o.pixels),
+                        &device_to_lab(&mut evalr, &ctx, &bytes[0], &target, &reference),
+                        kept.as_deref(),
+                    )
+                })
+            } else {
+                None
+            };
+            judge.prove_wtpt_attribution(iname, false, forced.as_ref(), out.receipt.absolute);
             eprintln!(
                 "ORACLE_T1 {{\"pair\":\"{id}\",\"class\":\"{}\",\"intent\":\"{iname}\",\"bpc\":false,\"patches\":{n},\"scored_patches\":{},\"de2000_mean\":{:.4},\"de2000_max\":{:.4},\"worst_patch\":{},\"out_of_range_values\":{clipped},\"verdict\":\"{}\"}}",
                 leg.get("class").str(),
@@ -560,4 +602,13 @@ fn every_fixture_pair_and_leg_has_a_test_and_provenance_is_recorded() {
     let synthetic =
         doc.get("profiles").keys().into_iter().filter(|k| doc.get("profiles").get(k).get("origin").str() == "synthetic").count();
     assert_eq!(synthetic, 3);
+}
+
+/// The registry id of the media-white divergence is the id the receipts carry (`AbsoluteReport::divergence`), and
+/// every registry entry that names it uses exactly that spelling.
+#[test]
+fn registry_divergence_id_is_the_one_the_receipt_carries() {
+    assert_eq!(ABS_V2_DISPLAY_WTPT_DIVERGENCE, "DIV-ABS-V2-DISPLAY-WTPT-001");
+    assert!(KNOWN_FINDINGS.iter().filter(|e| e.3.starts_with("DIV-ABS")).all(|e| e.3 == ABS_V2_DISPLAY_WTPT_DIVERGENCE));
+    assert!(KNOWN_FINDINGS.iter().any(|e| e.3 == ABS_V2_DISPLAY_WTPT_DIVERGENCE));
 }
