@@ -730,9 +730,11 @@ fn alias_type_disjoint_stale_cancel() {
             &cancel,
         )
         .unwrap();
-        // The override is written into instance 1's record, so its key is scoped to the instance.
+        // The proposal carries the whole successor instance, so it writes instance 1's whole record
+        // (PLR-046): the write footprint is the record key, not the edited field.
+        let instance_record = (id("SCIN", 1), String::new());
         let key = |n: u32, f: &str| (id("SCIN", 1), format!("override/{}/{f}", id("SLYR", n)));
-        assert_eq!(p.write_footprint, vec![key(4, "characters")]);
+        assert_eq!(p.write_footprint, vec![instance_record.clone()]);
         assert_eq!(p.read_footprint, vec![(id("SCMP", 12), String::new())]);
         assert_eq!(p.instance.overrides, vec![record(4, "characters", s("Hi"))]);
         assert_eq!(inst, before, "the caller's instance is untouched");
@@ -748,20 +750,22 @@ fn alias_type_disjoint_stale_cancel() {
         )
         .unwrap();
         let expected = BTreeMap::from([
-            (key(4, "characters"), 1u64),
+            (instance_record.clone(), 1u64),
             (key(3, "width"), 1),
             ((id("SCMP", 12), String::new()), 3),
         ]);
-        // Same property moved 1 -> 2: refused. Disjoint property (width 1 -> 9): admissible.
+        // A key outside the footprint (a part key of the record, width 1 -> 9): admissible, because
+        // a host moves the record key on every write into the record. The record key moved
+        // 1 -> 2 (another write into instance 1): refused.
         let mut current = expected.clone();
         current.insert(key(3, "width"), 9);
         assert_eq!(p.admit(&expected, &current), Ok(()));
-        current.insert(key(4, "characters"), 2);
+        current.insert(instance_record.clone(), 2);
         assert_eq!(
             p.admit(&expected, &current),
             Err(E::StaleProperty {
                 node_id: id("SCIN", 1),
-                field: format!("override/{}/characters", id("SLYR", 4))
+                field: String::new()
             })
         );
         // Record-level drift on the component definition read by the proposal is also stale.
@@ -1898,6 +1902,17 @@ fn design_refuses_repeated_ids() {
             }),
             Some(E::Duplicate(id("SVAR", 1)))
         );
+        // Instance ids are another Folio namespace (SMB-FOLIO-UNIQUENESS): the earlier index did not
+        // key by them and accepted the repeat; `Design::validate_with_instance` replaces the first
+        // record of an id, so the repeat is refused here with the other ids.
+        assert_eq!(
+            refused(&|fx| {
+                let i = instance(1, &id("SCMP", 12));
+                fx.records.component_instances.push(i.clone());
+                fx.records.component_instances.push(i);
+            }),
+            Some(E::Duplicate(id("SCIN", 1)))
+        );
         // The standalone variable table refuses the same repeat.
         let mut records = valid.records.clone();
         records.variables.push(records.variables[0].clone());
@@ -2031,5 +2046,82 @@ fn override_write_keys_are_scoped_to_the_instance() {
             a.admit(&expected, &current),
             Err(E::StaleProperty { .. })
         ));
+    });
+}
+
+#[test]
+fn concurrent_proposals_on_one_instance_conflict() {
+    bounded_case("concurrent_proposals_one_instance", || {
+        let fx = fixture();
+        let design = fx.design();
+        let (limits, cancel) = (Limits::default(), CancellationToken::default());
+        let propose = |instance_number: u32, node: u32, field: &str, value: StudioValue| {
+            propose_overrides(
+                &instance(instance_number, &id("SCMP", 12)),
+                &[OverrideEdit {
+                    node_id: id("SLYR", node),
+                    field: field.into(),
+                    value,
+                }],
+                &design,
+                &no_modes(),
+                3,
+                &limits,
+                &cancel,
+            )
+            .unwrap()
+        };
+        // Two proposals made from the same base revision edit DIFFERENT fields of instance 1. Each
+        // carries the whole successor instance, so accepting both would keep only the second one's
+        // edit (PLR-046): their write footprints must overlap.
+        let a = propose(1, 4, "characters", s("Hi"));
+        let b = propose(1, 3, "fills", color(1.0, 0.0, 0.0, 1.0));
+        assert_eq!(a.instance.overrides, vec![record(4, "characters", s("Hi"))]);
+        assert_eq!(
+            b.instance.overrides,
+            vec![record(3, "fills", color(1.0, 0.0, 0.0, 1.0))]
+        );
+        let record_key = (id("SCIN", 1), String::new());
+        assert_eq!(a.write_footprint, vec![record_key.clone()]);
+        assert_eq!(b.write_footprint, vec![record_key.clone()]);
+
+        // Both are admissible against the revisions they were made at.
+        let seen: BTreeMap<(String, String), u64> = a
+            .footprint()
+            .into_iter()
+            .chain(b.footprint())
+            .map(|k| (k, 1))
+            .collect();
+        assert_eq!(a.admit(&seen, &seen), Ok(()));
+        assert_eq!(b.admit(&seen, &seen), Ok(()));
+        // The host accepts `a` and moves the keys it wrote: `b` is now stale (accepting it would
+        // replace the instance record without `a`'s edit), and so is a repeat of `a`.
+        let mut after_a = seen.clone();
+        for k in &a.write_footprint {
+            after_a.insert(k.clone(), 2);
+        }
+        let stale = Err(E::StaleProperty {
+            node_id: id("SCIN", 1),
+            field: String::new(),
+        });
+        assert_eq!(b.admit(&seen, &after_a), stale.clone());
+        assert_eq!(a.admit(&seen, &after_a), stale);
+        // Re-proposed from the accepted record, `b` writes the same key at its new revision.
+        let mut rebased = after_a.clone();
+        rebased.insert(record_key, 2);
+        assert_eq!(b.admit(&rebased, &after_a), Ok(()));
+
+        // A proposal on another instance of the same component writes another record: not in conflict.
+        let other = propose(2, 4, "characters", s("Hi"));
+        assert_eq!(other.write_footprint, vec![(id("SCIN", 2), String::new())]);
+        let mut with_other = after_a.clone();
+        for k in other.footprint() {
+            with_other.entry(k).or_insert(1);
+        }
+        let mut seen_other = seen.clone();
+        for k in other.footprint() {
+            seen_other.entry(k).or_insert(1);
+        }
+        assert_eq!(other.admit(&seen_other, &with_other), Ok(()));
     });
 }

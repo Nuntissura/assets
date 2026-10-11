@@ -14,8 +14,10 @@
 //! Folio's spacing and padding are; `RectPt`/`SizePt` are points when the document unit is `pt`.
 //!
 //! [`Design::new`] indexes and refuses only a repeated id (`Duplicate`), the one defect an index
-//! cannot re-check later: a lookup by a repeated id would pick one record silently. It runs no other
-//! validation (test `design_refuses_repeated_ids`). [`Design::validate`] is the validation step
+//! cannot re-check later: a lookup by a repeated id would pick one record silently. The id
+//! namespaces are Folio's (`hsk_studio_folio::check_identity_uniqueness`, the single owner,
+//! CX-CAP-001); this crate keeps no copy of the rules. `new` runs no other validation (test
+//! `design_refuses_repeated_ids`). [`Design::validate`] is the validation step
 //! (Folio, then the crate-local rules). The evaluators re-check what they depend on, so an
 //! unvalidated set with these defects yields a typed refusal: alias cycles and alias type clashes
 //! (test `alias_type_disjoint_stale_cancel`), a missing mode value (`override_rules_and_properties`),
@@ -28,7 +30,7 @@ use hsk_studio_folio::{
     Budget, ComponentPropertyType, Parent, ResolutionIssue, Resolver, StudioComponent,
     StudioComponentInstance, StudioComponentProperty, StudioComponentSet, StudioDesignRecords,
     StudioDocument, StudioLayer, StudioNodeDesign, StudioValue, Unresolved,
-    validate_design_records,
+    check_identity_uniqueness, validate_design_records,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,30 +82,18 @@ pub struct Design<'a> {
 
 impl<'a> Design<'a> {
     /// Indexes the inputs and refuses a repeated id with `Duplicate`, so every lookup names exactly
-    /// one record: document node ids (artboards, page spreads and layers share one namespace, as in
-    /// Folio), design entry node ids, component and set ids (one namespace), the container layer of a
-    /// component or set (reported with the component or set id, as Folio does), variable collection
-    /// ids and variable ids. Nothing else is validated here; see [`Design::validate`].
+    /// one record. The namespaces and the reported id are Folio's
+    /// (`hsk_studio_folio::check_identity_uniqueness`): document node ids (artboards, page spreads and
+    /// layers share one namespace), design entry node ids, component and set ids (one namespace), the
+    /// container layer of a component or set (reported with the component or set id), variable
+    /// collection ids, variable ids, component instance ids and paint style ids. Nothing else is
+    /// validated here; see [`Design::validate`].
     pub fn new(
         document: &'a StudioDocument,
         records: &'a StudioDesignRecords,
         local: &'a LocalContent,
     ) -> R<Self> {
-        let mut node_ids: BTreeSet<&str> = BTreeSet::new();
-        for id in document
-            .artboards
-            .iter()
-            .map(|a| a.artboard_id.as_str())
-            .chain(
-                document
-                    .page_spreads
-                    .iter()
-                    .map(|s| s.page_spread_id.as_str()),
-            )
-            .chain(document.layers.iter().map(|l| l.layer_id.as_str()))
-        {
-            unique(&mut node_ids, id, id)?;
-        }
+        check_identity_uniqueness(document, records).map_err(E::from)?;
         let mut layers: BTreeMap<&str, &StudioLayer> = BTreeMap::new();
         let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for l in &document.layers {
@@ -113,25 +103,18 @@ impl<'a> Design<'a> {
                 children.entry(p.node_id.as_str()).or_default().push(id);
             }
         }
+        // Every id below is unique (checked above), so a plain insert never replaces a record.
         let mut designs: BTreeMap<&str, &StudioNodeDesign> = BTreeMap::new();
         for n in &records.nodes {
-            if designs.insert(n.node.node_id.as_str(), n).is_some() {
-                return Err(E::Duplicate(n.node.node_id.clone()));
-            }
+            designs.insert(n.node.node_id.as_str(), n);
         }
-        let mut definition_ids: BTreeSet<&str> = BTreeSet::new();
-        let mut container_layers: BTreeSet<&str> = BTreeSet::new();
         let mut components: BTreeMap<&str, &StudioComponent> = BTreeMap::new();
         for k in &records.components {
-            unique(&mut definition_ids, &k.component_id, &k.component_id)?;
-            unique(&mut container_layers, &k.layer_id, &k.component_id)?;
             components.insert(k.component_id.as_str(), k);
         }
         let mut sets: BTreeMap<&str, &StudioComponentSet> = BTreeMap::new();
         let mut set_by_layer: BTreeMap<&str, &StudioComponentSet> = BTreeMap::new();
         for s in &records.component_sets {
-            unique(&mut definition_ids, &s.component_id, &s.component_id)?;
-            unique(&mut container_layers, &s.layer_id, &s.component_id)?;
             sets.insert(s.component_id.as_str(), s);
             set_by_layer.insert(s.layer_id.as_str(), s);
         }
@@ -158,7 +141,7 @@ impl<'a> Design<'a> {
             components,
             sets,
             member_of,
-            vars: VariableTable::new(&records.variable_collections, &records.variables)?,
+            vars: VariableTable::index(&records.variable_collections, &records.variables),
         })
     }
 

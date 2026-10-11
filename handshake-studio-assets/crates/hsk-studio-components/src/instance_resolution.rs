@@ -28,6 +28,7 @@ use hsk_studio_folio::{
     ComponentPropertyType as PropType, StudioComponent, StudioComponentInstance,
     StudioComponentProperty, StudioComponentSet, StudioInstanceProperty, StudioOverrideRecord,
     StudioPropertyValue, StudioValue, StudioVariable, StudioVariableCollection, VariableType,
+    check_variable_identity_uniqueness,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,18 +38,11 @@ pub fn is_overridable(field: &str) -> bool {
 }
 
 const MAX_TEXT: usize = 65_536;
-/// Footprint keys: `(record_id, "")` record level, `(instance_id, "property/<name>")` and
-/// `(instance_id, "override/<node_id>/<field>")`: an override is written into its instance record,
-/// so two instances of one component have disjoint write keys (STU-ARC-011; test
-/// `override_write_keys_are_scoped_to_the_instance`).
+/// Footprint keys: `(record_id, "")` is the record level and `(instance_id, "property/<name>")` a
+/// part of an instance record. An override proposal carries the whole successor instance record, so
+/// it writes the record key `(instance_id, "")` (STU-ARC-011; tests
+/// `concurrent_proposals_on_one_instance_conflict`, `override_write_keys_are_scoped_to_the_instance`).
 type Footprint = Vec<(String, String)>;
-
-fn override_key(instance_id: &str, node_id: &str, field: &str) -> (String, String) {
-    (
-        instance_id.to_owned(),
-        format!("override/{node_id}/{field}"),
-    )
-}
 
 /// Inserts `key` into `seen`; a repeat is `Duplicate(reported)`.
 pub(crate) fn unique<'a>(seen: &mut BTreeSet<&'a str>, key: &'a str, reported: &str) -> R<()> {
@@ -114,7 +108,8 @@ pub(crate) fn check_value(v: &StudioValue, target: &str, alias_ok: bool) -> R<()
 /// Borrowed lookup over Folio variable collections and variables. Built from the record vectors
 /// directly so an evaluator can be run (and refuse typed) on a set that Folio's validator rejects;
 /// only a repeated collection or variable id is refused here (`Duplicate`), because a lookup by that
-/// id would otherwise pick one record silently.
+/// id would otherwise pick one record silently. The rule is Folio's
+/// (`hsk_studio_folio::check_variable_identity_uniqueness`); this crate keeps no copy.
 #[derive(Clone, Debug, Default)]
 pub struct VariableTable<'a> {
     collections: BTreeMap<&'a str, &'a StudioVariableCollection>,
@@ -125,22 +120,25 @@ impl<'a> VariableTable<'a> {
         collections: &'a [StudioVariableCollection],
         variables: &'a [StudioVariable],
     ) -> R<Self> {
-        let mut table = Self::default();
-        for c in collections {
-            if table
-                .collections
-                .insert(c.collection_id.as_str(), c)
-                .is_some()
-            {
-                return Err(E::Duplicate(c.collection_id.clone()));
-            }
+        check_variable_identity_uniqueness(collections, variables).map_err(E::from)?;
+        Ok(Self::index(collections, variables))
+    }
+    /// The lookup without the uniqueness pass, for a caller that has already run it (`Design::new`
+    /// runs Folio's full pass first): a repeated id would keep the last record.
+    pub(crate) fn index(
+        collections: &'a [StudioVariableCollection],
+        variables: &'a [StudioVariable],
+    ) -> Self {
+        Self {
+            collections: collections
+                .iter()
+                .map(|c| (c.collection_id.as_str(), c))
+                .collect(),
+            variables: variables
+                .iter()
+                .map(|v| (v.variable_id.as_str(), v))
+                .collect(),
         }
-        for v in variables {
-            if table.variables.insert(v.variable_id.as_str(), v).is_some() {
-                return Err(E::Duplicate(v.variable_id.clone()));
-            }
-        }
-        Ok(table)
     }
     pub fn variable(&self, id: &str) -> Option<&'a StudioVariable> {
         self.variables.get(id).copied()
@@ -803,7 +801,13 @@ pub struct OverrideProposal {
     pub base_revision: u64,
     pub instance: StudioComponentInstance,
     pub resolution: Resolution,
-    /// `(instance_id, "override/<node_id>/<field>")` per edited field.
+    /// Exactly `[(instance_id, "")]`: `instance` is the whole successor record, so accepting the
+    /// proposal replaces the whole record and any concurrent change to it (a second proposal, a
+    /// property edit) is lost unless it is detected. Detection holds when the host moves the record
+    /// key `(instance_id, "")` on every accepted write into that record, and a writer of only a part
+    /// of the record (a field-level key such as `(instance_id, "property/<name>")`) moves the record
+    /// key as well. Two instances of one component write different records, so their keys stay
+    /// disjoint.
     pub write_footprint: Vec<(String, String)>,
     /// Keys the edited fields' values depend on (definition record, variables, properties).
     pub read_footprint: Vec<(String, String)>,
@@ -877,23 +881,22 @@ pub fn propose_overrides(
         .iter()
         .map(|e| (e.node_id.as_str(), e.field.as_str()))
         .collect();
-    // The overrides live in this instance's record: the write keys are scoped to the instance.
-    let write: BTreeSet<(String, String)> = edited
-        .iter()
-        .map(|(node_id, field)| override_key(&inst.instance_id, node_id, field))
-        .collect();
+    // The proposal carries the whole successor instance, so it writes the whole instance record
+    // (PLR-046): a field-level write key would let two proposals that edit different fields of one
+    // instance both be admitted, and the second to be accepted would replace the first one's edit.
+    let write = (inst.instance_id.clone(), String::new());
     let mut read = BTreeSet::new();
     for f in &resolution.fields {
         if edited.contains(&(f.node_id.as_str(), f.field.as_str())) {
             read.extend(f.reads.iter().cloned());
         }
     }
-    read.retain(|k| !write.contains(k));
+    read.remove(&write);
     Ok(OverrideProposal {
         base_revision,
         instance: next,
         resolution,
-        write_footprint: write.into_iter().collect(),
+        write_footprint: vec![write],
         read_footprint: read.into_iter().collect(),
     })
 }
