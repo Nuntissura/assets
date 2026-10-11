@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-generation: 11
+generation: 12
 phase: active
 owner: coder_02
 changed_files:
@@ -50,6 +50,12 @@ changed_files:
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/spec-modules/master-spec.md
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/spec-modules/roadmap.md
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3/specification.yaml
 - repo-governance/taskboard/taskboard.yaml
 - repo-governance/topology/links.yaml
 - repo-governance/topology/product.yaml
@@ -106,6 +112,17 @@ proof:
     added with explicit extent assertion, latermax100/minima500 unchanged. Two JSONfloats require explicit allowedAppend
     return; hostpolicy supplied in fixtures. Only2testfiles changed; production unchanged; runtime pending.
   product_content_hash: 30d4c577181407c3d8bef8d5e1fd88b97ad1e4790bd0a805385cca182b9d39c8
+- kind: compile_and_behavior
+  source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  observed: All-feature/all-target check passed0.25s;49 tests passed; both examples passed; default-core505 check
+    valid unchanged-input reuse; independent PASS_SCOPED_RUNTIME
+- kind: candidate_binding
+  source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  observed: 31 published product blobs matched at proof; hash30d4c577; later README-only proof update leaves all30
+    runtime input blobs unchanged
+- kind: specification_status
+  observed: Spec10 records eight partial areas; all99 full accepted requirement records unchanged; exact six-file
+    published v9 bundle archived
 blockers: []
-next_action: Publish2test corrective candidate; focused layout-recovery/JSON-recovery gates then final workspace
-  and examples
+next_action: Publish evaluated009 outcome and verify exact remote/source containment; then settle done state and
+  prepare010

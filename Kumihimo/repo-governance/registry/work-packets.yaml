@@ -66,8 +66,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
-  next_action: Publish2test corrective candidate; focused layout-recovery/JSON-recovery gates then final workspace
-    and examples
+  next_action: Publish evaluated009 outcome and verify exact remote/source containment; then settle done state and
+    prepare010
   blockers: []
 - wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
   title: Implement replaceable content and lifecycle contracts

@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 29
+  version: 30
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -23,7 +23,7 @@ project_profile:
   - aarch64 Windows development host
   product_workspace:
     manifest_file: product/Cargo.toml
-  implementation_status: tabs_and_recovery_candidate_runtime_pending
+  implementation_status: ownership_layout_and_recovery_packets_proven
   gui_applicability: planned
   test_entrypoint: product/Cargo.toml
   build_environment:
@@ -43,7 +43,7 @@ canonical_commands:
 rule_sets: {}
 build_matrix:
   matrix_id: BM-KUMIHIMO-001
-  revision: 3
+  revision: 4
   entries:
   - entry_id: BM-KUM-CORE-WINX64-001
     wp_ref: WP-KUM-007-core-model-v1
@@ -85,6 +85,31 @@ build_matrix:
     - native popouts
     - performance
     - persistent recovery
+    - provider engines
+  - entry_id: BM-KUM-RECOVERY-WINX64-001
+    wp_ref: WP-KUM-009-tabs-and-layout-recovery-v1
+    source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+    package_manifest: product/Cargo.toml
+    package_versions:
+      kumihimo-core: 0.3.0
+      kumihimo-layout-json: 0.1.0
+    snapshot_version: 3
+    saved_schema: 1
+    observed_target: x86_64-pc-windows-msvc
+    rustc_version: 1.91.1
+    proof:
+      default_core_check: passed at50563242; unchanged runtime/config inputs independently reconciled
+      all_feature_all_target_check: passed atc387f9e4
+      tests: 49 passed:1private/9ownership/12layout/7layout-recovery/7tabs/13JSON
+      workspace_example: generation11/panes2/content640x336 after24 topstrip
+      json_example: schema1/551bytes/freshgeneration1
+    not_proven:
+    - ARM64 execution
+    - WASM
+    - GUI
+    - native popouts
+    - performance
+    - host atomic filesystem/interrupted-save recovery
     - provider engines
   policy: Record only actual implemented feature proof; no mandatory pillar universe
 dependency_policy: {}

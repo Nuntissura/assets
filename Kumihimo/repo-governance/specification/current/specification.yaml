@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 9
-  revision: 9
+  version: 10
+  revision: 10
   status: accepted_direction_implementation_authorized
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 9
-    digest: sha256:f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b
+    revision: 10
+    digest: sha256:afe22dc6fd627133ef828b0321ac44f717d04390a21b092035dce722c9ad65d3
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -345,8 +345,8 @@ storage:
     - DEC-KUM-OPTIONAL-IDEAS
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
-    revision: 9
-    digest: sha256:b2c686d9ba6058cc996b156bd57182c7e776e1899d86c15ee741adebfe32c504
+    revision: 10
+    digest: sha256:188628b5b451e54b5337ce4fc463dd1bd9d10425cbbaadd18c3998dbe23f16dd
     semantic_entity_refs:
     - TOPIC-KUM-ROADMAP
   document_record_required_fields:
@@ -572,10 +572,17 @@ change_history:
   - TOPIC-KUM-BOUNDARIES
   - TOPIC-KUM-CHOICES
   - TOPIC-KUM-ROADMAP
+- revision: 10
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
 design_status:
-  accepted: Complete declared core behavior and ownership boundaries; all product features remain planned.
-  pending: Choose and implement adapters; prove actual GUI, x64/ARM build paths, web behavior, rendering integration
-    and Servo capabilities.
+  accepted: Eight feature areas partially implemented at the proven headless boundary; all full requirement acceptances
+    remain open.
+  pending: Concrete GUI/native/web adapters, host storage, lifecycle/engines, ARM/WASM and performance acceptance.
 topic_format_contract:
   rule_refs:
   - BR-SPEC-FORMAT-001

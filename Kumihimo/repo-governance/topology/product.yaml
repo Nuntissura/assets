@@ -1,5 +1,5 @@
 kind: product_topology
-implementation_status: tabs_and_recovery_candidate_runtime_pending
+implementation_status: ownership_layout_and_recovery_packets_proven
 nodes:
 - id: KUM-PRODUCT
   path: product/
@@ -42,17 +42,17 @@ nodes:
   responsibility: Executed public consumer packing, geometry, tool docking, preview, float and admission assertions
 - id: KUM-TAB-CONTRACTS
   path: product/kumihimo-core/tests/tabs_contracts.rs
-  responsibility: Public tab/group/pin/close/query contract assertions; execution pending
+  responsibility: Public tab/group/pin/close/query contract assertions; executed atc387f9e4
 - id: KUM-RECOVERY-CONTRACTS
   path: product/kumihimo-core/tests/layout_recovery_contracts.rs
-  responsibility: Public layout-action and saved recovery assertions; execution pending
+  responsibility: Public layout-action and saved recovery assertions; executed atc387f9e4
 - id: KUM-LAYOUT-JSON
   manifest_ref: product/kumihimo-layout-json/Cargo.toml
   entrypoint: product/kumihimo-layout-json/src/lib.rs
   responsibility: Optional bounded schema1 JSON codec and save stamp; no filesystem or engine effects
 - id: KUM-JSON-CONTRACTS
   path: product/kumihimo-layout-json/tests/recovery.rs
-  responsibility: Public codec/restore/admission assertions; execution pending
+  responsibility: Public codec/restore/admission assertions; executed atc387f9e4
 - id: KUM-JSON-EXAMPLE
   path: product/kumihimo-layout-json/examples/roundtrip.rs
   responsibility: Quiet bounded save/restore console example
