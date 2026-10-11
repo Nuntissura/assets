@@ -1,37 +1,15 @@
-//! MotionJS-local consumer over the deterministic scripted test double (no JavaScript engine is
-//! linked yet). `motion-js-consumer --eval "num:3" [--engine scripted] [--fuel N] [--dimension N]`
+//! MotionJS-local consumer. Default engine: the deterministic scripted test double (not JavaScript).
+//! With `--features quickjs`: `--engine quickjs` evaluates real JavaScript in-process.
+//! `motion-js-consumer --eval "num:3" [--engine scripted|quickjs] [--fuel N] [--dimension N]`
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_motion::{EvalTick, ExprRequest, ExpressionProvider, Fuel, HostRead, NoHost};
 use hsk_studio_motion_js::*;
 use std::env;
 
-fn run() -> Result<(), String> {
-    let args: Vec<_> = env::args().skip(1).collect();
-    if args == ["--descriptor"] || args == ["--help"] {
-        println!("{DESCRIPTOR}");
-        return Ok(());
-    }
-    let (mut source, mut fuel, mut dimension) = (None, 1000_u64, 1_usize);
-    let mut i = 0;
-    while i < args.len() {
-        let value = args.get(i + 1).ok_or("missing_argument")?;
-        match args[i].as_str() {
-            "--eval" => source = Some(value.clone()),
-            "--engine" => match value.as_str() {
-                "scripted" => {}
-                "boa" | "quickjs" => return Err("engine_unavailable".into()),
-                _ => return Err("unknown_engine".into()),
-            },
-            "--fuel" => fuel = value.parse().map_err(|_| "invalid_fuel")?,
-            "--dimension" => dimension = value.parse().map_err(|_| "invalid_dimension")?,
-            _ => return Err("unknown_argument".into()),
-        }
-        i += 2;
-    }
-    let source = source.ok_or("missing_eval")?;
-    let provider = MotionJsProvider::new(ScriptedEngine::new(), Quotas::default());
+fn evaluate<E: Engine>(engine: E, quotas: Quotas, source: &str, fuel: u64, dimension: usize) {
+    let provider = MotionJsProvider::new(engine, quotas);
     let request = ExprRequest {
-        source: &source,
+        source,
         revision: 0,
         tick: EvalTick::new(0),
         seed: 0,
@@ -44,6 +22,45 @@ fn run() -> Result<(), String> {
     println!("result={result:?}");
     println!("fuel_used={} stats={:?}", fuel.used(), provider.stats());
     println!("retire={:?}", provider.retire());
+}
+
+fn run() -> Result<(), String> {
+    let args: Vec<_> = env::args().skip(1).collect();
+    if args == ["--descriptor"] || args == ["--help"] {
+        println!("{DESCRIPTOR}");
+        return Ok(());
+    }
+    let (mut source, mut fuel, mut dimension, mut engine) = (None, 1000_u64, 1_usize, "scripted");
+    let mut i = 0;
+    while i < args.len() {
+        let value = args.get(i + 1).ok_or("missing_argument")?;
+        match args[i].as_str() {
+            "--eval" => source = Some(value.clone()),
+            "--engine" => {
+                engine = match value.as_str() {
+                    "scripted" => "scripted",
+                    "quickjs" => "quickjs",
+                    "boa" => return Err("engine_unavailable".into()),
+                    _ => return Err("unknown_engine".into()),
+                }
+            }
+            "--fuel" => fuel = value.parse().map_err(|_| "invalid_fuel")?,
+            "--dimension" => dimension = value.parse().map_err(|_| "invalid_dimension")?,
+            _ => return Err("unknown_argument".into()),
+        }
+        i += 2;
+    }
+    let source = source.ok_or("missing_eval")?;
+    let quotas = Quotas::default();
+    match engine {
+        "scripted" => evaluate(ScriptedEngine::new(), quotas, &source, fuel, dimension),
+        #[cfg(feature = "quickjs")]
+        "quickjs" => {
+            let engine = QuickJsEngine::new(&quotas).map_err(|error| error.code().to_owned())?;
+            evaluate(engine, quotas, &source, fuel, dimension);
+        }
+        _ => return Err("engine_unavailable".into()),
+    }
     Ok(())
 }
 
