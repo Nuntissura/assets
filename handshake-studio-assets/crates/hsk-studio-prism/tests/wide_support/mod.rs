@@ -336,3 +336,29 @@ pub fn run_lab(
     request.source = WideSource::Lab;
     engine.transform(&request, &CancellationToken::default(), &mut Collect(Vec::new()))
 }
+/// CIELAB (D50) to XYZ.
+pub fn lab_to_xyz(l: f64, a: f64, b: f64) -> [f64; 3] {
+    let fy = (l + 16.0) / 116.0;
+    let (fx, fz) = (fy + a / 500.0, fy - b / 200.0);
+    let inv = |t: f64| {
+        if t > 6.0 / 29.0 {
+            t * t * t
+        } else {
+            3.0 * (6.0f64 / 29.0).powi(2) * (t - 4.0 / 29.0)
+        }
+    };
+    [D50[0] * inv(fx), D50[1] * inv(fy), D50[2] * inv(fz)]
+}
+/// XYZ (D50) to unclamped linear sRGB (Bruce Lindbloom's D50 inverse matrix).
+pub fn xyz_to_linear_srgb(xyz: [f64; 3]) -> [f64; 3] {
+    let m = [
+        [3.1338561, -1.6168667, -0.4906146],
+        [-0.9787684, 1.9161415, 0.0334540],
+        [0.0719453, -0.2289914, 1.4052427],
+    ];
+    m.map(|r| r[0] * xyz[0] + r[1] * xyz[1] + r[2] * xyz[2])
+}
+/// XYZ (D50) to encoded sRGB clamped to 0..1.
+pub fn xyz_to_srgb(xyz: [f64; 3]) -> [f64; 3] {
+    xyz_to_linear_srgb(xyz).map(|v| srgb_encode(v.clamp(0.0, 1.0)))
+}

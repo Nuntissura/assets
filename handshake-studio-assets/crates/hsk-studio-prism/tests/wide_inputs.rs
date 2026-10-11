@@ -21,18 +21,9 @@ fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
         Err(e) => panic!("case {name} exceeded/lost 30s deadline: {e}"),
     }
 }
-/// Lab (D50) -> encoded sRGB, f64 (Lindbloom D50 inverse).
+/// Lab (D50) -> encoded sRGB, f64.
 fn lab_to_srgb(l: f64, a: f64, b: f64) -> [f64; 3] {
-    let fy = (l + 16.0) / 116.0;
-    let (fx, fz) = (fy + a / 500.0, fy - b / 200.0);
-    let inv = |t: f64| if t > 6.0 / 29.0 { t * t * t } else { 3.0 * (6.0f64 / 29.0).powi(2) * (t - 4.0 / 29.0) };
-    let xyz = [D50[0] * inv(fx), D50[1] * inv(fy), D50[2] * inv(fz)];
-    let m = [
-        [3.1338561, -1.6168667, -0.4906146],
-        [-0.9787684, 1.9161415, 0.0334540],
-        [0.0719453, -0.2289914, 1.4052427],
-    ];
-    m.map(|row| srgb_encode((row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2]).clamp(0.0, 1.0)))
+    xyz_to_srgb(lab_to_xyz(l, a, b))
 }
 fn gray_profile(gamma: f64) -> Vec<u8> {
     assemble(
@@ -65,8 +56,8 @@ fn gray_trc_and_lab_inputs_reach_the_working_rgb_space() {
         assert_eq!((out.receipt.source_space, out.receipt.source_profile_id.is_none()), (SourceSpace::Lab, true));
         for (i, p) in lab.chunks_exact(3).enumerate() {
             let e = lab_to_srgb(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
-            for c in 0..3 {
-                assert!((f64::from(out.pixels[i * 3 + c]) - e[c]).abs() < 1.5e-3, "lab {p:?} ch {c}: {} vs {}", out.pixels[i * 3 + c], e[c]);
+            for (c, want) in e.iter().enumerate() {
+                assert!((f64::from(out.pixels[i * 3 + c]) - want).abs() < 1.5e-3, "lab {p:?} ch {c}: {} vs {want}", out.pixels[i * 3 + c]);
             }
         }
         // Lab source black is L* 0 (ISO 18619): compensation toward a CMYK destination of black L* 20.
