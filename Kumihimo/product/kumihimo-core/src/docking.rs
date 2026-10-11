@@ -1,6 +1,8 @@
 use crate::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum DockLocation {
     Append {
         workspace: WorkspaceId,
@@ -39,10 +41,13 @@ pub enum DockIntent {
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SurfaceKind {
     InAppFloat,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct FloatingFrame {
     pub kind: SurfaceKind,
     pub rect: Rect,
@@ -52,11 +57,15 @@ pub struct FloatingFrame {
 /// Constructed only by Core::preview. Geometry is derived and never imported by commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockPreview {
+    identity: Identity,
     generation: u64,
     intent: DockIntent,
     geometry: Vec<GeometryOutput>,
 }
 impl DockPreview {
+    pub fn identity(&self) -> &Identity {
+        &self.identity
+    }
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -82,9 +91,11 @@ impl Core {
             .model
             .contexts
             .keys()
+            .filter(|id| candidate.model.geometry_workspace_visible(**id))
             .map(|id| candidate.model.geometry(*id))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(DockPreview {
+            identity: self.model.identity.clone(),
             generation: self.model.generation,
             intent,
             geometry,
@@ -93,7 +104,11 @@ impl Core {
     pub(crate) fn preview_command(
         preview: DockPreview,
         generation: u64,
+        identity: &Identity,
     ) -> Result<DockIntent, Error> {
+        if &preview.identity != identity {
+            return Err(Error::IdentityMismatch);
+        }
         if preview.generation != generation {
             return Err(Error::StalePreview {
                 expected: preview.generation,
@@ -116,6 +131,9 @@ impl Core {
                     return Err(Error::ForbiddenDestination);
                 }
                 let old = record.placement;
+                if old == placement {
+                    return Ok(Change::Unchanged);
+                }
                 if let ToolPlacement::Cell { workspace, .. } = old {
                     self.model
                         .layouts
@@ -142,6 +160,14 @@ impl Core {
                 }
             }
             DockIntent::Float { frame, rect } => {
+                if self
+                    .model
+                    .floats
+                    .get(&frame)
+                    .is_some_and(|f| f.rect == rect)
+                {
+                    return Ok(Change::Unchanged);
+                }
                 let workspace = self
                     .model
                     .frames
@@ -244,7 +270,7 @@ impl Core {
         }
         Ok(())
     }
-    fn location_workspace(&self, location: DockLocation) -> Result<WorkspaceId, Error> {
+    pub(crate) fn location_workspace(&self, location: DockLocation) -> Result<WorkspaceId, Error> {
         Ok(match location {
             DockLocation::Append { workspace }
             | DockLocation::WorkspaceEdge { workspace, .. }

@@ -1,9 +1,41 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-generation: 4
+generation: 8
 phase: active
-owner: dev_lead
+owner: coder_02
 changed_files:
+- product/Cargo.lock
+- product/Cargo.toml
+- product/README.md
+- product/kumihimo-core/Cargo.toml
+- product/kumihimo-core/examples/workspace.rs
+- product/kumihimo-core/src/arrangement.rs
+- product/kumihimo-core/src/command.rs
+- product/kumihimo-core/src/core.rs
+- product/kumihimo-core/src/decimal.rs
+- product/kumihimo-core/src/docking.rs
+- product/kumihimo-core/src/geometry.rs
+- product/kumihimo-core/src/identity.rs
+- product/kumihimo-core/src/ids.rs
+- product/kumihimo-core/src/layout.rs
+- product/kumihimo-core/src/layout_actions.rs
+- product/kumihimo-core/src/lib.rs
+- product/kumihimo-core/src/model.rs
+- product/kumihimo-core/src/mutation.rs
+- product/kumihimo-core/src/persistence.rs
+- product/kumihimo-core/src/restore.rs
+- product/kumihimo-core/src/solver.rs
+- product/kumihimo-core/src/tabs.rs
+- product/kumihimo-core/src/tools.rs
+- product/kumihimo-core/tests/contracts.rs
+- product/kumihimo-core/tests/layout_contracts.rs
+- product/kumihimo-core/tests/layout_recovery_contracts.rs
+- product/kumihimo-core/tests/tabs_contracts.rs
+- product/kumihimo-layout-json/Cargo.toml
+- product/kumihimo-layout-json/examples/roundtrip.rs
+- product/kumihimo-layout-json/src/lib.rs
+- product/kumihimo-layout-json/tests/recovery.rs
+- repo-governance/codex/build-rules/current/build-rules.yaml
 - repo-governance/registry/work-packets.yaml
 - repo-governance/sessions/current.yaml
 - repo-governance/specification/current/INDEX.json
@@ -19,6 +51,8 @@ changed_files:
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/spec-modules/roadmap.md
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/specification.yaml
 - repo-governance/taskboard/taskboard.yaml
+- repo-governance/topology/links.yaml
+- repo-governance/topology/product.yaml
 - repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
 - repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-dependency-readiness.yaml
 - repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-evaluation.yaml
@@ -34,5 +68,26 @@ proof:
 - kind: precoding_readiness
   observed: Dependency ready_for_selected_optional_dependencies; eval11cases prepared/runtime not evaluated; coder02
     full-contract read ready pending publication; actual lock closure remains compile-lane proof
+- kind: coding_admission
+  source_revision: b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2
+  observed: Independent origin exact read matched clean publication; contract/manifest/master/roadmap Git blobs
+    reread and matched; dependency ready_for_selected_optional_dependencies and eval11cases prepared; lock closure
+    remains lead precompile proof
+- kind: dependency_resolution
+  observed: 'Lead sole lane: offline generate-lockfile exit0 locked11externalpackages; default-core no-default-features
+    locked offline tree shows no dependencies; serde1.0.229/JSON1.0.151; no009compile/test yet'
+- kind: frozen_source_preparation
+  observed: Coder02 froze31 UTF8 LF product files and migrated consumer tests/manual; root independently counted31/noCRLF;
+    evaluator focused source read pending; no009 compile/test/run
+  product_content_hash: b45838fb1af1c96ee2c5d18cfc952f857c74e60d485dc8054dea5d1bf94f1ed6
+  hash_format: sorted lowercase POSIX project-relative path:sha256(bytes), LF join, no trailing LF
+- kind: R014_interpretation
+  observed: Live recovery allows existing unchanged/decreasing overage only per dimension where effective saved/host
+    ceiling equals current canonical ceiling; same frame/field baseline; fresh/stricter/new/growing and wire/identity/structure
+    strict; actual limits stored
+- kind: focused_source_review
+  observed: Evaluator independently matched31-file b45838fb digest and completed one R002-R022/11case source read
+    without blocking finding; source_review_complete/runtime_pending; all checks/tests/examples remain unrun
 blockers: []
-next_action: Publish accepted full009/spec9; independently reread remote blobs, then explicitly admit coder02
+next_action: Publish frozen candidate and bind31 Git blobs; lead serial default-core then workspace/all-feature
+  proof

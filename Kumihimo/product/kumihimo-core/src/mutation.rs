@@ -132,8 +132,13 @@ impl Core {
                 Ok(Change::Created(EntityId::Frame(id)))
             }
             Command::RegisterProvider {
+                key,
                 supports_shared_views,
             } => {
+                self.check_key(&key)?;
+                if self.model.providers.values().any(|p| p.key == key) {
+                    return Err(Error::InvalidState("duplicate provider key"));
+                }
                 let (raw, next, generation) = self.creation()?;
                 let id = ProviderId::from_raw(raw);
                 self.model.providers.insert(
@@ -141,19 +146,43 @@ impl Core {
                     Provider {
                         id,
                         supports_shared_views,
+                        key,
+                        availability: ProviderAvailability::Available,
                     },
                 );
                 self.next_entity = next;
                 self.model.generation = generation;
                 Ok(Change::Created(EntityId::Provider(id)))
             }
-            Command::RegisterResource { provider } => {
+            Command::RegisterResource {
+                provider,
+                key,
+                restore_reference,
+            } => {
                 if !self.model.providers.contains_key(&provider) {
                     return Err(Error::Missing(EntityId::Provider(provider)));
                 }
+                self.check_key(&key)?;
+                self.check_label(&restore_reference)?;
+                if self
+                    .model
+                    .resources
+                    .values()
+                    .any(|r| r.provider == provider && r.key == key)
+                {
+                    return Err(Error::InvalidState("duplicate resource key"));
+                }
                 let (raw, next, generation) = self.creation()?;
                 let id = ResourceId::from_raw(raw);
-                self.model.resources.insert(id, Resource { id, provider });
+                self.model.resources.insert(
+                    id,
+                    Resource {
+                        id,
+                        provider,
+                        key,
+                        restore_reference,
+                    },
+                );
                 self.next_entity = next;
                 self.model.generation = generation;
                 Ok(Change::Created(EntityId::Resource(id)))
@@ -172,7 +201,11 @@ impl Core {
                     .ok_or(Error::Missing(EntityId::Resource(resource)))?
                     .provider;
                 if !self.model.providers[&provider].supports_shared_views
-                    && self.model.views.values().any(|v| v.resource == resource)
+                    && self
+                        .model
+                        .views
+                        .values()
+                        .any(|v| v.resource == resource && v.closed.is_none())
                 {
                     return Err(Error::SharingDenied(resource));
                 }
@@ -190,6 +223,14 @@ impl Core {
                         frame,
                         resource,
                         group: None,
+                        label: String::new(),
+                        pinned: false,
+                        unsaved: false,
+                        closed: None,
+                        state: ViewState {
+                            visible: true,
+                            usable: true,
+                        },
                     },
                 );
                 let target = self.model.frames.get_mut(&frame).unwrap();
@@ -207,6 +248,10 @@ impl Core {
                 color,
             } => {
                 self.frame(frame)?;
+                self.check_label(&label)?;
+                if let Some(color) = &color {
+                    self.check_label(color)?;
+                }
                 let (raw, next, generation) = self.creation()?;
                 let id = GroupId::from_raw(raw);
                 self.model.groups.insert(
@@ -216,6 +261,8 @@ impl Core {
                         frame,
                         label,
                         color,
+                        description: String::new(),
+                        collapsed: false,
                     },
                 );
                 self.model.frames.get_mut(&frame).unwrap().groups.push(id);
@@ -244,6 +291,9 @@ impl Core {
                 Ok(Change::Grouped(view))
             }
             Command::SelectView { view } => {
+                if self.view(view)?.closed.is_some() {
+                    return Err(Error::ClosedView(view));
+                }
                 let frame = self.view(view)?.frame;
                 if self.frame(frame)?.selected_view == Some(view) {
                     return Ok(Change::Unchanged);
@@ -311,6 +361,9 @@ impl Core {
                 destination,
                 index,
             } => {
+                if self.view(view)?.closed.is_some() {
+                    return Err(Error::ClosedView(view));
+                }
                 let source = self.view(view)?.frame;
                 let count = self.frame(destination)?.views.len();
                 index_check(index, count - usize::from(source == destination))?;
@@ -323,6 +376,7 @@ impl Core {
                 if source == destination && old_index == index {
                     return Ok(Change::Unchanged);
                 }
+                self.check_pin_move(view, destination, true)?;
                 if source != destination {
                     budget_check(
                         Budget::ViewsPerFrame,

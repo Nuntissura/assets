@@ -1,4 +1,16 @@
 use kumihimo_core::*;
+
+fn new_core(limits: Limits, receipts: usize) -> Core {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let run = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Core::new(
+        Identity::new("test-layout", format!("test-run-{run}")).unwrap(),
+        limits,
+        receipts,
+    )
+    .unwrap()
+}
+
 use std::collections::BTreeMap;
 
 fn s(value: f64) -> Scalar {
@@ -12,6 +24,7 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
 }
 fn envelope(core: &Core, command: Command) -> Envelope {
     Envelope {
+        identity: core.snapshot().identity.clone(),
         actor: "layout-consumer".into(),
         operation: core.ledger_status().high_watermark.checked_next().unwrap(),
         expected_generation: core.snapshot().generation,
@@ -58,20 +71,27 @@ struct Fixture {
     vb: ViewId,
 }
 fn fixture() -> Fixture {
-    let mut core = Core::new(Limits::default(), 16);
+    let mut core = new_core(Limits::default(), 16);
     let w = workspace(&mut core, None);
     let a = frame(&mut core, w);
     let b = frame(&mut core, w);
     let EntityId::Provider(provider) = create(
         &mut core,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: true,
         },
     ) else {
         unreachable!()
     };
-    let EntityId::Resource(resource) = create(&mut core, Command::RegisterResource { provider })
-    else {
+    let EntityId::Resource(resource) = create(
+        &mut core,
+        Command::RegisterResource {
+            provider,
+            key: format!("resource-{}", provider.raw()),
+            restore_reference: "opaque-reference".into(),
+        },
+    ) else {
         unreachable!()
     };
     let EntityId::View(va) = create(
@@ -84,9 +104,14 @@ fn fixture() -> Fixture {
     ) else {
         unreachable!()
     };
-    let EntityId::Resource(other_resource) =
-        create(&mut core, Command::RegisterResource { provider })
-    else {
+    let EntityId::Resource(other_resource) = create(
+        &mut core,
+        Command::RegisterResource {
+            provider,
+            key: "resource-b".into(),
+            restore_reference: "opaque-reference-b".into(),
+        },
+    ) else {
         unreachable!()
     };
     let EntityId::View(vb) = create(
@@ -494,12 +519,14 @@ fn malformed_plans_and_arithmetic_rejections_preserve_allocation() {
     let first = create(
         &mut f.core,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: false,
         },
     );
     let other = create(
         &mut control.core,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: false,
         },
     );
@@ -967,12 +994,14 @@ fn previews_preserve_entity_allocation_and_tool_policy_stales_tokens() {
     let id = create(
         &mut f.core,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: false,
         },
     );
     let control_id = create(
         &mut control.core,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: false,
         },
     );

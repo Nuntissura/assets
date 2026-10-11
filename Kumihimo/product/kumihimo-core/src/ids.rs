@@ -7,6 +7,20 @@ macro_rules! ids {
             pub const fn from_raw(raw: u64) -> Self { Self(raw) }
             pub const fn raw(self) -> u64 { self.0 }
         }
+        #[cfg(feature = "serde")]
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                crate::decimal::serialize(&self.0, serializer)
+            }
+        }
+        #[cfg(feature = "serde")]
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let raw = crate::decimal::deserialize(deserializer)?;
+                if raw == 0 || raw == u64::MAX { return Err(serde::de::Error::custom("invalid generated entity ID")); }
+                Ok(Self(raw))
+            }
+        }
     )+};
 }
 ids!(

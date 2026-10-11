@@ -1,0 +1,12 @@
+[package]
+name = "kumihimo-layout-json"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+description = "Bounded JSON wire format for Kumihimo semantic layouts"
+publish = false
+
+[dependencies]
+kumihimo-core = { path = "../kumihimo-core", features = ["serde"] }
+serde = "=1.0.229"
+serde_json = "=1.0.151"

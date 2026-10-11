@@ -1,17 +1,23 @@
 use crate::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct EditingTarget {
     pub view: ViewId,
     pub resource: ResourceId,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum ToolAnchor {
     View(ViewId),
     Frame(FrameId),
     Workspace(WorkspaceId),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum ToolPlacement {
     Edge {
         anchor: ToolAnchor,
@@ -25,11 +31,15 @@ pub enum ToolPlacement {
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum BindingPolicy {
     Pinned,
     ActiveCompatible,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum VisibilityPolicy {
     TargetVisibleUsable,
     OriginVisibleUsable,
@@ -37,6 +47,8 @@ pub enum VisibilityPolicy {
     Hidden,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum HiddenSpace {
     Release,
     Retain,
@@ -51,6 +63,8 @@ pub struct TargetState {
     pub keyboard_focused: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct ToolPolicy {
     pub binding: BindingPolicy,
     pub visibility: VisibilityPolicy,
@@ -126,6 +140,62 @@ impl Tool {
     }
 }
 impl Snapshot {
+    pub fn view_usable(&self, id: ViewId) -> bool {
+        self.views.get(&id).is_some_and(|view| {
+            view.closed.is_none()
+                && view.state.usable
+                && self
+                    .resources
+                    .get(&view.resource)
+                    .and_then(|resource| self.providers.get(&resource.provider))
+                    .is_some_and(|provider| {
+                        provider.availability == ProviderAvailability::Available
+                    })
+        })
+    }
+    /// Canonical closure/provider state always constrains the host's runtime assertions.
+    pub fn effective_tool_presentation(&self, tool: &Tool) -> ToolPresentation {
+        let origin = self.view_usable(tool.origin);
+        let target = self.view_usable(tool.target.view);
+        let origin_visible = tool.state.origin_visible
+            && self
+                .views
+                .get(&tool.origin)
+                .is_some_and(|v| v.closed.is_none() && v.state.visible);
+        let target_visible = tool.state.target_visible
+            && self
+                .views
+                .get(&tool.target.view)
+                .is_some_and(|v| v.closed.is_none() && v.state.visible);
+        let usable = tool.state.target_usable && origin && target;
+        let visible = match tool.policy.visibility {
+            VisibilityPolicy::TargetVisibleUsable => target_visible && usable,
+            VisibilityPolicy::OriginVisibleUsable => {
+                origin_visible && tool.state.origin_usable && origin
+            }
+            VisibilityPolicy::Always => true,
+            VisibilityPolicy::Hidden => false,
+        };
+        let mut presentation = ToolPresentation {
+            visible,
+            usable,
+            applicable: tool.state.applicable && usable,
+            reserves_space: visible || tool.policy.hidden_space == HiddenSpace::Retain,
+        };
+        if let ToolPlacement::Edge {
+            anchor: ToolAnchor::View(id),
+            ..
+        } = tool.placement
+        {
+            if self.views.get(&id).is_none_or(|v| v.closed.is_some()) {
+                presentation.visible = false;
+                presentation.usable = false;
+                presentation.applicable = false;
+                presentation.reserves_space = false;
+            }
+        }
+        presentation
+    }
     pub(crate) fn target_valid(&self, target: EditingTarget) -> Result<(), Error> {
         let view = self
             .views

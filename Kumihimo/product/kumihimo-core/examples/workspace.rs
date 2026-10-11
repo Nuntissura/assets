@@ -2,6 +2,7 @@ use kumihimo_core::*;
 
 fn run(core: &mut Core, command: Command) -> Result<Change, Error> {
     let envelope = Envelope {
+        identity: core.snapshot().identity.clone(),
         actor: "workspace-example".into(),
         operation: core
             .ledger_status()
@@ -15,12 +16,13 @@ fn run(core: &mut Core, command: Command) -> Result<Change, Error> {
 }
 fn main() -> Result<(), Error> {
     let mut core = Core::new(
+        Identity::new("workspace-example", "one-shot-demo")?,
         Limits {
             max_records: Some(100),
             ..Limits::default()
         },
         16,
-    );
+    )?;
     let Change::Created(EntityId::Workspace(root)) =
         run(&mut core, Command::CreateWorkspace { owner: None })?
     else {
@@ -54,14 +56,21 @@ fn main() -> Result<(), Error> {
     let Change::Created(EntityId::Provider(provider)) = run(
         &mut core,
         Command::RegisterProvider {
+            key: "example-provider".into(),
             supports_shared_views: true,
         },
     )?
     else {
         unreachable!()
     };
-    let Change::Created(EntityId::Resource(resource)) =
-        run(&mut core, Command::RegisterResource { provider })?
+    let Change::Created(EntityId::Resource(resource)) = run(
+        &mut core,
+        Command::RegisterResource {
+            provider,
+            key: "example-resource".into(),
+            restore_reference: "host-owned-ref".into(),
+        },
+    )?
     else {
         unreachable!()
     };

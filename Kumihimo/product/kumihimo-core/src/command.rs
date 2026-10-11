@@ -12,10 +12,13 @@ pub enum Command {
         index: usize,
     },
     RegisterProvider {
+        key: String,
         supports_shared_views: bool,
     },
     RegisterResource {
         provider: ProviderId,
+        key: String,
+        restore_reference: String,
     },
     CreateView {
         frame: FrameId,
@@ -68,10 +71,65 @@ pub enum Command {
     },
     Dock(crate::DockIntent),
     CommitPreview(crate::DockPreview),
+    SetViewMetadata {
+        view: ViewId,
+        label: String,
+        pinned: bool,
+        unsaved: bool,
+    },
+    SetViewState {
+        view: ViewId,
+        state: crate::ViewState,
+    },
+    CloseView {
+        view: ViewId,
+        approved: bool,
+    },
+    ReopenView {
+        view: ViewId,
+        destination: FrameId,
+    },
+    ConfigureGroup {
+        group: GroupId,
+        label: String,
+        color: Option<String>,
+        description: String,
+        collapsed: bool,
+    },
+    MoveGroup {
+        group: GroupId,
+        destination: FrameId,
+        index: usize,
+        group_index: usize,
+    },
+    SetPinPolicy(crate::PinPolicy),
+    SetProviderAvailability {
+        provider: ProviderId,
+        availability: crate::ProviderAvailability,
+    },
+    SetResourceReference {
+        resource: ResourceId,
+        restore_reference: String,
+    },
+    Equalize {
+        workspace: WorkspaceId,
+    },
+    SwapFrames {
+        first: FrameId,
+        second: FrameId,
+    },
+    Maximize {
+        frame: FrameId,
+    },
+    RestoreLayout {
+        workspace: WorkspaceId,
+    },
+    Restore(crate::PreparedRestore),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Envelope {
+    pub identity: crate::Identity,
     pub actor: String,
     pub operation: OperationId,
     pub expected_generation: u64,
@@ -83,6 +141,10 @@ pub enum Budget {
     Depth,
     ViewsPerFrame,
     LayoutEntries,
+    ClosedViews,
+    TabPage,
+    LabelBytes,
+    KeyBytes,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Counter {
@@ -92,6 +154,18 @@ pub enum Counter {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
+    InvalidIdentity,
+    IdentityMismatch,
+    InvalidState(&'static str),
+    UnsupportedSchema {
+        found: u32,
+        supported: u32,
+    },
+    ClosedView(ViewId),
+    CloseVeto(ViewId),
+    Pinned(ViewId),
+    Maximized(WorkspaceId),
+    RestoreConflict,
     Missing(EntityId),
     ChildWorkspaceExists(FrameId),
     Cycle {
@@ -146,9 +220,16 @@ pub enum Change {
     LayoutChanged(WorkspaceId),
     ContextChanged(WorkspaceId),
     ToolChanged(crate::ToolId),
+    TabChanged(ViewId),
+    GroupChanged(GroupId),
+    ProviderChanged(ProviderId),
+    ResourceChanged(ResourceId),
+    PinPolicyChanged,
+    Restored,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
+    pub identity: crate::Identity,
     pub actor: String,
     pub operation: OperationId,
     pub generation: u64,

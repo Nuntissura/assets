@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 
 /// Practical host policy; None leaves that dimension unrestricted by the core.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Limits {
     /// Global sum of workspace, frame, provider, resource, group and view records.
     pub max_records: Option<usize>,
@@ -11,6 +13,10 @@ pub struct Limits {
     pub max_views_per_frame: Option<usize>,
     /// Aggregate plan/context/tool-policy metadata entries, separate from entity records.
     pub max_layout_entries: Option<usize>,
+    pub max_closed_views: Option<usize>,
+    pub max_tab_page_size: Option<usize>,
+    pub max_label_bytes: Option<usize>,
+    pub max_key_bytes: Option<usize>,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -19,6 +25,10 @@ impl Default for Limits {
             max_depth: None,
             max_views_per_frame: None,
             max_layout_entries: Some(65_536),
+            max_closed_views: Some(1024),
+            max_tab_page_size: Some(256),
+            max_label_bytes: Some(65_536),
+            max_key_bytes: Some(256),
         }
     }
 }
@@ -30,6 +40,10 @@ impl Limits {
             max_depth: None,
             max_views_per_frame: None,
             max_layout_entries: None,
+            max_closed_views: None,
+            max_tab_page_size: None,
+            max_label_bytes: None,
+            max_key_bytes: None,
         }
     }
 }
@@ -53,11 +67,15 @@ pub struct Frame {
 pub struct Provider {
     pub id: ProviderId,
     pub supports_shared_views: bool,
+    pub key: String,
+    pub availability: crate::ProviderAvailability,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resource {
     pub id: ResourceId,
     pub provider: ProviderId,
+    pub key: String,
+    pub restore_reference: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct View {
@@ -65,6 +83,11 @@ pub struct View {
     pub frame: FrameId,
     pub resource: ResourceId,
     pub group: Option<GroupId>,
+    pub label: String,
+    pub pinned: bool,
+    pub unsaved: bool,
+    pub closed: Option<crate::ClosedView>,
+    pub state: crate::ViewState,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group {
@@ -72,6 +95,8 @@ pub struct Group {
     pub frame: FrameId,
     pub label: String,
     pub color: Option<String>,
+    pub description: String,
+    pub collapsed: bool,
 }
 
 /// Read-only through Core. A cloned snapshot is detached diagnostic data, not a restore API.
@@ -80,6 +105,9 @@ pub struct Snapshot {
     pub version: u32,
     pub generation: u64,
     pub limits: Limits,
+    pub identity: crate::Identity,
+    pub pin_policy: crate::PinPolicy,
+    pub maximized: BTreeMap<WorkspaceId, FrameId>,
     pub workspaces: BTreeMap<WorkspaceId, Workspace>,
     pub frames: BTreeMap<FrameId, Frame>,
     pub providers: BTreeMap<ProviderId, Provider>,
@@ -92,11 +120,14 @@ pub struct Snapshot {
     pub floats: BTreeMap<FrameId, crate::FloatingFrame>,
 }
 impl Snapshot {
-    pub(crate) fn new(limits: Limits) -> Self {
+    pub(crate) fn new(identity: crate::Identity, limits: Limits) -> Self {
         Self {
-            version: 2,
+            version: 3,
             generation: 0,
             limits,
+            identity,
+            pin_policy: crate::PinPolicy::default(),
+            maximized: BTreeMap::new(),
             workspaces: BTreeMap::new(),
             frames: BTreeMap::new(),
             providers: BTreeMap::new(),

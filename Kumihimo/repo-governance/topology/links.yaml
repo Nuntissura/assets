@@ -48,3 +48,39 @@ edges:
   from: EVAL-KUM-008-v1
   to: KUM-LAYOUT-CONTRACTS
   relation: evaluates
+- id: KUM-LINK-WP009-CORE
+  from: WP-KUM-009-tabs-and-layout-recovery-v1
+  to: KUM-CORE
+  relation: implements
+- id: KUM-LINK-WP009-JSON
+  from: WP-KUM-009-tabs-and-layout-recovery-v1
+  to: KUM-LAYOUT-JSON
+  relation: implements
+- id: KUM-LINK-TAB-CONTRACTS
+  from: KUM-TAB-CONTRACTS
+  to: KUM-CORE
+  relation: validates
+- id: KUM-LINK-RECOVERY-CONTRACTS
+  from: KUM-RECOVERY-CONTRACTS
+  to: KUM-CORE
+  relation: validates
+- id: KUM-LINK-JSON-CONTRACTS
+  from: KUM-JSON-CONTRACTS
+  to: KUM-LAYOUT-JSON
+  relation: validates
+- id: KUM-LINK-JSON-CORE
+  from: KUM-LAYOUT-JSON
+  to: KUM-CORE
+  relation: consumes
+- id: KUM-LINK-JSON-EXAMPLE
+  from: KUM-JSON-EXAMPLE
+  to: KUM-LAYOUT-JSON
+  relation: consumes
+- id: KUM-LINK-EVAL009-RECOVERY
+  from: EVAL-KUM-009-v1
+  to: KUM-RECOVERY-CONTRACTS
+  relation: evaluates
+- id: KUM-LINK-EVAL009-JSON
+  from: EVAL-KUM-009-v1
+  to: KUM-JSON-CONTRACTS
+  relation: evaluates

@@ -2,8 +2,12 @@ schema_version: kumihimo.wp-evaluation.v1
 evaluation_id: EVAL-KUM-009-v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
 evaluator: ROLE-KUM-EVALUATION
-phase: acceptance_cases_prepared
-verdict: PREPARED_NOT_RUNTIME_EVALUATED
+phase: source_review_complete
+contract_clarifications:
+  - refs: [WP009-R014, EVAL-KUM-009-001, EVAL-KUM-009-007]
+    source: Lead interpretation of published R014; no scope change
+    expectation: Live unchanged/decreasing overage recovery applies per dimension only when candidate saved-intersect-host effective ceiling equals current canonical ceiling. Stricter effective options/saved ceilings and fresh import are strict. Per-frame comparison uses the same frame, and oversized fields use the same entity/field baseline; new/growing data cannot borrow overage. Store actual effective limits without inflation; wire bytes/recursion/identity validation and structural validity remain absolute.
+verdict: SOURCE_REVIEW_COMPLETE_RUNTIME_PENDING
 cases_frozen: true
 report_frozen_for_publication: true
 baseline_revision: ad89a1ca325f4b3b73f92101fbcd795a551597ba
@@ -314,9 +318,8 @@ red_team_preparation:
   - Retained sibling/float minima belong to ordinary solver geometry; selected maximize projection and restoration under changed constraints
     need explicit geometry/rejection rules.
 gap_flags:
-- No blocking contradiction found between the full R001-R023/spec9 choices and these focused cases; independent publication readback
-  and final dependency readiness remain prerequisites.
-- No WP009 implementation candidate or runtime proof inspected; prepared cases establish no product behavior.
+- Prepared contract/spec publication was independently verified; the frozen staged product source has now received one focused read.
+- No blocking source finding against R002-R022 and the eleven frozen cases; no compile or runtime verdict follows from source inspection.
 proof_plan:
 - Resolve exact published predecessor/readiness under WP009-R001 before coding; frozen cases cover R002-R022 and acceptance A001-A009.
 - Coder owns public consumer assertions plus quiet core/JSON examples and no-context manual under R023; lead owns exact default-core/all-features
@@ -326,12 +329,65 @@ proof_plan:
   proof instead of duplicate Cargo.
 INDEPENDENT_FINDINGS: []
 RESIDUAL_UNCERTAINTY:
-- Actual implementation, codec byte behavior, focused execution and exact candidate publication remain unevaluated.
+- Exact product candidate publication, compilation, actual codec byte behavior and focused runtime execution remain unevaluated.
 - Mounted/native GUI, provider/live-engine, actual filesystem/interrupted-store and real legacy-format migration remain accepted later
   boundaries; no complete RECOVERY feature verdict.
-next_action: Lead publishes full contract/spec and prepared report; independently bind published bytes before coder admission, then
-  wait for candidate/source and serialized proof dispatch.
+next_action: Lead publishes the frozen product candidate and runs the contracted serial proof matrix; evaluator binds exact published runtime inputs and inspects resulting evidence without duplicate Cargo.
+source_review:
+  status: complete_no_blocking_source_findings
+  observed_at: '2026-10-12'
+  product_file_count: 31
+  product_manifest_sha256: b45838fb1af1c96ee2c5d18cfc952f857c74e60d485dc8054dea5d1bf94f1ed6
+  manifest_algorithm: SHA256 of ordinal-sorted lowercase POSIX product/path plus colon plus lowercase SHA256 of raw file bytes, joined with LF and no final LF
+  source_state: Frozen staged product source at prepared-contract HEAD b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2; no product edits or Cargo by evaluator
+  contract_refs: [WP009-R002, WP009-R003, WP009-R004, WP009-R005, WP009-R006, WP009-R007, WP009-R008, WP009-R009, WP009-R010, WP009-R011, WP009-R012, WP009-R013, WP009-R014, WP009-R015, WP009-R016, WP009-R017, WP009-R018, WP009-R019, WP009-R020, WP009-R021, WP009-R022]
+  cases: [EVAL-KUM-009-001, EVAL-KUM-009-002, EVAL-KUM-009-003, EVAL-KUM-009-004, EVAL-KUM-009-005, EVAL-KUM-009-006, EVAL-KUM-009-007, EVAL-KUM-009-008, EVAL-KUM-009-009, EVAL-KUM-009-010, EVAL-KUM-009-011]
+  inspected_paths:
+  - product/kumihimo-core/src/identity.rs
+  - product/kumihimo-core/src/decimal.rs
+  - product/kumihimo-core/src/persistence.rs
+  - product/kumihimo-core/src/restore.rs
+  - product/kumihimo-core/src/tabs.rs
+  - product/kumihimo-core/src/layout_actions.rs
+  - product/kumihimo-core/src/core.rs
+  - product/kumihimo-core/src/tools.rs
+  - product/kumihimo-core/src/solver.rs
+  - product/kumihimo-core/src/arrangement.rs
+  - product/kumihimo-core/src/command.rs
+  - product/kumihimo-core/src/docking.rs
+  - product/kumihimo-core/src/geometry.rs
+  - product/kumihimo-core/src/ids.rs
+  - product/kumihimo-core/src/layout.rs
+  - product/kumihimo-core/src/model.rs
+  - product/kumihimo-core/src/mutation.rs
+  - product/kumihimo-core/src/lib.rs
+  - product/kumihimo-layout-json/src/lib.rs
+  - product/kumihimo-core/tests/tabs_contracts.rs
+  - product/kumihimo-core/tests/layout_recovery_contracts.rs
+  - product/kumihimo-layout-json/tests/recovery.rs
+  - product/kumihimo-core/examples/workspace.rs
+  - product/kumihimo-layout-json/examples/roundtrip.rs
+  - product/Cargo.toml
+  - product/kumihimo-core/Cargo.toml
+  - product/kumihimo-layout-json/Cargo.toml
+  - product/README.md
+  observations:
+  - Envelope and embedded preview/restore token incarnation checks precede receipt lookup and high-water changes; same-incarnation replay remains historical acknowledgment.
+  - PreparedRestore owns complete immutable DTO/options and detached candidate; activation skips legacy ownership repair and measurement migration, preserves the live ledger and monotone allocator, and fresh activation uses generation1/op0.
+  - Effective restore limits intersect saved and host policy; live same-ceiling grandfathering uses current dimension usage, the same frame/depth entity, and the same string entity/field, while fresh or stricter imports remain strict.
+  - Close/reopen preserves identity and retained metadata; open sharing, explicit close approval, member pin checks and canonical-set tab paging are distinct from closed history and returned rows.
+  - Solver measurement, edge reservation and geometry state output use Snapshot-aware presentation; closed view-edge anchors are dormant, and closed/unavailable target rebinding rejects.
+  - Maximize retains structural packing while omitting hidden sibling/float/cell constraints; affected source/destination guards cover ordinary and indirect placement paths, and failed exit leaves the retained projected arrangement intact.
+  - JSON rejects duplicate members before typed map normalization, checks complete input and byte bounds, retains the parser recursion guard and uses validated geometry constructors and decimal u64 representations.
+  - Seven tab tests, seven layout tests and thirteen JSON recovery tests plus both examples were inspected as unrun consumer source, not runtime proof; the manual explicitly preserves that distinction and the host-storage boundary.
+  proof_limit: Source review only; exact published candidate and lead-owned contracted runtime proof remain required
 prepared_binding:
   contract_sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
   master_spec_sha256: f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b
-  publication: pending_lead_publication_and_independent_readback
+  publication:
+    status: independently_verified
+    revision: b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2
+    observed_at: '2026-10-12'
+    command: git ls-remote origin refs/heads/codex/handpick
+    observed: Exact remote matched; published contract/master-spec bytes match current files and frozen SHA256 bindings; published prepared report equals prior current report with 11 frozen cases
+    proof_limit: Prepared publication only; implementation/runtime verdict remains pending

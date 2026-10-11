@@ -25,13 +25,13 @@ roles:
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6-luna
     reasoning: high
-    assignment: Await frozen009 candidate or actual failure dispatch; build lane idle
+    assignment: Frozen009 prebuild resource/cache observation; await concrete failure dispatch
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP009 focused cases and explicit boundary gap preparation
+    assignment: One focused frozen009 source read; then exact candidate runtime evaluation
   coder:
     role_id: ROLE-KUM-CODER-02
     thread_id: 01a12cff-0f3f-72e3-b1ca-3befa8471878
@@ -39,15 +39,15 @@ roles:
     reasoning: high
     completed_implementation_wps: []
     rotate_after: 2
-    assignment: Read-only onboarding; await full published WP009 and dependency readiness before product coding
+    assignment: Frozen009 source; await focused findings or lead compile diagnostics; no Cargo; first of two packets
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
   file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles own
     dispatched reports
 build_lane:
-  owner: null
-  phase: idle
+  owner: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
+  phase: candidate_publication
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -57,8 +57,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish full009/spec9 after scoped role consistency/readiness; independent published reread then coder02
-  admission
+next_action: Finish focused frozen009 source evaluation; publish candidate and independently bind Git blobs; lead
+  serial proof only
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

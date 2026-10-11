@@ -7,10 +7,19 @@ scope: Dependency readiness for the full WP009-R001–R023 and WP009-A001–A011
   references, and all carried LAYOUT-004 operations.
 verdict: ready_for_selected_optional_dependencies
 coding_admission:
-  status: not_admitted
-  reason: WP009-R001 requires published contract/spec readback, dependency readiness and frozen evaluator cases
-    before coder02 admission. The full contract/spec9 are read in this worktree, but remote publication/readback,
-    evaluator refresh and explicit lead admission remain pending.
+  status: admitted_product_only
+  owner: coder_02
+  admission_evidence:
+    current_worktree_state_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
+    current_worktree_state_sha256: 4df6f704e0d8095c18a1fab249555b4e8441fdf08ffe548192348d8c7658ebd7
+    state_generation: 5
+    current_session_ref: repo-governance/sessions/current.yaml
+    assignment: Implement full published WP009 product scope; first of two packets; no Cargo/rustc until lead lane
+      dispatch
+    state_source: current_worktree_only; the published b2005b0 state is generation 4 and records the pre-admission
+      next action
+  scope_boundary: Coder02 is admitted to product-only implementation. Cargo/rustc and lock resolution remain in
+    the lead-owned serial lane; this dependency report does not claim lock closure.
 baseline:
   prior_remote_baseline:
     observed_revision: ad89a1ca325f4b3b73f92101fbcd795a551597ba
@@ -39,9 +48,9 @@ baseline:
     contract_requirements: 23
     acceptance_criteria: 11
     contract_sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
-    state_generation: 3
+    state_generation: 5
     state_phase: active
-    state_owner: dev_lead
+    state_owner: coder_02
     contract_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
     state_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
     specification_version: 9
@@ -51,7 +60,8 @@ baseline:
     accepted_requirement_records: 99
     archived_v8_comparison: 'Compared current v9 against archived v8 after the latest clarification: all 99 requirement
       IDs and statements match; no additions, removals or changed statements.'
-    remote_publication_status: pending_not_checked_in_this_update
+    remote_publication_status: origin refs/heads/codex/handpick points to b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2;
+      four canonical contract/spec blobs independently read and byte-matched.
     git_commands_run: false
     requirement_ids:
     - WP009-R001
@@ -89,9 +99,10 @@ baseline:
     - WP009-A009
     - WP009-A010
     - WP009-A011
+    remote_publication_revision: b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2
   core:
     package: product/kumihimo-core
-    package_version: 0.2.0
+    package_version: 0.3.0
     rust_edition: '2021'
     rust_version: '1.91'
     default_runtime_dependencies: []
@@ -305,9 +316,10 @@ dependency_decision:
   - The inspected product/ tree contains only kumihimo-core, with no application/store adapter. Keep full RECOVERY
     acceptance open until a real platform adapter supplies atomic replacement/recovery proof; do not invent native-store
     behavior or mark host persistence complete from JSON tests.
-  dependency_resolution_boundary: Exact versions and package placement are selected by R002. Inspected cache artifacts
-    support candidate availability, but only the lead may establish actual workspace lockfile closure in its serial
-    lane.
+  dependency_resolution_boundary: At the frozen manifest set, lead resolved the exact workspace lock offline. All
+    11 exact locked registry archives are present, match Cargo.lock checksums, and have extracted sources; selected
+    serde/serde_json/syn versions are confirmed. This is not compiler proof. Re-resolve if manifests change before
+    final compilation.
   contract_scope_summary:
   - 'R001-R006: full promotion, selected optional dependency boundary, semantic schema DTO, canonical decimal IDs,
     bounded strict JSON and schema-1-only rejection policy.'
@@ -356,8 +368,8 @@ dependency_candidates:
   local_cache_observation: Exact serde 1.0.229, serde_core 1.0.229 and serde_derive 1.0.229 source/archive artifacts
     are present. serde_derive has Rust 1.71 MSRV; compatible proc-macro2, quote and syn source/archive artifacts
     were found.
-  offline_status: Candidate proc-macro closure artifacts observed; no Cargo resolution or offline build was run,
-    so the selected workspace lockfile closure remains unverified.
+  offline_status: Selected in current product/Cargo.lock; exact 1.0.229 archive checksum matches and extracted source
+    is present. Lead offline resolution succeeded; no compiler proof was run by this role.
   source: https://docs.rs/crate/serde/1.0.229/source/Cargo.toml
 - crate: serde_json
   version: 1.0.151
@@ -368,7 +380,8 @@ dependency_candidates:
     closure artifacts are also present, but resolver selection must still be pinned in the project lock.
   current_upstream: 1.0.152 is current in docs.rs as of 2026-10-12, but exact 1.0.152 cache presence was not observed;
     1.0.151 is the locally cached, Rust-1.91-compatible candidate.
-  offline_status: Cached candidate only; no Cargo resolution or offline build was run.
+  offline_status: Selected in current product/Cargo.lock; exact 1.0.151 archive checksum matches and extracted source
+    is present. Lead offline resolution succeeded; no compiler proof was run by this role.
   source: https://docs.rs/crate/serde_json/1.0.151/source/Cargo.toml
 - crate: ron
   version: 0.12.2
@@ -517,22 +530,23 @@ focused_proof_plan:
     expected: Verify generation-stamped immutable-byte protocol, single-writer ordering and stale-stamp rejection.
       Keep full RECOVERY acceptance open until a real platform adapter proves interrupted atomic replacement or
       last-valid recovery; codec proof is separate.
-  execution_boundary: This dependency readiness report makes no Cargo, product-code, test, Git, or platform-persistence
-    changes. Cache observations do not prove the selected workspace lock closure; the lead resolves the actual lockfile
-    closure in the serial lane before compiling. The evaluator has prepared 11 acceptance scenarios and six boundary
-    decisions against spec9; they do not claim runtime results. The lead publishes and independently rereads the
-    exact contract/spec revision and explicitly admits coder02 only after R001 predecessors pass. Host file/monitor/engine
-    behavior remains outside headless proof.
+  execution_boundary: This readiness update made no Cargo, product-code, test, or Git writes and ran no broad import
+    audit. Lead resolved the exact lock offline for the four recorded manifest/lock hashes. All 11 exact locked
+    registry archives checksum-match and extracted sources are present. This establishes offline dependency inputs
+    only; no compiler result is claimed. If manifests change, the lead must resolve the final lock again in the
+    serial lane before compiling. Evaluator cases are frozen; runtime evaluation remains distinct.
 handoff:
-  next_action: Lead publishes and independently reads back the exact full WP009/spec9 candidate, resolves selected
-    dependency lock closure in its one serial offline Cargo lane before compiling, and explicitly admits coder02
-    after R001 predecessors pass. Dependency readiness is selected; this report does not admit coding. Full host
-    RECOVERY acceptance remains open until a real adapter proves storage recovery.
-  publication_status: pending_remote_publication_and_independent_readback
-  lock_resolution_status: not_resolved_by_dependency_role; cache inspection is not offline lock closure
-  evaluator_status: 'Validated and frozen: 11 acceptance scenarios and six boundary decisions bind the exact current
-    contract/spec9 hashes; no runtime evaluation claimed.'
-  no_product_cargo_git_changes: true
+  next_action: Freeze this exact manifest/lock readiness record. Wait for final manifest changes to settle; the
+    lead re-resolves the resulting lock in the single offline Cargo lane before compiler proof. Dependency role
+    performs no product work or broad import audit.
+  publication_status: 'verified: origin tip b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2; four canonical contract/spec
+    blobs byte-match'
+  coding_admission_status: coder02 admitted product-only in current WP state generation 5; no Cargo/rustc until
+    lead dispatch
+  current_frozen_lock_status: lead offline resolver succeeded; 13 lock entries, 11 registry packages; all exact
+    archives/sources available and checksums match
+  final_manifest_lock_status: pending any coder manifest changes and later lead re-resolution
+  no_product_cargo_git_writes: true
 schema_and_host_save_boundary:
 - 'R006: durable schema 1 is the first format. Reject schema 0 and unsupported older/newer schemas; Snapshot v1/v2
   are not file formats. No legacy migration is claimed until a genuine earlier durable schema exists.'
@@ -550,10 +564,128 @@ evaluation_readback:
   prepared_acceptance_scenarios: 11
   prepared_boundary_decisions: 6
   status: validated_and_frozen_for_spec9; runtime_not_evaluated
-  admission_effect: Evaluation cases are validated and frozen against the exact current full contract/spec9 bytes.
-    R001 coder admission still awaits lead publication, independent published-byte readback and explicit admission.
+  admission_effect: The 11 acceptance scenarios/six boundary decisions bind the published full contract and spec9.
+    Current WP state/session record coder02 admitted product-only; runtime evaluation remains pending.
   evaluation_sha256: af2083f26737bdf371c94c697b86b450ca73eb845495bf10d976c16b0dfe9863
   prepared_binding:
     contract_sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
     master_spec_sha256: f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b
     publication: pending_lead_publication_and_independent_readback
+publication_binding:
+  remote: origin
+  branch_ref: refs/heads/codex/handpick
+  observed_remote_tip: b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2
+  lead_candidate_revision: b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2
+  remote_tip_matches_candidate: true
+  read_method: git ls-remote plus direct git cat-file blob reads at the exact revision; raw bytes compared with
+    the corresponding current worktree files
+  canonical_published_blobs:
+  - path: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
+    sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
+  - path: repo-governance/specification/current/specification.yaml
+    sha256: bd1b68c909be1275ab497c38563b3bc694cca0609628f6174628f49ba9e85f63
+  - path: repo-governance/specification/current/spec-modules/master-spec.md
+    sha256: f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b
+  - path: repo-governance/specification/current/spec-modules/roadmap.md
+    sha256: b2c686d9ba6058cc996b156bd57182c7e776e1899d86c15ee741adebfe32c504
+  all_four_blobs_byte_match: true
+  published_state_at_candidate:
+    sha256: 8d396f6e1bc41508533c07d807304457edfb346eb6608e20d2f849b9a8f742e7
+    generation: 4
+    phase: active
+    owner: dev_lead
+    next_action: Publish accepted full009/spec9; independently reread remote blobs, then explicitly admit coder02
+    meaning: This published state predates the later local coding-admission state; it is not represented as current.
+  read_only_git_queries: true
+locked_dependency_readiness:
+  manifest_and_lock_hashes:
+    product/Cargo.toml: eb0a77905da95361f4f39ecc9cb0a0a7762358b55475104c75f69f63a6905b33
+    product/kumihimo-core/Cargo.toml: 5c6baf61ddb7b3aeb76f6cfca669d1822757a7e77a431d337187bd50ee1aea1a
+    product/kumihimo-layout-json/Cargo.toml: 3ea8de085edde58be09b32cafa322b04f33eff4cd471c307beee0655d66d8e2c
+    product/Cargo.lock: 1918140a16ee6dce89f9e6a2935b25a6fc3f0c919ec659801f456d73a3f9f7e6
+  lockfile_version: 4
+  locked_package_count: 13
+  local_workspace_package_count: 2
+  registry_package_count: 11
+  registry_packages:
+  - name: itoa
+    version: 1.0.18
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: memchr
+    version: 2.8.3
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: proc-macro2
+    version: 1.0.107
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: quote
+    version: 1.0.47
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: serde
+    version: 1.0.229
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: serde_core
+    version: 1.0.229
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: serde_derive
+    version: 1.0.229
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: serde_json
+    version: 1.0.151
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: syn
+    version: 3.0.8
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: unicode-ident
+    version: 1.0.26
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  - name: zmij
+    version: 1.0.23
+    archive_present: true
+    archive_matches_lock_checksum: true
+    source_present: true
+  archive_checksum_matches: 11
+  source_directories_present: 11
+  missing_or_checksum_mismatched_archives: []
+  cargo_home_observation: CARGO_HOME is unset; inspected the default Cargo home under USERPROFILE/.cargo without
+    storing its absolute path.
+  resolver_logs:
+    lock_resolution:
+      path: .local/kumihimo-recovery/proof/resolve-b2005b07.log
+      sha256: 34858714664d45106dec3de797863f231e12ae17f2b65cb826064b483a752673
+      observed_output: Locking 11 packages to latest compatible versions
+      command: cargo generate-lockfile --offline
+      reported_exit_code: 0
+    default_core_tree:
+      path: .local/kumihimo-recovery/proof/default-core-dependencies-b2005b07.log
+      sha256: c010296b4672eecf4d6af0e7f38a0f13031ba402fb3289addaa7d383e5b51c7e
+      observed_output: kumihimo-core v0.3.0 only
+      command: cargo tree -pcore --no-default-features --locked --offline
+      reported_exit_code: 0
+  selected_locked_versions:
+    serde: 1.0.229
+    serde_json: 1.0.151
+    syn: 3.0.8
+  status: current frozen manifest lock closure resolved offline by lead; all exact locked registry archives and
+    extracted sources are present and archive checksums match Cargo.lock.
+  limits: No Cargo command or compiler proof was run by the dependency role. These metadata/cache checks do not
+    prove compilation. Re-resolve after any manifest change before the final serial build lane.

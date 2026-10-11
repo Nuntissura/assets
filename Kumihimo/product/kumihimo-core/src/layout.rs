@@ -4,23 +4,43 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Plan-local selector; structural repair can replace it. It is not a stable entity ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NodeId(pub u64);
+#[cfg(feature = "serde")]
+impl serde::Serialize for NodeId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        crate::decimal::serialize(&self.0, s)
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for NodeId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::decimal::deserialize(d).map(Self)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum LayoutItem {
     Frame(FrameId),
     Tool(ToolId),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct WeightedNode {
     pub node: NodeId,
     pub weight: Scalar,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Cell {
     pub row: usize,
     pub column: usize,
     pub node: NodeId,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum LayoutNode {
     Leaf(LayoutItem),
     Split {
@@ -34,11 +54,15 @@ pub enum LayoutNode {
     },
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct LayoutPlan {
     pub root: Option<NodeId>,
     pub nodes: BTreeMap<NodeId, LayoutNode>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct GeometryContext {
     pub viewport: Rect,
     pub gap: Scalar,
@@ -375,5 +399,6 @@ impl Snapshot {
                 })
                 .sum::<usize>()
             + self.floats.len() * 2
+            + self.maximized.len()
     }
 }

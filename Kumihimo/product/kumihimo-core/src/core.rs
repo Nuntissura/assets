@@ -12,14 +12,19 @@ pub struct Core {
     receipts: VecDeque<(Envelope, Outcome)>,
 }
 impl Core {
-    pub fn new(limits: Limits, receipt_capacity: usize) -> Self {
-        Self {
-            model: Snapshot::new(limits),
+    pub fn new(
+        identity: crate::Identity,
+        limits: Limits,
+        receipt_capacity: usize,
+    ) -> Result<Self, Error> {
+        identity.validate()?;
+        Ok(Self {
+            model: Snapshot::new(identity, limits),
             next_entity: 1,
             high_watermark: OperationId::new(0),
             receipt_capacity,
             receipts: VecDeque::new(),
-        }
+        })
     }
     pub fn snapshot(&self) -> &Snapshot {
         &self.model
@@ -33,6 +38,17 @@ impl Core {
     }
     /// Exclusive mutable access serializes mutations. Hosts coordinate sequence allocation across actors.
     pub fn execute(&mut self, envelope: Envelope) -> Response {
+        if envelope.identity != self.model.identity {
+            return self.response(&envelope, Err(Error::IdentityMismatch));
+        }
+        let token_identity = match &envelope.command {
+            crate::Command::CommitPreview(token) => Some(token.identity()),
+            crate::Command::Restore(token) => Some(token.identity()),
+            _ => None,
+        };
+        if token_identity.is_some_and(|identity| identity != &self.model.identity) {
+            return self.response(&envelope, Err(Error::IdentityMismatch));
+        }
         if let Some((original, outcome)) = self
             .receipts
             .iter()
@@ -75,6 +91,7 @@ impl Core {
     fn response(&self, e: &Envelope, result: Result<Change, Error>) -> Response {
         Response {
             outcome: Outcome {
+                identity: self.model.identity.clone(),
                 actor: e.actor.clone(),
                 operation: e.operation,
                 generation: self.model.generation,
@@ -104,7 +121,12 @@ mod overflow_tests {
     #[test]
     fn exhaustion_is_atomic() {
         for counter in [Counter::EntityId, Counter::Generation] {
-            let mut core = Core::new(Limits::default(), 2);
+            let mut core = Core::new(
+                crate::Identity::new("overflow", format!("{counter:?}")).unwrap(),
+                Limits::default(),
+                2,
+            )
+            .unwrap();
             if counter == Counter::EntityId {
                 core.next_entity = u64::MAX;
             } else {
@@ -113,6 +135,7 @@ mod overflow_tests {
             let before = core.snapshot().clone();
             let next = core.next_entity;
             let r = core.execute(Envelope {
+                identity: core.snapshot().identity.clone(),
                 actor: "overflow".into(),
                 operation: OperationId::new(1),
                 expected_generation: before.generation,

@@ -292,3 +292,40 @@ research_sources:
   - title: Mozilla sccache, README caveats
     url: https://github.com/mozilla/sccache
     relevance: Confirms incremental Rust crates are not cached and documents cache-key caveats.
+wp009_prepublication_observation:
+  observed_at_utc: '2026-10-11T22:44:15Z'
+  candidate_status: PREPUBLICATION; runtime pending
+  git_head_short: b200
+  wp009_state:
+    generation: 6
+    phase: active
+    owner: coder_02
+  cargo_lane:
+    owner: null
+    phase: idle
+    target_relative_to_kumihimo_root: .local/cargo-target
+    target_exists: true
+  host_resources:
+    cpu_load_percent: 15
+    cpu_sample_count: 1
+    logical_processors: 32
+    free_memory_gib: 67.9
+    total_memory_gib: 127.9
+    volume: 'D:'
+    free_disk_gib: 3073.8
+    total_disk_gib: 14902.0
+  active_processes:
+    cargo: []
+    rustc: []
+    linker: []
+    sccache_server_before_query: []
+    sccache_server_after_query: []
+  sccache:
+    executable_resolves: true
+    version: 0.18.0
+    show_stats_exit_code: 0
+    query_semantics: The command connects to an existing server; when none is available it returns stats without starting a server.
+    source: https://github.com/mozilla/sccache/blob/main/src/commands.rs#L3578-L3597
+    shared_statistics_recorded: false
+    server_or_cache_changed: false
+  assessment: No material build contention was evident in this sample. The Kumihimo lane remains idle and no Cargo command was run.

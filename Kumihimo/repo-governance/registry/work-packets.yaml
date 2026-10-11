@@ -66,7 +66,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
-  next_action: Publish accepted full009/spec9; independently reread remote blobs, then explicitly admit coder02
+  next_action: Publish frozen candidate and bind31 Git blobs; lead serial default-core then workspace/all-feature
+    proof
   blockers: []
 - wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
   title: Implement replaceable content and lifecycle contracts

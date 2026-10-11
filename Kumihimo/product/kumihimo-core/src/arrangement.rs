@@ -2,12 +2,17 @@ use crate::*;
 
 impl Core {
     pub(crate) fn model_candidate(&self) -> Self {
-        let mut core = Self::new(self.model.limits, 0);
+        let mut core = Self::new(self.model.identity.clone(), self.model.limits, 0)
+            .expect("validated live identity");
         core.model = self.model.clone();
         core.next_entity = self.next_entity;
         core
     }
     pub(crate) fn mutate(&mut self, command: Command) -> Result<Change, Error> {
+        if let Command::Restore(token) = command {
+            return self.restore_command(token);
+        }
+        self.guard_maximized(&command)?;
         let layout_command = matches!(
             command,
             Command::SetLayout { .. }
@@ -18,6 +23,19 @@ impl Core {
                 | Command::RebindTool { .. }
                 | Command::Dock(_)
                 | Command::CommitPreview(_)
+                | Command::Equalize { .. }
+                | Command::SwapFrames { .. }
+                | Command::Maximize { .. }
+                | Command::RestoreLayout { .. }
+                | Command::CloseView { .. }
+                | Command::ReopenView { .. }
+                | Command::SetViewMetadata { .. }
+                | Command::SetViewState { .. }
+                | Command::ConfigureGroup { .. }
+                | Command::MoveGroup { .. }
+                | Command::SetPinPolicy(_)
+                | Command::SetProviderAvailability { .. }
+                | Command::SetResourceReference { .. }
         );
         if !layout_command
             && self.model.layouts.is_empty()
@@ -50,6 +68,19 @@ impl Core {
     }
     fn apply_arrangement(&mut self, command: Command, before: &Snapshot) -> Result<Change, Error> {
         match command {
+            command @ (Command::Equalize { .. }
+            | Command::SwapFrames { .. }
+            | Command::Maximize { .. }
+            | Command::RestoreLayout { .. }) => self.layout_action(command),
+            command @ (Command::CloseView { .. }
+            | Command::ReopenView { .. }
+            | Command::SetViewMetadata { .. }
+            | Command::SetViewState { .. }
+            | Command::ConfigureGroup { .. }
+            | Command::MoveGroup { .. }
+            | Command::SetPinPolicy(_)
+            | Command::SetProviderAvailability { .. }
+            | Command::SetResourceReference { .. }) => self.tab_command(command),
             Command::SetLayout { workspace, plan } => {
                 if self.model.layouts.get(&workspace) == Some(&plan) {
                     return Ok(Change::Unchanged);
@@ -150,6 +181,9 @@ impl Core {
                     return Err(Error::IncompatibleTarget);
                 }
                 self.model.target_valid(target)?;
+                if !self.model.view_usable(target.view) {
+                    return Err(Error::IncompatibleTarget);
+                }
                 let generation = self.next_generation()?;
                 self.model.tools.get_mut(&tool).unwrap().target = target;
                 self.model.generation = generation;
@@ -157,7 +191,8 @@ impl Core {
             }
             Command::Dock(intent) => self.dock(intent),
             Command::CommitPreview(preview) => {
-                let intent = Self::preview_command(preview, self.model.generation)?;
+                let intent =
+                    Self::preview_command(preview, self.model.generation, &self.model.identity)?;
                 self.dock(intent)
             }
             command => {
@@ -218,7 +253,7 @@ impl Core {
             }
         }
     }
-    fn validate_arrangement(&self) -> Result<(), Error> {
+    pub(crate) fn validate_arrangement(&self) -> Result<(), Error> {
         for (workspace, plan) in &self.model.layouts {
             self.model.validate_plan(*workspace, plan)?;
         }
@@ -248,7 +283,9 @@ impl Core {
             self.model.validate_tool(tool)?;
         }
         for workspace in self.model.contexts.keys() {
-            self.model.geometry(*workspace)?;
+            if self.model.geometry_workspace_visible(*workspace) {
+                self.model.geometry(*workspace)?;
+            }
         }
         Ok(())
     }

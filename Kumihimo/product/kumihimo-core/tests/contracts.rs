@@ -1,7 +1,19 @@
 use kumihimo_core::*;
 
+fn new_core(limits: Limits, receipts: usize) -> Core {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let run = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Core::new(
+        Identity::new("test-layout", format!("test-run-{run}")).unwrap(),
+        limits,
+        receipts,
+    )
+    .unwrap()
+}
+
 fn envelope(core: &Core, command: Command) -> Envelope {
     Envelope {
+        identity: core.snapshot().identity.clone(),
         actor: "consumer".into(),
         operation: core.ledger_status().high_watermark.checked_next().unwrap(),
         expected_generation: core.snapshot().generation,
@@ -32,9 +44,11 @@ fn frame(core: &mut Core, workspace: WorkspaceId) -> FrameId {
     }
 }
 fn provider(core: &mut Core, supports_shared_views: bool) -> ProviderId {
+    let key = format!("provider-{}", core.snapshot().providers.len());
     match created(
         core,
         Command::RegisterProvider {
+            key,
             supports_shared_views,
         },
     ) {
@@ -43,7 +57,15 @@ fn provider(core: &mut Core, supports_shared_views: bool) -> ProviderId {
     }
 }
 fn resource(core: &mut Core, provider: ProviderId) -> ResourceId {
-    match created(core, Command::RegisterResource { provider }) {
+    let key = format!("resource-{}", core.snapshot().resources.len());
+    match created(
+        core,
+        Command::RegisterResource {
+            provider,
+            key,
+            restore_reference: "opaque-reference".into(),
+        },
+    ) {
         EntityId::Resource(id) => id,
         _ => unreachable!(),
     }
@@ -95,7 +117,7 @@ struct Fixture {
     group: GroupId,
 }
 fn fixture() -> Fixture {
-    let mut core = Core::new(Limits::default(), 8);
+    let mut core = new_core(Limits::default(), 8);
     let root = workspace(&mut core, None);
     let a = frame(&mut core, root);
     let b = frame(&mut core, root);
@@ -239,6 +261,7 @@ fn rejection_preserves_full_model_and_next_entity_allocation() {
     let mut request = envelope(
         &f.core,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: false,
         },
     );
@@ -332,7 +355,7 @@ fn insertion_indexes_are_measured_after_removal_for_frames_and_views() {
 
 #[test]
 fn practical_record_limit_can_be_lowered_without_deleting_or_blocking_moves() {
-    let mut core = Core::new(
+    let mut core = new_core(
         Limits {
             max_records: Some(3),
             ..Limits::default()
@@ -376,6 +399,7 @@ fn practical_record_limit_can_be_lowered_without_deleting_or_blocking_moves() {
     reject(
         &mut core,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: true,
         },
         Error::Admission {
@@ -398,16 +422,20 @@ fn default_admission_is_finite_and_unbounded_policy_is_explicit() {
             max_records: None,
             max_depth: None,
             max_views_per_frame: None,
-            max_layout_entries: None
+            max_layout_entries: None,
+            max_closed_views: None,
+            max_tab_page_size: None,
+            max_label_bytes: None,
+            max_key_bytes: None,
         }
     );
-    let core = Core::new(Limits::default(), 2);
+    let core = new_core(Limits::default(), 2);
     assert_eq!(core.snapshot().limits, Limits::default());
 }
 
 #[test]
 fn depth_limit_covers_descendants_and_allows_recovery_after_lowering() {
-    let mut core = Core::new(
+    let mut core = new_core(
         Limits {
             max_depth: Some(2),
             ..Limits::default()
@@ -489,7 +517,7 @@ fn depth_limit_covers_descendants_and_allows_recovery_after_lowering() {
 
 #[test]
 fn view_budget_sharing_selection_and_group_ownership_are_explicit() {
-    let mut core = Core::new(
+    let mut core = new_core(
         Limits {
             max_views_per_frame: Some(2),
             ..Limits::default()
@@ -584,12 +612,13 @@ fn view_budget_sharing_selection_and_group_ownership_are_explicit() {
 
 #[test]
 fn replay_precedes_generation_check_and_expired_operations_never_execute() {
-    let mut core = Core::new(Limits::default(), 2);
+    let mut core = new_core(Limits::default(), 2);
     let original = envelope(&core, Command::CreateWorkspace { owner: None });
     let first = core.execute(original.clone());
     apply(
         &mut core,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: true,
         },
     );
@@ -605,6 +634,7 @@ fn replay_precedes_generation_check_and_expired_operations_never_execute() {
             1 => request.expected_generation = 42,
             _ => {
                 request.command = Command::RegisterProvider {
+                    key: format!("provider-at-{}", line!()),
                     supports_shared_views: true,
                 }
             }
@@ -635,7 +665,7 @@ fn replay_precedes_generation_check_and_expired_operations_never_execute() {
     let mut zero = original;
     zero.operation = OperationId::new(0);
     assert_eq!(core.execute(zero).outcome.result, Err(Error::ZeroOperation));
-    let mut no_receipts = Core::new(Limits::default(), 0);
+    let mut no_receipts = new_core(Limits::default(), 0);
     let e = envelope(&no_receipts, Command::CreateWorkspace { owner: None });
     no_receipts.execute(e.clone());
     assert_eq!(
@@ -646,6 +676,7 @@ fn replay_precedes_generation_check_and_expired_operations_never_execute() {
     let mut last = envelope(
         &no_receipts,
         Command::RegisterProvider {
+            key: format!("provider-at-{}", line!()),
             supports_shared_views: true,
         },
     );
@@ -663,7 +694,7 @@ fn replay_precedes_generation_check_and_expired_operations_never_execute() {
 
 #[test]
 fn host_counts_are_variable_and_deep_containment_is_flat() {
-    let mut core = Core::new(Limits::unbounded(), 4);
+    let mut core = new_core(Limits::unbounded(), 4);
     let root = workspace(&mut core, None);
     let p = provider(&mut core, true);
     let r = resource(&mut core, p);

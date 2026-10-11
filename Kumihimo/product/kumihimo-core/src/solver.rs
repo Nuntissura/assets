@@ -7,7 +7,7 @@ fn edge_tools(model: &Snapshot, anchor: ToolAnchor) -> Vec<&Tool> {
         .tools
         .values()
         .filter(|t| {
-            t.presentation().reserves_space
+            model.effective_tool_presentation(t).reserves_space
                 && matches!(t.placement, ToolPlacement::Edge { anchor: a, .. } if a == anchor)
         })
         .collect();
@@ -136,6 +136,32 @@ struct Measurement {
     frames: BTreeMap<FrameId, Size>,
 }
 fn measure(model: &Snapshot, workspace: WorkspaceId) -> Result<Measurement, Error> {
+    // Validate retained packing even in branches excluded from the projection.
+    let mut retained = vec![workspace];
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(id) = retained.pop() {
+        if !seen.insert(id) {
+            return Err(Error::InvalidState("workspace cycle or repeated ownership"));
+        }
+        let plan = model.effective_plan(id)?;
+        model.validate_plan(id, &plan)?;
+        if let Some(frame) = model.maximized.get(&id) {
+            if model.frames.get(frame).is_none_or(|f| f.workspace != id)
+                || model.floats.contains_key(frame)
+                || !plan
+                    .nodes
+                    .values()
+                    .any(|node| *node == LayoutNode::Leaf(LayoutItem::Frame(*frame)))
+            {
+                return Err(Error::InvalidState("invalid maximize target"));
+            }
+        }
+        for frame in &model.workspaces[&id].frames {
+            if let Some(child) = model.frames[frame].child_workspace {
+                retained.push(child);
+            }
+        }
+    }
     let mut pending = vec![workspace];
     let mut order = vec![];
     while let Some(id) = pending.pop() {
@@ -145,6 +171,13 @@ fn measure(model: &Snapshot, workspace: WorkspaceId) -> Result<Measurement, Erro
             .ok_or(Error::Missing(EntityId::Workspace(id)))?;
         order.push(id);
         for frame in &ws.frames {
+            if model
+                .maximized
+                .get(&id)
+                .is_some_and(|selected| selected != frame)
+            {
+                continue;
+            }
             if let Some(child) = model.frames[frame].child_workspace {
                 pending.push(child);
             }
@@ -152,11 +185,31 @@ fn measure(model: &Snapshot, workspace: WorkspaceId) -> Result<Measurement, Erro
     }
     let mut measured = BTreeMap::<WorkspaceId, Measurement>::new();
     for id in order.into_iter().rev() {
-        let plan = model.effective_plan(id)?;
+        let mut plan = model.effective_plan(id)?;
         model.validate_plan(id, &plan)?;
+        if let Some(frame) = model.maximized.get(&id) {
+            let node = plan
+                .nodes
+                .iter()
+                .find_map(|(id, node)| {
+                    (*node == LayoutNode::Leaf(LayoutItem::Frame(*frame))).then_some(*id)
+                })
+                .ok_or(Error::InvalidState("maximize leaf absent"))?;
+            plan = LayoutPlan {
+                root: Some(node),
+                nodes: BTreeMap::from([(node, LayoutNode::Leaf(LayoutItem::Frame(*frame)))]),
+            };
+        }
         let gap = model.contexts.get(&id).map_or(0.0, |c| c.gap.get());
         let mut frame_min = BTreeMap::new();
         for frame in &model.workspaces[&id].frames {
+            if model
+                .maximized
+                .get(&id)
+                .is_some_and(|selected| selected != frame)
+            {
+                continue;
+            }
             let mut minimum = model
                 .contexts
                 .get(&id)
@@ -175,7 +228,7 @@ fn measure(model: &Snapshot, workspace: WorkspaceId) -> Result<Measurement, Erro
                 LayoutNode::Leaf(LayoutItem::Frame(frame)) => frame_min[frame],
                 LayoutNode::Leaf(LayoutItem::Tool(tool)) => {
                     let t = &model.tools[tool];
-                    if t.presentation().reserves_space {
+                    if model.effective_tool_presentation(t).reserves_space {
                         t.policy.minimum
                     } else {
                         Size::zero()
@@ -239,6 +292,58 @@ fn measure(model: &Snapshot, workspace: WorkspaceId) -> Result<Measurement, Erro
 }
 
 impl Snapshot {
+    /// Hidden descendant contexts are structurally retained, not separately solved during activation.
+    pub(crate) fn geometry_workspace_visible(&self, mut workspace: WorkspaceId) -> bool {
+        let mut visited = std::collections::BTreeSet::new();
+        while visited.insert(workspace) {
+            let Some(owner) = self.workspaces.get(&workspace).and_then(|w| w.owner) else {
+                return true;
+            };
+            let Some(frame) = self.frames.get(&owner) else {
+                return false;
+            };
+            if self
+                .maximized
+                .get(&frame.workspace)
+                .is_some_and(|selected| *selected != owner)
+            {
+                return false;
+            }
+            workspace = frame.workspace;
+        }
+        false
+    }
+    fn projected_tool_presentation(&self, tool: &Tool) -> ToolPresentation {
+        let mut presentation = self.effective_tool_presentation(tool);
+        let (workspace, frame, cell) = match tool.placement {
+            ToolPlacement::Cell { workspace, .. } => (workspace, None, true),
+            ToolPlacement::Edge {
+                anchor: ToolAnchor::Workspace(workspace),
+                ..
+            } => (workspace, None, false),
+            ToolPlacement::Edge {
+                anchor: ToolAnchor::Frame(frame),
+                ..
+            } => (self.frames[&frame].workspace, Some(frame), false),
+            ToolPlacement::Edge {
+                anchor: ToolAnchor::View(view),
+                ..
+            } => {
+                let frame = self.views[&view].frame;
+                (self.frames[&frame].workspace, Some(frame), false)
+            }
+        };
+        let hidden = !self.geometry_workspace_visible(workspace)
+            || self
+                .maximized
+                .get(&workspace)
+                .is_some_and(|selected| cell || frame.is_some_and(|f| f != *selected));
+        if hidden {
+            presentation.visible = false;
+            presentation.reserves_space = false;
+        }
+        presentation
+    }
     pub fn geometry(&self, workspace: WorkspaceId) -> Result<GeometryOutput, Error> {
         let context = self
             .contexts
@@ -272,7 +377,7 @@ impl Snapshot {
             tool_states: self
                 .tools
                 .iter()
-                .map(|(id, t)| (*id, t.presentation()))
+                .map(|(id, t)| (*id, self.projected_tool_presentation(t)))
                 .collect(),
             nodes: BTreeMap::new(),
             cells: BTreeMap::new(),
@@ -297,7 +402,10 @@ impl Snapshot {
                     output.frame_content.insert(*frame, content);
                 }
                 LayoutNode::Leaf(LayoutItem::Tool(tool)) => {
-                    if self.tools[tool].presentation().reserves_space {
+                    if self
+                        .effective_tool_presentation(&self.tools[tool])
+                        .reserves_space
+                    {
                         output.tools.insert(*tool, rect);
                     }
                 }
@@ -388,7 +496,8 @@ impl Snapshot {
             }
         }
         for (frame, float) in &self.floats {
-            if self.frames[frame].workspace != workspace {
+            if self.frames[frame].workspace != workspace || self.maximized.contains_key(&workspace)
+            {
                 continue;
             }
             let minimum = m.frames[frame];

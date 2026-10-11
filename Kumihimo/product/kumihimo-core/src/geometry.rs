@@ -20,6 +20,19 @@ impl From<GeometryError> for Error {
 /// Finite logical DIP number; canonical positive zero makes complete-envelope equality reflexive.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scalar(f64);
+#[cfg(feature = "serde")]
+impl serde::Serialize for Scalar {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(self.get())
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Scalar {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = <f64 as serde::Deserialize>::deserialize(d)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
 impl Eq for Scalar {}
 impl Scalar {
     pub fn new(value: f64) -> Result<Self, Error> {
@@ -56,9 +69,23 @@ pub(crate) fn positive(value: f64) -> Result<f64, Error> {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Size {
     width: Scalar,
     height: Scalar,
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Size {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            width: Scalar,
+            height: Scalar,
+        }
+        let wire = <Wire as serde::Deserialize>::deserialize(d)?;
+        Self::new(wire.width.get(), wire.height.get()).map_err(serde::de::Error::custom)
+    }
 }
 impl Size {
     pub fn new(width: f64, height: f64) -> Result<Self, Error> {
@@ -86,10 +113,31 @@ impl Size {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Rect {
     x: Scalar,
     y: Scalar,
     size: Size,
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Rect {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            x: Scalar,
+            y: Scalar,
+            size: Size,
+        }
+        let wire = <Wire as serde::Deserialize>::deserialize(d)?;
+        Self::new(
+            wire.x.get(),
+            wire.y.get(),
+            wire.size.width(),
+            wire.size.height(),
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 impl Rect {
     pub fn new(x: f64, y: f64, width: f64, height: f64) -> Result<Self, Error> {
@@ -139,11 +187,15 @@ impl Rect {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Axis {
     Horizontal,
     Vertical,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Edge {
     Top,
     Bottom,
@@ -151,6 +203,8 @@ pub enum Edge {
     Right,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Overflow {
     Reject,
     Scrollable,
