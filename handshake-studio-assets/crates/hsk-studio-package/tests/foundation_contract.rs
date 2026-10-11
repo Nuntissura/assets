@@ -253,7 +253,7 @@ fn mixed_graph_roundtrip_with_assets() {
         let receipt = write_package_with(
             &snapshot,
             &assets,
-            &[],
+            &Extras::default(),
             &WriteOptions {
                 zip64: Zip64Policy::Always,
                 ..WriteOptions::default()
@@ -523,7 +523,10 @@ fn unknown_record_quarantined_verbatim() {
         write_package_with(
             opened.snapshot().unwrap(),
             &MemoryAssetSource::from_opened(&opened),
-            &opened.quarantined,
+            &Extras {
+                quarantined: &opened.quarantined,
+                ..Extras::default()
+            },
             &WriteOptions::default(),
             &Limits::default(),
             &token(),
@@ -537,7 +540,10 @@ fn unknown_record_quarantined_verbatim() {
         write_package_with(
             second.snapshot().unwrap(),
             &MemoryAssetSource::from_opened(&second),
-            &second.quarantined,
+            &Extras {
+                quarantined: &second.quarantined,
+                ..Extras::default()
+            },
             &WriteOptions::default(),
             &Limits::default(),
             &token(),
@@ -747,7 +753,7 @@ fn write_with(
     write_package_with(
         snapshot,
         assets,
-        &[],
+        &Extras::default(),
         options,
         &Limits::default(),
         &token(),

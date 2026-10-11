@@ -30,7 +30,11 @@ pub enum EntryKind {
 pub enum Codec {
     #[default]
     Raw,
+    /// One zstd frame over the raw bytes.
     Zstd,
+    /// Byte-plane shuffle (element size in `elem_size`) then one zstd frame: groups the
+    /// high-entropy and low-entropy bytes of f32/f16/u16 samples so smooth data compresses.
+    ShuffleZstd,
 }
 
 impl Codec {
@@ -39,8 +43,58 @@ impl Codec {
     }
 }
 
+/// Pixel layout of a preview image: tightly packed rows, 8 bits per channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PixelFormat {
+    Gray8,
+    Rgb8,
+    Rgba8,
+}
+
+impl PixelFormat {
+    pub const fn bytes_per_pixel(self) -> u64 {
+        match self {
+            Self::Gray8 => 1,
+            Self::Rgb8 => 3,
+            Self::Rgba8 => 4,
+        }
+    }
+}
+
+/// Declared description of a preview image; the pixels are never decoded by the package.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewInfo {
+    pub format: PixelFormat,
+    pub width: u32,
+    pub height: u32,
+    /// Caller-defined colour tag (1..=64 chars of `[A-Za-z0-9._:-]`), e.g. a profile id.
+    pub color: String,
+}
+
+impl PreviewInfo {
+    /// Exact decoded byte size implied by format and dimensions.
+    pub fn byte_len(&self) -> u64 {
+        u64::from(self.width) * u64::from(self.height) * self.format.bytes_per_pixel()
+    }
+
+    pub(crate) fn valid(&self, limits: &Limits) -> bool {
+        let dim = |d: u32| (1..=limits.max_preview_dimension).contains(&d);
+        dim(self.width)
+            && dim(self.height)
+            && self.byte_len() <= limits.max_preview_bytes
+            && (1..=64).contains(&self.color.len())
+            && self
+                .color
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+    }
+}
+
 /// One row of the blob table. `len` is the stored (archive entry) length; `sha256_hex` is the
-/// identity of the decoded bytes; `raw_len` is the decoded length of a compressed blob.
+/// identity of the decoded bytes; `raw_len` is the decoded length of a compressed blob;
+/// `elem_size` is the shuffle element size; `preview` describes a preview image.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestEntry {
@@ -52,6 +106,10 @@ pub struct ManifestEntry {
     pub codec: Codec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_len: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elem_size: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<PreviewInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,17 +177,31 @@ impl Manifest {
                 EntryKind::Asset => {
                     entry.name.strip_prefix(ASSET_PREFIX) == Some(&entry.sha256_hex)
                 }
-                EntryKind::Preview => entry.name.starts_with(PREVIEW_PREFIX),
+                EntryKind::Preview => {
+                    entry.name.strip_prefix(PREVIEW_PREFIX) == Some(&entry.sha256_hex)
+                }
                 EntryKind::Opaque => entry.name != DOCUMENT_NAME,
             };
-            let codec_ok = match entry.codec {
-                Codec::Raw => entry.raw_len.is_none(),
-                Codec::Zstd => {
-                    entry.kind == EntryKind::Asset
-                        && entry.raw_len.is_some_and(|n| n <= limits.max_entry_bytes)
+            let raw_ok = |n: u64| n <= limits.max_entry_bytes;
+            let codec_ok = match (entry.codec, entry.kind) {
+                (Codec::Raw, _) => entry.raw_len.is_none() && entry.elem_size.is_none(),
+                (Codec::Zstd, EntryKind::Asset | EntryKind::Preview) => {
+                    entry.raw_len.is_some_and(raw_ok) && entry.elem_size.is_none()
                 }
+                (Codec::ShuffleZstd, EntryKind::Asset) => {
+                    entry.raw_len.is_some_and(raw_ok) && matches!(entry.elem_size, Some(2 | 4 | 8))
+                }
+                _ => false,
             };
-            if !consistent || !codec_ok {
+            let preview_ok = match (entry.kind, &entry.preview) {
+                (EntryKind::Preview, Some(info)) => {
+                    let decoded = entry.raw_len.unwrap_or(entry.len);
+                    info.valid(limits) && decoded == info.byte_len()
+                }
+                (EntryKind::Preview, None) => false,
+                (_, preview) => preview.is_none(),
+            };
+            if !consistent || !codec_ok || !preview_ok {
                 return Err(PackageError::ManifestInvalid);
             }
         }

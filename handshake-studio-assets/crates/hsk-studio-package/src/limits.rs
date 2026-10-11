@@ -15,6 +15,10 @@ pub struct Limits {
     pub max_manifest_bytes: u64,
     /// Maximum zstd window a compressed blob may declare (decoder allocation bound).
     pub max_window_bytes: u64,
+    /// Maximum decoded size of one preview image.
+    pub max_preview_bytes: u64,
+    /// Maximum preview width or height in pixels.
+    pub max_preview_dimension: u32,
 }
 
 impl Default for Limits {
@@ -26,6 +30,8 @@ impl Default for Limits {
             max_name_len: 255,
             max_manifest_bytes: 16 * 1024 * 1024,
             max_window_bytes: 64 * 1024 * 1024,
+            max_preview_bytes: 16 * 1024 * 1024,
+            max_preview_dimension: 16_384,
         }
     }
 }

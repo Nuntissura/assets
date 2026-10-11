@@ -6,13 +6,14 @@ use crate::{
     limits::Limits,
     manifest::{
         ASSET_PREFIX, CONTAINER_VERSION, Codec, DOCUMENT_NAME, EntryKind, MANIFEST_NAME, Manifest,
-        ManifestEntry,
+        ManifestEntry, PREVIEW_PREFIX, PreviewInfo,
     },
-    read::{Opened, Quarantined, tile_digests},
+    read::{Opened, PreviewImage, Quarantined, tile_digests},
+    shuffle::byte_shuffle,
     zip::{Zip64Policy, ZipWriter, validate_name, validate_name_set},
 };
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{ContentDigest, Snapshot};
+use hsk_studio_folio::{ContentDigest, Payload, Snapshot, StudioDocument};
 use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 use std::{borrow::Cow, collections::BTreeMap, io::Write};
 
@@ -77,8 +78,20 @@ impl AssetSource for MemoryAssetSource {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WriteOptions {
     pub zip64: Zip64Policy,
-    /// Codec requested for asset blobs; a blob that would not shrink is stored raw.
+    /// Codec requested for asset blobs. The smallest of raw, zstd and (for `ShuffleZstd`, when the
+    /// tile format names a 2/4/8-byte element such as `rgb_f32le` or `coverage_u16le`) shuffle+zstd
+    /// is chosen per blob; previews use plain zstd when this is not `Raw`.
     pub asset_codec: Codec,
+}
+
+/// Optional entries written next to the document and its assets.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Extras<'a> {
+    /// Preserved unknown entries, re-emitted verbatim as `opaque`.
+    pub quarantined: &'a [Quarantined],
+    /// Optional preview images (derived data, content-addressed, never decoded by readers that
+    /// do not ask for them).
+    pub previews: &'a [PreviewImage],
 }
 
 struct Part<'a> {
@@ -86,9 +99,107 @@ struct Part<'a> {
     kind: EntryKind,
     codec: Codec,
     raw_len: Option<u64>,
+    elem_size: Option<u8>,
+    preview: Option<PreviewInfo>,
     /// SHA-256 of the decoded bytes (content identity).
     sha: String,
     stored: Cow<'a, [u8]>,
+}
+
+impl<'a> Part<'a> {
+    fn raw(name: String, kind: EntryKind, sha: String, stored: Cow<'a, [u8]>) -> Self {
+        Self {
+            name,
+            kind,
+            codec: Codec::Raw,
+            raw_len: None,
+            elem_size: None,
+            preview: None,
+            sha,
+            stored,
+        }
+    }
+}
+
+struct Encoded {
+    codec: Codec,
+    raw_len: Option<u64>,
+    elem_size: Option<u8>,
+    stored: Vec<u8>,
+}
+
+/// Element size implied by a tile format name such as `rgb_f32le` / `coverage_u16le`.
+fn element_size_for_format(format: &str) -> Option<u8> {
+    match format.rsplit('_').next()? {
+        "f32le" | "u32le" | "i32le" => Some(4),
+        "f16le" | "u16le" | "i16le" => Some(2),
+        "f64le" | "u64le" | "i64le" => Some(8),
+        _ => None,
+    }
+}
+
+/// Element size per content digest; `None` when tiles sharing a digest disagree or the format
+/// has no known element size.
+fn tile_elem_sizes(doc: &StudioDocument) -> BTreeMap<String, Option<u8>> {
+    let mut sizes: BTreeMap<String, Option<u8>> = BTreeMap::new();
+    for layer in &doc.layers {
+        if let Payload::Raster { tiles } = &layer.payload {
+            for tile in tiles {
+                let size = element_size_for_format(&tile.format);
+                sizes
+                    .entry(tile.content_digest.digest.clone())
+                    .and_modify(|current| {
+                        if *current != size {
+                            *current = None;
+                        }
+                    })
+                    .or_insert(size);
+            }
+        }
+    }
+    sizes
+}
+
+/// Smallest of raw / zstd / shuffle+zstd for `bytes` (ties keep the simpler codec).
+fn encode_blob(
+    requested: Codec,
+    elem: Option<u8>,
+    bytes: Vec<u8>,
+    cancel: &CancellationToken,
+) -> Result<Encoded, PackageError> {
+    let raw_len = bytes.len() as u64;
+    let mut best_len = bytes.len();
+    let mut best: Option<(Codec, Option<u8>, Vec<u8>)> = None;
+    if requested != Codec::Raw {
+        check(cancel)?;
+        let plain = compress_to_vec(&bytes[..], CompressionLevel::Fastest);
+        if plain.len() < best_len {
+            best_len = plain.len();
+            best = Some((Codec::Zstd, None, plain));
+        }
+        if let (Codec::ShuffleZstd, Some(size)) = (requested, elem) {
+            check(cancel)?;
+            let shuffled = byte_shuffle(&bytes, usize::from(size));
+            let packed = compress_to_vec(&shuffled[..], CompressionLevel::Fastest);
+            if packed.len() < best_len {
+                best = Some((Codec::ShuffleZstd, Some(size), packed));
+            }
+        }
+    }
+    Ok(match best {
+        Some((codec, elem_size, stored)) => Encoded {
+            codec,
+            raw_len: Some(raw_len),
+            elem_size,
+            stored,
+        },
+        None => Encoded {
+            codec: Codec::Raw,
+            raw_len: None,
+            elem_size: None,
+            stored: bytes,
+        },
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +222,7 @@ pub fn write_package<W: Write>(
     write_package_with(
         doc,
         assets,
-        &[],
+        &Extras::default(),
         &WriteOptions::default(),
         limits,
         cancel,
@@ -119,12 +230,12 @@ pub fn write_package<W: Write>(
     )
 }
 
-/// As [`write_package`], additionally re-emitting preserved `quarantined` entries verbatim
-/// (listed in the manifest as `opaque`) and with explicit [`WriteOptions`].
+/// As [`write_package`], additionally writing [`Extras`] (preserved unknown entries, previews)
+/// under explicit [`WriteOptions`].
 pub fn write_package_with<W: Write>(
     doc: &Snapshot,
     assets: &dyn AssetSource,
-    quarantined: &[Quarantined],
+    extras: &Extras<'_>,
     options: &WriteOptions,
     limits: &Limits,
     cancel: &CancellationToken,
@@ -135,6 +246,7 @@ pub fn write_package_with<W: Write>(
     let doc_bytes = doc.encoded_bytes();
 
     let mut parts: Vec<Part<'_>> = Vec::new();
+    let elem_sizes = tile_elem_sizes(document);
     for digest in tile_digests(document)? {
         check(cancel)?;
         let reference = ContentDigest {
@@ -150,48 +262,61 @@ pub fn write_package_with<W: Write>(
         if sha256_hex(&bytes, cancel)? != digest {
             return Err(PackageError::HashMismatch);
         }
-        let name = format!("{ASSET_PREFIX}{digest}");
-        // Per-blob choice: compress only when it actually shrinks the stored bytes.
-        let packed = (options.asset_codec == Codec::Zstd)
-            .then(|| compress_to_vec(&bytes[..], CompressionLevel::Fastest))
-            .filter(|packed| packed.len() < bytes.len());
-        parts.push(match packed {
-            Some(packed) => Part {
-                name,
-                kind: EntryKind::Asset,
-                codec: Codec::Zstd,
-                raw_len: Some(bytes.len() as u64),
-                sha: digest,
-                stored: Cow::Owned(packed),
-            },
-            None => Part {
-                name,
-                kind: EntryKind::Asset,
-                codec: Codec::Raw,
-                raw_len: None,
-                sha: digest,
-                stored: Cow::Owned(bytes),
-            },
-        });
-    }
-    for held in quarantined {
+        let elem = elem_sizes.get(&digest).copied().flatten();
+        let encoded = encode_blob(options.asset_codec, elem, bytes, cancel)?;
         parts.push(Part {
-            name: held.name.clone(),
-            kind: EntryKind::Opaque,
-            codec: Codec::Raw,
-            raw_len: None,
-            sha: sha256_hex(&held.bytes, cancel)?,
-            stored: Cow::Borrowed(held.bytes.as_slice()),
+            name: format!("{ASSET_PREFIX}{digest}"),
+            kind: EntryKind::Asset,
+            codec: encoded.codec,
+            raw_len: encoded.raw_len,
+            elem_size: encoded.elem_size,
+            preview: None,
+            sha: digest,
+            stored: Cow::Owned(encoded.stored),
         });
     }
-    parts.push(Part {
-        name: DOCUMENT_NAME.to_owned(),
-        kind: EntryKind::Document,
-        codec: Codec::Raw,
-        raw_len: None,
-        sha: sha256_hex(doc_bytes, cancel)?,
-        stored: Cow::Borrowed(doc_bytes),
-    });
+    for held in extras.quarantined {
+        parts.push(Part::raw(
+            held.name.clone(),
+            EntryKind::Opaque,
+            sha256_hex(&held.bytes, cancel)?,
+            Cow::Borrowed(held.bytes.as_slice()),
+        ));
+    }
+    for image in extras.previews {
+        check(cancel)?;
+        if !image.info.valid(limits) || image.pixels.len() as u64 != image.info.byte_len() {
+            return Err(PackageError::PreviewMismatch);
+        }
+        let sha = sha256_hex(&image.pixels, cancel)?;
+        let plain = (options.asset_codec != Codec::Raw)
+            .then(|| compress_to_vec(&image.pixels[..], CompressionLevel::Fastest))
+            .filter(|plain| plain.len() < image.pixels.len());
+        let (codec, raw_len, stored) = match plain {
+            Some(plain) => (
+                Codec::Zstd,
+                Some(image.pixels.len() as u64),
+                Cow::Owned(plain),
+            ),
+            None => (Codec::Raw, None, Cow::Borrowed(image.pixels.as_slice())),
+        };
+        parts.push(Part {
+            name: format!("{PREVIEW_PREFIX}{sha}"),
+            kind: EntryKind::Preview,
+            codec,
+            raw_len,
+            elem_size: None,
+            preview: Some(image.info.clone()),
+            sha,
+            stored,
+        });
+    }
+    parts.push(Part::raw(
+        DOCUMENT_NAME.to_owned(),
+        EntryKind::Document,
+        sha256_hex(doc_bytes, cancel)?,
+        Cow::Borrowed(doc_bytes),
+    ));
     parts.sort_by(|a, b| a.name.cmp(&b.name));
 
     validate_name_set(
@@ -210,6 +335,8 @@ pub fn write_package_with<W: Write>(
             len: p.stored.len() as u64,
             codec: p.codec,
             raw_len: p.raw_len,
+            elem_size: p.elem_size,
+            preview: p.preview.clone(),
         })
         .collect();
     let manifest = Manifest {

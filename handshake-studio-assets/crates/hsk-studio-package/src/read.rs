@@ -4,7 +4,10 @@ use crate::{
     error::PackageError,
     hashing::{check, hex, is_hex64, sha256_hex},
     limits::Limits,
-    manifest::{ASSET_PREFIX, Codec, EntryKind, MANIFEST_NAME, Manifest, ManifestEntry},
+    manifest::{
+        ASSET_PREFIX, Codec, EntryKind, MANIFEST_NAME, Manifest, ManifestEntry, PreviewInfo,
+    },
+    shuffle::byte_unshuffle,
     zip::{EntryMeta, SliceSource, Source, StreamSource, preflight_source, stream_range},
 };
 use hsk_studio_accord::CancellationToken;
@@ -30,8 +33,6 @@ pub enum LossReason {
     Unlisted,
     /// Listed with kind `opaque`: preserved, not semantically imported.
     Opaque,
-    /// Listed with kind `preview`: preserved, not interpreted by this slice.
-    Preview,
 }
 
 /// Explicit loss receipt: preserved-opaque, not semantically imported (STU-IO-004/005).
@@ -39,6 +40,20 @@ pub enum LossReason {
 pub struct LossNote {
     pub name: String,
     pub reason: LossReason,
+}
+
+/// Declared metadata of a preview entry; its pixels are not read until requested.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewRef {
+    pub name: String,
+    pub info: PreviewInfo,
+}
+
+/// A preview image: tightly packed rows in `info.format`, `info.width` x `info.height`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewImage {
+    pub info: PreviewInfo,
+    pub pixels: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +64,8 @@ pub struct Opened {
     pub assets: BTreeMap<String, Vec<u8>>,
     pub quarantined: Vec<Quarantined>,
     pub loss: Vec<LossNote>,
+    /// Optional previews, declared only: bodies are never read or decoded by `read_package`.
+    pub previews: Vec<PreviewRef>,
 }
 
 impl Opened {
@@ -267,6 +284,36 @@ impl<S: Source> Container<S> {
                     &mut sink,
                 )?;
             }
+            Codec::ShuffleZstd => {
+                let raw_len = entry.raw_len.ok_or(PackageError::ManifestInvalid)?;
+                let elem = usize::from(entry.elem_size.ok_or(PackageError::ManifestInvalid)?);
+                // Un-shuffling needs every byte plane, so the decoded frame is buffered (bounded
+                // by `raw_len <= max_entry_bytes`), then restored and hashed in chunks.
+                let mut shuffled: Vec<u8> = Vec::new();
+                let mut collect = |chunk: &[u8]| -> Result<(), PackageError> {
+                    shuffled.extend_from_slice(chunk);
+                    Ok(())
+                };
+                decode_zstd(
+                    &mut self.src,
+                    start,
+                    size,
+                    raw_len,
+                    self.limits.max_window_bytes,
+                    cancel,
+                    &mut collect,
+                )?;
+                check(cancel)?;
+                let plain = byte_unshuffle(&shuffled, elem);
+                drop(shuffled);
+                for chunk in plain.chunks(1 << 20) {
+                    check(cancel)?;
+                    hasher.update(chunk);
+                }
+                if retain {
+                    out = Some(plain);
+                }
+            }
         }
         if hex(hasher.finalize().as_slice()) != entry.sha256_hex {
             return Err(PackageError::HashMismatch);
@@ -282,6 +329,43 @@ impl<S: Source> Container<S> {
             self.process_entry(entry, false, cancel)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn previews(&self) -> Vec<PreviewRef> {
+        self.manifest
+            .entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Preview)
+            .filter_map(|e| {
+                Some(PreviewRef {
+                    name: e.name.clone(),
+                    info: e.preview.clone()?,
+                })
+            })
+            .collect()
+    }
+
+    /// Decodes and digest-verifies one preview on request.
+    pub(crate) fn read_preview(
+        &mut self,
+        name: &str,
+        cancel: &CancellationToken,
+    ) -> Result<PreviewImage, PackageError> {
+        let entry = self
+            .manifest
+            .entries
+            .iter()
+            .find(|e| e.kind == EntryKind::Preview && e.name == name)
+            .cloned()
+            .ok_or(PackageError::MissingEntry)?;
+        let info = entry.preview.clone().ok_or(PackageError::ManifestInvalid)?;
+        let pixels = self
+            .process_entry(&entry, true, cancel)?
+            .unwrap_or_default();
+        if pixels.len() as u64 != info.byte_len() {
+            return Err(PackageError::PreviewMismatch);
+        }
+        Ok(PreviewImage { info, pixels })
     }
 
     /// Decoded, verified bytes of one asset by SHA-256 hex.
@@ -314,6 +398,7 @@ impl<S: Source> Container<S> {
         let mut document: Option<Vec<u8>> = None;
         let mut assets = BTreeMap::new();
         let mut held: Vec<(Quarantined, LossReason)> = Vec::new();
+        let mut previews: Vec<PreviewRef> = Vec::new();
         let mut listed: BTreeSet<String> = BTreeSet::new();
         for entry in &entries {
             listed.insert(entry.name.clone());
@@ -322,6 +407,16 @@ impl<S: Source> Container<S> {
                     code: folio::Code::BudgetExceeded,
                     target: "input".to_owned(),
                 }));
+            }
+            if entry.kind == EntryKind::Preview {
+                // Optional and derived: declared only, never read or decoded here.
+                if let Some(info) = &entry.preview {
+                    previews.push(PreviewRef {
+                        name: entry.name.clone(),
+                        info: info.clone(),
+                    });
+                }
+                continue;
             }
             let data = self.process_entry(entry, true, cancel)?.unwrap_or_default();
             let reason = match entry.kind {
@@ -334,7 +429,7 @@ impl<S: Source> Container<S> {
                     assets.insert(hash.to_owned(), data);
                     continue;
                 }
-                EntryKind::Preview => LossReason::Preview,
+                EntryKind::Preview => continue,
                 EntryKind::Opaque => LossReason::Opaque,
             };
             held.push((
@@ -402,6 +497,7 @@ impl<S: Source> Container<S> {
             assets,
             quarantined,
             loss,
+            previews,
         })
     }
 }
@@ -460,6 +556,25 @@ pub fn read_package_stream<R: Read + Seek>(
     PackageReader::open(src, limits, cancel)?.into_opened(folio_budget, resolver, cancel)
 }
 
+/// Declared previews of a package, without hashing or decoding any entry body.
+pub fn list_previews(
+    bytes: &[u8],
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<Vec<PreviewRef>, PackageError> {
+    Ok(Container::open(SliceSource(bytes), limits, cancel)?.previews())
+}
+
+/// Decodes and digest-verifies one named preview (see [`list_previews`]).
+pub fn read_preview(
+    bytes: &[u8],
+    limits: &Limits,
+    name: &str,
+    cancel: &CancellationToken,
+) -> Result<PreviewImage, PackageError> {
+    Container::open(SliceSource(bytes), limits, cancel)?.read_preview(name, cancel)
+}
+
 /// Lazy reader over a `Read + Seek` source: open verifies structure, CRCs and the manifest;
 /// assets are decoded and hash-verified one at a time on request.
 pub struct PackageReader<R: Read + Seek> {
@@ -493,6 +608,20 @@ impl<R: Read + Seek> PackageReader<R> {
         cancel: &CancellationToken,
     ) -> Result<Vec<u8>, PackageError> {
         self.inner.read_asset(sha256_hex, cancel)
+    }
+
+    /// Declared previews; nothing is read or decoded.
+    pub fn previews(&self) -> Vec<PreviewRef> {
+        self.inner.previews()
+    }
+
+    /// Decodes and digest-verifies one named preview.
+    pub fn read_preview(
+        &mut self,
+        name: &str,
+        cancel: &CancellationToken,
+    ) -> Result<PreviewImage, PackageError> {
+        self.inner.read_preview(name, cancel)
     }
 
     pub fn into_opened(

@@ -3,8 +3,9 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, ContentDigest, Inspection, Unresolved, inspect_bytes};
 use hsk_studio_package::{
-    AssetError, AssetSource, Codec, DESCRIPTOR, Limits, LossReason, WriteOptions,
-    read_package_stream, save_atomic, sweep_stale_temps, write_package_with,
+    AssetError, AssetSource, Codec, DESCRIPTOR, Extras, Limits, LossReason, PixelFormat,
+    PreviewImage, PreviewInfo, WriteOptions, read_package_stream, save_atomic, sweep_stale_temps,
+    write_package_with,
 };
 use std::{
     env,
@@ -53,6 +54,32 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// `--preview PIXELS FORMAT WxH COLOR`: raw tightly packed pixels from a file.
+fn read_preview_arg(
+    file: &str,
+    format: &str,
+    size: &str,
+    color: &str,
+) -> Result<PreviewImage, String> {
+    let format = match format {
+        "gray8" => PixelFormat::Gray8,
+        "rgb8" => PixelFormat::Rgb8,
+        "rgba8" => PixelFormat::Rgba8,
+        _ => return Err("unknown preview format".into()),
+    };
+    let (width, height) = size.split_once('x').ok_or("preview size is WxH")?;
+    let info = PreviewInfo {
+        format,
+        width: width.parse().map_err(|_| "invalid preview width")?,
+        height: height.parse().map_err(|_| "invalid preview height")?,
+        color: color.to_owned(),
+    };
+    Ok(PreviewImage {
+        pixels: read_bounded(Path::new(file))?,
+        info,
+    })
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     let token = CancellationToken::default();
@@ -65,11 +92,18 @@ fn run() -> Result<(), String> {
         ["--write", doc, out, rest @ ..] => {
             let mut assets = PathBuf::new();
             let mut options = WriteOptions::default();
+            let mut previews: Vec<PreviewImage> = Vec::new();
             let mut flags = rest.iter();
             while let Some(flag) = flags.next() {
                 match *flag {
                     "--assets" => assets = PathBuf::from(flags.next().ok_or("missing --assets value")?),
                     "--zstd" => options.asset_codec = Codec::Zstd,
+                    "--shuffle" => options.asset_codec = Codec::ShuffleZstd,
+                    "--preview" => {
+                        let mut next = || flags.next().ok_or("missing --preview value");
+                        let (file, format, size, color) = (next()?, next()?, next()?, next()?);
+                        previews.push(read_preview_arg(file, format, size, color)?);
+                    }
                     _ => return Err("unknown arguments".into()),
                 }
             }
@@ -84,7 +118,10 @@ fn run() -> Result<(), String> {
             let receipt = write_package_with(
                 &snapshot,
                 &DirAssets(assets),
-                &[],
+                &Extras {
+                    quarantined: &[],
+                    previews: &previews,
+                },
                 &options,
                 &limits,
                 &token,
@@ -113,7 +150,6 @@ fn run() -> Result<(), String> {
                 .map(|n| match n.reason {
                     LossReason::Unlisted => "unlisted",
                     LossReason::Opaque => "opaque",
-                    LossReason::Preview => "preview",
                 })
                 .collect();
             println!(
@@ -124,6 +160,7 @@ fn run() -> Result<(), String> {
                     ("editable", opened.snapshot().is_some().to_string()),
                     ("assets", opened.assets.len().to_string()),
                     ("quarantined", opened.quarantined.len().to_string()),
+                    ("previews", opened.previews.len().to_string()),
                     ("loss", format!("{loss:?}")),
                 ])
             );
@@ -141,7 +178,7 @@ fn run() -> Result<(), String> {
             );
             Ok(())
         }
-        _ => Err("usage: --descriptor | --write DOC.json OUT.handshake [--assets DIR] [--zstd] | --read IN.handshake | --sweep TARGET".into()),
+        _ => Err("usage: --descriptor | --write DOC.json OUT.handshake [--assets DIR] [--zstd|--shuffle] [--preview PIXELS FORMAT WxH COLOR] | --read IN.handshake | --sweep TARGET".into()),
     }
 }
 

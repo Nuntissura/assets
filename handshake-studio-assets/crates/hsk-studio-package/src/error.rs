@@ -54,6 +54,8 @@ pub enum PackageError {
     DestinationInvalid,
     /// Compressed blob failed to decode or exceeded its declared window.
     DecodeFailed,
+    /// Preview pixel buffer does not match its declared format and dimensions.
+    PreviewMismatch,
 }
 
 impl PackageError {
@@ -89,6 +91,7 @@ impl PackageError {
             Self::ReadbackMismatch => "readback_mismatch",
             Self::DestinationInvalid => "destination_invalid",
             Self::DecodeFailed => "decode_failed",
+            Self::PreviewMismatch => "preview_mismatch",
         }
     }
 }
