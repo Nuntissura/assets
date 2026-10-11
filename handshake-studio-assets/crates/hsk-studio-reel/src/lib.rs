@@ -24,6 +24,8 @@ pub mod fixtures;
 mod identity;
 mod isobmff;
 mod matroska;
+mod mkv_content;
+mod mkv_pcm;
 mod model;
 mod registry;
 mod report;
@@ -47,8 +49,9 @@ pub use isobmff::{
     read_timecode_start,
 };
 pub use matroska::{
-    ClusterRef, CuePoint, CuePosition, CuedSeek, MATROSKA_PROVIDER_ID, MatroskaProvider, MkvIndex,
-    MkvLayout, MkvTrack, MkvTrackInfo, build_matroska_index, cued_seek, read_layout,
+    ClusterRef, CuePoint, CuePosition, CuedSeek, MATROSKA_PROVIDER_ID, MatroskaProvider,
+    MkvCompression, MkvContentEncoding, MkvEncodingKind, MkvIndex, MkvLayout, MkvTrack,
+    MkvTrackInfo, build_matroska_index, cued_seek, read_layout,
 };
 pub use model::*;
 pub use registry::{ProxySource, Registry, detect_type};

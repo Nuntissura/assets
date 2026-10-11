@@ -23,6 +23,7 @@
 use crate::av1_config::parse_av1c;
 use crate::error::{DecoderFault, ReelError, check_cancel};
 use crate::isobmff::{ColorTag, TrackIndex, deliver_packets};
+use crate::mkv_content::{ContentPlan, DecodeSink};
 use crate::model::*;
 use hsk_studio_accord::{CancellationToken, Ticks};
 use std::collections::VecDeque;
@@ -236,6 +237,14 @@ pub(crate) struct VideoTrack<'a> {
     pub unsupported: Option<&'static str>,
 }
 
+/// Container-side content decoding of a track (Matroska `ContentEncodings`): the plan that turns stored
+/// packets into codec packets, and a refusal (encryption, ...) that is reported once a decoder exists.
+#[derive(Default)]
+pub(crate) struct VideoContent<'a> {
+    pub plan: Option<&'a ContentPlan>,
+    pub refusal: Option<ReelError>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PacketMeta {
     index: u64,
@@ -363,11 +372,38 @@ pub(crate) fn decode_video_track(
     sink: &mut dyn ChunkSink,
     route: &VideoRoute<'_>,
 ) -> Result<SegmentReceipt, ReelError> {
+    decode_video_track_with(
+        src,
+        video,
+        VideoContent::default(),
+        req,
+        limits,
+        cancel,
+        sink,
+        route,
+    )
+}
+
+/// `decode_video_track` for a track whose stored packets need the container's content decoding first.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_video_track_with(
+    src: &mut dyn ReadSeek,
+    video: VideoTrack<'_>,
+    content: VideoContent<'_>,
+    req: &SegmentRequest,
+    limits: &Limits,
+    cancel: &CancellationToken,
+    sink: &mut dyn ChunkSink,
+    route: &VideoRoute<'_>,
+) -> Result<SegmentReceipt, ReelError> {
     let chosen = choose(route, video.codec).ok_or_else(|| ReelError::CodecUnavailable {
         codec: video.codec_label.clone(),
     })?;
     if let Some(what) = video.unsupported {
         return Err(ReelError::Unsupported { what });
+    }
+    if let Some(error) = content.refusal {
+        return Err(error);
     }
     match video.codec {
         VideoCodec::Av1 if !video.config.is_empty() => {
@@ -412,6 +448,14 @@ pub(crate) fn decode_video_track(
         },
         cancel,
     };
+    let mut transform;
+    let packets: &mut dyn ChunkSink = match content.plan {
+        Some(plan) if plan.has_frame_steps() => {
+            transform = DecodeSink::new(&mut pump, plan, limits.max_chunk_bytes);
+            &mut transform
+        }
+        _ => &mut pump,
+    };
     let mut receipt = deliver_packets(
         src,
         video.track,
@@ -420,7 +464,7 @@ pub(crate) fn decode_video_track(
         req,
         limits,
         cancel,
-        &mut pump,
+        packets,
     )?;
     pump.session
         .finish(cancel, &mut pump.fwd)

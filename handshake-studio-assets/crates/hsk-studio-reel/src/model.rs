@@ -1,4 +1,5 @@
 //! Provider port, request/receipt vocabulary, limits. Instance-owned: there is no global registry.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::ReelError;
 use crate::video::VideoRoute;
 use hsk_studio_accord::{CancellationToken, Ticks};
@@ -358,7 +359,7 @@ impl VideoFormat {
     pub fn frame_bytes(&self) -> Option<usize> {
         let bps = self.bytes_per_sample() as u64;
         let samples = self.plane_dims().iter().try_fold(0u64, |acc, (w, h)| {
-            acc.checked_add(u64::from(*w) * u64::from(*h))
+            acc.checked_add(u64::from(*w).checked_mul(u64::from(*h))?)
         })?;
         usize::try_from(samples.checked_mul(bps)?).ok()
     }

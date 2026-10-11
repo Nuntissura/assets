@@ -9,14 +9,24 @@
 //! are NOT decoded (`CodecUnavailable` naming the CodecID); tracks with `ContentEncodings` (header
 //! stripping, compression, encryption) are typed `Unsupported` at delivery. `cued_seek` finds the start
 //! cluster through `Cues` and scans only the clusters it needs.
+//!
+//! Arithmetic on file-derived numbers is checked throughout (V4-01).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{ReelError, check_cancel};
 use crate::isobmff::{
-    AudioFormat, ExternalTrack, SampleEntry, SeekResult, TrackIndex, TrackKind, deliver_packets,
+    AudioFormat, ExternalTrack, PcmStream, SampleEntry, SeekResult, TrackIndex, TrackKind,
+    deliver_packets, deliver_pcm_stream,
 };
+use crate::mkv_content::{ContentPlan, DecodeSink, parse_content_encodings};
+use crate::mkv_pcm::{build_pcm_stream, pcm_format_of};
 use crate::model::*;
-use crate::video::{VideoCodec, VideoRoute, VideoTrack};
+use crate::video::{
+    VideoCodec, VideoContent, VideoRoute, VideoTrack, decode_video_track_with,
+};
 use hsk_studio_accord::{CancellationToken, Rounding, Ticks, Timescale};
 use std::io::{Read, Seek, SeekFrom};
+
+pub use crate::mkv_content::{MkvCompression, MkvContentEncoding, MkvEncodingKind};
 
 pub const MATROSKA_PROVIDER_ID: &str = "matroska";
 const DECODER_VERSION: &str = "1";
@@ -106,7 +116,7 @@ fn parse_head(buf: &[u8]) -> Result<Head, ReelError> {
     if first == 0 {
         return Err(corrupt("ebml-id-length"));
     }
-    let id_len = first.leading_zeros() as usize + 1;
+    let id_len = (first.leading_zeros() as usize).saturating_add(1);
     if id_len > 4 {
         return Err(corrupt("ebml-id-length"));
     }
@@ -114,22 +124,30 @@ fn parse_head(buf: &[u8]) -> Result<Head, ReelError> {
     if size_first == 0 {
         return Err(corrupt("ebml-size-length"));
     }
-    let size_len = size_first.leading_zeros() as usize + 1;
-    if buf.len() < id_len + size_len {
+    let size_len = (size_first.leading_zeros() as usize).saturating_add(1);
+    let head_len = id_len.saturating_add(size_len);
+    if buf.len() < head_len {
         return Err(corrupt("ebml-header-truncated"));
     }
     let id = buf[..id_len]
         .iter()
         .fold(0u32, |acc, b| (acc << 8) | u32::from(*b));
     let mut value = u64::from(u16::from(size_first) & (0xFFu16 >> size_len));
-    for b in &buf[id_len + 1..id_len + size_len] {
+    let size_tail = buf
+        .get(id_len.saturating_add(1)..head_len)
+        .ok_or(corrupt("ebml-header-truncated"))?;
+    for b in size_tail {
         value = (value << 8) | u64::from(*b);
     }
-    let unknown = value == (1u64 << (7 * size_len)) - 1;
+    // The all-ones pattern of this width is the reserved "unknown size" (width is 1..=8 octets).
+    let all_ones = 1u64
+        .checked_shl((size_len as u32).saturating_mul(7))
+        .unwrap_or(0)
+        .saturating_sub(1);
     Ok(Head {
         id,
-        size: (!unknown).then_some(value),
-        header_len: (id_len + size_len) as u64,
+        size: (value != all_ones).then_some(value),
+        header_len: head_len as u64,
     })
 }
 
@@ -153,7 +171,7 @@ fn read_at(
     Ok(buf)
 }
 
-fn uint(payload: &[u8]) -> Result<u64, ReelError> {
+pub(crate) fn uint(payload: &[u8]) -> Result<u64, ReelError> {
     if payload.len() > 8 {
         return Err(corrupt("ebml-uint"));
     }
@@ -176,12 +194,12 @@ fn float(payload: &[u8]) -> Result<f64, ReelError> {
 }
 
 /// Children of an in-memory master element. Unknown-size or overlong children are `Corrupt`.
-struct Elems<'a> {
+pub(crate) struct Elems<'a> {
     data: &'a [u8],
     pos: usize,
 }
 
-fn elems(data: &[u8]) -> Elems<'_> {
+pub(crate) fn elems(data: &[u8]) -> Elems<'_> {
     Elems { data, pos: 0 }
 }
 
@@ -206,7 +224,7 @@ impl<'a> Iterator for Elems<'a> {
         })();
         match result {
             Ok((id, payload, end)) => {
-                self.pos += end;
+                self.pos = self.pos.saturating_add(end);
                 Some(Ok((id, payload)))
             }
             Err(e) => {
@@ -236,15 +254,16 @@ fn lace_vint(buf: &[u8], pos: &mut usize) -> Result<(u64, usize), ReelError> {
     if first == 0 {
         return Err(corrupt("lace-vint"));
     }
-    let len = first.leading_zeros() as usize + 1;
-    if *pos + len > buf.len() {
-        return Err(corrupt("lace-header-truncated"));
-    }
+    let len = (first.leading_zeros() as usize).saturating_add(1);
+    let end = pos
+        .checked_add(len)
+        .filter(|end| *end <= buf.len())
+        .ok_or(corrupt("lace-header-truncated"))?;
     let mut value = u64::from(u16::from(first) & (0xFFu16 >> len));
-    for b in &buf[*pos + 1..*pos + len] {
+    for b in &buf[pos.saturating_add(1)..end] {
         value = (value << 8) | u64::from(*b);
     }
-    *pos += len;
+    *pos = end;
     Ok((value, len))
 }
 
@@ -264,8 +283,15 @@ pub struct MkvTrackInfo {
     pub default: bool,
     pub codec_delay_ns: u64,
     pub seek_pre_roll_ns: u64,
-    /// `ContentEncodings` present (compression / header stripping / encryption): not undone here.
+    /// `ContentEncodings` present (compression / header stripping / encryption).
     pub content_encoded: bool,
+    /// The track's encodings as stored. Header stripping and zlib are undone for frames and
+    /// `CodecPrivate`; see `content_refusal` for everything else.
+    pub content_encodings: Vec<MkvContentEncoding>,
+    /// Why the encodings cannot be undone for this track (encryption, deprecated algorithms, malformed
+    /// or unsupported scope, a damaged `CodecPrivate`). Delivery of this track returns it; other tracks
+    /// are unaffected.
+    pub content_refusal: Option<ReelError>,
     pub width: u32,
     pub height: u32,
     pub channels: u16,
@@ -318,7 +344,9 @@ pub struct MkvLayout {
 
 impl MkvLayout {
     fn media_timescale(&self) -> u32 {
-        (1_000_000_000 / self.timestamp_scale_ns) as u32
+        1_000_000_000u64
+            .checked_div(self.timestamp_scale_ns)
+            .unwrap_or(0) as u32
     }
     pub fn track(&self, number: u32) -> Option<&MkvTrackInfo> {
         self.tracks.iter().find(|t| t.number == number)
@@ -334,7 +362,7 @@ struct Counting<'a> {
 impl Read for Counting<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        self.bytes += n as u64;
+        self.bytes = self.bytes.saturating_add(n as u64);
         Ok(n)
     }
 }
@@ -359,6 +387,8 @@ fn parse_track_entry(payload: &[u8]) -> Result<MkvTrackInfo, ReelError> {
         codec_delay_ns: 0,
         seek_pre_roll_ns: 0,
         content_encoded: false,
+        content_encodings: Vec::new(),
+        content_refusal: None,
         width: 0,
         height: 0,
         channels: 1,
@@ -400,7 +430,10 @@ fn parse_track_entry(payload: &[u8]) -> Result<MkvTrackInfo, ReelError> {
             }
             ID_CODEC_DELAY => t.codec_delay_ns = uint(p)?,
             ID_SEEK_PRE_ROLL => t.seek_pre_roll_ns = uint(p)?,
-            ID_CONTENT_ENCODINGS => t.content_encoded = true,
+            ID_CONTENT_ENCODINGS => {
+                t.content_encoded = true;
+                t.content_encodings = parse_content_encodings(p)?;
+            }
             ID_VIDEO => {
                 for sub in elems(p) {
                     let (sid, sp) = sub?;
@@ -428,7 +461,31 @@ fn parse_track_entry(payload: &[u8]) -> Result<MkvTrackInfo, ReelError> {
     if t.number == 0 {
         return Err(corrupt("track-number-missing"));
     }
+    finish_content_encodings(&mut t);
     Ok(t)
+}
+
+/// Resolve the encodings once per track: private-scope steps decode `CodecPrivate` now (it is consumed
+/// as a decoder config), anything this reader cannot undo is remembered as the track's refusal.
+fn finish_content_encodings(t: &mut MkvTrackInfo) {
+    match ContentPlan::from_encodings(&t.content_encodings) {
+        Err(error) => t.content_refusal = Some(error),
+        Ok(Some(plan)) if plan.has_private_steps() => {
+            match plan.decode_private(&t.codec_private, MAX_CODEC_PRIVATE) {
+                Ok(decoded) => t.codec_private = decoded,
+                Err(error) => t.content_refusal = Some(error),
+            }
+        }
+        Ok(_) => {}
+    }
+}
+
+/// The frame-decoding plan of a track, or the typed reason it cannot be delivered.
+fn content_plan(info: &MkvTrackInfo) -> Result<Option<ContentPlan>, ReelError> {
+    if let Some(error) = &info.content_refusal {
+        return Err(error.clone());
+    }
+    ContentPlan::from_encodings(&info.content_encodings)
 }
 
 fn parse_cues(payload: &[u8], limits: &Limits) -> Result<Vec<CuePoint>, ReelError> {
@@ -535,7 +592,9 @@ fn first_child_timecode(
     let head = peek_head(src, data_start, end)?;
     match head.size {
         Some(size) if head.id == ID_TIMESTAMP && size <= 8 => {
-            let at = data_start + head.header_len;
+            let Some(at) = data_start.checked_add(head.header_len) else {
+                return Ok(None);
+            };
             if at.checked_add(size).is_none_or(|e| e > end) {
                 return Ok(None);
             }
@@ -592,7 +651,7 @@ fn read_layout_inner(
         .size
         .filter(|s| *s <= MAX_EBML_HEADER)
         .ok_or(corrupt("ebml-header-size"))?;
-    let header_end = head.header_len + size;
+    let header_end = head.header_len.saturating_add(size);
     if header_end > file_len {
         return Err(corrupt("ebml-header-truncated"));
     }
@@ -640,7 +699,9 @@ fn read_layout_inner(
             _ => return Err(corrupt("segment-missing")),
         }
     };
-    let data_start = segment_pos + segment_head.header_len;
+    let data_start = segment_pos
+        .checked_add(segment_head.header_len)
+        .ok_or(corrupt("segment-missing"))?;
     let mut truncated_tail = false;
     let segment_end = match segment_head.size {
         Some(n) => match data_start.checked_add(n) {
@@ -673,7 +734,9 @@ fn read_layout_inner(
             break;
         }
         let h = peek_head(src, pos, segment_end)?;
-        let body = pos + h.header_len;
+        let body = pos
+            .checked_add(h.header_len)
+            .ok_or(corrupt("element-exceeds-parent"))?;
         match h.id {
             ID_CLUSTER => {
                 let (end, truncated) = match h.size {
@@ -692,7 +755,7 @@ fn read_layout_inner(
                     });
                 }
                 layout.clusters.push(ClusterRef {
-                    position: pos - data_start,
+                    position: pos.saturating_sub(data_start),
                     data_start: body,
                     end,
                     timecode: first_child_timecode(src, body, end)?,
@@ -711,7 +774,7 @@ fn read_layout_inner(
                         what: "probe-bytes",
                     });
                 }
-                probed += n;
+                probed = probed.saturating_add(n);
                 let payload = read_at(src, body, n as usize, "segment-element")?;
                 match h.id {
                     ID_INFO => {
@@ -787,7 +850,13 @@ fn default_units(track: &MkvTrackInfo, scale_ns: u64) -> u32 {
     track
         .default_duration_ns
         .filter(|d| d.is_multiple_of(scale_ns))
-        .map_or(0, |d| u32::try_from(d / scale_ns).unwrap_or(0))
+        .and_then(|d| d.checked_div(scale_ns))
+        .and_then(|units| u32::try_from(units).ok())
+        .unwrap_or(0)
+}
+
+fn exceeds_parent() -> ReelError {
+    corrupt("element-exceeds-parent")
 }
 
 /// Parse one Block / SimpleBlock payload at `data_pos` into its frames (lacing expanded).
@@ -808,17 +877,17 @@ fn parse_block(
     if first == 0 {
         return Err(corrupt("block-track-vint"));
     }
-    let tlen = first.leading_zeros() as usize + 1;
-    if tlen + 3 > buf.len() {
-        return Err(corrupt("block-header"));
-    }
+    let tlen = (first.leading_zeros() as usize).saturating_add(1);
+    let fixed = buf
+        .get(tlen..tlen.saturating_add(3))
+        .ok_or(corrupt("block-header"))?;
     let mut number = u64::from(u16::from(first) & (0xFFu16 >> tlen));
     for b in &buf[1..tlen] {
         number = (number << 8) | u64::from(*b);
     }
-    let rel = i16::from_be_bytes([buf[tlen], buf[tlen + 1]]);
-    let flags = buf[tlen + 2];
-    let header_len = (tlen + 3) as u64;
+    let rel = i16::from_be_bytes([fixed[0], fixed[1]]);
+    let flags = fixed[2];
+    let header_len = tlen.saturating_add(3) as u64;
     let ti = tracks
         .iter()
         .position(|t| u64::from(t.number) == number)
@@ -827,7 +896,12 @@ fn parse_block(
         .ok()
         .and_then(|t| t.checked_add(i64::from(rel)))
         .ok_or(ReelError::LimitExceeded { what: "time-range" })?;
-    let payload_len = size - header_len;
+    let payload_len = size
+        .checked_sub(header_len)
+        .ok_or(corrupt("block-header"))?;
+    let payload_pos = data_pos
+        .checked_add(header_len)
+        .ok_or_else(exceeds_parent)?;
     let key = flags & 0x80 != 0;
     let lacing = (flags & 0x06) >> 1;
     let to_u32 = |n: u64| {
@@ -839,7 +913,7 @@ fn parse_block(
         return Ok(vec![ParsedFrame {
             track: ti,
             pts: base,
-            offset: data_pos + header_len,
+            offset: payload_pos,
             size: to_u32(payload_len)?,
             duration: default_units(&tracks[ti], scale_ns),
             key,
@@ -850,21 +924,22 @@ fn parse_block(
     }
     let head_bytes = read_at(
         src,
-        data_pos + header_len,
+        payload_pos,
         payload_len.min(LACE_PEEK) as usize,
         "lace-header",
     )?;
-    let count = usize::from(*head_bytes.first().ok_or(corrupt("lace-header-truncated"))?) + 1;
+    let count = usize::from(*head_bytes.first().ok_or(corrupt("lace-header-truncated"))?)
+        .saturating_add(1);
     let mut p = 1usize;
     let mut sizes: Vec<u64> = Vec::with_capacity(count);
     match lacing {
         1 => {
-            for _ in 0..count - 1 {
+            for _ in 0..count.saturating_sub(1) {
                 let mut total = 0u64;
                 loop {
                     let b = *head_bytes.get(p).ok_or(corrupt("lace-header-truncated"))?;
-                    p += 1;
-                    total += u64::from(b);
+                    p = p.saturating_add(1);
+                    total = total.saturating_add(u64::from(b));
                     if b != 255 {
                         break;
                     }
@@ -876,9 +951,16 @@ fn parse_block(
             if count >= 2 {
                 let (first_size, _) = lace_vint(&head_bytes, &mut p)?;
                 sizes.push(first_size);
-                for _ in 1..count - 1 {
+                for _ in 1..count.saturating_sub(1) {
                     let (raw, len) = lace_vint(&head_bytes, &mut p)?;
-                    let delta = raw as i64 - ((1i64 << (7 * len - 1)) - 1);
+                    // Signed vint: raw - (2^(7*len - 1) - 1).
+                    let shift =
+                        u32::try_from(len.saturating_mul(7).saturating_sub(1)).unwrap_or(63);
+                    let bias = 1i64
+                        .checked_shl(shift)
+                        .unwrap_or(i64::MAX)
+                        .saturating_sub(1);
+                    let delta = (raw as i64).saturating_sub(bias);
                     let prev = *sizes.last().unwrap_or(&0) as i64;
                     let next = prev
                         .checked_add(delta)
@@ -892,10 +974,12 @@ fn parse_block(
             let body = payload_len
                 .checked_sub(1)
                 .ok_or(corrupt("lace-header-truncated"))?;
-            if body % count as u64 != 0 {
+            let frames = count as u64;
+            if body.checked_rem(frames) != Some(0) {
                 return Err(corrupt("fixed-lace-size"));
             }
-            sizes.extend(std::iter::repeat_n(body / count as u64, count - 1));
+            let each = body.checked_div(frames).ok_or(corrupt("fixed-lace-size"))?;
+            sizes.extend(std::iter::repeat_n(each, count.saturating_sub(1)));
         }
     }
     let rest = payload_len
@@ -914,14 +998,18 @@ fn parse_block(
         .ok_or(ReelError::Unsupported {
             what: "lacing-without-default-duration",
         })?;
-    if default % scale_ns != 0 {
+    if default.checked_rem(scale_ns) != Some(0) {
         return Err(ReelError::Unsupported {
             what: "laced-frame-duration-not-a-timestamp-multiple",
         });
     }
-    let step = i64::try_from(default / scale_ns)
-        .map_err(|_| ReelError::LimitExceeded { what: "time-range" })?;
-    let mut offset = data_pos + header_len + p as u64;
+    let step = default
+        .checked_div(scale_ns)
+        .and_then(|units| i64::try_from(units).ok())
+        .ok_or(ReelError::LimitExceeded { what: "time-range" })?;
+    let mut offset = payload_pos
+        .checked_add(p as u64)
+        .ok_or_else(exceeds_parent)?;
     let mut frames = Vec::with_capacity(count);
     for (i, frame_size) in sizes.iter().enumerate() {
         frames.push(ParsedFrame {
@@ -934,7 +1022,7 @@ fn parse_block(
             duration: u32::try_from(step).unwrap_or(0),
             key,
         });
-        offset += frame_size;
+        offset = offset.checked_add(*frame_size).ok_or_else(exceeds_parent)?;
     }
     Ok(frames)
 }
@@ -967,7 +1055,7 @@ fn scan_cluster(
                     what: "sample-count",
                 });
             }
-            *budget -= 1;
+            *budget = budget.saturating_sub(1);
             let duration = match block_duration {
                 Some(d) if single => u32::try_from(d).unwrap_or(0),
                 _ => f.duration,
@@ -989,13 +1077,13 @@ fn scan_cluster(
     while cluster.end.saturating_sub(pos) >= 2 {
         check_cancel(cancel)?;
         let h = peek_head(src, pos, cluster.end)?;
-        let body = pos + h.header_len;
+        let body = pos.checked_add(h.header_len).ok_or_else(exceeds_parent)?;
         let size = h.size.ok_or(corrupt("unknown-size-child"))?;
         let Some(end) = body.checked_add(size).filter(|e| *e <= cluster.end) else {
             if cluster.truncated {
                 break; // the recording was cut inside this element
             }
-            return Err(corrupt("element-exceeds-parent"));
+            return Err(exceeds_parent());
         };
         match h.id {
             ID_TIMESTAMP => {
@@ -1018,12 +1106,12 @@ fn scan_cluster(
                 let (mut duration, mut referenced) = (None, false);
                 while end.saturating_sub(gpos) >= 2 {
                     let gh = peek_head(src, gpos, end)?;
-                    let gbody = gpos + gh.header_len;
+                    let gbody = gpos.checked_add(gh.header_len).ok_or_else(exceeds_parent)?;
                     let gsize = gh.size.ok_or(corrupt("unknown-size-child"))?;
                     let gend = gbody
                         .checked_add(gsize)
                         .filter(|e| *e <= end)
-                        .ok_or(corrupt("element-exceeds-parent"))?;
+                        .ok_or_else(exceeds_parent)?;
                     match gh.id {
                         ID_BLOCK => {
                             frames = parse_block(src, gbody, gsize, timecode, tracks, scale_ns)?;
@@ -1062,7 +1150,7 @@ fn finish_durations(samples: &mut [SampleEntry], end_hint: Option<i64>) {
         }
         let pts = samples[i].pts;
         let next = order
-            .get(w + 1)
+            .get(w.saturating_add(1))
             .and_then(|&j| samples[j].pts.checked_sub(pts))
             .filter(|d| *d > 0);
         let fallback = || {
@@ -1114,6 +1202,10 @@ fn external_track(info: &MkvTrackInfo, layout: &MkvLayout) -> ExternalTrack {
 pub struct MkvTrack {
     pub info: MkvTrackInfo,
     pub index: TrackIndex,
+    /// Compact block index of a valid uncompressed-PCM track (`A_PCM/*`): the stream the shared PCM
+    /// delivery reads. `None` for every other track (and for PCM whose parameters are refused, which
+    /// delivery reports with the typed reason).
+    pub pcm: Option<PcmStream>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1180,6 +1272,11 @@ pub fn build_matroska_index(
     let mut tracks = Vec::with_capacity(layout.tracks.len());
     for (info, mut samples) in layout.tracks.iter().zip(per_track) {
         finish_durations(&mut samples, end_hint(&layout));
+        let pcm = if info.track_type == 2 {
+            build_pcm_stream(info, &samples, layout.media_timescale())?
+        } else {
+            None
+        };
         let index = TrackIndex::from_external_samples(
             external_track(info, &layout),
             samples,
@@ -1189,9 +1286,10 @@ pub fn build_matroska_index(
         tracks.push(MkvTrack {
             info: info.clone(),
             index,
+            pcm,
         });
     }
-    let bytes_read = layout.bytes_read + counting.bytes;
+    let bytes_read = layout.bytes_read.saturating_add(counting.bytes);
     Ok(MkvIndex {
         layout,
         tracks,
@@ -1269,7 +1367,7 @@ pub fn cued_seek(
     let scan_count = if layout.clusters.is_empty() {
         0
     } else {
-        last - start + 1
+        last.saturating_sub(start).saturating_add(1)
     };
     let mut counting = Counting {
         inner: src,
@@ -1371,9 +1469,22 @@ impl MatroskaProvider {
         route: &VideoRoute<'_>,
     ) -> Result<SegmentReceipt, ReelError> {
         let track = select_track(index, req.track)?;
+        let plan = content_plan(&track.info);
         if req.output == OutputMode::Decoded {
             if track.info.codec_id == "V_AV1" {
-                return crate::video::decode_video_track(
+                // A refusal (encryption, ...) is reported only once a decoder exists: without one the
+                // track is simply unavailable.
+                let content = match &plan {
+                    Ok(plan) => VideoContent {
+                        plan: plan.as_ref(),
+                        refusal: None,
+                    },
+                    Err(error) => VideoContent {
+                        plan: None,
+                        refusal: Some(error.clone()),
+                    },
+                };
+                return decode_video_track_with(
                     src,
                     VideoTrack {
                         track: &track.index,
@@ -1385,9 +1496,9 @@ impl MatroskaProvider {
                         codec_label: track.info.codec_id.clone(),
                         width: track.info.width,
                         height: track.info.height,
-                        // Reported only once a decoder exists: without one the track is simply unavailable.
-                        unsupported: track.info.content_encoded.then_some("content-encoding"),
+                        unsupported: None,
                     },
+                    content,
                     req,
                     limits,
                     cancel,
@@ -1395,16 +1506,44 @@ impl MatroskaProvider {
                     route,
                 );
             }
+            // Uncompressed PCM decodes through the shared PCM path; the format is validated again here
+            // so a refused layout is reported with its typed reason.
+            if pcm_format_of(&track.info)?.is_some() {
+                if track.info.content_encoded {
+                    return Err(ReelError::Unsupported {
+                        what: "content-encoded-pcm",
+                    });
+                }
+                let stream = track.pcm.as_ref().ok_or(ReelError::Unsupported {
+                    what: "pcm-not-indexed",
+                })?;
+                return deliver_pcm_stream(
+                    src,
+                    stream,
+                    track.index.ticks_exact,
+                    "matroska-pcm",
+                    req,
+                    limits,
+                    cancel,
+                    sink,
+                );
+            }
             // No other decoder is registered for any Matroska CodecID in this slice.
             return Err(ReelError::CodecUnavailable {
                 codec: track.info.codec_id.clone(),
             });
         }
-        if track.info.content_encoded {
-            return Err(ReelError::Unsupported {
-                what: "content-encoding",
-            });
-        }
+        // Packets: undo the track's frame encodings (header stripping, zlib) before they reach the sink;
+        // a track whose encodings cannot be undone is refused before anything is read.
+        let plan = plan?;
+        let mut decoder;
+        let sink: &mut dyn ChunkSink = match &plan {
+            Some(plan) if plan.has_frame_steps() => {
+                decoder = DecodeSink::new(sink, plan, limits.max_chunk_bytes);
+                &mut decoder
+            }
+            _ => sink,
+        };
         deliver_packets(
             src,
             &track.index,
@@ -1449,6 +1588,13 @@ impl MediaProvider for MatroskaProvider {
             what: "no-audio-or-video-track",
         })?;
         let presented = track.index.presented();
+        let (ticks_per_unit, units) = match track.pcm.as_ref().map(|pcm| &pcm.window) {
+            Some(Ok(window)) => (window.ticks_per_frame, window.frames),
+            _ => (
+                presented.first().map_or(0, |p| p.duration),
+                presented.len() as u64,
+            ),
+        };
         Ok(StreamLayout {
             kind: if track.info.track_type == 1 {
                 MediaKind::Video
@@ -1458,8 +1604,8 @@ impl MediaProvider for MatroskaProvider {
             codec: track.info.codec_id.clone(),
             width: track.info.width,
             height: track.info.height,
-            ticks_per_unit: presented.first().map_or(0, |p| p.duration),
-            units: presented.len() as u64,
+            ticks_per_unit,
+            units,
             channels: track.info.channels,
             tracks: index.tracks.len() as u32,
         })
@@ -1497,7 +1643,7 @@ impl MediaProvider for MatroskaProvider {
         let file_len = verify_grant(src, &req.grant, req.expected_revision)?;
         let index = build_matroska_index(src, file_len, limits, cancel)?;
         let mut receipt = self.deliver(src, &index, req, limits, cancel, sink, route)?;
-        receipt.bytes_read += index.bytes_read;
+        receipt.bytes_read = receipt.bytes_read.saturating_add(index.bytes_read);
         Ok(receipt)
     }
 }
