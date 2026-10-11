@@ -45,11 +45,33 @@ pub enum AssetDecision {
 }
 
 /// Caller-owned grant lookup for relative references. Must not block, fetch or have side effects. A reference
-/// that climbs out with plain `..` segments is the port's containment decision: the document location is not
-/// known here (backslashes and percent-encoded dots/slashes are refused before the port, see
+/// that climbs out with plain `..` segments is the port's containment decision: the document location is known here
+/// only through `document_url` (backslashes and percent-encoded dots/slashes are refused before the port, see
 /// `DenyReason::AmbiguousPath`).
+///
+/// Port contract (R13-P2). Every reference that reaches `resolve` comes with the carrier's load contexts (`Loads`: what
+/// a browser does with the resource it fetches, decided before the reference is; a `link` has one per `rel` keyword, an
+/// animated URL one per candidate target). Where `loads.reads_text()` holds (style sheet, script, text track, manifest)
+/// the browser reads the fetched bytes as CSS, JavaScript, WebVTT or JSON, so a grant of the document itself there lets
+/// the document's own text load any URL it spells (R12-F2): a port that grants project files must refuse the document
+/// itself, and any text file it does not intend as that format, in those contexts.
+/// - `document_url` known: a relative reference that resolves to the document (same path after dot-segment removal,
+///   percent-decoding and ASCII case folding; query and fragment ignored) in a `reads_text` context is
+///   `Denied(SelfReference)` and `resolve` is not called (test `r13_p2_references_that_resolve_to_the_document_are_denied_in_text_contexts`).
+/// - `document_url` unknown (the default), or a spelling the crate cannot resolve against it (a directory form such as
+///   `.` while the document is `dir/index.html`): `resolve` is called and decides, with the context (test
+///   `r13_p2_the_port_receives_the_load_context`).
+/// - Contexts that do not read the document as text (navigation, image, media, SVG reference, CSS value) keep the
+///   reference for the port in every case.
 pub trait AssetPort: Send + Sync {
-    fn resolve(&self, reference: &str) -> AssetDecision;
+    /// The location of the document being scanned, in the terms the references are relative to (an absolute URL or a
+    /// project path); `None` when unknown. Pure accessor.
+    fn document_url(&self) -> Option<&str> {
+        None
+    }
+
+    /// The decision for one relative reference found in a carrier whose load contexts are `loads`.
+    fn resolve(&self, reference: &str, loads: Loads) -> AssetDecision;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,11 +102,12 @@ pub enum DenyReason {
     /// A function inside a CSS URL function (`image-set()`, `src()`, `image()`, ...) that computes its value at style time
     /// (`var()`, `attr()`, `env()`, custom `--*()` functions, any unknown function): the URL is not in the source.
     ComputedUrl,
-    /// A reference to the document itself (`#...`, the empty string or only URL-parser whitespace) from a carrier whose
-    /// browser reads the document's own text as the resource: a style sheet (`link rel=stylesheet`, `@import`; quirks
-    /// mode assumes `text/css`), a script (`script src`, svg `script href`), a text track or a manifest. The document
-    /// would be parsed as CSS or executed as JavaScript and could load any URL from plain text (R12-F2). Every other
-    /// carrier keeps `AssetOutcome::SameDocument`.
+    /// A reference to the document itself (`#...`, the empty string or only URL-parser whitespace; with
+    /// `AssetPort::document_url` known also a relative spelling that resolves to the document, R13-P2) from a carrier
+    /// whose browser reads the document's own text as the resource: a style sheet (`link rel=stylesheet`, `@import`;
+    /// quirks mode assumes `text/css`), a script (`script src`, svg `script href`), a text track or a manifest. The
+    /// document would be parsed as CSS or executed as JavaScript and could load any URL from plain text (R12-F2). Every
+    /// other carrier keeps `AssetOutcome::SameDocument` (`#...`, empty) or reaches the port (a relative spelling).
     SelfReference,
 }
 impl DenyReason {
@@ -179,6 +202,86 @@ fn url_clean(reference: &str) -> String {
 fn resolves_to_document(reference: &str) -> bool {
     let cleaned = url_clean(reference);
     cleaned.is_empty() || cleaned.starts_with('#')
+}
+
+/// A URL scheme (URL Standard: an ASCII alpha followed by alphanumerics, `+`, `-`, `.`).
+fn is_scheme(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+}
+
+/// The path of a document URL or project path as references are compared with it (R13-P2): scheme, authority, query and
+/// fragment removed, backslashes read as slashes (a Windows project path).
+fn document_path(url: &str) -> String {
+    let url = url_clean(url).replace('\\', "/");
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    let tail = match url.split_once(':') {
+        Some((scheme, tail)) if is_scheme(scheme) => tail,
+        _ => url,
+    };
+    match tail.strip_prefix("//") {
+        Some(authority_and_path) => authority_and_path
+            .find('/')
+            .and_then(|i| authority_and_path.get(i..))
+            .unwrap_or_default()
+            .to_owned(),
+        None => tail.to_owned(),
+    }
+}
+
+/// The comparable form of a path: dot segments removed (RFC 3986 5.2.4; `..` stops at the root), empty segments dropped
+/// (`a//b`, trailing and leading slashes read as one server reads them), percent-decoded and ASCII-lowercased (case-
+/// insensitive file systems; every spelling a port may read as the same file is one spelling).
+fn path_segments(path: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            other => out.push(percent_decoded(other).to_ascii_lowercase()),
+        }
+    }
+    out
+}
+
+/// The document being scanned as references to it are compared (`AssetPort::document_url`).
+struct DocumentUrl {
+    /// The path as given (query and fragment removed): the directory a relative reference is merged with.
+    path: String,
+    segments: Vec<String>,
+}
+
+impl DocumentUrl {
+    fn of(url: &str) -> Self {
+        let path = document_path(url);
+        let segments = path_segments(&path);
+        DocumentUrl { path, segments }
+    }
+
+    /// `reference` (relative, not a scheme or `//` URL, not `#...`) resolves to the document: its path is the document's
+    /// after merging with the document's directory and removing dot segments, or it has no path (`?x`: the document with
+    /// another query). The directory a spelling such as `.` names is not the document (the port decides).
+    fn names(&self, reference: &str) -> bool {
+        let cleaned = url_clean(reference).replace('\\', "/");
+        let path = cleaned.split(['?', '#']).next().unwrap_or_default();
+        if path.is_empty() {
+            return true;
+        }
+        let merged = if path.starts_with('/') {
+            path.to_owned()
+        } else {
+            let directory = self
+                .path
+                .rfind('/')
+                .and_then(|i| self.path.get(..=i))
+                .unwrap_or_default();
+            format!("{directory}{path}")
+        };
+        path_segments(&merged) == self.segments
+    }
 }
 
 /// Classify without any I/O. `None` = relative: the port decides.
@@ -337,7 +440,39 @@ fn refresh_url(s: &str) -> Option<Range<usize>> {
     if pos >= len {
         return None;
     }
-    // Optional `url =` prefix; a partial prefix means the whole remainder is the URL.
+    refresh_target(b, pos)
+}
+
+/// The legacy engine reading of a `<meta http-equiv=refresh>` content that is only a URL, with no delay number (`URL`,
+/// `; URL`, `, URL`, `url=URL`): the HTML steps read no refresh from it, an engine that refreshes immediately navigates
+/// (R13-P3; test `r13_p3_url_only_refresh_content_is_read_fail_closed`). A content that starts with a digit or `.` has a
+/// delay and is the HTML steps' alone (an invalid delay navigates nowhere); a blank content has no URL.
+fn legacy_refresh_url(s: &str) -> Option<Range<usize>> {
+    let b = s.as_bytes();
+    let mut pos = skip_ascii_ws(b, 0);
+    if b.get(pos).is_none_or(|c| c.is_ascii_digit() || *c == b'.') {
+        return None;
+    }
+    if matches!(b.get(pos), Some(b';' | b',')) {
+        pos = skip_ascii_ws(b, pos.saturating_add(1));
+    }
+    if pos >= b.len() {
+        return None;
+    }
+    refresh_target(b, pos)
+}
+
+fn skip_ascii_ws(b: &[u8], mut i: usize) -> usize {
+    while b.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i = i.saturating_add(1);
+    }
+    i
+}
+
+/// The URL of a refresh `content` from `pos` (not at the end): an optional `url =` prefix (a partial prefix means the whole
+/// remainder is the URL), then the URL, quoted or not.
+fn refresh_target(b: &[u8], pos: usize) -> Option<Range<usize>> {
+    let len = b.len();
     let mut quoted_from = pos;
     if matches!(b.get(pos), Some(b'u' | b'U')) {
         let mut p = pos.saturating_add(1);
@@ -347,13 +482,13 @@ fn refresh_url(s: &str) -> Option<Range<usize>> {
                 matches!(b.get(p), Some(b'l' | b'L'))
             }
             && {
-                p = skip_ws(p.saturating_add(1));
+                p = skip_ascii_ws(b, p.saturating_add(1));
                 b.get(p) == Some(&b'=')
             };
         if !full {
             return Some(pos..len);
         }
-        quoted_from = skip_ws(p.saturating_add(1));
+        quoted_from = skip_ascii_ws(b, p.saturating_add(1));
     }
     let mut start = quoted_from;
     let mut end = len;
@@ -390,7 +525,10 @@ fn has_base(doc: &WebDoc, cancel: &CancellationToken) -> Result<bool, WebError> 
 
 /// The `;`-separated pieces of an animation `values` list (Blink `SVGAnimationElement::ParseValues`: split on every `;`,
 /// each piece stripped of HTML whitespace; Gecko `SMILParserUtils::ParseValues` strips SVG whitespace, which differs only
-/// in U+000C, CSS whitespace and a C0 control the URL parser strips; empty pieces dropped): (offset in `text`, piece).
+/// in U+000C, CSS whitespace and a C0 control the URL parser strips; pieces with no character at all dropped): (offset in
+/// `text`, piece). A piece of nothing but HTML whitespace (`values="&#12;"`) is kept as written: one engine reading keeps
+/// U+000C, which the URL parser then strips to the empty reference to the document itself (R13-P1; test
+/// `r13_p1_a_blank_values_piece_fails_closed`).
 fn value_pieces(text: &str) -> Vec<(usize, &str)> {
     let html_space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}');
     let mut out = Vec::new();
@@ -404,6 +542,8 @@ fn value_pieces(text: &str) -> Vec<(usize, &str)> {
         let item = part.trim_matches(html_space);
         if !item.is_empty() {
             out.push((start.saturating_add(lead), item));
+        } else if !part.is_empty() {
+            out.push((start, part));
         }
     }
     out
@@ -412,13 +552,31 @@ fn value_pieces(text: &str) -> Vec<(usize, &str)> {
 struct Collector<'a> {
     doc: &'a WebDoc,
     port: &'a dyn AssetPort,
+    cancel: &'a CancellationToken,
     base_blocks: bool,
+    /// The document's own location when the port knows it (`AssetPort::document_url`).
+    document: Option<DocumentUrl>,
     limit: usize,
     /// Encoded bytes of `data:` payloads that may still be scanned (aggregate bound, `Limits::max_bytes`).
     data_budget: usize,
     out: Vec<AssetRef>,
     /// Element ids of the document (`id` attribute value -> elements), built when the first animated URL needs it.
-    ids: Option<HashMap<String, Vec<NodeId>>>,
+    ids: Option<HashMap<String, IdEntry>>,
+}
+
+/// The elements sharing one `id` value and, per animated attribute name, the load contexts of that attribute on all of
+/// them (memoised: the elements are walked once per name, however many animations name them; R13-F1).
+#[derive(Default)]
+struct IdEntry {
+    nodes: Vec<NodeId>,
+    loads: HashMap<String, Loads>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Target elements `Collector::id_loads` evaluated on this thread (the hostile-size test in `assets/tests.rs` bounds
+    /// it).
+    static TARGET_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The load contexts of a `link` element's `href` from its `rel` and `as` attributes (decoded, first of each wins).
@@ -428,6 +586,18 @@ fn link_loads_of(doc: &WebDoc, id: NodeId) -> Loads {
         value("rel").unwrap_or_default().as_str(),
         value("as").as_deref(),
     )
+}
+
+/// The load contexts of attribute `name` on the element `target` an animation writes into: the attribute's URL row, a
+/// `link href` by its `rel` and `as`; an attribute without a URL row on that element is read as the strictest applicable
+/// contexts, script and resource together (fail closed).
+fn target_loads(doc: &WebDoc, target: NodeId, name: &str) -> Loads {
+    let tag = doc.local_name(target).unwrap_or_default();
+    match carriers::attribute_path(&tag, name) {
+        Some((Path::Url, _)) if tag == "link" && name == "href" => link_loads_of(doc, target),
+        Some((Path::Url, load)) => Loads::of(load),
+        _ => Loads::of(Load::Script).and(Load::Resource),
+    }
 }
 
 /// Percent-decoding (URL Standard "percent-decode" of a fragment, UTF-8 decoded without failure) for the `id` lookup of an
@@ -463,64 +633,76 @@ impl Collector<'_> {
     /// parent. `use href` animated to another fragment stays a same-document reference; a `script` target is a script
     /// load. A target that cannot be found, an attribute without a URL row on its element, or a base is read as the
     /// strictest applicable contexts, script and resource document together (fail closed).
-    fn animated_loads(&mut self, animation: NodeId, name: &str) -> Loads {
+    ///
+    /// Work is linear in the document (R13-F1): the id map is built once, and the elements sharing an id are walked once per
+    /// attribute name (`id_loads`), however many animations name that id or spell it differently; no list is copied.
+    fn animated_loads(&mut self, animation: NodeId, name: &str) -> Result<Loads, WebError> {
         let strict = Loads::of(Load::Script).and(Load::Resource);
         let doc = self.doc;
         let by_href = ["href", "xlink:href"]
             .iter()
             .find_map(|n| doc.attribute(animation, n))
             .and_then(|a| doc.attr_value(a));
-        let targets: Vec<NodeId> = match by_href {
-            None => doc
+        let Some(href) = by_href else {
+            return Ok(doc
                 .node(animation)
                 .and_then(|n| n.parent)
-                .into_iter()
-                .collect(),
-            Some(href) => {
-                let cleaned = url_clean(&href);
-                let Some(fragment) = cleaned.strip_prefix('#') else {
-                    return strict;
-                };
-                let ids = self.ids.get_or_insert_with(|| {
-                    let mut map: HashMap<String, Vec<NodeId>> = HashMap::new();
-                    for id in 0..doc.len() {
-                        let Some(node) = doc.node(id).filter(|n| n.kind == NodeKind::Element)
-                        else {
-                            continue;
-                        };
-                        for a in &node.attrs {
-                            if doc.attr_local_name(a) == "id"
-                                && let Some(value) = doc.attr_value(a)
-                            {
-                                map.entry(value).or_default().push(id);
-                            }
-                        }
-                    }
-                    map
-                });
-                let mut found: Vec<NodeId> = ids.get(fragment).cloned().unwrap_or_default();
-                let decoded = percent_decoded(fragment);
-                if decoded != fragment {
-                    found.extend(ids.get(&decoded).into_iter().flatten().copied());
-                }
-                found
-            }
+                .map_or(strict, |parent| target_loads(doc, parent, name)));
         };
-        if targets.is_empty() {
-            return strict;
+        let cleaned = url_clean(&href);
+        let Some(fragment) = cleaned.strip_prefix('#') else {
+            return Ok(strict);
+        };
+        let decoded = percent_decoded(fragment);
+        let mut found = self.id_loads(fragment, name)?;
+        if decoded != fragment
+            && let Some(more) = self.id_loads(&decoded, name)?
+        {
+            found = Some(found.map_or(more, |f| f.union(more)));
+        }
+        Ok(found.unwrap_or(strict))
+    }
+
+    /// The load contexts of attribute `name` on the elements whose `id` is `key`, `None` without such an element. Builds
+    /// the id map on first use; memoised per (id, name). Cancellation is checked every 1024 elements of both loops.
+    fn id_loads(&mut self, key: &str, name: &str) -> Result<Option<Loads>, WebError> {
+        let (doc, cancel) = (self.doc, self.cancel);
+        if self.ids.is_none() {
+            let mut map: HashMap<String, IdEntry> = HashMap::new();
+            for id in 0..doc.len() {
+                if id & 0x3ff == 0 {
+                    cancel.check()?;
+                }
+                let Some(node) = doc.node(id).filter(|n| n.kind == NodeKind::Element) else {
+                    continue;
+                };
+                for a in &node.attrs {
+                    if doc.attr_local_name(a) == "id"
+                        && let Some(value) = doc.attr_value(a)
+                    {
+                        map.entry(value).or_default().nodes.push(id);
+                    }
+                }
+            }
+            self.ids = Some(map);
+        }
+        let Some(entry) = self.ids.as_mut().and_then(|ids| ids.get_mut(key)) else {
+            return Ok(None);
+        };
+        if let Some(&known) = entry.loads.get(name) {
+            return Ok(Some(known));
         }
         let mut loads = Loads::EMPTY;
-        for target in targets {
-            let tag = doc.local_name(target).unwrap_or_default();
-            loads = loads.union(match carriers::attribute_path(&tag, name) {
-                Some((Path::Url, _)) if tag == "link" && name == "href" => {
-                    link_loads_of(doc, target)
-                }
-                Some((Path::Url, load)) => Loads::of(load),
-                _ => strict,
-            });
+        for (i, &target) in entry.nodes.iter().enumerate() {
+            if i & 0x3ff == 0 {
+                cancel.check()?;
+            }
+            #[cfg(test)]
+            TARGET_VISITS.with(|v| v.set(v.get().saturating_add(1)));
+            loads = loads.union(target_loads(doc, target, name));
         }
-        loads
+        entry.loads.insert(name.to_owned(), loads);
+        Ok(Some(loads))
     }
 
     /// `nested`: the reference is inside a `data:` payload. `loads`: what the carrier's browser does with the fetched
@@ -550,7 +732,18 @@ impl Collector<'_> {
         if ambiguous_path(reference) {
             return AssetOutcome::Denied(DenyReason::AmbiguousPath);
         }
-        match self.port.resolve(reference) {
+        // A relative spelling of the document itself (`index.html`, `./index.html`, `?x`) read as a style sheet, script, text
+        // track or manifest is the same self-reference as `#` when the port told where the document lives (R13-P2); when it
+        // did not, the port decides with the load contexts.
+        if loads.reads_text()
+            && self
+                .document
+                .as_ref()
+                .is_some_and(|document| document.names(reference))
+        {
+            return AssetOutcome::Denied(DenyReason::SelfReference);
+        }
+        match self.port.resolve(reference, loads) {
             AssetDecision::Granted { id } => AssetOutcome::Granted { id },
             AssetDecision::Denied => AssetOutcome::Denied(DenyReason::NotGranted),
             AssetDecision::Unavailable => AssetOutcome::Unavailable,
@@ -870,7 +1063,9 @@ impl Collector<'_> {
                 }
             }
             (Path::Refresh, _) => {
-                if let Some(r) = refresh_url(text) {
+                // The HTML steps first; a content that is only a URL is no refresh for them (R13-P3) but navigates in an
+                // engine reading, so it is reported too.
+                if let Some(r) = refresh_url(text).or_else(|| legacy_refresh_url(text)) {
                     self.url_value(node, &source, &text[r.clone()], sub(&r), loads)?;
                 }
             }
@@ -1000,8 +1195,16 @@ enum HttpEquiv {
 /// (tests: `data_*` and `r12_*` in `tests/css_url_gate.rs`, `datauri::tests::load_context_decides_before_the_type`). A
 /// reference to the document itself (`#...`, or empty after the URL parser's stripping) is `SameDocument`, except from a
 /// carrier whose browser reads the document's own text as a style sheet, script, text track or manifest:
-/// `Denied(SelfReference)` (test `r12_f2_self_references_from_style_sheet_and_script_carriers_are_denied`). `srcdoc` and
-/// speculation rules contents and script text are not scanned.
+/// `Denied(SelfReference)` (test `r12_f2_self_references_from_style_sheet_and_script_carriers_are_denied`); with
+/// `AssetPort::document_url` known a relative spelling of the document (`index.html`, `./index.html`, `?x`) is the same
+/// self-reference from those carriers (test `r13_p2_references_that_resolve_to_the_document_are_denied_in_text_contexts`),
+/// otherwise the port decides it with the load contexts (`AssetPort::resolve`). A `<meta http-equiv=refresh>` content that
+/// is only a URL (no delay number) is read as a navigation too (test `r13_p3_url_only_refresh_content_is_read_fail_closed`),
+/// and a `values` piece of nothing but whitespace is a reference to the document (test
+/// `r13_p1_a_blank_values_piece_fails_closed`). The scan is linear in the document: the elements an animation names by id
+/// are walked once per attribute name, and cancellation is checked every 1024 elements of each loop (tests
+/// `r13_f1_many_animations_sharing_ids_finish_within_the_bound`, `animated_loads_checks_cancellation_inside_its_loops`).
+/// `srcdoc` and speculation rules contents and script text are not scanned.
 pub fn collect_assets(
     doc: &WebDoc,
     port: &dyn AssetPort,
@@ -1010,7 +1213,9 @@ pub fn collect_assets(
     let mut c = Collector {
         doc,
         port,
+        cancel,
         base_blocks: has_base(doc, cancel)?,
+        document: port.document_url().map(DocumentUrl::of),
         limit: doc.limits().max_nodes,
         data_budget: doc.limits().max_bytes,
         out: Vec::new(),
@@ -1058,7 +1263,7 @@ pub fn collect_assets(
         };
         // The load contexts of an animated URL: those of the attribute on the element it targets.
         let animated_url_loads = match &animated {
-            Some((name, Path::Url)) => Some(c.animated_loads(id, name)),
+            Some((name, Path::Url)) => Some(c.animated_loads(id, name)?),
             _ => None,
         };
         for attr in &node.attrs {
@@ -1112,3 +1317,6 @@ pub fn collect_assets(
     }
     Ok(c.out)
 }
+
+#[cfg(test)]
+mod tests;

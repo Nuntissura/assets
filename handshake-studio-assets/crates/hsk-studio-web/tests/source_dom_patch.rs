@@ -7,8 +7,8 @@ use hsk_studio_web::responsive::{
 };
 use hsk_studio_web::{
     Applied, AssetDecision, AssetOutcome, AssetPort, AssetSource, DenyReason, EditRefusal,
-    HiddenReason, LimitKind, Limits, LossKind, MalformedKind, NodeKey, NodeKind, SourcePatch,
-    UnsupportedKind, UnsupportedRuleReason, WebDoc, WebError, apply, collect_assets,
+    HiddenReason, LimitKind, Limits, Loads, LossKind, MalformedKind, NodeKey, NodeKind,
+    SourcePatch, UnsupportedKind, UnsupportedRuleReason, WebDoc, WebError, apply, collect_assets,
     decode_entities, escape_attr, escape_text, insert_element, outcome_of, parse, preview_tree,
     refresh, remove_attribute, remove_node, report, set_attribute, set_text,
 };
@@ -788,7 +788,7 @@ struct Grants {
     calls: Mutex<Vec<String>>,
 }
 impl AssetPort for Grants {
-    fn resolve(&self, reference: &str) -> AssetDecision {
+    fn resolve(&self, reference: &str, _: Loads) -> AssetDecision {
         self.calls.lock().unwrap().push(reference.to_owned());
         match reference {
             "logo.png" => AssetDecision::Granted {
@@ -1183,7 +1183,7 @@ struct Spy {
     calls: Mutex<Vec<String>>,
 }
 impl AssetPort for Spy {
-    fn resolve(&self, reference: &str) -> AssetDecision {
+    fn resolve(&self, reference: &str, _: Loads) -> AssetDecision {
         self.calls.lock().unwrap().push(reference.to_owned());
         if reference.starts_with("logo.png") {
             AssetDecision::Granted {

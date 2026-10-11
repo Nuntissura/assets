@@ -365,9 +365,15 @@ fn load_context_decides_before_the_type() {
         ScanCss
     );
     assert_eq!(d(Loads::of(Load::Image), "data:text/html,x"), Inline);
-    // No context at all is read as a script, the strictest single reading.
+    // No context at all is denied (fail closed, R13-N1); a script is not the strictest single reading: a manifest, a track,
+    // a document and a resource deny an SVG image that a script reads inline.
     assert_eq!(d(Loads::EMPTY, "data:text/css,x"), Deny);
-    assert_eq!(d(Loads::EMPTY, "data:image/png,x"), Inline);
+    assert_eq!(d(Loads::EMPTY, "data:image/png,x"), Deny);
+    assert_eq!(d(Loads::EMPTY, "data:image/svg+xml,x"), Deny);
+    assert_eq!(d(Loads::of(Load::Script), "data:image/svg+xml,x"), Inline);
+    for load in [Load::Manifest, Load::Track, Load::Document, Load::Resource] {
+        assert_eq!(d(Loads::of(load), "data:image/svg+xml,x"), Deny, "{load:?}");
+    }
 }
 
 /// V4-02: a MIME part longer than `MAX_HEADER_BYTES` is not copied or parsed; it is an unknown type (never CSS, never

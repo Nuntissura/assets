@@ -51,7 +51,7 @@ pub(crate) enum Class {
 /// whether a reference to the document itself is harmless (`Load::reads_text`). The load context is decided first; the
 /// URL's scheme and the payload's type only then (`datauri::decide`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Load {
+pub enum Load {
     /// Decoded as an image; SVG runs in secure (static or animated) mode and loads nothing further.
     Image,
     /// Decoded as a font (`link rel=preload as=font`): font data, never CSS, a document or a script.
@@ -87,7 +87,7 @@ pub(crate) enum Load {
 }
 
 impl Load {
-    pub(crate) const ALL: [Load; 13] = [
+    pub const ALL: [Load; 13] = [
         Load::Image,
         Load::Font,
         Load::Media,
@@ -108,7 +108,7 @@ impl Load {
     /// `@import`: a same-origin resource whose type is not a style sheet type is assumed `text/css`), as a classic
     /// script (HTML "fetch a classic script": no MIME type check), as WebVTT, or as a manifest. A reference to the
     /// document itself in such a carrier is therefore never harmless (`Collector::decide`).
-    pub(crate) const fn reads_text(self) -> bool {
+    pub const fn reads_text(self) -> bool {
         matches!(
             self,
             Load::Stylesheet | Load::Script | Load::Track | Load::Manifest
@@ -120,37 +120,40 @@ impl Load {
 /// animated URL attribute may belong to several candidate elements. Every context applies (the strictest decision wins:
 /// `datauri::decide_all`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Loads(u16);
+pub struct Loads(u16);
 
 impl Loads {
-    pub(crate) const EMPTY: Loads = Loads(0);
+    pub const EMPTY: Loads = Loads(0);
 
-    pub(crate) const fn of(load: Load) -> Self {
+    pub const fn of(load: Load) -> Self {
         Loads(1u16.wrapping_shl(load as u32))
     }
 
     #[must_use]
-    pub(crate) const fn and(self, load: Load) -> Self {
+    pub const fn and(self, load: Load) -> Self {
         Loads(self.0 | Loads::of(load).0)
     }
 
     #[must_use]
-    pub(crate) const fn union(self, other: Loads) -> Self {
+    pub const fn union(self, other: Loads) -> Self {
         Loads(self.0 | other.0)
     }
 
-    pub(crate) const fn is_empty(self) -> bool {
+    pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
-    pub(crate) fn iter(self) -> impl Iterator<Item = Load> {
-        Load::ALL
-            .into_iter()
-            .filter(move |l| self.0 & Loads::of(*l).0 != 0)
+    /// Whether `load` is one of the contexts.
+    pub const fn contains(self, load: Load) -> bool {
+        self.0 & Loads::of(load).0 != 0
     }
 
-    /// Any context reads the document's text (`Load::reads_text`).
-    pub(crate) fn reads_text(self) -> bool {
+    pub fn iter(self) -> impl Iterator<Item = Load> {
+        Load::ALL.into_iter().filter(move |l| self.contains(*l))
+    }
+
+    /// Any context reads the document's text (`Load::reads_text`: style sheet, script, text track, manifest).
+    pub fn reads_text(self) -> bool {
         self.iter().any(Load::reads_text)
     }
 }

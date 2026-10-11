@@ -11,7 +11,7 @@ const INLINE_DOCUMENT: &str = "Denied(InlineDocument)";
 
 struct Port;
 impl AssetPort for Port {
-    fn resolve(&self, _: &str) -> AssetDecision {
+    fn resolve(&self, _: &str, _: Loads) -> AssetDecision {
         AssetDecision::Unavailable
     }
 }

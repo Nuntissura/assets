@@ -10,7 +10,7 @@
 //! as `Debug` text), so this file is also the red proof on the crate at 62d8983.
 
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_web::{AssetDecision, AssetPort, Limits, collect_assets, parse};
+use hsk_studio_web::{AssetDecision, AssetPort, Limits, Load, Loads, collect_assets, parse};
 use std::sync::Mutex;
 
 // Each canonical test case owns its deadline; panic payloads reach the Cargo harness.
@@ -42,7 +42,7 @@ struct Port {
     calls: Mutex<Vec<String>>,
 }
 impl AssetPort for Port {
-    fn resolve(&self, reference: &str) -> AssetDecision {
+    fn resolve(&self, reference: &str, _: Loads) -> AssetDecision {
         self.calls.lock().unwrap().push(reference.to_owned());
         AssetDecision::Unavailable
     }
@@ -1448,6 +1448,569 @@ fn r12_prereview_f3_payload_nbsp_value_is_a_relative_reference() {
             let (seen, calls) = scan("<img src=\"&nbsp;\">").unwrap();
             assert_eq!(seen, [("\u{a0}".to_owned(), UNAVAILABLE.to_owned())]);
             assert_eq!(calls, ["\u{a0}"]);
+        },
+    );
+}
+
+// ----- R13 pre-review remediation (validation/R13-prereview-web.json R13-F1, P1, P2, P3; lead decision "Small fix + narrow
+// check") ----------------------------------------------------------------------------------------------------------------
+
+/// Records every relative reference with the load contexts it came with; the document is at `document` when given.
+struct ContextPort {
+    document: Option<&'static str>,
+    calls: Mutex<Vec<(String, Loads)>>,
+}
+impl AssetPort for ContextPort {
+    fn document_url(&self) -> Option<&str> {
+        self.document
+    }
+    fn resolve(&self, reference: &str, loads: Loads) -> AssetDecision {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((reference.to_owned(), loads));
+        AssetDecision::Unavailable
+    }
+}
+
+/// (reference, outcome as `Debug` text) of every reference and the (reference, contexts) the port was asked about.
+type SeenWithContext = (Vec<(String, String)>, Vec<(String, Loads)>);
+
+fn scan_context(src: &str, document: Option<&'static str>) -> SeenWithContext {
+    let doc = parse(src, 0, &Limits::default(), &CancellationToken::default())
+        .unwrap_or_else(|e| panic!("{src:?} parses: {}", e.code()));
+    let port = ContextPort {
+        document,
+        calls: Mutex::new(Vec::new()),
+    };
+    let found = collect_assets(&doc, &port, &CancellationToken::default())
+        .unwrap_or_else(|e| panic!("{src:?}: refused {}", e.code()));
+    let seen = found
+        .iter()
+        .map(|a| (a.reference.clone(), format!("{:?}", a.outcome)))
+        .collect();
+    (seen, port.calls.into_inner().unwrap())
+}
+
+/// R13-P2: a relative reference reaches the port with the carrier's load contexts, so the port can tell a style sheet or
+/// script carrier from a hyperlink. Several contexts for a `link` with several keywords, `Resource` for CSS values and SVG
+/// references; `reads_text` is the contexts that read the fetched bytes as text. Without `document_url` the port decides
+/// even for the document's own file name (the contract in the `AssetPort` documentation).
+#[test]
+fn r13_p2_the_port_receives_the_load_context() {
+    bounded_case("r13_p2_the_port_receives_the_load_context", || {
+        let src = concat!(
+            "<link rel=stylesheet href=\"a.css\">",
+            "<img src=\"b.png\">",
+            "<script src=\"c.js\"></script>",
+            "<link rel=preload as=font href=\"d.woff\">",
+            "<link rel=\"icon STYLESHEET\" href=\"e.css\">",
+            "<a href=\"f.html\"></a>",
+            "<svg><use href=\"g.svg#x\"/></svg>",
+            "<video><track src=\"h.vtt\"></video>",
+            "<link rel=manifest href=\"i.json\">",
+            "<style>@import \"j.css\"; a{background:url(k.png)}</style>",
+            "<svg><script id=\"s\"></script><set href=\"#s\" attributeName=\"href\" to=\"l.js\"/></svg>",
+            "<link rel=stylesheet href=\"index.html\">",
+            "<video src=\"m.mp4\"></video>",
+        );
+        let (seen, calls) = scan_context(src, None);
+        let one = Loads::of;
+        let expected: [(&str, Loads); 14] = [
+            ("a.css", one(Load::Stylesheet)),
+            ("b.png", one(Load::Image)),
+            ("c.js", one(Load::Script)),
+            ("d.woff", one(Load::Font)),
+            ("e.css", one(Load::Image).and(Load::Stylesheet)),
+            ("f.html", one(Load::Document)),
+            ("g.svg#x", one(Load::Resource)),
+            ("h.vtt", one(Load::Track)),
+            ("i.json", one(Load::Manifest)),
+            ("j.css", one(Load::Stylesheet)),
+            ("k.png", one(Load::Resource)),
+            ("l.js", one(Load::Script)),
+            ("index.html", one(Load::Stylesheet)),
+            ("m.mp4", one(Load::Media)),
+        ];
+        let got: Vec<(&str, Loads)> = calls.iter().map(|(r, l)| (r.as_str(), *l)).collect();
+        assert_eq!(got, expected, "seen {seen:?}");
+        // no document URL: the document's own file name in a style sheet carrier reaches the port, which decides
+        assert!(seen.contains(&("index.html".to_owned(), UNAVAILABLE.to_owned())));
+        // reads_text: style sheet, script, text track and manifest contexts (also within several)
+        let reads: Vec<bool> = expected.iter().map(|(_, l)| l.reads_text()).collect();
+        assert_eq!(
+            reads,
+            [
+                true, false, true, false, true, false, false, true, true, true, false, true, true,
+                false
+            ]
+        );
+        assert!(one(Load::Image).and(Load::Stylesheet).contains(Load::Image));
+        assert!(!one(Load::Image).contains(Load::Stylesheet));
+        assert!(Loads::EMPTY.is_empty());
+        assert_eq!(
+            one(Load::Image)
+                .and(Load::Stylesheet)
+                .iter()
+                .collect::<Vec<_>>(),
+            [Load::Image, Load::Stylesheet]
+        );
+    });
+}
+
+/// Spellings of the document `site/index.html` as a reference from a style sheet or script carrier (a browser reads the
+/// document's own text as that format and loads whatever URLs it spells, R12-F2): the attribute text and the reference the
+/// gate reads (character references decoded). Spellings with a control character are `NotGranted` before any comparison.
+const DOCUMENT_SPELLINGS: [(&str, &str); 14] = [
+    ("index.html", "index.html"),
+    ("./index.html", "./index.html"),
+    ("INDEX.HTML", "INDEX.HTML"),
+    ("%69ndex.html", "%69ndex.html"),
+    ("index.html?x", "index.html?x"),
+    ("index.html#frag", "index.html#frag"),
+    ("a/../index.html", "a/../index.html"),
+    ("../site/index.html", "../site/index.html"),
+    ("/site/index.html", "/site/index.html"),
+    ("?", "?"),
+    ("?x", "?x"),
+    ("&#32;index.html&#32;", " index.html "),
+    ("&#x69;ndex.html", "index.html"),
+    ("index&#46;html", "index.html"),
+];
+
+const DOCUMENTS: [&str; 4] = [
+    "https://project.invalid/site/index.html",
+    "file:///site/index.html",
+    "/site/index.html",
+    "site/index.html",
+];
+
+/// R13-P2: with the document's location known (`AssetPort::document_url`), a relative reference that resolves to it
+/// (dot segments, percent-decoding of ordinary characters, ASCII case, query and fragment ignored) is
+/// `Denied(SelfReference)` from a style sheet, `@import`, script, text track or manifest carrier and the port is not asked;
+/// every other carrier, every other file and a directory spelling reach the port with the context; a base or an ambiguous
+/// path keeps its own reason.
+#[test]
+fn r13_p2_references_that_resolve_to_the_document_are_denied_in_text_contexts() {
+    bounded_case(
+        "r13_p2_references_that_resolve_to_the_document_are_denied_in_text_contexts",
+        || {
+            for document in DOCUMENTS {
+                for (written, decoded) in DOCUMENT_SPELLINGS {
+                    let text_contexts = [
+                        format!("<link rel=stylesheet href=\"{written}\">"),
+                        format!("<link rel=\" Alternate STYLESHEET\" href=\"{written}\">"),
+                        format!("<link rel=\"icon stylesheet\" href=\"{written}\">"),
+                        format!("<link rel=preload as=style href=\"{written}\">"),
+                        format!("<link rel=preload as=script href=\"{written}\">"),
+                        format!("<link rel=modulepreload href=\"{written}\">"),
+                        format!("<link rel=manifest href=\"{written}\">"),
+                        format!("<script src=\"{written}\"></script>"),
+                        format!("<SCRIPT SRC=\"{written}\"></SCRIPT>"),
+                        format!("<svg><script href=\"{written}\"/></svg>"),
+                        format!("<svg><script xlink:href=\"{written}\"></script></svg>"),
+                        format!("<video><track src=\"{written}\"></video>"),
+                        format!(
+                            "<svg><script id=\"s\"></script><set href=\"#s\" attributeName=\"href\" to=\"{written}\"/></svg>"
+                        ),
+                    ];
+                    for src in text_contexts {
+                        let (seen, calls) = scan_context(&src, Some(document));
+                        assert!(
+                            seen.contains(&(decoded.to_owned(), SELF_REFERENCE.to_owned())),
+                            "{document} {src:?}: not a self reference; seen {seen:?}"
+                        );
+                        assert!(
+                            calls.iter().all(|(r, _)| r != decoded),
+                            "{document} {src:?}: port asked {calls:?}"
+                        );
+                    }
+                    // @import: strings and url() in an HTML and an SVG style element (CSS escapes and case included)
+                    for css in [
+                        format!("@import \"{written}\";"),
+                        format!("@IMPORT url({written});"),
+                        format!("@import url(\"{written}\");"),
+                    ] {
+                        if written.contains('&') {
+                            continue; // character references are not decoded inside a style element
+                        }
+                        for src in [
+                            format!("<style>{css}</style>"),
+                            format!("<svg><style>{css}</style></svg>"),
+                        ] {
+                            let (seen, calls) = scan_context(&src, Some(document));
+                            assert!(
+                                seen.contains(&(decoded.to_owned(), SELF_REFERENCE.to_owned())),
+                                "{document} {src:?}: {seen:?}"
+                            );
+                            assert!(calls.is_empty(), "{document} {src:?}: {calls:?}");
+                        }
+                    }
+                    // Every context that does not read the document as text keeps the reference for the port.
+                    for src in [
+                        format!("<a href=\"{written}\"></a>"),
+                        format!("<img src=\"{written}\">"),
+                        format!("<iframe src=\"{written}\"></iframe>"),
+                        format!("<form action=\"{written}\"></form>"),
+                        format!("<link rel=icon href=\"{written}\">"),
+                        format!("<link rel=preload as=image href=\"{written}\">"),
+                        format!("<link rel=preload as=font href=\"{written}\">"),
+                        format!("<link href=\"{written}\">"),
+                        format!("<video src=\"{written}\"></video>"),
+                        format!("<svg><use href=\"{written}\"/></svg>"),
+                        format!("<meta http-equiv=refresh content=\"5;url={written}\">"),
+                    ] {
+                        let (seen, calls) = scan_context(&src, Some(document));
+                        assert!(
+                            calls
+                                .iter()
+                                .any(|(r, l)| r.trim() == decoded.trim() && !l.reads_text()),
+                            "{document} {src:?}: port not asked; seen {seen:?}"
+                        );
+                        assert!(
+                            !seen.iter().any(|(_, o)| o == SELF_REFERENCE),
+                            "{document} {src:?}: {seen:?}"
+                        );
+                    }
+                    // a CSS value is a resource: the port is asked
+                    let (seen, calls) = scan_context(
+                        &format!("<div style=\"background:url('{decoded}')\"></div>"),
+                        Some(document),
+                    );
+                    assert!(
+                        calls.iter().any(|(r, _)| r.trim() == decoded.trim())
+                            && !seen.iter().any(|(_, o)| o == SELF_REFERENCE),
+                        "{document} {decoded:?}: {seen:?} {calls:?}"
+                    );
+                }
+                // other files, directories and parent directories are not the document: the port decides
+                for other in [
+                    "other.css",
+                    "index.htm",
+                    "xindex.html",
+                    "site/index.html",
+                    "../index.html",
+                    "/index.html",
+                    ".",
+                    "./",
+                    "..",
+                    "dir/",
+                    "/",
+                ] {
+                    for src in [
+                        format!("<link rel=stylesheet href=\"{other}\">"),
+                        format!("<script src=\"{other}\"></script>"),
+                        format!("<style>@import \"{other}\";</style>"),
+                    ] {
+                        let (seen, calls) = scan_context(&src, Some(document));
+                        assert!(
+                            calls.iter().any(|(r, l)| r == other && l.reads_text()),
+                            "{document} {src:?}: port not asked; seen {seen:?}"
+                        );
+                    }
+                }
+                // an ambiguous spelling and a base keep their reasons (the document cannot be compared reliably)
+                for (src, reference, outcome) in [
+                    (
+                        "<link rel=stylesheet href=\"index%2ehtml\">",
+                        "index%2ehtml",
+                        "Denied(AmbiguousPath)",
+                    ),
+                    (
+                        "<link rel=stylesheet href=\"a%2Findex.html\">",
+                        "a%2Findex.html",
+                        "Denied(AmbiguousPath)",
+                    ),
+                    (
+                        "<base href=\"other/\"><link rel=stylesheet href=\"index.html\">",
+                        "index.html",
+                        BASE_HREF,
+                    ),
+                ] {
+                    let (seen, calls) = scan_context(src, Some(document));
+                    assert!(
+                        seen.contains(&(reference.to_owned(), outcome.to_owned()))
+                            && calls.is_empty(),
+                        "{document} {src:?}: {seen:?} {calls:?}"
+                    );
+                }
+            }
+            // The directory form of a document: its directory spellings are the document.
+            for same in [".", "./", "../site/", "?q"] {
+                let (seen, calls) = scan_context(
+                    &format!("<link rel=stylesheet href=\"{same}\">"),
+                    Some("https://project.invalid/site/"),
+                );
+                assert!(
+                    seen.contains(&(same.to_owned(), SELF_REFERENCE.to_owned()))
+                        && calls.is_empty(),
+                    "{same:?}: {seen:?} {calls:?}"
+                );
+            }
+            // No document URL: the same spellings reach the port with their context (nothing is denied on a guess).
+            let (seen, calls) = scan_context(
+                "<link rel=stylesheet href=\"index.html\"><script src=\"?x\"></script>",
+                None,
+            );
+            assert_eq!(calls.len(), 2, "{seen:?}");
+            assert!(calls.iter().all(|(_, l)| l.reads_text()));
+        },
+    );
+}
+
+/// R13-P1: a SMIL `values` piece with nothing but HTML whitespace (`values="&#12;"`) is not dropped. One engine reading
+/// keeps U+000C, which the URL parser strips to the empty reference to the document itself; from a script (or style sheet,
+/// track, manifest) target that is `Denied(SelfReference)`, from any other target a same-document reference. Pieces with no
+/// character at all stay unreported.
+#[test]
+fn r13_p1_a_blank_values_piece_fails_closed() {
+    bounded_case("r13_p1_a_blank_values_piece_fails_closed", || {
+        // (as written in the attribute, as the piece reaches the gate)
+        let blanks: [(&str, &str); 8] = [
+            ("&#12;", "\u{c}"),
+            ("&#x0C;", "\u{c}"),
+            ("&#32;", " "),
+            ("&#9;", "\t"),
+            ("&#10;&#13;", "\n\r"),
+            (" &#12; ", " \u{c} "),
+            ("&#12;&#12;", "\u{c}\u{c}"),
+            ("&Tab;&#12;&NewLine;", "\t\u{c}\n"),
+        ];
+        for (written, decoded) in blanks {
+            for name in ["href", "xlink:href", " HREF ", "Xlink:Href"] {
+                // script parent: self-reference
+                assert_only(
+                    &format!(
+                        "<svg><script><animate attributeName=\"{name}\" values=\"{written}\" dur=\"1s\"/></script></svg>"
+                    ),
+                    decoded,
+                    SELF_REFERENCE,
+                );
+                // a script found by id
+                assert_reports(
+                    &format!(
+                        "<svg><script id=\"s\"></script><animate href=\"#s\" attributeName=\"{name}\" values=\"{written}\"/></svg>"
+                    ),
+                    decoded,
+                    SELF_REFERENCE,
+                );
+                // another piece beside it
+                let (seen, calls) = scan(&format!(
+                    "<svg><script><set attributeName=\"{name}\" values=\"a.png;{written};b.png\"/></script></svg>"
+                ))
+                .unwrap();
+                assert_eq!(
+                    seen,
+                    [
+                        ("a.png".to_owned(), UNAVAILABLE.to_owned()),
+                        (decoded.to_owned(), SELF_REFERENCE.to_owned()),
+                        ("b.png".to_owned(), UNAVAILABLE.to_owned()),
+                    ]
+                );
+                assert_eq!(calls, ["a.png", "b.png"]);
+                // a use (SVG frame animation): a same-document reference
+                assert_only(
+                    &format!(
+                        "<svg><use><animate attributeName=\"{name}\" values=\"{written}\"/></use></svg>"
+                    ),
+                    decoded,
+                    SAME_DOCUMENT,
+                );
+            }
+        }
+        // style sheet, track and manifest targets are text carriers as well
+        for target in [
+            "<link rel=stylesheet id=t>",
+            "<link rel=manifest id=t>",
+            "<link rel=\"icon stylesheet\" id=t>",
+        ] {
+            assert_reports(
+                &format!(
+                    "{target}<svg><set href=\"#t\" attributeName=\"href\" values=\"&#12;\"/></svg>"
+                ),
+                "\u{c}",
+                SELF_REFERENCE,
+            );
+        }
+        // pieces with no character at all are dropped (nothing a browser reads); no row for the animation itself
+        for values in ["", ";", ";;", ";;;;"] {
+            let (seen, calls) = scan(&format!(
+                "<svg><script><animate attributeName=\"href\" values=\"{values}\"/></script></svg>"
+            ))
+            .unwrap();
+            assert!(seen.is_empty() && calls.is_empty(), "{values:?}: {seen:?}");
+        }
+        // a CSS target reads whitespace as nothing
+        let (seen, _) = scan(
+            "<svg><rect><animate attributeName=\"fill\" values=\"&#12;;&#32;\"/></rect></svg>",
+        )
+        .unwrap();
+        assert!(seen.is_empty(), "{seen:?}");
+    });
+}
+
+/// R13-P3: a `<meta http-equiv=refresh>` whose content is only a URL (no delay number) is no refresh for the HTML steps,
+/// but an engine that refreshes immediately navigates: the URL is reported as a navigation load (and a relative one reaches
+/// the port in a document context). A delay keeps the HTML reading; a blank content, a bare separator and an invalid delay
+/// report nothing.
+#[test]
+fn r13_p3_url_only_refresh_content_is_read_fail_closed() {
+    bounded_case(
+        "r13_p3_url_only_refresh_content_is_read_fail_closed",
+        || {
+            let meta = |equiv: &str, content: &str| {
+                format!(
+                    "<meta http-equiv=\"{equiv}\" content=\"{}\">",
+                    attr_text(content)
+                )
+            };
+            for content in [
+                EVIL.to_owned(),
+                format!("; {EVIL}"),
+                format!(", {EVIL}"),
+                format!(" \t;\t{EVIL}"),
+                format!("url={EVIL}"),
+                format!("URL = {EVIL}"),
+                format!("Url='{EVIL}'"),
+                format!("; url=\"{EVIL}\""),
+                format!("\"{EVIL}\""),
+                format!("'{EVIL}' tail"),
+                format!("&#104;{}", &EVIL[1..]),
+                format!("\u{c}{EVIL}"),
+            ] {
+                // the escape case is already attribute text; the others are escaped for the attribute
+                let attr = if content.starts_with("&#") {
+                    content.clone()
+                } else {
+                    attr_text(&content)
+                };
+                for equiv in ["refresh", "REFRESH", " Refresh ", "&#114;efresh"] {
+                    assert_evil(&format!("<meta http-equiv=\"{equiv}\" content=\"{attr}\">"));
+                }
+                assert_evil(&format!("<META HTTP-EQUIV=refresh CONTENT=\"{attr}\">"));
+            }
+            // a relative URL is asked of the port as a navigation (document context), once
+            for (content, expected) in [
+                ("page2.html", "page2.html"),
+                ("; page2.html", "page2.html"),
+                (", page2.html", "page2.html"),
+                ("url=page2.html", "page2.html"),
+                ("uploads/page2.html", "uploads/page2.html"),
+            ] {
+                let (seen, calls) = scan_context(&meta("refresh", content), None);
+                assert!(
+                    calls.len() == 1
+                        && calls[0].1 == Loads::of(Load::Document)
+                        && calls[0].0 == expected,
+                    "{content:?}: {seen:?} {calls:?}"
+                );
+            }
+            // nothing to report
+            for content in [
+                "",
+                " ",
+                "\t\n",
+                ";",
+                "; ",
+                ",",
+                " ; ",
+                "5",
+                "5;",
+                "5; ",
+                "5x",
+                "5x;url=page2.html",
+                ".x",
+                "1e3;page2.html",
+            ] {
+                let (seen, calls) = scan_context(&meta("refresh", content), None);
+                assert!(
+                    seen.is_empty() && calls.is_empty(),
+                    "{content:?}: {seen:?} {calls:?}"
+                );
+            }
+            // the HTML steps keep their reading
+            let (seen, calls) = scan_context(&meta("refresh", "5; url=page2.html"), None);
+            assert_eq!(seen, [("page2.html".to_owned(), UNAVAILABLE.to_owned())]);
+            assert_eq!(calls.len(), 1);
+            assert_evil(&meta("refresh", &format!("0;URL={EVIL}")));
+            assert_evil(&meta("refresh", &format!("0.5 {EVIL}")));
+            // decoys: other pragmas, a name instead of http-equiv, content without a pragma
+            for src in [
+                meta("content-type", EVIL),
+                meta("refreshing", EVIL),
+                meta("default-style", EVIL),
+                format!("<meta name=refresh content=\"{EVIL}\">"),
+                format!("<meta content=\"{EVIL}\">"),
+                "<meta http-equiv=refresh>".to_owned(),
+            ] {
+                let (seen, calls) = scan(&src).unwrap();
+                assert!(seen.is_empty() && calls.is_empty(), "{src:?}: {seen:?}");
+            }
+            // a URL-only content in a refresh that also has a base: relative URLs are denied by the base, not offered
+            let (seen, calls) = scan_context(
+                &format!("<base href=\"x/\">{}", meta("refresh", "page2.html")),
+                None,
+            );
+            assert!(
+                calls.is_empty() && seen.iter().any(|(_, o)| o == BASE_HREF),
+                "{seen:?}"
+            );
+        },
+    );
+}
+
+/// R13-F1: a document within the default limits with many animations of `href`/`xlink:href` naming one id shared by many
+/// elements (the quadratic case: every animation walked every sharing element) is scanned in linear work. At e409030 this
+/// document (20000 x 20000 = 4e8 target evaluations) runs for minutes; here the declared bound is 45 s (`bounded_case`) and
+/// the scan itself must finish within 20 s, measured in a few seconds in the unoptimised test profile (the operation
+/// counter test is `assets::tests::animated_loads_walks_each_shared_id_once_per_attribute_name`). The contexts are still the
+/// union over every sharing element: one `script` among the `g` elements makes each animated `href` a script load.
+#[test]
+fn r13_f1_many_animations_sharing_ids_finish_within_the_bound() {
+    bounded_case(
+        "r13_f1_many_animations_sharing_ids_finish_within_the_bound",
+        || {
+            let count = 20_000usize;
+            let sets: String = (0..count)
+                .map(|i| match i % 4 {
+                    0 => "<set href=\"#x\" attributeName=\"href\" to=\"#y\"/>",
+                    1 => "<set href=\"#%78\" attributeName=\"href\" to=\"#y\"/>",
+                    2 => "<set href=\"#x\" attributeName=\"xlink:href\" to=\"#y\"/>",
+                    _ => "<set href=\" #%78\" attributeName=\"xlink:href\" to=\"#y\"/>",
+                })
+                .collect();
+            for (extra, expected) in [("", SAME_DOCUMENT), ("<script id=\"x\"/>", SELF_REFERENCE)] {
+                let src = format!("<svg>{extra}{}{sets}</svg>", "<g id=\"x\"/>".repeat(count));
+                assert!(src.len() < Limits::default().max_bytes);
+                let doc = parse(&src, 0, &Limits::default(), &CancellationToken::default())
+                    .expect("the document is within the default limits");
+                let started = std::time::Instant::now();
+                let port = Port {
+                    calls: Mutex::new(Vec::new()),
+                };
+                let found = collect_assets(&doc, &port, &CancellationToken::default())
+                    .expect("the scan completes");
+                let elapsed = started.elapsed();
+                eprintln!(
+                    "r13_f1: {count} animations over {count} shared ids scanned in {elapsed:?}"
+                );
+                assert!(
+                    elapsed < std::time::Duration::from_secs(20),
+                    "scan of {count} animations sharing an id took {elapsed:?}"
+                );
+                let to: Vec<_> = found.iter().filter(|a| a.reference == "#y").collect();
+                assert_eq!(to.len(), count);
+                assert!(
+                    to.iter().all(|a| format!("{:?}", a.outcome) == expected),
+                    "{expected}"
+                );
+                assert_eq!(
+                    found.len(),
+                    count * 2,
+                    "each animation reports its href and its to"
+                );
+                assert!(port.calls.into_inner().unwrap().is_empty());
+            }
         },
     );
 }

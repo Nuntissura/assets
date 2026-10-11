@@ -6,8 +6,8 @@ use crate::model::{has_skeleton, model_attribute_count, model_events, parse_mode
 use crate::oracle::{Mode, reference_events};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_web::{
-    AssetDecision, AssetOutcome, AssetPort, AssetSource, LossKind, Namespace, NodeKind, WebDoc,
-    collect_assets,
+    AssetDecision, AssetOutcome, AssetPort, AssetSource, Loads, LossKind, Namespace, NodeKind,
+    WebDoc, collect_assets,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
@@ -310,7 +310,7 @@ const CSS_ATTRIBUTES: &[&str] = &[
 
 struct GrantAll;
 impl AssetPort for GrantAll {
-    fn resolve(&self, reference: &str) -> AssetDecision {
+    fn resolve(&self, reference: &str, _: Loads) -> AssetDecision {
         AssetDecision::Granted {
             id: reference.to_owned(),
         }

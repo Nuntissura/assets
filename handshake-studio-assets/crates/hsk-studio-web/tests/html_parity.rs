@@ -7,7 +7,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_web::responsive::document_media_blocks;
 use hsk_studio_web::{
-    AssetDecision, AssetPort, ContentModel, Limits, NodeKind, WebDoc, apply, collect_assets,
+    AssetDecision, AssetPort, ContentModel, Limits, Loads, NodeKind, WebDoc, apply, collect_assets,
     decode_entities, escape_attr, escape_text, insert_element, parse, preview_tree, set_attribute,
     set_text,
 };
@@ -496,7 +496,7 @@ struct Port {
     calls: Mutex<Vec<String>>,
 }
 impl AssetPort for Port {
-    fn resolve(&self, reference: &str) -> AssetDecision {
+    fn resolve(&self, reference: &str, _: Loads) -> AssetDecision {
         self.calls.lock().unwrap().push(reference.to_owned());
         if reference == "logo.png" {
             AssetDecision::Granted { id: "logo".into() }
