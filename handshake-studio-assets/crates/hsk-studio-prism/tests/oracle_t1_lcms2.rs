@@ -133,6 +133,10 @@ const KNOWN_FINDINGS: &[(&str, &str, bool, &str)] = &[
     ("src_leg_acescg", "relative_colorimetric", false, "PRISM-SOURCE-XYZ-NEGATIVE-CLAMP-001"),
     ("src_leg_image_p3", "relative_colorimetric", false, "PRISM-SOURCE-XYZ-NEGATIVE-CLAMP-001"),
     ("src_leg_synth_rgb_v2_table", "relative_colorimetric", false, "PRISM-SOURCE-XYZ-NEGATIVE-CLAMP-001"),
+    // PRISM-MISSING-INTENT-TABLE-REFUSAL-001: a v4 profile without an A2B2 table (HLG203 has A2B0/A2B1 only) makes the
+    // engine refuse the saturation intent with a typed MissingIntentTable; lcms2 converts with a fallback table.
+    ("l_rec2100_hlg203_to_srgb", "saturation", false, "PRISM-MISSING-INTENT-TABLE-REFUSAL-001"),
+    ("l_rec2100_hlg203_to_srgb", "saturation", true, "PRISM-MISSING-INTENT-TABLE-REFUSAL-001"),
 ];
 
 fn known_finding(id: &str, intent: &str, bpc: bool) -> Option<&'static str> {
@@ -355,7 +359,12 @@ fn run_pair(id: &'static str) {
             let out = match run(&mut eng, &ctx, src, dst, &patches, intent_of(iname), bpc) {
                 Ok(o) => o,
                 Err(f) => {
-                    judge.failures.push(format!("{iname} bpc={bpc}: engine refused {:?}", f.error));
+                    let detail = format!("{iname} bpc={bpc}: engine refused {:?}", f.error);
+                    eprintln!("ORACLE_T1_REFUSED {id} {detail}");
+                    match known_finding(id, iname, bpc) {
+                        Some(fid) => judge.expected_fails.push(format!("{fid}: {detail}")),
+                        None => judge.failures.push(detail),
+                    }
                     continue;
                 }
             };
@@ -374,7 +383,8 @@ fn run_pair(id: &'static str) {
                     if v2_display { with_d50_wtpt(b).unwrap_or_else(|| b.clone()) } else { b.clone() }
                 };
                 let (ps, pd) = (patch(src_key, src), patch(dst_key, dst));
-                run(&mut eng, &ctx, &ps, &pd, &patches, Intent::AbsoluteColorimetric, false).ok().map(|o| {
+                let mut diag = WideEngine::new(ctx.actor.clone(), 2).unwrap();
+                run(&mut diag, &ctx, &ps, &pd, &patches, Intent::AbsoluteColorimetric, false).ok().map(|o| {
                     let lab = device_to_lab(&mut leg, &ctx, dst, &target, &o.pixels);
                     let st = stats(&lab, &ref_lab_same, kept.as_deref());
                     (st.mean, st.max)
