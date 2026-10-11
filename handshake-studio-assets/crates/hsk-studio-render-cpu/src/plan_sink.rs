@@ -25,6 +25,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 mod effects;
 mod extended;
+#[cfg(test)]
+mod refusal_keys;
 
 use crate::coverage::PreparedPath;
 use crate::px::{
@@ -41,8 +43,9 @@ use hsk_studio_pigment::coverage_math::mask_coverage;
 use hsk_studio_pigment::effect_math::EffectKind;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, Applicability, BackendError, BackendIdentity, DeviceClass, Exactness,
-    ExactnessLedger, ExecuteRequest, ExtOperator, Layer, MaskFormat, MaskInput, Operator,
-    PlanExtensions, PlanNode, PlanSources, RenderBackend, RenderPlan, RenderReceipt, SampleFormat,
+    ExactnessLedger, ExecuteRequest, ExtOperator, Layer, MASK_DENSITY_OPERATOR, MaskFormat,
+    MaskInput, Operator, PASS_THROUGH_FILL_OPERATOR, PlanError, PlanExtensions, PlanNode,
+    PlanSources, RenderBackend, RenderPlan, RenderReceipt, SAMPLE_RANGE_OPERATOR, SampleFormat,
     SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink, admit, admit_extended,
 };
 use serde::Serialize;
@@ -138,10 +141,17 @@ pub(crate) fn unsupported(operator: &'static str) -> RenderError {
 fn source(key: SourceKey, fault: SourceFault) -> RenderError {
     RenderError::Source { key, fault }
 }
+/// Typed mapping of a blend failure; every key is pigment's (PLR-006, test
+/// `defence_in_depth_refusal_keys_are_pigments`): samples outside `[0, 1]` are
+/// [`SAMPLE_RANGE_OPERATOR`], a mode this backend cannot evaluate is `Operator::Blend(mode).key()`
+/// (what shared admission reports for it), any other failure is its own `BlendError::code`.
 fn blend_error(error: BlendError) -> RenderError {
     match error {
-        BlendError::OutOfDomain => unsupported("sample_range_outside_unit"),
-        _ => unsupported("blend_mode"),
+        BlendError::OutOfDomain => unsupported(SAMPLE_RANGE_OPERATOR),
+        BlendError::GroupOnly(mode)
+        | BlendError::ToolOnly(mode)
+        | BlendError::Unsupported(mode) => unsupported(Operator::Blend(mode).key()),
+        other => unsupported(other.code()),
     }
 }
 
@@ -327,7 +337,7 @@ fn unit_rgb(rgba: [f32; 4]) -> Result<(), RenderError> {
     {
         Ok(())
     } else {
-        Err(unsupported("sample_range_outside_unit"))
+        Err(unsupported(SAMPLE_RANGE_OPERATOR))
     }
 }
 
@@ -423,7 +433,7 @@ fn verify_tile(
         }
     }
     if out_of_unit {
-        return Err(unsupported("sample_range_outside_unit"));
+        return Err(unsupported(SAMPLE_RANGE_OPERATOR));
     }
     Ok(())
 }
@@ -520,33 +530,41 @@ fn prepare<'a, V: VectorSource>(
                     let starts_run =
                         !clipped && g.layers.get(li.saturating_add(1)).is_some_and(is_clipped);
                     // A pass-through group has no isolated content to take a base alpha from.
-                    // Pigment validation refuses it first (`ClipBasePassThrough`); kept so
-                    // `prepare` stays safe on its own.
+                    // Pigment validation refuses it first (`ClipBasePassThrough`); kept as defence
+                    // in depth so `prepare` stays safe on its own, and refused with pigment's own
+                    // error value for the node, never a local spelling (PLR-006).
                     if starts_run && pass_through {
-                        return Err(unsupported("clip_base_pass_through"));
+                        return Err(RenderError::Backend(BackendError::InvalidPlan(
+                            PlanError::ClipBasePassThrough {
+                                node: u32::try_from(i).map_err(|_| overflow())?,
+                            },
+                        )));
                     }
                     let child_isolated = match child {
                         PlanNode::Group(c) => Some(c.isolated),
                         _ => None,
                     };
                     // Structural validation already guaranteed pass_through <-> non-isolated group.
+                    // Every refusal key below is pigment's operator key (`Operator::key`), so the
+                    // defence in depth reports exactly what shared admission reports.
                     if pass_through && l.opacity < 1.0 {
-                        return Err(unsupported("group_pass_through_opacity"));
+                        return Err(unsupported(Operator::PassThroughOpacity.key()));
                     }
                     // A non-isolated group composites straight onto the running backdrop, so there
-                    // is no group result to scale: fill is as undefined as opacity here. Pigment
-                    // rates `fill_opacity` Approximate for any non-Normal mode, so admission lets
-                    // it through; refuse it here, typed and before the first sink call, never
-                    // render the group at full strength while the receipt claims fill was applied.
+                    // is no group result to scale: fill is as undefined as opacity here. Pigment's
+                    // `admit` refuses it first for every backend (`PASS_THROUGH_FILL_OPERATOR`,
+                    // intrinsically Unsupported); kept as defence in depth under the same key,
+                    // typed and before the first sink call, never rendering the group at full
+                    // strength while the receipt claims fill was applied.
                     if pass_through && l.fill_opacity < 1.0 {
-                        return Err(unsupported("group_pass_through_fill_opacity"));
+                        return Err(unsupported(PASS_THROUGH_FILL_OPERATOR));
                     }
                     if !pass_through {
                         if child_isolated == Some(false) {
-                            return Err(unsupported("group_non_isolated_blended"));
+                            return Err(unsupported(Operator::NonIsolatedBlendedGroup.key()));
                         }
                         if !blend_supported(l.mode) {
-                            return Err(unsupported("blend_mode"));
+                            return Err(unsupported(Operator::Blend(l.mode).key()));
                         }
                     }
                     let layer_fx = ext.layer(i, li);
@@ -577,9 +595,10 @@ fn prepare<'a, V: VectorSource>(
                         Some(_) if clipped => None,
                         Some(m) => {
                             // Density below 1 is an envelope operator: the v1 path refuses it (and
-                            // pigment's `admit` already did), the envelope path evaluates it.
+                            // pigment's `admit` already did, as `MASK_DENSITY_OPERATOR`), the
+                            // envelope path evaluates it.
                             if m.density != 1.0 && !ext.allow_density {
-                                return Err(unsupported("mask_density"));
+                                return Err(unsupported(MASK_DENSITY_OPERATOR));
                             }
                             if pass_through {
                                 return Err(unsupported("mask_on_pass_through"));
@@ -590,7 +609,9 @@ fn prepare<'a, V: VectorSource>(
                             let wide = match m.format {
                                 MaskFormat::CoverageU8 => false,
                                 MaskFormat::CoverageU16Le => true,
-                                _ => return Err(unsupported("mask_format")),
+                                // A format this backend has no reader for: pigment's operator
+                                // key for it (`Operator::Mask(format).key()`).
+                                other => return Err(unsupported(Operator::Mask(other).key())),
                             };
                             if plane.sample_format != m.format.key()
                                 || plane.sha256 != m.sha256

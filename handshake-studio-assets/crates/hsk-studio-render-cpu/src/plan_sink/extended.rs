@@ -29,7 +29,9 @@ use hsk_studio_pigment::effect_math::window::{
     WindowBudget, WindowError, WindowLimits, layer_window_cost, stack_support_px,
 };
 use hsk_studio_pigment::effect_math::{EffectError, EffectOp};
-use hsk_studio_pigment::render_plan::{BackendError, PlanExtensions};
+use hsk_studio_pigment::render_plan::{
+    BackendError, ExtOperator, PlanExtensions, SAMPLE_RANGE_OPERATOR,
+};
 use std::collections::BTreeMap;
 
 /// Resident bound charged per prepared adjustment: four curve channels of at most 19 points with
@@ -94,16 +96,18 @@ pub(super) struct ExtPrep {
     pub(super) allow_density: bool,
 }
 
+/// Typed mapping of a coverage failure; the keys are pigment's (PLR-006): [`SAMPLE_RANGE_OPERATOR`]
+/// and the envelope operators' own `ExtOperator::key`, what `admit_extended` reports for them.
 pub(super) fn coverage_error(error: CoverageError) -> RenderError {
     match error {
-        CoverageError::OutOfDomain => unsupported("sample_range_outside_unit"),
-        CoverageError::FeatherOutOfRange => unsupported("mask_feather"),
-        CoverageError::RangeOrder => unsupported("blend_if"),
+        CoverageError::OutOfDomain => unsupported(SAMPLE_RANGE_OPERATOR),
+        CoverageError::FeatherOutOfRange => unsupported(ExtOperator::MaskFeather.key()),
+        CoverageError::RangeOrder => unsupported(ExtOperator::BlendIf.key()),
     }
 }
 fn adjust_error(error: AdjustError) -> RenderError {
     match error {
-        AdjustError::OutOfDomain => unsupported("sample_range_outside_unit"),
+        AdjustError::OutOfDomain => unsupported(SAMPLE_RANGE_OPERATOR),
         AdjustError::InvalidParameter(what) | AdjustError::Unsupported(what) => unsupported(what),
     }
 }
@@ -119,8 +123,11 @@ pub(super) fn effect_error(error: EffectError) -> RenderError {
         EffectError::SizeOutOfRange | EffectError::DistanceOutOfRange => {
             unsupported("effect_limit")
         }
-        EffectError::PlaneShape => unsupported("effect_plane_shape"),
-        EffectError::OverBudget => unsupported("effect_over_budget"),
+        EffectError::PlaneShape => unsupported(EffectError::PlaneShape.code()),
+        EffectError::OverBudget => unsupported(EffectError::OverBudget.code()),
+        // A feature pigment recognises and refuses (gradient glow, glow range, jitter, Precise):
+        // its own key, what `admit_extended` reports for it.
+        EffectError::Unsupported(feature) => unsupported(feature.key()),
         EffectError::Overflow => overflow(),
         EffectError::Blend(e) => blend_error(e),
         _ => unsupported("effect_parameter"),
@@ -146,7 +153,9 @@ pub(super) fn window_error(error: WindowError) -> RenderError {
             RenderError::Backend(BackendError::Unavailable("effect_allocation"))
         }
         WindowError::TooManyEffects => unsupported("effect_limit"),
-        WindowError::WindowShape | WindowError::Geometry => unsupported("effect_plane_shape"),
+        WindowError::WindowShape | WindowError::Geometry => {
+            unsupported(EffectError::PlaneShape.code())
+        }
         WindowError::OutsideDomain => unsupported("effect_window_domain"),
         WindowError::Source => unsupported("effect_source"),
         _ => unsupported("effect_parameter"),
@@ -244,7 +253,7 @@ impl ExtPrep {
                     prep.charge(bytes, limit)?;
                     let weights = feather_kernel(px).map_err(coverage_error)?;
                     if weights.len() != taps {
-                        return Err(unsupported("mask_feather"));
+                        return Err(unsupported(ExtOperator::MaskFeather.key()));
                     }
                     let index = prep.kernels.len();
                     prep.kernels.push(Kernel {
