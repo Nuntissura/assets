@@ -358,9 +358,7 @@ impl<'a, W: Write> ZipWriter<'a, W> {
         );
         put_u16(&mut tail, 0); // archive comment length
         self.put(&tail)?;
-        self.out
-            .flush()
-            .map_err(|e| PackageError::Io(e.kind()))?;
+        self.out.flush().map_err(|e| PackageError::Io(e.kind()))?;
         Ok(WriteStats {
             entries: self.records.len() as u32,
             bytes_written: self.pos,
@@ -384,7 +382,10 @@ impl<'a> Rd<'a> {
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8], PackageError> {
         let end = self.pos.checked_add(n).ok_or(malformed("truncated"))?;
-        let slice = self.bytes.get(self.pos..end).ok_or(malformed("truncated"))?;
+        let slice = self
+            .bytes
+            .get(self.pos..end)
+            .ok_or(malformed("truncated"))?;
         self.pos = end;
         Ok(slice)
     }

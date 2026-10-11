@@ -209,7 +209,10 @@ fn manifest_of(entries: &[(String, Vec<u8>)]) -> Manifest {
     Manifest::parse(bytes, &Limits::default()).unwrap()
 }
 fn set_manifest(entries: &mut [(String, Vec<u8>)], manifest: &Manifest) {
-    let slot = entries.iter_mut().find(|(n, _)| n == MANIFEST_NAME).unwrap();
+    let slot = entries
+        .iter_mut()
+        .find(|(n, _)| n == MANIFEST_NAME)
+        .unwrap();
     slot.1 = manifest.to_canonical_bytes().unwrap();
 }
 
@@ -220,7 +223,11 @@ fn mixed_graph_roundtrip_with_assets() {
     bounded_case("mixed_graph_roundtrip_with_assets", || {
         let (snapshot, assets, blobs) = fixture();
         let first = write_to_vec(&snapshot, &assets);
-        assert_eq!(first, write_to_vec(&snapshot, &assets), "deterministic writer");
+        assert_eq!(
+            first,
+            write_to_vec(&snapshot, &assets),
+            "deterministic writer"
+        );
 
         let metas = preflight(&first, &Limits::default(), &token()).unwrap();
         assert_eq!(metas.len(), 4, "manifest, document, two deduplicated blobs");
@@ -236,7 +243,10 @@ fn mixed_graph_roundtrip_with_assets() {
         assert!(opened.quarantined.is_empty() && opened.loss.is_empty());
 
         let again = write_to_vec(reopened, &MemoryAssetSource::from_opened(&opened));
-        assert_eq!(again, first, "second write of the opened result is byte-identical");
+        assert_eq!(
+            again, first,
+            "second write of the opened result is byte-identical"
+        );
 
         // Forced ZIP64 end records and headers exercise the reader's ZIP64 path for real.
         let mut forced = Vec::new();
@@ -273,9 +283,8 @@ fn mixed_graph_roundtrip_with_assets() {
 fn hostile_zip_rejected() {
     bounded_case("hostile_zip_rejected", || {
         let limits = Limits::default();
-        let code = |bytes: &[u8], limits: &Limits| {
-            preflight(bytes, limits, &token()).unwrap_err().code()
-        };
+        let code =
+            |bytes: &[u8], limits: &Limits| preflight(bytes, limits, &token()).unwrap_err().code();
         let one = |name: &str| raw_zip(&[stored(name, b"x")]);
         assert_eq!(code(&one("../evil"), &limits), "traversal_name");
         assert_eq!(code(&one("a/../evil"), &limits), "traversal_name");
@@ -285,11 +294,17 @@ fn hostile_zip_rejected() {
         assert_eq!(code(&one("CON.txt"), &limits), "unsafe_name");
         assert_eq!(code(&one("caf\u{e9}"), &limits), "unsafe_name");
         assert_eq!(
-            code(&raw_zip(&[stored("a.bin", b"1"), stored("a.bin", b"2")]), &limits),
+            code(
+                &raw_zip(&[stored("a.bin", b"1"), stored("a.bin", b"2")]),
+                &limits
+            ),
             "duplicate_name"
         );
         assert_eq!(
-            code(&raw_zip(&[stored("a.bin", b"1"), stored("A.BIN", b"2")]), &limits),
+            code(
+                &raw_zip(&[stored("a.bin", b"1"), stored("A.BIN", b"2")]),
+                &limits
+            ),
             "case_fold_duplicate"
         );
         assert_eq!(
@@ -313,7 +328,10 @@ fn hostile_zip_rejected() {
             method: 8,
             ..stored("bomb.bin", b"\x03\x00")
         };
-        assert_eq!(code(&raw_zip(&[deflated]), &limits), "unsupported_compression");
+        assert_eq!(
+            code(&raw_zip(&[deflated]), &limits),
+            "unsupported_compression"
+        );
         let few = Limits {
             max_entries: 2,
             ..limits
@@ -330,7 +348,10 @@ fn hostile_zip_rejected() {
             ..limits
         };
         assert_eq!(
-            code(&raw_zip(&[stored("a", b"123"), stored("b", b"456")]), &total),
+            code(
+                &raw_zip(&[stored("a", b"123"), stored("b", b"456")]),
+                &total
+            ),
             "total_too_large"
         );
 
@@ -381,7 +402,10 @@ fn manifest_integrity_and_version() {
 
         // Raw byte flip is caught by CRC; a consistent-CRC byte flip is caught by the manifest hash.
         let metas = preflight(&package, &Limits::default(), &token()).unwrap();
-        let asset = metas.iter().find(|m| m.name.starts_with(ASSET_PREFIX)).unwrap();
+        let asset = metas
+            .iter()
+            .find(|m| m.name.starts_with(ASSET_PREFIX))
+            .unwrap();
         let mut flipped = package.clone();
         let start = asset.data(&package).as_ptr() as usize - package.as_ptr() as usize;
         flipped[start] ^= 0xFF;
@@ -467,7 +491,9 @@ fn unknown_record_quarantined_verbatim() {
         let (snapshot, assets, _) = fixture();
         let package = write_to_vec(&snapshot, &assets);
         let payload = b"MZ\x90\x00 not json, never interpreted \x00\xff".to_vec();
-        let with_extra = repack(&package, |e| e.push(("opaque/x.bin".to_owned(), payload.clone())));
+        let with_extra = repack(&package, |e| {
+            e.push(("opaque/x.bin".to_owned(), payload.clone()))
+        });
 
         let opened = read(&with_extra).unwrap();
         assert!(opened.snapshot().is_some());
@@ -551,10 +577,48 @@ impl AtomicFs for Fault {
     }
 }
 
+/// Child-process fs: the process ends at `replace`, after the temp file is durable and verified,
+/// exactly like a kill in that window (no destructors or cleanup run).
+struct ExitAtReplace(StdFs);
+impl AtomicFs for ExitAtReplace {
+    fn write_temp(&mut self, target: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+        self.0.write_temp(target, bytes)
+    }
+    fn read_back(&mut self, temp: &Path, max: u64) -> io::Result<Vec<u8>> {
+        self.0.read_back(temp, max)
+    }
+    fn replace(&mut self, _: &Path, _: &Path) -> io::Result<()> {
+        std::process::exit(86)
+    }
+    fn remove(&mut self, temp: &Path) {
+        self.0.remove(temp);
+    }
+}
+
+const CRASH_CHILD_ENV: &str = "HSK_PACKAGE_CRASH_CHILD";
+
+fn renamed_package() -> (Vec<u8>, Vec<u8>, Vec<Vec<u8>>) {
+    let (snapshot, assets, blobs) = fixture();
+    let old = write_to_vec(&snapshot, &assets);
+    let renamed = snapshot
+        .rename(
+            &identity("SLYR", 2),
+            "renamed".into(),
+            7,
+            8,
+            folio::Budget::default(),
+            &token(),
+            &Granted,
+        )
+        .unwrap();
+    (old, write_to_vec(&renamed, &assets), blobs)
+}
+
 struct TempDir(PathBuf);
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("hsk-studio-package-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("hsk-studio-package-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
@@ -574,25 +638,24 @@ impl Drop for TempDir {
 
 #[test]
 fn atomic_save_retains_last_good_and_cancel() {
+    if let Ok(dir) = std::env::var(CRASH_CHILD_ENV) {
+        let (_, new, _) = renamed_package();
+        let target = Path::new(&dir).join("doc.handshake");
+        let _ = save_atomic_with(
+            &mut ExitAtReplace(StdFs),
+            &target,
+            &new,
+            &Limits::default(),
+            &token(),
+        );
+        std::process::exit(2);
+    }
     bounded_case("atomic_save_retains_last_good_and_cancel", || {
         let dir = TempDir::new("atomic");
         let target = dir.0.join("doc.handshake");
         let only_target: BTreeSet<String> = ["doc.handshake".to_owned()].into();
         let limits = Limits::default();
-        let (snapshot, assets, _) = fixture();
-        let old = write_to_vec(&snapshot, &assets);
-        let renamed = snapshot
-            .rename(
-                &identity("SLYR", 2),
-                "renamed".into(),
-                7,
-                8,
-                folio::Budget::default(),
-                &token(),
-                &Granted,
-            )
-            .unwrap();
-        let new = write_to_vec(&renamed, &assets);
+        let (old, new, _) = renamed_package();
         assert_ne!(old, new);
 
         save_atomic(&target, &old, &limits, &token()).unwrap();
@@ -600,7 +663,11 @@ fn atomic_save_retains_last_good_and_cancel() {
         assert_eq!(dir.listing(), only_target);
 
         let last_good_kept = |label: &str| {
-            assert_eq!(std::fs::read(&target).unwrap(), old, "{label}: last-good changed");
+            assert_eq!(
+                std::fs::read(&target).unwrap(),
+                old,
+                "{label}: last-good changed"
+            );
             assert_eq!(dir.listing(), only_target, "{label}: temp left behind");
         };
 
@@ -618,7 +685,9 @@ fn atomic_save_retains_last_good_and_cancel() {
             fail_replace: true,
         };
         assert_eq!(
-            save_atomic_with(&mut failing, &target, &new, &limits, &token()).unwrap_err().code(),
+            save_atomic_with(&mut failing, &target, &new, &limits, &token())
+                .unwrap_err()
+                .code(),
             "io"
         );
         last_good_kept("failed replace");
@@ -644,5 +713,45 @@ fn atomic_save_retains_last_good_and_cancel() {
         save_atomic(&target, &new, &limits, &token()).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), new);
         assert_eq!(dir.listing(), only_target);
+
+        // Real interrupted save: a child process ends between the durable temp and the rename.
+        let crash = TempDir::new("crash");
+        let crash_target = crash.0.join("doc.handshake");
+        save_atomic(&crash_target, &old, &limits, &token()).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "atomic_save_retains_last_good_and_cancel",
+                "--test-threads=1",
+            ])
+            .env(CRASH_CHILD_ENV, &crash.0)
+            .status()
+            .unwrap();
+        assert_eq!(
+            status.code(),
+            Some(86),
+            "child must end at the injected kill point"
+        );
+        assert_eq!(
+            std::fs::read(&crash_target).unwrap(),
+            old,
+            "last-good survives the kill"
+        );
+        read(&old).unwrap();
+        let stale: Vec<String> = crash
+            .listing()
+            .into_iter()
+            .filter(|n| n != "doc.handshake")
+            .collect();
+        assert_eq!(stale.len(), 1, "exactly the interrupted temp remains");
+        assert!(stale[0].starts_with("doc.handshake.tmp-"));
+        assert_eq!(
+            std::fs::read(crash.0.join(&stale[0])).unwrap(),
+            new,
+            "interrupted temp is the complete, durable successor"
+        );
+        // Recovery: the next save succeeds over last-good despite the stale temp.
+        save_atomic(&crash_target, &new, &limits, &token()).unwrap();
+        assert_eq!(std::fs::read(&crash_target).unwrap(), new);
     });
 }

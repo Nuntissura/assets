@@ -95,7 +95,9 @@ impl Manifest {
                     documents += 1;
                     entry.name == DOCUMENT_NAME
                 }
-                EntryKind::Asset => entry.name.strip_prefix(ASSET_PREFIX) == Some(&entry.sha256_hex),
+                EntryKind::Asset => {
+                    entry.name.strip_prefix(ASSET_PREFIX) == Some(&entry.sha256_hex)
+                }
                 EntryKind::Preview => entry.name.starts_with(PREVIEW_PREFIX),
                 EntryKind::Opaque => entry.name != DOCUMENT_NAME,
             };

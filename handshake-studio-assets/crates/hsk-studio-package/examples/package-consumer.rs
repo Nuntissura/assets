@@ -21,7 +21,10 @@ struct DirAssets(PathBuf);
 impl AssetSource for DirAssets {
     fn read(&self, digest: &ContentDigest, max: u64) -> Result<Vec<u8>, AssetError> {
         let hex = &digest.digest;
-        if digest.algorithm != "sha256" || hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if digest.algorithm != "sha256"
+            || hex.len() != 64
+            || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+        {
             return Err(AssetError::Absent);
         }
         let mut bytes = Vec::new();

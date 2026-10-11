@@ -2,12 +2,7 @@
 //! file next to the target, `sync_all`, read it back and re-verify, then atomically replace.
 //! The destination is never deleted first; on any failure only the temp file is removed and the
 //! last-good destination stays byte-identical.
-use crate::{
-    error::PackageError,
-    hashing::check,
-    limits::Limits,
-    read::verify_container,
-};
+use crate::{error::PackageError, hashing::check, limits::Limits, read::verify_container};
 use hsk_studio_accord::CancellationToken;
 use std::{
     fs::{self, File, OpenOptions},
@@ -54,9 +49,9 @@ fn is_transient(error: &io::Error) -> bool {
 impl AtomicFs for StdFs {
     fn write_temp(&mut self, target: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
         let dir = parent_dir(target);
-        let name = target
-            .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "target has no file name"))?;
+        let name = target.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "target has no file name")
+        })?;
         for attempt in 0..64u32 {
             let mut temp_name = name.to_os_string();
             temp_name.push(format!(".tmp-{}-{attempt}", std::process::id()));
