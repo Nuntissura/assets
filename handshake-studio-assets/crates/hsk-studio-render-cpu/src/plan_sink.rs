@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub const RENDERER: &str = "hsk-studio-render-cpu/0.1";
+pub const PARITY: &str = "w3c_published_functions_adobe_parity_not_proven";
 pub const SAMPLE_FORMAT: &str = "rgb_f32le";
 pub const ALPHA_ASSOCIATION: &str = "straight";
 pub const MAX_OPS: usize = 65_536;
@@ -258,6 +259,9 @@ pub struct RenderReceipt {
     pub ops_executed: u64,
     pub peak_scratch_bytes: u64,
     pub renderer: &'static str,
+    /// What the output is and is not proven against. Constant until an Adobe-produced oracle
+    /// exists: the blend functions are the published W3C ones, not verified Adobe behaviour.
+    pub parity: &'static str,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -605,6 +609,7 @@ impl Renderer {
             ops_executed: ops.len() as u64,
             peak_scratch_bytes: scratch_bytes,
             renderer: RENDERER,
+            parity: PARITY,
         })
     }
 }

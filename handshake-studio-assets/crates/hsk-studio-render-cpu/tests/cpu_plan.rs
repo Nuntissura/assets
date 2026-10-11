@@ -198,10 +198,32 @@ fn known_alpha_mask_sample_math() {
             (BlendMode::Difference, [0.8, 0.4, 0.6]),
             // Overlay: backdrop decides multiply (<=.5: 2*cb*cs) or screen (>.5: cs+2cb-1-cs(2cb-1)).
             (BlendMode::Overlay, [0.4, 0.0, 0.2]),
+            // Dodge: cs=1 -> 1, cs=0 -> min(1, cb); burn: cs=1 -> 1-(1-cb), cs=0 -> 0.
+            (BlendMode::ColourDodge, [1.0, 0.4, 0.6]),
+            (BlendMode::ColourBurn, [0.2, 0.0, 0.0]),
+            (BlendMode::HardLight, [1.0, 0.0, 0.0]),
+            // Soft light: R cs>.5, cb<=.25: .2+(D-.2), D=((16*.2-12)*.2+4)*.2=.448;
+            // G,B cs=0: cb-(1-0)*cb*(1-cb): .4-.4*.6 = .16 and .6-.6*.4 = .36.
+            (BlendMode::SoftLight, [0.448, 0.16, 0.36]),
+            (BlendMode::Exclusion, [0.8, 0.4, 0.6]),
+            // Non-separable (W3C 10.2), Lum = .3R+.59G+.11B: Lum(cb)=.362, Lum(red)=.3.
+            // luminosity: SetLum(cb, .3) shifts by -.062, no clip.
+            (BlendMode::Luminosity, [0.138, 0.338, 0.538]),
+            // colour: SetLum(red, .362) -> (1.062,.062,.062), ClipColor x>1 compresses about L.
+            (BlendMode::Colour, [1.0, 0.088_571_43, 0.088_571_43]),
+            // saturation: SetSat(cb, 1) = (0,.5,1), SetLum to .362 -> (-.043,.457,.957), ClipColor n<0.
+            (BlendMode::Saturation, [0.0, 0.446_913_58, 0.893_827_16]),
+            // hue: SetSat(red, Sat(cb)=.4) = (.4,0,0), SetLum to .362 -> (.642,.242,.242).
+            (BlendMode::Hue, [0.642, 0.242, 0.242]),
         ] {
             let out = composite_straight(mode, backdrop, red, 1.0, 1.0);
             close(out, [want[0], want[1], want[2], 1.0]);
         }
+        // Soft light sqrt branch: cb=.64 > .25, cs=1: D=sqrt(.64)=.8 -> .64+(.8-.64)=.8.
+        close(
+            composite_straight(BlendMode::SoftLight, [0.64, 0.64, 0.64, 1.0], [1.0; 4], 1.0, 1.0),
+            [0.8, 0.8, 0.8, 1.0],
+        );
         // Partial backdrop alpha: ab=.5, as=.5, ao=.75, C=(0.1875+0.0625+0.0625)/0.75.
         close(
             composite_straight(
@@ -797,6 +819,7 @@ fn receipt_binds_revision_profile_and_observe() {
         assert_eq!(receipt.extent, extent);
         assert_eq!((receipt.sample_format, receipt.alpha), ("rgb_f32le", "straight"));
         assert_eq!(receipt.renderer, "hsk-studio-render-cpu/0.1");
+        assert!(receipt.parity.contains("adobe_parity_not_proven"));
         assert_eq!((receipt.chunks, receipt.ops_executed), (6, 1));
         assert_eq!(receipt.peak_scratch_bytes, 128);
 

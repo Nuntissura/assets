@@ -1,10 +1,13 @@
 //! Straight-alpha sample math: W3C Compositing and Blending Level 1 general source-over formula with
-//! the separable blend functions of section 10.1. Arithmetic is space-agnostic: the caller's plan
-//! declares the blending space and this module never converts between spaces (STU-COL-163).
+//! the separable (10.1) and non-separable (10.2) blend functions. Arithmetic is space-agnostic: the
+//! caller's plan declares the blending space and this module never converts between spaces
+//! (STU-COL-163).
 //!
-//! Values outside `[0, 1]` (HDR, linear light) go through the same arithmetic unclamped; the
-//! formulas are only specified on `[0, 1]`, so that extension is stated here, not asserted as
-//! verified against any external editor.
+//! Basis: every supported function is the published W3C/PDF function. That is NOT proof of Adobe
+//! parity (Photoshop may differ, e.g. soft light variants); parity stays NOT_PROVEN until an
+//! Adobe-produced oracle exists. Values outside `[0, 1]` (HDR, linear light) go through the same
+//! arithmetic unclamped, except where a formula clamps itself (dodge/burn minima, ClipColor); the
+//! formulas are only specified on `[0, 1]`, so that extension is stated here, not verified.
 use crate::RenderError;
 
 /// Blend members with a recovered, source-verified function. Discriminants are the canonical
@@ -15,36 +18,57 @@ pub enum BlendMode {
     Normal = 2,
     Darken = 4,
     Multiply = 5,
+    ColourBurn = 6,
     Lighten = 8,
     Screen = 9,
+    ColourDodge = 10,
     Overlay = 12,
+    SoftLight = 13,
+    HardLight = 14,
     Difference = 18,
+    Exclusion = 19,
+    Hue = 20,
+    Saturation = 21,
+    Colour = 22,
+    Luminosity = 23,
 }
 
 impl BlendMode {
-    pub const SUPPORTED: [BlendMode; 7] = [
+    pub const SUPPORTED: [BlendMode; 16] = [
         Self::Normal,
         Self::Darken,
         Self::Multiply,
+        Self::ColourBurn,
         Self::Lighten,
         Self::Screen,
+        Self::ColourDodge,
         Self::Overlay,
+        Self::SoftLight,
+        Self::HardLight,
         Self::Difference,
+        Self::Exclusion,
+        Self::Hue,
+        Self::Saturation,
+        Self::Colour,
+        Self::Luminosity,
     ];
     /// Canonical STU-RAS-154 discriminant.
     pub const fn code(self) -> u16 {
         self as u16
     }
     pub const fn name(self) -> &'static str {
-        match self {
-            Self::Normal => "normal",
-            Self::Darken => "darken",
-            Self::Multiply => "multiply",
-            Self::Lighten => "lighten",
-            Self::Screen => "screen",
-            Self::Overlay => "overlay",
-            Self::Difference => "difference",
+        match blend_mode_name(self as u16) {
+            Some(name) => name,
+            None => "unknown",
         }
+    }
+    /// True when the function acts on each channel independently (W3C 10.1); false for the four
+    /// component modes that act on the whole RGB triple (W3C 10.2).
+    pub const fn is_separable(self) -> bool {
+        !matches!(
+            self,
+            Self::Hue | Self::Saturation | Self::Colour | Self::Luminosity
+        )
     }
 }
 
@@ -115,22 +139,109 @@ fn hard_light(cb: f64, cs: f64) -> f64 {
         screen(cb, 2.0 * cs - 1.0)
     }
 }
-
-/// Separable blend function `B(Cb, Cs)` on one channel.
-pub fn blend_channel(mode: BlendMode, cb: f64, cs: f64) -> f64 {
-    match mode {
-        BlendMode::Normal => cs,
-        BlendMode::Multiply => multiply(cb, cs),
-        BlendMode::Screen => screen(cb, cs),
-        BlendMode::Darken => cb.min(cs),
-        BlendMode::Lighten => cb.max(cs),
-        BlendMode::Difference => (cb - cs).abs(),
-        // Overlay(Cb, Cs) = HardLight(Cs, Cb): the backdrop decides multiply versus screen.
-        BlendMode::Overlay => hard_light(cs, cb),
+fn soft_light(cb: f64, cs: f64) -> f64 {
+    if cs <= 0.5 {
+        cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+    } else {
+        let d = if cb <= 0.25 {
+            ((16.0 * cb - 12.0) * cb + 4.0) * cb
+        } else {
+            cb.sqrt()
+        };
+        cb + (2.0 * cs - 1.0) * (d - cb)
+    }
+}
+fn colour_dodge(cb: f64, cs: f64) -> f64 {
+    if cb == 0.0 {
+        0.0
+    } else if cs >= 1.0 {
+        1.0
+    } else {
+        (cb / (1.0 - cs)).min(1.0)
+    }
+}
+fn colour_burn(cb: f64, cs: f64) -> f64 {
+    if cb >= 1.0 {
+        1.0
+    } else if cs <= 0.0 {
+        0.0
+    } else {
+        1.0 - ((1.0 - cb) / cs).min(1.0)
     }
 }
 
-/// Source-over with a separable blend on straight (non-premultiplied) RGBA, evaluated in binary64
+/// How a mode is evaluated: one channel at a time (W3C 10.1) or on the whole triple (10.2).
+enum Kind {
+    Separable(fn(f64, f64) -> f64),
+    Component(fn([f64; 3], [f64; 3]) -> [f64; 3]),
+}
+
+fn kind(mode: BlendMode) -> Kind {
+    match mode {
+        BlendMode::Normal => Kind::Separable(|_, cs| cs),
+        BlendMode::Multiply => Kind::Separable(multiply),
+        BlendMode::Screen => Kind::Separable(screen),
+        BlendMode::Darken => Kind::Separable(f64::min),
+        BlendMode::Lighten => Kind::Separable(f64::max),
+        BlendMode::Difference => Kind::Separable(|cb, cs| (cb - cs).abs()),
+        BlendMode::Exclusion => Kind::Separable(|cb, cs| cb + cs - 2.0 * cb * cs),
+        BlendMode::ColourDodge => Kind::Separable(colour_dodge),
+        BlendMode::ColourBurn => Kind::Separable(colour_burn),
+        BlendMode::HardLight => Kind::Separable(hard_light),
+        BlendMode::SoftLight => Kind::Separable(soft_light),
+        // Overlay(Cb, Cs) = HardLight(Cs, Cb): the backdrop decides multiply versus screen.
+        BlendMode::Overlay => Kind::Separable(|cb, cs| hard_light(cs, cb)),
+        BlendMode::Hue => Kind::Component(|cb, cs| set_lum(set_sat(cs, sat(cb)), lum(cb))),
+        BlendMode::Saturation => Kind::Component(|cb, cs| set_lum(set_sat(cb, sat(cs)), lum(cb))),
+        BlendMode::Colour => Kind::Component(|cb, cs| set_lum(cs, lum(cb))),
+        BlendMode::Luminosity => Kind::Component(|cb, cs| set_lum(cb, lum(cs))),
+    }
+}
+
+fn lum(c: [f64; 3]) -> f64 {
+    0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+}
+fn clip_colour(c: [f64; 3]) -> [f64; 3] {
+    let l = lum(c);
+    let n = c[0].min(c[1]).min(c[2]);
+    let x = c[0].max(c[1]).max(c[2]);
+    let mut out = c;
+    if n < 0.0 {
+        out = out.map(|v| l + (v - l) * l / (l - n));
+    }
+    if x > 1.0 {
+        out = out.map(|v| l + (v - l) * (1.0 - l) / (x - l));
+    }
+    out
+}
+fn set_lum(c: [f64; 3], l: f64) -> [f64; 3] {
+    let d = l - lum(c);
+    clip_colour(c.map(|v| v + d))
+}
+fn sat(c: [f64; 3]) -> f64 {
+    c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+}
+fn set_sat(c: [f64; 3], s: f64) -> [f64; 3] {
+    let mut idx = [0_usize, 1, 2];
+    idx.sort_by(|&a, &b| c[a].total_cmp(&c[b]));
+    let [lo, mid, hi] = idx;
+    let mut out = [0.0; 3];
+    if c[hi] > c[lo] {
+        out[mid] = (c[mid] - c[lo]) * s / (c[hi] - c[lo]);
+        out[hi] = s;
+    }
+    out
+}
+
+/// Blend function `B(Cb, Cs)` on an RGB triple (W3C 10.1 per channel, 10.2 whole-triple).
+pub fn blend_rgb(mode: BlendMode, cb: [f64; 3], cs: [f64; 3]) -> [f64; 3] {
+    match kind(mode) {
+        Kind::Separable(f) => std::array::from_fn(|i| f(cb[i], cs[i])),
+        Kind::Component(f) => f(cb, cs),
+    }
+}
+
+/// Source-over with a blend function on straight (non-premultiplied) RGBA, evaluated in binary64
 /// and rounded once to binary32. Inputs must be finite; the executor validates them.
 ///
 /// `as = source.a * opacity * coverage`; `ao = as + ab*(1-as)`;
@@ -152,12 +263,13 @@ pub fn composite_straight(
     if ao <= 0.0 {
         return [0.0; 4];
     }
+    let cb = [backdrop[0], backdrop[1], backdrop[2]].map(f64::from);
+    let cs = [source[0], source[1], source[2]].map(f64::from);
+    let b = blend_rgb(mode, cb, cs);
     let mut out = [0.0_f32; 4];
     for i in 0..3 {
-        let cb = f64::from(backdrop[i]);
-        let cs = f64::from(source[i]);
-        let b = blend_channel(mode, cb, cs);
-        out[i] = (((1.0 - a_s) * ab * cb + (1.0 - ab) * a_s * cs + a_s * ab * b) / ao) as f32;
+        out[i] =
+            (((1.0 - a_s) * ab * cb[i] + (1.0 - ab) * a_s * cs[i] + a_s * ab * b[i]) / ao) as f32;
     }
     out[3] = ao as f32;
     out
