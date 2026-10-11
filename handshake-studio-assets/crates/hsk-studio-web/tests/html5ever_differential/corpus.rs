@@ -1141,6 +1141,28 @@ pub fn css_urls() -> Cases {
             "<div style=\"a:url(x \\);b:url(//evil.example/gecko)\"></div>",
             "<style>.a{a:URL(x\n\\);b:url(//evil.example/gecko-sheet)}</style>",
             "<style>/* url(//decoy.example/c) */ .a{b:'url(//decoy.example/s)'} .c{d:url/**/(//decoy.example/l)}</style>",
+            // R11-F1: SVG animation values split on every `;` (comment, bad url, string and escape decoys; case/whitespace).
+            "<svg><rect width=\"9\" height=\"9\"><animate attributeName=\"mask\" dur=\"1s\" values=\"none /*;url(https://evil.example/m.png)\"/></rect></svg>",
+            "<svg><rect><animate attributeName=\"fill\" values=\"url(a b;url(//evil.example/bad))\"/></rect></svg>",
+            "<svg><rect><animate attributeName=\"FILL\" values=\"none &quot;x;url(//evil.example/str)\"/></rect></svg>",
+            "<svg><rect><animateMotion attributeName=\" stroke \" values=\"none /*;\\75 rl(//evil.example/esc) ;\"/></rect></svg>",
+            "<svg><rect><animate attributeName=\"mask\" values=\"url(a;b)\"/></rect></svg>",
+            "<svg><rect><animate attributeName=\"mask\" to=\"none /*;url(//evil.example/to)\" from=\"url(//evil.example/from)\" by=\"URL( '//evil.example/by' )\"/></rect></svg>",
+            // R11-F2: every CSS property of the inventory is a CSS target (marker shorthand, image properties, style).
+            "<svg><path d=\"M0 0L9 9\"><set attributeName=\"marker\" to=\"url(private/markers.svg#m)\"/></path></svg>",
+            "<svg><path><set attributeName=\"MARKER\" to=\"url(//evil.example/mk.svg#m)\"/><animate attributeName=\"background-image\" values=\"none;image-set('//evil.example/bi' 1x)\"/></path></svg>",
+            "<svg><g><set attributeName=\"style\" to=\"background:url(//evil.example/st)\"/><set attributeName=\"width\" to=\"url(//evil.example/not-css)\"/></g></svg>",
+            // R11-P1: data: payloads (CSS scanned recursively; quirks-mode style sheet types; documents not scanned).
+            "<style>@import url(\"data:text/css,@import%20'//evil.example/d1';\");</style>",
+            "<style>@import 'data:text/css;base64,QGltcG9ydCAnLy9lLmludmFsaWQvYic7';</style>",
+            "<style>@import \"data:text/plain,@import '//evil.example/quirks';\";@import 'data:,@import url(//evil.example/u)';</style>",
+            "<div style=\"background:url(&quot;data:text/css,a{b:url(//evil.example/d2)}&quot;)\"></div>",
+            "<svg><style>@import 'data:text/css,@import &quot;data:text/css,@import url(//evil.example/d3);&quot;;';</style></svg>",
+            "<style>@import \"data:text/css;charset=utf-16le;base64,QABpAG0AcABvAHIAdAAgAHUAcgBsACgALwAvAGUALgBpAG4AdgBhAGwAaQBkAC8AdwApADsA\";</style>",
+            "<style>@import 'data:text/css,@import \"x.css\";';@import 'data:text/css;charset=shift_jis,@import \"//evil.example/sj\";';</style>",
+            "<style>.a{b:url('data:text/html,<img src=//evil.example/h>');c:url(\"data:image/svg+xml,<svg/>\")}</style>",
+            // R11-P2/P3: @namespace URLs load nothing; -moz- gradients and filter functions compute nothing; filter() strings.
+            "<style>@namespace url(http://www.w3.org/2000/svg);@namespace svg '//evil.example/ns';.a{b:image-set(-moz-linear-gradient(red, blue) 1x);c:filter('//evil.example/fi', blur(2px))}</style>",
         ],
     )
 }

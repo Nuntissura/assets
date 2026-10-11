@@ -622,6 +622,18 @@ fn data_css_payloads_are_scanned_recursively() {
         let url = format!("data:text/css;charset=shift_jis,{import}");
         let (seen, _) = scan(&format!("<style>@import \"{url}\";</style>")).unwrap();
         assert_eq!(seen, [(url, "Denied(InlineDocument)".to_owned())]);
+        // A bad string (or bad url) spelling a data: URL loads nothing: denied, its truncated payload never read.
+        let (seen, _) = scan(&format!(
+            "<style>.a{{b:url(\"data:text/css,@import '{EVIL}';\n}}</style>"
+        ))
+        .unwrap();
+        assert_eq!(
+            seen,
+            [(
+                format!("data:text/css,@import '{EVIL}';"),
+                NOT_GRANTED.to_owned()
+            )]
+        );
         // A failed base64 payload loads nothing in a browser; the gate denies it.
         let (seen, _) = scan("<style>@import 'data:text/css;base64,QG=';</style>").unwrap();
         assert_eq!(

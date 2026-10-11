@@ -787,3 +787,89 @@ fn output_is_bounded_by_the_limit() {
     assert_eq!(found[0].value, "b");
     assert_eq!(css_references(&many, 0).unwrap().len(), 0);
 }
+
+/// (kind, value, import) of every reference.
+fn refs_import(css: &str) -> Vec<(char, String, bool)> {
+    css_references(css, usize::MAX)
+        .expect("nesting within the limit")
+        .into_iter()
+        .map(|r| {
+            let k = match r.kind {
+                RefKind::Url => 'u',
+                RefKind::Bad => 'b',
+                RefKind::Computed => 'c',
+            };
+            (k, r.value, r.import)
+        })
+        .collect()
+}
+
+/// R11-P2: the URL of `@namespace` (after an optional prefix) names a namespace and is never fetched (CSS Namespaces 3):
+/// not a reference, whatever its spelling; any later URL is.
+#[test]
+fn namespace_urls_are_not_references() {
+    assert!(refs("@namespace url(http://www.w3.org/2000/svg);").is_empty());
+    assert!(refs("@namespace svg \"http://www.w3.org/2000/svg\";").is_empty());
+    // escape, comments, case and whitespace
+    assert!(refs("@n\\61mespace/**/svg/**/url('x');").is_empty());
+    assert!(refs("@NAMESPACE\n\tX\n URL( x );").is_empty());
+    assert!(refs("@namespace url(a b);@namespace \"x\n;").is_empty());
+    // decoys: not after @namespace, or a second URL in the prelude, or a later rule
+    assert_eq!(
+        refs("@namespace x url(a) url(b);@media x{a{b:url(c)}}@import 'd';"),
+        [u("b"), u("c"), u("d")]
+    );
+    assert_eq!(refs("@namespaces url(a);"), [u("a")]);
+    assert_eq!(refs("@namespace x y url(a);"), [u("a")]);
+}
+
+/// The `@import` URL is marked (a style sheet); every other URL is not, even right after another at-rule.
+#[test]
+fn import_urls_are_marked() {
+    assert_eq!(
+        refs_import("@import 'a';@IMPORT url(b);@\\69mport/**/url(\"c\") layer;@import src('d');"),
+        [
+            ('u', "a".to_owned(), true),
+            ('u', "b".to_owned(), true),
+            ('u', "c".to_owned(), true),
+            ('u', "d".to_owned(), true),
+        ]
+    );
+    assert_eq!(
+        refs_import("@media url(a){}@import x url(b);a{b:url(c)}@import image-set('d' 1x);"),
+        [
+            ('u', "a".to_owned(), false),
+            ('u', "b".to_owned(), false),
+            ('u', "c".to_owned(), false),
+            ('u', "d".to_owned(), false),
+        ]
+    );
+    // A bad url or bad string as the @import URL keeps the mark.
+    assert_eq!(
+        refs_import("@import url(a b);@import 'c\n;"),
+        [('b', "a".to_owned(), true), ('b', "c".to_owned(), true)]
+    );
+}
+
+/// R11-P3 and the inventory's function row: Gecko's `-moz-` gradients and the filter functions compute no URL; the
+/// strings of `filter()` / `-webkit-filter()` are image URLs (Filter Effects 1 12).
+#[test]
+fn moz_gradients_filter_functions_and_filter_strings() {
+    assert!(
+        refs("b:image-set(-moz-linear-gradient(red, blue) 1x, -MOZ-repeating-radial-gradient(red, blue) 2x)")
+            .is_empty()
+    );
+    assert_eq!(
+        refs(
+            "b:filter('a.png', blur(2px) sepia(1));c:-webkit-filter(\"b.png\", grayscale(1));d:FILTER( '\\63.png' , opacity(0.5))"
+        ),
+        [u("a.png"), u("b.png"), u("c.png")]
+    );
+    // A substitution function inside filter() still computes its URL.
+    assert_eq!(refs("b:filter(var(--u), blur(1px))"), [c("var(--u)")]);
+    // The filter property is not the function: its url() is a url token, strings are not URLs.
+    assert_eq!(
+        refs("filter:url(f.svg#x) blur(1px);content:'g.png'"),
+        [u("f.svg#x")]
+    );
+}

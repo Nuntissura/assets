@@ -11,7 +11,9 @@
 //! comments and CDATA sections (the crate's own character data from `WebDoc::view`), bogus comments (opaque in the crate,
 //! preprocessed here), and per `style` element the text a browser's CSS parser reads against the crate's
 //! `WebDoc::stylesheet_text` (the text its asset scan and preview interpret; signature `style-sheet-text`), and per CSS
-//! carrier (each `style` / SVG presentation attribute, each style sheet) the URLs the crate's `collect_assets` reports
+//! carrier (each `style` / SVG presentation attribute, each style sheet, each `from`/`to`/`by`/`values` of an SVG
+//! animation of a CSS property, `values` split on every `;`) the URLs the crate's `collect_assets` reports (incl. the
+//! references inside `data:` payloads the gate reads as CSS)
 //! against the URLs `css_reference` (a separately written CSS Syntax 3 reading over html5ever's text) finds there
 //! (signature `css-urls`; no licensed CSS reference tokenizer is available as a dev-dependency: cssparser is MPL-2.0,
 //! which the workspace licence gate refuses). The scripting
@@ -652,12 +654,13 @@ fn whole_documents_with_explicit_structure() {
     });
 }
 
-/// R10 pre-review R10-F1 / R10-P1 (lead decision 2026-10-11T15:25:17Z): every URL a browser loads from CSS, in every
-/// carrier, is reported by the gate exactly as the reference CSS reading finds it (signature `css-urls`).
+/// R10 pre-review R10-F1 / R10-P1 (lead decision 2026-10-11T15:25:17Z) and R11 (16:55:12Z): every URL a browser loads
+/// from CSS, in every carrier (incl. SVG animation values split on `;` and `data:` style sheet payloads), is reported by
+/// the gate exactly as the reference CSS reading finds it (signature `css-urls`). All 60 inputs must be comparable.
 #[test]
 fn css_url_payloads_read_like_the_reference() {
     bounded_case("css_url_payloads_read_like_the_reference", || {
-        run_cases("css_urls", corpus::css_urls(), Mode::Fragment, 36)
+        run_cases("css_urls", corpus::css_urls(), Mode::Fragment, 60)
     });
 }
 

@@ -158,6 +158,142 @@ pub fn check(input: &str, mode: Mode) -> Outcome {
     Outcome::Compared(found)
 }
 
+/// SVG animation elements whose `from`/`to`/`by`/`values` are compared as CSS carriers when `attributeName` names a CSS
+/// property of the carrier inventory (R11-F1/F2).
+const ANIMATION_ELEMENTS: &[&str] = &[
+    "animate",
+    "set",
+    "animatemotion",
+    "animatetransform",
+    "animatecolor",
+];
+
+/// CSS properties whose animation the gate reads as CSS: the carrier inventory's CSS property rows (`carriers.rs`
+/// `CSS_URL_PROPERTIES`, `CSS_COLOR_ONLY_PROPERTIES`), copied here as the reference's list; plus `CSS_ATTRIBUTES`.
+const CSS_TARGETS: &[&str] = &[
+    "background",
+    "background-image",
+    "background-tbd",
+    "border-image",
+    "border-image-source",
+    "list-style",
+    "list-style-image",
+    "list-style-type",
+    "content",
+    "bookmark-label",
+    "copy-into",
+    "cursor",
+    "clip-path",
+    "mask",
+    "mask-image",
+    "mask-border",
+    "mask-border-source",
+    "filter",
+    "backdrop-filter",
+    "fill",
+    "stroke",
+    "fill-image",
+    "stroke-image",
+    "marker",
+    "marker-start",
+    "marker-mid",
+    "marker-end",
+    "offset",
+    "offset-path",
+    "shape-outside",
+    "shape-inside",
+    "cue",
+    "cue-before",
+    "cue-after",
+    "-webkit-filter",
+    "-webkit-mask",
+    "-webkit-mask-image",
+    "-webkit-mask-box-image",
+    "-webkit-mask-box-image-source",
+    "-webkit-border-image",
+    "-webkit-box-reflect",
+    "-webkit-clip-path",
+    "-webkit-shape-outside",
+    "-webkit-backdrop-filter",
+    "-webkit-list-style",
+    "-webkit-list-style-image",
+    "-webkit-cursor",
+    "-webkit-mask-border",
+    "-webkit-mask-border-source",
+    "color",
+    "accent-color",
+    "background-color",
+    "border",
+    "border-block",
+    "border-block-color",
+    "border-block-end",
+    "border-block-end-color",
+    "border-block-start",
+    "border-block-start-color",
+    "border-bottom",
+    "border-bottom-color",
+    "border-color",
+    "border-inline",
+    "border-inline-color",
+    "border-inline-end",
+    "border-inline-end-color",
+    "border-inline-start",
+    "border-inline-start-color",
+    "border-left",
+    "border-left-color",
+    "border-right",
+    "border-right-color",
+    "border-top",
+    "border-top-color",
+    "box-shadow",
+    "box-shadow-color",
+    "caret",
+    "caret-color",
+    "column-rule",
+    "column-rule-color",
+    "fill-color",
+    "flood-color",
+    "lighting-color",
+    "outline",
+    "outline-color",
+    "row-rule",
+    "row-rule-color",
+    "rule",
+    "rule-color",
+    "scrollbar-color",
+    "stop-color",
+    "stroke-color",
+    "text-decoration",
+    "text-decoration-color",
+    "text-emphasis",
+    "text-emphasis-color",
+    "text-shadow",
+    "-webkit-box-shadow",
+    "-webkit-text-fill-color",
+    "-webkit-text-stroke",
+    "-webkit-text-stroke-color",
+];
+
+/// `element` is an SVG animation whose `attributeName` value names a CSS target.
+fn css_animation(element: &str, attribute_name: Option<&str>) -> bool {
+    ANIMATION_ELEMENTS.contains(&element)
+        && attribute_name.is_some_and(|t| {
+            let t = t.trim().to_ascii_lowercase();
+            CSS_TARGETS.contains(&t.as_str()) || CSS_ATTRIBUTES.contains(&t.as_str())
+        })
+}
+
+/// The animation attributes read as CSS (`values` split on every `;`, the engines' ParseValues).
+const ANIMATION_VALUES: &[&str] = &["to", "from", "by", "values"];
+
+/// The pieces of a `values` list: split on every `;`, HTML whitespace stripped, empty pieces dropped.
+fn value_pieces(text: &str) -> Vec<&str> {
+    text.split(';')
+        .map(|p| p.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')))
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
 /// Attributes the gate reads as CSS on any element (`style` and the SVG presentation attributes it scans).
 const CSS_ATTRIBUTES: &[&str] = &[
     "style",
@@ -204,9 +340,16 @@ fn css_urls_differ(doc: &WebDoc, expected: &[Ev]) -> Option<String> {
         let node = doc.node(row.id)?;
         let mut names = HashSet::new();
         let mut sources: Vec<AssetSource> = Vec::new();
+        let element = doc.local_name(row.id).unwrap_or_default();
+        let target = doc
+            .attribute(row.id, "attributename")
+            .and_then(|a| doc.attr_value(a));
+        let animation = css_animation(&element, target.as_deref());
         for attr in &node.attrs {
             let name = doc.attr_name(attr).to_ascii_lowercase();
-            if CSS_ATTRIBUTES.contains(&name.as_str()) {
+            if CSS_ATTRIBUTES.contains(&name.as_str())
+                || (animation && ANIMATION_VALUES.contains(&name.as_str()))
+            {
                 if !names.insert(name.clone()) {
                     return None;
                 }
@@ -247,16 +390,28 @@ fn css_urls_differ(doc: &WebDoc, expected: &[Ev]) -> Option<String> {
         let Ev::Open { name, attrs, .. } = ev else {
             continue;
         };
+        let target = attrs
+            .iter()
+            .find(|(n, _)| n == "attributename")
+            .map(|(_, v)| v.as_str());
+        let animation = css_animation(name, target);
         let mut carriers: Vec<(String, &str)> = attrs
             .iter()
-            .filter(|(n, _)| CSS_ATTRIBUTES.contains(&n.as_str()))
+            .filter(|(n, _)| {
+                CSS_ATTRIBUTES.contains(&n.as_str())
+                    || (animation && ANIMATION_VALUES.contains(&n.as_str()))
+            })
             .map(|(n, v)| (n.clone(), v.as_str()))
             .collect();
         if name == "style" {
             carriers.push(("sheet".to_owned(), sheets.next().map_or("", String::as_str)));
         }
         for (label, text) in carriers {
-            let found = urls(text);
+            let found: Vec<_> = if animation && label == "values" {
+                value_pieces(text).into_iter().flat_map(urls).collect()
+            } else {
+                urls(text)
+            };
             for u in found.iter().filter(|u| u.kind == UrlKind::Url) {
                 *loadable.entry(u.value.clone()).or_insert(0) += 1;
             }

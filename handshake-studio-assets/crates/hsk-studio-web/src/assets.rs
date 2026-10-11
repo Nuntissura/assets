@@ -442,6 +442,18 @@ impl Collector<'_> {
         depth: u32,
     ) -> Result<(), WebError> {
         let outcome = self.decide(reference, bad, depth > 0);
+        // A bad-url token or bad string spelling `data:` loads nothing and its payload is cut short: denied, never read
+        // (found by the differential generator, gen:Css:70041).
+        if bad && outcome == AssetOutcome::Inline {
+            return self.push(
+                node,
+                source,
+                reference.to_owned(),
+                span,
+                AssetOutcome::Denied(DenyReason::NotGranted),
+                depth,
+            );
+        }
         if outcome == AssetOutcome::Inline
             && let Some(url) = datauri::parse(reference)
         {
@@ -642,17 +654,15 @@ impl Collector<'_> {
                     self.reference(node, &source, &text[r.clone()], false, sub(&r), load, 0)?;
                 }
             }
-            (Path::InlineDoc, _) => {
-                if !text.trim().is_empty() {
-                    self.push(
-                        node,
-                        &source,
-                        text.to_owned(),
-                        value_span.clone(),
-                        AssetOutcome::Denied(DenyReason::InlineDocument),
-                        0,
-                    )?;
-                }
+            (Path::InlineDoc, _) if !text.trim().is_empty() => {
+                self.push(
+                    node,
+                    &source,
+                    text.to_owned(),
+                    value_span.clone(),
+                    AssetOutcome::Denied(DenyReason::InlineDocument),
+                    0,
+                )?;
             }
             // No animation target, nothing loaded, or a CSS-only path (never an attribute row).
             _ => {}

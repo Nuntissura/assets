@@ -4,8 +4,12 @@
 //! literally (consume / reconsume), parsed into a component-value tree (5.4 consume a list of component values, simple
 //! block, function), and the tree is walked for URLs. The URL rules are the gate's documented policy (`cssurl` module
 //! docs): url tokens; strings whose nearest enclosing function is url, src, image-set, -webkit-image-set, image,
-//! cross-fade or -webkit-cross-fade, or that follow `@import`; bad-url tokens and bad strings in those places as bad;
-//! inside a URL function, the first function outside the value-function list as computed; empty URLs skipped; the union
+//! cross-fade, -webkit-cross-fade, filter or -webkit-filter, or that follow `@import`; the URL right after `@namespace`
+//! (and an optional prefix) skipped; the `@import` URL marked; bad-url tokens and bad strings in those places as bad;
+//! inside a URL function, the first function outside the value-function list as computed; empty URLs skipped; a `data:`
+//! URL whose payload is CSS (or, as an `@import`, a type a style sheet reads as CSS in quirks mode) followed by the URLs of
+//! its payload, read by a second, separately written data: URL reader (Fetch data: URL processor, MIME Sniffing, Infra
+//! forgiving-base64, CSS Syntax 3 3.2 encodings); the union
 //! of three readings: the specification's, the engines' non-ASCII ident code points (>= U+0080), and Gecko's (engines'
 //! code points, and after whitespace in an unquoted url the next code point is consumed before the bad-url remnants, as
 //! Servo cssparser 0.38 `consume_url_end` does).
@@ -32,6 +36,8 @@ pub struct RefUrl {
     pub at: usize,
     pub kind: UrlKind,
     pub value: String,
+    /// The URL of an `@import` (a style sheet).
+    pub import: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -431,6 +437,8 @@ const URL_FUNCTIONS: &[&str] = &[
     "image",
     "cross-fade",
     "-webkit-cross-fade",
+    "filter",
+    "-webkit-filter",
 ];
 
 const VALUE_FUNCTIONS: &[&str] = &[
@@ -458,6 +466,23 @@ const VALUE_FUNCTIONS: &[&str] = &[
     "-webkit-repeating-linear-gradient",
     "-webkit-repeating-radial-gradient",
     "-webkit-gradient",
+    "-moz-linear-gradient",
+    "-moz-radial-gradient",
+    "-moz-repeating-linear-gradient",
+    "-moz-repeating-radial-gradient",
+    "filter",
+    "-webkit-filter",
+    "blur",
+    "brightness",
+    "contrast",
+    "drop-shadow",
+    "grayscale",
+    "hue-rotate",
+    "invert",
+    "opacity",
+    "saturate",
+    "sepia",
+    "alpha",
     "color-stop",
     "from",
     "to",
@@ -504,30 +529,59 @@ struct Walk<'a> {
     out: Vec<RefUrl>,
 }
 
+/// What the previous significant item set up: `@import` (its URL is a style sheet), `@namespace` and its optional prefix
+/// (their URL is a namespace name, never loaded).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum After {
+    Nothing,
+    Import,
+    Namespace,
+    NamespacePrefix,
+}
+
 impl Walk<'_> {
     /// `string_url`: the nearest enclosing function is a URL function; `in_url`: some enclosing function is;
-    /// `computed`: inside a function already reported as computed.
-    fn items(&mut self, items: &[Cv], string_url: bool, in_url: bool, computed: bool) {
-        let mut import = false;
+    /// `computed`: inside a function already reported as computed; `mark`: the URL function was opened right after
+    /// `@import` or `@namespace`.
+    fn items(&mut self, items: &[Cv], string_url: bool, in_url: bool, computed: bool, mark: After) {
+        let mut after = After::Nothing;
         for item in items {
-            let was_import = std::mem::replace(&mut import, false);
+            let was = std::mem::replace(&mut after, After::Nothing);
+            let namespace = matches!(was, After::Namespace | After::NamespacePrefix);
+            let import = was == After::Import || (string_url && mark == After::Import);
+            let skip_strings =
+                string_url && matches!(mark, After::Namespace | After::NamespacePrefix);
             match item {
-                Cv::Token(T::Ws) => import = was_import,
-                Cv::Token(T::AtKeyword(name)) => import = name.eq_ignore_ascii_case("import"),
+                Cv::Token(T::Ws) => after = was,
+                Cv::Token(T::AtKeyword(name)) if name.eq_ignore_ascii_case("import") => {
+                    after = After::Import
+                }
+                Cv::Token(T::AtKeyword(name)) if name.eq_ignore_ascii_case("namespace") => {
+                    after = After::Namespace
+                }
+                Cv::Token(T::Ident) if was == After::Namespace => after = After::NamespacePrefix,
+                Cv::Token(T::Url { .. } | T::BadUrl { .. } | T::Str { .. } | T::BadStr { .. })
+                    if namespace => {}
                 Cv::Token(T::Url { value, at }) if !value.is_empty() => {
-                    self.push(*at, UrlKind::Url, value)
+                    self.push(*at, UrlKind::Url, value, was == After::Import)
                 }
-                Cv::Token(T::BadUrl { partial, at }) => self.push(*at, UrlKind::Bad, partial),
+                Cv::Token(T::BadUrl { partial, at }) => {
+                    self.push(*at, UrlKind::Bad, partial, was == After::Import)
+                }
                 Cv::Token(T::Str { value, at })
-                    if (string_url || was_import) && !value.is_empty() =>
+                    if (string_url || was == After::Import)
+                        && !skip_strings
+                        && !value.is_empty() =>
                 {
-                    self.push(*at, UrlKind::Url, value)
+                    self.push(*at, UrlKind::Url, value, import)
                 }
-                Cv::Token(T::BadStr { partial, at }) if string_url || was_import => {
-                    self.push(*at, UrlKind::Bad, partial)
+                Cv::Token(T::BadStr { partial, at })
+                    if (string_url || was == After::Import) && !skip_strings =>
+                {
+                    self.push(*at, UrlKind::Bad, partial, import)
                 }
                 Cv::Token(_) => {}
-                Cv::Block(inner) => self.items(inner, string_url, in_url, computed),
+                Cv::Block(inner) => self.items(inner, string_url, in_url, computed, mark),
                 Cv::Function {
                     name,
                     at,
@@ -538,20 +592,26 @@ impl Walk<'_> {
                     let mut now_computed = computed;
                     if in_url && !computed && !VALUE_FUNCTIONS.contains(&lower.as_str()) {
                         let text = self.src[*at..*end].to_owned();
-                        self.push(*at, UrlKind::Computed, &text);
+                        self.push(*at, UrlKind::Computed, &text, false);
                         now_computed = true;
                     }
                     let is_url = URL_FUNCTIONS.contains(&lower.as_str());
-                    self.items(inner, is_url, in_url || is_url, now_computed);
+                    let inner_mark = if matches!(lower.as_str(), "url" | "src") {
+                        was
+                    } else {
+                        After::Nothing
+                    };
+                    self.items(inner, is_url, in_url || is_url, now_computed, inner_mark);
                 }
             }
         }
     }
-    fn push(&mut self, at: usize, kind: UrlKind, value: &str) {
+    fn push(&mut self, at: usize, kind: UrlKind, value: &str, import: bool) {
         self.out.push(RefUrl {
             at,
             kind,
             value: value.to_owned(),
+            import,
         });
     }
 }
@@ -569,16 +629,403 @@ fn read(src: &str, reading: Reading) -> Vec<RefUrl> {
         src,
         out: Vec::new(),
     };
-    walk.items(&items, false, false, false);
+    walk.items(&items, false, false, false, After::Nothing);
     walk.out
 }
 
-/// The URLs in `src` under all three readings (union, always all three), ordered by source offset.
+/// The URLs in `src` under all three readings (union, always all three), ordered by source offset; each URL that is a
+/// `data:` URL whose payload the gate reads as CSS is followed by the URLs of that payload (recursively).
 pub fn urls(src: &str) -> Vec<RefUrl> {
     let set: BTreeSet<RefUrl> = read(src, Reading::Spec)
         .into_iter()
         .chain(read(src, Reading::Engines))
         .chain(read(src, Reading::Gecko))
         .collect();
-    set.into_iter().collect()
+    let mut out = Vec::new();
+    for r in set {
+        let nested = if r.kind == UrlKind::Url {
+            data_payload_css(&r.value, r.import)
+        } else {
+            None
+        };
+        out.push(r);
+        if let Some(css) = nested {
+            out.extend(urls(&css));
+        }
+    }
+    out
+}
+
+// ----- data: URLs (a second reading of Fetch's data: URL processor, written separately from the crate's `datauri`) ----
+
+/// The CSS text the gate scans for a `data:` URL found in CSS (`import`: the URL of an `@import`), or `None`.
+fn data_payload_css(url: &str, import: bool) -> Option<String> {
+    // URL parser: strip C0 controls and spaces at both ends, drop tab/LF/CR everywhere, cut the fragment.
+    let chars: Vec<char> = url
+        .trim_matches(|c: char| (c as u32) <= 0x20)
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .take_while(|c| *c != '#')
+        .collect();
+    if chars.len() < 5
+        || !chars[..5]
+            .iter()
+            .zip("data:".chars())
+            .all(|(a, b)| a.to_ascii_lowercase() == b)
+    {
+        return None;
+    }
+    let rest = &chars[5..];
+    let comma = rest.iter().position(|c| *c == ',')?;
+    // The serialized MIME part: percent-encode what the opaque path / query states encode.
+    let mut mime = String::new();
+    let mut in_query = false;
+    for (k, &c) in rest[..comma].iter().enumerate() {
+        if c == '?' && !in_query {
+            in_query = true;
+            mime.push(c);
+            continue;
+        }
+        let next = rest.get(k + 1).copied();
+        let encode = (c as u32) < 0x20
+            || (c as u32) > 0x7e
+            || (in_query && matches!(c, ' ' | '"' | '<' | '>'))
+            || (!in_query && c == ' ' && matches!(next, Some('?')));
+        if encode {
+            let mut buf = [0u8; 4];
+            for byte in c.encode_utf8(&mut buf).bytes() {
+                mime.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            mime.push(c);
+        }
+    }
+    let mut mime = mime
+        .trim_matches(|c: char| c.is_ascii_whitespace())
+        .to_owned();
+    let lower = mime.to_ascii_lowercase();
+    let mut base64 = false;
+    if lower.ends_with("base64") {
+        let before = lower[..lower.len() - 6].trim_end_matches(' ');
+        if before.ends_with(';') {
+            base64 = true;
+            mime.truncate(before.len() - 1);
+        }
+    }
+    if mime.starts_with(';') {
+        mime.insert_str(0, "text/plain");
+    }
+    let (essence, charset) = mime_essence(&mime);
+    let inert = inert_type(&essence);
+    if !(essence == "text/css" || (import && inert)) {
+        return None;
+    }
+    // Body: percent-decode the UTF-8 bytes, then forgiving-base64.
+    let raw: String = rest[comma + 1..].iter().collect();
+    let bytes = raw.as_bytes();
+    let mut body = Vec::new();
+    let mut k = 0;
+    while k < bytes.len() {
+        let hexpair = (bytes[k] == b'%')
+            .then(|| bytes.get(k + 1..k + 3))
+            .flatten()
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()))
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hexpair {
+            Some(v) => {
+                body.push(v);
+                k += 3;
+            }
+            None => {
+                body.push(bytes[k]);
+                k += 1;
+            }
+        }
+    }
+    if base64 {
+        body = base64_decode(&body)?;
+    }
+    decode_css(&body, charset.as_deref())
+}
+
+/// MIME Sniffing "parse a MIME type": (essence, charset); failure is text/plain;charset=US-ASCII.
+fn mime_essence(input: &str) -> (String, Option<String>) {
+    let token = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c))
+    };
+    let http_ws = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r');
+    let input = input.trim_matches(http_ws);
+    let fallback = || ("text/plain".to_owned(), Some("US-ASCII".to_owned()));
+    let Some(slash) = input.find('/') else {
+        return fallback();
+    };
+    let ty = &input[..slash];
+    let after = &input[slash + 1..];
+    let semi = after.find(';').unwrap_or(after.len());
+    let sub = after[..semi].trim_end_matches(http_ws);
+    if !token(ty) || !token(sub) {
+        return fallback();
+    }
+    let essence = format!("{}/{}", ty.to_ascii_lowercase(), sub.to_ascii_lowercase());
+    // Parameters, one at a time.
+    let p: Vec<char> = after[semi..].chars().collect();
+    let mut i = 0;
+    let mut charset = None;
+    while i < p.len() {
+        i += 1; // the ';'
+        while i < p.len() && http_ws(p[i]) {
+            i += 1;
+        }
+        let name_start = i;
+        while i < p.len() && p[i] != ';' && p[i] != '=' {
+            i += 1;
+        }
+        let name: String = p[name_start..i]
+            .iter()
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if i < p.len() && p[i] == ';' {
+            continue;
+        }
+        if i >= p.len() {
+            break;
+        }
+        i += 1; // the '='
+        if i >= p.len() {
+            break;
+        }
+        let value: String = if p[i] == '"' {
+            i += 1;
+            let mut v = String::new();
+            while i < p.len() {
+                let c = p[i];
+                i += 1;
+                if c == '"' {
+                    break;
+                }
+                if c == '\\' {
+                    if i < p.len() {
+                        v.push(p[i]);
+                        i += 1;
+                    } else {
+                        v.push('\\');
+                    }
+                } else {
+                    v.push(c);
+                }
+            }
+            while i < p.len() && p[i] != ';' {
+                i += 1;
+            }
+            v
+        } else {
+            let start = i;
+            while i < p.len() && p[i] != ';' {
+                i += 1;
+            }
+            let v: String = p[start..i].iter().collect();
+            let v = v.trim_end_matches(http_ws).to_owned();
+            if v.is_empty() {
+                continue;
+            }
+            v
+        };
+        let quoted_ok = value
+            .chars()
+            .all(|c| c == '\t' || (' '..='~').contains(&c) || ('\u{80}'..='\u{ff}').contains(&c));
+        if name == "charset" && charset.is_none() && quoted_ok {
+            charset = Some(value);
+        }
+    }
+    (essence, charset)
+}
+
+fn inert_type(essence: &str) -> bool {
+    let (ty, sub) = essence.split_once('/').unwrap_or((essence, ""));
+    match (ty, sub) {
+        (_, s) if s.ends_with("+xml") => false,
+        ("image", _) | ("font", _) => true,
+        ("audio" | "video", s) => !s.contains("mpegurl"),
+        ("text", "plain") => true,
+        ("application", s) => {
+            ["octet-stream", "ogg", "vnd.ms-fontobject"].contains(&s)
+                || s.starts_with("font-")
+                || s.starts_with("x-font-")
+        }
+        _ => false,
+    }
+}
+
+/// Infra forgiving-base64 decode.
+fn base64_decode(data: &[u8]) -> Option<Vec<u8>> {
+    let mut d: Vec<u8> = data
+        .iter()
+        .copied()
+        .filter(|b| !b" \t\n\r\x0c".contains(b))
+        .collect();
+    if d.len().is_multiple_of(4) {
+        for _ in 0..2 {
+            if d.last() == Some(&b'=') {
+                d.pop();
+            }
+        }
+    }
+    if d.len() % 4 == 1 {
+        return None;
+    }
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut bits: u64 = 0;
+    let mut n = 0;
+    let mut out = Vec::new();
+    for b in d {
+        let v = alphabet.iter().position(|a| *a == b)? as u64;
+        bits = (bits << 6) | v;
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+            bits &= (1 << n) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// CSS Syntax 3 3.2 + Encoding Standard decode for the labels the gate supports; `None` = refused.
+fn decode_css(bytes: &[u8], charset: Option<&str>) -> Option<String> {
+    #[derive(PartialEq)]
+    enum E {
+        Utf8,
+        Be,
+        Le,
+        W1252,
+        Repl,
+    }
+    let label = |l: &str| -> Option<E> {
+        let l = l
+            .trim_matches(|c: char| c.is_ascii_whitespace())
+            .to_ascii_lowercase();
+        let any = |list: &[&str]| list.contains(&l.as_str());
+        if any(&[
+            "unicode-1-1-utf-8",
+            "unicode11utf8",
+            "unicode20utf8",
+            "utf-8",
+            "utf8",
+            "x-unicode20utf8",
+        ]) {
+            Some(E::Utf8)
+        } else if any(&["unicodefffe", "utf-16be"]) {
+            Some(E::Be)
+        } else if any(&[
+            "csunicode",
+            "iso-10646-ucs-2",
+            "ucs-2",
+            "unicode",
+            "unicodefeff",
+            "utf-16",
+            "utf-16le",
+        ]) {
+            Some(E::Le)
+        } else if any(&[
+            "ansi_x3.4-1968",
+            "ascii",
+            "cp1252",
+            "cp819",
+            "csisolatin1",
+            "ibm819",
+            "iso-8859-1",
+            "iso-ir-100",
+            "iso8859-1",
+            "iso88591",
+            "iso_8859-1",
+            "iso_8859-1:1987",
+            "l1",
+            "latin1",
+            "us-ascii",
+            "windows-1252",
+            "x-cp1252",
+        ]) {
+            Some(E::W1252)
+        } else if any(&[
+            "csiso2022kr",
+            "hz-gb-2312",
+            "iso-2022-cn",
+            "iso-2022-cn-ext",
+            "iso-2022-kr",
+            "replacement",
+        ]) {
+            Some(E::Repl)
+        } else {
+            None
+        }
+    };
+    let (enc, body) = if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        (E::Utf8, &bytes[3..])
+    } else if bytes.starts_with(&[0xfe, 0xff]) {
+        (E::Be, &bytes[2..])
+    } else if bytes.starts_with(&[0xff, 0xfe]) {
+        (E::Le, &bytes[2..])
+    } else if let Some(c) = charset {
+        (label(c)?, bytes)
+    } else if let Some(rest) = bytes.strip_prefix(b"@charset \"") {
+        match rest.iter().position(|b| *b == b'"') {
+            Some(q) if q + 12 <= 1024 && rest.get(q + 1) == Some(&b';') && rest[..q].is_ascii() => {
+                match label(std::str::from_utf8(&rest[..q]).ok()?)? {
+                    E::Be | E::Le => (E::Utf8, bytes),
+                    e => (e, bytes),
+                }
+            }
+            _ => (E::Utf8, bytes),
+        }
+    } else {
+        (E::Utf8, bytes)
+    };
+    Some(match enc {
+        E::Utf8 => String::from_utf8_lossy(body).into_owned(),
+        E::Be | E::Le => {
+            let units: Vec<u16> = body
+                .chunks_exact(2)
+                .map(|c| {
+                    if enc == E::Be {
+                        u16::from_be_bytes([c[0], c[1]])
+                    } else {
+                        u16::from_le_bytes([c[0], c[1]])
+                    }
+                })
+                .collect();
+            let lone_surrogate = units.last().is_some_and(|u| (0xd800..0xdc00).contains(u));
+            let mut s: String = char::decode_utf16(units)
+                .map(|r| r.unwrap_or('\u{fffd}'))
+                .collect();
+            if body.len() % 2 == 1 && !lone_surrogate {
+                s.push('\u{fffd}');
+            }
+            s
+        }
+        E::W1252 => body
+            .iter()
+            .map(|&b| match b {
+                0x80..=0x9f => char::from_u32(
+                    [
+                        0x20AC, 0x81, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021, 0x2C6, 0x2030,
+                        0x160, 0x2039, 0x152, 0x8D, 0x17D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C,
+                        0x201D, 0x2022, 0x2013, 0x2014, 0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0x9D,
+                        0x17E, 0x178,
+                    ][usize::from(b - 0x80)],
+                )
+                .unwrap_or('\u{fffd}'),
+                b => char::from(b),
+            })
+            .collect(),
+        E::Repl => {
+            if body.is_empty() {
+                String::new()
+            } else {
+                "\u{fffd}".to_owned()
+            }
+        }
+    })
 }

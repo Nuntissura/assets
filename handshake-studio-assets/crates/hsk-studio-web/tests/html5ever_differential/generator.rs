@@ -43,9 +43,10 @@ pub enum Theme {
     /// markup that exercises the tokenizer's error paths.
     Fuzz,
     /// Hostile CSS in every carrier the asset gate reads (style attributes on HTML and SVG elements, HTML and SVG style
-    /// bodies, SVG presentation attributes): number/dot/exponent prefixes, escapes, comments, quotes, CDO/CDC, non-ASCII
-    /// code points, CR/FF/CR LF, character references, URL functions, image-set/src/image strings, @import and
-    /// substitution functions. Compared by the gate-level `css-urls` check.
+    /// bodies, SVG presentation attributes, SVG animation values of CSS and non-CSS targets): number/dot/exponent
+    /// prefixes, escapes, comments, quotes, CDO/CDC, non-ASCII code points, CR/FF/CR LF, character references, URL
+    /// functions, image-set/src/image/filter strings, @import, @namespace, substitution functions and `data:` payloads
+    /// (CSS, base64, UTF-16, quirks-mode types, nested, documents). Compared by the gate-level `css-urls` check.
     Css,
 }
 
@@ -143,6 +144,13 @@ const CSS_FUNCTIONS: &[&str] = &[
     "@IMPORT",
     "@\\69mport ",
     "@media ",
+    // R11: filter() strings are URLs; -moz- gradients and filter functions compute none; @namespace URLs load nothing.
+    "filter(",
+    "-webkit-filter(",
+    "-moz-linear-gradient(",
+    "blur(",
+    "@namespace ",
+    "@NAMESPACE svg ",
 ];
 const CSS_URLS: &[&str] = &[
     "https://e.invalid/a.png",
@@ -158,8 +166,37 @@ const CSS_URLS: &[&str] = &[
     "data:x",
     "#frag",
     "d e",
+    // data: payloads (R11-P1): CSS scanned recursively, quirks-mode style sheet types, documents denied.
+    "'data:text/css,@import \"//e.invalid/dc.css\";'",
+    "\"data:text/css,a{b:url(//e.invalid/dd)}\"",
+    "data:text/css,%40import%20'//e.invalid/pc'",
+    "'data:text/css;base64,QGltcG9ydCAnLy9lLmludmFsaWQvYic7'",
+    "\"data:text/css;charset=utf-16le;base64,QABpAG0AcABvAHIAdAAgAHUAcgBsACgALwAvAGUALgBpAG4AdgBhAGwAaQBkAC8AdwApADsA\"",
+    "\"data:text/plain,@import '//e.invalid/p';\"",
+    "\"data:,@import url(//e.invalid/u)\"",
+    "'DATA:TEXT/CSS ,@IMPORT url(x.css)'",
+    "\"data:text/css,@import 'data:text/css,@import url(//e.invalid/n2)';\"",
+    "'data:text/html,<b>x</b>'",
+    "'data:image/svg+xml,<svg/>'",
+    "\"data:text/css;charset=shift_jis,a\"",
 ];
 const CSS_SPACE: &[&str] = &[" ", "  ", "\n", "\t"];
+/// `attributeName` values of the SVG animation carrier: CSS targets of the carrier inventory (incl. the `marker`
+/// shorthand, case and whitespace variants) and targets that are not CSS (compared as non-carriers).
+const ANIMATED: &[&str] = &[
+    "fill",
+    "mask",
+    "marker",
+    "MARKER",
+    "marker-end",
+    "background-image",
+    "clip-path",
+    "filter",
+    " stroke ",
+    "style",
+    "width",
+    "href",
+];
 const PRESENTATION: &[&str] = &[
     "fill",
     "stroke",
@@ -447,10 +484,25 @@ impl Generator {
         for _ in 0..(1 + self.rng.below(3)) {
             let css = self.css_text();
             let attr = css.replace('"', "&quot;");
-            match self.rng.below(7) {
+            match self.rng.below(9) {
                 0 | 1 => {
                     let tag = *self.rng.pick(&["div", "span", "b", "em", "section"]);
                     out.push_str(&format!("<{tag} style=\"{attr}\">x</{tag}>"));
+                }
+                // R11-F1/F2: SVG animation values (split on `;` by the engines) for CSS and non-CSS targets.
+                7 | 8 => {
+                    let target = *self.rng.pick(ANIMATED);
+                    let el =
+                        *self
+                            .rng
+                            .pick(&["animate", "set", "animateMotion", "animateTransform"]);
+                    let which = *self
+                        .rng
+                        .pick(&["values", "values", "values", "to", "from", "by"]);
+                    let second = self.css_text().replace('"', "&quot;");
+                    out.push_str(&format!(
+                        "<svg><rect><{el} attributeName=\"{target}\" {which}=\"{attr};{second}\"/></rect></svg>"
+                    ));
                 }
                 2 => out.push_str(&format!("<style>{css}</style>")),
                 3 => out.push_str(&format!(

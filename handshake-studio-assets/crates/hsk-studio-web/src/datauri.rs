@@ -94,15 +94,17 @@ fn serialized_header(raw: &str) -> String {
     let mut query = false;
     let mut it = raw.chars().filter(|c| !is_url_ws(*c)).peekable();
     while let Some(c) = it.next() {
+        // C0 control percent-encode set: C0 controls and every code point above U+007E.
+        let c0_set = !(' '..='~').contains(&c);
         let encode = if query {
-            c < ' ' || c > '~' || matches!(c, ' ' | '"' | '#' | '<' | '>')
+            c0_set || matches!(c, ' ' | '"' | '#' | '<' | '>')
         } else if c == '?' {
             query = true;
             false
         } else if c == ' ' {
             it.peek().is_some_and(|n| matches!(n, '?' | '#'))
         } else {
-            c < ' ' || c > '~'
+            c0_set
         };
         if encode {
             let mut buf = [0u8; 4];
@@ -485,14 +487,16 @@ pub(crate) fn css_text(bytes: &[u8], charset: Option<&str>) -> Option<String> {
     Some(decode(bytes, fallback))
 }
 
-/// Types that load nothing further in a document, resource, media, track or CSS-value carrier.
+/// Types that load nothing further in a document, resource, media, track or CSS-value carrier. Every XML type (`+xml`)
+/// can be an XML document (with XHTML, SVG or style sheet processing instructions): never inert.
 fn inert(essence: &str) -> bool {
     let (ty, sub) = essence.split_once('/').unwrap_or((essence, ""));
-    let xml = sub.ends_with("+xml");
+    if sub.ends_with("+xml") {
+        return false;
+    }
     match ty {
-        "image" => !xml,
-        "audio" | "video" => !xml && !sub.contains("mpegurl"),
-        "font" => true,
+        "image" | "font" => true,
+        "audio" | "video" => !sub.contains("mpegurl"),
         "text" => sub == "plain",
         "application" => {
             matches!(sub, "octet-stream" | "ogg" | "vnd.ms-fontobject")
