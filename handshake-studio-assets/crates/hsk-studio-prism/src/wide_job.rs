@@ -368,6 +368,13 @@ impl WideJob<'_> {
     /// Convert band `band`: `pixels` holds exactly its pixels (input channels each) and `out` receives them
     /// (output channels each). Thread-safe; each band converts at most once (`BandClaimed` afterwards, even
     /// after a failure). Index and length refusals do not claim the band.
+    ///
+    /// What a failed call leaves in `out` (src/wide_job/tests.rs): the whole band is input-checked before the first
+    /// chunk, so `ChannelRange` and `NonfiniteChannel` write nothing. The band then converts chunk by chunk
+    /// (`ADMITTED_CHUNK_PIXELS` pixels each), reading the token at every chunk edge: `Canceled` leaves exactly the
+    /// chunks converted before that edge (none when canceled before the first chunk, all of them when the cancel
+    /// lands after the last) and writes nothing after it; `NonfiniteOutput` leaves the chunks up to and including
+    /// the failing one. The band stays claimed in every case: convert it again on a new job, never on this one.
     pub fn convert_band(
         &self,
         band: usize,
@@ -409,6 +416,11 @@ impl WideJob<'_> {
 
     /// `convert_band` writing the output over the input (`ChannelCount` unless input and output channel counts
     /// are equal). Each pixel is copied to the stack before it is overwritten: same arithmetic, same bits.
+    ///
+    /// A failed call leaves the caller's INPUT partly overwritten: after `Canceled` (or `NonfiniteOutput`) `buffer`
+    /// is the converted chunks followed by the untouched original pixels, exactly as `convert_band` describes for
+    /// `out`; input-check refusals change nothing. Never convert that buffer again (the converted prefix would be
+    /// converted twice): restore the band's source pixels from a copy you hold, then use a new job.
     pub fn convert_band_in_place(
         &self,
         band: usize,
