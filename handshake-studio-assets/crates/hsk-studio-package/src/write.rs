@@ -15,7 +15,11 @@ use crate::{
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{ContentDigest, Payload, Snapshot, StudioDocument};
 use ruzstd::encoding::{CompressionLevel, compress_to_vec};
-use std::{borrow::Cow, collections::BTreeMap, io::Write};
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    io::{Read, Write},
+};
 
 /// Caller-granted asset byte provider. The package never owns a catalog or a second CAS: bytes
 /// are streamed from whichever resolver the caller grants (ArtifactService port in the host,
@@ -23,6 +27,29 @@ use std::{borrow::Cow, collections::BTreeMap, io::Write};
 pub trait AssetSource {
     /// Returns the bytes for `digest`, at most `max` bytes.
     fn read(&self, digest: &ContentDigest, max: u64) -> Result<Vec<u8>, AssetError>;
+}
+
+/// One asset opened for streaming: its exact byte length and a reader over its bytes.
+///
+/// The length is a declaration the writer holds the reader to: a stream that yields more or fewer
+/// bytes fails with `length_mismatch`, and the bytes must hash to the requested SHA-256 digest
+/// (`hash_mismatch` otherwise). Nothing is trusted from the provider.
+pub struct AssetReader<'a> {
+    /// Exact number of bytes `reader` yields.
+    pub len: u64,
+    pub reader: Box<dyn Read + 'a>,
+}
+
+/// Streaming counterpart of [`AssetSource`] for [`crate::write_package_streaming`] and
+/// [`crate::save_atomic_streaming`]: bytes are pulled through a bounded reader instead of being
+/// returned as one buffer, so a raw blob is never resident in the writer.
+///
+/// `open` may be called more than once for the same digest (a codec-compressed blob is read once
+/// to plan the manifest and once to write it); every call must yield the same bytes. The writer
+/// has one reader open at a time.
+pub trait AssetStream {
+    /// Opens `digest` for reading; `max` is the largest stored entry the writer will accept.
+    fn open(&self, digest: &ContentDigest, max: u64) -> Result<AssetReader<'_>, AssetError>;
 }
 
 /// Scoped in-memory resolver input for standalone fixtures.
@@ -75,6 +102,22 @@ impl AssetSource for MemoryAssetSource {
     }
 }
 
+impl AssetStream for MemoryAssetSource {
+    fn open(&self, digest: &ContentDigest, max: u64) -> Result<AssetReader<'_>, AssetError> {
+        if digest.algorithm != "sha256" {
+            return Err(AssetError::Absent);
+        }
+        match self.blobs.get(&digest.digest) {
+            None => Err(AssetError::Absent),
+            Some(b) if b.len() as u64 > max => Err(AssetError::TooLarge),
+            Some(b) => Ok(AssetReader {
+                len: b.len() as u64,
+                reader: Box::new(b.as_slice()),
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WriteOptions {
     pub zip64: Zip64Policy,
@@ -121,11 +164,11 @@ impl<'a> Part<'a> {
     }
 }
 
-struct Encoded {
-    codec: Codec,
-    raw_len: Option<u64>,
-    elem_size: Option<u8>,
-    stored: Vec<u8>,
+pub(crate) struct Encoded {
+    pub(crate) codec: Codec,
+    pub(crate) raw_len: Option<u64>,
+    pub(crate) elem_size: Option<u8>,
+    pub(crate) stored: Vec<u8>,
 }
 
 /// Element size implied by a tile format name such as `rgb_f32le` / `coverage_u16le`.
@@ -140,7 +183,7 @@ fn element_size_for_format(format: &str) -> Option<u8> {
 
 /// Element size per content digest; `None` when tiles sharing a digest disagree or the format
 /// has no known element size.
-fn tile_elem_sizes(doc: &StudioDocument) -> BTreeMap<String, Option<u8>> {
+pub(crate) fn tile_elem_sizes(doc: &StudioDocument) -> BTreeMap<String, Option<u8>> {
     let mut sizes: BTreeMap<String, Option<u8>> = BTreeMap::new();
     for layer in &doc.layers {
         if let Payload::Raster { tiles } = &layer.payload {
@@ -161,7 +204,7 @@ fn tile_elem_sizes(doc: &StudioDocument) -> BTreeMap<String, Option<u8>> {
 }
 
 /// Smallest of raw / zstd / shuffle+zstd for `bytes` (ties keep the simpler codec).
-fn encode_blob(
+pub(crate) fn encode_blob(
     requested: Codec,
     elem: Option<u8>,
     bytes: Vec<u8>,

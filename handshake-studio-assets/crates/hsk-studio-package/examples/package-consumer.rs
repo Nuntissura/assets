@@ -3,9 +3,9 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, ContentDigest, Inspection, Unresolved, inspect_bytes};
 use hsk_studio_package::{
-    AssetError, AssetSource, Codec, DESCRIPTOR, Extras, Limits, LossReason, PixelFormat,
-    PreviewImage, PreviewInfo, WriteOptions, read_package_stream, save_atomic, sweep_stale_temps,
-    write_package_with,
+    AssetError, AssetReader, AssetSource, AssetStream, Codec, DESCRIPTOR, Extras, Limits,
+    LossReason, PixelFormat, PreviewImage, PreviewInfo, StreamSave, WriteOptions,
+    read_package_stream, save_atomic, save_atomic_streaming, sweep_stale_temps, write_package_with,
 };
 use std::{
     env,
@@ -38,6 +38,24 @@ impl AssetSource for DirAssets {
             return Err(AssetError::TooLarge);
         }
         Ok(bytes)
+    }
+}
+
+impl AssetStream for DirAssets {
+    fn open(&self, digest: &ContentDigest, max: u64) -> Result<AssetReader<'_>, AssetError> {
+        let hex = &digest.digest;
+        if digest.algorithm != "sha256"
+            || hex.len() != 64
+            || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(AssetError::Absent);
+        }
+        let file = File::open(self.0.join(hex)).map_err(|_| AssetError::Absent)?;
+        let len = file.metadata().map_err(|_| AssetError::Absent)?.len();
+        if len > max {
+            return Err(AssetError::TooLarge);
+        }
+        Ok(AssetReader { len, reader: Box::new(file) })
     }
 }
 
@@ -93,12 +111,14 @@ fn run() -> Result<(), String> {
             let mut assets = PathBuf::new();
             let mut options = WriteOptions::default();
             let mut previews: Vec<PreviewImage> = Vec::new();
+            let mut stream = false;
             let mut flags = rest.iter();
             while let Some(flag) = flags.next() {
                 match *flag {
                     "--assets" => assets = PathBuf::from(flags.next().ok_or("missing --assets value")?),
                     "--zstd" => options.asset_codec = Codec::Zstd,
                     "--shuffle" => options.asset_codec = Codec::ShuffleZstd,
+                    "--stream" => stream = true,
                     "--preview" => {
                         let mut next = || flags.next().ok_or("missing --preview value");
                         let (file, format, size, color) = (next()?, next()?, next()?, next()?);
@@ -114,6 +134,17 @@ fn run() -> Result<(), String> {
                 Inspection::Editable(s) => s,
                 Inspection::ReadOnly(_) => return Err("document is read-only".into()),
             };
+            let receipt = if stream {
+                let dir_assets = DirAssets(assets);
+                let save = StreamSave {
+                    doc: &snapshot,
+                    assets: &dir_assets,
+                    extras: Extras { quarantined: &[], previews: &previews },
+                    options,
+                };
+                save_atomic_streaming(Path::new(out), &save, &limits, &token)
+                    .map_err(|e| e.code().to_owned())?
+            } else {
             let mut package = Vec::new();
             let receipt = write_package_with(
                 &snapshot,
@@ -129,6 +160,8 @@ fn run() -> Result<(), String> {
             )
                 .map_err(|e| e.code().to_owned())?;
             save_atomic(Path::new(out), &package, &limits, &token).map_err(|e| e.code().to_owned())?;
+            receipt
+            };
             println!(
                 "{}",
                 summary_json(&[
@@ -178,7 +211,7 @@ fn run() -> Result<(), String> {
             );
             Ok(())
         }
-        _ => Err("usage: --descriptor | --write DOC.json OUT.handshake [--assets DIR] [--zstd|--shuffle] [--preview PIXELS FORMAT WxH COLOR] | --read IN.handshake | --sweep TARGET".into()),
+        _ => Err("usage: --descriptor | --write DOC.json OUT.handshake [--assets DIR] [--zstd|--shuffle] [--stream] [--preview PIXELS FORMAT WxH COLOR] | --read IN.handshake | --sweep TARGET".into()),
     }
 }
 

@@ -27,6 +27,8 @@ const FLAG_UTF8: u16 = 0x0800;
 const DOS_DATE: u16 = 0x0021;
 const EXTRA_ZIP64: u16 = 0x0001;
 const LOCAL_FIXED: usize = 30;
+/// Offset of the CRC-32 field inside a local header (patched after a streamed entry's body).
+const LOCAL_CRC_OFFSET: u64 = 14;
 const CD_FIXED: usize = 46;
 const EOCD_LEN: usize = 22;
 const EOCD64_LEN: usize = 56;
@@ -163,6 +165,16 @@ pub(crate) struct WriteStats {
     pub zip64: bool,
 }
 
+/// Entry whose body is being streamed: the local header is already written with a zero CRC,
+/// which `end_streamed` patches once the body is complete.
+struct OpenEntry {
+    name: String,
+    size: u64,
+    offset: u64,
+    written: u64,
+    hasher: crc32fast::Hasher,
+}
+
 pub(crate) struct ZipWriter<'a, W: Write> {
     out: &'a mut W,
     pos: u64,
@@ -170,6 +182,7 @@ pub(crate) struct ZipWriter<'a, W: Write> {
     limits: Limits,
     policy: Zip64Policy,
     total: u64,
+    open: Option<OpenEntry>,
 }
 
 fn put_u16(buf: &mut Vec<u8>, v: u16) {
@@ -191,6 +204,7 @@ impl<'a, W: Write> ZipWriter<'a, W> {
             limits,
             policy,
             total: 0,
+            open: None,
         }
     }
 
@@ -206,18 +220,12 @@ impl<'a, W: Write> ZipWriter<'a, W> {
         self.policy == Zip64Policy::Always
     }
 
-    pub(crate) fn add(
-        &mut self,
-        name: &str,
-        data: &[u8],
-        cancel: &CancellationToken,
-    ) -> Result<(), PackageError> {
-        check(cancel)?;
+    /// Limit and name checks shared by buffered and streamed entries; accounts the entry.
+    fn admit(&mut self, name: &str, size: u64) -> Result<(), PackageError> {
         if self.records.len() >= self.limits.max_entries as usize {
             return Err(PackageError::TooManyEntries);
         }
         validate_name(name.as_bytes(), self.limits.max_name_len)?;
-        let size = data.len() as u64;
         if size > self.limits.max_entry_bytes {
             return Err(PackageError::EntryTooLarge);
         }
@@ -226,9 +234,12 @@ impl<'a, W: Write> ZipWriter<'a, W> {
             .checked_add(size)
             .filter(|t| *t <= self.limits.max_total_bytes)
             .ok_or(PackageError::TotalTooLarge)?;
-        let crc = crc32(data, cancel)?;
+        Ok(())
+    }
+
+    /// Local file header (and ZIP64 extra when required) for a STORE entry of `size` bytes.
+    fn local_header(&self, name: &str, size: u64, crc: u32) -> Vec<u8> {
         let zip64 = self.always() || size >= u64::from(SENT32);
-        let offset = self.pos;
         let mut header = Vec::with_capacity(LOCAL_FIXED + name.len() + 20);
         put_u32(&mut header, SIG_LOCAL);
         put_u16(&mut header, if zip64 { 45 } else { 20 });
@@ -253,6 +264,24 @@ impl<'a, W: Write> ZipWriter<'a, W> {
             put_u64(&mut header, size); // uncompressed
             put_u64(&mut header, size); // compressed
         }
+        header
+    }
+
+    pub(crate) fn add(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        cancel: &CancellationToken,
+    ) -> Result<(), PackageError> {
+        check(cancel)?;
+        if self.open.is_some() {
+            return Err(malformed("entry_left_open"));
+        }
+        let size = data.len() as u64;
+        self.admit(name, size)?;
+        let crc = crc32(data, cancel)?;
+        let offset = self.pos;
+        let header = self.local_header(name, size, crc);
         self.put(&header)?;
         self.put(data)?;
         self.records.push(Record {
@@ -265,6 +294,9 @@ impl<'a, W: Write> ZipWriter<'a, W> {
     }
 
     pub(crate) fn finish(mut self, cancel: &CancellationToken) -> Result<WriteStats, PackageError> {
+        if self.open.is_some() {
+            return Err(malformed("entry_left_open"));
+        }
         let always = self.always();
         let cd_offset = self.pos;
         let mut cd = Vec::new();
@@ -372,6 +404,75 @@ impl<'a, W: Write> ZipWriter<'a, W> {
             bytes_written: self.pos,
             zip64,
         })
+    }
+}
+
+/// Streamed entries need a seekable sink: the local header is written first (sizes are declared
+/// up front, the CRC is not yet known), the body follows chunk by chunk, and the 4-byte CRC field
+/// is patched in place afterwards. The result is byte-identical to a buffered [`ZipWriter::add`]
+/// and never uses data descriptors, so the canonical-form reader accepts it unchanged.
+impl<W: Write + Seek> ZipWriter<'_, W> {
+    pub(crate) fn begin_streamed(
+        &mut self,
+        name: &str,
+        size: u64,
+        cancel: &CancellationToken,
+    ) -> Result<(), PackageError> {
+        check(cancel)?;
+        if self.open.is_some() {
+            return Err(malformed("entry_left_open"));
+        }
+        self.admit(name, size)?;
+        let offset = self.pos;
+        let header = self.local_header(name, size, 0);
+        self.put(&header)?;
+        self.open = Some(OpenEntry {
+            name: name.to_owned(),
+            size,
+            offset,
+            written: 0,
+            hasher: crc32fast::Hasher::new(),
+        });
+        Ok(())
+    }
+
+    /// Appends body bytes; more than the declared size is a `length_mismatch`.
+    pub(crate) fn write_streamed(&mut self, chunk: &[u8]) -> Result<(), PackageError> {
+        let open = self
+            .open
+            .as_mut()
+            .ok_or_else(|| malformed("no_open_entry"))?;
+        let written = open
+            .written
+            .checked_add(chunk.len() as u64)
+            .filter(|w| *w <= open.size)
+            .ok_or(PackageError::LengthMismatch)?;
+        open.hasher.update(chunk);
+        open.written = written;
+        self.put(chunk)
+    }
+
+    /// Closes the open entry: fewer bytes than declared is a `length_mismatch`; otherwise the CRC
+    /// field of its local header is patched and the entry is recorded for the central directory.
+    pub(crate) fn end_streamed(&mut self) -> Result<(), PackageError> {
+        let open = self.open.take().ok_or_else(|| malformed("no_open_entry"))?;
+        if open.written != open.size {
+            return Err(PackageError::LengthMismatch);
+        }
+        let crc = open.hasher.finalize();
+        let io = |e: std::io::Error| PackageError::Io(e.kind());
+        self.out
+            .seek(SeekFrom::Start(open.offset + LOCAL_CRC_OFFSET))
+            .map_err(io)?;
+        self.out.write_all(&crc.to_le_bytes()).map_err(io)?;
+        self.out.seek(SeekFrom::Start(self.pos)).map_err(io)?;
+        self.records.push(Record {
+            name: open.name,
+            crc,
+            size: open.size,
+            offset: open.offset,
+        });
+        Ok(())
     }
 }
 

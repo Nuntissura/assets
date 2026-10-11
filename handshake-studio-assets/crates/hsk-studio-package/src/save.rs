@@ -8,11 +8,19 @@
 //! lock when the process dies, so [`sweep_stale_temps`] can tell a dead owner (lock free) from a
 //! live one (lock held) without guessing from pids, and it only ever deletes a temp that a valid
 //! marker names, never any other file.
-use crate::{error::PackageError, hashing::check, limits::Limits, read::verify_container};
+use crate::{
+    error::PackageError,
+    hashing::check,
+    limits::Limits,
+    read::{PackageReader, verify_container},
+    stream::write_package_streaming,
+    write::{AssetStream, Extras, WriteOptions, WriteReceipt},
+};
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_folio::Snapshot;
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
-    io::{self, Read, Write},
+    io::{self, BufWriter, Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -34,6 +42,16 @@ pub trait AtomicFs {
     fn replace(&mut self, temp: &Path, target: &Path) -> io::Result<()>;
     /// Best-effort removal of a temp file this save created.
     fn remove(&mut self, temp: &Path);
+}
+
+/// Filesystem steps of a streaming atomic save. Extends [`AtomicFs`], whose `replace` and
+/// `remove` are reused unchanged (rename with backoff, owner marker release).
+pub trait StreamingFs: AtomicFs {
+    /// Creates a fresh temp file beside `target`, opened for writing. The caller writes, syncs and
+    /// closes it, then hands the path back to `replace` or `remove`.
+    fn create_temp(&mut self, target: &Path) -> io::Result<(PathBuf, File)>;
+    /// Opens a temp file this save created for reading (post-write verification).
+    fn open_temp(&mut self, temp: &Path) -> io::Result<File>;
 }
 
 struct Held {
@@ -112,8 +130,10 @@ fn create_marker(marker: &Path, temp_name: &str) -> io::Result<Option<File>> {
     }
 }
 
-impl AtomicFs for StdFs {
-    fn write_temp(&mut self, target: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+impl StdFs {
+    /// Owner-marked `create_new` temp beside `target`; the owner lock is held (registered in
+    /// `held`) until `replace` or `remove`.
+    fn create(&mut self, target: &Path) -> io::Result<(PathBuf, File)> {
         let dir = parent_dir(target);
         let name = target.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "target has no file name")
@@ -130,30 +150,20 @@ impl AtomicFs for StdFs {
                 Err(error) => return Err(error),
             };
             let marker = lock.as_ref().map(|_| marker);
-            let discard = |lock: Option<File>, marker: &Option<PathBuf>| {
-                drop(lock);
-                if let Some(m) = marker {
-                    let _ = fs::remove_file(m);
-                }
-            };
             match OpenOptions::new().write(true).create_new(true).open(&temp) {
-                Ok(mut file) => {
-                    let written = file.write_all(bytes).and_then(|()| file.sync_all());
-                    drop(file);
-                    if let Err(error) = written {
-                        let _ = fs::remove_file(&temp);
-                        discard(lock, &marker);
-                        return Err(error);
-                    }
+                Ok(file) => {
                     self.held.push(Held {
                         temp: temp.clone(),
                         marker,
                         lock,
                     });
-                    return Ok(temp);
+                    return Ok((temp, file));
                 }
                 Err(error) => {
-                    discard(lock, &marker);
+                    drop(lock);
+                    if let Some(m) = &marker {
+                        let _ = fs::remove_file(m);
+                    }
                     if error.kind() == io::ErrorKind::AlreadyExists {
                         continue;
                     }
@@ -165,6 +175,31 @@ impl AtomicFs for StdFs {
             io::ErrorKind::AlreadyExists,
             "temp names exhausted",
         ))
+    }
+}
+
+impl StreamingFs for StdFs {
+    fn create_temp(&mut self, target: &Path) -> io::Result<(PathBuf, File)> {
+        self.create(target)
+    }
+
+    fn open_temp(&mut self, temp: &Path) -> io::Result<File> {
+        File::open(temp)
+    }
+}
+
+impl AtomicFs for StdFs {
+    fn write_temp(&mut self, target: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+        let (temp, mut file) = self.create(target)?;
+        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        match written {
+            Ok(()) => Ok(temp),
+            Err(error) => {
+                self.remove(&temp);
+                Err(error)
+            }
+        }
     }
 
     fn read_back(&mut self, temp: &Path, max: u64) -> io::Result<Vec<u8>> {
@@ -389,4 +424,101 @@ fn publish(
     fs_port
         .replace(temp, target)
         .map_err(|e| PackageError::Io(e.kind()))
+}
+
+/// Write buffer between the streaming writer and the temp file (headers and small entries; large
+/// bodies bypass it in 1 MiB chunks).
+const STREAM_BUFFER: usize = 256 * 1024;
+
+/// Everything a streaming save writes: the document, the asset stream and the optional extras.
+#[derive(Clone, Copy)]
+pub struct StreamSave<'a> {
+    pub doc: &'a Snapshot,
+    pub assets: &'a dyn AssetStream,
+    pub extras: Extras<'a>,
+    pub options: WriteOptions,
+}
+
+/// Streams `save` to `target` with [`StdFs`]: asset bytes flow from the [`AssetStream`] into the
+/// temp file in bounded chunks and are SHA-256 verified on the way, so peak memory does not grow
+/// with asset size. Same crash-safety contract as [`save_atomic`].
+pub fn save_atomic_streaming(
+    target: &Path,
+    save: &StreamSave<'_>,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<WriteReceipt, PackageError> {
+    save_atomic_streaming_with(&mut StdFs::new(), target, save, limits, cancel)
+}
+
+/// Streaming atomic save through an injectable [`StreamingFs`].
+///
+/// Order: cancel check -> create owner-marked temp -> stream the package (digest and length
+/// verified per asset; a mismatch aborts here) -> flush + `sync_all` -> reopen the temp and verify
+/// structure, every CRC-32, the manifest and every entry's SHA-256 -> cancel check -> atomic
+/// replace with backoff. On any failure only the temp (and its marker) is removed and the
+/// last-good destination stays byte-identical.
+pub fn save_atomic_streaming_with(
+    fs_port: &mut dyn StreamingFs,
+    target: &Path,
+    save: &StreamSave<'_>,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<WriteReceipt, PackageError> {
+    check(cancel)?;
+    if target.is_dir() {
+        return Err(PackageError::DestinationInvalid);
+    }
+    let (temp, file) = fs_port
+        .create_temp(target)
+        .map_err(|e| PackageError::Io(e.kind()))?;
+    let outcome = stream_and_publish(fs_port, &temp, file, target, save, limits, cancel);
+    if outcome.is_err() {
+        fs_port.remove(&temp);
+    }
+    outcome
+}
+
+fn stream_and_publish(
+    fs_port: &mut dyn StreamingFs,
+    temp: &Path,
+    file: File,
+    target: &Path,
+    save: &StreamSave<'_>,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<WriteReceipt, PackageError> {
+    let io_kind = |e: io::Error| PackageError::Io(e.kind());
+    let mut out = BufWriter::with_capacity(STREAM_BUFFER, file);
+    let receipt = write_package_streaming(
+        save.doc,
+        save.assets,
+        &save.extras,
+        &save.options,
+        limits,
+        cancel,
+        &mut out,
+    )?;
+    let file = out.into_inner().map_err(|e| io_kind(e.into_error()))?;
+    file.sync_all().map_err(io_kind)?;
+    let length = file.metadata().map_err(io_kind)?.len();
+    drop(file);
+    if length != receipt.bytes_written {
+        return Err(PackageError::ReadbackMismatch);
+    }
+    check(cancel)?;
+    // Read-back: the file is re-verified from disk, not from what the writer believes it wrote.
+    let reader_file = fs_port.open_temp(temp).map_err(io_kind)?;
+    let mut reader = PackageReader::open(reader_file, limits, cancel)?;
+    let manifest = reader.manifest();
+    if manifest.document_id != save.doc.document().document_id
+        || manifest.revision != receipt.doc_revision
+    {
+        return Err(PackageError::ReadbackMismatch);
+    }
+    reader.verify_all(cancel)?;
+    drop(reader);
+    check(cancel)?;
+    fs_port.replace(temp, target).map_err(io_kind)?;
+    Ok(receipt)
 }
