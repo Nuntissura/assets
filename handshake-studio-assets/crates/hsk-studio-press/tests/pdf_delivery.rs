@@ -170,6 +170,7 @@ fn redacted_text_absent_all_reachable_streams() {
     assert!(report.complete && report.layout_shift_possible, "standard font without /Widths: shift honestly reported");
     assert!(out.proof.is_clean(), "{:?}", out.proof);
     assert!(out.is_proven());
+    assert_eq!((out.short_needles, out.residual_in_region), (0, 0));
     assert_eq!(out.proof.xref_sections, 1);
 
     // Independent oracle over ALL bytes: raw + every inflated stream body.

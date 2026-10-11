@@ -216,16 +216,28 @@ pub fn verify_payload_absent(
 pub struct RedactedOutput {
     pub bytes: Vec<u8>,
     pub reports: Vec<RedactionReport>,
+    /// Payload proof over the saved bytes for the distinctive removed strings.
     pub proof: PayloadProof,
+    /// Removed strings shorter than [`MIN_DISTINCTIVE_NEEDLE`] bytes (typical for kerned words
+    /// and subset-font glyph codes). A byte scan cannot prove those absent because they legitimately
+    /// occur elsewhere, so they are NOT part of `proof`; `residual_in_region` covers them.
+    pub short_needles: u32,
+    /// Text strings, annotations and unsupported marks a fresh redaction pass over the SAVED
+    /// bytes still finds in the regions (0 = the saved bytes hold nothing the region test selects).
+    pub residual_in_region: u32,
 }
 
 impl RedactedOutput {
-    /// Every region fully removed (nothing left in `unredacted`) AND the saved bytes pass the
-    /// payload proof for every removed string.
+    /// Every region fully removed (nothing left in `unredacted`), the saved bytes pass the payload
+    /// proof for every distinctive removed string, and a fresh pass over the saved bytes finds
+    /// nothing left in the regions.
     pub fn is_proven(&self) -> bool {
-        self.reports.iter().all(|r| r.complete) && self.proof.is_clean()
+        self.reports.iter().all(|r| r.complete) && self.proof.is_clean() && self.residual_in_region == 0
     }
 }
+
+/// Removed strings at least this long (bytes) are verified by byte scan.
+pub const MIN_DISTINCTIVE_NEEDLE: usize = 6;
 
 /// Redacts every region, full-saves, and verifies the saved bytes against the removed strings.
 /// On error the document is restored to its state before the call.
@@ -242,9 +254,21 @@ pub fn redact_and_save(
             reports.push(doc.redact_region(region, policy, cancel)?);
         }
         let bytes = doc.save_full(cancel)?;
-        let needles: Vec<Vec<u8>> = reports.iter().flat_map(|r| r.removed_text.iter().cloned()).collect();
+        let all: Vec<Vec<u8>> = reports.iter().flat_map(|r| r.removed_text.iter().cloned()).collect();
+        let needles: Vec<Vec<u8>> = all.iter().filter(|n| n.len() >= MIN_DISTINCTIVE_NEEDLE).cloned().collect();
+        let short_needles = (all.len() - needles.len()) as u32;
         let proof = verify_payload_absent(&bytes, &needles, &doc.limits, cancel)?;
-        Ok(RedactedOutput { bytes, reports, proof })
+        // Fresh re-open of the saved bytes: the region test must now select nothing.
+        let mut saved = PdfDoc::open(&bytes, &doc.limits, cancel)?;
+        let mut residual = 0u32;
+        for region in regions {
+            let again = saved.redact_region(region, UnsupportedPolicy::ReportAndContinue, cancel)?;
+            residual = residual
+                .saturating_add(again.text_strings_removed)
+                .saturating_add(again.annotations_removed.len() as u32)
+                .saturating_add(again.unredacted.len() as u32);
+        }
+        Ok(RedactedOutput { bytes, reports, proof, short_needles, residual_in_region: residual })
     })();
     if result.is_err() {
         doc.objects = backup;

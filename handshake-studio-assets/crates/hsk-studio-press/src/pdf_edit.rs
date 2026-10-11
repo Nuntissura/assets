@@ -184,6 +184,11 @@ impl PdfDoc {
         &self.limits
     }
 
+    /// Reference of the trailer `/Info` dictionary, when present.
+    pub fn info_ref(&self) -> Option<ObjRef> {
+        self.trailer.get("Info").and_then(Object::as_ref)
+    }
+
     pub(crate) fn resolve<'a>(&'a self, mut o: &'a Object) -> &'a Object {
         for _ in 0..16 {
             match o {

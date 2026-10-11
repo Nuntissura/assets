@@ -16,8 +16,8 @@ mod writer;
 pub use error::{Limits, PressError, RedactionClass, SinkError};
 pub use redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
 pub use sanitized_save::{
-    PayloadHit, PayloadLocation, PayloadProof, RedactedOutput, SanitizePolicy, SanitizeReport, redact_and_save,
-    sanitize_full_rewrite, verify_payload_absent,
+    MIN_DISTINCTIVE_NEEDLE, PayloadHit, PayloadLocation, PayloadProof, RedactedOutput, SanitizePolicy, SanitizeReport,
+    redact_and_save, sanitize_full_rewrite, verify_payload_absent,
 };
 pub use pdf_edit::{
     AnnotationView, ArtifactSink, EditReceipt, FieldView, Inspection, ObjectModelProposal, PageView, PdfDoc, PdfScalar,
