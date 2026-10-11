@@ -56,7 +56,10 @@ pub struct TimecodeStart {
 }
 
 /// Read the start timecode for `track_id` through its `tref/tmcd` link. `Ok(None)` when the track has no
-/// timecode reference or the referenced track holds no sample.
+/// timecode reference or the referenced track holds no sample. A track the reader refuses
+/// (`TrackIndex::unsupported`) is the same typed `Unsupported` it is everywhere else, for the named track
+/// and for the `tmcd` track it references: a refused timecode track is not "no timecode" (test
+/// `refused_track_is_unsupported_for_every_use`).
 pub fn read_timecode_start(
     src: &mut dyn ReadSeek,
     index: &MediaIndex,
@@ -68,6 +71,7 @@ pub fn read_timecode_start(
             what: "track-not-found",
         });
     };
+    track.require_supported()?;
     let Some(tc_id) = track.timecode_ref else {
         return Ok(None);
     };
@@ -77,6 +81,7 @@ pub fn read_timecode_start(
         .ok_or(ReelError::Corrupt {
             what: "tref-tmcd-target",
         })?;
+    tc.require_supported()?;
     let (Some(description), Some(first)) = (tc.timecode, tc.presented.first()) else {
         return Ok(None);
     };

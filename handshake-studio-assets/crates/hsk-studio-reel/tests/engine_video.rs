@@ -851,6 +851,288 @@ fn zero_duration_edit_costs_only_its_track() {
     });
 }
 
+// ---- 3b. R10: a repeated media sample, and the typed refusal for every use of a refused track -----------
+
+/// Ticks per 1/600 s media unit.
+const UNIT_600: i64 = 423_360_000;
+
+/// Records `(index, pts, preroll)` of every chunk it receives.
+#[derive(Default)]
+struct Record(Vec<(u64, i64, bool)>);
+
+impl ChunkSink for Record {
+    fn accept(&mut self, c: Chunk<'_>) -> Result<(), ReelError> {
+        self.0.push((c.index, c.pts, c.preroll));
+        Ok(())
+    }
+}
+
+fn mov_request(
+    bytes: &[u8],
+    track: Option<u32>,
+    (output, purpose): (OutputMode, Purpose),
+    (start, count): (u64, u64),
+) -> SegmentRequest {
+    SegmentRequest {
+        codec: ISOBMFF_PROVIDER_ID.into(),
+        start_pts: Ticks::new(start),
+        count,
+        track,
+        output,
+        prefer: SourcePreference::Original,
+        purpose,
+        grant: Grant {
+            content_id: ContentId::parse("r10-fixture").unwrap(),
+            revision: 1,
+            expected_len: bytes.len() as u64,
+        },
+        expected_revision: 1,
+    }
+}
+
+fn deliver_mov(
+    bytes: &[u8],
+    track: Option<u32>,
+    mode: (OutputMode, Purpose),
+    range: (u64, u64),
+    sink: &mut dyn ChunkSink,
+) -> Result<SegmentReceipt, ReelError> {
+    IsobmffProvider.decode_segment(
+        &mut Cursor::new(bytes.to_vec()),
+        &mov_request(bytes, track, mode, range),
+        &Limits::default(),
+        &CancellationToken::default(),
+        sink,
+    )
+}
+
+/// SMB-REEL-ENG-1 R10 (CONFIRMED): an edit list can present one media sample more than once (two edits
+/// whose media ranges overlap). Packet delivery keyed its slots by media sample, delivered each sample
+/// once, and still returned Ok, `Exact`, `complete == true` with `actual.units` 2 of 4 for a request of
+/// 4 presented units. Now the receipt is computed from the units delivered: a preview of such a range is
+/// `Partial`, `complete == false`, says how many units came out and delivers each media sample at its
+/// first presented entry; an export of it is `Incomplete { requested, delivered }` before the first
+/// payload read (the sink is never reached). A range that holds every media sample once is untouched.
+#[test]
+fn repeated_media_sample_is_a_shortfall_not_a_silent_success() {
+    bounded_case(
+        "repeated_media_sample_is_a_shortfall_not_a_silent_success",
+        || {
+            // 4 samples of 20 units; two edits of 40 units from media time 0: s0 s1 s0 s1.
+            let bytes = four_sample_mov(Some(vec![(40, 0), (40, 0)]));
+            let index = index_of(&bytes).expect("overlapping media ranges still index");
+            let presented: Vec<(u32, i64)> = index.tracks[0]
+                .presented()
+                .iter()
+                .map(|p| (p.sample, p.pts))
+                .collect();
+            assert_eq!(
+                presented,
+                [
+                    (0, 0),
+                    (1, 20 * UNIT_600),
+                    (0, 40 * UNIT_600),
+                    (1, 60 * UNIT_600)
+                ],
+                "the shape under test: media samples 0 and 1 are each presented twice"
+            );
+            let at = |units: u64| units * UNIT_600 as u64;
+            let export = (OutputMode::Packets, Purpose::Export);
+            let preview = (OutputMode::Packets, Purpose::Preview);
+
+            // Export: every range that presents a media sample twice is refused, with the number of
+            // different media samples it holds, and the sink is never reached.
+            for (start, count, distinct) in [(0, 4, 2), (0, 3, 2), (20, 3, 2)] {
+                let sink = &mut NeverReached("repeated media sample");
+                let result = deliver_mov(&bytes, None, export, (at(start), count), sink);
+                assert_eq!(
+                    result.unwrap_err(),
+                    ReelError::Incomplete {
+                        requested: count,
+                        delivered: distinct,
+                    },
+                    "export start {start} count {count}"
+                );
+            }
+
+            // Export of ranges that hold each media sample once: exact, complete, every unit delivered
+            // (20/2 is s1 then s0: two different samples, delivered in decode order).
+            for (start, count) in [(0, 2), (40, 2), (20, 2), (20, 1), (40, 1)] {
+                let mut record = Record::default();
+                let receipt = deliver_mov(&bytes, None, export, (at(start), count), &mut record)
+                    .unwrap_or_else(|e| panic!("export start {start} count {count}: {e}"));
+                assert_eq!(receipt.disposition, Disposition::Exact, "start {start}");
+                assert!(receipt.complete, "start {start} count {count}");
+                assert_eq!(receipt.actual.units, count, "start {start} count {count}");
+                let delivered = record.0.iter().filter(|c| !c.2).count() as u64;
+                assert_eq!(delivered, count, "start {start} count {count}: chunks");
+            }
+
+            // Preview of the whole range: the shortfall is reported, not hidden.
+            let mut record = Record::default();
+            let receipt = deliver_mov(&bytes, None, preview, (0, 4), &mut record).unwrap();
+            assert_eq!(receipt.requested.units, 4);
+            assert_eq!(receipt.actual.units, 2, "two different media samples exist");
+            assert!(!receipt.complete);
+            assert_eq!(receipt.disposition, Disposition::Partial);
+            assert_eq!(
+                outcome_for(&Ok(receipt)),
+                Outcome::Failure(FailureCode::Loss)
+            );
+            // Each media sample arrives once, at its FIRST presented entry (the receipt's
+            // `actual.start_pts` is that of the first presented unit).
+            assert_eq!(
+                record.0,
+                [(0, 0, false), (1, 20 * UNIT_600, false)],
+                "chunks of the preview"
+            );
+
+            // Control: an edit list without overlap is delivered whole and exact.
+            let plain = four_sample_mov(Some(vec![(80, 0)]));
+            let mut record = Record::default();
+            let receipt = deliver_mov(&plain, None, export, (0, 4), &mut record).unwrap();
+            assert!(receipt.complete && receipt.actual.units == 4);
+            assert_eq!(receipt.disposition, Disposition::Exact);
+            assert_eq!(record.0.len(), 4);
+        },
+    );
+}
+
+/// SMB-REEL-ENG-1 R10 (CONFIRMED): a refused track (`elst-zero-duration`) is `Unsupported` for EVERY use
+/// of it, including `read_timecode_start`, which returned `Ok(None)` for a refused `tmcd` track (and gave
+/// the timecode of a refused video track): a refused timecode track is not "no timecode". The accessors
+/// that return plain data show the refusal as an empty edit list and presentation and a refused PCM
+/// window.
+#[test]
+fn refused_track_is_unsupported_for_every_use() {
+    bounded_case("refused_track_is_unsupported_for_every_use", || {
+        let refused = ReelError::Unsupported {
+            what: "elst-zero-duration",
+        };
+        let spec = TimecodeMovSpec {
+            frames: 30,
+            timescale: 30000,
+            frame_duration: 1001,
+            frame_bytes: 100,
+            drop_frame: true,
+            counter: false,
+            frames_per_second: 30,
+            start_value: 107_892,
+        };
+        let timecode = |bytes: &[u8], index: &MediaIndex, track: u32| {
+            read_timecode_start(
+                &mut Cursor::new(bytes.to_vec()),
+                index,
+                track,
+                &Limits::default(),
+            )
+        };
+        let preview = (OutputMode::Packets, Purpose::Preview);
+
+        // Control: nothing refused, the video track names its timecode.
+        let bytes = mov_timecode_bytes(&spec);
+        let index = index_of(&bytes).unwrap();
+        assert!(index.tracks.iter().all(|t| t.unsupported().is_none()));
+        let start = timecode(&bytes, &index, 1).unwrap().unwrap();
+        assert_eq!((start.track_id, start.raw_sample), (2, 107_892));
+
+        // The timecode track carries a zero-length edit: it is the refused track, the video is not.
+        let bytes = mov_timecode_bytes_with_edits(&spec, None, Some(vec![(0, 0)]));
+        let index = index_of(&bytes).expect("one track's edit list is not the file's");
+        assert_eq!(index.track(1).unwrap().unsupported(), None);
+        assert_eq!(
+            index.track(2).unwrap().unsupported(),
+            Some("elst-zero-duration")
+        );
+        let receipt = deliver_mov(&bytes, Some(1), preview, (0, 3), &mut Count::default()).unwrap();
+        assert!(receipt.complete, "the video track still delivers");
+        assert_eq!(
+            timecode(&bytes, &index, 1).unwrap_err(),
+            refused,
+            "the referenced tmcd track is refused: that is not 'no timecode'"
+        );
+        assert_eq!(
+            timecode(&bytes, &index, 2).unwrap_err(),
+            refused,
+            "the refused tmcd track, named directly"
+        );
+
+        // The video track is the refused one; its timecode track is fine.
+        let bytes = mov_timecode_bytes_with_edits(&spec, Some(vec![(0, 0)]), None);
+        let index = index_of(&bytes).unwrap();
+        assert_eq!(
+            index.track(1).unwrap().unsupported(),
+            Some("elst-zero-duration")
+        );
+        assert_eq!(index.track(2).unwrap().unsupported(), None);
+        assert_eq!(
+            timecode(&bytes, &index, 1).unwrap_err(),
+            refused,
+            "the timecode of a refused track"
+        );
+        assert_eq!(
+            timecode(&bytes, &index, 2).unwrap(),
+            None,
+            "a supported tmcd track references no timecode"
+        );
+        // A track that does not exist keeps its own error.
+        assert_eq!(
+            timecode(&bytes, &index, 9).unwrap_err(),
+            ReelError::Unsupported {
+                what: "track-not-found"
+            }
+        );
+
+        // Every accessor of a refused compact-PCM track: no edit list, no presented samples, the window of
+        // its stream is the same refusal (it was the generic `pcm-window-unset`), and seek, probe and
+        // every delivery refuse it.
+        let pcm = |edits: Option<Vec<(u64, i64)>>| {
+            mov_pcm_bytes(&PcmMovSpec {
+                fourcc: *b"twos",
+                kind: PcmKind::S16,
+                big_endian: true,
+                lpcm_v2: false,
+                non_interleaved: false,
+                channels: 2,
+                rate: 48000,
+                frames: 4800,
+                frames_per_chunk: 1024,
+                movie_timescale: 1000,
+                edits,
+                moov_first: true,
+                sound_version: None,
+            })
+        };
+        let clean = index_of(&pcm(None)).unwrap();
+        assert!(clean.tracks[0].pcm().unwrap().window.is_ok());
+        let bytes = pcm(Some(vec![(0, 0)]));
+        let index = index_of(&bytes).unwrap();
+        let track = &index.tracks[0];
+        assert_eq!(track.unsupported(), Some("elst-zero-duration"));
+        assert!(track.edits.is_empty() && track.presented().is_empty());
+        assert_eq!(
+            track.pcm().expect("the compact stream stays").window,
+            Err(refused.clone())
+        );
+        assert_eq!(track.seek(Ticks::new(0)).unwrap_err(), refused);
+        let probed = IsobmffProvider.probe(
+            &mut Cursor::new(bytes.clone()),
+            &Limits::default(),
+            &CancellationToken::default(),
+        );
+        assert_eq!(probed.unwrap_err(), refused);
+        for output in [OutputMode::Decoded, OutputMode::Packets] {
+            let mut sink = Count::default();
+            let mode = (output, Purpose::Preview);
+            assert_eq!(
+                deliver_mov(&bytes, None, mode, (0, 10), &mut sink).unwrap_err(),
+                refused,
+                "{output:?}"
+            );
+        }
+    });
+}
+
 // ---- 4. raw fiel / clap --------------------------------------------------------------------------------
 
 fn clap(fields: [i32; 8]) -> Vec<u8> {

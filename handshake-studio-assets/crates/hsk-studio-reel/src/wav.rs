@@ -375,6 +375,7 @@ impl MediaProvider for WavProvider {
         if deliver_end < want_end {
             return Err(ReelError::Truncated { delivered });
         }
+        let complete = delivery_complete(req, delivered)?;
         Ok(SegmentReceipt {
             requested: Span {
                 start_pts: req.start_pts,
@@ -391,11 +392,7 @@ impl MediaProvider for WavProvider {
                 end_pts: tick_span(deliver_end, tps)?,
                 units: delivered,
             },
-            disposition: if aligned {
-                Disposition::Exact
-            } else {
-                Disposition::Approximate
-            },
+            disposition: delivery_disposition(aligned, complete),
             source: SourceKind::Original,
             proxy_note: ProxyNote::NotRequested,
             original_id: req.grant.content_id.clone(),
@@ -405,7 +402,7 @@ impl MediaProvider for WavProvider {
             decoder_version: DECODER_VERSION,
             chunks,
             bytes_read,
-            complete: true,
+            complete,
             ticks_exact: true,
             video: None,
         })

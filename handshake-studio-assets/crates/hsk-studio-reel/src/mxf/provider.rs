@@ -256,6 +256,9 @@ impl MxfProvider {
         let (start_ticks, start_exact) = units_to_ticks(start, rate)?;
         let (end_ticks, end_exact) = units_to_ticks(end, rate)?;
         let span = end_ticks.saturating_sub(start_ticks);
+        // Each requested display position is delivered once, or the call was refused above (the reordered
+        // pre-pass); the flag is read from the delivered count all the same, as at every other site.
+        let complete = delivery_complete(req, delivered)?;
         Ok(SegmentReceipt {
             requested: Span {
                 start_pts: req.start_pts,
@@ -267,11 +270,7 @@ impl MxfProvider {
                 end_pts: Ticks::new(end_ticks),
                 units: delivered,
             },
-            disposition: if aligned {
-                Disposition::Exact
-            } else {
-                Disposition::Approximate
-            },
+            disposition: delivery_disposition(aligned, complete),
             source: SourceKind::Original,
             proxy_note: ProxyNote::NotRequested,
             original_id: req.grant.content_id.clone(),
@@ -281,9 +280,7 @@ impl MxfProvider {
             decoder_version: DECODER_VERSION,
             chunks,
             bytes_read: payload,
-            // Each requested display position is delivered once, or the call was refused above
-            // (the reordered pre-pass), so a shortfall is not an Ok result of any purpose.
-            complete: delivered == req.count,
+            complete,
             ticks_exact: ticks_exact && start_exact && end_exact,
             video: None,
         })

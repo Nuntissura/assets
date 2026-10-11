@@ -467,6 +467,37 @@ pub(crate) fn require_exact_start(
     Ok(())
 }
 
+/// Whether a delivery is complete, computed from the units it delivered against the units requested
+/// (SMB-REEL-ENG-1 R10: a constant `complete: true` reported Ok, Exact and complete for a packet
+/// delivery that handed over 2 of 4 requested units, test
+/// `repeated_media_sample_is_a_shortfall_not_a_silent_success`). A shortfall is `false` for a
+/// `Purpose::Preview` receipt (paired with `delivery_disposition`, which reports `Partial`) and the typed
+/// `Incomplete { requested, delivered }` for `Purpose::Export`, which is exact or fails. The
+/// delivery receipts of the wav, y4m, PCM, packet and mxf providers take `complete` from here (unit test
+/// `delivery_complete_is_computed_from_delivered_units`).
+pub(crate) fn delivery_complete(req: &SegmentRequest, delivered: u64) -> Result<bool, ReelError> {
+    if delivered == req.count {
+        return Ok(true);
+    }
+    if req.purpose == Purpose::Export {
+        return Err(ReelError::Incomplete {
+            requested: req.count,
+            delivered,
+        });
+    }
+    Ok(false)
+}
+
+/// The receipt disposition of a delivery: a shortfall is `Partial` whatever the start was; a complete
+/// delivery is `Exact` when the start was a whole unit and `Approximate` otherwise.
+pub(crate) fn delivery_disposition(exact_start: bool, complete: bool) -> Disposition {
+    match (complete, exact_start) {
+        (false, _) => Disposition::Partial,
+        (true, true) => Disposition::Exact,
+        (true, false) => Disposition::Approximate,
+    }
+}
+
 /// `read_exact` that maps a short read to `Truncated { delivered }`.
 pub(crate) fn read_exact_or_truncated(
     src: &mut dyn ReadSeek,
@@ -495,4 +526,60 @@ pub(crate) fn read_exact_structural(
             ReelError::Io(e.kind())
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(purpose: Purpose, count: u64) -> SegmentRequest {
+        SegmentRequest {
+            codec: "test".into(),
+            start_pts: Ticks::new(0),
+            count,
+            track: None,
+            output: OutputMode::Packets,
+            prefer: SourcePreference::Original,
+            purpose,
+            grant: Grant {
+                content_id: ContentId::parse("model-unit").unwrap(),
+                revision: 1,
+                expected_len: 0,
+            },
+            expected_revision: 1,
+        }
+    }
+
+    /// Completeness follows the delivered count: equal is complete; any other count is a shortfall that a
+    /// preview reports (`Partial`) and an export refuses with the units it did deliver.
+    #[test]
+    fn delivery_complete_is_computed_from_delivered_units() {
+        for purpose in [Purpose::Preview, Purpose::Export] {
+            assert_eq!(delivery_complete(&request(purpose, 4), 4), Ok(true));
+        }
+        assert_eq!(
+            delivery_complete(&request(Purpose::Preview, 4), 2),
+            Ok(false)
+        );
+        assert_eq!(
+            delivery_complete(&request(Purpose::Export, 4), 2),
+            Err(ReelError::Incomplete {
+                requested: 4,
+                delivered: 2
+            })
+        );
+        // More units than requested is no more complete than fewer.
+        assert_eq!(
+            delivery_complete(&request(Purpose::Preview, 4), 5),
+            Ok(false)
+        );
+        assert_eq!(
+            delivery_disposition(true, true),
+            Disposition::Exact,
+            "whole start, all units"
+        );
+        assert_eq!(delivery_disposition(false, true), Disposition::Approximate);
+        assert_eq!(delivery_disposition(true, false), Disposition::Partial);
+        assert_eq!(delivery_disposition(false, false), Disposition::Partial);
+    }
 }

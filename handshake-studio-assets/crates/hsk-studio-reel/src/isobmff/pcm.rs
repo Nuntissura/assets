@@ -539,6 +539,9 @@ pub(crate) fn deliver_pcm_stream(
     };
     let actual_start = tick_at(start)?;
     let actual_end = tick_at(want_end)?;
+    // Frames the loop above handed to the sink (its cursor), not the frames the request named.
+    let delivered = cursor.saturating_sub(start);
+    let complete = delivery_complete(req, delivered)?;
     let requested_span = u64::try_from(tick_span(req.count, tps)?).map_err(|_| tick_range())?;
     Ok(SegmentReceipt {
         requested: Span {
@@ -554,13 +557,9 @@ pub(crate) fn deliver_pcm_stream(
         actual: Span {
             start_pts: actual_start,
             end_pts: actual_end,
-            units: want_end.saturating_sub(start),
+            units: delivered,
         },
-        disposition: if aligned {
-            Disposition::Exact
-        } else {
-            Disposition::Approximate
-        },
+        disposition: delivery_disposition(aligned, complete),
         source: SourceKind::Original,
         proxy_note: ProxyNote::NotRequested,
         original_id: req.grant.content_id.clone(),
@@ -570,7 +569,7 @@ pub(crate) fn deliver_pcm_stream(
         decoder_version: DECODER_VERSION,
         chunks,
         bytes_read: payload,
-        complete: true,
+        complete,
         ticks_exact: track_ticks_exact && stream.ticks_exact,
         video: None,
     })

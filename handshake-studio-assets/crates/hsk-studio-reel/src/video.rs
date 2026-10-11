@@ -24,7 +24,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::av1_config::parse_av1c;
 use crate::error::{DecoderFault, ReelError, check_cancel};
-use crate::isobmff::{ColorTag, TrackIndex, deliver_packets, require_exact_track_start};
+use crate::isobmff::{ColorTag, TrackIndex, deliver_packets, require_exportable_range};
 use crate::mkv_content::{ContentPlan, DecodeSink};
 use crate::model::*;
 use hsk_studio_accord::{CancellationToken, Ticks};
@@ -445,12 +445,15 @@ pub(crate) fn decode_video_track_with(
         }
         VideoCodec::Av1 => {}
     }
-    // Export is exact or it fails: a start that is not a whole presented sample is refused HERE, before a
-    // decoder session exists, so a refused export spawns no worker (test
-    // `export_not_exact_is_refused_before_a_decoder_session_opens`). A preview does not take this step
-    // and keeps its error order; packet delivery repeats the same check.
+    // Export is exact or it fails: everything an export of this range can be refused for before a
+    // picture exists is refused HERE, before a decoder session exists, so a refused export spawns no
+    // worker: a start that is not a whole presented sample, a range that runs past the end of the
+    // presentation (PLR-062) and a range that presents one media sample more than once (see
+    // `require_exportable_range`; tests `export_not_exact_is_refused_before_a_decoder_session_opens`,
+    // `export_range_is_checked_before_a_decoder_session_opens`). A preview does not take this step and
+    // keeps its error order; packet delivery repeats the same check.
     if req.purpose == Purpose::Export {
-        require_exact_track_start(video.track, req)?;
+        require_exportable_range(video.track, req)?;
     }
     let (session, identity): (Box<dyn VideoDecodeSession>, DecoderIdentity) = match chosen {
         #[cfg(feature = "av1")]

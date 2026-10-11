@@ -78,9 +78,14 @@ pub enum ReelError {
         requested: Ticks,
         nearest: Ticks,
     },
-    /// `Purpose::Export` decoded fewer units than `requested`. Units already handed to the sink are
-    /// delivered; this error is the statement that the export must not publish them
-    /// (test `export_refuses_partial_video_decode`).
+    /// `Purpose::Export` would deliver, or did decode, fewer units than `requested`. Two cases: a
+    /// compressed-video decode that produced fewer pictures than requested (units already handed to the
+    /// sink are delivered; this error is the statement that the export must not publish them, test
+    /// `export_refuses_partial_video_decode`), and a packet range whose edit list presents one media
+    /// sample more than once, which is refused before the first read or any decoder session with
+    /// `delivered` the number of different media samples in the range (tests
+    /// `repeated_media_sample_is_a_shortfall_not_a_silent_success`,
+    /// `export_range_is_checked_before_a_decoder_session_opens`).
     Incomplete {
         requested: u64,
         delivered: u64,

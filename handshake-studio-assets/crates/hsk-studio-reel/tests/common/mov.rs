@@ -391,6 +391,16 @@ pub struct TimecodeMovSpec {
 
 /// Video track (id 1, `avc1`, all sync) referencing a `tmcd` track (id 2) through `tref`.
 pub fn mov_timecode_bytes(spec: &TimecodeMovSpec) -> Vec<u8> {
+    mov_timecode_bytes_with_edits(spec, None, None)
+}
+
+/// `mov_timecode_bytes` with an edit list on the video track (1) and/or the `tmcd` track (2), each as
+/// `(segment_duration in movie units, media_time in media units; -1 = empty edit)`.
+pub fn mov_timecode_bytes_with_edits(
+    spec: &TimecodeMovSpec,
+    video_edits: Option<Vec<(u64, i64)>>,
+    tmcd_edits: Option<Vec<(u64, i64)>>,
+) -> Vec<u8> {
     let video_bytes = u64::from(spec.frames) * u64::from(spec.frame_bytes);
     let mut payload: Vec<u8> = (0..spec.frames)
         .flat_map(|i| (0..spec.frame_bytes).map(move |j| mp4_sample_byte(i, j)))
@@ -422,7 +432,7 @@ pub fn mov_timecode_bytes(spec: &TimecodeMovSpec) -> Vec<u8> {
             stsz_table: Vec::new(),
             stsc: vec![(1, spec.frames)],
             chunk_offsets: vec![base],
-            edits: None,
+            edits: video_edits.clone(),
             tref_tmcd: Some(2),
         });
         let timecode = trak_box(&TrakSpec {
@@ -440,7 +450,7 @@ pub fn mov_timecode_bytes(spec: &TimecodeMovSpec) -> Vec<u8> {
             stsz_table: Vec::new(),
             stsc: vec![(1, 1)],
             chunk_offsets: vec![base + video_bytes],
-            edits: None,
+            edits: tmcd_edits.clone(),
             tref_tmcd: None,
         });
         let mut moov = mvhd_box(spec.timescale, total);

@@ -962,3 +962,144 @@ fn export_not_exact_is_refused_before_a_decoder_session_opens() {
         assert_eq!((opens(), sink.chunks.len()), (2, 1), "{name}");
     }
 }
+
+/// PLR-062 (SMB-REEL-ENG-1 R10): the export pre-check that PLR-057 put before the decoder session covered
+/// the START only. It now covers the whole range: a count that runs past the end of the clip is
+/// `OutOfRange`, and a range whose edit list presents one media sample more than once is
+/// `Incomplete { requested, delivered }`, both before `ExternalVideoDecoder::open` (the fake records
+/// every open) and before any picture. A preview keeps its order (a session opens, then the range error)
+/// and reports the repeated sample as a `Partial` receipt.
+#[test]
+fn export_range_is_checked_before_a_decoder_session_opens() {
+    // 4 samples of 20 units, two edits of 40 units from media time 0: s0 s1 s0 s1 (av01 so that it routes
+    // to the decoder; the fake decodes whatever the packets hold).
+    let repeating = mp4_bytes(&Mp4Spec {
+        movie_timescale: 600,
+        media_timescale: 600,
+        codec: *b"av01",
+        width: 16,
+        height: 16,
+        samples: (0..4)
+            .map(|k| Mp4Sample {
+                duration: 20,
+                cts_offset: 0,
+                size: 16,
+                sync: k == 0,
+            })
+            .collect(),
+        edits: Some(vec![(40, 0), (40, 0)]),
+        samples_per_chunk: 2,
+        co64: false,
+        ctts_version: 0,
+        moov_first: true,
+        colr_nclx: None,
+        pasp: None,
+    });
+    let unit = 423_360_000u64; // ticks per 1/600 s
+    for (name, bytes, container, last_frame) in [
+        ("mp4", MP4, ISOBMFF_PROVIDER_ID, PTS_MP4[2]),
+        ("mkv", MKV, MATROSKA_PROVIDER_ID, PTS_MKV[2]),
+        ("repeating", &repeating[..], ISOBMFF_PROVIDER_ID, 60 * unit),
+    ] {
+        let (fake, seen) = Fake::new(Plan::Works);
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let run = |purpose: Purpose, start: u64, count: u64| {
+            let mut req = request(container, bytes, start, count, OutputMode::Decoded);
+            req.purpose = purpose;
+            let mut sink = Collect::default();
+            let result = registry.decode_segment(
+                &mut Cursor::new(bytes.to_vec()),
+                None,
+                &req,
+                &Limits::default(),
+                &CancellationToken::default(),
+                &mut sink,
+            );
+            (result, sink)
+        };
+        let opens = || seen.lock().unwrap().opens.len();
+        let clip_frames = if name == "repeating" { 4 } else { 3 };
+
+        // Export from a whole-frame start with a count that runs one past the end, and from the last
+        // frame with two: refused as out of range, no session, no picture, no packet sent.
+        for (start, count) in [(0, clip_frames + 1), (last_frame, 2)] {
+            let (result, sink) = run(Purpose::Export, start, count);
+            assert!(
+                matches!(result, Err(ReelError::OutOfRange { .. })),
+                "{name} export {start}+{count}: {result:?}"
+            );
+            assert_eq!(
+                opens(),
+                0,
+                "{name} export {start}+{count}: an export that runs past the end opened a session"
+            );
+            assert!(
+                sink.chunks.is_empty() && seen.lock().unwrap().packets.is_empty(),
+                "{name} export {start}+{count}"
+            );
+        }
+
+        // The same request as a preview is unchanged: the session opens, then the range error.
+        let (result, sink) = run(Purpose::Preview, 0, clip_frames + 1);
+        assert!(
+            matches!(result, Err(ReelError::OutOfRange { .. })),
+            "{name} preview: {result:?}"
+        );
+        assert_eq!((opens(), sink.chunks.len()), (1, 0), "{name} preview");
+        let after_preview = opens();
+
+        if name == "repeating" {
+            // Export of a range that presents a media sample twice: Incomplete with the number of
+            // different media samples, and again no session.
+            let (result, sink) = run(Purpose::Export, 0, 4);
+            assert_eq!(
+                result.unwrap_err(),
+                ReelError::Incomplete {
+                    requested: 4,
+                    delivered: 2,
+                },
+                "{name}"
+            );
+            assert_eq!(
+                opens(),
+                after_preview,
+                "{name}: Incomplete opened a session"
+            );
+            assert!(sink.chunks.is_empty(), "{name}");
+
+            // Preview of it: one session, two different media samples decoded, the shortfall reported.
+            let (result, sink) = run(Purpose::Preview, 0, 4);
+            let receipt = result.unwrap();
+            assert_eq!(receipt.disposition, Disposition::Partial, "{name}");
+            assert!(!receipt.complete, "{name}");
+            assert_eq!(
+                (receipt.requested.units, receipt.actual.units),
+                (4, 2),
+                "{name}"
+            );
+            assert_eq!(
+                (opens(), sink.chunks.len()),
+                (after_preview + 1, 2),
+                "{name}"
+            );
+
+            // Export of a range that holds every media sample once is exact and opens its session.
+            let (result, sink) = run(Purpose::Export, 0, 2);
+            let receipt = result.unwrap();
+            assert_eq!(receipt.disposition, Disposition::Exact, "{name}");
+            assert!(receipt.complete && receipt.actual.units == 2, "{name}");
+            assert_eq!(
+                (opens(), sink.chunks.len()),
+                (after_preview + 2, 2),
+                "{name}"
+            );
+        } else {
+            // Export of the whole clip: exact, complete, and it does open its session.
+            let (result, sink) = run(Purpose::Export, 0, 3);
+            let receipt = result.unwrap();
+            assert_eq!(receipt.disposition, Disposition::Exact, "{name}");
+            assert!(receipt.complete && receipt.actual.units == 3, "{name}");
+            assert_eq!((opens(), sink.chunks.len()), (2, 3), "{name}");
+        }
+    }
+}

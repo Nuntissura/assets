@@ -324,3 +324,167 @@ fn oversize_picture_on_the_trusted_rav1d_path_is_refused() {
     assert_eq!(result.unwrap_err(), protocol);
     assert!(sink.frames.is_empty());
 }
+
+// ---- R10 (PLR-062): Export through the in-process rav1d arm ---------------------------------------------
+
+fn export_request(provider_id: &str, bytes: &[u8], start: u64, count: u64) -> SegmentRequest {
+    SegmentRequest {
+        purpose: Purpose::Export,
+        ..request(provider_id, bytes, start, count)
+    }
+}
+
+/// Export through the TRUSTED in-process rav1d arm, which no test drove before (PLR-062): an export at a
+/// whole-frame start decodes bit-exactly, complete and `Exact`, from the first frame and from a later one
+/// (pre-roll decoded from the sync sample); a start inside a frame is `NotExact` with the frame start as
+/// `nearest`; a range that runs past the end is `OutOfRange`; and a shortfall can not reach the sink.
+#[test]
+fn export_through_the_trusted_rav1d_arm_is_exact_or_it_fails() {
+    let export = |bytes: &[u8], start: u64, count: u64| {
+        let registry = Registry::standard();
+        let mut src = Cursor::new(bytes.to_vec());
+        let id = registry.detect(&mut src).unwrap().descriptor().id;
+        let mut sink = Collect::default();
+        let result = registry.resolve_id(id).unwrap().decode_segment_routed(
+            &mut src,
+            &export_request(id, bytes, start, count),
+            &Limits::default(),
+            &CancellationToken::default(),
+            &mut sink,
+            &VideoRoute::trusted(),
+        );
+        (result, sink)
+    };
+    for (name, bytes, pts) in [("mp4", MP4, PTS_MP4), ("mkv", MKV, PTS_MKV)] {
+        // The whole clip, and the last two frames (frame 0 is decoded as pre-roll only).
+        for (first, count) in [(0usize, 3u64), (1, 2)] {
+            let (result, sink) = export(bytes, pts[first], count);
+            let receipt = result.unwrap_or_else(|e| panic!("{name} export from {first}: {e}"));
+            assert_eq!(receipt.decoder_id, "rav1d", "{name}");
+            assert_eq!(receipt.disposition, Disposition::Exact, "{name} {first}");
+            assert!(receipt.complete, "{name} {first}");
+            assert_eq!(receipt.actual.units, count, "{name} {first}");
+            let digests: Vec<String> = sink.frames.iter().map(|(_, _, b)| hash(b)).collect();
+            assert_eq!(
+                digests,
+                ORACLE[first..].to_vec(),
+                "{name} export from {first}"
+            );
+        }
+
+        // A start inside frame 1: refused with the frame start as `nearest`; nothing reaches the sink.
+        let inside = pts[1] + 1;
+        let (result, sink) = export(bytes, inside, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            ReelError::NotExact {
+                requested: Ticks::new(inside),
+                nearest: Ticks::new(pts[1]),
+            },
+            "{name}"
+        );
+        assert!(sink.frames.is_empty(), "{name}");
+
+        // A count that runs past the end, from the first and from the last frame.
+        for (start, count) in [(pts[0], 4), (pts[2], 2)] {
+            let (result, sink) = export(bytes, start, count);
+            assert!(
+                matches!(result, Err(ReelError::OutOfRange { .. })),
+                "{name} {start}+{count}: {result:?}"
+            );
+            assert!(sink.frames.is_empty(), "{name} {start}+{count}");
+        }
+    }
+}
+
+/// PLR-062 on the in-process arm: the range refusals come BEFORE the session is opened. Opening the
+/// in-process session feeds the `av1C` configuration OBUs to rav1d, so a record whose sequence-header OBU
+/// claims more payload than it holds (size 127, 13 bytes present; `parse_av1c` only splits the record and
+/// accepts it) makes the open fail. An export that reports its own range error from such a file never
+/// reached the open; a valid export of the same file does, and fails with the open error.
+#[test]
+fn export_range_is_refused_before_the_in_process_session_opens() {
+    let unopenable = |container: &str| {
+        // `av1C` record `81 00 0c 00` then OBU header 0x0a and size 0x0d: the size becomes 0x7f.
+        let record = [0x81, 0x00, 0x0c, 0x00, 0x0a];
+        let source = if container == ISOBMFF_PROVIDER_ID {
+            MP4
+        } else {
+            MKV
+        };
+        patched(
+            source,
+            &[record.as_slice(), &[0x0d]].concat(),
+            &[record.as_slice(), &[0x7f]].concat(),
+        )
+    };
+    for (name, container, pts) in [
+        ("mp4", ISOBMFF_PROVIDER_ID, PTS_MP4),
+        ("mkv", MATROSKA_PROVIDER_ID, PTS_MKV),
+    ] {
+        let bytes = unopenable(container);
+        let export = |start: u64, count: u64| {
+            decode_with_purpose(&bytes, start, count, &Limits::default(), Purpose::Export)
+                .map(|_| ())
+        };
+        // Control: a valid export reaches the open, and the open is what fails.
+        let opened = export(pts[0], 3).unwrap_err();
+        assert!(
+            !matches!(
+                opened,
+                ReelError::NotExact { .. }
+                    | ReelError::OutOfRange { .. }
+                    | ReelError::Incomplete { .. }
+            ),
+            "{name}: the control must fail at the session open, got {opened:?}"
+        );
+        // A start inside frame 1, and counts that run past the end from the first and the last frame:
+        // each reports its own refusal, not the open error.
+        assert_eq!(
+            export(pts[1] + 1, 1).unwrap_err(),
+            ReelError::NotExact {
+                requested: Ticks::new(pts[1] + 1),
+                nearest: Ticks::new(pts[1]),
+            },
+            "{name}"
+        );
+        for (start, count) in [(pts[0], 4), (pts[2], 2)] {
+            assert!(
+                matches!(export(start, count), Err(ReelError::OutOfRange { .. })),
+                "{name} {start}+{count}: {:?}",
+                export(start, count)
+            );
+        }
+        // A preview keeps its order: the session opens first, so the open error comes first.
+        let preview = decode_with_purpose(&bytes, pts[0], 4, &Limits::default(), Purpose::Preview);
+        assert_eq!(
+            preview.unwrap_err(),
+            opened,
+            "{name}: preview order unchanged"
+        );
+    }
+}
+
+fn decode_with_purpose(
+    bytes: &[u8],
+    start: u64,
+    count: u64,
+    limits: &Limits,
+    purpose: Purpose,
+) -> Result<(SegmentReceipt, Collect), ReelError> {
+    let registry = Registry::standard();
+    let mut src = Cursor::new(bytes.to_vec());
+    let id = registry.detect(&mut src)?.descriptor().id;
+    let mut sink = Collect::default();
+    let mut req = request(id, bytes, start, count);
+    req.purpose = purpose;
+    let receipt = registry.resolve_id(id).unwrap().decode_segment_routed(
+        &mut src,
+        &req,
+        limits,
+        &CancellationToken::default(),
+        &mut sink,
+        &VideoRoute::trusted(),
+    )?;
+    Ok((receipt, sink))
+}

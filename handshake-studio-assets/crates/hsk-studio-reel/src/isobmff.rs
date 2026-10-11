@@ -202,8 +202,9 @@ pub struct TrackIndex {
     /// Track id of the `tmcd` track this track references through `tref`.
     pub timecode_ref: Option<u32>,
     /// A container feature of THIS track that the reader refuses (`elst-zero-duration`): the other tracks
-    /// of the file are indexed and usable, this one has no edit list or presented samples, and
-    /// `seek`, `probe` and every delivery of it are `Unsupported` with this name (see `unsupported()`).
+    /// of the file are indexed and usable, this one has no edit list or presented samples, the window of
+    /// its compact PCM stream is the same refusal, and `seek`, `probe`, every delivery and
+    /// `read_timecode_start` of it are `Unsupported` with this name (see `unsupported()`).
     unsupported: Option<&'static str>,
     pcm: Option<PcmStream>,
     samples: Vec<SampleEntry>,
@@ -355,8 +356,13 @@ impl TrackIndex {
 
     /// The container feature of THIS track that the reader refuses (`elst-zero-duration`), if any. The
     /// refusal is per track: the file's other tracks are indexed and deliver as usual, while this one has
-    /// no edit list or presented samples and `seek`, `IsobmffProvider::probe` and every delivery of it
-    /// are `ReelError::Unsupported` with this name (test `zero_duration_edit_costs_only_its_track`).
+    /// no edit list or presented samples (`edits`, `presented()` are empty), the window of its `pcm()`
+    /// stream is `Err(Unsupported)` with this name, and `seek`, `IsobmffProvider::probe`, every delivery
+    /// and `read_timecode_start` (as the named track and as a referenced `tmcd` track) are
+    /// `ReelError::Unsupported` with this name (tests `zero_duration_edit_costs_only_its_track`,
+    /// `refused_track_is_unsupported_for_every_use`). `samples()`, `sync_samples()` and `is_all_sync()`
+    /// stay the raw sample-table facts and say nothing about delivery; `MediaIndex::default_track` still
+    /// returns a refused first video track, so a consumer that lists tracks reads this accessor.
     pub fn unsupported(&self) -> Option<&'static str> {
         self.unsupported
     }
@@ -1645,13 +1651,19 @@ pub fn build_index(
             Ok(()) => {}
             // A zero-length edit this reader will not guess costs ITS track, not the file: the other
             // tracks keep their index (an audio or timecode track must not make the video unusable).
-            // The track has no edit list or presented samples and every use of it is `Unsupported`
-            // with the same name (test `zero_duration_edit_costs_only_its_track`).
+            // The track has no edit list or presented samples, the window of its compact PCM stream
+            // is the same refusal, and `seek`, `probe`, every delivery and `read_timecode_start` of it
+            // (as the named track and as a referenced `tmcd` track) are `Unsupported` with the same
+            // name (tests `zero_duration_edit_costs_only_its_track`,
+            // `refused_track_is_unsupported_for_every_use`).
             Err(ReelError::Unsupported {
                 what: what @ "elst-zero-duration",
             }) => {
                 track.edits.clear();
                 track.presented.clear();
+                if let Some(stream) = &mut track.pcm {
+                    stream.window = Err(ReelError::Unsupported { what });
+                }
                 track.unsupported = Some(what);
             }
             Err(error) => return Err(error),
@@ -1961,21 +1973,14 @@ pub(crate) fn require_exact_track_start(
     Ok(first)
 }
 
-/// Packet delivery for any container whose index is a `TrackIndex`: frame-accurate start, pre-roll
-/// from the nearest earlier sync sample (conservative for open GOP), exact requested vs actual spans.
-/// `bytes_read` counts payload only.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn deliver_packets(
-    src: &mut dyn ReadSeek,
-    track: &TrackIndex,
-    codec_label: String,
-    decoder_id: &'static str,
+/// The presented samples a request covers: `req.count` presented entries from the one `first` locates. A
+/// request that runs past the end of the presentation is `OutOfRange`, like a start outside it, and a
+/// zero count is `Unsupported`.
+fn requested_range<'a>(
+    track: &'a TrackIndex,
     req: &SegmentRequest,
-    limits: &Limits,
-    cancel: &CancellationToken,
-    sink: &mut dyn ChunkSink,
-) -> Result<SegmentReceipt, ReelError> {
-    let first = require_exact_track_start(track, req)?;
+    first: &SeekResult,
+) -> Result<&'a [PresentedSample], ReelError> {
     let last_presented = req
         .count
         .checked_sub(1)
@@ -1992,7 +1997,69 @@ pub(crate) fn deliver_packets(
                 end: e,
             }
         })?;
-    let wanted = &track.presented[first.presented_index..=last_presented];
+    Ok(&track.presented[first.presented_index..=last_presented])
+}
+
+/// How many different media samples `wanted` presents. An edit list can present one media sample more than
+/// once in a range (edits with overlapping media ranges, a looped edit): packet delivery hands each media
+/// sample over once, so such a range holds fewer deliverable units than presented entries.
+fn distinct_media_samples(wanted: &[PresentedSample]) -> u64 {
+    let mut samples: Vec<u32> = wanted.iter().map(|p| p.sample).collect();
+    samples.sort_unstable();
+    samples.dedup();
+    samples.len() as u64
+}
+
+/// Everything an export of the request's range can be refused for before any payload is read or a decoder
+/// session exists: the start must be a whole presented sample (`require_exact_track_start`), the range must
+/// lie inside the presentation (`OutOfRange` for a count that runs past the end, PLR-062), and, for
+/// `Purpose::Export`, every presented unit of it must be deliverable: a range that presents one media
+/// sample more than once holds fewer deliverable units than requested and is
+/// `Incomplete { requested, delivered }` with `delivered` the number of different media samples (test
+/// `repeated_media_sample_is_a_shortfall_not_a_silent_success`). Video decode calls this before it opens
+/// a session (tests `export_not_exact_is_refused_before_a_decoder_session_opens`,
+/// `export_range_is_checked_before_a_decoder_session_opens`); packet delivery repeats it for the same,
+/// cheap, answer. A preview takes the same steps without the `Incomplete` refusal.
+pub(crate) fn require_exportable_range<'a>(
+    track: &'a TrackIndex,
+    req: &SegmentRequest,
+) -> Result<(SeekResult, &'a [PresentedSample]), ReelError> {
+    let first = require_exact_track_start(track, req)?;
+    let wanted = requested_range(track, req, &first)?;
+    if req.purpose == Purpose::Export {
+        let deliverable = distinct_media_samples(wanted);
+        if deliverable != req.count {
+            return Err(ReelError::Incomplete {
+                requested: req.count,
+                delivered: deliverable,
+            });
+        }
+    }
+    Ok((first, wanted))
+}
+
+/// Packet delivery for any container whose index is a `TrackIndex`: frame-accurate start, pre-roll
+/// from the nearest earlier sync sample (conservative for open GOP), exact requested vs actual spans.
+/// `bytes_read` counts payload only.
+///
+/// Each MEDIA sample is delivered once, at the pts of its FIRST presented entry in the range. A range whose
+/// edit list presents a media sample more than once therefore delivers fewer units than it requests: a
+/// preview reports it (`complete == false`, `Disposition::Partial`, `actual.units` the units delivered), an
+/// export is refused before the first read (`require_exportable_range`). `complete` is computed from the
+/// units delivered (`model::delivery_complete`; test `repeated_media_sample_is_a_shortfall_not_a_silent_success`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn deliver_packets(
+    src: &mut dyn ReadSeek,
+    track: &TrackIndex,
+    codec_label: String,
+    decoder_id: &'static str,
+    req: &SegmentRequest,
+    limits: &Limits,
+    cancel: &CancellationToken,
+    sink: &mut dyn ChunkSink,
+) -> Result<SegmentReceipt, ReelError> {
+    let (first, wanted) = require_exportable_range(track, req)?;
+    let exact_start = first.disposition == SeekDisposition::Exact && first.trim_start == 0;
     let (mut lo, mut hi) = (u32::MAX, 0u32);
     for p in wanted {
         lo = lo.min(p.sample);
@@ -2011,7 +2078,8 @@ pub(crate) fn deliver_packets(
     let mut slots: Vec<Option<(i64, u64, u64)>> = vec![None; span];
     for p in wanted {
         let slot = p.sample.checked_sub(from).ok_or_else(order_error)?;
-        slots[slot as usize] = Some((p.pts, p.duration, p.trim_start));
+        // A media sample presented more than once is delivered at its first presented entry.
+        slots[slot as usize].get_or_insert((p.pts, p.duration, p.trim_start));
     }
     let last = *wanted.last().expect("count >= 1");
     let start_actual = to_ticks(wanted[0].pts)?;
@@ -2066,6 +2134,9 @@ pub(crate) fn deliver_packets(
             delivered = delivered.checked_add(1).ok_or_else(counter_error)?;
         }
     }
+    // The shortfall check reads the units this loop delivered: an export that delivered fewer fails with
+    // `Incomplete`, a preview reports it.
+    let complete = delivery_complete(req, delivered)?;
     Ok(SegmentReceipt {
         requested: Span {
             start_pts: req.start_pts,
@@ -2082,11 +2153,7 @@ pub(crate) fn deliver_packets(
             end_pts: end_actual,
             units: delivered,
         },
-        disposition: if first.disposition == SeekDisposition::Exact && first.trim_start == 0 {
-            Disposition::Exact
-        } else {
-            Disposition::Approximate
-        },
+        disposition: delivery_disposition(exact_start, complete),
         source: SourceKind::Original,
         proxy_note: ProxyNote::NotRequested,
         original_id: req.grant.content_id.clone(),
@@ -2096,7 +2163,7 @@ pub(crate) fn deliver_packets(
         decoder_version: DECODER_VERSION,
         chunks,
         bytes_read: payload,
-        complete: true,
+        complete,
         ticks_exact,
         video: None,
     })

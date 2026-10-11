@@ -369,6 +369,7 @@ impl MediaProvider for Y4mProvider {
             })?;
         }
         let delivered = u64::from(chunks);
+        let complete = delivery_complete(req, delivered)?;
         let bytes_read = delivered
             .checked_mul(record)
             .and_then(|b| b.checked_add(info.header_bytes))
@@ -391,11 +392,7 @@ impl MediaProvider for Y4mProvider {
                 end_pts: tick_span(want_end, tpf)?,
                 units: delivered,
             },
-            disposition: if aligned {
-                Disposition::Exact
-            } else {
-                Disposition::Approximate
-            },
+            disposition: delivery_disposition(aligned, complete),
             source: SourceKind::Original,
             proxy_note: ProxyNote::NotRequested,
             original_id: req.grant.content_id.clone(),
@@ -405,7 +402,7 @@ impl MediaProvider for Y4mProvider {
             decoder_version: DECODER_VERSION,
             chunks,
             bytes_read,
-            complete: true,
+            complete,
             ticks_exact: true,
             video: None,
         })
