@@ -46,7 +46,7 @@ use crate::pdf_edit::PdfDoc;
 use crate::raster::{InlineClass, RASTER_CLASS, classify_inline, codec_signature, decode_prefix, hidden_zlib, raster_tail};
 use crate::reader::{check_cancel, find, parse_document};
 use crate::redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
-use crate::show_text::{FontCache, FontText, KINDS, Role, SEP, Walker, content_role_streams, fonts_in, is_show, pages, pages_outside_tree, show_strings};
+use crate::show_text::{FontCache, FontState, FontText, KINDS, Role, SEP, Walker, content_role_streams, fonts_in, is_show, pages, pages_outside_tree, show_strings};
 use crate::syntax::{Dict, Object, Stream};
 use crate::text_codec::{Enc, decode_text, pdfdoc_byte, utf16be_bytes};
 use crate::text_fields::{TextFieldPolicy, TextFieldReport, appearance_roots};
@@ -954,9 +954,11 @@ fn verify_internal(
     }
 
     // Needles in the text each root draws (drawing order, joined and spaced, every reading kind;
-    // walker.root_texts). Kept text is a collision; anything else a hit. Only the font readings (not
-    // the bytes) of one kept operator make the needles it draws (exemption of byte matches).
-    let mut collisions: BTreeMap<(usize, u32), u32> = BTreeMap::new();
+    // walker.root_texts). Kept text is a collision; anything else a hit. In kept text only a font
+    // reading of positively determined fonts draws text (never the bytes, never a guess for an
+    // unresolved font), and only a match wholly inside one operator makes a needle that operator
+    // draws (exemption of byte matches inside it). Collisions are counted once per operator.
+    let mut collided: BTreeSet<(usize, u32, usize)> = BTreeSet::new();
     let mut kept_ops: BTreeMap<(u32, usize), KeptOp> = BTreeMap::new();
     let mut text_hits: BTreeSet<(usize, u32)> = BTreeSet::new();
     for rec in walker.records.iter().filter(|r| r.role == Role::Kept) {
@@ -986,13 +988,17 @@ fn verify_internal(
                     let recs: BTreeSet<usize> =
                         slot.get(a..b).unwrap_or(&[]).iter().filter(|s| **s != SEP).filter_map(|s| rt.slots.get(*s as usize)).map(|(r, _)| *r).collect();
                     let Some(first) = recs.first().copied() else { continue };
-                    if rt.role == Role::Kept
-                        && font_reading
-                        && recs.len() == 1
-                        && let Some(r) = walker.records.get(first)
-                        && let Some(stream) = r.stream
-                    {
-                        kept_ops.entry((stream, r.op)).or_default().drawn.insert(n.index);
+                    if rt.role == Role::Kept {
+                        let determined = recs.iter().all(|r| walker.records.get(*r).is_some_and(|x| x.font == FontState::Known));
+                        if !font_reading || !determined {
+                            continue;
+                        }
+                        if recs.len() == 1
+                            && let Some(r) = walker.records.get(first)
+                            && let Some(stream) = r.stream
+                        {
+                            kept_ops.entry((stream, r.op)).or_default().drawn.insert(n.index);
+                        }
                     }
                     if !exempt {
                         matched.insert((n.index, first));
@@ -1001,10 +1007,10 @@ fn verify_internal(
             }
         }
         for (needle, first) in matched {
-            let Some(stream) = walker.records.get(first).and_then(|r| r.stream) else { continue };
+            let Some(r) = walker.records.get(first) else { continue };
+            let Some(stream) = r.stream else { continue };
             if rt.role == Role::Kept {
-                let c = collisions.entry((needle, stream)).or_default();
-                *c = c.saturating_add(1);
+                collided.insert((needle, stream, r.op));
             } else {
                 text_hits.insert((needle, stream));
             }
@@ -1018,11 +1024,12 @@ fn verify_internal(
         }
         let bytes: Vec<u8> = rec.strings.iter().flat_map(|s| s.raw.iter().map(|c| u8::try_from(u32::from(*c)).unwrap_or(0))).collect();
         for needle in vars.iter().filter(|v| !v.hex && scan_one(&bytes, v)).map(|v| v.needle_index).collect::<BTreeSet<_>>() {
-            if rec.role == Role::Kept {
-                let c = collisions.entry((needle, stream)).or_default();
-                *c = c.saturating_add(1);
-            } else {
+            if rec.role != Role::Kept {
                 text_hits.insert((needle, stream));
+            } else if rec.strings.iter().all(|s| s.raw_drawn) {
+                // Kept bytes the font draws as the same letters: kept text.
+                collided.insert((needle, stream, rec.op));
+                kept_ops.entry((stream, rec.op)).or_default().drawn.insert(needle);
             }
         }
     }
@@ -1048,7 +1055,9 @@ fn verify_internal(
         // is not content: its bytes are scanned in every spelling and read as text.
         let ops: Option<Rc<(Vec<Op>, bool)>> = if roles.is_some() { walker.ops_of(*num)? } else { None };
         let ops_list: &[Op] = ops.as_ref().map(|p| p.0.as_slice()).unwrap_or(&[]);
-        if roles.is_none() && !raster_objects.contains(num) {
+        // Read as text: every stream that is not only kept page text (XMP, embedded files, stray
+        // and appearance content alike); kept text is matched through its font readings above.
+        if !exempt && !raster_objects.contains(num) {
             for needle in stream_text_hits(bytes, &needles) {
                 found.insert((needle, *num));
                 proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedStream { object: *num, offset: 0 } });
@@ -1098,8 +1107,7 @@ fn verify_internal(
                         }
                         for needle in found_here {
                             if kept_needles.is_some_and(|ns| ns.contains(&needle)) {
-                                let c = collisions.entry((needle, *num)).or_default();
-                                *c = c.saturating_add(1);
+                                collided.insert((needle, *num, k));
                             } else {
                                 proof.hits.push(PayloadHit { needle, location: PayloadLocation::ContentString { object: *num } });
                             }
@@ -1140,6 +1148,11 @@ fn verify_internal(
         }
     }
     proof.hits.truncate(MAX_HITS);
+    let mut collisions: BTreeMap<(usize, u32), u32> = BTreeMap::new();
+    for (needle, object, _) in collided {
+        let c = collisions.entry((needle, object)).or_default();
+        *c = c.saturating_add(1);
+    }
     proof.kept_text_collisions = collisions.into_iter().map(|((needle, object), count)| TextCollision { needle, object, count }).collect();
     Ok((proof, region))
 }

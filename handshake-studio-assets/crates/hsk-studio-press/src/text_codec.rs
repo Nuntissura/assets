@@ -38,6 +38,7 @@ pub(crate) fn pdfdoc_char(b: u8) -> char {
 /// untouched text re-encodes unchanged.
 pub(crate) fn pdfdoc_byte(c: char) -> Option<u8> {
     match c as u32 {
+        0x1B => Some(0x1B),
         u @ (0..=0x17 | 0x20..=0x7F | 0x9F | 0xA1..=0xFF) => Some(u as u8),
         _ => LOW
             .iter()
@@ -58,7 +59,11 @@ pub(crate) fn decode_text(bytes: &[u8]) -> (Vec<char>, Enc) {
     } else if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         (String::from_utf8_lossy(rest).chars().collect(), Enc::Utf8)
     } else {
-        (bytes.iter().map(|b| pdfdoc_char(*b)).collect(), Enc::PdfDoc)
+        // Byte 0x1B is read as ESC (U+001B), not the dotaccent of Table D.2: viewers treat it as the
+        // language-escape marker in a PDFDocEncoded text string too (pdf.js `stringToPDFString` drops
+        // 0x1B..0x1B), so matching sees and drops the escape (`norm.rs`; R9-P2, test
+        // `language_escapes_and_invisible_characters_never_hide_text`). It encodes back to 0x1B.
+        (bytes.iter().map(|b| if *b == 0x1B { '\u{1B}' } else { pdfdoc_char(*b) }).collect(), Enc::PdfDoc)
     }
 }
 
