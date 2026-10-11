@@ -570,6 +570,13 @@ fn hostile_descriptor_and_adjustment_sizes_are_typed_refusals() {
         // wrong versions
         let (_, version_codes) = lfx2_codes(&[0, 0, 0, 1, 0, 0, 0, 16]);
         assert!(version_codes.contains(&"descriptor_version_unsupported"));
+        // a bool item of another type is a refusal of that effect, not a silent default; a list holding a
+        // non-object is reported
+        let wrong_type = v_objc("DrSh", vec![("enab", v_long(1)), ("Md  ", v_enum("BlnM", "Mltp"))]);
+        let (_, c) = lfx2_codes(&lfx2(vec![("DrSh", wrong_type)]));
+        assert!(c.contains(&"effect_value_invalid"), "{c:?}");
+        let (_, c) = lfx2_codes(&lfx2(vec![("dropShadowMulti", v_list(vec![v_long(1), shadow(2.0)]))]));
+        assert!(c.contains(&"effect_slot_malformed"), "{c:?}");
 
         // adjustment counts: curves v4 with u32::MAX curves, a v1 bitmap of 32 curves in a short block,
         // a hue record one byte short, a levels block that claims 29 records but holds fewer

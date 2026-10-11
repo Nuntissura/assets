@@ -132,8 +132,12 @@ fn angle(o: &Object, key: &str, default: f64, lo: f64, hi: f64) -> Result<f64, R
     }
 }
 
-fn flag(o: &Object, key: &str, default: bool) -> bool {
-    o.get(key).and_then(Value::boolean).unwrap_or(default)
+/// A bool item: absent means `default`; present with another type is a refusal (not a default).
+fn flag(o: &Object, key: &str, default: bool) -> Result<bool, Reason> {
+    match o.get(key) {
+        None => Ok(default),
+        Some(v) => v.boolean().ok_or("effect_value_invalid"),
+    }
 }
 
 fn blend(o: &Object, key: &str) -> Result<u16, Reason> {
@@ -185,7 +189,7 @@ fn contour(o: &Object, key: &str) -> Result<Option<StudioContour>, Reason> {
         if !in_range(input) || !in_range(output) || points.last().is_some_and(|last| last.input >= input) {
             return Err("effect_contour_unmapped");
         }
-        points.push(StudioContourPoint { input, output, corner: flag(p, "Cnty", false) });
+        points.push(StudioContourPoint { input, output, corner: flag(p, "Cnty", false)? });
     }
     Ok(Some(StudioContour { name, points }))
 }
@@ -205,16 +209,16 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
     let opacity = percent(o, "Opct", 100.0)?;
     let mut effect = StudioEffect {
         instance_id: String::new(),
-        enabled: flag(o, "enab", true),
-        visible_in_editor: flag(o, "showInDialog", true),
+        enabled: flag(o, "enab", true)?,
+        visible_in_editor: flag(o, "showInDialog", true)?,
         blend_mode: blend(o, "Md  ")?,
         opacity,
         colour: colour(o, "Clr ")?,
         contour: None,
-        anti_alias: flag(o, "AntA", false),
+        anti_alias: flag(o, "AntA", false)?,
         noise: percent(o, "Nose", 0.0)?,
         angle: angle(o, "lagl", 0.0, -180.0, 180.0)?,
-        use_global_light: flag(o, "uglg", false),
+        use_global_light: flag(o, "uglg", false)?,
         params: StudioEffectKind::ColourOverlay,
     };
     match contour(o, "TrnS") {
@@ -229,7 +233,7 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
             distance: pixels(o, "Dstn", 0.0)?,
             spread: percent(o, "Ckmt", 0.0)?,
             size: pixels(o, "blur", 0.0)?,
-            layer_knocks_out: flag(o, "layerConceals", true),
+            layer_knocks_out: flag(o, "layerConceals", true)?,
         },
         Slot::InnerShadow => StudioEffectKind::InnerShadow {
             distance: pixels(o, "Dstn", 0.0)?,
@@ -256,7 +260,7 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
         Slot::Satin => StudioEffectKind::Satin {
             distance: pixels(o, "Dstn", 0.0)?,
             size: pixels(o, "blur", 0.0)?,
-            invert: flag(o, "Invr", false),
+            invert: flag(o, "Invr", false)?,
         },
         Slot::ColourOverlay => StudioEffectKind::ColourOverlay,
         Slot::Stroke => {
@@ -274,11 +278,11 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
                 )?,
                 fill_type: StrokeFillType::Solid,
                 fill: None,
-                overprint: flag(o, "overprint", false),
+                overprint: flag(o, "overprint", false)?,
             }
         }
         Slot::Bevel => {
-            if flag(o, "useTexture", false) {
+            if flag(o, "useTexture", false)? {
                 return Err("effect_fill_reference_unavailable");
             }
             let altitude = angle(o, "Lald", 30.0, 0.0, 90.0)?;
@@ -311,8 +315,8 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
                 shadow_mode: blend(o, "sdwM")?,
                 shadow_colour: colour(o, "sdwC")?.ok_or("effect_colour_model_unmapped")?,
                 shadow_opacity: percent(o, "sdwO", 100.0)?,
-                anti_alias_gloss: flag(o, "antialiasGloss", false),
-                use_contour: flag(o, "useShape", false),
+                anti_alias_gloss: flag(o, "antialiasGloss", false)?,
+                use_contour: flag(o, "useShape", false)?,
                 use_texture: false,
                 texture: None,
             }
@@ -338,7 +342,7 @@ pub(crate) fn effect_stack(
 fn map_stack(data: &[u8], stack_id: impl FnOnce() -> Option<String>, limits: &Limits) -> Result<Mapped<StudioEffectStack>, Reason> {
     let root = descriptor::parse_versioned(data, &[0, 16], limits)?;
     let mut notes: Vec<Note> = Vec::new();
-    let enabled = root.get("masterFXSwitch").and_then(Value::boolean).unwrap_or(true);
+    let enabled = flag(&root, "masterFXSwitch", true)?;
     let scale = match root.get("Scl ") {
         None => 100.0,
         Some(v) if has_percent_unit(v) => v.number().filter(|n| n.is_finite() && *n > 0.0).ok_or("effect_scale_invalid")?,
@@ -358,7 +362,13 @@ fn map_stack(data: &[u8], stack_id: impl FnOnce() -> Option<String>, limits: &Li
         }
         let objects: Vec<&Object> = match (multi, value) {
             (false, Value::Object(o)) => vec![o],
-            (true, Value::List(list)) => list.iter().filter_map(Value::object).collect(),
+            (true, Value::List(list)) => {
+                let objects: Vec<&Object> = list.iter().filter_map(Value::object).collect();
+                if objects.len() != list.len() {
+                    notes.push((LossKind::Unsupported, "effect_slot_malformed"));
+                }
+                objects
+            }
             _ => {
                 notes.push((LossKind::Unsupported, "effect_slot_malformed"));
                 continue;
