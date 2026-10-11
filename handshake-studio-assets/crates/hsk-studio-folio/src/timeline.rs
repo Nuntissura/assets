@@ -224,12 +224,12 @@ fn derived_duration(span: u64, speed: &Speed) -> Option<u64> {
     }
     u64::try_from(scaled / magnitude).ok()
 }
-fn control_free(s: &str) -> bool {
+pub(crate) fn control_free(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_HANDLE_BYTES && !s.chars().any(char::is_control)
 }
 /// A handle is an opaque id, never a filesystem path (STU-VID-020): any path separator (so rooted,
 /// relative, `./` and `../` spellings), drive prefixes, home (`~`) prefixes and bare `.`/`..` are refused.
-fn handle(s: &str) -> bool {
+pub(crate) fn handle(s: &str) -> bool {
     let drive = s.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
         && s.as_bytes().get(1) == Some(&b':');
     control_free(s)

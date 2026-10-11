@@ -34,6 +34,10 @@ mod appearance;
 pub use appearance::*;
 mod timeline;
 pub use timeline::*;
+mod layout;
+pub use layout::*;
+mod story;
+pub use story::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum GeometryUnit {
     #[serde(rename = "mm")]
@@ -148,6 +152,10 @@ pub struct StudioPageSpread {
     #[serde(deserialize_with = "required")]
     pub parent: Parent,
     pub bounds: Bounds,
+    /// Pages of the spread, left to right (STU-LAY-001). Absent and empty are the same spread; empty
+    /// is not encoded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<StudioPage>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -165,6 +173,10 @@ pub struct StudioLayer {
     /// the kind's identity default and is not encoded; see [`StudioLayer::effective_appearance`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<LayerAppearance>,
+    /// Text-frame geometry and thread links of a `text` layer (STU-LAY-017/122). Absent is not a
+    /// frame and is not encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_frame: Option<StudioTextFrame>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "payload_kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -307,6 +319,14 @@ pub trait Resolver {
     fn media(&self, _artifact_manifest_id: &str, _content_digest: &ContentDigest) -> Resolution {
         Resolution::Absent
     }
+    /// Stored story content (`StoryContent::Stored`). Defaults to Absent for the same reason.
+    fn story_content(
+        &self,
+        _artifact_manifest_id: &str,
+        _content_digest: &ContentDigest,
+    ) -> Resolution {
+        Resolution::Absent
+    }
 }
 /// No resolver is falsely treated as an available provider.
 pub struct Unresolved;
@@ -366,6 +386,10 @@ pub enum Code {
     UnknownBlendMode,
     /// Known blend mode that a layer cannot take (tool-only, or group-only on a leaf).
     InapplicableBlendMode,
+    /// Text-frame thread links that are not reciprocal, or a story that is not one chain.
+    InvalidThread,
+    /// Text-frame thread links that loop back on themselves.
+    ThreadCycle,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -482,6 +506,7 @@ fn validate(
         .and_then(|n| n.checked_add(d.layers.len()))
         .and_then(|n| n.checked_add(d.graph.operations.len()))
         .and_then(|n| n.checked_add(timeline::node_count(d)))
+        .and_then(|n| n.checked_add(layout::page_count(d)))
         .is_none_or(|n| n > b.nodes)
         || d.graph.edges.len() > b.edges
     {
@@ -735,6 +760,7 @@ fn validate(
         token,
         Code::ContainmentCycle,
     )?;
+    layout::validate_layout(d, token)?;
     let layers: BTreeMap<&str, &StudioLayer> =
         d.layers.iter().map(|l| (l.layer_id.as_str(), l)).collect();
     let mut ops = BTreeSet::new();
@@ -1156,6 +1182,32 @@ fn extension(v: &Value, target: &str, t: &CancellationToken) -> Result<Option<Di
                 &["source", "ordered_composite", "composite_result"][..],
             ),
             ("dependency_kind", &["data"][..]),
+            ("side", &["right_hand", "left_hand", "single_sided"][..]),
+            (
+                "first_baseline_offset",
+                &[
+                    "ascent",
+                    "cap_height",
+                    "leading",
+                    "em_box_height",
+                    "x_height",
+                    "fixed",
+                ][..],
+            ),
+            (
+                "vertical_justification",
+                &["top", "center", "bottom", "justify"][..],
+            ),
+            (
+                "auto_sizing_type",
+                &[
+                    "off",
+                    "height_only",
+                    "width_only",
+                    "height_and_width",
+                    "height_and_width_proportionally",
+                ][..],
+            ),
         ] {
             if o.get(field)
                 .and_then(Value::as_str)
@@ -1215,7 +1267,14 @@ fn extension(v: &Value, target: &str, t: &CancellationToken) -> Result<Option<Di
         } else if o.contains_key("artboard_id") {
             Some(&["schema_id", "artboard_id", "name", "parent", "bounds"])
         } else if o.contains_key("page_spread_id") {
-            Some(&["schema_id", "page_spread_id", "name", "parent", "bounds"])
+            Some(&[
+                "schema_id",
+                "page_spread_id",
+                "name",
+                "parent",
+                "bounds",
+                "pages",
+            ])
         } else if o.contains_key("payload") {
             Some(&[
                 "schema_id",
@@ -1226,6 +1285,7 @@ fn extension(v: &Value, target: &str, t: &CancellationToken) -> Result<Option<Di
                 "payload",
                 "visible",
                 "appearance",
+                "text_frame",
             ])
         } else if o.contains_key("fill_opacity") {
             Some(&[
@@ -1288,6 +1348,26 @@ fn extension(v: &Value, target: &str, t: &CancellationToken) -> Result<Option<Di
             ])
         } else if o.contains_key("algorithm") {
             Some(&["algorithm", "digest"])
+        } else if o.contains_key("text_column_count") {
+            Some(&[
+                "page_id",
+                "bounds",
+                "inset_spacing",
+                "text_column_count",
+                "text_column_gutter",
+                "first_baseline_offset",
+                "minimum_first_baseline_offset",
+                "vertical_justification",
+                "auto_sizing_type",
+                "previous_text_frame",
+                "next_text_frame",
+            ])
+        } else if o.contains_key("page_id") {
+            Some(&["page_id", "width", "height", "side", "margins", "bleed"])
+        } else if o.contains_key("inside_or_left") {
+            Some(&["top", "bottom", "inside_or_left", "outside_or_right"])
+        } else if o.contains_key("top") {
+            Some(&["top", "right", "bottom", "left"])
         } else if o.contains_key("value") {
             Some(&["value", "unit"])
         } else if o.contains_key("x") {
@@ -1374,4 +1454,4 @@ pub fn document_schema() -> schemars::Schema {
         .into_generator()
         .into_root_schema_for::<StudioDocument>()
 }
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-FOLIO","version":1,"api":"inspect_bytes / validate_document / Snapshot::rename","consumer":"folio-consumer --input FILE --expected-revision U64 [--rename ID --name TEXT --successor U64] [--cancel] [--report] [--max-bytes N --max-nodes N --max-edges N --max-payload-bytes N]; --schema; --descriptor","input":"Published CON015-021 typed document; all nullable profiles and parents explicitly present; caller revision and limits required at mutation; optional timeline members sequences/tracks/clips (STU-VID-010/020/021, integer Ticks, ordered non-overlapping clips, content-addressed media) counted against Budget.nodes; optional per-layer appearance (opacity and fill_opacity percent 0..=100, blend_mode StudioBlendMode discriminant 1..=35, clipped, isolation, StudioMask coverage tiles with enabled/linked; absent = identity default, not encoded)","output":"Immutable source-local document or typed rejection; unknown schema/fields preserve complete original bytes read-only; ordered composition edge projection","recovery":"Correct invalid fields; refresh caller revision; obtain typed domain/profile/ArtifactManifest resolver from existing owner; unavailable meaning blocks dependent operations; canceled or rejected edits preserve original bytes","manual":"Same pure wire contract and generated draft2020-12 schema for human/model/API consumers; no hidden defaults or private catalog","argus":{"inspect":"snapshot bytes, revision, resolution dispositions, stable diagnostic address","steer":"same bounded rename API","state":"immutable graph and ordered input projection","capture":"caller-owned granted capture of actual output"},"diagnostics":"Pure typed codes and target addresses adapted by caller through Observe/FlightRecorder/internal diagnostics/Palmistry; private document names/content are not diagnostic text","authority":"Caller revision is not host authority; grants, CKC/ArtifactService, Chronicle, Package, native GUI, color/render, DB, CRDT and EventLedger acceptance remain pending"}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-FOLIO","version":1,"api":"inspect_bytes / validate_document / Snapshot::rename / validate_text_story / StudioDocument::text_threads / StudioDocument::locate_page","consumer":"folio-consumer --input FILE --expected-revision U64 [--rename ID --name TEXT --successor U64] [--cancel] [--report] [--max-bytes N --max-nodes N --max-edges N --max-payload-bytes N]; --schema; --descriptor","input":"Published CON015-021 typed document; all nullable profiles and parents explicitly present; caller revision and limits required at mutation; optional timeline members sequences/tracks/clips (STU-VID-010/020/021, integer Ticks, ordered non-overlapping clips, content-addressed media) counted against Budget.nodes; optional layout members: pages inside page_spreads (per-page size, margins and bleed in pt, STU-LAY-107/113; document-local page_id) and text frames on text layers (bounds, inset, columns, first baseline, vertical justification, auto-size in pt; previous/next thread links per STU-LAY-122 that must be reciprocal, acyclic and one story per chain; pages counted against Budget.nodes); standalone text story hsk.studio.text_story@1 validated by validate_text_story (content reference, paragraph and character-range partitions with style and language refs); optional per-layer appearance (opacity and fill_opacity percent 0..=100, blend_mode StudioBlendMode discriminant 1..=35, clipped, isolation, StudioMask coverage tiles with enabled/linked; absent = identity default, not encoded)","output":"Immutable source-local document or typed rejection; unknown schema/fields preserve complete original bytes read-only; ordered composition edge projection","recovery":"Correct invalid fields; refresh caller revision; obtain typed domain/profile/ArtifactManifest resolver from existing owner; unavailable meaning blocks dependent operations; canceled or rejected edits preserve original bytes","manual":"Same pure wire contract and generated draft2020-12 schema for human/model/API consumers; no hidden defaults or private catalog","argus":{"inspect":"snapshot bytes, revision, resolution dispositions, stable diagnostic address","steer":"same bounded rename API","state":"immutable graph and ordered input projection","capture":"caller-owned granted capture of actual output"},"diagnostics":"Pure typed codes and target addresses adapted by caller through Observe/FlightRecorder/internal diagnostics/Palmistry; private document names/content are not diagnostic text","authority":"Caller revision is not host authority; grants, CKC/ArtifactService, Chronicle, Package, native GUI, color/render, DB, CRDT and EventLedger acceptance remain pending"}"#;
