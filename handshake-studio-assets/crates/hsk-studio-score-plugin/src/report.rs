@@ -27,6 +27,7 @@ pub fn outcome_of<T>(result: &Result<T, PluginError>) -> Outcome {
             | PluginError::Timeout
             | PluginError::BudgetExceeded
             | PluginError::Protocol(_)
+            | PluginError::PluginFault
             | PluginError::Unavailable,
         ) => Outcome::Failure(FailureCode::Unavailable),
     }

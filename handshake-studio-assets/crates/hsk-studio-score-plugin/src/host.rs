@@ -30,7 +30,7 @@ use crate::types::{
     ProcessReceipt, RetireReport, SUPPORTED_CLAP_ABI, StateCapture,
 };
 use crate::wire::{self, ConfigureSpec, Frame, PluginSpec, Reply, WireError};
-use crate::worker::WORKER_PROGRAM;
+use crate::worker::{BACKEND_UNAVAILABLE_EXIT_CODE, WORKER_PROGRAM};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_score::{ChannelLayout, InputBlock, OutputBlock, sha256};
 use std::{
@@ -95,6 +95,18 @@ impl Default for HostLimits {
     }
 }
 
+/// Which backend the worker process runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkerBackend {
+    /// Pure-Rust gain-and-delay reference (never loads the plugin file). Proves isolation only.
+    #[default]
+    Reference,
+    /// Loads the approved `.clap` library in the worker. The worker binary must be built with cargo
+    /// feature `clap`; otherwise it exits with `BACKEND_UNAVAILABLE_EXIT_CODE` and the host reports
+    /// `unavailable`.
+    Clap,
+}
+
 /// Host construction options.
 #[derive(Clone, Debug, Default)]
 pub struct HostOptions {
@@ -102,6 +114,7 @@ pub struct HostOptions {
     /// directory above it, for test and example binaries).
     pub program: Option<PathBuf>,
     pub limits: HostLimits,
+    pub backend: WorkerBackend,
     /// Command-line arguments for the worker (test fault injection and the reference latency).
     #[doc(hidden)]
     pub test_args: Vec<String>,
@@ -251,6 +264,8 @@ struct Session {
     pid: u32,
     shared: Arc<Shared>,
     finished: Option<Terminated>,
+    /// Backend identity the worker announced in HELLO.
+    identity: Arc<str>,
     /// Last field: released only after `Drop::drop` has killed and reaped the child.
     _permit: Permit,
 }
@@ -481,6 +496,7 @@ fn spawn_session(
         pid,
         shared: Arc::clone(shared),
         finished: None,
+        identity: Arc::from(""),
         _permit: permit,
     };
     let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
@@ -495,6 +511,15 @@ fn spawn_session(
         Waited::Frame(frame) => frame,
         Waited::Canceled => return Err(session.fail(Failure::Canceled, true).0),
         Waited::TimedOut => return Err(session.fail(Failure::Deadline, true).0),
+        Waited::Failed(WireError::Closed) => {
+            // A worker that exits at once with the "backend not built" code never said HELLO.
+            let (error, done) = session.fail(Failure::Wire(WireError::Closed), true);
+            return Err(if done.exit_code == Some(BACKEND_UNAVAILABLE_EXIT_CODE) {
+                PluginError::Unavailable
+            } else {
+                error
+            });
+        }
         Waited::Failed(error) => return Err(session.fail(Failure::Wire(error), true).0),
     };
     let hello = match wire::decode_hello(&frame) {
@@ -505,6 +530,7 @@ fn spawn_session(
         session.terminate(Duration::ZERO);
         return Err(PluginError::AbiMismatch);
     }
+    session.identity = Arc::from(hello.identity);
     Ok(session)
 }
 
@@ -596,7 +622,14 @@ impl IsolatedHost {
             shared: Arc::new(Shared {
                 program,
                 limits: options.limits,
-                test_args: options.test_args,
+                test_args: {
+                    let mut args = Vec::new();
+                    if options.backend == WorkerBackend::Clap {
+                        args.extend(["--backend".to_owned(), "clap".to_owned()]);
+                    }
+                    args.extend(options.test_args);
+                    args
+                },
                 workers: AtomicUsize::new(0),
                 bytes: AtomicU64::new(0),
                 ledger: Mutex::new(Vec::new()),
@@ -727,6 +760,7 @@ impl PluginProvider for IsolatedHost {
         let spec = spec_of(plugin)?;
         let mut session = spawn_session(&self.shared, permit, &owner, plugin.abi_version, cancel)?;
         let frame = wire::encode_probe(1, &spec);
+        let identity = Arc::clone(&session.identity);
         let result = match session.exchange(1, frame, wire::REPLY_SLACK, deadline, cancel) {
             Ok(Reply::Probed {
                 plugin_id,
@@ -744,7 +778,7 @@ impl PluginProvider for IsolatedHost {
                     abi_version: abi,
                     inputs,
                     outputs,
-                    provider_identity: crate::worker::REFERENCE_IDENTITY.to_owned(),
+                    provider_identity: identity.to_string(),
                 })
                 .ok_or(PluginError::Protocol(ProtocolFault::Inconsistent)),
             Ok(Reply::Error { code, .. }) => Err(wire::error_of(code)),

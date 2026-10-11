@@ -43,6 +43,7 @@ pub(crate) const E_BUDGET: u8 = 4;
 pub(crate) const E_CONFIG: u8 = 5;
 pub(crate) const E_NOT_CONFIGURED: u8 = 6;
 pub(crate) const E_UNAVAILABLE: u8 = 7;
+pub(crate) const E_PLUGIN: u8 = 8;
 
 const fn known_kind(kind: u8) -> bool {
     matches!(
@@ -706,6 +707,7 @@ pub(crate) fn error_of(code: u8) -> PluginError {
         E_BUDGET => PluginError::BudgetExceeded,
         E_CONFIG => PluginError::InvalidConfig,
         E_UNAVAILABLE => PluginError::Unavailable,
+        E_PLUGIN => PluginError::PluginFault,
         E_NOT_CONFIGURED => PluginError::Protocol(ProtocolFault::UnexpectedKind),
         _ => PluginError::Protocol(ProtocolFault::Inconsistent),
     }

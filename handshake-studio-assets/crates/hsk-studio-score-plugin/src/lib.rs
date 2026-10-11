@@ -12,8 +12,15 @@
 //! Flow: `IsolatedHost::new` -> `probe` (optional) -> `activate` -> `process` / `set_parameter` /
 //! `capture_state` -> `retire`. `PluginProcessor` lets a score `Engine` publish a hosted plugin's
 //! block (the engine discards it on any failure).
-#![forbid(unsafe_code)]
+// Default features are pure Rust and forbid `unsafe`. Feature `clap` adds the one module that loads a
+// foreign library (`clap_backend`); `unsafe` is denied everywhere else and allowed only there.
+#![cfg_attr(not(feature = "clap"), forbid(unsafe_code))]
+#![cfg_attr(feature = "clap", deny(unsafe_code))]
 
+mod backend;
+#[cfg(feature = "clap")]
+#[allow(unsafe_code)]
+mod clap_backend;
 mod error;
 mod host;
 mod processor;
@@ -22,9 +29,11 @@ mod types;
 mod wire;
 mod worker;
 
+pub use backend::REFERENCE_IDENTITY;
 pub use error::{PluginError, ProtocolFault};
 pub use host::{
     HostLimits, HostOptions, HostStats, IsolatedHost, IsolatedInstance, ProcessLedgerEntry,
+    WorkerBackend,
 };
 pub use processor::PluginProcessor;
 pub use report::{outcome_of, report};
@@ -34,7 +43,7 @@ pub use types::{
     ProcessReceipt, RetireReport, SUPPORTED_CLAP_ABI, StateCapture,
 };
 pub use worker::{
-    FAULT_EXIT_CODE, PANIC_EXIT_CODE, REFERENCE_IDENTITY, WORKER_PROGRAM, worker_main,
+    BACKEND_UNAVAILABLE_EXIT_CODE, FAULT_EXIT_CODE, PANIC_EXIT_CODE, WORKER_PROGRAM, worker_main,
 };
 
 /// Manual and inspection descriptor for a model or tool with no prior context.

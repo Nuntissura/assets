@@ -67,6 +67,9 @@ pub enum PluginError {
     InvalidBlock(ScoreError),
     /// The worker returned a non-finite sample; the block was replaced by silence.
     NonFiniteOutput,
+    /// The hosted plugin itself reported a failure (for example a processing error status); the
+    /// worker is still running and the block was replaced by silence.
+    PluginFault,
 }
 
 impl PluginError {
@@ -87,6 +90,7 @@ impl PluginError {
             Self::InvalidConfig => "invalid_config",
             Self::InvalidBlock(_) => "invalid_block",
             Self::NonFiniteOutput => "non_finite_output",
+            Self::PluginFault => "plugin_fault",
         }
     }
 }
