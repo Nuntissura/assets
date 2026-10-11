@@ -1,10 +1,12 @@
 //! Focused proofs for the GPU backend (MT-35546 cases plus the R3 regressions). The admission,
 //! latch and residency tests are hardware-independent and must pass on a machine without an
-//! adapter. Every GPU-execution proof goes through `gpu_gate`: the ONLY skip (printed
-//! `NOT_PROVEN`) is "no adapter at all" (or the forced `none` backend); an adapter whose device,
-//! shader or pipeline failed, a timeout or a lost device FAILS the test, and
-//! `HSK_STUDIO_TEST_REQUIRE_GPU=1` turns even "no adapter" into a failure. Device creation is
-//! serialised by `DEVICE_LOCK`; the parity tests share one lazily created backend.
+//! adapter. Every GPU-execution proof goes through `gpu_gate`, which follows the checked-in
+//! `tests/gpu-proof.toml` (V4-03): with `require_gpu = true` (committed) "no adapter" FAILS the
+//! proof with a message starting `NOT_PROVEN: no adapter`; with `false` the proof prints that line
+//! and passes, and the round counts it (exit 73, never green). An adapter whose device, shader or
+//! pipeline failed, a timeout or a lost device FAILS the test in both modes.
+//! `HSK_STUDIO_TEST_REQUIRE_GPU=1` only strengthens the file. Device creation is serialised by
+//! `DEVICE_LOCK`; the parity tests share one lazily created backend.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::blend_math::{
     Applicability, Family, MODES, PixelSite, Rgba, blend_rgb, composite_over,
@@ -373,14 +375,54 @@ fn no_adapter() -> DeviceOptions {
         ..DeviceOptions::default()
     }
 }
-fn require_gpu() -> bool {
-    std::env::var("HSK_STUDIO_TEST_REQUIRE_GPU").as_deref() == Ok("1")
+/// The checked-in GPU proof policy (`tests/gpu-proof.toml`), compiled in so no test reads a path and
+/// the round (which unsets every HSK_* variable) sees the committed value.
+const GPU_PROOF_POLICY: &str = include_str!("gpu-proof.toml");
+
+/// `require_gpu` of a policy text; a missing schema, a missing key or any other value is an error,
+/// never a silent default.
+fn parse_proof_policy(text: &str) -> Result<bool, String> {
+    let (mut schema, mut require) = (None, None);
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!("not a `key = value` line: {line:?}"));
+        };
+        match (key.trim(), value.trim()) {
+            ("schema", v) => schema = Some(v.trim_matches('"').to_owned()),
+            ("require_gpu", "true") => require = Some(true),
+            ("require_gpu", "false") => require = Some(false),
+            ("require_gpu", other) => {
+                return Err(format!("require_gpu must be true|false: {other:?}"));
+            }
+            (other, _) => return Err(format!("unknown key {other:?}")),
+        }
+    }
+    if schema.as_deref() != Some("hsk.studio.render-gpu-proof@1") {
+        return Err(format!(
+            "schema must be hsk.studio.render-gpu-proof@1, got {schema:?}"
+        ));
+    }
+    require.ok_or_else(|| "require_gpu is missing".to_owned())
 }
-/// Gate of every GPU-execution proof. `Ok(Some)`: a live device. `Ok(None)`: the one legitimate
-/// NOT_PROVEN case, no adapter at all (or the forced `none` backend), and only while
-/// `HSK_STUDIO_TEST_REQUIRE_GPU` is not `1`. Everything else (an adapter whose device or
-/// shader/pipeline failed, a timeout, a lost device) is `Err`: the calling test FAILS, never skips.
-fn gpu_gate(backend: &GpuBackend, what: &str) -> Result<Option<DeviceInfo>, String> {
+/// Strict mode: the committed policy, or `HSK_STUDIO_TEST_REQUIRE_GPU=1` (which only strengthens).
+fn require_gpu() -> bool {
+    parse_proof_policy(GPU_PROOF_POLICY)
+        .unwrap_or_else(|e| panic!("tests/gpu-proof.toml is invalid: {e}"))
+        || std::env::var("HSK_STUDIO_TEST_REQUIRE_GPU").as_deref() == Ok("1")
+}
+/// The line the round counts (`^[ \t]*NOT_PROVEN:`): a proof that did not run for lack of an adapter.
+fn not_proven_line(what: &str) -> String {
+    format!("NOT_PROVEN: no adapter; {what} not run")
+}
+/// `gpu_gate` with the strictness made explicit. `Ok(Some)`: a live device. `Ok(None)`: the one
+/// NOT_PROVEN case (no adapter at all, or the forced `none` backend) while `strict` is false; the
+/// `NOT_PROVEN:` line is printed. Strict mode, an adapter whose device, shader or pipeline failed, a
+/// timeout and a lost device are `Err`: the calling test FAILS, never skips.
+fn gate(backend: &GpuBackend, what: &str, strict: bool) -> Result<Option<DeviceInfo>, String> {
     if let Some(info) = backend.device_info() {
         return Ok(Some(info));
     }
@@ -390,16 +432,22 @@ fn gpu_gate(backend: &GpuBackend, what: &str) -> Result<Option<DeviceInfo>, Stri
         ));
     }
     match backend.unavailable_reason() {
-        Some(Reason::NoAdapter) if !require_gpu() => {
-            eprintln!("NOT_PROVEN: no adapter; {what} not run");
+        Some(Reason::NoAdapter) if !strict => {
+            eprintln!("{}", not_proven_line(what));
             Ok(None)
         }
+        Some(Reason::NoAdapter) => Err(format!(
+            "NOT_PROVEN: no adapter; {what} requires a GPU (tests/gpu-proof.toml require_gpu = true)"
+        )),
         other => Err(format!(
-            "{what}: no live device (unavailable {other:?}, lost {}, require_gpu {})",
-            backend.is_lost(),
-            require_gpu()
+            "{what}: no live device (unavailable {other:?}, lost {})",
+            backend.is_lost()
         )),
     }
+}
+/// Gate of every GPU-execution proof, with the committed strictness.
+fn gpu_gate(backend: &GpuBackend, what: &str) -> Result<Option<DeviceInfo>, String> {
+    gate(backend, what, require_gpu())
 }
 fn run(
     backend: &GpuBackend,
@@ -409,6 +457,61 @@ fn run(
     sink: &mut Image,
 ) -> Result<hsk_studio_pigment::render_plan::RenderReceipt, BackendError> {
     backend.execute(plan, req, sources, &CancellationToken::default(), sink)
+}
+
+/// R5 finding `no-adapter-early-return-green` (regression, hardware-independent): without an
+/// adapter a GPU proof is never a green pass when the checked-in policy requires the GPU, and the
+/// permitted NOT_PROVEN route prints the line the round counts.
+#[test]
+fn no_adapter_is_not_a_green_gpu_proof_when_the_gpu_is_required() {
+    const SCHEMA: &str = "schema = \"hsk.studio.render-gpu-proof@1\"\n";
+    // the committed policy is well-formed; malformed policies are errors, never a default
+    let committed = parse_proof_policy(GPU_PROOF_POLICY).expect("tests/gpu-proof.toml is valid");
+    assert_eq!(
+        parse_proof_policy(&format!("{SCHEMA}require_gpu = true\n")),
+        Ok(true)
+    );
+    assert_eq!(
+        parse_proof_policy(&format!("{SCHEMA}require_gpu = false\n")),
+        Ok(false)
+    );
+    for bad in [
+        "".to_owned(),
+        "require_gpu = true\n".to_owned(),
+        SCHEMA.to_owned(),
+        format!("{SCHEMA}require_gpu = maybe\n"),
+        format!("{SCHEMA}require_gpu = true\nextra = 1\n"),
+        format!("{SCHEMA}require_gpu\n"),
+        "schema = \"other\"\nrequire_gpu = true\n".to_owned(),
+    ] {
+        assert!(parse_proof_policy(&bad).is_err(), "accepted {bad:?}");
+    }
+
+    // strict gate on a machine without an adapter (forced `none` backend): a FAILURE whose message
+    // starts with the NOT_PROVEN marker
+    let backend = GpuBackend::new(no_adapter());
+    let strict = gate(&backend, "regression probe", true);
+    assert!(
+        matches!(&strict, Err(m) if m.starts_with("NOT_PROVEN: no adapter")),
+        "strict gate must fail on no adapter, got {:?}",
+        strict.as_ref().map(|d| d.is_some())
+    );
+    // opt-out route: not an error, and the line it prints is the one the round counts
+    assert!(matches!(
+        gate(&backend, "regression probe", false),
+        Ok(None)
+    ));
+    let line = not_proven_line("regression probe");
+    assert!(line.starts_with("NOT_PROVEN: no adapter;"), "{line}");
+    assert!(line.contains("regression probe"));
+    // the gate every GPU proof uses follows the committed policy (env can only add strictness)
+    let env_strict = std::env::var("HSK_STUDIO_TEST_REQUIRE_GPU").as_deref() == Ok("1");
+    assert_eq!(require_gpu(), committed || env_strict);
+    assert_eq!(
+        gpu_gate(&backend, "regression probe").is_err(),
+        require_gpu(),
+        "gpu_gate must fail on no adapter exactly when the GPU is required"
+    );
 }
 
 #[test]
@@ -1156,7 +1259,7 @@ fn pipeline_failure_is_typed_and_fails_the_gpu_gate() {
     );
     if broken.unavailable_reason() == Some(Reason::NoAdapter) {
         // No adapter at all: acquisition stops before any shader exists. The gate decides
-        // (NOT_PROVEN here, a failure under HSK_STUDIO_TEST_REQUIRE_GPU=1).
+        // (NOT_PROVEN here, a failure while tests/gpu-proof.toml says require_gpu = true).
         let gate = gpu_gate(&broken, "pipeline-failure typing").unwrap_or_else(|e| panic!("{e}"));
         assert!(gate.is_none());
         return;
