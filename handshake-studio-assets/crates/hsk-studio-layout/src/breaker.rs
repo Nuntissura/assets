@@ -268,7 +268,7 @@ fn knuth_plass_pass(
             } else {
                 0.0
             };
-            let overfull = r < -1.0;
+            let overfull = r < -1.0 - EPS;
             let take = if overfull {
                 allow_overfull && !arena[ai].has_successor
             } else {

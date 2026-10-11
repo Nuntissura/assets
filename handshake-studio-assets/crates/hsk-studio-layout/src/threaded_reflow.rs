@@ -298,7 +298,8 @@ pub fn reflow(
             starts.push(items.get(s).map_or(n, |it| it.first));
         }
         starts.push(n);
-        let advance = |r: Range<usize>| p.glyphs[r].iter().map(|g| g.advance_pt).sum::<f64>();
+        // `+ 0.0` turns the empty sum (-0.0) into +0.0 so hang and width never print as "-0".
+        let advance = |r: Range<usize>| p.glyphs[r].iter().map(|g| g.advance_pt).sum::<f64>() + 0.0;
         let mut lines_here = Vec::new();
         for (k, b) in breaks.iter().enumerate() {
             let range = starts[k]..starts[k + 1].max(starts[k]);
@@ -343,7 +344,7 @@ pub fn reflow(
                     hang_pt: advance(content_end..range.end),
                     source,
                     glyph_range: range,
-                    overfull: b.overfull || width_pt > slot.width_pt + EPS,
+                    overfull: b.overfull,
                     ratio: b.ratio,
                 },
             ));
