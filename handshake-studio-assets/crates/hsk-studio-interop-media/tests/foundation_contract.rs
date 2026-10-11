@@ -655,3 +655,97 @@ fn round_trip_export_and_native_formats_blocked() {
         let _ = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
     });
 }
+
+// ---- R3 regression: tick->frame math is Accord's (Timescale), not a local division -------------
+
+#[test]
+fn ticks_to_frames_exact_is_exact_on_every_table_rate_and_refuses_off_frame_ticks() {
+    bounded_case("ticks_to_frames_exact_table", || {
+        // (spelling, fps num, fps den, ticks per frame = 254_016_000_000 * den / num, by hand)
+        let table = [
+            ("23.976", 24_000u64, 1001u64, 10_594_584_000u64),
+            ("24", 24, 1, 10_584_000_000),
+            ("25", 25, 1, 10_160_640_000),
+            ("29.97", 30_000, 1001, 8_475_667_200),
+            ("30", 30, 1, 8_467_200_000),
+            ("48", 48, 1, 5_292_000_000),
+            ("50", 50, 1, 5_080_320_000),
+            ("59.94", 60_000, 1001, 4_237_833_600),
+            ("60", 60, 1, 4_233_600_000),
+            ("15", 15, 1, 16_934_400_000),
+        ];
+        for (text, num, den, tpf) in table {
+            let r = rate(text);
+            assert_eq!(r.ticks_per_frame(), tpf, "{text}");
+            assert_eq!(fps_fraction(r), (num, den), "{text}");
+            let last = u64::MAX / tpf;
+            for k in [0, 1, 2, 24, 90_000, 1_000_000, last] {
+                let ticks = Ticks::new(k * tpf);
+                assert_eq!(
+                    ticks_to_frames_exact(ticks, r).unwrap(),
+                    k,
+                    "{text} frame {k}"
+                );
+                // Independent oracle: frames = ticks * fps_num / (ticks_per_second * fps_den).
+                let oracle = u128::from(k * tpf) * u128::from(num)
+                    / (u128::from(TICKS_PER_SECOND) * u128::from(den));
+                assert_eq!(oracle, u128::from(k), "{text} frame {k}");
+                if k > 0 {
+                    let below = ticks_to_frames_exact(Ticks::new(k * tpf - 1), r);
+                    assert_eq!(
+                        below.unwrap_err().kind,
+                        ErrorKind::NotFrameAligned,
+                        "{text} {k}-"
+                    );
+                }
+                if k < last {
+                    let above = ticks_to_frames_exact(Ticks::new(k * tpf + 1), r);
+                    assert_eq!(
+                        above.unwrap_err().kind,
+                        ErrorKind::NotFrameAligned,
+                        "{text} {k}+"
+                    );
+                }
+            }
+        }
+        // Export goes through the same conversion: an off-frame record time is refused, typed.
+        let mut proposal = import(&edl(E1), "25").unwrap();
+        proposal.clips[0].source_in = Ticks::new(proposal.clips[0].source_in.value() + 1);
+        assert_eq!(
+            export_cmx3600(&proposal).unwrap_err().kind,
+            ErrorKind::NotFrameAligned
+        );
+    });
+}
+
+#[test]
+fn tick_frame_and_ratio_math_has_no_local_copy() {
+    bounded_case("no_local_tick_frame_math", || {
+        // R3 SMB-INTEROP-MEDIA: ticks_to_frames_exact divided by ticks-per-frame itself and a local
+        // gcd reduced speed ratios, both duplicating Accord. The timecode label arithmetic
+        // (nominal / timecode_to_frames / frames_to_timecode) is the D9 duplicate with pulse and
+        // stays until the Operator decides the interop-media -> pulse edge.
+        let time = include_str!("../src/time.rs");
+        let body = |signature: &str| {
+            let start = time
+                .find(signature)
+                .unwrap_or_else(|| panic!("{signature} missing"));
+            let end = time[start..].find("\n}\n").expect("function end");
+            &time[start..start + end]
+        };
+        let frames = body("pub fn ticks_to_frames_exact");
+        assert!(frames.contains("units_from_ticks"), "{frames}");
+        assert!(
+            !frames.contains("is_multiple_of") && !frames.contains('%') && !frames.contains(" / "),
+            "{frames}"
+        );
+        assert!(body("pub(crate) fn reduce").contains("Timescale::rational"));
+        assert!(!time.contains("fn gcd"), "reduced ratios come from Accord");
+        let manifest = include_str!("../Cargo.toml");
+        // Update this guard in the commit that adds the edge once D9 is decided.
+        assert!(
+            !manifest.contains("hsk-studio-pulse"),
+            "the pulse edge is blocked (D9)"
+        );
+    });
+}

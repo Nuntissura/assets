@@ -232,7 +232,7 @@ fn derive_speed(
         }
         return Ok((Speed::UNIT, Disposition::Editable));
     };
-    let (n, d) = reduce(span, duration);
+    let (n, d) = reduce(span, duration).map_err(|_| err(ErrorKind::InvalidSpeed, ev.line))?;
     // M2 ratio = (|m2_num| / m2_den) / (fps_n / fps_d)
     let m2_n = u128::from(m2_num.unsigned_abs()) * u128::from(fps.1);
     let m2_d = u128::from(m2_den) * u128::from(fps.0);

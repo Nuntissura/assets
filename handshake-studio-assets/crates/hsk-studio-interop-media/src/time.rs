@@ -4,10 +4,14 @@
 //! Rational-to-tick and fps arithmetic is Accord's (`Timescale`, `FrameRate::from_fps` /
 //! `fps_fraction`); this module keeps the interchange spellings, loss reporting and typed errors.
 //!
-//! NOTE: the timecode label arithmetic here (non-drop and drop-frame) deliberately mirrors
-//! `hsk-studio-pulse`, which owns time. `pulse` is not yet in this crate's dependencies (root
-//! `workspace.metadata.studio.dependencies.hsk-studio-interop-media`), so the minimal copy
-//! lives here until that edge is added; then these functions collapse onto pulse.
+//! Tick/frame conversion and rational reduction are Accord's too (`Timescale::units_from_ticks`,
+//! `Timescale::rational`); no local division or gcd remains for them.
+//!
+//! NOTE (D9, OPEN): the timecode label arithmetic here (non-drop and drop-frame: `nominal`,
+//! `timecode_to_frames`, `frames_to_timecode`) deliberately mirrors `hsk-studio-pulse`, which owns
+//! time. The interop-media -> pulse edge is BLOCKED on an Operator decision (it is not in the root
+//! `workspace.metadata.studio.dependencies.hsk-studio-interop-media`), so this crate must not add a
+//! pulse dependency; the minimal copy stays until D9 is decided, then it collapses onto pulse.
 use crate::error::{ErrorKind, InteropError, Result};
 use hsk_studio_accord::{FrameRate, Rounding, Ticks, Timescale};
 
@@ -15,17 +19,9 @@ fn fail<T>(kind: ErrorKind) -> Result<T> {
     Err(InteropError::new(kind))
 }
 
-fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a
-}
-
-/// Reduced ratio `num/den` (den > 0).
-pub(crate) fn reduce(num: u64, den: u64) -> (u64, u64) {
-    let g = gcd(num, den).max(1);
-    (num / g, den / g)
+/// Reduced ratio `num/den` (both non-zero), from Accord's reduced-rational constructor.
+pub(crate) fn reduce(num: u64, den: u64) -> Result<(u64, u64)> {
+    Ok(Timescale::rational(num, den)?.units_per_second())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,11 +240,14 @@ pub fn frames_to_ticks(frames: u64, rate: FrameRate) -> Result<Ticks> {
     Ticks::checked_frames(frames, rate).map_err(InteropError::from)
 }
 
-/// Exact frame count of a frame-aligned tick value.
+/// Exact frame count of a frame-aligned tick value: Accord's `units_from_ticks` at the frame
+/// rate; a remainder means the value is not on a frame boundary.
 pub fn ticks_to_frames_exact(ticks: Ticks, rate: FrameRate) -> Result<u64> {
-    let tpf = rate.ticks_per_frame();
-    if !ticks.value().is_multiple_of(tpf) {
-        return fail(ErrorKind::NotFrameAligned);
+    let (num, den) = rate.fps_fraction();
+    let frames = Timescale::rational(num, den)?.units_from_ticks(ticks, Rounding::Floor)?;
+    if frames.exact {
+        Ok(frames.value)
+    } else {
+        fail(ErrorKind::NotFrameAligned)
     }
-    Ok(ticks.value() / tpf)
 }
