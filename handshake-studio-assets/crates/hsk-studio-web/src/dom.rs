@@ -25,9 +25,10 @@
 //! parsing, scripting enabled or disabled) equals it after two documented normalisations: (N1) the browser inserts
 //! implied `html`, `head`, `body`, `tbody` (around a `tr` directly in a `table`) and `colgroup` (around a `col` directly
 //! in a `table`) elements that are not in the source; (N2) whitespace-only text at the document skeleton level (before
-//! `<html>`, between `<html>` and `<head>`, after `</body>` and `</html>`) is dropped or moved into the body. Every
-//! input where a browser re-parents, reorders or drops an authored node is refused typed; the detection rule is in
-//! `construction`. The name `image` in HTML content is read as `img` (13.2.6.4.7) and `</image>` is an ignored end tag.
+//! `<html>`, between `<html>` and `<head>`, after `</body>` and `</html>`) is dropped or moved into the body. Inputs
+//! where a browser re-parents, reorders or drops an authored node are refused typed; the detection rule and its proofs
+//! are in `construction`. The name `image` in HTML content is read as `img` (13.2.6.4.7) and `</image>` is an ignored
+//! end tag.
 //!
 //! Spans and decoded values: every node keeps the exact source span of its bytes. Decoded values (`WebDoc::local_name`,
 //! `WebDoc::attr_local_name`, `WebDoc::attr_value`, `ViewRow::text` of text nodes, `WebDoc::text_content`) are what the

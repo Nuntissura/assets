@@ -8,10 +8,14 @@
 //!   (`WebDoc` docs), not a refusal. Whitespace-only text at the document skeleton level is the one non-element case:
 //!   the "initial", "before html" and "before head" modes drop it, "after body" and "after after body" insert it into
 //!   the body element (13.2.6.4.1-.3, .19, .22).
-//! - It re-parents, reorders or drops authored nodes. Every such case is refused typed, by the detection rule below,
-//!   before the node is added. The rule is conservative: where the HTML Standard and html5ever 0.40.1 (the differential
-//!   oracle) use different element sets (scope: annotation-xml; special: keygen, search, isindex) the smaller boundary set
-//!   is used, so a token either engine would restructure is refused.
+//! - It re-parents, reorders or drops authored nodes. Such inputs are refused typed, by the detection rule below,
+//!   before the node is added (one input per rule row: `tests/html_parity.rs`
+//!   `tree_construction_that_moves_authored_nodes_is_refused_typed`; against html5ever: the differential target's
+//!   tree-construction group, `tree_construction_dispositions_are_pinned`, whole documents and the generated corpora,
+//!   all without a disagreement outside N1/N2). The rule is conservative: where the HTML Standard and html5ever 0.40.1
+//!   use different element sets (scope: annotation-xml; special: keygen, search, isindex) the smaller boundary set is
+//!   used, so a token either engine would restructure is refused; some inputs a browser keeps as authored are refused
+//!   too (template contents follow the "in body" rules here, an implied `tr` is not accepted).
 //!
 //! Detection rule (the crate already requires every non-void element to be closed by its own end tag, properly nested):
 //!
@@ -582,12 +586,19 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// An end tag the tree builder ignores (`</image>`: no element ever has that name in HTML content) is a node only
-    /// where it changes no insertion mode.
-    pub(super) fn tree_ignored_end(&self, span: &Range<usize>) -> Result<(), WebError> {
-        if matches!(self.mode, Mode::AfterBody | Mode::AfterAfterBody) {
-            return Err(refuse(UnsupportedKind::DocumentStructure, span));
+    /// An end tag the tree builder ignores (`</image>`: no element ever has that name in HTML content). In the "initial"
+    /// mode it is "anything else" first (the mode becomes "before html", so a later DOCTYPE is ignored); after `</body>`
+    /// or `</html>` it switches back to "in body", so it is refused there.
+    pub(super) fn tree_ignored_end(&mut self, span: &Range<usize>) -> Result<(), WebError> {
+        match self.mode {
+            Mode::AfterBody | Mode::AfterAfterBody => {
+                Err(refuse(UnsupportedKind::DocumentStructure, span))
+            }
+            Mode::Initial => {
+                self.mode = Mode::BeforeHtml;
+                Ok(())
+            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 }

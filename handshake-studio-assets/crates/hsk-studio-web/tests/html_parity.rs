@@ -129,6 +129,9 @@ fn image_start_tag_is_a_void_img_and_its_end_tag_is_ignored() {
                 outcome("<html><head></head><body></body></html></image>"),
                 "document_structure"
             );
+            // An ignored end tag first ends the "initial" mode, so a DOCTYPE after it is ignored too.
+            assert_eq!(outcome("</image><!DOCTYPE html>"), "ignored_token");
+            assert_eq!(outcome("<!DOCTYPE html></image><p>x</p>"), "ok");
         },
     );
 }

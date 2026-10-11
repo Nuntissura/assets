@@ -803,6 +803,49 @@ pub fn tree_construction_restructuring() -> Cases {
     )
 }
 
+/// 13.2.4.3 scopes, 13.2.4.4 markers, 13.2.6.4.7-.15: inputs the crate's tree-construction rule accepts because a scope
+/// boundary, a marker, a special element or the table structure keeps the authored tree (the accepting side of the
+/// detection rule in `dom::construction`); every one must be compared and agree after N1.
+pub fn tree_construction_accepted() -> Cases {
+    labelled(
+        "tree_ok",
+        &[
+            "<p><button><div>x</div></button></p>",
+            "<p><object><div>x</div></object></p>",
+            "<p><applet><div></div></applet></p>",
+            "<p><marquee><div></div></marquee></p>",
+            "<p><svg><foreignObject><div>x</div></foreignObject></svg></p>",
+            "<p><math><mi><div>x</div></mi></math></p>",
+            "<p><svg><desc><table></table></desc></svg></p>",
+            "<a><object><a>x</a></object></a>",
+            "<a><table><tr><td><a>x</a></td></tr></table></a>",
+            "<ul><li><ul><li>x</li></ul></li></ul>",
+            "<li><div><ul><li>x</li></ul></div></li>",
+            "<dl><dt><dl><dd>x</dd></dl></dt></dl>",
+            "<button><select><button>x</button></select></button>",
+            "<select><option>a</option><optgroup><option>b</option></optgroup></select>",
+            "<select><optgroup><option>a</option></optgroup><hr><option>b</option></select>",
+            "<ruby>a<rb>b</rb><rt>c</rt><rp>d</rp></ruby>",
+            "<ruby><rtc><rt>x</rt></rtc></ruby>",
+            "<table><caption>c</caption><colgroup><col></colgroup><thead><tr><th>h</th></tr></thead><tbody><tr><td>d</td></tr></tbody><tfoot><tr><td>f</td></tr></tfoot></table>",
+            "<table>\n  <tr>\n    <td>x</td>\n  </tr>\n</table>",
+            "<table><col span=2><col></table>",
+            "<table><col><tr><td>x</td></tr><tbody></tbody><tr></tr></table>",
+            "<table><script>x</script><style>y</style><tr><td>z</td></tr></table>",
+            "<table><input type=hidden><input TYPE=Hidden></table>",
+            "<form><table><tr><td><input></td></tr></table></form>",
+            "<nobr>a</nobr><nobr>b</nobr>",
+            "<h1>a</h1><div><h2>b</h2></div>",
+            "<p>a</p><hr><p>b</p>",
+            "<details><summary>s</summary><p>x</p></details>",
+            "<option>a</option><option>b</option>",
+            "<div><p>a</p><p>b</p></div>",
+            "<image src=a></image><image>",
+            "<pre>\n\nx</pre><listing>\r\ny</listing><textarea>\r\n</textarea>",
+        ],
+    )
+}
+
 /// 13.2.5.6-13.2.5.40 tag open, tag name, attribute name and attribute value states: delimiters, stray quotes, missing
 /// whitespace, case folding, self-closing flag, form feed.
 pub fn tag_and_attribute_syntax() -> Cases {

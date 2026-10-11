@@ -32,7 +32,7 @@ pub enum HiddenReason {
 pub struct PreviewNode {
     pub id: NodeId,
     pub depth: usize,
-    /// Lower-cased tag name.
+    /// Element name as the tree builder creates it (`WebDoc::local_name`: lower-cased, `image` read as `img`).
     pub tag: String,
     pub role: Option<String>,
     pub name: Option<String>,

@@ -415,6 +415,19 @@ fn tree_construction_restructuring_is_refused_or_read_like_a_browser() {
     );
 }
 
+#[test]
+fn tree_construction_accepted_inputs_read_like_a_browser() {
+    bounded_case(
+        "tree_construction_accepted_inputs_read_like_a_browser",
+        || {
+            let cases = corpus::tree_construction_accepted();
+            let all = cases.len();
+            // Every input is accepted (the floor is the whole group) and must agree after N1.
+            run_cases("tree_accepted", cases, Mode::Fragment, all)
+        },
+    );
+}
+
 /// Every input of the tree-construction group with its outcome: refused with the typed code the crate's detection rule
 /// gives it (`dom::construction`), or read like a browser after normalisation N1 (`agrees`). A change in either direction
 /// fails here, so the D9 disposition list cannot drift silently.
