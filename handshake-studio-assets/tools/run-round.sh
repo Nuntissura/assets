@@ -127,6 +127,7 @@ plan="$results/units.plan.tsv"
   || die "selection or .config/round-features.toml invalid (see above)"
 import json, pathlib, sys, tomllib
 
+sys.stdout.reconfigure(newline="\n")  # Windows text mode would end rows with CR (status "run\r")
 meta = json.load(open(sys.argv[1], encoding="utf-8"))
 matrix_path, sel_all, asked = pathlib.Path(sys.argv[2]), sys.argv[3] == "1", sys.argv[4:]
 ids = set(meta["workspace_members"])
@@ -208,6 +209,7 @@ rec default nextest '*' - run "$U_BUILD" "$U_RUN" .
 default_filter=$U_FILTER
 mkdir -p "$results/features" "$results/doctest"
 while IFS=$'\t' read -r kind crate feats status; do
+  status=${status%$'\r'}
   name=$crate; [ "$feats" != - ] && name="$crate+${feats//,/+}"
   if [ "$status" != run ]; then
     k=doctest; [ "$kind" = features ] && k=nextest
@@ -282,7 +284,7 @@ def doctests(path, unit, crate, feats):
 
 units, tests = [], []
 for line in (res / "units.tsv").read_text(encoding="utf-8").splitlines():
-    unit, kind, crate, feats, status, b, r, d = line.split("\t")
+    unit, kind, crate, feats, status, b, r, d = line.rstrip("\r").split("\t")
     feats = [] if feats == "-" else feats.split(",")
     u = {"unit": unit, "kind": kind, "crate": None if crate == "*" else crate, "features": feats, "status": status,
          "build_exit": num(b), "run_exit": num(r), "dir": None if d == "-" else d}
@@ -322,8 +324,8 @@ round_json = {
     "env_unset": E["RR_UNSET"], "target_dir": E["RR_TARGET"],
 }
 (res / "tests.json").write_text(json.dumps({"schema": "hsk.studio.round-tests@1", "sha": E["RR_SHA"], "tests": tests},
-                                           indent=1) + "\n", encoding="utf-8")
-(res / "round.json").write_text(json.dumps(round_json, indent=1) + "\n", encoding="utf-8")
+                                           indent=1) + "\n", encoding="utf-8", newline="\n")
+(res / "round.json").write_text(json.dumps(round_json, indent=1) + "\n", encoding="utf-8", newline="\n")
 for u in units:
     print("  %-48s %-16s build=%s run=%s pass=%d fail=%d skip=%d" % (u["unit"], u["status"], u["build_exit"],
           u["run_exit"], u["passed"], u["failed"], u["skipped"]))
