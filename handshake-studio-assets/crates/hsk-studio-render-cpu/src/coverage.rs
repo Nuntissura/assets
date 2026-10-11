@@ -1,7 +1,8 @@
 //! Path-fill coverage: exact winding of the true curve (kurbo, analytic on cubic segments) sampled
 //! on an N x N pixel-centred grid. Coverage is `hits / N^2`, so a pixel fully inside is exactly 1.0,
 //! fully outside exactly 0.0, and an axis-aligned half-pixel edge exactly 0.5 for even N.
-use crate::RenderError;
+use crate::plan_sink::{RenderError, unsupported};
+use hsk_studio_pigment::render_plan::BackendError;
 use hsk_studio_accord::Unit;
 use hsk_studio_nib::{Anchor, Point, Winding};
 use hsk_studio_pigment::Rect;
@@ -21,12 +22,12 @@ pub(crate) struct PreparedPath {
 fn px(value: hsk_studio_accord::Length, ppi: Option<f64>) -> Result<f64, RenderError> {
     let v = value
         .convert(Unit::Pixels, ppi)
-        .map_err(|_| RenderError::InvalidGeometry)?
+        .map_err(|_| unsupported("vector_geometry"))?
         .value();
     if v.is_finite() && v.abs() <= COORD_LIMIT {
         Ok(v)
     } else {
-        Err(RenderError::InvalidGeometry)
+        Err(unsupported("vector_geometry"))
     }
 }
 
@@ -49,13 +50,13 @@ impl PreparedPath {
         let even_odd = match winding {
             Winding::NonZero => false,
             Winding::EvenOdd => true,
-            Winding::None => return Err(RenderError::UnsupportedOp("path_fill_winding_none")),
+            Winding::None => return Err(unsupported("vector_winding_none")),
         };
         if anchors.len() < 2 {
-            return Err(RenderError::InvalidGeometry);
+            return Err(unsupported("vector_geometry"));
         }
         if !(1..=16).contains(&samples) {
-            return Err(RenderError::InvalidInput("aa_samples"));
+            return Err(unsupported("vector_aa_samples"));
         }
         let mut path = BezPath::new();
         let first = pair(anchors[0].position, ppi)?;
@@ -83,10 +84,10 @@ impl PreparedPath {
         let (x0, y0) = (bb.x0.floor(), bb.y0.floor());
         let (x1, y1) = (bb.x1.ceil(), bb.y1.ceil());
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
-            return Err(RenderError::InvalidGeometry);
+            return Err(unsupported("vector_geometry"));
         }
-        let width = u32::try_from((x1 - x0) as i64).map_err(|_| RenderError::Overflow)?;
-        let height = u32::try_from((y1 - y0) as i64).map_err(|_| RenderError::Overflow)?;
+        let width = u32::try_from((x1 - x0) as i64).map_err(|_| RenderError::Backend(BackendError::Overflow))?;
+        let height = u32::try_from((y1 - y0) as i64).map_err(|_| RenderError::Backend(BackendError::Overflow))?;
         Ok(Self {
             path,
             bounds: Rect {

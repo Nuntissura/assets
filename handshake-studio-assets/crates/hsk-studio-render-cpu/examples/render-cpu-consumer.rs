@@ -1,18 +1,30 @@
 //! Render-cpu consumer: `--descriptor` prints the module descriptor; `--selftest` renders the
-//! hand-computed oracle (backdrop 0.2/0.4/0.6, red source at opacity 0.5) and fails on mismatch.
+//! hand-computed oracle (backdrop 0.2/0.4/0.6, red source at opacity 0.5) through the pigment
+//! `RenderBackend` port and fails on mismatch.
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_pigment::Rect;
-use hsk_studio_render_cpu::{
-    BlendMode, BlendSpace, DESCRIPTOR, NoSources, Op, PixelSink, RenderOptions, RenderPlan,
-    Renderer, SinkError,
+use hsk_studio_pigment::{Mask, Rect};
+use hsk_studio_pigment::render_plan::{
+    AlphaConvention, BlendSpace, ColourTag, ExecuteRequest, Exactness, Group, Layer,
+    NoVector, OutputTarget, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
+    SampleFormat, SinkError, SourceKey, StudioBlendMode, TilePlanes, TileSink,
 };
+use hsk_studio_render_cpu::{DESCRIPTOR, Renderer};
 use std::env;
 
-struct OnePixel {
+struct NoSources;
+impl PlanSources for NoSources {
+    fn tile(&self, _key: SourceKey) -> Option<TilePlanes<'_>> {
+        None
+    }
+    fn mask(&self, _key: SourceKey) -> Option<Mask<'_>> {
+        None
+    }
+}
+struct Collect {
     colour: Vec<u8>,
     alpha: Vec<u8>,
 }
-impl PixelSink for OnePixel {
+impl TileSink for Collect {
     fn accept(&mut self, _rect: Rect, colour: &[u8], alpha: &[u8]) -> Result<(), SinkError> {
         self.colour.extend_from_slice(colour);
         self.alpha.extend_from_slice(alpha);
@@ -34,45 +46,72 @@ fn selftest() -> Result<(), String> {
         width: 1,
         height: 1,
     };
-    let fill = |rgba: [f32; 4], blend, opacity| Op::Fill {
-        rect: pixel,
-        rgba,
-        blend,
-        opacity,
-    };
     for (mode, expect) in [
-        (BlendMode::Normal, [0.6_f32, 0.2, 0.3]),
-        (BlendMode::Multiply, [0.2, 0.2, 0.3]),
+        (StudioBlendMode::Normal, [0.6_f32, 0.2, 0.3]),
+        (StudioBlendMode::Multiply, [0.2, 0.2, 0.3]),
     ] {
-        let plan = RenderPlan::new(
-            1,
-            pixel,
-            [0; 32],
-            BlendSpace::LinearLight,
-            vec![
-                fill([0.2, 0.4, 0.6, 1.0], BlendMode::Normal, 1.0),
-                fill([1.0, 0.0, 0.0, 1.0], mode, 0.5),
+        let layer = |input, mode, opacity| Layer {
+            input: PlanNodeId(input),
+            mode,
+            opacity,
+            fill_opacity: 1.0,
+            mask: None,
+        };
+        let plan: RenderPlan<NoVector> = RenderPlan {
+            revision: 1,
+            target: OutputTarget {
+                extent: pixel,
+                format: SampleFormat::RgbF32Le,
+                alpha: AlphaConvention::Straight,
+                space: ColourTag {
+                    profile_sha256: [0; 32],
+                    blend_space: BlendSpace::LinearLight,
+                },
+            },
+            nodes: vec![
+                PlanNode::Solid {
+                    rect: pixel,
+                    rgba: [0.2, 0.4, 0.6, 1.0],
+                },
+                PlanNode::Solid {
+                    rect: pixel,
+                    rgba: [1.0, 0.0, 0.0, 1.0],
+                },
+                PlanNode::Group(Group {
+                    isolated: true,
+                    layers: vec![
+                        layer(0, StudioBlendMode::Normal, 1.0),
+                        layer(1, mode, 0.5),
+                    ],
+                }),
             ],
-        );
-        let renderer = Renderer::new(RenderOptions::default()).map_err(|e| e.to_string())?;
-        let mut sink = OnePixel {
+            root: PlanNodeId(2),
+        };
+        let request = ExecuteRequest {
+            expected_revision: 1,
+            min_exactness: Exactness::Exact,
+            deadline: None,
+            max_working_bytes: 1 << 20,
+        };
+        let mut sink = Collect {
             colour: vec![],
             alpha: vec![],
         };
-        let receipt = renderer
-            .render(&plan, 1, &NoSources, &CancellationToken::default(), &mut sink)
-            .map_err(|e| e.to_string())?;
+        let receipt = Renderer::default()
+            .execute(&plan, &request, &NoSources, &CancellationToken::default(), &mut sink)
+            .map_err(|e| e.code().to_owned())?;
         let (c, a) = (f32s(&sink.colour), f32s(&sink.alpha));
         let ok = c.iter().zip(expect).all(|(got, want)| (got - want).abs() < 1e-6)
             && (a[0] - 1.0).abs() < 1e-6;
         println!(
-            "{} colour={c:?} alpha={a:?} chunks={} ops={}",
-            mode.name(),
+            "{} colour={c:?} alpha={a:?} chunks={} nodes={} lowest={}",
+            mode.key(),
             receipt.chunks,
-            receipt.ops_executed
+            receipt.nodes_executed,
+            receipt.exactness.lowest.key()
         );
         if !ok {
-            return Err(format!("{} oracle mismatch", mode.name()));
+            return Err(format!("{} oracle mismatch", mode.key()));
         }
     }
     Ok(())
