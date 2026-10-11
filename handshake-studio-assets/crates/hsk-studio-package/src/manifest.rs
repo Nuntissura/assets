@@ -156,6 +156,7 @@ impl Manifest {
 
     fn validate(&self, limits: &Limits) -> Result<(), PackageError> {
         let mut documents = 0usize;
+        let mut decoded_total = 0u64;
         let mut previous: Option<&str> = None;
         for entry in &self.entries {
             validate_name(entry.name.as_bytes(), limits.max_name_len)?;
@@ -204,6 +205,11 @@ impl Manifest {
             if !consistent || !codec_ok || !preview_ok {
                 return Err(PackageError::ManifestInvalid);
             }
+            // Aggregate decoded bound, from declarations alone: no entry has been decoded yet.
+            decoded_total = decoded_total
+                .checked_add(entry.raw_len.unwrap_or(entry.len))
+                .filter(|total| *total <= limits.max_decoded_total_bytes)
+                .ok_or(PackageError::TotalTooLarge)?;
         }
         if documents != 1 {
             return Err(PackageError::ManifestInvalid);

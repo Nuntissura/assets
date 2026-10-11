@@ -138,6 +138,10 @@ struct Raw<'a> {
     method: u16,
     data: &'a [u8],
     declared: Option<u32>,
+    /// Central-directory internal and external attributes (ignored by the reader).
+    attrs: (u16, u32),
+    /// Extra field bytes for the local header and the central directory.
+    extra: (&'a [u8], &'a [u8]),
 }
 fn stored<'a>(name: &'a str, data: &'a [u8]) -> Raw<'a> {
     Raw {
@@ -145,8 +149,12 @@ fn stored<'a>(name: &'a str, data: &'a [u8]) -> Raw<'a> {
         method: 0,
         data,
         declared: None,
+        attrs: (0, 0),
+        extra: (NO_EXTRA, NO_EXTRA),
     }
 }
+const NO_EXTRA: &[u8] = &[];
+const RAGGED_EXTRA: &[u8] = &[0x01, 0x00, 0x08];
 fn raw_zip(entries: &[Raw<'_>]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut cd = Vec::new();
@@ -169,12 +177,16 @@ fn raw_zip(entries: &[Raw<'_>]) -> Vec<u8> {
             buf.extend_from_slice(&size.to_le_bytes());
             buf.extend_from_slice(&size.to_le_bytes());
             buf.extend_from_slice(&(e.name.len() as u16).to_le_bytes());
-            buf.extend_from_slice(&0u16.to_le_bytes());
+            let extra = if local { e.extra.0 } else { e.extra.1 };
+            buf.extend_from_slice(&(extra.len() as u16).to_le_bytes());
             if !local {
-                buf.extend_from_slice(&[0u8; 2 + 2 + 2 + 4]);
+                buf.extend_from_slice(&[0u8; 2 + 2]); // comment length, disk
+                buf.extend_from_slice(&e.attrs.0.to_le_bytes());
+                buf.extend_from_slice(&e.attrs.1.to_le_bytes());
                 buf.extend_from_slice(&offset.to_le_bytes());
             }
             buf.extend_from_slice(e.name.as_bytes());
+            buf.extend_from_slice(extra);
             if local {
                 buf.extend_from_slice(e.data);
             }
@@ -1752,5 +1764,265 @@ fn preview_entry_kind_declared_lazy_and_verified() {
             pixels: vec![0; 80_000],
         };
         assert_eq!(write_err(&[huge]), "preview_mismatch");
+    });
+}
+
+// ===== review R2 regressions (package lane) ===================================================
+
+fn extra_record(id: u16, data: &[u8]) -> Vec<u8> {
+    let mut record = id.to_le_bytes().to_vec();
+    record.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    record.extend_from_slice(data);
+    record
+}
+
+#[test]
+fn r2_aggregate_decoded_bytes_bounded_from_manifest() {
+    bounded_case("r2_aggregate_decoded_bytes_bounded_from_manifest", || {
+        let (snapshot, assets, _) = fixture();
+        let package = write_to_vec(&snapshot, &assets);
+        let code_with = |bytes: &[u8], limits: &Limits| {
+            read_package(bytes, limits, folio::Budget::default(), &Granted, &token())
+                .unwrap_err()
+                .code()
+        };
+
+        // The review's scenario: many tiny entries each declaring 512 MiB decoded (valid per
+        // entry, far under the stored-size cap). Nine of them exceed the 4 GiB aggregate limit and
+        // are refused from the manifest alone, before anything is decoded or allocated.
+        let swarm = repack(&package, |entries| {
+            let mut manifest = manifest_of(entries);
+            for i in 0..9u64 {
+                let hex = format!("{i:064x}");
+                let name = format!("{ASSET_PREFIX}{hex}");
+                entries.push((name.clone(), vec![0u8; 16]));
+                manifest.entries.push(ManifestEntry {
+                    name,
+                    kind: EntryKind::Asset,
+                    sha256_hex: hex,
+                    len: 16,
+                    codec: Codec::Zstd,
+                    raw_len: Some(512 * 1024 * 1024),
+                    elem_size: None,
+                    preview: None,
+                });
+            }
+            manifest.entries.sort_by(|a, b| a.name.cmp(&b.name));
+            set_manifest(entries, &manifest);
+        });
+        assert_eq!(code_with(&swarm, &Limits::default()), "total_too_large");
+
+        // Gate proof: the same declarations pass the manifest under a roomier limit and only then
+        // fail on the (deliberately invalid) frames.
+        let declared = |raw_len: u64| {
+            repack(&package, |entries| {
+                let mut manifest = manifest_of(entries);
+                for row in manifest
+                    .entries
+                    .iter_mut()
+                    .filter(|r| r.kind == EntryKind::Asset)
+                {
+                    row.codec = Codec::Zstd;
+                    row.raw_len = Some(raw_len);
+                }
+                set_manifest(entries, &manifest);
+            })
+        };
+        let declared_pair = declared(600_000);
+        let tight = Limits {
+            max_decoded_total_bytes: 1_000_000,
+            ..Limits::default()
+        };
+        assert_eq!(code_with(&declared_pair, &tight), "total_too_large");
+        let roomy = Limits {
+            max_decoded_total_bytes: 1_300_000,
+            ..Limits::default()
+        };
+        assert_eq!(code_with(&declared_pair, &roomy), "decode_failed");
+        // The streaming reader applies the same bound.
+        let streamed = read_package_stream(
+            io::Cursor::new(declared_pair),
+            &tight,
+            folio::Budget::default(),
+            &Granted,
+            &token(),
+        );
+        assert_eq!(streamed.unwrap_err().code(), "total_too_large");
+    });
+}
+
+#[test]
+fn r2_zip64_locator_only_when_announced() {
+    bounded_case("r2_zip64_locator_only_when_announced", || {
+        // Plain archive whose last central-directory bytes spell the ZIP64 locator signature:
+        // internal attributes 0x4b50 + external attributes 0x0706 sit exactly 20 bytes before the
+        // EOCD (10-byte name). No EOCD sentinel, so it is an ordinary archive.
+        let trap = raw_zip(&[
+            stored("first.bin", b"1"),
+            Raw {
+                attrs: (0x4b50, 0x0706),
+                ..stored("last.bin12", b"2")
+            },
+        ]);
+        assert_eq!(
+            &trap[trap.len() - 42..trap.len() - 38],
+            &[0x50, 0x4b, 0x06, 0x07]
+        );
+        let metas = preflight(&trap, &Limits::default(), &token()).unwrap();
+        assert_eq!(metas.len(), 2);
+        let streamed = preflight_stream(&mut io::Cursor::new(&trap), &Limits::default(), &token());
+        assert_eq!(streamed.unwrap().len(), 2);
+
+        // When ZIP64 is announced the locator is mandatory: damage it and the archive is refused.
+        let (snapshot, assets, _) = fixture();
+        let mut forced = Vec::new();
+        write_package_with(
+            &snapshot,
+            &assets,
+            &Extras::default(),
+            &WriteOptions {
+                zip64: Zip64Policy::Always,
+                ..WriteOptions::default()
+            },
+            &Limits::default(),
+            &token(),
+            &mut forced,
+        )
+        .unwrap();
+        read(&forced).unwrap();
+        let mut damaged = forced.clone();
+        let locator = damaged.len() - 22 - 20;
+        damaged[locator] ^= 0xFF;
+        assert_eq!(read(&damaged).unwrap_err().code(), "malformed_archive");
+        // A sentinel with no locator is refused, never misread as a plain archive.
+        let mut lone = raw_zip(&[stored("a.bin", b"1")]);
+        let n = lone.len();
+        lone[n - 10..n - 6].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        assert_eq!(
+            preflight(&lone, &Limits::default(), &token())
+                .unwrap_err()
+                .code(),
+            "malformed_archive"
+        );
+    });
+}
+
+#[test]
+fn r2_unknown_extra_fields_and_hidden_bytes_refused() {
+    bounded_case("r2_unknown_extra_fields_and_hidden_bytes_refused", || {
+        let limits = Limits::default();
+        let code = |entry: Raw<'_>| {
+            preflight(&raw_zip(&[entry]), &limits, &token())
+                .unwrap_err()
+                .code()
+        };
+        // Info-ZIP Unicode Path (0x7075) could show another tool a different name.
+        let unicode_path = extra_record(0x7075, &[1, 0, 0, 0, 0]);
+        let central_only = Raw {
+            extra: (NO_EXTRA, unicode_path.as_slice()),
+            ..stored("a.bin", b"1")
+        };
+        assert_eq!(code(central_only), "unsupported_feature");
+        let local_only = Raw {
+            extra: (unicode_path.as_slice(), NO_EXTRA),
+            ..stored("a.bin", b"1")
+        };
+        assert_eq!(code(local_only), "unsupported_feature");
+        // An extended timestamp (0x5455) is just as foreign to the canonical form.
+        let timestamp = extra_record(0x5455, &[1, 0, 0, 0, 0]);
+        let both = Raw {
+            extra: (timestamp.as_slice(), timestamp.as_slice()),
+            ..stored("a.bin", b"1")
+        };
+        assert_eq!(code(both), "unsupported_feature");
+        // A ZIP64 record carrying bytes no sentinel field asked for hides data: refused.
+        let hidden = extra_record(0x0001, &[0xAA; 8]);
+        let padded = Raw {
+            extra: (NO_EXTRA, hidden.as_slice()),
+            ..stored("a.bin", b"1")
+        };
+        assert_eq!(code(padded), "malformed_archive");
+        // Block that does not tile into records, and a duplicated ZIP64 record.
+        let ragged = Raw {
+            extra: (NO_EXTRA, RAGGED_EXTRA),
+            ..stored("a.bin", b"1")
+        };
+        assert_eq!(code(ragged), "malformed_archive");
+        let twice = [extra_record(1, &[]), extra_record(1, &[])].concat();
+        let doubled = Raw {
+            extra: (twice.as_slice(), twice.as_slice()),
+            ..stored("a.bin", b"1")
+        };
+        assert_eq!(code(doubled), "malformed_archive");
+        // File-vs-directory conflicts hold under case folding too.
+        let conflict = raw_zip(&[stored("A", b"1"), stored("a/b", b"2")]);
+        assert_eq!(
+            preflight(&conflict, &limits, &token()).unwrap_err().code(),
+            "path_conflict"
+        );
+        // The writer's own output (ZIP64 extras only) is unaffected.
+        let (snapshot, assets, _) = fixture();
+        read(&write_to_vec(&snapshot, &assets)).unwrap();
+    });
+}
+
+#[test]
+fn r2_descriptor_matches_api_and_limits() {
+    bounded_case("r2_descriptor_matches_api_and_limits", || {
+        let descriptor: Value = serde_json::from_str(DESCRIPTOR).expect("descriptor is JSON");
+        let text = |key: &str| descriptor[key].as_str().unwrap_or_default().to_owned();
+        let api = text("api");
+        for name in [
+            "write_package",
+            "write_package_with",
+            "Extras",
+            "read_package",
+            "read_package_stream",
+            "PackageReader",
+            "preflight",
+            "preflight_stream",
+            "list_previews",
+            "read_preview",
+            "byte_shuffle",
+            "byte_unshuffle",
+            "save_atomic",
+            "save_atomic_with",
+            "sweep_stale_temps",
+            "outcome_for",
+            "report",
+        ] {
+            assert!(api.contains(name), "descriptor api misses {name}");
+        }
+        let consumer = text("consumer");
+        for flag in [
+            "--write",
+            "--read",
+            "--sweep",
+            "--zstd",
+            "--shuffle",
+            "--preview",
+            "--descriptor",
+        ] {
+            assert!(consumer.contains(flag), "descriptor consumer misses {flag}");
+        }
+        // Limits are the real defaults, key for key.
+        let d = Limits::default();
+        let expected = json!({
+            "max_entries": d.max_entries,
+            "max_entry_bytes": d.max_entry_bytes,
+            "max_total_bytes": d.max_total_bytes,
+            "max_decoded_total_bytes": d.max_decoded_total_bytes,
+            "max_name_len": d.max_name_len,
+            "max_manifest_bytes": d.max_manifest_bytes,
+            "max_window_bytes": d.max_window_bytes,
+            "max_preview_bytes": d.max_preview_bytes,
+            "max_preview_dimension": d.max_preview_dimension,
+        });
+        assert_eq!(descriptor["limits"], expected);
+        // Capabilities that exist are not listed as pending.
+        let authority = text("authority").to_lowercase();
+        assert!(!authority.contains("streaming from read"));
+        assert!(!authority.contains("stale-temp sweep after"));
+        assert!(text("container").contains("shuffle_zstd"));
     });
 }

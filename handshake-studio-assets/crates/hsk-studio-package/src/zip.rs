@@ -138,7 +138,7 @@ pub(crate) fn validate_name_set<'a>(
     }
     for name in &exact {
         for (index, _) in name.match_indices('/') {
-            if exact.contains(&name[..index]) {
+            if folded.contains(&name[..index].to_ascii_lowercase()) {
                 return Err(PackageError::PathConflict);
             }
         }
@@ -516,7 +516,8 @@ impl<'a> Rd<'a> {
     }
 }
 
-/// Finds the (single) ZIP64 extra field; the extra block must tile exactly into TLV records.
+/// Returns the data of the single ZIP64 extra field; it must be the only record in the block,
+/// and the block must tile exactly into TLV records (no hidden bytes).
 fn zip64_extra(extra: &[u8]) -> Result<&[u8], PackageError> {
     let mut rd = Rd::at(extra, 0);
     let mut found: Option<&[u8]> = None;
@@ -524,12 +525,15 @@ fn zip64_extra(extra: &[u8]) -> Result<&[u8], PackageError> {
         let id = rd.u16()?;
         let size = usize::from(rd.u16()?);
         let data = rd.take(size)?;
-        if id == EXTRA_ZIP64 {
-            if found.is_some() {
-                return Err(malformed("duplicate_zip64_extra"));
-            }
-            found = Some(data);
+        // The writer emits no other extra field; anything else (Unicode path, timestamps,
+        // unknown ids) could show another tool different content, so it is refused outright.
+        if id != EXTRA_ZIP64 {
+            return Err(PackageError::UnsupportedFeature);
         }
+        if found.is_some() {
+            return Err(malformed("duplicate_zip64_extra"));
+        }
+        found = Some(data);
     }
     Ok(found.unwrap_or(&[]))
 }
@@ -593,18 +597,20 @@ fn parse_end(src: &mut dyn Source, limits: &Limits) -> Result<EndRecord, Package
     if disk != 0 || cd_disk != 0 || n_disk != n_total || comment != 0 {
         return Err(malformed("eocd_fields"));
     }
-    let locator_pos = eocd_pos.checked_sub(LOCATOR64_LEN as u64);
-    let mut locator = [0u8; LOCATOR64_LEN];
-    let has_locator = match locator_pos {
-        Some(p) => {
-            src.read_at(p, &mut locator)?;
-            Rd::at(&locator, 0).u32()? == SIG_LOCATOR64
+    // ZIP64 is announced only by a sentinel inside the EOCD, and the locator is then mandatory.
+    // Locator-looking bytes without a sentinel are ordinary central-directory bytes (an attribute
+    // or offset value can equal the signature), so they are never sniffed.
+    let needs64 = n_total == SENT16 || cd_size32 == SENT32 || cd_offset32 == SENT32;
+    let (entries, cd_size, cd_offset, region_end) = if needs64 {
+        let locator_pos = eocd_pos
+            .checked_sub(LOCATOR64_LEN as u64)
+            .ok_or_else(|| malformed("zip64_locator_missing"))?;
+        let mut locator = [0u8; LOCATOR64_LEN];
+        src.read_at(locator_pos, &mut locator)?;
+        let mut rd = Rd::at(&locator, 0);
+        if rd.u32()? != SIG_LOCATOR64 {
+            return Err(malformed("zip64_locator_missing"));
         }
-        None => false,
-    };
-    let (entries, cd_size, cd_offset, region_end) = if has_locator {
-        let locator_pos = locator_pos.ok_or_else(|| malformed("locator"))?;
-        let mut rd = Rd::at(&locator, 4);
         if rd.u32()? != 0 {
             return Err(malformed("locator_disk"));
         }
@@ -642,9 +648,6 @@ fn parse_end(src: &mut dyn Source, limits: &Limits) -> Result<EndRecord, Package
         }
         (n64, size64, offset64, eocd64_offset)
     } else {
-        if n_total == SENT16 || cd_size32 == SENT32 || cd_offset32 == SENT32 {
-            return Err(malformed("zip64_required"));
-        }
         (
             u64::from(n_total),
             u64::from(cd_size32),

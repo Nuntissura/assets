@@ -155,7 +155,7 @@ fn run() -> Result<(), String> {
             println!(
                 "{}",
                 summary_json(&[
-                    ("document_id", format!("\"{}\"", opened.manifest.document_id)),
+                    ("document_id", serde_json::to_string(&opened.manifest.document_id).unwrap_or_default()),
                     ("revision", opened.manifest.revision.to_string()),
                     ("editable", opened.snapshot().is_some().to_string()),
                     ("assets", opened.assets.len().to_string()),

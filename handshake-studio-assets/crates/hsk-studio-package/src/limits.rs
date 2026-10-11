@@ -1,5 +1,7 @@
 //! Bounded-loading limits. Every untrusted size is checked against these before any allocation
-//! or decode; the container is STORE-only, so nothing is ever inflated and no ratio bomb exists.
+//! or decode. The archive itself is STORE-only, but manifest-declared blobs may be zstd (optionally
+//! shuffled): their decoded size is bounded per entry (`max_entry_bytes`), in aggregate
+//! (`max_decoded_total_bytes`, summed from the manifest before decoding) and by window size.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -13,6 +15,9 @@ pub struct Limits {
     pub max_name_len: u16,
     /// Maximum `manifest.json` size.
     pub max_manifest_bytes: u64,
+    /// Maximum sum of all decoded entry sizes (`raw_len` of compressed entries, stored length
+    /// otherwise), checked from the manifest before any entry is decoded or allocated.
+    pub max_decoded_total_bytes: u64,
     /// Maximum zstd window a compressed blob may declare (decoder allocation bound).
     pub max_window_bytes: u64,
     /// Maximum decoded size of one preview image.
@@ -29,6 +34,7 @@ impl Default for Limits {
             max_total_bytes: 4 * 1024 * 1024 * 1024,
             max_name_len: 255,
             max_manifest_bytes: 16 * 1024 * 1024,
+            max_decoded_total_bytes: 4 * 1024 * 1024 * 1024,
             max_window_bytes: 64 * 1024 * 1024,
             max_preview_bytes: 16 * 1024 * 1024,
             max_preview_dimension: 16_384,
