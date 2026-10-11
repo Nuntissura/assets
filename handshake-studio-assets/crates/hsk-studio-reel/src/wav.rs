@@ -1,6 +1,10 @@
 //! WAV / RIFF PCM provider: bounded streaming sample-range decode and exact-header encode.
 //! Integer PCM (8/16/24/32 bit) and IEEE float (32/64 bit); samples are delivered in file byte order.
 //! Non-PCM tags (ADPCM, MP3-in-WAV, A-law ...) are a typed `CodecUnavailable` naming the tag.
+//!
+//! Every chunk size, offset, sample count and duration taken from the file or the caller uses checked
+//! arithmetic and a typed error (V4-01); `v4_hardening.rs` proves the u32-max and aggregate cases.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
 use crate::time::exact_ticks_per_unit;
@@ -11,6 +15,8 @@ pub const WAV_PROVIDER_ID: &str = "wav-pcm";
 const DECODER_VERSION: &str = "1";
 const MAX_CHUNKS_BEFORE_DATA: u32 = 256;
 const MAX_FMT_BYTES: u32 = 64;
+/// Largest data chunk the 32-bit RIFF fields can describe with the 36-byte header and pad byte to spare.
+const MAX_ENCODE_DATA_BYTES: u64 = u32::MAX as u64 - 64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WavProvider;
@@ -27,19 +33,39 @@ struct WavInfo {
 }
 
 impl WavInfo {
+    // `block_align` is validated non-zero in `parse_wav`; a zero here would mean an empty stream, never a
+    // bogus count.
     fn declared_samples(&self) -> u64 {
-        self.data_declared / u64::from(self.block_align)
+        self.data_declared
+            .checked_div(u64::from(self.block_align))
+            .unwrap_or(0)
     }
     fn available_samples(&self) -> u64 {
-        self.data_available.min(self.data_declared) / u64::from(self.block_align)
+        self.data_available
+            .min(self.data_declared)
+            .checked_div(u64::from(self.block_align))
+            .unwrap_or(0)
     }
 }
 
-fn le16(b: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([b[at], b[at + 1]])
+fn le_array<const N: usize>(b: &[u8], at: usize) -> Result<[u8; N], ReelError> {
+    at.checked_add(N)
+        .and_then(|end| b.get(at..end))
+        .and_then(|bytes| <[u8; N]>::try_from(bytes).ok())
+        .ok_or(ReelError::Corrupt { what: "wav-fmt" })
 }
-fn le32(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+fn le16(b: &[u8], at: usize) -> Result<u16, ReelError> {
+    le_array::<2>(b, at).map(u16::from_le_bytes)
+}
+fn le32(b: &[u8], at: usize) -> Result<u32, ReelError> {
+    le_array::<4>(b, at).map(u32::from_le_bytes)
+}
+
+/// `offset + by` for a position in the file: a sum that does not fit u64 is a limit, never a wrap.
+fn advance(offset: u64, by: u64) -> Result<u64, ReelError> {
+    offset.checked_add(by).ok_or(ReelError::LimitExceeded {
+        what: "wav-offset",
+    })
 }
 
 fn parse_wav(
@@ -72,9 +98,9 @@ fn parse_wav(
         check_cancel(cancel)?;
         let mut hdr = [0u8; 8];
         read_exact_structural(src, &mut hdr, "wav-chunk-header")?;
-        read += 8;
+        read = advance(read, 8)?;
         let id = [hdr[0], hdr[1], hdr[2], hdr[3]];
-        let size = le32(&hdr, 4);
+        let size = le32(&hdr, 4)?;
         if read > limits.max_probe_bytes {
             return Err(ReelError::LimitExceeded {
                 what: "probe-bytes",
@@ -90,26 +116,26 @@ fn parse_wav(
                 let mut buf = [0u8; MAX_FMT_BYTES as usize];
                 let body = &mut buf[..size as usize];
                 read_exact_structural(src, body, "wav-fmt")?;
-                read += u64::from(size);
-                let mut tag = le16(body, 0);
+                read = advance(read, u64::from(size))?;
+                let mut tag = le16(body, 0)?;
                 if tag == 0xFFFE {
                     if size < 40 {
                         return Err(ReelError::Corrupt {
                             what: "wav-extensible-size",
                         });
                     }
-                    tag = le16(body, 24);
+                    tag = le16(body, 24)?;
                 }
                 fmt = Some((
                     tag,
-                    le16(body, 2),
-                    le32(body, 4),
-                    le16(body, 12),
-                    le16(body, 14),
+                    le16(body, 2)?,
+                    le32(body, 4)?,
+                    le16(body, 12)?,
+                    le16(body, 14)?,
                 ));
                 if size % 2 == 1 {
                     src.seek(SeekFrom::Current(1))?;
-                    read += 1;
+                    read = advance(read, 1)?;
                 }
             }
             b"data" => {
@@ -140,7 +166,9 @@ fn parse_wav(
                         what: "wav-channels-or-rate",
                     });
                 }
-                if u32::from(block_align) != u32::from(channels) * u32::from(bits / 8) {
+                if Some(u32::from(block_align))
+                    != u32::from(channels).checked_mul(u32::from(bits / 8))
+                {
                     return Err(ReelError::Corrupt {
                         what: "wav-block-align",
                     });
@@ -163,14 +191,17 @@ fn parse_wav(
                 });
             }
             _ => {
-                let skip = u64::from(size) + u64::from(size % 2);
+                let skip = advance(u64::from(size), u64::from(size % 2))?;
                 if read.saturating_add(skip) > file_len {
                     return Err(ReelError::Corrupt {
                         what: "wav-chunk-exceeds-file",
                     });
                 }
-                src.seek(SeekFrom::Current(skip as i64))?;
-                read += skip;
+                let relative = i64::try_from(skip).map_err(|_| ReelError::LimitExceeded {
+                    what: "wav-offset",
+                })?;
+                src.seek(SeekFrom::Current(relative))?;
+                read = advance(read, skip)?;
             }
         }
     }
@@ -257,7 +288,13 @@ impl MediaProvider for WavProvider {
             what: "sample-rate-not-tick-exact",
         })?;
         let block = usize::from(info.block_align);
-        let start = req.start_pts.value() / tps;
+        let start = req
+            .start_pts
+            .value()
+            .checked_div(tps)
+            .ok_or(ReelError::Corrupt {
+                what: "wav-zero-sample-duration",
+            })?;
         let aligned = req.start_pts.value().is_multiple_of(tps);
         let want_end = start
             .checked_add(req.count)
@@ -274,7 +311,11 @@ impl MediaProvider for WavProvider {
         }
         let available = info.available_samples();
         let deliver_end = want_end.min(available);
-        let chunk_samples = (limits.max_chunk_bytes / block) as u64;
+        let chunk_samples = limits
+            .max_chunk_bytes
+            .checked_div(block)
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
         if chunk_samples == 0 {
             return Err(ReelError::LimitExceeded {
                 what: "chunk-smaller-than-sample",
@@ -288,15 +329,25 @@ impl MediaProvider for WavProvider {
             })?;
         src.seek(SeekFrom::Start(first_byte))?;
 
-        let cap = chunk_samples.min(deliver_end.saturating_sub(start)) as usize * block;
+        let slice_bytes = |samples: u64| -> Result<usize, ReelError> {
+            usize::try_from(samples)
+                .ok()
+                .and_then(|n| n.checked_mul(block))
+                .ok_or(ReelError::LimitExceeded {
+                    what: "chunk-bytes",
+                })
+        };
+        let cap = slice_bytes(chunk_samples.min(deliver_end.saturating_sub(start)))?;
         let mut buf = vec![0u8; cap];
         let mut cursor = start;
         let (mut chunks, mut payload) = (0u32, 0u64);
         while cursor < deliver_end {
             check_cancel(cancel)?;
-            let n = chunk_samples.min(deliver_end - cursor);
-            let bytes = n as usize * block;
-            read_exact_or_truncated(src, &mut buf[..bytes], cursor - start)?;
+            let remaining = deliver_end.saturating_sub(cursor);
+            let n = chunk_samples.min(remaining);
+            let bytes = slice_bytes(n)?;
+            let done = cursor.saturating_sub(start);
+            read_exact_or_truncated(src, &mut buf[..bytes], done)?;
             sink.accept(Chunk {
                 kind: ChunkKind::AudioSamples,
                 pts: i64::try_from(tick_span(cursor, tps)?.value())
@@ -309,10 +360,18 @@ impl MediaProvider for WavProvider {
                 trim_start: 0,
                 bytes: &buf[..bytes],
             })?;
-            cursor += n;
-            chunks += 1;
-            payload += bytes as u64;
+            cursor = advance(cursor, n)?;
+            chunks = chunks.checked_add(1).ok_or(ReelError::LimitExceeded {
+                what: "chunk-count",
+            })?;
+            payload = u64::try_from(bytes)
+                .ok()
+                .and_then(|b| payload.checked_add(b))
+                .ok_or(ReelError::LimitExceeded {
+                    what: "bytes-read",
+                })?;
         }
+        let bytes_read = advance(info.header_bytes, payload)?;
         let delivered = deliver_end.saturating_sub(start);
         if deliver_end < want_end {
             return Err(ReelError::Truncated { delivered });
@@ -346,7 +405,7 @@ impl MediaProvider for WavProvider {
             decoder_id: WAV_PROVIDER_ID,
             decoder_version: DECODER_VERSION,
             chunks,
-            bytes_read: info.header_bytes + payload,
+            bytes_read,
             complete: true,
             ticks_exact: true,
             video: None,
@@ -387,30 +446,52 @@ impl MediaProvider for WavProvider {
                 what: "wav-encode-format",
             });
         }
-        let block = u32::from(channels) * u32::from(bits / 8);
+        let block = u32::from(channels)
+            .checked_mul(u32::from(bits / 8))
+            .ok_or(ReelError::Unsupported {
+                what: "wav-encode-format",
+            })?;
         let data_bytes = spec
             .total_units
             .checked_mul(u64::from(block))
-            .filter(|b| *b <= u64::from(u32::MAX) - 64)
+            .filter(|b| *b <= MAX_ENCODE_DATA_BYTES)
             .ok_or(ReelError::LimitExceeded {
                 what: "wav-data-size",
             })?;
         let pad = data_bytes % 2;
+        let size_error = || ReelError::LimitExceeded {
+            what: "wav-data-size",
+        };
+        // RIFF size = 36 header bytes after the 8-byte preamble + data + pad byte.
+        let riff_size = data_bytes
+            .checked_add(pad)
+            .and_then(|d| d.checked_add(36))
+            .and_then(|total| u32::try_from(total).ok())
+            .ok_or_else(size_error)?;
+        let data_size = u32::try_from(data_bytes).map_err(|_| size_error())?;
+        let byte_rate = rate.checked_mul(block).ok_or(ReelError::LimitExceeded {
+            what: "wav-byte-rate",
+        })?;
+        let block_align = u16::try_from(block).map_err(|_| ReelError::Unsupported {
+            what: "wav-encode-format",
+        })?;
         let mut header = Vec::with_capacity(44);
         header.extend_from_slice(b"RIFF");
-        header.extend_from_slice(&((36 + data_bytes + pad) as u32).to_le_bytes());
+        header.extend_from_slice(&riff_size.to_le_bytes());
         header.extend_from_slice(b"WAVEfmt ");
         header.extend_from_slice(&16u32.to_le_bytes());
         header.extend_from_slice(&(if float { 3u16 } else { 1u16 }).to_le_bytes());
         header.extend_from_slice(&channels.to_le_bytes());
         header.extend_from_slice(&rate.to_le_bytes());
-        header.extend_from_slice(&rate.saturating_mul(block).to_le_bytes());
-        header.extend_from_slice(&(block as u16).to_le_bytes());
+        header.extend_from_slice(&byte_rate.to_le_bytes());
+        header.extend_from_slice(&block_align.to_le_bytes());
         header.extend_from_slice(&bits.to_le_bytes());
         header.extend_from_slice(b"data");
-        header.extend_from_slice(&(data_bytes as u32).to_le_bytes());
+        header.extend_from_slice(&data_size.to_le_bytes());
         out.write_all(&header)?;
-        let mut bytes_written = header.len() as u64;
+        let mut bytes_written = u64::try_from(header.len()).map_err(|_| ReelError::LimitExceeded {
+            what: "bytes-written",
+        })?;
 
         let mut buf = Vec::new();
         let mut written = 0u64;
@@ -428,7 +509,10 @@ impl MediaProvider for WavProvider {
                 canceled = true;
                 break;
             }
-            if buf.len() as u64 != units * u64::from(block) {
+            // `units` comes from the source: a product that wraps must not be able to equal the
+            // buffer length.
+            let expected = units.checked_mul(u64::from(block));
+            if expected.is_none_or(|e| u64::try_from(buf.len()) != Ok(e)) {
                 return Err(ReelError::Corrupt {
                     what: "chunk-size-mismatch",
                 });
@@ -438,19 +522,25 @@ impl MediaProvider for WavProvider {
                     what: "chunk-bytes",
                 });
             }
-            if written + units > spec.total_units {
-                return Err(ReelError::LimitExceeded {
+            let new_total = written
+                .checked_add(units)
+                .filter(|total| *total <= spec.total_units)
+                .ok_or(ReelError::LimitExceeded {
                     what: "source-exceeds-declared",
-                });
-            }
+                })?;
             out.write_all(&buf)?;
-            written += units;
-            bytes_written += buf.len() as u64;
+            written = new_total;
+            bytes_written = u64::try_from(buf.len())
+                .ok()
+                .and_then(|b| bytes_written.checked_add(b))
+                .ok_or(ReelError::LimitExceeded {
+                    what: "bytes-written",
+                })?;
         }
         let complete = !canceled && written == spec.total_units;
         if complete && pad == 1 {
             out.write_all(&[0])?;
-            bytes_written += 1;
+            bytes_written = advance(bytes_written, 1)?;
         }
         Ok(EncodeReceipt {
             codec: WAV_PROVIDER_ID.into(),

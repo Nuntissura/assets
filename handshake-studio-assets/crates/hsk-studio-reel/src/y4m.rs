@@ -1,6 +1,10 @@
 //! YUV4MPEG2 (Y4M) provider: license-free raw video, 8-bit 4:2:0 / 4:2:2 / 4:4:4 / mono, progressive,
 //! plain `FRAME\n` records. Decode streams ONE frame at a time into a reused buffer; peak memory is one
 //! frame plus the header. Frame rate must map to an exact broadcast tick duration (`FrameRate`).
+//!
+//! Every size, offset, count and duration derived from header numbers or caller input uses checked
+//! arithmetic and a typed error (V4-01); `v4_hardening.rs` proves the u64/u32-max and aggregate cases.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
 use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
@@ -11,6 +15,7 @@ const DECODER_VERSION: &str = "1";
 const MAX_HEADER_BYTES: usize = 4096;
 const MAX_DIMENSION: u32 = 65_536;
 const FRAME_MARKER: &[u8; 6] = b"FRAME\n";
+const FRAME_MARKER_LEN: u64 = FRAME_MARKER.len() as u64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Y4mProvider;
@@ -61,6 +66,8 @@ struct Y4mInfo {
     ticks_per_frame: u64,
     frame_bytes: u64,
     header_bytes: u64,
+    /// The 6-byte frame marker plus one frame of pixel bytes.
+    record: u64,
     /// Whole `FRAME` records present in the file.
     complete_frames: u64,
 }
@@ -84,7 +91,11 @@ fn parse_y4m(src: &mut dyn ReadSeek, file_len: u64, limits: &Limits) -> Result<Y
             if n == 0 {
                 break;
             }
-            filled += n;
+            // A `Read` that reports more bytes than the slice it was given is broken: refuse.
+            filled = filled
+                .checked_add(n)
+                .filter(|total| *total <= cap)
+                .ok_or(ReelError::Io(std::io::ErrorKind::InvalidData))?;
         }
         filled
     };
@@ -175,16 +186,36 @@ fn parse_y4m(src: &mut dyn ReadSeek, file_len: u64, limits: &Limits) -> Result<Y
             what: "frame-bytes",
         });
     }
-    let header_bytes = end as u64 + 1;
-    let record = frame_bytes + FRAME_MARKER.len() as u64;
+    let header_bytes = u64::try_from(end)
+        .ok()
+        .and_then(|e| e.checked_add(1))
+        .ok_or(ReelError::LimitExceeded {
+            what: "y4m-header-bytes",
+        })?;
+    let record = record_bytes(frame_bytes)?;
     Ok(Y4mInfo {
         width,
         height,
         ticks_per_frame: frame_rate.ticks_per_frame(),
         frame_bytes,
         header_bytes,
-        complete_frames: file_len.saturating_sub(header_bytes) / record,
+        record,
+        complete_frames: file_len
+            .saturating_sub(header_bytes)
+            .checked_div(record)
+            .ok_or(ReelError::Corrupt {
+                what: "y4m-zero-record",
+            })?,
     })
+}
+
+/// Bytes of one `FRAME` record: marker plus pixel bytes (never zero).
+fn record_bytes(frame_bytes: u64) -> Result<u64, ReelError> {
+    frame_bytes
+        .checked_add(FRAME_MARKER_LEN)
+        .ok_or(ReelError::LimitExceeded {
+            what: "frame-bytes",
+        })
 }
 
 fn tick_span(units: u64, tpf: u64) -> Result<Ticks, ReelError> {
@@ -259,14 +290,20 @@ impl MediaProvider for Y4mProvider {
         let file_len = verify_grant(src, &req.grant, req.expected_revision)?;
         let info = parse_y4m(src, file_len, limits)?;
         let tpf = info.ticks_per_frame;
-        let start = req.start_pts.value() / tpf;
+        let start = req
+            .start_pts
+            .value()
+            .checked_div(tpf)
+            .ok_or(ReelError::Corrupt {
+                what: "y4m-zero-frame-duration",
+            })?;
         let aligned = req.start_pts.value().is_multiple_of(tpf);
         let want_end = start
             .checked_add(req.count)
             .ok_or(ReelError::LimitExceeded {
                 what: "frame-range",
             })?;
-        let record = info.frame_bytes + FRAME_MARKER.len() as u64;
+        let record = info.record;
         let first_byte = start
             .checked_mul(record)
             .and_then(|b| b.checked_add(info.header_bytes))
@@ -274,12 +311,25 @@ impl MediaProvider for Y4mProvider {
                 what: "byte-offset",
             })?;
         src.seek(SeekFrom::Start(first_byte))?;
+        // The most the source can still hold at the seek position: a frame buffer is allocated only
+        // when one whole record fits there, whatever the header (and a generous `Limits`) declare.
+        let available = file_len.saturating_sub(first_byte);
+        let frame_len = usize::try_from(info.frame_bytes).map_err(|_| ReelError::LimitExceeded {
+            what: "frame-bytes",
+        })?;
 
-        let mut buf = vec![0u8; info.frame_bytes as usize];
-        let (mut delivered, mut marker) = (0u64, [0u8; 6]);
-        while start + delivered < want_end {
+        let mut buf: Vec<u8> = Vec::new();
+        // One counter drives the loop, the chunk index and the receipt, so they cannot disagree; the
+        // receipt field is u32, so the 2^32-th chunk is refused instead of wrapping.
+        let (mut chunks, mut marker) = (0u32, [0u8; 6]);
+        while u64::from(chunks) < req.count {
             check_cancel(cancel)?;
-            let index = start + delivered;
+            let delivered = u64::from(chunks);
+            let index = start
+                .checked_add(delivered)
+                .ok_or(ReelError::LimitExceeded {
+                    what: "frame-range",
+                })?;
             read_exact_or_truncated(src, &mut marker, delivered)?;
             if &marker != FRAME_MARKER {
                 return Err(if marker.starts_with(b"FRAME ") {
@@ -292,7 +342,16 @@ impl MediaProvider for Y4mProvider {
                     }
                 });
             }
+            if buf.len() != frame_len {
+                if available < record {
+                    return Err(ReelError::Truncated { delivered });
+                }
+                buf = vec![0u8; frame_len];
+            }
             read_exact_or_truncated(src, &mut buf, delivered)?;
+            chunks = chunks.checked_add(1).ok_or(ReelError::LimitExceeded {
+                what: "chunk-count",
+            })?;
             sink.accept(Chunk {
                 kind: ChunkKind::VideoFrame,
                 pts: i64::try_from(tick_span(index, tpf)?.value())
@@ -305,8 +364,14 @@ impl MediaProvider for Y4mProvider {
                 trim_start: 0,
                 bytes: &buf,
             })?;
-            delivered += 1;
         }
+        let delivered = u64::from(chunks);
+        let bytes_read = delivered
+            .checked_mul(record)
+            .and_then(|b| b.checked_add(info.header_bytes))
+            .ok_or(ReelError::LimitExceeded {
+                what: "byte-offset",
+            })?;
         Ok(SegmentReceipt {
             requested: Span {
                 start_pts: req.start_pts,
@@ -335,8 +400,8 @@ impl MediaProvider for Y4mProvider {
             codec: Y4M_PROVIDER_ID.into(),
             decoder_id: Y4M_PROVIDER_ID,
             decoder_version: DECODER_VERSION,
-            chunks: delivered as u32,
-            bytes_read: info.header_bytes + delivered * record,
+            chunks,
+            bytes_read,
             complete: true,
             ticks_exact: true,
             video: None,
@@ -387,10 +452,13 @@ impl MediaProvider for Y4mProvider {
         let (fps_num, fps_den) = frame_rate.fps_fraction();
         let frame_bytes = chroma
             .frame_bytes(width, height)
-            .filter(|b| *b <= limits.max_chunk_bytes as u64)
+            .filter(|b| usize::try_from(*b).is_ok_and(|b| b <= limits.max_chunk_bytes))
             .ok_or(ReelError::LimitExceeded {
                 what: "frame-bytes",
             })?;
+        let frame_len = usize::try_from(frame_bytes).map_err(|_| ReelError::LimitExceeded {
+            what: "frame-bytes",
+        })?;
         let header = format!(
             "YUV4MPEG2 W{width} H{height} F{}:{} Ip A1:1 C{}\n",
             fps_num,
@@ -402,7 +470,9 @@ impl MediaProvider for Y4mProvider {
             }
         );
         out.write_all(header.as_bytes())?;
-        let mut bytes_written = header.len() as u64;
+        let mut bytes_written = u64::try_from(header.len()).map_err(|_| ReelError::LimitExceeded {
+            what: "bytes-written",
+        })?;
         let (mut buf, mut written, mut canceled) = (Vec::new(), 0u64, false);
         loop {
             if check_cancel(cancel).is_err() {
@@ -417,22 +487,32 @@ impl MediaProvider for Y4mProvider {
                 canceled = true;
                 break;
             }
-            if units == 0 || buf.len() as u64 != units * frame_bytes {
+            // `units` comes from the source: a product that wraps must not be able to equal the
+            // buffer length (a lying count would otherwise be reported as written frames).
+            let expected = units.checked_mul(frame_bytes);
+            if units == 0 || expected.is_none_or(|e| u64::try_from(buf.len()) != Ok(e)) {
                 return Err(ReelError::Corrupt {
                     what: "chunk-size-mismatch",
                 });
             }
-            if written + units > spec.total_units {
-                return Err(ReelError::LimitExceeded {
+            let new_total = written
+                .checked_add(units)
+                .filter(|total| *total <= spec.total_units)
+                .ok_or(ReelError::LimitExceeded {
                     what: "source-exceeds-declared",
-                });
-            }
-            for frame in buf.chunks(frame_bytes as usize) {
+                })?;
+            for frame in buf.chunks(frame_len) {
                 out.write_all(FRAME_MARKER)?;
                 out.write_all(frame)?;
-                bytes_written += FRAME_MARKER.len() as u64 + frame.len() as u64;
+                bytes_written = u64::try_from(frame.len())
+                    .ok()
+                    .and_then(|f| f.checked_add(FRAME_MARKER_LEN))
+                    .and_then(|record| bytes_written.checked_add(record))
+                    .ok_or(ReelError::LimitExceeded {
+                        what: "bytes-written",
+                    })?;
             }
-            written += units;
+            written = new_total;
         }
         Ok(EncodeReceipt {
             codec: Y4M_PROVIDER_ID.into(),

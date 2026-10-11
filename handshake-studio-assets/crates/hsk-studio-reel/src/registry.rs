@@ -1,5 +1,6 @@
 //! Instance-owned, enumerable provider registry plus proxy/original arbitration.
 //! There is no process-global factory: two registries never share providers.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{ReelError, check_cancel};
 use crate::isobmff::IsobmffProvider;
 use crate::matroska::MatroskaProvider;
@@ -133,7 +134,11 @@ impl Registry {
             if n == 0 {
                 break;
             }
-            filled += n;
+            // A `Read` that reports more bytes than the slice it was given is broken: refuse.
+            filled = filled
+                .checked_add(n)
+                .filter(|total| *total <= head.len())
+                .ok_or(ReelError::Io(std::io::ErrorKind::InvalidData))?;
         }
         src.seek(SeekFrom::Start(0))?;
         let head = &head[..filled];

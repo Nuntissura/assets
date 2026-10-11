@@ -5,6 +5,9 @@
 //! differ only between windows share a sampled identity. `relink` therefore reports a confidence
 //! (`Full` only when the whole file was hashed or a full digest verified), reports ambiguity instead of
 //! picking, and can verify a sampled match with the full-content SHA-256.
+//!
+//! Offsets, window spans and counters use checked or saturating arithmetic (V4-01).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{ReelError, check_cancel};
 use crate::model::ReadSeek;
 use hsk_studio_accord::CancellationToken;
@@ -46,7 +49,8 @@ impl IdentityParams {
         Ok(self)
     }
     fn covered_bytes(self) -> u64 {
-        u64::from(self.window) * u64::from(self.windows)
+        // window <= 2^20 and windows <= 64 after `validate`, so the product cannot saturate.
+        u64::from(self.window).saturating_mul(u64::from(self.windows))
     }
 }
 
@@ -63,7 +67,7 @@ pub fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes
         .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        .fold(String::with_capacity(bytes.len().saturating_mul(2)), |mut s, b| {
             let _ = write!(s, "{b:02x}");
             s
         })
@@ -102,22 +106,36 @@ pub fn sampled_identity(
     hash.update(params.window.to_le_bytes());
     hash.update(params.windows.to_le_bytes());
     let window = u64::from(params.window);
-    let mut buf = vec![0u8; params.window as usize];
+    let window_len = usize::try_from(params.window).map_err(|_| ReelError::LimitExceeded {
+        what: "identity-params",
+    })?;
+    let mut buf = vec![0u8; window_len];
     let exhaustive = len <= params.covered_bytes();
+    let offset_error = ReelError::LimitExceeded {
+        what: "identity-offset",
+    };
     if exhaustive {
-        let mut offset = 0;
+        let mut offset = 0u64;
         while offset < len {
             check_cancel(cancel)?;
-            let n = window.min(len - offset);
-            read_window(src, offset, &mut buf[..n as usize])?;
-            hash.update(&buf[..n as usize]);
-            offset += n;
+            let n = window.min(len.saturating_sub(offset));
+            let n_len = usize::try_from(n).map_err(|_| offset_error.clone())?;
+            read_window(src, offset, &mut buf[..n_len])?;
+            hash.update(&buf[..n_len]);
+            offset = offset.checked_add(n).ok_or_else(|| offset_error.clone())?;
         }
     } else {
-        let span = u128::from(len - window);
+        // `validate` keeps windows >= 2 and not exhaustive means len > windows * window, so both the
+        // span and the divisor are positive.
+        let span = u128::from(len.saturating_sub(window));
+        let divisor = u128::from(params.windows.saturating_sub(1));
         for i in 0..params.windows {
             check_cancel(cancel)?;
-            let offset = (span * u128::from(i) / u128::from(params.windows - 1)) as u64;
+            let offset = span
+                .checked_mul(u128::from(i))
+                .and_then(|scaled| scaled.checked_div(divisor))
+                .and_then(|o| u64::try_from(o).ok())
+                .ok_or_else(|| offset_error.clone())?;
             read_window(src, offset, &mut buf)?;
             hash.update(&buf);
         }
@@ -209,12 +227,12 @@ pub fn relink(
         check_cancel(cancel)?;
         let len = src.seek(SeekFrom::End(0))?;
         if len != query.expected.len {
-            length_mismatch += 1;
+            length_mismatch = length_mismatch.saturating_add(1);
             continue;
         }
         let identity = sampled_identity(&mut **src, query.expected.params, cancel)?;
         if identity.digest != query.expected.digest {
-            content_mismatch += 1;
+            content_mismatch = content_mismatch.saturating_add(1);
             continue;
         }
         let mut confidence = if identity.exhaustive {
@@ -226,7 +244,7 @@ pub fn relink(
             if full_digest(&mut **src, chunk_bytes, cancel)?
                 != query.expected_full.unwrap_or([0; 32])
             {
-                content_mismatch += 1;
+                content_mismatch = content_mismatch.saturating_add(1);
                 continue;
             }
             confidence = RelinkConfidence::Full;
