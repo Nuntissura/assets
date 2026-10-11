@@ -8,12 +8,12 @@
 use crate::hashing;
 #[cfg(feature = "clap")]
 use crate::staging::StageError;
-use crate::types::{Arch, Completeness, PluginFormat, SUPPORTED_CLAP_ABI};
+use crate::types::{Arch, Completeness, PluginFormat, SUPPORTED_CLAP_ABI, validate_sample_rate};
 use crate::wire::{
     ConfigureSpec, E_ABI, E_BUDGET, E_CONFIG, E_HASH, E_NOT_CONFIGURED, E_STALE, E_UNAVAILABLE,
     PluginSpec,
 };
-use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ};
+use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS};
 
 /// Identity the reference backend reports in HELLO and receipts.
 pub const REFERENCE_IDENTITY: &str = "reference-gain-delay@1";
@@ -206,11 +206,10 @@ impl Backend for Reference {
             || channels > MAX_CHANNELS
             || max_frames == 0
             || max_frames > MAX_BLOCK_FRAMES
-            || cfg.sample_rate_hz == 0
-            || cfg.sample_rate_hz > MAX_SAMPLE_RATE_HZ
         {
             return Err((E_CONFIG, 0));
         }
+        validate_sample_rate(cfg.sample_rate_hz).map_err(|_| (E_CONFIG, 0))?;
         let mut gain = 1.0;
         for (param, value) in &cfg.params {
             if *param != 0 || !gain_ok(*value) {

@@ -31,14 +31,14 @@ use crate::backend::{
     check_supported, refusal_of_stage,
 };
 use crate::staging::{StagedFile, stage_verified};
-use crate::types::{Completeness, PluginFormat, SUPPORTED_CLAP_ABI};
+use crate::types::{Completeness, PluginFormat, SUPPORTED_CLAP_ABI, validate_sample_rate};
 use crate::wire::{
     ConfigureSpec, E_BUDGET, E_CONFIG, E_NOT_CONFIGURED, E_PLUGIN, E_STALE, E_UNAVAILABLE,
     PluginSpec,
 };
 use clack_host::events::event_types::ParamValueEvent;
 use clack_host::prelude::*;
-use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ};
+use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
@@ -181,11 +181,10 @@ impl Backend for ClapBackend {
             || channels > MAX_CHANNELS
             || max_frames == 0
             || max_frames > MAX_BLOCK_FRAMES
-            || cfg.sample_rate_hz == 0
-            || cfg.sample_rate_hz > MAX_SAMPLE_RATE_HZ
         {
             return Err((E_CONFIG, 0));
         }
+        validate_sample_rate(cfg.sample_rate_hz).map_err(|_| (E_CONFIG, 0))?;
         let mut pending = Vec::with_capacity(cfg.params.len());
         for (param, value) in &cfg.params {
             let id = ClapId::from_raw(*param).ok_or((E_CONFIG, u64::from(*param)))?;

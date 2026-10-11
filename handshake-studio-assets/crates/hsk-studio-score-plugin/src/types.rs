@@ -1,7 +1,7 @@
 use crate::error::PluginError;
 use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_score::{
-    ChannelLayout, InputBlock, MAX_BLOCK_FRAMES, MAX_SAMPLE_RATE_HZ, OutputBlock,
+    ChannelLayout, InputBlock, MAX_BLOCK_FRAMES, OutputBlock, ticks_per_sample,
 };
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -97,11 +97,29 @@ pub struct Parameter {
     pub value: f64,
 }
 
+/// The one sample-rate rule of this crate. A configured rate must be one `hsk-studio-score` can run: the
+/// rule its single rate gate, [`ticks_per_sample`], applies to every block (`1 ..= MAX_SAMPLE_RATE_HZ` Hz
+/// and an exact divisor of the tick rate, so 44_100 and 48_000 pass while 0, 44_101, 47_999 and
+/// `u32::MAX` do not). The host (`ProcessConfig::validate`) and both worker backends (`configure` in
+/// `backend.rs` and `clap_backend.rs`) call this function and keep no copy of the rule, so a rate is
+/// refused with `invalid_config` when the instance is configured, not at its first block.
+/// Tests: `rate_gate_tests::{host_validate_follows_the_score_rule,
+/// reference_configure_follows_the_score_rule, clap_configure_follows_the_score_rule}` (one table, equal
+/// to score's rule, for each entry point) and
+/// `foundation_contract::sample_rate_is_refused_at_activation_before_any_spawn` (no worker is spawned).
+pub(crate) fn validate_sample_rate(rate_hz: u32) -> Result<(), PluginError> {
+    ticks_per_sample(rate_hz)
+        .map(|_ticks_per_sample| ())
+        .map_err(|_| PluginError::InvalidConfig)
+}
+
 /// Everything an activation needs; validated before any process is spawned.
 #[derive(Clone, Debug)]
 pub struct ProcessConfig {
     pub plugin: ApprovedPlugin,
     pub grant: Option<PluginGrant>,
+    /// Refused with `invalid_config` before any worker exists unless `hsk_studio_score::ticks_per_sample`
+    /// admits it (test: `foundation_contract::sample_rate_is_refused_at_activation_before_any_spawn`).
     pub sample_rate_hz: u32,
     pub layout: ChannelLayout,
     /// Preallocated block bound: the instance refuses blocks above it.
@@ -114,9 +132,8 @@ pub struct ProcessConfig {
 
 impl ProcessConfig {
     pub(crate) fn validate(&self) -> Result<(), PluginError> {
-        if self.sample_rate_hz == 0
-            || self.sample_rate_hz > MAX_SAMPLE_RATE_HZ
-            || self.max_block_frames == 0
+        validate_sample_rate(self.sample_rate_hz)?;
+        if self.max_block_frames == 0
             || self.max_block_frames > MAX_BLOCK_FRAMES
             || self.parameters.len() > 256
             || self.parameters.iter().any(|p| !p.value.is_finite())

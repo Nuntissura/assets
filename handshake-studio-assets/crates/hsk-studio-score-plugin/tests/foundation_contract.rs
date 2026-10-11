@@ -12,7 +12,9 @@ use hsk_studio_observe::{
     Budget, DeliveryClass, DeliveryError, Error as ObserveError, FailureCode, MAX_FRAME_BYTES,
     Observe, Outcome, SinkPort,
 };
-use hsk_studio_score::{ChannelLayout, Engine, InputBlock, OutputBlock, RequestContext, sha256};
+use hsk_studio_score::{
+    BlockSpec, ChannelLayout, Engine, InputBlock, OutputBlock, RequestContext, sha256,
+};
 use hsk_studio_score_plugin::*;
 use std::{
     path::{Path, PathBuf},
@@ -758,4 +760,84 @@ fn staging_directories_follow_the_worker() {
         );
         assert!(entries(&root.0).is_empty());
     });
+}
+
+#[test]
+fn sample_rate_is_refused_at_activation_before_any_spawn() {
+    bounded_case(
+        "sample_rate_is_refused_at_activation_before_any_spawn",
+        || {
+            // PLR-054: the host once applied only `0 < rate <= 768_000`, so a rate that is not an exact
+            // divisor of the tick rate (44_101, 47_999, ...) activated a worker and failed at the first
+            // block. The rule is score's `ticks_per_sample`; a refusal is `invalid_config` before any
+            // process exists, through both `activate` and `activate_isolated`.
+            let file = PluginFile::new();
+            let host = host();
+            let cancel = CancellationToken::default();
+            let config_at = |rate: u32| ProcessConfig {
+                sample_rate_hz: rate,
+                ..config(&file, 0.5)
+            };
+            for rate in [
+                0,
+                44_101,
+                47_999,
+                22_051,
+                96_001,
+                11_000,
+                768_001,
+                1_536_000,
+                u32::MAX,
+            ] {
+                assert_eq!(
+                    host.activate_isolated(&config_at(rate), &cancel, DEADLINE)
+                        .unwrap_err(),
+                    PluginError::InvalidConfig,
+                    "activate_isolated at {rate} Hz"
+                );
+                assert_eq!(
+                    host.activate(&config_at(rate), &cancel, DEADLINE).err(),
+                    Some(PluginError::InvalidConfig),
+                    "activate at {rate} Hz"
+                );
+            }
+            let s = host.stats();
+            assert_eq!(
+                (s.spawned, s.workers_live, s.in_flight_bytes),
+                (0, 0, 0),
+                "a refused rate must not spawn a worker or hold a permit"
+            );
+
+            // The accepted side: rates the score rule admits activate (and retire) normally.
+            for rate in [8_000, 44_100, 48_000, 500_000, 705_600, 768_000] {
+                let mut instance = host
+                    .activate_isolated(&config_at(rate), &cancel, DEADLINE)
+                    .unwrap_or_else(|e| panic!("{rate} Hz refused: {e}"));
+                assert_eq!(instance.sample_rate_hz(), rate);
+                assert!(instance.retire_in_place().reaped, "{rate} Hz");
+            }
+            assert_eq!(host.stats().spawned, 6);
+
+            // One block at an accepted non-default rate runs end to end: the configured rate is the
+            // block's rate, so nothing is left to fail at the first block.
+            let mut instance = host
+                .activate_isolated(&config_at(44_100), &cancel, DEADLINE)
+                .unwrap();
+            let (left, right) = signal(256);
+            let sp = BlockSpec {
+                sample_rate_hz: 44_100,
+                ..spec(256, 0)
+            };
+            let channels: [&[f32]; 2] = [&left, &right];
+            let input = InputBlock::new(&sp, &channels);
+            let mut out = prefilled(256);
+            let receipt = instance
+                .process(&input, &mut out, &cancel, DEADLINE)
+                .unwrap();
+            assert_eq!(receipt.frames, 256);
+            let want: Vec<f32> = left.iter().map(|s| s * 0.5).collect();
+            assert_eq!(bits(&out.backing()[..256]), bits(&want));
+            assert!(instance.retire_in_place().reaped);
+        },
+    );
 }
