@@ -95,7 +95,7 @@ impl StepAppearance {
     }
     /// Lowest class over everything this appearance uses. Mirrors pigment's `Operator` accounting:
     /// fill opacity with a non-Normal mode and pass-through below full opacity are Approximate;
-    /// clipping has no renderer route yet and is Unsupported.
+    /// clipping (pigment's clip-to-base route, Photoshop rule UNVERIFIED) is Approximate.
     pub fn exactness(&self) -> Exactness {
         let mut lowest = self.mode.facts().exactness;
         if self.fill_opacity < 1.0 && self.mode != StudioBlendMode::Normal {
@@ -105,7 +105,7 @@ impl StepAppearance {
             lowest = lowest.lowest_of(Exactness::Approximate);
         }
         if self.clipped {
-            lowest = Exactness::Unsupported;
+            lowest = lowest.lowest_of(Exactness::Approximate);
         }
         lowest
     }

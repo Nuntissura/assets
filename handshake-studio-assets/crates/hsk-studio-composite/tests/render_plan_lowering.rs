@@ -3,14 +3,14 @@
 //! (layer_id, operation_key) tie-break, tile grid cells), never produced by the code under test.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::{
-    BlendSpace, CompositeError, Exactness, Limits, TileInfo, TileInfoSource, evaluate, lower,
+    BlendSpace, CompositeError, Exactness, Limits, StepStatus, TileInfo, TileInfoSource, evaluate, lower,
     lower_to_render_plan,
 };
 use hsk_studio_folio::TileRef;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BackendIdentity, ColourTag, DeviceClass, ExecuteRequest,
-    MaskFormat, Operator, OutputTarget, PlanError, PlanNode, PlanNodeId, PlanSources, RenderBackend,
+    MaskFormat, MaskInput, Operator, OutputTarget, PlanError, PlanNode, PlanNodeId, PlanSources, RenderBackend,
     RenderPlan, RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileSink, admit,
 };
 use serde_json::{Value, json};
@@ -315,8 +315,8 @@ fn lowered_plan_passes_shared_backend_admission() {
 }
 
 #[test]
-fn appearance_lowers_mode_opacity_fill_mask_and_refuses_clipping() {
-    bounded_case("appearance_lowers_mode_opacity_fill_mask_and_refuses_clipping", || {
+fn appearance_lowers_mode_opacity_fill_mask_and_wraps_root() {
+    bounded_case("appearance_lowers_mode_opacity_fill_mask_and_wraps_root", || {
         let root = addr(1, "mix", "out");
         let token = CancellationToken::default();
         let unavailable = |r: Result<hsk_studio_composite::RenderLowering, CompositeError>| match r {
@@ -386,21 +386,6 @@ fn appearance_lowers_mode_opacity_fill_mask_and_refuses_clipping() {
         assert!(used.contains(&"group_pass_through_opacity"));
         assert_eq!(low.exactness.lowest, Exactness::Approximate);
 
-        // Clipping has no route in the render IR yet: Unavailable and Unsupported in the ledger,
-        // never ignored. A hidden clipped layer is not part of the render and does not block.
-        let mut clipped = tiled();
-        clipped["layers"][2]["appearance"] = appearance(100.0, 100.0, 2, false);
-        clipped["layers"][2]["appearance"]["clipped"] = json!(true);
-        assert!(unavailable(lowered(&clipped, BlendSpace::Encoded, &root)).contains("clipping_unsupported"));
-        let snap = open(&clipped);
-        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
-        assert_eq!(plan.lowest_exactness(), Exactness::Unsupported);
-        let report = evaluate(&plan, &snap, &token).unwrap();
-        assert_eq!(report.receipt.exactness.lowest, Exactness::Unsupported);
-        assert!(report.require_ready().is_err());
-        clipped["layers"][2]["visible"] = json!(false);
-        assert!(lowered(&clipped, BlendSpace::Encoded, &root).is_ok());
-
         // An unrecovered blend mode is refused by evaluation (typed), never lowered as Normal.
         let mut unknown_mode = tiled();
         unknown_mode["layers"][1]["appearance"] = appearance(100.0, 100.0, 31, false);
@@ -412,5 +397,133 @@ fn appearance_lowers_mode_opacity_fill_mask_and_refuses_clipping() {
                 StudioBlendMode::Average
             )))
         );
+    });
+}
+
+struct NoClipBackend;
+impl RenderBackend for NoClipBackend {
+    fn identity(&self) -> BackendIdentity {
+        BackendIdentity {
+            name: "composite-test-double",
+            version: "0",
+            device: DeviceClass::Cpu,
+            adapter: String::new(),
+            generation: 0,
+        }
+    }
+    fn exactness(&self, _: Operator) -> Exactness {
+        Exactness::Exact
+    }
+    fn execute(
+        &self,
+        _: &RenderPlan,
+        _: &ExecuteRequest,
+        _: &dyn PlanSources,
+        _: &CancellationToken,
+        _: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, BackendError> {
+        Err(BackendError::Unavailable("test_double"))
+    }
+}
+
+#[test]
+fn clipped_layers_lower_to_clip_to_base_and_unsupported_cases_are_refused() {
+    bounded_case("clipped_layers_lower_to_clip_to_base_and_unsupported_cases_are_refused", || {
+        let root = addr(1, "mix", "out");
+        let token = CancellationToken::default();
+        let unavailable = |r: Result<hsk_studio_composite::RenderLowering, CompositeError>| match r {
+            Err(CompositeError::Unavailable(reason)) => reason,
+            other => panic!("expected Unavailable, got {other:?}"),
+        };
+        let clip = |v: &mut Value, layer_index: usize| {
+            v["layers"][layer_index]["appearance"] = appearance(100.0, 100.0, 2, false);
+            v["layers"][layer_index]["appearance"]["clipped"] = json!(true);
+        };
+
+        // Raster 3 (above base raster 2) and a third raster 6 are both clipped: one shared base.
+        let mut v = tiled();
+        clip(&mut v, 2);
+        v["layers"].as_array_mut().unwrap().push(layer(
+            6,
+            "raster",
+            json!({"payload_kind":"raster","tiles":[tile(6,"t60",0,0,16,16)]}),
+        ));
+        v["layers"][5]["appearance"] = appearance(100.0, 100.0, 5, false);
+        v["layers"][5]["appearance"]["clipped"] = json!(true);
+        v["graph"]["operations"].as_array_mut().unwrap().push(source(6, "image"));
+        v["graph"]["edges"]
+            .as_array_mut()
+            .unwrap()
+            .push(edge(address(6, "source", "out"), address(1, "mix", "inputs"), 2));
+        let low = lowered(&v, BlendSpace::Encoded, &root).unwrap();
+        let PlanNode::Group(top) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("root") };
+        assert_eq!(top.layers.len(), 3);
+        assert!(top.layers[0].mask.is_none());
+        for (n, mode) in [(1, StudioBlendMode::Normal), (2, StudioBlendMode::Multiply)] {
+            let layer = top.layers[n];
+            assert_eq!(layer.mode, mode);
+            assert_eq!(layer.mask, Some(MaskInput::clip_to_base()), "layer {n}");
+        }
+        assert!(low.mask_sources.is_empty(), "the clip route has no plane to resolve");
+        let used: Vec<&str> = low.exactness.operators.iter().map(|o| o.key).collect();
+        assert!(used.contains(&"clip_to_base"));
+        assert_eq!(low.exactness.lowest, Exactness::Approximate);
+        let snap = open(&v);
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let report = evaluate(&plan, &snap, &token).unwrap();
+        assert_eq!(report.receipt.exactness.lowest, Exactness::Approximate);
+        assert_eq!(report.step(&root).unwrap().status, StepStatus::Ready);
+        // Clipped content never extends beyond its base: base raster 2 is (0,0)+128x64 and the
+        // clipped layers (0,64)+64x64 and (0,0)+16x16 add nothing to the group extent.
+        assert_eq!(
+            report.step(&root).unwrap().extent,
+            Some(Rect { x: 0, y: 0, width: 128, height: 64 })
+        );
+
+        // A backend that has not opted in to the route is refused by shared admission, typed.
+        let request = ExecuteRequest {
+            expected_revision: 7,
+            min_exactness: Exactness::Approximate,
+            deadline: None,
+            max_working_bytes: 1 << 20,
+        };
+        assert_eq!(
+            admit(&low.plan, &NoClipBackend, &request, &token),
+            Err(BackendError::Unsupported { operator: "clip_to_base", exactness: Exactness::Unsupported })
+        );
+
+        // A hidden base takes its clipped layers with it: only the group's other layers remain.
+        let mut hidden_base = tiled();
+        clip(&mut hidden_base, 2);
+        hidden_base["layers"][1]["visible"] = json!(false);
+        let low = lowered(&hidden_base, BlendSpace::Encoded, &root).unwrap();
+        let PlanNode::Group(top) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("root") };
+        assert!(top.layers.is_empty());
+        assert!(low.sources.is_empty());
+
+        // No base below (clipped bottom layer), own mask, and pass-through group: typed, not ignored.
+        let mut bottom = tiled();
+        clip(&mut bottom, 1);
+        assert!(unavailable(lowered(&bottom, BlendSpace::Encoded, &root)).contains("clip_without_base"));
+        let mut own_mask = tiled();
+        clip(&mut own_mask, 2);
+        own_mask["layers"][2]["appearance"]["mask"] =
+            json!({"tiles":[mask_tile(3, "m3")],"enabled":true,"linked":true});
+        assert!(unavailable(lowered(&own_mask, BlendSpace::Encoded, &root)).contains("clipped_with_mask_unsupported"));
+        let mut group_clip = tiled();
+        group_clip["layers"].as_array_mut().unwrap().push(layer(7, "group", json!({"payload_kind":"group"})));
+        group_clip["graph"]["operations"].as_array_mut().unwrap().push(composite(7));
+        group_clip["graph"]["edges"].as_array_mut().unwrap().extend([
+            edge(address(2, "source", "out"), address(7, "mix", "inputs"), 0),
+            edge(address(7, "mix", "out"), address(1, "mix", "inputs"), 2),
+        ]);
+        group_clip["layers"][5]["appearance"] = appearance(100.0, 100.0, 1, true);
+        group_clip["layers"][5]["appearance"]["clipped"] = json!(true);
+        assert!(unavailable(lowered(&group_clip, BlendSpace::Encoded, &root)).contains("clipped_pass_through_unsupported"));
+        // A clipped root has no base either.
+        let mut clipped_root = tiled();
+        clipped_root["layers"][0]["appearance"] = appearance(100.0, 100.0, 1, true);
+        clipped_root["layers"][0]["appearance"]["clipped"] = json!(true);
+        assert!(unavailable(lowered(&clipped_root, BlendSpace::Encoded, &root)).contains("clip_without_base"));
     });
 }

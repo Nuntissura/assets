@@ -185,19 +185,25 @@ fn record_appearance(ledger: &mut ExactnessLedger, step: &Step) {
         ledger.record("group_pass_through_opacity", Exactness::Approximate);
     }
     if a.clipped {
-        ledger.record("clipping", Exactness::Unsupported);
+        // Pigment's clip-to-base route; the Photoshop clipping-group rule is UNVERIFIED.
+        ledger.record("clip_to_base", Exactness::Approximate);
     }
 }
 
-/// Why the step cannot be rendered although its payload can: clipping has no route in the render
-/// IR yet, and an enabled mask without coverage tiles has unspecified meaning (not guessed).
+/// Why the step cannot be rendered although its payload can. The render IR has one mask slot per
+/// layer, so a clipped layer cannot also carry its own mask; a clipped layer cannot reference a
+/// pass-through group; an enabled mask without coverage tiles has unspecified meaning. None of
+/// these is guessed or ignored.
 fn appearance_block(
     layers: &BTreeMap<&str, &hsk_studio_folio::StudioLayer>,
     step: &Step,
 ) -> Option<&'static str> {
     let a = step.appearance();
-    if a.clipped {
-        return Some("clipping_unsupported");
+    if a.clipped && a.mask {
+        return Some("clipped_with_mask_unsupported");
+    }
+    if a.clipped && a.mode == StudioBlendMode::PassThrough {
+        return Some("clipped_pass_through_unsupported");
     }
     if a.mask {
         let tiles = layers
@@ -281,7 +287,8 @@ pub fn evaluate(
                 ..
             } => {
                 let mut extent = None;
-                let mut blocked = None;
+                let mut blocked: Option<String> = None;
+                let mut have_base = false;
                 for input in inputs {
                     let Some(&i) = seen.get(input) else {
                         return Err(if all.contains(input) {
@@ -291,26 +298,38 @@ pub fn evaluate(
                         });
                     };
                     let child = &evals[i];
+                    // Clipping group: a clipped input clips to the nearest unclipped input below
+                    // it (whatever its visibility), so it needs one, and its content never
+                    // extends beyond that base: it adds no extent of its own.
+                    let clipped = plan.steps[i].appearance().clipped;
+                    if clipped && !have_base {
+                        blocked.get_or_insert_with(|| {
+                            format!("clip_without_base:{}", child.addr.text())
+                        });
+                    }
+                    have_base |= !clipped;
                     if !child.visible {
                         continue;
                     }
                     match &child.status {
                         StepStatus::Ready => {
-                            if let Some(e) = child.extent {
+                            if !clipped && let Some(e) = child.extent {
                                 extent = union(extent, e)?;
                             }
                         }
                         StepStatus::Unavailable(_) => {
-                            blocked.get_or_insert_with(|| child.addr.text());
+                            blocked.get_or_insert_with(|| {
+                                format!("input_unavailable:{}", child.addr.text())
+                            });
                         }
                     }
                 }
                 match blocked {
-                    Some(child) => StepEval {
+                    Some(reason) => StepEval {
                         addr: addr.clone(),
                         visible: *visible,
                         extent: None,
-                        status: StepStatus::Unavailable(format!("input_unavailable:{child}")),
+                        status: StepStatus::Unavailable(reason),
                     },
                     None => StepEval {
                         addr: addr.clone(),

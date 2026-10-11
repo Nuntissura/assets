@@ -12,9 +12,12 @@
 //! coverage tiles (density 1, not inverted: Folio does not store either yet). A group follows
 //! its mode: pass_through = non-isolated, any other mode = isolated.
 //!
-//! Never silently ignored: a clipped layer or an enabled mask without coverage is `Unavailable`
-//! (no clipping route in the IR yet; empty-mask meaning is unspecified). A disabled mask is an
-//! authored "no mask" and is omitted. Hidden and empty layers are not emitted.
+//! Clipping (Folio `clipped`): a clipped layer clips to the nearest unclipped layer below it in
+//! the same group and lowers to pigment's clip-to-base route (`MaskInput::clip_to_base`, Approximate:
+//! the Photoshop rule is UNVERIFIED). Hidden base = clipped layers dropped with it. Never silently
+//! ignored: a clipped layer with no base, with its own mask (one mask slot) or referencing a
+//! pass-through group, and an enabled mask without coverage, are `Unavailable`. A disabled mask is
+//! an authored "no mask" and is omitted. Hidden and empty layers are not emitted.
 //!
 //! The requested root is rendered regardless of its own visibility flag. Its own appearance is
 //! honoured by wrapping it in one synthetic isolated group when it is not neutral over a
@@ -94,17 +97,25 @@ impl Emitter<'_> {
         self.next_key = self.next_key.checked_add(1).ok_or(CompositeError::Overflow)?;
         Ok(key)
     }
-    /// The referencing layer: the referenced layer's authored appearance plus its mask.
+    /// The referencing layer: the referenced layer's authored appearance plus its mask. A clipped
+    /// layer carries pigment's clip-to-base route in its single mask slot, so a clipped layer
+    /// with its own mask is refused (evaluation already marks it unavailable).
     fn layer(
         &mut self,
         input: PlanNodeId,
         appearance: &StepAppearance,
         layer: &StudioLayer,
     ) -> Result<Layer, CompositeError> {
-        let mask = if appearance.mask {
-            Some(self.mask(layer)?)
-        } else {
-            None
+        let mask = match (appearance.clipped, appearance.mask) {
+            (true, true) => {
+                return Err(CompositeError::Unavailable(format!(
+                    "{}:clipped_with_mask_unsupported",
+                    layer.layer_id
+                )));
+            }
+            (true, false) => Some(MaskInput::clip_to_base()),
+            (false, true) => Some(self.mask(layer)?),
+            (false, false) => None,
         };
         Ok(Layer {
             input,
@@ -206,7 +217,16 @@ pub fn lower_to_render_plan(
         .get(root)
         .ok_or_else(|| CompositeError::DanglingInput(root.text()))?;
 
-    // Phase 1: steps reachable from the root through visible inputs.
+    if plan.steps[root_index].appearance().clipped {
+        // A root has no siblings, hence no clip base.
+        return Err(CompositeError::Unavailable(format!(
+            "{}:clip_without_base",
+            root.text()
+        )));
+    }
+
+    // Phase 1: steps reachable from the root through visible inputs. A clipped input clips to the
+    // nearest unclipped input below it; with a hidden base it is not part of the render.
     let mut reachable = BTreeSet::new();
     let mut stack = vec![root_index];
     while let Some(i) = stack.pop() {
@@ -214,6 +234,7 @@ pub fn lower_to_render_plan(
             continue;
         }
         if let Step::Composite { inputs, .. } = &plan.steps[i] {
+            let mut base_visible: Option<bool> = None;
             for input in inputs {
                 let child = *index
                     .get(input)
@@ -221,7 +242,22 @@ pub fn lower_to_render_plan(
                 if child >= i {
                     return Err(CompositeError::Cycle(input.text()));
                 }
-                if plan.steps[child].visible() {
+                let step = &plan.steps[child];
+                if step.appearance().clipped {
+                    match base_visible {
+                        None => {
+                            return Err(CompositeError::Unavailable(format!(
+                                "{}:clip_without_base",
+                                input.text()
+                            )));
+                        }
+                        Some(false) => continue,
+                        Some(true) => {}
+                    }
+                } else {
+                    base_visible = Some(step.visible());
+                }
+                if step.visible() {
                     stack.push(child);
                 }
             }
@@ -331,12 +367,31 @@ pub fn lower_to_render_plan(
                 inputs, appearance, ..
             } => {
                 let mut group_layers = Vec::with_capacity(inputs.len());
+                // Was the nearest unclipped input below emitted? (`None`: no unclipped input yet.)
+                let mut base_emitted: Option<bool> = None;
                 for input in inputs {
                     let child = index[input];
-                    if !plan.steps[child].visible() {
-                        continue;
+                    let emitted = if plan.steps[child].visible() {
+                        node_of.get(&child).copied()
+                    } else {
+                        None
+                    };
+                    if plan.steps[child].appearance().clipped {
+                        match base_emitted {
+                            None => {
+                                return Err(CompositeError::Unavailable(format!(
+                                    "{}:clip_without_base",
+                                    input.text()
+                                )));
+                            }
+                            // Nothing to clip to: the clipped layer contributes nothing.
+                            Some(false) => continue,
+                            Some(true) => {}
+                        }
+                    } else {
+                        base_emitted = Some(emitted.is_some());
                     }
-                    let Some(id) = node_of.get(&child) else {
+                    let Some(id) = emitted.as_ref() else {
                         continue;
                     };
                     let layer = layers
