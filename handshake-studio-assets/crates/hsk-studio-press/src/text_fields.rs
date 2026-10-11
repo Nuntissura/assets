@@ -356,6 +356,14 @@ impl Matcher {
                 spans.push(s);
             }
         }
+        // Under a right-to-left override a viewer shows the text reversed (norm::visual_order, R10-P2):
+        // a match there has no span in logical order, so the whole text is the span.
+        if spans.is_empty()
+            && let Some(v) = norm::visual_order(hay)
+            && (!self.find_in(&v, Escapes::Segments).is_empty() || !self.find_in(&v, Escapes::Chars).is_empty())
+        {
+            spans.push((0, hay.len()));
+        }
         spans.sort_unstable();
         spans
     }
@@ -518,7 +526,7 @@ pub(crate) fn appearance_streams_of(objs: &Objs, d: &Dict) -> BTreeSet<u32> {
             for (_, v) in &xo.entries {
                 if let Object::Ref(r) = v
                     && out.len() < MAX_AP_FORMS
-                    && matches!(objs.get(&r.num), Some(Entry { obj: Object::Stream(s), .. }) if s.dict.get("Subtype").is_some_and(|t| t.is_name("Form")))
+                    && matches!(objs.get(&r.num), Some(Entry { obj: Object::Stream(s), .. }) if s.dict.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Form")))
                     && out.insert(r.num)
                 {
                     work.push(r.num);
@@ -838,7 +846,7 @@ impl Ctx<'_> {
     /// catalog.
     fn dict(&mut self, objs: &Objs, d: &mut Dict, t: Target, loc: Loc, out: &mut Vec<TextFieldOutcome>) -> Result<bool> {
         let p = self.policy;
-        let widget_like = t.field || d.get("FT").is_some() || d.get("Subtype").is_some_and(|s| s.is_name("Widget"));
+        let widget_like = t.field || d.get("FT").is_some() || d.get("Subtype").map(|s| res(objs, s)).is_some_and(|s| s.is_name("Widget"));
         let mut slots: Vec<Slot> = Vec::new();
         if t.outline {
             slots.push(Slot::new("Title", TextRole::OutlineTitle, SlotKind::Plain, p.outline_titles));
@@ -998,8 +1006,8 @@ impl Ctx<'_> {
         let p = self.policy;
         let nested = Loc { direct: true, ..loc };
         let mut changed = false;
-        let s_name = d.get("S").and_then(Object::as_name).map(<[u8]>::to_vec);
-        let is_catalog = d.get("Type").is_some_and(|t| t.is_name("Catalog"));
+        let s_name = d.get("S").map(|x| res(objs, x)).and_then(Object::as_name).map(<[u8]>::to_vec);
+        let is_catalog = d.get("Type").map(|x| res(objs, x)).is_some_and(|t| t.is_name("Catalog"));
         for key in ["Dest", "OpenAction"] {
             changed |= self.rename_ref(&mut st.rn, d, key, loc, out);
         }
@@ -1014,7 +1022,7 @@ impl Ctx<'_> {
             let s = Slot::new("Base", TextRole::ActionUri, SlotKind::Plain, p.action_uris);
             changed |= matches!(self.slot(objs, u, &s, loc, out)?, Applied::Edited);
         }
-        if s_name.is_some() && (matches!(d.get("P"), Some(Object::Ref(_))) || d.get("Type").is_some_and(|t| t.is_name("StructElem"))) {
+        if s_name.is_some() && (matches!(d.get("P"), Some(Object::Ref(_))) || d.get("Type").map(|x| res(objs, x)).is_some_and(|t| t.is_name("StructElem"))) {
             for (key, role) in [
                 ("Alt", TextRole::StructAlt),
                 ("ActualText", TextRole::StructActualText),
@@ -1056,7 +1064,7 @@ impl Ctx<'_> {
                 changed |= self.filespec(objs, f, nested, out)?;
             }
         }
-        if d.get("Subtype").is_some_and(|t| t.is_name("FileAttachment"))
+        if d.get("Subtype").map(|x| res(objs, x)).is_some_and(|t| t.is_name("FileAttachment"))
             && let Some(Object::Dict(f)) = d.get_mut("FS")
             && !typed_filespec(f)
         {
@@ -1327,13 +1335,13 @@ fn collect_filespec_nums(objs: &Objs, live: &BTreeSet<u32>, extra: Vec<u32>) -> 
                 Object::Dict(_) | Object::Stream(_) => {
                     let Some(d) = o.as_dict() else { continue };
                     let remote = matches!(
-                        d.get("S").and_then(Object::as_name),
+                        d.get("S").map(|x| res(objs, x)).and_then(Object::as_name),
                         Some(b"GoToR" | b"GoToE" | b"Launch" | b"ImportData" | b"SubmitForm")
                     );
                     if remote && let Some(Object::Ref(r)) = d.get("F") {
                         out.insert(r.num);
                     }
-                    if d.get("Subtype").is_some_and(|t| t.is_name("FileAttachment")) && let Some(Object::Ref(r)) = d.get("FS") {
+                    if d.get("Subtype").map(|x| res(objs, x)).is_some_and(|t| t.is_name("FileAttachment")) && let Some(Object::Ref(r)) = d.get("FS") {
                         out.insert(r.num);
                     }
                     match d.get("AF") {

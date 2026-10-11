@@ -32,11 +32,19 @@
 //!   between strings, so kerning used as the word space reads as one), every reading kind (font text,
 //!   `/ToUnicode`, bytes); the whole-token rule exempts only a match inside ONE string glued to a letter
 //!   of that string, never a match that spans strings (R9-F3; tests `split_runs_are_read_whole`,
-//!   `kerning_word_spaces_are_read`). Every string and name, and the text of every stream that is not
-//!   only kept page text (XMP, embedded files), is also matched as text. All text is normalised first
-//!   (`norm.rs`: language escapes, characters that draw nothing, NFKC compatibility forms; R9-P2; tests
+//!   `kerning_word_spaces_are_read`). Every string and name, and the text of EVERY stream that is not
+//!   only kept page text (XMP and plain ASCII streams included, R10-F7), is also matched as text. All
+//!   text is normalised first (`norm.rs`: language escapes, characters that draw nothing, NFKC
+//!   compatibility forms, right-to-left overrides; R9-P2, R10-P1/P2; tests
 //!   `language_escapes_and_invisible_characters_never_hide_text`,
-//!   `zero_width_and_compatibility_characters_never_hide_text`).
+//!   `zero_width_and_compatibility_characters_never_hide_text`, `ascii_streams_are_matched_as_text`).
+//! - Canonical content (lead decision 2026-10-11T15:00:20Z): every content stream a viewer may interpret
+//!   (every stream the walk reaches by a content role) is checked to be exactly the canonical
+//!   serialisation of its own strict parse (`canon::is_canonical`); `PayloadProof::non_canonical_streams`
+//!   lists the others. A redaction (`redact_and_save`) rewrites every content stream canonically before
+//!   it saves, and its result is proven only when the saved file holds no non-canonical content
+//!   (`NotProven::NonCanonicalContent`), so the operators the proof read are the operators a viewer
+//!   reads.
 //! - Spellings: the given bytes, PDFDocEncoding, UTF-8, UTF-16BE, UTF-16LE, upper- and lower-case hex
 //!   of the byte and UTF-16BE spellings, and the codes each font's `/ToUnicode` map gives the text
 //!   (scanned in the content streams that can select that font).
@@ -52,15 +60,17 @@
 //! Out of scope (no claim): application-level encodings inside a decoded payload (zip or base64 in an
 //! embedded file, compressed data at an arbitrary offset of a stream that is not content) and pixels.
 #![deny(clippy::arithmetic_side_effects)]
-use crate::content::Op;
+use crate::canon::{canonicalize, is_canonical};
+use crate::content::{Op, inline_dict};
 use crate::error::{Limits, PressError, RedactionClass, Result, TextCause};
 use crate::filters;
-use crate::norm::{Escapes, normalize, normalized, normalized_str};
+use crate::font::Font;
+use crate::norm::{Escapes, normalize, normalized, normalized_str, visual_order};
 use crate::pdf_edit::PdfDoc;
 use crate::raster::{InlineClass, RASTER_CLASS, classify_inline, codec_signature, decode_prefix, hidden_zlib, raster_tail};
 use crate::reader::{check_cancel, find, parse_document};
 use crate::redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
-use crate::show_text::{FontCache, FontState, FontText, KINDS, Role, SEP, Walker, content_role_streams, fonts_in, is_show, pages, pages_outside_tree, show_strings};
+use crate::show_text::{FontCache, FontState, KINDS, Role, SEP, Walker, content_role_streams, fonts_in, is_show, pages, pages_outside_tree, show_strings};
 use crate::syntax::{Dict, Object, Stream};
 use crate::text_codec::{Enc, decode_text, pdfdoc_byte, utf16be_bytes};
 use crate::text_fields::{TextFieldPolicy, TextFieldReport, appearance_roots};
@@ -156,6 +166,10 @@ pub enum NotProven {
     /// (`PayloadProof::undetermined_text` with [`TextCause::UnresolvedWritingMode`]; lead decision
     /// 2026-10-11T13:10:26Z, R9-F1; test `unknown_cmap_names_are_unresolved_writing_modes`).
     UnresolvedWritingMode,
+    /// A redaction's saved file holds a content stream that is not the canonical serialisation of its
+    /// own parse (`PayloadProof::non_canonical_streams`): a viewer may read other operators from it
+    /// than the proof did (lead decision 2026-10-11T15:00:20Z; test `canonical_rewrite_round_trips`).
+    NonCanonicalContent,
 }
 
 impl NotProven {
@@ -172,6 +186,7 @@ impl NotProven {
             Self::UnreadableContent => "unreadable_content",
             Self::UnreadableRemovedText => "unreadable_removed_text",
             Self::UnresolvedWritingMode => "unresolved_writing_mode",
+            Self::NonCanonicalContent => "non_canonical_content",
         }
     }
 }
@@ -203,9 +218,16 @@ pub struct PayloadProof {
     /// marker (`inline:<filter>` for inline images, `hidden_zlib` behind a raster codec name).
     /// Blocks `is_clean` (reason `NotProven::TrailingData`).
     pub trailing_data_streams: Vec<(u32, String)>,
-    /// `(object, reason)` of content the walk could not follow. Blocks `is_clean` when
-    /// `needles_searched > 0` (reason `NotProven::UnreadableContent`).
+    /// `(object, reason)` of content the walk could not follow (it does not parse completely with the
+    /// strict parser: an unknown operator, an extra or missing operand, an inline image whose end is not
+    /// certain, page content streams a byte-for-byte join would read differently, ...). Blocks
+    /// `is_clean` when `needles_searched > 0` (reason `NotProven::UnreadableContent`).
     pub unreadable_content_streams: Vec<(u32, String)>,
+    /// Content streams a viewer may interpret (reached by a content role) whose decoded bytes are not
+    /// the canonical serialisation of their own parse (`canon.rs`; inline images included). A redaction
+    /// result is proven only when this is empty (`NotProven::NonCanonicalContent`); a plain payload check
+    /// of a file this crate did not write reports it without blocking.
+    pub non_canonical_streams: Vec<u32>,
     /// Distinct needles the proof searched for (0 = no text-needle search was requested).
     pub needles_searched: u32,
     /// Cross-reference sections in the output (1 = fresh full save, no incremental tail).
@@ -327,7 +349,10 @@ fn push_spellings(out: &mut Vec<Variant>, i: usize, bytes: &[u8], chars: &[char]
 }
 
 /// Raw-byte needles: the bytes as given, plus their spellings (module docs). `unicode[i]`, when
-/// present, is the text of needle `i` as its font's `/ToUnicode` reads it.
+/// present, is the text of needle `i` as its font draws it (`RedactionReport::removed_unicode`). Both
+/// that text and the bytes read as PDFDocEncoding text are searched, in every spelling and as
+/// normalised text: a `/Differences` or base-encoding remap of a quote, dash or space draws other
+/// characters than the bytes spell (R10-D1; test `remapped_punctuation_is_searched_as_drawn`).
 fn variants_unicode(needles: &[Vec<u8>], unicode: &[Option<String>]) -> Vec<Variant> {
     let mut out = Vec::new();
     for (i, n) in needles.iter().enumerate() {
@@ -336,13 +361,22 @@ fn variants_unicode(needles: &[Vec<u8>], unicode: &[Option<String>]) -> Vec<Vari
         }
         let (chars, enc) = decode_text(n);
         let mapped = unicode.get(i).cloned().flatten().filter(|t| !t.trim().is_empty());
-        let text = mapped.clone().or_else(|| (enc == Enc::PdfDoc).then(|| chars.iter().collect::<String>()));
-        let spelled: Vec<char> = match &mapped {
-            Some(t) => t.chars().collect(),
-            None if enc == Enc::PdfDoc => chars,
-            None => Vec::new(),
-        };
-        push_spellings(&mut out, i, n, &spelled, text);
+        let byte_text = (enc == Enc::PdfDoc).then(|| chars.iter().collect::<String>()).filter(|t| !t.trim().is_empty());
+        match &mapped {
+            Some(t) => {
+                push_spellings(&mut out, i, n, &t.chars().collect::<Vec<_>>(), Some(t.clone()));
+                if let Some(b) = byte_text.filter(|b| b != t) {
+                    let pdfdoc: Vec<char> = b.chars().collect();
+                    let spelled = pdfdoc.iter().map(|c| crate::text_codec::pdfdoc_byte(*c)).collect::<Option<Vec<u8>>>().unwrap_or_else(|| n.clone());
+                    out.push(Variant { needle_index: i, bytes: Vec::new(), token: true, text: Some(b), hex: false });
+                    push_spellings(&mut out, i, &spelled, &pdfdoc, None);
+                }
+            }
+            None => {
+                let spelled: Vec<char> = if enc == Enc::PdfDoc { chars } else { Vec::new() };
+                push_spellings(&mut out, i, n, &spelled, byte_text);
+            }
+        }
     }
     out
 }
@@ -482,11 +516,13 @@ impl Needles {
     /// Occurrences `(needle, start, end, exempt)` in `hay` (normalised), where `slot[i]` names the drawn
     /// string (or text string) character `i` belongs to ([`SEP`]: a separator); `needle` indexes
     /// `list`. Matching is by substring. The whole-token rule may only EXEMPT a match, and only where
-    /// the drawn reading proves a different token: the whole match lies in one string and an ASCII
-    /// letter or digit of that SAME string touches a needle edge that is one too. A match that spans
-    /// strings (a concatenated reading) is never exempt (lead decision 2026-10-11T13:10:26Z; test
-    /// `split_runs_are_read_whole`).
-    fn matches(&self, hay: &[char], slot: &[u32]) -> Vec<(usize, usize, usize, bool)> {
+    /// the drawn reading proves a different token: the whole match lies in one string, an ASCII letter
+    /// or digit of that SAME string touches a needle edge that is one too, and that string's glyphs are
+    /// drawn next to each other (`adjacent(slot)`: `show_text::StrRead::adjacent`, R10-P4; a glued
+    /// letter a hostile width places far away proves nothing). A match that spans strings (a
+    /// concatenated reading) is never exempt (lead decision 2026-10-11T13:10:26Z; tests
+    /// `split_runs_are_read_whole`, `token_exemption_needs_drawn_adjacency`).
+    fn matches(&self, hay: &[char], slot: &[u32], adjacent: &dyn Fn(u32) -> bool) -> Vec<(usize, usize, usize, bool)> {
         let mut out = Vec::new();
         for (i, c) in hay.iter().enumerate() {
             let Some(candidates) = self.by_first.get(c) else { continue };
@@ -502,7 +538,7 @@ impl Needles {
                 let glued = |at: Option<usize>, edge: &char| {
                     at.is_some_and(|p| slot.get(p) == Some(&s0) && hay.get(p).is_some_and(char::is_ascii_alphanumeric)) && edge.is_ascii_alphanumeric()
                 };
-                let exempt = n.token && single && (glued(i.checked_sub(1), first) || glued(Some(end), last));
+                let exempt = n.token && single && adjacent(s0) && (glued(i.checked_sub(1), first) || glued(Some(end), last));
                 out.push((*k, i, end, exempt));
             }
         }
@@ -511,18 +547,22 @@ impl Needles {
 }
 
 /// Needles found (not exempt) in a text string or name read as text, both with its language escapes
-/// dropped (as a viewer shows it) and with only the `ESC` characters dropped.
+/// dropped (as a viewer shows it) and with only the `ESC` characters dropped, and in the order a bidi
+/// viewer shows it when it holds a right-to-left override (`norm::visual_order`, R10-P2).
 fn string_text_hits(text: &[char], needles: &Needles, escape_forms: &[Escapes]) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
     if needles.is_empty() {
         return out;
     }
-    for esc in escape_forms {
-        let hay = normalized(text, *esc);
-        let slot = vec![0u32; hay.len()];
-        for (k, _, _, exempt) in needles.matches(&hay, &slot) {
-            if !exempt && let Some(n) = needles.list.get(k) {
-                out.insert(n.index);
+    let visual = visual_order(text);
+    for form in std::iter::once(text).chain(visual.as_deref()) {
+        for esc in escape_forms {
+            let hay = normalized(form, *esc);
+            let slot = vec![0u32; hay.len()];
+            for (k, _, _, exempt) in needles.matches(&hay, &slot, &|_| true) {
+                if !exempt && let Some(n) = needles.list.get(k) {
+                    out.insert(n.index);
+                }
             }
         }
     }
@@ -530,11 +570,13 @@ fn string_text_hits(text: &[char], needles: &Needles, escape_forms: &[Escapes]) 
 }
 
 /// Needles found (not exempt) in a decoded stream read as text (UTF-16 with a byte-order mark, else
-/// UTF-8), normalised. Only streams with a byte outside printable ASCII are read this way: anything
-/// else is covered by the byte spellings.
+/// UTF-8), normalised: EVERY stream, plain printable ASCII included (R10-F7: a needle whose text
+/// differs from its normalised form, a ligature or a no-break space, is not found by byte spellings in
+/// an ASCII XMP packet; test `ascii_streams_are_matched_as_text`), also in bidi visual order when the
+/// text holds a right-to-left override (R10-P2).
 fn stream_text_hits(bytes: &[u8], needles: &Needles) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
-    if needles.is_empty() || bytes.iter().all(|b| (0x20..0x7F).contains(b) || matches!(b, b'\t' | b'\n' | b'\r' | b'\x0C')) {
+    if needles.is_empty() {
         return out;
     }
     let text: String = if bytes.starts_with(&[0xFE, 0xFF]) || bytes.starts_with(&[0xFF, 0xFE]) {
@@ -542,9 +584,10 @@ fn stream_text_hits(bytes: &[u8], needles: &Needles) -> BTreeSet<usize> {
     } else {
         String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)).into_owned()
     };
+    let visual: Option<String> = if text.contains('\u{202E}') { visual_order(&text.chars().collect::<Vec<_>>()).map(|v| v.into_iter().collect()) } else { None };
     let forms: &[Escapes] = if text.contains('\u{1B}') { &[Escapes::Chars, Escapes::Segments] } else { &[Escapes::Chars] };
-    for escapes in forms {
-        let hay = normalized_str(&text, *escapes);
+    for (source, escapes) in std::iter::once(&text).chain(visual.as_ref()).flat_map(|t| forms.iter().map(move |e| (t, e))) {
+        let hay = normalized_str(source, *escapes);
         for n in &needles.list {
             let pat: String = n.chars.iter().collect();
             let (first, last) = (n.chars.first().copied().unwrap_or(' '), n.chars.last().copied().unwrap_or(' '));
@@ -594,24 +637,6 @@ fn shown_needles(op: &Op, kept: Option<&KeptOp>, vars: &[Variant]) -> BTreeSet<u
     }
     out.extend(k.drawn.iter().copied());
     out
-}
-
-/// Inline-image dictionary with the abbreviated filter keys spelled out (ISO 32000-2 8.9.7).
-fn inline_dict(operands: &[Object]) -> Dict {
-    let mut d = Dict::default();
-    for pair in operands.chunks(2) {
-        if let [Object::Name(k), v] = pair {
-            let key: &[u8] = match k.as_slice() {
-                b"F" => b"Filter",
-                b"DP" => b"DecodeParms",
-                b"W" => b"Width",
-                b"H" => b"Height",
-                other => other,
-            };
-            d.set_key(key, v.clone());
-        }
-    }
-    d
 }
 
 /// Scans needles in `bytes`, pushing hits at `loc(offset)`.
@@ -722,27 +747,18 @@ pub fn verify_payload_absent_unicode(
     verify_with_variants(output, variants_unicode(needles, unicode), limits, cancel)
 }
 
-/// The codes under which `font` draws `text`: through its `/ToUnicode` map (composite and simple
-/// fonts) and through the encoding of a simple font (base encoding, `/Differences`).
-fn font_codes(font: &FontText, text: &[char]) -> Vec<Vec<u8>> {
-    match font {
-        FontText::Composite { cmap: Some(cmap), .. } => cmap.encode(text).into_iter().collect(),
-        FontText::Simple { enc, cmap, .. } => enc.encode(text).into_iter().chain(cmap.as_ref().and_then(|c| c.encode(text))).collect(),
-        FontText::Composite { cmap: None, .. } => Vec::new(),
-    }
-}
-
 /// Font-code spellings (raw and hex) of the needle texts under each of `fonts` that can encode
-/// them (test `differences_encoded_text_is_found_proven_and_redacted` for the encoding side).
+/// them (`font::Font::encode`: a simple font's encoding, a `/ToUnicode` code by value written in the
+/// font's codespace; test `differences_encoded_text_is_found_proven_and_redacted` for the encoding side).
 fn code_variants(
-    fonts: &[Rc<FontText>],
+    fonts: &[Rc<Font>],
     texts: &[(usize, Vec<char>, bool)],
     vars: &[Variant],
 ) -> Vec<Variant> {
     let mut out: Vec<Variant> = Vec::new();
     for f in fonts {
         for (needle, text, _) in texts {
-            for codes in font_codes(f, text).into_iter().filter(|c| !c.is_empty()) {
+            for codes in f.encode(text).into_iter().filter(|c| !c.is_empty()) {
                 if out.len() >= MAX_CODE_VARIANTS {
                     return out;
                 }
@@ -804,6 +820,7 @@ fn verify_internal(
         undetermined_text: Vec::new(),
         trailing_data_streams: Vec::new(),
         unreadable_content_streams: Vec::new(),
+        non_canonical_streams: Vec::new(),
         needles_searched: u32::try_from(
             vars.iter().filter(|v| !v.bytes.is_empty() || v.text.is_some()).map(|v| v.needle_index).collect::<BTreeSet<_>>().len(),
         )
@@ -947,7 +964,7 @@ fn verify_internal(
         walker.run_page(segments, *resources, Role::Kept)?;
     }
     let tree_pages: BTreeSet<u32> = tree.iter().map(|(n, _, _)| *n).collect();
-    for (segments, resources) in pages_outside_tree(objs, &tree_pages) {
+    for (_, segments, resources) in pages_outside_tree(objs, &tree_pages) {
         check_cancel(cancel)?;
         walker.run_page(&segments, resources, Role::Stray)?;
     }
@@ -958,9 +975,9 @@ fn verify_internal(
         };
         walker.run_stream(n, resources, Role::Appearance)?;
     }
-    for (n, resources) in content_role_streams(objs) {
+    for (n, role) in content_role_streams(objs) {
         if !walker.roles.contains_key(&n) && decoded.contains_key(&n) {
-            walker.run_stream(n, resources, Role::Stray)?;
+            walker.run_stream(n, role.resources, Role::Stray)?;
         }
     }
     for (i, num) in decoded.keys().enumerate() {
@@ -990,6 +1007,20 @@ fn verify_internal(
     proof.opaque_text_streams = opaque.into_iter().collect();
     proof.undetermined_text = undetermined.into_iter().collect();
     proof.unreadable_content_streams = walker.unreadable.iter().map(|(n, why)| (*n, (*why).to_owned())).collect();
+    // Canonical content: every stream a viewer may interpret (reached by a content role, not only by
+    // the object-table scan) is the canonical serialisation of its own strict parse.
+    for num in walker.roles.keys() {
+        if walker.unreached.contains(num) || walker.unreadable.contains_key(num) {
+            continue;
+        }
+        let canonical = match (decoded.get(num), walker.parsed_any(*num)) {
+            (Some(data), Some(parsed)) => is_canonical(data, &parsed),
+            _ => false,
+        };
+        if !canonical {
+            proof.non_canonical_streams.push(*num);
+        }
+    }
     let mut region: Vec<(u32, RedactionClass)> = Vec::new();
     for page in region_pages {
         let segments: &[u32] = tree.iter().find(|(n, _, _)| n == page).map(|(_, s, _)| s.as_slice()).unwrap_or(&[]);
@@ -1031,7 +1062,8 @@ fn verify_internal(
             let (chars, src) = normalize(&hay.chars, escapes);
             let slot: Vec<u32> = src.iter().map(|i| hay.slot.get(*i).copied().unwrap_or(SEP)).collect();
             let font_reading = h < KINDS.saturating_sub(1).saturating_mul(2);
-            for (k, a, b, exempt) in needles.matches(&chars, &slot) {
+            let adjacent = |s: u32| rt.slots.get(s as usize).and_then(|(r, si)| walker.records.get(*r)?.strings.get(*si)).is_some_and(|x| x.adjacent);
+            for (k, a, b, exempt) in needles.matches(&chars, &slot, &adjacent) {
                 let Some(n) = needles.list.get(k) else { continue };
                 {
                     let recs: BTreeSet<usize> =
@@ -1102,8 +1134,8 @@ fn verify_internal(
         let exempt = roles.as_ref().is_some_and(|r| !r.is_empty() && r.iter().all(|x| *x == Role::Kept));
         // Every stream that tokenizes as content was walked above (it has a role); any other stream
         // is not content: its bytes are scanned in every spelling and read as text.
-        let ops: Option<Rc<(Vec<Op>, bool)>> = if roles.is_some() { walker.ops_of(*num)? } else { None };
-        let ops_list: &[Op] = ops.as_ref().map(|p| p.0.as_slice()).unwrap_or(&[]);
+        let ops = if roles.is_some() { walker.parsed_any(*num) } else { None };
+        let ops_list: &[Op] = ops.as_ref().map(|p| p.ops.as_slice()).unwrap_or(&[]);
         // Read as text: every stream that is not only kept page text (XMP, embedded files, stray
         // and appearance content alike); kept text is matched through its font readings above.
         if !exempt && !raster_objects.contains(num) {
@@ -1271,6 +1303,10 @@ impl RedactedOutput {
         }
         // Positive determination: every text-showing operator of the saved file, whatever was removed.
         v.extend(self.proof.structural_reasons(true));
+        // Canonical rewrite: the saved file holds only content this crate wrote from its own parse.
+        if !self.proof.non_canonical_streams.is_empty() {
+            v.push(NotProven::NonCanonicalContent);
+        }
         v
     }
 
@@ -1283,7 +1319,8 @@ impl RedactedOutput {
     /// every text-showing operator of the saved file positively determined: font resolved, writing
     /// mode known, every code read, content followed (`NotProven::OpaqueText`,
     /// `NotProven::UnresolvedWritingMode`, `NotProven::UnreadableContent`), whatever was removed (lead
-    /// decision 2026-10-11T13:10:26Z). Says nothing about the same words legitimately living elsewhere
+    /// decision 2026-10-11T13:10:26Z), and every content stream of the saved file in the canonical form
+    /// this crate writes (`NotProven::NonCanonicalContent`, lead decision 2026-10-11T15:00:20Z). Says nothing about the same words legitimately living elsewhere
     /// (outline titles, metadata); `is_proven` also requires `proof.hits` to be empty.
     pub fn region_cleared(&self) -> bool {
         self.region_reasons().is_empty()
@@ -1333,15 +1370,26 @@ pub fn redact_and_save_with(
         let unreadable_removed = u32::try_from(unreadable).unwrap_or(u32::MAX);
         let text_fields = match text {
             Some(tp) => {
-                let strings: Vec<String> = needles
-                    .iter()
-                    .zip(&unicode)
-                    .map(|(n, u)| u.clone().unwrap_or_else(|| decode_text(n).0.into_iter().collect()))
-                    .collect();
+                // The drawn text and, where a remap makes it differ, the bytes' text (R10-D1).
+                let mut strings: Vec<String> = Vec::new();
+                for (n, u) in needles.iter().zip(&unicode) {
+                    let bytes_text: String = decode_text(n).0.into_iter().collect();
+                    if let Some(t) = u
+                        && !strings.contains(t)
+                    {
+                        strings.push(t.clone());
+                    }
+                    if (u.is_none() || u.as_ref() != Some(&bytes_text)) && !strings.contains(&bytes_text) {
+                        strings.push(bytes_text);
+                    }
+                }
                 Some(doc.redact_text_fields(&strings, tp, cancel)?)
             }
             None => None,
         };
+        // CANONICAL REWRITE (lead decision 2026-10-11T15:00:20Z): every content stream of the document
+        // is re-serialised from this crate's parse before the save (canon.rs).
+        canonicalize(&mut doc.objects, &doc.trailer, &doc.limits, cancel)?;
         let bytes = doc.save_full(cancel)?;
         // Fresh re-open of the saved bytes: the region test must now select nothing.
         let mut saved = PdfDoc::open(&bytes, &doc.limits, cancel)?;
@@ -1442,14 +1490,15 @@ pub fn sanitize_full_rewrite(
     if policy.drop_info_metadata && trailer.remove("Info").is_some() {
         bump(&mut counts, "info_metadata");
     }
-    let js_nums: BTreeSet<u32> = staged
-        .iter()
-        .filter(|(_, e)| e.obj.as_dict().and_then(|d| d.get("S")).is_some_and(|s| s.is_name("JavaScript")))
-        .map(|(n, _)| *n)
-        .collect();
+    // Indirect name objects, so an indirect /S or /Subtype is read as what it names (R10-F3).
+    let named = |name: &str| -> BTreeSet<u32> { staged.iter().filter(|(_, e)| e.obj.is_name(name)).map(|(n, _)| *n).collect() };
+    let (js_names, attachment_names) = (named("JavaScript"), named("FileAttachment"));
+    let is_name = |o: Option<&Object>, name: &str, refs: &BTreeSet<u32>| o.is_some_and(|s| s.is_name(name) || matches!(s, Object::Ref(r) if refs.contains(&r.num)));
+    let js_nums: BTreeSet<u32> =
+        staged.iter().filter(|(_, e)| is_name(e.obj.as_dict().and_then(|d| d.get("S")), "JavaScript", &js_names)).map(|(n, _)| *n).collect();
     let is_js = |o: &Object| match o {
         Object::Ref(r) => js_nums.contains(&r.num),
-        Object::Dict(d) => d.get("S").is_some_and(|s| s.is_name("JavaScript")),
+        Object::Dict(d) => is_name(d.get("S"), "JavaScript", &js_names),
         _ => false,
     };
     for entry in staged.values_mut() {
@@ -1475,7 +1524,7 @@ pub fn sanitize_full_rewrite(
                 if policy.drop_embedded_files {
                     hit("EmbeddedFiles", "embedded_files", d);
                     hit("AF", "embedded_files", d);
-                    if d.get("Subtype").is_some_and(|s| s.is_name("FileAttachment")) {
+                    if is_name(d.get("Subtype"), "FileAttachment", &attachment_names) {
                         hit("FS", "embedded_files", d);
                     }
                 }

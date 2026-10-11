@@ -65,7 +65,7 @@ pub(crate) fn format_real(v: f64) -> String {
     if s.is_empty() || s == "-" || s == "-0" { "0".into() } else { s.into() }
 }
 
-fn write_name(n: &[u8], out: &mut Vec<u8>) {
+pub(crate) fn write_name(n: &[u8], out: &mut Vec<u8>) {
     out.push(b'/');
     for &b in n {
         if (0x21..=0x7e).contains(&b) && b != b'#' && crate::syntax::is_regular(b) {

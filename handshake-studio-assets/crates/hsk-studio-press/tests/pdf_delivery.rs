@@ -167,7 +167,9 @@ fn redacted_text_absent_all_reachable_streams() {
     let report = &out.reports[0];
     assert_eq!(report.removed_text, vec![b"SECRET-ALPHA".to_vec()]);
     assert_eq!(report.annotations_removed, vec![ObjRef { num: 5, generation: 0 }]);
-    assert!(report.complete && report.layout_shift_possible, "standard font without /Widths: shift honestly reported");
+    // R10-F6 (lead decision 2026-10-11T15:00:20Z): a standard font without /Widths advances by its AFM
+    // widths, exactly, so the removed string is replaced by its exact advance and nothing shifts.
+    assert!(report.complete && !report.layout_shift_possible, "standard font without /Widths: exact AFM advance");
     assert!(out.proof.is_clean(), "{:?}", out.proof);
     assert!(out.is_proven());
     assert_eq!((out.short_needles, out.residual_in_region), (0, 0));
@@ -1557,16 +1559,22 @@ fn raster_class_is_listed_and_region_images_are_removed() {
         build(&objs, "/Info 7 0 R", b"")
     };
     let out = run(&inline("300 300", "DCT"), UnsupportedPolicy::Refuse).unwrap();
-    assert!(out.proof.raster_streams.iter().any(|r| r.inline && r.filter == "DCT" && r.class == RASTER_CLASS));
+    // The proof over the source lists the inline image; the redaction's output holds it as an image
+    // XObject (canonical rewrite, R10-F1).
+    let p = verify_payload_absent(&inline("300 300", "DCT"), &[b"SECRET-ALPHA".to_vec()], &Limits::default(), &token()).unwrap();
+    assert!(p.raster_streams.iter().any(|r| r.inline && r.filter == "DCT" && r.class == RASTER_CLASS));
+    assert!(out.proof.raster_streams.iter().any(|r| !r.inline && r.filter == "DCTDecode" && r.class == RASTER_CLASS), "{:?}", out.proof.raster_streams);
     assert!(out.is_proven(), "{:?}", out.proof);
     let near = inline("80 660", "DCT");
     assert_eq!(run(&near, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::InlineImage));
     let removed = run(&near, UnsupportedPolicy::RemoveImages).unwrap();
     assert_eq!(removed.reports[0].inline_images_removed, 1);
     assert!(removed.is_proven() && independent_streams(&removed.bytes).iter().all(|s| find(s, b"XXJPEGDATAXX").is_none()));
-    // An inline image with an unknown filter blocks, like a stream would.
-    let out = run(&inline("300 300", "Foo"), UnsupportedPolicy::Refuse).unwrap();
-    assert!(out.proof.streams_not_decodable.iter().any(|(_, f)| f == "inline:Foo") && !out.is_proven());
+    // An inline image with an unknown filter blocks, like a stream would: the proof over the source
+    // lists it, and the redaction refuses, since where its data ends is not known (R10-F1).
+    let p = verify_payload_absent(&inline("300 300", "Foo"), &[b"SECRET-ALPHA".to_vec()], &Limits::default(), &token()).unwrap();
+    assert!(!p.is_clean() && p.unreadable_content_streams.iter().any(|(n, _)| *n == 4), "{:?}", p);
+    assert_eq!(run(&inline("300 300", "Foo"), UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedFilter("Foo".into()));
 }
 
 #[test]
@@ -2547,13 +2555,19 @@ fn inline_image_data_is_decoded_and_scanned() {
     };
     let pixels = b"SECRET-ALPHA pixels";
     for (filter, data) in [("/Fl", zl(pixels)), ("[/Fl /DCT]", zl(&zl(pixels))), ("/AHx", hex_stream(pixels)), ("[/A85 /Fl]", a85(&zl(pixels)))] {
-        let out = r7_run(&pdf(filter, &data));
+        // The proof over a file with the inline image decodes and scans its data.
+        let source = pdf(filter, &data);
+        let p = r7_verify(&source);
+        assert!(p.hits.iter().any(|h| matches!(h.location, PayloadLocation::InlineImage { .. })), "{filter}: {:?}", p.hits); // R7-new-api
+        // A redaction's output holds the image as an image XObject (canonical rewrite, R10-F1): its
+        // decoded data is scanned like any stream.
+        let out = r7_run(&source);
         assert!(!out.is_proven(), "{filter}: the removed string is in the decoded image data: {:?}", out.not_proven_reasons());
-        assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::InlineImage { .. })), "{filter}: {:?}", out.proof.hits); // R7-new-api
+        assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { .. })), "{filter}: {:?}", out.proof.hits);
     }
-    // Control: pixels without the string are proven, the raster tail is listed.
+    // Control: pixels without the string are proven, the raster tail is listed (as an XObject now).
     let out = r7_run(&pdf("[/Fl /DCT]", &zl(&jpeg(b"plain"))));
-    assert!(out.is_proven() && out.proof.raster_streams.iter().any(|r| r.inline), "{:?}", out.not_proven_reasons());
+    assert!(out.is_proven() && out.proof.raster_streams.iter().any(|r| !r.inline && r.filter == "DCTDecode"), "{:?}", out.not_proven_reasons());
 }
 
 /// Type0 test fonts: 23 has no /ToUnicode (unreadable), 24 maps codes 0101..010C to SECRET-ALPHA.
@@ -2917,9 +2931,11 @@ fn unmappable_glyph_names_and_encodingless_fonts_are_opaque() {
     let desc = |flags: u32, file: &str| (31, format!("<< /Type /FontDescriptor /FontName /ABCDEF+Test /Flags {flags} {file} >>").into_bytes());
     let described = type1("/FontDescriptor 31 0 R", "");
     proven("non-embedded, no /Encoding", doc_with(described.clone(), vec![desc(32, "")], &show("(abc)")));
-    opaque("embedded, no /Encoding", doc_with(described.clone(), vec![desc(32, "/FontFile 32 0 R"), (32, stream_body("", b"%!PS-AdobeFont-1.0"))], &show("(abc)")));
+    // (Embedded fonts carry /Widths: without them the glyph metrics are unknown, R10-F6.)
+    let described_w = type1("/FontDescriptor 31 0 R", "/FirstChar 97 /Widths [500 500 500]");
+    opaque("embedded, no /Encoding", doc_with(described_w.clone(), vec![desc(32, "/FontFile 32 0 R"), (32, stream_body("", b"%!PS-AdobeFont-1.0"))], &show("(abc)")));
     opaque("symbolic, no /Encoding", doc_with(described.clone(), vec![desc(4, "")], &show("(abc)")));
-    proven("embedded with /ToUnicode", doc_with(type1("/FontDescriptor 31 0 R /ToUnicode 21 0 R", ""), vec![desc(32, "/FontFile 32 0 R"), (32, stream_body("", b"%!PS-AdobeFont-1.0")), (21, to_unicode.clone())], &show("<010203>")));
+    proven("embedded with /ToUnicode", doc_with(type1("/FontDescriptor 31 0 R /ToUnicode 21 0 R", "/FirstChar 1 /Widths [500 500 500]"), vec![desc(32, "/FontFile 32 0 R"), (32, stream_body("", b"%!PS-AdobeFont-1.0")), (21, to_unicode.clone())], &show("<010203>")));
     // Type 3: glyph names come only from /Differences; unmappable names are opaque, readable ones are text.
     let type3 = |names: &str| {
         let procs: String = names.split_whitespace().map(|n| format!("{n} 33 0 R ")).collect();
@@ -3350,7 +3366,8 @@ fn writing_mode_is_read_from_the_cmap() {
     // Controls: horizontal predefined CMaps (Identity-H, H) and an embedded CMap with /WMode 0.
     for (what, pdf) in [
         ("Identity-H", r9_cmap_doc("/Identity-H", vec![])),
-        ("H", r9_cmap_doc("/H", vec![])),
+        // A predefined horizontal CMap whose codespace holds R7_CODES (/H's 2121..7E7E does not: R10-F4).
+        ("UniJIS-UCS2-H", r9_cmap_doc("/UniJIS-UCS2-H", vec![])),
         ("embedded /WMode 0", r9_cmap_doc("39 0 R", vec![r9_cmap("/WMode 0", "/WMode 0 def /H usecmap")])),
     ] {
         let out = r9_run(&pdf, R9_BELOW, UnsupportedPolicy::Refuse).unwrap();
@@ -3385,8 +3402,10 @@ fn unknown_cmap_names_are_unresolved_writing_modes() {
     let cid = r7_fonts().into_iter().filter(|(n, _)| *n == 21 || *n == 25).collect();
     let p = verify_secret(&r8_ap_doc(font, "BT /F1 12 Tf 2 5 Td <0101> Tj ET", cid));
     expect(&mut red, !p.is_clean(), "an unresolved writing mode in an appearance read as clean");
-    assert_eq!(p.not_proven_reasons(), vec![NotProven::UnresolvedWritingMode]); // R9-new-api
-    assert_eq!(p.undetermined_text, vec![(13, TextCause::UnresolvedWritingMode)]); // R9-new-api
+    // Since R10-F4 a composite string is split by its encoding CMap's codespace: an unknown CMap has
+    // none, so its codes are also unread (the lead decision 2026-10-11T15:00:20Z adds that cause).
+    assert_eq!(p.not_proven_reasons(), vec![NotProven::OpaqueText, NotProven::UnresolvedWritingMode]); // R9-new-api
+    assert_eq!(p.undetermined_text, vec![(13, TextCause::UnresolvedWritingMode), (13, TextCause::UnreadableCode)]); // R9-new-api
     assert!(red.is_empty(), "{red:#?}");
 }
 
@@ -3587,9 +3606,11 @@ fn direct_type3_glyph_procedures_are_read() {
     let mut red = Vec::new();
     let t3 = "/T3 << /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a 40 0 R >> /Encoding << /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [500] /Resources << /Font << /F1 6 0 R >> >> >>";
     let glyph = (40, stream_body("/Type /Metadata /Subtype /XML", br"0 0 d0 BT /F1 12 Tf (SEC\122ET-ALPHA) Tj ET"));
-    let out = r7_run(&r8_doc(&r8_page(""), t3, "", vec![glyph]));
-    // Independent oracle: the file holds no plain spelling, only the escaped literal.
-    assert!(find(&out.bytes, b"SECRET-ALPHA").is_none() && find(&out.bytes, br"SEC\122ET-ALPHA").is_some());
+    let out = r7_run(&r8_doc(&r8_page(""), t3, "", vec![glyph.clone()]));
+    // Independent oracle: the source holds no plain spelling, only the escaped literal; the saved glyph
+    // procedure is the canonical rewrite of the same operator (lead decision 2026-10-11T15:00:20Z).
+    assert!(find(&glyph.1, b"SECRET-ALPHA").is_none() && find(&glyph.1, br"SEC\122ET-ALPHA").is_some());
+    assert!(independent_streams(&out.bytes).iter().any(|s| find(s, b"(SECRET-ALPHA) Tj").is_some()));
     expect(&mut red, !out.is_proven() && decoded_text_hit(&out.proof, 40), format!("direct Type 3 glyph procedure not read: {:?}", out.proof.hits));
     // A stream nothing references as content, with misleading keys, drawing text with a font it cannot
     // resolve: read (stray), so its text is opaque.

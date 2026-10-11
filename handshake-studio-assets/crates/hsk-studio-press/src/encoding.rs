@@ -61,7 +61,7 @@ pub(crate) enum Slot {
 
 /// The font's base encoding before `/Differences`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Base {
+pub(crate) enum Base {
     Standard,
     WinAnsi,
     MacRoman,
@@ -69,8 +69,19 @@ enum Base {
     /// No text at any code: Type 3 before `/Differences`, and the symbols of a non-embedded
     /// ZapfDingbats (dingbats cannot spell a needle).
     Empty,
-    /// Lives in the font program, or a name this reading does not know (`MacExpertEncoding`, ...).
+    /// Lives in the font program (embedded or symbolic font, or no base named): its codes are unknown.
     BuiltIn,
+    /// A base encoding name this reading does not know (`MacExpertEncoding`, ...): codes unknown.
+    Other,
+}
+
+/// What names the glyph a code draws (for the standard 14 metrics, `font.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GlyphSource<'a> {
+    /// A `/Differences` glyph name.
+    Name(&'a [u8]),
+    /// The base encoding's glyph for the code.
+    Base(Base, u8),
 }
 
 /// Subtypes whose codes are one byte.
@@ -79,13 +90,18 @@ fn simple_subtype(subtype: Option<&[u8]>) -> bool {
 }
 
 /// A font dictionary whose codes are NOT one byte: Type 0 and (when referenced directly) CIDFonts.
-pub(crate) fn is_composite(fd: &Dict) -> bool {
-    matches!(fd.get("Subtype").and_then(Object::as_name), Some(b"Type0" | b"CIDFontType0" | b"CIDFontType2"))
+/// `/Subtype` is resolved first: any object may be indirect (ISO 32000-2 7.3.10), and pdf.js reads it
+/// through `Dict.get`, which dereferences (R10-F3; test `indirect_subtypes_are_resolved`).
+pub(crate) fn is_composite(objs: &Objs, fd: &Dict) -> bool {
+    matches!(fd.get("Subtype").map(|s| res(objs, s)).and_then(Object::as_name), Some(b"Type0" | b"CIDFontType0" | b"CIDFontType2"))
 }
 
 /// The text of every code of one simple font.
 pub(crate) struct SimpleEncoding {
     slots: Vec<Slot>,
+    base: Base,
+    /// The `/Differences` glyph name of each code that has one.
+    names: Vec<Option<Vec<u8>>>,
 }
 
 /// Text of one shown string.
@@ -101,7 +117,7 @@ static UNKNOWN: Slot = Slot::Unknown;
 impl SimpleEncoding {
     /// Every code unknown (a malformed encoding).
     fn unreadable() -> Self {
-        Self { slots: vec![Slot::Unknown; 256] }
+        Self { slots: vec![Slot::Unknown; 256], base: Base::Other, names: vec![None; 256] }
     }
 
     /// Reads the encoding of a simple font dictionary (`Subtype` Type1, MMType1, TrueType or Type3;
@@ -116,7 +132,7 @@ impl SimpleEncoding {
                 let base = match d.get("BaseEncoding").map(|b| res(objs, b)) {
                     None | Some(Object::Null) => None,
                     Some(Object::Name(n)) => Some(named_base(n)),
-                    Some(_) => Some(Base::BuiltIn),
+                    Some(_) => Some(Base::Other),
                 };
                 (base, d.get("Differences").map(|x| res(objs, x)))
             }
@@ -124,6 +140,7 @@ impl SimpleEncoding {
         };
         let base = explicit.unwrap_or_else(|| implicit_base(objs, fd, subtype));
         let mut slots = base_slots(base);
+        let mut names = vec![None; 256];
         match differences {
             None | Some(Object::Null) => {}
             Some(Object::Array(items)) => {
@@ -132,13 +149,21 @@ impl SimpleEncoding {
                 }
                 let cost = items.len().saturating_add(16).saturating_mul(ELEMENT_COST);
                 *budget = budget.checked_sub(cost).ok_or(PressError::InputLimit("decoded_total"))?;
-                if !apply_differences(objs, items, &mut slots) {
+                if !apply_differences(objs, items, &mut slots, &mut names) {
                     return Ok(Self::unreadable());
                 }
             }
             Some(_) => return Ok(Self::unreadable()),
         }
-        Ok(Self { slots })
+        Ok(Self { slots, base, names })
+    }
+
+    /// What names the glyph code `code` draws.
+    pub(crate) fn glyph_source(&self, code: u8) -> GlyphSource<'_> {
+        match self.names.get(usize::from(code)).and_then(Option::as_deref) {
+            Some(n) => GlyphSource::Name(n),
+            None => GlyphSource::Base(self.base, code),
+        }
     }
 
     /// Text of `s` code by code. A code the encoding leaves unread (or without a glyph) falls back to
@@ -153,7 +178,7 @@ impl SimpleEncoding {
                 Slot::Char(c) => text.push(*c),
                 Slot::Text(t) => text.extend(t.chars()),
                 Slot::NoGlyph | Slot::Unknown => {
-                    let mapped = cmap.map(|c| c.decode(std::slice::from_ref(b))).unwrap_or_default();
+                    let mapped: Vec<char> = cmap.and_then(|c| c.lookup(u32::from(*b))).map(|t| t.chars().collect()).unwrap_or_default();
                     if mapped.is_empty() {
                         opaque |= *slot == Slot::Unknown;
                     } else {
@@ -194,7 +219,7 @@ fn named_base(name: &[u8]) -> Base {
         b"WinAnsiEncoding" => Base::WinAnsi,
         b"MacRomanEncoding" => Base::MacRoman,
         b"PDFDocEncoding" => Base::PdfDoc,
-        _ => Base::BuiltIn,
+        _ => Base::Other,
     }
 }
 
@@ -243,13 +268,13 @@ fn base_slots(base: Base) -> Vec<Slot> {
             })
             .collect(),
         Base::Empty => vec![Slot::NoGlyph; 256],
-        Base::BuiltIn => vec![Slot::Unknown; 256],
+        Base::BuiltIn | Base::Other => vec![Slot::Unknown; 256],
     }
 }
 
 /// Applies `[code /name /name ... code /name ...]`; `false` = malformed (a name before any code, a
 /// code outside 0..=255 that names follow, a non-name non-integer element).
-fn apply_differences(objs: &Objs, items: &[Object], slots: &mut [Slot]) -> bool {
+fn apply_differences(objs: &Objs, items: &[Object], slots: &mut [Slot], names: &mut [Option<Vec<u8>>]) -> bool {
     let mut code: Option<usize> = None;
     for it in items {
         match res(objs, it) {
@@ -258,12 +283,24 @@ fn apply_differences(objs: &Objs, items: &[Object], slots: &mut [Slot]) -> bool 
                 let Some(c) = code else { return false };
                 let Some(slot) = slots.get_mut(c) else { return false };
                 *slot = glyph_slot(name);
+                if let Some(n) = names.get_mut(c) {
+                    *n = Some(name.clone());
+                }
                 code = c.checked_add(1).filter(|c| *c < 256);
             }
             _ => return false,
         }
     }
     true
+}
+
+/// The Unicode text the Adobe Glyph List gives one glyph name (`None`: no text, or not a list name
+/// or convention).
+pub(crate) fn glyph_unicode(name: &[u8]) -> Option<String> {
+    match glyph_text(name) {
+        Glyph::Text(t) => Some(t),
+        Glyph::Blank | Glyph::Unknown => None,
+    }
 }
 
 enum Glyph {
@@ -447,6 +484,7 @@ mod tests {
         assert_eq!(base("PDFDocEncoding").slot(0xA0), &Slot::Char('\u{20AC}'));
         // Not read: unknown names and MacExpertEncoding leave every code unknown.
         assert_eq!(base("MacExpertEncoding").slot(b'A'), &Slot::Unknown);
+        assert_eq!(base("MacExpertEncoding").glyph_source(b'A'), GlyphSource::Base(Base::Other, b'A'));
         assert_eq!(base("Identity-H").slot(b'A'), &Slot::Unknown);
     }
 

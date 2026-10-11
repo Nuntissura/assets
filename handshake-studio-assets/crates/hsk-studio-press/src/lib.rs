@@ -3,6 +3,7 @@
 //! live document authority.
 #![forbid(unsafe_code)]
 
+mod canon;
 mod cmap;
 mod content;
 mod determination;
@@ -10,6 +11,7 @@ mod encoding;
 mod encoding_data;
 mod error;
 mod filters;
+mod font;
 mod norm;
 mod norm_data;
 mod pdf_edit;
@@ -18,6 +20,7 @@ mod reader;
 mod redaction;
 mod sanitized_save;
 mod show_text;
+mod std14_data;
 mod syntax;
 mod text_codec;
 mod text_fields;

@@ -1,16 +1,25 @@
 //! The determination pass (lead decision 2026-10-11T13:10:26Z, POSITIVE DETERMINATION): text drawn
 //! by content streams (page content, form XObjects, Type 3 glyph procedures, annotation appearances,
-//! any stream the object-table scan reaches), read through each font: the encoding of a simple font
-//! (base encoding plus `/Differences`, glyph names through the Adobe Glyph List, `encoding.rs`) and/or
-//! its `/ToUnicode` CMap.
+//! any stream the object-table scan reaches), read through each font (`font.rs`: a simple font's
+//! encoding and `/ToUnicode`, a composite font's codes split by its encoding CMap and read through
+//! `/ToUnicode`).
 //!
-//! For EVERY text-showing operator (`Tj`, `TJ`, `'`, `"`) the walk records a [`ShowRec`]:
+//! For every text-showing operator (`Tj`, `TJ`, `'`, `"`) of every content stream this walk parses,
+//! it records a [`ShowRec`]:
 //! - its font, resolved by the graphics-state rules or not ([`FontState`]: no font selected, or a
 //!   name that is no font dictionary of the resources in force);
 //! - its writing mode ([`WMode`] from `determination`: horizontal, vertical or unresolved);
 //! - whether its glyph geometry is known ([`ShowRec::geometry`]: Type 3 and vertical text are not
-//!   computed by the redaction selector until lane SMB-PRESS-GEOMETRY);
+//!   computed by the redaction selector until lane SMB-PRESS-GEOMETRY, nor text whose glyph widths are
+//!   unknown);
 //! - its reading per string ([`StrRead`]) and whether every code was read ([`ShowRec::unreadable`]).
+//!
+//! The walk reads only what it can parse completely with the strict parser (`content::parse_strict`,
+//! lead decision 2026-10-11T15:00:20Z): a stream with an unknown operator, a wrong operand count or
+//! type, an inline image whose end is not certain, or (for a page) content streams that a viewer's
+//! byte-for-byte join would read differently, is listed in [`Walker::unreadable`] and its text is
+//! not read: a typed `NotProven::UnreadableContent`, never a guess. `/Subtype` of an XObject is resolved
+//! before it is read (R10-F3).
 //!
 //! The payload proof computes `is_proven` / `region_cleared` from these records
 //! (`sanitized_save.rs`): an operator whose font or writing mode is unresolved, or whose reading is
@@ -25,26 +34,24 @@
 //! follows what a viewer draws, not what a dictionary lists:
 //! - the font is part of the graphics state: `Tf`, an ExtGState `/Font` set by `gs`, saved by `q` and
 //!   restored by `Q` (ISO 32000-2 8.4.1, 8.4.2, 8.4.5 Table 57, 9.3.1); a page's content streams are
-//!   one stream, so the state carries from one to the next (7.8.2);
+//!   one stream, so the state carries from one to the next (7.8.2); so are the font size, character and
+//!   word spacing, horizontal scaling and rendering mode, which decide whether a glyph glued to a match
+//!   is drawn next to it ([`StrRead::adjacent`], R10-P4);
 //! - a form XObject is entered by `Do` with the caller's graphics state (its font included) and with
 //!   its own `/Resources`, or the caller's when it has none (7.8.3, 8.10.1), memoised per (form,
-//!   resources, font, role), depth [`MAX_FORM_DEPTH`]; a cycle or deeper nesting is unreadable;
-//! - anything it cannot follow (content that does not tokenize, operands split from their operator
-//!   across a page's streams, `q` nesting over [`MAX_GSTATE`], an undecodable form) is reported in
-//!   [`Walker::unreadable`] instead of being skipped (tests `font_state_follows_q_q_gs_and_do`,
-//!   `unreadable_or_stray_content_never_reads_clean`).
+//!   resources, font, role), depth [`MAX_FORM_DEPTH`]; a cycle or deeper nesting is unreadable.
 //!
 //! Bounded: a ToUnicode stream is decoded under the caller's decoded-byte budget (aggregate), parsed
 //! by `cmap` (entry and range limits), and cached per font object; the walk interprets at most
 //! `4 x Limits::max_content_ops` operators; the text of the roots is charged to
 //! `Limits::max_decoded_total` characters ([`Walker::root_texts`]).
 #![deny(clippy::arithmetic_side_effects)]
-use crate::cmap::{Cmap, parse_to_unicode};
-use crate::content::{Op, parse_content_ext};
-use crate::determination::{WMode, writing_mode};
-use crate::encoding::{SimpleEncoding, is_composite, same_words};
+use crate::content::{Op, Parsed, joins_cleanly, parse_strict, tokenize};
+use crate::determination::WMode;
+use crate::encoding::same_words;
 use crate::error::{Limits, PressError, RedactionClass, Result, TextCause};
 use crate::filters;
+use crate::font::{Font, Kind, read_font};
 use crate::reader::Entry;
 use crate::redaction::res;
 use crate::syntax::{Dict, Object};
@@ -53,36 +60,14 @@ use std::rc::Rc;
 
 pub(crate) type Objs = BTreeMap<u32, Entry>;
 
-pub(crate) enum FontText {
-    /// One-byte codes: read through the font's encoding (base encoding, `/Differences`, glyph names)
-    /// and through `/ToUnicode` where there is one. A code neither reads makes the text unreadable.
-    /// Always horizontal; `type3`: a Type 3 font (glyph geometry not computed by the selector).
-    Simple { enc: SimpleEncoding, cmap: Option<Cmap>, type3: bool },
-    /// Composite font: `/ToUnicode` decodes the codes (`None`: no usable map, the codes cannot be
-    /// read); `wmode` from its CMap (`determination::writing_mode`).
-    Composite { cmap: Option<Cmap>, wmode: WMode },
-}
-
-impl FontText {
-    fn wmode(&self) -> WMode {
-        match self {
-            Self::Simple { .. } => WMode::Horizontal,
-            Self::Composite { wmode, .. } => *wmode,
-        }
-    }
-    fn type3(&self) -> bool {
-        matches!(self, Self::Simple { type3: true, .. })
-    }
-}
-
 /// Fonts already read: by font object number, and (for font dictionaries written directly into a
 /// resource dictionary) by the dictionary's address. The address entries are only valid while the
 /// object map is not mutated, so every [`Walker`] starts with none (a hostile content stream with a
 /// million `Tf` operators must not rebuild a direct font's encoding a million times).
 #[derive(Default)]
 pub(crate) struct FontCache {
-    by_object: BTreeMap<u32, Rc<FontText>>,
-    by_address: BTreeMap<usize, Rc<FontText>>,
+    by_object: BTreeMap<u32, Rc<Font>>,
+    by_address: BTreeMap<usize, Rc<Font>>,
 }
 
 /// The text a stream (and every form it draws) shows, for the text-field appearance scan: one entry
@@ -117,27 +102,8 @@ pub(crate) fn show_strings(op: &Op) -> Vec<&[u8]> {
     out
 }
 
-fn read_font(objs: &Objs, fd: &Dict, limits: &Limits, budget: &mut usize) -> Result<FontText> {
-    let mut cmap = None;
-    if let Some(Object::Stream(tu)) = fd.get("ToUnicode").map(|v| res(objs, v))
-        && filters::is_decodable(&tu.dict)
-    {
-        match filters::decode_stream(tu, limits, budget) {
-            Ok(data) => cmap = parse_to_unicode(&data),
-            Err(e @ (PressError::InputLimit(_) | PressError::Canceled)) => return Err(e),
-            Err(_) => {}
-        }
-    }
-    if is_composite(fd) {
-        let wmode = writing_mode(objs, fd.get("Encoding"), limits, budget, 0)?;
-        return Ok(FontText::Composite { cmap, wmode });
-    }
-    let type3 = fd.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Type3"));
-    Ok(FontText::Simple { enc: SimpleEncoding::of_font(objs, fd, budget)?, cmap, type3 })
-}
-
 /// The font a font-dictionary value selects (`None`: not a font dictionary).
-fn font_of(objs: &Objs, v: &Object, limits: &Limits, budget: &mut usize, cache: &mut FontCache) -> Result<Option<Rc<FontText>>> {
+fn font_of(objs: &Objs, v: &Object, limits: &Limits, budget: &mut usize, cache: &mut FontCache) -> Result<Option<Rc<Font>>> {
     let key = if let Object::Ref(r) = v { Some(r.num) } else { None };
     if let Some(k) = key
         && let Some(hit) = cache.by_object.get(&k)
@@ -167,10 +133,27 @@ pub(crate) fn lookup_font(
     limits: &Limits,
     budget: &mut usize,
     cache: &mut FontCache,
-) -> Result<Option<Rc<FontText>>> {
+) -> Result<Option<Rc<Font>>> {
     match fonts.and_then(|f| f.get_key(name)) {
         Some(v) => font_of(objs, v, limits, budget, cache),
         None => Ok(None),
+    }
+}
+
+/// Number of colour components of a colour space resource `name` of `resources` (inline images).
+pub(crate) fn resource_components(objs: &Objs, resources: Option<&Dict>, name: &[u8]) -> Option<usize> {
+    let v = resources.and_then(|r| r.get("ColorSpace")).map(|c| res(objs, c)).and_then(Object::as_dict)?.get_key(name)?;
+    let v = res(objs, v);
+    match v {
+        Object::Array(a) if a.first().map(|f| res(objs, f)).is_some_and(|f| f.is_name("ICCBased")) => {
+            let stream = a.get(1).map(|s| res(objs, s)).and_then(Object::as_dict)?;
+            stream.get("N").map(|n| res(objs, n)).and_then(Object::as_int).and_then(|n| usize::try_from(n).ok()).filter(|n| matches!(n, 1 | 3 | 4))
+        }
+        Object::Array(a) => {
+            let resolved: Vec<Object> = a.iter().map(|x| res(objs, x).clone()).collect();
+            crate::content::components(&Object::Array(resolved), &crate::content::no_color_spaces)
+        }
+        other => crate::content::components(other, &crate::content::no_color_spaces),
     }
 }
 
@@ -195,7 +178,7 @@ pub(crate) enum Role {
 enum FontSel {
     /// No `Tf` (or `gs` with `/Font`) yet.
     Unset,
-    Known(Rc<FontText>),
+    Known(Rc<Font>),
     /// A `Tf` (or `gs /Font`) named a font the resources do not hold.
     Unresolved,
 }
@@ -210,9 +193,26 @@ impl FontSel {
     }
 }
 
-struct State {
+/// The part of the graphics state the walk follows (saved by `q`, restored by `Q`).
+#[derive(Clone)]
+struct Gs {
     font: FontSel,
-    stack: Vec<FontSel>,
+    fs: f64,
+    tc: f64,
+    tw: f64,
+    th: f64,
+    tr: i64,
+}
+
+impl Gs {
+    fn initial(font: FontSel) -> Self {
+        Self { font, fs: 0.0, tc: 0.0, tw: 0.0, th: 1.0, tr: 0 }
+    }
+}
+
+struct State {
+    g: Gs,
+    stack: Vec<Gs>,
 }
 
 /// How the font of a text-showing operator was determined.
@@ -241,6 +241,11 @@ pub(crate) struct StrRead {
     /// letters and digits as the bytes). Only such bytes may exempt a byte match in kept text (R8 P1;
     /// test `kept_text_needs_a_drawn_reading`).
     pub raw_drawn: bool,
+    /// Each glyph of the string is drawn next to the one before it: its exact advance (width, size,
+    /// character and word spacing, scaling) is no longer than the font's glyph box and the text is not
+    /// invisible (rendering mode 3 or 7). Only then may a letter of the string glued to a needle prove
+    /// that the needle is part of another word (R10-P4; test `token_exemption_needs_drawn_adjacency`).
+    pub adjacent: bool,
 }
 
 /// One text-showing operator in one drawing context, positively determined or not.
@@ -255,6 +260,8 @@ pub(crate) struct ShowRec {
     pub font: FontState,
     pub wmode: WMode,
     pub type3: bool,
+    /// The font's glyph metrics are not known (`font::Font::metrics_known`).
+    pub unknown_metrics: bool,
     /// Some code (or the content itself) could not be turned into text.
     pub unreadable: bool,
 }
@@ -293,6 +300,7 @@ impl ShowRec {
             v.push(RedactionClass::Type3Text);
         }
         match self.wmode {
+            WMode::Horizontal if self.unknown_metrics && !self.type3 => v.push(RedactionClass::UnknownGlyphMetrics),
             WMode::Horizontal => {}
             WMode::Vertical => v.push(RedactionClass::VerticalText),
             WMode::Unresolved => v.push(RedactionClass::UnresolvedWritingMode),
@@ -306,7 +314,7 @@ pub(crate) const MAX_GSTATE: usize = 256;
 /// Form nesting the walker follows.
 pub(crate) const MAX_FORM_DEPTH: usize = 32;
 
-pub(crate) type ParsedOps = Rc<(Vec<Op>, bool)>;
+pub(crate) type ParsedOps = Rc<Parsed>;
 
 /// An entry of a drawing sequence: a text-showing operator, or a form drawn there by `Do`.
 #[derive(Clone, Copy)]
@@ -328,7 +336,8 @@ pub(crate) struct Walker<'o> {
     /// Decoded stream bytes supplied by the caller (the payload proof decodes every stream once);
     /// `None` = decode on demand under `budget`.
     pre: Option<&'o BTreeMap<u32, Vec<u8>>>,
-    parsed: BTreeMap<u32, Option<ParsedOps>>,
+    /// Parses by (stream, resources address); `Err` = the stream cannot be read (the reason).
+    parsed: BTreeMap<(u32, usize), std::result::Result<ParsedOps, &'static str>>,
     done: BTreeSet<MemoKey>,
     ops_left: usize,
     pub records: Vec<ShowRec>,
@@ -345,11 +354,13 @@ pub(crate) struct Walker<'o> {
     pub root_unreadable: bool,
     /// Every role each stream was drawn in.
     pub roles: BTreeMap<u32, BTreeSet<Role>>,
+    /// Streams reached only by the object-table scan ([`Walker::run_unreached`]): no viewer draws them.
+    pub unreached: BTreeSet<u32>,
     /// Resource dictionaries each stream was read with (for the code-spelling backstop).
     pub resources_used: BTreeMap<u32, Vec<&'o Dict>>,
     /// Every font selected during the walk stays alive, so the memo key (font address) can never be
     /// reused by a different font.
-    keep: Vec<Rc<FontText>>,
+    keep: Vec<Rc<Font>>,
 }
 
 /// Reading kinds of drawn text matched by the proof and the appearance scan: the font's text, the
@@ -377,6 +388,16 @@ pub(crate) struct RootText {
     pub hays: Vec<Hay>,
 }
 
+/// A parse error that means "this content cannot be read" (not a budget overrun or cancellation).
+fn unreadable_reason(e: &PressError) -> Option<&'static str> {
+    match e {
+        PressError::Canceled | PressError::InputLimit("decoded_total" | "decoded_bytes") => None,
+        PressError::Malformed(why) | PressError::InputLimit(why) => Some(why),
+        PressError::UnsupportedFilter(_) => Some("inline_image_filter"),
+        _ => Some("content_unreadable"),
+    }
+}
+
 impl<'o> Walker<'o> {
     pub(crate) fn new(objs: &'o Objs, limits: &'o Limits, budget: usize, mut fonts: FontCache) -> Self {
         fonts.by_address.clear();
@@ -398,6 +419,7 @@ impl<'o> Walker<'o> {
             unreadable: BTreeMap::new(),
             root_unreadable: false,
             roles: BTreeMap::new(),
+            unreached: BTreeSet::new(),
             resources_used: BTreeMap::new(),
             keep: Vec::new(),
         }
@@ -429,26 +451,47 @@ impl<'o> Walker<'o> {
         }
     }
 
-    /// Parsed operations of a stream object (cached). `None`: not a stream, not decodable, or does
-    /// not tokenize.
-    pub(crate) fn ops_of(&mut self, num: u32) -> Result<Option<ParsedOps>> {
-        if let Some(p) = self.parsed.get(&num) {
+    /// Decoded bytes of a stream object (`None`: not a stream or not decodable).
+    fn bytes_of(&mut self, num: u32) -> Result<Option<std::borrow::Cow<'o, [u8]>>> {
+        if let Some(pre) = self.pre {
+            return Ok(pre.get(&num).map(|d| std::borrow::Cow::Borrowed(d.as_slice())));
+        }
+        match self.objs.get(&num).map(|e| &e.obj) {
+            Some(Object::Stream(s)) => match filters::decode_stream(s, self.limits, &mut self.budget) {
+                Ok(data) => Ok(Some(std::borrow::Cow::Owned(data))),
+                Err(e @ (PressError::InputLimit(_) | PressError::Canceled)) => Err(e),
+                Err(_) => Ok(None),
+            },
+            _ => Ok(None),
+        }
+    }
+
+    /// Strictly parsed operations of a stream object read with `resources` (cached). `Err(reason)`:
+    /// not decodable, or not content this crate reads completely.
+    pub(crate) fn ops_of(&mut self, num: u32, resources: Option<&'o Dict>) -> Result<std::result::Result<ParsedOps, &'static str>> {
+        let key = (num, resources.map_or(0, |d| std::ptr::from_ref(d) as usize));
+        if let Some(p) = self.parsed.get(&key) {
             return Ok(p.clone());
         }
-        let parsed = match self.pre {
-            Some(pre) => pre.get(&num).and_then(|data| parse_content_ext(data, self.limits).ok()),
-            None => match self.objs.get(&num).map(|e| &e.obj) {
-                Some(Object::Stream(s)) => match filters::decode_stream(s, self.limits, &mut self.budget) {
-                    Ok(data) => parse_content_ext(&data, self.limits).ok(),
-                    Err(e @ (PressError::InputLimit(_) | PressError::Canceled)) => return Err(e),
-                    Err(_) => None,
-                },
-                _ => None,
-            },
+        let parsed = match self.bytes_of(num)? {
+            None => Err("content_unreadable"),
+            Some(data) => {
+                let objs = self.objs;
+                let cs = move |n: &[u8]| resource_components(objs, resources, n);
+                match parse_strict(&data, self.limits, &cs, &mut self.budget) {
+                    Ok(p) if p.inline_ambiguous => Err("inline_image_ambiguous"),
+                    Ok(p) => Ok(Rc::new(p)),
+                    Err(e) => Err(unreadable_reason(&e).ok_or(e)?),
+                }
+            }
         };
-        let parsed = parsed.map(Rc::new);
-        self.parsed.insert(num, parsed.clone());
+        self.parsed.insert(key, parsed.clone());
         Ok(parsed)
+    }
+
+    /// Any strict parse of `num` made during the walk (for the proof's operand scan).
+    pub(crate) fn parsed_any(&self, num: u32) -> Option<ParsedOps> {
+        self.parsed.range((num, 0)..=(num, usize::MAX)).find_map(|(_, p)| p.as_ref().ok().cloned())
     }
 
     fn note(&mut self, num: u32, role: Role, resources: Option<&'o Dict>) {
@@ -465,42 +508,70 @@ impl<'o> Walker<'o> {
     /// [`Role::Kept`] for a page of the page tree and [`Role::Stray`] for a page object outside it
     /// ([`pages_outside_tree`]).
     pub(crate) fn run_page(&mut self, segments: &[u32], resources: Option<&'o Dict>, role: Role) -> Result<()> {
-        let mut st = State { font: FontSel::Unset, stack: Vec::new() };
+        let mut st = State { g: Gs::initial(FontSel::Unset), stack: Vec::new() };
         let seq = self.new_seq();
         self.roots.push((seq, role));
         let mut broken = false;
+        let mut prev: Option<(u32, ParsedOps)> = None;
         for (i, seg) in segments.iter().enumerate() {
             self.note(*seg, role, resources);
             if broken {
                 // The state after an unreadable stream is unknown: what follows is not checkable.
                 self.unread(Some(*seg), "after_unreadable_stream");
-                st.font = FontSel::Unresolved;
+                st.g.font = FontSel::Unresolved;
             }
-            let Some(parsed) = self.ops_of(*seg)? else {
-                self.unread(Some(*seg), "content_unreadable");
-                broken = true;
-                continue;
+            let parsed = match self.ops_of(*seg, resources)? {
+                Ok(p) => p,
+                Err(why) => {
+                    self.unread(Some(*seg), why);
+                    broken = true;
+                    prev = None;
+                    continue;
+                }
             };
-            if parsed.1 && i.saturating_add(1) < segments.len() {
+            // A viewer joins the streams byte for byte (content::joins_cleanly).
+            if let Some((p, pp)) = &prev
+                && let (Some(a), Some(b)) = (self.bytes_of(*p)?, self.bytes_of(*seg)?)
+                && !joins_cleanly(&a, pp, &b)
+            {
+                self.unread(Some(*p), "segments_merge");
+                broken = true;
+            }
+            if parsed.trailing_operands && i.saturating_add(1) < segments.len() {
                 self.unread(Some(*seg), "operands_across_streams");
                 broken = true;
             }
             let mut chain = vec![*seg];
-            self.interp(Some(*seg), &parsed.0, resources, role, &mut st, 0, &mut chain, seq)?;
+            self.interp(Some(*seg), &parsed.ops, resources, role, &mut st, 0, &mut chain, seq)?;
+            prev = Some((*seg, parsed));
         }
         Ok(())
     }
 
     /// A stream no page, page object, appearance or content role reached (the object-table scan):
-    /// read as stray content when it tokenizes, with no resources, so every font it names is
-    /// unresolved and its text opaque (R8 F1; test
+    /// read as stray content when it tokenizes (the lenient tokenizer: any operator), with no
+    /// resources, so every font it names is unresolved and its text opaque (R8 F1; test
     /// `partial_tounicode_and_unreachable_pages_are_read_or_opaque`). A stream that does not tokenize is
-    /// not content; its bytes are scanned in every spelling.
+    /// not content; its bytes are scanned in every spelling and read as text.
     pub(crate) fn run_unreached(&mut self, num: u32) -> Result<()> {
-        if self.ops_of(num)?.is_none() {
-            return Ok(());
-        }
-        self.run_stream(num, None, Role::Stray)
+        let Some(data) = self.bytes_of(num)? else { return Ok(()) };
+        let parsed = match tokenize(&data, self.limits, &crate::content::no_color_spaces, &mut self.budget) {
+            Ok(p) => p,
+            Err(e) => {
+                unreadable_reason(&e).ok_or(e)?;
+                return Ok(());
+            }
+        };
+        self.unreached.insert(num);
+        self.note(num, Role::Stray, None);
+        // Kept for the proof's operand and inline-image scan (`parsed_any`); never a canonical check.
+        let parsed = Rc::new(parsed);
+        self.parsed.insert((num, usize::MAX), Ok(Rc::clone(&parsed)));
+        let seq = self.new_seq();
+        self.roots.push((seq, Role::Stray));
+        let mut st = State { g: Gs::initial(FontSel::Unset), stack: Vec::new() };
+        let mut chain = vec![num];
+        self.interp(Some(num), &parsed.ops, None, Role::Stray, &mut st, 0, &mut chain, seq)
     }
 
     /// One stream drawn on its own (an appearance, or a stray content stream).
@@ -510,34 +581,55 @@ impl<'o> Walker<'o> {
         if !self.done.insert(key) {
             return Ok(());
         }
-        let Some(parsed) = self.ops_of(num)? else {
-            self.unread(Some(num), "content_unreadable");
-            return Ok(());
+        let parsed = match self.ops_of(num, resources)? {
+            Ok(p) => p,
+            Err(why) => {
+                self.unread(Some(num), why);
+                return Ok(());
+            }
         };
-        let mut st = State { font: FontSel::Unset, stack: Vec::new() };
+        let mut st = State { g: Gs::initial(FontSel::Unset), stack: Vec::new() };
         let mut chain = vec![num];
         let seq = self.new_seq();
         self.roots.push((seq, role));
-        self.interp(Some(num), &parsed.0, resources, role, &mut st, 0, &mut chain, seq)
+        self.interp(Some(num), &parsed.ops, resources, role, &mut st, 0, &mut chain, seq)
     }
 
     /// Bytes that are not (or not known as) a stream object, drawn on their own.
     pub(crate) fn run_bytes(&mut self, data: &[u8], resources: Option<&'o Dict>, role: Role) -> Result<()> {
         let seq = self.new_seq();
         self.roots.push((seq, role));
-        let Ok((ops, _)) = parse_content_ext(data, self.limits) else {
-            // Unreadable: the raw bytes still count as text for matching, and it reads as opaque.
-            self.root_unreadable = true;
-            let raw = latin1(data);
-            let strings = vec![StrRead { text: raw.clone(), alt: None, raw, raw_drawn: false }];
-            self.records.push(ShowRec { stream: None, role, op: 0, strings, font: FontState::Known, wmode: WMode::Horizontal, type3: false, unreadable: true });
-            let idx = self.records.len().saturating_sub(1);
-            self.push_item(seq, Item::Rec(idx));
-            return Ok(());
+        let objs = self.objs;
+        let cs = move |n: &[u8]| resource_components(objs, resources, n);
+        let parsed = match parse_strict(data, self.limits, &cs, &mut self.budget) {
+            Ok(p) if !p.inline_ambiguous => p,
+            other => {
+                if let Err(e) = other {
+                    unreadable_reason(&e).ok_or(e)?;
+                }
+                // Unreadable: the raw bytes still count as text for matching, and it reads as opaque.
+                self.root_unreadable = true;
+                let raw = latin1(data);
+                let strings = vec![StrRead { text: raw.clone(), alt: None, raw, raw_drawn: false, adjacent: false }];
+                self.records.push(ShowRec {
+                    stream: None,
+                    role,
+                    op: 0,
+                    strings,
+                    font: FontState::Known,
+                    wmode: WMode::Horizontal,
+                    type3: false,
+                    unknown_metrics: false,
+                    unreadable: true,
+                });
+                let idx = self.records.len().saturating_sub(1);
+                self.push_item(seq, Item::Rec(idx));
+                return Ok(());
+            }
         };
-        let mut st = State { font: FontSel::Unset, stack: Vec::new() };
+        let mut st = State { g: Gs::initial(FontSel::Unset), stack: Vec::new() };
         let mut chain = Vec::new();
-        self.interp(None, &ops, resources, role, &mut st, 0, &mut chain, seq)
+        self.interp(None, &parsed.ops, resources, role, &mut st, 0, &mut chain, seq)
     }
 
     fn font_named(&mut self, resources: Option<&'o Dict>, name: &[u8], role: Role) -> Result<FontSel> {
@@ -554,8 +646,8 @@ impl<'o> Walker<'o> {
         Ok(FontSel::Unresolved)
     }
 
-    /// The font an ExtGState sets (`None`: the state sets no font).
-    fn gs_font(&mut self, resources: Option<&'o Dict>, name: &[u8]) -> Result<Option<FontSel>> {
+    /// The font and size an ExtGState sets (`None`: the state sets no font).
+    fn gs_font(&mut self, resources: Option<&'o Dict>, name: &[u8]) -> Result<Option<(FontSel, Option<f64>)>> {
         let objs = self.objs;
         let Some(gs) = resources
             .and_then(|r| r.get("ExtGState"))
@@ -568,46 +660,40 @@ impl<'o> Walker<'o> {
             return Ok(None);
         };
         let Some(entry) = gs.get("Font").map(|f| res(objs, f)) else { return Ok(None) };
-        let font = match entry.as_array().and_then(|a| a.first()) {
+        let pair = entry.as_array().filter(|a| a.len() == 2);
+        let font = match pair.and_then(|a| a.first()) {
             Some(v) => font_of(objs, v, self.limits, &mut self.budget, &mut self.fonts)?,
             None => None,
         };
-        Ok(Some(font.map_or(FontSel::Unresolved, FontSel::Known)))
+        let size = pair.and_then(|a| a.get(1)).and_then(|s| res(objs, s).as_f64());
+        let sel = match (font, size) {
+            (Some(f), Some(_)) => FontSel::Known(f),
+            _ => FontSel::Unresolved,
+        };
+        Ok(Some((sel, size)))
     }
 
-    /// The record of one text-showing operator drawn with `font`.
-    fn determine(stream: Option<u32>, role: Role, op_index: usize, op: &Op, font: &FontSel) -> ShowRec {
-        let (state, wmode, type3) = match font {
-            FontSel::Known(f) => (FontState::Known, f.wmode(), f.type3()),
-            FontSel::Unset => (FontState::NoFont, WMode::Unresolved, false),
-            FontSel::Unresolved => (FontState::Unresolved, WMode::Unresolved, false),
+    /// The record of one text-showing operator drawn with the graphics state `g`.
+    fn determine(stream: Option<u32>, role: Role, op_index: usize, op: &Op, g: &Gs) -> ShowRec {
+        let (state, wmode, type3, unknown_metrics) = match &g.font {
+            FontSel::Known(f) => (FontState::Known, f.wmode, f.type3, !f.metrics_known() || show_strings(op).iter().any(|s| f.glyphs(s).is_none())),
+            FontSel::Unset => (FontState::NoFont, WMode::Unresolved, false, false),
+            FontSel::Unresolved => (FontState::Unresolved, WMode::Unresolved, false, false),
         };
-        let mut rec = ShowRec { stream, role, op: op_index, strings: Vec::new(), font: state, wmode, type3, unreadable: false };
+        let mut rec = ShowRec { stream, role, op: op_index, strings: Vec::new(), font: state, wmode, type3, unknown_metrics, unreadable: false };
         for s in show_strings(op) {
             let raw = latin1(s);
-            let (text, alt, raw_drawn) = match font {
-                FontSel::Known(f) => match f.as_ref() {
-                    FontText::Composite { cmap: Some(cmap), .. } => {
-                        // A code the map does not name is text this walk cannot read.
-                        let (decoded, complete) = cmap.decode_checked(s);
-                        rec.unreadable |= !complete;
-                        (decoded, None, false)
-                    }
-                    FontText::Composite { cmap: None, .. } => {
-                        rec.unreadable |= !s.is_empty();
-                        (raw.clone(), None, false)
-                    }
-                    FontText::Simple { enc, cmap, .. } => {
-                        let read = enc.read(s, cmap.as_ref());
-                        rec.unreadable |= read.opaque;
-                        let drawn = !read.opaque && same_words(&read.text, &raw);
-                        (read.text, cmap.as_ref().map(|c| c.decode(s)), drawn)
-                    }
-                },
+            let (text, alt, raw_drawn, adjacent) = match &g.font {
+                FontSel::Known(f) => {
+                    let r = f.read(s);
+                    rec.unreadable |= !r.complete;
+                    let raw_drawn = matches!(f.kind, Kind::Simple(_)) && r.complete && same_words(&r.text, &raw);
+                    (r.text, r.alt, raw_drawn, adjacent(f, s, g))
+                }
                 // Not determined: what a viewer substitutes is unknown (the bytes are a guess).
-                FontSel::Unset | FontSel::Unresolved => (raw.clone(), None, false),
+                FontSel::Unset | FontSel::Unresolved => (raw.clone(), None, false, false),
             };
-            rec.strings.push(StrRead { text, alt, raw, raw_drawn });
+            rec.strings.push(StrRead { text, alt, raw, raw_drawn, adjacent });
         }
         rec
     }
@@ -625,6 +711,7 @@ impl<'o> Walker<'o> {
         seq: usize,
     ) -> Result<()> {
         let objs = self.objs;
+        let num = |op: &Op, i: usize| op.operands.get(i).and_then(Object::as_f64);
         for (i, op) in ops.iter().enumerate() {
             self.ops_left = self.ops_left.checked_sub(1).ok_or(PressError::InputLimit("content_walk"))?;
             match op.name.as_slice() {
@@ -632,34 +719,46 @@ impl<'o> Walker<'o> {
                     if st.stack.len() >= MAX_GSTATE {
                         self.unread(stream, "gstate_depth");
                     } else {
-                        st.stack.push(st.font.clone());
+                        st.stack.push(st.g.clone());
                     }
                 }
                 b"Q" => {
-                    if let Some(f) = st.stack.pop() {
-                        st.font = f;
+                    if let Some(g) = st.stack.pop() {
+                        st.g = g;
                     }
                 }
                 b"Tf" => {
-                    st.font = match op.operands.first().and_then(Object::as_name) {
+                    st.g.font = match op.operands.first().and_then(Object::as_name) {
                         Some(n) => self.font_named(resources, n, role)?,
                         None => FontSel::Unresolved,
                     };
-                    self.keep_alive(&st.font);
+                    st.g.fs = num(op, 1).unwrap_or(0.0);
+                    self.keep_alive(&st.g.font);
                 }
                 b"gs" => {
                     if let Some(n) = op.operands.first().and_then(Object::as_name)
-                        && let Some(f) = self.gs_font(resources, n)?
+                        && let Some((f, size)) = self.gs_font(resources, n)?
                     {
-                        st.font = f;
-                        self.keep_alive(&st.font);
+                        st.g.font = f;
+                        if let Some(s) = size {
+                            st.g.fs = s;
+                        }
+                        self.keep_alive(&st.g.font);
                     }
                 }
+                b"Tc" => st.g.tc = num(op, 0).unwrap_or(0.0),
+                b"Tw" => st.g.tw = num(op, 0).unwrap_or(0.0),
+                b"Tz" => st.g.th = num(op, 0).unwrap_or(100.0) / 100.0,
+                b"Tr" => st.g.tr = op.operands.first().and_then(Object::as_int).unwrap_or(0),
                 name if is_show(name) => {
+                    if name == b"\"" {
+                        st.g.tw = num(op, 0).unwrap_or(0.0);
+                        st.g.tc = num(op, 1).unwrap_or(0.0);
+                    }
                     if show_strings(op).iter().all(|s| s.is_empty()) {
                         continue;
                     }
-                    let rec = Self::determine(stream, role, i, op, &st.font);
+                    let rec = Self::determine(stream, role, i, op, &st.g);
                     self.records.push(rec);
                     let idx = self.records.len().saturating_sub(1);
                     self.push_item(seq, Item::Rec(idx));
@@ -675,7 +774,8 @@ impl<'o> Walker<'o> {
                         continue;
                     };
                     let Some(Object::Stream(form)) = objs.get(&r.num).map(|e| &e.obj) else { continue };
-                    if !form.dict.get("Subtype").is_some_and(|t| t.is_name("Form")) {
+                    // R10-F3: /Subtype may be an indirect object; viewers dereference it.
+                    if !form.dict.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Form")) {
                         continue;
                     }
                     if let Some(s) = stream {
@@ -692,22 +792,25 @@ impl<'o> Walker<'o> {
                         self.unread(Some(r.num), "form_depth");
                         continue;
                     }
-                    let key = (r.num, active.map_or(0, |d| std::ptr::from_ref(d) as usize), st.font.key(), role);
+                    let key = (r.num, active.map_or(0, |d| std::ptr::from_ref(d) as usize), st.g.font.key(), role);
                     if let Some(f) = self.form_seq.get(&key).copied() {
                         self.push_item(seq, Item::Form(f));
                         continue;
                     }
-                    let Some(parsed) = self.ops_of(r.num)? else {
-                        self.unread(Some(r.num), "content_unreadable");
-                        continue;
+                    let parsed = match self.ops_of(r.num, active)? {
+                        Ok(p) => p,
+                        Err(why) => {
+                            self.unread(Some(r.num), why);
+                            continue;
+                        }
                     };
                     let f = self.new_seq();
                     self.form_seq.insert(key, f);
                     self.push_item(seq, Item::Form(f));
                     // The form starts with the caller's graphics state and leaves it unchanged.
-                    let mut inner = State { font: st.font.clone(), stack: Vec::new() };
+                    let mut inner = State { g: st.g.clone(), stack: Vec::new() };
                     chain.push(r.num);
-                    let walked = self.interp(Some(r.num), &parsed.0, active, role, &mut inner, depth.saturating_add(1), chain, f);
+                    let walked = self.interp(Some(r.num), &parsed.ops, active, role, &mut inner, depth.saturating_add(1), chain, f);
                     chain.pop();
                     walked?;
                 }
@@ -793,10 +896,26 @@ impl<'o> Walker<'o> {
     }
 }
 
+/// Every glyph of `s` is drawn next to the one before it (see [`StrRead::adjacent`]).
+fn adjacent(f: &Font, s: &[u8], g: &Gs) -> bool {
+    if g.fs == 0.0 || g.th == 0.0 || matches!(g.tr, 3 | 7) {
+        return false;
+    }
+    let Some(glyphs) = f.glyphs(s) else { return false };
+    let reach = (f.bbox[2] - f.bbox[0]) / 1000.0 * (g.fs * g.th).abs();
+    glyphs.iter().all(|gl| match gl.width {
+        Some((lo, hi)) if lo == hi => {
+            let advance = (lo / 1000.0 * g.fs + g.tc + if gl.space { g.tw } else { 0.0 }) * g.th;
+            advance.is_finite() && advance.abs() <= reach
+        }
+        _ => false,
+    })
+}
+
 /// `/AcroForm /DR /Font` of the document's catalog, if any.
 fn dr_fonts(objs: &Objs) -> Option<&Dict> {
     objs.values().find_map(|e| {
-        let c = e.obj.as_dict().filter(|d| d.get("Type").is_some_and(|t| t.is_name("Catalog")))?;
+        let c = e.obj.as_dict().filter(|d| d.get("Type").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Catalog")))?;
         c.get("AcroForm")
             .map(|a| res(objs, a))
             .and_then(Object::as_dict)
@@ -845,7 +964,7 @@ const PAGE_TREE_DEPTH: usize = 64;
 
 /// The content streams a page dictionary draws, in order: `/Contents` as one stream, or an array of
 /// stream references (`None`: no content stream, e.g. an annotation whose `/Contents` is a string).
-fn content_streams_of(objs: &Objs, d: &Dict) -> Option<Vec<u32>> {
+pub(crate) fn content_streams_of(objs: &Objs, d: &Dict) -> Option<Vec<u32>> {
     let refs = |a: &[Object]| -> Vec<u32> { a.iter().filter_map(Object::as_ref).map(|x| x.num).collect() };
     let segments = match d.get("Contents")? {
         Object::Ref(rf) => match objs.get(&rf.num).map(|x| &x.obj) {
@@ -862,15 +981,15 @@ fn content_streams_of(objs: &Objs, d: &Dict) -> Option<Vec<u32>> {
 /// Page objects OUTSIDE the page tree (object-table scan, R8 F1): every indirect dictionary that is
 /// not a page reached from `/Root /Pages` and whose `/Contents` is a content stream (or an array of
 /// them), such as a template page under `/Names /Templates` (ISO 32000-2 12.7.6) or a page reached only
-/// through a destination, `/OpenAction` or an annotation `/P`: `(content streams, inherited
-/// resources)`. Read as stray content (never kept text; test
+/// through a destination, `/OpenAction` or an annotation `/P`: `(page object, content streams,
+/// inherited resources)`. Read as stray content (never kept text; test
 /// `partial_tounicode_and_unreachable_pages_are_read_or_opaque`).
-pub(crate) fn pages_outside_tree<'a>(objs: &'a Objs, tree: &BTreeSet<u32>) -> Vec<(Vec<u32>, Option<&'a Dict>)> {
+pub(crate) fn pages_outside_tree<'a>(objs: &'a Objs, tree: &BTreeSet<u32>) -> Vec<(u32, Vec<u32>, Option<&'a Dict>)> {
     objs.iter()
         .filter(|(n, _)| !tree.contains(n))
-        .filter_map(|(_, e)| {
+        .filter_map(|(n, e)| {
             let d = e.obj.as_dict()?;
-            Some((content_streams_of(objs, d)?, inherited_resources(objs, d)))
+            Some((*n, content_streams_of(objs, d)?, inherited_resources(objs, d)))
         })
         .collect()
 }
@@ -910,26 +1029,37 @@ pub(crate) fn pages<'a>(objs: &'a Objs, trailer: &'a Dict) -> Vec<(u32, Vec<u32>
 /// Nesting followed when looking for Type 3 font dictionaries inside objects.
 const DICT_SEARCH_DEPTH: usize = 64;
 
+/// A content stream by its role (not by a page's `/Contents`).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ContentRole<'a> {
+    /// The resources it is read with on its own.
+    pub resources: Option<&'a Dict>,
+    /// Object numbers of the Type 3 font dictionaries whose `/CharProcs` hold it (`None` in the list:
+    /// a font dictionary written directly into another object).
+    pub type3_owners: Vec<Option<u32>>,
+}
+
 /// Content streams that are content by their role, with the resources they are read with on their
 /// own: form XObjects, tiling patterns, any other non-image stream that carries `/Resources`, and the
 /// glyph procedures (`/CharProcs`) of EVERY Type 3 font dictionary, indirect or written directly into
 /// a resource dictionary (R9-P1), read with the font's resources (test
-/// `direct_type3_glyph_procedures_are_read`).
-pub(crate) fn content_role_streams(objs: &Objs) -> BTreeMap<u32, Option<&Dict>> {
-    let mut out = BTreeMap::new();
+/// `direct_type3_glyph_procedures_are_read`). `/Subtype` and `/PatternType` are resolved first (R10-F3).
+pub(crate) fn content_role_streams(objs: &Objs) -> BTreeMap<u32, ContentRole<'_>> {
+    let mut out: BTreeMap<u32, ContentRole<'_>> = BTreeMap::new();
     for (num, e) in objs {
         if let Object::Stream(s) = &e.obj {
             let d = &s.dict;
             let own = d.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict);
-            let form = d.get("Subtype").is_some_and(|t| t.is_name("Form"));
-            let pattern = d.get("PatternType").and_then(Object::as_int) == Some(1);
-            let image = d.get("Subtype").is_some_and(|t| t.is_name("Image"));
+            let subtype = d.get("Subtype").map(|t| res(objs, t));
+            let form = subtype.is_some_and(|t| t.is_name("Form"));
+            let pattern = d.get("PatternType").map(|t| res(objs, t)).and_then(Object::as_int) == Some(1);
+            let image = subtype.is_some_and(|t| t.is_name("Image"));
             if form || pattern || (own.is_some() && !image) {
-                out.insert(*num, own);
+                out.insert(*num, ContentRole { resources: own, type3_owners: Vec::new() });
             }
         }
     }
-    for e in objs.values() {
+    for (owner, e) in objs {
         let mut stack: Vec<(&Object, usize)> = vec![(&e.obj, 0)];
         while let Some((o, depth)) = stack.pop() {
             let d = match o {
@@ -947,9 +1077,13 @@ pub(crate) fn content_role_streams(objs: &Objs) -> BTreeMap<u32, Option<&Dict>> 
                 && let Some(procs) = d.get("CharProcs").map(|c| res(objs, c)).and_then(Object::as_dict)
             {
                 let own = d.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict);
+                let whose = (depth == 0).then_some(*owner);
                 for (_, v) in &procs.entries {
                     if let Some(r) = v.as_ref() {
-                        out.entry(r.num).or_insert(own);
+                        let role = out.entry(r.num).or_insert(ContentRole { resources: own, type3_owners: Vec::new() });
+                        if !role.type3_owners.contains(&whose) {
+                            role.type3_owners.push(whose);
+                        }
                     }
                 }
             }
@@ -962,8 +1096,8 @@ pub(crate) fn content_role_streams(objs: &Objs) -> BTreeMap<u32, Option<&Dict>> 
 }
 
 /// Font objects of the `/Font` dictionaries in `resources` (for the code-spelling backstop).
-pub(crate) fn fonts_in(objs: &Objs, resources: &[&Dict], limits: &Limits, budget: &mut usize, cache: &mut FontCache) -> Result<Vec<Rc<FontText>>> {
-    let mut out: Vec<Rc<FontText>> = Vec::new();
+pub(crate) fn fonts_in(objs: &Objs, resources: &[&Dict], limits: &Limits, budget: &mut usize, cache: &mut FontCache) -> Result<Vec<Rc<Font>>> {
+    let mut out: Vec<Rc<Font>> = Vec::new();
     for r in resources {
         let Some(fonts) = r.get("Font").map(|f| res(objs, f)).and_then(Object::as_dict) else { continue };
         for (_, v) in &fonts.entries {

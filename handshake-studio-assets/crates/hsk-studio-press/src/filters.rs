@@ -162,6 +162,35 @@ pub(crate) fn decode_chain(stream: &Stream, limits: &Limits, budget: &mut usize)
     Ok(Decoded { data: data.into_owned(), consumed, trailing })
 }
 
+/// Bytes of `data` the FIRST filter of `dict`'s chain reads, up to and including its end-of-data
+/// marker (Flate: the deflate stream and its Adler-32; LZW code 257; ASCIIHex `>`; ASCII85 `~>`;
+/// RunLength 128): where an inline image's data ends (`content.rs`, R10-F1). The stage output is
+/// charged to `budget` like any decode.
+pub(crate) fn first_stage_extent(dict: &Dict, data: &[u8], limits: &Limits, budget: &mut usize) -> Result<usize> {
+    let names = filter_names(dict, Some(limits))?;
+    let parms = decode_parms(dict, names.len())?;
+    let name = names.first().ok_or(PressError::Malformed("inline_image_filter"))?;
+    let cap = limits.max_decoded_bytes.min(*budget);
+    match stage(name, parms.first().and_then(Option::as_ref), data, cap) {
+        Ok((out, used)) if out.len() <= cap => {
+            *budget = budget.saturating_sub(out.len());
+            Ok(used)
+        }
+        Ok(_) => {
+            *budget = budget.saturating_sub(cap);
+            Err(limit_error(limits, cap))
+        }
+        Err(PressError::InputLimit(_)) => {
+            *budget = budget.saturating_sub(cap);
+            Err(limit_error(limits, cap))
+        }
+        Err(e) => {
+            *budget = budget.saturating_sub(data.len());
+            Err(e)
+        }
+    }
+}
+
 /// Zlib inflate with the output capped at `cap` bytes. Returns the inflated bytes and the number of
 /// input bytes the decoder read (the deflate stream and its Adler-32 checksum); input after that is
 /// not part of the stream. Same flags and buffer growth as

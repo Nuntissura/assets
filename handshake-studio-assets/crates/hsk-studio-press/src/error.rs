@@ -91,6 +91,11 @@ pub enum RedactionClass {
     /// that cannot be read, a `/WMode` other than 0 or 1): its advance direction is unknown (R9-F1;
     /// test `unknown_cmap_names_are_unresolved_writing_modes`).
     UnresolvedWritingMode,
+    /// Text on the page whose glyph advance widths are not known: an embedded simple font without
+    /// `/Widths` (the widths live in the font program), or a composite font string its encoding CMap's
+    /// codespace cannot split into codes (lead decision 2026-10-11T15:00:20Z, R10-F6; `font.rs`; test
+    /// `composite_geometry_uses_w_dw_and_signed_size`).
+    UnknownGlyphMetrics,
 }
 
 /// Why a text-showing operator of a content stream was not positively determined (lead decision
@@ -132,6 +137,7 @@ impl RedactionClass {
             Self::VerticalText => "vertical_text",
             Self::UnresolvedFont => "unresolved_font",
             Self::UnresolvedWritingMode => "unresolved_writing_mode",
+            Self::UnknownGlyphMetrics => "unknown_glyph_metrics",
         }
     }
 }

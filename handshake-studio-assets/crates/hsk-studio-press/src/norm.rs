@@ -8,9 +8,20 @@
 //!   language escapes, so only the `ESC` characters are dropped ([`Escapes::Chars`]): a font cannot
 //!   hide glyphs by mapping a code to `ESC`. Callers match both forms for text strings, and for any
 //!   other text that holds an `ESC` (matching more is the safe side);
-//! - characters that draw nothing are dropped ([`is_ignorable`]: soft hyphen, zero-width space and
-//!   joiners, direction marks and embeddings, word joiner and invisible operators, variation
-//!   selectors, the byte-order mark, tags);
+//! - characters that draw nothing are dropped ([`is_ignorable`]: the whole Unicode
+//!   `Default_Ignorable_Code_Point` set, R10-P1: soft hyphen, combining grapheme joiner, Arabic letter
+//!   mark, Hangul fillers, Khmer inherent vowels, Mongolian variation selectors, zero-width space and
+//!   joiners, direction marks, embeddings, overrides and isolates (the bidi controls, R10-P2), word
+//!   joiner and invisible operators, variation selectors, the byte-order mark, halfwidth Hangul filler,
+//!   reserved U+FFF0..U+FFF8, shorthand format controls, musical symbol format controls, tags); the set
+//!   is the `Default_Ignorable_Code_Point` property of the Unicode Character Database as baked by
+//!   ICU4X `icu_properties_data` 2.3.0 (Unicode-3.0 licence; 17 ranges, 4174 code points, read from the
+//!   crate's `property_binary_default_ignorable_code_point_v1` inversion list 2026-10-11; the Unicode
+//!   version of that data is not stated in the crate and is UNVERIFIED here);
+//! - text under an explicit right-to-left override (U+202E .. U+202C) is shown reversed by a bidi
+//!   viewer (UAX #9 rule X6 with L2): text strings and text streams are also matched in that visual
+//!   order ([`visual_order`], R10-P2); embeddings and isolates (which reorder whole runs, not the
+//!   letters of a Latin word) are only stripped;
 //! - compatibility normalisation: NFKC equivalence, computed on the NFKD form (two strings are
 //!   NFKC-equivalent exactly when their NFKD forms are equal): each character is replaced by its
 //!   compatibility decomposition and combining marks are put in canonical order. The table
@@ -37,24 +48,86 @@ pub(crate) enum Escapes {
 
 const ESC: char = '\u{1B}';
 
-/// Characters that draw nothing and must not split a needle (Unicode default-ignorable format
-/// characters that occur in text).
+/// Characters that draw nothing and must not split a needle: Unicode `Default_Ignorable_Code_Point`
+/// (module docs; unit test `default_ignorables_are_the_ucd_set`).
 pub(crate) fn is_ignorable(c: char) -> bool {
     matches!(
         c,
         '\u{AD}'
             | '\u{34F}'
             | '\u{61C}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
             | '\u{180B}'..='\u{180F}'
             | '\u{200B}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206F}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{3164}'
             | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF0}'..='\u{FFF8}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
             | '\u{1D173}'..='\u{1D17A}'
             | '\u{E0000}'..='\u{E0FFF}'
     )
+}
+
+/// `text` in the order a bidi viewer shows it when it holds an explicit right-to-left override
+/// (U+202E): explicit levels from the overrides and embeddings (an override to the next odd level,
+/// a left-to-right override or any embedding to the next even level, since Latin letters inside an
+/// embedding resolve to an even level; U+202C ends the innermost), then UAX #9 rule L2: from the
+/// highest level down to 1, every run at that level or higher is reversed. `None` when the text has no
+/// right-to-left override (module docs).
+pub(crate) fn visual_order(text: &[char]) -> Option<Vec<char>> {
+    if !text.contains(&'\u{202E}') {
+        return None;
+    }
+    let (mut chars, mut levels): (Vec<char>, Vec<u8>) = (Vec::with_capacity(text.len()), Vec::with_capacity(text.len()));
+    let mut stack: Vec<u8> = Vec::new();
+    let mut cur = 0u8;
+    for c in text {
+        match c {
+            '\u{202E}' if stack.len() < 125 => {
+                stack.push(cur);
+                cur = cur.saturating_add(if cur.is_multiple_of(2) { 1 } else { 2 });
+            }
+            '\u{202A}' | '\u{202B}' | '\u{202D}' if stack.len() < 125 => {
+                stack.push(cur);
+                cur = cur.saturating_add(if cur.is_multiple_of(2) { 2 } else { 1 });
+            }
+            '\u{202C}' => {
+                if let Some(l) = stack.pop() {
+                    cur = l;
+                }
+            }
+            other => {
+                chars.push(*other);
+                levels.push(cur);
+            }
+        }
+    }
+    let max = levels.iter().copied().max().unwrap_or(0);
+    for lvl in (1..=max).rev() {
+        let mut i = 0usize;
+        while i < chars.len() {
+            if levels.get(i).is_some_and(|l| *l >= lvl) {
+                let start = i;
+                while levels.get(i).is_some_and(|l| *l >= lvl) {
+                    i = i.saturating_add(1);
+                }
+                if let Some(run) = chars.get_mut(start..i) {
+                    run.reverse();
+                }
+                if let Some(run) = levels.get_mut(start..i) {
+                    run.reverse();
+                }
+            } else {
+                i = i.saturating_add(1);
+            }
+        }
+    }
+    Some(chars)
 }
 
 /// Compatibility decomposition of `c` from the table, if it has one.
@@ -202,6 +275,25 @@ mod tests {
         for s in ["SEC\u{1B}en\u{1B}RET  x", "\u{1EAD}\u{FF33}\u{200B}"] {
             assert_eq!(normalized_str(s, Escapes::Segments), n(s, Escapes::Segments));
         }
+    }
+
+    #[test]
+    fn default_ignorables_are_the_ucd_set() {
+        // The 17 ranges of the inversion list (module docs), counted: 4174 code points.
+        let count = (0..=0x10FFFFu32).filter_map(char::from_u32).filter(|c| is_ignorable(*c)).count();
+        assert_eq!(count, 4174);
+        for c in ['\u{17B4}', '\u{1BCA0}', '\u{3164}', '\u{FFA0}', '\u{2065}', '\u{115F}', '\u{FFF8}'] {
+            assert!(is_ignorable(c), "{:04X}", c as u32);
+        }
+        for c in ['\u{FFF9}', '\u{1161}', ' ', 'A'] {
+            assert!(!is_ignorable(c), "{:04X}", c as u32);
+        }
+        // A right-to-left override shows its run reversed; other text has no second form.
+        let v = |s: &str| visual_order(&s.chars().collect::<Vec<_>>()).map(|v| v.into_iter().collect::<String>());
+        assert_eq!(v("\u{202E}AHPLA-TERCES\u{202C} plan").as_deref(), Some("SECRET-ALPHA plan"));
+        assert_eq!(v("x \u{202E}CBA").as_deref(), Some("x ABC"));
+        assert_eq!(v("\u{202E}C\u{202A}ab\u{202C}B\u{202C}").as_deref(), Some("BabC"));
+        assert_eq!(v("plain"), None);
     }
 
     #[test]
