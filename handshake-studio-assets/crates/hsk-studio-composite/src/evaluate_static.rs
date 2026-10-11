@@ -21,7 +21,8 @@ use hsk_studio_pigment::blend_math::{
     Applicability, BlendError, BlendSpace, Exactness, ExactnessLedger, StudioBlendMode,
 };
 use hsk_studio_pigment::render_plan::{
-    ClipRole, ExtOperator, MaskFormat, Operator, PASS_THROUGH_FILL_OPERATOR, PlanError,
+    ClipRole, ExtOperator, MaskFormat, Operator, PASS_THROUGH_FILL_OPERATOR,
+    PASS_THROUGH_MASK_OPERATOR, PlanError,
 };
 use hsk_studio_pigment::{Grid, Rect};
 use std::collections::{BTreeMap, BTreeSet};
@@ -221,6 +222,11 @@ fn record_appearance(ledger: &mut ExactnessLedger, step: &Step, adjustment: bool
         if a.opacity < 1.0 {
             record_operator(ledger, Operator::PassThroughOpacity);
         }
+        if a.mask && !a.clipped {
+            // Pigment defines no mask on a pass-through layer (no group result to weigh), so
+            // shared admission refuses it for every backend (`PASS_THROUGH_MASK_OPERATOR`).
+            ledger.record(PASS_THROUGH_MASK_OPERATOR, Exactness::Unsupported);
+        }
     } else if a.fill_opacity < 1.0 && a.mode != StudioBlendMode::Normal {
         record_operator(ledger, Operator::FillOpacity);
     }
@@ -241,6 +247,12 @@ fn appearance_block(
     let a = step.appearance();
     if a.mode == StudioBlendMode::PassThrough && a.fill_opacity < 1.0 {
         return Some(PASS_THROUGH_FILL_OPERATOR);
+    }
+    // Same standing as fill: a mask on a pass-through layer has no group result to weigh, pigment
+    // refuses it for every backend, and a PSD with such a group imports with a typed loss. A clipped
+    // layer's mask slot belongs to the clip route (refused below).
+    if a.mode == StudioBlendMode::PassThrough && a.mask && !a.clipped {
+        return Some(PASS_THROUGH_MASK_OPERATOR);
     }
     if a.clipped && a.mask {
         return Some("clipped_with_mask_unsupported");
@@ -294,15 +306,20 @@ impl RoleSet {
 /// clipped layer directly above it is `Base`, everything else `Unclipped`). A clipped layer under a
 /// hidden or empty base, and a hidden or empty clipped layer, are not emitted and have no role in
 /// that group, exactly like the lowering drops them. A step no group composites is `Unclipped`.
+///
+/// Also returns, per step, the inputs the lowering emits as layers of that step's group (visible and
+/// not empty, a clipped layer only with a surviving base): the shape of the plan's layers, which the
+/// nested-effects accounting reads.
 fn clip_roles(
     plan: &LoweredPlan,
     evals: &[StepEval],
     adjustment_steps: &[bool],
     seen: &BTreeMap<&NodeAddr, usize>,
-) -> Vec<RoleSet> {
+) -> (Vec<RoleSet>, Vec<Vec<usize>>) {
     let mut roles = vec![RoleSet::default(); plan.steps.len()];
+    let mut emitted: Vec<Vec<usize>> = vec![Vec::new(); plan.steps.len()];
     let mut has_parent = vec![false; plan.steps.len()];
-    for step in &plan.steps {
+    for (at, step) in plan.steps.iter().enumerate() {
         let Step::Composite { inputs, .. } = step else {
             continue;
         };
@@ -332,6 +349,11 @@ fn clip_roles(
                 local.push((i, ClipRole::Clipped));
             }
         }
+        emitted[at] = local
+            .iter()
+            .map(|&(i, _)| i)
+            .filter(|&i| evals[i].visible && !(evals[i].is_ready_and_empty() && !adjustment_steps[i]))
+            .collect();
         for (i, role) in local {
             roles[i].add(role);
         }
@@ -341,7 +363,7 @@ fn clip_roles(
             roles[i].add(ClipRole::Unclipped);
         }
     }
-    roles
+    (roles, emitted)
 }
 
 /// Evaluate `plan` against `snap`. Fails with `StaleRevision` when the plan and snapshot revisions
@@ -643,16 +665,29 @@ fn evaluate_with(
     }
 
     // Blend-If: pigment reports `BlendIf`, `BlendIfClipBase` or `BlendIfClippedLayer` by the clip
-    // role the layer has in its group; the two clip operators are Unsupported (no public
-    // definition), so the ledger mirrors pigment's admission (tests/render_plan_lowering.rs
-    // `blend_if_on_clip_roles_is_reported_and_refused_like_pigment`).
+    // role the layer has in its group, and `EffectsWithBlendIf` for an unclipped layer that also
+    // has effects; the clip operators and the combination are Unsupported (no public definition),
+    // so the ledger mirrors pigment's admission (tests/render_plan_lowering.rs
+    // `blend_if_on_clip_roles_is_reported_and_refused_like_pigment`,
+    // `effects_with_blend_if_and_nested_effects_are_reported_like_pigment`).
     if records.is_some() {
-        let roles = clip_roles(plan, &evals, &adjustment_steps, &seen);
+        let (roles, emitted) = clip_roles(plan, &evals, &adjustment_steps, &seen);
         for (i, has_blend_if) in blend_if_steps.iter().enumerate() {
             if *has_blend_if {
                 for role in roles[i].iter() {
-                    record_ext(&mut ledger, blend_if_operator(role));
+                    record_ext(&mut ledger, blend_if_operator(role, effects_steps[i]));
                 }
+            }
+        }
+        // Nested effects, as pigment's validate defines them: a layer with effects whose content
+        // (the group it composites) holds, directly or through nested group layers, an emitted
+        // layer with effects. Steps are in dependency order, so one forward pass suffices. The
+        // class is pigment's (Approximate); each backend declares whether it evaluates the nesting.
+        let mut holds_effects = vec![false; plan.steps.len()];
+        for (i, inputs) in emitted.iter().enumerate() {
+            holds_effects[i] = inputs.iter().any(|&j| effects_steps[j] || holds_effects[j]);
+            if effects_steps[i] && holds_effects[i] {
+                record_ext(&mut ledger, ExtOperator::EffectsNested);
             }
         }
     }

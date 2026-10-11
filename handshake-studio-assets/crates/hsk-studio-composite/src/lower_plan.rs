@@ -99,7 +99,9 @@ impl StepAppearance {
     /// full opacity and clipping (pigment's clip-to-base route, Photoshop rule UNVERIFIED) carry
     /// pigment's class. A pass-through layer with fill below 1 has no group result for fill to
     /// scale: pigment's shared admission refuses it for every backend
-    /// (`PASS_THROUGH_FILL_OPERATOR`), so it is `Unsupported` here too.
+    /// (`PASS_THROUGH_FILL_OPERATOR`), so it is `Unsupported` here too; so is a mask on a
+    /// pass-through layer (`PASS_THROUGH_MASK_OPERATOR`, no group result to weigh), unless the
+    /// layer is clipped (that route is refused on its own).
     pub fn exactness(&self) -> Exactness {
         let mut lowest = self.mode.facts().exactness;
         if self.mode == StudioBlendMode::PassThrough {
@@ -108,6 +110,9 @@ impl StepAppearance {
             }
             if self.opacity < 1.0 {
                 lowest = lowest.lowest_of(Operator::PassThroughOpacity.intrinsic());
+            }
+            if self.mask && !self.clipped {
+                lowest = lowest.lowest_of(Exactness::Unsupported);
             }
         } else if self.fill_opacity < 1.0 && self.mode != StudioBlendMode::Normal {
             lowest = lowest.lowest_of(Operator::FillOpacity.intrinsic());

@@ -327,6 +327,27 @@ fn record_envelope(
     if render.has_mask_density() {
         record_ext(ledger, ExtOperator::MaskDensity);
     }
+    // Nested effects need the whole envelope (the content of a layer holds another layer with
+    // effects), which the entry-by-entry probes above cannot see: pigment's validate of the full
+    // envelope names it. Knockout is carried and refused above, so it is cleared for this probe; an
+    // envelope that does not validate as a whole (a refused adjustment feature) names no nesting.
+    let whole = PlanExtensions::from_layers(
+        extensions
+            .layers
+            .iter()
+            .cloned()
+            .map(|mut e| {
+                e.knockout = Knockout::None;
+                e
+            })
+            .collect(),
+    );
+    if whole
+        .validate(render)
+        .is_ok_and(|ops| ops.contains(&ExtOperator::EffectsNested))
+    {
+        record_ext(ledger, ExtOperator::EffectsNested);
+    }
     // An effect composites with its own blend mode; pigment's admission asks the backend for that
     // mode's v1 class, so the ledger lists it under the mode's pigment key.
     for mode in extensions.effect_modes() {

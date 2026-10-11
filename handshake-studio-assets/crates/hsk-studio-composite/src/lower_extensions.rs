@@ -595,11 +595,15 @@ pub(crate) fn convert_effects(
 /// The Blend-If operator pigment reports for a layer with a non-identity range in the clip role it
 /// has in its group (`PlanExtensions::validate`: `BlendIf` on an unclipped layer,
 /// `BlendIfClipBase` on the base of a clipping run, `BlendIfClippedLayer` on a clipped layer; the
-/// two clip operators are intrinsically Unsupported because no public source defines them). The
-/// role is a property of the parent group, so [`LayerFeatures::operators`] leaves Blend-If out and
-/// the evaluation records this operator per role.
-pub(crate) fn blend_if_operator(role: ClipRole) -> ExtOperator {
+/// two clip operators are intrinsically Unsupported because no public source defines them). An
+/// unclipped layer that also carries effects (`has_effects`) is reported as `EffectsWithBlendIf`
+/// instead (intrinsically Unsupported: no public source defines how the Blend-If weight composes
+/// with the effect mattes; lane SMB-PIGMENT-FX-OPS), exactly like pigment's validate. The role is a
+/// property of the parent group, so [`LayerFeatures::operators`] leaves Blend-If out and the
+/// evaluation records this operator per role.
+pub(crate) fn blend_if_operator(role: ClipRole, has_effects: bool) -> ExtOperator {
     match role {
+        ClipRole::Unclipped if has_effects => ExtOperator::EffectsWithBlendIf,
         ClipRole::Unclipped => ExtOperator::BlendIf,
         ClipRole::Base => ExtOperator::BlendIfClipBase,
         ClipRole::Clipped => ExtOperator::BlendIfClippedLayer,

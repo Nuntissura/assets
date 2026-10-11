@@ -728,7 +728,8 @@ use hsk_studio_pigment::blend_math::{
 };
 use hsk_studio_pigment::coverage_math::BlendChannel;
 use hsk_studio_pigment::render_plan::{
-    ExtOperator, Knockout, LayerExtension, PASS_THROUGH_FILL_OPERATOR, admit_extended,
+    ExtOperator, Knockout, LayerExtension, PASS_THROUGH_FILL_OPERATOR, PASS_THROUGH_MASK_OPERATOR,
+    admit_extended,
 };
 
 /// Folio resolver that binds the `adjustment` layer kind to its primitive schema.
@@ -2093,5 +2094,239 @@ fn refusal_keys_are_pigments() {
         filled["layers"][0]["appearance"] = appearance(100.0, 25.0, 1, true);
         let keys = unsupported_keys(&filled);
         assert!(keys.contains(&operator), "composite ledger {keys:?} lacks pigment's {operator}");
+
+        // A coverage mask on a pass-through layer (lane SMB-FX-OPS-ADOPT, pigment b2f5f81): pigment's
+        // shared admission refuses it as PASS_THROUGH_MASK_OPERATOR for every backend.
+        let mask = MaskInput {
+            key: SourceKey(1),
+            placement: Rect { x: 0, y: 0, width: 8, height: 8 },
+            format: MaskFormat::CoverageU8,
+            sha256: [0; 32],
+            inverted: false,
+            density: 1.0,
+        };
+        let plan = pigment_plan(vec![over_group(StudioBlendMode::PassThrough, 1.0, Some(mask))]);
+        let Err(BackendError::Unsupported { operator, .. }) =
+            admit(&plan, &Backend { refuses: None }, &request, &token)
+        else {
+            panic!("pigment admission refuses a mask on a pass-through layer")
+        };
+        assert_eq!(operator, PASS_THROUGH_MASK_OPERATOR);
+        let keys = unsupported_keys(&masked_group(1, true));
+        assert!(keys.contains(&operator), "composite ledger {keys:?} lacks pigment's {operator}");
+    });
+}
+
+/// `tiled()` with an enabled coverage mask on the root group, whose appearance has `mode` (1 =
+/// pass_through, 2 = Normal) and `group` (pass-through isolation).
+fn masked_group(mode: u16, group: bool) -> Value {
+    let mut v = tiled();
+    v["layers"][0]["appearance"] = appearance(100.0, 100.0, mode, group);
+    v["layers"][0]["appearance"]["mask"] =
+        json!({"tiles":[mask_tile(1, "mg")],"enabled":true,"linked":true});
+    v
+}
+
+/// Lane SMB-FX-OPS-ADOPT: a mask on a pass-through group has no defined semantics (pigment
+/// b2f5f81), so composite treats it like fill on a pass-through layer: the step is Unavailable
+/// under pigment's key, the evaluation ledger and the plan's exactness say Unsupported, and
+/// lowering refuses it by the same code. The same mask on an isolated group is unaffected.
+#[test]
+fn mask_on_a_pass_through_group_is_refused_like_the_fill_rule() {
+    bounded_case("mask_on_a_pass_through_group_is_refused_like_the_fill_rule", || {
+        let token = CancellationToken::default();
+        let root = addr(1, "mix", "out");
+        let key = PASS_THROUGH_MASK_OPERATOR;
+
+        let doc = masked_group(1, true);
+        let snap = open(&doc);
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        assert_eq!(plan.lowest_exactness(), Exactness::Unsupported);
+        let report = evaluate(&plan, &snap, &token).unwrap();
+        assert!(report.receipt.exactness.operators.contains(&OperatorExactness {
+            key,
+            exactness: Exactness::Unsupported
+        }));
+        assert_eq!(report.receipt.exactness.lowest, Exactness::Unsupported);
+        assert_eq!(report.step(&root).unwrap().status, StepStatus::Unavailable(key.into()));
+        match lowered(&doc, BlendSpace::Encoded, &root) {
+            Err(CompositeError::Unavailable(reason)) => assert!(reason.contains(key), "{reason}"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+
+        // Counterfactuals: the same mask on an isolated Normal group lowers and carries no such
+        // key; a pass-through group without a mask, or with a disabled mask, is unchanged.
+        let isolated = masked_group(2, false);
+        let low = lowered(&isolated, BlendSpace::Encoded, &root).unwrap();
+        assert!(low.exactness.operators.iter().all(|o| o.key != key));
+        assert_eq!(low.mask_sources.len(), 1);
+        let low = lowered(&tiled(), BlendSpace::Encoded, &root).unwrap();
+        assert!(low.exactness.operators.iter().all(|o| o.key != key));
+        let mut disabled = masked_group(1, true);
+        disabled["layers"][0]["appearance"]["mask"]["enabled"] = json!(false);
+        let low = lowered(&disabled, BlendSpace::Encoded, &root).unwrap();
+        assert!(low.exactness.operators.iter().all(|o| o.key != key));
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lane SMB-FX-OPS-ADOPT: effects together with Blend-If, and nested effects (pigment d3ce607).
+// ---------------------------------------------------------------------------------------------
+
+/// A backend double that evaluates every envelope operator except the nesting of effects (the
+/// render-cpu shape: effects supported, `EffectsNested` declared Unsupported).
+struct NoNestingBackend;
+impl RenderBackend for NoNestingBackend {
+    fn identity(&self) -> BackendIdentity {
+        BackendIdentity {
+            name: "composite-test-double",
+            version: "0",
+            device: DeviceClass::Cpu,
+            adapter: String::new(),
+            generation: 0,
+        }
+    }
+    fn exactness(&self, _: Operator) -> Exactness {
+        Exactness::Exact
+    }
+    fn supports_clip_to_base(&self) -> bool {
+        true
+    }
+    fn extension_exactness(&self, op: ExtOperator) -> Exactness {
+        match op {
+            ExtOperator::EffectsNested => Exactness::Unsupported,
+            _ => Exactness::Exact,
+        }
+    }
+    fn execute(
+        &self,
+        _: &RenderPlan,
+        _: &ExecuteRequest,
+        _: &dyn PlanSources,
+        _: &CancellationToken,
+        _: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, BackendError> {
+        Err(BackendError::Unavailable("test_double"))
+    }
+}
+
+/// Raster records for `(layer, colour overlay effect, Blend-If gray range)` entries.
+fn effects_and_ranges(entries: &[(u8, bool, Option<[f64; 4]>)]) -> StudioRasterRecords {
+    let layers = entries
+        .iter()
+        .map(|(n, effects, range)| {
+            let mut e = json!({"layer_id":identity("SLYR", *n)});
+            if *effects {
+                e["effects"] = fx_stack(vec![fx_effect(
+                    "co_1",
+                    50.0,
+                    fx_colour(1.0, 0.0, 0.0),
+                    false,
+                    json!({"effect_kind":"colour_overlay"}),
+                )]);
+            }
+            if let Some(r) = range {
+                e["advanced_blending"] = blending(Some(*r), true);
+            }
+            e
+        })
+        .collect::<Vec<_>>();
+    records(Value::Array(layers))
+}
+
+/// `tiled()` whose root group 1 is an isolated Normal group, so it may carry effects.
+fn isolated_root() -> Value {
+    let mut v = tiled();
+    v["layers"][0]["appearance"] = appearance(100.0, 100.0, 2, false);
+    v
+}
+
+#[test]
+fn effects_with_blend_if_and_nested_effects_are_reported_like_pigment() {
+    bounded_case("effects_with_blend_if_and_nested_effects_are_reported_like_pigment", || {
+        use hsk_studio_pigment::effect_math::EffectKind;
+        let token = CancellationToken::default();
+        let overlay = ExtOperator::Effect(EffectKind::ColourOverlay);
+        let refused = |key: &'static str| {
+            Err(BackendError::Unsupported { operator: key, exactness: Exactness::Unsupported })
+        };
+        // The evaluation ledger and the lowering (ledger and envelope) of one document.
+        let both = |doc: &Value, recs: &StudioRasterRecords| {
+            let run = run_ext(doc, recs, false);
+            let low = lower_ext(&run, recs).expect("carried to pigment, not dropped");
+            let validated = low.extensions.validate(&low.plan).expect("pigment validates it");
+            (run.2.receipt.exactness, low, validated)
+        };
+
+        // Effects and a non-identity Blend-If on one layer: pigment reports the combination
+        // instead of blend_if, and admission refuses it for every backend, even one claiming
+        // every operator Exact.
+        let recs = effects_and_ranges(&[(3, true, Some(SPLIT))]);
+        let (eval, low, validated) = both(&tiled(), &recs);
+        assert_eq!(validated, vec![overlay, ExtOperator::EffectsWithBlendIf]);
+        for (what, ledger) in [("evaluation", &eval), ("lowering", &low.exactness)] {
+            assert!(has_operator(ledger, ExtOperator::EffectsWithBlendIf), "{what}");
+            assert!(has_operator(ledger, overlay), "{what}");
+            assert!(!has_operator(ledger, ExtOperator::BlendIf), "{what}: instead of blend_if");
+        }
+        assert_eq!(eval.lowest, Exactness::Unsupported);
+        assert_eq!(
+            admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token),
+            refused("effects_with_blend_if")
+        );
+
+        // Counterfactuals: effects and ranges on different layers, and identity ranges.
+        let recs = effects_and_ranges(&[(2, false, Some(SPLIT)), (3, true, None)]);
+        let (eval, low, validated) = both(&tiled(), &recs);
+        assert!(validated.contains(&ExtOperator::BlendIf) && validated.contains(&overlay));
+        for ledger in [&eval, &low.exactness] {
+            assert!(has_operator(ledger, ExtOperator::BlendIf));
+            assert!(!has_operator(ledger, ExtOperator::EffectsWithBlendIf));
+        }
+        assert!(admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token).is_ok());
+        let recs = effects_and_ranges(&[(3, true, Some(IDENTITY_LEVELS))]);
+        let (eval, low, validated) = both(&tiled(), &recs);
+        assert_eq!(validated, vec![overlay]);
+        for ledger in [&eval, &low.exactness] {
+            assert!(!has_operator(ledger, ExtOperator::BlendIf));
+            assert!(!has_operator(ledger, ExtOperator::EffectsWithBlendIf));
+        }
+
+        // A layer with effects whose content holds a layer with effects: root 1 and layer 3.
+        let nested_recs = effects_and_ranges(&[(1, true, None), (3, true, None)]);
+        let (eval, low, validated) = both(&isolated_root(), &nested_recs);
+        assert!(validated.contains(&ExtOperator::EffectsNested), "{validated:?}");
+        for (what, ledger) in [("evaluation", &eval), ("lowering", &low.exactness)] {
+            assert!(has_operator(ledger, ExtOperator::EffectsNested), "{what}");
+        }
+        // The class is pigment's (Approximate) and the backend declares it: one that evaluates
+        // nesting admits the plan, one that declares it Unsupported is refused before any sink call.
+        assert_eq!(ExtOperator::EffectsNested.intrinsic(), Exactness::Approximate);
+        assert!(admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token).is_ok());
+        assert_eq!(
+            admit_extended(&low.plan, &low.extensions, &NoNestingBackend, &request(), &token),
+            refused("effects_nested")
+        );
+
+        // Counterfactuals: effects on the inner layer only, on the outer group only, and a hidden
+        // inner layer (not emitted, so it is not part of the content) are not nested.
+        let mut hidden_inner = isolated_root();
+        hidden_inner["layers"][2]["visible"] = json!(false);
+        for (what, doc, entries) in [
+            ("inner only", isolated_root(), vec![(3, true, None)]),
+            ("outer only", isolated_root(), vec![(1, true, None)]),
+            ("hidden inner", hidden_inner, vec![(1, true, None), (3, true, None)]),
+        ] {
+            let (eval, low, validated) = both(&doc, &effects_and_ranges(&entries));
+            assert!(!validated.contains(&ExtOperator::EffectsNested), "{what}: {validated:?}");
+            for ledger in [&eval, &low.exactness] {
+                assert!(!has_operator(ledger, ExtOperator::EffectsNested), "{what}");
+            }
+            assert!(
+                admit_extended(&low.plan, &low.extensions, &NoNestingBackend, &request(), &token)
+                    .is_ok(),
+                "{what}"
+            );
+        }
     });
 }
