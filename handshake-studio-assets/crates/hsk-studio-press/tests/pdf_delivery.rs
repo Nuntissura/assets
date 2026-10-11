@@ -802,7 +802,11 @@ fn leaks(bytes: &[u8], needle: &str) -> bool {
     let n = needle.to_lowercase();
     std::iter::once(bytes.to_vec())
         .chain(independent_streams(bytes))
-        .any(|v| String::from_utf8_lossy(&v).to_lowercase().contains(&n) || strings_of(&v).iter().any(|s| s.contains(&n)))
+        .any(|v| {
+            let text = String::from_utf8_lossy(&v).to_lowercase();
+            // `#20` is how a name object spells a blank.
+            text.contains(&n) || text.replace("#20", " ").contains(&n) || strings_of(&v).iter().any(|s| s.contains(&n))
+        })
 }
 
 fn outline_doc() -> Vec<u8> {
@@ -1194,4 +1198,231 @@ fn undecodable_stream_never_reads_as_proven() {
     assert!(!out.region_cleared() && !out.is_proven());
     let again = verify_payload_absent(&out.bytes, &[b"SECRET-ALPHA".to_vec()], &Limits::default(), &token()).unwrap();
     assert!(again.hits.is_empty() && !again.is_clean());
+}
+
+// ----------------------------------------------------------------- slice 4
+// Destinations, URI actions, form labels, structure text, document information, popup/IRT
+// annotations and composite-font appearances.
+
+type Row = (u32, bool, TextOutcomeKind, u32);
+
+fn rows(r: &hsk_studio_press::TextFieldReport, role: TextRole) -> Vec<Row> {
+    let mut v: Vec<Row> = r.outcomes.iter().filter(|o| o.role == role).map(|o| (o.object.num, o.direct, o.kind, o.matches)).collect();
+    v.sort_by_key(|r| (r.0, r.1));
+    v
+}
+
+fn minimal_objs(catalog_extra: &str, annots: &str) -> Vec<(u32, Vec<u8>)> {
+    vec![
+        (1, format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>").into_bytes()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> /Annots [{annots}] >>").into_bytes()),
+        (4, stream_body("", b"q Q")),
+    ]
+}
+
+#[test]
+fn destinations_and_action_uris_redacted_with_consistent_references() {
+    let mut objs = minimal_objs(
+        "/Outlines 10 0 R /Names << /Dests 30 0 R >> /Dests 33 0 R /OpenAction << /S /URI /URI (http://y.example/budget plan) >> /URI << /Base (http://base.example/Budget Plan/) >>",
+        "5 0 R 6 0 R 7 0 R 8 0 R",
+    );
+    let more: Vec<(u32, &str)> = vec![
+        (5, "<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /GoTo /D (Budget Plan A) >> >>"),
+        (
+            6,
+            "<< /Type /Annot /Subtype /Link /Rect [0 20 10 30] /A << /S /URI /URI (http://corp.example/?q=Budget Plan&x=1) >> /AA << /E << /S /URI /URI (http://a.example/budget plan) >> >> >>",
+        ),
+        (7, "<< /Type /Annot /Subtype /Link /Rect [0 40 10 50] /Dest /Budget#20Plan#20Legacy >>"),
+        (8, "<< /Type /Annot /Subtype /Link /Rect [0 60 10 70] /Dest (Budget Plan Missing) >>"),
+        (10, "<< /Type /Outlines /First 11 0 R /Last 12 0 R /Count 2 >>"),
+        (11, "<< /Title (Section one) /Parent 10 0 R /Next 12 0 R /Dest (Budget Plan A) >>"),
+        (12, "<< /Title (Section two) /Parent 10 0 R /Prev 11 0 R /A << /S /URI /URI (http://x.example/Budget Plan) >> >>"),
+        (30, "<< /Kids [31 0 R 32 0 R] >>"),
+        (31, "<< /Limits [(Appendix) (Budget Plan A)] /Names [(Appendix) [3 0 R /Fit] (Budget Plan A) [3 0 R /XYZ 0 0 0]] >>"),
+        (32, "<< /Limits [(Glossary) (zeta)] /Names [(Glossary) [3 0 R /Fit] (zeta) [3 0 R /Fit]] >>"),
+        (33, "<< /Budget#20Plan#20Legacy [3 0 R /Fit] /Other [3 0 R /Fit] >>"),
+    ];
+    objs.extend(more.into_iter().map(|(n, b)| (n, b.as_bytes().to_vec())));
+    let input = build(&objs, "", b"");
+    let needle = ["Budget Plan".to_string()];
+    assert!(leaks(&input, "budget plan"));
+
+    let mut doc = open(&input);
+    let out = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    use TextOutcomeKind::Replaced;
+    // Tree and legacy dictionary keys (identifiers) and every reference, with their holders.
+    assert_eq!(
+        rows(&out.report, TextRole::DestName),
+        vec![(5, true, Replaced, 1), (7, false, Replaced, 1), (8, false, Replaced, 1), (11, false, Replaced, 1), (30, false, Replaced, 1), (33, false, Replaced, 1)]
+    );
+    assert_eq!(
+        rows(&out.report, TextRole::ActionUri),
+        vec![(1, false, Replaced, 1), (1, true, Replaced, 1), (6, true, Replaced, 1), (6, true, Replaced, 1), (12, true, Replaced, 1)]
+    );
+    assert!(out.report.complete && out.is_proven(), "{:?}", out.proof);
+
+    // Independent oracle: no spelling survives (names with #20 included); URIs keep their shape.
+    assert!(!leaks(&out.bytes, "budget plan"));
+    let strings = all_strings(&out.bytes);
+    for expect in ["http://corp.example/?q=[redacted]&x=1", "http://a.example/[redacted]", "http://x.example/[redacted]", "http://y.example/[redacted]", "http://base.example/[redacted]/"] {
+        assert!(strings.iter().any(|s| s == expect), "missing {expect:?} in {strings:?}");
+    }
+    // One opaque name per old name, used by the tree/dictionary key and by every reference.
+    let hsk = |n: &str| strings.iter().filter(|s| s.as_str() == n).count();
+    assert_eq!((hsk("hskrd0"), hsk("hskrd2")), (3, 1), "tree key + GoTo /D + outline /Dest; dangling reference");
+    assert_eq!(count(&out.bytes, b"/HskRd1"), 2, "legacy dictionary key + /Dest name reference");
+    // The name tree is rebuilt as one sorted leaf with the original values; kids are gone.
+    let root = {
+        let at = find(&out.bytes, b"30 0 obj").expect("root object");
+        let end = find(&out.bytes[at..], b"endobj").unwrap();
+        out.bytes[at..at + end].to_vec()
+    };
+    assert!(find(&root, b"/Kids").is_none() && find(&out.bytes, b"/Limits").is_none());
+    assert_eq!(strings_of(&root), vec!["appendix", "glossary", "hskrd0", "zeta"]);
+    assert!(find(&root, b"[3 0 R /XYZ 0 0 0]").is_some());
+    assert!(find(&out.bytes, b"/Other [3 0 R /Fit]").is_some());
+    assert_eq!(open(&out.bytes).inspect().page_count, 1);
+
+    // Disabled classes are reported kept, never silently, and the proof agrees.
+    let mut doc = open(&input);
+    let off = TextFieldPolicy { destinations: false, action_uris: false, ..TextFieldPolicy::default() };
+    let kept = redact_text_fields_and_save(&mut doc, &needle, &off, &token()).unwrap();
+    assert_eq!((kept.report.kept_by_policy, kept.report.matches_redacted, kept.report.complete), (11, 0, false));
+    assert!(rows(&kept.report, TextRole::DestName).iter().all(|r| r.2 == TextOutcomeKind::KeptByPolicy));
+    assert!(!kept.is_proven() && !kept.proof.hits.is_empty() && leaks(&kept.bytes, "budget plan"));
+}
+
+#[test]
+fn form_labels_structure_text_info_and_xmp_redacted() {
+    let xmp = b"<?xpacket begin='x'?><x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF><rdf:Description><dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">Budget Plan 2026</rdf:li></rdf:Alt></dc:title></rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end='w'?>";
+    let mut objs = minimal_objs("/AcroForm << /Fields [30 0 R] >> /StructTreeRoot 50 0 R /Metadata 40 0 R", "30 0 R");
+    objs.extend([
+        (7, b"<< /Title (Budget Plan 2026) /Author (A. Planner) /Keywords (budget plan, finance) /Custom (x Budget Plan y) >>".to_vec()),
+        (
+            30,
+            b"<< /Type /Annot /Subtype /Widget /FT /Ch /T (choice) /TU (Pick the Budget Plan) /Opt [(Budget Plan A) [(exp1) (Budget Plan display)] (zzz)] /V (zzz) /Rect [10 40 200 60] /P 3 0 R >>"
+                .to_vec(),
+        ),
+        (40, stream_body("/Type /Metadata /Subtype /XML", xmp)),
+        (50, b"<< /Type /StructTreeRoot /K 51 0 R >>".to_vec()),
+        (51, b"<< /Type /StructElem /S /Document /P 50 0 R /K [52 0 R] /T (Budget Plan T) >>".to_vec()),
+        (52, b"<< /Type /StructElem /S /Figure /P 51 0 R /Alt (Chart of the Budget Plan) /ActualText (Budget Plan) /E (Budget Plan Expanded) >>".to_vec()),
+    ]);
+    let input = build(&objs, "/Info 7 0 R", b"");
+    let needle = ["Budget Plan".to_string()];
+    use TextOutcomeKind::{Dropped, Replaced};
+
+    let mut doc = open(&input);
+    let out = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(rows(&out.report, TextRole::InfoField), vec![(7, false, Replaced, 1); 3]);
+    assert_eq!(rows(&out.report, TextRole::Xmp), vec![(1, false, Dropped, 1)]);
+    assert_eq!(rows(&out.report, TextRole::FieldTooltip), vec![(30, false, Replaced, 1)]);
+    assert_eq!(rows(&out.report, TextRole::FieldOption), vec![(30, false, Replaced, 2)]);
+    assert_eq!(rows(&out.report, TextRole::StructTitle), vec![(51, false, Replaced, 1)]);
+    assert_eq!(rows(&out.report, TextRole::StructAlt), vec![(52, false, Replaced, 1)]);
+    assert_eq!(rows(&out.report, TextRole::StructActualText), vec![(52, false, Replaced, 1)]);
+    assert_eq!(rows(&out.report, TextRole::StructExpansion), vec![(52, false, Replaced, 1)]);
+    assert!(out.report.complete && out.is_proven(), "{:?}", out.proof);
+
+    assert!(!leaks(&out.bytes, "budget plan") && find(&out.bytes, b"xmpmeta").is_none());
+    let strings = all_strings(&out.bytes);
+    for expect in [
+        "[redacted] 2026",
+        "a. planner",
+        "[redacted], finance",
+        "x [redacted] y",
+        "pick the [redacted]",
+        "[redacted] a",
+        "exp1",
+        "[redacted] display",
+        "zzz",
+        "chart of the [redacted]",
+        "[redacted] expanded",
+        "[redacted] t",
+    ] {
+        assert!(strings.iter().any(|s| s == expect), "missing {expect:?} in {strings:?}");
+    }
+    assert!(find(&out.bytes, b"/Opt [([REDACTED] A) [(exp1) ([REDACTED] display)] (zzz)]").is_some(), "option pairs keep their shape");
+    assert!(find(&out.bytes, b"/Metadata").is_none());
+
+    // The three classes switched off are all reported kept and remain proof hits.
+    let mut doc = open(&input);
+    let off = TextFieldPolicy { form_labels: false, structure_text: false, info_fields: false, ..TextFieldPolicy::default() };
+    let kept = redact_text_fields_and_save(&mut doc, &needle, &off, &token()).unwrap();
+    assert_eq!((kept.report.kept_by_policy, kept.report.matches_redacted, kept.report.complete), (10, 0, false));
+    assert!(!kept.is_proven() && leaks(&kept.bytes, "budget plan") && find(&kept.bytes, b"xmpmeta").is_some());
+    assert!(kept.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 7 })));
+}
+
+fn to_unicode_cmap() -> Vec<u8> {
+    b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Test-UCS def /CMapType 2 def\n\
+1 begincodespacerange <0000> <FFFF> endcodespacerange\n\
+2 beginbfchar <0001> <0042> <0002> <0075> endbfchar\n\
+2 beginbfrange <0003> <0003> <0064> <0004> <0006> [<0067> <0065> <0074>] endbfrange\n\
+4 beginbfchar <0007> <0020> <0008> <0050> <0009> <006C> <000B> <006E> endbfchar\n\
+1 beginbfrange <000A> <000A> <0061> endbfrange\n\
+endcmap CMapName currentdict /CMap defineresource pop end end"
+        .to_vec()
+}
+
+#[test]
+fn popup_irt_annotations_and_composite_font_appearances() {
+    let codes: String = (1..=11).map(|c| format!("{c:04X}")).collect();
+    let ap = |font: &str| stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 100 20] /Resources << /Font << /F1 {font} 0 R >> >>"), format!("BT /F1 12 Tf 2 5 Td <{codes}> Tj ET").as_bytes());
+    let font = |extra: &str| format!("<< /Type /Font /Subtype /Type0 /BaseFont /Test /Encoding /Identity-H /DescendantFonts [21 0 R] {extra} >>").into_bytes();
+    let mut objs = minimal_objs("", "5 0 R 9 0 R 10 0 R 11 0 R 16 0 R");
+    objs.extend([
+        (5, b"<< /Type /Annot /Subtype /Text /Rect [10 10 30 30] /Contents (plain note) /Popup 6 0 R /IRT 8 0 R /P 3 0 R >>".to_vec()),
+        (6, b"<< /Type /Annot /Subtype /Popup /Rect [40 40 100 100] /Parent 5 0 R /Contents (popup says Budget Plan) /Open false >>".to_vec()),
+        (8, b"<< /Type /Annot /Subtype /Text /Rect [1 1 5 5] /Contents (replied-to: Budget Plan) /T (Owner) >>".to_vec()),
+        (9, b"<< /Type /Annot /Subtype /FreeText /Rect [100 100 200 140] /Contents (label only) /AP << /N 13 0 R >> >>".to_vec()),
+        (10, b"<< /Type /Annot /Subtype /FreeText /Rect [100 150 200 190] /Contents (Budget Plan note) /AP << /N 14 0 R >> >>".to_vec()),
+        (11, b"<< /Type /Annot /Subtype /FreeText /Rect [100 200 200 240] /Contents (fine) /AP << /N 15 0 R >> >>".to_vec()),
+        (16, b"<< /Type /Annot /Subtype /FreeText /Rect [100 250 200 290] /Contents (hostile map) /AP << /N 17 0 R >> >>".to_vec()),
+        (13, ap("20")),
+        (14, ap("23")),
+        (15, ap("23")),
+        (17, ap("24")),
+        (20, font("/ToUnicode 22 0 R")),
+        (21, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Test /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>".to_vec()),
+        (22, stream_body("", &to_unicode_cmap())),
+        (23, font("")),
+        // A hostile map: stray delimiters and a four-billion-code range are refused, never followed.
+        (24, font("/ToUnicode 25 0 R")),
+        (25, stream_body("", b")))) ] > << 1 beginbfrange <00000000> <FFFFFFFF> <0041> endbfrange")),
+    ]);
+    let input = build(&objs, "", b"");
+    let needle = ["Budget Plan".to_string()];
+    use TextOutcomeKind::{Dropped, Replaced, Unverifiable};
+
+    let mut doc = open(&input);
+    let out = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    let seen: Vec<(u32, TextRole, TextOutcomeKind, u32, bool)> =
+        out.report.outcomes.iter().map(|o| (o.object.num, o.role, o.kind, o.matches, o.unreadable)).collect();
+    assert_eq!(
+        seen,
+        vec![
+            (6, TextRole::AnnotContents, Replaced, 1, false),
+            (8, TextRole::AnnotContents, Replaced, 1, false),
+            // Decoded through /ToUnicode: the appearance shows the text although /Contents does not.
+            (9, TextRole::Appearance, Dropped, 1, false),
+            // Edited annotation, composite font without /ToUnicode: dropped fail-closed.
+            (10, TextRole::AnnotContents, Replaced, 1, false),
+            (10, TextRole::Appearance, Dropped, 0, true),
+            // Not edited and unreadable: kept, reported, and the report is not complete.
+            (11, TextRole::Appearance, Unverifiable, 0, true),
+            (16, TextRole::Appearance, Unverifiable, 0, true),
+        ]
+    );
+    assert_eq!((out.report.annotations_scanned, out.report.unverifiable, out.report.kept_by_policy), (7, 2, 0));
+    assert!(!out.report.complete && !out.is_proven());
+    assert!(out.proof.is_clean(), "the byte proof sees nothing readable left: {:?}", out.proof);
+
+    let strings = all_strings(&out.bytes);
+    assert!(strings.iter().any(|s| s == "popup says [redacted]") && strings.iter().any(|s| s == "replied-to: [redacted]"));
+    assert!(!leaks(&out.bytes, "budget plan"));
+    assert!(find(&out.bytes, b"/N 13 0 R").is_none() && find(&out.bytes, b"/N 14 0 R").is_none());
+    assert!(find(&out.bytes, b"/N 15 0 R").is_some() && find(&out.bytes, b"/N 17 0 R").is_some());
+    assert_eq!(open(&out.bytes).inspect().page_count, 1);
 }
