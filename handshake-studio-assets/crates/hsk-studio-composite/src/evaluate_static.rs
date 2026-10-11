@@ -6,8 +6,9 @@
 use crate::{
     CompositeError,
     lower_extensions::{
-        ConvertedAdjustment, EffectContext, LayerFeatures, REFUSE_CLIP_GROUP_BLEND_OFF,
-        REFUSE_EFFECT_ON_CLIP_BASE, adjustment_for, blend_if_operator, is_adjustment_layer,
+        ConvertedAdjustment, EffectContext, LayerFeatures, REFUSE_CLIP_BASE_PASS_THROUGH,
+        REFUSE_CLIP_GROUP_BLEND_OFF, REFUSE_EFFECT_ON_CLIP_BASE, adjustment_for,
+        blend_if_operator, is_adjustment_layer,
     },
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step},
 };
@@ -200,8 +201,10 @@ fn record_ext(ledger: &mut ExactnessLedger, op: ExtOperator) {
 }
 
 /// Everything a step uses, keyed like pigment's `Operator`s so ledgers read the same way. The only
-/// keys composite owns are `source` (an evaluation concept; pigment names the same thing `tile`)
-/// and the refusal key `clip_base_pass_through` (pigment has no operator for it).
+/// key composite owns is `source` (an evaluation concept; pigment names the same thing `tile`);
+/// every refusal key is pigment's: an operator key, an exported constant, or the code of the
+/// `PlanError` pigment's validation refuses the rule with (PLR-006, test
+/// `refusal_keys_are_pigments`).
 fn record_appearance(ledger: &mut ExactnessLedger, step: &Step, adjustment: bool) {
     if matches!(step, Step::Source { .. }) && !adjustment {
         ledger.record("source", Exactness::Exact);
@@ -562,9 +565,9 @@ fn evaluate_with(
                         // extent (R3: it used to block the parent through the status match below).
                         continue;
                     } else if pass_through_base && rendered {
-                        ledger.record("clip_base_pass_through", Exactness::Unsupported);
+                        ledger.record(REFUSE_CLIP_BASE_PASS_THROUGH, Exactness::Unsupported);
                         blocked.get_or_insert_with(|| {
-                            format!("clip_base_pass_through:{}", child.addr.text())
+                            format!("{REFUSE_CLIP_BASE_PASS_THROUGH}:{}", child.addr.text())
                         });
                     } else if adjustment_base && rendered {
                         // Pigment: an adjustment layer has no base alpha to clip to

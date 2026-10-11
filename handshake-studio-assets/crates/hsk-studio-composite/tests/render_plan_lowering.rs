@@ -528,6 +528,23 @@ fn clipped_layers_lower_to_clip_to_base_and_unsupported_cases_are_refused() {
     });
 }
 
+/// Root group 1 = [group 7 (the base; contains raster 2), raster 3 clipped to it]. Group mode 1 =
+/// pass_through (non-isolated), 2 = Normal (isolated).
+fn pass_through_base_fixture(mode: u16) -> Value {
+    let mut v = tiled();
+    v["layers"].as_array_mut().unwrap().push(layer(7, "group", json!({"payload_kind":"group"})));
+    v["graph"]["operations"].as_array_mut().unwrap().push(composite(7));
+    v["graph"]["edges"] = json!([
+        edge(address(2, "source", "out"), address(7, "mix", "inputs"), 0),
+        edge(address(7, "mix", "out"), address(1, "mix", "inputs"), 0),
+        edge(address(3, "source", "out"), address(1, "mix", "inputs"), 1),
+    ]);
+    v["layers"][5]["appearance"] = appearance(100.0, 100.0, mode, mode == 1);
+    v["layers"][2]["appearance"] = appearance(100.0, 100.0, 2, false);
+    v["layers"][2]["appearance"]["clipped"] = json!(true);
+    v
+}
+
 #[test]
 fn pass_through_group_as_clip_base_is_unavailable_and_unsupported_in_the_ledger() {
     bounded_case("pass_through_group_as_clip_base", || {
@@ -536,26 +553,15 @@ fn pass_through_group_as_clip_base_is_unavailable_and_unsupported_in_the_ledger(
         // pass-through clip base are UNVERIFIED (oracle pending): refused, never guessed.
         let root = addr(1, "mix", "out");
         let token = CancellationToken::default();
-        let fixture = |mode: u16| {
-            let mut v = tiled();
-            v["layers"].as_array_mut().unwrap().push(layer(7, "group", json!({"payload_kind":"group"})));
-            v["graph"]["operations"].as_array_mut().unwrap().push(composite(7));
-            v["graph"]["edges"] = json!([
-                edge(address(2, "source", "out"), address(7, "mix", "inputs"), 0),
-                edge(address(7, "mix", "out"), address(1, "mix", "inputs"), 0),
-                edge(address(3, "source", "out"), address(1, "mix", "inputs"), 1),
-            ]);
-            v["layers"][5]["appearance"] = appearance(100.0, 100.0, mode, mode == 1);
-            v["layers"][2]["appearance"] = appearance(100.0, 100.0, 2, false);
-            v["layers"][2]["appearance"]["clipped"] = json!(true);
-            v
-        };
+        let fixture = pass_through_base_fixture;
 
         // Pass-through base: typed Unavailable at lowering, Unsupported in the evaluation ledger
-        // and on the parent step.
+        // and on the parent step; the key is pigment's PlanError code (test
+        // `refusal_keys_are_pigments` shows pigment's validation refuses the rule with it).
+        let key = PlanError::ClipBasePassThrough { node: 0 }.code();
         let v = fixture(1);
         match lowered(&v, BlendSpace::Encoded, &root) {
-            Err(CompositeError::Unavailable(reason)) => assert!(reason.contains("clip_base_pass_through"), "{reason}"),
+            Err(CompositeError::Unavailable(reason)) => assert!(reason.contains(key), "{reason}"),
             other => panic!("expected Unavailable, got {other:?}"),
         }
         let snap = open(&v);
@@ -567,9 +573,9 @@ fn pass_through_group_as_clip_base_is_unavailable_and_unsupported_in_the_ledger(
             .exactness
             .operators
             .iter()
-            .any(|o| o.key == "clip_base_pass_through" && o.exactness == Exactness::Unsupported));
+            .any(|o| o.key == key && o.exactness == Exactness::Unsupported));
         match &report.step(&root).unwrap().status {
-            StepStatus::Unavailable(reason) => assert!(reason.contains("clip_base_pass_through"), "{reason}"),
+            StepStatus::Unavailable(reason) => assert!(reason.contains(key), "{reason}"),
             other => panic!("expected Unavailable, got {other:?}"),
         }
 
@@ -2003,5 +2009,89 @@ fn blend_clipped_layers_as_group_off_is_refused_on_a_clip_base() {
         let mut hidden_base = clip_doc();
         hidden_base["layers"][1]["visible"] = json!(false);
         lowers_and_is_ready(&hidden_base, &recs, "base hidden");
+    });
+}
+
+use hsk_studio_pigment::render_plan::{Group, Layer, PlanLimits};
+
+/// PLR-006 / lane SMB-REFUSAL-KEYS: the refusal keys composite re-decides (`record_appearance`, the
+/// clip-base refusal) are the ones pigment's own validation and admission produce for the same
+/// rule, so they cannot drift. Each rule is shown on a hand-built pigment plan first (pigment's
+/// answer), then on the composite document (composite's evaluation-ledger key must contain it).
+#[test]
+fn refusal_keys_are_pigments() {
+    bounded_case("refusal_keys_are_pigments", || {
+        let token = CancellationToken::default();
+        let unsupported_keys = |v: &Value| -> Vec<&'static str> {
+            let snap = open(v);
+            let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+            let report = evaluate(&plan, &snap, &token).unwrap();
+            let operators = report.receipt.exactness.operators;
+            operators.iter().filter(|o| o.exactness == Exactness::Unsupported).map(|o| o.key).collect()
+        };
+        // [solid, non-isolated group over it, isolated root holding `top` over the group].
+        let pigment_plan = |top: Vec<Layer>| {
+            let rect = Rect { x: 0, y: 0, width: 8, height: 8 };
+            let inner = Layer {
+                input: PlanNodeId(0),
+                mode: StudioBlendMode::Normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+                mask: None,
+            };
+            RenderPlan {
+                revision: 7,
+                target: target(BlendSpace::Encoded),
+                nodes: vec![
+                    PlanNode::Solid { rect, rgba: [1.0; 4] },
+                    PlanNode::Group(Group { isolated: false, layers: vec![inner] }),
+                    PlanNode::Group(Group { isolated: true, layers: top }),
+                ],
+                root: PlanNodeId(2),
+            }
+        };
+        let over_group = |mode, fill_opacity, mask| Layer {
+            input: PlanNodeId(1),
+            mode,
+            opacity: 1.0,
+            fill_opacity,
+            mask,
+        };
+
+        // A clipping run whose base is a pass-through group: pigment's validation refuses it as
+        // PlanError::ClipBasePassThrough (it has no operator key for it).
+        let clipped = Layer {
+            input: PlanNodeId(0),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            mask: Some(MaskInput::clip_to_base()),
+        };
+        let refused = pigment_plan(vec![over_group(StudioBlendMode::PassThrough, 1.0, None), clipped])
+            .validate(&PlanLimits::default())
+            .expect_err("pigment refuses a pass-through clip base");
+        assert_eq!(refused, PlanError::ClipBasePassThrough { node: 2 });
+        let keys = unsupported_keys(&pass_through_base_fixture(1));
+        assert!(keys.contains(&refused.code()), "composite ledger {keys:?} lacks pigment's {}", refused.code());
+
+        // A pass-through layer with fill below 1: pigment's shared admission refuses it as
+        // PASS_THROUGH_FILL_OPERATOR for every backend.
+        let request = ExecuteRequest {
+            expected_revision: 7,
+            min_exactness: Exactness::Approximate,
+            deadline: None,
+            max_working_bytes: 1 << 20,
+        };
+        let plan = pigment_plan(vec![over_group(StudioBlendMode::PassThrough, 0.25, None)]);
+        let Err(BackendError::Unsupported { operator, .. }) =
+            admit(&plan, &Backend { refuses: None }, &request, &token)
+        else {
+            panic!("pigment admission refuses fill below 1 on a pass-through layer")
+        };
+        assert_eq!(operator, PASS_THROUGH_FILL_OPERATOR);
+        let mut filled = tiled();
+        filled["layers"][0]["appearance"] = appearance(100.0, 25.0, 1, true);
+        let keys = unsupported_keys(&filled);
+        assert!(keys.contains(&operator), "composite ledger {keys:?} lacks pigment's {operator}");
     });
 }

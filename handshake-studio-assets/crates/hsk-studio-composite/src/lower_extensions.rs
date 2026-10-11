@@ -32,7 +32,7 @@ use hsk_studio_pigment::effect_math::{
     GlowTechnique, InnerGlowOp, InnerShadowOp, MAX_EFFECTS_PER_LAYER, OuterGlowOp, StrokeOp,
     StrokePosition as PigmentStrokePosition,
 };
-use hsk_studio_pigment::render_plan::{ClipRole, ExtOperator, Knockout};
+use hsk_studio_pigment::render_plan::{ClipRole, ExtOperator, Knockout, PlanError};
 use std::collections::BTreeMap;
 
 pub use hsk_studio_pigment::adjust_math::AdjustmentOp;
@@ -88,6 +88,12 @@ pub const REFUSE_ADJUSTMENT_RECORD: &str = "adjustment_record_missing";
 /// blend mode against the backdrop) is not modelled and must not be dropped silently. The code is
 /// the one interop-psd reports for the same file setting.
 pub const REFUSE_CLIP_GROUP_BLEND_OFF: &str = "blend_clipped_layers_as_group_off_not_modelled";
+/// Refusal code and evaluation-ledger key: the base of a clipping run is a rendered pass-through
+/// group. Pigment's `RenderPlan::validate` refuses it as `PlanError::ClipBasePassThrough` and has no
+/// operator key for it, so composite reports that error's own code instead of a local spelling
+/// (plausible register PLR-006; the ledger entries for an adjustment or effects clip base already do
+/// the same through `PlanError::AdjustmentClipBase` and `PlanError::EffectClipRun`).
+pub const REFUSE_CLIP_BASE_PASS_THROUGH: &str = PlanError::ClipBasePassThrough { node: 0 }.code();
 
 /// Lowering-report key: one curve point whose corner flag pigment cannot carry.
 pub const NOTE_CURVE_CORNER_DROPPED: &str = "curves_corner_flag_dropped";

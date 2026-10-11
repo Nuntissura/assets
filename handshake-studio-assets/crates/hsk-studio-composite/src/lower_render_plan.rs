@@ -17,8 +17,9 @@
 //! the Photoshop rule is UNVERIFIED). A hidden or empty base drops its clipped layers with it, in
 //! evaluation too (they neither block the parent nor add extent). Never silently
 //! ignored: a clipped layer with no base, with its own mask (one mask slot) or referencing a
-//! pass-through group, a pass-through group serving as the clip base (`clip_base_pass_through`,
-//! Unsupported in the evaluation ledger, consistent with the backends; Photoshop's semantics for it
+//! pass-through group, a pass-through group serving as the clip base (`REFUSE_CLIP_BASE_PASS_THROUGH`,
+//! pigment's `PlanError::ClipBasePassThrough` code, Unsupported in the evaluation ledger, consistent
+//! with the backends; Photoshop's semantics for it
 //! are UNVERIFIED pending the oracle), and an enabled mask without coverage, are `Unavailable`. A
 //! hidden or empty pass-through base drops its clipped layers instead. A disabled mask is
 //! an authored "no mask" and is omitted. Hidden and empty layers are not emitted.
@@ -708,8 +709,9 @@ fn lower_inner(
                         // Photoshop's semantics are UNVERIFIED (oracle pending), so never guess.
                         if base_pass_through && present {
                             return Err(CompositeError::Unavailable(format!(
-                                "{}:clip_base_pass_through",
-                                input.text()
+                                "{}:{}",
+                                input.text(),
+                                crate::lower_extensions::REFUSE_CLIP_BASE_PASS_THROUGH
                             )));
                         }
                         // Pigment: an adjustment layer cannot be a clip base.
