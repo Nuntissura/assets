@@ -1,5 +1,5 @@
 //! Interop-local real consumer: import an IDML package and print the proposal summary and the loss
-//! list, identify an InDesign binary file with `--indd`, or print the descriptor. A refusal prints a
+//! list (or `--reflow ADVANCE_PT`: per-thread placement and overset with a fixture shaper), identify an InDesign binary file with `--indd`, or print the descriptor. A refusal prints a
 //! stable error code on stderr and exits 2. Nothing is committed or written.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_interop_layout::*;
@@ -33,7 +33,7 @@ fn main() -> ExitCode {
     }
     let Some(path) = arg(&args, "--idml") else {
         eprintln!(
-            "usage: interop-layout-consumer [--descriptor] [--idml FILE [--export]] [--indd FILE]"
+            "usage: interop-layout-consumer [--descriptor] [--idml FILE [--export | --reflow ADVANCE_PT]] [--indd FILE]"
         );
         return ExitCode::from(2);
     };
@@ -57,6 +57,38 @@ fn main() -> ExitCode {
             }
         }
         return ExitCode::SUCCESS;
+    }
+    if let Some(advance) = arg(&args, "--reflow") {
+        // Fixture shaper (fixed advance per char, 12 pt lines, 9 pt ascent), NOT shaping.
+        let shaper = FixedAdvanceShaper {
+            advance_pt: advance.parse().unwrap_or(5.0),
+            line_height_pt: 12.0,
+            ascent_pt: 9.0,
+        };
+        match reflow_import(&import, &shaper, &ReflowOptions::default(), &cancel) {
+            Ok(threads) => {
+                for t in threads {
+                    let lines = t
+                        .outcome
+                        .as_ref()
+                        .map_or(0, |p| p.frames.iter().map(|f| f.lines.len()).sum());
+                    println!(
+                        "thread story={} frames={} lines={} overset={:?} refusal={:?} notes={:?}",
+                        t.idml_story_id,
+                        t.frame_ids.len(),
+                        lines,
+                        t.overset().map(|o| (o.start, o.end)),
+                        t.refusal(),
+                        t.notes
+                    );
+                }
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("{}", e.code());
+                return ExitCode::from(2);
+            }
+        }
     }
     let doc = import.proposal.snapshot.document();
     println!(
