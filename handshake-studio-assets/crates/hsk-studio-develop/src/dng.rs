@@ -8,6 +8,7 @@
 //! (UNVERIFIED which anchor Adobe applies there).
 use crate::DevelopError;
 use crate::color::{self, CameraSolution, DngColor, Mat3};
+use crate::ljpeg;
 use crate::pipeline::{Cfa, CfaPattern, CfaPlane, Limits, PlaneInit, XTRANS};
 use crate::recipe::{DevelopRecipe, ProfileBinding, as_shot_gain};
 use crate::tiff::{Entry, Ifd, Tiff};
@@ -356,17 +357,25 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         Some(e) => first_u32(&tiff, e)?,
         None => 1,
     };
-    if compression != 1 {
-        return Err(DevelopError::UnsupportedCompression);
-    }
-    if bits != 8 && bits != 16 {
+    let lossless_jpeg = match compression {
+        1 => false,
+        7 => true,
+        _ => return Err(DevelopError::UnsupportedCompression),
+    };
+    let bits_ok = if lossless_jpeg {
+        (2..=16).contains(&bits)
+    } else {
+        bits == 8 || bits == 16
+    };
+    if !bits_ok {
         return Err(DevelopError::UnsupportedContainer);
     }
     let cfa_pattern = parse_cfa(&tiff, &l)?;
 
-    // Strip / tile payloads (uncompressed, byte-aligned samples in file byte order).
+    // Strip / tile payloads: uncompressed byte-aligned samples in file byte order, or one
+    // lossless-JPEG stream per block (components interleave along the block row).
     let layout = layout(&tiff, &l, width, height)?;
-    let bytes_per_sample = usize::from(bits / 8);
+    let bytes_per_sample = usize::from(bits.div_ceil(8));
     let mut samples = vec![0u16; width as usize * height as usize];
     for block_row in 0..layout.down {
         for block_col in 0..layout.across {
@@ -376,11 +385,30 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             } else {
                 layout.block_h.min(height - block_row * layout.block_h)
             };
-            let expected = u64::from(layout.block_w) * u64::from(block_h) * bytes_per_sample as u64;
-            if u64::from(layout.counts[index]) < expected {
-                return Err(DevelopError::InvalidContainer);
+            let block_w = layout.block_w as usize;
+            let decoded: Vec<u16>;
+            let uncompressed: &[u8];
+            if lossless_jpeg {
+                let stream = tiff.region(u64::from(layout.offsets[index]), u64::from(layout.counts[index]))?;
+                let image = ljpeg::decode(stream, block_w * block_h as usize)?;
+                if image.width as usize * image.components != block_w || image.height != block_h {
+                    return Err(DevelopError::InvalidContainer);
+                }
+                // A decoded value above the stream's own precision means a corrupt stream.
+                let ceiling = u32::from(u16::MAX) >> (16 - u32::from(image.precision));
+                if image.samples.iter().any(|v| u32::from(*v) > ceiling) {
+                    return Err(DevelopError::InvalidContainer);
+                }
+                decoded = image.samples;
+                uncompressed = &[];
+            } else {
+                let expected = block_w as u64 * u64::from(block_h) * bytes_per_sample as u64;
+                if u64::from(layout.counts[index]) < expected {
+                    return Err(DevelopError::InvalidContainer);
+                }
+                decoded = Vec::new();
+                uncompressed = tiff.region(u64::from(layout.offsets[index]), expected)?;
             }
-            let data = tiff.region(u64::from(layout.offsets[index]), expected)?;
             let x0 = block_col * layout.block_w;
             let y0 = block_row * layout.block_h;
             for by in 0..block_h {
@@ -393,9 +421,13 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
                     if x >= width {
                         break;
                     }
-                    let at = (by as usize * layout.block_w as usize + bx as usize) * bytes_per_sample;
-                    samples[y as usize * width as usize + x as usize] =
-                        read_sample(&data[at..at + bytes_per_sample], bits, tiff.is_big_endian());
+                    let at = by as usize * block_w + bx as usize;
+                    samples[y as usize * width as usize + x as usize] = if lossless_jpeg {
+                        decoded[at]
+                    } else {
+                        let o = at * bytes_per_sample;
+                        read_sample(&uncompressed[o..o + bytes_per_sample], bits, tiff.is_big_endian())
+                    };
                 }
             }
         }

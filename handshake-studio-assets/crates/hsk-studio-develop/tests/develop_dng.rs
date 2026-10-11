@@ -136,6 +136,7 @@ struct Spec {
     dng_version: Option<[u8; 4]>,
     backward: [u8; 4],
     lin_table: Option<Vec<u16>>,
+    lj: (usize, u8, u8, u32, usize),
 }
 
 struct Built {
@@ -171,6 +172,7 @@ fn base() -> Spec {
         dng_version: Some([1, 4, 0, 0]),
         backward: [1, 1, 0, 0],
         lin_table: None,
+        lj: (2, 1, 16, 0, 0),
     }
 }
 
@@ -185,7 +187,8 @@ fn build(s: &Spec) -> Built {
     let sample_bytes = |v: u16| -> Vec<u8> {
         if s.bits == 8 { vec![v as u8] } else { enc.u16(v).to_vec() }
     };
-    let blocks: Vec<Vec<u8>> = match s.tiles {
+    // Per-block sample arrays (w, h, values) then their on-disk encoding.
+    let raw_blocks: Vec<(usize, usize, Vec<u16>)> = match s.tiles {
         Some((tw, th)) => {
             let (tw, th) = (tw as usize, th as usize);
             let mut out = Vec::new();
@@ -195,19 +198,26 @@ fn build(s: &Spec) -> Built {
                     for y in 0..th {
                         for x in 0..tw {
                             let (sx, sy) = (tx * tw + x, ty * th + y);
-                            let v = if sx < w && sy < h { s.samples[sy * w + sx] } else { 0 };
-                            b.extend(sample_bytes(v));
+                            b.push(if sx < w && sy < h { s.samples[sy * w + sx] } else { 0 });
                         }
                     }
-                    out.push(b);
+                    out.push((tw, th, b));
                 }
             }
             out
         }
-        None => (0..h / 2)
-            .map(|strip| (0..2 * w).flat_map(|i| sample_bytes(s.samples[strip * 2 * w + i])).collect())
-            .collect(),
+        None => (0..h / 2).map(|strip| (w, 2, s.samples[strip * 2 * w..(strip + 1) * 2 * w].to_vec())).collect(),
     };
+    let blocks: Vec<Vec<u8>> = raw_blocks
+        .iter()
+        .map(|(bw, bh, v)| {
+            if s.compression == 7 {
+                ljpeg_encode(v, *bw, *bh, s.lj)
+            } else {
+                v.iter().flat_map(|x| sample_bytes(*x)).collect()
+            }
+        })
+        .collect();
     let make = |raw_at: u32, offsets: &[u32]| -> (Vec<T>, Vec<T>) {
         let mut t0 = vec![enc.short(254, &[1]), enc.ascii(50708, "Studio Test"), enc.long(330, &[raw_at]), enc.byte(50707, &s.backward)];
         if let Some(v) = s.dng_version {
@@ -498,7 +508,7 @@ fn dng_refusals() {
         let refuse = |bytes: &[u8], want: DevelopError| assert_eq!(decode_container(bytes).err(), Some(want));
         refuse(&build(&Spec { dng_version: None, ..base() }).bytes, DevelopError::UnsupportedContainer);
         refuse(&build(&Spec { backward: [2, 0, 0, 0], ..base() }).bytes, DevelopError::UnsupportedContainer);
-        refuse(&build(&Spec { compression: 7, ..base() }).bytes, DevelopError::UnsupportedCompression);
+        refuse(&build(&Spec { compression: 8, ..base() }).bytes, DevelopError::UnsupportedCompression);
         refuse(&build(&Spec { photometric: 34892, ..base() }).bytes, DevelopError::UnsupportedContainer);
         refuse(&build(&Spec { photometric: 2, ..base() }).bytes, DevelopError::InvalidContainer);
         refuse(&build(&Spec { cfa: [1, 0, 0, 1], ..base() }).bytes, DevelopError::UnsupportedPattern);
@@ -529,5 +539,197 @@ fn dng_refusals() {
         let raw = decode_container(&build(&lin).bytes).unwrap();
         assert_eq!((raw.sample(2, 3), raw.linearized), (100, true));
         refuse(&build(&Spec { lin_table: Some(table), white: None, ..lin }).bytes, DevelopError::InvalidContainer);
+    });
+}
+
+// ---- test-side lossless JPEG encoder (T.81 SOF3, one 5-bit-code Huffman table) -------------
+struct BitWriter {
+    out: Vec<u8>,
+    acc: u32,
+    n: u32,
+}
+
+impl BitWriter {
+    fn put(&mut self, value: u32, bits: u32) {
+        for i in (0..bits).rev() {
+            self.acc = (self.acc << 1) | ((value >> i) & 1);
+            self.n += 1;
+            if self.n == 8 {
+                self.flush_byte();
+            }
+        }
+    }
+    fn flush_byte(&mut self) {
+        self.out.push(self.acc as u8);
+        if self.acc as u8 == 0xFF {
+            self.out.push(0);
+        }
+        self.acc = 0;
+        self.n = 0;
+    }
+    fn pad(&mut self) {
+        while self.n != 0 {
+            self.put(1, 1);
+        }
+    }
+}
+
+/// `lj` = (components, predictor, precision, point transform, restart rows).
+fn ljpeg_encode(samples: &[u16], bw: usize, bh: usize, lj: (usize, u8, u8, u32, usize)) -> Vec<u8> {
+    let (comps, predictor, precision, pt, restart_rows) = lj;
+    let x_per_line = bw / comps;
+    let be16 = |v: usize| (v as u16).to_be_bytes();
+    let mut out = vec![0xFF, 0xD8, 0xFF, 0xC3];
+    out.extend(be16(8 + 3 * comps));
+    out.push(precision);
+    out.extend(be16(bh));
+    out.extend(be16(x_per_line));
+    out.push(comps as u8);
+    for c in 0..comps {
+        out.extend([c as u8 + 1, 0x11, 0]);
+    }
+    out.extend([0xFF, 0xC4]);
+    out.extend(be16(2 + 1 + 16 + 17));
+    out.push(0);
+    let mut counts = [0u8; 16];
+    counts[4] = 17; // seventeen 5-bit codes: symbol k has code k
+    out.extend(counts);
+    out.extend(0..=16u8);
+    if restart_rows > 0 {
+        out.extend([0xFF, 0xDD, 0, 4]);
+        out.extend(be16(restart_rows * x_per_line));
+    }
+    out.extend([0xFF, 0xDA]);
+    out.extend(be16(6 + 2 * comps));
+    out.push(comps as u8);
+    for c in 0..comps {
+        out.extend([c as u8 + 1, 0]);
+    }
+    out.extend([predictor, 0, pt as u8]);
+    let mut w = BitWriter { out, acc: 0, n: 0 };
+    let v = |i: usize| i64::from(samples[i]) >> pt;
+    let mut rst = 0u8;
+    for y in 0..bh {
+        let first_row = y == 0 || (restart_rows > 0 && y % restart_rows == 0);
+        if restart_rows > 0 && y > 0 && y % restart_rows == 0 {
+            w.pad();
+            w.out.extend([0xFF, 0xD0 + (rst & 7)]);
+            rst += 1;
+        }
+        for x in 0..x_per_line {
+            for c in 0..comps {
+                let at = y * bw + x * comps + c;
+                let prediction = if first_row {
+                    if x == 0 { 1i64 << (precision as u32 - pt - 1) } else { v(at - comps) }
+                } else if x == 0 {
+                    v(at - bw)
+                } else {
+                    let (a, b, cc) = (v(at - comps), v(at - bw), v(at - bw - comps));
+                    match predictor {
+                        1 => a,
+                        2 => b,
+                        3 => cc,
+                        4 => a + b - cc,
+                        5 => a + ((b - cc) >> 1),
+                        6 => b + ((a - cc) >> 1),
+                        _ => (a + b) >> 1,
+                    }
+                };
+                let mut diff = (v(at) - prediction).rem_euclid(65536);
+                if diff > 32767 {
+                    diff -= 65536;
+                }
+                if diff == -32768 {
+                    w.put(16, 5); // category 16: no extra bits
+                    continue;
+                }
+                let category = 64 - diff.unsigned_abs().leading_zeros();
+                w.put(category, 5);
+                if category > 0 {
+                    let bits = if diff >= 0 { diff } else { diff - 1 };
+                    w.put((bits as u32) & ((1u32 << category) - 1), category);
+                }
+            }
+        }
+    }
+    w.pad();
+    let mut out = w.out;
+    out.extend([0xFF, 0xD9]);
+    out
+}
+
+fn pseudo(i: usize, precision: u8, pt: u32) -> u16 {
+    let h = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40;
+    ((h as u16) & (((1u32 << precision) - 1) as u16)) & !((1u16 << pt) - 1)
+}
+
+#[test]
+fn dng_lossless_jpeg() {
+    bounded_case("dng_lossless_jpeg", || {
+        // Known answer worked out by hand from T.81 (P=8, one line of 3 samples, 5-bit codes):
+        // 100 vs 128 -> diff -28 (cat 5, bits 00011); 102 vs 100 -> +2 (cat 2, bits 10); 99 vs 102 -> -3 (cat 2, bits 00).
+        let mut vector = vec![0xFF, 0xD8, 0xFF, 0xC3, 0, 11, 8, 0, 1, 0, 3, 1, 1, 0x11, 0, 0xFF, 0xC4, 0, 36, 0];
+        vector.extend([0, 0, 0, 0, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        vector.extend(0..=16u8);
+        vector.extend([0xFF, 0xDA, 0, 8, 1, 1, 0, 1, 0, 0, 0x28, 0xC5, 0x08, 0xFF, 0xD9]);
+        let image = ljpeg::decode(&vector, 1 << 10).unwrap();
+        assert_eq!((image.width, image.height, image.components, image.precision), (3, 1, 1, 8));
+        assert_eq!(image.samples, vec![100, 102, 99]);
+        // A truncated stream, a subsampled component, a bad predictor and an oversize frame refuse.
+        assert!(ljpeg::decode(&vector[..vector.len() - 4], 1 << 10).is_err());
+        let mut subsampled = vector.clone();
+        subsampled[13] = 0x22;
+        assert_eq!(ljpeg::decode(&subsampled, 1 << 10).err(), Some(DevelopError::UnsupportedCompression));
+        let mut bad = vector.clone();
+        let ss = vector.len() - 6;
+        bad[ss] = 9;
+        assert_eq!(ljpeg::decode(&bad, 1 << 10).err(), Some(DevelopError::InvalidContainer));
+        assert_eq!(ljpeg::decode(&vector, 2).err(), Some(DevelopError::InvalidDimensions));
+
+        // Round trips through DNG strips and tiles: every predictor, 1/2/4 components, 12/14/16-bit,
+        // point transform, restart per row; the decoded frame must equal the source exactly.
+        let cases: [(usize, u8, u8, u32, usize); 9] = [
+            (2, 1, 16, 0, 0),
+            (1, 7, 14, 0, 0),
+            (2, 4, 12, 2, 0),
+            (1, 2, 16, 0, 0),
+            (1, 3, 12, 0, 0),
+            (2, 5, 14, 0, 0),
+            (1, 6, 16, 0, 0),
+            (4, 1, 16, 0, 0),
+            (2, 1, 12, 1, 1),
+        ];
+        for (n, case) in cases.into_iter().enumerate() {
+            let (_, predictor, precision, pt, _) = case;
+            for tiles in [None, Some((4u32, 4u32))] {
+                let (width, height) = (8u32, 6u32);
+                let samples: Vec<u16> = (0..(width * height) as usize).map(|i| pseudo(i + n, precision, pt)).collect();
+                let spec = Spec {
+                    width,
+                    height,
+                    samples: samples.clone(),
+                    tiles,
+                    compression: 7,
+                    lj: case,
+                    white: Some(60_000),
+                    forward: [None, None],
+                    color: [None, None],
+                    ..base()
+                };
+                let raw = decode_container(&build(&spec).bytes).unwrap_or_else(|e| panic!("case {n} {tiles:?} predictor {predictor}: {e}"));
+                let got: Vec<u16> = (0..height).flat_map(|y| (0..width).map(move |x| (x, y))).map(|(x, y)| raw.sample(x, y)).collect();
+                assert_eq!(got, samples, "case {n} tiles {tiles:?} predictor {predictor}");
+            }
+        }
+        // A block whose frame width does not match the block width refuses.
+        let odd = Spec { samples: vec![0; 16], compression: 7, lj: (2, 1, 16, 0, 0), ..base() };
+        let mut bytes = build(&odd).bytes;
+        // (the frame now declares more samples than the block can hold, so admission refuses it)
+        for i in 0..bytes.len() - 12 {
+            if bytes[i..i + 4] == [0xFF, 0xC3, 0, 14] {
+                bytes[i + 8] = 3; // SOF3 samples-per-line 2 -> 3
+            }
+        }
+        assert_eq!(decode_container(&bytes).err(), Some(DevelopError::InvalidDimensions));
     });
 }
