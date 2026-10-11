@@ -489,6 +489,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-package", &["crc32fast", "ruzstd", "serde", "serde_json", "sha2"]),
     ("hsk-studio-interop-psd", &["miniz_oxide", "serde_json"]),
     ("hsk-studio-interop-vector", &["miniz_oxide", "roxmltree", "svgtypes"]),
+    ("hsk-studio-interop-fig", &["miniz_oxide", "ruzstd", "serde_json", "sha2"]),
     ("hsk-studio-interop-layout", &["miniz_oxide", "roxmltree", "serde_json", "sha2"]),
     ("hsk-studio-controls", &["egui", "serde", "serde_json"]),
     ("hsk-studio-session", &["serde_json"]),
@@ -496,6 +497,8 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-kernel-bindings", &["serde", "serde_json"]),
     ("hsk-studio-press", &["miniz_oxide", "sha2"]),
     ("hsk-studio-web", &["sha2"]),
+    ("hsk-studio-score-device", &["cpal"]),
+    ("hsk-studio-score-plugin", &["clack-host"]),
     ("hsk-studio-interop-lrcat", &["sha2"]),
     ("hsk-studio-motion-js", &["rquickjs"]),
 ];
