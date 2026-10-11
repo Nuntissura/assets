@@ -1,7 +1,7 @@
 //! Tick/frame conversion and timecode LABEL functions (STU-VID-012, 012a, 012c, 013, 013a).
 //! Stored time is always integer ticks; drop-frame only changes how a frame number is labelled.
 use crate::error::{PulseError, Result};
-use crate::rational::gcd;
+use crate::rational::{Rounding, gcd};
 use hsk_studio_accord::{FrameRate, FrameRateNormalization, TICKS_PER_SECOND, Ticks};
 
 /// Normalizes a ticks/frame import value (legacy 10594594594/8475675675 map to the 1001-ratio
@@ -75,6 +75,11 @@ pub fn samples_from_ticks_exact(ticks: Ticks, sample_rate_hz: u32) -> Result<u64
         return Err(PulseError::NotFrameAligned);
     }
     Ok(ticks.value() / per_sample)
+}
+
+/// Display-side sample position: samples fully elapsed at `ticks`.
+pub fn samples_floor(ticks: Ticks, sample_rate_hz: u32) -> Result<u64> {
+    Ok(ticks.value() / ticks_per_sample(sample_rate_hz)?)
 }
 
 fn ticks_per_sample(sample_rate_hz: u32) -> Result<u64> {
@@ -235,4 +240,49 @@ pub fn ticks_to_timecode(ticks: Ticks, rate: FrameRate, drop_frame: bool) -> Res
 pub fn timecode_to_ticks(tc: Timecode, rate: FrameRate, drop_frame: bool) -> Result<Ticks> {
     let format = TimecodeFormat::new(rate, drop_frame)?;
     frames_to_ticks(timecode_to_frames(tc, format)?, rate)
+}
+
+/// Ticks of the frame boundary selected by `rounding` (`Exact` refuses sub-frame values).
+pub fn snap_to_frame(ticks: Ticks, rate: FrameRate, rounding: Rounding) -> Result<Ticks> {
+    let tpf = rate.ticks_per_frame();
+    let (frames, rem) = (ticks.value() / tpf, ticks.value() % tpf);
+    let frames = match rounding {
+        Rounding::Exact if rem != 0 => return Err(PulseError::NotFrameAligned),
+        Rounding::Exact | Rounding::Floor => frames,
+        Rounding::Ceil => frames + u64::from(rem != 0),
+        Rounding::NearestHalfUp => frames + u64::from(u128::from(rem) * 2 >= u128::from(tpf)),
+    };
+    frames_to_ticks(frames, rate)
+}
+
+/// Parses typed timecode `H..:MM:SS:FF` (non-drop) or `H..:MM:SS;FF` (drop-frame). Field ranges
+/// against a frame rate are checked later by [`timecode_to_frames`].
+pub fn parse_timecode(input: &str) -> Result<Timecode> {
+    if input.len() > 32 || !input.is_ascii() {
+        return Err(PulseError::InvalidTimecode);
+    }
+    let parts: Vec<&str> = input.split([':', ';']).collect();
+    let separators: Vec<char> = input.chars().filter(|c| matches!(c, ':' | ';')).collect();
+    if parts.len() != 4
+        || separators.len() != 3
+        || separators[..2].contains(&';')
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || p.len() > 10 || !p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(PulseError::InvalidTimecode);
+    }
+    let field = |i: usize| {
+        parts[i]
+            .parse::<u64>()
+            .map_err(|_| PulseError::InvalidTimecode)
+    };
+    let small = |i: usize| u8::try_from(field(i)?).map_err(|_| PulseError::InvalidTimecode);
+    Ok(Timecode {
+        hours: field(0)?,
+        minutes: small(1)?,
+        seconds: small(2)?,
+        frames: small(3)?,
+        drop_frame: separators[2] == ';',
+    })
 }
