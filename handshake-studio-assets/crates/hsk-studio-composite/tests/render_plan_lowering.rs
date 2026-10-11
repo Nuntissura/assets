@@ -946,6 +946,39 @@ fn adjustment_layer_lowers_to_transparent_placeholder_and_envelope_entry() {
             == PlanError::AdjustmentClipBase { node: 0 }.code()
             && o.exactness == Exactness::Unsupported));
         assert!(unavailable_reason(lower_ext(&run_clipped, &recs)).contains("clip_base_adjustment"));
+
+        // Brightness/contrast carries `use_legacy`; the modern curve is unpublished, so it is
+        // carried too and refused by pigment's admission under the kind's key (never emulated),
+        // with the ledger `Unsupported`. The legacy mode is admitted.
+        let bc = |legacy: bool| {
+            records(json!([{"layer_id":identity("SLYR",3),"adjustment":{"kind":"brightness_contrast",
+                "brightness":10.0,"contrast":10.0,"use_legacy":legacy}}]))
+        };
+        let (modern, legacy) = (bc(false), bc(true));
+        let token = CancellationToken::default();
+        let low = lower_ext(&run_ext(&adjusted(), &modern, true), &modern).unwrap();
+        assert_eq!(
+            admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token),
+            Err(BackendError::Unsupported { operator: "brightness_contrast", exactness: Exactness::Unsupported })
+        );
+        assert_eq!(low.exactness.lowest, Exactness::Unsupported);
+        let low = lower_ext(&run_ext(&adjusted(), &legacy, true), &legacy).unwrap();
+        assert!(admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token).is_ok());
+        // Hue bands with a shift and non-default threshold colours have no pigment counterpart;
+        // all-zero bands (PSD writes six defaults) are the identity.
+        let hs = |band_shift: f64| {
+            let zero = json!({"hue":0.0,"saturation":0.0,"lightness":0.0});
+            records(json!([{"layer_id":identity("SLYR",3),"adjustment":{"kind":"hue_saturation",
+                "master":{"hue":10.0,"saturation":0.0,"lightness":0.0},"colorize":false,"colorization":zero,
+                "bands":[{"range":[0.0,0.0,30.0,60.0],"shift":{"hue":band_shift,"saturation":0.0,"lightness":0.0}}]}}]))
+        };
+        let (flat, shifted) = (hs(0.0), hs(5.0));
+        assert!(lower_ext(&run_ext(&adjusted(), &flat, true), &flat).is_ok());
+        assert!(unavailable_reason(lower_ext(&run_ext(&adjusted(), &shifted, true), &shifted))
+            .ends_with("hue_saturation_bands"));
+        let th = records(json!([{"layer_id":identity("SLYR",3),"adjustment":{"kind":"threshold","level":128.0,
+            "true_colour":{"r":1.0,"g":0.0,"b":0.0,"colour_profile_id":null}}}]));
+        assert!(unavailable_reason(lower_ext(&run_ext(&adjusted(), &th, true), &th)).ends_with("threshold_colours"));
     });
 }
 
@@ -1131,14 +1164,15 @@ fn knockout_and_effect_stack_are_refused() {
         let none = records(json!([{"layer_id":identity("SLYR",2),"advanced_blending":blending("inherited")}]));
         assert!(flow(&nested, &none).1.unwrap().extensions.is_empty());
 
-        // An enabled effect stack with an enabled instance is refused (effects wave 1 pending);
-        // a disabled stack, or one without enabled instances, is not.
+        // An enabled effect instance of a kind pigment does not render (here an inner shadow; wave
+        // 1 is drop shadow, colour overlay and stroke) is refused; a disabled stack, or one
+        // without enabled instances, is not.
         let stack = |enabled: bool, instance_enabled: bool| {
             json!({"effect_stack_id":"SEFX-019abcde-0000-7000-8000-000000000001","enabled":enabled,"scale":100.0,
                 "effects":[{"instance_id":"fx_1","enabled":instance_enabled,"visible_in_editor":true,
                     "blend_mode":5,"opacity":75.0,"colour":{"r":0.0,"g":0.0,"b":0.0,"colour_profile_id":null},
                     "anti_alias":false,"noise":0.0,"angle":120.0,"use_global_light":true,
-                    "params":{"effect_kind":"colour_overlay"}}]})
+                    "params":{"effect_kind":"inner_shadow","distance":1.0,"choke":0.0,"size":1.0}}]})
         };
         let with = |enabled, instance_enabled| {
             records(json!([{"layer_id":identity("SLYR",3),"effects":stack(enabled, instance_enabled)}]))
@@ -1219,5 +1253,286 @@ fn evaluation_ledger_keys_and_classes_are_pigments() {
             StepStatus::Unavailable(PASS_THROUGH_FILL_OPERATOR.into())
         );
         assert_eq!(plan.lowest_exactness(), Exactness::Unsupported);
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Layer effects wave 1 (drop shadow, colour overlay, solid stroke): lowering of folio
+// `StudioEffectStack` records to pigment `EffectOp`s, checked against pigment's own
+// `render_layer_reference` on small planes (hand-derived pixels), and the typed refusals.
+// ---------------------------------------------------------------------------------------------
+use hsk_studio_pigment::effect_math::{
+    ColourOverlayOp, DropShadowOp, EffectOp, EffectPlane, LayerParams, StrokeOp,
+    StrokePosition as PigmentStrokePosition, render_layer_reference,
+};
+
+fn fx_colour(r: f64, g: f64, b: f64) -> Value {
+    json!({"r":r,"g":g,"b":b,"colour_profile_id":null})
+}
+/// A Normal-mode effect instance (blend_mode 2) with the given kind block.
+fn fx_effect(id: &str, opacity: f64, colour: Value, global_light: bool, params: Value) -> Value {
+    json!({"instance_id":id,"enabled":true,"visible_in_editor":true,"blend_mode":2,"opacity":opacity,
+        "colour":colour,"anti_alias":false,"noise":0.0,"angle":0.0,"use_global_light":global_light,
+        "params":params})
+}
+fn fx_stack(effects: Vec<Value>) -> Value {
+    json!({"effect_stack_id":"SEFX-019abcde-0000-7000-8000-000000000001","enabled":true,"scale":100.0,
+        "effects":effects})
+}
+fn fx_shadow(distance: f64, spread: f64, size: f64) -> Value {
+    json!({"effect_kind":"drop_shadow","distance":distance,"spread":spread,"size":size,"layer_knocks_out":false})
+}
+fn fx_stroke(size: f64, position: &str) -> Value {
+    json!({"effect_kind":"stroke","size":size,"position":position,"fill_type":"solid","overprint":false})
+}
+fn fx_records(global_light: Option<f64>, layers: Value) -> StudioRasterRecords {
+    let mut v = json!({"schema_id":"hsk.studio.raster_records@1","document_id":identity("SDOC",1),"layers":layers});
+    if let Some(angle) = global_light {
+        v["global_light"] = json!({"angle":angle,"altitude":30.0});
+    }
+    serde_json::from_value(v).expect("records shape")
+}
+fn plane_with(w: u32, h: u32, covered: &[(u32, u32)], rgb: [f32; 3]) -> EffectPlane {
+    let n = (w * h) as usize;
+    let (mut colours, mut alpha) = (vec![[0.0; 3]; n], vec![0.0; n]);
+    for (x, y) in covered {
+        let i = (y * w + x) as usize;
+        colours[i] = rgb;
+        alpha[i] = 1.0;
+    }
+    EffectPlane::new(w, h, colours, alpha).unwrap()
+}
+fn assert_pixel(plane: &EffectPlane, x: u32, y: u32, rgb: Option<[f32; 3]>, alpha: f32) {
+    let p = plane.pixel(x, y).unwrap();
+    assert_close(p.a, alpha);
+    if let Some(rgb) = rgb {
+        for (got, want) in p.rgb.iter().zip(rgb) {
+            assert_close(*got, want);
+        }
+    }
+}
+fn flow_space(
+    v: &Value,
+    recs: &StudioRasterRecords,
+    space: BlendSpace,
+) -> (EvalReport, Result<ExtendedLowering, CompositeError>) {
+    let snap = open_bytes(&serde_json::to_vec(v).unwrap(), &WithAdjustment);
+    let token = CancellationToken::default();
+    let plan = lower(&snap, 7, space, &Limits::default(), &token).unwrap();
+    let report = evaluate_extended(&plan, &snap, recs, &token).unwrap();
+    let low = lower_to_render_plan_extended(
+        &plan, &report, &snap, recs, &addr(1, "mix", "out"), target(space), &Info,
+    );
+    (report, low)
+}
+
+#[test]
+fn effect_stack_lowers_to_pigment_ops_that_render_as_derived() {
+    bounded_case("effect_stack_lowers_to_pigment_ops_that_render_as_derived", || {
+        // Layer 2: a drop shadow that follows Global Light (180 degrees), distance 2, opacity 50
+        // percent, black. Layer 3: a red colour overlay at 50 percent, then a white stroke of 1 px
+        // outside, both Normal. Percent become fractions; the list order is preserved.
+        let recs = fx_records(
+            Some(180.0),
+            json!([
+                {"layer_id":identity("SLYR",2),"effects":fx_stack(vec![
+                    fx_effect("ds_1", 50.0, fx_colour(0.0,0.0,0.0), true, fx_shadow(2.0, 0.0, 0.0))])},
+                {"layer_id":identity("SLYR",3),"effects":fx_stack(vec![
+                    fx_effect("co_1", 50.0, fx_colour(1.0,0.0,0.0), false, json!({"effect_kind":"colour_overlay"})),
+                    fx_effect("st_1", 100.0, fx_colour(1.0,1.0,1.0), false, fx_stroke(1.0, "outside"))])}]),
+        );
+        let (report, low) = flow_space(&tiled(), &recs, BlendSpace::Encoded);
+        let low = low.unwrap();
+        let normal = StudioBlendMode::Normal;
+        let shadow = EffectOp::DropShadow(DropShadowOp::new([0.0; 3], normal, 0.5).with_offset(180.0, 2.0));
+        let overlay = EffectOp::ColourOverlay(ColourOverlayOp::new([1.0, 0.0, 0.0], normal, 0.5));
+        let stroke = EffectOp::Stroke(StrokeOp::new([1.0; 3], normal, 1.0, 1.0, PigmentStrokePosition::Outside));
+        assert_eq!(
+            low.extensions.layers,
+            vec![
+                LayerExtension::new(PlanNodeId(4), 0).with_effects(vec![shadow]),
+                LayerExtension::new(PlanNodeId(4), 1).with_effects(vec![overlay, stroke]),
+            ]
+        );
+        // The envelope validates, a backend that opts in admits it, and both ledgers list the
+        // effect kinds under pigment's keys and class (Approximate).
+        let token = CancellationToken::default();
+        assert_eq!(
+            low.extensions.validate(&low.plan),
+            Ok(vec![
+                ExtOperator::Effect(hsk_studio_pigment::effect_math::EffectKind::DropShadow),
+                ExtOperator::Effect(hsk_studio_pigment::effect_math::EffectKind::ColourOverlay),
+                ExtOperator::Effect(hsk_studio_pigment::effect_math::EffectKind::Stroke),
+            ])
+        );
+        assert!(admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token).is_ok());
+        for ledger in [&low.exactness, &report.receipt.exactness] {
+            // Wave 1 only: pigment may know more kinds than composite lowers.
+            use hsk_studio_pigment::effect_math::EffectKind;
+            for kind in [EffectKind::DropShadow, EffectKind::ColourOverlay, EffectKind::Stroke] {
+                let op = ExtOperator::Effect(kind);
+                assert!(
+                    ledger.operators.iter().any(|o| o.key == op.key() && o.exactness == op.intrinsic()),
+                    "{} missing from {:?}",
+                    op.key(),
+                    ledger.operators
+                );
+            }
+            assert_eq!(ledger.lowest, Exactness::Approximate);
+        }
+        // A backend without effect support is refused before any sink call, by the effect key.
+        assert_eq!(
+            admit_extended(&low.plan, &low.extensions, &NoClipBackend, &request(), &token),
+            Err(BackendError::Unsupported { operator: "drop_shadow", exactness: Exactness::Unsupported })
+        );
+
+        // Pigment's own reference render of the lowered ops (6 x 3 plane, a 2 x 1 blue bar at
+        // x = 1..2, y = 1). Angle 180 and distance 2 move the matte by (+2, 0): black at alpha 0.5
+        // on x = 3..4, none elsewhere; the bar stays opaque blue.
+        let blue = [0.0, 0.0, 1.0];
+        let bar = plane_with(6, 3, &[(1, 1), (2, 1)], blue);
+        let none = EffectPlane::transparent(6, 3).unwrap();
+        let out = render_layer_reference(&none, &bar, LayerParams::plain(), &low.extensions.layers[0].effects).unwrap();
+        assert_pixel(&out, 1, 1, Some(blue), 1.0);
+        assert_pixel(&out, 2, 1, Some(blue), 1.0);
+        assert_pixel(&out, 3, 1, Some([0.0; 3]), 0.5);
+        assert_pixel(&out, 4, 1, Some([0.0; 3]), 0.5);
+        assert_pixel(&out, 5, 1, None, 0.0);
+        assert_pixel(&out, 0, 1, None, 0.0);
+        assert_pixel(&out, 3, 0, None, 0.0);
+
+        // Red at 50 percent over an opaque blue pixel: (0.5, 0, 0.5), still opaque.
+        let one = plane_with(1, 1, &[(0, 0)], blue);
+        let none = EffectPlane::transparent(1, 1).unwrap();
+        let out = render_layer_reference(&none, &one, LayerParams::plain(), &low.extensions.layers[1].effects[..1]).unwrap();
+        assert_pixel(&out, 0, 0, Some([0.5, 0.0, 0.5]), 1.0);
+
+        // The stroke (1 px outside, white) around a 3 x 3 square at 2..4 of a 7 x 7 plane: the
+        // pixel next to an edge is fully white, two pixels away nothing, the square stays blue.
+        let covered: Vec<(u32, u32)> = (2..5).flat_map(|y| (2..5).map(move |x| (x, y))).collect();
+        let square = plane_with(7, 7, &covered, blue);
+        let none = EffectPlane::transparent(7, 7).unwrap();
+        let out = render_layer_reference(&none, &square, LayerParams::plain(), &low.extensions.layers[1].effects[1..]).unwrap();
+        assert_pixel(&out, 1, 3, Some([1.0; 3]), 1.0);
+        assert_pixel(&out, 5, 3, Some([1.0; 3]), 1.0);
+        assert_pixel(&out, 0, 3, None, 0.0);
+        assert_pixel(&out, 3, 3, Some(blue), 1.0);
+    });
+}
+
+#[test]
+fn effect_refusals_are_typed_and_nothing_is_dropped_or_approximated_silently() {
+    bounded_case("effect_refusals_are_typed_and_nothing_is_dropped_or_approximated_silently", || {
+        // Every case puts the effects on layer 3 of tiled() unless stated and must be refused with
+        // its code by evaluation (the step) and by lowering; the control cases must lower.
+        let on_layer_3 = |effect: Value| {
+            fx_records(None, json!([{"layer_id":identity("SLYR",3),"effects":fx_stack(vec![effect])}]))
+        };
+        let refused = |v: &Value, recs: &StudioRasterRecords, space: BlendSpace, code: &str| {
+            let (_, low) = flow_space(v, recs, space);
+            let reason = unavailable_reason(low);
+            assert!(reason.contains(code), "{code} not in {reason}");
+        };
+        let ok = |v: &Value, recs: &StudioRasterRecords, space: BlendSpace| {
+            flow_space(v, recs, space).1.unwrap_or_else(|e| panic!("expected a lowering, got {e}"))
+        };
+        let black = || fx_colour(0.0, 0.0, 0.0);
+        let overlay = || json!({"effect_kind":"colour_overlay"});
+        let enc = BlendSpace::Encoded;
+        let doc = tiled();
+
+        // Contour: linear (two points, (0,0) and (255,255), or absent) lowers; anything else is refused.
+        let with_contour = |points: Value| {
+            let mut e = fx_effect("e1", 100.0, black(), false, overlay());
+            e["contour"] = json!({"name":"C","points":points});
+            on_layer_3(e)
+        };
+        let linear = json!([{"input":0.0,"output":0.0,"corner":false},{"input":255.0,"output":255.0,"corner":false}]);
+        assert_eq!(ok(&doc, &with_contour(linear), enc).extensions.layers.len(), 1);
+        let bent = json!([{"input":0.0,"output":0.0,"corner":false},{"input":128.0,"output":255.0,"corner":false},
+            {"input":255.0,"output":255.0,"corner":false}]);
+        refused(&doc, &with_contour(bent), enc, "effect_contour");
+        // Noise above zero.
+        let mut noisy = fx_effect("e1", 100.0, black(), false, overlay());
+        noisy["noise"] = json!(10.0);
+        refused(&doc, &on_layer_3(noisy), enc, "effect_noise");
+        // Gradient / pattern stroke fill, and overprint.
+        let mut gradient = fx_stroke(2.0, "outside");
+        gradient["fill_type"] = json!("gradient");
+        gradient["fill"] = json!({"schema_id":"hsk.studio.gradient@1","object_id":"GRAD-1"});
+        refused(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, gradient)), enc, "effect_stroke_fill");
+        let mut overprint = fx_stroke(2.0, "inside");
+        overprint["overprint"] = json!(true);
+        refused(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, overprint)), enc, "effect_stroke_overprint");
+        // Global Light: a drop shadow that follows it needs the record; the others do not use the angle.
+        let follows = on_layer_3(fx_effect("e1", 100.0, black(), true, fx_shadow(2.0, 0.0, 0.0)));
+        refused(&doc, &follows, enc, "effect_global_light_unresolved");
+        let resolved = fx_records(
+            Some(120.0),
+            json!([{"layer_id":identity("SLYR",3),"effects":fx_stack(vec![
+                fx_effect("e1", 100.0, black(), true, fx_shadow(2.0, 0.0, 0.0))])}]),
+        );
+        let low = ok(&doc, &resolved, enc);
+        let EffectOp::DropShadow(s) = low.extensions.layers[0].effects[0] else { panic!("drop shadow") };
+        assert_eq!(s.angle_deg, 120.0);
+        assert!(ok(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), true, overlay())), enc).extensions.layers.len() == 1);
+        // A kind pigment does not render, and stack scale other than 100 percent.
+        let glow = json!({"effect_kind":"outer_glow","technique":"softer","spread":0.0,"size":3.0,"range":50.0,"jitter":0.0});
+        refused(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, glow.clone())), enc, "layer_effects_not_rendered");
+        let mut scaled = on_layer_3(fx_effect("e1", 100.0, black(), false, overlay()));
+        scaled.layers[0].effects.as_mut().unwrap().scale = 150.0;
+        refused(&doc, &scaled, enc, "effect_stack_scale");
+        // A disabled instance (even of an unsupported kind) and a disabled stack render nothing.
+        let mut off = fx_effect("e1", 100.0, black(), false, glow);
+        off["enabled"] = json!(false);
+        assert!(ok(&doc, &on_layer_3(off), enc).extensions.is_empty());
+        let mut disabled = on_layer_3(fx_effect("e1", 100.0, black(), false, overlay()));
+        disabled.layers[0].effects.as_mut().unwrap().enabled = false;
+        assert!(ok(&doc, &disabled, enc).extensions.is_empty());
+        // Colour: another profile is not converted; mid-tones in a linear-light plan are not
+        // decoded (black is the same in every encoding); a missing colour is not invented.
+        let other_profile = json!({"r":0.0,"g":0.0,"b":0.0,"colour_profile_id":identity("SCPF",2)});
+        refused(&doc, &on_layer_3(fx_effect("e1", 100.0, other_profile, false, overlay())), enc, "effect_colour_profile");
+        let same_profile = json!({"r":0.5,"g":0.5,"b":0.5,"colour_profile_id":identity("SCPF",1)});
+        assert_eq!(ok(&doc, &on_layer_3(fx_effect("e1", 100.0, same_profile.clone(), false, overlay())), enc).extensions.layers.len(), 1);
+        refused(&doc, &on_layer_3(fx_effect("e1", 100.0, same_profile, false, overlay())), BlendSpace::LinearLight, "effect_colour_linear_light");
+        assert_eq!(ok(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, overlay())), BlendSpace::LinearLight).extensions.layers.len(), 1);
+        let mut no_colour = fx_effect("e1", 100.0, black(), false, overlay());
+        no_colour["colour"] = json!(null);
+        refused(&doc, &on_layer_3(no_colour), enc, "effect_colour_missing");
+        // A spread above 100 percent is outside pigment's range: refused, not clamped.
+        refused(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, fx_shadow(1.0, 150.0, 4.0))), enc, "effect_parameter");
+
+        // Layer-level: pass-through (the root group's default mode), clipped, clip base, adjustment.
+        let root_fx = fx_records(None, json!([{"layer_id":identity("SLYR",1),"effects":fx_stack(vec![
+            fx_effect("e1", 100.0, black(), false, overlay())])}]));
+        refused(&doc, &root_fx, enc, "effect_on_pass_through");
+        let mut clipped = tiled();
+        clipped["layers"][2]["appearance"] = appearance(100.0, 100.0, 2, false);
+        clipped["layers"][2]["appearance"]["clipped"] = json!(true);
+        refused(&clipped, &on_layer_3(fx_effect("e1", 100.0, black(), false, overlay())), enc, "effect_on_clipped_layer");
+        // Layer 2 with effects is the base of clipped layer 3: refused by evaluation (parent step,
+        // pigment's code in the ledger) and by lowering. Without effects the same run lowers.
+        let base_fx = fx_records(None, json!([{"layer_id":identity("SLYR",2),"effects":fx_stack(vec![
+            fx_effect("e1", 100.0, black(), false, overlay())])}]));
+        let (report, low) = flow_space(&clipped, &base_fx, enc);
+        assert!(unavailable_reason(low).contains("effect_on_clip_base"));
+        assert!(report.receipt.exactness.operators.iter().any(|o| o.key
+            == PlanError::EffectClipRun { node: 0 }.code()
+            && o.exactness == Exactness::Unsupported));
+        assert!(matches!(
+            &report.step(&addr(1, "mix", "out")).unwrap().status,
+            StepStatus::Unavailable(r) if r.starts_with("effect_on_clip_base")
+        ));
+        assert!(ok(&clipped, &fx_records(None, json!([])), enc).extensions.is_empty());
+        // An adjustment layer takes no effects.
+        let adj = fx_records(None, json!([{"layer_id":identity("SLYR",3),"adjustment":{"kind":"invert"},
+            "effects":fx_stack(vec![fx_effect("e1", 100.0, black(), false, overlay())])}]));
+        let run = run_ext(&adjusted(), &adj, true);
+        assert_eq!(
+            run.2.step(&addr(3, "source", "out")).unwrap().status,
+            StepStatus::Unavailable("effect_on_adjustment_layer".into())
+        );
+        assert!(unavailable_reason(lower_ext(&run, &adj)).contains("effect_on_adjustment_layer"));
     });
 }

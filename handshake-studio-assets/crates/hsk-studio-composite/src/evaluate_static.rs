@@ -5,7 +5,10 @@
 //! never faked, skipped or treated as Normal.
 use crate::{
     CompositeError,
-    lower_extensions::{ConvertedAdjustment, LayerFeatures, adjustment_for, is_adjustment_layer},
+    lower_extensions::{
+        ConvertedAdjustment, EffectContext, LayerFeatures, REFUSE_EFFECT_ON_CLIP_BASE,
+        adjustment_for, is_adjustment_layer,
+    },
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step},
 };
 use hsk_studio_accord::CancellationToken;
@@ -312,6 +315,14 @@ fn evaluate_with(
     // Index-aligned with `evals`: the step is an adjustment layer (it has no extent of its own and
     // applies to whatever lies below it, so it is never "empty").
     let mut adjustment_steps: Vec<bool> = Vec::with_capacity(plan.steps.len());
+    // Index-aligned with `evals`: the step is visible and carries rendered effects (such a layer
+    // cannot be the base of a clipping run; pigment refuses it).
+    let mut effects_steps: Vec<bool> = Vec::with_capacity(plan.steps.len());
+    let effect_cx = records.map(|r| EffectContext {
+        global_light: r.global_light.as_ref(),
+        blending: &doc.blending_space,
+        space: plan.blend_space,
+    });
     let mut seen: BTreeMap<&NodeAddr, usize> = BTreeMap::new();
     for step in &plan.steps {
         cancel.check().map_err(|_| CompositeError::Canceled)?;
@@ -333,23 +344,38 @@ fn evaluate_with(
         };
         record_appearance(&mut ledger, step, converted.is_some());
         let mut ext_block: Option<&'static str> = None;
-        if let (Some(recs), Some(l), true) = (records, layer, step.visible()) {
+        let mut step_effects = false;
+        if let (Some(recs), Some(cx), Some(l), true) = (records, effect_cx.as_ref(), layer, step.visible())
+        {
             if let Some(Ok(c)) = &converted {
                 record_ext(&mut ledger, ExtOperator::AdjustmentLayer);
                 record_ext(&mut ledger, ExtOperator::Adjustment(c.op.kind()));
+                for (key, exactness, _) in &c.notes {
+                    ledger.record(key, *exactness);
+                }
                 // Pigment decides what it cannot evaluate (modern brightness/contrast).
                 if matches!(c.op.prepare(), Err(AdjustError::Unsupported(_))) {
                     ledger.record(c.op.kind().key(), Exactness::Unsupported);
                 }
             }
-            let features = LayerFeatures::of(&layers, recs, &l.layer_id);
+            let features = LayerFeatures::of(&layers, recs, cx, &l.layer_id);
             let a = step.appearance();
             for op in features.operators(a.mask && !a.clipped) {
                 record_ext(&mut ledger, op);
             }
-            ext_block = features.refusal();
+            // An effect composites with its own blend mode: pigment's admission asks the backend
+            // for that mode's v1 class, so the ledger lists it under the mode's pigment key.
+            for mode in features.effect_modes() {
+                record_operator(&mut ledger, Operator::Blend(mode));
+            }
+            for (key, exactness, _) in &features.notes {
+                ledger.record(key, *exactness);
+            }
+            ext_block = features.refusal(a, converted.is_some());
+            step_effects = features.has_effects();
         }
         adjustment_steps.push(converted.is_some());
+        effects_steps.push(step_effects);
         let eval = match step {
             Step::Source {
                 addr,
@@ -397,6 +423,8 @@ fn evaluate_with(
                 let mut base_dropped = false;
                 // The current clip base is a visible adjustment layer (pigment refuses it).
                 let mut adjustment_base = false;
+                // The current clip base is a rendered layer with effects (pigment refuses it).
+                let mut effects_base = false;
                 for input in inputs {
                     let Some(&i) = seen.get(input) else {
                         return Err(if all.contains(input) {
@@ -427,6 +455,7 @@ fn evaluate_with(
                         pass_through_base =
                             rendered && plan.steps[i].appearance().mode == StudioBlendMode::PassThrough;
                         adjustment_base = child.visible && adjustment;
+                        effects_base = rendered && effects_steps[i];
                         base_dropped = !child.visible || (child.is_ready_and_empty() && !adjustment);
                     } else if base_dropped {
                         // Dropped with its hidden or empty base: not refused, not unavailable, no
@@ -446,6 +475,16 @@ fn evaluate_with(
                         );
                         blocked.get_or_insert_with(|| {
                             format!("clip_base_adjustment:{}", child.addr.text())
+                        });
+                    } else if effects_base && rendered {
+                        // Pigment: Photoshop's rule for effects inside a clipping group is
+                        // UNVERIFIED, so effects on a clip base are refused for every backend.
+                        ledger.record(
+                            PlanError::EffectClipRun { node: 0 }.code(),
+                            Exactness::Unsupported,
+                        );
+                        blocked.get_or_insert_with(|| {
+                            format!("{REFUSE_EFFECT_ON_CLIP_BASE}:{}", child.addr.text())
                         });
                     }
                     if !child.visible {

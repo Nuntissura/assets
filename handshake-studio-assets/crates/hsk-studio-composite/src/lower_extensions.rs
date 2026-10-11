@@ -10,16 +10,23 @@
 //!
 //! Refusals are codes, never silent drops: `hue_saturation_bands`, `threshold_colours`,
 //! `exposure_use_legacy`, `channel_blend_unsupported`, `layer_effects_not_rendered`.
+use crate::lower_plan::StepAppearance;
 use hsk_studio_folio::{
-    ADJUSTMENT_SCHEMA, Parent, Payload, StudioAdjustment, StudioAdjustmentChannel,
-    StudioAdvancedBlending, StudioBlendChannel, StudioColor, StudioCurve, StudioEffectStack,
-    StudioKnockout, StudioLayer, StudioLevelsRecord, StudioRasterRecords,
+    ADJUSTMENT_SCHEMA, Parent, Payload, ProfileBinding, StrokeFillType,
+    StrokePosition as FolioStrokePosition, StudioAdjustment,
+    StudioAdjustmentChannel, StudioAdvancedBlending, StudioBlendChannel, StudioColor,
+    StudioContour, StudioCurve, StudioEffect, StudioEffectKind, StudioEffectStack,
+    StudioGlobalLight, StudioKnockout, StudioLayer, StudioLevelsRecord, StudioRasterRecords,
 };
 use hsk_studio_pigment::adjust_math::{
     BrightnessContrast, Curves, Exposure, HueSaturation, Levels, LevelsRecord,
 };
-use hsk_studio_pigment::blend_math::{BlendSpace, Exactness};
+use hsk_studio_pigment::blend_math::{BlendSpace, Exactness, StudioBlendMode};
 use hsk_studio_pigment::coverage_math::{BlendChannel, BlendRangeEntry};
+use hsk_studio_pigment::effect_math::{
+    ColourOverlayOp, DropShadowOp, EffectError, EffectOp, MAX_EFFECTS_PER_LAYER, StrokeOp,
+    StrokePosition as PigmentStrokePosition,
+};
 use hsk_studio_pigment::render_plan::{ExtOperator, Knockout};
 use std::collections::BTreeMap;
 
@@ -33,8 +40,40 @@ pub const REFUSE_THRESHOLD_COLOURS: &str = "threshold_colours";
 pub const REFUSE_EXPOSURE_LEGACY: &str = "exposure_use_legacy";
 /// Refusal code: a per-channel blend enablement other than all channels on.
 pub const REFUSE_CHANNEL_BLEND: &str = "channel_blend_unsupported";
-/// Refusal code: an enabled effect stack with at least one enabled instance (effects wave 1 pending).
+/// Refusal code: an enabled effect instance of a kind pigment does not render (effects wave 1 is
+/// drop shadow, colour overlay and solid stroke).
 pub const REFUSE_EFFECTS: &str = "layer_effects_not_rendered";
+/// Refusal code: effect-stack scale other than 100 percent (pigment has no effect scaling).
+pub const REFUSE_EFFECT_SCALE: &str = "effect_stack_scale";
+/// Refusal code: a contour other than the linear one (two points, `(0,0)` and `(255,255)`).
+pub const REFUSE_EFFECT_CONTOUR: &str = "effect_contour";
+/// Refusal code: effect noise above zero.
+pub const REFUSE_EFFECT_NOISE: &str = "effect_noise";
+/// Refusal code: a gradient or pattern stroke fill.
+pub const REFUSE_EFFECT_FILL: &str = "effect_stroke_fill";
+/// Refusal code: stroke overprint.
+pub const REFUSE_EFFECT_OVERPRINT: &str = "effect_stroke_overprint";
+/// Refusal code: a drop shadow that follows Global Light while the records state none.
+pub const REFUSE_EFFECT_GLOBAL_LIGHT: &str = "effect_global_light_unresolved";
+/// Refusal code: an effect without a colour.
+pub const REFUSE_EFFECT_COLOUR: &str = "effect_colour_missing";
+/// Refusal code: an effect colour in a profile other than the document's blending profile.
+pub const REFUSE_EFFECT_COLOUR_PROFILE: &str = "effect_colour_profile";
+/// Refusal code: a mid-tone effect colour in a linear-light plan (its profile transfer would have
+/// to be decoded; black and white are the same in every encoding).
+pub const REFUSE_EFFECT_COLOUR_LINEAR: &str = "effect_colour_linear_light";
+/// Refusal code: an effect blend mode that is not a known layer mode.
+pub const REFUSE_EFFECT_BLEND_MODE: &str = "effect_blend_mode";
+/// Refusal code: an effect parameter outside pigment's declared range.
+pub const REFUSE_EFFECT_PARAMETER: &str = "effect_parameter";
+/// Refusal code: an effect size, distance or count above pigment's limits.
+pub const REFUSE_EFFECT_LIMIT: &str = "effect_limit";
+/// Refusal codes: effects on an adjustment, pass-through or clipped layer, or on the base of a
+/// clipping run (pigment refuses all four).
+pub const REFUSE_EFFECT_ON_ADJUSTMENT: &str = "effect_on_adjustment_layer";
+pub const REFUSE_EFFECT_ON_PASS_THROUGH: &str = "effect_on_pass_through";
+pub const REFUSE_EFFECT_ON_CLIPPED: &str = "effect_on_clipped_layer";
+pub const REFUSE_EFFECT_ON_CLIP_BASE: &str = "effect_on_clip_base";
 /// Refusal code: an adjustment layer whose record is absent.
 pub const REFUSE_ADJUSTMENT_RECORD: &str = "adjustment_record_missing";
 
@@ -42,6 +81,10 @@ pub const REFUSE_ADJUSTMENT_RECORD: &str = "adjustment_record_missing";
 pub const NOTE_CURVE_CORNER_DROPPED: &str = "curves_corner_flag_dropped";
 /// Lowering-report key: exposure linearisation exponent chosen from the plan blend space.
 pub const NOTE_EXPOSURE_LINEARIZE: &str = "exposure_linearize_gamma";
+/// Lowering-report key: drop shadow spread read as a percent of the size (STU-RAS-157 states pixels
+/// for it, but its observed range 0..100 exceeds the observed size range 0..65, and Photoshop's
+/// spread is a percentage; spec gap, UNVERIFIED).
+pub const NOTE_SHADOW_SPREAD_PERCENT: &str = "drop_shadow_spread_percent";
 
 /// One recorded approximation of the lowering (never a silent drop). `exactness` is the class the
 /// approximation costs; the lowering ledger carries it under `key`.
@@ -288,8 +331,153 @@ pub(crate) fn resolve_knockout(
     Knockout::None
 }
 
-fn effects_enabled(s: &StudioEffectStack) -> bool {
-    s.enabled && s.effects.iter().any(|e| e.enabled)
+/// What effect conversion needs besides the stack: the document's Global Light, its blending
+/// profile and the plan's blend space.
+#[derive(Clone, Copy)]
+pub(crate) struct EffectContext<'a> {
+    pub global_light: Option<&'a StudioGlobalLight>,
+    pub blending: &'a ProfileBinding,
+    pub space: BlendSpace,
+}
+
+type Notes = Vec<(&'static str, Exactness, String)>;
+
+fn linear_contour(c: &StudioContour) -> bool {
+    matches!(c.points.as_slice(), [a, b]
+        if a.input == 0.0 && a.output == 0.0 && b.input == 255.0 && b.output == 255.0)
+}
+
+/// The effect colour in plan units. Folio keeps the colour in its own profile's encoding; pigment
+/// takes numbers already in the plan's blend space (STU-COL-163), and composite converts nothing:
+/// a colour in another profile is refused, and in a linear-light plan only black and white (the
+/// same in every encoding) are accepted.
+fn effect_colour(
+    e: &StudioEffect,
+    cx: &EffectContext<'_>,
+) -> Result<[f32; 3], &'static str> {
+    let c = e.colour.as_ref().ok_or(REFUSE_EFFECT_COLOUR)?;
+    if let ProfileBinding::Assigned(p) = &c.colour_profile_id
+        && !matches!(cx.blending, ProfileBinding::Assigned(b) if b == p)
+    {
+        return Err(REFUSE_EFFECT_COLOUR_PROFILE);
+    }
+    let rgb = [c.r as f32, c.g as f32, c.b as f32];
+    if cx.space == BlendSpace::LinearLight && rgb.iter().any(|v| *v != 0.0 && *v != 1.0) {
+        return Err(REFUSE_EFFECT_COLOUR_LINEAR);
+    }
+    Ok(rgb)
+}
+
+fn convert_effect(
+    e: &StudioEffect,
+    cx: &EffectContext<'_>,
+    notes: &mut Notes,
+) -> Result<EffectOp, &'static str> {
+    if e.noise > 0.0 {
+        return Err(REFUSE_EFFECT_NOISE);
+    }
+    if e.contour.as_ref().is_some_and(|c| !linear_contour(c)) {
+        return Err(REFUSE_EFFECT_CONTOUR);
+    }
+    let mode = StudioBlendMode::try_from(e.blend_mode).map_err(|_| REFUSE_EFFECT_BLEND_MODE)?;
+    let opacity = (e.opacity / 100.0) as f32;
+    let op = match &e.params {
+        StudioEffectKind::DropShadow {
+            distance,
+            spread,
+            size,
+            layer_knocks_out,
+        } => {
+            // Global Light is a document-level angle shared by the effects that subscribe to it.
+            let angle = if e.use_global_light {
+                cx.global_light.ok_or(REFUSE_EFFECT_GLOBAL_LIGHT)?.angle
+            } else {
+                e.angle
+            };
+            if *spread > 0.0 {
+                notes.push((
+                    NOTE_SHADOW_SPREAD_PERCENT,
+                    Exactness::Approximate,
+                    format!("{}: spread {spread}", e.instance_id),
+                ));
+            }
+            EffectOp::DropShadow(
+                DropShadowOp::new(effect_colour(e, cx)?, mode, opacity)
+                    .with_offset(angle as f32, *distance as f32)
+                    .with_spread((*spread / 100.0) as f32)
+                    .with_size(*size as f32)
+                    .with_layer_knocks_out(*layer_knocks_out),
+            )
+        }
+        StudioEffectKind::ColourOverlay => {
+            EffectOp::ColourOverlay(ColourOverlayOp::new(effect_colour(e, cx)?, mode, opacity))
+        }
+        StudioEffectKind::Stroke {
+            size,
+            position,
+            fill_type,
+            overprint,
+            ..
+        } => {
+            if *fill_type != StrokeFillType::Solid {
+                return Err(REFUSE_EFFECT_FILL);
+            }
+            if *overprint {
+                return Err(REFUSE_EFFECT_OVERPRINT);
+            }
+            let position = match position {
+                FolioStrokePosition::Inside => PigmentStrokePosition::Inside,
+                FolioStrokePosition::Outside => PigmentStrokePosition::Outside,
+                FolioStrokePosition::Centre => PigmentStrokePosition::Centre,
+            };
+            EffectOp::Stroke(StrokeOp::new(
+                effect_colour(e, cx)?,
+                mode,
+                opacity,
+                *size as f32,
+                position,
+            ))
+        }
+        // Bevel and emboss, inner shadow, glows, satin, gradient and pattern overlay.
+        _ => return Err(REFUSE_EFFECTS),
+    };
+    // Pigment's own parameter and limit judgement, mapped to the code the lowering reports.
+    op.validate().map_err(|err| match err {
+        EffectError::SizeOutOfRange | EffectError::DistanceOutOfRange | EffectError::OverBudget => {
+            REFUSE_EFFECT_LIMIT
+        }
+        EffectError::ModeNotApplicable(_) => REFUSE_EFFECT_BLEND_MODE,
+        _ => REFUSE_EFFECT_PARAMETER,
+    })?;
+    Ok(op)
+}
+
+/// The pigment effect ops of a stack, in list order, or the refusal. A disabled stack and disabled
+/// instances render nothing (an unsupported kind that is disabled is not refused).
+pub(crate) fn convert_effects(
+    stack: &StudioEffectStack,
+    cx: &EffectContext<'_>,
+) -> Result<(Vec<EffectOp>, Notes), &'static str> {
+    let live: Vec<&StudioEffect> = if stack.enabled {
+        stack.effects.iter().filter(|e| e.enabled).collect()
+    } else {
+        Vec::new()
+    };
+    if live.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    if stack.scale != 100.0 {
+        return Err(REFUSE_EFFECT_SCALE);
+    }
+    if live.len() > MAX_EFFECTS_PER_LAYER {
+        return Err(REFUSE_EFFECT_LIMIT);
+    }
+    let mut ops = Vec::with_capacity(live.len());
+    let mut notes = Vec::new();
+    for e in live {
+        ops.push(convert_effect(e, cx, &mut notes)?);
+    }
+    Ok((ops, notes))
 }
 
 /// Mask parameters of a layer as pigment units. Only meaningful when the layer has an enabled
@@ -307,7 +495,10 @@ pub(crate) struct LayerFeatures {
     pub mask: Option<MaskParams>,
     pub blend_if: Vec<BlendRangeEntry>,
     pub knockout: Knockout,
-    effects: bool,
+    /// The converted effect ops in list order, or the refusal code of the stack.
+    pub effects: Result<Vec<EffectOp>, &'static str>,
+    /// Approximations made while converting (effects); adjustments carry their own.
+    pub notes: Notes,
     channel_blend_default: bool,
 }
 
@@ -315,10 +506,18 @@ impl LayerFeatures {
     pub(crate) fn of(
         layers: &BTreeMap<&str, &StudioLayer>,
         records: &StudioRasterRecords,
+        cx: &EffectContext<'_>,
         layer_id: &str,
     ) -> Self {
         let rec = records.layer(layer_id);
         let blending = rec.and_then(|r| r.advanced_blending.as_ref());
+        let (effects, notes) = match rec.and_then(|r| r.effects.as_ref()) {
+            Some(stack) => match convert_effects(stack, cx) {
+                Ok((ops, notes)) => (Ok(ops), notes),
+                Err(code) => (Err(code), Vec::new()),
+            },
+            None => (Ok(Vec::new()), Vec::new()),
+        };
         Self {
             mask: rec.and_then(|r| r.mask.as_ref()).map(|m| MaskParams {
                 density: (m.density / 100.0) as f32,
@@ -327,28 +526,54 @@ impl LayerFeatures {
             }),
             blend_if: blending.map(blend_if).unwrap_or_default(),
             knockout: resolve_knockout(layers, records, layer_id),
-            effects: rec
-                .and_then(|r| r.effects.as_ref())
-                .is_some_and(effects_enabled),
+            effects,
+            notes,
             channel_blend_default: blending
                 .is_none_or(|b| b.channel_blend.red && b.channel_blend.green && b.channel_blend.blue),
         }
     }
 
-    /// The refusal code when the layer uses something the envelope cannot carry.
-    pub(crate) fn refusal(&self) -> Option<&'static str> {
-        if self.effects {
-            Some(REFUSE_EFFECTS)
-        } else if !self.channel_blend_default {
-            Some(REFUSE_CHANNEL_BLEND)
-        } else {
-            None
+    /// Does the layer carry rendered effects (or an effect stack that is refused)?
+    pub(crate) fn has_effects(&self) -> bool {
+        self.effects.as_ref().map_or(true, |ops| !ops.is_empty())
+    }
+
+    /// The effect ops (empty when none or refused; see [`LayerFeatures::refusal`]).
+    pub(crate) fn effect_ops(&self) -> &[EffectOp] {
+        self.effects.as_deref().unwrap_or_default()
+    }
+
+    /// The refusal code when the layer uses something the envelope cannot carry. `appearance` is
+    /// the layer's own (effects need an isolated, unclipped, non-adjustment layer);
+    /// `adjustment`: the layer is an adjustment layer.
+    pub(crate) fn refusal(
+        &self,
+        appearance: &StepAppearance,
+        adjustment: bool,
+    ) -> Option<&'static str> {
+        if !self.channel_blend_default {
+            return Some(REFUSE_CHANNEL_BLEND);
         }
+        if let Err(code) = &self.effects {
+            return Some(code);
+        }
+        if self.has_effects() {
+            if adjustment {
+                return Some(REFUSE_EFFECT_ON_ADJUSTMENT);
+            }
+            if appearance.mode == StudioBlendMode::PassThrough {
+                return Some(REFUSE_EFFECT_ON_PASS_THROUGH);
+            }
+            if appearance.clipped {
+                return Some(REFUSE_EFFECT_ON_CLIPPED);
+            }
+        }
+        None
     }
 
     /// Does the layer change nothing beyond its own appearance?
     pub(crate) fn is_neutral(&self) -> bool {
-        self.blend_if.is_empty() && self.knockout == Knockout::None
+        self.blend_if.is_empty() && self.knockout == Knockout::None && !self.has_effects()
     }
 
     /// Envelope operators this layer uses. `coverage_mask`: the layer carries an enabled coverage
@@ -369,6 +594,24 @@ impl LayerFeatures {
         if self.knockout != Knockout::None {
             ops.push(ExtOperator::Knockout(self.knockout));
         }
+        for op in self.effect_ops() {
+            let e = ExtOperator::Effect(op.kind());
+            if !ops.contains(&e) {
+                ops.push(e);
+            }
+        }
         ops
+    }
+
+    /// The blend modes the effects composite with (pigment's admission asks the backend for each
+    /// mode's v1 class).
+    pub(crate) fn effect_modes(&self) -> Vec<StudioBlendMode> {
+        let mut modes = Vec::new();
+        for op in self.effect_ops() {
+            if !modes.contains(&op.mode()) {
+                modes.push(op.mode());
+            }
+        }
+        modes
     }
 }

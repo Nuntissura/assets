@@ -32,25 +32,31 @@
 //! `diagnostics/adjustments-advanced-blending.md`): the same plan plus a pigment `PlanExtensions`
 //! envelope built from Folio's `StudioRasterRecords`: adjustment layers (a transparent `Solid`
 //! placeholder in the group plus `LayerExtension.adjustment`), mask density / invert / feather,
-//! Blend-If and knockout. The envelope is built with pigment's constructors only; composite adds
-//! no formula and no class. A feature the envelope cannot carry is `Unavailable` (enabled effect
-//! stack, hue bands, threshold colours, channel enablement); knockout and modern
-//! brightness/contrast are carried and refused by pigment's `admit_extended`.
+//! Blend-If, knockout and effects wave 1 (drop shadow, colour overlay, solid stroke ->
+//! `LayerExtension.effects`). The envelope is built with pigment's constructors only; composite
+//! adds no formula and no class. A feature the envelope cannot carry is `Unavailable` (effect
+//! kinds pigment does not render, effects on adjustment / pass-through / clipped / clip-base
+//! layers, non-linear contour, noise, gradient or pattern stroke fill, unresolved Global Light,
+//! effect colours it would have to convert, hue bands, threshold colours, channel enablement);
+//! knockout and modern brightness/contrast are carried and refused by pigment's
+//! `admit_extended`.
 use crate::{
     CompositeError,
     evaluate_static::{EvalReport, StepStatus, tile_rects, union},
     lower_extensions::{
-        AdjustmentOp, LayerFeatures, LoweringNote, adjustment_for, is_adjustment_layer,
+        AdjustmentOp, EffectContext, LayerFeatures, LoweringNote, adjustment_for,
+        is_adjustment_layer,
     },
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step, StepAppearance},
 };
 use hsk_studio_folio::{Parent, Payload, Snapshot, StudioLayer, StudioRasterRecords, TileRef};
 use hsk_studio_pigment::blend_math::{Exactness, ExactnessLedger, StudioBlendMode};
 use hsk_studio_pigment::coverage_math::BlendRangeEntry;
+use hsk_studio_pigment::effect_math::EffectOp;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, ExtOperator, Group, Knockout, Layer, LayerExtension, MaskFormat, MaskInput,
-    OutputTarget, PlanError, PlanExtensions, PlanLimits, PlanNode, PlanNodeId, RenderPlan,
-    SampleFormat, SourceKey, TileInput,
+    Operator, OutputTarget, PlanError, PlanExtensions, PlanLimits, PlanNode, PlanNodeId,
+    RenderPlan, SampleFormat, SourceKey, TileInput,
 };
 use hsk_studio_pigment::Rect;
 use std::collections::{BTreeMap, BTreeSet};
@@ -220,6 +226,7 @@ struct EntryParts {
     blend_if: Vec<BlendRangeEntry>,
     feather_px: f32,
     knockout: Knockout,
+    effects: Vec<EffectOp>,
 }
 
 impl EntryParts {
@@ -239,6 +246,7 @@ impl EntryParts {
                 .filter(|_| coverage_mask)
                 .map_or(0.0, |m| m.feather_px),
             knockout: features.knockout,
+            effects: features.effect_ops().to_vec(),
         })
     }
     fn is_empty(&self) -> bool {
@@ -246,6 +254,7 @@ impl EntryParts {
             && self.blend_if.is_empty()
             && self.feather_px <= 0.0
             && self.knockout == Knockout::None
+            && self.effects.is_empty()
     }
     fn into_extension(self, group: PlanNodeId) -> LayerExtension {
         let mut e = LayerExtension::new(group, self.layer);
@@ -260,6 +269,9 @@ impl EntryParts {
         }
         if self.knockout != Knockout::None {
             e = e.with_knockout(self.knockout);
+        }
+        if !self.effects.is_empty() {
+            e = e.with_effects(self.effects);
         }
         e
     }
@@ -311,6 +323,12 @@ fn record_envelope(
     if render.has_mask_density() {
         record_ext(ledger, ExtOperator::MaskDensity);
     }
+    // An effect composites with its own blend mode; pigment's admission asks the backend for that
+    // mode's v1 class, so the ledger lists it under the mode's pigment key.
+    for mode in extensions.effect_modes() {
+        let op = Operator::Blend(mode);
+        ledger.record(op.key(), op.intrinsic());
+    }
     Ok(())
 }
 
@@ -346,9 +364,17 @@ pub fn lower_to_render_plan(
 /// - Blend-If: `level / 255` ranges `[black_start, black_end, white_start, white_end]`, source
 ///   then destination, per gray/red/green/blue entry; identity entries are dropped.
 /// - Knockout: `Enabled` (and an `Inherited` that resolves to enabled) is `Knockout::Shallow`.
+/// - Effects: the enabled instances of an enabled stack at 100 percent scale, in list order, as
+///   pigment `EffectOp`s (percent / 100; a drop shadow resolves Global Light into its angle;
+///   spread is read as a percent of the size and noted). Drop shadow, colour overlay and a solid
+///   stroke only.
 ///
-/// Fails `Unavailable` for an enabled effect stack (`layer_effects_not_rendered`, effects wave 1
-/// pending), hue bands, threshold colours, exposure `use_legacy`, channel enablement other than
+/// Fails `Unavailable` for an enabled effect of any other kind (`layer_effects_not_rendered`), a
+/// stack scale other than 100, a contour other than linear, noise above zero, a gradient or
+/// pattern or overprint stroke, a drop shadow that follows an absent Global Light, an effect
+/// colour in another profile (or mid-tone in a linear-light plan), effects on an adjustment,
+/// pass-through or clipped layer or on a clip base, hue bands, threshold colours, exposure
+/// `use_legacy`, channel enablement other than
 /// all on, a clipped layer whose base is an adjustment layer, and a visible adjustment layer that
 /// the composition graph does not place in its (rendered) parent group: Folio currently defines no
 /// graph operation for it, so it has no authored stack position and the spec forbids inferring
@@ -533,8 +559,18 @@ fn lower_inner(
         info,
     };
     let mut node_of: BTreeMap<usize, PlanNodeId> = BTreeMap::new();
-    let root_features = records.map(|r| LayerFeatures::of(&layers, r, &root.layer_id));
-    if let Some(reason) = root_features.as_ref().and_then(LayerFeatures::refusal) {
+    let effect_cx = records.map(|r| EffectContext {
+        global_light: r.global_light.as_ref(),
+        blending: &doc.blending_space,
+        space: plan.blend_space,
+    });
+    let root_features = records
+        .zip(effect_cx.as_ref())
+        .map(|(r, cx)| LayerFeatures::of(&layers, r, cx, &root.layer_id));
+    if let Some(reason) = root_features
+        .as_ref()
+        .and_then(|f| f.refusal(plan.steps[root_index].appearance(), false))
+    {
         return Err(CompositeError::Unavailable(format!(
             "{}:{reason}",
             root.layer_id
@@ -635,6 +671,8 @@ fn lower_inner(
                 let mut base_pass_through = false;
                 // Is that base a (visible) adjustment layer (no base alpha to clip to)?
                 let mut base_adjustment = false;
+                // Is that base an emitted layer with effects (pigment refuses it as a base)?
+                let mut base_effects = false;
                 for input in inputs {
                     let child = index[input];
                     let child_visible = plan.steps[child].visible();
@@ -648,6 +686,14 @@ fn lower_inner(
                         node_of.get(&child).map_or(Slot::Empty, |id| Slot::Node(*id))
                     };
                     let present = !matches!(slot, Slot::Empty);
+                    let features = if present {
+                        records
+                            .zip(effect_cx.as_ref())
+                            .zip(child_layer)
+                            .map(|((r, cx), l)| LayerFeatures::of(&layers, r, cx, &l.layer_id))
+                    } else {
+                        None
+                    };
                     if plan.steps[child].appearance().clipped {
                         // Emitted clipped layer on a pass-through base: backends refuse it, and
                         // Photoshop's semantics are UNVERIFIED (oracle pending), so never guess.
@@ -662,6 +708,14 @@ fn lower_inner(
                             return Err(CompositeError::Unavailable(format!(
                                 "{}:clip_base_adjustment",
                                 input.text()
+                            )));
+                        }
+                        // Pigment: effects on the base of a clipping run are refused.
+                        if base_effects && present {
+                            return Err(CompositeError::Unavailable(format!(
+                                "{}:{}",
+                                input.text(),
+                                crate::lower_extensions::REFUSE_EFFECT_ON_CLIP_BASE
                             )));
                         }
                         match base_emitted {
@@ -680,6 +734,7 @@ fn lower_inner(
                         base_pass_through = present
                             && plan.steps[child].appearance().mode == StudioBlendMode::PassThrough;
                         base_adjustment = adjustment && child_visible;
+                        base_effects = features.as_ref().is_some_and(LayerFeatures::has_effects);
                     }
                     let input_id = match slot {
                         Slot::Empty => continue,
@@ -692,12 +747,24 @@ fn lower_inner(
                     let layer = child_layer
                         .ok_or_else(|| CompositeError::DanglingInput(input.text()))?;
                     let child_appearance = plan.steps[child].appearance();
-                    let features = records.map(|r| LayerFeatures::of(&layers, r, &layer.layer_id));
-                    if let Some(reason) = features.as_ref().and_then(LayerFeatures::refusal) {
+                    if let Some(reason) = features
+                        .as_ref()
+                        .and_then(|f| f.refusal(child_appearance, adjustment))
+                    {
                         return Err(CompositeError::Unavailable(format!(
                             "{}:{reason}",
                             layer.layer_id
                         )));
+                    }
+                    if let Some(f) = &features {
+                        for (key, exactness, detail) in &f.notes {
+                            notes.push(LoweringNote {
+                                layer_id: layer.layer_id.clone(),
+                                key,
+                                exactness: *exactness,
+                                detail: detail.clone(),
+                            });
+                        }
                     }
                     let adjustment_op = match (adjustment, records) {
                         (true, Some(r)) => {

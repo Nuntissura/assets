@@ -205,7 +205,7 @@ fn static_closure_no_temporal_provider() {
         let d: Value = serde_json::from_str(DESCRIPTOR).unwrap();
         assert_eq!(d["owner"], "STUDIO-MODULE-COMPOSITE");
         assert_eq!(d["limits"]["case_seconds"], 30);
-        assert_eq!(d["version"], 2);
+        assert_eq!(d["version"], 3);
         assert!(d["model"]["owner_of_blend_maths"].as_str().unwrap().contains("hsk_studio_pigment::blend_math"));
         // CX-CAP-001: composite keeps no second copy of the blend enumeration or maths.
         for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
