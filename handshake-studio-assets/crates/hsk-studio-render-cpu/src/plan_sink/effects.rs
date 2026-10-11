@@ -1,31 +1,40 @@
 //! Layer effects wave 1 (drop shadow, colour overlay, solid stroke) of the CPU backend. The maths is
 //! pigment's single owner `effect_math` (CX-CAP-001): the matte of every effect and the layer
-//! composition order and fade rules come from `render_layer_reference`, which this module calls per
-//! tile; render-cpu keeps no copy of a matte, a distance transform or a composition rule.
+//! composition order and fade rules come from `effect_math::window::render_layer_window`, which
+//! this module calls once per chunk; render-cpu keeps no copy of a matte, a distance transform or a
+//! composition rule.
 //!
 //! Evaluation (class Approximate, Photoshop parity NOT_PROVEN, D5 cases 12-14). A layer with
-//! effects is evaluated per tile `T` of its effect region (the layer content bounds grown by the
-//! effect margin, clipped to the chunk). The tile side is `MAX_REFERENCE_SIDE - 2 * margin` at most
-//! (pigment's reference planes hold 64 pixels per side), so the frame `F = T + margin` is one
-//! reference plane: the content over `F` is evaluated with the chunked compositor itself (layer
-//! content, nested group, mask with feather, density and invert), turned into an `EffectPlane`,
-//! composed over the current backdrop of `T` by `render_layer_reference`, and `T` is written back.
-//! `margin` is `effect_support_px`, the distance the matte at a tile pixel reads, so the matte of
-//! `T` equals the matte of the whole layer (pixels beyond the layer bounds are transparent in both).
+//! effects is evaluated for the window `W` of each chunk: the layer content bounds grown by the
+//! stack margin (`stack_support_px`, the distance any matte of the stack reads), clipped to the
+//! chunk. The geometry is `WindowGeometry::uncut(bounds, margin, W)`, so the result is the matte of
+//! the whole layer, not of a cut plane, for every chunking and thread count. The layer alpha reaches
+//! pigment through [`FrameAlpha`], an `AlphaSource` over a content frame: the layer's shape (content
+//! over `W` grown by the margin and clipped to the layer bounds, including a nested isolated group,
+//! the mask with feather, density and invert) evaluated by the chunked compositor itself. Pigment
+//! asks it for single-row rectangles inside the layer, the window grown by the margin, and
+//! nothing else; a request outside the frame is the typed refusal `effect_source`.
 //!
-//! Limits (typed refusals before the first sink call, see `ExtPrep::build` and `prepare`): an
-//! effect margin above `MAX_EFFECT_MARGIN` (31 px; larger needs a windowed matte API in pigment),
-//! effects together with Blend-If on one layer, and effects inside the content of a layer with
-//! effects. The per-worker frame memory is part of the reserved scratch
-//! (`ExtPrep::frame_scratch_bytes`).
+//! The dissolve blend mode uses plan coordinates with seed 0 (`site_origin` (0, 0)), which equals
+//! `render_layer_reference` on a reference plane placed at the plan origin; the result does not
+//! depend on the chunking (test `parity_with_reference_across_chunkings_and_threads`).
+//!
+//! Resource rules: the largest window's predicted peak bytes (`layer_window_cost`), the two window
+//! input arrays and the frame are part of the reserved scratch (`ExtPrep::frame_scratch_bytes`) and
+//! charged to `max_working_bytes` before the first sink call; pigment checks the prediction against
+//! its limits before it reads or allocates. A window whose predicted work is above
+//! `MAX_EFFECT_WINDOW_WORK` is a typed refusal (test `work_limit_and_hostile_geometry_stay_typed`).
+//! Effects together with Blend-If on one layer, and effects inside the content of a layer with
+//! effects, are typed refusals as well (see `prepare`).
 #![deny(clippy::arithmetic_side_effects)]
-use super::extended::{Frame, Fx, effect_error};
+use super::extended::{Frame, Fx, window_error};
 use super::{Eval, PLayer, PNode, RenderError, mask_value_clamped, tile_at, unsupported};
-use crate::px::{area, end, grow_rect, index_in, intersect, mul_u, offset, overflow, to_i64};
+use crate::px::{area, end, grow_rect, index_in, intersect, overflow};
 use hsk_studio_pigment::Rect;
-use hsk_studio_pigment::effect_math::{
-    EffectOp, EffectPlane, LayerParams, MAX_REFERENCE_SIDE, render_layer_reference,
+use hsk_studio_pigment::effect_math::window::{
+    AlphaSource, WindowError, WindowGeometry, WindowPlane, render_layer_window,
 };
+use hsk_studio_pigment::effect_math::{EffectOp, LayerParams};
 
 /// Fills `content` over `region` (a sub-rectangle of `frame`) from `pixel(x, y)`.
 fn fill_region(
@@ -45,6 +54,45 @@ fn fill_region(
     Ok(())
 }
 
+/// The layer shape alpha (content alpha times the layer mask) over a content frame, read row by
+/// row for pigment's windowed evaluation.
+struct FrameAlpha<'a> {
+    frame: Rect,
+    content: &'a [[f32; 4]],
+}
+
+impl AlphaSource for FrameAlpha<'_> {
+    fn read_alpha(&self, rect: Rect, out: &mut [f32]) -> Result<(), WindowError> {
+        let refused = |_| WindowError::Source;
+        if !self
+            .frame
+            .contains(rect)
+            .map_err(|_| WindowError::Overflow)?
+        {
+            return Err(WindowError::Source);
+        }
+        let width = usize::try_from(rect.width).map_err(|_| WindowError::Overflow)?;
+        let (_, y1) = rect.end().map_err(|_| WindowError::Overflow)?;
+        let mut done = 0_usize;
+        for y in rect.y..y1 {
+            let start = index_in(self.frame, rect.x, y).map_err(refused)?;
+            let stop = start.checked_add(width).ok_or(WindowError::Overflow)?;
+            let next = done.checked_add(width).ok_or(WindowError::Overflow)?;
+            let row = self.content.get(start..stop).ok_or(WindowError::Source)?;
+            let dst = out.get_mut(done..next).ok_or(WindowError::Source)?;
+            for (d, p) in dst.iter_mut().zip(row) {
+                *d = p[3];
+            }
+            done = next;
+        }
+        if done == out.len() {
+            Ok(())
+        } else {
+            Err(WindowError::Source)
+        }
+    }
+}
+
 impl Eval<'_, '_> {
     /// Composes a layer with effects onto `dst` (the running buffer of the chunk `chunk`).
     pub(super) fn effect_layer(
@@ -62,7 +110,10 @@ impl Eval<'_, '_> {
         let Some(bounds) = self.prepared.bounds[layer.input] else {
             return Ok(());
         };
-        let Some(region) = intersect(grow_rect(bounds, effect.margin)?, chunk)? else {
+        if area(bounds)? == 0 {
+            return Ok(());
+        }
+        let Some(window) = intersect(grow_rect(bounds, effect.margin)?, chunk)? else {
             return Ok(());
         };
         // The frame belongs to the chunk-level scratch; inside it there is none, which is how a
@@ -71,11 +122,12 @@ impl Eval<'_, '_> {
             .frame
             .take()
             .ok_or_else(|| unsupported("effects_nested"))?;
-        let outcome = self.effect_tiles(
+        let outcome = self.effect_window(
             layer,
             effect.margin,
             &effect.ops,
-            region,
+            bounds,
+            window,
             chunk,
             dst,
             &mut frame,
@@ -84,119 +136,93 @@ impl Eval<'_, '_> {
         outcome
     }
 
+    /// One window: the content over the frame, `render_layer_window` over the backdrop of the
+    /// window, written back into the running buffer.
     #[allow(clippy::too_many_arguments)]
-    fn effect_tiles(
+    fn effect_window(
         &self,
         layer: &PLayer<'_>,
         margin: usize,
         ops: &[EffectOp],
-        region: Rect,
+        bounds: Rect,
+        window: Rect,
         chunk: Rect,
         dst: &mut [[f32; 4]],
         frame: &mut Frame,
     ) -> Result<(), RenderError> {
-        let plane_side = usize::try_from(MAX_REFERENCE_SIDE).map_err(|_| overflow())?;
-        let side = plane_side
-            .checked_sub(mul_u(margin, 2)?)
-            .ok_or_else(overflow)?
-            .min(frame.tile_cap);
-        if side == 0 {
-            return Err(unsupported("effect_margin"));
-        }
-        let step = to_i64(side)?;
-        let (x1, y1) = end(region)?;
-        let extent = |start: i64, stop: i64| -> Result<u32, RenderError> {
-            stop.checked_sub(start)
-                .map(|n| n.min(step))
-                .and_then(|n| u32::try_from(n).ok())
-                .ok_or_else(overflow)
-        };
-        let mut y = region.y;
-        while y < y1 {
-            let mut x = region.x;
-            while x < x1 {
-                let tile = Rect {
-                    x,
-                    y,
-                    width: extent(x, x1)?,
-                    height: extent(y, y1)?,
-                };
-                self.effect_tile(layer, margin, ops, tile, chunk, dst, frame)?;
-                x = x.checked_add(step).ok_or_else(overflow)?;
-            }
-            y = y.checked_add(step).ok_or_else(overflow)?;
-        }
-        Ok(())
-    }
-
-    /// One tile: content over the frame, `render_layer_reference` over the backdrop, write back.
-    #[allow(clippy::too_many_arguments)]
-    fn effect_tile(
-        &self,
-        layer: &PLayer<'_>,
-        margin: usize,
-        ops: &[EffectOp],
-        tile: Rect,
-        chunk: Rect,
-        dst: &mut [[f32; 4]],
-        frame: &mut Frame,
-    ) -> Result<(), RenderError> {
-        let frame_rect = grow_rect(tile, margin)?;
-        let count = area(frame_rect)?;
         let Frame {
             content,
             spare,
             fx: frame_fx,
-            ..
+            limits,
         } = frame;
+        // The alpha reads of the window stay inside the window grown by the margin and the layer.
+        let frame_rect = intersect(grow_rect(window, margin)?, bounds)?
+            .ok_or_else(|| unsupported("plan_shape"))?;
         let content = content
-            .get_mut(..count)
+            .get_mut(..area(frame_rect)?)
             .ok_or_else(|| unsupported("effect_scratch"))?;
         content.fill([0.0; 4]);
         self.frame_content(layer, frame_rect, content, spare, frame_fx)?;
 
-        let content_plane = EffectPlane::new(
-            frame_rect.width,
-            frame_rect.height,
-            content.iter().map(|p| [p[0], p[1], p[2]]).collect(),
-            content.iter().map(|p| p[3]).collect(),
-        )
-        .map_err(effect_error)?;
-        // The backdrop is the running buffer inside the tile; the margin never reaches the result.
-        let mut rgb = vec![[0.0_f32; 3]; count];
-        let mut alpha = vec![0.0_f32; count];
-        let (tx1, ty1) = end(tile)?;
-        for y in tile.y..ty1 {
-            for x in tile.x..tx1 {
+        let count = area(window)?;
+        let mut content_rgb = vec![[0.0_f32; 3]; count];
+        let mut backdrop_rgb = vec![[0.0_f32; 3]; count];
+        let mut backdrop_alpha = vec![0.0_f32; count];
+        let (wx1, wy1) = end(window)?;
+        let (fx1, fy1) = end(frame_rect)?;
+        let mut at = 0_usize;
+        for y in window.y..wy1 {
+            for x in window.x..wx1 {
                 let d = *dst.get(index_in(chunk, x, y)?).ok_or_else(overflow)?;
-                let at = index_in(frame_rect, x, y)?;
-                *rgb.get_mut(at).ok_or_else(overflow)? = [d[0], d[1], d[2]];
-                *alpha.get_mut(at).ok_or_else(overflow)? = d[3];
+                *backdrop_rgb.get_mut(at).ok_or_else(overflow)? = [d[0], d[1], d[2]];
+                *backdrop_alpha.get_mut(at).ok_or_else(overflow)? = d[3];
+                if x >= frame_rect.x && x < fx1 && y >= frame_rect.y && y < fy1 {
+                    let c = *content
+                        .get(index_in(frame_rect, x, y)?)
+                        .ok_or_else(overflow)?;
+                    *content_rgb.get_mut(at).ok_or_else(overflow)? = [c[0], c[1], c[2]];
+                }
+                at = at.checked_add(1).ok_or_else(overflow)?;
             }
         }
-        let backdrop = EffectPlane::new(frame_rect.width, frame_rect.height, rgb, alpha)
-            .map_err(effect_error)?;
-        let result = render_layer_reference(
+        let backdrop =
+            WindowPlane::new(window, backdrop_rgb, backdrop_alpha).map_err(window_error)?;
+        let geometry = WindowGeometry::uncut(
+            bounds,
+            u32::try_from(margin).map_err(|_| overflow())?,
+            window,
+        )
+        .map_err(window_error)?
+        .with_site_origin((0, 0));
+        let source = FrameAlpha {
+            frame: frame_rect,
+            content,
+        };
+        let result = render_layer_window(
+            &source,
+            &geometry,
+            &content_rgb,
             &backdrop,
-            &content_plane,
             LayerParams {
                 mode: layer.mode,
                 opacity: layer.layer_opacity,
                 fill_opacity: layer.fill_opacity,
             },
             ops,
+            *limits,
         )
-        .map_err(effect_error)?;
-        for y in tile.y..ty1 {
-            for x in tile.x..tx1 {
-                let column = u32::try_from(offset(x, frame_rect.x)?).map_err(|_| overflow())?;
-                let row = u32::try_from(offset(y, frame_rect.y)?).map_err(|_| overflow())?;
-                let p = result
-                    .pixel(column, row)
-                    .ok_or_else(|| unsupported("effect_plane_shape"))?;
+        .map_err(window_error)?;
+        let plane = &result.plane;
+        let mut at = 0_usize;
+        for y in window.y..wy1 {
+            for x in window.x..wx1 {
+                let rgb = plane.rgb().get(at).ok_or_else(overflow)?;
+                let alpha = *plane.alpha().get(at).ok_or_else(overflow)?;
                 // Alpha can round 1 ulp above 1; keep the buffer inside the blend domain.
                 *dst.get_mut(index_in(chunk, x, y)?).ok_or_else(overflow)? =
-                    [p.rgb[0], p.rgb[1], p.rgb[2], p.a.min(1.0)];
+                    [rgb[0], rgb[1], rgb[2], alpha.min(1.0)];
+                at = at.checked_add(1).ok_or_else(overflow)?;
             }
         }
         Ok(())

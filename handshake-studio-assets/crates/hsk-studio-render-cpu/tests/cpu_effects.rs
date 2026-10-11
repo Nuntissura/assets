@@ -1,11 +1,13 @@
 //! Layer effects wave 1 of the CPU backend (drop shadow, colour overlay, solid stroke) through
 //! `RenderBackend::execute_extended`. The matte and the composition order are pigment's
-//! `effect_math`; the backend evaluates them per tile of a frame (tile plus effect margin), so each
-//! test compares the rendered plan with `render_layer_reference` on the whole plane (bit-identical)
-//! and states hand-derived values. Photoshop parity of the effects is NOT_PROVEN (D5 cases 12-14).
+//! `effect_math`; the backend evaluates them per chunk window (`effect_math::window`, see
+//! tests/cpu_window.rs), so each test compares the rendered plan with `render_layer_reference` on
+//! the whole plane (bit-identical) and states hand-derived values. Photoshop parity of the effects
+//! is NOT_PROVEN (D5 cases 12-14).
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::coverage_math::{BlendChannel, BlendRangeEntry, IDENTITY_RANGE};
+use hsk_studio_pigment::effect_math::window::layer_window_cost;
 use hsk_studio_pigment::effect_math::{
     ColourOverlayOp, DropShadowOp, EffectKind, EffectOp, EffectPlane, LayerParams, StrokeOp,
     StrokePosition, render_layer_reference,
@@ -517,12 +519,14 @@ fn effect_refusals_and_scratch_charge_stay_typed() {
             exactness: Exactness::Approximate
         })
     );
-    // A margin above the window pigment's 64-pixel reference planes allow (size 30: sigma 15,
-    // support 45 > 24) is a typed refusal of this backend, not a render.
-    assert_eq!(
-        refused(&basic, &with_effects(&shadow(30.0)), Exactness::Approximate),
-        unsupported("effect_margin")
-    );
+    // Changed with SMB-RENDER-CPU-WINDOW: a margin above the 24 px limit of the 64-pixel reference
+    // planes (size 30: sigma 15, support 45) used to be the typed refusal `effect_margin`; the
+    // windowed evaluation renders it. The shadow of one opaque pixel is the product of two centre
+    // taps of the blur kernel (tests/cpu_window.rs checks the 200 px case against the oracle).
+    let (result, grid) = render(1, 1, &basic, &with_effects(&shadow(30.0)));
+    result.unwrap();
+    assert_eq!(grid.calls, 1);
+    near(grid.at(0, 0), [1.0, 0.0, 0.0, 1.0], 1e-6);
     // Effects and Blend-If on one layer, and effects in the content of a layer with effects.
     let both = envelope(vec![
         one_layer(2, 1)
@@ -560,12 +564,17 @@ fn effect_refusals_and_scratch_charge_stay_typed() {
     result.unwrap();
     near(grid.at(0, 0), [1.0, 0.0, 0.0, 1.0], 1e-6);
 
-    // Charge (hand-derived, one worker, 1 x 1 chunk): v1 scratch 1 * 32; one effect record 64;
-    // a shadow of size 4 has margin ceil(0) + 0 + feather_support(4) = ceil(3 * 2) = 6, so the
-    // frame is (1 + 12)^2 = 169 pixels at 16 * 0 (no group levels) + 64 (content, backdrop and
-    // result planes) + 4 * (1 effect + 12) bytes = 116 per pixel: 19604. Total 32 + 64 + 19604.
-    // One byte less is BudgetExceeded before any sink call.
+    // Charge (hand-derived, one worker, 1 x 1 chunk). Changed with SMB-RENDER-CPU-WINDOW: the old
+    // model charged a (1 + 2 * margin)^2 reference frame (19700 bytes for this case); the windowed
+    // evaluation charges the content frame clipped to the 1 x 1 layer (1 pixel * 16 bytes), the two
+    // window input arrays (1 pixel * 28 bytes) and pigment's predicted peak for a 1 x 1 window
+    // (`layer_window_cost`; the shadow has margin feather_support(4) = 6). Total: v1 scratch 32 +
+    // one effect record 64 + 16 + 28 + peak. One byte less is BudgetExceeded before any sink call.
     let ext = with_effects(&shadow(4.0));
+    let peak = layer_window_cost(&shadow(4.0), rect(0, 0, 1, 1))
+        .unwrap()
+        .peak_bytes;
+    let need = 140_u64.wrapping_add(peak);
     let (result, _) = run_ext(
         &Renderer::new(1).unwrap(),
         &basic,
@@ -574,20 +583,20 @@ fn effect_refusals_and_scratch_charge_stay_typed() {
         1 << 20,
         &no_sources(),
     );
-    assert_eq!(result.unwrap().peak_working_bytes, 19_700);
+    assert_eq!(result.unwrap().peak_working_bytes, need);
     let (result, grid) = run_ext(
         &Renderer::new(1).unwrap(),
         &basic,
         &ext,
         Exactness::Approximate,
-        19_699,
+        need.wrapping_sub(1),
         &no_sources(),
     );
     assert_eq!(
         result,
         Err(BackendError::BudgetExceeded {
-            requested: 19_700,
-            limit: 19_699
+            requested: need,
+            limit: need.wrapping_sub(1)
         })
     );
     assert_eq!(grid.calls, 0);

@@ -25,9 +25,10 @@ use hsk_studio_pigment::coverage_math::{
     BlendRangeEntry, CoverageError, IDENTITY_RANGE, blend_if_weight, feather_kernel,
     feather_support,
 };
-use hsk_studio_pigment::effect_math::{
-    EffectError, EffectOp, MAX_REFERENCE_SIDE, effect_support_px,
+use hsk_studio_pigment::effect_math::window::{
+    WindowBudget, WindowError, WindowLimits, layer_window_cost, stack_support_px,
 };
+use hsk_studio_pigment::effect_math::{EffectError, EffectOp};
 use hsk_studio_pigment::render_plan::{BackendError, PlanExtensions};
 use std::collections::BTreeMap;
 
@@ -40,11 +41,16 @@ const BLEND_ENTRY_BYTES: u64 = 40;
 const SAMPLE_BYTES: u64 = 4;
 /// Resident bytes charged per effect instance (the `EffectOp` record).
 const EFFECT_OP_BYTES: u64 = 64;
-/// Pigment's reference planes have at most `MAX_REFERENCE_SIDE` (64) pixels per side, so a tile and
-/// its margin must fit one plane. The reference recomputes the margin of every tile, so the cost of
-/// a layer grows with `(64 / tile side)^2`; a margin of 24 px keeps tiles of at least 16 px. A
-/// larger margin needs a windowed matte API in pigment and is refused as `effect_margin`.
-pub(super) const MAX_EFFECT_MARGIN: usize = 24;
+/// Bytes the window arrays of one effect call hold next to pigment's own peak: the backdrop plane
+/// (colour 12 + alpha 4 per pixel) and the content colour (12 per pixel).
+const WINDOW_INPUT_BYTES_PER_PIXEL: u64 = 28;
+/// Bytes of one content frame pixel (straight RGBA `f32`).
+const FRAME_PIXEL_BYTES: u64 = 16;
+/// Largest predicted work (inner-loop visits, `window_cost`) of one effect window. Cancel and
+/// deadline are observed between chunks only, so the work of one window is bounded here: a layer
+/// whose largest window is predicted above it is a typed refusal (`effect_work_limit`) before the
+/// first sink call; a smaller chunk size shrinks the window (test `work_limit_and_hostile_geometry_stay_typed`).
+pub const MAX_EFFECT_WINDOW_WORK: u64 = 1_000_000_000;
 
 /// Envelope state of one layer: indices into the tables of [`ExtPrep`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -55,10 +61,13 @@ pub(super) struct LayerFx {
     pub(super) effect: Option<usize>,
 }
 
-/// The effects of one layer (list order) and the margin around its content they read.
+/// The effects of one layer (list order), the margin around its content they read
+/// (`stack_support_px`) and the content bounds (set by `prepare`; `None` until then or when the
+/// content is absent).
 pub(super) struct EffectLayer {
     pub(super) ops: Vec<EffectOp>,
     pub(super) margin: usize,
+    bounds: Option<Rect>,
 }
 
 /// One normalised feather kernel: `2 * support + 1` taps.
@@ -75,9 +84,6 @@ pub(super) struct ExtPrep {
     blend_sets: Vec<Vec<BlendRangeEntry>>,
     kernels: Vec<Kernel>,
     effects: Vec<EffectLayer>,
-    /// Widest effect margin and longest effect list over all layers.
-    max_margin: usize,
-    max_effects: usize,
     /// Deepest isolated-group nesting under an effect layer's content (set by `prepare`).
     pub(super) frame_depth: usize,
     /// Bytes of the tables above, reserved for the whole run.
@@ -117,6 +123,32 @@ pub(super) fn effect_error(error: EffectError) -> RenderError {
         EffectError::OverBudget => unsupported("effect_over_budget"),
         EffectError::Overflow => overflow(),
         EffectError::Blend(e) => blend_error(e),
+        _ => unsupported("effect_parameter"),
+    }
+}
+
+/// Typed mapping of a windowed-evaluation failure: a byte limit is `BudgetExceeded` with pigment's
+/// predicted need, a work limit is the refusal `effect_work_limit`.
+pub(super) fn window_error(error: WindowError) -> RenderError {
+    match error {
+        WindowError::Effect(e) => effect_error(e),
+        WindowError::OverBudget {
+            budget: WindowBudget::Bytes,
+            needed,
+            limit,
+        } => RenderError::Backend(BackendError::BudgetExceeded {
+            requested: needed,
+            limit,
+        }),
+        WindowError::OverBudget { .. } => unsupported("effect_work_limit"),
+        WindowError::Overflow => overflow(),
+        WindowError::AllocationFailed => {
+            RenderError::Backend(BackendError::Unavailable("effect_allocation"))
+        }
+        WindowError::TooManyEffects => unsupported("effect_limit"),
+        WindowError::WindowShape | WindowError::Geometry => unsupported("effect_plane_shape"),
+        WindowError::OutsideDomain => unsupported("effect_window_domain"),
+        WindowError::Source => unsupported("effect_source"),
         _ => unsupported("effect_parameter"),
     }
 }
@@ -176,28 +208,22 @@ impl ExtPrep {
                 prep.blend_sets.push(e.blend_if.clone());
             }
             if !e.effects.is_empty() {
-                // The margin an effect reads around the layer content: pigment's reference planes
-                // hold at most MAX_REFERENCE_SIDE pixels per side, so a tile of the layer plus its
-                // margin must fit one plane.
-                let mut margin = 0_usize;
-                for op in &e.effects {
-                    let support = effect_support_px(op).map_err(effect_error)?;
-                    margin = margin.max(to_usize(u64::from(support))?);
-                }
-                if margin > MAX_EFFECT_MARGIN {
-                    return Err(unsupported("effect_margin"));
-                }
+                // The margin the stack reads around the layer content: the shared domain of a
+                // windowed evaluation (`WindowGeometry::uncut`). Any size is admitted here; the
+                // memory and work of a window are charged and bounded in `frame_shape`.
+                let margin = to_usize(u64::from(
+                    stack_support_px(&e.effects).map_err(effect_error)?,
+                ))?;
                 let bytes = u64::try_from(e.effects.len())
                     .ok()
                     .and_then(|n| n.checked_mul(EFFECT_OP_BYTES))
                     .ok_or_else(overflow)?;
                 prep.charge(bytes, limit)?;
-                prep.max_margin = prep.max_margin.max(margin);
-                prep.max_effects = prep.max_effects.max(e.effects.len());
                 fx.effect = Some(prep.effects.len());
                 prep.effects.push(EffectLayer {
                     ops: e.effects.clone(),
                     margin,
+                    bounds: None,
                 });
             }
             if e.mask_feather_px > 0.0 {
@@ -273,8 +299,10 @@ impl ExtPrep {
     }
 }
 
-/// Sizes of the per-worker effect frame: the working rectangle of one effect tile (the tile plus
-/// the effect margin on every side, at most `MAX_REFERENCE_SIDE` per side).
+/// Sizes of the per-worker effect frame: the layer content over the part of the layer that the
+/// alpha reads of one window can reach (the window grown by the stack margin, clipped to the layer
+/// bounds), the group levels beneath it, the frame's feather scratch, and the transient memory of
+/// one windowed call.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct FrameShape {
     pub(super) pixels: usize,
@@ -283,54 +311,99 @@ pub(super) struct FrameShape {
     /// Feather scratch for the frame (zero without a feathered layer).
     pub(super) fx_plane: usize,
     pub(super) fx_tmp: usize,
-    /// Largest tile side (the chunk side).
-    pub(super) tile_cap: usize,
-    /// Effects per layer (sizes the matte allocations of the reference).
-    pub(super) effects: usize,
+    /// Transient bytes of one window call: the backdrop and content colour arrays plus pigment's
+    /// predicted peak (`layer_window_cost`), largest over the effect layers.
+    pub(super) window_bytes: u64,
+    /// Limits handed to every window call: pigment's predicted peak of the largest window and
+    /// [`MAX_EFFECT_WINDOW_WORK`].
+    pub(super) limits: WindowLimits,
 }
 
 impl ExtPrep {
-    /// The frame shape for chunks of side at most `chunk_side`; `None` without effect layers.
-    pub(super) fn frame_shape(&self, chunk_side: usize) -> Result<Option<FrameShape>, RenderError> {
+    /// Records the content bounds of effect layer `index` (the layer's node bounds, before the
+    /// margin is added); called by `prepare`.
+    pub(super) fn set_effect_bounds(&mut self, index: usize, bounds: Option<Rect>) {
+        if let Some(layer) = self.effects.get_mut(index) {
+            layer.bounds = bounds;
+        }
+    }
+
+    /// The frame shape for chunks of at most `chunk_width x chunk_height`; `None` without effect
+    /// layers. For every effect layer with content the largest window is the chunk clipped to the
+    /// layer grown by its margin; `layer_window_cost` of that window gives pigment's predicted peak
+    /// bytes and work (before any read or allocation). A predicted work above
+    /// [`MAX_EFFECT_WINDOW_WORK`] is the typed refusal `effect_work_limit`.
+    pub(super) fn frame_shape(
+        &self,
+        chunk_width: usize,
+        chunk_height: usize,
+    ) -> Result<Option<FrameShape>, RenderError> {
         if self.effects.is_empty() {
             return Ok(None);
         }
-        let side = add_u(chunk_side, mul_u(self.max_margin, 2)?)?
-            .min(usize::try_from(MAX_REFERENCE_SIDE).map_err(|_| overflow())?);
-        let (fx_plane, fx_tmp) = self.feather_dims(side, side)?;
+        let (mut pixels, mut fx_plane, mut fx_tmp) = (0_usize, 0_usize, 0_usize);
+        let (mut window_bytes, mut peak) = (0_u64, 0_u64);
+        for layer in &self.effects {
+            let Some(bounds) = layer.bounds else {
+                continue;
+            };
+            let (bounds_width, bounds_height) = (width_of(bounds)?, height_of(bounds)?);
+            if bounds_width == 0 || bounds_height == 0 {
+                continue;
+            }
+            let twice = mul_u(layer.margin, 2)?;
+            let window_width = chunk_width.min(add_u(bounds_width, twice)?);
+            let window_height = chunk_height.min(add_u(bounds_height, twice)?);
+            let frame_width = bounds_width.min(add_u(window_width, twice)?);
+            let frame_height = bounds_height.min(add_u(window_height, twice)?);
+            pixels = pixels.max(mul_u(frame_width, frame_height)?);
+            let (plane, tmp) = self.feather_dims(frame_width, frame_height)?;
+            fx_plane = fx_plane.max(plane);
+            fx_tmp = fx_tmp.max(tmp);
+            let window = Rect {
+                x: 0,
+                y: 0,
+                width: u32::try_from(window_width).map_err(|_| overflow())?,
+                height: u32::try_from(window_height).map_err(|_| overflow())?,
+            };
+            let cost = layer_window_cost(&layer.ops, window).map_err(window_error)?;
+            if cost.work > MAX_EFFECT_WINDOW_WORK {
+                return Err(unsupported("effect_work_limit"));
+            }
+            let inputs = u64::try_from(mul_u(window_width, window_height)?)
+                .ok()
+                .and_then(|n| n.checked_mul(WINDOW_INPUT_BYTES_PER_PIXEL))
+                .ok_or_else(overflow)?;
+            window_bytes =
+                window_bytes.max(inputs.checked_add(cost.peak_bytes).ok_or_else(overflow)?);
+            peak = peak.max(cost.peak_bytes);
+        }
         Ok(Some(FrameShape {
-            pixels: mul_u(side, side)?,
+            pixels,
             depth: self.frame_depth,
             fx_plane,
             fx_tmp,
-            tile_cap: chunk_side,
-            effects: self.max_effects,
+            window_bytes,
+            limits: WindowLimits::new(peak, MAX_EFFECT_WINDOW_WORK),
         }))
     }
 
-    /// Upper bound of one worker's effect scratch in bytes: the content frame and its group levels
-    /// (16 bytes per pixel each), the three reference planes (backdrop, content, result: 16 bytes
-    /// per pixel each), the mattes and the reference's temporaries (4 bytes per pixel for each
-    /// effect plus 12), and the frame's feather scratch. An estimate of the allocations of
-    /// `render_layer_reference`, which allocates internally; not a measured value.
+    /// One worker's effect scratch in bytes: the content frame and its group levels (16 bytes per
+    /// pixel each), the frame's feather scratch, and the transient memory of one window call
+    /// (`FrameShape::window_bytes`, pigment's own prediction plus the two input arrays).
     pub(super) fn frame_scratch_bytes(&self, shape: &FrameShape) -> Result<u64, RenderError> {
         let to_u64 = |n: usize| u64::try_from(n).map_err(|_| overflow());
-        let per_pixel = to_u64(shape.depth)?
-            .checked_mul(16)
-            .and_then(|d| d.checked_add(16 + 48))
-            .and_then(|d| {
-                to_u64(shape.effects.checked_add(12)?)
-                    .ok()?
-                    .checked_mul(4)?
-                    .checked_add(d)
-            })
+        let levels = to_u64(shape.depth)?.checked_add(1).ok_or_else(overflow)?;
+        let frame = to_u64(shape.pixels)?
+            .checked_mul(FRAME_PIXEL_BYTES)
+            .and_then(|b| b.checked_mul(levels))
             .ok_or_else(overflow)?;
         let fx = to_u64(add_u(shape.fx_plane, shape.fx_tmp)?)?
             .checked_mul(SAMPLE_BYTES)
             .ok_or_else(overflow)?;
-        to_u64(shape.pixels)?
-            .checked_mul(per_pixel)
-            .and_then(|b| b.checked_add(fx))
+        frame
+            .checked_add(fx)
+            .and_then(|b| b.checked_add(shape.window_bytes))
             .ok_or_else(overflow)
     }
 
@@ -340,7 +413,7 @@ impl ExtPrep {
 }
 
 /// Per-worker feather scratch: the feathered coverage of the layer being composited (chunk-indexed)
-/// and the horizontal-pass buffer. Sized once, charged with the rest of the scratch, never grown.
+/// and the horizontal-pass buffer. Sized once and charged with the rest of the scratch; the length is not changed afterwards.
 /// `frame` is the effect frame (only on the chunk-level scratch of a worker, `None` inside it, so a
 /// layer with effects inside the content of a layer with effects is a typed refusal).
 pub(super) struct Fx {
@@ -348,13 +421,14 @@ pub(super) struct Fx {
     tmp: Vec<f32>,
     pub(super) frame: Option<Box<Frame>>,
 }
-/// Working memory of one effect tile (see `effects.rs`): the layer content over the frame, the
-/// group levels beneath it, and a frame-sized feather scratch for the layer's mask.
+/// Working memory of one effect window (see `effects.rs`): the layer content over the frame, the
+/// group levels beneath it, a frame-sized feather scratch for the layer's mask, and the limits of
+/// the windowed call.
 pub(super) struct Frame {
     pub(super) content: Vec<[f32; 4]>,
     pub(super) spare: Vec<Vec<[f32; 4]>>,
     pub(super) fx: Fx,
-    pub(super) tile_cap: usize,
+    pub(super) limits: WindowLimits,
 }
 impl Fx {
     pub(super) fn new(plane: usize, tmp: usize, frame: Option<FrameShape>) -> Self {
@@ -366,7 +440,7 @@ impl Fx {
                     content: vec![[0.0; 4]; s.pixels],
                     spare: (0..s.depth).map(|_| vec![[0.0; 4]; s.pixels]).collect(),
                     fx: Fx::new(s.fx_plane, s.fx_tmp, None),
-                    tile_cap: s.tile_cap,
+                    limits: s.limits,
                 })
             }),
         }

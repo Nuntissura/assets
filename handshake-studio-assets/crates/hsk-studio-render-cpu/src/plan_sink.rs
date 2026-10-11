@@ -29,6 +29,7 @@ use crate::px::{
     add_u, area, end, grow_rect, index_in, intersect, mul_u, offset, overflow, to_i64, union,
 };
 use crate::vector::VectorSource;
+pub use extended::MAX_EFFECT_WINDOW_WORK;
 use extended::{ExtPrep, FrameShape, Fx, LayerFx, blend_weight, coverage_error};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_nib::PathLimits;
@@ -547,10 +548,15 @@ fn prepare<'a, V: VectorSource>(
                         }
                     }
                     let layer_fx = ext.layer(i, li);
-                    // Layer effects (wave 1): the content is evaluated per tile of a frame (the tile
-                    // plus the effect margin) and composed by pigment's `render_layer_reference`.
+                    // Layer effects (wave 1): the layer is evaluated per chunk window (the content
+                    // bounds grown by the stack margin, clipped to the chunk) and composed by
+                    // pigment's `render_layer_window`.
                     let mut layer_bounds = bounds[input];
-                    if let Some(effect) = layer_fx.effect.and_then(|e| ext.effect(e)) {
+                    if let Some(index) = layer_fx.effect {
+                        let margin = ext
+                            .effect(index)
+                            .map(|e| e.margin)
+                            .ok_or_else(|| unsupported("plan_shape"))?;
                         if layer_fx.blend_if.is_some() {
                             return Err(unsupported("effects_with_blend_if"));
                         }
@@ -558,10 +564,9 @@ fn prepare<'a, V: VectorSource>(
                             return Err(unsupported("effects_nested"));
                         }
                         // The shadow and stroke reach beyond the content bounds by the margin.
-                        layer_bounds = layer_bounds
-                            .map(|b| grow_rect(b, effect.margin))
-                            .transpose()?;
+                        layer_bounds = layer_bounds.map(|b| grow_rect(b, margin)).transpose()?;
                         ext.frame_depth = ext.frame_depth.max(need[input]);
+                        ext.set_effect_bounds(index, bounds[input]);
                     }
                     group_effects |= layer_fx.effect.is_some() || has_effects[input];
                     let mask = match &l.mask {
@@ -1434,7 +1439,7 @@ impl Renderer {
         // horizontal pass with its `feather_support` margin rows) per worker. Zero on the v1 path.
         let (columns, rows) = (side_len(side_x)?, side_len(side_y)?);
         let (fx_plane, fx_tmp) = prepared.ext.feather_dims(columns, rows)?;
-        let frame = prepared.ext.frame_shape(columns.max(rows))?;
+        let frame = prepared.ext.frame_shape(columns, rows)?;
         let frame_bytes = match &frame {
             Some(shape) => prepared.ext.frame_scratch_bytes(shape)?,
             None => 0,
