@@ -17,9 +17,7 @@ use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_chronicle::{
     self as chronicle, Inverse, RevisionEntry, RevisionUpdate, SourceResult,
 };
-use hsk_studio_folio::{
-    self as folio, NodeKind, NodeRef, Payload, Resolver, Snapshot, StudioDocument, Unresolved,
-};
+use hsk_studio_folio::{self as folio, Resolver, Snapshot, StudioDocument, Unresolved};
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_package::{
     Codec, Extras, Limits, LossNote, Manifest, PackageError, PackageReader, PreviewImage,
@@ -480,91 +478,11 @@ fn emit_report(
     }
 }
 
-/// Every chronicle property. Mirrored here because chronicle exports no property table; drift
-/// is caught by `chronicle_property_table_matches_the_session_seed`, and `addressable` below
-/// stops compiling when chronicle or folio gain a property or node kind.
-const PROPERTIES: [chronicle::Property; 2] =
-    [chronicle::Property::Name, chronicle::Property::Visible];
-
-/// Whether chronicle can address `property` on a `kind` node. Exhaustive over node kind x
-/// property on purpose: a new variant on either side is a compile error here, not a silent
-/// fall-through.
-fn addressable(kind: &NodeKind, property: chronicle::Property) -> bool {
-    match (kind, property) {
-        (NodeKind::Layer, chronicle::Property::Name | chronicle::Property::Visible)
-        | (NodeKind::Artboard | NodeKind::PageSpread, chronicle::Property::Name) => true,
-        (NodeKind::Artboard | NodeKind::PageSpread, chronicle::Property::Visible) => false,
-    }
-}
-
-fn seed_revisions(document: &StudioDocument) -> Vec<RevisionEntry> {
-    let mut vector = Vec::new();
-    let mut seed = |node_kind: NodeKind, node_id: &str| {
-        for property in PROPERTIES {
-            if addressable(&node_kind, property) {
-                vector.push(RevisionEntry {
-                    address: chronicle::PropertyAddress {
-                        target: NodeRef {
-                            node_kind: node_kind.clone(),
-                            node_id: node_id.to_owned(),
-                        },
-                        property,
-                    },
-                    revision: 0,
-                });
-            }
-        }
-    };
-    for layer in &document.layers {
-        if !matches!(layer.payload, Payload::Unsupported { .. }) {
-            seed(NodeKind::Layer, &layer.layer_id);
-        }
-    }
-    for artboard in &document.artboards {
-        seed(NodeKind::Artboard, &artboard.artboard_id);
-    }
-    for spread in &document.page_spreads {
-        seed(NodeKind::PageSpread, &spread.page_spread_id);
-    }
-    vector
-}
-
-/// Sets the addressed property to a neutral value so two documents can be compared without it.
-/// False when the address names no such node or property. Exhaustive like `addressable`.
-fn mask_property(document: &mut StudioDocument, address: &chronicle::PropertyAddress) -> bool {
-    let id = address.target.node_id.as_str();
-    match (&address.target.node_kind, address.property) {
-        (&NodeKind::Layer, chronicle::Property::Name) => document
-            .layers
-            .iter_mut()
-            .find(|layer| layer.layer_id == id)
-            .map(|layer| layer.name.clear())
-            .is_some(),
-        (&NodeKind::Layer, chronicle::Property::Visible) => document
-            .layers
-            .iter_mut()
-            .find(|layer| layer.layer_id == id)
-            .map(|layer| layer.visible = false)
-            .is_some(),
-        (&NodeKind::Artboard, chronicle::Property::Name) => document
-            .artboards
-            .iter_mut()
-            .find(|artboard| artboard.artboard_id == id)
-            .map(|artboard| artboard.name.clear())
-            .is_some(),
-        (&NodeKind::PageSpread, chronicle::Property::Name) => document
-            .page_spreads
-            .iter_mut()
-            .find(|spread| spread.page_spread_id == id)
-            .map(|spread| spread.name.clear())
-            .is_some(),
-        (&NodeKind::Artboard | &NodeKind::PageSpread, chronicle::Property::Visible) => false,
-    }
-}
-
 /// True when `successor` is `base` plus new values at exactly the declared `updates` addresses
 /// (and the successor's revision). A provider may have prepared its transaction from some other
-/// copy of the document; nothing else it changed may ride along unrevisioned.
+/// copy of the document; nothing else it changed may ride along unrevisioned. Which properties
+/// exist and how to neutralise them is chronicle's (`mask_property`, `seed_revisions`); this
+/// crate keeps no copy of that table. Test: `session_consumes_the_chronicle_addressability_table`.
 fn derives_from(
     base: &StudioDocument,
     successor: &StudioDocument,
@@ -573,10 +491,10 @@ fn derives_from(
     let mut expected = base.clone();
     let mut actual = successor.clone();
     expected.revision = actual.revision;
-    updates
-        .iter()
-        .all(|u| mask_property(&mut expected, &u.address) && mask_property(&mut actual, &u.address))
-        && expected == actual
+    updates.iter().all(|u| {
+        chronicle::mask_property(&mut expected, &u.address)
+            && chronicle::mask_property(&mut actual, &u.address)
+    }) && expected == actual
 }
 
 fn inherited_codec(manifest: &Manifest) -> Codec {
@@ -684,7 +602,7 @@ impl Session {
                     config,
                     ports,
                     resource,
-                    revisions: seed_revisions(parts.snapshot.document()),
+                    revisions: chronicle::seed_revisions(parts.snapshot.document()),
                     snapshot: parts.snapshot,
                     preview_refs: reader.previews(),
                     source: Mutex::new(reader),
@@ -1470,7 +1388,7 @@ impl Session {
             self.inspect_authority_document(authority_document, authority.revision, cancel)?;
         let revision_before = self.snapshot.document().revision;
         let revision_after = snapshot.document().revision;
-        self.revisions = seed_revisions(snapshot.document());
+        self.revisions = chronicle::seed_revisions(snapshot.document());
         self.snapshot = snapshot;
         self.receipts.remove(key.as_str());
         Ok(DivergenceReport {

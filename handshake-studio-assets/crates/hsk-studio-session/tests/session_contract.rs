@@ -2710,151 +2710,281 @@ fn inconsistent_proposals_are_refused_and_a_zero_deadline_drain_reports_what_it_
     });
 }
 
+/// Independent oracle for the table test: reads a property straight from the document fields.
+fn value_at(document: &folio::StudioDocument, address: &PropertyAddress) -> PropertyValue {
+    let id = address.target.node_id.as_str();
+    match (&address.target.node_kind, address.property) {
+        (NodeKind::Layer, Property::Name) => PropertyValue::String(
+            document
+                .layers
+                .iter()
+                .find(|l| l.layer_id == id)
+                .unwrap()
+                .name
+                .clone(),
+        ),
+        (NodeKind::Layer, Property::Visible) => PropertyValue::Bool(
+            document
+                .layers
+                .iter()
+                .find(|l| l.layer_id == id)
+                .unwrap()
+                .visible,
+        ),
+        (NodeKind::Artboard, Property::Name) => PropertyValue::String(
+            document
+                .artboards
+                .iter()
+                .find(|a| a.artboard_id == id)
+                .unwrap()
+                .name
+                .clone(),
+        ),
+        (NodeKind::PageSpread, Property::Name) => PropertyValue::String(
+            document
+                .page_spreads
+                .iter()
+                .find(|s| s.page_spread_id == id)
+                .unwrap()
+                .name
+                .clone(),
+        ),
+        // Chronicle refuses these pairs before it reads a value; the probe only needs a value of
+        // the property's type.
+        (NodeKind::Artboard | NodeKind::PageSpread, Property::Visible) => PropertyValue::Bool(true),
+    }
+}
+
+/// Writes one property through chronicle against the live snapshot and the session's own revision
+/// vector. With `smuggle` it prepares from a copy of the live snapshot whose artboard was renamed.
+struct ProbePair {
+    address: PropertyAddress,
+    smuggle: bool,
+}
+impl ProposalProvider for ProbePair {
+    fn propose(&self, request: &ProposalRequest<'_>) -> Result<Prepared, ProviderError> {
+        let live = request.snapshot.document();
+        let current = value_at(live, &self.address);
+        let written = match &current {
+            PropertyValue::Bool(v) => PropertyValue::Bool(!v),
+            PropertyValue::String(_) => PropertyValue::String(format!("probe-{}", live.revision)),
+        };
+        let mut base = request.snapshot.clone();
+        if self.smuggle {
+            let mut edited = live.clone();
+            edited.artboards[0].name = "smuggled".into();
+            base = folio::validate_document(
+                edited,
+                request.budget.folio,
+                request.cancel,
+                request.resolver,
+            )
+            .map_err(|_| ProviderError::Rejected("forge_failed"))?;
+        }
+        let revision = request
+            .revisions
+            .iter()
+            .find(|e| e.address == self.address)
+            .map_or(0, |e| e.revision);
+        let patch = Patch {
+            transport_version: 1,
+            document_id: identity("SDOC", 1),
+            base_revision: live.revision,
+            command_id: "probe".into(),
+            correlation_id: 1,
+            actor: patch_actor(),
+            reads: vec![PropertyRead {
+                address: self.address.clone(),
+                expected_revision: revision,
+                expected_value: current,
+            }],
+            writes: vec![PropertyWrite {
+                address: self.address.clone(),
+                value: written,
+            }],
+        };
+        chronicle::prepare(
+            &patch,
+            &base,
+            request.revisions,
+            request.budget,
+            request.cancel,
+            request.resolver,
+        )
+        .map_err(provider_error)
+    }
+}
+
 #[test]
-fn chronicle_property_table_matches_the_session_seed() {
-    bounded_case("chronicle_property_table_matches_session_seed", || {
-        // A document with every node kind chronicle can address, plus a layer it cannot.
-        let mut assets = MemoryAssetSource::new();
-        let digest = assets.insert(BLOB.to_vec());
-        let mut doc = document_json(&digest.digest);
-        let bounds = doc["artboards"][0]["bounds"].clone();
-        doc["page_spreads"] = json!([{"schema_id":"hsk.studio.page_spread@1","page_spread_id":identity("SPGS",1),"name":"spread","parent":null,"bounds":bounds}]);
-        doc["layers"].as_array_mut().unwrap().push(json!({
+fn session_consumes_the_chronicle_addressability_table() {
+    bounded_case(
+        "session_consumes_the_chronicle_addressability_table",
+        || {
+            // A document with every node kind chronicle can address, plus a layer it cannot.
+            let mut assets = MemoryAssetSource::new();
+            let digest = assets.insert(BLOB.to_vec());
+            let mut doc = document_json(&digest.digest);
+            let bounds = doc["artboards"][0]["bounds"].clone();
+            doc["page_spreads"] = json!([{"schema_id":"hsk.studio.page_spread@1","page_spread_id":identity("SPGS",1),"name":"spread","parent":null,"bounds":bounds}]);
+            doc["layers"].as_array_mut().unwrap().push(json!({
             "schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",3),"name":"opaque","parent":null,
             "kind":"vendor-thing","visible":true,
             "payload":{"payload_kind":"unsupported","kind":"vendor-thing","schema_id":"vendor.thing@1","encoded_bytes":[1,2,3],"reason":"preserved"}
         }));
-        let snapshot = match folio::inspect_bytes(
-            &serde_json::to_vec(&doc).unwrap(),
-            folio::Budget::default(),
-            &token(),
-            &Granted,
-        )
-        .unwrap()
-        {
-            folio::Inspection::Editable(s) => s,
-            folio::Inspection::ReadOnly(_) => panic!("fixture became read-only"),
-        };
-        let mut bytes = Vec::new();
-        write_package_with(
-            &snapshot,
-            &assets as &dyn AssetSource,
-            &Extras {
-                quarantined: &[],
-                previews: &[],
-            },
-            &WriteOptions::default(),
-            &Limits::default(),
-            &token(),
-            &mut bytes,
-        )
-        .unwrap();
-        let session = Session::open_bytes(
-            &bytes,
-            SessionConfig::new(actor_context()),
-            ports(&Frames::default()),
-            &token(),
-        )
-        .unwrap();
-        let seeded: Vec<PropertyAddress> = session
-            .revisions()
-            .iter()
-            .map(|e| e.address.clone())
-            .collect();
-
-        // Every (node, property) pair: chronicle itself decides whether it can address it.
-        let nodes: Vec<(NodeKind, String, String, bool)> = doc["layers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|l| {
-                (
-                    NodeKind::Layer,
-                    l["layer_id"].as_str().unwrap().to_owned(),
-                    l["name"].as_str().unwrap().to_owned(),
-                    l["visible"].as_bool().unwrap(),
-                )
-            })
-            .chain([(
-                NodeKind::Artboard,
-                identity("SART", 1),
-                "board".to_owned(),
-                true,
-            )])
-            .chain([(
-                NodeKind::PageSpread,
-                identity("SPGS", 1),
-                "spread".to_owned(),
-                true,
-            )])
-            .collect();
-        let mut every_pair = Vec::new();
-        for (kind, id, _, _) in &nodes {
-            for property in [Property::Name, Property::Visible] {
-                every_pair.push(RevisionEntry {
-                    address: PropertyAddress {
-                        target: NodeRef {
-                            node_kind: kind.clone(),
-                            node_id: id.clone(),
-                        },
-                        property,
-                    },
-                    revision: 0,
-                });
-            }
-        }
-        let mut accepted = 0usize;
-        for entry in &every_pair {
-            let (_, _, name, visible) = nodes
-                .iter()
-                .find(|n| n.1 == entry.address.target.node_id)
-                .unwrap();
-            let (current, written) = match entry.address.property {
-                Property::Name => (
-                    PropertyValue::String(name.clone()),
-                    PropertyValue::String("probe".into()),
-                ),
-                Property::Visible => (PropertyValue::Bool(*visible), PropertyValue::Bool(!visible)),
-            };
-            let patch = Patch {
-                transport_version: 1,
-                document_id: identity("SDOC", 1),
-                base_revision: 7,
-                command_id: "probe".into(),
-                correlation_id: 1,
-                actor: patch_actor(),
-                reads: vec![PropertyRead {
-                    address: entry.address.clone(),
-                    expected_revision: 0,
-                    expected_value: current,
-                }],
-                writes: vec![PropertyWrite {
-                    address: entry.address.clone(),
-                    value: written,
-                }],
-            };
-            // The vector holds only the pair under test: chronicle validates every entry of a
-            // vector it is given, so a vector of all pairs would refuse the unaddressable ones.
-            let verdict = chronicle::prepare(
-                &patch,
-                &snapshot,
-                std::slice::from_ref(entry),
-                chronicle::Budget::default(),
+            let snapshot = match folio::inspect_bytes(
+                &serde_json::to_vec(&doc).unwrap(),
+                folio::Budget::default(),
                 &token(),
                 &Granted,
-            );
-            let chronicle_accepts = verdict.is_ok();
+            )
+            .unwrap()
+            {
+                folio::Inspection::Editable(s) => s,
+                folio::Inspection::ReadOnly(_) => panic!("fixture became read-only"),
+            };
+            let mut bytes = Vec::new();
+            write_package_with(
+                &snapshot,
+                &assets as &dyn AssetSource,
+                &Extras {
+                    quarantined: &[],
+                    previews: &[],
+                },
+                &WriteOptions::default(),
+                &Limits::default(),
+                &token(),
+                &mut bytes,
+            )
+            .unwrap();
+            let mut session = Session::open_bytes(
+                &bytes,
+                SessionConfig::new(actor_context()),
+                ports(&Frames::default()),
+                &token(),
+            )
+            .unwrap();
+
+            // The seed is chronicle's own seed, not a session-side rebuild of it.
             assert_eq!(
-                seeded.contains(&entry.address),
-                chronicle_accepts,
-                "session seed and chronicle disagree on {:?}: {:?}",
-                entry.address,
-                verdict.err()
+                session.revisions(),
+                chronicle::seed_revisions(session.snapshot().document()).as_slice()
             );
-            accepted += usize::from(chronicle_accepts);
-        }
-        // Layers 1 and 2 (name, visible), the artboard and the page spread (name); the
-        // unsupported layer is addressable by neither.
-        assert_eq!((accepted, seeded.len()), (6, 6));
-    });
+
+            // Every (node, property) pair: chronicle's table decides what the session seeds and what
+            // it lets through. An addressable pair commits, a pair chronicle marks non-addressable is
+            // refused by the session with chronicle's code and changes nothing, and the unsupported
+            // layer (addressable by type, not by content) is refused invalid_target.
+            let nodes = [
+                (NodeKind::Layer, identity("SLYR", 1)),
+                (NodeKind::Layer, identity("SLYR", 2)),
+                (NodeKind::Layer, identity("SLYR", 3)),
+                (NodeKind::Artboard, identity("SART", 1)),
+                (NodeKind::PageSpread, identity("SPGS", 1)),
+            ];
+            let unsupported = identity("SLYR", 3);
+            let (mut committed, mut refused, mut probe) = (0u64, 0usize, 0usize);
+            for (kind, node_id) in &nodes {
+                for property in chronicle::PROPERTIES {
+                    let address = PropertyAddress {
+                        target: NodeRef {
+                            node_kind: kind.clone(),
+                            node_id: node_id.clone(),
+                        },
+                        property,
+                    };
+                    let table_says = chronicle::addressable(kind, property);
+                    let expect_commit = table_says && *node_id != unsupported;
+                    assert_eq!(
+                        session.revisions().iter().any(|e| e.address == address),
+                        expect_commit,
+                        "seed disagrees with the chronicle table on {address:?}"
+                    );
+                    let id = format!("test.probe-{probe}");
+                    probe += 1;
+                    session
+                        .providers_mut()
+                        .register(
+                            &id,
+                            Box::new(ProbePair {
+                                address: address.clone(),
+                                smuggle: false,
+                            }),
+                        )
+                        .unwrap();
+                    let (revision, bytes_before, revisions_before) = (
+                        session.document_revision(),
+                        session.snapshot().encoded_bytes().to_vec(),
+                        session.revisions().to_vec(),
+                    );
+                    let verdict = session.submit(&id, b"", revision, &token());
+                    if expect_commit {
+                        let applied = verdict.unwrap_or_else(|e| panic!("{address:?}: {e:?}"));
+                        assert!(applied.changed, "{address:?}");
+                        assert_eq!(applied.revision, revision + 1);
+                        committed += 1;
+                        let entry = session
+                            .revisions()
+                            .iter()
+                            .find(|e| e.address == address)
+                            .unwrap();
+                        assert_eq!(entry.revision, 1, "{address:?}");
+                    } else {
+                        let code = if table_says {
+                            "invalid_target"
+                        } else {
+                            "wrong_type"
+                        };
+                        assert_eq!(
+                            verdict.unwrap_err().error,
+                            SessionError::Provider(code),
+                            "{address:?}"
+                        );
+                        refused += 1;
+                        assert_eq!(session.document_revision(), revision);
+                        assert_eq!(session.snapshot().encoded_bytes(), bytes_before.as_slice());
+                        assert_eq!(session.revisions(), revisions_before.as_slice());
+                    }
+                }
+            }
+            // Layers 1 and 2 (name, visible), the artboard and the page spread (name) commit;
+            // visibility of the artboard and page spread, and both properties of the unsupported
+            // layer, are refused.
+            assert_eq!((committed, refused), (6, 4));
+            assert_eq!(session.document_revision(), 7 + committed);
+
+            // The session derives lineage through chronicle's mask: a successor that carries one more
+            // change than the declared update (here a renamed artboard beside a visibility change) is
+            // not a derivation of the live document, so it is refused before anything is published.
+            let target = PropertyAddress {
+                target: NodeRef {
+                    node_kind: NodeKind::Layer,
+                    node_id: identity("SLYR", 1),
+                },
+                property: Property::Visible,
+            };
+            session
+                .providers_mut()
+                .register(
+                    "test.probe-smuggle",
+                    Box::new(ProbePair {
+                        address: target,
+                        smuggle: true,
+                    }),
+                )
+                .unwrap();
+            let (revision, bytes_before) = (
+                session.document_revision(),
+                session.snapshot().encoded_bytes().to_vec(),
+            );
+            assert_eq!(
+                session
+                    .submit("test.probe-smuggle", b"", revision, &token())
+                    .unwrap_err()
+                    .error,
+                SessionError::ProposalNotDerived
+            );
+            assert_eq!(session.document_revision(), revision);
+            assert_eq!(session.snapshot().encoded_bytes(), bytes_before.as_slice());
+        },
+    );
 }
