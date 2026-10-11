@@ -259,15 +259,15 @@ impl<'a> Lexer<'a> {
         let mut out = Vec::new();
         while self.pos < self.data.len() && is_regular(self.data[self.pos]) {
             let b = self.data[self.pos];
-            if b == b'#' {
-                if let (Some(h), Some(l)) = (
+            if b == b'#'
+                && let (Some(h), Some(l)) = (
                     self.data.get(self.pos + 1).copied().and_then(hex_val),
                     self.data.get(self.pos + 2).copied().and_then(hex_val),
-                ) {
-                    out.push(h * 16 + l);
-                    self.pos += 3;
-                    continue;
-                }
+                )
+            {
+                out.push(h * 16 + l);
+                self.pos += 3;
+                continue;
             }
             out.push(b);
             self.pos += 1;

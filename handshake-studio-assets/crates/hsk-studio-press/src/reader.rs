@@ -336,10 +336,10 @@ pub(crate) fn parse_document(bytes: &[u8], limits: &Limits, cancel: &Cancellatio
             have_trailer = true;
         } else {
             for key in ["Root", "Info", "ID", "Encrypt"] {
-                if trailer.get(key).is_none() {
-                    if let Some(v) = dict.get(key) {
-                        trailer.set(key, v.clone());
-                    }
+                if trailer.get(key).is_none()
+                    && let Some(v) = dict.get(key)
+                {
+                    trailer.set(key, v.clone());
                 }
             }
         }

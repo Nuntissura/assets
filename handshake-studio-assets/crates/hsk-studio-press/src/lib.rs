@@ -3,14 +3,22 @@
 //! live document authority.
 #![forbid(unsafe_code)]
 
+mod content;
 mod error;
 mod filters;
 mod pdf_edit;
 mod reader;
+mod redaction;
+mod sanitized_save;
 mod syntax;
 mod writer;
 
 pub use error::{Limits, PressError, RedactionClass, SinkError};
+pub use redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
+pub use sanitized_save::{
+    PayloadHit, PayloadLocation, PayloadProof, RedactedOutput, SanitizePolicy, SanitizeReport, redact_and_save,
+    sanitize_full_rewrite, verify_payload_absent,
+};
 pub use pdf_edit::{
     AnnotationView, ArtifactSink, EditReceipt, FieldView, Inspection, ObjectModelProposal, PageView, PdfDoc, PdfScalar,
     SaveReceipt, SignatureView, sha256_hex,
