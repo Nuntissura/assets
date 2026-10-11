@@ -7,8 +7,8 @@
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::coverage_math::{BlendChannel, BlendRangeEntry, IDENTITY_RANGE};
 use hsk_studio_pigment::effect_math::{
-    ColourOverlayOp, DropShadowOp, EffectOp, EffectPlane, LayerParams, StrokeOp, StrokePosition,
-    render_layer_reference,
+    ColourOverlayOp, DropShadowOp, EffectKind, EffectOp, EffectPlane, LayerParams, StrokeOp,
+    StrokePosition, render_layer_reference,
 };
 use hsk_studio_pigment::render_plan::*;
 use hsk_studio_render_cpu::Renderer;
@@ -452,6 +452,24 @@ fn effect_stack_matches_reference_for_every_chunking() {
 #[test]
 fn effect_refusals_and_scratch_charge_stay_typed() {
     let one = rect(0, 0, 1, 1);
+    // Capability: the three wave 1 kinds are implemented; any kind pigment added later is refused
+    // at admission until this backend evaluates and tests it.
+    let backend: &dyn RenderBackend = &Renderer::new(1).unwrap();
+    for kind in EffectKind::ALL {
+        let wave1 = matches!(
+            kind,
+            EffectKind::DropShadow | EffectKind::ColourOverlay | EffectKind::Stroke
+        );
+        assert_eq!(
+            backend.extension_exactness(ExtOperator::Effect(kind)),
+            if wave1 {
+                Exactness::Exact
+            } else {
+                Exactness::Unsupported
+            },
+            "{kind:?}"
+        );
+    }
     let refused = |p: &RenderPlan, ext: &PlanExtensions, min: Exactness| {
         let (result, grid) = run_ext(
             &Renderer::new(1).unwrap(),

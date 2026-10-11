@@ -35,6 +35,7 @@ use hsk_studio_nib::PathLimits;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, composite_over};
 use hsk_studio_pigment::coverage_math::mask_coverage;
+use hsk_studio_pigment::effect_math::EffectKind;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, Applicability, BackendError, BackendIdentity, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Layer, MaskFormat, MaskInput, Operator,
@@ -1661,8 +1662,8 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
     }
     /// The envelope operators implement pigment's formulas verbatim (`adjust_math`,
     /// `coverage_math`, `effect_math`), so this backend adds no loss of its own: the receipt class is pigment's
-    /// intrinsic one (Approximate). Knockout and any operator this build does not know are
-    /// Unsupported (typed refusal at admission).
+    /// intrinsic one (Approximate). Knockout, effect kinds beyond wave 1 and any operator this
+    /// build does not know are Unsupported (typed refusal at admission).
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
         match operator {
             ExtOperator::AdjustmentLayer
@@ -1670,7 +1671,10 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
             | ExtOperator::MaskFeather
-            | ExtOperator::Effect(_) => Exactness::Exact,
+            | ExtOperator::Effect(EffectKind::DropShadow)
+            | ExtOperator::Effect(EffectKind::ColourOverlay)
+            | ExtOperator::Effect(EffectKind::Stroke) => Exactness::Exact,
+            // Effect kinds added after wave 1 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }
     }
