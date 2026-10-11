@@ -28,7 +28,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::cmap::{Cmap, parse_to_unicode};
 use crate::content::{Op, parse_content_ext};
-use crate::encoding::{SimpleEncoding, expand_ligatures, is_composite};
+use crate::encoding::{SimpleEncoding, expand_ligatures, is_composite, same_words};
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
 use crate::reader::Entry;
@@ -62,6 +62,9 @@ pub(crate) struct FontCache {
 
 pub(crate) struct Shown {
     pub all: Vec<char>,
+    /// The same text with every operator of two or more strings (a kerned `TJ`) read as one run:
+    /// its bytes joined and every reading joined, no separator between the strings (R8 F2/D2).
+    pub joined: Vec<char>,
     pub mapped: Vec<char>,
     /// Text was drawn with a font whose codes cannot be read (composite without a usable
     /// `/ToUnicode`), or the content could not be followed.
@@ -157,7 +160,9 @@ pub(crate) enum Role {
     /// An annotation appearance, or a form it draws.
     Appearance,
     /// A content stream (form, tiling pattern, Type3 glyph procedure, stream with resources) that no
-    /// page or appearance draws: read with its own resources, never kept text.
+    /// page or appearance draws, read with its own resources; the content of a page object outside the
+    /// page tree, read with that page's resources; any other stream that tokenizes as content, read
+    /// with none. Never kept text; a font name it cannot resolve makes its text opaque.
     Stray,
 }
 
@@ -194,7 +199,18 @@ pub(crate) struct ShowRec {
     /// Index of the operator in its stream's operations.
     pub op: usize,
     pub all: Vec<char>,
+    /// Font readings that differ from the bytes, one space after each string's reading.
     pub mapped: Vec<char>,
+    /// Operator of two or more non-empty strings (a kerned `TJ`): each reading that differs from the
+    /// bytes, joined over all strings with NO separator, as a viewer draws one run (R8 F2/D2; test
+    /// `kerned_tj_runs_are_read_whole_and_kept_text_needs_a_drawn_reading`). Empty otherwise.
+    pub joined: Vec<Vec<char>>,
+    /// The string bytes of such an operator joined (empty for a single string).
+    pub bytes: Vec<u8>,
+    /// Per string of the operator ([`show_strings`] order): its bytes are what the font draws (a simple
+    /// font whose complete encoding reading has the same letters and digits as the bytes). Only such
+    /// bytes may exempt a byte match in kept text (R8 P1).
+    pub raw_drawn: Vec<bool>,
     pub opaque: bool,
 }
 
@@ -302,12 +318,14 @@ impl<'o> Walker<'o> {
         }
     }
 
-    /// A page: its content streams in order, one graphics state across them.
-    pub(crate) fn run_page(&mut self, segments: &[u32], resources: Option<&'o Dict>) -> Result<()> {
+    /// A page: its content streams in order, one graphics state across them. `role` is
+    /// [`Role::Kept`] for a page of the page tree and [`Role::Stray`] for a page object outside it
+    /// ([`pages_outside_tree`]).
+    pub(crate) fn run_page(&mut self, segments: &[u32], resources: Option<&'o Dict>, role: Role) -> Result<()> {
         let mut st = State { font: FontSel::Unset, stack: Vec::new() };
         let mut broken = false;
         for (i, seg) in segments.iter().enumerate() {
-            self.note(*seg, Role::Kept, resources);
+            self.note(*seg, role, resources);
             if broken {
                 // The state after an unreadable stream is unknown: what follows is not checkable.
                 self.unread(Some(*seg), "after_unreadable_stream");
@@ -323,9 +341,21 @@ impl<'o> Walker<'o> {
                 broken = true;
             }
             let mut chain = vec![*seg];
-            self.interp(Some(*seg), &parsed.0, resources, Role::Kept, &mut st, 0, &mut chain)?;
+            self.interp(Some(*seg), &parsed.0, resources, role, &mut st, 0, &mut chain)?;
         }
         Ok(())
+    }
+
+    /// A stream no page, page object, appearance or content role reached (the object-table scan):
+    /// read as stray content when it tokenizes, with no resources, so every font it names is
+    /// unresolved and its text opaque (R8 F1; test
+    /// `partial_tounicode_and_unreachable_pages_are_read_or_opaque`). A stream that does not tokenize is
+    /// not content; its bytes are scanned in every spelling.
+    pub(crate) fn run_unreached(&mut self, num: u32) -> Result<()> {
+        if self.ops_of(num)?.is_none() {
+            return Ok(());
+        }
+        self.run_stream(num, None, Role::Stray)
     }
 
     /// One stream drawn on its own (an appearance, or a stray content stream).
@@ -351,7 +381,7 @@ impl<'o> Walker<'o> {
             self.root_unreadable = true;
             let mut all = latin1(data);
             all.push(' ');
-            self.records.push(ShowRec { stream: None, role, op: 0, all, mapped: Vec::new(), opaque: true });
+            self.records.push(ShowRec { stream: None, role, op: 0, all, mapped: Vec::new(), joined: Vec::new(), bytes: Vec::new(), raw_drawn: Vec::new(), opaque: true });
             return Ok(());
         };
         let mut st = State { font: FontSel::Unset, stack: Vec::new() };
@@ -441,13 +471,33 @@ impl<'o> Walker<'o> {
                     if strs.iter().all(|s| s.is_empty()) {
                         continue;
                     }
-                    let mut rec = ShowRec { stream, role, op: i, all: Vec::new(), mapped: Vec::new(), opaque: false };
+                    // A kerned TJ draws one run: its readings are also matched joined (R8 F2/D2).
+                    let multi = strs.iter().filter(|s| !s.is_empty()).count() > 1;
+                    let mut rec = ShowRec {
+                        stream,
+                        role,
+                        op: i,
+                        all: Vec::new(),
+                        mapped: Vec::new(),
+                        joined: Vec::new(),
+                        bytes: Vec::new(),
+                        raw_drawn: Vec::with_capacity(strs.len()),
+                        opaque: false,
+                    };
+                    let (mut enc_join, mut map_join): (Vec<char>, Vec<char>) = (Vec::new(), Vec::new());
                     for s in strs {
+                        if multi {
+                            rec.bytes.extend_from_slice(s);
+                        }
+                        let mut raw_drawn = false;
                         match &st.font {
                             FontSel::Known(f) => match f.as_ref() {
                                 FontText::Composite { cmap } => {
-                                    let decoded = cmap.decode(s);
+                                    // A code the map does not name is text this walk cannot read.
+                                    let (decoded, complete) = cmap.decode_checked(s);
+                                    rec.opaque |= !complete;
                                     rec.all.extend(decoded.iter().copied());
+                                    map_join.extend(decoded.iter().copied());
                                     rec.mapped.extend(decoded);
                                     rec.mapped.push(' ');
                                 }
@@ -462,10 +512,16 @@ impl<'o> Walker<'o> {
                                     let raw = latin1(s);
                                     let read = enc.read(s, cmap.as_ref());
                                     rec.opaque |= read.opaque;
+                                    raw_drawn = !read.opaque && same_words(&read.text, &raw);
+                                    enc_join.extend(read.text.iter().copied());
                                     let mut readings: Vec<Vec<char>> = Vec::new();
                                     readings.extend(expand_ligatures(&read.text));
                                     readings.push(read.text);
-                                    readings.extend(cmap.as_ref().map(|c| c.decode(s)));
+                                    if let Some(c) = cmap.as_ref() {
+                                        let d = c.decode(s);
+                                        map_join.extend(d.iter().copied());
+                                        readings.push(d);
+                                    }
                                     for reading in readings.into_iter().filter(|r| !r.is_empty() && *r != raw) {
                                         rec.all.extend(reading.iter().copied());
                                         rec.all.push(' ');
@@ -475,16 +531,27 @@ impl<'o> Walker<'o> {
                                     rec.all.extend(raw);
                                 }
                             },
-                            // Page content naming a font its resources do not hold: what a viewer
-                            // substitutes is unknown, so the text cannot be checked. Appearance
-                            // streams fall back to /DR first (see `font_named`) and then to a viewer
-                            // default font (single-byte codes, the byte scan); a stray stream has no
-                            // drawing context, its bytes are judged as bytes.
+                            // A font name the resources do not hold: what a viewer substitutes is
+                            // unknown, so page content and stray content (page objects outside the
+                            // page tree, streams nothing draws: no drawing context to fall back on) are
+                            // opaque (R8 F1). Appearance streams fall back to /DR first (see
+                            // `font_named`) and then to a viewer default font (single-byte codes, the
+                            // byte scan).
                             FontSel::Unresolved => {
-                                rec.opaque |= role == Role::Kept && !s.is_empty();
+                                rec.opaque |= matches!(role, Role::Kept | Role::Stray) && !s.is_empty();
                                 rec.all.extend(latin1(s));
                             }
                             FontSel::Unset => rec.all.extend(latin1(s)),
+                        }
+                        rec.raw_drawn.push(raw_drawn);
+                    }
+                    if multi {
+                        let raw = latin1(&rec.bytes);
+                        let lig = expand_ligatures(&enc_join);
+                        for reading in [Some(enc_join), lig, Some(map_join)].into_iter().flatten() {
+                            if !reading.is_empty() && reading != raw && !rec.joined.contains(&reading) {
+                                rec.joined.push(reading);
+                            }
                         }
                     }
                     rec.all.push(' ');
@@ -546,9 +613,19 @@ impl<'o> Walker<'o> {
 
     /// Records joined into one [`Shown`] (the text-field view of an appearance).
     pub(crate) fn shown(&self) -> Shown {
-        let mut shown = Shown { all: Vec::new(), mapped: Vec::new(), opaque: self.root_unreadable || !self.unreadable.is_empty() };
+        let mut shown = Shown { all: Vec::new(), joined: Vec::new(), mapped: Vec::new(), opaque: self.root_unreadable || !self.unreadable.is_empty() };
         for r in &self.records {
             shown.all.extend(r.all.iter().copied());
+            if r.bytes.is_empty() {
+                shown.joined.extend(r.all.iter().copied());
+            } else {
+                shown.joined.extend(latin1(&r.bytes));
+                shown.joined.push(' ');
+                for j in &r.joined {
+                    shown.joined.extend(j.iter().copied());
+                    shown.joined.push(' ');
+                }
+            }
             shown.mapped.extend(r.mapped.iter().copied());
             shown.opaque |= r.opaque;
         }
@@ -606,8 +683,40 @@ pub(crate) fn inherited_resources<'a>(objs: &'a Objs, page: &'a Dict) -> Option<
 /// Page-tree depth the page walk follows.
 const PAGE_TREE_DEPTH: usize = 64;
 
-/// Every page reached from `/Root /Pages`: `(content stream numbers in order, resources)`.
-pub(crate) fn pages<'a>(objs: &'a Objs, trailer: &'a Dict) -> Vec<(Vec<u32>, Option<&'a Dict>)> {
+/// The content streams a page dictionary draws, in order: `/Contents` as one stream, or an array of
+/// stream references (`None`: no content stream, e.g. an annotation whose `/Contents` is a string).
+fn content_streams_of(objs: &Objs, d: &Dict) -> Option<Vec<u32>> {
+    let refs = |a: &[Object]| -> Vec<u32> { a.iter().filter_map(Object::as_ref).map(|x| x.num).collect() };
+    let segments = match d.get("Contents")? {
+        Object::Ref(rf) => match objs.get(&rf.num).map(|x| &x.obj) {
+            Some(Object::Array(a)) => refs(a),
+            Some(Object::Stream(_)) => vec![rf.num],
+            _ => return None,
+        },
+        Object::Array(a) => refs(a),
+        _ => return None,
+    };
+    segments.iter().any(|n| matches!(objs.get(n).map(|e| &e.obj), Some(Object::Stream(_)))).then_some(segments)
+}
+
+/// Page objects OUTSIDE the page tree (object-table scan, R8 F1): every indirect dictionary that is
+/// not a page reached from `/Root /Pages` and whose `/Contents` is a content stream (or an array of
+/// them), such as a template page under `/Names /Templates` (ISO 32000-2 12.7.6) or a page reached only
+/// through a destination, `/OpenAction` or an annotation `/P`: `(content streams, inherited
+/// resources)`. Read as stray content (never kept text; test
+/// `partial_tounicode_and_unreachable_pages_are_read_or_opaque`).
+pub(crate) fn pages_outside_tree<'a>(objs: &'a Objs, tree: &BTreeSet<u32>) -> Vec<(Vec<u32>, Option<&'a Dict>)> {
+    objs.iter()
+        .filter(|(n, _)| !tree.contains(n))
+        .filter_map(|(_, e)| {
+            let d = e.obj.as_dict()?;
+            Some((content_streams_of(objs, d)?, inherited_resources(objs, d)))
+        })
+        .collect()
+}
+
+/// Every page reached from `/Root /Pages`: `(page object, content stream numbers in order, resources)`.
+pub(crate) fn pages<'a>(objs: &'a Objs, trailer: &'a Dict) -> Vec<(u32, Vec<u32>, Option<&'a Dict>)> {
     let mut out = Vec::new();
     let Some(root) = trailer.get("Root").map(|r| res(objs, r)).and_then(Object::as_dict).and_then(|c| c.get("Pages")).and_then(Object::as_ref)
     else {
@@ -633,7 +742,7 @@ pub(crate) fn pages<'a>(objs: &'a Objs, trailer: &'a Dict) -> Vec<(Vec<u32>, Opt
             Some(Object::Array(a)) => a.iter().filter_map(Object::as_ref).map(|x| x.num).collect(),
             _ => Vec::new(),
         };
-        out.push((segments, inherited_resources(objs, d)));
+        out.push((n, segments, inherited_resources(objs, d)));
     }
     out
 }

@@ -1764,7 +1764,9 @@ fn hostile_decoder_bounds_dims_and_aggregate() {
         ("range 0..u32::MAX", b"1 beginbfrange <00000000> <FFFFFFFF> <0041> endbfrange".to_vec(), 1),
         ("five-byte code", b"1 beginbfchar <0000000001> <0041> endbfchar".to_vec(), 1),
         ("entry cap", five_ranges.into_bytes(), 1),
-        ("u32 edge, valid", b"1 beginbfrange <FFFFFFFE> <FFFFFFFF> <FFFF> endbfrange".to_vec(), 0),
+        // The map also names the drawn code 0001: since R8 a code the map does not name is opaque
+        // text (Cmap::decode_checked), so the valid edge range sits beside a mapping for what is shown.
+        ("u32 edge, valid", b"1 beginbfchar <0001> <0041> endbfchar 1 beginbfrange <FFFFFFFE> <FFFFFFFF> <FFFF> endbfrange".to_vec(), 0),
     ];
     for (what, map, unverifiable) in maps {
         let mut doc = open(&ap_doc(&map, None));
@@ -2299,8 +2301,14 @@ fn stray_streams_and_hidden_payloads_are_not_kept_text() {
             out.proof.hits
         );
         assert!(!out.is_proven() && out.not_proven_reasons().contains(&NotProven::Leak), "{dict}");
-        assert!(out.region_cleared(), "the in-region instance itself is gone: {dict}");
+        // R8 F1 (lead decision 11:58Z): stray content without resources cannot resolve /F1, so its
+        // text is opaque and the region claim is withheld too.
+        assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText) && !out.region_cleared(), "{dict}: {:?}", out.not_proven_reasons());
     }
+    // With its own resources the stray form's font resolves: a leak, and the in-region instance itself is gone.
+    let out = run(&stray(stream_body("/Filter /FlateDecode /Subtype /Form /BBox [0 0 9 9] /Resources << /Font << /F1 6 0 R >> >>", &body)));
+    assert_eq!(out.not_proven_reasons(), vec![NotProven::Leak]);
+    assert!(out.region_cleared(), "the in-region instance itself is gone");
 
     // A form drawn from the page's resources stays kept text: the same word there is a collision.
     let mut objs = base_objs(format!("{page}\nq 1 0 0 1 0 0 cm /Fm1 Do Q").as_bytes(), "<< /Title (T) >>");
@@ -2911,8 +2919,18 @@ fn unmappable_glyph_names_and_encodingless_fonts_are_opaque() {
             .into_bytes()
     };
     let glyph = (33, stream_body("", b"600 0 0 0 600 600 d1 0 0 600 600 re f"));
-    opaque("Type 3, unmappable names", doc_with(type3("/g1 /g2"), vec![glyph.clone()], &show("<0102>")));
-    let read = proven("Type 3, readable names", doc_with(type3(DIFF_NAMES), vec![glyph.clone()], &show(DIFF_CODES)));
+    // Since R8 F4 (lead decision 11:58Z) Type 3 text on the page makes a region not computable
+    // (RegionIncomplete, RedactionClass::Type3Text), so these run with ReportAndContinue; the reading
+    // of the Type 3 text is what this test checks.
+    let type3_run = |pdf: Vec<u8>| {
+        let mut doc = open(&pdf);
+        redact_and_save(&mut doc, &[R7_REGION], UnsupportedPolicy::ReportAndContinue, &token()).unwrap()
+    };
+    let out = type3_run(doc_with(type3("/g1 /g2"), vec![glyph.clone()], &show("<0102>")));
+    assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText) && out.proof.opaque_text_streams.len() == 1, "Type 3, unmappable names: {:?}", out.not_proven_reasons());
+    let read = type3_run(doc_with(type3(DIFF_NAMES), vec![glyph.clone()], &show(DIFF_CODES)));
+    assert_eq!(read.reports[0].unredacted, vec![RedactionClass::Type3Text]);
+    assert!(!read.not_proven_reasons().contains(&NotProven::OpaqueText) && read.proof.hits.is_empty(), "Type 3, readable names: {:?}", read.not_proven_reasons());
     assert_eq!(read.proof.kept_text_collisions.len(), 1, "the Type 3 text is read: the kept instance is a collision, not invisible");
 }
 

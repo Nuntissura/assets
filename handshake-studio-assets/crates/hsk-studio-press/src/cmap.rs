@@ -240,7 +240,16 @@ impl Cmap {
 
     /// Text of a show-operator string; codes without a mapping are skipped.
     pub(crate) fn decode(&self, s: &[u8]) -> Vec<char> {
+        self.decode_checked(s).0
+    }
+
+    /// [`Cmap::decode`] and whether every code of `s` had a mapping. `false`: a code the map does not
+    /// name (or a trailing partial code) was skipped, so the text a viewer draws is not completely
+    /// read; the content walk makes such composite text opaque and the redaction selector marks such a
+    /// removed string unreadable (test `partial_tounicode_and_unreachable_pages_are_read_or_opaque`).
+    pub(crate) fn decode_checked(&self, s: &[u8]) -> (Vec<char>, bool) {
         let mut out = Vec::new();
+        let mut complete = true;
         let mut pos = 0usize;
         while pos < s.len() {
             let mut step = None;
@@ -252,8 +261,9 @@ impl Cmap {
                     break;
                 }
             }
+            complete &= step.is_some();
             pos = pos.saturating_add(step.unwrap_or_else(|| self.lens.first().copied().unwrap_or(1).max(1)));
         }
-        out
+        (out, complete)
     }
 }

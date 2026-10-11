@@ -328,10 +328,17 @@ fn is_pua(c: char) -> bool {
 /// Adobe Glyph List specification, "Mapping glyph names to Unicode": drop everything from the first
 /// period, split at underscores, map each component through the list, `uniXXXX...` or `uXXXX[XX]`.
 /// A component that maps to nothing (or only to a Private Use Area character) makes the glyph unknown.
+/// Only the exact name `.notdef` draws no text (ISO 32000-2 9.6.5); any other name whose stem has no
+/// component (`/.s1`, `/.A`, `/_`, `/__`, the empty name) names a glyph the font program draws, which
+/// this reading cannot turn into text: unknown, so the text is opaque (R8 D1; unit test
+/// `glyph_names_follow_the_agl_specification`, test `unmappable_glyph_names_and_encodingless_fonts_are_opaque`).
 fn glyph_text(name: &[u8]) -> Glyph {
     let Ok(name) = std::str::from_utf8(name) else { return Glyph::Unknown };
     if name.len() > MAX_GLYPH_NAME {
         return Glyph::Unknown;
+    }
+    if name == ".notdef" {
+        return Glyph::Blank;
     }
     let stem = name.split('.').next().unwrap_or_default();
     let mut text = String::new();
@@ -341,7 +348,7 @@ fn glyph_text(name: &[u8]) -> Glyph {
             _ => return Glyph::Unknown,
         }
     }
-    if text.is_empty() { Glyph::Blank } else { Glyph::Text(text) }
+    if text.is_empty() { Glyph::Unknown } else { Glyph::Text(text) }
 }
 
 fn component_text(c: &str) -> Option<String> {
@@ -429,10 +436,15 @@ mod tests {
         assert_eq!(t("uniE000"), None, "a Private Use Area character is not text");
         assert_eq!(t("Asmall"), None);
         for unknown in ["g123", "G12", "uni004", "uni0041zzzz", "Uni0041", "u41", "u0000041", "cid12", ""] {
-            assert!(matches!(glyph_text(unknown.as_bytes()), Glyph::Unknown | Glyph::Blank), "{unknown}");
+            assert!(matches!(glyph_text(unknown.as_bytes()), Glyph::Unknown), "{unknown}");
             assert!(t(unknown).is_none(), "{unknown}");
         }
+        // R8 D1: only `.notdef` draws nothing; an empty stem is a glyph this reading cannot name.
         assert!(matches!(glyph_text(b".notdef"), Glyph::Blank));
+        for empty_stem in [".s1", ".A", "_", "__", ".notdef.alt", "._"] {
+            assert!(matches!(glyph_text(empty_stem.as_bytes()), Glyph::Unknown), "{empty_stem}");
+            assert_eq!(glyph_slot(empty_stem.as_bytes()), Slot::Unknown, "{empty_stem}");
+        }
         assert!(matches!(glyph_text(&[0xFF, 0xFE]), Glyph::Unknown));
         assert!(matches!(glyph_text(&[b'A'; 200]), Glyph::Unknown), "name length bound");
         assert_eq!(glyph_slot(b"nbspace"), Slot::Char(' '));

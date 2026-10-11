@@ -71,6 +71,14 @@ pub enum RedactionClass {
     FormXObject,
     Shading,
     InlineImage,
+    /// Type 3 text anywhere on the page: its glyph advances go through `/FontMatrix` and its glyph
+    /// procedures may draw outside the conservative box, which this selector does not compute, so a
+    /// region cannot be proven clear (lead decision 2026-10-11T11:58:11Z, R8 F4/D4; geometry is lane
+    /// SMB-PRESS-GEOMETRY; test `type3_and_vertical_text_never_read_as_cleared`).
+    Type3Text,
+    /// Vertical writing anywhere on the page (a composite font with `/Identity-V`, another `-V`
+    /// CMap or `/WMode 1`): glyphs advance down the page, not along x (same decision and test).
+    VerticalText,
 }
 
 impl RedactionClass {
@@ -81,6 +89,8 @@ impl RedactionClass {
             Self::FormXObject => "form_xobject",
             Self::Shading => "shading",
             Self::InlineImage => "inline_image",
+            Self::Type3Text => "type3_text",
+            Self::VerticalText => "vertical_text",
         }
     }
 }

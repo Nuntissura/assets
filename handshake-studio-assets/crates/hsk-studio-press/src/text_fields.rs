@@ -819,7 +819,8 @@ impl Ctx<'_> {
     }
 
     /// `(matches in appearance text, some appearance could not be read)`. Text is read through each
-    /// font's `/ToUnicode` map where there is one.
+    /// font's encoding and `/ToUnicode` map, per string and with each kerned `TJ` read as one run
+    /// (the larger of the two counts; R8 F2/D2).
     fn appearance_scan(&mut self, objs: &Objs, d: &Dict) -> Result<(u32, bool)> {
         let (mut matches, mut undecodable) = (0u32, false);
         for n in appearance_streams_of(objs, d) {
@@ -830,7 +831,8 @@ impl Ctx<'_> {
                     let resources = st.dict.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict);
                     let shown = show_text(objs, resources, &data, self.limits, &mut self.budget, &mut self.fonts)?;
                     undecodable |= shown.opaque;
-                    matches = matches.saturating_add(count_u32(self.matcher.find(&shown.all).len()));
+                    let found = self.matcher.find(&shown.all).len().max(self.matcher.find(&shown.joined).len());
+                    matches = matches.saturating_add(count_u32(found));
                 }
             }
         }
