@@ -33,6 +33,10 @@ use crate::coverage_math::{feather_kernel, feather_support};
 use serde::Serialize;
 use std::fmt;
 
+/// Windowed evaluation of the matte and the layer composition for an output window of an
+/// arbitrarily large layer (bit-identical to the reference below; see the module doc there).
+pub mod window;
+
 /// Class of every effect operator in this module (see module doc).
 pub const EFFECT_EXACTNESS: Exactness = Exactness::Approximate;
 /// Largest blur size, spread distance or stroke size in pixels. STU-RAS-157 declares no hard maximum
