@@ -3287,11 +3287,19 @@ fn empty_stem_glyph_names_are_opaque() {
 }
 
 // --------------------------------- R9 pre-review remediation (POSITIVE DETERMINATION)
-// Lead decision 2026-10-11T13:10:26Z, validation/R9-prereview-press.json R9-F1..F3, R9-P1, R9-P2.
-// Lines marked R9-new-api use API added by this remediation; the red run on 49731a5 drops only those
-// lines, and every test there fails on an API-stable assertion before them.
+// Lead decision 2026-10-11T13:10:26Z, validation/R9-prereview-press.json R9-F1..F3, R9-P1, R9-P2: one
+// test per sub-case the lead listed. Each test collects every failing sub-case (`expect`) before it
+// asserts, so the red run on 49731a5 names each one. Lines marked R9-new-api use API added by this
+// remediation; the red run drops only those lines.
 
 use hsk_studio_press::TextCause; // R9-new-api
+
+/// Records a failed expectation (`what`) instead of stopping at the first one.
+fn expect(red: &mut Vec<String>, ok: bool, what: impl std::fmt::Display) {
+    if !ok {
+        red.push(what.to_string());
+    }
+}
 
 /// The vertical-text fixture of `type3_and_vertical_text_never_read_as_cleared`: R7_CODES drawn at
 /// (100, 700) with font 37 (`/V1`, Type0 over CIDFont 21, ToUnicode 25) whose `/Encoding` is `enc`.
@@ -3303,23 +3311,27 @@ fn r9_cmap_doc(enc: &str, extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
     r8_doc(&vtext, "/V1 37 0 R", "", objs)
 }
 
-/// An embedded CMap stream (object 39) with `dict` entries and `program` as its data.
+/// An embedded CMap stream (object 39) with `dict` entries and `program` inside its data.
 fn r9_cmap(dict: &str, program: &str) -> (u32, Vec<u8>) {
     let body = format!("/CIDInit /ProcSet findresource begin 12 dict begin begincmap {program} 1 begincodespacerange <0000> <FFFF> endcodespacerange 1 begincidrange <0000> <FFFF> 0 endcidrange endcmap end end");
     (39, stream_body(&format!("/Type /CMap /CMapName /Test-Embedded {dict}"), body.as_bytes()))
 }
 
-/// R9-F1: writing mode is read positively from the CMap. The predefined CMap /V (vertical, ISO 32000-2
-/// 9.7.5.2 Table 116) does not end in -V; an embedded CMap can use it (/UseCMap or `usecmap`); a name
-/// outside the table is not known horizontal. At 49731a5 each of these read as horizontal: the text
-/// below its first glyph was never selected and the region read as cleared and proven.
+/// The region below the first glyph of `r9_cmap_doc` (a vertical run passes through it).
+const R9_BELOW: RedactionRegion = RedactionRegion { page_index: 0, rect: [90.0, 600.0, 130.0, 650.0] };
+
+fn r9_run(pdf: &[u8], region: RedactionRegion, policy: UnsupportedPolicy) -> Result<hsk_studio_press::RedactedOutput, PressError> {
+    let mut doc = open(pdf);
+    redact_and_save(&mut doc, &[region], policy, &token())
+}
+
+/// R9-F1 (predefined CMap /V): writing mode is read positively from the CMap. /V is vertical (ISO
+/// 32000-2 9.7.5.2 Table 116) but does not end in -V; an embedded CMap can use it (/UseCMap, or
+/// `usecmap` in its program). At 49731a5 each of these read as horizontal: the vertical run below its
+/// first glyph was never selected and the region read as cleared and proven.
 #[test]
 fn writing_mode_is_read_from_the_cmap() {
-    let below = RedactionRegion { page_index: 0, rect: [90.0, 600.0, 130.0, 650.0] };
-    let run = |pdf: &[u8], policy: UnsupportedPolicy| {
-        let mut doc = open(pdf);
-        redact_and_save(&mut doc, &[below], policy, &token())
-    };
+    let mut red = Vec::new();
     let vertical: Vec<(&str, Vec<u8>)> = vec![
         ("predefined /V", r9_cmap_doc("/V", vec![])),
         ("embedded, /UseCMap /V", r9_cmap_doc("39 0 R", vec![r9_cmap("/UseCMap /V", "")])),
@@ -3327,16 +3339,33 @@ fn writing_mode_is_read_from_the_cmap() {
         ("embedded, program /WMode 1", r9_cmap_doc("39 0 R", vec![r9_cmap("", "/WMode 1 def")])),
     ];
     for (what, pdf) in &vertical {
-        let out = run(pdf, UnsupportedPolicy::ReportAndContinue).unwrap();
+        let out = r9_run(pdf, R9_BELOW, UnsupportedPolicy::ReportAndContinue).unwrap();
         // Independent oracle: the vertical run is still drawn (it starts at y 700 and runs down).
         assert!(independent_streams(&out.bytes).iter().any(|s| find(s, R7_CODES.as_bytes()).is_some()), "{what}");
-        assert!(!out.region_cleared() && !out.is_proven(), "{what}: vertical text read as cleared");
-        assert_eq!(out.reports[0].unredacted, vec![RedactionClass::VerticalText], "{what}");
+        expect(&mut red, !out.region_cleared() && !out.is_proven(), format!("{what}: vertical text read as cleared"));
+        expect(&mut red, out.reports[0].unredacted == vec![RedactionClass::VerticalText], format!("{what}: {:?}", out.reports[0].unredacted));
+        expect(&mut red, r9_run(pdf, R9_BELOW, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::VerticalText)), format!("{what}: not refused"));
         assert_eq!(out.region_undetermined, vec![(0, RedactionClass::VerticalText)], "{what}"); // R9-new-api
-        assert_eq!(run(pdf, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::VerticalText), "{what}");
     }
-    // A CMap name outside ISO 32000-2 Table 116 (a real Adobe CMap, and an invented one), a /WMode the
-    // table does not define, and an embedded CMap that does not tokenize: the writing mode is unresolved.
+    // Controls: horizontal predefined CMaps (Identity-H, H) and an embedded CMap with /WMode 0.
+    for (what, pdf) in [
+        ("Identity-H", r9_cmap_doc("/Identity-H", vec![])),
+        ("H", r9_cmap_doc("/H", vec![])),
+        ("embedded /WMode 0", r9_cmap_doc("39 0 R", vec![r9_cmap("/WMode 0", "/WMode 0 def /H usecmap")])),
+    ] {
+        let out = r9_run(&pdf, R9_BELOW, UnsupportedPolicy::Refuse).unwrap();
+        assert!(out.region_cleared() && out.is_proven(), "{what}: {:?}", out.not_proven_reasons());
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R9-F1 (unknown CMap name): a CMap name outside ISO 32000-2 Table 116 (a real Adobe CMap the table
+/// does not list, an invented one), a /WMode the table does not define and an embedded CMap that does
+/// not tokenize are not known horizontal: the region is not cleared and the proof names the cause. At
+/// 49731a5 every name not ending in -V read as horizontal.
+#[test]
+fn unknown_cmap_names_are_unresolved_writing_modes() {
+    let mut red = Vec::new();
     let unresolved: Vec<(&str, Vec<u8>)> = vec![
         ("UniJIS2004-UTF16-H", r9_cmap_doc("/UniJIS2004-UTF16-H", vec![])),
         ("invented name", r9_cmap_doc("/Secret-H", vec![])),
@@ -3344,99 +3373,112 @@ fn writing_mode_is_read_from_the_cmap() {
         ("untokenizable program", r9_cmap_doc("39 0 R", vec![(39, stream_body("/Type /CMap", b"begincmap } endcmap"))])),
     ];
     for (what, pdf) in &unresolved {
-        let out = run(pdf, UnsupportedPolicy::ReportAndContinue).unwrap();
-        assert!(!out.region_cleared() && !out.is_proven(), "{what}: unknown writing mode read as cleared");
+        let out = r9_run(pdf, R9_BELOW, UnsupportedPolicy::ReportAndContinue).unwrap();
+        expect(&mut red, !out.region_cleared() && !out.is_proven(), format!("{what}: unknown writing mode read as cleared"));
+        expect(&mut red, r9_run(pdf, R9_BELOW, UnsupportedPolicy::Refuse).is_err(), format!("{what}: not refused"));
         assert_eq!(out.reports[0].unredacted, vec![RedactionClass::UnresolvedWritingMode], "{what}"); // R9-new-api
         assert!(out.not_proven_reasons().contains(&NotProven::UnresolvedWritingMode), "{what}"); // R9-new-api
         assert!(out.proof.undetermined_text.iter().any(|(_, c)| *c == TextCause::UnresolvedWritingMode), "{what}"); // R9-new-api
     }
-    // The proof side: text drawn anywhere (here an annotation appearance) with a font whose writing
-    // mode is unknown is not positively determined.
-    let font = format!("<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Secret-H /DescendantFonts [21 0 R] /ToUnicode 25 0 R >>").into_bytes();
+    // The proof side: text drawn anywhere (an annotation appearance) with such a font.
+    let font = b"<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Secret-H /DescendantFonts [21 0 R] /ToUnicode 25 0 R >>".to_vec();
     let cid = r7_fonts().into_iter().filter(|(n, _)| *n == 21 || *n == 25).collect();
     let p = verify_secret(&r8_ap_doc(font, "BT /F1 12 Tf 2 5 Td <0101> Tj ET", cid));
-    assert!(!p.is_clean(), "an unresolved writing mode read as clean");
+    expect(&mut red, !p.is_clean(), "an unresolved writing mode in an appearance read as clean");
     assert_eq!(p.not_proven_reasons(), vec![NotProven::UnresolvedWritingMode]); // R9-new-api
     assert_eq!(p.undetermined_text, vec![(13, TextCause::UnresolvedWritingMode)]); // R9-new-api
-    // Controls: horizontal predefined CMaps (Identity-H, H) and an embedded CMap with /WMode 0.
-    for (what, pdf) in [
-        ("Identity-H", r9_cmap_doc("/Identity-H", vec![])),
-        ("H", r9_cmap_doc("/H", vec![])),
-        ("embedded /WMode 0", r9_cmap_doc("39 0 R", vec![r9_cmap("/WMode 0", "/WMode 0 def /H usecmap")])),
-    ] {
-        let out = run(&pdf, UnsupportedPolicy::Refuse).unwrap();
-        assert!(out.region_cleared() && out.is_proven(), "{what}: {:?}", out.not_proven_reasons());
-    }
+    assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R9-F2: the selector's font is graphics state like a viewer's. At 49731a5 the selector knew only
-/// `Tf` by name in the current resources: a font set by `gs` (ExtGState /Font) gave a zero-size box, so
-/// SECRET-ALPHA drawn across the region stayed and the region read as cleared and proven; a Type 3 font
-/// inherited into a form with its own resources was never resolved, so never marked; text with an
-/// unresolvable font or none was placed as if its font were known.
+/// base_objs page (annotation 5, image 8) with `resources` (fonts, ExtGStates, XObjects besides Im1).
+fn r9_page_doc(content: &str, resources: &str, extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs = base_objs(content.as_bytes(), "<< /Title (T) >>");
+    let resources = if resources.contains("/XObject << ") { resources.replace("/XObject << ", "/XObject << /Im1 8 0 R ") } else { format!("{resources} /XObject << /Im1 8 0 R >>") };
+    objs[2].1 = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R] /Resources << {resources} >> >>").into_bytes();
+    objs.extend(extra);
+    build(&objs, "/Info 7 0 R", b"")
+}
+
+/// A region inside the Helvetica 12 run of SECRET-ALPHA drawn from (100, 700) (x 100..about 192).
+const R9_INSIDE: RedactionRegion = RedactionRegion { page_index: 0, rect: [120.0, 690.0, 180.0, 715.0] };
+
+/// R9-F2 (font set by gs): the selector's font is graphics state like a viewer's; an ExtGState
+/// `/Font [font size]` selects font and size (ISO 32000-2 8.4.5 Table 57), q/Q restore it. At 49731a5
+/// the selector knew only `Tf`: the run got a zero-size box at its origin, was never removed, and the
+/// region read as cleared and proven while SECRET-ALPHA was drawn across it.
 #[test]
 fn font_is_graphics_state_in_the_selector() {
-    // base_objs page (annotation 5, image 8) with `resources` (fonts, ExtGStates, XObjects besides Im1).
-    let doc = |content: &str, resources: &str, extra: Vec<(u32, Vec<u8>)>| {
-        let mut objs = base_objs(content.as_bytes(), "<< /Title (T) >>");
-        let resources = if resources.contains("/XObject << ") { resources.replace("/XObject << ", "/XObject << /Im1 8 0 R ") } else { format!("{resources} /XObject << /Im1 8 0 R >>") };
-        objs[2].1 = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [5 0 R] /Resources << {resources} >> >>").into_bytes();
-        objs.extend(extra);
-        build(&objs, "/Info 7 0 R", b"")
-    };
-    let inside = RedactionRegion { page_index: 0, rect: [120.0, 690.0, 180.0, 715.0] };
-    let run = |pdf: &[u8], region: RedactionRegion, policy: UnsupportedPolicy| {
-        let mut doc = open(pdf);
-        redact_and_save(&mut doc, &[region], policy, &token())
-    };
-    // (a) Helvetica 12 set by gs, no Tf: SECRET-ALPHA runs from x 100 to about 192, across the region.
+    let mut red = Vec::new();
     let gs_res = "/Font << /F1 6 0 R >> /ExtGState << /GS9 << /Font [6 0 R 12] >> >>";
-    let gs_page = "BT /GS9 gs 100 700 Td (SECRET-ALPHA) Tj ET\nBT /F1 12 Tf 72 300 Td (Public) Tj ET";
-    let out = run(&doc(gs_page, gs_res, vec![]), inside, UnsupportedPolicy::Refuse).unwrap();
-    assert_eq!(out.reports[0].text_strings_removed, 1, "the gs-selected run touches the region");
-    assert!(independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-ALPHA").is_none()));
-    assert!(out.is_proven() && out.region_cleared(), "{:?}", out.not_proven_reasons());
-    // q/Q restore the gs font: after Q the run is drawn with Helvetica again.
-    let qq = "BT /GS9 gs q /F1 30 Tf Q 100 700 Td (SECRET-ALPHA) Tj ET";
-    let out = run(&doc(qq, gs_res, vec![]), inside, UnsupportedPolicy::Refuse).unwrap();
-    assert_eq!(out.reports[0].text_strings_removed, 1);
+    for (what, content) in [
+        ("gs, no Tf", "BT /GS9 gs 100 700 Td (SECRET-ALPHA) Tj ET\nBT /F1 12 Tf 72 300 Td (Public) Tj ET"),
+        ("gs, then Tf inside q..Q", "BT /GS9 gs q /F1 30 Tf Q 100 700 Td (SECRET-ALPHA) Tj ET\nBT /F1 12 Tf 72 300 Td (Public) Tj ET"),
+    ] {
+        let out = r9_run(&r9_page_doc(content, gs_res, vec![]), R9_INSIDE, UnsupportedPolicy::Refuse).unwrap();
+        expect(&mut red, out.reports[0].text_strings_removed == 1, format!("{what}: the run across the region was not removed"));
+        // Independent oracle: the string left the page content.
+        expect(&mut red, independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-ALPHA").is_none()), format!("{what}: SECRET-ALPHA still drawn"));
+        expect(&mut red, out.is_proven() && out.region_cleared(), format!("{what}: {:?}", out.not_proven_reasons()));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
 
-    // (b) A Type 3 font (FontMatrix 0.002: 20 pt glyphs at size 10) set on the page and inherited by a
-    // form that has its own /Resources without it: the form's text is Type 3 text.
+/// R9-F2 (font inherited by a form without its own /Font): a form XObject starts with the caller's
+/// graphics state, its font included (ISO 32000-2 8.10.1), whatever its own /Resources hold. A Type 3
+/// font set on the page and inherited into such a form (or selected by gs) is Type 3 text. At 49731a5
+/// the selector re-resolved the inherited name in the form's own resources, found nothing, placed the
+/// glyphs 10 pt apart instead of 20 and never marked the Type 3 text: the region read as cleared.
+#[test]
+fn fonts_inherited_into_forms_are_resolved() {
+    let mut red = Vec::new();
     let t3 = (35, b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.002 0 0 0.002 0 0] /CharProcs << /S 36 0 R >> /Encoding << /Differences [83 /S] >> /FirstChar 65 /LastChar 90 /Widths [1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000] >>".to_vec());
     let proc_ = (36, stream_body("", b"1000 0 0 0 1000 1000 d1 0 0 1000 1000 re f"));
     let form = (28, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F2 6 0 R >> >>", b"BT 100 700 Td (SECRET) Tj ET"));
-    let res = "/Font << /T3 35 0 R /F1 6 0 R >> /XObject << /Fm1 28 0 R >>";
-    let inherited = doc("/T3 10 Tf q /Fm1 Do Q\nBT /F1 12 Tf 72 300 Td (Public) Tj ET", res, vec![t3.clone(), proc_.clone(), form]);
     let region = RedactionRegion { page_index: 0, rect: [170.0, 690.0, 215.0, 715.0] };
-    assert_eq!(run(&inherited, region, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::Type3Text));
-    let out = run(&inherited, region, UnsupportedPolicy::ReportAndContinue).unwrap();
-    assert!(!out.region_cleared() && out.reports[0].unredacted == vec![RedactionClass::Type3Text], "{:?}", out.not_proven_reasons());
-    assert_eq!(out.region_undetermined, vec![(0, RedactionClass::Type3Text)]); // R9-new-api
-    // The same Type 3 font selected by gs.
-    let gs_t3 = doc("BT /GS3 gs 100 700 Td (SECRET) Tj ET", "/Font << /F1 6 0 R >> /ExtGState << /GS3 << /Font [35 0 R 10] >> >>", vec![t3, proc_]);
-    assert_eq!(run(&gs_t3, region, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::Type3Text));
-
-    // (c) A font name the resources do not hold, and text with no font at all, on the region's page.
-    let unresolved = doc("BT /F9 12 Tf 100 700 Td (SECRET-ALPHA) Tj ET", "/Font << /F1 6 0 R >>", vec![]);
-    assert_eq!(run(&unresolved, inside, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::UnresolvedFont)); // R9-new-api
-    // Text before any Tf (the font is graphics state: a later BT does not reset it).
-    let no_font = doc("BT 72 300 Td (Public) Tj ET\nBT /F1 12 Tf 100 700 Td (SECRET-ALPHA) Tj ET", "/Font << /F1 6 0 R >>", vec![]);
-    let out = run(&no_font, inside, UnsupportedPolicy::ReportAndContinue).unwrap();
-    assert!(!out.region_cleared() && !out.is_proven(), "text with no font on the page read as cleared");
-    assert_eq!(out.reports[0].unredacted, vec![RedactionClass::UnresolvedFont]); // R9-new-api
-    assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText), "{:?}", out.not_proven_reasons());
-    assert!(out.proof.undetermined_text.iter().any(|(_, c)| *c == TextCause::NoFont), "{:?}", out.proof.undetermined_text); // R9-new-api
-    assert_eq!(out.region_undetermined, vec![(0, RedactionClass::UnresolvedFont)]); // R9-new-api
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("Tf on the page, inherited by the form", r9_page_doc("/T3 10 Tf q /Fm1 Do Q\nBT /F1 12 Tf 72 300 Td (Public) Tj ET", "/Font << /T3 35 0 R /F1 6 0 R >> /XObject << /Fm1 28 0 R >>", vec![t3.clone(), proc_.clone(), form.clone()])),
+        ("gs on the page, inherited by the form", r9_page_doc("/GS3 gs q /Fm1 Do Q\nBT /F1 12 Tf 72 300 Td (Public) Tj ET", "/Font << /F1 6 0 R >> /ExtGState << /GS3 << /Font [35 0 R 10] >> >> /XObject << /Fm1 28 0 R >>", vec![t3.clone(), proc_.clone(), form])),
+        ("gs in page text", r9_page_doc("BT /GS3 gs 100 700 Td (SECRET) Tj ET", "/Font << /F1 6 0 R >> /ExtGState << /GS3 << /Font [35 0 R 10] >> >>", vec![t3, proc_])),
+    ];
+    for (what, pdf) in &cases {
+        expect(&mut red, r9_run(pdf, region, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::Type3Text)), format!("{what}: not refused"));
+        let out = r9_run(pdf, region, UnsupportedPolicy::ReportAndContinue).unwrap();
+        expect(&mut red, !out.region_cleared() && out.reports[0].unredacted == vec![RedactionClass::Type3Text], format!("{what}: {:?}", out.not_proven_reasons()));
+        assert_eq!(out.region_undetermined, vec![(0, RedactionClass::Type3Text)], "{what}"); // R9-new-api
+    }
+    assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R9-F3: a run drawn by several show operators (or text objects, or a form a stream draws) is read
-/// whole, kerning used as the word space reads as a space, and the removal side joins consecutive
-/// removed strings of a text object and judges readability per string whatever its length. At 49731a5
-/// each of these read as proven.
+/// R9-F2 (unresolvable font): text whose font is not determined (a name the resources do not hold, no
+/// font selected at all) has unknown glyph widths: the region is never cleared and the proof names the
+/// cause. At 49731a5 such text was placed as if its widths were known and the region read as cleared
+/// and proven.
+#[test]
+fn undetermined_fonts_never_read_as_cleared() {
+    let mut red = Vec::new();
+    let unresolved = r9_page_doc("BT /F9 12 Tf 100 700 Td (SECRET-ALPHA) Tj ET", "/Font << /F1 6 0 R >>", vec![]);
+    expect(&mut red, r9_run(&unresolved, R9_INSIDE, UnsupportedPolicy::Refuse).is_err(), "unresolved font name: not refused");
+    let out = r9_run(&unresolved, R9_INSIDE, UnsupportedPolicy::ReportAndContinue).unwrap();
+    expect(&mut red, !out.region_cleared(), "unresolved font name: region read as cleared");
+    // Text before any Tf (the font is graphics state: a later BT does not reset it, and nothing set it).
+    let no_font = r9_page_doc("BT 72 300 Td (Public) Tj ET\nBT /F1 12 Tf 100 700 Td (SECRET-ALPHA) Tj ET", "/Font << /F1 6 0 R >>", vec![]);
+    let out = r9_run(&no_font, R9_INSIDE, UnsupportedPolicy::ReportAndContinue).unwrap();
+    expect(&mut red, !out.region_cleared() && !out.is_proven(), "text with no font on the page read as cleared");
+    expect(&mut red, out.not_proven_reasons().contains(&NotProven::OpaqueText), format!("no font: {:?}", out.not_proven_reasons()));
+    assert_eq!(r9_run(&unresolved, R9_INSIDE, UnsupportedPolicy::Refuse), Err(PressError::UnsupportedRedactionClass(RedactionClass::UnresolvedFont))); // R9-new-api
+    assert_eq!(out.reports[0].unredacted, vec![RedactionClass::UnresolvedFont]); // R9-new-api
+    assert!(out.proof.undetermined_text.iter().any(|(_, c)| *c == TextCause::NoFont), "{:?}", out.proof.undetermined_text); // R9-new-api
+    assert_eq!(out.region_undetermined, vec![(0, RedactionClass::UnresolvedFont)]); // R9-new-api
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R9-F3 (split Tj in one BT): a run drawn by several show operators (or text objects, or a form a
+/// stream draws) is read whole, in Helvetica, /ToUnicode and /Differences codes; the text-field pass
+/// drops such an appearance; the whole-token rule exempts only what one string's reading proves. At
+/// 49731a5 each split read as clean.
 #[test]
 fn split_runs_are_read_whole() {
-    // (i) Appearances that draw SECRET-ALPHA in two show operators.
+    let mut red = Vec::new();
     let helv = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec();
     for content in [
         "BT /F1 12 Tf 2 5 Td (SECRET-) Tj (ALPHA) Tj ET",
@@ -3444,15 +3486,14 @@ fn split_runs_are_read_whole() {
         "BT /F1 12 Tf 2 5 Td (SECRET-) Tj ET BT /F1 12 Tf 60 5 Td (ALPHA) ' ET",
     ] {
         let p = verify_secret(&r8_ap_doc(helv.clone(), content, vec![]));
-        assert!(!p.is_clean() && decoded_text_hit(&p, 13), "{content}: {:?}", p.hits);
+        expect(&mut red, !p.is_clean() && decoded_text_hit(&p, 13), format!("{content}: {:?}", p.hits));
     }
-    // /ToUnicode codes and /Differences codes split over two Tj.
     let p = r7_verify(&r7_font_doc(R7_PLAIN, None, Some("BT /F1 12 Tf 2 5 Td <0101010201030104010501060107> Tj <01080109010A010B010C> Tj ET"), "", vec![]));
-    assert!(!p.is_clean() && decoded_text_hit(&p, 26), "ToUnicode split: {:?}", p.hits);
+    expect(&mut red, !p.is_clean() && decoded_text_hit(&p, 26), format!("ToUnicode split: {:?}", p.hits));
     let split_diff = r8_ap_doc(diff_font(&format!("1 {DIFF_NAMES}"), ""), "BT /F1 12 Tf 2 5 Td <01020304020506> Tj <0708090A07> Tj ET", vec![]);
     let p = verify_secret(&split_diff);
-    assert!(!p.is_clean() && decoded_text_hit(&p, 13), "Differences split: {:?}", p.hits);
-    // Split between an appearance and a form it draws.
+    expect(&mut red, !p.is_clean() && decoded_text_hit(&p, 13), format!("Differences split: {:?}", p.hits));
+    // Split between an appearance and a form it draws (the form inherits font and resources).
     let mut objs = minimal_objs("", "5 0 R");
     objs.extend([
         (5, b"<< /Type /Annot /Subtype /FreeText /Rect [100 100 300 140] /Contents (label) /AP << /N 13 0 R >> >>".to_vec()),
@@ -3461,52 +3502,75 @@ fn split_runs_are_read_whole() {
         (20, helv.clone()),
     ]);
     let p = verify_secret(&build(&objs, "", b""));
-    assert!(!p.is_clean() && decoded_text_hit(&p, 13), "split across Do: {:?}", p.hits);
+    expect(&mut red, !p.is_clean() && decoded_text_hit(&p, 13), format!("split across Do: {:?}", p.hits));
     // The text-field pass reads the split run too and drops the appearance.
     let mut doc = open(&split_diff);
     let out = redact_text_fields_and_save(&mut doc, &["SECRET-ALPHA".to_string()], &TextFieldPolicy::default(), &token()).unwrap();
-    assert_eq!(rows(&out.report, TextRole::Appearance), vec![(5, false, TextOutcomeKind::Dropped, 1)]);
-    assert!(out.is_proven(), "{:?}", out.not_proven_reasons());
+    expect(&mut red, rows(&out.report, TextRole::Appearance) == vec![(5, false, TextOutcomeKind::Dropped, 1)], format!("text fields: {:?}", out.report.outcomes));
+    expect(&mut red, out.is_proven(), format!("text fields: {:?}", out.not_proven_reasons()));
     // The whole-token rule exempts only what the drawn reading proves: a letter glued in the SAME
     // string is another token (clean), a letter of the NEXT string is not (a hit).
     let p = verify_secret(&r8_ap_doc(helv.clone(), "BT /F1 12 Tf 2 5 Td (SECRET-ALPHAx) Tj ET", vec![]));
     assert!(p.is_clean(), "{:?}", p.hits);
-    let p = verify_secret(&r8_ap_doc(helv.clone(), "BT /F1 12 Tf 2 5 Td (SECRET-ALPHA) Tj (x) Tj ET", vec![]));
-    assert!(decoded_text_hit(&p, 13), "a concatenated match is never suppressed: {:?}", p.hits);
+    let p = verify_secret(&r8_ap_doc(helv, "BT /F1 12 Tf 2 5 Td (SECRET-ALPHA) Tj (x) Tj ET", vec![]));
+    expect(&mut red, decoded_text_hit(&p, 13), format!("a concatenated match was suppressed: {:?}", p.hits));
+    assert!(red.is_empty(), "{red:#?}");
+}
 
-    // (ii) Kerning used as the word space: the removed needle SECRET ALPHA is drawn elsewhere as
-    // [(SECRET) -250 (ALPHA)] TJ in Helvetica (bytes equal to the text).
+/// R9-F3 (kerning-number word space): pdfTeX-style text writes no space glyphs; the needle SECRET ALPHA
+/// removed from the region is drawn elsewhere as [(SECRET) -250 (ALPHA)] TJ in Helvetica (bytes equal
+/// to the text). The spaced reading finds it. At 49731a5 the per-string spaced reading existed only
+/// when it differed from the bytes, so the appearance read as clean and the result as proven.
+#[test]
+fn kerning_word_spaces_are_read() {
     let page = "BT /F2 12 Tf 72 700 Td (SECRET ALPHA) Tj ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET";
     let out = r7_run(&r7_font_doc(page, None, Some("BT /F2 12 Tf 2 5 Td [(SECRET) -250 (ALPHA)] TJ ET"), "", vec![]));
     assert_eq!(out.reports[0].removed_text, vec![b"SECRET ALPHA".to_vec()]);
     assert!(!out.is_proven() && decoded_text_hit(&out.proof, 26), "kerning as the word space: {:?}", out.proof.hits);
+    // Control: a different second word.
+    let out = r7_run(&r7_font_doc(page, None, Some("BT /F2 12 Tf 2 5 Td [(SECRET) -250 (BETA)] TJ ET"), "", vec![]));
+    assert!(out.is_proven(), "{:?}", out.proof.hits);
+}
 
-    // (iii) Removal side: (SECRE) Tj (T-ALPHA) Tj in the region; the outline twin is a leak.
-    let outline = || {
-        vec![
-            (40, b"<< /Type /Outlines /First 41 0 R /Last 41 0 R /Count 1 >>".to_vec()),
-            (41, b"<< /Title (SECRET-ALPHA plan) /Parent 40 0 R >>".to_vec()),
-        ]
-    };
+fn r9_outline() -> Vec<(u32, Vec<u8>)> {
+    vec![
+        (40, b"<< /Type /Outlines /First 41 0 R /Last 41 0 R /Count 1 >>".to_vec()),
+        (41, b"<< /Title (SECRET-ALPHA plan) /Parent 40 0 R >>".to_vec()),
+    ]
+}
+
+/// R9-F3 (removal side): the region draws `(SECRE) Tj (T-ALPHA) Tj`; consecutive removed strings of one
+/// text object are recorded joined, so the outline twin SECRET-ALPHA is a leak and a text policy
+/// redacts it. At 49731a5 only T-ALPHA was distinctive, the token rule kept it from matching inside
+/// SECRET-ALPHA, and the result read as proven with the title intact.
+#[test]
+fn removed_runs_join_across_show_operators() {
     let pieces = "BT /F2 12 Tf 72 700 Td (SECRE) Tj (T-ALPHA) Tj ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET";
-    let pdf = r8_doc(pieces, "", "/Outlines 40 0 R", outline());
+    let pdf = r8_doc(pieces, "", "/Outlines 40 0 R", r9_outline());
     let out = r7_run(&pdf);
-    assert_eq!((out.reports[0].text_strings_removed, out.reports[0].removed_text.last()), (2, Some(&b"SECRET-ALPHA".to_vec())));
     assert!(!out.is_proven() && out.proof.hits.iter().any(|h| h.location == PayloadLocation::StringObject { object: 41 }), "{:?}", out.proof.hits);
+    assert_eq!((out.reports[0].text_strings_removed, out.reports[0].removed_text.last()), (2, Some(&b"SECRET-ALPHA".to_vec())));
     let mut doc = open(&pdf);
     let with = redact_and_save_with(&mut doc, &[R7_REGION], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
     assert!(with.is_proven() && !leaks(&with.bytes, "secret-alpha"), "{:?}", with.not_proven_reasons());
-    // One glyph per operator with a composite font that has no /ToUnicode (font 23, 4 pt so all twelve
-    // glyphs lie in the region): each removed string is two bytes, and none can be read.
+    // Control: a run of short pieces of another word is proven.
+    let out = r7_run(&r8_doc("BT /F2 12 Tf 72 700 Td (PUB) Tj (LIC) Tj ET", "", "/Outlines 40 0 R", r9_outline()));
+    assert!(out.is_proven(), "{:?}", out.not_proven_reasons());
+}
+
+/// R9-F3 (one glyph per operator, unreadable): the region draws SECRET-ALPHA one 2-byte code per `Tj`
+/// with a composite font that has no /ToUnicode (font 23, 4 pt so all twelve glyphs lie in the
+/// region). No removed string can be read, whatever its length. At 49731a5 strings under 6 bytes were
+/// not judged, nothing was searched, and the result read as proven with SECRET-ALPHA in the outline.
+#[test]
+fn glyph_by_glyph_unreadable_text_is_never_proven() {
     let glyphs: String = (1..=12).map(|i| format!("<01{i:02X}> Tj ")).collect();
-    let pdf = r8_doc(&format!("BT /F3 4 Tf 72 700 Td {glyphs}ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET"), "", "/Outlines 40 0 R", outline());
+    let pdf = r8_doc(&format!("BT /F3 4 Tf 72 700 Td {glyphs}ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET"), "", "/Outlines 40 0 R", r9_outline());
     let out = r7_run(&pdf);
     assert!(!out.is_proven(), "glyph-by-glyph unreadable removed text read as proven");
     assert!(out.not_proven_reasons().contains(&NotProven::UnreadableRemovedText), "{:?}", out.not_proven_reasons());
+    assert_eq!(out.reports[0].text_strings_removed, 12);
     assert!(out.unreadable_removed >= 12 && out.reports[0].removed_unreadable.iter().all(|u| *u), "{:?}", out.reports[0].removed_unreadable);
-    // Control: a run of short readable pieces of another word is proven.
-    let out = r7_run(&r8_doc("BT /F2 12 Tf 72 700 Td (PUB) Tj (LIC) Tj ET", "", "/Outlines 40 0 R", outline()));
-    assert!(out.is_proven(), "{:?}", out.not_proven_reasons());
 }
 
 /// R9-P1: Type 3 glyph procedures of a font dictionary written directly into a resource dictionary
@@ -3515,79 +3579,88 @@ fn split_runs_are_read_whole() {
 /// literal was found by no spelling, and the result read as proven.
 #[test]
 fn direct_type3_glyph_procedures_are_read() {
+    let mut red = Vec::new();
     let t3 = "/T3 << /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a 40 0 R >> /Encoding << /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [500] /Resources << /Font << /F1 6 0 R >> >> >>";
     let glyph = (40, stream_body("/Type /Metadata /Subtype /XML", br"0 0 d0 BT /F1 12 Tf (SEC\122ET-ALPHA) Tj ET"));
     let out = r7_run(&r8_doc(&r8_page(""), t3, "", vec![glyph]));
     // Independent oracle: the file holds no plain spelling, only the escaped literal.
     assert!(find(&out.bytes, b"SECRET-ALPHA").is_none() && find(&out.bytes, br"SEC\122ET-ALPHA").is_some());
-    assert!(!out.is_proven(), "a direct Type 3 glyph procedure was not read");
-    assert!(decoded_text_hit(&out.proof, 40), "{:?}", out.proof.hits);
+    expect(&mut red, !out.is_proven() && decoded_text_hit(&out.proof, 40), format!("direct Type 3 glyph procedure not read: {:?}", out.proof.hits));
     // A stream nothing references as content, with misleading keys, drawing text with a font it cannot
     // resolve: read (stray), so its text is opaque.
     let hidden = (32, stream_body("/Type /Metadata /Subtype /XML", format!("BT /F1 12 Tf 72 300 Td {R7_CODES} Tj ET").as_bytes()));
     let out = r7_run(&r8_doc(&r8_page(""), "", "/Hidden 32 0 R", vec![hidden]));
-    assert!(!out.is_proven() && out.proof.opaque_text_streams == vec![32], "{:?}", out.not_proven_reasons());
+    expect(&mut red, !out.is_proven() && out.proof.opaque_text_streams == vec![32], format!("keyed stray stream: {:?}", out.not_proven_reasons()));
     // Control: the same direct Type 3 font whose glyph procedure draws only a path is proven.
     let glyph = (40, stream_body("/Type /Metadata /Subtype /XML", b"500 0 0 0 500 500 d1 0 0 500 500 re f"));
     let out = r7_run(&r8_doc(&r8_page(""), t3, "", vec![glyph]));
     assert!(out.is_proven(), "{:?}", out.not_proven_reasons());
+    assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R9-P2: language escapes (ESC..ESC, ISO 32000-2 7.9.2.2.1; pdf.js drops them), characters that draw
-/// nothing and compatibility forms (NFKC) never hide a removed string, in text strings, in drawn text
-/// and in XMP; the text-field pass redacts what the proof finds. At 49731a5 the proof read each as
-/// proven (or the text-field pass left the title in place).
+fn r9_titled(title: &str) -> Vec<(u32, Vec<u8>)> {
+    vec![
+        (40, b"<< /Type /Outlines /First 41 0 R /Last 41 0 R /Count 1 >>".to_vec()),
+        (41, format!("<< /Title {title} /Parent 40 0 R >>").into_bytes()),
+    ]
+}
+
+/// The proof finds the removed SECRET-ALPHA in outline title `title` (a leak) and a text policy
+/// redacts it (proven): `red` records each failure for `what`.
+fn r9_title_found(red: &mut Vec<String>, what: &str, title: &str) {
+    let pdf = r8_doc(&r8_page(""), "", "/Outlines 40 0 R", r9_titled(title));
+    let out = r7_run(&pdf);
+    expect(red, !out.is_proven() && out.proof.hits.iter().any(|h| h.location == PayloadLocation::StringObject { object: 41 }), format!("{what}: title not found: {:?}", out.proof.hits));
+    let mut doc = open(&pdf);
+    let with = redact_and_save_with(&mut doc, &[R7_REGION], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
+    expect(red, with.is_proven(), format!("{what}: text policy left it: {:?}", with.not_proven_reasons()));
+    expect(red, rows(with.text_fields.as_ref().unwrap(), TextRole::OutlineTitle) == vec![(41, false, TextOutcomeKind::Replaced, 1)], format!("{what}: title outcome"));
+}
+
+/// R9-P2 (language escapes): ESC..ESC in a text string is a language mark (ISO 32000-2 7.9.2.2.1);
+/// pdf.js drops it (also in PDFDocEncoding), so the bookmark panel shows SECRET-ALPHA plan. At 49731a5
+/// neither the proof nor the text-field pass found the title.
 #[test]
 fn language_escapes_and_invisible_characters_never_hide_text() {
-    let titled = |title: &str| {
-        vec![
-            (40, b"<< /Type /Outlines /First 41 0 R /Last 41 0 R /Count 1 >>".to_vec()),
-            (41, format!("<< /Title {title} /Parent 40 0 R >>").into_bytes()),
-        ]
-    };
-    let page = r8_page("");
-    let esc_utf16: String = format!(
-        "<FEFF{}>",
-        "SEC\u{1B}en\u{1B}RET-ALPHA plan".encode_utf16().map(|u| format!("{u:04X}")).collect::<String>()
-    );
-    let titles: Vec<(&str, String)> = vec![
-        ("PDFDocEncoding language escape", r"(SEC\033en\033RET-ALPHA plan)".to_string()),
-        ("UTF-16BE language escape", esc_utf16),
-        ("zero-width space", u16hex("SEC\u{200B}RET-ALPHA plan")),
-        ("soft hyphen and word joiner", u16hex("SE\u{AD}CRET-AL\u{2060}PHA plan")),
-        ("fullwidth letters", u16hex("\u{FF33}\u{FF25}\u{FF23}\u{FF32}\u{FF25}\u{FF34}-\u{FF21}\u{FF2C}\u{FF30}\u{FF28}\u{FF21} plan")),
-        ("mathematical bold letters", u16hex("\u{1D412}\u{1D404}\u{1D402}\u{1D411}\u{1D404}\u{1D413}-ALPHA plan")),
-    ];
-    for (what, title) in &titles {
-        let pdf = r8_doc(&page, "", "/Outlines 40 0 R", titled(title));
-        let out = r7_run(&pdf);
-        assert!(!out.is_proven(), "{what}: the title hides the removed string");
-        assert!(out.proof.hits.iter().any(|h| h.location == PayloadLocation::StringObject { object: 41 }), "{what}: {:?}", out.proof.hits);
-        let mut doc = open(&pdf);
-        let with = redact_and_save_with(&mut doc, &[R7_REGION], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
-        assert!(with.is_proven(), "{what}: {:?}", with.not_proven_reasons());
-        assert_eq!(rows(with.text_fields.as_ref().unwrap(), TextRole::OutlineTitle), vec![(41, false, TextOutcomeKind::Replaced, 1)], "{what}");
-    }
-    // Drawn text: a /ToUnicode map that reads a zero-width space between letters (code 0110), and a
-    // map that reads ESC (0111): neither hides SECRET-ALPHA.
+    let mut red = Vec::new();
+    let utf16 = format!("<FEFF{}>", "SEC\u{1B}en\u{1B}RET-ALPHA plan".encode_utf16().map(|u| format!("{u:04X}")).collect::<String>());
+    r9_title_found(&mut red, "PDFDocEncoding language escape", r"(SEC\033en\033RET-ALPHA plan)");
+    r9_title_found(&mut red, "UTF-16BE language escape", &utf16);
+    // Control: another word with the same escape is not found.
+    let out = r7_run(&r8_doc(&r8_page(""), "", "/Outlines 40 0 R", r9_titled(r"(SEC\033en\033RET-BETA plan)")));
+    assert!(out.is_proven(), "{:?}", out.proof.hits);
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R9-P2 (zero-width needle): characters that draw nothing (zero-width space and joiners, soft hyphen,
+/// word joiner) and compatibility forms (NFKC: fullwidth, mathematical letters) never hide a removed
+/// string: in text strings, in drawn text (a /ToUnicode map that reads a zero-width space or ESC between
+/// letters) and in XMP. At 49731a5 the proof matched exact characters only and read each as proven.
+#[test]
+fn zero_width_and_compatibility_characters_never_hide_text() {
+    let mut red = Vec::new();
+    r9_title_found(&mut red, "zero-width space", &u16hex("SEC\u{200B}RET-ALPHA plan"));
+    r9_title_found(&mut red, "soft hyphen and word joiner", &u16hex("SE\u{AD}CRET-AL\u{2060}PHA plan"));
+    r9_title_found(&mut red, "fullwidth letters", &u16hex("\u{FF33}\u{FF25}\u{FF23}\u{FF32}\u{FF25}\u{FF34}-\u{FF21}\u{FF2C}\u{FF30}\u{FF28}\u{FF21} plan"));
+    r9_title_found(&mut red, "mathematical bold letters", &u16hex("\u{1D412}\u{1D404}\u{1D402}\u{1D411}\u{1D404}\u{1D413}-ALPHA plan"));
+    // Drawn text: /ToUnicode reads code 0110 as a zero-width space and 0111 as ESC.
     let mut cmap = String::from("1 begincodespacerange <0000> <FFFF> endcodespacerange 14 beginbfchar\n");
     for (i, ch) in "SECRET-ALPHA".chars().enumerate() {
         cmap.push_str(&format!("<{:04X}> <{:04X}>\n", 0x0101 + i as u32, ch as u32));
     }
     cmap.push_str("<0110> <200B>\n<0111> <001B>\nendbfchar");
     let font = b"<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Identity-H /DescendantFonts [21 0 R] /ToUnicode 22 0 R >>".to_vec();
-    let mut extra = vec![(21, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /T >>".to_vec()), (22, stream_body("", cmap.as_bytes()))];
+    let cid = vec![(21, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /T >>".to_vec()), (22, stream_body("", cmap.as_bytes()))];
     for codes in ["<010101020103011001040105010601070108010901110110010A010B010C>", "<0101010201030111010401050106010701080109010A010B010C0111>"] {
-        let p = verify_secret(&r8_ap_doc(font.clone(), &format!("BT /F1 12 Tf 2 5 Td {codes} Tj ET"), extra.clone()));
-        assert!(decoded_text_hit(&p, 13), "{codes}: {:?}", p.hits);
+        let p = verify_secret(&r8_ap_doc(font.clone(), &format!("BT /F1 12 Tf 2 5 Td {codes} Tj ET"), cid.clone()));
+        expect(&mut red, decoded_text_hit(&p, 13), format!("{codes}: {:?}", p.hits));
     }
     // XMP: a zero-width joiner inside the text of a metadata stream.
-    extra.push((50, stream_body("/Type /Metadata /Subtype /XML", "<x:xmpmeta><dc:title>SECRET\u{200D}-ALPHA</dc:title></x:xmpmeta>".as_bytes())));
-    let out = r7_run(&r8_doc(&page, "", "/Metadata 50 0 R", extra.split_off(2)));
-    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 50, .. })), "{:?}", out.proof.hits);
-    // Controls: another word with the same disguises is not found.
-    let out = r7_run(&r8_doc(&page, "", "/Outlines 40 0 R", titled(&u16hex("SEC\u{200B}RET-BETA plan"))));
+    let xmp = (50, stream_body("/Type /Metadata /Subtype /XML", "<x:xmpmeta><dc:title>SECRET\u{200D}-ALPHA</dc:title></x:xmpmeta>".as_bytes()));
+    let out = r7_run(&r8_doc(&r8_page(""), "", "/Metadata 50 0 R", vec![xmp]));
+    expect(&mut red, out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 50, .. })), format!("XMP: {:?}", out.proof.hits));
+    // Control: another word with the same disguise is not found.
+    let out = r7_run(&r8_doc(&r8_page(""), "", "/Outlines 40 0 R", r9_titled(&u16hex("SEC\u{200B}RET-BETA plan"))));
     assert!(out.is_proven(), "{:?}", out.proof.hits);
-    let out = r7_run(&r8_doc(&page, "", "/Outlines 40 0 R", titled(r"(SEC\033en\033RET-BETA plan)")));
-    assert!(out.is_proven(), "{:?}", out.proof.hits);
+    assert!(red.is_empty(), "{red:#?}");
 }
