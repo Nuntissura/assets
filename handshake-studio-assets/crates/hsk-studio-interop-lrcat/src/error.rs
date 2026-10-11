@@ -1,3 +1,4 @@
+#![deny(clippy::arithmetic_side_effects)]
 //! Typed failures of the fixed-format catalog decoder. Codes are stable wire strings; no message
 //! ever carries file content, paths or row text.
 use hsk_studio_observe::FailureCode;
@@ -18,6 +19,8 @@ pub enum LimitKind {
     Columns,
     SchemaRows,
     SchemaText,
+    /// Aggregate accounted memory retained by schema, lookup tables and proposals.
+    RetainedText,
     Configuration,
 }
 
@@ -36,6 +39,7 @@ impl LimitKind {
             Self::Columns => "limit_columns",
             Self::SchemaRows => "limit_schema_rows",
             Self::SchemaText => "limit_schema_text",
+            Self::RetainedText => "limit_retained_text",
             Self::Configuration => "limit_configuration",
         }
     }

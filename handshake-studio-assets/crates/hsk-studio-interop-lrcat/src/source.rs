@@ -1,9 +1,11 @@
+#![deny(clippy::arithmetic_side_effects)]
 //! Explicitly granted, immutable byte sources and the hostile-input limits.
 use crate::error::{LimitKind, LrcatError, Result, SourceError};
 
 /// Hard ceilings no `Limits` value may exceed.
 pub const HARD_MAX_MAIN_BYTES: u64 = 1 << 30;
 pub const HARD_MAX_WAL_BYTES: u64 = 1 << 30;
+pub const HARD_MAX_RETAINED_TEXT_BYTES: u64 = 1 << 31;
 
 /// A stable, immutable, read-only byte range granted by the caller. The decoder never writes,
 /// seeks a shared cursor or opens anything by path: it only calls `read_at`.
@@ -86,6 +88,11 @@ pub struct Limits {
     pub max_unmapped_tables: u32,
     /// Opaque develop-setting bytes retained in a proposal (hash + length are always kept).
     pub max_retained_opaque_bytes: u64,
+    /// Aggregate accounted memory the extraction may retain in the schema, the path lookup
+    /// tables and the proposal (text, copies of shared text and entry overhead). Text is charged
+    /// every time it is kept or cloned, so many rows pointing at one stored value cannot multiply
+    /// it past this bound.
+    pub max_retained_text_bytes: u64,
 }
 
 impl Default for Limits {
@@ -103,6 +110,7 @@ impl Default for Limits {
             max_columns: 2048,
             max_unmapped_tables: 256,
             max_retained_opaque_bytes: 256 << 20,
+            max_retained_text_bytes: 512 << 20,
         }
     }
 }
@@ -112,6 +120,7 @@ impl Limits {
     pub fn validate(&self) -> Result<()> {
         let bad = self.max_main_bytes > HARD_MAX_MAIN_BYTES
             || self.max_wal_bytes > HARD_MAX_WAL_BYTES
+            || self.max_retained_text_bytes > HARD_MAX_RETAINED_TEXT_BYTES
             || self.max_pages == 0
             || self.max_page_reads == 0
             || self.max_rows == 0

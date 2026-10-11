@@ -296,8 +296,13 @@ fn image(rest: Vec<Vec<u8>>) -> Vec<u8> {
 }
 
 fn image_with(table: &str, rest: Vec<Vec<u8>>) -> Vec<u8> {
+    image_rooted(table, 2, rest)
+}
+
+/// Like `image_with`, but `sqlite_master` declares `root` as the table's root page.
+fn image_rooted(table: &str, root: i64, rest: Vec<Vec<u8>>) -> Vec<u8> {
     let sql = format!("CREATE TABLE {table} (id_local INTEGER PRIMARY KEY, id_global, rootFile, rating)");
-    let master = record(&[V::Text("table"), V::Text(table), V::Text(table), V::Int(2), V::Text(&sql)]);
+    let master = record(&[V::Text("table"), V::Text(table), V::Text(table), V::Int(root), V::Text(&sql)]);
     let mut page1 = leaf_page(100, &[leaf_cell(1, &master)]);
     page1[..16].copy_from_slice(b"SQLite format 3\0");
     page1[16..18].copy_from_slice(&(PS as u16).to_be_bytes());
@@ -317,6 +322,11 @@ fn image_with(table: &str, rest: Vec<Vec<u8>>) -> Vec<u8> {
 
 /// A table-leaf cell whose declared payload is `total` bytes, spilling to overflow page 3.
 fn spilling_cell(total: u64) -> Vec<u8> {
+    spilling_cell_to(total, 3)
+}
+
+/// Like `spilling_cell`, with an explicit first-overflow-page pointer.
+fn spilling_cell_to(total: u64, overflow_page_no: u32) -> Vec<u8> {
     let (u, x) = (PS as u64, PS as u64 - 35);
     let m = (u - 12) * 32 / 255 - 23;
     let k = m + (total - m) % (u - 4);
@@ -324,7 +334,7 @@ fn spilling_cell(total: u64) -> Vec<u8> {
     let mut cell = varint(total);
     cell.extend(varint(1));
     cell.extend(vec![0u8; local]);
-    cell.extend(3u32.to_be_bytes());
+    cell.extend(overflow_page_no.to_be_bytes());
     cell
 }
 
@@ -622,5 +632,285 @@ fn report_and_descriptor() {
         }
         assert_eq!(DESCRIPTOR.matches('{').count(), DESCRIPTOR.matches('}').count());
         assert_eq!(DESCRIPTOR.matches('[').count(), DESCRIPTOR.matches(']').count());
+    });
+}
+
+// ---- R5 remediation regressions (hostile images built by hand) ----
+
+/// Interior page 1 (database header + `sqlite_master` split over leaf pages 2 and 3) naming one
+/// table per entry with its root at page 4.., then one leaf page per table, then `extra` pages.
+fn tables_image(tables: &[(&str, &str, Vec<Vec<u8>>)], extra: Vec<Vec<u8>>) -> Vec<u8> {
+    let master: Vec<Vec<u8>> = tables
+        .iter()
+        .enumerate()
+        .map(|(i, (name, sql, _))| {
+            let rec = record(&[V::Text("table"), V::Text(name), V::Text(name), V::Int(4 + i as i64), V::Text(sql)]);
+            leaf_cell(i as u64 + 1, &rec)
+        })
+        .collect();
+    let (left, right) = master.split_at(master.len() / 2);
+    let mut link = 2u32.to_be_bytes().to_vec();
+    link.extend(varint(left.len() as u64));
+    let mut page1 = pack(0x05, 100, 12, &[link], 3);
+    let mut pages = vec![leaf_page(0, left), leaf_page(0, right)];
+    pages.extend(tables.iter().map(|(_, _, cells)| leaf_page(0, cells)));
+    pages.extend(extra);
+    page1[..16].copy_from_slice(b"SQLite format 3\0");
+    page1[16..18].copy_from_slice(&(PS as u16).to_be_bytes());
+    page1[18] = 1;
+    page1[19] = 1;
+    page1[21..24].copy_from_slice(&[64, 32, 32]);
+    page1[24..28].copy_from_slice(&1u32.to_be_bytes());
+    page1[28..32].copy_from_slice(&(pages.len() as u32 + 1).to_be_bytes());
+    page1[56..60].copy_from_slice(&1u32.to_be_bytes());
+    page1[92..96].copy_from_slice(&1u32.to_be_bytes());
+    let mut out = page1;
+    for p in pages {
+        out.extend(p);
+    }
+    out
+}
+
+const IMAGES_SQL: &str = "CREATE TABLE Adobe_images(id_global,rootFile,rating)";
+
+/// `rows` leaf cells that all carry the record `rec` (rowids 1..=rows) and spill into ONE shared
+/// overflow chain starting at page 3, plus that chain's pages.
+fn shared_spill(rec: &[u8], rows: u64) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let total = rec.len() as u64;
+    let (u, x) = (PS as u64, PS as u64 - 35);
+    assert!(total > x, "record must spill");
+    let m = (u - 12) * 32 / 255 - 23;
+    let k = m + (total - m) % (u - 4);
+    let local = if k <= x { k } else { m } as usize;
+    let cells: Vec<Vec<u8>> = (1..=rows)
+        .map(|rowid| {
+            let mut cell = varint(total);
+            cell.extend(varint(rowid));
+            cell.extend(&rec[..local]);
+            cell.extend(3u32.to_be_bytes());
+            cell
+        })
+        .collect();
+    let chunks: Vec<&[u8]> = rec[local..].chunks(PS - 4).collect();
+    let chain = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let next = if i + 1 < chunks.len() { 4 + i as u32 } else { 0 };
+            let mut page = overflow_page(next);
+            page[4..4 + chunk.len()].copy_from_slice(chunk);
+            page
+        })
+        .collect();
+    (leaf_page(0, &cells), chain)
+}
+
+#[test]
+fn shared_overflow_chain_across_rows_is_refused() {
+    bounded_case("shared_overflow_chain_across_rows_is_refused", || {
+        let big = "x".repeat(499);
+        let rec = record(&[V::Null, V::Text(&big), V::Int(7), V::Int(3)]);
+        let build = |rows: u64| {
+            let (leaf, chain) = shared_spill(&rec, rows);
+            let mut pages = vec![leaf];
+            pages.extend(chain);
+            image(pages)
+        };
+        // A legitimate row owns its overflow chain: it decodes through it.
+        let one = extract_with(&build(1), Limits::default()).expect("one row owns its chain");
+        assert_eq!(one.photos.len(), 1);
+        assert_eq!(one.photos[0].global_id.as_deref(), Some(big.as_str()));
+        // Six rows pointing at the same overflow pages would retain six copies of one stored
+        // value (the amplification behind the reviewed out-of-memory abort): refused, typed.
+        assert_eq!(
+            extract_with(&build(6), Limits::default()).unwrap_err(),
+            LrcatError::Cycle("overflow_shared")
+        );
+    });
+}
+
+/// Entries the proposal itself holds for the entities that have a proposal vector.
+fn produced(p: &CatalogProposal, entity: &str) -> Option<u64> {
+    Some(match entity {
+        "Adobe_images" => p.photos.len(),
+        "Adobe_imageDevelopSettings" => p.develop.len(),
+        "AgLibraryCollection" => p.collections.len(),
+        "AgLibraryCollectionImage" => p.collection_members.len(),
+        "AgLibraryKeyword" => p.keywords.len(),
+        "AgLibraryKeywordImage" => p.keyword_assignments.len(),
+        "Adobe_variablesTable" => usize::from(p.schema_version.is_some()),
+        _ => return None,
+    } as u64)
+}
+
+/// Whole-row loss occurrences the proposal lists for an entity (field-level notes excluded).
+fn noted_lost(p: &CatalogProposal, entity: &str) -> u64 {
+    const WHOLE_ROW: [&str; 9] = [
+        "orphan_row",
+        "duplicate_rowid",
+        "variables_not_mapped",
+        "xmp_blob_not_inflated",
+        "exif_harvest_not_mapped",
+        "develop_history_not_mapped",
+        "develop_snapshot_not_mapped",
+        "collection_content_not_decoded",
+        "unmapped_table",
+    ];
+    p.losses
+        .iter()
+        .filter(|l| WHOLE_ROW.contains(&l.code))
+        .filter(|l| {
+            l.entity == entity
+                || (l.entity == "unmapped_table" && entity.strip_prefix("table:") == Some(l.field.as_str()))
+        })
+        .map(|l| l.count)
+        .sum()
+}
+
+/// Three independent sources must agree: the walker's row count, the proposal content and the
+/// loss notes.
+fn assert_independent_reconciliation(p: &CatalogProposal) {
+    assert!(!p.counts.is_empty());
+    for c in &p.counts {
+        assert_eq!(c.rows_seen, c.mapped + c.lost, "seen == mapped + lost for {}", c.entity);
+        if let Some(n) = produced(p, &c.entity) {
+            assert_eq!(c.mapped, n, "mapped of {} is the number of entries in the proposal", c.entity);
+        }
+        assert_eq!(c.lost, noted_lost(p, &c.entity), "lost of {} equals its whole-row loss notes", c.entity);
+    }
+}
+
+#[test]
+fn reconciliation_is_cross_checked_not_constructed() {
+    bounded_case("reconciliation_is_cross_checked_not_constructed", || {
+        for p in [extract(&grant_main(MAIN)).unwrap(), extract(&grant_wal(WAL_MAIN, WAL)).unwrap()] {
+            assert_independent_reconciliation(&p);
+            assert!(p.reconciles());
+            // The claim can fail: a proposal that lost an entry, lost a count or carries a count
+            // that disagrees with its content no longer reconciles.
+            let mut fewer = p.clone();
+            fewer.photos.pop();
+            assert!(!fewer.reconciles(), "mapped must equal the entries actually present");
+            let mut keywords = p.clone();
+            keywords.keyword_assignments.clear();
+            assert!(!keywords.reconciles(), "emptied assignments no longer match their count");
+            let mut skewed = p.clone();
+            skewed.counts.iter_mut().find(|c| c.entity == "Adobe_images").unwrap().lost += 1;
+            assert!(!skewed.reconciles());
+            let mut missing = p.clone();
+            missing.counts.retain(|c| c.entity != "Adobe_images");
+            assert!(!missing.reconciles(), "the required table always has a count");
+        }
+
+        // A repeated rowid (corrupt b-tree) used to be counted as two mapped rows although the
+        // second silently replaced the first; now the later row is a typed whole-row loss.
+        let root_sql = "CREATE TABLE AgLibraryRootFolder(absolutePath)";
+        let dup = tables_image(
+            &[
+                (
+                    "AgLibraryRootFolder",
+                    root_sql,
+                    vec![leaf_cell(5, &record(&[V::Text("/a")])), leaf_cell(5, &record(&[V::Text("/b")]))],
+                ),
+                ("Adobe_images", IMAGES_SQL, vec![]),
+            ],
+            vec![],
+        );
+        let p = extract_with(&dup, Limits::default()).expect("duplicate rowid is a loss, not a failure");
+        let c = p.count("AgLibraryRootFolder").unwrap();
+        assert_eq!((c.rows_seen, c.mapped, c.lost), (2, 1, 1));
+        assert_eq!(p.loss("AgLibraryRootFolder", "duplicate_rowid").unwrap().count, 1);
+        assert_independent_reconciliation(&p);
+        assert!(p.reconciles());
+    });
+}
+
+#[test]
+fn retained_text_budget_counts_every_copy() {
+    bounded_case("retained_text_budget_counts_every_copy", || {
+        // One stored 440-byte root path, one folder, one file; every photo row resolves its path
+        // through them and its proposal gets its own copy of the root path (and folder/file text).
+        let path = "p".repeat(440);
+        let build = |photos: u64| {
+            let rows: Vec<Vec<u8>> = (1..=photos)
+                .map(|id| leaf_cell(id, &record(&[V::Text("g"), V::Int(1), V::Int(3)])))
+                .collect();
+            tables_image(
+                &[
+                    ("AgLibraryRootFolder", "CREATE TABLE AgLibraryRootFolder(absolutePath)", vec![leaf_cell(1, &record(&[V::Text(&path)]))]),
+                    ("AgLibraryFolder", "CREATE TABLE AgLibraryFolder(rootFolder,pathFromRoot)", vec![leaf_cell(1, &record(&[V::Int(1), V::Text("a")]))]),
+                    (
+                        "AgLibraryFile",
+                        "CREATE TABLE AgLibraryFile(folder,idx_filename,baseName,extension)",
+                        vec![leaf_cell(1, &record(&[V::Int(1), V::Text("x.cr2"), V::Null, V::Null]))],
+                    ),
+                    ("Adobe_images", IMAGES_SQL, rows),
+                ],
+                vec![],
+            )
+        };
+        let tight = Limits { max_retained_text_bytes: 9_000, ..Limits::default() };
+
+        // Within the default budget the amplification is real: 16 photos, 16 copies of the path.
+        let many = extract_with(&build(16), Limits::default()).expect("default budget admits the small catalog");
+        let copies: usize = many.photos.iter().map(|p| p.root_path.as_deref().map_or(0, str::len)).sum();
+        assert_eq!(copies, 16 * path.len());
+        assert!(copies as u64 > tight.max_retained_text_bytes / 2 && many.reconciles());
+        // A single photo fits the tight budget; the same stored path referenced by 16 rows does
+        // not, because every copy is charged: typed limit, no proposal.
+        assert_eq!(extract_with(&build(1), tight).expect("one copy fits").photos.len(), 1);
+        assert_eq!(
+            extract_with(&build(16), tight).unwrap_err(),
+            LrcatError::Limit(LimitKind::RetainedText)
+        );
+        // The budget bounds the schema too: sqlite_master table names are only bounded by the record.
+        let bare = Limits { max_retained_text_bytes: 300, ..Limits::default() };
+        assert_eq!(extract_with(&build(1), bare).unwrap_err(), LrcatError::Limit(LimitKind::RetainedText));
+        // The budget itself cannot be disabled by configuration.
+        let off = Limits { max_retained_text_bytes: u64::MAX, ..Limits::default() };
+        assert_eq!(extract_with(&build(1), off).unwrap_err(), LrcatError::Limit(LimitKind::Configuration));
+    });
+}
+
+fn patched(mut bytes: Vec<u8>, at: usize, with: &[u8]) -> Vec<u8> {
+    bytes[at..at + with.len()].copy_from_slice(with);
+    bytes
+}
+
+#[test]
+fn sizes_at_numeric_maximum_are_typed_refusals() {
+    bounded_case("sizes_at_numeric_maximum_are_typed_refusals", || {
+        let refused = |bytes: &[u8], limits: Limits| extract_with(bytes, limits).unwrap_err();
+        let d = Limits::default;
+        // Header: page size 0 and 65535 (not a power of two), page count u32::MAX.
+        assert_eq!(refused(&patched(row_image(), 16, &[0, 0]), d()), LrcatError::Corrupt("page_size"));
+        assert_eq!(refused(&patched(row_image(), 16, &[0xff, 0xff]), d()), LrcatError::Corrupt("page_size"));
+        assert_eq!(refused(&patched(row_image(), 28, &[0xff; 4]), d()), LrcatError::Limit(LimitKind::Pages));
+        // Table root page u32::MAX and a root that does not fit u32 (negative rowid-like value).
+        assert_eq!(refused(&image_rooted("Adobe_images", i64::from(u32::MAX), vec![leaf_page(0, &[])]), d()), LrcatError::Corrupt("page_number"));
+        assert_eq!(refused(&image_rooted("Adobe_images", i64::MIN, vec![leaf_page(0, &[])]), d()), LrcatError::Unsupported("virtual_table"));
+        // b-tree page: cell count 0xffff, cell pointer 0xffff, interior child u32::MAX.
+        assert_eq!(refused(&patched(row_image(), PS + 3, &[0xff, 0xff]), d()), LrcatError::Corrupt("cell_pointer_array"));
+        assert_eq!(refused(&patched(row_image(), PS + 8, &[0xff, 0xff]), d()), LrcatError::Corrupt("cell_bounds"));
+        let child_max = image(vec![interior_page(&[u32::MAX], 3), leaf_page(0, &[])]);
+        assert_eq!(refused(&child_max, d()), LrcatError::Corrupt("child_page"));
+        // Cell: declared payload u64::MAX (nine 0xff varint bytes), overflow pointer u32::MAX.
+        let mut payload_max = vec![0xff; 9];
+        payload_max.extend(varint(1));
+        assert_eq!(refused(&image(vec![leaf_page(0, &[payload_max])]), d()), LrcatError::Limit(LimitKind::Payload));
+        let ptr_max = image(vec![leaf_page(0, &[spilling_cell_to(2000, u32::MAX)])]);
+        assert_eq!(refused(&ptr_max, d()), LrcatError::Corrupt("overflow_pointer"));
+        // A 1 GiB declared payload in a 2 KiB file with every cap raised to its widest: refused
+        // typed after reading the (missing) chain, without reserving the declared size.
+        let wide = Limits { max_payload: 1 << 30, max_overflow_pages: u32::MAX, ..d() };
+        let huge = image(vec![leaf_page(0, &[spilling_cell_to(1 << 30, 3)]), overflow_page(0)]);
+        assert_eq!(refused(&huge, wide), LrcatError::Corrupt("overflow_chain_short"));
+        // Record header: header size claims more than the payload; serial type u64::MAX.
+        let mut bad_header = varint(200);
+        bad_header.extend(vec![0u8; 9]);
+        assert_eq!(refused(&image(vec![leaf_page(0, &[leaf_cell(1, &bad_header)])]), d()), LrcatError::Corrupt("record_header"));
+        let mut serial_max = vec![10u8];
+        serial_max.extend(vec![0xff; 9]);
+        assert_eq!(refused(&image(vec![leaf_page(0, &[leaf_cell(1, &serial_max)])]), d()), LrcatError::Corrupt("record_truncated"));
     });
 }

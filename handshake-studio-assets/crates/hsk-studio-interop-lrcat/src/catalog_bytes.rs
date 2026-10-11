@@ -1,3 +1,4 @@
+#![deny(clippy::arithmetic_side_effects)]
 //! INTERNAL bounded read-only decoder of untrusted SQLite file bytes: header, table b-tree
 //! pages, cell/record format, overflow chains, schema table, freelist check. Nothing here is
 //! `pub` outside the crate: no engine, no query API, no cache, no write path. Format source:
@@ -5,12 +6,20 @@
 use crate::error::{LimitKind, LrcatError, Result, be16, be32, check_cancel};
 use crate::source::{ByteSource, Limits};
 use hsk_studio_accord::CancellationToken;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 
 const MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const HEADER_BYTES: usize = 100;
 pub(crate) const MAX_SCHEMA_SQL: usize = 64 * 1024;
+/// Accounted bookkeeping bytes per retained collection entry (hash/vector slack).
+pub(crate) const ENTRY_BYTES: u64 = 24;
+
+/// Accounted bytes of one retained entry of type `T` (its inline size plus slack); heap text the
+/// entry owns is charged separately, by length.
+pub(crate) const fn entry_bytes<T>() -> u64 {
+    (std::mem::size_of::<T>() as u64).saturating_add(ENTRY_BYTES)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TextEncoding {
@@ -93,7 +102,7 @@ pub(crate) fn varint(buf: &[u8]) -> Option<(u64, usize)> {
         let b = *buf.get(i)?;
         value = (value << 7) | u64::from(b & 0x7f);
         if b & 0x80 == 0 {
-            return Some((value, i + 1));
+            return Some((value, i.saturating_add(1)));
         }
     }
     let b = *buf.get(8)?;
@@ -110,8 +119,9 @@ fn serial_size(serial: u64) -> Result<u64> {
         5 => 6,
         6 | 7 => 8,
         10 | 11 => return Err(LrcatError::Corrupt("serial_type")),
-        n if n % 2 == 0 => (n - 12) / 2,
-        n => (n - 13) / 2,
+        // 12 and above: even = blob of (n - 12) / 2 bytes, odd = text of (n - 13) / 2 bytes.
+        n if n % 2 == 0 => n.saturating_sub(12) / 2,
+        n => n.saturating_sub(13) / 2,
     })
 }
 
@@ -153,7 +163,7 @@ pub(crate) fn decode_record(
     let mut serials: Vec<u64> = Vec::new();
     while pos < header_size {
         let (serial, k) = varint(&payload[pos..header_size]).ok_or(LrcatError::Corrupt("record_header"))?;
-        pos += k;
+        pos = pos.saturating_add(k);
         if serials.len() >= max_columns as usize {
             return Err(LrcatError::Limit(LimitKind::Columns));
         }
@@ -173,27 +183,33 @@ pub(crate) fn decode_record(
     if offset > payload.len() as u64 {
         return Err(LrcatError::Corrupt("record_truncated"));
     }
-    Ok(want
-        .iter()
-        .map(|w| match w.and_then(|i| serials.get(i).map(|s| (i, *s))) {
-            None => Value::Null,
-            Some((i, serial)) => {
-                let start = offsets[i] as usize;
-                read_value(serial, &payload[start..start + sizes[i] as usize])
-            }
-        })
-        .collect())
+    let truncated = LrcatError::Corrupt("record_truncated");
+    let mut out = Vec::with_capacity(want.len());
+    for w in want {
+        let Some((i, serial)) = w.and_then(|i| serials.get(i).map(|s| (i, *s))) else {
+            out.push(Value::Null);
+            continue;
+        };
+        let start = usize::try_from(offsets[i]).map_err(|_| truncated.clone())?;
+        let len = usize::try_from(sizes[i]).map_err(|_| truncated.clone())?;
+        let end = start.checked_add(len).ok_or(truncated.clone())?;
+        let bytes = payload.get(start..end).ok_or(truncated.clone())?;
+        out.push(read_value(serial, bytes));
+    }
+    Ok(out)
 }
 
-/// Local payload bytes of a table-leaf cell with `p` payload bytes and usable size `u`.
+/// Local payload bytes of a table-leaf cell with `p` payload bytes and usable size `u`
+/// (`u >= 480` is validated at open; the saturating forms keep the formulas total anyway).
 fn local_size(p: u64, u: usize) -> usize {
-    let x = (u - 35) as u64;
+    let x = u.saturating_sub(35) as u64;
     if p <= x {
-        return p as usize;
+        return usize::try_from(p).unwrap_or(usize::MAX);
     }
-    let m = ((u - 12) * 32 / 255 - 23) as u64;
-    let k = m + (p - m) % (u as u64 - 4);
-    if k <= x { k as usize } else { m as usize }
+    let m = (u.saturating_sub(12).saturating_mul(32) / 255).saturating_sub(23) as u64;
+    let span = (u as u64).saturating_sub(4);
+    let k = m.saturating_add(p.saturating_sub(m).checked_rem(span).unwrap_or(0));
+    usize::try_from(if k <= x { k } else { m }).unwrap_or(usize::MAX)
 }
 
 /// Validates the SQLite magic and returns the page size from the first 100 bytes of the main file.
@@ -248,6 +264,12 @@ pub(crate) struct Db<'a> {
     freelist_count: u32,
     page_reads: Cell<u64>,
     cells: Cell<u64>,
+    /// Overflow pages already consumed by ANY chain of this extraction. A page belongs to exactly
+    /// one cell's chain in a valid file; a second claim (another row, another table, a loop) is a
+    /// shared page and is refused, so no chain can be read once per row.
+    overflow_claimed: RefCell<HashSet<u32>>,
+    /// Extraction-wide accounted retained memory (see `charge`).
+    retained: Cell<u64>,
 }
 
 /// One table-leaf cell: the local payload bytes are copied, the rest is fetched on demand.
@@ -304,6 +326,8 @@ impl<'a> Db<'a> {
             freelist_count: 0,
             page_reads: Cell::new(0),
             cells: Cell::new(0),
+            overflow_claimed: RefCell::new(HashSet::new()),
+            retained: Cell::new(0),
         };
         let page1 = db.read_page(1)?;
         if &page1[..16] != MAGIC {
@@ -321,10 +345,10 @@ impl<'a> Db<'a> {
         if write_version > 2 || read_version > 2 {
             return Err(LrcatError::Unsupported("file_format_version"));
         }
-        let usable = page_size - u32::from(page1[20]);
-        if usable < 480 {
-            return Err(LrcatError::Corrupt("usable_size"));
-        }
+        let usable = page_size
+            .checked_sub(u32::from(page1[20]))
+            .filter(|u| *u >= 480)
+            .ok_or(LrcatError::Corrupt("usable_size"))?;
         if page1[21] != 64 || page1[22] != 32 || page1[23] != 32 {
             return Err(LrcatError::Corrupt("payload_fractions"));
         }
@@ -342,7 +366,7 @@ impl<'a> Db<'a> {
         } else if in_header != 0 && counter == valid_for {
             in_header
         } else {
-            u32::try_from(main.len() / u64::from(page_size))
+            u32::try_from(main.len().checked_div(u64::from(page_size)).unwrap_or(0))
                 .map_err(|_| LrcatError::Limit(LimitKind::Pages))?
         };
         if pages == 0 {
@@ -351,7 +375,9 @@ impl<'a> Db<'a> {
         if pages > limits.max_pages {
             return Err(LrcatError::Limit(LimitKind::Pages));
         }
-        if wal_pages.is_none() && u64::from(pages) * u64::from(page_size) > main.len() {
+        if wal_pages.is_none()
+            && u64::from(pages).saturating_mul(u64::from(page_size)) > main.len()
+        {
             return Err(LrcatError::Corrupt("main_truncated"));
         }
         db.usable = usable;
@@ -366,7 +392,7 @@ impl<'a> Db<'a> {
         if no == 0 || no > self.page_count {
             return Err(LrcatError::Corrupt("page_number"));
         }
-        let reads = self.page_reads.get() + 1;
+        let reads = self.page_reads.get().saturating_add(1);
         if reads > self.limits.max_page_reads {
             return Err(LrcatError::Limit(LimitKind::PageReads));
         }
@@ -378,16 +404,29 @@ impl<'a> Db<'a> {
             wal.read_at(*offset, &mut buf)?;
             return Ok(buf);
         }
-        let offset = u64::from(no - 1) * u64::from(self.page_size);
-        if offset + u64::from(self.page_size) > self.main.len() {
+        let offset = u64::from(no.saturating_sub(1)).saturating_mul(u64::from(self.page_size));
+        if offset.saturating_add(u64::from(self.page_size)) > self.main.len() {
             return Err(LrcatError::Corrupt("page_missing"));
         }
         self.main.read_at(offset, &mut buf)?;
         Ok(buf)
     }
 
+    /// Charges `bytes` of memory the extraction is about to retain (schema entries, lookup-table
+    /// entries, proposal entries, every kept or cloned string) against
+    /// `Limits::max_retained_text_bytes`. Call BEFORE the allocation it guards; the total is
+    /// extraction-wide, so a value stored once but referenced by many rows is charged per copy.
+    pub fn charge(&self, bytes: u64) -> Result<()> {
+        let total = self.retained.get().saturating_add(bytes);
+        if total > self.limits.max_retained_text_bytes {
+            return Err(LrcatError::Limit(LimitKind::RetainedText));
+        }
+        self.retained.set(total);
+        Ok(())
+    }
+
     fn add_cells(&self, n: u64) -> Result<()> {
-        let total = self.cells.get() + n;
+        let total = self.cells.get().saturating_add(n);
         if total > self.limits.max_cells {
             return Err(LrcatError::Limit(LimitKind::Cells));
         }
@@ -414,69 +453,81 @@ impl<'a> Db<'a> {
                 return Err(LrcatError::Cycle("btree_cycle"));
             }
             let page = self.read_page(no)?;
-            let h = if no == 1 { HEADER_BYTES } else { 0 };
-            let (header_len, interior) = match page[h] {
+            // Page 1 carries the 100-byte database header before its b-tree header.
+            let head = &page[if no == 1 { HEADER_BYTES } else { 0 }..];
+            let array_base = if no == 1 { HEADER_BYTES } else { 0 };
+            let (header_len, interior) = match head[0] {
                 0x0d => (8usize, false),
                 0x05 => (12usize, true),
                 _ => return Err(LrcatError::Corrupt("btree_page_type")),
             };
-            let ncells = usize::from(be16(&page[h + 3..]));
-            let array_start = h + header_len;
-            let array_end = array_start + ncells * 2;
+            let ncells = usize::from(be16(&head[3..]));
+            let array_start = array_base.saturating_add(header_len);
+            let array_end = ncells.saturating_mul(2).saturating_add(array_start);
             if array_end > usable {
                 return Err(LrcatError::Corrupt("cell_pointer_array"));
             }
             self.add_cells(ncells as u64)?;
-            let pointer = |i: usize| usize::from(be16(&page[array_start + i * 2..]));
+            // `array_end <= usable <= page.len()` was checked, so every pointer read is in range.
+            let pointer = |i: usize| {
+                let at = i.saturating_mul(2).saturating_add(array_start);
+                usize::from(be16(&page[at..]))
+            };
             if interior {
-                let mut children = Vec::with_capacity(ncells + 1);
+                let mut children = Vec::with_capacity(ncells.saturating_add(1));
                 for i in 0..ncells {
                     let p = pointer(i);
-                    if p < array_end || p + 5 > usable {
+                    if p < array_end || p.saturating_add(5) > usable {
                         return Err(LrcatError::Corrupt("cell_bounds"));
                     }
                     children.push(be32(&page[p..]));
                 }
-                children.push(be32(&page[h + 8..]));
+                children.push(be32(&head[8..]));
                 for child in children.into_iter().rev() {
                     if child == 0 || child > self.page_count {
                         return Err(LrcatError::Corrupt("child_page"));
                     }
-                    stack.push((child, depth + 1));
+                    stack.push((child, depth.saturating_add(1)));
                 }
                 continue;
             }
+            let bounds = LrcatError::Corrupt("cell_bounds");
             for i in 0..ncells {
                 let p = pointer(i);
                 if p < array_end || p >= usable {
-                    return Err(LrcatError::Corrupt("cell_bounds"));
+                    return Err(bounds);
                 }
-                let (payload_len, n1) =
-                    varint(&page[p..usable]).ok_or(LrcatError::Corrupt("cell_bounds"))?;
-                let (rowid, n2) = varint(&page[p + n1..usable])
-                    .ok_or(LrcatError::Corrupt("cell_bounds"))?;
+                let (payload_len, n1) = page
+                    .get(p..usable)
+                    .and_then(varint)
+                    .ok_or(bounds.clone())?;
+                let (rowid, n2) = page
+                    .get(p.saturating_add(n1)..usable)
+                    .and_then(varint)
+                    .ok_or(bounds.clone())?;
                 if payload_len > self.limits.max_payload {
                     return Err(LrcatError::Limit(LimitKind::Payload));
                 }
                 let local = local_size(payload_len, usable);
-                let start = p + n1 + n2;
-                let end = start + local;
-                let spills = payload_len > (usable - 35) as u64;
-                if end + if spills { 4 } else { 0 } > usable {
-                    return Err(LrcatError::Corrupt("cell_overrun"));
+                let overrun = LrcatError::Corrupt("cell_overrun");
+                let start = p.saturating_add(n1).saturating_add(n2);
+                let end = start.checked_add(local).ok_or(overrun.clone())?;
+                let spills = payload_len > usable.saturating_sub(35) as u64;
+                if end.saturating_add(if spills { 4 } else { 0 }) > usable {
+                    return Err(overrun);
                 }
                 let overflow = if spills { be32(&page[end..]) } else { 0 };
                 if spills && (overflow == 0 || overflow > self.page_count) {
                     return Err(LrcatError::Corrupt("overflow_pointer"));
                 }
-                rows += 1;
+                rows = rows.saturating_add(1);
                 if rows > self.limits.max_rows {
                     return Err(LrcatError::Limit(LimitKind::Rows));
                 }
                 visit(TableCell {
                     rowid: rowid as i64,
                     payload_len,
-                    local: page[start..end].to_vec(),
+                    local: page.get(start..end).ok_or(overrun)?.to_vec(),
                     overflow,
                 })?;
             }
@@ -484,36 +535,53 @@ impl<'a> Db<'a> {
         Ok(rows)
     }
 
-    /// Assembles the full record payload, following the overflow chain with a page cap and cycle
-    /// detection. The declared size was already checked against `max_payload`.
+    /// Assembles the full record payload, following the overflow chain with a page cap, cycle
+    /// detection and an extraction-wide claim on every overflow page: a page already consumed by
+    /// this chain is `overflow_cycle`, by another cell's chain `overflow_shared`. The declared
+    /// size was already checked against `max_payload`.
     pub fn payload(&self, cell: &TableCell) -> Result<Vec<u8>> {
-        let total = cell.payload_len as usize;
-        let mut out = Vec::with_capacity(total);
-        out.extend_from_slice(&cell.local);
-        if out.len() >= total {
-            return Ok(out);
+        let total = usize::try_from(cell.payload_len)
+            .map_err(|_| LrcatError::Limit(LimitKind::Payload))?;
+        if total <= cell.local.len() {
+            return Ok(cell.local.clone());
         }
         if cell.overflow == 0 {
             return Err(LrcatError::Corrupt("overflow_missing"));
         }
-        let per_page = (self.usable - 4) as usize;
-        let needed = (total - out.len()).div_ceil(per_page);
+        // Every size is checked BEFORE the buffer is allocated: the chain this payload needs must
+        // fit the configured cap, and the up-front reservation never exceeds what the database
+        // itself could supply (the loop below grows only with bytes really read).
+        let per_page = (self.usable as usize).saturating_sub(4).max(1);
+        let needed = total.saturating_sub(cell.local.len()).div_ceil(per_page);
         if needed > self.limits.max_overflow_pages as usize {
             return Err(LrcatError::Limit(LimitKind::OverflowPages));
         }
-        let mut seen: HashSet<u32> = HashSet::new();
+        let supply = (self.page_count as usize)
+            .saturating_mul(per_page)
+            .saturating_add(cell.local.len());
+        let mut out = Vec::with_capacity(total.min(supply));
+        out.extend_from_slice(&cell.local);
+        let mut chain: Vec<u32> = Vec::new();
         let mut next = cell.overflow;
         while out.len() < total {
             if next == 0 {
                 return Err(LrcatError::Corrupt("overflow_chain_short"));
             }
-            if !seen.insert(next) {
-                return Err(LrcatError::Cycle("overflow_cycle"));
+            if !self.overflow_claimed.borrow_mut().insert(next) {
+                return Err(LrcatError::Cycle(if chain.contains(&next) {
+                    "overflow_cycle"
+                } else {
+                    "overflow_shared"
+                }));
             }
+            chain.push(next);
             let page = self.read_page(next)?;
             next = be32(&page[0..]);
-            let take = per_page.min(total - out.len());
-            out.extend_from_slice(&page[4..4 + take]);
+            let take = per_page.min(total.saturating_sub(out.len()));
+            let chunk = page
+                .get(4..take.saturating_add(4))
+                .ok_or(LrcatError::Corrupt("overflow_page"))?;
+            out.extend_from_slice(chunk);
         }
         if next != 0 {
             return Err(LrcatError::Corrupt("overflow_chain_long"));
@@ -531,7 +599,7 @@ impl<'a> Db<'a> {
             let v = decode_record(&payload, self.limits.max_columns, &want)?;
             let name = v[1].text(enc);
             if v[0].text(enc).as_deref() != Some("table") || name.is_none() {
-                schema.other_objects += 1;
+                schema.other_objects = schema.other_objects.saturating_add(1);
                 return Ok(());
             }
             let root = v[2]
@@ -542,7 +610,7 @@ impl<'a> Db<'a> {
                 .text(enc)
                 .filter(|s| s.len() <= MAX_SCHEMA_SQL)
                 .and_then(|s| parse_create_table(&s, self.limits.max_columns).ok());
-            schema.tables.push(match parsed {
+            let def = match parsed {
                 Some(p) => TableDef {
                     name: name.unwrap_or_default(),
                     root,
@@ -559,7 +627,18 @@ impl<'a> Db<'a> {
                     rowid_alias: None,
                     without_rowid: false,
                 },
-            });
+            };
+            // Names are only bounded by the record payload: charge every retained schema entry.
+            let columns = def
+                .columns
+                .iter()
+                .fold(0u64, |a, c| a.saturating_add(ENTRY_BYTES).saturating_add(c.len() as u64));
+            self.charge(
+                entry_bytes::<TableDef>()
+                    .saturating_add(def.name.len() as u64)
+                    .saturating_add(columns),
+            )?;
+            schema.tables.push(def);
             Ok(())
         })?;
         Ok(schema)
@@ -596,14 +675,16 @@ impl<'a> Db<'a> {
                 report.anomaly = Some("freelist_leaf_count");
                 return Ok(report);
             }
-            report.counted += 1;
+            report.counted = report.counted.saturating_add(1);
             for i in 0..leaves {
-                let leaf = be32(&page[8 + i * 4..]);
+                // `leaves <= per_trunk_max`, so the 4-byte entry lies inside the page.
+                let at = i.saturating_mul(4).saturating_add(8);
+                let leaf = be32(&page[at..]);
                 if leaf == 0 || leaf > self.page_count || !seen.insert(leaf) {
                     report.anomaly = Some("freelist_leaf_invalid");
                     return Ok(report);
                 }
-                report.counted += 1;
+                report.counted = report.counted.saturating_add(1);
             }
             trunk = be32(&page[0..]);
         }
@@ -629,43 +710,47 @@ enum Tok {
     Punct(char),
 }
 
+/// Cursor step over untrusted text: saturating, and every use is guarded by a `get`/length test.
+fn adv(i: usize, n: usize) -> usize {
+    i.saturating_add(n)
+}
+
 fn tokenize(sql: &str) -> Option<Vec<Tok>> {
     let c: Vec<char> = sql.chars().collect();
     let mut toks = Vec::new();
     let mut i = 0;
-    while i < c.len() {
-        let ch = c[i];
+    while let Some(&ch) = c.get(i) {
         if ch.is_whitespace() {
-            i += 1;
-        } else if ch == '-' && c.get(i + 1) == Some(&'-') {
-            while i < c.len() && c[i] != '\n' {
-                i += 1;
+            i = adv(i, 1);
+        } else if ch == '-' && c.get(adv(i, 1)) == Some(&'-') {
+            while c.get(i).is_some_and(|x| *x != '\n') {
+                i = adv(i, 1);
             }
-        } else if ch == '/' && c.get(i + 1) == Some(&'*') {
-            i += 2;
-            while !(c.get(i) == Some(&'*') && c.get(i + 1) == Some(&'/')) {
+        } else if ch == '/' && c.get(adv(i, 1)) == Some(&'*') {
+            i = adv(i, 2);
+            while !(c.get(i) == Some(&'*') && c.get(adv(i, 1)) == Some(&'/')) {
                 if i >= c.len() {
                     return None;
                 }
-                i += 1;
+                i = adv(i, 1);
             }
-            i += 2;
+            i = adv(i, 2);
         } else if ch == '"' || ch == '`' || ch == '\'' {
             let mut text = String::new();
-            i += 1;
+            i = adv(i, 1);
             loop {
                 let x = *c.get(i)?;
                 if x == ch {
-                    if c.get(i + 1) == Some(&ch) {
+                    if c.get(adv(i, 1)) == Some(&ch) {
                         text.push(ch);
-                        i += 2;
+                        i = adv(i, 2);
                         continue;
                     }
-                    i += 1;
+                    i = adv(i, 1);
                     break;
                 }
                 text.push(x);
-                i += 1;
+                i = adv(i, 1);
             }
             toks.push(if ch == '\'' {
                 Tok::Str
@@ -674,23 +759,30 @@ fn tokenize(sql: &str) -> Option<Vec<Tok>> {
             });
         } else if ch == '[' {
             let mut text = String::new();
-            i += 1;
-            while *c.get(i)? != ']' {
-                text.push(c[i]);
-                i += 1;
+            i = adv(i, 1);
+            loop {
+                let x = *c.get(i)?;
+                if x == ']' {
+                    break;
+                }
+                text.push(x);
+                i = adv(i, 1);
             }
-            i += 1;
+            i = adv(i, 1);
             toks.push(Tok::Quoted(text.to_lowercase()));
         } else if ch.is_alphanumeric() || ch == '_' || ch == '$' {
             let mut text = String::new();
-            while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_' || c[i] == '$') {
-                text.push(c[i]);
-                i += 1;
+            while let Some(&x) = c.get(i) {
+                if !(x.is_alphanumeric() || x == '_' || x == '$') {
+                    break;
+                }
+                text.push(x);
+                i = adv(i, 1);
             }
             toks.push(Tok::Word(text.to_lowercase()));
         } else {
             toks.push(Tok::Punct(ch));
-            i += 1;
+            i = adv(i, 1);
         }
     }
     Some(toks)
@@ -711,12 +803,12 @@ pub(crate) fn parse_create_table(
     if !toks.get(i).is_some_and(|t| is_word(t, "create")) {
         return Err("schema_not_create");
     }
-    i += 1;
+    i = adv(i, 1);
     if toks
         .get(i)
         .is_some_and(|t| is_word(t, "temp") || is_word(t, "temporary"))
     {
-        i += 1;
+        i = adv(i, 1);
     }
     if !toks.get(i).is_some_and(|t| is_word(t, "table")) {
         return Err("schema_not_table");
@@ -725,9 +817,9 @@ pub(crate) fn parse_create_table(
         if is_word(&toks[i], "as") {
             return Err("schema_create_as");
         }
-        i += 1;
+        i = adv(i, 1);
     }
-    i += 1; // past '('
+    i = adv(i, 1); // past '('
     let mut columns: Vec<String> = Vec::new();
     let mut rowid_alias = None;
     loop {
@@ -735,13 +827,13 @@ pub(crate) fn parse_create_table(
         let mut depth = 0u32;
         while i < toks.len() {
             match &toks[i] {
-                Tok::Punct('(') => depth += 1,
+                Tok::Punct('(') => depth = depth.saturating_add(1),
                 Tok::Punct(')') if depth == 0 => break,
-                Tok::Punct(')') => depth -= 1,
+                Tok::Punct(')') => depth = depth.saturating_sub(1),
                 Tok::Punct(',') if depth == 0 => break,
                 _ => {}
             }
-            i += 1;
+            i = adv(i, 1);
         }
         if i >= toks.len() {
             return Err("schema_unbalanced");
@@ -768,7 +860,7 @@ pub(crate) fn parse_create_table(
             columns.push(name);
         }
         let closing = toks[i] == Tok::Punct(')');
-        i += 1;
+        i = adv(i, 1);
         if closing {
             break;
         }

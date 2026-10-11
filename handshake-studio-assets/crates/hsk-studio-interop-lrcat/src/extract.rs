@@ -1,10 +1,13 @@
+#![deny(clippy::arithmetic_side_effects)]
 //! Fixed Lightroom semantic extraction. This is the ONLY public decoding entry: it reads a fixed,
 //! named set of Lightroom tables from granted bytes and returns typed import proposals plus
 //! per-entity loss and reconciliation receipts. Decoded rows are proposals, never authority, and
 //! a successful parse is not a full conversion (STU-IO-189). Table and column names below come
 //! from the module brief and the LightCraft concept reference; they are UNVERIFIED against a
 //! Lightroom-written catalog of any current version (validator-time oracle).
-use crate::catalog_bytes::{Db, Schema, TableDef, Value, decode_record, peek_page_size};
+use crate::catalog_bytes::{
+    Db, ENTRY_BYTES, Schema, TableDef, Value, decode_record, entry_bytes, peek_page_size,
+};
 use crate::error::{LrcatError, Result, check_cancel};
 use crate::source::{Grant, Limits, WalGrant};
 use crate::wal_snapshot::{Fingerprint, WalOverlay, digest, scan_wal};
@@ -23,6 +26,11 @@ pub const KNOWN_PROCESS_VERSIONS: &[&str] = &["5.0", "5.7", "6.6", "6.7", "10.0"
 pub const KNOWN_SCHEMA_VERSIONS: &[&str] = &[];
 
 const MAX_LOSS_KEYS: usize = 4096;
+
+/// Cursor step over untrusted text: saturating, and every use is guarded by a `get`/length test.
+fn adv(i: usize, n: usize) -> usize {
+    i.saturating_add(n)
+}
 const MAX_LUA_SCALARS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -59,7 +67,12 @@ pub struct LossNote {
     pub first_local_id: Option<i64>,
 }
 
-/// `rows_seen == mapped + lost` for every entity table the extractor touched.
+/// Row accounting of one entity table the extractor touched, from three separate sources:
+/// `rows_seen` is counted by the b-tree walker, `mapped` is the number of entries the proposal
+/// (or its lookup table) holds for the entity, `lost` is the number of rows that produced no
+/// entry, each recorded as a whole-row `LossNote` event. Field-level losses of a mapped row are
+/// listed in `losses` but do not make the row lost. `CatalogProposal::reconciles` cross-checks
+/// `rows_seen == mapped + lost` and `mapped` against the proposal content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityCount {
     pub entity: String,
@@ -179,11 +192,48 @@ impl CatalogProposal {
             .iter()
             .find(|l| l.entity == entity && l.code == code)
     }
-    /// Every touched entity table satisfies `rows_seen == mapped + lost`.
+    /// Entries this proposal itself holds for an entity that has a proposal vector (`None` for
+    /// lookup-only and count-only tables).
+    fn produced(&self, entity: &str) -> Option<u64> {
+        Some(match entity {
+            "Adobe_images" => self.photos.len(),
+            "Adobe_imageDevelopSettings" => self.develop.len(),
+            "AgLibraryCollection" => self.collections.len(),
+            "AgLibraryCollectionImage" => self.collection_members.len(),
+            "AgLibraryKeyword" => self.keywords.len(),
+            "AgLibraryKeywordImage" => self.keyword_assignments.len(),
+            "Adobe_variablesTable" => usize::from(self.schema_version.is_some()),
+            _ => return None,
+        } as u64)
+    }
+
+    /// True only when the row accounting is consistent with the proposal itself: for every
+    /// counted entity `rows_seen == mapped + lost`, every entity with a proposal vector has a
+    /// count whose `mapped` equals the entries actually present, and the required `Adobe_images`
+    /// count exists. A proposal that lost entries, lost a count or carries a skewed count does
+    /// not reconcile.
     pub fn reconciles(&self) -> bool {
-        self.counts
-            .iter()
-            .all(|c| c.rows_seen == c.mapped + c.lost)
+        const WITH_VECTOR: [&str; 7] = [
+            "Adobe_images",
+            "Adobe_imageDevelopSettings",
+            "AgLibraryCollection",
+            "AgLibraryCollectionImage",
+            "AgLibraryKeyword",
+            "AgLibraryKeywordImage",
+            "Adobe_variablesTable",
+        ];
+        self.count("Adobe_images").is_some()
+            && self
+                .counts
+                .iter()
+                .all(|c| c.mapped.checked_add(c.lost) == Some(c.rows_seen))
+            && WITH_VECTOR
+                .iter()
+                .all(|e| match (self.count(e), self.produced(e)) {
+                    (Some(c), Some(n)) => c.mapped == n,
+                    (None, Some(n)) => n == 0,
+                    _ => true,
+                })
     }
     /// True only when nothing was lost, approximated, opaque or unsupported (never for a
     /// catalog that carries develop settings: those stay opaque).
@@ -221,8 +271,22 @@ impl LossLog {
             count: 0,
             first_local_id: id,
         });
-        note.count += n;
+        note.count = note.count.saturating_add(n);
     }
+}
+
+/// Walker row count plus the number of rows that produced no entry (`Dropped`).
+#[derive(Clone, Copy)]
+struct Walked {
+    seen: u64,
+    lost: u64,
+}
+
+/// Why a visited row produced no entry; `rows` records it as a whole-row loss.
+struct Dropped {
+    field: &'static str,
+    disposition: Disposition,
+    code: &'static str,
 }
 
 /// Root-folder path by id; folder (root id, path from root) by id; file (folder id, name) by id.
@@ -251,13 +315,43 @@ impl<'a> Extractor<'a> {
         self.losses.borrow_mut().add(entity, field, d, code, n, id);
     }
 
-    fn count(&self, entity: &str, seen: u64, mapped: u64) {
+    /// Records an entity's accounting from three separate sources: the walker's row count and
+    /// whole-row loss events (`walked`) and the number of entries the caller really kept
+    /// (`mapped`). `lost` is never derived by subtraction.
+    fn count(&self, entity: &str, walked: Walked, mapped: u64) {
         self.counts.borrow_mut().push(EntityCount {
             entity: entity.to_owned(),
-            rows_seen: seen,
+            rows_seen: walked.seen,
             mapped,
-            lost: seen.saturating_sub(mapped),
+            lost: walked.lost,
         });
+    }
+
+    /// Keeps the first row seen for `id`; a repeated rowid (corrupt b-tree) is a whole-row loss
+    /// of the later row instead of silently replacing the earlier one.
+    fn put<V>(&self, map: &mut HashMap<i64, V>, id: i64, value: V) -> Result<Option<Dropped>> {
+        if map.contains_key(&id) {
+            return Ok(Some(Dropped {
+                field: "rowid",
+                disposition: Disposition::Unsupported,
+                code: "duplicate_rowid",
+            }));
+        }
+        self.db.charge(entry_bytes::<(i64, V)>())?;
+        map.insert(id, value);
+        Ok(None)
+    }
+
+    /// Clones retained text, charging the copy against the retained-text budget BEFORE cloning:
+    /// one stored value referenced by many rows is paid for once per copy.
+    fn clone_text(&self, s: &Option<String>) -> Result<Option<String>> {
+        match s {
+            None => Ok(None),
+            Some(text) => {
+                self.db.charge(text.len() as u64)?;
+                Ok(Some(text.clone()))
+            }
+        }
     }
 
     fn lookup(&self, name: &str) -> Option<&'a TableDef> {
@@ -302,13 +396,15 @@ impl<'a> Extractor<'a> {
         }
     }
 
+    /// Walks one table. `visit` returns `None` when the row produced its entry and `Some(Dropped)`
+    /// when it produced none; every dropped row becomes a whole-row `LossNote` and one `lost`.
     fn rows(
         &self,
         entity: &str,
         t: &TableDef,
         names: &[&'static str],
-        mut visit: impl FnMut(i64, &[Value]) -> Result<()>,
-    ) -> Result<u64> {
+        mut visit: impl FnMut(i64, &[Value]) -> Result<Option<Dropped>>,
+    ) -> Result<Walked> {
         let want: Vec<Option<usize>> = names
             .iter()
             .map(|n| t.columns.iter().position(|c| c.eq_ignore_ascii_case(n)))
@@ -317,7 +413,8 @@ impl<'a> Extractor<'a> {
             .iter()
             .map(|w| w.is_some() && *w == t.rowid_alias)
             .collect();
-        let n = self.db.walk_table(t.root, &mut |cell| {
+        let mut lost = 0u64;
+        let seen = self.db.walk_table(t.root, &mut |cell| {
             check_cancel(self.cancel)?;
             let payload = self.db.payload(&cell)?;
             let mut vals = decode_record(&payload, self.limits.max_columns, &want)?;
@@ -326,25 +423,31 @@ impl<'a> Extractor<'a> {
                     vals[i] = Value::Int(cell.rowid);
                 }
             }
-            visit(cell.rowid, &vals)
+            if let Some(d) = visit(cell.rowid, &vals)? {
+                lost = lost.saturating_add(1);
+                self.loss(entity, d.field, d.disposition, d.code, 1, Some(cell.rowid));
+            }
+            Ok(())
         })?;
         for (i, w) in want.iter().enumerate() {
             if w.is_none() {
-                self.loss(entity, names[i], Disposition::Missing, "column_absent", n, None);
+                self.loss(entity, names[i], Disposition::Missing, "column_absent", seen, None);
             }
         }
-        Ok(n)
+        Ok(Walked { seen, lost })
     }
 
-    fn text(&self, entity: &str, field: &str, v: &Value, id: i64) -> Option<String> {
+    /// Strict text decode of a column value; kept text is charged against the retained budget.
+    fn text(&self, entity: &str, field: &str, v: &Value, id: i64) -> Result<Option<String>> {
         if v.is_null() {
-            return None;
+            return Ok(None);
         }
         let out = v.text(self.db.encoding);
-        if out.is_none() {
-            self.loss(entity, field, Disposition::Missing, "unexpected_or_invalid_text", 1, Some(id));
+        match &out {
+            None => self.loss(entity, field, Disposition::Missing, "unexpected_or_invalid_text", 1, Some(id)),
+            Some(text) => self.db.charge(text.len() as u64)?,
         }
-        out
+        Ok(out)
     }
 
     fn int(&self, entity: &str, field: &str, v: &Value, id: i64) -> Option<i64> {
@@ -366,10 +469,16 @@ impl<'a> Extractor<'a> {
             self.loss(name, "", Disposition::Unsupported, e.code(), 1, None);
             return Ok(());
         }
-        let n = self.db.walk_table(t.root, &mut |_| check_cancel(self.cancel))?;
-        self.count(name, n, 0);
-        if n > 0 {
-            self.loss(name, "", d, code, n, None);
+        // Counted tables are never mapped: every walked row is a whole-row loss event.
+        let mut lost = 0u64;
+        let seen = self.db.walk_table(t.root, &mut |_| {
+            check_cancel(self.cancel)?;
+            lost = lost.saturating_add(1);
+            Ok(())
+        })?;
+        self.count(name, Walked { seen, lost }, 0);
+        if lost > 0 {
+            self.loss(name, "", d, code, lost, None);
         }
         Ok(())
     }
@@ -384,64 +493,71 @@ impl<'a> Extractor<'a> {
             return Ok(None);
         }
         let mut version = None;
-        let n = self.rows("Adobe_variablesTable", t, &["name", "value"], |id, v| {
-            if self.text("Adobe_variablesTable", "name", &v[0], id).as_deref() == Some("Adobe_DBVersion") {
+        let walked = self.rows("Adobe_variablesTable", t, &["name", "value"], |id, v| {
+            let named = self.text("Adobe_variablesTable", "name", &v[0], id)?.as_deref() == Some("Adobe_DBVersion");
+            if named && version.is_none() {
                 version = match &v[1] {
-                    Value::Text(_) => self.text("Adobe_variablesTable", "value", &v[1], id),
+                    Value::Text(_) => self.text("Adobe_variablesTable", "value", &v[1], id)?,
                     Value::Int(i) => Some(i.to_string()),
                     _ => None,
                 };
+                if version.is_some() {
+                    return Ok(None);
+                }
             }
-            Ok(())
+            Ok(Some(Dropped {
+                field: "",
+                disposition: Disposition::Unsupported,
+                code: "variables_not_mapped",
+            }))
         })?;
-        let mapped = u64::from(version.is_some());
-        self.count("Adobe_variablesTable", n, mapped);
-        if n > mapped {
-            self.loss("Adobe_variablesTable", "", Disposition::Unsupported, "variables_not_mapped", n - mapped, None);
-        }
+        self.count("Adobe_variablesTable", walked, u64::from(version.is_some()));
         Ok(version)
     }
 
     fn path_tables(&self) -> Result<PathTables> {
         let mut roots = HashMap::new();
         if let Some(t) = self.optional("AgLibraryRootFolder") {
-            let n = self.rows("AgLibraryRootFolder", t, &["absolutePath"], |id, v| {
-                roots.insert(id, self.text("AgLibraryRootFolder", "absolutePath", &v[0], id));
-                Ok(())
+            let walked = self.rows("AgLibraryRootFolder", t, &["absolutePath"], |id, v| {
+                let path = self.text("AgLibraryRootFolder", "absolutePath", &v[0], id)?;
+                self.put(&mut roots, id, path)
             })?;
-            self.count("AgLibraryRootFolder", n, n);
+            self.count("AgLibraryRootFolder", walked, roots.len() as u64);
         }
         let mut folders = HashMap::new();
         if let Some(t) = self.optional("AgLibraryFolder") {
-            let n = self.rows("AgLibraryFolder", t, &["rootFolder", "pathFromRoot"], |id, v| {
-                folders.insert(
-                    id,
-                    (
-                        self.int("AgLibraryFolder", "rootFolder", &v[0], id),
-                        self.text("AgLibraryFolder", "pathFromRoot", &v[1], id),
-                    ),
+            let walked = self.rows("AgLibraryFolder", t, &["rootFolder", "pathFromRoot"], |id, v| {
+                let entry = (
+                    self.int("AgLibraryFolder", "rootFolder", &v[0], id),
+                    self.text("AgLibraryFolder", "pathFromRoot", &v[1], id)?,
                 );
-                Ok(())
+                self.put(&mut folders, id, entry)
             })?;
-            self.count("AgLibraryFolder", n, n);
+            self.count("AgLibraryFolder", walked, folders.len() as u64);
         }
         let mut files = HashMap::new();
         if let Some(t) = self.optional("AgLibraryFile") {
             let names = ["folder", "idx_filename", "baseName", "extension"];
-            let n = self.rows("AgLibraryFile", t, &names, |id, v| {
-                let mut name = self.text("AgLibraryFile", "idx_filename", &v[1], id);
+            let walked = self.rows("AgLibraryFile", t, &names, |id, v| {
+                let mut name = self.text("AgLibraryFile", "idx_filename", &v[1], id)?;
                 if name.is_none() {
-                    let base = self.text("AgLibraryFile", "baseName", &v[2], id);
-                    let ext = self.text("AgLibraryFile", "extension", &v[3], id);
-                    name = base.map(|b| match ext {
-                        Some(e) if !e.is_empty() => format!("{b}.{e}"),
-                        _ => b,
-                    });
+                    let base = self.text("AgLibraryFile", "baseName", &v[2], id)?;
+                    let ext = self.text("AgLibraryFile", "extension", &v[3], id)?;
+                    name = match base {
+                        Some(b) => match ext {
+                            Some(e) if !e.is_empty() => {
+                                self.db.charge((b.len() as u64).saturating_add(1).saturating_add(e.len() as u64))?;
+                                Some(format!("{b}.{e}"))
+                            }
+                            _ => Some(b),
+                        },
+                        None => None,
+                    };
                 }
-                files.insert(id, (self.int("AgLibraryFile", "folder", &v[0], id), name));
-                Ok(())
+                let entry = (self.int("AgLibraryFile", "folder", &v[0], id), name);
+                self.put(&mut files, id, entry)
             })?;
-            self.count("AgLibraryFile", n, n);
+            self.count("AgLibraryFile", walked, files.len() as u64);
         }
         Ok((roots, folders, files))
     }
@@ -462,20 +578,20 @@ impl<'a> Extractor<'a> {
             "orientation",
         ];
         let mut photos = Vec::new();
-        let n = self.rows("Adobe_images", t, &names, |id, v| {
+        let walked = self.rows("Adobe_images", t, &names, |id, v| {
             let e = "Adobe_images";
             let (mut root_path, mut path_from_root, mut file_name) = (None, None, None);
             match self.int(e, "rootFile", &v[1], id).and_then(|f| files.get(&f)) {
                 None => self.loss(e, "path", Disposition::Missing, "file_unresolved", 1, Some(id)),
                 Some((folder, name)) => {
-                    file_name = name.clone();
+                    file_name = self.clone_text(name)?;
                     match folder.and_then(|f| folders.get(&f)) {
                         None => self.loss(e, "path", Disposition::Missing, "folder_unresolved", 1, Some(id)),
                         Some((root, rel)) => {
-                            path_from_root = rel.clone();
+                            path_from_root = self.clone_text(rel)?;
                             match root.and_then(|r| roots.get(&r)) {
                                 None => self.loss(e, "path", Disposition::Missing, "root_unresolved", 1, Some(id)),
-                                Some(p) => root_path = p.clone(),
+                                Some(p) => root_path = self.clone_text(p)?,
                             }
                         }
                     }
@@ -501,24 +617,25 @@ impl<'a> Extractor<'a> {
                 }
                 ok
             });
+            self.db.charge(entry_bytes::<PhotoProposal>())?;
             photos.push(PhotoProposal {
                 local_id: id,
-                global_id: self.text(e, "id_global", &v[0], id),
+                global_id: self.text(e, "id_global", &v[0], id)?,
                 root_path,
                 path_from_root,
                 file_name,
-                file_format: self.text(e, "fileFormat", &v[2], id),
+                file_format: self.text(e, "fileFormat", &v[2], id)?,
                 width: self.int(e, "fileWidth", &v[3], id),
                 height: self.int(e, "fileHeight", &v[4], id),
                 rating,
                 pick,
-                color_label: self.text(e, "colorLabels", &v[7], id),
-                capture_time: self.text(e, "captureTime", &v[8], id),
-                orientation: self.text(e, "orientation", &v[9], id),
+                color_label: self.text(e, "colorLabels", &v[7], id)?,
+                capture_time: self.text(e, "captureTime", &v[8], id)?,
+                orientation: self.text(e, "orientation", &v[9], id)?,
             });
-            Ok(())
+            Ok(None)
         })?;
-        self.count("Adobe_images", n, photos.len() as u64);
+        self.count("Adobe_images", walked, photos.len() as u64);
         Ok(photos)
     }
 
@@ -528,10 +645,13 @@ impl<'a> Extractor<'a> {
             return Ok(out);
         };
         let e = "Adobe_imageDevelopSettings";
-        let n = self.rows(e, t, &["image", "text"], |id, v| {
+        let walked = self.rows(e, t, &["image", "text"], |id, v| {
             let Some(image) = v[0].as_i64().filter(|i| image_ids.contains(i)) else {
-                self.loss(e, "image", Disposition::Unsupported, "orphan_row", 1, Some(id));
-                return Ok(());
+                return Ok(Some(Dropped {
+                    field: "image",
+                    disposition: Disposition::Unsupported,
+                    code: "orphan_row",
+                }));
             };
             let bytes = v[1].bytes().unwrap_or(&[]);
             if v[1].is_null() {
@@ -539,9 +659,9 @@ impl<'a> Extractor<'a> {
             }
             let len = bytes.len() as u64;
             let sha256: [u8; 32] = Sha256::digest(bytes).into();
-            let keep = self.retained.get() + len <= self.limits.max_retained_opaque_bytes;
+            let keep = self.retained.get().saturating_add(len) <= self.limits.max_retained_opaque_bytes;
             if keep {
-                self.retained.set(self.retained.get() + len);
+                self.retained.set(self.retained.get().saturating_add(len));
             } else {
                 self.loss(e, "text", Disposition::Opaque, "opaque_bytes_not_retained", 1, Some(id));
             }
@@ -557,6 +677,19 @@ impl<'a> Extractor<'a> {
             if scalars.keys().any(|k| k.starts_with("Enable")) {
                 self.loss(e, "Enable*", Disposition::Opaque, "enable_flags_unmapped", 1, Some(id));
             }
+            // The scalar map and the process-version copy are retained text: charge them (the
+            // opaque bytes have their own budget above).
+            let scalar_bytes = scalars.iter().fold(0u64, |acc, (k, val)| {
+                acc.saturating_add(ENTRY_BYTES)
+                    .saturating_add(k.len() as u64)
+                    .saturating_add(val.len() as u64)
+            });
+            let version_bytes = process_version.as_ref().map_or(0, |p| p.len() as u64);
+            self.db.charge(
+                entry_bytes::<DevelopProposal>()
+                    .saturating_add(scalar_bytes)
+                    .saturating_add(version_bytes),
+            )?;
             out.push(DevelopProposal {
                 image_local_id: image,
                 process_version,
@@ -567,9 +700,9 @@ impl<'a> Extractor<'a> {
                 },
                 scalars,
             });
-            Ok(())
+            Ok(None)
         })?;
-        self.count(e, n, out.len() as u64);
+        self.count(e, walked, out.len() as u64);
         Ok(out)
     }
 
@@ -582,8 +715,8 @@ impl<'a> Extractor<'a> {
         let mut members = Vec::new();
         if let Some(t) = self.optional("AgLibraryCollection") {
             let e = "AgLibraryCollection";
-            let n = self.rows(e, t, &["name", "parent", "creationId"], |id, v| {
-                let creation_id = self.text(e, "creationId", &v[2], id);
+            let walked = self.rows(e, t, &["name", "parent", "creationId"], |id, v| {
+                let creation_id = self.text(e, "creationId", &v[2], id)?;
                 let kind = match creation_id.as_deref() {
                     Some(c) if c.to_ascii_lowercase().contains("smart") => {
                         self.loss(e, "creationId", Disposition::Unsupported, "smart_collection_rules_not_decoded", 1, Some(id));
@@ -595,30 +728,36 @@ impl<'a> Extractor<'a> {
                         CollectionKind::Other
                     }
                 };
+                self.db.charge(entry_bytes::<CollectionProposal>())?;
                 collections.push(CollectionProposal {
                     local_id: id,
-                    name: self.text(e, "name", &v[0], id),
+                    name: self.text(e, "name", &v[0], id)?,
                     parent: self.int(e, "parent", &v[1], id),
                     creation_id,
                     kind,
                 });
-                Ok(())
+                Ok(None)
             })?;
-            self.count(e, n, collections.len() as u64);
+            self.count(e, walked, collections.len() as u64);
         }
         if let Some(t) = self.optional("AgLibraryCollectionImage") {
             let e = "AgLibraryCollectionImage";
             let known: HashSet<i64> = collections.iter().map(|c| c.local_id).collect();
-            let n = self.rows(e, t, &["collection", "image"], |id, v| {
+            let walked = self.rows(e, t, &["collection", "image"], |_, v| {
                 match (v[0].as_i64(), v[1].as_i64()) {
                     (Some(c), Some(i)) if known.contains(&c) && image_ids.contains(&i) => {
+                        self.db.charge(entry_bytes::<CollectionMember>())?;
                         members.push(CollectionMember { collection: c, image: i });
+                        Ok(None)
                     }
-                    _ => self.loss(e, "collection,image", Disposition::Unsupported, "orphan_row", 1, Some(id)),
+                    _ => Ok(Some(Dropped {
+                        field: "collection,image",
+                        disposition: Disposition::Unsupported,
+                        code: "orphan_row",
+                    })),
                 }
-                Ok(())
             })?;
-            self.count(e, n, members.len() as u64);
+            self.count(e, walked, members.len() as u64);
         }
         Ok((collections, members))
     }
@@ -631,29 +770,35 @@ impl<'a> Extractor<'a> {
         let mut assignments = Vec::new();
         if let Some(t) = self.optional("AgLibraryKeyword") {
             let e = "AgLibraryKeyword";
-            let n = self.rows(e, t, &["name", "parent"], |id, v| {
+            let walked = self.rows(e, t, &["name", "parent"], |id, v| {
+                self.db.charge(entry_bytes::<KeywordProposal>())?;
                 keywords.push(KeywordProposal {
                     local_id: id,
-                    name: self.text(e, "name", &v[0], id),
+                    name: self.text(e, "name", &v[0], id)?,
                     parent: self.int(e, "parent", &v[1], id),
                 });
-                Ok(())
+                Ok(None)
             })?;
-            self.count(e, n, keywords.len() as u64);
+            self.count(e, walked, keywords.len() as u64);
         }
         if let Some(t) = self.optional("AgLibraryKeywordImage") {
             let e = "AgLibraryKeywordImage";
             let known: HashSet<i64> = keywords.iter().map(|k| k.local_id).collect();
-            let n = self.rows(e, t, &["image", "tag"], |id, v| {
+            let walked = self.rows(e, t, &["image", "tag"], |_, v| {
                 match (v[0].as_i64(), v[1].as_i64()) {
                     (Some(i), Some(k)) if known.contains(&k) && image_ids.contains(&i) => {
+                        self.db.charge(entry_bytes::<KeywordAssignment>())?;
                         assignments.push(KeywordAssignment { image: i, keyword: k });
+                        Ok(None)
                     }
-                    _ => self.loss(e, "image,tag", Disposition::Unsupported, "orphan_row", 1, Some(id)),
+                    _ => Ok(Some(Dropped {
+                        field: "image,tag",
+                        disposition: Disposition::Unsupported,
+                        code: "orphan_row",
+                    })),
                 }
-                Ok(())
             })?;
-            self.count(e, n, assignments.len() as u64);
+            self.count(e, walked, assignments.len() as u64);
         }
         Ok((keywords, assignments))
     }
@@ -667,18 +812,24 @@ impl<'a> Extractor<'a> {
                 continue;
             }
             if listed >= self.limits.max_unmapped_tables {
-                unlisted += 1;
+                unlisted = unlisted.saturating_add(1);
                 continue;
             }
-            listed += 1;
+            listed = listed.saturating_add(1);
             let name = sanitize(&t.name);
             if let Err(e) = Self::walkable(t) {
                 self.loss("unmapped_table", &name, Disposition::Unsupported, e.code(), 1, None);
                 continue;
             }
-            let n = self.db.walk_table(t.root, &mut |_| check_cancel(self.cancel))?;
-            self.count(&format!("table:{name}"), n, 0);
-            self.loss("unmapped_table", &name, Disposition::Unsupported, "unmapped_table", n.max(1), None);
+            // No row of an unmapped table is mapped: each walked row is a whole-row loss event.
+            let mut lost = 0u64;
+            let seen = self.db.walk_table(t.root, &mut |_| {
+                check_cancel(self.cancel)?;
+                lost = lost.saturating_add(1);
+                Ok(())
+            })?;
+            self.count(&format!("table:{name}"), Walked { seen, lost }, 0);
+            self.loss("unmapped_table", &name, Disposition::Unsupported, "unmapped_table", lost.max(1), None);
         }
         if unlisted > 0 {
             self.loss("unmapped_table", "", Disposition::Unsupported, "unmapped_tables_unlisted", unlisted, None);
@@ -694,65 +845,81 @@ pub(crate) fn scan_lua_scalars(bytes: &[u8]) -> BTreeMap<String, String> {
     let n = bytes.len();
     let (mut i, mut depth) = (0usize, 0u32);
     let skip_ws = |mut i: usize| {
-        while i < n && bytes[i].is_ascii_whitespace() {
-            i += 1;
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i = adv(i, 1);
         }
         i
+    };
+    // Index of the closing quote of a string whose body starts at `k` (or the end of the text).
+    let string_end = |mut k: usize| {
+        while let Some(&b) = bytes.get(k) {
+            if b == b'"' {
+                break;
+            }
+            k = adv(k, if b == b'\\' { 2 } else { 1 });
+        }
+        k
     };
     while i < n && out.len() < MAX_LUA_SCALARS {
         let c = bytes[i];
         if c == b'{' {
-            depth += 1;
-            i += 1;
+            depth = depth.saturating_add(1);
+            i = adv(i, 1);
         } else if c == b'}' {
             depth = depth.saturating_sub(1);
-            i += 1;
-        } else if c == b'-' && bytes.get(i + 1) == Some(&b'-') {
-            while i < n && bytes[i] != b'\n' {
-                i += 1;
+            i = adv(i, 1);
+        } else if c == b'-' && bytes.get(adv(i, 1)) == Some(&b'-') {
+            while bytes.get(i).is_some_and(|b| *b != b'\n') {
+                i = adv(i, 1);
             }
         } else if c == b'"' {
-            i += 1;
-            while i < n && bytes[i] != b'"' {
-                i += if bytes[i] == b'\\' { 2 } else { 1 };
-            }
-            i += 1;
+            i = adv(string_end(adv(i, 1)), 1);
         } else if c.is_ascii_alphabetic() || c == b'_' {
             let start = i;
-            while i < n && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
+            while bytes
+                .get(i)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            {
+                i = adv(i, 1);
             }
             let key = &bytes[start..i];
             let j = skip_ws(i);
-            if depth != 1 || bytes.get(j) != Some(&b'=') || bytes.get(j + 1) == Some(&b'=') || key.len() > 64 {
+            if depth != 1
+                || bytes.get(j) != Some(&b'=')
+                || bytes.get(adv(j, 1)) == Some(&b'=')
+                || key.len() > 64
+            {
                 continue;
             }
-            let v = skip_ws(j + 1);
+            let v = skip_ws(adv(j, 1));
             let value = match bytes.get(v) {
                 Some(b'{') | None => continue,
                 Some(b'"') => {
-                    let mut k = v + 1;
-                    while k < n && bytes[k] != b'"' {
-                        k += if bytes[k] == b'\\' { 2 } else { 1 };
-                    }
+                    let first = adv(v, 1);
+                    let k = string_end(first);
                     let end = k.min(n);
-                    i = (k + 1).min(n);
-                    String::from_utf8_lossy(&bytes[v + 1..end.min(v + 1 + 256)]).into_owned()
+                    i = adv(k, 1).min(n);
+                    let text = bytes.get(first..end.min(adv(first, 256))).unwrap_or_default();
+                    String::from_utf8_lossy(text).into_owned()
                 }
                 Some(_) => {
                     let mut k = v;
-                    while k < n && !matches!(bytes[k], b',' | b'}' | b'\n' | b'\r' | b';') {
-                        k += 1;
+                    while bytes
+                        .get(k)
+                        .is_some_and(|b| !matches!(b, b',' | b'}' | b'\n' | b'\r' | b';'))
+                    {
+                        k = adv(k, 1);
                     }
                     i = k;
-                    String::from_utf8_lossy(&bytes[v..k.min(v + 64)]).trim().to_owned()
+                    let text = bytes.get(v..k.min(adv(v, 64))).unwrap_or_default();
+                    String::from_utf8_lossy(text).trim().to_owned()
                 }
             };
             if !value.is_empty() {
                 out.insert(String::from_utf8_lossy(key).into_owned(), value);
             }
         } else {
-            i += 1;
+            i = adv(i, 1);
         }
     }
     out
