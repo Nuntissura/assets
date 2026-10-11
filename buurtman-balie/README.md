@@ -36,7 +36,10 @@ On Windows, after the repository preparation gate:
 ```powershell
 cargo build --locked --offline -p buurtman-balie-host-demo --release --example portal_workload
 python tooling/portal-workload.py --executable target/release/examples/portal_workload.exe
+python tooling/portal-workload.py --profile P2 --executable target/release/examples/portal_workload.exe
 ```
+
+P1 uses Store-call admission; P2 queues complete authorized CRM calls through `CommandWorker` with the same provisional workload. P2 directly rereads the shared raw MemoryStore after drain and exposes the full disposable snapshot for receipt reconciliation. There are no hidden retries. Keep historical P1 run artifacts when comparing results.
 
 The monitor validates the selected specification profile, raw outcomes and canonical counters, records own-process CPU and peak working set, and retains source/binary hashes and cleanup evidence under ignored `.local/portal-workload/runs`. The latest result is `.local/portal-workload/result.json`. A failed measurement retains its error there; inspect it before retrying. The runner waits for the monitor's stdin release so the final OS resource read precedes exit; use the monitor to run it.
 
@@ -293,6 +296,17 @@ Queued expiry never executes. An active write's caller timeout returns uncertain
 its capacity until completion; reconcile the identical CRM request. Admission is volatile, and submitted
 byte accounting does not bound response sizes or total process memory. Hosts retain durable intent,
 response limits and aggregate cross-process admission. Production workload/latency budgets remain unselected.
+
+`worker::CommandWorker::new(raw_store, authorization, limits, config)` instead owns one `Crm` and
+serializes complete `execute`, `get`, search, quote, catalogue and relationship calls. Clones share the
+same queue. This prevents local load/commit interleaving among participating commands; stale edits,
+duplicate creates and external writers still return conflicts. Authorization runs when each call is
+dispatched, so queued work does not retain revoked grants. The host must supply live grant checks.
+Use the raw Store here rather than nesting a Store worker; retain finite host transport timeouts.
+Submitted bytes count the Context and method arguments, not snapshots returned or the host RPC envelope.
+The same expiry, uncertain write, close and pressure rules apply. After `Storage`, preserve the identical
+Context/Request for explicit reconciliation; never silently retry changed intent. Calls block their
+caller, so async hosts still need bounded invocation before dispatching onto blocking threads.
 
 The browser harness accepts bounded local requests, validates Origin, serializes bridge access and exposes no production
 authentication or durable storage. On bridge timeout, restart it; never interpret an uncertain save as definitely failed.

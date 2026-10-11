@@ -14,6 +14,20 @@ Inspected on 2026-10-11: paired AGENTS/CLAUDE entry points; linked Codex/build r
 
 </topic>
 
+<topic id="whole-command-admission" wp="WP-BB-010-swarm-backpressure-v1" status="selected">
+
+## Whole-command admission after provisional measurement
+
+The P1 actual CRM workload exposed same-workspace load/CAS interleaving despite serial Store calls. Current `service.rs::execute` loads state, applies one command and commits by CAS without retries. The selected additive `CommandWorker` owns one complete Crm on the existing persistent worker; Store-only admission remains available. Participating commands complete before the next dispatch. External writers and stale record revisions still require CAS; this is local scheduling, not a merge or global database lock.
+
+Primary sources inspected on 2026-10-11: [Tokio's channels implementation tutorial](https://tokio.rs/tokio/tutorial/channels) processes each received command through the owned client before receiving the next; [Tower0.5.3 Buffer worker source](https://docs.rs/tower/0.5.3/src/tower/buffer/worker.rs.html) sends the returned response future back to its caller. Buffering alone does not serialize completion. Existing Rust queue/deadline accounting fits the synchronous Crm boundary; no Tokio/Tower dependency or upstream implementation is adopted.
+
+Reuse the bounded submitted-byte/count engine, expiry fence and retained in-flight capacity. Run current authorization inside each dispatched Crm method. Reject hidden retries and broad CRM replacement. Queue overload/expiry must not mutate; dispatched response loss remains uncertain and exact actor/request/receipt replay reconciles it. Pressure remains payload-free, and hosts own response limits, durable intent and aggregate admission.
+
+Independent probes cover revoked grants while queued (including reads/replays), an external writer between load and CAS, stale edits and committed-response loss. Focused unchanged Store-worker regression tests accompany the new command tests. P2 preserves P1's provisional workload/configuration but rereads raw shared MemoryStore snapshots after drain; compare natural conflicts, resource use and latency, separately from injected faults. Production Portal adapter/grant mapping, realistic corpus, multi-process budgets and SLA remain unresolved.
+
+</topic>
+
 <topic id="inspected-boundaries" wp="WP-BB-010-swarm-backpressure-v1">
 
 ## Current source evidence

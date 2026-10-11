@@ -1,8 +1,10 @@
 //! One host-supplied Store on one persistent thread, shared by synchronous handles.
 //! Admission is volatile. Hosts retain write intent, transport deadlines, response
 //! byte limits, authorization and aggregate cross-process admission ownership.
-use crate::{Authorization, Context, Crm, Cursor, Error, FieldDefinition, Limits, Outcome, Page,
-    PricingTier, Quote, Record, Relation, Request, SearchFilter, Snapshot, Store};
+use crate::{
+    Authorization, Context, Crm, Cursor, Error, FieldDefinition, Limits, Outcome, Page,
+    PricingTier, Quote, Record, Relation, Request, SearchFilter, Snapshot, Store,
+};
 use std::{
     collections::VecDeque,
     io::{self, Write},
@@ -123,14 +125,21 @@ impl WorkerStore {
     pub fn new<S: Store + Send + 'static>(store: S, config: WorkerConfig) -> Result<Self, Error> {
         let mut store = store;
         Self::new_handler(config, move |operation| match operation {
-            Operation::Load(workspace) => store.load(&workspace).map(|value| Reply::Loaded(Box::new(value))),
-            Operation::Cas(workspace, expected, next) => { store.compare_exchange(&workspace, expected, *next)?; Ok(Reply::Written) },
+            Operation::Load(workspace) => store
+                .load(&workspace)
+                .map(|value| Reply::Loaded(Box::new(value))),
+            Operation::Cas(workspace, expected, next) => {
+                store.compare_exchange(&workspace, expected, *next)?;
+                Ok(Reply::Written)
+            }
             _ => unreachable!("Store worker operation"),
         })
     }
 
     fn new_handler<F>(config: WorkerConfig, handler: F) -> Result<Self, Error>
-    where F: FnMut(Operation) -> Result<Reply, Error> + Send + 'static {
+    where
+        F: FnMut(Operation) -> Result<Reply, Error> + Send + 'static,
+    {
         let now = Instant::now();
         if config.pending_count == 0
             || config.pending_count.checked_add(1).is_none()
@@ -228,10 +237,19 @@ impl WorkerStore {
         self.submit_counted(operation, counter.bytes, started)
     }
 
-    fn submit_counted(&self, operation: Operation, bytes: usize, started: Instant) -> Result<Reply, Error> {
+    fn submit_counted(
+        &self,
+        operation: Operation,
+        bytes: usize,
+        started: Instant,
+    ) -> Result<Reply, Error> {
         let config = &self.shared.config;
-        let caller_end = started.checked_add(config.caller_deadline).ok_or(Error::Invalid("worker deadline"))?;
-        let queue_end = started.checked_add(config.queue_deadline).ok_or(Error::Invalid("worker deadline"))?;
+        let caller_end = started
+            .checked_add(config.caller_deadline)
+            .ok_or(Error::Invalid("worker deadline"))?;
+        let queue_end = started
+            .checked_add(config.queue_deadline)
+            .ok_or(Error::Invalid("worker deadline"))?;
         let call = Arc::new(Call {
             phase: Mutex::new(Phase::Queued),
             changed: Condvar::new(),
@@ -370,14 +388,28 @@ pub struct CommandWorker {
 }
 
 impl CommandWorker {
-    pub fn new<S, A>(store: S, authorization: A, limits: Limits, config: WorkerConfig) -> Result<Self, Error>
-    where S: Store + Send + 'static, A: Authorization + Send + 'static {
+    pub fn new<S, A>(
+        store: S,
+        authorization: A,
+        limits: Limits,
+        config: WorkerConfig,
+    ) -> Result<Self, Error>
+    where
+        S: Store + Send + 'static,
+        A: Authorization + Send + 'static,
+    {
         let mut crm = Crm::new(store, authorization, limits);
         let engine = WorkerStore::new_handler(config, move |operation| match operation {
             Operation::Execute(ctx, request) => crm.execute(&ctx, *request).map(Reply::Executed),
-            Operation::Get(ctx, id) => crm.get(&ctx, &id).map(|record| Reply::Record(Box::new(record))),
-            Operation::Search(ctx, filter, limit, cursor) => crm.search_filtered(&ctx, &filter, limit, cursor.as_ref()).map(|page| Reply::Page(Box::new(page))),
-            Operation::Quote(ctx, client, product) => crm.quote(&ctx, &client, &product).map(Reply::Quote),
+            Operation::Get(ctx, id) => crm
+                .get(&ctx, &id)
+                .map(|record| Reply::Record(Box::new(record))),
+            Operation::Search(ctx, filter, limit, cursor) => crm
+                .search_filtered(&ctx, &filter, limit, cursor.as_ref())
+                .map(|page| Reply::Page(Box::new(page))),
+            Operation::Quote(ctx, client, product) => {
+                crm.quote(&ctx, &client, &product).map(Reply::Quote)
+            }
             Operation::Fields(ctx) => crm.field_definitions(&ctx).map(Reply::Fields),
             Operation::Tiers(ctx) => crm.pricing_tiers(&ctx).map(Reply::Tiers),
             Operation::Relations(ctx, id) => crm.relations(&ctx, &id).map(Reply::Relations),
@@ -386,64 +418,114 @@ impl CommandWorker {
         Ok(Self { engine })
     }
 
-    pub fn close(&self) { self.engine.close(); }
-    pub fn pressure(&self) -> WorkerPressure { self.engine.pressure() }
+    pub fn close(&self) {
+        self.engine.close();
+    }
+    pub fn pressure(&self) -> WorkerPressure {
+        self.engine.pressure()
+    }
 
     fn submit<T, F>(&self, args: &T, operation: F) -> Result<Reply, Error>
-    where T: serde::Serialize, F: FnOnce() -> Operation {
+    where
+        T: serde::Serialize,
+        F: FnOnce() -> Operation,
+    {
         let started = Instant::now();
-        let mut counter = Counter { bytes: 0, limit: self.engine.shared.config.max_request_bytes };
-        serde_json::to_writer(&mut counter, args).map_err(|_| self.engine.reject("worker request bytes"))?;
+        let mut counter = Counter {
+            bytes: 0,
+            limit: self.engine.shared.config.max_request_bytes,
+        };
+        serde_json::to_writer(&mut counter, args)
+            .map_err(|_| self.engine.reject("worker request bytes"))?;
         // Clone owned arguments only after the bounded serializer accepts them.
-        self.engine.submit_counted(operation(), counter.bytes, started)
+        self.engine
+            .submit_counted(operation(), counter.bytes, started)
     }
 
     /// Charges JSON tuple `(Context, Request)`; authorization runs at dispatch.
     pub fn execute(&self, ctx: &Context, request: Request) -> Result<Outcome, Error> {
-        match self.submit(&(ctx, &request), || Operation::Execute(ctx.clone(), Box::new(request.clone())))? {
-            Reply::Executed(outcome) => Ok(outcome), _ => unreachable!("execute reply"),
+        match self.submit(&(ctx, &request), || {
+            Operation::Execute(ctx.clone(), Box::new(request.clone()))
+        })? {
+            Reply::Executed(outcome) => Ok(outcome),
+            _ => unreachable!("execute reply"),
         }
     }
 
     pub fn get(&self, ctx: &Context, id: &str) -> Result<Record, Error> {
         match self.submit(&(ctx, id), || Operation::Get(ctx.clone(), id.into()))? {
-            Reply::Record(record) => Ok(*record), _ => unreachable!("get reply"),
+            Reply::Record(record) => Ok(*record),
+            _ => unreachable!("get reply"),
         }
     }
 
-    pub fn search_filtered(&self, ctx: &Context, filter: &SearchFilter, limit: usize, cursor: Option<&Cursor>) -> Result<Page, Error> {
-        match self.submit(&(ctx, filter, limit, cursor), || Operation::Search(ctx.clone(), filter.clone(), limit, cursor.cloned()))? {
-            Reply::Page(page) => Ok(*page), _ => unreachable!("search reply"),
+    pub fn search_filtered(
+        &self,
+        ctx: &Context,
+        filter: &SearchFilter,
+        limit: usize,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page, Error> {
+        match self.submit(&(ctx, filter, limit, cursor), || {
+            Operation::Search(ctx.clone(), filter.clone(), limit, cursor.cloned())
+        })? {
+            Reply::Page(page) => Ok(*page),
+            _ => unreachable!("search reply"),
         }
     }
 
-    pub fn search(&self, ctx: &Context, query: &str, tag: Option<&str>, limit: usize, cursor: Option<&Cursor>) -> Result<Page, Error> {
-        match self.submit(&(ctx, query, tag, limit, cursor), || Operation::Search(ctx.clone(), SearchFilter { query:query.into(),tag:tag.map(str::to_owned),..Default::default() }, limit, cursor.cloned()))? {
-            Reply::Page(page) => Ok(*page), _ => unreachable!("search reply"),
+    pub fn search(
+        &self,
+        ctx: &Context,
+        query: &str,
+        tag: Option<&str>,
+        limit: usize,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page, Error> {
+        match self.submit(&(ctx, query, tag, limit, cursor), || {
+            Operation::Search(
+                ctx.clone(),
+                SearchFilter {
+                    query: query.into(),
+                    tag: tag.map(str::to_owned),
+                    ..Default::default()
+                },
+                limit,
+                cursor.cloned(),
+            )
+        })? {
+            Reply::Page(page) => Ok(*page),
+            _ => unreachable!("search reply"),
         }
     }
 
     pub fn quote(&self, ctx: &Context, client_id: &str, product_id: &str) -> Result<Quote, Error> {
-        match self.submit(&(ctx, client_id, product_id), || Operation::Quote(ctx.clone(), client_id.into(), product_id.into()))? {
-            Reply::Quote(quote) => Ok(quote), _ => unreachable!("quote reply"),
+        match self.submit(&(ctx, client_id, product_id), || {
+            Operation::Quote(ctx.clone(), client_id.into(), product_id.into())
+        })? {
+            Reply::Quote(quote) => Ok(quote),
+            _ => unreachable!("quote reply"),
         }
     }
 
     pub fn field_definitions(&self, ctx: &Context) -> Result<Vec<FieldDefinition>, Error> {
         match self.submit(&(ctx,), || Operation::Fields(ctx.clone()))? {
-            Reply::Fields(fields) => Ok(fields), _ => unreachable!("fields reply"),
+            Reply::Fields(fields) => Ok(fields),
+            _ => unreachable!("fields reply"),
         }
     }
 
     pub fn pricing_tiers(&self, ctx: &Context) -> Result<Vec<PricingTier>, Error> {
         match self.submit(&(ctx,), || Operation::Tiers(ctx.clone()))? {
-            Reply::Tiers(tiers) => Ok(tiers), _ => unreachable!("tiers reply"),
+            Reply::Tiers(tiers) => Ok(tiers),
+            _ => unreachable!("tiers reply"),
         }
     }
 
     pub fn relations(&self, ctx: &Context, id: &str) -> Result<Vec<Relation>, Error> {
         match self.submit(&(ctx, id), || Operation::Relations(ctx.clone(), id.into()))? {
-            Reply::Relations(relations) => Ok(relations), _ => unreachable!("relations reply"),
+            Reply::Relations(relations) => Ok(relations),
+            _ => unreachable!("relations reply"),
         }
     }
 }
