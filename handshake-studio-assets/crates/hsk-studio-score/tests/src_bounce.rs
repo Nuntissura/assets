@@ -272,6 +272,26 @@ fn refusals_happen_before_any_sink_call() {
         let huge_channels: [&[f32]; 2] = [&huge, &huge];
         let over = vec![0.0_f32; (1 << 20) + 1];
         let over_channels: [&[f32]; 2] = [&over, &over];
+        // Clip length is not a refusal for the streaming path; the whole-clip oracle keeps the
+        // MAX_BLOCK_FRAMES bound on the input clip and on the converted clip.
+        for (name, rate_in, rate_out, input) in [
+            ("converted clip over the block bound", 44_100, 48_000, &huge_channels),
+            ("input clip over the block bound", 48_000, 48_000, &over_channels),
+        ] {
+            let mut g = graph(rate_in, rate_out, 1024);
+            let layout = ChannelLayout::stereo();
+            let request = BounceRequest { sample_rate_hz: rate_in, layout: &layout, start_sample: 0, channels: input, block_frames: 256 };
+            let stages = ResampledBounce { pre: &mut Unity, pre_out: &mut g.pre_out, resampler: &mut g.resampler, post: &mut Unity, out: &mut g.out };
+            let engine = engine();
+            let mut touched = false;
+            let mut sink = |_: BounceChunk<'_>| {
+                touched = true;
+                Ok(())
+            };
+            let result = engine.bounce_resampled_whole_clip(&ctx(7), &request, stages, &mut sink, &CancellationToken::default());
+            assert_eq!(result.unwrap_err(), ScoreError::CapacityExceeded, "{name}");
+            assert!(!touched, "{name}: the sink must not be called");
+        }
         let mut limiter_44k = HardLimiter::new(44_100, 2, transparent).unwrap();
         let mut limiter_48k = HardLimiter::new(48_000, 2, transparent).unwrap();
         let mut mono_mix = ChannelMix::stereo_to_mono();
@@ -279,7 +299,7 @@ fn refusals_happen_before_any_sink_call() {
         // (name, expected, rate in, resampler (in, out), start, channels, block, pre, post)
         type Case<'a> = (&'a str, ScoreError, u32, (u32, u32), u64, &'a [&'a [f32]], usize, bool, u8);
         // pre: true = 44.1 kHz limiter as pre (wrong rate); post: 0 Unity, 1 48 kHz limiter, 2 mono mix
-        let cases: [Case<'_>; 14] = [
+        let cases: [Case<'_>; 12] = [
             ("non-finite", ScoreError::NotFinite, 48_000, (48_000, 44_100), 0, &bad, 256, false, 0),
             ("length", ScoreError::LengthMismatch, 48_000, (48_000, 44_100), 0, &short, 256, false, 0),
             ("channel count", ScoreError::ChannelMismatch, 48_000, (48_000, 44_100), 0, &one, 256, false, 0),
@@ -292,8 +312,6 @@ fn refusals_happen_before_any_sink_call() {
             ("post bound to the input rate", ScoreError::InvalidRate, 48_000, (48_000, 44_100), 0, &channels, 256, false, 1),
             ("post layout", ScoreError::ChannelMismatch, 48_000, (48_000, 44_100), 0, &channels, 256, false, 2),
             ("start not whole at the output rate", ScoreError::OutOfRange, 44_100, (44_100, 48_000), 1, &channels, 256, false, 0),
-            ("converted clip over the block bound", ScoreError::CapacityExceeded, 44_100, (44_100, 48_000), 0, &huge_channels, 256, false, 0),
-            ("input clip over the block bound", ScoreError::CapacityExceeded, 48_000, (48_000, 48_000), 0, &over_channels, 256, false, 0),
         ];
         for (name, expected, rate_in, (src_in, src_out), start, input, block, wrong_pre, post_kind) in cases {
             let mut g = graph(src_in, src_out, 1024);

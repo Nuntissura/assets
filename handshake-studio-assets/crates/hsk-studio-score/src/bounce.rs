@@ -191,13 +191,7 @@ impl Engine {
         let end_ticks = sample_to_ticks(end_sample, request.sample_rate_hz)?;
 
         proc.reset();
-        let mut run = BounceRun {
-            digests: vec![Sha256::new(); out_channels],
-            peak: [0.0; MAX_CHANNELS],
-            energy: [0.0; MAX_CHANNELS],
-            actual: 0,
-            blocks: 0,
-        };
+        let mut run = BounceRun::new(out_channels);
         let outcome = self.bounce_blocks(
             ctx, request, proc, out, sink, cancel, frames, total, latency, &mut run,
         );
@@ -205,37 +199,18 @@ impl Engine {
             proc.reset();
             return Err(error);
         }
-
-        let mut channel_digests = Sha256::new();
-        channel_digests.update(DIGEST_DOMAIN);
-        channel_digests.update(&(out_channels as u16).to_le_bytes());
-        let mut receipt = BounceReceipt {
+        Ok(run.into_receipt(&ReceiptHeader {
             requested_frames: frames_u64,
-            actual_frames: run.actual,
             sample_rate_hz: request.sample_rate_hz,
             start_sample: request.start_sample,
             end_sample,
             start_ticks,
             end_ticks,
-            blocks: run.blocks,
             revision: ctx.expected_revision,
             latency_dropped_frames: proc.latency_samples(),
             chain_identity: identity_digest(&proc.identity()),
-            digest: [0; 32],
-            channels: out_channels,
-            labels: [0; MAX_CHANNELS],
-            peak: run.peak,
-            rms: [0.0; MAX_CHANNELS],
-        };
-        for (ch, (hasher, label)) in run.digests.into_iter().zip(&out_labels).enumerate() {
-            receipt.labels[ch] = *label;
-            receipt.rms[ch] = (run.energy[ch] / run.actual.max(1) as f64).sqrt() as f32;
-            channel_digests.update(&label.to_le_bytes());
-            channel_digests.update(&run.actual.to_le_bytes());
-            channel_digests.update(&hasher.finalize());
-        }
-        receipt.digest = channel_digests.finalize();
-        Ok(receipt)
+            labels: &out_labels,
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -288,18 +263,11 @@ impl Engine {
                     let samples = out.published_channel(ch).ok_or(ScoreError::ChannelMismatch)?;
                     *slot = &samples[lo - at..hi - at];
                 }
-                for (ch, samples) in kept[..out_channels].iter().enumerate() {
-                    for sample in *samples {
-                        run.digests[ch].update(&sample.to_le_bytes());
-                        run.peak[ch] = run.peak[ch].max(sample.abs());
-                        run.energy[ch] += f64::from(*sample) * f64::from(*sample);
-                    }
-                }
+                run.record(&kept[..out_channels]);
                 sink(BounceChunk {
                     start_sample: request.start_sample + (lo - latency) as u64,
                     channels: &kept[..out_channels],
                 })?;
-                run.actual += (hi - lo) as u64;
             }
             at += len;
         }
@@ -307,10 +275,88 @@ impl Engine {
     }
 }
 
-struct BounceRun {
+/// Running meters and digests of the retained output frames of one bounce stage.
+pub(crate) struct BounceRun {
     digests: Vec<Sha256>,
     peak: [f32; MAX_CHANNELS],
     energy: [f64; MAX_CHANNELS],
-    actual: u64,
-    blocks: u32,
+    pub(crate) actual: u64,
+    pub(crate) blocks: u32,
+}
+
+/// Fixed facts a [`BounceRun`] needs to become a [`BounceReceipt`].
+pub(crate) struct ReceiptHeader<'a> {
+    pub(crate) requested_frames: u64,
+    pub(crate) sample_rate_hz: u32,
+    pub(crate) start_sample: u64,
+    pub(crate) end_sample: u64,
+    pub(crate) start_ticks: Ticks,
+    pub(crate) end_ticks: Ticks,
+    pub(crate) revision: u64,
+    pub(crate) latency_dropped_frames: u32,
+    pub(crate) chain_identity: [u8; 32],
+    pub(crate) labels: &'a [u16],
+}
+
+impl BounceRun {
+    pub(crate) fn new(out_channels: usize) -> Self {
+        Self {
+            digests: vec![Sha256::new(); out_channels],
+            peak: [0.0; MAX_CHANNELS],
+            energy: [0.0; MAX_CHANNELS],
+            actual: 0,
+            blocks: 0,
+        }
+    }
+
+    /// Accounts one run of retained frames, one slice per output channel (all the same length).
+    pub(crate) fn record(&mut self, kept: &[&[f32]]) {
+        const BATCH: usize = 256;
+        let mut bytes = [0_u8; BATCH * 4];
+        for (ch, samples) in kept.iter().enumerate() {
+            for piece in samples.chunks(BATCH) {
+                for (slot, sample) in bytes.chunks_exact_mut(4).zip(piece) {
+                    slot.copy_from_slice(&sample.to_le_bytes());
+                    self.peak[ch] = self.peak[ch].max(sample.abs());
+                    self.energy[ch] += f64::from(*sample) * f64::from(*sample);
+                }
+                self.digests[ch].update(&bytes[..piece.len() * 4]);
+            }
+        }
+        self.actual += kept.first().map_or(0, |c| c.len()) as u64;
+    }
+
+    pub(crate) fn into_receipt(self, header: &ReceiptHeader<'_>) -> BounceReceipt {
+        let out_channels = self.digests.len();
+        let mut channel_digests = Sha256::new();
+        channel_digests.update(DIGEST_DOMAIN);
+        channel_digests.update(&(out_channels as u16).to_le_bytes());
+        let mut receipt = BounceReceipt {
+            requested_frames: header.requested_frames,
+            actual_frames: self.actual,
+            sample_rate_hz: header.sample_rate_hz,
+            start_sample: header.start_sample,
+            end_sample: header.end_sample,
+            start_ticks: header.start_ticks,
+            end_ticks: header.end_ticks,
+            blocks: self.blocks,
+            revision: header.revision,
+            latency_dropped_frames: header.latency_dropped_frames,
+            chain_identity: header.chain_identity,
+            digest: [0; 32],
+            channels: out_channels,
+            labels: [0; MAX_CHANNELS],
+            peak: self.peak,
+            rms: [0.0; MAX_CHANNELS],
+        };
+        for (ch, (hasher, label)) in self.digests.into_iter().zip(header.labels).enumerate() {
+            receipt.labels[ch] = *label;
+            receipt.rms[ch] = (self.energy[ch] / self.actual.max(1) as f64).sqrt() as f32;
+            channel_digests.update(&label.to_le_bytes());
+            channel_digests.update(&self.actual.to_le_bytes());
+            channel_digests.update(&hasher.finalize());
+        }
+        receipt.digest = channel_digests.finalize();
+        receipt
+    }
 }

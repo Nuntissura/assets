@@ -2,6 +2,7 @@ use crate::block::{InputBlock, OutputBlock};
 use crate::engine::{BlockReceipt, Engine, RequestContext};
 use crate::error::ScoreError;
 use crate::layout::{MAX_BLOCK_FRAMES, MAX_CHANNELS, ticks_per_sample};
+use crate::stream_resample::StreamState;
 use hsk_studio_accord::CancellationToken;
 use rubato::audioadapter_buffers::direct::{SequentialSlice, SequentialSliceOfSlices};
 use rubato::{Async, FixedAsync, Resampler, SincInterpolationParameters, WindowFunction};
@@ -26,14 +27,18 @@ pub const MIN_CHUNK_FRAMES: usize = 64;
 /// including 48k to 44.1k, 44.1k to 48k, 32k to 48k, x2 and identity): 0.007 to 0.010 output
 /// frames, about the 1/128 sinc-table step, versus 0.4 to 1.0 frames for rubato's own trim.
 pub struct ClipResampler {
-    inner: Async<f32>,
+    pub(crate) inner: Async<f32>,
     input_rate_hz: u32,
     output_rate_hz: u32,
-    channels: usize,
-    chunk_frames: usize,
-    pad_input_frames: usize,
-    drop_output_frames: usize,
+    pub(crate) channels: usize,
+    pub(crate) chunk_frames: usize,
+    pub(crate) pad_input_frames: usize,
+    pub(crate) drop_output_frames: usize,
     padded: Vec<f32>,
+    /// Streaming state (see `stream_resample.rs`); allocated by `begin_stream`, never by a push.
+    pub(crate) stream_in: Vec<f32>,
+    pub(crate) stream_out: Vec<f32>,
+    pub(crate) stream: StreamState,
 }
 
 impl std::fmt::Debug for ClipResampler {
@@ -144,6 +149,9 @@ impl ClipResampler {
             pad_input_frames,
             drop_output_frames,
             padded: Vec::new(),
+            stream_in: Vec::new(),
+            stream_out: Vec::new(),
+            stream: StreamState::default(),
         })
     }
     pub fn input_rate_hz(&self) -> u32 {

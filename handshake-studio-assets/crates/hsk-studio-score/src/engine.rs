@@ -66,10 +66,10 @@ pub struct BlockReceipt {
     pub start_sample: u64,
     pub end_sample: u64,
     pub revision: u64,
-    channels: usize,
-    labels: [u16; MAX_CHANNELS],
-    peak: [f32; MAX_CHANNELS],
-    rms: [f32; MAX_CHANNELS],
+    pub(crate) channels: usize,
+    pub(crate) labels: [u16; MAX_CHANNELS],
+    pub(crate) peak: [f32; MAX_CHANNELS],
+    pub(crate) rms: [f32; MAX_CHANNELS],
 }
 
 impl BlockReceipt {
