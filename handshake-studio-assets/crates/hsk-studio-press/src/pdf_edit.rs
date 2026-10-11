@@ -1,5 +1,5 @@
 //! `PdfDoc`: the bounded PDF object view. PDF bytes are provider transport; this type is a typed
-//! projection of one opened input and never a second live document authority.
+//! projection of one opened input and holds no document state beyond it.
 use crate::error::{Limits, PressError, Result, SinkError};
 use crate::reader::{Entry, Parsed, check_cancel, parse_document};
 use crate::syntax::{Dict, ObjRef, Object};
@@ -35,7 +35,7 @@ pub struct Inspection {
     pub has_byte_range_signature: bool,
     /// `/SigFlags` SignaturesExist or at least one byte-range signature.
     pub signed: bool,
-    /// Cross-reference sections followed (1 = never incrementally updated).
+    /// Cross-reference sections followed (1 = not incrementally updated).
     pub xref_sections: u32,
     pub source_sha256: String,
 }
@@ -343,7 +343,7 @@ impl PdfDoc {
     }
 
     /// Edits one allowlisted scalar entry of one dictionary object (Info `/Title /Author
-    /// /Subject`, page `/Rotate`, annotation `/Contents`). Never executes actions or scripts.
+    /// /Subject`, page `/Rotate`, annotation `/Contents`). Executes no actions or scripts.
     pub fn edit_entry(
         &mut self,
         target: ObjRef,

@@ -4,14 +4,14 @@
 //! `/Contents`, `/T`, `/Subj`, `/RC` (12.5.2 Table 166, 12.5.6.2 Table 170; `/RC` is a text string or
 //! a text stream holding XHTML), and, only when `widget_values` is set, form field `/V` and `/DV`
 //! (12.7.4.1 Table 226: text string, text stream, or array of text strings for choice fields).
-//! `/T` of a widget or field is the field NAME (not annotation text): never rewritten, but a match
-//! is reported as kept. The appearance streams of an annotation (`/AP`, 12.5.5) carry a rendering of
+//! `/T` of a widget or field is the field NAME (not annotation text): not rewritten, but a match
+//! is reported as kept (test: widget_values_are_an_explicit_option_and_kept_text_is_reported). The appearance streams of an annotation (`/AP`, 12.5.5) carry a rendering of
 //! the same text, so an appearance whose show operands match is dropped (viewers regenerate it).
 //!
 //! Proof rule (same as slices 1-2, nothing is silently kept): every slot is either rewritten or
 //! reported as `KeptByPolicy`; the independent check is `verify_payload_absent` over the saved
 //! bytes (annotation appearance streams count as annotation text there, not as kept page text).
-//! Outcomes never carry document text.
+//! Outcomes carry no document text (`TextFieldOutcome` has no text field).
 //!
 //! Matching works on decoded text (PDFDocEncoding, UTF-16BE/LE, UTF-8 with mark), not on bytes, so
 //! one needle matches all spellings. Defaults are fail-closed: case-insensitive, substring.
@@ -23,7 +23,8 @@
 //! strings and the catalog XMP `/Metadata` stream, and annotations reached only through `/Popup`,
 //! `/IRT` or a popup's `/Parent`. Appearance streams are read through the font's `/ToUnicode`
 //! CMap; composite-font text that cannot be decoded drops the appearance of an edited annotation
-//! and is otherwise reported `Unverifiable` (kept, never silent).
+//! and is otherwise reported `Unverifiable` (kept and listed; test
+//! popup_irt_annotations_and_composite_font_appearances).
 //! Slice 5 adds file targets: `GoToR`/`GoToE`/`Launch`/`ImportData`/`SubmitForm` actions (`/F` file
 //! specifications with `/UF /DOS /Mac /Unix /Desc`, the remote `/D`, the Launch `/Win` entries),
 //! every file specification (`/AF`, file attachment `/FS`, the `/Names /EmbeddedFiles` tree whose
@@ -122,7 +123,7 @@ pub enum TextRole {
     AnnotSubject,
     FieldValue,
     FieldDefaultValue,
-    /// `/T` of a form field or widget: a name, never rewritten.
+    /// `/T` of a form field or widget: a name, not rewritten.
     FieldName,
     /// `/AP` appearance streams of an annotation.
     Appearance,
@@ -561,7 +562,8 @@ enum Rewrite {
     /// Not a text value (null, number, dictionary, missing).
     NotText,
     Clean,
-    /// Replacement as a DIRECT value (shared string objects are never edited in place).
+    /// Replacement as a DIRECT value (a shared string object is left as it is; test
+    /// outline_titles_redacted_in_every_encoding).
     Changed { value: Object, matches: u32 },
     Dropped { matches: u32, unreadable: bool },
 }
@@ -1237,7 +1239,7 @@ fn collect_filespec_nums(objs: &Objs, live: &BTreeSet<u32>, extra: Vec<u32>) -> 
 }
 
 /// Outline items: everything reachable from `/Outlines` through `/First /Last /Next /Prev` (the
-/// tree may be inconsistent; every linked node is judged). `/Parent` is never followed.
+/// tree may be inconsistent; every linked node is judged). `/Parent` is not followed.
 fn outline_nums(doc: &PdfDoc, cancel: &CancellationToken) -> Result<BTreeSet<u32>> {
     let mut stack: Vec<u32> = match doc.catalog()?.get("Outlines") {
         Some(Object::Ref(r)) => vec![r.num],

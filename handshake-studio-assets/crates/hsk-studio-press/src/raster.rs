@@ -93,7 +93,7 @@ pub(crate) fn decode_prefix(stream: &Stream, limits: &Limits, budget: &mut usize
     let chain = filter_chain(&stream.dict, false).ok_or(PressError::Malformed("filter_entry"))?;
     let head = chain.get(..chain.len().saturating_sub(1)).unwrap_or(&[]);
     let mut dict = stream.dict.clone();
-    // An explicit (possibly empty) array so the file-specification key `/F` is never read as a filter.
+    // An explicit (possibly empty) array so the file-specification key `/F` is not read as a filter.
     dict.set("Filter", Object::Array(head.iter().map(|n| Object::Name(n.clone())).collect()));
     filters::decode_stream(&Stream { dict, data: stream.data.clone() }, limits, budget)
 }

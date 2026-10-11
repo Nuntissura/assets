@@ -77,7 +77,7 @@ pub struct PayloadProof {
     pub streams_decoded: u32,
     /// Streams scanned raw only: `(object number, filter name or reason)`. Blocks `is_clean`.
     pub streams_not_decodable: Vec<(u32, String)>,
-    /// Raster image streams excluded from the text-needle proof (listed, never blocking).
+    /// Raster image streams excluded from the text-needle proof (listed, not blocking; test raster_class_is_listed_and_region_images_are_removed).
     pub raster_streams: Vec<RasterStream>,
     /// Content streams that draw text with a composite font having no usable `/ToUnicode`: that
     /// text is invisible to this proof (listed, not blocking).
@@ -458,7 +458,7 @@ pub struct RedactedOutput {
     /// Payload proof over the saved bytes for the distinctive removed strings.
     pub proof: PayloadProof,
     /// Removed strings shorter than [`MIN_DISTINCTIVE_NEEDLE`] bytes (typical for kerned words
-    /// and subset-font glyph codes). A byte scan cannot prove those absent because they legitimately
+    /// and subset-font glyph codes). A byte scan is no evidence for those because they legitimately
     /// occur elsewhere, so they are NOT part of `proof`; `residual_in_region` covers them.
     pub short_needles: u32,
     /// Text strings, annotations and unsupported marks a fresh redaction pass over the SAVED

@@ -1,4 +1,4 @@
-//! Typed refusals and hostile-input limits. Messages are static and never carry document text.
+//! Typed refusals and hostile-input limits. Messages are static strings and carry no document text.
 use std::fmt;
 
 /// Hostile-input limits. Every allocation the reader or writer makes is bounded by one of these.

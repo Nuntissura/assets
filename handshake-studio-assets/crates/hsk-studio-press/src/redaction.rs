@@ -423,7 +423,7 @@ impl<'a> Interp<'a> {
     }
 
     /// Interprets a form XObject under the current CTM. Returns a copy-on-write replacement form
-    /// when text inside it was removed; the original form is never modified.
+    /// when text inside it was removed; the original form is left as it is (test form_xobject_text_redaction_copy_on_write).
     fn run_form(&mut self, stream: &'a Stream, matrix: Mat, cancel: &CancellationToken, depth: usize) -> Result<Option<ObjRef>> {
         let data = filters::decode_stream(stream, &self.doc.limits, &mut self.budget)?;
         let ops = parse_content(&data, &self.doc.limits)?;

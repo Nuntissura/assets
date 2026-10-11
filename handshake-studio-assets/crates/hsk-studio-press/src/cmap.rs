@@ -98,7 +98,7 @@ fn tokenize(data: &[u8]) -> Vec<Tok> {
                     i = i.saturating_add(1);
                 }
                 if i == start {
-                    i = i.saturating_add(1); // stray delimiter: always advance
+                    i = i.saturating_add(1); // stray delimiter: advance past it
                 } else if let Some(w) = data.get(start..i) {
                     out.push(Tok::Word(w.to_vec()));
                 }
