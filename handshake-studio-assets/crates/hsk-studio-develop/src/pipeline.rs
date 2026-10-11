@@ -162,6 +162,8 @@ pub struct CfaPlane {
     bytes: Vec<u8>,
     col_phase: Vec<u8>,
     row_phase: Vec<u8>,
+    /// Channel of a site by `[row phase][column phase]` (period <= 6); built once at admission.
+    lut: [[u8; 6]; 6],
     sha256: [u8; 32],
     limits: Limits,
 }
@@ -227,6 +229,12 @@ impl CfaPlane {
         let row_phase: Vec<u8> = (0..i64::from(height))
             .map(|y| (sensor_origin.1 + y + i64::from(cfa.phase_y)).rem_euclid(p) as u8)
             .collect();
+        let mut lut = [[0u8; 6]; 6];
+        for (row_phase_index, row) in lut.iter_mut().enumerate().take(period) {
+            for (col_phase_index, slot) in row.iter_mut().enumerate().take(period) {
+                *slot = cfa.pattern.channel(col_phase_index, row_phase_index);
+            }
+        }
         let plane = Self {
             width,
             height,
@@ -240,18 +248,27 @@ impl CfaPlane {
             bytes,
             col_phase,
             row_phase,
+            lut,
             limits,
         };
         for y in 0..height as usize {
-            for x in 0..width as usize {
-                let s = plane.sample(x, y);
-                let ch = usize::from(plane.channel(x, y));
+            let lut_row = &plane.lut[usize::from(plane.row_phase[y])];
+            for (x, s) in plane.row_samples(y).enumerate() {
+                let ch = usize::from(lut_row[usize::from(plane.col_phase[x])]);
                 if s < black[ch] || s > white[ch] {
                     return Err(DevelopError::SampleOutOfRange);
                 }
             }
         }
         Ok(plane)
+    }
+
+    /// The `width` samples of row `y` (padding excluded); the caller guarantees `y < height`.
+    fn row_samples(&self, y: usize) -> impl Iterator<Item = u16> + '_ {
+        let start = y * self.stride_bytes as usize;
+        self.bytes[start..start + self.width as usize * 2]
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
     }
 
     pub fn width(&self) -> u32 {
@@ -297,9 +314,7 @@ impl CfaPlane {
 
     /// CFA channel index (R=0, G=1, B=2) at a full-plane site.
     pub fn channel(&self, x: usize, y: usize) -> u8 {
-        self.cfa
-            .pattern
-            .channel(usize::from(self.col_phase[x]), usize::from(self.row_phase[y]))
+        self.lut[usize::from(self.row_phase[y])][usize::from(self.col_phase[x])]
     }
 }
 
@@ -317,14 +332,15 @@ fn reflect(coordinate: i64, extent: usize) -> usize {
 /// rounding; a nonzero value rounding to zero refuses.
 fn normalize(plane: &CfaPlane, cancel: &CancellationToken) -> Result<Vec<f32>, DevelopError> {
     let (w, h) = (plane.width as usize, plane.height as usize);
+    let denominator: [f64; 3] = std::array::from_fn(|ch| f64::from(plane.white[ch] - plane.black[ch]));
     let mut norm = Vec::with_capacity(w * h);
     for y in 0..h {
         cancel.check()?;
-        for x in 0..w {
-            let ch = usize::from(plane.channel(x, y));
-            let numerator = f64::from(plane.sample(x, y) - plane.black[ch]);
-            let denominator = f64::from(plane.white[ch] - plane.black[ch]);
-            let value = numerator / denominator;
+        let lut_row = &plane.lut[usize::from(plane.row_phase[y])];
+        for (x, sample) in plane.row_samples(y).enumerate() {
+            let ch = usize::from(lut_row[usize::from(plane.col_phase[x])]);
+            let numerator = f64::from(sample - plane.black[ch]);
+            let value = numerator / denominator[ch];
             let rounded = value as f32;
             if value != 0.0 && rounded == 0.0 {
                 return Err(DevelopError::NormalizationUnderflow);
@@ -335,7 +351,9 @@ fn normalize(plane: &CfaPlane, cancel: &CancellationToken) -> Result<Vec<f32>, D
     Ok(norm)
 }
 
-fn demosaic_at(plane: &CfaPlane, norm: &[f32], x: usize, y: usize) -> Result<[f32; 3], DevelopError> {
+/// Reference demosaic of one site with reflect indexing (used for sites within two samples of an
+/// edge, where the 5x5 window leaves the plane). Summation order is fixed: rows, then columns.
+fn demosaic_at_reflect(plane: &CfaPlane, norm: &[f32], x: usize, y: usize) -> Result<[f32; 3], DevelopError> {
     let (w, h) = (plane.width as usize, plane.height as usize);
     let own = plane.channel(x, y);
     let mut out = [0.0f32; 3];
@@ -369,6 +387,96 @@ fn demosaic_at(plane: &CfaPlane, norm: &[f32], x: usize, y: usize) -> Result<[f3
     Ok(out)
 }
 
+/// Contributing neighbours of one phase class, as linear offsets into the normalised plane in the
+/// reference summation order. `None` for the own channel and for a channel with no support.
+struct Stencil {
+    own: u8,
+    offsets: [Option<Box<[isize]>>; 3],
+}
+
+/// Bilinear reflect demosaic over a normalised plane. Sites at least two samples from every edge
+/// never reflect, so their neighbours depend only on the (row phase, column phase) class: the
+/// offsets are built once per class and the sum runs in exactly the reference order (same f32
+/// additions, same count), which keeps the output byte-identical to [`demosaic_at_reflect`].
+struct Demosaic<'a> {
+    plane: &'a CfaPlane,
+    norm: &'a [f32],
+    width: usize,
+    height: usize,
+    period: usize,
+    classes: Vec<Stencil>,
+}
+
+impl<'a> Demosaic<'a> {
+    fn new(plane: &'a CfaPlane, norm: &'a [f32]) -> Self {
+        let width = plane.width as usize;
+        let period = plane.cfa.pattern.period();
+        let p = period as isize;
+        let mut classes = Vec::with_capacity(period * period);
+        for row_phase in 0..period {
+            for col_phase in 0..period {
+                let own = plane.lut[row_phase][col_phase];
+                let offsets = std::array::from_fn(|channel| {
+                    if channel == usize::from(own) {
+                        return None;
+                    }
+                    for radius in [1isize, 2] {
+                        let mut found = Vec::new();
+                        for dy in -radius..=radius {
+                            for dx in -radius..=radius {
+                                let neighbour_row = (row_phase as isize + dy).rem_euclid(p) as usize;
+                                let neighbour_col = (col_phase as isize + dx).rem_euclid(p) as usize;
+                                if usize::from(plane.lut[neighbour_row][neighbour_col]) == channel {
+                                    found.push(dy * width as isize + dx);
+                                }
+                            }
+                        }
+                        if !found.is_empty() {
+                            return Some(found.into_boxed_slice());
+                        }
+                    }
+                    None
+                });
+                classes.push(Stencil { own, offsets });
+            }
+        }
+        Self {
+            plane,
+            norm,
+            width,
+            height: plane.height as usize,
+            period,
+            classes,
+        }
+    }
+
+    #[inline]
+    fn pixel(&self, x: usize, y: usize) -> Result<[f32; 3], DevelopError> {
+        if x < 2 || y < 2 || x + 2 >= self.width || y + 2 >= self.height {
+            return demosaic_at_reflect(self.plane, self.norm, x, y);
+        }
+        let class = usize::from(self.plane.row_phase[y]) * self.period + usize::from(self.plane.col_phase[x]);
+        let stencil = &self.classes[class];
+        let site = y * self.width + x;
+        let mut out = [0.0f32; 3];
+        for (channel, slot) in out.iter_mut().enumerate() {
+            if channel == usize::from(stencil.own) {
+                *slot = self.norm[site];
+                continue;
+            }
+            let offsets = stencil.offsets[channel]
+                .as_deref()
+                .ok_or(DevelopError::MissingColourSupport)?;
+            let mut sum = 0.0f32;
+            for offset in offsets {
+                sum += self.norm[site.wrapping_add_signed(*offset)];
+            }
+            *slot = sum / (offsets.len() as f32);
+        }
+        Ok(out)
+    }
+}
+
 /// Full-plane normalised demosaic (scalar oracle). Crop and tile boundaries never change it.
 pub fn demosaic_normalized(
     plane: &CfaPlane,
@@ -376,12 +484,13 @@ pub fn demosaic_normalized(
 ) -> Result<Vec<[f32; 3]>, DevelopError> {
     cancel.check()?;
     let norm = normalize(plane, cancel)?;
+    let demosaic = Demosaic::new(plane, &norm);
     let (w, h) = (plane.width as usize, plane.height as usize);
     let mut out = Vec::with_capacity(w * h);
     for y in 0..h {
         cancel.check()?;
         for x in 0..w {
-            out.push(demosaic_at(plane, &norm, x, y)?);
+            out.push(demosaic.pixel(x, y)?);
         }
     }
     Ok(out)
@@ -480,14 +589,8 @@ fn to_f32_checked(value: f64) -> Result<f32, DevelopError> {
 }
 
 /// Stage A: demosaiced sample -> as-shot gain -> calibration matrix -> working-profile RGB (f32).
-fn working_pixel(
-    plane: &CfaPlane,
-    norm: &[f32],
-    prepared: &PreparedRecipe,
-    x: usize,
-    y: usize,
-) -> Result<[f32; 3], DevelopError> {
-    let demosaiced = demosaic_at(plane, norm, x, y)?;
+#[inline]
+fn working_pixel(prepared: &PreparedRecipe, demosaiced: [f32; 3]) -> Result<[f32; 3], DevelopError> {
     let mut balanced = [0.0f64; 3];
     for i in 0..3 {
         balanced[i] = mul_checked(prepared.gain[i], f64::from(demosaiced[i]))?;
@@ -518,6 +621,17 @@ fn finish_pixel(prepared: &PreparedRecipe, converted: [f32; 3]) -> Result<[f32; 
         out[channel] = to_f32_checked(v)?;
     }
     Ok(out)
+}
+
+/// Stage C when exposure is exactly 1.0 and no curve runs: multiplying a finite f32 by 1.0 in
+/// binary64 and rounding back is the identity, so only the finiteness refusal remains.
+#[inline]
+fn finish_pixel_identity(converted: [f32; 3]) -> Result<[f32; 3], DevelopError> {
+    if converted.iter().all(|v| v.is_finite()) {
+        Ok(converted)
+    } else {
+        Err(DevelopError::StageOverflow)
+    }
 }
 
 fn checked_i64(value: i128) -> Result<i64, DevelopError> {
@@ -608,8 +722,13 @@ pub fn develop_with(
     }
 
     let norm = normalize(plane, cancel)?;
-    let tile_pixels = grid.tile_width as usize * grid.tile_height as usize;
+    let demosaic = Demosaic::new(plane, &norm);
+    let identity_finish =
+        prepared.exposure_gain == 1.0 && prepared.curves.iter().all(Option::is_none);
+    let tile_width = grid.tile_width as usize;
+    let tile_pixels = tile_width * grid.tile_height as usize;
     let mut tiles = Vec::with_capacity(tile_count as usize);
+    let mut working: Vec<[f32; 3]> = Vec::new();
     for row in row_first..=row_last {
         for column in col_first..=col_last {
             cancel.check()?;
@@ -620,37 +739,47 @@ pub fn develop_with(
                 .intersect(output)
                 .map_err(|_| DevelopError::Overflow)?
                 .ok_or(DevelopError::EmptyCrop)?;
+            let (developed_w, developed_h) = (developed.width as usize, developed.height as usize);
             let mut colour = vec![0u8; tile_pixels * 12];
             let mut alpha = vec![0u8; tile_pixels * 4];
             let mut coverage = vec![0u8; tile_pixels];
             // Stage A for the whole developed region (row-major), then the optional conversion.
-            let mut working =
-                Vec::with_capacity(developed.width as usize * developed.height as usize);
-            for dy in 0..developed.height {
-                for dx in 0..developed.width {
-                    let sx = x0 as usize + (developed.x + i64::from(dx) - ox) as usize;
-                    let sy = y0 as usize + (developed.y + i64::from(dy) - oy) as usize;
-                    working.push(working_pixel(plane, &norm, &prepared, sx, sy)?);
+            working.clear();
+            working.reserve(developed_w * developed_h);
+            let source_x = x0 as usize + (developed.x - ox) as usize;
+            let source_y = y0 as usize + (developed.y - oy) as usize;
+            for sy in source_y..source_y + developed_h {
+                for sx in source_x..source_x + developed_w {
+                    working.push(working_pixel(&prepared, demosaic.pixel(sx, sy)?)?);
                 }
             }
             if prepared.profile_transform
                 && let Some(c) = converter.as_deref_mut()
             {
                 working = c.convert(&working, cancel)?;
-            }
-            for (i, w) in working.iter().enumerate() {
-                let dx = (i % developed.width as usize) as i64;
-                let dy = (i / developed.width as usize) as i64;
-                let rgb = finish_pixel(&prepared, *w)?;
-                let tx = (developed.x + dx - bounds.x) as usize;
-                let ty = (developed.y + dy - bounds.y) as usize;
-                let index = ty * grid.tile_width as usize + tx;
-                for (c, value) in rgb.iter().enumerate() {
-                    colour[index * 12 + c * 4..index * 12 + c * 4 + 4]
-                        .copy_from_slice(&value.to_le_bytes());
+                if working.len() != developed_w * developed_h {
+                    return Err(DevelopError::InvalidLength);
                 }
-                alpha[index * 4..index * 4 + 4].copy_from_slice(&1.0f32.to_le_bytes());
-                coverage[index] = 255;
+            }
+            let first_x = (developed.x - bounds.x) as usize;
+            let first_y = (developed.y - bounds.y) as usize;
+            for (dy, source_row) in working.chunks_exact(developed_w).enumerate() {
+                let first = (first_y + dy) * tile_width + first_x;
+                let colour_row = &mut colour[first * 12..(first + developed_w) * 12];
+                for (cell, w) in colour_row.chunks_exact_mut(12).zip(source_row) {
+                    let rgb = if identity_finish {
+                        finish_pixel_identity(*w)?
+                    } else {
+                        finish_pixel(&prepared, *w)?
+                    };
+                    for (slot, value) in cell.chunks_exact_mut(4).zip(rgb) {
+                        slot.copy_from_slice(&value.to_le_bytes());
+                    }
+                }
+                for cell in alpha[first * 4..(first + developed_w) * 4].chunks_exact_mut(4) {
+                    cell.copy_from_slice(&1.0f32.to_le_bytes());
+                }
+                coverage[first..first + developed_w].fill(255);
             }
             tiles.push(DevelopedTile {
                 bounds,
@@ -730,16 +859,15 @@ pub fn develop_to_image(
     let mut rgb = vec![0.0f32; width as usize * height as usize * 3];
     for tile in &tiles {
         let d = tile.developed;
-        for y in 0..d.height {
-            for x in 0..d.width {
-                let tx = (d.x - tile.bounds.x) as usize + x as usize;
-                let ty = (d.y - tile.bounds.y) as usize + y as usize;
-                let from = (ty * edge as usize + tx) * 12;
-                let to = ((d.y as usize + y as usize) * width as usize + d.x as usize + x as usize) * 3;
-                for c in 0..3 {
-                    let b = &tile.colour[from + c * 4..from + c * 4 + 4];
-                    rgb[to + c] = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                }
+        let row_pixels = d.width as usize;
+        for y in 0..d.height as usize {
+            let tx = (d.x - tile.bounds.x) as usize;
+            let ty = (d.y - tile.bounds.y) as usize + y;
+            let from = (ty * edge as usize + tx) * 12;
+            let to = ((d.y as usize + y) * width as usize + d.x as usize) * 3;
+            let source = tile.colour[from..from + row_pixels * 12].chunks_exact(4);
+            for (slot, b) in rgb[to..to + row_pixels * 3].iter_mut().zip(source) {
+                *slot = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
             }
         }
     }

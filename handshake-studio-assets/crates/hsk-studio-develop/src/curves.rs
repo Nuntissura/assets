@@ -107,13 +107,17 @@ impl PreparedCurve {
         if !v.is_finite() || !(0.0..=1.0).contains(&v) {
             return Err(DevelopError::CurveDomain);
         }
-        let n = self.xs.len();
-        if let Some(i) = self.xs.iter().position(|x| *x == v) {
-            return Ok(self.ys[i]);
+        // `xs` is strictly ascending (a non-finite or repeated slope refuses at prepare), so the
+        // first control point at or above `v` decides both cases: an exact control-point input
+        // returns its authored y, otherwise the segment is the one just below it.
+        let upper = self.xs.partition_point(|x| *x < v);
+        if self.xs.get(upper) == Some(&v) {
+            return Ok(self.ys[upper]);
         }
-        let i = (0..n - 1)
-            .find(|i| self.xs[*i] < v && v < self.xs[i + 1])
-            .ok_or(DevelopError::CurveDomain)?;
+        let i = upper.checked_sub(1).ok_or(DevelopError::CurveDomain)?;
+        if upper >= self.xs.len() {
+            return Err(DevelopError::CurveDomain);
+        }
         let h = self.xs[i + 1] - self.xs[i];
         let t = (v - self.xs[i]) / h;
         let t2 = t * t;
