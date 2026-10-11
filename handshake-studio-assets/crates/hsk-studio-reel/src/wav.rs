@@ -306,13 +306,14 @@ impl MediaProvider for WavProvider {
                 units: n,
                 sync: true,
                 preroll: false,
+                trim_start: 0,
                 bytes: &buf[..bytes],
             })?;
             cursor += n;
             chunks += 1;
             payload += bytes as u64;
         }
-        let delivered = deliver_end - start;
+        let delivered = deliver_end.saturating_sub(start);
         if deliver_end < want_end {
             return Err(ReelError::Truncated { delivered });
         }

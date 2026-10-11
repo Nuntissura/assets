@@ -105,6 +105,9 @@ pub struct PresentedSample {
     pub pts: i64,
     pub duration: u64,
     pub edit: u32,
+    /// Ticks of this sample that precede the edit's `media_time` (an unaligned edit start): `pts` is
+    /// clamped to the edit start and decoding begins at this containing sample.
+    pub trim_start: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +134,8 @@ pub struct SeekResult {
     pub decode_from: SeekPoint,
     /// Decode-order samples from `decode_from` through `target` inclusive.
     pub samples_to_decode: u32,
+    /// Leading ticks of the target sample before the presented start (see `PresentedSample`).
+    pub trim_start: u64,
     pub disposition: SeekDisposition,
 }
 
@@ -171,6 +176,8 @@ pub struct MediaIndex {
     pub tracks: Vec<TrackIndex>,
     /// Bytes read to build the index (box headers + moov + every moof/sidx).
     pub bytes_read: u64,
+    /// Length of the source the index was built from; delivery re-checks it.
+    pub source_len: u64,
     /// `mvex` present: samples come from movie fragments.
     pub fragmented: bool,
     /// Absolute offset of every `moof` found (fragmented files).
@@ -210,6 +217,66 @@ impl MediaIndex {
             .iter()
             .find(|t| t.kind == TrackKind::Video)
             .or_else(|| self.tracks.iter().find(|t| t.kind == TrackKind::Audio))
+    }
+}
+
+/// Track header facts supplied by a container reader other than ISOBMFF.
+#[allow(dead_code)] // consumed by the Matroska reader (slice 3)
+pub(crate) struct ExternalTrack {
+    pub track_id: u32,
+    pub kind: TrackKind,
+    pub handler: [u8; 4],
+    pub enabled: bool,
+    pub media_timescale: u32,
+    pub media_duration: u64,
+    pub width: u32,
+    pub height: u32,
+    pub audio: Option<AudioFormat>,
+}
+
+impl TrackIndex {
+    /// Assemble a track from samples produced by another container reader (Matroska). The timeline is
+    /// the identity timeline (no edit list) and `dts` is whatever the reader could know (often `pts`).
+    #[allow(dead_code)] // consumed by the Matroska reader (slice 3)
+    pub(crate) fn from_external_samples(
+        parts: ExternalTrack,
+        samples: Vec<SampleEntry>,
+        limits: &Limits,
+        cancel: &CancellationToken,
+    ) -> Result<Self, ReelError> {
+        let sync_points: Vec<u32> = samples
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.sync)
+            .map(|(i, _)| i as u32)
+            .collect();
+        let all_sync = sync_points.len() == samples.len();
+        let mut track = TrackIndex {
+            track_id: parts.track_id,
+            kind: parts.kind,
+            handler: parts.handler,
+            enabled: parts.enabled,
+            media_timescale: parts.media_timescale,
+            media_duration: parts.media_duration,
+            codec: [0; 4],
+            width: parts.width,
+            height: parts.height,
+            audio: parts.audio,
+            color: ColorTag::Untagged,
+            pixel_aspect: None,
+            edits: Vec::new(),
+            ticks_exact: true,
+            timecode: None,
+            timecode_ref: None,
+            pcm: None,
+            samples,
+            presented: Vec::new(),
+            sync_points: if all_sync { Vec::new() } else { sync_points },
+            all_sync,
+        };
+        build_edits(&mut track, &[], 0)?;
+        build_presentation(&mut track, limits, cancel)?;
+        Ok(track)
     }
 }
 
@@ -309,7 +376,8 @@ impl TrackIndex {
                 pts: start_pts,
             },
             samples_to_decode: p.sample.saturating_sub(start) + 1,
-            disposition: if r == i128::from(p.pts) {
+            trim_start: p.trim_start,
+            disposition: if r == i128::from(p.pts) && p.trim_start == 0 {
                 SeekDisposition::Exact
             } else {
                 SeekDisposition::Containing
@@ -684,6 +752,10 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
                         frames_per_packet,
                     }),
                 });
+            } else {
+                return Err(ReelError::Unsupported {
+                    what: "quicktime-sound-version",
+                });
             }
         }
         TrackKind::Timecode => timecode = Some(timecode::parse_tmcd(&mut e)?),
@@ -934,6 +1006,7 @@ fn track_from_tables(
                 media_timescale,
             },
             limits,
+            budget,
         )?
     } else {
         None
@@ -1113,6 +1186,25 @@ fn build_presentation(
             continue;
         };
         let first = order.partition_point(|&i| track.samples[i as usize].pts < media_time);
+        // An edit that starts inside a sample still presents it: decoding begins at the containing
+        // sample, its presented time is clamped to the edit start and the lead-in is reported.
+        if first > 0 {
+            let i = order[first - 1];
+            let sample = track.samples[i as usize];
+            let end = sample.pts.saturating_add(i64::from(sample.duration));
+            if end > media_time {
+                let remain = media_to_ticks(end - media_time, track.media_timescale)?;
+                let trim = media_to_ticks(media_time - sample.pts, track.media_timescale)?;
+                track.ticks_exact &= remain.exact && trim.exact;
+                presented.push(PresentedSample {
+                    sample: i,
+                    pts: edit.presentation_start,
+                    duration: remain.ticks.max(0) as u64,
+                    edit: e as u32,
+                    trim_start: trim.ticks.max(0) as u64,
+                });
+            }
+        }
         for &i in &order[first..] {
             let sample = track.samples[i as usize];
             let (pts, exact) = track.pts_in_edit(e as u32, sample.pts)?;
@@ -1133,6 +1225,7 @@ fn build_presentation(
                 pts,
                 duration: dur.ticks.max(0) as u64,
                 edit: e as u32,
+                trim_start: 0,
             });
         }
     }
@@ -1193,7 +1286,7 @@ fn read_moov(
                 brand = b;
             }
             b"moov" => {
-                if pos + size > file_len {
+                if pos.checked_add(size).is_none_or(|end| end > file_len) {
                     return Err(ReelError::Corrupt {
                         what: "moov-exceeds-file",
                     });
@@ -1298,6 +1391,7 @@ pub fn build_index(
         movie_timescale,
         tracks,
         bytes_read,
+        source_len: file_len,
         fragmented,
         fragment_offsets,
         segment_indexes,
@@ -1444,7 +1538,11 @@ impl IsobmffProvider {
         if req.count == 0 {
             return Err(ReelError::Unsupported { what: "zero-count" });
         }
-        verify_grant(src, &req.grant, req.expected_revision)?;
+        let len = verify_grant(src, &req.grant, req.expected_revision)?;
+        if len != index.source_len {
+            // The index describes a different file: replaying it would read the wrong bytes.
+            return Err(ReelError::StaleGrant);
+        }
         self.deliver(src, index, req, limits, cancel, sink)
     }
 
@@ -1477,98 +1575,125 @@ impl IsobmffProvider {
                 what: "packets-of-compact-pcm-track",
             });
         }
-        let first = track.seek(req.start_pts)?;
-        let last_presented = usize::try_from(req.count - 1)
-            .ok()
-            .and_then(|c| first.presented_index.checked_add(c))
-            .filter(|i| *i < track.presented.len())
-            .ok_or_else(|| {
-                let (f, e) = track.presentation_bounds();
-                ReelError::OutOfRange {
-                    requested: req.start_pts,
-                    first: f,
-                    end: e,
-                }
-            })?;
-        let wanted = &track.presented[first.presented_index..=last_presented];
-        let (mut lo, mut hi) = (u32::MAX, 0u32);
-        for p in wanted {
-            lo = lo.min(p.sample);
-            hi = hi.max(p.sample);
-        }
-        let from = track.sync_for(lo)?.min(track.sync_for(wanted[0].sample)?);
-        let span = (hi - from) as usize + 1;
-        let mut slots: Vec<Option<(i64, u64)>> = vec![None; span];
-        for p in wanted {
-            slots[(p.sample - from) as usize] = Some((p.pts, p.duration));
-        }
-        let last = *wanted.last().expect("count >= 1");
-        let start_actual = to_ticks(wanted[0].pts)?;
-        let end_actual = to_ticks(
-            last.pts
-                .checked_add(i64::try_from(last.duration).unwrap_or(i64::MAX))
-                .ok_or(ReelError::LimitExceeded { what: "tick-range" })?,
-        )?;
-        let length = end_actual.value() - start_actual.value();
-        let (mut chunks, mut payload, mut delivered) = (0u32, 0u64, 0u64);
-        let mut buf = Vec::new();
-        let mut ticks_exact = track.ticks_exact;
-        for (slot, sample_index) in (from..=hi).enumerate() {
-            check_cancel(cancel)?;
-            let sample = track.samples[sample_index as usize];
-            read_sample(src, &sample, &mut buf, limits, delivered)?;
-            let (pts, duration, preroll) = match slots[slot] {
-                Some((pts, duration)) => (pts, duration, false),
-                None => {
-                    let (pts, exact) = track.pts_in_edit(wanted[0].edit, sample.pts)?;
-                    ticks_exact &= exact;
-                    let d = media_to_ticks(i64::from(sample.duration), track.media_timescale)?;
-                    (pts, d.ticks.max(0) as u64, true)
-                }
-            };
-            sink.accept(Chunk {
-                kind: ChunkKind::Packet,
-                pts,
-                duration: Ticks::new(duration),
-                index: u64::from(sample_index),
-                units: 1,
-                sync: sample.sync,
-                preroll,
-                bytes: &buf,
-            })?;
-            chunks += 1;
-            payload += buf.len() as u64;
-            if !preroll {
-                delivered += 1;
-            }
-        }
-        Ok(SegmentReceipt {
-            requested: Span {
-                start_pts: req.start_pts,
-                end_pts: Ticks::new(req.start_pts.value().saturating_add(length)),
-                units: req.count,
-            },
-            actual: Span {
-                start_pts: start_actual,
-                end_pts: end_actual,
-                units: delivered,
-            },
-            disposition: if first.disposition == SeekDisposition::Exact {
-                Disposition::Exact
-            } else {
-                Disposition::Approximate
-            },
-            source: SourceKind::Original,
-            proxy_note: ProxyNote::NotRequested,
-            original_id: req.grant.content_id.clone(),
-            proxy_id: None,
-            codec: fourcc_string(track.codec),
-            decoder_id: "isobmff-demux",
-            decoder_version: DECODER_VERSION,
-            chunks,
-            bytes_read: payload,
-            complete: true,
-            ticks_exact,
-        })
+        deliver_packets(
+            src,
+            track,
+            fourcc_string(track.codec),
+            "isobmff-demux",
+            req,
+            limits,
+            cancel,
+            sink,
+        )
     }
+}
+
+/// Packet delivery for any container whose index is a `TrackIndex`: frame-accurate start, pre-roll
+/// from the nearest earlier sync sample (conservative for open GOP), exact requested vs actual spans.
+/// `bytes_read` counts payload only.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn deliver_packets(
+    src: &mut dyn ReadSeek,
+    track: &TrackIndex,
+    codec_label: String,
+    decoder_id: &'static str,
+    req: &SegmentRequest,
+    limits: &Limits,
+    cancel: &CancellationToken,
+    sink: &mut dyn ChunkSink,
+) -> Result<SegmentReceipt, ReelError> {
+    let first = track.seek(req.start_pts)?;
+    let last_presented = usize::try_from(req.count - 1)
+        .ok()
+        .and_then(|c| first.presented_index.checked_add(c))
+        .filter(|i| *i < track.presented.len())
+        .ok_or_else(|| {
+            let (f, e) = track.presentation_bounds();
+            ReelError::OutOfRange {
+                requested: req.start_pts,
+                first: f,
+                end: e,
+            }
+        })?;
+    let wanted = &track.presented[first.presented_index..=last_presented];
+    let (mut lo, mut hi) = (u32::MAX, 0u32);
+    for p in wanted {
+        lo = lo.min(p.sample);
+        hi = hi.max(p.sample);
+    }
+    let from = track.sync_for(lo)?.min(track.sync_for(wanted[0].sample)?);
+    let span = (hi - from) as usize + 1;
+    let mut slots: Vec<Option<(i64, u64, u64)>> = vec![None; span];
+    for p in wanted {
+        slots[(p.sample - from) as usize] = Some((p.pts, p.duration, p.trim_start));
+    }
+    let last = *wanted.last().expect("count >= 1");
+    let start_actual = to_ticks(wanted[0].pts)?;
+    let end_actual = to_ticks(
+        last.pts
+            .checked_add(i64::try_from(last.duration).unwrap_or(i64::MAX))
+            .ok_or(ReelError::LimitExceeded { what: "tick-range" })?,
+    )?;
+    let length = end_actual.value() - start_actual.value();
+    let (mut chunks, mut payload, mut delivered) = (0u32, 0u64, 0u64);
+    let mut buf = Vec::new();
+    let mut ticks_exact = track.ticks_exact;
+    for (slot, sample_index) in (from..=hi).enumerate() {
+        check_cancel(cancel)?;
+        let sample = track.samples[sample_index as usize];
+        read_sample(src, &sample, &mut buf, limits, delivered)?;
+        let (pts, duration, preroll, trim_start) = match slots[slot] {
+            Some((pts, duration, trim)) => (pts, duration, false, trim),
+            None => {
+                let (pts, exact) = track.pts_in_edit(wanted[0].edit, sample.pts)?;
+                ticks_exact &= exact;
+                let d = media_to_ticks(i64::from(sample.duration), track.media_timescale)?;
+                (pts, d.ticks.max(0) as u64, true, 0)
+            }
+        };
+        sink.accept(Chunk {
+            kind: ChunkKind::Packet,
+            pts,
+            duration: Ticks::new(duration),
+            index: u64::from(sample_index),
+            units: 1,
+            sync: sample.sync,
+            preroll,
+            trim_start,
+            bytes: &buf,
+        })?;
+        chunks += 1;
+        payload += buf.len() as u64;
+        if !preroll {
+            delivered += 1;
+        }
+    }
+    Ok(SegmentReceipt {
+        requested: Span {
+            start_pts: req.start_pts,
+            end_pts: Ticks::new(req.start_pts.value().saturating_add(length)),
+            units: req.count,
+        },
+        actual: Span {
+            start_pts: start_actual,
+            end_pts: end_actual,
+            units: delivered,
+        },
+        disposition: if first.disposition == SeekDisposition::Exact && first.trim_start == 0 {
+            Disposition::Exact
+        } else {
+            Disposition::Approximate
+        },
+        source: SourceKind::Original,
+        proxy_note: ProxyNote::NotRequested,
+        original_id: req.grant.content_id.clone(),
+        proxy_id: None,
+        codec: codec_label,
+        decoder_id,
+        decoder_version: DECODER_VERSION,
+        chunks,
+        bytes_read: payload,
+        complete: true,
+        ticks_exact,
+    })
 }

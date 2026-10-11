@@ -165,6 +165,7 @@ pub(super) struct CompactInput<'a> {
 pub(super) fn try_compact(
     input: CompactInput<'_>,
     limits: &Limits,
+    budget: &mut Budget,
 ) -> Result<Option<PcmStream>, ReelError> {
     let Ok(Some(format)) = pcm_format(input.codec, input.audio.as_ref()) else {
         return Ok(None);
@@ -200,7 +201,7 @@ pub(super) fn try_compact(
                 what: "stsc-exceeds-stsz",
             });
         }
-        if runs.len() >= limits.max_samples {
+        if runs.len() >= limits.max_samples.min(budget.samples_left) {
             return Err(ReelError::LimitExceeded {
                 what: "chunk-count",
             });
@@ -217,6 +218,8 @@ pub(super) fn try_compact(
     if consumed != n {
         return Err(ReelError::Corrupt { what: "stsc-short" });
     }
+    // Chunk runs are what a compact PCM track holds in memory: they, not frames, spend the budget.
+    budget.samples_left -= runs.len();
     Ok(Some(PcmStream {
         format,
         total_frames: media_frame,
@@ -373,6 +376,7 @@ impl IsobmffProvider {
                 units: n,
                 sync: true,
                 preroll: false,
+                trim_start: 0,
                 bytes: &buf[..bytes],
             })?;
             cursor += n;

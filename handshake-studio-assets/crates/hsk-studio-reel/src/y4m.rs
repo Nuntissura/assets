@@ -113,6 +113,12 @@ fn parse_y4m(src: &mut dyn ReadSeek, file_len: u64, limits: &Limits) -> Result<Y
     let (mut width, mut height, mut rate) = (0u32, 0u32, None);
     let mut chroma = Chroma::C420;
     for token in tokens.filter(|t| !t.is_empty()) {
+        // The tag is one ASCII byte, so splitting after it is always on a char boundary.
+        if !token.as_bytes()[0].is_ascii() {
+            return Err(ReelError::Corrupt {
+                what: "y4m-header-tag",
+            });
+        }
         let (tag, value) = token.split_at(1);
         match tag {
             "W" => {
@@ -157,6 +163,7 @@ fn parse_y4m(src: &mut dyn ReadSeek, file_len: u64, limits: &Limits) -> Result<Y
     let (num, den) = rate.ok_or(ReelError::Corrupt {
         what: "y4m-rate-missing",
     })?;
+    // moves to accord (SMB-ACCORD-ENG-2): fps <-> FrameRate ticks mapping
     let ticks = u128::from(TICKS_PER_SECOND) * u128::from(den);
     if !ticks.is_multiple_of(u128::from(num)) {
         return Err(ReelError::Unsupported {
@@ -308,6 +315,7 @@ impl MediaProvider for Y4mProvider {
                 units: 1,
                 sync: true,
                 preroll: false,
+                trim_start: 0,
                 bytes: &buf,
             })?;
             delivered += 1;
@@ -443,6 +451,7 @@ impl MediaProvider for Y4mProvider {
     }
 }
 
+// moves to accord (SMB-ACCORD-ENG-2)
 fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
         (a, b) = (b, a % b);

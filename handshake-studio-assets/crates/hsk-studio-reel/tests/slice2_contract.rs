@@ -117,6 +117,7 @@ fn pcm_spec(fourcc: &[u8; 4], kind: PcmKind, big_endian: bool, lpcm_v2: bool) ->
         movie_timescale: 48000,
         edits: None,
         moov_first: true,
+        sound_version: None,
     }
 }
 

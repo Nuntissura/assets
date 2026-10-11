@@ -125,8 +125,8 @@ fn gop_spec() -> Mp4Spec {
         co64: false,
         ctts_version: 0,
         moov_first: true,
-        colr_nclx: Some((1, 1, 1, false)),
-        pasp: Some((1, 1)),
+        colr_nclx: Some((9, 16, 18, true)),
+        pasp: Some((4, 3)),
     }
 }
 
@@ -149,13 +149,13 @@ fn isobmff_index_seek_and_packets() {
         assert_eq!(
             track.color,
             ColorTag::Nclx {
-                primaries: 1,
-                transfer: 1,
-                matrix: 1,
-                full_range: Some(false)
+                primaries: 9,
+                transfer: 16,
+                matrix: 18,
+                full_range: Some(true)
             }
         );
-        assert_eq!(track.pixel_aspect, Some((1, 1)));
+        assert_eq!(track.pixel_aspect, Some((4, 3)));
         assert_eq!(track.sync_samples(), &[0, 7]);
 
         // Exact PTS for every frame: edit list shifts the 2-frame B-frame delay to presentation zero.

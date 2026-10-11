@@ -168,6 +168,9 @@ pub struct Chunk<'a> {
     pub sync: bool,
     /// Decode-only packet needed to reach the requested frames; not part of the requested span.
     pub preroll: bool,
+    /// Ticks at the start of this chunk that lie before the presented start (an edit list that begins
+    /// inside a sample): the consumer discards that much decoded output. `0` when nothing is trimmed.
+    pub trim_start: u64,
     pub bytes: &'a [u8],
 }
 

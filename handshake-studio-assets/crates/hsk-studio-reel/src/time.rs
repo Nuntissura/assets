@@ -8,12 +8,13 @@ use crate::error::ReelError;
 use hsk_studio_accord::TICKS_PER_SECOND;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TickValue {
+pub(crate) struct TickValue {
     pub ticks: i64,
     pub exact: bool,
 }
 
-pub fn media_to_ticks(value: i64, timescale: u32) -> Result<TickValue, ReelError> {
+// moves to accord (SMB-ACCORD-ENG-2)
+pub(crate) fn media_to_ticks(value: i64, timescale: u32) -> Result<TickValue, ReelError> {
     if timescale == 0 {
         return Err(ReelError::Corrupt {
             what: "zero-timescale",
@@ -35,7 +36,8 @@ pub fn media_to_ticks(value: i64, timescale: u32) -> Result<TickValue, ReelError
 }
 
 /// Ticks per unit (frame or sample) of a `rate`-per-second stream, only when the division is exact.
-pub fn exact_ticks_per_unit(rate: u32) -> Option<u64> {
+// moves to accord (SMB-ACCORD-ENG-2)
+pub(crate) fn exact_ticks_per_unit(rate: u32) -> Option<u64> {
     if rate == 0 || !TICKS_PER_SECOND.is_multiple_of(u64::from(rate)) {
         None
     } else {

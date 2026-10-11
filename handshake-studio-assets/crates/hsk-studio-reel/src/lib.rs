@@ -38,7 +38,6 @@ pub use isobmff::{
 pub use model::*;
 pub use registry::{ProxySource, Registry, detect_type};
 pub use report::{outcome_for, report};
-pub use time::{TickValue, exact_ticks_per_unit, media_to_ticks};
 pub use wav::{WAV_PROVIDER_ID, WavProvider};
 pub use y4m::{Y4M_PROVIDER_ID, Y4mProvider};
 

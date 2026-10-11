@@ -129,6 +129,8 @@ impl Registry {
         let mut note = ProxyNote::NotRequested;
         let mut proxy_id = None;
         if req.prefer == SourcePreference::Proxy {
+            // The original's grant is checked before anything is probed or read from either source.
+            verify_grant(original, &req.grant, req.expected_revision)?;
             note = ProxyNote::NoProxyAvailable;
             if let Some(mut proxy) = proxy {
                 proxy_id = Some(proxy.grant.content_id.clone());

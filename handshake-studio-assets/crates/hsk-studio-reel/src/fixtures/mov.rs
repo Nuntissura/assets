@@ -243,11 +243,16 @@ pub struct PcmMovSpec {
     pub movie_timescale: u32,
     pub edits: Option<Vec<(u64, i64)>>,
     pub moov_first: bool,
+    /// Write this sound-description version instead of 0 (v0 layout; probes version handling).
+    pub sound_version: Option<u16>,
 }
 
-pub fn mov_pcm_bytes(spec: &PcmMovSpec) -> Vec<u8> {
-    let block = u64::from(spec.channels) * u64::from(spec.kind.bits() / 8);
-    let mut payload = Vec::with_capacity((spec.frames * block) as usize);
+fn pcm_block(spec: &PcmMovSpec) -> u64 {
+    u64::from(spec.channels) * u64::from(spec.kind.bits() / 8)
+}
+
+fn pcm_payload(spec: &PcmMovSpec) -> Vec<u8> {
+    let mut payload = Vec::with_capacity((spec.frames * pcm_block(spec)) as usize);
     for f in 0..spec.frames {
         for c in 0..spec.channels {
             payload.extend(pcm_encode(
@@ -257,6 +262,12 @@ pub fn mov_pcm_bytes(spec: &PcmMovSpec) -> Vec<u8> {
             ));
         }
     }
+    payload
+}
+
+/// The audio `trak` of a PCM movie whose sample data starts at absolute offset `base`.
+fn pcm_trak(spec: &PcmMovSpec, track_id: u32, base: u64) -> Vec<u8> {
+    let block = pcm_block(spec);
     let mut body = vec![0u8; 6];
     body.extend_from_slice(&1u16.to_be_bytes());
     if spec.lpcm_v2 {
@@ -281,7 +292,7 @@ pub fn mov_pcm_bytes(spec: &PcmMovSpec) -> Vec<u8> {
         body.extend_from_slice(&be32(block as u32));
         body.extend_from_slice(&be32(1));
     } else {
-        body.extend_from_slice(&0u16.to_be_bytes());
+        body.extend_from_slice(&spec.sound_version.unwrap_or(0).to_be_bytes());
         body.extend_from_slice(&[0; 6]);
         body.extend_from_slice(&spec.channels.to_be_bytes());
         body.extend_from_slice(&spec.kind.bits().to_be_bytes());
@@ -296,30 +307,71 @@ pub fn mov_pcm_bytes(spec: &PcmMovSpec) -> Vec<u8> {
         stsc.push((chunks as u32, (spec.frames % per) as u32));
     }
     let movie_duration = spec.frames * u64::from(spec.movie_timescale) / u64::from(spec.rate);
+    trak_box(&TrakSpec {
+        track_id,
+        handler: *b"soun",
+        media_timescale: spec.rate,
+        media_duration: spec.frames,
+        movie_duration,
+        width: 0,
+        height: 0,
+        entry,
+        stts: vec![(spec.frames as u32, 1)],
+        stsz_fixed: block as u32,
+        stsz_count: spec.frames as u32,
+        stsz_table: Vec::new(),
+        stsc,
+        chunk_offsets: (0..chunks).map(|k| base + k * per * block).collect(),
+        edits: spec.edits.clone(),
+        tref_tmcd: None,
+    })
+}
+
+pub fn mov_pcm_bytes(spec: &PcmMovSpec) -> Vec<u8> {
+    let payload = pcm_payload(spec);
+    let movie_duration = spec.frames * u64::from(spec.movie_timescale) / u64::from(spec.rate);
     let moov = |base: u64| {
-        let trak = trak_box(&TrakSpec {
-            track_id: 1,
-            handler: *b"soun",
-            media_timescale: spec.rate,
-            media_duration: spec.frames,
-            movie_duration,
-            width: 0,
-            height: 0,
-            entry: entry.clone(),
-            stts: vec![(spec.frames as u32, 1)],
-            stsz_fixed: block as u32,
-            stsz_count: spec.frames as u32,
-            stsz_table: Vec::new(),
-            stsc: stsc.clone(),
-            chunk_offsets: (0..chunks).map(|k| base + k * per * block).collect(),
-            edits: spec.edits.clone(),
-            tref_tmcd: None,
-        });
         let mut moov = mvhd_box(spec.movie_timescale, movie_duration);
-        moov.extend_from_slice(&trak);
+        moov.extend_from_slice(&pcm_trak(spec, 1, base));
         boxed(b"moov", &moov)
     };
     assemble(&moov, &payload, spec.moov_first)
+}
+
+/// Video track 1 (`video_frames` all-sync `avc1` frames of 100 bytes at 25 fps) plus the PCM audio as
+/// track 2: a movie where one long audio track must not starve the video track's index budget.
+pub fn mov_av_bytes(video_frames: u32, audio: &PcmMovSpec) -> Vec<u8> {
+    let video_bytes = u64::from(video_frames) * 100;
+    let mut payload: Vec<u8> = (0..video_frames)
+        .flat_map(|i| (0..100u32).map(move |j| mp4_sample_byte(i, j)))
+        .collect();
+    payload.extend(pcm_payload(audio));
+    let movie_duration = u64::from(video_frames) * 40;
+    let moov = |base: u64| {
+        let video = trak_box(&TrakSpec {
+            track_id: 1,
+            handler: *b"vide",
+            media_timescale: 1000,
+            media_duration: movie_duration,
+            movie_duration,
+            width: 64,
+            height: 36,
+            entry: video_entry(b"avc1", 64, 36),
+            stts: vec![(video_frames, 40)],
+            stsz_fixed: 100,
+            stsz_count: video_frames,
+            stsz_table: Vec::new(),
+            stsc: vec![(1, video_frames)],
+            chunk_offsets: vec![base],
+            edits: None,
+            tref_tmcd: None,
+        });
+        let mut moov = mvhd_box(1000, movie_duration);
+        moov.extend_from_slice(&video);
+        moov.extend_from_slice(&pcm_trak(audio, 2, base + video_bytes));
+        boxed(b"moov", &moov)
+    };
+    assemble(&moov, &payload, true)
 }
 
 // ---- timecode track --------------------------------------------------------------------------------
