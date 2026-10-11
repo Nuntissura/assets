@@ -2472,17 +2472,19 @@ fn raw_hit(p: &hsk_studio_press::PayloadProof) -> bool {
 #[test]
 fn bytes_after_end_of_data_and_dictionary_comments_are_hits() {
     let page = r7_page();
-    // The removed string in plain bytes right after the end-of-data marker of each filter.
-    let plain_after: Vec<(&str, Vec<u8>)> = vec![
-        ("/Filter /ASCIIHexDecode", b"41>SECRET-ALPHA".to_vec()),
-        ("/Filter /FlateDecode", [zl(b"x"), b"SECRET-ALPHA".to_vec()].concat()),
-        ("/Filter /ASCII85Decode", b"87cURDZ~>SECRET-ALPHA".to_vec()),
-        ("/Filter /RunLengthDecode", [vec![0u8, b'x', 128], b"SECRET-ALPHA".to_vec()].concat()),
+    // The removed string in plain bytes right after the end-of-data marker of each filter. Where
+    // the byte before it is not a letter or digit the raw scan reports it too; after the Adler-32
+    // of a zlib stream it may be glued to a letter (whole-token rule), and TrailingData alone blocks.
+    let plain_after: Vec<(&str, Vec<u8>, bool)> = vec![
+        ("/Filter /ASCIIHexDecode", b"41>SECRET-ALPHA".to_vec(), true),
+        ("/Filter /FlateDecode", [zl(b"x"), b"SECRET-ALPHA".to_vec()].concat(), false),
+        ("/Filter /ASCII85Decode", b"87cURDZ~>SECRET-ALPHA".to_vec(), true),
+        ("/Filter /RunLengthDecode", [vec![0u8, b'x', 128], b"SECRET-ALPHA".to_vec()].concat(), true),
     ];
-    for (dict, data) in plain_after {
+    for (dict, data, raw) in plain_after {
         let out = r7_run(&r7_with_hidden(&page, stream_body(dict, &data)));
         assert!(!out.is_proven(), "{dict}: the removed string is in the saved file: {:?}", out.proof);
-        assert!(raw_hit(&out.proof) && find(&out.bytes, b"SECRET-ALPHA").is_some(), "{dict}: {:?} {:?}", out.proof, find(&out.bytes, b"SECRET-ALPHA"));
+        assert!(find(&out.bytes, b"SECRET-ALPHA").is_some() && (!raw || raw_hit(&out.proof)), "{dict}: {:?}", out.proof);
         assert!(out.proof.trailing_data_streams.iter().any(|(n, _)| *n == 20), "{dict}"); // R7-new-api
         assert!(out.not_proven_reasons().contains(&NotProven::TrailingData), "{dict}"); // R7-new-api
     }
