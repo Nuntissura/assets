@@ -1,0 +1,31 @@
+schema_version: kumihimo.wp-contract.v1
+kind: work_packet_stub
+wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
+title: Prove web arrangement with Portal-style frames
+scope:
+- Prove browser adapter with expandable movable mock cards/detail subframes and same semantic core where feasible;
+  host owns kanban columns/domain commands; no unrelated Portal repo edits without packet expansion
+files:
+- product/
+- repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/
+- repo-governance/specification/current/
+- repo-governance/topology/
+dependencies:
+- WP-KUM-011-navigation-and-media-controls-v1
+spec_refs:
+- TOPIC-KUM-WORKSPACE
+- TOPIC-KUM-LAYOUT
+- TOPIC-KUM-CONTENT
+- TOPIC-KUM-PLATFORMS
+- TOPIC-KUM-MODEL
+requirements:
+- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+  eval before coding
+- Reuse existing core and verified cache; no parallel Cargo or long default suites
+- Preserve host ownership and existing accepted scope; explicit exact platform proof
+acceptance:
+- Real browser interaction, resize/nesting/docking/persistence/model routes; arrangement moves do not silently change
+  task meaning; capability/failure scope explicit
+proof:
+- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+status_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-state.yaml

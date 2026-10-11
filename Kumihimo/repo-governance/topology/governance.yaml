@@ -11,3 +11,7 @@ nodes:
   derived: true
 - id: KUM-GOV-SYNC
   path: repo-governance/repo-scripts/sync.py
+- id: KUM-GOV-SESSION
+  path: repo-governance/sessions/current.yaml
+- id: KUM-GOV-SESSION-START
+  path: repo-governance/repo-scripts/session_start.py

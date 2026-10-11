@@ -1,0 +1,9 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-012-desktop-gui-adapter-v1
+generation: 1
+phase: planned
+owner: unassigned
+changed_files: []
+proof: []
+blockers: []
+next_action: Promote after predecessor proof; dependency and eval agents prepare before coding

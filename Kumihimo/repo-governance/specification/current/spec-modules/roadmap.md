@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 4
+revision: 5
 title: Kumihimo roadmap
 updated_at: '2026-10-11'
 ---
@@ -88,6 +88,7 @@ roadmap:
   - REQ-KUM-LAYOUT-004
   - REQ-KUM-LAYOUT-005
   - REQ-KUM-LAYOUT-006
+  - REQ-KUM-LAYOUT-007
   implementation_source_revision: null
   verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
   matrix_entry_refs: []
@@ -134,6 +135,11 @@ roadmap:
   - REQ-KUM-CHROME-003
   - REQ-KUM-CHROME-004
   - REQ-KUM-CHROME-005
+  - REQ-KUM-CHROME-006
+  - REQ-KUM-CHROME-007
+  - REQ-KUM-CHROME-008
+  - REQ-KUM-CHROME-009
+  - REQ-KUM-CHROME-010
   implementation_source_revision: null
   verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
   matrix_entry_refs: []
@@ -148,6 +154,9 @@ roadmap:
   - REQ-KUM-CONTENT-002
   - REQ-KUM-CONTENT-003
   - REQ-KUM-CONTENT-004
+  - REQ-KUM-CONTENT-005
+  - REQ-KUM-CONTENT-006
+  - REQ-KUM-CONTENT-007
   implementation_source_revision: null
   verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
   matrix_entry_refs: []

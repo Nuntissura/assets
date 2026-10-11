@@ -52,7 +52,9 @@ The [technical gap research](repo-governance/docs/research/modularity-and-techni
 
 Read the identical AGENTS.md/CLAUDE.md entry points, the project CODEX, relevant build rules and the [taskboard](repo-governance/taskboard/taskboard.yaml). Choose a bounded WP; read its contract/state and the relevant [master-spec topics](repo-governance/specification/current/spec-modules/master-spec.md). Activate, execute, run focused proof, record recovery state, and rebuild the board.
 
-The model maintains this asset directly in the shared assets checkout. No enrichment phase, mandatory microtasks/worktrees, role handoffs, controller dependency, long test suite or stock compliance audit is required. Reference templates do not add gates. Engineering boundaries and honest proof still apply.
+The dev lead maintains this asset in the shared assets checkout with dedicated coding, dependency, diagnostic and evaluation chats. Start every session with `python repo-governance/repo-scripts/session_start.py`; the canonical session record contains role targets, coder rotation and build ownership. Dependencies precede coding, evaluation is focused, Cargo is serialized and cache reuse is verified. A 15-minute thread heartbeat checks progress/resources without interrupting other Rust teams.
+
+The model maintains this asset directly in the shared assets checkout. No enrichment phase, mandatory microtasks/worktrees, formal handoff pipeline, controller dependency, long test suite or stock compliance audit is required. Reference templates do not add gates. Engineering boundaries and honest proof still apply.
 
 Inputs: operator requests and WP contracts. Outputs: owned file changes, observed proof and recoverable WP state. Status is planned, active, blocked, done or cancelled; product roadmap status remains separate.
 
@@ -65,11 +67,12 @@ Inputs: operator requests and WP contracts. Outputs: owned file changes, observe
 Run from the Kumihimo folder with Python 3.12+ and PyYAML (version pinned in repo-governance/repo-scripts/requirements.txt):
 
 ```powershell
+python repo-governance/repo-scripts/session_start.py
 python repo-governance/repo-scripts/sync.py
 python repo-governance/repo-scripts/sync.py --check
 ```
 
-The first rebuilds CODEX, taskboard, registry and spec navigation projections. The second checks source structure and projection freshness without writing. Neither proves GUI or Rust runtime behavior. There are no product startup/build commands yet.
+Session-start reads live Git, canonical packet state and session coordination. Sync rebuilds CODEX, taskboard, registry and spec navigation projections; `sync.py --check` checks source structure and freshness without writing. Neither proves GUI or Rust runtime behavior. There are no product startup/build commands yet.
 
 </topic>
 

@@ -1,0 +1,51 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-006-session-and-spec-v1
+title: Start the team session and publish the agreed specification and implementation packets
+scope:
+- Persist the operator's dev-lead, dedicated role chats, dependency admission, coder rotation and efficient serial Cargo workflow
+- Add a portable session-start command and recoverable current session record
+- Preserve spec revision 4 and incorporate accepted cross-module embedding and movable toolbar/panel concepts with host-owned policies
+- Create a full first portable-core implementation packet and bounded downstream packet stubs covering the existing roadmap
+- Publish the specification, workflow and board before admitting product coding
+files:
+- README.md
+- repo-governance/codex/
+- repo-governance/repo-scripts/session_start.py
+- repo-governance/repo-scripts/sync.py
+- repo-governance/sessions/
+- repo-governance/topology/
+- repo-governance/docs/research/
+- repo-governance/specification/
+- repo-governance/work-packets/active/
+- repo-governance/taskboard/
+- repo-governance/registry/
+dependencies:
+- WP-KUM-005-modularity-and-technical-research-v1
+spec_refs:
+- TOPIC-KUM-BOUNDARIES
+- TOPIC-KUM-LAYOUT
+- TOPIC-KUM-CHROME
+- TOPIC-KUM-CONTENT
+- TOPIC-KUM-CHOICES
+- TOPIC-KUM-ROADMAP
+requirements:
+- Keep existing minimal workflow; no enrichment phase, mandatory microtasks, long suites or formal handoff pipeline
+- Coding uses gpt-6.1-sol high; dependency readiness precedes coding; eval agent writes focused evaluation for each WP
+- Separate role chats may communicate directly on failures and blockers; overlapping file writes and all Kumihimo Cargo runs are serialized
+- Rotate coding agents after two implementation WPs; scope expansion is authorized for this session, later sessions inherit only operator-authorized scope
+- Use project-relative configuration and record the verified Git root rather than initialize a second parent repository
+- Preserve all prior accepted requirements, stable IDs and unrelated spec topics; proposals not explicitly adopted remain proposals
+acceptance:
+- Session-start describes role ownership, coordination, recovery, build/cache/resource strategy and next action without chat-history dependence
+- Accepted tool surfaces separate placement, target binding, visibility, keyboard focus and reserved space with host policy
+- Embedding retains host-owned asset/editing semantics and generic content contracts
+- Full WP-KUM-007-core-model-v1 plus downstream stubs cover the roadmap with clear dependencies, bounded scope and focused proof
+- Eval agent's focused WP evaluation exists; parsing/reference/projection checks and owned diff pass
+- Commit is pushed to the existing assets origin and exact remote revision independently matches before coding starts
+proof:
+- python repo-governance/repo-scripts/session_start.py
+- python repo-governance/repo-scripts/sync.py --check
+- Inspect preserved revision against Git HEAD and accepted requirement changes against operator use cases
+- git diff --check -- Kumihimo
+- git ls-remote origin refs/heads/codex/handpick
+status_ref: repo-governance/work-packets/active/WP-KUM-006-session-and-spec-v1/WP-KUM-006-session-and-spec-v1-state.yaml

@@ -12,3 +12,7 @@ edges:
   from: KUM-GOV-SYNC
   to: KUM-GOV-BOARD
   relation: generates
+- id: KUM-LINK-SESSION-RECOVERY
+  from: KUM-GOV-SESSION-START
+  to: KUM-GOV-SESSION
+  relation: reads_and_exposes_recovery

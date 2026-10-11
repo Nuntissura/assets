@@ -4,7 +4,7 @@ identity:
   codex_source_id: CODEX-KUMIHIMO-v1
   project_id: KUMIHIMO
   version: 27
-  revision: 23
+  revision: 24
   status: active_model_operated
 execution_modes:
   default: model_operated
@@ -16,6 +16,11 @@ execution_modes:
       shared_protocol_path: repo-governance/codex/protocols/shared/minimal.md
       role_authorization:
         maintainer: Owns bounded product and governance work; no compulsory role handoffs
+        dev_lead: Owns session, task state, scope admission and publication
+        coder: Owns admitted product paths; fixed model and rotation policy
+        dependencies: Owns admitted dependency-readiness report
+        diagnostics: Owns dispatched diagnostics and failure investigation
+        evaluation: Owns focused per-WP evaluation
       transition_registry:
         phases:
         - planned
@@ -27,7 +32,8 @@ execution_modes:
       mechanical_adapter_fields:
         evaluator: maintainer checks current contract/state and affected proof
       operating_protocol:
-        start: Read taskboard, selected WP contract/state and relevant specification topics
+        start: Run the session-start command; inspect session roster, taskboard, selected WP contract/state and
+          relevant specification topics
         execute: Write a bounded WP directly; activate in state; implement in this checkout
         recover: Read current Git diff and WP state; reconcile uncertain effects before retrying
         proof: Run only affected focused checks; broad/slow checks only when explicitly required
@@ -38,6 +44,20 @@ repository_workflows:
   output_path: repo-governance/codex/workflows/repository-workflows.md
   authority_source: repo-governance/codex/current/codex-source.yaml
   steps:
+  - workflow_id: KUM-FLOW-000
+    title: Session start and team recovery
+    required_reads:
+    - canonical authority
+    - repo-governance/sessions/current.yaml
+    - active WP contract/state
+    - Git status and exact revision
+    actions: &id001
+    - Read canonical authority and current session; reconcile current scope and later stop instructions
+    - Read WP state, board and current Git diff; reconcile external effects
+    - Check role chats, file ownership, coder rotation count and dependency/eval dispatch
+    - Inspect resource/cache observations before granting serial Cargo ownership
+    - Continue the recorded next action; update state and board at meaningful milestones
+    proof: Live session-start output, role readiness and canonical Git state agree with dispatch
   - workflow_id: KUM-FLOW-001
     title: Select and execute a bounded WP
     required_reads:
@@ -108,6 +128,29 @@ rules:
 - rule_id: KUM-PROCESS-001
   requirement: Do not stop processes this session did not start without the operator process-stop acknowledgment
     required by global authority.
+- rule_id: KUM-SESSION-001
+  requirement: At every session start run python repo-governance/repo-scripts/session_start.py; inspect canonical
+    authority, current session, active WP state and Git state before dispatch or effects.
+- rule_id: KUM-TEAM-001
+  requirement: Use a dev lead plus separate coding, dependency, diagnostic and evaluation chats; the operator authorizes
+    direct team messages on blockers/failures and bounded subagents, with serialized overlapping file writes.
+- rule_id: KUM-TEAM-002
+  requirement: Admit coding only after the accepted spec and WP predecessor is published and the dependency agent
+    records readiness; eval agent writes focused acceptance cases and observed evaluation for each WP.
+- rule_id: KUM-TEAM-003
+  requirement: Use gpt-6.1-sol high for coding; rotate coders after two completed implementation WPs, creating a
+    fresh chat when local rotation is unavailable. Use cheaper agents for exploration when adequate and retain reasoning
+    strength for difficult diagnosis.
+- rule_id: KUM-CARGO-001
+  requirement: The dev lead grants one Kumihimo Cargo lane at a time; use the stable source/target roots and verified
+    cache, bundle affected checks and reuse valid results. Other teams may delay builds while source work continues;
+    never stop unowned processes or delete their caches.
+- rule_id: KUM-TICK-001
+  requirement: Use the authorized 15-minute thread heartbeat to inspect WP/team progress, CPU, memory, disk and
+    Rust process activity; recover blockers with evidence and notify only meaningful change or needed operator action.
+- rule_id: KUM-SCOPE-002
+  requirement: Session-specific expansion authority lives in the session record; do not carry AFK/expansion permission
+    into another session without operator scope reconciliation. Stop or pause immediately on later operator instruction.
 stock_workflows: {}
 project_installation:
   execution_mode: model_operated
@@ -152,3 +195,7 @@ minimal_artifact_contract:
   - blocked
   - done
   - cancelled
+session_start:
+  command: python repo-governance/repo-scripts/session_start.py
+  session_ref: repo-governance/sessions/current.yaml
+  steps: *id001

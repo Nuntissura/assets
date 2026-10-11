@@ -1,0 +1,53 @@
+schema_version: kumihimo.wp-evaluation.v1
+evaluation_id: EVAL-KUM-007-v1
+wp_id: WP-KUM-007-core-model-v1
+evaluator: ROLE-KUM-EVALUATION
+phase: acceptance_plan
+verdict: NOT_IMPLEMENTED_NOT_EVALUATED
+scope: Portable in-memory core only; coder owns product tests and serial Cargo proof
+acceptance_scenarios:
+  - case_id: EVAL-KUM-007-001
+    refs: [REQ-KUM-BOUNDARIES-002, REQ-KUM-LAYOUT-006]
+    method: Move a frame owning multiple containment levels between workspaces with distinct sibling orders and resources.
+    expected: Exactly one placement parent changes; descendant workspace/frame/view/resource/group identities and local order survive. Each frame has at most one owned child workspace.
+  - case_id: EVAL-KUM-007-002
+    refs: [REQ-KUM-LAYOUT-006, REQ-KUM-MODEL-001]
+    method: Reject self/descendant cycles, absent targets, duplicate requested identity and invalid insertion indexes; compare the complete canonical model and the next successful identity allocation with a control sequence.
+    expected: Records, order, ownership, generation and identity allocation are unchanged; structured errors identify the cause and relevant target. Bounded outcome-ledger bookkeeping is evaluated separately from model atomicity.
+  - case_id: EVAL-KUM-007-003
+    refs: [REQ-KUM-LAYOUT-006]
+    method: For siblings [A, B, C], move B to insertion indexes 0, 1 and 2 interpreted after removal; reject index 3. Also append to an empty destination and move an item back to its unchanged order.
+    expected: Results are [B, A, C], unchanged [A, B, C], and [A, C, B]; unchanged order is a no-op with unchanged generation. Invalid index preserves the complete model.
+  - case_id: EVAL-KUM-007-004
+    refs: [REQ-KUM-LAYOUT-001, REQ-KUM-LAYOUT-006]
+    method: Create the illustrative 20 frames with 30 views each, vary counts, add nested levels and move a deep subtree through the public API.
+    expected: Example counts are neither preset nor ceiling; flat records and iterative traversal do not bind conceptual depth to recursive ownership or call-stack traversal. Functional proof makes no throughput, GUI or engine-resource claim.
+  - case_id: EVAL-KUM-007-005
+    refs: [REQ-KUM-LAYOUT-001]
+    method: Exercise each implemented admission budget at limit-minus-one, limit and limit-plus-one; lower policy below existing usage, attempt new admission and move an existing item.
+    expected: Configured policy is disclosed; rejected admission deletes no existing records and consumes no identity. The manual specifies whether counts and depth apply globally or locally, and whether movement changes the relevant usage.
+  - case_id: EVAL-KUM-007-006
+    refs: [REQ-KUM-BOUNDARIES-002, REQ-KUM-BOUNDARIES-003]
+    method: Request two views of one resource with sharing allowed and denied; move supported views independently and inspect provider/resource references.
+    expected: Shared views have different typed view IDs and retain the same resource reference; denied duplication preserves the original. Local identity scope, non-reuse and overflow handling are explicit; no durable-global identity or persistence claim is required.
+  - case_id: EVAL-KUM-007-007
+    refs: [REQ-KUM-MODEL-001, REQ-KUM-MODEL-002]
+    method: Submit increasing instance-local operation sequences, a valid mutation, stale generation, exact-envelope replay after generation changes, changed-envelope reuse, a rejected-operation replay and retention eviction under a small budget.
+    expected: Retained exact-envelope replay precedes stale-generation checks and cannot repeat a mutation; changed actor/generation/command under a retained sequence is rejected. A sequence at or below the high-water mark without a retained outcome is explicitly expired and cannot execute again; retention and sequence-overflow behavior are documented without unbounded ID storage.
+  - case_id: EVAL-KUM-007-008
+    refs: [REQ-KUM-BOUNDARIES-001, REQ-KUM-BOUNDARIES-005, REQ-KUM-BOUNDARIES-006, REQ-KUM-BOUNDARIES-007]
+    method: Inspect minimal consumer imports, public API and package graph; consume the coder-owned focused Cargo and runnable-example results; follow the no-context manual.
+    expected: Independently usable cohesive core has no mandatory runtime external dependencies when admitted as such; no GUI/native/GPU/Servo public inputs. Manual states commands, ownership, errors, recovery and exact observed host proof. Geometry, persistence, native popouts and actual provider lifecycle stay outside this packet.
+proof_handling:
+  coding_admission: Independently read published WP-006 revision and dependency readiness before implementation review.
+  cargo_owner: Dev-lead-dispatched serial build owner; evaluator does not launch or duplicate Cargo runs.
+  independent_review: Read actual product diff and external consumer assertions against these scenarios; reuse unchanged passing proof and target only uncovered behavior.
+  completion: Separate compile/test/example results, contract alignment, observed architecture and publication; never mark entire referenced future features implemented from this bounded core.
+risks_controls:
+  - Partial detach before validation loses a subtree; full pre/post-state comparison and control identity allocation detect it.
+  - Frame-owned workspaces confused with split nodes or resource sharing; inspect canonical parent relations and distinct typed records.
+  - Replay retention or validation ordering hides repeated effects; small-ledger public command sequences expose the declared boundary.
+INDEPENDENT_FINDINGS: []
+RESIDUAL_UNCERTAINTY:
+  - Product source and runtime proof do not yet exist; plan is not an implementation verdict.
+next_action: Inspect coder handoff and exact product candidate after published predecessor and dependency admission.

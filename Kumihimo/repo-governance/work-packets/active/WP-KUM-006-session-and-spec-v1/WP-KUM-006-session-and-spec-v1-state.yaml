@@ -1,0 +1,71 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-006-session-and-spec-v1
+generation: 2
+phase: active
+owner: dev_lead
+changed_files:
+- README.md
+- repo-governance/codex/CODEX.md
+- repo-governance/codex/current/codex-source.yaml
+- repo-governance/codex/protocols/project/minimal.md
+- repo-governance/codex/protocols/shared/minimal.md
+- repo-governance/registry/ids.yaml
+- repo-governance/registry/work-packets.yaml
+- repo-governance/repo-scripts/session_start.py
+- repo-governance/repo-scripts/sync.py
+- repo-governance/sessions/SESSION-KUM-2026-10-11-v1-diagnostics.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/specification/current/INDEX.json
+- repo-governance/specification/current/primitive-feature-mix-matrix.json
+- repo-governance/specification/current/primitive-list.json
+- repo-governance/specification/current/spec-modules/master-spec.md
+- repo-governance/specification/current/spec-modules/roadmap.md
+- repo-governance/specification/current/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v4-r4-822ea9af3816/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v4-r4-822ea9af3816/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v4-r4-822ea9af3816/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v4-r4-822ea9af3816/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v4-r4-822ea9af3816/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v4-r4-822ea9af3816/specification.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/topology/governance.yaml
+- repo-governance/topology/links.yaml
+- repo-governance/work-packets/active/WP-KUM-006-session-and-spec-v1/WP-KUM-006-session-and-spec-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-006-session-and-spec-v1/WP-KUM-006-session-and-spec-v1-evaluation.yaml
+- repo-governance/work-packets/active/WP-KUM-006-session-and-spec-v1/WP-KUM-006-session-and-spec-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-dependency-readiness.yaml
+- repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-evaluation.yaml
+- repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-state.yaml
+proof:
+- kind: spec_preservation
+  observed: All 90 prior requirements unchanged; 6-file v4 archive independently matches 822ea9af3816; 14 unrelated
+    master topics preserved
+- kind: focused_structure
+  observed: sync.py --check and owned diff --check passed; 20 topics, 99 requirements and 18 planned features
+- kind: session_start
+  observed: Portable read-only command observed from outside Kumihimo with canonical lead/role IDs, workflow, Git
+    state and target anchor
+- kind: role_evaluation
+  observed: EVAL-KUM-006-v1 PASS_PREPUBLICATION; all 18 features covered by full WP007 and downstream stubs; runtime
+    not claimed
+- kind: dependency_readiness
+  observed: WP007 dependency verdict ready_for_zero_runtime_external_dependencies; coding still waits for publication
+- kind: heartbeat
+  observed: App automation kumihimo-dev-lead-tick ACTIVE with 15-minute thread schedule
+blockers: []
+next_action: Commit and push preparation candidate; independently verify remote, settle WP006 and admit WP007

@@ -1,0 +1,109 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-007-core-model-v1
+title: Implement the portable workspace identity and containment core
+scope:
+- Create product/Cargo.toml workspace with one independently usable kumihimo-core package and cohesive internal
+  modules
+- Implement typed identities and flat in-memory workspace/frame/view/resource/provider/group records with recursive
+  frame-owned child workspaces
+- Implement validated creation and subtree movement with deterministic structured errors, model generation and a
+  small structured mutation API
+- Keep content resources host-owned; different views require declared shared-view capability; preserve all identities
+  on moves
+- Provide a no-context product manual, minimal runnable example and focused external contract tests
+files:
+- product/
+- README.md
+- repo-governance/codex/build-rules/current/build-rules.yaml
+- repo-governance/topology/
+- repo-governance/specification/current/
+- repo-governance/specification/spec-archive/
+- repo-governance/sessions/current.yaml
+- repo-governance/work-packets/active/WP-KUM-007-core-model-v1/
+- repo-governance/taskboard/
+- repo-governance/registry/
+dependencies:
+- WP-KUM-006-session-and-spec-v1
+spec_refs:
+- REQ-KUM-BOUNDARIES-001
+- REQ-KUM-BOUNDARIES-002
+- REQ-KUM-BOUNDARIES-003
+- REQ-KUM-BOUNDARIES-005
+- REQ-KUM-BOUNDARIES-006
+- REQ-KUM-BOUNDARIES-007
+- REQ-KUM-LAYOUT-001
+- REQ-KUM-LAYOUT-006
+- REQ-KUM-MODEL-001
+- REQ-KUM-MODEL-002
+requirements:
+- Dependency agent readiness and published predecessor are hard coding-admission gates
+- One frame placement workspace; at most one child workspace owned by each frame; flat records and iterative ancestry
+  traversal; no fixed conceptual nesting/count ceiling
+- Host-configurable admission limits are practical policy, distinct from architecture; lowered limits reject new
+  admission without deleting existing state
+- A view has one owning frame/tab placement and references a separate resource; duplicating a resource view needs
+  explicit sharing support
+- Reject duplicate/missing targets, cycles, incompatible sharing and invalid indexes without changing model records,
+  generation or identity allocation
+- Define insertion indexes against the destination sequence after removing the moving item; same-parent unchanged
+  order is a no-op with unchanged generation
+- Use typed stable non-reused local IDs; document identity scope and overflow errors; never expose mandatory GUI/native/GPU/Servo
+  types
+- Mutations include actor, operation identity and expected generation; retain bounded operation outcomes, reject
+  reuse with different intent, document retention and stale-generation behavior
+- Use a monotonic operation sequence per core instance; replay retained outcomes only for the same complete envelope.
+  Reject an older operation whose receipt has expired with an explicit expired-operation result, rather than treating it as a new mutation.
+  Rejected commands may update bounded operation bookkeeping while model records, generation and entity allocation remain unchanged.
+- No GUI, rendering, native popouts, file persistence, engines, actual content lifecycle, geometric solver or third-party
+  toolkit adoption in this packet
+- Coding agent owns product; dev lead owns governance/state/Git; eval and dependency agents own their named reports;
+  no parallel Cargo
+acceptance:
+- Public consumer contract creates multiple nested workspaces and moves a subtree while preserving contained IDs,
+  order and resource references
+- Cycle, stale generation, invalid index, missing/duplicate identity, incompatible sharing and admission rejection
+  leave model state unchanged with structured reasons
+- Host-selected counts support the illustrative 20 frames with 30 tabs each and deeper nesting without a fixed built-in
+  ceiling; this is functional proof only
+- Operation replay is explicit and deterministic within configured retention; changed intent reuse is rejected;
+  no-op semantics are documented and proven
+- One minimal core package compiles with no runtime external dependencies when readiness confirms this approach;
+  focused tests and example pass on the observed host
+- Manual explains startup, API inputs/outputs, navigation, errors, recovery, platform proof limits and next boundaries
+- Eval agent records observed focused proof; state/board and product topology describe only implemented scope; owned
+  changes committed/pushed and exact remote verified
+proof:
+- Dependency readiness report and independent remote read of WP006 publication
+- cargo check --manifest-path product/Cargo.toml --all-targets --locked
+- cargo test --manifest-path product/Cargo.toml --locked -p kumihimo-core
+- cargo run --manifest-path product/Cargo.toml --locked -p kumihimo-core --example workspace
+- python repo-governance/repo-scripts/sync.py --check
+- git diff --check -- Kumihimo
+- git ls-remote origin refs/heads/codex/handpick
+research_basis:
+  local_refs:
+  - repo-governance/docs/research/modularity-and-technical-gaps.md#core-proposals
+  - repo-governance/docs/research/window-frame-field-research.md#workspace-implementations
+  sources:
+  - https://github.com/rerun-io/egui_tiles/blob/main/src/tiles.rs
+  - https://github.com/rerun-io/egui_tiles/blob/main/src/tree.rs
+  - https://github.com/DioxusLabs/taffy/blob/main/src/lib.rs
+  - https://doc.rust-lang.org/cargo/reference/features.html
+  - https://doc.rust-lang.org/std/collections/struct.BTreeMap.html
+  selected: Small headless canonical model; external storage and adapter boundaries; verify dependency choice before
+    admission
+  rejected:
+  - Toolkit-owned canonical model that changes during a GUI pass
+  - Mandatory browser/GPU dependencies for in-memory model
+  - Recursive ownership destruction or traversal as architectural depth limit
+  risks_controls:
+  - 'Cycles and multi-parent placement: validate ancestry before mutation'
+  - 'View/resource conflation: separate typed records and declared sharing'
+  - 'Unbounded practical allocation: host policy with explicit rejection'
+  - 'Parallel stale writes: expected generation and one canonical mutation owner'
+  - 'Retry ambiguity: bounded operation identity ledger with declared retention'
+adjacent_value:
+- Reuse stable IDs for future persistence, diagnostics, tool targets and AI commands
+- Use external consumer tests to make adapters cheaper without implementing them
+- Keep typed content references lightweight so portal and creative hosts reuse one core
+status_ref: repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-state.yaml

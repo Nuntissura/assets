@@ -1,0 +1,31 @@
+schema_version: kumihimo.wp-contract.v1
+kind: work_packet_stub
+wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
+title: Prove browser and graphics integration boundaries
+scope:
+- Pinned Servo/2D/3D composition experiments, independently-sized content views, engine thread ownership, browser
+  resource management signals; no universal compatibility promises
+files:
+- product/
+- repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/
+- repo-governance/specification/current/
+- repo-governance/topology/
+dependencies:
+- WP-KUM-012-desktop-gui-adapter-v1
+spec_refs:
+- TOPIC-KUM-SERVO
+- TOPIC-KUM-RENDER
+- TOPIC-KUM-PERFORMANCE
+- TOPIC-KUM-LIFECYCLE
+- TOPIC-KUM-PLATFORMS
+requirements:
+- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+  eval before coding
+- Reuse existing core and verified cache; no parallel Cargo or long default suites
+- Preserve host ownership and existing accepted scope; explicit exact platform proof
+acceptance:
+- Independent view resize and dirty-frame scheduling; surface recreation/popout context constraints; measured resource
+  scenarios and exact backend/platform/version proof
+proof:
+- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+status_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-state.yaml

@@ -66,6 +66,14 @@ def projections():
     files[current + 'primitive-list.json'] = json_bytes({'kind':'derived_primitive_list','spec_revision':manifest['identity']['revision'],'primitives':records['primitives']})
     files[current + 'primitive-feature-mix-matrix.json'] = json_bytes({'kind':'derived_primitive_feature_matrix','spec_revision':manifest['identity']['revision'],'relations':records['primitive_feature_relations']})
     ids = [row['rule_id'] for row in source['rules']] + [row['wp_id'] for row in rows]
+    session_path = GOV / 'sessions/current.yaml'
+    if session_path.is_file():
+        session = load(session_path)
+        ids += [session['session_id']] + [role['role_id'] for role in session['roles'].values()]
+    for name, collection in [('governance', 'nodes'), ('product', 'nodes'), ('links', 'edges')]:
+        topology_path = GOV / ('topology/' + name + '.yaml')
+        if topology_path.is_file():
+            ids += [entry['id'] for entry in load(topology_path)[collection]]
     for doc in manifest['storage']['documents']:
         ids += [doc['document_id']] + doc['semantic_entity_refs']
     if len(ids) != len(set(ids)):

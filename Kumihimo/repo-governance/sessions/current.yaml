@@ -1,0 +1,59 @@
+schema_version: kumihimo.session.v1
+session_id: SESSION-KUM-2026-10-11-v1
+phase: active
+dev_lead: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
+git:
+  workspace_relative_root: ..
+  branch: codex/handpick
+  remote: origin
+  initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
+active_wp: WP-KUM-006-session-and-spec-v1
+operator_scope:
+  implementation_resumed: true
+  scope_expansion_authorized_this_session: true
+  operator_afk: true
+  future_sessions_require_current_scope_reconciliation: true
+roles:
+  dependencies:
+    role_id: ROLE-KUM-DEPENDENCIES
+    thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
+    model: gpt-6-luna
+    reasoning: high
+    assignment: Inspect readiness for the first core packet; wait for bounded write dispatch
+  diagnostics:
+    role_id: ROLE-KUM-DIAGNOSTICS
+    thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
+    model: gpt-6-luna
+    reasoning: high
+    assignment: Inspect cache, resources and build contention; wait for bounded write dispatch
+  evaluation:
+    role_id: ROLE-KUM-EVALUATION
+    thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
+    model: gpt-6.1-sol
+    reasoning: high
+    assignment: Write focused evaluations for admitted packets; no independent Cargo runs
+  coder:
+    role_id: ROLE-KUM-CODER-01
+    thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
+    model: gpt-6.1-sol
+    reasoning: high
+    completed_implementation_wps: []
+    rotate_after: 2
+    assignment: Await published specification and dependency admission for WP-KUM-007-core-model-v1
+communication:
+  direct_team_messages_authorized: true
+  evidence: Operator explicitly requested all role chats communicate on blockers and failures
+  file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles own
+    dispatched reports
+build_lane:
+  owner: null
+  phase: idle
+  stable_target_relative_root: .local/cargo-target
+  target_path_anchor: kumihimo_project_root
+  parallel_kumihimo_cargo: false
+  other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
+tick:
+  interval_minutes: 15
+  mechanism: Codex thread heartbeat
+  automation_id: kumihimo-dev-lead-tick
+next_action: Publish session workflow and spec plan, then admit the first coder only after dependency readiness

@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 4
+revision: 5
 title: Kumihimo master specification
 updated_at: '2026-10-11'
 ---
@@ -36,6 +36,8 @@ Kumihimo holds and arranges content supplied by a host app: editors, browsers, m
 The baseline reflects the clarified intent: recursively nested windows and tabs without a fixed count. The following topics expand that behavior. All product features are planned; initialization and a checked specification do not prove a working GUI, rendering speed or browser compatibility.
 
 Read the explanation at the start of each topic for the plain-language intent. The structured block records the corresponding requirements and focused acceptance scenarios. Optional field-inspired ideas live in the research note and are not required features.
+
+Intended consumers include Handshake Notes, Studio and the planned Atelier suite, plus handshake-portal ingestion and movable taskboard/detail frames. These are operator-provided use cases, not implemented integrations. Modules can present views alongside or within other modules through host-declared capabilities. The host coordinates shared assets, editing actions and domain meaning; Kumihimo supplies arrangement and view boundaries.
 ```
 
 ```yaml
@@ -474,6 +476,7 @@ content_blocks:
   - REQ-KUM-LAYOUT-004
   - REQ-KUM-LAYOUT-005
   - REQ-KUM-LAYOUT-006
+  - REQ-KUM-LAYOUT-007
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -488,6 +491,8 @@ There is no fixed number of windows, tabs or nesting levels in the conceptual mo
 Hosts choose nested splits, grids, docking and supported floating frames. Recursive window containment is separate from a tree of split lines. Window-count, nesting and tab-count settings belong to the host; practical resource/admission policies remain explicit and configurable rather than defining a fixed-size asset.
 
 Shared split lines align neighbors. Snap previews show where a dragged frame will land. Minimum usable sizes and disclosed overflow preserve access to content in a dense or deeply nested arrangement. Exact parent-relative snap subdivisions and overlapping placement remain in prep research until separately accepted.
+
+Toolbars and tool panels can also be movable surfaces. A toolbar can move from the Studio tab to its containing frame or the root workspace edge; panels can occupy eligible grid positions. The host selects which neighbours or proportions absorb reserved space, and the layout core calculates the resulting geometry. This does not adopt unrestricted overlapping placement or morphing borders. The initial model uses flat records with explicit workspace-to-owner-frame and frame-to-placement-workspace relations; frames may own a child workspace. This preserves recursive frame-owned workspaces without a fixed depth. Tab-owned nested workspaces remain a later optional extension.
 ```
 
 ```yaml
@@ -577,6 +582,21 @@ requirements:
   - FEAT-KUM-LAYOUT
   primitive_refs:
   - PRIM-KUM-LAYOUT
+- requirement_id: REQ-KUM-LAYOUT-007
+  anchor_refs:
+  - TOPIC-KUM-LAYOUT
+  statement: Permit host-provided toolbars and tool panels as independently dockable surfaces at eligible grid positions
+    and edges of a tab, containing frame or root workspace; moving a tool surface preserves its identity and host
+    editing target, with eligible destinations and resize policy supplied by the host.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-LAYOUT-007
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-LAYOUT
+  primitive_refs:
+  - PRIM-KUM-LAYOUT
 acceptance:
 - acceptance_id: ACC-KUM-LAYOUT-001
   requirement_refs:
@@ -612,6 +632,13 @@ acceptance:
   method: Create multiple containment levels, move a child between eligible parents and attempt a cycle.
   expected_result: Nested workspaces retain independent child/tab identities and local arrangement; valid moves
     preserve resources and cycles are rejected.
+- acceptance_id: ACC-KUM-LAYOUT-007
+  requirement_refs:
+  - REQ-KUM-LAYOUT-007
+  method: Move a Studio toolbar from its tab to an ancestor workspace edge and a tool panel into an eligible grid
+    cell; reject a forbidden destination and cancel one drag.
+  expected_result: Identity and target survive allowed moves; previews account for reserved space, forbidden moves
+    give a reason, cancellation restores the arrangement and host minimum sizes are respected.
 features:
 - feature_id: FEAT-KUM-LAYOUT
   title: Nested windows, alignment and resizing
@@ -622,6 +649,7 @@ features:
   - REQ-KUM-LAYOUT-004
   - REQ-KUM-LAYOUT-005
   - REQ-KUM-LAYOUT-006
+  - REQ-KUM-LAYOUT-007
   primitive_refs:
   - PRIM-KUM-LAYOUT
 primitives:
@@ -650,6 +678,7 @@ gui_design:
   - ACC-KUM-LAYOUT-004
   - ACC-KUM-LAYOUT-005
   - ACC-KUM-LAYOUT-006
+  - ACC-KUM-LAYOUT-007
 decisions:
 - decision_id: DEC-KUM-LAYOUT
   anchor_refs:
@@ -661,6 +690,9 @@ decisions:
   - https://github.com/rerun-io/egui_tiles/blob/main/src/behavior.rs
   - https://raw.githubusercontent.com/microsoft/vscode/main/src/vs/base/browser/ui/grid/gridview.ts
   - https://raw.githubusercontent.com/zed-industries/zed/main/crates/workspace/src/pane_group.rs
+  - https://doc.qt.io/qt-6/qtoolbar.html
+  - https://doc.qt.io/qt-6/qdockwidget.html
+  - https://doc.qt.io/qt-6/qaction.html
   supersedes: []
 ```
 
@@ -1058,6 +1090,11 @@ content_blocks:
   - REQ-KUM-CHROME-003
   - REQ-KUM-CHROME-004
   - REQ-KUM-CHROME-005
+  - REQ-KUM-CHROME-006
+  - REQ-KUM-CHROME-007
+  - REQ-KUM-CHROME-008
+  - REQ-KUM-CHROME-009
+  - REQ-KUM-CHROME-010
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -1070,6 +1107,10 @@ content_blocks:
 The operating system may provide the outer title bar. An app can draw a custom title bar through a platform adapter. The pane tab strip, editor toolbar and browser address bar are separate controls with separate owners.
 
 Allow full, compact, contextual and hidden frame controls. Hidden controls need a reliable reveal command or gesture. Native movement, resizing, system buttons, keyboard access and accessibility must still work where the platform supports customization.
+
+Docking location and editing target are independent. A Studio toolbar moved to the main workspace can remain pinned to its original view. Binding, visibility, command enablement and keyboard focus are separate host-exposed policies. The proposed useful default is now the accepted default profile: keep the target pinned, show tools while that target is visible and usable, hide them for an inactive hidden tab, and restore placement on return. Hosts may override that profile; ordinary tool use does not automatically reveal an editor or pick another open file. Clicking the toolbar itself must preserve its target. A visible Studio view alongside focused Notes can retain its tools.
+
+Hosts choose whether hidden docked tools release their space or leave it reserved. They also declare supported orientations, sizes and destinations. The core handles placement and geometry; optional GUI adapters supply controls; providers supply actual tool actions. Hiding a toolbar does not unload its editor.
 ```
 
 ```yaml
@@ -1145,6 +1186,80 @@ requirements:
   - FEAT-KUM-CHROME
   primitive_refs:
   - PRIM-KUM-CHROME
+- requirement_id: REQ-KUM-CHROME-006
+  anchor_refs:
+  - TOPIC-KUM-CHROME
+  statement: Keep a tool surface placement parent, host content owner and bound editing view/resource separate;
+    docking at an ancestor edge shall not silently retarget the tool to another open file.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-CHROME-006
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CHROME
+  primitive_refs:
+  - PRIM-KUM-CHROME
+- requirement_id: REQ-KUM-CHROME-007
+  anchor_refs:
+  - TOPIC-KUM-CHROME
+  statement: Expose independent host-selectable tool binding and visibility policies, including pinned target, active-compatible
+    target and originating-tab visibility; a useful default is pinned binding with visibility while its target is
+    visible and usable, without auto-revealing hidden editors on ordinary tool activation.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-CHROME-007
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CHROME
+  primitive_refs:
+  - PRIM-KUM-CHROME
+- requirement_id: REQ-KUM-CHROME-008
+  anchor_refs:
+  - TOPIC-KUM-CHROME
+  statement: Treat keyboard focus, target visibility and command applicability as separate states; focusing a toolbar
+    shall not hide it or lose its editing target, and another focused pane shall not by itself hide tools for a
+    still-visible target.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-CHROME-008
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CHROME
+  primitive_refs:
+  - PRIM-KUM-CHROME
+- requirement_id: REQ-KUM-CHROME-009
+  anchor_refs:
+  - TOPIC-KUM-CHROME
+  statement: Let the host choose whether a hidden docked tool surface releases or retains reserved layout space;
+    core layout computes affected geometry from that policy, host minimum sizes and proportions, while hiding controls
+    does not itself dispose or suspend content.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-CHROME-009
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CHROME
+  primitive_refs:
+  - PRIM-KUM-CHROME
+- requirement_id: REQ-KUM-CHROME-010
+  anchor_refs:
+  - TOPIC-KUM-CHROME
+  statement: Accept host-declared tool-surface orientation, preferred/minimum sizes, eligible edges/grid positions
+    and overflow behaviour; GUI adapters present drag handles and controls, the portable core stores semantic placement
+    and geometry, and content providers supply actual tool commands.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-CHROME-010
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CHROME
+  primitive_refs:
+  - PRIM-KUM-CHROME
 acceptance:
 - acceptance_id: ACC-KUM-CHROME-001
   requirement_refs:
@@ -1172,6 +1287,37 @@ acceptance:
   - REQ-KUM-CHROME-005
   method: Change theme, control density and adapter-sensitive settings during use.
   expected_result: Safe changes apply without content loss; deferred changes show their required transition.
+- acceptance_id: ACC-KUM-CHROME-006
+  requirement_refs:
+  - REQ-KUM-CHROME-006
+  method: Dock a toolbar at the root with two different Studio files open, switch tabs and invoke a tool.
+  expected_result: Only the declared target can receive the action; a missing or incompatible target produces an
+    explicit unavailable state without changing another file.
+- acceptance_id: ACC-KUM-CHROME-007
+  requirement_refs:
+  - REQ-KUM-CHROME-007
+  method: Switch between Studio, Notes and terminal tabs while a Studio toolbar is docked at an ancestor edge.
+  expected_result: Selected host policy controls visibility and binding; returning restores placement and target,
+    and ordinary activation never implicitly reveals a hidden target.
+- acceptance_id: ACC-KUM-CHROME-008
+  requirement_refs:
+  - REQ-KUM-CHROME-008
+  method: Click a docked toolbar and then focus a Notes pane beside its Studio target.
+  expected_result: Toolbar focus does not invalidate the target; visibility follows declared policy and commands
+    remain host-validated at invocation.
+- acceptance_id: ACC-KUM-CHROME-009
+  requirement_refs:
+  - REQ-KUM-CHROME-009
+  method: Hide and restore a root toolbar under release-space and retain-space policies, including an undersized
+    workspace.
+  expected_result: Reserved space and neighbouring pane geometry follow the selected policy; placement is retained,
+    overflow/rejection is explicit and content lifecycle remains separately acknowledged.
+- acceptance_id: ACC-KUM-CHROME-010
+  requirement_refs:
+  - REQ-KUM-CHROME-010
+  method: Move a horizontal toolbar to a permitted vertical edge, and attempt a placement unsupported by its provider.
+  expected_result: Supported orientation and sizes are used; unsupported placement is rejected or handled through
+    the declared fallback without inventing editor commands.
 features:
 - feature_id: FEAT-KUM-CHROME
   title: Configurable bars, borders and host settings
@@ -1181,6 +1327,11 @@ features:
   - REQ-KUM-CHROME-003
   - REQ-KUM-CHROME-004
   - REQ-KUM-CHROME-005
+  - REQ-KUM-CHROME-006
+  - REQ-KUM-CHROME-007
+  - REQ-KUM-CHROME-008
+  - REQ-KUM-CHROME-009
+  - REQ-KUM-CHROME-010
   primitive_refs:
   - PRIM-KUM-CHROME
 primitives:
@@ -1208,6 +1359,11 @@ gui_design:
   - ACC-KUM-CHROME-003
   - ACC-KUM-CHROME-004
   - ACC-KUM-CHROME-005
+  - ACC-KUM-CHROME-006
+  - ACC-KUM-CHROME-007
+  - ACC-KUM-CHROME-008
+  - ACC-KUM-CHROME-009
+  - ACC-KUM-CHROME-010
 decisions:
 - decision_id: DEC-KUM-CHROME
   anchor_refs:
@@ -1218,6 +1374,9 @@ decisions:
   research_source_refs:
   - https://code.visualstudio.com/docs/configure/custom-layout
   - https://dockview.dev/docs/core/panels/headerPosition/
+  - https://doc.qt.io/qt-6/qtoolbar.html
+  - https://doc.qt.io/qt-6/qdockwidget.html
+  - https://doc.qt.io/qt-6/qaction.html
   supersedes: []
 ```
 
@@ -1234,6 +1393,9 @@ content_blocks:
   - REQ-KUM-CONTENT-002
   - REQ-KUM-CONTENT-003
   - REQ-KUM-CONTENT-004
+  - REQ-KUM-CONTENT-005
+  - REQ-KUM-CONTENT-006
+  - REQ-KUM-CONTENT-007
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -1246,6 +1408,8 @@ content_blocks:
 An editor, a browser, a video player and a 3D viewer can all occupy a frame if they implement the host contract. The contract provides geometry, input, focus, redraw requests and lifecycle notifications; the content reports what it can do.
 
 Plugins may fail or disappear. Keep a labeled placeholder and recovery reference instead of deleting their tabs. Security and process isolation belong to the host integration; a decorative frame cannot provide them.
+
+One host asset may have multiple declared views, such as an image in Notes, a moodboard and Studio, with independent per-view state. Shared-view support must be explicit. The host decides linked references versus independent copies and coordinates revisions and content undo. Providers can declare preview, quick-edit or full-editor presentations; Kumihimo does not implement image tools, rich-text editing, scene tools or kanban transitions. For Portal, dragging an arrangement surface and changing a card column are distinct host-routed actions.
 ```
 
 ```yaml
@@ -1306,6 +1470,51 @@ requirements:
   - FEAT-KUM-CONTENT
   primitive_refs:
   - PRIM-KUM-CONTENT
+- requirement_id: REQ-KUM-CONTENT-005
+  anchor_refs:
+  - TOPIC-KUM-CONTENT
+  statement: Allow capable providers to expose embedded previews, quick-edit views and full editor views through
+    generic content contracts; each view retains an explicit resource reference and provider-declared capabilities,
+    and the supplying host owns editor controls and inline document placement.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-CONTENT-005
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CONTENT
+  primitive_refs:
+  - PRIM-KUM-CONTENT
+- requirement_id: REQ-KUM-CONTENT-006
+  anchor_refs:
+  - TOPIC-KUM-CONTENT
+  statement: Keep shared asset resolution, linked-versus-independent-copy semantics, cross-module update coordination
+    and content-edit undo in the host; moving or docking frames affects arrangement without silently copying resources
+    or rewriting document/kanban meaning.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-CONTENT-006
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CONTENT
+  primitive_refs:
+  - PRIM-KUM-CONTENT
+- requirement_id: REQ-KUM-CONTENT-007
+  anchor_refs:
+  - TOPIC-KUM-CONTENT
+  statement: Have the host resolve and validate tool targets and command applicability at invocation, including
+    stale, hidden, closed or unavailable targets; pinned identity survives view focus changes, while visibility,
+    enablement and permission decisions remain host policy.
+  rationale: Preserve operator tool-surface and shared-workspace intent through explicit host boundaries.
+  acceptance_refs:
+  - ACC-KUM-CONTENT-007
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-CONTENT
+  primitive_refs:
+  - PRIM-KUM-CONTENT
 acceptance:
 - acceptance_id: ACC-KUM-CONTENT-001
   requirement_refs:
@@ -1328,6 +1537,26 @@ acceptance:
   - REQ-KUM-CONTENT-004
   method: Send malformed events, excess work and an event for another provider's view.
   expected_result: Invalid or misrouted work is rejected visibly; bounded queues keep arrangement interactions responsive.
+- acceptance_id: ACC-KUM-CONTENT-005
+  requirement_refs:
+  - REQ-KUM-CONTENT-005
+  method: Use one mock asset in a Notes-like embed, moodboard and full editor through providers with different presentation
+    capabilities.
+  expected_result: Supported views retain the declared resource identity with independent view state; unsupported
+    presentations report a reason and do not imply arbitrary editor compatibility.
+- acceptance_id: ACC-KUM-CONTENT-006
+  requirement_refs:
+  - REQ-KUM-CONTENT-006
+  method: Move a linked image view between frames and simulate an independent copy and a kanban-column command through
+    host integration.
+  expected_result: Frame movement preserves reference identity; copy and domain changes occur only through explicit
+    host operations and their owning undo scope.
+- acceptance_id: ACC-KUM-CONTENT-007
+  requirement_refs:
+  - REQ-KUM-CONTENT-007
+  method: Queue a tool action, change or close its target before delivery, and focus the toolbar itself.
+  expected_result: Stale or unavailable work is explicitly rejected; another file is never substituted and ordinary
+    keyboard focus does not retarget tools.
 features:
 - feature_id: FEAT-KUM-CONTENT
   title: Hosted modules and plugin contracts
@@ -1336,6 +1565,9 @@ features:
   - REQ-KUM-CONTENT-002
   - REQ-KUM-CONTENT-003
   - REQ-KUM-CONTENT-004
+  - REQ-KUM-CONTENT-005
+  - REQ-KUM-CONTENT-006
+  - REQ-KUM-CONTENT-007
   primitive_refs:
   - PRIM-KUM-CONTENT
 primitives:
@@ -1361,6 +1593,9 @@ gui_design:
   - ACC-KUM-CONTENT-002
   - ACC-KUM-CONTENT-003
   - ACC-KUM-CONTENT-004
+  - ACC-KUM-CONTENT-005
+  - ACC-KUM-CONTENT-006
+  - ACC-KUM-CONTENT-007
 decisions:
 - decision_id: DEC-KUM-CONTENT
   anchor_refs:
@@ -1371,6 +1606,9 @@ decisions:
   research_source_refs:
   - https://docs.rs/egui_dock/latest/egui_dock/widgets/tab_viewer/trait.TabViewer.html
   - https://dockview.dev/docs/core/overview/
+  - https://doc.qt.io/qt-6/qtoolbar.html
+  - https://doc.qt.io/qt-6/qdockwidget.html
+  - https://doc.qt.io/qt-6/qaction.html
   supersedes: []
 ```
 
@@ -3265,6 +3503,8 @@ Compare egui_tiles for flexible grids, egui_dock for docking/tab integration, an
 Library selection needs a small real sample of the affected boundary: variable counts and recursive window containment, grouping, custom controls, touch, save/restore and the chosen rendering handoff. Native popouts require their own proof; an in-app floating egui window is not that proof.
 
 Optional research proposals include scrolling workspaces inspired by Niri, a zoomed workspace overview, auto-hide edge trays, layout undo, saved named arrangements and snapping hysteresis. They are not accepted features or required gates in this revision. Preserve them in the research note for later operator decisions.
+
+Implementation starts with one small portable core package for typed identities, in-memory recursive containment, content/view references and deterministic validated operations. The first packet avoids GUI/browser/rendering dependencies and native effects. Geometry, persistent snapshots and concrete adapters are subsequent bounded packets. Flat canonical records and iterative ancestry checks avoid making recursive model depth depend on the call stack. No toolkit is selected by this choice.
 ```
 
 ```yaml

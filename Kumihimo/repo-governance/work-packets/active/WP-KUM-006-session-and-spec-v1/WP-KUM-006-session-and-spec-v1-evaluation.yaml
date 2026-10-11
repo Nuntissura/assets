@@ -1,0 +1,81 @@
+schema_version: kumihimo.wp-evaluation.v1
+evaluation_id: EVAL-KUM-006-v1
+wp_id: WP-KUM-006-session-and-spec-v1
+evaluator: ROLE-KUM-EVALUATION
+phase: prepublication_review_complete
+verdict: PASS_PREPUBLICATION
+publication_verdict: PENDING_INDEPENDENT_REMOTE_READ
+baseline_revision: 822ea9af3816a76720f153a62bf82692555ae47c
+scope: Specification, session workflow, session-start and bounded implementation packets; no product runtime claim
+risk_tier: HIGH
+acceptance_scenarios:
+  - case_id: EVAL-KUM-006-001
+    requirement: Portable no-context session startup and recovery
+    method: Compare session-start output with canonical session, live Git and WP state; inspect relative-root resolution and recovery instructions.
+    expected: Exact role chat IDs, ownership, admitted scope, serial build owner, stable cache path, blockers and next action are discoverable without chat history; no second repository or machine-specific path is introduced.
+  - case_id: EVAL-KUM-006-002
+    requirement: Dependency and publication predecessors
+    method: Trace the first coder's admission from WP dependencies and session workflow to dependency readiness and independently verified published specification/packet revision.
+    expected: Product coding cannot be admitted before both predecessors; an active session or planned packet is not readiness proof. Publication acceptance remains pending until an independent remote read.
+  - case_id: EVAL-KUM-006-003
+    requirement: Team coordination and quiet serial builds
+    method: Inspect canonical workflow and session fields for role ownership, direct blocker communication, coder rotation, serial Cargo ownership and resource contention handling.
+    expected: Coders rotate after two implementation WPs; concurrent writes and Kumihimo Cargo runs have one explicit owner; unrelated processes are not disrupted; later sessions reconcile scope rather than inheriting unrestricted expansion.
+  - case_id: EVAL-KUM-006-004
+    requirement: Host-owned tool-surface behavior
+    method: Walk a tool surface moved between frames while its target stays bound, then independently vary visibility, keyboard focus and reserved space; compare all results with the accepted spec.
+    expected: Placement does not silently retarget editing or steal focus; visibility and reserved space are independent under declared host policy. Unsupported combinations have explicit outcomes rather than invented guarantees.
+  - case_id: EVAL-KUM-006-005
+    requirement: Generic embedding boundary
+    method: Trace an embedded asset/editing surface through generic content contracts and declared ownership.
+    expected: The host retains actual asset/editing semantics and resources; the portable core is not required to import sibling asset engines, GUI widgets, native handles, GPU objects or Servo types.
+  - case_id: EVAL-KUM-006-006
+    requirement: Preservation and bounded roadmap coverage
+    method: Reconcile the archived v4 bundle with the baseline Git bytes, compare stable requirement IDs and unaffected topics, then map roadmap items to WP-007 and downstream stubs.
+    expected: Prior accepted meaning and IDs survive; adopted deltas are complete in the current spec; unaccepted ideas remain proposals. WP-007 has bounded files, dependencies, acceptance and focused proof; stubs do not authorize implementation or mark complete features implemented.
+  - case_id: EVAL-KUM-006-007
+    requirement: Concrete final diff and publication
+    method: Inspect the final owned diff, declared parsing/reference/projection proof and independently read the published branch revision.
+    expected: Evaluation binds the inspected candidate; structural proof is separate from spec alignment, runtime proof and publication. Unchanged passing checks are reused only when their inputs remain unchanged.
+DIFF_ATTACK_SURFACES:
+  - Session-start may expose an empty workflow or stale session claims despite displaying current Git state.
+  - Planned WP state, dependency reports and published packet identity may disagree at coder admission.
+  - Moving a toolbar/panel may incorrectly conflate placement, target binding, visibility, focus and reserved space.
+  - New packet coverage may omit prior roadmap scope or adopt research proposals implicitly.
+INDEPENDENT_CHECKS_RUN:
+  - Baseline Git tree enumeration and byte comparison found exactly six archived v4 files, all matching 822ea9af3816a76720f153a62bf82692555ae47c with equal membership.
+  - Parsed baseline/current requirement records independently; all 90 original records are equal, with nine additions in layout/chrome/content and no missing prior IDs.
+  - Compared complete master-spec topic bodies; only workspace/layout/chrome/content/choices changed, leaving fourteen other master-spec topics unchanged. Roadmap adds the new requirement references without claiming implementation.
+  - Reconciled eighteen feature declarations against WP-007 and WP-008 through WP-014 references; zero uncovered features. Stubs explicitly require promotion before coding.
+  - Inspected actual source/workflow/spec/packet diff and final session-start output; canonical dev-lead ID, populated workflow and project-anchored target agree with the current session.
+COUNTERFACTUAL_CHECKS:
+  - If session_start.py ROOT were derived from the caller directory rather than __file__, invoking startup outside Kumihimo would read the wrong canonical session; actual outside-directory invocation succeeded.
+  - If REQ-KUM-CHROME-006/008 and REQ-KUM-CONTENT-007 were removed, ancestor docking or toolbar focus could silently retarget an action to another file; the current declarations explicitly forbid that substitution.
+BOUNDARY_PROBES:
+  - Ran session_start.py from the parent .assets directory; observed the same Kumihimo canonical session and live shared Git root, codex/handpick branch, exact baseline revision, four role targets, idle serial lane and next action.
+  - Compared tool-surface placement, target binding, visibility, focus and reserved-space clauses against two Studio files, a beside-visible Notes pane and a hidden editor; the declared host policies preserve target identity and keep hiding distinct from lifecycle acknowledgment.
+NEGATIVE_PATH_CHECKS:
+  - Source inspection of session_start.py read/git/main confirms failed file reads, YAML parsing or Git queries propagate failure before successful JSON output; no write or dispatch occurs. Invalid-fixture execution was not required for this preparation review.
+  - Inspected queued stale/closed tool-target acceptance and forbidden docking/cancellation clauses; they require explicit rejection without substituting another file. These are specification checks, not runtime proof.
+INDEPENDENT_FINDINGS: []
+resolved_findings:
+  - WP-008 now states snapping to eligible layout boundaries; exact parent-relative subdivisions remain research.
+  - Session records and emits dev_lead=01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1; populated canonical workflow is emitted.
+conclusions:
+  structural_proof: Fresh parsing/reference/projection check passed after final LF normalization with 20 topics, 99 requirements, 18 planned features and no stale projections; owned Git diff whitespace check passed.
+  spec_alignment: Preserved prior accepted requirements; added generic embedding and independently bound movable tools with explicit host ownership.
+  code_quality: Small read-only session helper and scoped registry extension; no product implementation or mandatory runtime dependency introduced.
+  environment: Session-start observed on this Windows host from outside the project; no copied-project, GUI, x64 runtime or web proof claimed.
+  final_decision: Prepublication candidate accepted; WP-006 completion and coding admission still require independently verified publication plus dependency readiness.
+candidate_bindings:
+  spec_revision: 5
+  specification_manifest_sha256: 2d072dc4cfbb1a605e01c01261ab0d44e3828f4dc9988d928ac658367e370913
+  canonical_authority_sha256: 484de67e4c1c520a788e723b9cc205ace01921ce1399c30a746a4c87e9a5e7c9
+  session_start_sha256: ad41d45640a779892311a07828afc45c9e47a46a08672ff8e561b85c37559d4f
+  sync_sha256: b21fdeaa5f17d55721e9a03723077cd513ca53174a883ca25499b5298c8614ed
+  session_sha256: 64cac8495511c68c2ad445bcfe90eb488df07cffb6a249dcb203af2aa62ae92e
+RESIDUAL_UNCERTAINTY:
+  - Publication is not yet independently verified; this verdict does not admit product coding.
+  - WP-007 and downstream feature behavior remain unimplemented; feature-reference coverage is planning coverage only.
+  - Product behavior, GUI adapters and platform compatibility are outside this preparation packet's proof.
+next_action: Retain fresh final structural proof and independently read published revision before WP-006 completion or product coding admission.

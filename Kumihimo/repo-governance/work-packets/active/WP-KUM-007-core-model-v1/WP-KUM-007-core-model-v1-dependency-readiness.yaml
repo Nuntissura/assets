@@ -1,0 +1,113 @@
+schema_version: kumihimo.dependency-readiness.v1
+kind: dependency_readiness
+wp_id: WP-KUM-007-core-model-v1
+role_id: ROLE-KUM-DEPENDENCIES
+updated_at: '2026-10-11'
+scope: Dependency and local toolchain readiness for the portable core model only.
+verdict: ready_for_zero_runtime_external_dependencies
+predecessor_publication_gate:
+  owner: dev_lead
+  status: pending
+  predecessor_wp: WP-KUM-006-session-and-spec-v1
+  expected_remote: origin/codex/handpick
+  observed_remote_revision: 822ea9af3816a76720f153a62bf82692555ae47c
+  observed_predecessor_state: not_present_at_observed_remote_revision
+  evidence:
+  - git ls-remote origin refs/heads/codex/handpick returned 822ea9af3816a76720f153a62bf82692555ae47c
+  - git cat-file could not find the WP-KUM-006 state file in origin/codex/handpick
+  note: This publication gate is separate from the dependency verdict; dev lead independently controls coding admission and build-lane serialization.
+dependency_decision:
+  package: product/kumihimo-core
+  runtime_external_dependencies: []
+  standard_library:
+  - std::collections::BTreeMap for keyed flat records and deterministic key traversal
+  - Vec for ordered child, tab, and membership sequences
+  - VecDeque for the bounded operation-outcome ledger
+  model_recommendations:
+  - Use distinct private newtype IDs for each entity kind; IDs are local to one in-memory model and are allocated monotonically without reuse.
+  - Use checked allocation and return a structured exhaustion error before changing records, identity allocation, or generation.
+  - Keep flat canonical records and explicit workspace-to-owner-frame and frame-to-placement-workspace relations; validate moves by iterative ancestry traversal before mutation.
+  - Keep ViewId and ContentResourceId distinct. A view references a host-owned resource; a second view of that resource is accepted only with declared sharing support.
+  - Keep operation actor, operation ID, expected generation, request intent, and outcome explicit; check the retained ledger before stale-generation validation, replay only an identical complete retained envelope, and reject a retained ID reused with changed intent.
+  - Use a monotonic operation sequence per core instance and retain its high-water mark with the bounded outcome ledger; reject an older sequence whose receipt expired, rather than admitting it as a new mutation.
+  - A rejection may update bounded operation bookkeeping, but it leaves model records, generation, and entity-ID allocation unchanged.
+  rationale:
+  - The current specification explicitly requires stable distinct identities, explicit recursive frame/workspace containment, identity preservation on moves, cycle rejection, and a headless portable core.
+  - This packet excludes persistence, GUI, GPU, browser, native window, and content-engine behavior, so those dependencies provide no required capability here.
+  - std collections cover the required records, ordered membership, and bounded ledger without introducing a dependency-resolution or feature-unification surface.
+alternatives:
+  rejected:
+  - option: slotmap or generational-arena for initial domain identity/storage
+    reason: They provide generation-checked handles that prevent stale slot aliasing, but WP-KUM-007 requires non-reused local domain IDs and flat records; reusable internal slots are not required. Keep them as a later option if measured storage needs justify them, and do not expose storage handles as stable domain IDs.
+  - option: egui_tiles as the core model or a runtime dependency
+    reason: Its current manifest is a GUI layout crate with egui and other runtime dependencies; its useful ID and transient-cache patterns do not justify importing its presentation model into Kumihimo's portable core.
+  - option: Taffy as a WP-KUM-007 dependency
+    reason: Taffy is a layout algorithm library with optional tree/storage and serialization features; geometry is outside this packet and belongs to a later bounded WP.
+  - option: serde for the initial model
+    reason: File persistence and serialized snapshots are explicitly excluded from WP-KUM-007; add serialization only with the later persistence contract.
+sources_checked:
+  local_authority_and_spec:
+  - repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-contract.yaml
+  - repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-state.yaml
+  - repo-governance/specification/current/spec-modules/master-spec.md (revision 5; TOPIC-KUM-BOUNDARIES, TOPIC-KUM-LAYOUT, TOPIC-KUM-CONTENT, TOPIC-KUM-MODEL, TOPIC-KUM-CHOICES)
+  - repo-governance/docs/research/modularity-and-technical-gaps.md (core-proposals)
+  - repo-governance/codex/build-rules/current/build-rules.yaml (KUM-BUILD-001–005; rust_check and rust_test are unset)
+  upstream_primary_sources:
+  - url: https://github.com/rerun-io/egui_tiles/blob/main/src/tiles.rs
+    observed: Flat tile map keyed by numeric TileId, explicit next-ID collision checks, and a transient rect cache excluded from serialization.
+  - url: https://github.com/rerun-io/egui_tiles/blob/main/src/tree.rs
+    observed: A tree root references tile IDs while tile records are separately stored.
+  - url: https://github.com/rerun-io/egui_tiles/blob/main/Cargo.toml
+    observed: Current manifest is egui_tiles 0.17.1, Rust 1.95, with egui, ahash, itertools, and log runtime dependencies; serde is optional.
+  - url: https://docs.rs/slotmap/latest/slotmap/
+    observed: SlotMap uses distinct typed keys and generation-aware storage; this is useful if reusable internal slots are later required.
+  - url: https://docs.rs/generational-arena/latest/generational_arena/
+    observed: Arena indexes pair a slot and generation to reject stale handles after slot reuse.
+  - url: https://github.com/DioxusLabs/taffy/blob/main/Cargo.toml
+    observed: Taffy keeps its node tree behind the optional taffy_tree feature, which enables slotmap; geometry algorithms can remain separately selected.
+  - url: https://doc.rust-lang.org/std/collections/struct.BTreeMap.html
+    observed: BTreeMap is a standard-library ordered map with ordered iteration.
+  - url: https://doc.rust-lang.org/cargo/reference/features.html
+    observed: Cargo unifies dependency features across users; feature selection is therefore not a hard isolation boundary for core dependencies.
+local_environment:
+  rust_host: x86_64-pc-windows-msvc
+  toolchains_observed:
+  - rustup stable: rustc 1.91.1 (ed61e7d7e 2025-11-07), active default
+  - rustup 1.97.1: rustc 1.97.1 (8bab26f4f 2026-07-14), installed and directly invocable
+  targets_installed_for_both_observed_toolchains:
+  - aarch64-pc-windows-msvc
+  - x86_64-pc-windows-msvc
+  - x86_64-unknown-linux-musl
+  wasm32_unknown_unknown: not_installed
+  cargo_registry_cache:
+    package_source_directories_observed: 2605
+    cached_package_archives_observed: 3011
+    relevant_cached_packages:
+    - slotmap-1.1.1
+    - egui_tiles-0.14.1
+    limitation: Cache presence does not prove the correctness or freshness of a candidate dependency graph or reusable target artifacts.
+  project_build_state:
+    product_manifest: absent; product/ currently contains only README.md
+    rust_check_command: unset in active build rules
+    rust_test_command: unset in active build rules
+    session_target_directory: .local/cargo-target, not yet present
+    cargo_home_and_target_environment_overrides: none observed
+    build_or_test_run: false
+  readiness_implication: The installed Rust toolchains and Windows x64 target are sufficient to begin the packet's planned host-side proof after its manifest is created; this report does not claim compiled behavior. Web/WASM target proof is unavailable locally and is outside WP-KUM-007 acceptance.
+risks_and_controls:
+  - risk: A failed move or rejected mutation partially changes records, entity IDs, or generation.
+    control: Validate target existence, membership, cycle, sharing, index, admission, generation, and allocation capacity before committing any mutation; test that rejection leaves those model fields unchanged. Operation bookkeeping may record the rejection.
+  - risk: Bounded replay retention is misread as exactly-once behavior beyond the retained window.
+    control: Use monotonic per-core-instance operation sequences and explicitly reject an expired sequence using the retained high-water mark; document that replay returns a prior outcome only while its receipt is retained.
+  - risk: Internal storage identity leaks into saved or public domain identity.
+    control: Keep domain IDs as typed, non-reused local IDs; use no slot-reuse library in this packet and introduce persistence identity policy in the later persistence WP.
+focused_proof_plan:
+- Inspect the resulting kumihimo-core manifest and confirm it has no normal dependencies; independently inspect `cargo tree --manifest-path product/Cargo.toml -p kumihimo-core --edges normal` once the package exists.
+- Run the contract's focused `cargo check --manifest-path product/Cargo.toml --all-targets --locked`, `cargo test --manifest-path product/Cargo.toml --locked -p kumihimo-core`, and minimal workspace example on the observed host, after coder admission and build-lane ownership.
+- Cover typed-ID separation, monotonic non-reuse and overflow rejection; create nested flat records, move a subtree, preserve IDs and resource references, and reject cycles.
+- Cover failed-mutation atomicity for missing/duplicate IDs, invalid index, incompatible sharing, admission limit, and stale generation; verify no record, entity-ID allocation, or generation changes, while allowing a rejection receipt in bounded bookkeeping.
+- Cover deterministic operation replay: identical complete retained envelope returns the recorded outcome, changed envelope conflicts, stale generation is explicit, no-op preserves generation, and an expired operation sequence is rejected by the retained high-water mark.
+- Exercise the illustrative 20 frames by 30 tabs and additional nesting as functional proof only; do not describe it as a performance benchmark or architectural limit.
+not_run:
+- No Cargo build, test, example, dependency resolution, install, or target download was run.
+- No runtime, WASM, ARM64 execution, or performance result is claimed.
