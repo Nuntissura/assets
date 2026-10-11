@@ -178,8 +178,13 @@ impl Registry {
     }
 
     /// Decode a segment honouring the proxy/original policy; the receipt says which source was read.
-    /// The source is `SourceTrust::Untrusted`: compressed video goes to the registered external decoder
-    /// or is `CodecUnavailable` (see `crate::video`).
+    ///
+    /// Trust routing (see `crate::video`): the ORIGINAL is read as `SourceTrust::Untrusted`, so its
+    /// compressed video goes to the registered external decoder or is `CodecUnavailable`. A proxy is a
+    /// different source and keeps its own `ProxySource::trust` (`ProxySource::new` is `Untrusted`;
+    /// `with_trust(SourceTrust::Trusted)` vouches for that proxy alone), so with cargo feature `av1` the
+    /// AV1 of a proxy built with `Trusted` is decoded in-process here as well. The proxy fallback rules
+    /// are those of `decode_segment_routed`. Test `trusted_original_never_lends_its_trust_to_a_proxy`.
     #[allow(clippy::too_many_arguments)]
     pub fn decode_segment(
         &self,
@@ -204,7 +209,19 @@ impl Registry {
     /// `decode_segment` with an explicit statement of how far the caller vouches for the bytes of the
     /// ORIGINAL (`req.grant`). `Trusted` additionally allows the in-process decoder (cargo feature
     /// `av1`) for those bytes only. A proxy is a different source: it is decoded under its own
-    /// `ProxySource::trust` (default `Untrusted`), never under `trust`.
+    /// `ProxySource::trust` (default `Untrusted`), not under `trust` (test
+    /// `trusted_original_never_lends_its_trust_to_a_proxy`).
+    ///
+    /// Proxy fallback, decided in two steps. Before any decode, a proxy that cannot stand in for the
+    /// original (stale grant or probe error: `ProxyNote::ProxyUnusableUsedOriginal`; layout mismatch:
+    /// `ProxyNote::LayoutMismatchUsedOriginal`) is dropped and the original is decoded under `trust`. A
+    /// proxy that passes those checks IS the request's source from then on: if its own route cannot
+    /// decode it (for example an `Untrusted` proxy of compressed video with no registered external
+    /// decoder that supports the codec, which is `CodecUnavailable`) or the decode fails for any other
+    /// reason, that error is the request's result and the original is not tried, even when the original
+    /// would decode under `trust`. A caller that wants the original then retries with
+    /// `SourcePreference::Original`. The `CodecUnavailable` case is pinned by the block "nothing
+    /// registered" in `trusted_original_never_lends_its_trust_to_a_proxy`.
     #[allow(clippy::too_many_arguments)]
     pub fn decode_segment_routed(
         &self,

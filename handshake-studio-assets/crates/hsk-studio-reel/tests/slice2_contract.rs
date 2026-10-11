@@ -1,5 +1,6 @@
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND, Ticks};
-use hsk_studio_reel::fixtures::*;
+mod common;
+use common::*;
 use hsk_studio_reel::*;
 use std::{io::Cursor, sync::Arc};
 

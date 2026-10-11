@@ -1,6 +1,7 @@
 //! One hostile-input regression per confirmed STUDIO-R2 reel finding: typed errors, never panics.
 use hsk_studio_accord::{CancellationToken, Ticks};
-use hsk_studio_reel::fixtures::*;
+mod common;
+use common::*;
 use hsk_studio_reel::*;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 

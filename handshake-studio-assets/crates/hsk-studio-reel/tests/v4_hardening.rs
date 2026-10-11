@@ -4,7 +4,8 @@
 //! items, or a running total, past a declared budget). Every refusal is a typed `ReelError`, never a
 //! panic, a wrap or a silent clamp. The ISOBMFF (MP4/MOV and fragmented MP4) cases live further down.
 use hsk_studio_accord::{CancellationToken, TICKS_PER_SECOND, Ticks};
-use hsk_studio_reel::fixtures::*;
+mod common;
+use common::*;
 use hsk_studio_reel::*;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 

@@ -2,7 +2,8 @@
 //! commit 1d404f8): typed errors, never an arithmetic-overflow panic, and limits that follow the stream.
 //! The AV1 1080p limit regression needs the decoder and lives in `av1_decode.rs` (feature `av1`).
 use hsk_studio_accord::{CancellationToken, Ticks};
-use hsk_studio_reel::fixtures::*;
+mod common;
+use common::*;
 use hsk_studio_reel::*;
 use std::io::Cursor;
 

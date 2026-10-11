@@ -5,12 +5,14 @@
 //! The allocator records the LARGEST single request made by the current thread, so a refusal that merely
 //! happens to return the same error as a huge zeroed allocation still fails here.
 use hsk_studio_accord::{CancellationToken, Ticks};
-use hsk_studio_reel::fixtures::*;
+mod common;
+use common::*;
 use hsk_studio_reel::*;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     io::Cursor,
+    sync::{Arc, Mutex},
 };
 
 thread_local! {
@@ -253,4 +255,215 @@ fn isobmff_sample_buffer_is_bounded_by_the_source() {
             bytes.len()
         );
     });
+}
+
+// ----- decoded pictures (PLR-032) ----------------------------------------------------------------------
+
+const MP4_16X16: &[u8] = include_bytes!("fixtures/av1/av1-16x16-3f.mp4");
+
+/// An external decoder that hands over ONE picture, whose planes were allocated by the test BEFORE the
+/// meter is reset: whatever the meter sees afterwards was allocated by the route, not by the decoder.
+struct OnePicture {
+    format: VideoFormat,
+    planes: Mutex<Option<Vec<Vec<u8>>>>,
+}
+
+struct OnePictureSession {
+    format: VideoFormat,
+    planes: Option<Vec<Vec<u8>>>,
+}
+
+impl ExternalVideoDecoder for OnePicture {
+    fn identity(&self) -> DecoderIdentity {
+        DecoderIdentity {
+            id: "one-picture",
+            version: "0",
+        }
+    }
+    fn supports(&self, codec: VideoCodec) -> bool {
+        codec == VideoCodec::Av1
+    }
+    fn open(
+        &self,
+        _spec: &VideoStreamSpec<'_>,
+        _cancel: &CancellationToken,
+    ) -> Result<Box<dyn VideoDecodeSession>, VideoDecodeError> {
+        Ok(Box::new(OnePictureSession {
+            format: self.format,
+            planes: self.planes.lock().unwrap().take(),
+        }))
+    }
+}
+
+impl VideoDecodeSession for OnePictureSession {
+    fn send(
+        &mut self,
+        _packet: &[u8],
+        tag: u64,
+        _cancel: &CancellationToken,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), VideoDecodeError> {
+        if let Some(planes) = self.planes.take() {
+            out.accept(DecodedPicture {
+                tag,
+                format: self.format,
+                film_grain_applied: false,
+                planes,
+            })?;
+        }
+        Ok(())
+    }
+    fn finish(
+        &mut self,
+        _cancel: &CancellationToken,
+        _out: &mut dyn PictureSink,
+    ) -> Result<(), VideoDecodeError> {
+        Ok(())
+    }
+}
+
+/// Counts delivered bytes without keeping or copying them.
+#[derive(Default)]
+struct CountBytes {
+    chunks: u32,
+    bytes: usize,
+}
+impl ChunkSink for CountBytes {
+    fn accept(&mut self, chunk: Chunk<'_>) -> Result<(), ReelError> {
+        self.chunks += 1;
+        self.bytes += chunk.bytes.len();
+        Ok(())
+    }
+}
+
+/// An 8-bit 4:2:0 picture of `width` x `height` with correctly sized planes (all allocated here).
+fn picture_of(width: u32, height: u32) -> OnePicture {
+    let format = VideoFormat {
+        width,
+        height,
+        bit_depth: 8,
+        chroma: ChromaFormat::Yuv420,
+        color: ColorInfo {
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+            full_range: false,
+            origin: ColorOrigin::SequenceHeader,
+        },
+    };
+    let planes = format
+        .plane_dims()
+        .iter()
+        .map(|(w, h)| vec![0u8; *w as usize * *h as usize])
+        .collect();
+    OnePicture {
+        format,
+        planes: Mutex::new(Some(planes)),
+    }
+}
+
+/// An `av01` MP4 that declares `width` x `height` (sample entry) and holds three tiny samples.
+fn av01_mp4(width: u16, height: u16) -> Vec<u8> {
+    mp4_bytes(&Mp4Spec {
+        movie_timescale: 600,
+        media_timescale: 600,
+        codec: *b"av01",
+        width,
+        height,
+        samples: (0..3)
+            .map(|k| Mp4Sample {
+                duration: 20,
+                cts_offset: 0,
+                size: 16,
+                sync: k == 0,
+            })
+            .collect(),
+        edits: None,
+        samples_per_chunk: 2,
+        co64: false,
+        ctts_version: 0,
+        moov_first: true,
+        colr_nclx: None,
+        pasp: None,
+    })
+}
+
+/// (case name, container bytes, size of the picture the decoder returns, expected result)
+type Case<'a> = (&'a str, &'a [u8], (u32, u32), Result<(), ReelError>);
+
+/// PLR-032, V4-02: a decoder (any embedder decoder) can return a picture larger than the container
+/// declared, and larger than the chunk budget. The route compares the picture with the declared size and
+/// with the budget on the planes that already exist; it must not first copy them into a second buffer.
+/// The meter records the largest single allocation of this thread after the 24 MiB picture exists.
+/// Case 3 is the instrument check: a picture that IS accepted is packed, and the meter sees that copy.
+#[test]
+fn oversize_decoded_picture_is_refused_before_it_is_copied() {
+    bounded_case(
+        "oversize_decoded_picture_is_refused_before_it_is_copied",
+        || {
+            let limits = Limits::default();
+            assert_eq!(
+                limits.max_chunk_bytes,
+                8 << 20,
+                "the budget this test assumes"
+            );
+            let big_mp4 = av01_mp4(4096, 4096);
+            let small_mp4 = av01_mp4(2048, 2048);
+            let cases: [Case<'_>; 3] = [
+                (
+                    "4096x4096 picture, container declares 16x16",
+                    MP4_16X16,
+                    (4096, 4096),
+                    Err(ReelError::DecoderFault {
+                        fault: DecoderFault::Protocol,
+                    }),
+                ),
+                (
+                    "4096x4096 picture matches the declaration but is 24 MiB (budget 8 MiB)",
+                    big_mp4.as_slice(),
+                    (4096, 4096),
+                    Err(ReelError::LimitExceeded {
+                        what: "av1-frame-bytes",
+                    }),
+                ),
+                (
+                    "2048x2048 picture matches the declaration and fits the budget",
+                    small_mp4.as_slice(),
+                    (2048, 2048),
+                    Ok(()),
+                ),
+            ];
+            for (case, bytes, (w, h), want) in cases {
+                let registry = Registry::standard().with_video_decoder(Arc::new(picture_of(w, h)));
+                let mut req = packet_request(bytes);
+                req.output = OutputMode::Decoded;
+                let mut sink = CountBytes::default();
+                let mut src = Cursor::new(bytes.to_vec());
+                let cancel = CancellationToken::default();
+                LARGEST.with(|largest| largest.set(0));
+                let result =
+                    registry.decode_segment(&mut src, None, &req, &limits, &cancel, &mut sink);
+                let largest = LARGEST.with(Cell::get);
+                match want {
+                    Err(error) => {
+                        assert_eq!(result.unwrap_err(), error, "{case}");
+                        assert_eq!(sink.chunks, 0, "{case}: nothing is delivered");
+                        assert!(
+                            largest < (1 << 20),
+                            "{case}: largest single allocation was {largest} bytes (the refused picture was copied)"
+                        );
+                    }
+                    Ok(()) => {
+                        result.unwrap_or_else(|e| panic!("{case}: {e:?}"));
+                        let frame = 2048 * 2048 * 3 / 2;
+                        assert_eq!((sink.chunks, sink.bytes), (1, frame), "{case}");
+                        assert!(
+                            largest >= frame,
+                            "{case}: the meter did not see the packing copy ({largest} bytes)"
+                        );
+                    }
+                }
+            }
+        },
+    );
 }

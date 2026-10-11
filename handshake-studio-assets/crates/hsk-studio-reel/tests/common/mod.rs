@@ -1,5 +1,8 @@
-//! Synthetic media byte builders (WAV, Y4M, MP4/MOV skeleton). Used by tests and the consumer example so
-//! no media is downloaded or stored. Deterministic: every byte is a pure function of its position.
+//! Synthetic media byte builders (WAV, Y4M, MP4/MOV skeleton, Matroska). Test support: compiled into the
+//! test binaries and the consumer example (`mod common;`), NOT part of the crate's API (PLR-029; they
+//! were `hsk_studio_reel::fixtures` until then). Used so no media is downloaded or stored. Deterministic:
+//! every byte is a pure function of its position. Each binary uses a subset of the builders.
+#![allow(dead_code, unused_imports)]
 mod mkv;
 mod mov;
 pub use mkv::*;

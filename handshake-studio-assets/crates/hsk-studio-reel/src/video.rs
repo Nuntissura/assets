@@ -17,8 +17,10 @@
 //!
 //! Both hosts run through ONE packet pump (`decode_video_track`): frame-accurate start and pre-roll come
 //! from the container, pictures are matched to packets by tag, pre-roll pictures are dropped, a mid-segment
-//! format change and any picture whose planes disagree with its declared format are refused, and the
-//! receipt names the decoder that actually ran (`DecoderIdentity`).
+//! format change, any picture whose planes disagree with its declared format and any picture larger than
+//! the size the container declares for the track (`within_declared_size`: the declared size is the
+//! sequence maximum) are refused before the picture is packed, and the receipt names the decoder that
+//! actually ran (`DecoderIdentity`).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::av1_config::parse_av1c;
 use crate::error::{DecoderFault, ReelError, check_cancel};
@@ -76,8 +78,10 @@ pub struct VideoStreamSpec<'a> {
     pub config: &'a [u8],
     /// Colour tag the container carried for the stream.
     pub color: ColorTag,
-    /// Picture size the container DECLARES (0 when it declares none): a decoder should refuse pictures
-    /// above it instead of allocating whatever the bitstream claims.
+    /// Picture size the container DECLARES (0 when it declares none; the AV1 sequence maximum, so a smaller
+    /// picture is legal): a decoder should refuse pictures above it instead of allocating whatever the
+    /// bitstream claims. The route does not rely on that: a picture above it is a
+    /// `DecoderFault::Protocol` and is not copied (test `decoded_picture_size_is_checked_against_the_container_declared_size`).
     pub width: u32,
     pub height: u32,
     pub limits: Limits,
@@ -261,11 +265,16 @@ struct PacketMeta {
 
 /// Forwards pictures to the caller's sink: a picture belongs to the packet whose tag it carries, pre-roll
 /// pictures are dropped, the first delivered format must not change inside one segment, and a picture
-/// whose planes disagree with its declared format is a decoder protocol fault.
+/// whose planes disagree with its declared format, or whose size exceeds the size the container declares,
+/// is a decoder protocol fault. Those checks, and the packed-size check against `max_chunk_bytes`, run
+/// BEFORE the picture is packed (packing copies the planes into `packed`); a refused picture is not
+/// copied (test `oversize_decoded_picture_is_refused_before_it_is_copied` measures the largest allocation).
 struct Forward<'a> {
     pending: VecDeque<PacketMeta>,
     sink: &'a mut dyn ChunkSink,
     max_chunk_bytes: usize,
+    /// `(width, height)` the container declares for the track; 0 = that side is not declared.
+    declared: (u32, u32),
     format: Option<VideoFormat>,
     delivered: u64,
     packed: Vec<u8>,
@@ -289,6 +298,26 @@ fn planes_match_format(picture: &DecodedPicture) -> bool {
         })
 }
 
+/// True when the picture does not exceed the size the container declares for the track. A side declared
+/// as 0 is not declared and is not checked. The declared size is the SEQUENCE MAXIMUM, not the size of
+/// every frame: AV1-ISOBMFF 2.2.4 sets the sample entry width/height to `max_frame_width_minus_1 + 1` /
+/// `max_frame_height_minus_1 + 1`, and the Matroska `V_AV1` mapping does the same for PixelWidth and
+/// PixelHeight. A picture smaller than the declared size is therefore legal; a larger one cannot come
+/// from a conformant stream and is the decoder breaking the boundary.
+fn within_declared_size(format: &VideoFormat, (declared_w, declared_h): (u32, u32)) -> bool {
+    (declared_w == 0 || format.width <= declared_w)
+        && (declared_h == 0 || format.height <= declared_h)
+}
+
+/// Bytes of the packed frame (all planes), `None` when the sum does not fit `usize`. Read from the planes
+/// that exist, so it needs no allocation.
+fn packed_len(picture: &DecodedPicture) -> Option<usize> {
+    picture
+        .planes
+        .iter()
+        .try_fold(0usize, |total, plane| total.checked_add(plane.len()))
+}
+
 impl PictureSink for Forward<'_> {
     fn accept(&mut self, picture: DecodedPicture) -> Result<(), ReelError> {
         let Some(at) = self.pending.iter().position(|m| m.index == picture.tag) else {
@@ -299,7 +328,7 @@ impl PictureSink for Forward<'_> {
         if meta.preroll {
             return Ok(()); // decoded only to reach the requested frames
         }
-        if !planes_match_format(&picture) {
+        if !planes_match_format(&picture) || !within_declared_size(&picture.format, self.declared) {
             return Err(ReelError::DecoderFault {
                 fault: DecoderFault::Protocol,
             });
@@ -313,14 +342,15 @@ impl PictureSink for Forward<'_> {
             }
             Some(_) => {}
         }
-        self.packed.clear();
-        for plane in &picture.planes {
-            self.packed.extend_from_slice(plane);
-        }
-        if self.packed.len() > self.max_chunk_bytes {
+        // The chunk budget is checked on the planes that exist, before `packed` copies any of them.
+        if packed_len(&picture).is_none_or(|len| len > self.max_chunk_bytes) {
             return Err(ReelError::LimitExceeded {
                 what: "av1-frame-bytes",
             });
+        }
+        self.packed.clear();
+        for plane in &picture.planes {
+            self.packed.extend_from_slice(plane);
         }
         self.sink.accept(Chunk {
             kind: ChunkKind::VideoFrame,
@@ -446,6 +476,7 @@ pub(crate) fn decode_video_track_with(
             pending: VecDeque::new(),
             sink,
             max_chunk_bytes: limits.max_chunk_bytes,
+            declared: (video.width, video.height),
             format: None,
             delivered: 0,
             packed: Vec::new(),

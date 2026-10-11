@@ -2,7 +2,8 @@ use hsk_studio_accord::{ActorContext, CancellationToken, DomainId, TICKS_PER_SEC
 use hsk_studio_observe::{
     Budget, DeliveryClass, DeliveryError, FailureCode, Observe, Outcome, SinkPort,
 };
-use hsk_studio_reel::fixtures::*;
+mod common;
+use common::*;
 use hsk_studio_reel::*;
 use std::io::Cursor;
 

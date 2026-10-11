@@ -12,6 +12,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod common;
+use common::{Mp4Sample, Mp4Spec, mp4_bytes};
+
 const MP4: &[u8] = include_bytes!("fixtures/av1/av1-16x16-3f.mp4");
 const MKV: &[u8] = include_bytes!("fixtures/av1/av1-16x16-3f.mkv");
 const MS: u64 = 254_016_000; // Pulse ticks per millisecond
@@ -61,6 +64,13 @@ enum Plan {
     MediaErrorOnPacket(u64),
     FaultOnFinish(DecoderFault),
     ShortPlane,
+    /// A picture of `width` x `height` whose planes are sized for 8-bit 4:2:0 at that size, whatever
+    /// `bit_depth` the format claims (`bit_depth` other than 8 makes planes and format disagree).
+    Picture {
+        width: u32,
+        height: u32,
+        bit_depth: u8,
+    },
 }
 
 struct Fake {
@@ -135,6 +145,33 @@ impl VideoDecodeSession for FakeSession {
                 return Err(ReelError::Corrupt { what: "fake-media" }.into());
             }
             _ => {}
+        }
+        if let Plan::Picture {
+            width,
+            height,
+            bit_depth,
+        } = self.plan
+        {
+            let (luma, chroma) = (
+                width as usize * height as usize,
+                width.div_ceil(2) as usize * height.div_ceil(2) as usize,
+            );
+            out.accept(DecodedPicture {
+                tag,
+                format: VideoFormat {
+                    width,
+                    height,
+                    bit_depth,
+                    ..picture_format()
+                },
+                film_grain_applied: false,
+                planes: vec![
+                    vec![tag as u8; luma],
+                    vec![0x80; chroma],
+                    vec![0x81; chroma],
+                ],
+            })?;
+            return Ok(());
         }
         let mut planes = vec![vec![tag as u8; 256], vec![0x80; 64], vec![0x81; 64]];
         if matches!(self.plan, Plan::ShortPlane) {
@@ -664,4 +701,109 @@ fn decoder_faults_are_a_distinct_typed_error_and_media_errors_pass_through() {
         VideoDecodeError::from(ReelError::Canceled).into_reel(),
         ReelError::Canceled
     );
+}
+
+/// PLR-032: a decoded picture is compared with the size the CONTAINER declares for the track (AV1: the
+/// sequence maximum, AV1-ISOBMFF 2.2.4 and the Matroska `V_AV1` mapping), not only with its own format.
+/// Larger than declared on either side is a decoder protocol fault at the first picture: nothing reaches
+/// the sink and the decoder is not fed a second packet. Equal or smaller is legal. A side the container
+/// does not declare (0) is not checked. A picture whose planes disagree with its format stays refused.
+#[test]
+fn decoded_picture_size_is_checked_against_the_container_declared_size() {
+    let protocol = ReelError::DecoderFault {
+        fault: DecoderFault::Protocol,
+    };
+    let decode_with = |bytes: &[u8], container: &str, width, height, bit_depth| {
+        let (fake, seen) = Fake::new(Plan::Picture {
+            width,
+            height,
+            bit_depth,
+        });
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let (result, sink) = decode(&registry, bytes, container, (0, 3), SourceTrust::Untrusted);
+        (result, sink, seen)
+    };
+    let packed_len = |w: u32, h: u32| (w * h + 2 * w.div_ceil(2) * h.div_ceil(2)) as usize;
+
+    // Both fixtures declare 16 x 16 (mp4: sample entry; mkv: PixelWidth / PixelHeight).
+    for (name, bytes, container) in [
+        ("mp4", MP4, ISOBMFF_PROVIDER_ID),
+        ("mkv", MKV, MATROSKA_PROVIDER_ID),
+    ] {
+        // Above the declared size on either side, by one sample or by a lot.
+        for (w, h) in [(17, 16), (16, 17), (32, 16), (16, 32), (64, 64)] {
+            let (result, sink, seen) = decode_with(bytes, container, w, h, 8);
+            assert_eq!(result.unwrap_err(), protocol, "{name} {w}x{h}");
+            assert!(
+                sink.chunks.is_empty(),
+                "{name} {w}x{h}: nothing is delivered"
+            );
+            assert_eq!(seen.lock().unwrap().packets.len(), 1, "{name} {w}x{h}");
+        }
+        // Planes that disagree with the format (10-bit format, 8-bit planes) are refused as before.
+        let (result, sink, _) = decode_with(bytes, container, 16, 16, 10);
+        assert_eq!(result.unwrap_err(), protocol, "{name} 10-bit format");
+        assert!(sink.chunks.is_empty(), "{name} 10-bit format");
+        // The declared size itself and anything smaller are legal (sequence maximum), and the receipt
+        // carries the format that was actually delivered.
+        for (w, h) in [(16, 16), (8, 8), (16, 1), (1, 16), (1, 1)] {
+            let (result, sink, _) = decode_with(bytes, container, w, h, 8);
+            let receipt = result.unwrap_or_else(|e| panic!("{name} {w}x{h}: {e:?}"));
+            assert_eq!(
+                receipt.video.map(|v| (v.width, v.height)),
+                Some((w, h)),
+                "{name} {w}x{h}"
+            );
+            assert_eq!(sink.chunks.len(), 3, "{name} {w}x{h}");
+            assert!(
+                sink.chunks.iter().all(|c| c.4.len() == packed_len(w, h)),
+                "{name} {w}x{h}: packed frame size"
+            );
+        }
+    }
+
+    // A side the container does not declare (0) is not checked; the declared side still is.
+    let synthetic = |width: u16, height: u16| {
+        mp4_bytes(&Mp4Spec {
+            movie_timescale: 600,
+            media_timescale: 600,
+            codec: *b"av01",
+            width,
+            height,
+            samples: (0..3)
+                .map(|k| Mp4Sample {
+                    duration: 20,
+                    cts_offset: 0,
+                    size: 16,
+                    sync: k == 0,
+                })
+                .collect(),
+            edits: None,
+            samples_per_chunk: 2,
+            co64: false,
+            ctts_version: 0,
+            moov_first: true,
+            colr_nclx: None,
+            pasp: None,
+        })
+    };
+    for (declared, picture, accepted) in [
+        ((0, 0), (64, 64), true),
+        ((0, 16), (64, 16), true),
+        ((0, 16), (64, 17), false),
+        ((16, 0), (16, 64), true),
+        ((16, 0), (17, 64), false),
+        ((16, 16), (16, 16), true),
+    ] {
+        let bytes = synthetic(declared.0, declared.1);
+        let (result, sink, _) = decode_with(&bytes, ISOBMFF_PROVIDER_ID, picture.0, picture.1, 8);
+        let label = format!("declared {declared:?} picture {picture:?}");
+        if accepted {
+            result.unwrap_or_else(|e| panic!("{label}: {e:?}"));
+            assert_eq!(sink.chunks.len(), 3, "{label}");
+        } else {
+            assert_eq!(result.unwrap_err(), protocol, "{label}");
+            assert!(sink.chunks.is_empty(), "{label}");
+        }
+    }
 }

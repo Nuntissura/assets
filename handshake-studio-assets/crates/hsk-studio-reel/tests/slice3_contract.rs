@@ -1,5 +1,6 @@
 use hsk_studio_accord::{CancellationToken, Ticks};
-use hsk_studio_reel::fixtures::*;
+mod common;
+use common::*;
 use hsk_studio_reel::*;
 use sha2::{Digest, Sha256};
 use std::io::Cursor;

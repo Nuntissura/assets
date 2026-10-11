@@ -6,8 +6,12 @@
 //! reel-consumer --decode FILE --start-unit N --units N [--packets] [--track ID]
 //! reel-consumer --seek FILE --ticks T
 use hsk_studio_accord::{CancellationToken, Ticks};
-use hsk_studio_reel::fixtures::{y4m_bytes, y4m_frame};
 use hsk_studio_reel::*;
+
+// The synthetic Y4M builders are test support (tests/common), not crate API.
+#[path = "../tests/common/mod.rs"]
+mod common;
+use common::{y4m_bytes, y4m_frame};
 use std::{env, fs::File, io::Cursor, process::ExitCode};
 
 struct Summary {

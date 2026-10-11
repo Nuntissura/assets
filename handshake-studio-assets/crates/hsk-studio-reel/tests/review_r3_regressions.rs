@@ -1,7 +1,8 @@
 //! One hostile-input regression per confirmed STUDIO-R3 reel finding (SMB-REEL, commit 404ff3a):
 //! typed errors, never an arithmetic-overflow panic.
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_reel::fixtures::*;
+mod common;
+use common::*;
 use hsk_studio_reel::*;
 use std::io::Cursor;
 
