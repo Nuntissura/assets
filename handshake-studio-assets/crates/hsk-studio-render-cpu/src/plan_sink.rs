@@ -15,7 +15,7 @@
 //! alpha is `G`'s own alpha (it never changes during the run), so a clipped layer needs no plane.
 //!
 //! Envelope operators (`RenderBackend::execute_extended`: adjustment layers, Blend-If, mask density
-//! and feather) live in the `extended` submodule and layer effects (wave 1) in `effects`; both call
+//! and feather) live in the `extended` submodule and layer effects (waves 1 and 2) in `effects`; both call
 //! pigment's maths. A plan without an envelope takes the unchanged v1 path.
 //!
 //! Workflow v4 V4-01: this module and `px` deny unchecked integer arithmetic; plan-derived sizes
@@ -548,7 +548,7 @@ fn prepare<'a, V: VectorSource>(
                         }
                     }
                     let layer_fx = ext.layer(i, li);
-                    // Layer effects (wave 1): the layer is evaluated per chunk window (the content
+                    // Layer effects (waves 1 and 2): the layer is evaluated per chunk window (the content
                     // bounds grown by the stack margin, clipped to the chunk) and composed by
                     // pigment's `render_layer_window`.
                     let mut layer_bounds = bounds[input];
@@ -1668,9 +1668,12 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
     /// The envelope operators implement pigment's formulas verbatim (`adjust_math`,
     /// `coverage_math`, `effect_math`) and pigment owns their exactness (CX-CAP-001): a supported
     /// operator reports exactly pigment's declared class (`ExtOperator::intrinsic`, Approximate for
-    /// everything but Invert), never a better one; bit-identity with pigment's reference is a
-    /// separate fact (the parity tests). Knockout, effect kinds beyond wave 1 and any operator this
-    /// build does not know are Unsupported (typed refusal at admission).
+    /// everything but Invert), not a better one (tests cpu_extended
+    /// `refusals_stay_typed_and_the_v1_path_is_unchanged`, cpu_effects
+    /// `effect_refusals_and_scratch_charge_stay_typed`, cpu_effects_fx2
+    /// `wave2_exactness_refusals_and_budget`); bit-identity with pigment's reference is a separate
+    /// fact (the parity tests). Knockout, effect kinds pigment adds after waves 1 and 2 and any
+    /// operator this build does not know are Unsupported (typed refusal at admission).
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
         match operator {
             ExtOperator::AdjustmentLayer
@@ -1678,10 +1681,15 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
             | ExtOperator::MaskFeather
-            | ExtOperator::Effect(EffectKind::DropShadow)
-            | ExtOperator::Effect(EffectKind::ColourOverlay)
-            | ExtOperator::Effect(EffectKind::Stroke) => operator.intrinsic(),
-            // Effect kinds added after wave 1 are not evaluated or tested here yet.
+            | ExtOperator::Effect(
+                EffectKind::DropShadow
+                | EffectKind::ColourOverlay
+                | EffectKind::Stroke
+                | EffectKind::InnerShadow
+                | EffectKind::OuterGlow
+                | EffectKind::InnerGlow,
+            ) => operator.intrinsic(),
+            // Effect kinds added after wave 2 are not evaluated or tested here yet.
             _ => Exactness::Unsupported,
         }
     }

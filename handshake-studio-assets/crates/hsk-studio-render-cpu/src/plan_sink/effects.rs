@@ -1,4 +1,8 @@
-//! Layer effects wave 1 (drop shadow, colour overlay, solid stroke) of the CPU backend. The maths is
+//! Layer effects waves 1 and 2 (drop shadow, colour overlay, solid stroke; inner shadow, outer
+//! glow, inner glow with the colour fill, Softer technique, full range, no jitter) of the CPU
+//! backend. The inner kinds read the inverted layer alpha (1 beyond the layer) and are clipped to
+//! the layer alpha by pigment; this module has no kind-specific code (test cpu_effects_fx2
+//! `wave2_parity_with_reference_across_chunkings_and_workers`). The maths is
 //! pigment's single owner `effect_math` (CX-CAP-001): the matte of every effect and the layer
 //! composition order and fade rules come from `effect_math::window::render_layer_window`, which
 //! this module calls once per chunk; render-cpu keeps no copy of a matte, a distance transform or a

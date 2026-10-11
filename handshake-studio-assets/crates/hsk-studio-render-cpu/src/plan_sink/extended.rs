@@ -10,7 +10,7 @@
 //! per-worker feather scratch (a coverage plane for the chunk plus a horizontal-pass buffer that
 //! also holds the `feather_support` margin rows) is part of the reserved scratch, so a feather wider
 //! than the budget is refused with `BudgetExceeded` before the first sink call. Layer effects
-//! (wave 1) keep their tables here and are evaluated in the `effects` submodule.
+//! (waves 1 and 2) keep their tables here and are evaluated in the `effects` submodule.
 #![deny(clippy::arithmetic_side_effects)]
 use super::{Eval, MaskView, PLayer, RenderError, blend_error, unsupported};
 use crate::px::{

@@ -454,31 +454,23 @@ fn effect_stack_matches_reference_for_every_chunking() {
 #[test]
 fn effect_refusals_and_scratch_charge_stay_typed() {
     let one = rect(0, 0, 1, 1);
-    // Capability: the three wave 1 kinds are implemented; any kind pigment added later is refused
-    // at admission until this backend evaluates and tests it.
+    // Capability. Changed with SMB-RENDER-CPU-FX2: the wave 2 kinds (inner shadow, outer glow,
+    // inner glow) are implemented too, so every kind of EffectKind::ALL reports pigment's declared
+    // class (Approximate, D5 12-17), not a better one: pigment owns the exactness (CX-CAP-001).
+    // (Before FX2 this loop asserted Unsupported for the three wave 2 kinds.) A kind pigment adds
+    // later is refused at admission until this backend evaluates and tests it
+    // (tests/cpu_effects_fx2.rs checks all six).
     let backend: &dyn RenderBackend = &Renderer::new(1).unwrap();
     for kind in EffectKind::ALL {
-        let wave1 = matches!(
-            kind,
-            EffectKind::DropShadow | EffectKind::ColourOverlay | EffectKind::Stroke
-        );
-        // A supported kind reports pigment's declared class (Approximate, D5 12-14), never a
-        // better one: pigment owns the exactness (CX-CAP-001).
         assert_eq!(
             backend.extension_exactness(ExtOperator::Effect(kind)),
-            if wave1 {
-                ExtOperator::Effect(kind).intrinsic()
-            } else {
-                Exactness::Unsupported
-            },
+            ExtOperator::Effect(kind).intrinsic(),
             "{kind:?}"
         );
-        if wave1 {
-            assert_eq!(
-                backend.extension_exactness(ExtOperator::Effect(kind)),
-                Exactness::Approximate
-            );
-        }
+        assert_eq!(
+            backend.extension_exactness(ExtOperator::Effect(kind)),
+            Exactness::Approximate
+        );
     }
     let refused = |p: &RenderPlan, ext: &PlanExtensions, min: Exactness| {
         let (result, grid) = run_ext(
