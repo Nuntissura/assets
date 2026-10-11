@@ -172,13 +172,18 @@ fn css_payloads_decode_per_bom_charset_and_at_charset() {
 #[test]
 fn decisions_by_type_and_load_context() {
     let d = |load: Load, r: &str| decide(load, &parse(r).expect("data URL"));
-    // CSS is scanned everywhere.
+    // CSS is scanned where it is a style sheet or nothing reads the payload (not in a script or a track: see
+    // `load_context_decides_before_the_type`).
     for load in [
         Load::Image,
+        Load::Font,
         Load::Document,
         Load::Stylesheet,
-        Load::Script,
         Load::Resource,
+        Load::Media,
+        Load::Beacon,
+        Load::None,
+        Load::Base,
     ] {
         assert_eq!(d(load, "data:Text/CSS;charset=utf-8,a"), Decision::ScanCss);
     }
@@ -246,6 +251,123 @@ fn decisions_by_type_and_load_context() {
     // Tracks: only images, audio and video (no text type can become WebVTT there).
     assert_eq!(d(Load::Track, "data:text/plain,WEBVTT"), Decision::Deny);
     assert_eq!(d(Load::Track, "data:audio/ogg,x"), Decision::Inline);
+}
+
+/// R12-F1/P1: the load context is decided first, the type only within it. The expected decision of every (load context,
+/// type) pair is written out here, from Fetch 2.10 (script-like destinations block `audio/*`, `image/*`, `video/*`,
+/// `text/csv` only), the HTML Standard (a script is executed whatever its type; a track is WebVTT; a manifest is parsed
+/// whatever its type; the quirks-mode style sheet reads any same-origin type as CSS) and the module docs.
+#[test]
+fn load_context_decides_before_the_type() {
+    use Decision::{Deny, Inline, ScanCss};
+    let types = [
+        "text/css",
+        "text/plain",
+        "text/html",
+        "image/png",
+        "image/svg+xml",
+        "text/vtt",
+        "text/csv",
+        "application/octet-stream",
+    ];
+    // (load context, decision per type in the order of `types`)
+    let table: [(Load, [Decision; 8]); 13] = [
+        (
+            Load::Script,
+            [Deny, Deny, Deny, Inline, Inline, Deny, Inline, Deny],
+        ),
+        (
+            Load::Track,
+            [Deny, Deny, Deny, Inline, Deny, Deny, Deny, Deny],
+        ),
+        (
+            Load::Manifest,
+            [Deny, Deny, Deny, Deny, Deny, Deny, Deny, Deny],
+        ),
+        (
+            Load::Image,
+            [
+                ScanCss, Inline, Inline, Inline, Inline, Inline, Inline, Inline,
+            ],
+        ),
+        (
+            Load::Font,
+            [
+                ScanCss, Inline, Inline, Inline, Inline, Inline, Inline, Inline,
+            ],
+        ),
+        (
+            Load::Beacon,
+            [
+                ScanCss, Inline, Inline, Inline, Inline, Inline, Inline, Inline,
+            ],
+        ),
+        (
+            Load::None,
+            [
+                ScanCss, Inline, Inline, Inline, Inline, Inline, Inline, Inline,
+            ],
+        ),
+        (
+            Load::Base,
+            [
+                ScanCss, Inline, Inline, Inline, Inline, Inline, Inline, Inline,
+            ],
+        ),
+        (
+            Load::Stylesheet,
+            [ScanCss, ScanCss, Deny, ScanCss, Deny, Deny, Deny, ScanCss],
+        ),
+        (
+            Load::Document,
+            [ScanCss, Inline, Deny, Inline, Deny, Deny, Deny, Inline],
+        ),
+        (
+            Load::Resource,
+            [ScanCss, Inline, Deny, Inline, Deny, Deny, Deny, Inline],
+        ),
+        (
+            Load::Media,
+            [ScanCss, Inline, Deny, Inline, Deny, Deny, Deny, Inline],
+        ),
+        (
+            Load::Inline,
+            [ScanCss, Inline, Deny, Inline, Deny, Deny, Deny, Inline],
+        ),
+    ];
+    assert_eq!(table.len(), Load::ALL.len(), "every load context has a row");
+    for (load, expected) in table {
+        for (ty, want) in types.iter().zip(expected) {
+            // The type spelled with case, parameters and whitespace decides the same.
+            for spelled in [
+                format!("data:{ty},x"),
+                format!("DATA:{};Charset=utf-8,x", ty.to_ascii_uppercase()),
+                format!(" \tdata: {ty} ;x=y,x"),
+            ] {
+                assert_eq!(
+                    decide(load, &parse(&spelled).expect("data URL")),
+                    want,
+                    "{load:?} {spelled:?}"
+                );
+            }
+        }
+    }
+    // Several contexts: the strictest decision wins (Inline < ScanCss < Deny).
+    let d = |loads: Loads, r: &str| decide_all(loads, &parse(r).expect("data URL"));
+    let icon_and_sheet = Loads::of(Load::Image).and(Load::Stylesheet);
+    assert_eq!(d(icon_and_sheet, "data:image/png,x"), ScanCss);
+    assert_eq!(d(icon_and_sheet, "data:image/svg+xml,x"), Deny);
+    let script_and_sheet = Loads::of(Load::Script).and(Load::Stylesheet);
+    assert_eq!(d(script_and_sheet, "data:text/css,x"), Deny);
+    assert_eq!(d(script_and_sheet, "data:image/png,x"), ScanCss);
+    assert_eq!(
+        d(Loads::of(Load::Image).and(Load::Font), "data:text/css,x"),
+        ScanCss
+    );
+    assert_eq!(d(Loads::of(Load::Image), "data:text/html,x"), Inline);
+    // No context at all is read as a script, the strictest single reading.
+    assert_eq!(d(Loads::EMPTY, "data:text/css,x"), Deny);
+    assert_eq!(d(Loads::EMPTY, "data:image/png,x"), Inline);
 }
 
 /// V4-02: a MIME part longer than `MAX_HEADER_BYTES` is not copied or parsed; it is an unknown type (never CSS, never

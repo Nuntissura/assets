@@ -27,13 +27,14 @@
 //! `data:` URL for a reference inside its payload).
 #![deny(clippy::arithmetic_side_effects)]
 
-use crate::carriers::{self, ANIMATION_ELEMENTS, Load, Path};
+use crate::carriers::{self, ANIMATION_ELEMENTS, Load, Loads, Path};
 use crate::charref::{Context, decode};
 use crate::cssurl::{RefKind, css_references};
 use crate::datauri::{self, DataUrl, Decision};
 use crate::dom::{NodeId, NodeKind, WebDoc};
 use crate::error::{LimitKind, WebError};
 use hsk_studio_accord::CancellationToken;
+use std::collections::HashMap;
 use std::ops::Range;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,6 +80,12 @@ pub enum DenyReason {
     /// A function inside a CSS URL function (`image-set()`, `src()`, `image()`, ...) that computes its value at style time
     /// (`var()`, `attr()`, `env()`, custom `--*()` functions, any unknown function): the URL is not in the source.
     ComputedUrl,
+    /// A reference to the document itself (`#...`, the empty string or only URL-parser whitespace) from a carrier whose
+    /// browser reads the document's own text as the resource: a style sheet (`link rel=stylesheet`, `@import`; quirks
+    /// mode assumes `text/css`), a script (`script src`, svg `script href`), a text track or a manifest. The document
+    /// would be parsed as CSS or executed as JavaScript and could load any URL from plain text (R12-F2). Every other
+    /// carrier keeps `AssetOutcome::SameDocument`.
+    SelfReference,
 }
 impl DenyReason {
     pub const fn code(self) -> &'static str {
@@ -92,6 +99,7 @@ impl DenyReason {
             Self::InlineDocument => "inline_document",
             Self::AmbiguousPath => "ambiguous_path",
             Self::ComputedUrl => "computed_url",
+            Self::SelfReference => "self_reference",
         }
     }
 }
@@ -106,7 +114,8 @@ pub enum AssetOutcome {
     /// `data:` URI carried in the source itself, nothing to resolve: a payload that loads nothing further in its carrier,
     /// or a CSS payload whose own references follow it in the result (`AssetRef::data_depth` one higher).
     Inline,
-    /// `#fragment`: same document.
+    /// `#fragment`, or a value empty after the URL parser's whitespace removal: the document itself, in a carrier that
+    /// does not read the document's text (`DenyReason::SelfReference` otherwise).
     SameDocument,
 }
 
@@ -138,14 +147,46 @@ pub struct AssetRef {
 /// `data_payloads_beyond_the_bounds_are_refused_typed`).
 pub const MAX_DATA_NESTING: u32 = 8;
 
-/// Classify without any I/O. `None` = relative: the port decides.
-fn classify(reference: &str) -> Option<AssetOutcome> {
-    // URL parsing drops tab/newline/CR and strips leading/trailing C0 controls and spaces; mirror that so
-    // `java\nscript:` cannot hide a scheme, and treat `\` as `/` for the authority check.
-    let cleaned: String = reference
+/// HTML "ASCII whitespace" (space, tab, LF, FF, CR): what the attribute rules strip (`rel`, `http-equiv`, `attributeName`
+/// values, `srcdoc` emptiness). Never Unicode White_Space: U+00A0, U+3000, U+2028 and the rest are ordinary characters.
+fn is_ascii_ws(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\u{c}' | '\r')
+}
+
+/// A value stripped of leading and trailing ASCII whitespace (the HTML attribute rules).
+fn ws_trim(s: &str) -> &str {
+    s.trim_matches(is_ascii_ws)
+}
+
+/// A value with no character except ASCII whitespace (never Unicode White_Space, R12-F3).
+fn is_blank(s: &str) -> bool {
+    ws_trim(s).is_empty()
+}
+
+/// The input of the URL Standard basic URL parser as it reads it (steps 1-2): leading and trailing C0 control or space
+/// removed, then every ASCII tab or newline removed. Never Unicode white space (R12-F3): `&nbsp;` is the relative reference
+/// `%C2%A0`, not nothing.
+fn url_clean(reference: &str) -> String {
+    reference
         .trim_matches(|c: char| c <= ' ')
         .chars()
         .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect()
+}
+
+/// The reference resolves to the document itself: empty after `url_clean`, or only a fragment (`#...`). A browser that
+/// loads it fetches the document's own bytes (R12-F2).
+fn resolves_to_document(reference: &str) -> bool {
+    let cleaned = url_clean(reference);
+    cleaned.is_empty() || cleaned.starts_with('#')
+}
+
+/// Classify without any I/O. `None` = relative: the port decides.
+fn classify(reference: &str) -> Option<AssetOutcome> {
+    // URL parsing drops tab/newline/CR and strips leading/trailing C0 controls and spaces (`url_clean`); mirror that so
+    // `java\nscript:` cannot hide a scheme, and treat `\` as `/` for the authority check.
+    let cleaned: String = url_clean(reference)
+        .chars()
         .map(|c| {
             if c == '\\' {
                 '/'
@@ -376,11 +417,127 @@ struct Collector<'a> {
     /// Encoded bytes of `data:` payloads that may still be scanned (aggregate bound, `Limits::max_bytes`).
     data_budget: usize,
     out: Vec<AssetRef>,
+    /// Element ids of the document (`id` attribute value -> elements), built when the first animated URL needs it.
+    ids: Option<HashMap<String, Vec<NodeId>>>,
+}
+
+/// The load contexts of a `link` element's `href` from its `rel` and `as` attributes (decoded, first of each wins).
+fn link_loads_of(doc: &WebDoc, id: NodeId) -> Loads {
+    let value = |name: &str| doc.attribute(id, name).and_then(|a| doc.attr_value(a));
+    carriers::link_loads(
+        value("rel").unwrap_or_default().as_str(),
+        value("as").as_deref(),
+    )
+}
+
+/// Percent-decoding (URL Standard "percent-decode" of a fragment, UTF-8 decoded without failure) for the `id` lookup of an
+/// animation's `href` target.
+fn percent_decoded(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0usize;
+    while let Some(&c) = b.get(i) {
+        let hex = |k: usize| {
+            b.get(k)
+                .and_then(|h| char::from(*h).to_digit(16))
+                .and_then(|d| u8::try_from(d).ok())
+        };
+        match (c, hex(i.saturating_add(1)), hex(i.saturating_add(2))) {
+            (b'%', Some(h), Some(l)) => {
+                out.push(h.saturating_mul(16).saturating_add(l));
+                i = i.saturating_add(3);
+            }
+            _ => {
+                out.push(c);
+                i = i.saturating_add(1);
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 impl Collector<'_> {
-    /// `nested`: the reference is inside a `data:` payload.
-    fn decide(&self, reference: &str, bad: bool, nested: bool) -> AssetOutcome {
+    /// The load contexts of the URL an SVG animation writes into attribute `name` (`href`, `xlink:href`, `src`, ...; R12-P1):
+    /// those of the attribute on the element the animation targets. The target is the element its `href`/`xlink:href`
+    /// names (`#id` in this document; every element with that id, also under percent-decoding) or, without one, its
+    /// parent. `use href` animated to another fragment stays a same-document reference; a `script` target is a script
+    /// load. A target that cannot be found, an attribute without a URL row on its element, or a base is read as the
+    /// strictest applicable contexts, script and resource document together (fail closed).
+    fn animated_loads(&mut self, animation: NodeId, name: &str) -> Loads {
+        let strict = Loads::of(Load::Script).and(Load::Resource);
+        let doc = self.doc;
+        let by_href = ["href", "xlink:href"]
+            .iter()
+            .find_map(|n| doc.attribute(animation, n))
+            .and_then(|a| doc.attr_value(a));
+        let targets: Vec<NodeId> = match by_href {
+            None => doc
+                .node(animation)
+                .and_then(|n| n.parent)
+                .into_iter()
+                .collect(),
+            Some(href) => {
+                let cleaned = url_clean(&href);
+                let Some(fragment) = cleaned.strip_prefix('#') else {
+                    return strict;
+                };
+                let ids = self.ids.get_or_insert_with(|| {
+                    let mut map: HashMap<String, Vec<NodeId>> = HashMap::new();
+                    for id in 0..doc.len() {
+                        let Some(node) = doc.node(id).filter(|n| n.kind == NodeKind::Element)
+                        else {
+                            continue;
+                        };
+                        for a in &node.attrs {
+                            if doc.attr_local_name(a) == "id"
+                                && let Some(value) = doc.attr_value(a)
+                            {
+                                map.entry(value).or_default().push(id);
+                            }
+                        }
+                    }
+                    map
+                });
+                let mut found: Vec<NodeId> = ids.get(fragment).cloned().unwrap_or_default();
+                let decoded = percent_decoded(fragment);
+                if decoded != fragment {
+                    found.extend(ids.get(&decoded).into_iter().flatten().copied());
+                }
+                found
+            }
+        };
+        if targets.is_empty() {
+            return strict;
+        }
+        let mut loads = Loads::EMPTY;
+        for target in targets {
+            let tag = doc.local_name(target).unwrap_or_default();
+            loads = loads.union(match carriers::attribute_path(&tag, name) {
+                Some((Path::Url, _)) if tag == "link" && name == "href" => {
+                    link_loads_of(doc, target)
+                }
+                Some((Path::Url, load)) => Loads::of(load),
+                _ => strict,
+            });
+        }
+        loads
+    }
+
+    /// `nested`: the reference is inside a `data:` payload. `loads`: what the carrier's browser does with the fetched
+    /// resource, decided before the reference's scheme or a payload's type (`carriers::Load`).
+    fn decide(&self, reference: &str, bad: bool, nested: bool, loads: Loads) -> AssetOutcome {
+        // A reference to the document itself (empty after the URL parser's stripping, or only a fragment) is harmless in
+        // a navigation, image, media or SVG reference carrier. Where the browser reads the document's own text as the
+        // resource (style sheet: quirks mode assumes text/css; script: no MIME check; text track; manifest) it parses or
+        // executes the document and loads whatever URLs that text spells (R12-F2). Inside a `data:` payload a
+        // fragment-only reference is the payload itself.
+        if !nested && !bad && resolves_to_document(reference) {
+            return if loads.reads_text() {
+                AssetOutcome::Denied(DenyReason::SelfReference)
+            } else {
+                AssetOutcome::SameDocument
+            };
+        }
         if let Some(done) = classify(reference) {
             return done;
         }
@@ -426,7 +583,60 @@ impl Collector<'_> {
         Ok(())
     }
 
-    /// One reference read from a carrier whose load context is `load`, `depth` `data:` payloads deep.
+    /// One URL value of a carrier: a value that is the empty string fetches nothing in any carrier (HTML: no request for
+    /// `src=""`, `href=""`); in a carrier that reads the document's text it is still denied as a self-reference (lead
+    /// decision R12: fail closed). Any other value goes through `reference`, whitespace-only included (it resolves to the
+    /// document itself).
+    fn url_value(
+        &mut self,
+        node: NodeId,
+        source: &AssetSource,
+        text: &str,
+        span: Range<usize>,
+        loads: Loads,
+    ) -> Result<(), WebError> {
+        if text.is_empty() {
+            if loads.reads_text() {
+                self.push(
+                    node,
+                    source,
+                    String::new(),
+                    span,
+                    AssetOutcome::Denied(DenyReason::SelfReference),
+                    0,
+                )?;
+            }
+            return Ok(());
+        }
+        self.reference(node, source, text, false, span, loads, 0)
+    }
+
+    /// A URL handed to a legacy plugin (`param value`, `Path::PluginParam`): nothing the gate can read loads it, so it is
+    /// reported and denied. External, protocol-relative, `file:` and script schemes keep their typed reason, a `data:`
+    /// payload is `InlineDocument`, a relative reference is `NotGranted` and never offered to the port.
+    fn plugin_url(
+        &mut self,
+        node: NodeId,
+        source: &AssetSource,
+        text: &str,
+        span: Range<usize>,
+    ) -> Result<(), WebError> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let outcome = if resolves_to_document(text) {
+            AssetOutcome::SameDocument
+        } else {
+            match classify(text) {
+                Some(AssetOutcome::Inline) => AssetOutcome::Denied(DenyReason::InlineDocument),
+                Some(done) => done,
+                None => AssetOutcome::Denied(DenyReason::NotGranted),
+            }
+        };
+        self.push(node, source, text.to_owned(), span, outcome, 0)
+    }
+
+    /// One reference read from a carrier whose load contexts are `loads`, `depth` `data:` payloads deep.
     #[allow(
         clippy::too_many_arguments,
         reason = "one reference: where it is, what it is, how it is loaded"
@@ -438,10 +648,10 @@ impl Collector<'_> {
         reference: &str,
         bad: bool,
         span: Range<usize>,
-        load: Load,
+        loads: Loads,
         depth: u32,
     ) -> Result<(), WebError> {
-        let outcome = self.decide(reference, bad, depth > 0);
+        let outcome = self.decide(reference, bad, depth > 0, loads);
         // A bad-url token or bad string spelling `data:` loads nothing and its payload is cut short: denied, never read
         // (found by the differential generator, gen:Css:70041).
         if bad && outcome == AssetOutcome::Inline {
@@ -457,7 +667,7 @@ impl Collector<'_> {
         if outcome == AssetOutcome::Inline
             && let Some(url) = datauri::parse(reference)
         {
-            match datauri::decide(load, &url) {
+            match datauri::decide_all(loads, &url) {
                 Decision::Inline => {}
                 Decision::Deny => {
                     return self.push(
@@ -547,17 +757,17 @@ impl Collector<'_> {
             span: locate(&span),
         })?;
         for r in found {
-            let load = if r.import {
+            let loads = Loads::of(if r.import {
                 Load::Stylesheet
             } else {
                 Load::Resource
-            };
+            });
             match r.kind {
                 RefKind::Url => {
-                    self.reference(node, source, &r.value, false, locate(&r.span), load, depth)?
+                    self.reference(node, source, &r.value, false, locate(&r.span), loads, depth)?
                 }
                 RefKind::Bad => {
-                    self.reference(node, source, &r.value, true, locate(&r.span), load, depth)?
+                    self.reference(node, source, &r.value, true, locate(&r.span), loads, depth)?
                 }
                 RefKind::Computed => self.push(
                     node,
@@ -597,15 +807,19 @@ impl Collector<'_> {
                 value_span.clone()
             }
         };
-        let Route { path, load, target } = route;
+        let Route {
+            path,
+            loads,
+            target,
+        } = route;
         match (path, target) {
             (Path::Url, _) | (Path::AnimationValue, Some(Path::Url)) => {
-                if !text.trim().is_empty() {
-                    self.reference(node, &source, text, false, value_span.clone(), load, 0)?;
-                }
+                self.url_value(node, &source, text, value_span.clone(), loads)?;
             }
             (Path::Base, _) => {
-                if !text.trim().is_empty() {
+                // A base the URL parser reads as nothing (ASCII whitespace only) re-targets nothing; any other value,
+                // Unicode white space included, is a relative URL against the document (R12-F3).
+                if !url_clean(text).is_empty() {
                     let outcome = match classify(text) {
                         Some(AssetOutcome::Denied(reason)) => AssetOutcome::Denied(reason),
                         _ => AssetOutcome::Denied(DenyReason::BaseHref),
@@ -623,7 +837,7 @@ impl Collector<'_> {
             (Path::AnimationValues, Some(Path::Url)) => {
                 for (at, item) in value_pieces(text) {
                     let r = at..at.saturating_add(item.len());
-                    self.reference(node, &source, item, false, sub(&r), load, 0)?;
+                    self.url_value(node, &source, item, sub(&r), loads)?;
                 }
             }
             // R11-F1: each piece of a values list is a separate CSS value for the browser (a comment, string or bad url
@@ -641,20 +855,23 @@ impl Collector<'_> {
             }
             (Path::UrlList, _) => {
                 for r in tokens(text) {
-                    self.reference(node, &source, &text[r.clone()], false, sub(&r), load, 0)?;
+                    self.reference(node, &source, &text[r.clone()], false, sub(&r), loads, 0)?;
                 }
             }
             (Path::Srcset, _) => {
                 for r in srcset_urls(text) {
-                    self.reference(node, &source, &text[r.clone()], false, sub(&r), load, 0)?;
+                    self.reference(node, &source, &text[r.clone()], false, sub(&r), loads, 0)?;
                 }
             }
             (Path::Refresh, _) => {
-                if let Some(r) = refresh_url(text).filter(|r| !text[r.clone()].trim().is_empty()) {
-                    self.reference(node, &source, &text[r.clone()], false, sub(&r), load, 0)?;
+                if let Some(r) = refresh_url(text) {
+                    self.url_value(node, &source, &text[r.clone()], sub(&r), loads)?;
                 }
             }
-            (Path::InlineDoc, _) if !text.trim().is_empty() => {
+            (Path::PluginParam, _) => {
+                self.plugin_url(node, &source, text, value_span.clone())?;
+            }
+            (Path::InlineDoc | Path::MetaLink, _) if !is_blank(text) => {
                 self.push(
                     node,
                     &source,
@@ -720,7 +937,7 @@ impl Collector<'_> {
                     .or_else(|| self.doc.text_value(c))
             })
             .collect();
-        if text.trim().is_empty() {
+        if is_blank(&text) {
             return Ok(());
         }
         let span = node.content_span().unwrap_or_else(|| node.span.clone());
@@ -739,9 +956,19 @@ impl Collector<'_> {
 #[derive(Clone, Copy)]
 struct Route {
     path: Path,
-    load: Load,
+    /// What the carrier's browser does with the fetched resource (`carriers::Load`; several for a `link` with several
+    /// keywords or an animated URL with several candidate targets).
+    loads: Loads,
     /// For `Path::AnimationValue(s)`: how the animation's target reads values.
     target: Option<Path>,
+}
+
+/// The `meta` pragma directive (`http-equiv`, ASCII case-insensitive, after the same character-reference decoding a
+/// browser applies) the gate reads: `refresh` is the HTML Standard's, `link` the legacy engine-only one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HttpEquiv {
+    Refresh,
+    Link,
 }
 
 /// Every asset-bearing reference in the document, in document order, with the decision for each. The carriers are the
@@ -775,6 +1002,7 @@ pub fn collect_assets(
         limit: doc.limits().max_nodes,
         data_budget: doc.limits().max_bytes,
         out: Vec::new(),
+        ids: None,
     };
     for id in 0..doc.len() {
         if id & 0x3ff == 0 {
@@ -786,42 +1014,80 @@ pub fn collect_assets(
         }
         // The element a browser creates (`<image>` in HTML content is an `img`).
         let tag = doc.local_name(id).unwrap_or_default();
-        // The keyword is compared after the same character-reference decoding a browser applies (`&#114efresh`).
-        let refresh = tag == "meta"
-            && doc
-                .attribute(id, "http-equiv")
+        // The keyword is compared after the same character-reference decoding a browser applies (`&#114efresh`), with the
+        // HTML attribute rules' ASCII whitespace stripping (a browser that does not strip reads fewer: over-reporting).
+        let http_equiv = if tag == "meta" {
+            doc.attribute(id, "http-equiv")
                 .and_then(|a| doc.attr_value(a))
-                .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"));
-        // An SVG animation writes from/to/by/values into the attribute or property named by attributeName.
-        let target = if ANIMATION_ELEMENTS.contains(&tag.as_str()) {
-            doc.attribute(id, "attributename")
-                .and_then(|a| doc.attr_value(a))
-                .and_then(|t| carriers::animation_target(&t.trim().to_ascii_lowercase()))
+                .and_then(|v| match ws_trim(&v).to_ascii_lowercase().as_str() {
+                    "refresh" => Some(HttpEquiv::Refresh),
+                    "link" => Some(HttpEquiv::Link),
+                    _ => None,
+                })
         } else {
             None
         };
+        // `param value` is a URL only for the names a legacy plugin loads (`carriers::PLUGIN_URL_PARAMS`).
+        let plugin_param = tag == "param"
+            && doc
+                .attribute(id, "name")
+                .and_then(|a| doc.attr_value(a))
+                .is_some_and(|n| {
+                    carriers::PLUGIN_URL_PARAMS.contains(&ws_trim(&n).to_ascii_lowercase().as_str())
+                });
+        // An SVG animation writes from/to/by/values into the attribute or property named by attributeName.
+        let animated = if ANIMATION_ELEMENTS.contains(&tag.as_str()) {
+            doc.attribute(id, "attributename")
+                .and_then(|a| doc.attr_value(a))
+                .map(|t| ws_trim(&t).to_ascii_lowercase())
+                .and_then(|name| carriers::animation_target(&name).map(|t| (name, t)))
+        } else {
+            None
+        };
+        // The load contexts of an animated URL: those of the attribute on the element it targets.
+        let animated_url_loads = match &animated {
+            Some((name, Path::Url)) => Some(c.animated_loads(id, name)),
+            _ => None,
+        };
         for attr in &node.attrs {
             let name = doc.attr_local_name(attr);
-            let route = match carriers::animation_path(&tag, &name) {
-                Some(path) => target.map(|t| Route {
-                    path,
-                    load: Load::Resource,
-                    target: Some(t),
-                }),
-                None => match carriers::attribute_path(&tag, &name) {
-                    Some((Path::Refresh, _)) if !refresh => None,
-                    Some((path, load)) => Some(Route {
-                        path,
-                        load,
-                        target: None,
-                    }),
-                    None => None,
-                },
-            };
-            let (Some(route), Some(value_span)) = (route, attr.value_span.clone()) else {
+            let Some(value_span) = attr.value_span.clone() else {
                 continue;
             };
-            c.attribute(id, &name, value_span, route)?;
+            if let Some(path) = carriers::animation_path(&tag, &name) {
+                if let Some((_, target)) = &animated {
+                    let loads = animated_url_loads.unwrap_or(Loads::of(Load::Resource));
+                    let route = Route {
+                        path,
+                        loads,
+                        target: Some(*target),
+                    };
+                    c.attribute(id, &name, value_span, route)?;
+                }
+                continue;
+            }
+            // The first row naming the element and attribute whose gate holds (specific rows come first; `meta content`
+            // has a refresh row and a link row, `param value` is read only for the plugin URL names).
+            let row = carriers::attribute_paths(&tag, &name).find(|(path, _)| match path {
+                Path::Refresh => http_equiv == Some(HttpEquiv::Refresh),
+                Path::MetaLink => http_equiv == Some(HttpEquiv::Link),
+                Path::PluginParam => plugin_param,
+                _ => true,
+            });
+            if let Some((path, load)) = row {
+                // `link`: the `rel` keywords and `as` decide (R12-P3); every other carrier has its row's context.
+                let loads = if tag == "link" && name == "href" {
+                    link_loads_of(doc, id)
+                } else {
+                    Loads::of(load)
+                };
+                let route = Route {
+                    path,
+                    loads,
+                    target: None,
+                };
+                c.attribute(id, &name, value_span, route)?;
+            }
         }
         if tag == "style" {
             c.style_children(id)?;

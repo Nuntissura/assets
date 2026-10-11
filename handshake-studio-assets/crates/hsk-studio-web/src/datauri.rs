@@ -13,23 +13,29 @@
 //!   document's, which this crate reads as text: UTF-8). Supported decoders: UTF-8, UTF-16BE/LE, windows-1252 (all its
 //!   labels, incl. `us-ascii` and `iso-8859-1`) and replacement; any other label refuses the payload (fail closed).
 //!
-//! Policy (`decide`, by the carrier's load context from `carriers`):
-//! - `text/css` is scanned in every carrier (a style sheet's own references load);
-//! - an image carrier decodes any payload as an image (SVG in secure mode loads nothing), and beacons and identifiers load
-//!   nothing: `Inline`;
-//! - a style sheet carrier reads any same-origin payload as CSS in quirks mode: the types below that are inert elsewhere are
-//!   scanned as CSS; every other type is denied;
-//! - every other carrier (documents, navigations, SVG resource documents, CSS values, media, text tracks, scripts) keeps
+//! Policy (`decide`): the carrier's load context (`carriers::Load`) is decided first, then the payload's type within it
+//! (R12-F1: a type that is a style sheet in one context is a script, a text track or a manifest in another):
+//! - script (`script src`, svg `script href`, `modulepreload`, `preload as=script|worker`): executed whatever the type, so
+//!   only the types Fetch blocks for script-like destinations are `Inline` (`audio/*`, `image/*`, `video/*`, `text/csv`:
+//!   Fetch Standard 2.10 "should response to request be blocked due to its MIME type?"; HTML "fetch a classic script" does
+//!   no MIME type check); `text/css` and every other type is denied;
+//! - text track: only images, audio and video stay `Inline`; no text type, `text/css` included, is kept from WebVTT;
+//! - manifest (`link rel=manifest|search`): parsed whatever the type, its URLs cannot be scanned: denied;
+//! - image, font (`link rel=icon`, `preload as=image|font`), beacons, base and identifiers: any payload is decoded as an
+//!   image or font or loads nothing: `Inline` (a `text/css` payload is scanned anyway: its references are reported);
+//! - style sheet (`link rel=stylesheet`, `@import`): a same-origin payload of any type is read as CSS in quirks mode, so
+//!   the types that are inert elsewhere are scanned as CSS and every other type is denied;
+//! - documents, navigations, SVG resource documents, CSS values, prefetched resources, media: `text/css` is scanned;
 //!   `Inline` only for types that load nothing further there (raster images, non-playlist audio/video, fonts, plain text,
-//!   octet streams; for scripts only the types Fetch blocks as scripts: images, audio, video, text/csv); HTML, XML (incl.
-//!   SVG), scripts, JSON, text tracks, playlists, PDF, multipart and unknown or sniffed types are denied: their references
-//!   cannot be scanned (no XML or script reader) and a browser loads them.
+//!   octet streams); HTML, XML (incl. SVG), scripts, JSON, text tracks, playlists, PDF, multipart and unknown or sniffed
+//!   types are denied: their references cannot be scanned (no XML or script reader) and a browser loads them;
+//! - a carrier with several contexts (`link rel="icon stylesheet"`) takes the strictest decision (`decide_all`).
 //!
 //! Proof: `datauri::tests` (each algorithm with escape, decoy and case inputs) and the gate tests in
-//! `tests/css_url_gate.rs` (`data_*`).
+//! `tests/css_url_gate.rs` (`data_*`, `r12_*`).
 #![deny(clippy::arithmetic_side_effects)]
 
-use crate::carriers::Load;
+use crate::carriers::{Load, Loads};
 
 /// The header of a `data:` URL (Fetch data: URL processor steps 1-7, 11-14), and the encoded body.
 #[derive(Debug, PartialEq, Eq)]
@@ -44,7 +50,7 @@ pub(crate) struct DataUrl<'a> {
 }
 
 /// The gate's decision for a `data:` reference.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Decision {
     /// Report `Inline`: nothing further loads from it in this carrier.
     Inline,
@@ -52,6 +58,17 @@ pub(crate) enum Decision {
     ScanCss,
     /// Report `Denied(InlineDocument)`.
     Deny,
+}
+
+impl Decision {
+    /// Strictness: reading the payload as CSS reports more than leaving it inline; denying reports it as unreadable.
+    const fn rank(self) -> u8 {
+        match self {
+            Decision::Inline => 0,
+            Decision::ScanCss => 1,
+            Decision::Deny => 2,
+        }
+    }
 }
 
 /// Longest MIME part (UTF-8 bytes before the comma, tabs and newlines removed) that is read; a longer one is an unknown
@@ -526,24 +543,25 @@ fn inert(essence: &str) -> bool {
     }
 }
 
-/// What the gate does with a `data:` reference in a carrier with load context `load` (module docs).
+/// Fetch "should response to request be blocked due to its MIME type?" for a script-like destination (Fetch Standard
+/// 2.10): `audio/*`, `image/*`, `video/*` and `text/csv` are blocked. HTML "fetch a classic script" does no MIME type check
+/// of its own ("for historical reasons"), so every other type, `text/css` included, is executed.
+fn script_blocked(essence: &str) -> bool {
+    let ty = essence.split_once('/').map_or(essence, |(t, _)| t);
+    matches!(ty, "image" | "audio" | "video") || essence == "text/csv"
+}
+
+/// What the gate does with a `data:` reference in a carrier with load context `load`. The load context is decided first
+/// (what a browser does with the fetched resource); the payload's type only decides within it (module docs).
 pub(crate) fn decide(load: Load, url: &DataUrl<'_>) -> Decision {
     let essence = url.essence.as_str();
-    if essence == "text/css" {
-        return Decision::ScanCss;
-    }
+    let css = essence == "text/css";
     match load {
-        Load::Image | Load::Beacon | Load::None | Load::Base => Decision::Inline,
-        Load::Stylesheet => {
-            if inert(essence) {
-                Decision::ScanCss
-            } else {
-                Decision::Deny
-            }
-        }
+        // Executed or parsed as a non-CSS format whatever the type says: `text/css` is not a style sheet here (R12-F1,
+        // R12-P1). A script carrier keeps `Inline` only for the types Fetch blocks for scripts, a text track only for the
+        // inert media types (no text type is excluded from WebVTT), a manifest or OpenSearch description for none.
         Load::Script => {
-            let ty = essence.split_once('/').map_or(essence, |(t, _)| t);
-            if matches!(ty, "image" | "audio" | "video") || essence == "text/csv" {
+            if script_blocked(essence) {
                 Decision::Inline
             } else {
                 Decision::Deny
@@ -557,14 +575,49 @@ pub(crate) fn decide(load: Load, url: &DataUrl<'_>) -> Decision {
                 Decision::Deny
             }
         }
+        Load::Manifest => Decision::Deny,
+        // Decoded as an image or a font, or nothing is loaded: any payload is inert there; a CSS payload is scanned
+        // anyway (its references are reported).
+        Load::Image | Load::Font | Load::Beacon | Load::None | Load::Base => {
+            if css {
+                Decision::ScanCss
+            } else {
+                Decision::Inline
+            }
+        }
+        // A style sheet reads every type that is inert elsewhere as CSS (quirks mode) and denies the rest.
+        Load::Stylesheet => {
+            if css || inert(essence) {
+                Decision::ScanCss
+            } else {
+                Decision::Deny
+            }
+        }
+        // Documents, resource documents, media: CSS is scanned, inert types stay inline, the rest is denied.
         Load::Document | Load::Resource | Load::Media | Load::Inline => {
-            if inert(essence) {
+            if css {
+                Decision::ScanCss
+            } else if inert(essence) {
                 Decision::Inline
             } else {
                 Decision::Deny
             }
         }
     }
+}
+
+/// The decision for a carrier with several load contexts (`Loads`): every context applies, so the strictest decision wins
+/// (`Inline` < `ScanCss` < `Deny`). No context at all is decided as the strictest single reading, `Load::Script`.
+pub(crate) fn decide_all(loads: Loads, url: &DataUrl<'_>) -> Decision {
+    let mut decision: Option<Decision> = None;
+    for load in loads.iter() {
+        let next = decide(load, url);
+        decision = Some(match decision {
+            Some(prev) if prev.rank() >= next.rank() => prev,
+            _ => next,
+        });
+    }
+    decision.unwrap_or_else(|| decide(Load::Script, url))
 }
 
 #[cfg(test)]

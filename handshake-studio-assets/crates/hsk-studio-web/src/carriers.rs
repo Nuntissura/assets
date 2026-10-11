@@ -1,5 +1,9 @@
 //! The URL carrier inventory: one table of every place a document hands a browser a URL to load (plus the identifiers and
-//! obsolete attributes the gate reads conservatively), derived from the specification indices cited in each row:
+//! obsolete attributes the gate reads conservatively), derived from the specification indices cited in each row. Every row
+//! (and, for `link`, every `rel` keyword: `LINK_TYPES`, `PRELOAD_AS`) names the carrier's load context (`Load`): what a
+//! browser does with the fetched resource. The load context is decided first, the URL's scheme and a `data:` payload's type
+//! only then (`datauri::decide`); a reference to the document itself is harmless only where the context does not read the
+//! document's text (`Load::reads_text`).
 //! - HTML Standard, 9 October 2026: the attribute index (`indices.html` "Attributes", every value type that is a URL, a
 //!   set of URLs or image candidate strings, `srcdoc`, `meta http-equiv=refresh`, `script type=speculationrules`) and the
 //!   obsolete features (`obsolete.html` 16.2 and the `ReflectURL` IDL of 16.3);
@@ -43,33 +47,112 @@ pub(crate) enum Class {
     DataPayload,
 }
 
-/// What a browser does with what it fetches from the carrier: decides how a `data:` payload is treated (`datauri`).
+/// What a browser does with what it fetches from the carrier: decides how a `data:` payload is treated (`datauri`) and
+/// whether a reference to the document itself is harmless (`Load::reads_text`). The load context is decided first; the
+/// URL's scheme and the payload's type only then (`datauri::decide`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Load {
     /// Decoded as an image; SVG runs in secure (static or animated) mode and loads nothing further.
     Image,
+    /// Decoded as a font (`link rel=preload as=font`): font data, never CSS, a document or a script.
+    Font,
     /// Played as audio or video (a playlist type loads its segments).
     Media,
-    /// A text track (WebVTT `STYLE` blocks hold CSS).
+    /// A text track (WebVTT `STYLE` blocks hold CSS; the document itself would be read as WebVTT).
     Track,
     /// Rendered in a nested navigable (`iframe`, `frame`, `object`, `embed`) or navigated to (`a`, `area`, `form`,
     /// refresh).
     Document,
-    /// An SVG resource document (`use`, paint servers, `filter`/`mask`/`clip-path`/`marker` references), or a CSS value
-    /// whose property the scan does not track (the most restrictive CSS reading).
+    /// An SVG resource document (`use`, paint servers, `filter`/`mask`/`clip-path`/`marker` references), a prefetched
+    /// resource, or a CSS value whose property the scan does not track (the most restrictive CSS reading).
     Resource,
-    /// A style sheet (`link`, `@import`; in quirks mode any same-origin type, so a `data:` payload is read as CSS).
+    /// A style sheet (`link rel=stylesheet`, `@import`; in quirks mode any same-origin type, so a `data:` payload is
+    /// read as CSS).
     Stylesheet,
-    /// A script: it executes.
+    /// A script: it executes whatever its type says (Fetch blocks only `audio/*`, `image/*`, `video/*` and `text/csv`
+    /// for script-like destinations).
     Script,
-    /// A fire-and-forget request (`ping`, `attributionsrc`): the response is not used.
+    /// A structured document parsed whatever its type says, whose own URLs a browser loads (`link rel=manifest`:
+    /// JSON; `rel=search`: an OpenSearch description).
+    Manifest,
+    /// A fire-and-forget request or connection hint (`ping`, `attributionsrc`, `rel=preconnect`): the response is not
+    /// used.
     Beacon,
-    /// A base URL for the other references (`base href`, `xml:base`).
+    /// A base URL for the other references (`base href`, `xml:base`, `object codebase`).
     Base,
-    /// An inline document the gate denies unscanned (`srcdoc`, speculation rules).
+    /// An inline document the gate denies unscanned (`srcdoc`, speculation rules, `meta http-equiv=link`).
     Inline,
     /// Not loaded by current engines (identifiers, obsolete attributes); read conservatively.
     None,
+}
+
+impl Load {
+    pub(crate) const ALL: [Load; 13] = [
+        Load::Image,
+        Load::Font,
+        Load::Media,
+        Load::Track,
+        Load::Document,
+        Load::Resource,
+        Load::Stylesheet,
+        Load::Script,
+        Load::Manifest,
+        Load::Beacon,
+        Load::Base,
+        Load::Inline,
+        Load::None,
+    ];
+
+    /// A browser that loads the document's own URL here reads the document's source text as the resource and acts on
+    /// it: as a style sheet (quirks mode: the HTML Standard "Quirk" of the `stylesheet` link type and CSS Cascade 5
+    /// `@import`: a same-origin resource whose type is not a style sheet type is assumed `text/css`), as a classic
+    /// script (HTML "fetch a classic script": no MIME type check), as WebVTT, or as a manifest. A reference to the
+    /// document itself in such a carrier is therefore never harmless (`Collector::decide`).
+    pub(crate) const fn reads_text(self) -> bool {
+        matches!(
+            self,
+            Load::Stylesheet | Load::Script | Load::Track | Load::Manifest
+        )
+    }
+}
+
+/// The load contexts of one carrier: a `link` whose `rel` names several keywords is processed once per keyword, an
+/// animated URL attribute may belong to several candidate elements. Every context applies (the strictest decision wins:
+/// `datauri::decide_all`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Loads(u16);
+
+impl Loads {
+    pub(crate) const EMPTY: Loads = Loads(0);
+
+    pub(crate) const fn of(load: Load) -> Self {
+        Loads(1u16.wrapping_shl(load as u32))
+    }
+
+    #[must_use]
+    pub(crate) const fn and(self, load: Load) -> Self {
+        Loads(self.0 | Loads::of(load).0)
+    }
+
+    #[must_use]
+    pub(crate) const fn union(self, other: Loads) -> Self {
+        Loads(self.0 | other.0)
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub(crate) fn iter(self) -> impl Iterator<Item = Load> {
+        Load::ALL
+            .into_iter()
+            .filter(move |l| self.0 & Loads::of(*l).0 != 0)
+    }
+
+    /// Any context reads the document's text (`Load::reads_text`).
+    pub(crate) fn reads_text(self) -> bool {
+        self.iter().any(Load::reads_text)
+    }
 }
 
 /// How the gate reads the carrier.
@@ -85,6 +168,11 @@ pub(crate) enum Path {
     Css,
     /// `<meta http-equiv=refresh>` content.
     Refresh,
+    /// `<meta http-equiv=link>` content (a `Link` header value; engine-only, legacy): denied as an inline document.
+    MetaLink,
+    /// `<param value>` of a legacy plugin when its `name` is one of `PLUGIN_URL_PARAMS`: a URL handed to a plugin the
+    /// gate cannot read, so it is reported and denied (relative: `NotGranted`, `data:`: `InlineDocument`).
+    PluginParam,
     /// A base URL: reported, and every relative reference of the document is denied `BaseHref`.
     Base,
     /// An inline document: reported `Denied(InlineDocument)`, not scanned.
@@ -298,6 +386,168 @@ pub(crate) const URL_FUNCTIONS: &[&str] = &[
     "-webkit-filter",
 ];
 
+/// How a `link` keyword loads its `href`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinkLoad {
+    Fixed(Load),
+    /// `rel=preload`: the `as` attribute decides (`PRELOAD_AS`).
+    ByAs,
+}
+
+/// The `link` keywords that load their `href` (HTML Standard 9 Oct 2026, links.html 4.6.8: "External Resource" types
+/// `dns-prefetch icon manifest modulepreload pingback preconnect prefetch preload stylesheet`), the load context each one
+/// fetches with, and the source. Every other keyword is a hyperlink, an annotation or the internal `expect`: nothing is
+/// fetched until a navigation, so the `href` is read as `Load::Document`. A `link` with several keywords is processed
+/// once per keyword (all contexts apply, `Loads`). Engine-only keywords are marked; their load is read conservatively.
+pub(crate) const LINK_TYPES: &[(&str, LinkLoad, &str)] = &[
+    (
+        "stylesheet",
+        LinkLoad::Fixed(Load::Stylesheet),
+        "HTML 4.6.8.23 stylesheet (fetch and process: Quirk paragraph, quirks-mode same-origin resources are assumed text/css)",
+    ),
+    (
+        "icon",
+        LinkLoad::Fixed(Load::Image),
+        "HTML 4.6.8.9 icon (linked resource fetch setup steps: destination \"image\")",
+    ),
+    (
+        "apple-touch-icon",
+        LinkLoad::Fixed(Load::Image),
+        "HTML semantics.html registered extension apple-touch-icon (an icon)",
+    ),
+    (
+        "apple-touch-icon-precomposed",
+        LinkLoad::Fixed(Load::Image),
+        "engine-only (WebKit): an icon",
+    ),
+    (
+        "mask-icon",
+        LinkLoad::Fixed(Load::Image),
+        "HTML semantics.html registered extension mask-icon (an icon)",
+    ),
+    (
+        "fluid-icon",
+        LinkLoad::Fixed(Load::Image),
+        "engine-only: an icon",
+    ),
+    (
+        "manifest",
+        LinkLoad::Fixed(Load::Manifest),
+        "HTML 4.6.8.11 manifest (fetch setup: destination \"manifest\", mode cors; parsed as JSON whatever the type)",
+    ),
+    (
+        "payment-method-manifest",
+        LinkLoad::Fixed(Load::Manifest),
+        "engine-only (payment handlers): a JSON manifest",
+    ),
+    (
+        "search",
+        LinkLoad::Fixed(Load::Manifest),
+        "HTML 4.6.8.22 search (OpenSearch description documents are autodiscovered: XML parsed whatever the type, its URLs load)",
+    ),
+    (
+        "modulepreload",
+        LinkLoad::Fixed(Load::Script),
+        "HTML 4.6.8.12 modulepreload (a module script fetch: script-like destination)",
+    ),
+    (
+        "serviceworker",
+        LinkLoad::Fixed(Load::Script),
+        "engine-only (historical): a service worker script",
+    ),
+    (
+        "preload",
+        LinkLoad::ByAs,
+        "HTML 4.6.8.20 preload (the as attribute is the destination)",
+    ),
+    (
+        "prefetch",
+        LinkLoad::Fixed(Load::Resource),
+        "HTML 4.6.8.19 prefetch (cached for a followup navigation)",
+    ),
+    (
+        "compression-dictionary",
+        LinkLoad::Fixed(Load::Resource),
+        "engine-only (Compression Dictionary Transport): a binary dictionary",
+    ),
+    (
+        "dns-prefetch",
+        LinkLoad::Fixed(Load::Beacon),
+        "HTML 4.6.8.5 dns-prefetch (resolves the origin; nothing is fetched)",
+    ),
+    (
+        "preconnect",
+        LinkLoad::Fixed(Load::Beacon),
+        "HTML 4.6.8.18 preconnect (connects to the origin; nothing is fetched)",
+    ),
+];
+
+/// The preload destinations of `link rel=preload as=...`: HTML semantics.html (`as`: the preload destinations `fetch font
+/// image script style track` and the module preload destinations, the script-like ones) and the Fetch destinations the
+/// engines accept in addition (`audio video document embed object`: engine-only, read by their destination). A missing or
+/// unknown value fetches nothing (HTML: an error for preload links) and is read as `Load::Resource`.
+pub(crate) const PRELOAD_AS: &[(&str, Load)] = &[
+    ("fetch", Load::Resource),
+    ("font", Load::Font),
+    ("image", Load::Image),
+    ("script", Load::Script),
+    ("style", Load::Stylesheet),
+    ("track", Load::Track),
+    ("worker", Load::Script),
+    ("sharedworker", Load::Script),
+    ("serviceworker", Load::Script),
+    ("audioworklet", Load::Script),
+    ("paintworklet", Load::Script),
+    ("audio", Load::Media),
+    ("video", Load::Media),
+    ("document", Load::Document),
+    ("embed", Load::Document),
+    ("object", Load::Document),
+];
+
+/// `param name` values whose `value` is a URL a legacy plugin loads (Blink `HTMLObjectElement::ParametersForPlugin` hands
+/// every `param` and `MapDataParamToSrc` to the plugin; Gecko `nsObjectLoadingContent`; the HTML Standard keeps `param`
+/// only in obsolete.html as `HTMLParamElement`). Engine-only: the value is reported and denied.
+pub(crate) const PLUGIN_URL_PARAMS: &[&str] = &["src", "movie", "code", "url", "data", "filename"];
+
+/// HTML "ASCII whitespace": space, tab, LF, FF, CR.
+fn is_ascii_ws(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\u{c}' | '\r')
+}
+
+/// The load contexts of a `link` element's `href` from its `rel` and `as` values (as the attributes read: decoded). The
+/// keywords are an ASCII case-insensitive set of ASCII-whitespace separated tokens; a `link` with none of the loading
+/// keywords is a hyperlink (`Load::Document`).
+pub(crate) fn link_loads(rel: &str, as_value: Option<&str>) -> Loads {
+    let mut loads = Loads::EMPTY;
+    for token in rel.split(is_ascii_ws).filter(|t| !t.is_empty()) {
+        let token = token.to_ascii_lowercase();
+        if let Some((_, how, _)) = LINK_TYPES.iter().find(|(rel, _, _)| *rel == token) {
+            loads = loads.and(match how {
+                LinkLoad::Fixed(load) => *load,
+                LinkLoad::ByAs => preload_load(as_value),
+            });
+        }
+    }
+    if loads.is_empty() {
+        Loads::of(Load::Document)
+    } else {
+        loads
+    }
+}
+
+/// The load context of `rel=preload` with this `as` value (stripped of ASCII whitespace: a browser that does not strip
+/// would fetch nothing, one that does is read the same way).
+fn preload_load(as_value: Option<&str>) -> Load {
+    let value = as_value
+        .map(|v| v.trim_matches(is_ascii_ws).to_ascii_lowercase())
+        .unwrap_or_default();
+    PRELOAD_AS
+        .iter()
+        .find(|(name, _)| *name == value)
+        .map_or(Load::Resource, |(_, load)| *load)
+}
+
 pub(crate) const CARRIERS: &[Carrier] = &[
     // ----- HTML attributes (specific elements first: the first matching row is the dispatch) -------------------------
     Carrier {
@@ -314,8 +564,9 @@ pub(crate) const CARRIERS: &[Carrier] = &[
         elements: &["link"],
         names: &["href"],
         path: Path::Url,
-        load: Load::Stylesheet,
-        source: HTML,
+        // The default for a `link` without a loading keyword (a hyperlink); `rel` and `as` decide (`link_loads`, `LINK_TYPES`).
+        load: Load::Document,
+        source: "HTML Standard (9 Oct 2026) indices.html href (link); the load context follows rel and as (links.html 4.6.8: LINK_TYPES, PRELOAD_AS)",
         fixture: "html_url",
     },
     Carrier {
@@ -464,6 +715,15 @@ pub(crate) const CARRIERS: &[Carrier] = &[
     },
     Carrier {
         class: Class::HtmlAttribute,
+        elements: &["meta"],
+        names: &["content"],
+        path: Path::MetaLink,
+        load: Load::Inline,
+        source: "engine-only, denied: <meta http-equiv=link content=\"<url>; rel=...\"> is not an HTML Standard pragma directive (4.2.5.3 lists content-language, content-type, default-style, refresh, set-cookie, x-ua-compatible, content-security-policy); legacy engines processed it as a Link header (current Gecko reads the Link header only from the HTTP channel: nsContentSink.cpp, HTMLMetaElement.cpp)",
+        fixture: "meta_link",
+    },
+    Carrier {
+        class: Class::HtmlAttribute,
         elements: &[],
         names: &["itemid", "itemtype", "itemprop"],
         path: Path::NoLoad,
@@ -501,11 +761,29 @@ pub(crate) const CARRIERS: &[Carrier] = &[
     Carrier {
         class: Class::HtmlAttribute,
         elements: &["object"],
-        names: &["codebase", "classid"],
+        names: &["classid"],
         path: Path::Url,
         load: Load::None,
         source: OBSOLETE,
         fixture: "html_url",
+    },
+    Carrier {
+        class: Class::HtmlAttribute,
+        elements: &["object"],
+        names: &["codebase"],
+        path: Path::Base,
+        load: Load::Base,
+        source: "HTML Standard (9 Oct 2026) obsolete.html 16.3 HTMLObjectElement codeBase (ReflectURL); engine-only as a base: Gecko nsObjectLoadingContent resolves the object's data against it (pref dom.object_embed.codebase.enabled), Blink treats it as a URL attribute; denied as a base like base href",
+        fixture: "object_codebase",
+    },
+    Carrier {
+        class: Class::HtmlAttribute,
+        elements: &["param"],
+        names: &["value"],
+        path: Path::PluginParam,
+        load: Load::Document,
+        source: "HTML Standard (9 Oct 2026) obsolete.html HTMLParamElement (name, value); engine-only, denied: Blink HTMLObjectElement::ParametersForPlugin hands every param (data mapped to src) to the plugin, which loads it; read only when name is one of PLUGIN_URL_PARAMS",
+        fixture: "plugin_param",
     },
     Carrier {
         class: Class::HtmlAttribute,
@@ -587,6 +865,15 @@ pub(crate) const CARRIERS: &[Carrier] = &[
         path: Path::Url,
         load: Load::Script,
         source: SVG_ATTRS,
+        fixture: "svg_url",
+    },
+    Carrier {
+        class: Class::SvgAttribute,
+        elements: &["mglyph"],
+        names: &["src"],
+        path: Path::Url,
+        load: Load::Image,
+        source: "MathML 3 (W3C Recommendation) 3.2.1.2 mglyph src (URI, required: the glyph image); not in MathML Core, engine-only (Gecko renders it): read as an image URL",
         fixture: "svg_url",
     },
     Carrier {
@@ -805,23 +1092,76 @@ pub(crate) const CARRIERS: &[Carrier] = &[
         source: "Fetch data: URL processor; types no carrier turns into a document, script, playlist or track: inline (style sheet carriers read them as CSS, quirks mode)",
         fixture: "data_inert",
     },
+    Carrier {
+        class: Class::DataPayload,
+        elements: &[],
+        names: &[
+            "text/css",
+            "text/plain",
+            "text/html",
+            "text/javascript",
+            "application/json",
+            "application/octet-stream",
+        ],
+        path: Path::Data,
+        load: Load::Script,
+        source: "Fetch Standard 2.10 should response to request be blocked due to its MIME type (script-like destinations block only audio/*, image/*, video/* and text/csv); HTML \"fetch a classic script\" has no MIME type check: a script carrier executes every other type, text/css included (script src, svg script href, modulepreload, preload as=script)",
+        fixture: "data_script",
+    },
+    Carrier {
+        class: Class::DataPayload,
+        elements: &[],
+        names: &["text/css", "text/plain", "text/vtt", "image/svg+xml"],
+        path: Path::Data,
+        load: Load::Track,
+        source: "HTML track element / WebVTT: a text track is read as WebVTT whatever the type could be (a STYLE block holds CSS that the CSS scan of a text/css reading would comment out)",
+        fixture: "data_track",
+    },
+    Carrier {
+        class: Class::DataPayload,
+        elements: &[],
+        names: &["text/css", "text/plain", "image/png", "application/json"],
+        path: Path::Data,
+        load: Load::Manifest,
+        source: "HTML 4.6.8.11 manifest, 4.6.8.22 search (OpenSearch): a structured document parsed whatever the type, whose own URLs load and cannot be scanned: every data: payload denied",
+        fixture: "data_manifest",
+    },
+    Carrier {
+        class: Class::DataPayload,
+        elements: &[],
+        names: &["image/png", "font/woff2", "text/html", "text/plain"],
+        path: Path::Data,
+        load: Load::Font,
+        source: "HTML 4.6.8.9 icon (destination image), 4.6.8.20 preload as=font|image: decoded as an image or a font, never as CSS (a binary payload is not tokenized)",
+        fixture: "data_link_inert",
+    },
 ];
 
 fn element_matches(row: &Carrier, tag: &str) -> bool {
     row.elements.is_empty() || row.elements.contains(&tag)
 }
 
-/// The path and load context of attribute `name` (lower-case) on element `tag` (lower-case local name): the first
-/// attribute row naming both.
-pub(crate) fn attribute_path(tag: &str, name: &str) -> Option<(Path, Load)> {
+/// Every attribute row naming attribute `name` (lower-case) on element `tag` (lower-case local name), in table order. An
+/// attribute has several rows only where the value decides (`meta content`: `http-equiv` refresh or link); the dispatch
+/// applies the row whose gate holds.
+pub(crate) fn attribute_paths<'a>(
+    tag: &'a str,
+    name: &'a str,
+) -> impl Iterator<Item = (Path, Load)> + 'a {
     CARRIERS
         .iter()
-        .find(|row| {
+        .filter(move |row| {
             matches!(row.class, Class::HtmlAttribute | Class::SvgAttribute)
                 && element_matches(row, tag)
                 && row.names.contains(&name)
         })
         .map(|row| (row.path, row.load))
+}
+
+/// The path and load context of attribute `name` (lower-case) on element `tag` (lower-case local name): the first
+/// attribute row naming both.
+pub(crate) fn attribute_path(tag: &str, name: &str) -> Option<(Path, Load)> {
+    attribute_paths(tag, name).next()
 }
 
 /// A CSS property in the inventory (any CSS property row, a presentation attribute, or `style`): an animation of it reads

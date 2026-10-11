@@ -76,6 +76,7 @@ fn svg_element(el: &str, name: &str, value: &str) -> String {
     match el {
         "feimage" => format!("<svg><filter><feImage {a}/></filter></svg>"),
         "mi" => format!("<math><mi {a}></mi></math>"),
+        "mglyph" => format!("<math><mi><mglyph {a}/></mi></math>"),
         el => format!("<svg><{el} {a}/></svg>"),
     }
 }
@@ -308,6 +309,108 @@ fn fixture(row: &Carrier) -> Option<Vec<Case>> {
                 }
             }
         }
+        // R12-F1: a script carrier executes every type Fetch 2.10 does not block for scripts, `text/css` included.
+        "data_script" => {
+            for n in row.names {
+                let url = format!("data:{n},fetch('{EVIL}')");
+                for doc in [
+                    html_element("script", "src", &url),
+                    svg_element("script", "href", &url),
+                    svg_element("script", "xlink:href", &url),
+                    format!("<link rel=\"modulepreload\" href=\"{}\">", attr(&url)),
+                    format!("<link rel=\"preload\" as=\"script\" href=\"{}\">", attr(&url)),
+                ] {
+                    out.push(Case {
+                        doc,
+                        expect: Expect::Reported(url.clone(), INLINE_DOCUMENT),
+                    });
+                }
+            }
+        }
+        // R12-P1: a text track is read as WebVTT whatever the type says.
+        "data_track" => {
+            for n in row.names {
+                let url = format!("data:{n},WEBVTT");
+                for doc in [
+                    html_element("track", "src", &url),
+                    format!("<link rel=\"preload\" as=\"track\" href=\"{}\">", attr(&url)),
+                ] {
+                    out.push(Case {
+                        doc,
+                        expect: Expect::Reported(url.clone(), INLINE_DOCUMENT),
+                    });
+                }
+            }
+        }
+        // R12-P3: a manifest or OpenSearch description is parsed whatever the type: every payload is denied.
+        "data_manifest" => {
+            for n in row.names {
+                let url = format!("data:{n},x");
+                for rel in ["manifest", "search", "payment-method-manifest"] {
+                    out.push(Case {
+                        doc: format!("<link rel=\"{rel}\" href=\"{}\">", attr(&url)),
+                        expect: Expect::Reported(url.clone(), INLINE_DOCUMENT),
+                    });
+                }
+            }
+        }
+        // R12-P3: an icon or a preloaded font or image is decoded as such, never read as CSS or as a document.
+        "data_link_inert" => {
+            for n in row.names {
+                let url = format!("data:{n},x");
+                for (rel, as_attr) in [
+                    ("icon", ""),
+                    ("apple-touch-icon", ""),
+                    ("preload", " as=\"font\""),
+                    ("preload", " as=\"image\""),
+                ] {
+                    out.push(Case {
+                        doc: format!("<link rel=\"{rel}\"{as_attr} href=\"{}\">", attr(&url)),
+                        expect: Expect::Reported(url.clone(), "Inline"),
+                    });
+                }
+            }
+        }
+        // R12-P2: `object codebase` is a base like `base href`.
+        "object_codebase" => {
+            out.push(evil(html_element("object", "codebase", EVIL)));
+            out.push(Case {
+                doc: "<object codebase=\"x/\" data=\"a.png\"></object><img src=\"a.png\">".to_owned(),
+                expect: Expect::Reported("a.png".to_owned(), "Denied(BaseHref)"),
+            });
+        }
+        // R12-P2: `param value` is a plugin URL for the names a plugin loads; any other name is a plain value.
+        "plugin_param" => {
+            for n in PLUGIN_URL_PARAMS {
+                out.push(evil(format!(
+                    "<object><param name=\"{n}\" value=\"{EVIL}\"></object>"
+                )));
+                out.push(Case {
+                    doc: format!("<object><param name=\"{n}\" value=\"a.swf\"></object>"),
+                    expect: Expect::Reported("a.swf".to_owned(), "Denied(NotGranted)"),
+                });
+                out.push(Case {
+                    doc: format!("<object><param name=\"{n}\" value=\"data:text/plain,x\"></object>"),
+                    expect: Expect::Reported("data:text/plain,x".to_owned(), INLINE_DOCUMENT),
+                });
+            }
+            out.push(Case {
+                doc: format!("<object><param name=\"quality\" value=\"{EVIL}\"></object>"),
+                expect: Expect::NothingEvil,
+            });
+        }
+        // R12-P2: `<meta http-equiv=link>` content is a Link header value (engine-only): denied unread.
+        "meta_link" => {
+            let content = format!("<{EVIL}>; rel=stylesheet");
+            out.push(Case {
+                doc: format!("<meta http-equiv=\"Link\" content=\"{content}\">"),
+                expect: Expect::Reported(content, INLINE_DOCUMENT),
+            });
+            out.push(Case {
+                doc: format!("<meta name=\"link\" content=\"<{EVIL}>; rel=stylesheet\">"),
+                expect: Expect::NothingEvil,
+            });
+        }
         _ => return None,
     }
     Some(out)
@@ -335,6 +438,13 @@ const FIXTURES: &[&str] = &[
     "data_css",
     "data_document",
     "data_inert",
+    "data_script",
+    "data_track",
+    "data_manifest",
+    "data_link_inert",
+    "object_codebase",
+    "plugin_param",
+    "meta_link",
 ];
 
 /// The dispatch reaches the row's path (a later row can be shadowed by an earlier one with the same element and name).
@@ -345,7 +455,12 @@ fn dispatch_reaches(row: &Carrier) -> Result<(), String> {
             for el in els {
                 for n in row.names {
                     let got = attribute_path(el, n);
-                    if got != Some((row.path, row.load)) {
+                    let mine = (row.path, row.load);
+                    // `meta content` has two rows (refresh, link) told apart by `http-equiv`: the dispatch applies the
+                    // first row whose gate holds, so the link row is reached through `attribute_paths`.
+                    let gated =
+                        row.path == Path::MetaLink && attribute_paths(el, n).any(|got| got == mine);
+                    if got != Some(mine) && !gated {
                         return Err(format!("attribute_path({el:?}, {n:?}) = {got:?}"));
                     }
                 }
@@ -500,6 +615,169 @@ fn inventory_covers_every_source() {
     for row in CARRIERS {
         for n in row.names.iter().chain(row.elements) {
             assert_eq!(*n, n.to_ascii_lowercase(), "{n}");
+        }
+    }
+}
+
+/// R12-P3: a `link` is loaded by its `rel` keywords (an ASCII case-insensitive set of ASCII-whitespace separated tokens) and,
+/// for `preload`, `as`; every loading keyword applies; a `link` with none is a hyperlink. Each expectation is written out
+/// from HTML 4.6.8 (the keyword's fetch destination), not computed from the table.
+#[test]
+fn link_keywords_choose_the_load_contexts() {
+    let one = Loads::of;
+    let rel = |rel: &str, as_value: Option<&str>| link_loads(rel, as_value);
+    // style sheets, icons, manifests, scripts
+    assert_eq!(rel("stylesheet", None), one(Load::Stylesheet));
+    assert_eq!(rel("STYLESHEET", None), one(Load::Stylesheet));
+    assert_eq!(
+        rel(
+            " 	StyleSheet
+",
+            None
+        ),
+        one(Load::Stylesheet)
+    );
+    assert_eq!(rel("alternate stylesheet", None), one(Load::Stylesheet));
+    assert_eq!(rel("stylesheet", Some("script")), one(Load::Stylesheet));
+    for icon in [
+        "icon",
+        "shortcut icon",
+        "apple-touch-icon",
+        "mask-icon",
+        "Icon",
+    ] {
+        assert_eq!(rel(icon, None), one(Load::Image), "{icon}");
+    }
+    assert_eq!(rel("manifest", None), one(Load::Manifest));
+    assert_eq!(rel("search", None), one(Load::Manifest));
+    assert_eq!(rel("modulepreload", None), one(Load::Script));
+    assert_eq!(rel("modulepreload", Some("style")), one(Load::Script));
+    // preload: the as attribute is the destination (case-insensitive, stripped); missing or unknown fetches nothing
+    for (as_value, expected) in [
+        ("style", Load::Stylesheet),
+        ("script", Load::Script),
+        ("font", Load::Font),
+        ("image", Load::Image),
+        ("track", Load::Track),
+        ("fetch", Load::Resource),
+        ("worker", Load::Script),
+        ("sharedworker", Load::Script),
+        ("audio", Load::Media),
+        ("video", Load::Media),
+        ("document", Load::Document),
+        ("embed", Load::Document),
+        ("object", Load::Document),
+        ("FONT", Load::Font),
+        (" Style	", Load::Stylesheet),
+        ("", Load::Resource),
+        ("styles", Load::Resource),
+        ("bogus", Load::Resource),
+    ] {
+        assert_eq!(
+            rel("preload", Some(as_value)),
+            one(expected),
+            "as={as_value:?}"
+        );
+    }
+    assert_eq!(rel("preload", None), one(Load::Resource));
+    // connection hints and prefetching
+    assert_eq!(rel("preconnect", None), one(Load::Beacon));
+    assert_eq!(rel("dns-prefetch", None), one(Load::Beacon));
+    assert_eq!(rel("prefetch", None), one(Load::Resource));
+    // hyperlinks, annotations, unknown and empty values: nothing is fetched until a navigation
+    for hyperlink in [
+        "canonical",
+        "alternate",
+        "author",
+        "next",
+        "nofollow",
+        "expect",
+        "bogus",
+        "",
+        "  ",
+    ] {
+        assert_eq!(rel(hyperlink, None), one(Load::Document), "{hyperlink:?}");
+    }
+    // several keywords: each applies
+    assert_eq!(
+        rel("icon stylesheet", None),
+        one(Load::Image).and(Load::Stylesheet)
+    );
+    assert_eq!(
+        rel("PRELOAD	icon  canonical", Some("font")),
+        one(Load::Font).and(Load::Image)
+    );
+    assert_eq!(
+        rel("stylesheet modulepreload", None),
+        one(Load::Stylesheet).and(Load::Script)
+    );
+    // not a keyword: a longer or prefixed token
+    assert_eq!(rel("stylesheets", None), one(Load::Document));
+    assert_eq!(rel("x-stylesheet", None), one(Load::Document));
+    // the table: lower-case unique keywords, each with its source
+    for (i, (name, _, source)) in LINK_TYPES.iter().enumerate() {
+        assert_eq!(*name, name.to_ascii_lowercase());
+        assert!(!source.is_empty(), "{name}");
+        assert!(
+            LINK_TYPES[i + 1..].iter().all(|(n, _, _)| n != name),
+            "{name}"
+        );
+    }
+    for (name, _) in PRELOAD_AS {
+        assert_eq!(*name, name.to_ascii_lowercase());
+    }
+}
+
+#[test]
+fn load_sets_hold_every_context_and_read_text_only_where_the_document_is_the_resource() {
+    let mut all = Loads::EMPTY;
+    assert!(all.is_empty());
+    for load in Load::ALL {
+        let one = Loads::of(load);
+        assert_eq!(one.iter().collect::<Vec<_>>(), [load]);
+        assert!(!one.is_empty());
+        all = all.and(load);
+        // Style sheet, script, text track and manifest read the document's own text; no other context does.
+        assert_eq!(
+            one.reads_text(),
+            matches!(
+                load,
+                Load::Stylesheet | Load::Script | Load::Track | Load::Manifest
+            ),
+            "{load:?}"
+        );
+    }
+    assert_eq!(all.iter().count(), Load::ALL.len());
+    assert!(all.reads_text());
+    assert_eq!(all.union(Loads::EMPTY), all);
+    assert!(!Loads::of(Load::Image).and(Load::Document).reads_text());
+    assert!(Loads::of(Load::Image).and(Load::Stylesheet).reads_text());
+}
+
+/// Two rows may share an element and an attribute only where the value of another attribute decides (`meta content`:
+/// `http-equiv` refresh or link); the specific-before-generic order of the others is what `dispatch_reaches` checks.
+#[test]
+fn only_http_equiv_rows_share_an_element_and_name() {
+    for (i, a) in CARRIERS.iter().enumerate() {
+        for b in &CARRIERS[i + 1..] {
+            if !matches!(a.class, Class::HtmlAttribute | Class::SvgAttribute)
+                || !matches!(b.class, Class::HtmlAttribute | Class::SvgAttribute)
+            {
+                continue;
+            }
+            for el in a.elements {
+                if !b.elements.contains(el) {
+                    continue;
+                }
+                for n in a.names {
+                    if b.names.contains(n) {
+                        assert_eq!(
+                            (*el, *n, a.path, b.path),
+                            ("meta", "content", Path::Refresh, Path::MetaLink)
+                        );
+                    }
+                }
+            }
         }
     }
 }
