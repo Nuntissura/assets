@@ -454,8 +454,12 @@ impl Collector<'_> {
         })?;
         for r in found {
             match r.kind {
-                RefKind::Url => self.reference(node, source.clone(), &r.value, false, locate(&r.span))?,
-                RefKind::Bad => self.reference(node, source.clone(), &r.value, true, locate(&r.span))?,
+                RefKind::Url => {
+                    self.reference(node, source.clone(), &r.value, false, locate(&r.span))?
+                }
+                RefKind::Bad => {
+                    self.reference(node, source.clone(), &r.value, true, locate(&r.span))?
+                }
                 RefKind::Computed => self.push(
                     node,
                     source.clone(),

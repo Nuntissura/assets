@@ -42,7 +42,135 @@ pub enum Theme {
     /// Mixed documents with 1-3 random edits (deleted characters, inserted delimiter tokens, copied chunks): malformed
     /// markup that exercises the tokenizer's error paths.
     Fuzz,
+    /// Hostile CSS in every carrier the asset gate reads (style attributes on HTML and SVG elements, HTML and SVG style
+    /// bodies, SVG presentation attributes): number/dot/exponent prefixes, escapes, comments, quotes, CDO/CDC, non-ASCII
+    /// code points, CR/FF/CR LF, character references, URL functions, image-set/src/image strings, @import and
+    /// substitution functions. Compared by the gate-level `css-urls` check.
+    Css,
 }
+
+const CSS_TOKENS: &[&str] = &[
+    "1.",
+    "+1.",
+    "-1.",
+    ".5",
+    "1e3",
+    "1e+",
+    "1E-2",
+    "2.5e",
+    "1",
+    "@",
+    "#",
+    "<!--",
+    "-->",
+    "<!-",
+    "--",
+    "-",
+    "+",
+    ".",
+    "u+1f",
+    "U+?",
+    "\\75",
+    "\\72 ",
+    "\\69",
+    "\\",
+    "\\\n",
+    "\\)",
+    "\\'",
+    "/*",
+    "*/",
+    "/**/",
+    "'",
+    "\"",
+    "(",
+    ")",
+    "[",
+    "]",
+    "{",
+    "}",
+    ";",
+    ":",
+    ",",
+    "%",
+    "!",
+    "\u{a0}",
+    "\u{80}",
+    "\u{200b}",
+    "é",
+    "\u{b7}",
+    "&#13;",
+    "&#12;",
+    "&quot;",
+    "&amp;",
+    "\r",
+    "\r\n",
+    "\u{c}",
+    "a",
+    "x",
+    "red",
+    "background",
+    "1x",
+    "2x",
+    "--u",
+];
+const CSS_FUNCTIONS: &[&str] = &[
+    "url(",
+    "URL(",
+    "u\\72l(",
+    "\\75rl(",
+    "url( ",
+    "url(\"",
+    "url('",
+    "url(  '",
+    "src(",
+    "SRC(",
+    "image-set(",
+    "-webkit-image-set(",
+    "image(",
+    "cross-fade(",
+    "type(",
+    "var(",
+    "attr(",
+    "env(",
+    "--f(",
+    "if(",
+    "linear-gradient(",
+    "calc(",
+    "rgb(",
+    "x(",
+    "-url(",
+    "@import ",
+    "@IMPORT",
+    "@\\69mport ",
+    "@media ",
+];
+const CSS_URLS: &[&str] = &[
+    "https://e.invalid/a.png",
+    "//e.invalid/b",
+    "c.png",
+    "ht\\74p://e.invalid/x",
+    "\\68ttp://e.invalid/y",
+    "'https://e.invalid/s'",
+    "\"//e.invalid/t\"",
+    "'u.png'",
+    "\"\"",
+    "javascript:x",
+    "data:x",
+    "#frag",
+    "d e",
+];
+const CSS_SPACE: &[&str] = &[" ", "  ", "\n", "\t"];
+const PRESENTATION: &[&str] = &[
+    "fill",
+    "stroke",
+    "mask",
+    "filter",
+    "cursor",
+    "clip-path",
+    "marker-start",
+    "marker-mid",
+    "marker-end",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ctx {
@@ -280,6 +408,9 @@ impl Generator {
     }
 
     pub fn document(&mut self) -> String {
+        if self.theme == Theme::Css {
+            return self.css_document();
+        }
         let mut out = String::new();
         let items = 1 + self.rng.below(4);
         for _ in 0..items {
@@ -287,6 +418,57 @@ impl Generator {
         }
         if self.theme == Theme::Fuzz {
             self.mutate(&mut out);
+        }
+        out
+    }
+
+    /// 2-16 CSS fragments (tokens, URL functions, URLs, whitespace).
+    fn css_text(&mut self) -> String {
+        let mut s = String::new();
+        for _ in 0..(2 + self.rng.below(15)) {
+            let r = self.rng.below(100);
+            s.push_str(if r < 30 {
+                self.rng.pick(CSS_FUNCTIONS)
+            } else if r < 45 {
+                self.rng.pick(CSS_URLS)
+            } else if r < 88 {
+                self.rng.pick(CSS_TOKENS)
+            } else {
+                self.rng.pick(CSS_SPACE)
+            });
+        }
+        s
+    }
+
+    /// 1-3 CSS carriers. Attribute values escape `"` only (character references in the fragments decode in attributes and
+    /// SVG text, never in an HTML style body); SVG style text escapes `<`; no fragment can spell `</style`.
+    fn css_document(&mut self) -> String {
+        let mut out = String::new();
+        for _ in 0..(1 + self.rng.below(3)) {
+            let css = self.css_text();
+            let attr = css.replace('"', "&quot;");
+            match self.rng.below(7) {
+                0 | 1 => {
+                    let tag = *self.rng.pick(&["div", "span", "b", "em", "section"]);
+                    out.push_str(&format!("<{tag} style=\"{attr}\">x</{tag}>"));
+                }
+                2 => out.push_str(&format!("<style>{css}</style>")),
+                3 => out.push_str(&format!(
+                    "<style>.a{{{css}}} .b{{background:url(//e.invalid/after)}}</style>"
+                )),
+                4 => out.push_str(&format!(
+                    "<svg><style>{}</style></svg>",
+                    css.replace('<', "&lt;")
+                )),
+                5 => {
+                    let name = *self.rng.pick(PRESENTATION);
+                    let el = *self.rng.pick(&["rect", "g", "path"]);
+                    out.push_str(&format!("<svg><{el} {name}=\"{attr}\"/></svg>"));
+                }
+                _ => out.push_str(&format!(
+                    "<svg><g style=\"{attr}\"></g></svg><div style=\"a:b;{attr}\"></div>"
+                )),
+            }
         }
         out
     }
@@ -575,7 +757,7 @@ impl Generator {
     fn html_element(&mut self, out: &mut String, depth: usize, in_a: bool) {
         let weights: [u32; 9] = match self.theme {
             // container, void, raw, rcdata, noscript, svg, math, pre, a
-            Theme::Mixed | Theme::Fuzz => [30, 10, 18, 8, 4, 12, 8, 4, 4],
+            Theme::Mixed | Theme::Fuzz | Theme::Css => [30, 10, 18, 8, 4, 12, 8, 4, 4],
             Theme::Namespaces => [10, 3, 10, 3, 2, 36, 30, 2, 2],
             Theme::RawText => [10, 2, 40, 18, 8, 6, 4, 6, 0],
             Theme::CharRefs => [26, 14, 12, 16, 2, 10, 8, 4, 8],

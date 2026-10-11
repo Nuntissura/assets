@@ -10,7 +10,11 @@
 //! the tokenizer builds them, values as the crate decodes them), decoded text, RCDATA, RAWTEXT and script bodies,
 //! comments and CDATA sections (the crate's own character data from `WebDoc::view`), bogus comments (opaque in the crate,
 //! preprocessed here), and per `style` element the text a browser's CSS parser reads against the crate's
-//! `WebDoc::stylesheet_text` (the text its asset scan and preview interpret; signature `style-sheet-text`). The scripting
+//! `WebDoc::stylesheet_text` (the text its asset scan and preview interpret; signature `style-sheet-text`), and per CSS
+//! carrier (each `style` / SVG presentation attribute, each style sheet) the URLs the crate's `collect_assets` reports
+//! against the URLs `css_reference` (a separately written CSS Syntax 3 reading over html5ever's text) finds there
+//! (signature `css-urls`; no licensed CSS reference tokenizer is available as a dev-dependency: cssparser is MPL-2.0,
+//! which the workspace licence gate refuses). The scripting
 //! enabled reading of `noscript` is compared as the preprocessed source slice. Not expressible through the public model: attribute namespaces and
 //! prefixes, SVG tag and attribute case adjustment (compared lowercase), the markup reading of `noscript` under scripting
 //! (compared as the source slice). Inputs with an authored `html`, `head` or `body` element are compared against a whole
@@ -23,6 +27,7 @@
 //! test in this target is expected to pass. `HSK_DIFFTEST_SCALE=<n>` multiplies the generated corpora for soak runs.
 
 mod corpus;
+mod css_reference;
 mod events;
 mod generator;
 mod harness;
@@ -644,5 +649,21 @@ fn generated_null_and_cr_noise() {
 fn whole_documents_with_explicit_structure() {
     bounded_case("whole_documents_with_explicit_structure", || {
         run_cases("documents", corpus::documents(), Mode::Document, 12)
+    });
+}
+
+/// R10 pre-review R10-F1 / R10-P1 (lead decision 2026-10-11T15:25:17Z): every URL a browser loads from CSS, in every
+/// carrier, is reported by the gate exactly as the reference CSS reading finds it (signature `css-urls`).
+#[test]
+fn css_url_payloads_read_like_the_reference() {
+    bounded_case("css_url_payloads_read_like_the_reference", || {
+        run_cases("css_urls", corpus::css_urls(), Mode::Fragment, 36)
+    });
+}
+
+#[test]
+fn generated_css_urls() {
+    bounded_case("generated_css_urls", || {
+        generated("generated_css", Theme::Css, 70_001, 3000, 2400)
     });
 }

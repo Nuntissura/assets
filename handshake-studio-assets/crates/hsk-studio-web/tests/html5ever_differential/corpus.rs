@@ -1090,3 +1090,55 @@ pub fn documents() -> Cases {
         ],
     )
 }
+
+/// CSS in every carrier the asset gate reads (CSS Syntax 3, W3C CRD 2026-10-01, 4.3; CSS Values 4 4.5; CSS Images 4 2.4,
+/// 2.5, Appendix A): R10-F1 number/dot prefixes, CDO/CDC, comments and quotes inside url(, bad urls after whitespace, CR,
+/// FF and quotes, escaped names and schemes, image-set/src/image/@import strings, computed URLs, non-ASCII ident code
+/// points, character references that decode before CSS. Compared by the gate-level `css-urls` check.
+pub fn css_urls() -> Cases {
+    labelled(
+        "css",
+        &[
+            "<div style=\"a:1.url(/*);background:url(https://evil.example/p.png)\"></div>",
+            "<style>.a{x:1.url(/*)}.b{background:url(https://evil.example/p.png)}</style>",
+            "<svg><style>.a{x:+1.url(/*)}.b{background:url(https://evil.example/p.png)}</style></svg>",
+            "<svg><rect fill=\"-1.url(/*) url(https://evil.example/p.svg#a)\"/></svg>",
+            "<svg><g mask=\".5.url(/*) url(https://evil.example/m.svg#m)\"></g></svg>",
+            "<div style=\"a:1.\\75rl(/*);b:url(//evil.example/e)\"></div>",
+            "<div style=\"a:1E+2.URL( /* );b:url(//evil.example/c)\"></div>",
+            "<div style=\"a:1url(/*);b:url(//evil.example/dimension)\"></div>",
+            "<div style=\"a:1.url(&quot;/*\n;b:url(//evil.example/s)\"></div>",
+            "<div style=\"a:<!--url(/*)-->;b:url(//evil.example/cdo)\"></div>",
+            "<style>.a{x:<!--url(/*)-->;b:url(//evil.example/cdo)}</style>",
+            "<svg><style>.a{x:&lt;!--url(/*)--&gt;;b:url(//evil.example/cdo)}</style></svg>",
+            "<div style=\"a:<!-url(/*);b:url(//evil.example/no-cdo)\"></div>",
+            "<div style=\"a:url(a b);b:url(//evil.example/after-bad)\"></div>",
+            "<div style=\"a:url(a&#13;b);b:url(//evil.example/after-cr)\"></div>",
+            "<div style=\"a:url(a&#12;b);b:url(//evil.example/after-ff)\"></div>",
+            "<div style=\"a:url(a'b);b:url(//evil.example/after-quote)\"></div>",
+            "<div style=\"a:url(a b\\) c);b:url(//evil.example/after-escaped-paren)\"></div>",
+            "<div style=\"b:url(ht\\74ps://evil.example/esc);c:u\\72l(//evil.example/name)\"></div>",
+            "<div style=\"b:url(  https://evil.example/p.png/* )\"></div>",
+            "<div style=\"b:image-set(&quot;https://evil.example/is.png&quot; 1x, 'b.png' 2x type('image/png'))\"></div>",
+            "<style>.a{b:-webkit-image-set('https://evil.example/w.png' 1x);c:image('i.png', red);d:src(\"s.png\")}</style>",
+            "<style>.a{b:\\69mage-set('\\68ttps://evil.example/x' 1x);c:cross-fade('cf.png' 50%, red)}</style>",
+            "<svg><style>@import 'https://evil.example/i.css';@IMPORT/**/\"//evil.example/j.css\";@import url(k.css)</style></svg>",
+            "<style>@\\69mport\n'l.css' screen;@import x 'not-a-url.css';@media 'm'</style>",
+            "<style>.a{content:\"https://e.invalid/text\";font-family:'x.png'}@font-face{src:url(f.woff) format('woff'),local('l')}</style>",
+            "<div style=\"b:image-set(var(--u) 1x);c:src(var(--v, 'x.png'));d:image(attr(data-u))\"></div>",
+            "<div style=\"b:image-set(--f('a.png') 1x, ENV(x) 2x);c:url('a.png' if(x));d:var(--x)\"></div>",
+            "<style>.a{b:image-set(linear-gradient(red, blue) 1x, rgb(0 0 0) calc(1x + 1x))}</style>",
+            "<div style=\"a:x\u{a0}url(/*);b:url(//evil.example/nbsp)\"></div>",
+            "<div style=\"a:x\u{80}url(/*);b:url(//evil.example/c1)\"></div>",
+            "<div style=\"a:#\u{a0}url(/*);b:url(//evil.example/hash)\"></div>",
+            "<svg><style>.a{b:url(//evil.example/&#x61;)} .c{d:u&#x72;l(//evil.example/ref)}</style></svg>",
+            "<style>.a{b:url(//evil.example/&#x61;)}</style>",
+            "<div style=\"b:url(//evil.example/&#x61;);c:image-set('&#104;ttps://evil.example/r' 1x)\"></div>",
+            "<svg><rect fill=\"url(#a)\" stroke=\"url(//evil.example/s.svg#b)\" cursor=\"url(c.cur), auto\"/></svg>",
+            "<svg><path clip-path=\"url( &quot;//evil.example/cp&quot; )\" filter=\"url(f.svg#f)\" marker-start=\"url(#m)\"/></svg>",
+            "<div style=\"b:url(&quot;//evil.example/q&quot;);c:url(\\&quot;x)\"></div>",
+            "<div style=\"b:image-set(] 'a.png' } ) 'b.png'\"></div>",
+            "<style>/* url(//decoy.example/c) */ .a{b:'url(//decoy.example/s)'} .c{d:url/**/(//decoy.example/l)}</style>",
+        ],
+    )
+}

@@ -55,7 +55,9 @@ const EVIL: &str = "https://evil.example/p.png";
 
 /// (reference, outcome as `Debug` text) for every reference, and the references the port was asked about; `Err(code)`
 /// when the scan is refused typed.
-fn scan(src: &str) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+type Seen = (Vec<(String, String)>, Vec<String>);
+
+fn scan(src: &str) -> Result<Seen, String> {
     let doc = parse(src, 0, &Limits::default(), &CancellationToken::default())
         .unwrap_or_else(|e| panic!("{src:?} parses: {}", e.code()));
     let port = Port {
@@ -100,7 +102,10 @@ fn reports_after(decoy: &str, real: &str, url: &str, outcome: &str) {
             seen.contains(&(url.to_owned(), outcome.to_owned())),
             "{src:?}: {url} not reported as {outcome}; seen {seen:?}"
         );
-        assert!(!calls.iter().any(|c| c == url), "{src:?}: port asked about {url}");
+        assert!(
+            !calls.iter().any(|c| c == url),
+            "{src:?}: port asked about {url}"
+        );
     }
 }
 
@@ -167,7 +172,10 @@ fn cdo_and_cdc_are_tokens_not_identifiers() {
             reports_after(decoy, &real, EVIL, EXTERNAL);
         }
         // `<!-` is no CDO: `-u` starts the identifier `-url`, a function, and the comment after it hides the rest.
-        reports_nothing(&format!("a:<!-url(/*);b:{real}"), &format!("<!-url(/*) {real}"));
+        reports_nothing(
+            &format!("a:<!-url(/*);b:{real}"),
+            &format!("<!-url(/*) {real}"),
+        );
     });
 }
 
@@ -186,14 +194,16 @@ fn url_strings_of_image_set_src_image_and_import_are_scanned() {
                 format!("cross-fade('{EVIL}' 50%, red)"),
                 format!("image(image-set('{EVIL}' 1x))"),
                 // escape: escaped function name and escaped scheme letters
-                format!("\\69mage-set(\"h\\74tps://evil.example/p.png\" 1x)"),
+                "\\69mage-set(\"h\\74tps://evil.example/p.png\" 1x)".to_owned(),
                 "image-set('\\68 ttps://evil.example/p.png' 1x)".to_owned(),
                 // case and whitespace
                 format!("IMAGE-SET(  \"{EVIL}\"  1X  )"),
                 format!("-WebKit-Image-Set(\n'{EVIL}'\t1x)"),
                 format!("SRC( '{EVIL}' )"),
                 // decoys around it: a comment, a type() string and a gradient
-                format!("image-set(/* 'x.png' */ linear-gradient(red, blue) 1x, \"{EVIL}\" type(\"image/png\") 2x)"),
+                format!(
+                    "image-set(/* 'x.png' */ linear-gradient(red, blue) 1x, \"{EVIL}\" type(\"image/png\") 2x)"
+                ),
             ] {
                 reports_after("1.url(/*)", &real, EVIL, EXTERNAL);
                 reports_after("x", &real, EVIL, EXTERNAL);
@@ -250,7 +260,10 @@ fn computed_urls_inside_url_functions_are_denied() {
             ("image-set(v\\61r(--u) 1x)", "v\\61r(--u)"),
             ("SRC(VAR(--u))", "VAR(--u)"),
             // a comment and a gradient before it
-            ("image-set(/* x */ linear-gradient(red, blue) 1x, var(--u) 2x)", "var(--u)"),
+            (
+                "image-set(/* x */ linear-gradient(red, blue) 1x, var(--u) 2x)",
+                "var(--u)",
+            ),
         ] {
             reports_after("1.url(/*)", real, function, COMPUTED);
             reports_after("x", real, function, COMPUTED);
@@ -275,8 +288,18 @@ fn url_tokens_escapes_comments_and_bad_urls_follow_the_tokenizer() {
                 let real = format!("url({EVIL})");
                 // escapes and comments inside a url token
                 reports_after(prefix, "url(ht\\74ps://evil.example/p.png)", EVIL, EXTERNAL);
-                reports_after(prefix, "url(  https://evil.example/p.png/* )", "https://evil.example/p.png/*", EXTERNAL);
-                reports_after(prefix, "URL(\\68\nttps://evil.example/p.png)", EVIL, EXTERNAL);
+                reports_after(
+                    prefix,
+                    "url(  https://evil.example/p.png/* )",
+                    "https://evil.example/p.png/*",
+                    EXTERNAL,
+                );
+                reports_after(
+                    prefix,
+                    "URL(\\68\nttps://evil.example/p.png)",
+                    EVIL,
+                    EXTERNAL,
+                );
                 // bad urls: reported denied, never offered to the port, and the next URL is read
                 for bad in [
                     "url(a b)",
@@ -336,7 +359,11 @@ fn css_nesting_beyond_the_limit_is_refused_typed() {
         ] {
             assert_eq!(scan(&src).err().as_deref(), Some("limit_depth"), "{src:?}");
         }
-        let (seen, _) = scan(&format!("<div style=\"a:{}url({EVIL})\"></div>", "(".repeat(1000))).unwrap();
+        let (seen, _) = scan(&format!(
+            "<div style=\"a:{}url({EVIL})\"></div>",
+            "(".repeat(1000)
+        ))
+        .unwrap();
         assert_eq!(seen, [(EVIL.to_owned(), EXTERNAL.to_owned())]);
     });
 }

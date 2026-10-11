@@ -114,7 +114,10 @@ fn preprocessing_cr_ff_crlf_and_nul() {
     let ws = tk.next_token().expect("whitespace");
     assert_eq!((ws.kind, ws.span), (Kind::Whitespace, 1..4));
     let url = tk.next_token().expect("url");
-    assert!(matches!(url.kind, Kind::Url { ref inner, .. } if *inner == (9..10)), "{url:?}");
+    assert!(
+        matches!(url.kind, Kind::Url { ref inner, .. } if *inner == (9..10)),
+        "{url:?}"
+    );
     assert_eq!(url.span, 4..13);
 }
 
@@ -261,7 +264,10 @@ fn hash_at_keyword_cdo_cdc_and_delims() {
         ("#url(/*)*/x", "#id:url ( ident:x"),
         ("@url(/*)*/x", "@url ( ident:x"),
         ("#0a #-1 #\\31 x #", "#u:0a ws #u:-1 ws #id:1x ws delim:#"),
-        ("@import @\\69mport @-x @1 @", "@import ws @import ws @-x ws delim:@ num:1/i ws delim:@"),
+        (
+            "@import @\\69mport @-x @1 @",
+            "@import ws @import ws @-x ws delim:@ num:1/i ws delim:@",
+        ),
         // CDO and CDC are tokens; `-->` is not an ident; `<!-` is not a CDO.
         ("<!--url(a)-->", "<!-- url:a -->"),
         ("-->url(a)", "--> url:a"),
@@ -298,8 +304,14 @@ fn non_ascii_ident_code_points_spec_and_engines() {
     // Code points only the engines accept: U+0080, U+00D7, U+037E, U+200B, U+FFFE.
     for c in ['\u{80}', '\u{d7}', '\u{37e}', '\u{200b}', '\u{fffe}'] {
         assert!(!spec_non_ascii_ident(c), "{c:?}");
-        assert_eq!(render(&format!("{c}"), NonAscii::Engines, false), format!("ident:{c}"));
-        assert_eq!(render(&format!("{c}"), NonAscii::Spec, false), format!("delim:{c}"));
+        assert_eq!(
+            render(&format!("{c}"), NonAscii::Engines, false),
+            format!("ident:{c}")
+        );
+        assert_eq!(
+            render(&format!("{c}"), NonAscii::Spec, false),
+            format!("delim:{c}")
+        );
     }
     // The gate reports the union: the url token the spec reading sees and nothing hidden by the engines' reading.
     assert_eq!(
@@ -313,7 +325,10 @@ fn non_ascii_ident_code_points_spec_and_engines() {
 #[test]
 fn unicode_range_only_when_allowed() {
     let r = |css: &str| render(css, NonAscii::Spec, true);
-    assert_eq!(r("u+1f-2a U+?? u+12345678"), "urange:1F-2A ws urange:0-FF ws urange:123456-123456 num:78/i");
+    assert_eq!(
+        r("u+1f-2a U+?? u+12345678"),
+        "urange:1F-2A ws urange:0-FF ws urange:123456-123456 num:78/i"
+    );
     assert_eq!(r("U+1?2"), "urange:10-1F num:2/i");
     // Without the flag (every place except the unicode-range descriptor, 5.5.11) `u+` is an ident and a number.
     assert_eq!(t("u+1f"), "ident:u dim:+1/i:f");
@@ -371,19 +386,26 @@ impl JsonParser<'_> {
             }
             _ => {
                 let start = self.i;
-                while self
-                    .s
-                    .get(self.i)
-                    .is_some_and(|b| b.is_ascii_digit() || matches!(b, b'-' | b'+' | b'.' | b'e' | b'E'))
-                {
+                while self.s.get(self.i).is_some_and(|b| {
+                    b.is_ascii_digit() || matches!(b, b'-' | b'+' | b'.' | b'e' | b'E')
+                }) {
                     self.i += 1;
                 }
-                J::Num(std::str::from_utf8(&self.s[start..self.i]).unwrap().parse().unwrap())
+                J::Num(
+                    std::str::from_utf8(&self.s[start..self.i])
+                        .unwrap()
+                        .parse()
+                        .unwrap(),
+                )
             }
         }
     }
     fn hex4(&mut self) -> u32 {
-        let v = u32::from_str_radix(std::str::from_utf8(&self.s[self.i..self.i + 4]).unwrap(), 16).unwrap();
+        let v = u32::from_str_radix(
+            std::str::from_utf8(&self.s[self.i..self.i + 4]).unwrap(),
+            16,
+        )
+        .unwrap();
         self.i += 4;
         v
     }
@@ -457,7 +479,13 @@ fn component_values(css: &str) -> Vec<J> {
 
 /// Appends one component value (and the corpus's parse-error markers) at `tokens[*i]`; returns true when the token was
 /// the `closer` of the enclosing block.
-fn component(css: &str, tokens: &[Token], i: &mut usize, closer: Option<&Kind>, out: &mut Vec<J>) -> bool {
+fn component(
+    css: &str,
+    tokens: &[Token],
+    i: &mut usize,
+    closer: Option<&Kind>,
+    out: &mut Vec<J>,
+) -> bool {
     let token = &tokens[*i];
     *i += 1;
     if closer == Some(&token.kind) {
@@ -493,7 +521,9 @@ fn component(css: &str, tokens: &[Token], i: &mut usize, closer: Option<&Kind>, 
         Kind::BadUrl { .. } => out.push(err("bad-url")),
         Kind::Delim(c) => out.push(J::Str(c.to_string())),
         Kind::Number { repr, integer } => out.push(J::Arr(numeric("number", css, repr, *integer))),
-        Kind::Percentage { repr, integer } => out.push(J::Arr(numeric("percentage", css, repr, *integer))),
+        Kind::Percentage { repr, integer } => {
+            out.push(J::Arr(numeric("percentage", css, repr, *integer)))
+        }
         Kind::Dimension {
             repr,
             integer,
@@ -573,10 +603,17 @@ fn css_parsing_tests_component_value_list() {
         let expected = J::Arr(split_match_tokens(expected));
         let actual = J::Arr(component_values(css));
         if !same(&actual, &expected) {
-            failures.push(format!("{css:?}\n  expected {expected:?}\n  actual   {actual:?}"));
+            failures.push(format!(
+                "{css:?}\n  expected {expected:?}\n  actual   {actual:?}"
+            ));
         }
     }
-    assert!(failures.is_empty(), "{} case(s) differ:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} case(s) differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 // ----- URL rules ------------------------------------------------------------------------------------------------------
@@ -593,7 +630,11 @@ fn r10_f1_payloads_report_the_later_url() {
         "a:1E2.URL( /* );background:url(https://e.invalid/p.png)",
     ] {
         let got = refs(css);
-        assert_eq!(got.last(), Some(&u("https://e.invalid/p.png")), "{css:?}: {got:?}");
+        assert_eq!(
+            got.last(),
+            Some(&u("https://e.invalid/p.png")),
+            "{css:?}: {got:?}"
+        );
     }
     // The unterminated-string decoy: `1.url("` is a url function whose string runs to the newline; the later url is real.
     assert_eq!(
@@ -611,7 +652,9 @@ fn image_set_src_image_and_import_strings_are_urls() {
         [u("//e.invalid/a.png"), u("b.png")]
     );
     assert_eq!(
-        refs("b:-WEBKIT-image-set('a.png' 1x);c:Image(ltr 'b.png', red);d:src(\"c.png\" cross-origin(anonymous))"),
+        refs(
+            "b:-WEBKIT-image-set('a.png' 1x);c:Image(ltr 'b.png', red);d:src(\"c.png\" cross-origin(anonymous))"
+        ),
         [u("a.png"), u("b.png"), u("c.png")]
     );
     assert_eq!(
@@ -620,12 +663,16 @@ fn image_set_src_image_and_import_strings_are_urls() {
     );
     // Nested image-set inside image(); url() inside image-set(); strings in other functions and plain strings are not.
     assert_eq!(
-        refs("b:image(image-set('a.png' 1x));c:image-set(url('b.png') 1x);d:'c.png';e:format('woff');f:local('x')"),
+        refs(
+            "b:image(image-set('a.png' 1x));c:image-set(url('b.png') 1x);d:'c.png';e:format('woff');f:local('x')"
+        ),
         [u("a.png"), u("b.png")]
     );
     // @import: string after whitespace or a comment, any case, escaped name; not after another token.
     assert_eq!(
-        refs("@import 'a.css';@IMPORT/**/\"b.css\";@\\69mport\n'c.css';@import url(d.css);@import x 'e.css';@media 'f'"),
+        refs(
+            "@import 'a.css';@IMPORT/**/\"b.css\";@\\69mport\n'c.css';@import url(d.css);@import x 'e.css';@media 'f'"
+        ),
         [u("a.css"), u("b.css"), u("c.css"), u("d.css")]
     );
     // Bad strings where a URL string belongs are reported bad; empty URLs load nothing (CSS Values 4 4.5.2).
@@ -641,11 +688,7 @@ fn image_set_src_image_and_import_strings_are_urls() {
 fn computed_urls_inside_url_functions_are_reported() {
     assert_eq!(
         refs("b:image-set(var(--u) 1x);c:src(var(--v, 'x.png'));d:image(attr(data-u))"),
-        [
-            c("var(--u)"),
-            c("var(--v, 'x.png')"),
-            c("attr(data-u)")
-        ]
+        [c("var(--u)"), c("var(--v, 'x.png')"), c("attr(data-u)")]
     );
     assert_eq!(
         refs("b:image-set(--f('a.png') 1x, ENV(x) 2x);c:url('a.png' if(x))"),
@@ -653,7 +696,9 @@ fn computed_urls_inside_url_functions_are_reported() {
     );
     // Value functions do not compute a URL; var() outside URL functions is not a URL either; unclosed runs to the end.
     assert_eq!(
-        refs("b:image-set(linear-gradient(red, blue) 1x, rgb(0 0 0) calc(1x + 1x));c:var(--x);d:image-set(var(--y"),
+        refs(
+            "b:image-set(linear-gradient(red, blue) 1x, rgb(0 0 0) calc(1x + 1x));c:var(--x);d:image-set(var(--y"
+        ),
         [c("var(--y")]
     );
 }
@@ -672,7 +717,11 @@ fn bad_urls_are_reported_and_spans_locate_values() {
         [
             (RefKind::Bad, "x", at("x y")..at("x y") + 1),
             (RefKind::Url, "q", at("q\"")..at("q\"") + 1),
-            (RefKind::Url, "http://e.invalid/z", at("ht\\74p")..at("z  )") + 1),
+            (
+                RefKind::Url,
+                "http://e.invalid/z",
+                at("ht\\74p")..at("z  )") + 1
+            ),
         ]
     );
 }
@@ -682,7 +731,10 @@ fn nesting_beyond_the_limit_is_refused() {
     let deep = "(".repeat(MAX_NESTING) + "url(x)";
     assert!(css_references(&deep, 10).is_ok());
     let deeper = "[".repeat(MAX_NESTING + 1) + "url(x)";
-    assert_eq!(css_references(&deeper, 10).err(), Some(MAX_NESTING..MAX_NESTING + 1));
+    assert_eq!(
+        css_references(&deeper, 10).err(),
+        Some(MAX_NESTING..MAX_NESTING + 1)
+    );
     // Mismatched closers do not end a block (5.4): `image-set(]` still scans its strings.
     assert_eq!(refs("b:image-set(] 'a.png' } ) 'b.png'"), [u("a.png")]);
 }

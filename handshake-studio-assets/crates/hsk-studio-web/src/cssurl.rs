@@ -4,7 +4,8 @@
 //! (<https://www.w3.org/TR/css-syntax-3/>), implemented algorithm by algorithm; every function below cites the section it
 //! implements: 3.3 (preprocessing, applied on the fly so spans stay source byte offsets), 4.2 (definitions), 4.3.1
 //! (consume a token, every case incl. CDO/CDC, hash, at-keyword, the `+`/`-`/`.` number checks and the opt-in
-//! unicode-range), 4.3.2 (comments: only where a token starts, never inside a string or url token), 4.3.3 (numeric
+//! unicode-range), 4.3.2 (comments: only where a token starts, never inside a string or url token: test
+//! `comments_only_where_a_token_starts`), 4.3.3 (numeric
 //! token), 4.3.4 (ident-like token: `url(` with the whitespace/quote rule), 4.3.5 (string), 4.3.6 (url), 4.3.7 (escaped
 //! code point), 4.3.8-4.3.11 (checks), 4.3.12 (ident sequence), 4.3.13 (number: a `.` only before a digit, the exponent
 //! only before a digit), 4.3.14 (unicode-range) and 4.3.15 (bad-url remnants). Proof: `cssurl::tests` (one group per
@@ -61,22 +62,55 @@ pub(crate) struct Token {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     not(test),
-    allow(dead_code, reason = "numeric details and unicode ranges are read by the tokenizer tests only")
+    allow(
+        dead_code,
+        reason = "numeric details and unicode ranges are read by the tokenizer tests only"
+    )
 )]
 pub(crate) enum Kind {
     Ident(String),
     Function(String),
     AtKeyword(String),
-    Hash { value: String, id: bool },
-    String { value: String, inner: Range<usize>, eof: bool },
-    BadString { partial: String, inner: Range<usize> },
-    Url { value: String, inner: Range<usize>, eof: bool },
-    BadUrl { partial: String, inner: Range<usize> },
+    Hash {
+        value: String,
+        id: bool,
+    },
+    String {
+        value: String,
+        inner: Range<usize>,
+        eof: bool,
+    },
+    BadString {
+        partial: String,
+        inner: Range<usize>,
+    },
+    Url {
+        value: String,
+        inner: Range<usize>,
+        eof: bool,
+    },
+    BadUrl {
+        partial: String,
+        inner: Range<usize>,
+    },
     Delim(char),
-    Number { repr: Range<usize>, integer: bool },
-    Percentage { repr: Range<usize>, integer: bool },
-    Dimension { repr: Range<usize>, integer: bool, unit: String },
-    UnicodeRange { start: u32, end: u32 },
+    Number {
+        repr: Range<usize>,
+        integer: bool,
+    },
+    Percentage {
+        repr: Range<usize>,
+        integer: bool,
+    },
+    Dimension {
+        repr: Range<usize>,
+        integer: bool,
+        unit: String,
+    },
+    UnicodeRange {
+        start: u32,
+        end: u32,
+    },
     Whitespace,
     Cdo,
     Cdc,
@@ -340,7 +374,8 @@ impl<'a> Tokenizer<'a> {
         }
         let (a, b, c) = (self.peek(0), self.peek(1), self.peek(2));
         if matches!(a, Some('e' | 'E'))
-            && (b.is_some_and(is_digit) || (matches!(b, Some('+' | '-')) && c.is_some_and(is_digit)))
+            && (b.is_some_and(is_digit)
+                || (matches!(b, Some('+' | '-')) && c.is_some_and(is_digit)))
         {
             self.bump();
             if matches!(self.peek(0), Some('+' | '-')) {
@@ -589,7 +624,8 @@ impl<'a> Tokenizer<'a> {
 pub(crate) enum RefKind {
     /// A URL a browser loads.
     Url,
-    /// A bad-url token, or a bad-string token where a URL string belongs: a browser loads nothing; never offered to a port.
+    /// A bad-url token, or a bad-string token where a URL string belongs: a browser loads nothing; never offered to a port
+    /// (gate test `url_tokens_escapes_comments_and_bad_urls_follow_the_tokenizer`).
     Bad,
     /// A function inside a URL-taking function whose result the source does not show (`var()`, `attr()`, custom functions,
     /// ...): the URL is computed at style time; denied.
@@ -774,7 +810,8 @@ fn scan(css: &str, non_ascii: NonAscii, limit: usize) -> Result<Vec<CssRef>, Ran
             Kind::Function(ref name) => {
                 let lower = name.to_ascii_lowercase();
                 let mut computed = None;
-                if url_functions > 0 && !computed_open && !VALUE_FUNCTIONS.contains(&lower.as_str()) {
+                if url_functions > 0 && !computed_open && !VALUE_FUNCTIONS.contains(&lower.as_str())
+                {
                     out.push(CssRef {
                         span: token.span.start..css.len(),
                         value: String::new(),
@@ -827,7 +864,10 @@ fn scan(css: &str, non_ascii: NonAscii, limit: usize) -> Result<Vec<CssRef>, Ran
 /// union is reported. `Err(span)`: blocks nest deeper than `MAX_NESTING`.
 pub(crate) fn css_references(css: &str, limit: usize) -> Result<Vec<CssRef>, Range<usize>> {
     let mut out = scan(css, NonAscii::Spec, limit)?;
-    if css.chars().any(|c| !c.is_ascii() && !spec_non_ascii_ident(c)) {
+    if css
+        .chars()
+        .any(|c| !c.is_ascii() && !spec_non_ascii_ident(c))
+    {
         let key = |r: &CssRef| (r.span.start, r.span.end, r.kind, r.value.clone());
         let mut seen: BTreeSet<(usize, usize, RefKind, String)> = out.iter().map(key).collect();
         for r in scan(css, NonAscii::Engines, limit)? {

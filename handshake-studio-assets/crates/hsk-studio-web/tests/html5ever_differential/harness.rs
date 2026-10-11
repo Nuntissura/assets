@@ -1,10 +1,15 @@
 //! Runs one input through both parsers, minimises disagreements and reports them with the input printed.
 
+use crate::css_reference::{UrlKind, urls};
 use crate::events::{Category, Ev, drop_implied, first_difference};
 use crate::model::{has_skeleton, model_attribute_count, model_events, parse_model};
 use crate::oracle::{Mode, reference_events};
-use hsk_studio_web::{LossKind, Namespace, NodeKind, WebDoc};
-use std::collections::BTreeMap;
+use hsk_studio_accord::CancellationToken;
+use hsk_studio_web::{
+    AssetDecision, AssetOutcome, AssetPort, AssetSource, LossKind, Namespace, NodeKind, WebDoc,
+    collect_assets,
+};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 
 /// One disagreement on one input.
@@ -107,6 +112,15 @@ pub fn check(input: &str, mode: Mode) -> Outcome {
                         "      html5ever style text content {reference:?}\n      hsk-web stylesheet_text      {crate_texts:?}\n"
                     ),
                 });
+            } else if let Some(detail) = css_urls_differ(&doc, &expected) {
+                // Gate-level CSS check: the URLs the crate's asset gate reports from every CSS carrier equal the URLs the
+                // reference CSS reading (`css_reference`) finds in the text html5ever hands to CSS for that carrier.
+                found.push(Disagreement {
+                    category: Category::Attribute,
+                    sub: "css-urls",
+                    scripting,
+                    detail,
+                });
             }
         }
         if let Some(d) = difference {
@@ -142,6 +156,137 @@ pub fn check(input: &str, mode: Mode) -> Outcome {
         }
     }
     Outcome::Compared(found)
+}
+
+/// Attributes the gate reads as CSS on any element (`style` and the SVG presentation attributes it scans).
+const CSS_ATTRIBUTES: &[&str] = &[
+    "style",
+    "fill",
+    "stroke",
+    "clip-path",
+    "cursor",
+    "filter",
+    "mask",
+    "marker-start",
+    "marker-mid",
+    "marker-end",
+];
+
+struct GrantAll;
+impl AssetPort for GrantAll {
+    fn resolve(&self, reference: &str) -> AssetDecision {
+        AssetDecision::Granted {
+            id: reference.to_owned(),
+        }
+    }
+}
+
+/// (computed, value) of each URL, sorted: the order inside one carrier does not matter for the gate.
+type CarrierUrls = Vec<(bool, String)>;
+
+/// `None` when, for every CSS carrier (each CSS attribute in source order, then the style sheet of a `style` element), the
+/// crate's `collect_assets` reports the same URLs as the reference reading of html5ever's text for that carrier, and never
+/// grants a URL the reference reads as bad or computed. Elements with a duplicate CSS attribute are not compared (the gate
+/// scans every duplicate; a browser keeps the first).
+fn css_urls_differ(doc: &WebDoc, expected: &[Ev]) -> Option<String> {
+    let assets = match collect_assets(doc, &GrantAll, &CancellationToken::default()) {
+        Ok(a) => a,
+        Err(e) => {
+            return Some(format!(
+                "      hsk-web collect_assets refused: {}\n",
+                e.code()
+            ));
+        }
+    };
+    let mut crate_lists: Vec<CarrierUrls> = Vec::new();
+    let mut granted: Vec<String> = Vec::new();
+    for row in doc.view().iter().filter(|r| r.kind == NodeKind::Element) {
+        let node = doc.node(row.id)?;
+        let mut names = HashSet::new();
+        let mut sources: Vec<AssetSource> = Vec::new();
+        for attr in &node.attrs {
+            let name = doc.attr_name(attr).to_ascii_lowercase();
+            if CSS_ATTRIBUTES.contains(&name.as_str()) {
+                if !names.insert(name.clone()) {
+                    return None;
+                }
+                sources.push(if name == "style" {
+                    AssetSource::InlineStyle
+                } else {
+                    AssetSource::Attribute(name)
+                });
+            }
+        }
+        if doc.local_name(row.id).as_deref() == Some("style") {
+            sources.push(AssetSource::StyleBody);
+        }
+        for source in sources {
+            let mut list: CarrierUrls = assets
+                .iter()
+                .filter(|a| a.node == row.id && a.source == source)
+                .map(|a| {
+                    if matches!(a.outcome, AssetOutcome::Granted { .. }) {
+                        granted.push(a.reference.clone());
+                    }
+                    // Compared as text so this file also builds on a crate without the reason (red proof at 62d8983).
+                    let computed = format!("{:?}", a.outcome) == "Denied(ComputedUrl)";
+                    (computed, a.reference.clone())
+                })
+                .collect();
+            list.sort();
+            crate_lists.push(list);
+        }
+    }
+    let texts = style_texts(expected);
+    let mut sheets = texts.iter();
+    let mut labels: Vec<String> = Vec::new();
+    let mut reference_lists: Vec<CarrierUrls> = Vec::new();
+    let mut not_loadable: Vec<String> = Vec::new();
+    for ev in expected {
+        let Ev::Open { name, attrs, .. } = ev else {
+            continue;
+        };
+        let mut carriers: Vec<(String, &str)> = attrs
+            .iter()
+            .filter(|(n, _)| CSS_ATTRIBUTES.contains(&n.as_str()))
+            .map(|(n, v)| (n.clone(), v.as_str()))
+            .collect();
+        if name == "style" {
+            carriers.push(("sheet".to_owned(), sheets.next().map_or("", String::as_str)));
+        }
+        for (label, text) in carriers {
+            let found = urls(text);
+            not_loadable.extend(
+                found
+                    .iter()
+                    .filter(|u| u.kind != UrlKind::Url)
+                    .map(|u| u.value.clone()),
+            );
+            let mut list: CarrierUrls = found
+                .into_iter()
+                .map(|u| (u.kind == UrlKind::Computed, u.value))
+                .collect();
+            list.sort();
+            labels.push(label);
+            reference_lists.push(list);
+        }
+    }
+    if crate_lists != reference_lists {
+        return Some(format!(
+            "      carriers           {labels:?}\n      reference css urls {reference_lists:?}\n      hsk-web css urls   {crate_lists:?}\n"
+        ));
+    }
+    // Bad urls, bad strings and computed URLs are never granted (the port is not asked about them).
+    let wrongly_granted: Vec<&String> = not_loadable
+        .iter()
+        .filter(|v| granted.contains(v))
+        .collect();
+    if !wrongly_granted.is_empty() {
+        return Some(format!(
+            "      reference reads these as bad or computed, hsk-web granted them: {wrongly_granted:?}\n"
+        ));
+    }
+    None
 }
 
 /// The child text content of every `style` element (any namespace) in document order: the text nodes directly inside it,
