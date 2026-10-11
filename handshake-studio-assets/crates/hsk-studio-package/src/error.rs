@@ -52,6 +52,8 @@ pub enum PackageError {
     Document(folio::Diagnostic),
     ReadbackMismatch,
     DestinationInvalid,
+    /// Compressed blob failed to decode or exceeded its declared window.
+    DecodeFailed,
 }
 
 impl PackageError {
@@ -86,6 +88,7 @@ impl PackageError {
             Self::Document(_) => "document_rejected",
             Self::ReadbackMismatch => "readback_mismatch",
             Self::DestinationInvalid => "destination_invalid",
+            Self::DecodeFailed => "decode_failed",
         }
     }
 }

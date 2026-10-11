@@ -12,7 +12,7 @@ use crate::{
 use hsk_studio_accord::CancellationToken;
 use std::{
     collections::{BTreeSet, HashSet},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
 };
 
 const SIG_LOCAL: u32 = 0x0403_4b50;
@@ -47,14 +47,22 @@ pub struct EntryMeta {
     pub size: u64,
     pub crc32: u32,
     pub header_offset: u64,
-    data_start: usize,
+    data_start: u64,
 }
 
 impl EntryMeta {
+    /// Offset of the entry body inside the preflighted source.
+    pub fn data_offset(&self) -> u64 {
+        self.data_start
+    }
+
     /// Entry bytes; `bytes` must be the buffer that was preflighted (otherwise empty).
     pub fn data<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
-        let end = self.data_start.saturating_add(self.size as usize);
-        bytes.get(self.data_start..end).unwrap_or(&[])
+        let range = usize::try_from(self.data_start)
+            .ok()
+            .zip(usize::try_from(self.size).ok())
+            .and_then(|(start, size)| Some(start..start.checked_add(size)?));
+        range.and_then(|r| bytes.get(r)).unwrap_or(&[])
     }
 }
 
@@ -371,6 +379,106 @@ impl<'a, W: Write> ZipWriter<'a, W> {
 // Reader
 // ---------------------------------------------------------------------------------------------
 
+const CHUNK: u64 = 1 << 20;
+
+/// Random-access byte source. One strict implementation serves both in-memory slices and
+/// `Read + Seek` streams, so the two entry points cannot disagree about an archive.
+pub(crate) trait Source {
+    fn len(&self) -> u64;
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), PackageError>;
+}
+
+impl<S: Source + ?Sized> Source for &mut S {
+    fn len(&self) -> u64 {
+        (**self).len()
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), PackageError> {
+        (**self).read_at(offset, buf)
+    }
+}
+
+pub(crate) struct SliceSource<'a>(pub(crate) &'a [u8]);
+
+impl Source for SliceSource<'_> {
+    fn len(&self) -> u64 {
+        self.0.len() as u64
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), PackageError> {
+        let start = usize::try_from(offset).map_err(|_| malformed("truncated"))?;
+        let end = start
+            .checked_add(buf.len())
+            .ok_or_else(|| malformed("truncated"))?;
+        buf.copy_from_slice(
+            self.0
+                .get(start..end)
+                .ok_or_else(|| malformed("truncated"))?,
+        );
+        Ok(())
+    }
+}
+
+pub(crate) struct StreamSource<R> {
+    inner: R,
+    len: u64,
+}
+
+impl<R: Read + Seek> StreamSource<R> {
+    pub(crate) fn new(mut inner: R) -> Result<Self, PackageError> {
+        let len = inner
+            .seek(SeekFrom::End(0))
+            .map_err(|e| PackageError::Io(e.kind()))?;
+        Ok(Self { inner, len })
+    }
+
+    pub(crate) fn into_inner(self) -> R {
+        self.inner
+    }
+}
+
+impl<R: Read + Seek> Source for StreamSource<R> {
+    fn len(&self) -> u64 {
+        self.len
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), PackageError> {
+        let end = offset
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| malformed("truncated"))?;
+        if end > self.len {
+            return Err(malformed("truncated"));
+        }
+        self.inner
+            .seek(SeekFrom::Start(offset))
+            .map_err(|e| PackageError::Io(e.kind()))?;
+        self.inner.read_exact(buf).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                malformed("truncated")
+            } else {
+                PackageError::Io(e.kind())
+            }
+        })
+    }
+}
+
+/// Streams `[start, start + size)` of `src` to `sink` in bounded chunks.
+pub(crate) fn stream_range(
+    src: &mut dyn Source,
+    start: u64,
+    size: u64,
+    cancel: &CancellationToken,
+    sink: &mut dyn FnMut(&[u8]) -> Result<(), PackageError>,
+) -> Result<(), PackageError> {
+    let mut buf = vec![0u8; size.min(CHUNK) as usize];
+    let mut done = 0u64;
+    while done < size {
+        check(cancel)?;
+        let n = (size - done).min(CHUNK) as usize;
+        src.read_at(start + done, &mut buf[..n])?;
+        sink(&buf[..n])?;
+        done += n as u64;
+    }
+    Ok(())
+}
+
 struct Rd<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -381,11 +489,14 @@ impl<'a> Rd<'a> {
         Self { bytes, pos }
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8], PackageError> {
-        let end = self.pos.checked_add(n).ok_or(malformed("truncated"))?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| malformed("truncated"))?;
         let slice = self
             .bytes
             .get(self.pos..end)
-            .ok_or(malformed("truncated"))?;
+            .ok_or_else(|| malformed("truncated"))?;
         self.pos = end;
         Ok(slice)
     }
@@ -445,31 +556,29 @@ impl Zip64Fields<'_> {
     }
 }
 
-struct CdEntry<'a> {
+struct CdEntry {
     name: String,
-    name_raw: &'a [u8],
     flags: u16,
     crc: u32,
     size: u64,
-    offset: usize,
+    offset: u64,
 }
 
 struct EndRecord {
     entries: u64,
-    cd_offset: usize,
-    cd_size: usize,
+    cd_offset: u64,
+    cd_size: u64,
 }
 
-fn to_usize(v: u64) -> Result<usize, PackageError> {
-    usize::try_from(v).map_err(|_| malformed("offset_overflow"))
-}
-
-fn parse_end(bytes: &[u8], limits: &Limits) -> Result<EndRecord, PackageError> {
-    if bytes.len() < EOCD_LEN {
+fn parse_end(src: &mut dyn Source, limits: &Limits) -> Result<EndRecord, PackageError> {
+    let len = src.len();
+    if len < EOCD_LEN as u64 {
         return Err(malformed("too_short"));
     }
-    let eocd_pos = bytes.len() - EOCD_LEN;
-    let mut rd = Rd::at(bytes, eocd_pos);
+    let eocd_pos = len - EOCD_LEN as u64;
+    let mut buf = [0u8; EOCD_LEN];
+    src.read_at(eocd_pos, &mut buf)?;
+    let mut rd = Rd::at(&buf, 0);
     if rd.u32()? != SIG_EOCD {
         // Includes trailing data and archive comments: the EOCD must be the final record.
         return Err(malformed("eocd_not_final"));
@@ -484,25 +593,31 @@ fn parse_end(bytes: &[u8], limits: &Limits) -> Result<EndRecord, PackageError> {
     if disk != 0 || cd_disk != 0 || n_disk != n_total || comment != 0 {
         return Err(malformed("eocd_fields"));
     }
-    let locator_pos = eocd_pos.checked_sub(LOCATOR64_LEN);
+    let locator_pos = eocd_pos.checked_sub(LOCATOR64_LEN as u64);
+    let mut locator = [0u8; LOCATOR64_LEN];
     let has_locator = match locator_pos {
-        Some(p) => Rd::at(bytes, p).u32()? == SIG_LOCATOR64,
+        Some(p) => {
+            src.read_at(p, &mut locator)?;
+            Rd::at(&locator, 0).u32()? == SIG_LOCATOR64
+        }
         None => false,
     };
     let (entries, cd_size, cd_offset, region_end) = if has_locator {
-        let locator_pos = locator_pos.ok_or(malformed("locator"))?;
-        let mut rd = Rd::at(bytes, locator_pos + 4);
+        let locator_pos = locator_pos.ok_or_else(|| malformed("locator"))?;
+        let mut rd = Rd::at(&locator, 4);
         if rd.u32()? != 0 {
             return Err(malformed("locator_disk"));
         }
-        let eocd64_offset = to_usize(rd.u64()?)?;
+        let eocd64_offset = rd.u64()?;
         if rd.u32()? != 1 {
             return Err(malformed("locator_disks"));
         }
-        if eocd64_offset.checked_add(EOCD64_LEN) != Some(locator_pos) {
+        if eocd64_offset.checked_add(EOCD64_LEN as u64) != Some(locator_pos) {
             return Err(malformed("eocd64_position"));
         }
-        let mut rd = Rd::at(bytes, eocd64_offset);
+        let mut record = [0u8; EOCD64_LEN];
+        src.read_at(eocd64_offset, &mut record)?;
+        let mut rd = Rd::at(&record, 0);
         if rd.u32()? != SIG_EOCD64 || rd.u64()? != (EOCD64_LEN - 12) as u64 {
             return Err(malformed("eocd64_record"));
         }
@@ -525,15 +640,15 @@ fn parse_end(bytes: &[u8], limits: &Limits) -> Result<EndRecord, PackageError> {
         {
             return Err(malformed("eocd_zip64_disagree"));
         }
-        (n64, to_usize(size64)?, to_usize(offset64)?, eocd64_offset)
+        (n64, size64, offset64, eocd64_offset)
     } else {
         if n_total == SENT16 || cd_size32 == SENT32 || cd_offset32 == SENT32 {
             return Err(malformed("zip64_required"));
         }
         (
             u64::from(n_total),
-            cd_size32 as usize,
-            cd_offset32 as usize,
+            u64::from(cd_size32),
+            u64::from(cd_offset32),
             eocd_pos,
         )
     };
@@ -543,7 +658,7 @@ fn parse_end(bytes: &[u8], limits: &Limits) -> Result<EndRecord, PackageError> {
     if cd_offset.checked_add(cd_size) != Some(region_end) {
         return Err(malformed("central_directory_range"));
     }
-    if cd_size < (entries as usize) * CD_FIXED {
+    if cd_size < entries * CD_FIXED as u64 {
         return Err(malformed("central_directory_size"));
     }
     Ok(EndRecord {
@@ -553,27 +668,51 @@ fn parse_end(bytes: &[u8], limits: &Limits) -> Result<EndRecord, PackageError> {
     })
 }
 
-/// Validates a complete STORE-only archive against `limits` and returns its entries.
-///
-/// Rejects (before reading any entry body): over-limit counts/sizes, unsafe, duplicate or
-/// case-fold-duplicate names, non-STORE methods, flags/encryption/descriptors/comments, ZIP64
-/// inconsistencies, overlapping/gapped/prepended/trailing layouts and central-directory vs
-/// local-header disagreement; then verifies every CRC-32.
+/// Validates a complete STORE-only archive held in memory; see [`preflight_source`].
 pub fn preflight(
     bytes: &[u8],
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> Result<Vec<EntryMeta>, PackageError> {
+    preflight_source(&mut SliceSource(bytes), limits, cancel)
+}
+
+/// As [`preflight`] over a `Read + Seek` stream: identical checks, bounded reads (one 1 MiB
+/// chunk, the 46..65 KiB central-directory record and the entry metadata list).
+pub fn preflight_stream<R: Read + Seek>(
+    src: &mut R,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<Vec<EntryMeta>, PackageError> {
+    preflight_source(&mut StreamSource::new(src)?, limits, cancel)
+}
+
+/// Validates a complete STORE-only archive against `limits` and returns its entries.
+///
+/// Rejects (before reading any entry body): over-limit counts/sizes, unsafe, duplicate or
+/// case-fold-duplicate names, non-STORE methods, flags/encryption/descriptors/comments, ZIP64
+/// inconsistencies, overlapping/gapped/prepended/trailing layouts and central-directory vs
+/// local-header disagreement; then verifies every CRC-32 in bounded chunks.
+pub(crate) fn preflight_source(
+    src: &mut dyn Source,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<Vec<EntryMeta>, PackageError> {
     check(cancel)?;
-    let end = parse_end(bytes, limits)?;
-    let cd = bytes
-        .get(end.cd_offset..end.cd_offset + end.cd_size)
-        .ok_or(malformed("central_directory_range"))?;
-    let mut rd = Rd::at(cd, 0);
-    let mut entries: Vec<CdEntry<'_>> = Vec::with_capacity(end.entries as usize);
+    let end = parse_end(src, limits)?;
+    let cd_end = end.cd_offset + end.cd_size;
+    let mut pos = end.cd_offset;
+    let mut entries: Vec<CdEntry> = Vec::with_capacity(end.entries as usize);
     let mut total: u64 = 0;
+    let mut scratch: Vec<u8> = Vec::new();
     for _ in 0..end.entries {
         check(cancel)?;
+        if cd_end - pos < CD_FIXED as u64 {
+            return Err(malformed("central_directory_excess"));
+        }
+        let mut fixed = [0u8; CD_FIXED];
+        src.read_at(pos, &mut fixed)?;
+        let mut rd = Rd::at(&fixed, 0);
         if rd.u32()? != SIG_CD {
             return Err(malformed("central_directory_signature"));
         }
@@ -605,10 +744,15 @@ pub fn preflight(
         if name_len > usize::from(limits.max_name_len) {
             return Err(PackageError::NameTooLong);
         }
-        let name_raw = rd.take(name_len)?;
-        let extra = rd.take(extra_len)?;
-        let name = validate_name(name_raw, limits.max_name_len)?;
-        let mut fields = Zip64Fields(zip64_extra(extra)?);
+        let variable = name_len + extra_len;
+        if cd_end - pos - (CD_FIXED as u64) < variable as u64 {
+            return Err(malformed("central_directory_excess"));
+        }
+        scratch.resize(variable, 0);
+        src.read_at(pos + CD_FIXED as u64, &mut scratch)?;
+        pos += (CD_FIXED + variable) as u64;
+        let name = validate_name(&scratch[..name_len], limits.max_name_len)?;
+        let mut fields = Zip64Fields(zip64_extra(&scratch[name_len..])?);
         let size = if usize32 == SENT32 {
             fields.next()?
         } else {
@@ -637,14 +781,13 @@ pub fn preflight(
             .ok_or(PackageError::TotalTooLarge)?;
         entries.push(CdEntry {
             name,
-            name_raw,
             flags,
             crc,
             size,
-            offset: to_usize(offset)?,
+            offset,
         });
     }
-    if rd.pos != cd.len() {
+    if pos != cd_end {
         return Err(malformed("central_directory_excess"));
     }
     validate_name_set(entries.iter().map(|e| e.name.as_str()))?;
@@ -652,7 +795,7 @@ pub fn preflight(
     // Layout: entries tile [0, cd_offset) exactly, in header-offset order.
     let mut order: Vec<usize> = (0..entries.len()).collect();
     order.sort_by_key(|&i| entries[i].offset);
-    let mut expected = 0usize;
+    let mut expected = 0u64;
     let mut metas: Vec<Option<EntryMeta>> = vec![None; entries.len()];
     for &i in &order {
         check(cancel)?;
@@ -660,7 +803,12 @@ pub fn preflight(
         if e.offset != expected {
             return Err(malformed("layout_gap_or_overlap"));
         }
-        let mut rd = Rd::at(bytes, e.offset);
+        if end.cd_offset - e.offset < LOCAL_FIXED as u64 {
+            return Err(malformed("entry_overruns_central_directory"));
+        }
+        let mut fixed = [0u8; LOCAL_FIXED];
+        src.read_at(e.offset, &mut fixed)?;
+        let mut rd = Rd::at(&fixed, 0);
         if rd.u32()? != SIG_LOCAL {
             return Err(malformed("local_signature"));
         }
@@ -674,12 +822,20 @@ pub fn preflight(
         let usize32 = rd.u32()?;
         let name_len = usize::from(rd.u16()?);
         let extra_len = usize::from(rd.u16()?);
-        let name = rd.take(name_len)?;
-        let extra = rd.take(extra_len)?;
-        if flags != e.flags || method != 0 || crc != e.crc || name != e.name_raw {
+        if flags != e.flags || method != 0 || crc != e.crc || name_len != e.name.len() {
             return Err(malformed("local_header_disagrees"));
         }
-        let mut fields = Zip64Fields(zip64_extra(extra)?);
+        let variable = name_len + extra_len;
+        let after_fixed = e.offset + LOCAL_FIXED as u64;
+        if end.cd_offset - after_fixed < variable as u64 {
+            return Err(malformed("entry_overruns_central_directory"));
+        }
+        scratch.resize(variable, 0);
+        src.read_at(after_fixed, &mut scratch)?;
+        if &scratch[..name_len] != e.name.as_bytes() {
+            return Err(malformed("local_header_disagrees"));
+        }
+        let mut fields = Zip64Fields(zip64_extra(&scratch[name_len..])?);
         let (lsize, lcsize) = match (usize32 == SENT32, csize32 == SENT32) {
             (true, true) => (fields.next()?, fields.next()?),
             (false, false) => (u64::from(usize32), u64::from(csize32)),
@@ -689,10 +845,10 @@ pub fn preflight(
         if lsize != e.size || lcsize != e.size {
             return Err(malformed("local_header_disagrees"));
         }
-        let data_start = rd.pos;
+        let data_start = after_fixed + variable as u64;
         let data_end = data_start
-            .checked_add(to_usize(e.size)?)
-            .ok_or(malformed("offset_overflow"))?;
+            .checked_add(e.size)
+            .ok_or_else(|| malformed("offset_overflow"))?;
         if data_end > end.cd_offset {
             return Err(malformed("entry_overruns_central_directory"));
         }
@@ -701,7 +857,7 @@ pub fn preflight(
             name: e.name.clone(),
             size: e.size,
             crc32: e.crc,
-            header_offset: e.offset as u64,
+            header_offset: e.offset,
             data_start,
         });
     }
@@ -710,7 +866,12 @@ pub fn preflight(
     }
     let metas: Vec<EntryMeta> = metas.into_iter().flatten().collect();
     for meta in &metas {
-        if crc32(meta.data(bytes), cancel)? != meta.crc32 {
+        let mut hasher = crc32fast::Hasher::new();
+        stream_range(src, meta.data_start, meta.size, cancel, &mut |chunk| {
+            hasher.update(chunk);
+            Ok(())
+        })?;
+        if hasher.finalize() != meta.crc32 {
             return Err(PackageError::CrcMismatch);
         }
     }

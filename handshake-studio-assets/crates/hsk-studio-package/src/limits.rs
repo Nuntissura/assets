@@ -13,6 +13,8 @@ pub struct Limits {
     pub max_name_len: u16,
     /// Maximum `manifest.json` size.
     pub max_manifest_bytes: u64,
+    /// Maximum zstd window a compressed blob may declare (decoder allocation bound).
+    pub max_window_bytes: u64,
 }
 
 impl Default for Limits {
@@ -23,6 +25,7 @@ impl Default for Limits {
             max_total_bytes: 4 * 1024 * 1024 * 1024,
             max_name_len: 255,
             max_manifest_bytes: 16 * 1024 * 1024,
+            max_window_bytes: 64 * 1024 * 1024,
         }
     }
 }

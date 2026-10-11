@@ -256,6 +256,7 @@ fn mixed_graph_roundtrip_with_assets() {
             &[],
             &WriteOptions {
                 zip64: Zip64Policy::Always,
+                ..WriteOptions::default()
             },
             &Limits::default(),
             &token(),
@@ -595,8 +596,6 @@ impl AtomicFs for ExitAtReplace {
     }
 }
 
-const CRASH_CHILD_ENV: &str = "HSK_PACKAGE_CRASH_CHILD";
-
 fn renamed_package() -> (Vec<u8>, Vec<u8>, Vec<Vec<u8>>) {
     let (snapshot, assets, blobs) = fixture();
     let old = write_to_vec(&snapshot, &assets);
@@ -638,18 +637,6 @@ impl Drop for TempDir {
 
 #[test]
 fn atomic_save_retains_last_good_and_cancel() {
-    if let Ok(dir) = std::env::var(CRASH_CHILD_ENV) {
-        let (_, new, _) = renamed_package();
-        let target = Path::new(&dir).join("doc.handshake");
-        let _ = save_atomic_with(
-            &mut ExitAtReplace(StdFs),
-            &target,
-            &new,
-            &Limits::default(),
-            &token(),
-        );
-        std::process::exit(2);
-    }
     bounded_case("atomic_save_retains_last_good_and_cancel", || {
         let dir = TempDir::new("atomic");
         let target = dir.0.join("doc.handshake");
@@ -672,7 +659,7 @@ fn atomic_save_retains_last_good_and_cancel() {
         };
 
         let mut corrupt = Fault {
-            inner: StdFs,
+            inner: StdFs::new(),
             corrupt_readback: true,
             fail_replace: false,
         };
@@ -680,7 +667,7 @@ fn atomic_save_retains_last_good_and_cancel() {
         last_good_kept("corrupt readback");
 
         let mut failing = Fault {
-            inner: StdFs,
+            inner: StdFs::new(),
             corrupt_readback: false,
             fail_replace: true,
         };
@@ -713,18 +700,526 @@ fn atomic_save_retains_last_good_and_cancel() {
         save_atomic(&target, &new, &limits, &token()).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), new);
         assert_eq!(dir.listing(), only_target);
+    });
+}
 
-        // Real interrupted save: a child process ends between the durable temp and the rename.
-        let crash = TempDir::new("crash");
-        let crash_target = crash.0.join("doc.handshake");
-        save_atomic(&crash_target, &old, &limits, &token()).unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "atomic_save_retains_last_good_and_cancel",
-                "--test-threads=1",
-            ])
-            .env(CRASH_CHILD_ENV, &crash.0)
+// ===== slice 2: blob table (raw|zstd), streaming reader, stale-temp sweep =====================
+
+/// Document with three tiles over three caller-chosen blobs.
+fn fixture_blobs(blobs: &[Vec<u8>]) -> (folio::Snapshot, MemoryAssetSource) {
+    let mut assets = MemoryAssetSource::new();
+    let digests: Vec<ContentDigestPair> = blobs
+        .iter()
+        .map(|b| ContentDigestPair(assets.insert(b.clone()).digest))
+        .collect();
+    let tiles = digests
+        .iter()
+        .enumerate()
+        .map(|(i, d)| tile(i as u8, d))
+        .collect();
+    (open_doc(&mixed(tiles)), assets)
+}
+
+fn lcg_bytes(n: usize, mut seed: u64) -> Vec<u8> {
+    (0..n)
+        .map(|_| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as u8
+        })
+        .collect()
+}
+
+fn zstd_options() -> WriteOptions {
+    WriteOptions {
+        asset_codec: Codec::Zstd,
+        ..WriteOptions::default()
+    }
+}
+
+fn write_with(
+    snapshot: &folio::Snapshot,
+    assets: &dyn AssetSource,
+    options: &WriteOptions,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_package_with(
+        snapshot,
+        assets,
+        &[],
+        options,
+        &Limits::default(),
+        &token(),
+        &mut out,
+    )
+    .unwrap();
+    out
+}
+
+/// Replaces the asset `hash` with `stored` bytes declared as a zstd blob of `raw_len` bytes.
+fn with_zstd_asset(package: &[u8], hash: &str, stored: &[u8], raw_len: u64) -> Vec<u8> {
+    repack(package, |entries| {
+        let name = format!("{ASSET_PREFIX}{hash}");
+        entries.iter_mut().find(|(n, _)| *n == name).unwrap().1 = stored.to_vec();
+        let mut manifest = manifest_of(entries);
+        let row = manifest
+            .entries
+            .iter_mut()
+            .find(|e| e.name == name)
+            .unwrap();
+        row.len = stored.len() as u64;
+        row.codec = Codec::Zstd;
+        row.raw_len = Some(raw_len);
+        set_manifest(entries, &manifest);
+    })
+}
+
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+#[test]
+fn blob_table_zstd_codec() {
+    bounded_case("blob_table_zstd_codec", || {
+        // Real frames from an independent encoder (libzstd 1.5.7): without and with content checksum.
+        let plain = b"handshake-tile-".repeat(40);
+        let frames = [
+            "28b52ffd605801b500007868616e647368616b652d74696c652d010046a49a75",
+            "28b52ffd645801b500007868616e647368616b652d74696c652d010046a49a7564590e0c",
+        ];
+        let (snapshot, assets) = fixture_blobs(std::slice::from_ref(&plain));
+        let raw_package = write_to_vec(&snapshot, &assets);
+        let hash = sha256_hex_of(&plain);
+        for frame in frames {
+            let package = with_zstd_asset(&raw_package, &hash, &unhex(frame), plain.len() as u64);
+            let opened = read(&package).unwrap();
+            assert_eq!(
+                opened.assets.get(&hash),
+                Some(&plain),
+                "libzstd frame decodes"
+            );
+            let row = opened
+                .manifest
+                .entries
+                .iter()
+                .find(|e| e.kind == EntryKind::Asset)
+                .unwrap();
+            assert_eq!((row.codec, row.raw_len), (Codec::Zstd, Some(600)));
+        }
+
+        // Writer-side zstd: verified against libzstd decode of the same frames outside the suite
+        // (7 inputs, 2026-10-11); here the package roundtrip, determinism and shrinkage.
+        let compressible = b"studio-raster-tile-row ".repeat(900);
+        let noise = lcg_bytes(1500, 7);
+        let (snapshot, assets) =
+            fixture_blobs(&[compressible.clone(), noise.clone(), plain.clone()]);
+        let raw = write_to_vec(&snapshot, &assets);
+        let packed = write_with(&snapshot, &assets, &zstd_options());
+        assert!(packed.len() < raw.len() / 2, "compressible blobs shrink");
+        assert_eq!(
+            packed,
+            write_with(&snapshot, &assets, &zstd_options()),
+            "deterministic"
+        );
+        let opened = read(&packed).unwrap();
+        for blob in [&compressible, &noise, &plain] {
+            assert_eq!(opened.assets.get(&sha256_hex_of(blob)), Some(blob));
+        }
+        let codecs: Vec<Codec> = opened
+            .manifest
+            .entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::Asset)
+            .map(|e| e.codec)
+            .collect();
+        assert_eq!(codecs.iter().filter(|c| **c == Codec::Zstd).count(), 2);
+        assert_eq!(
+            codecs.iter().filter(|c| **c == Codec::Raw).count(),
+            1,
+            "noise stays raw"
+        );
+        // Re-saving the decoded result with the same option reproduces the package byte-for-byte.
+        let resaved = write_with(
+            opened.snapshot().unwrap(),
+            &MemoryAssetSource::from_opened(&opened),
+            &zstd_options(),
+        );
+        assert_eq!(resaved, packed);
+
+        // Hostile compressed blobs, each rejected with a typed code and bounded work.
+        let frame = unhex(frames[0]);
+        let code = |package: &[u8]| read(package).unwrap_err().code();
+        let n = plain.len() as u64;
+        assert_eq!(
+            code(&with_zstd_asset(&raw_package, &hash, &frame, n - 1)),
+            "length_mismatch"
+        );
+        assert_eq!(
+            code(&with_zstd_asset(&raw_package, &hash, &frame, n + 1)),
+            "length_mismatch"
+        );
+        let mut trailing = frame.clone();
+        trailing.push(0);
+        assert_eq!(
+            code(&with_zstd_asset(&raw_package, &hash, &trailing, n)),
+            "malformed_archive"
+        );
+        let mut damaged = frame.clone();
+        damaged[frame.len() / 2] ^= 0x55;
+        assert!(read(&with_zstd_asset(&raw_package, &hash, &damaged, n)).is_err());
+        let wrong_identity = repack(&with_zstd_asset(&raw_package, &hash, &frame, n), |e| {
+            let mut m = manifest_of(e);
+            m.entries
+                .iter_mut()
+                .find(|r| r.kind == EntryKind::Asset)
+                .unwrap()
+                .sha256_hex = "0".repeat(64);
+            set_manifest(e, &m);
+        });
+        assert!(matches!(
+            code(&wrong_identity),
+            "hash_mismatch" | "manifest_invalid"
+        ));
+        // Expansion bomb: 100 RLE blocks of 128 KiB (12.5 MiB) from ~400 bytes, declared 1000 bytes.
+        let mut bomb = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x38];
+        for i in 0..100 {
+            let header = if i == 99 {
+                0x0010_0003u32
+            } else {
+                0x0010_0002u32
+            };
+            bomb.extend_from_slice(&header.to_le_bytes()[..3]);
+            bomb.push(0xAB);
+        }
+        assert_eq!(
+            code(&with_zstd_asset(&raw_package, &hash, &bomb, 1000)),
+            "length_mismatch"
+        );
+        // Window declared above the limit is refused before any allocation.
+        let tight = Limits {
+            max_window_bytes: 1024,
+            ..Limits::default()
+        };
+        let err = read_package(
+            &with_zstd_asset(&raw_package, &hash, &bomb, 1000),
+            &tight,
+            folio::Budget::default(),
+            &Granted,
+            &token(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "decode_failed");
+        // The codec is only legal on assets, and needs a declared decoded length.
+        let on_document = repack(&raw_package, |e| {
+            let mut m = manifest_of(e);
+            let row = m
+                .entries
+                .iter_mut()
+                .find(|r| r.kind == EntryKind::Document)
+                .unwrap();
+            row.codec = Codec::Zstd;
+            row.raw_len = Some(1);
+            set_manifest(e, &m);
+        });
+        assert_eq!(code(&on_document), "manifest_invalid");
+        let no_len = repack(&raw_package, |e| {
+            let mut m = manifest_of(e);
+            m.entries
+                .iter_mut()
+                .find(|r| r.kind == EntryKind::Asset)
+                .unwrap()
+                .codec = Codec::Zstd;
+            set_manifest(e, &m);
+        });
+        assert_eq!(code(&no_len), "manifest_invalid");
+    });
+}
+
+/// `Read + Seek` wrapper recording the largest single read request.
+struct Counting<R> {
+    inner: R,
+    max_request: usize,
+}
+impl<R: io::Read> io::Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.max_request = self.max_request.max(buf.len());
+        self.inner.read(buf)
+    }
+}
+impl<R: io::Seek> io::Seek for Counting<R> {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// Virtual source of `len` zero bytes with a fixed tail: no storage, so a huge claim costs nothing.
+struct Virtual {
+    pos: u64,
+    len: u64,
+    tail: Vec<u8>,
+    max_request: usize,
+}
+impl io::Read for Virtual {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.max_request = self.max_request.max(buf.len());
+        let tail_start = self.len - self.tail.len() as u64;
+        let mut n = 0;
+        while n < buf.len() && self.pos < self.len {
+            buf[n] = if self.pos >= tail_start {
+                self.tail[(self.pos - tail_start) as usize]
+            } else {
+                0
+            };
+            self.pos += 1;
+            n += 1;
+        }
+        Ok(n)
+    }
+}
+impl io::Seek for Virtual {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        self.pos = match pos {
+            io::SeekFrom::Start(p) => p,
+            io::SeekFrom::End(d) => self.len.checked_add_signed(d).unwrap(),
+            io::SeekFrom::Current(d) => self.pos.checked_add_signed(d).unwrap(),
+        };
+        Ok(self.pos)
+    }
+}
+
+fn summary(result: Result<Opened, PackageError>) -> Result<(Vec<u8>, Vec<String>), &'static str> {
+    result
+        .map(|o| {
+            (
+                o.snapshot()
+                    .map(|s| s.encoded_bytes().to_vec())
+                    .unwrap_or_default(),
+                o.assets.keys().cloned().collect(),
+            )
+        })
+        .map_err(|e| e.code())
+}
+
+#[test]
+fn streaming_reader_matches_slice_reader_and_bounds_reads() {
+    bounded_case(
+        "streaming_reader_matches_slice_reader_and_bounds_reads",
+        || {
+            let limits = Limits::default();
+            let stream = |bytes: &[u8]| {
+                read_package_stream(
+                    io::Cursor::new(bytes.to_vec()),
+                    &limits,
+                    folio::Budget::default(),
+                    &Granted,
+                    &token(),
+                )
+            };
+
+            // Multi-chunk package (2.4 MB incompressible blob + compressible ones) over a counting source.
+            let big = lcg_bytes(2_400_000, 99);
+            let (snapshot, assets) =
+                fixture_blobs(&[big.clone(), b"row ".repeat(5000), lcg_bytes(900, 3)]);
+            let package = write_with(&snapshot, &assets, &zstd_options());
+            let mut counting = Counting {
+                inner: io::Cursor::new(package.clone()),
+                max_request: 0,
+            };
+            let streamed = read_package_stream(
+                &mut counting,
+                &limits,
+                folio::Budget::default(),
+                &Granted,
+                &token(),
+            )
+            .unwrap();
+            let sliced = read(&package).unwrap();
+            assert_eq!(streamed.assets, sliced.assets);
+            assert_eq!(streamed.assets.get(&sha256_hex_of(&big)), Some(&big));
+            assert_eq!(
+                streamed.snapshot().unwrap().encoded_bytes(),
+                snapshot.encoded_bytes()
+            );
+            assert_eq!(streamed.manifest, sliced.manifest);
+            assert!(
+                counting.max_request <= 1 << 20 && counting.max_request < big.len(),
+                "largest single read request was {}",
+                counting.max_request
+            );
+
+            // Lazy reader: verify everything without retaining, then fetch one asset by identity.
+            let mut reader =
+                PackageReader::open(io::Cursor::new(package.clone()), &limits, &token()).unwrap();
+            assert_eq!(reader.entries().len(), 5);
+            reader.verify_all(&token()).unwrap();
+            let hash = sha256_hex_of(&big);
+            assert_eq!(reader.read_asset(&hash, &token()).unwrap(), big);
+            assert_eq!(
+                reader.read_asset(&"0".repeat(64), &token()).unwrap_err(),
+                PackageError::MissingAsset
+            );
+            assert_eq!(reader.manifest().revision, 7);
+            assert_eq!(
+                preflight_stream(&mut io::Cursor::new(&package), &limits, &token())
+                    .unwrap()
+                    .len(),
+                5
+            );
+
+            // One implementation: every truncation and single-bit corruption of a small package gives
+            // the identical verdict from both readers.
+            let (small_doc, small_assets, _) = fixture();
+            let small = write_with(&small_doc, &small_assets, &zstd_options());
+            for end in 0..small.len() {
+                assert_eq!(
+                    summary(read(&small[..end])),
+                    summary(stream(&small[..end])),
+                    "truncate {end}"
+                );
+            }
+            for at in 0..small.len() {
+                let mut damaged = small.clone();
+                damaged[at] ^= 0x10;
+                assert_eq!(
+                    summary(read(&damaged)),
+                    summary(stream(&damaged)),
+                    "flip {at}"
+                );
+            }
+
+            // Hostile length claims never allocate or scan: a 4 GiB source whose EOCD announces a
+            // 4 GiB central directory of zeros dies at the first record with small bounded reads.
+            let total = u64::from(u32::MAX);
+            let mut eocd = Vec::new();
+            eocd.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+            eocd.extend_from_slice(&[0, 0, 0, 0]);
+            eocd.extend_from_slice(&60_000u16.to_le_bytes());
+            eocd.extend_from_slice(&60_000u16.to_le_bytes());
+            eocd.extend_from_slice(&((total - 22) as u32).to_le_bytes());
+            eocd.extend_from_slice(&0u32.to_le_bytes());
+            eocd.extend_from_slice(&0u16.to_le_bytes());
+            let virtual_source = Virtual {
+                pos: 0,
+                len: total,
+                tail: eocd,
+                max_request: 0,
+            };
+            let mut hostile = virtual_source;
+            let err = read_package_stream(
+                &mut hostile,
+                &limits,
+                folio::Budget::default(),
+                &Granted,
+                &token(),
+            )
+            .unwrap_err();
+            assert_eq!(err.code(), "malformed_archive");
+            assert!(
+                hostile.max_request <= 64 * 1024,
+                "request {}",
+                hostile.max_request
+            );
+            let mut empty = Virtual {
+                pos: 0,
+                len: 1 << 40,
+                tail: vec![],
+                max_request: 0,
+            };
+            assert_eq!(
+                preflight_stream(&mut empty, &limits, &token())
+                    .unwrap_err()
+                    .code(),
+                "malformed_archive"
+            );
+            assert!(empty.max_request <= 64);
+        },
+    );
+}
+
+const SWEEP_CHILD_ENV: &str = "HSK_PACKAGE_SWEEP_CHILD";
+
+/// Child-process body for the sweep test: `crash` ends at the rename, `hold` keeps a save open.
+fn sweep_child(spec: &str) -> ! {
+    use std::io::{BufRead, Write};
+    let (mode, dir) = spec.split_once(':').unwrap();
+    let (_, new, _) = renamed_package();
+    let target = Path::new(dir).join("doc.handshake");
+    match mode {
+        "crash" => {
+            let _ = save_atomic_with(
+                &mut ExitAtReplace(StdFs::new()),
+                &target,
+                &new,
+                &Limits::default(),
+                &token(),
+            );
+            std::process::exit(2)
+        }
+        _ => {
+            let mut held = StdFs::new();
+            held.write_temp(&target, &new).unwrap();
+            println!("HSK-READY");
+            std::io::stdout().flush().unwrap();
+            let mut line = String::new();
+            while std::io::stdin().lock().read_line(&mut line).unwrap_or(0) > 0 {
+                line.clear();
+            }
+            std::process::exit(87)
+        }
+    }
+}
+
+fn run_child(mode: &str, dir: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "stale_temp_sweep_owner_marker",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(SWEEP_CHILD_ENV, format!("{mode}:{}", dir.display()));
+    command
+}
+
+#[test]
+fn stale_temp_sweep_owner_marker() {
+    if let Ok(spec) = std::env::var(SWEEP_CHILD_ENV) {
+        sweep_child(&spec);
+    }
+    bounded_case("stale_temp_sweep_owner_marker", || {
+        use std::io::BufRead;
+        use std::process::Stdio;
+        let dir = TempDir::new("sweep");
+        let target = dir.0.join("doc.handshake");
+        let limits = Limits::default();
+        let (old, new, _) = renamed_package();
+        save_atomic(&target, &old, &limits, &token()).unwrap();
+        let sweep = || sweep_stale_temps(&target, &token()).unwrap();
+
+        // Look-alikes that must never be touched: unmarked temp, garbage marker, and a
+        // well-formed marker naming some other file.
+        let plain = dir.0.join("doc.handshake.tmp-9-9");
+        std::fs::write(&plain, b"user data").unwrap();
+        let garbage_temp = dir.0.join("doc.handshake.tmp-8-8");
+        std::fs::write(&garbage_temp, b"user data 2").unwrap();
+        std::fs::write(dir.0.join("doc.handshake.tmp-8-8.owner"), b"not a marker").unwrap();
+        let unrelated = dir.0.join("unrelated.txt");
+        std::fs::write(&unrelated, b"unrelated").unwrap();
+        std::fs::write(
+            dir.0.join("doc.handshake.tmp-7-7.owner"),
+            b"hsk-studio-package-temp 1\npid 7\ntemp unrelated.txt\n",
+        )
+        .unwrap();
+        let decoys = dir.listing();
+
+        // A real process ends between the durable temp and the rename.
+        let status = run_child("crash", &dir.0)
+            .stdout(Stdio::null())
             .status()
             .unwrap();
         assert_eq!(
@@ -733,25 +1228,91 @@ fn atomic_save_retains_last_good_and_cancel() {
             "child must end at the injected kill point"
         );
         assert_eq!(
-            std::fs::read(&crash_target).unwrap(),
+            std::fs::read(&target).unwrap(),
             old,
             "last-good survives the kill"
         );
-        read(&old).unwrap();
-        let stale: Vec<String> = crash
-            .listing()
-            .into_iter()
-            .filter(|n| n != "doc.handshake")
-            .collect();
-        assert_eq!(stale.len(), 1, "exactly the interrupted temp remains");
-        assert!(stale[0].starts_with("doc.handshake.tmp-"));
+        let crashed: Vec<String> = dir.listing().difference(&decoys).cloned().collect();
         assert_eq!(
-            std::fs::read(crash.0.join(&stale[0])).unwrap(),
+            crashed.len(),
+            2,
+            "interrupted temp plus its marker: {crashed:?}"
+        );
+        let crashed_temp = crashed
+            .iter()
+            .find(|n| !n.ends_with(".owner"))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            std::fs::read(dir.0.join(&crashed_temp)).unwrap(),
             new,
             "interrupted temp is the complete, durable successor"
         );
-        // Recovery: the next save succeeds over last-good despite the stale temp.
-        save_atomic(&crash_target, &new, &limits, &token()).unwrap();
-        assert_eq!(std::fs::read(&crash_target).unwrap(), new);
+
+        // A second process keeps a save open (owner lock held) while we sweep.
+        let mut live = run_child("hold", &dir.0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(live.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            assert!(
+                lines.read_line(&mut line).unwrap() > 0,
+                "live child never became ready"
+            );
+            if line.trim() == "HSK-READY" {
+                break;
+            }
+        }
+        let before_sweep = dir.listing();
+        let first = sweep();
+        assert_eq!(
+            first.removed,
+            vec![crashed_temp.clone()],
+            "only the dead owner's temp goes"
+        );
+        assert_eq!(first.skipped_live, 1, "live owner is left alone");
+        assert_eq!(
+            first.ignored, 2,
+            "garbage marker and foreign marker are ignored"
+        );
+        let after_first: BTreeSet<String> = dir.listing();
+        let live_files: Vec<&String> = before_sweep
+            .difference(&decoys)
+            .filter(|n| !crashed.contains(n))
+            .collect();
+        assert_eq!(live_files.len(), 2, "live temp plus marker: {live_files:?}");
+        assert!(live_files.iter().all(|n| after_first.contains(*n)));
+        assert!(
+            decoys.iter().all(|n| after_first.contains(n)),
+            "decoys untouched"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), old);
+
+        // The live owner ends without cleanup; its lock dies with it and the next sweep reclaims it.
+        drop(live.stdin.take());
+        assert_eq!(live.wait().unwrap().code(), Some(87));
+        let second = sweep();
+        assert_eq!(second.removed.len(), 1);
+        assert_eq!(second.skipped_live, 0);
+        assert_eq!(dir.listing(), decoys, "only the original decoys remain");
+        assert_eq!(std::fs::read(&plain).unwrap(), b"user data");
+        assert_eq!(std::fs::read(&garbage_temp).unwrap(), b"user data 2");
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"unrelated");
+
+        // An in-flight save of this very process is never swept; cleanup removes temp and marker.
+        let mut mine = StdFs::new();
+        let temp = mine.write_temp(&target, &new).unwrap();
+        let during = sweep();
+        assert!(during.removed.is_empty() && during.skipped_live == 1);
+        assert!(temp.exists());
+        mine.remove(&temp);
+        assert_eq!(dir.listing(), decoys);
+        assert!(sweep().removed.is_empty());
+        // Next save still publishes over last-good after all of the above.
+        save_atomic(&target, &new, &limits, &token()).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), new);
     });
 }

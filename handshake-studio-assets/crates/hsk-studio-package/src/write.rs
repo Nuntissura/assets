@@ -5,7 +5,7 @@ use crate::{
     hashing::{check, sha256_hex, sha256_hex_of},
     limits::Limits,
     manifest::{
-        ASSET_PREFIX, CONTAINER_VERSION, DOCUMENT_NAME, EntryKind, MANIFEST_NAME, Manifest,
+        ASSET_PREFIX, CONTAINER_VERSION, Codec, DOCUMENT_NAME, EntryKind, MANIFEST_NAME, Manifest,
         ManifestEntry,
     },
     read::{Opened, Quarantined, tile_digests},
@@ -13,6 +13,7 @@ use crate::{
 };
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{ContentDigest, Snapshot};
+use ruzstd::encoding::{CompressionLevel, compress_to_vec};
 use std::{borrow::Cow, collections::BTreeMap, io::Write};
 
 /// Caller-granted asset byte provider. The package never owns a catalog or a second CAS: bytes
@@ -76,6 +77,18 @@ impl AssetSource for MemoryAssetSource {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WriteOptions {
     pub zip64: Zip64Policy,
+    /// Codec requested for asset blobs; a blob that would not shrink is stored raw.
+    pub asset_codec: Codec,
+}
+
+struct Part<'a> {
+    name: String,
+    kind: EntryKind,
+    codec: Codec,
+    raw_len: Option<u64>,
+    /// SHA-256 of the decoded bytes (content identity).
+    sha: String,
+    stored: Cow<'a, [u8]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,7 +134,7 @@ pub fn write_package_with<W: Write>(
     let document = doc.document();
     let doc_bytes = doc.encoded_bytes();
 
-    let mut payloads: Vec<(String, EntryKind, Cow<'_, [u8]>)> = Vec::new();
+    let mut parts: Vec<Part<'_>> = Vec::new();
     for digest in tile_digests(document)? {
         check(cancel)?;
         let reference = ContentDigest {
@@ -137,42 +150,68 @@ pub fn write_package_with<W: Write>(
         if sha256_hex(&bytes, cancel)? != digest {
             return Err(PackageError::HashMismatch);
         }
-        payloads.push((
-            format!("{ASSET_PREFIX}{digest}"),
-            EntryKind::Asset,
-            Cow::Owned(bytes),
-        ));
+        let name = format!("{ASSET_PREFIX}{digest}");
+        // Per-blob choice: compress only when it actually shrinks the stored bytes.
+        let packed = (options.asset_codec == Codec::Zstd)
+            .then(|| compress_to_vec(&bytes[..], CompressionLevel::Fastest))
+            .filter(|packed| packed.len() < bytes.len());
+        parts.push(match packed {
+            Some(packed) => Part {
+                name,
+                kind: EntryKind::Asset,
+                codec: Codec::Zstd,
+                raw_len: Some(bytes.len() as u64),
+                sha: digest,
+                stored: Cow::Owned(packed),
+            },
+            None => Part {
+                name,
+                kind: EntryKind::Asset,
+                codec: Codec::Raw,
+                raw_len: None,
+                sha: digest,
+                stored: Cow::Owned(bytes),
+            },
+        });
     }
     for held in quarantined {
-        payloads.push((
-            held.name.clone(),
-            EntryKind::Opaque,
-            Cow::Borrowed(held.bytes.as_slice()),
-        ));
+        parts.push(Part {
+            name: held.name.clone(),
+            kind: EntryKind::Opaque,
+            codec: Codec::Raw,
+            raw_len: None,
+            sha: sha256_hex(&held.bytes, cancel)?,
+            stored: Cow::Borrowed(held.bytes.as_slice()),
+        });
     }
-    payloads.push((
-        DOCUMENT_NAME.to_owned(),
-        EntryKind::Document,
-        Cow::Borrowed(doc_bytes),
-    ));
-    payloads.sort_by(|a, b| a.0.cmp(&b.0));
+    parts.push(Part {
+        name: DOCUMENT_NAME.to_owned(),
+        kind: EntryKind::Document,
+        codec: Codec::Raw,
+        raw_len: None,
+        sha: sha256_hex(doc_bytes, cancel)?,
+        stored: Cow::Borrowed(doc_bytes),
+    });
+    parts.sort_by(|a, b| a.name.cmp(&b.name));
 
     validate_name_set(
-        payloads
+        parts
             .iter()
-            .map(|p| p.0.as_str())
+            .map(|p| p.name.as_str())
             .chain(std::iter::once(MANIFEST_NAME)),
     )?;
 
-    let mut entries = Vec::with_capacity(payloads.len());
-    for (name, kind, data) in &payloads {
-        entries.push(ManifestEntry {
-            name: name.clone(),
-            kind: *kind,
-            sha256_hex: sha256_hex(data, cancel)?,
-            len: data.len() as u64,
-        });
-    }
+    let entries = parts
+        .iter()
+        .map(|p| ManifestEntry {
+            name: p.name.clone(),
+            kind: p.kind,
+            sha256_hex: p.sha.clone(),
+            len: p.stored.len() as u64,
+            codec: p.codec,
+            raw_len: p.raw_len,
+        })
+        .collect();
     let manifest = Manifest {
         container_version: CONTAINER_VERSION,
         document_id: document.document_id.clone(),
@@ -183,14 +222,14 @@ pub fn write_package_with<W: Write>(
     if manifest_bytes.len() as u64 > limits.max_manifest_bytes {
         return Err(PackageError::EntryTooLarge);
     }
-    if payloads.len() + 1 > limits.max_entries as usize {
+    if parts.len() + 1 > limits.max_entries as usize {
         return Err(PackageError::TooManyEntries);
     }
     // Pre-validate everything the zip writer would check so failure never leaves partial output.
     let mut total = manifest_bytes.len() as u64;
-    for (name, _, data) in &payloads {
-        validate_name(name.as_bytes(), limits.max_name_len)?;
-        let len = data.len() as u64;
+    for part in &parts {
+        validate_name(part.name.as_bytes(), limits.max_name_len)?;
+        let len = part.stored.len() as u64;
         if len > limits.max_entry_bytes {
             return Err(PackageError::EntryTooLarge);
         }
@@ -203,11 +242,11 @@ pub fn write_package_with<W: Write>(
     let mut zip = ZipWriter::new(out, *limits, options.zip64);
     zip.add(MANIFEST_NAME, &manifest_bytes, cancel)?;
     // Physical order: manifest first, then document, then the remaining entries by name.
-    for (name, _, data) in payloads.iter().filter(|p| p.0 == DOCUMENT_NAME) {
-        zip.add(name, data, cancel)?;
+    for part in parts.iter().filter(|p| p.name == DOCUMENT_NAME) {
+        zip.add(&part.name, &part.stored, cancel)?;
     }
-    for (name, _, data) in payloads.iter().filter(|p| p.0 != DOCUMENT_NAME) {
-        zip.add(name, data, cancel)?;
+    for part in parts.iter().filter(|p| p.name != DOCUMENT_NAME) {
+        zip.add(&part.name, &part.stored, cancel)?;
     }
     let stats = zip.finish(cancel)?;
     Ok(WriteReceipt {

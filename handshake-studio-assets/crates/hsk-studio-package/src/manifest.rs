@@ -24,6 +24,23 @@ pub enum EntryKind {
     Opaque,
 }
 
+/// Blob codec id. `Raw` is the implicit default and is never written to the manifest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Codec {
+    #[default]
+    Raw,
+    Zstd,
+}
+
+impl Codec {
+    pub fn is_raw(&self) -> bool {
+        matches!(self, Self::Raw)
+    }
+}
+
+/// One row of the blob table. `len` is the stored (archive entry) length; `sha256_hex` is the
+/// identity of the decoded bytes; `raw_len` is the decoded length of a compressed blob.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestEntry {
@@ -31,6 +48,10 @@ pub struct ManifestEntry {
     pub kind: EntryKind,
     pub sha256_hex: String,
     pub len: u64,
+    #[serde(default, skip_serializing_if = "Codec::is_raw")]
+    pub codec: Codec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_len: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +122,14 @@ impl Manifest {
                 EntryKind::Preview => entry.name.starts_with(PREVIEW_PREFIX),
                 EntryKind::Opaque => entry.name != DOCUMENT_NAME,
             };
-            if !consistent {
+            let codec_ok = match entry.codec {
+                Codec::Raw => entry.raw_len.is_none(),
+                Codec::Zstd => {
+                    entry.kind == EntryKind::Asset
+                        && entry.raw_len.is_some_and(|n| n <= limits.max_entry_bytes)
+                }
+            };
+            if !consistent || !codec_ok {
                 return Err(PackageError::ManifestInvalid);
             }
         }
