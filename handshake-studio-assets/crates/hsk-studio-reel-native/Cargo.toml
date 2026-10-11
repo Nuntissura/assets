@@ -6,6 +6,16 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+av1 = ["dep:hsk-studio-accord", "dep:hsk-studio-reel"]
+
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false, optional = true }
+hsk-studio-reel = { path = "../hsk-studio-reel", version = "=0.1.0", default-features = false, features = ["av1"], optional = true }
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "reel-native-av1-worker"
+path = "src/bin/reel-native-av1-worker.rs"
+required-features = ["av1"]
