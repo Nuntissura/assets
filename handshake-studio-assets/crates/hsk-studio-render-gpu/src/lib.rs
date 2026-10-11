@@ -1,2 +1,24 @@
 //! wgpu backend/device lifecycle, residency and budgets; GPU API types hidden from
 //! document/contracts.
+//!
+//! Implements the pigment-owned `RenderBackend` port (`hsk_studio_pigment::render_plan`) as
+//! [`GpuBackend`]. The plan IR, `StudioBlendMode`, the receipt and the reference blend arithmetic
+//! (`hsk_studio_pigment::blend_math`) live in pigment (CX-CAP-001); this crate adds headless
+//! device acquisition, generation/loss handling, byte-accounted residency and the WGSL compute
+//! pass. No wgpu type appears in any public signature (STU-ARC-002); a missing adapter is the
+//! typed `Unavailable`, never a silent CPU fallback.
+#![forbid(unsafe_code)]
+pub mod device;
+pub mod error;
+mod kernel;
+pub mod plan_sink;
+pub mod report;
+pub mod residency;
+
+pub use device::{AdapterKind, BackendChoice, DeviceInfo, DeviceOptions, GpuContext};
+pub use error::{GpuError, Reason};
+pub use plan_sink::{GpuBackend, GpuStats, RENDERER_NAME, RENDERER_VERSION, gpu_blend_supported};
+pub use report::{outcome_of, report};
+pub use residency::{Reservation, ReservationId, Residency, ResidentKey};
+
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-RENDER_GPU","version":1,"renderer":"hsk-studio-render-gpu/0.1","operation":"execute_render_plan_to_tile_sink","api":"impl RenderBackend<NoVector> for GpuBackend (pigment render_plan port); GpuBackend::new(DeviceOptions) never fails and holds Ready|Lost|Unavailable; execute_detailed returns (RenderReceipt, GpuStats); reacquire(cancel) is the only recovery; report(result, correlation, revision, cancel, observe, sink) emits one terminal Observe frame","command":"render-gpu-consumer --descriptor | --probe | --selftest","device":{"acquire":"headless: wgpu instance + adapter + device with no surface, no window, no focus; downlevel limits; validation layers off","backends":"auto|vulkan|dx12|metal|none (none = forced Unavailable(no_adapter))","generation":"u64, 1 on first acquire, +1 on every reacquire; a lost device latches DeviceLost{generation} for every later execute until reacquire","loss":"wgpu device-lost callback latches; simulate_device_loss destroys through the real wgpu path","unavailable":"no adapter -> Unavailable(no_adapter) (after admission); adapter without device -> no_device; request timeout -> adapter_timeout; never a CPU fallback"},"plan":"hsk_studio_pigment::render_plan::RenderPlan; admit() runs first (cancel, stale revision, validation, per-operator class); flat root group or leaf of solid and tile layers","blend":{"owner":"hsk_studio_pigment::blend_math (reference); WGSL reproduces composite_over in f32","supported":["normal","multiply","screen"],"exactness":"fitted (tolerance-equal, not bit-exact: GPU fused multiply-add and division); tile/solid exact (f32 bits preserved); fill_opacity approximate (folded as a product)","refused":"every other mode, masks, nested/pass-through groups, vector, premultiplied alpha, samples outside [0,1]: Unsupported at admission, before any upload"},"formats":{"colour":"rgb_f32le","alpha":"f32le straight, separate plane","chunk":"tightly packed row-major, sink receives rect + both planes"},"memory":{"residency":"pure-Rust LRU with pins and a hard budget; every device buffer is charged before it is created and released on every exit; peak and evictions are counted","buffers_per_call":"dst + staging (+ src when tiles) chunk buffers + 64 byte params","chunk":"shrinks from 512 until all buffers fit min(request.max_working_bytes, residency budget, device buffer limits); smaller than 64 texels -> BudgetExceeded","units":"RGBA f32 = 16 bytes per texel"},"failure":"cancel/deadline between chunks and layers; stale revision, invalid plan, unsupported operator, unresolved or mismatching source refuse before the first device call; sink error aborts; scratch released on every exit; receipt only after the last chunk","privacy":"no pixel, profile or path bytes in telemetry; adapter name only in the receipt identity text","pending":["more blend modes (WGSL per mode needs a parity test against blend_math)","masks, vector coverage, isolated and pass-through groups","content-addressed tile cache across executions (ResidentKey::Tile)","f16/HDR accumulation, multi-GPU, surface presentation (host)","backend-qualified oracle on discrete GPU, Vulkan and Metal: only the backend named in the lane file is proven"]}"#;
