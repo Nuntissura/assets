@@ -8,8 +8,13 @@ retries = 0
 slow-timeout = { period = "30s", terminate-after = 4 }
 
 [profile.default.junit]
-# Written to <target-dir>/nextest/default/junit.xml; run-round.sh copies it into the results dir.
+# Written to <target-dir>/nextest/default/junit.xml; run-round.sh copies it into each unit's results dir.
+# Full results: every test is a <testcase> (passing names included), passing tests' stdout/stderr stored
+# (e.g. a NOT_PROVEN branch stays distinguishable from a parity PASS), skipped tests listed (report-skipped: 0.9.143+).
 path = "junit.xml"
+store-success-output = true
+store-failure-output = true
+report-skipped = "all"
 
 # Smoke check: run-round.sh --canary selects the first listed test of every selected package
 # (computed from `cargo nextest list`, so it never names stale tests) and runs it with this profile.
@@ -20,3 +25,6 @@ slow-timeout = { period = "10s", terminate-after = 3 }
 
 [profile.canary.junit]
 path = "junit.xml"
+store-success-output = true
+store-failure-output = true
+report-skipped = "all"
