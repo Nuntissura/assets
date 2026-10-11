@@ -1,7 +1,10 @@
 //! Session-side adapter: implements the session's `GrantPort`, `CommitPort` and `JobPort` by
 //! encoding envelopes, calling a [`HostBridge`] and decoding replies. Fail closed everywhere: a
 //! missing, undecodable or mismatched reply is a denied grant, a refused job, and for a commit
-//! the distinct outcome `Unknown` (never `Rejected`: the host may have committed).
+//! the distinct outcome `Unknown` (not `Rejected`: the host may have committed). Tested for a lost
+//! reply by `stale_epoch_conflict_and_unknown_outcome`; undecodable and mismatched replies take the
+//! same path (`Exchange::NoReply`) and are not separately tested.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::{
     host::HostBridge,
     wire::{
@@ -48,7 +51,7 @@ impl<H: HostBridge> Shared<H> {
         key: Option<&str>,
         body: Body,
     ) -> Exchange {
-        let correlation = self.correlation.fetch_add(1, Ordering::Relaxed) + 1;
+        let correlation = self.correlation.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         let envelope = Envelope {
             bridge_version: crate::wire::BRIDGE_VERSION,
             correlation_id: correlation,
@@ -78,7 +81,8 @@ impl<H: HostBridge> Shared<H> {
         }
     }
 
-    /// Best-effort terminal report; it can never change the result it reports.
+    /// Best-effort terminal report; it returns nothing, so the result it reports is unchanged by
+    /// construction.
     fn report(&self, revision: u64, outcome: Outcome, code: Option<&str>) {
         let Some(outcome) = OutcomeWire::from_observe(outcome) else {
             return;
@@ -334,6 +338,8 @@ impl<H: HostBridge + 'static> JobPort for BridgeJobs<H> {
             Exchange::Reply(ReplyBody::Job(JobDecision::Refused { retry_after_ms })) => {
                 Err(JobRefused { retry_after_ms })
             }
+            // The session's port has no denial form: an unauthorized admission is a refusal with
+            // the long hint, same as an unreachable host. No ticket exists, so none is released.
             _ => Err(JobRefused {
                 retry_after_ms: UNREACHABLE_RETRY_AFTER_MS,
             }),

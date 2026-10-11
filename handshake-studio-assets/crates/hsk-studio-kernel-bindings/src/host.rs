@@ -3,10 +3,16 @@
 //! commit, lease-epoch fence, expected-revision compare, idempotency bound to principal,
 //! resource and binding, monotonic receipts). It is memory only: nothing it holds survives the
 //! process, and it is a stand-in for the concrete host adapters that live in the product.
+//!
+//! Proven by `tests/bridge_contract.rs`: grants and commit order (`fail_closed_on_absent_or_revoked_grant`,
+//! `roundtrip_envelopes_through_session_and_idempotent_replay`), job tickets bound to their owner
+//! (`job_tickets_are_released_only_by_their_owner`, `job_admission_needs_a_standing_grant`), and a host-owned lease epoch
+//! (`lease_epoch_is_issued_by_the_host_not_adopted_from_callers`).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::wire::{
     ActionWire, Body, CommitDecision, CommitMsg, DenyReason, DiagnosticMsg, Envelope, ErrorReply,
-    GrantDecision, JobDecision, Limits, LookupDecision, ReceiptWire, RejectCode, Reply, ReplyBody,
-    decode_envelope, encode_reply, hex_decode,
+    GrantDecision, JobDecision, JobDenyCode, Limits, LookupDecision, ReceiptWire, RejectCode,
+    Reply, ReplyBody, decode_envelope, encode_reply, hex_decode,
 };
 use hsk_studio_accord::{ActorContext, DomainId};
 use hsk_studio_session::Action;
@@ -85,6 +91,16 @@ struct IdempotencyEntry {
     receipt: ReceiptWire,
 }
 
+/// An admitted job. The ticket belongs to the account, principal and resource it was admitted
+/// for; only that owner can release it.
+struct JobEntry {
+    account: String,
+    principal: String,
+    resource: String,
+    jobs: u32,
+    bytes: u64,
+}
+
 #[derive(Default)]
 struct State {
     grants: BTreeSet<GrantKey>,
@@ -97,7 +113,7 @@ struct State {
     idempotency: BTreeMap<String, IdempotencyEntry>,
     receipts: Vec<ReceiptWire>,
     sequence: u64,
-    jobs: BTreeMap<u64, (u32, u64)>,
+    jobs: BTreeMap<u64, JobEntry>,
     next_ticket: u64,
     diagnostics: Vec<DiagnosticRecord>,
     faults: VecDeque<Fault>,
@@ -205,12 +221,7 @@ impl TransientHost {
 
     /// (jobs, bytes) admitted and not yet released.
     pub fn jobs_in_flight(&self) -> (u32, u64) {
-        self.lock()
-            .jobs
-            .values()
-            .fold((0, 0), |(j, b), (jobs, bytes)| {
-                (j.saturating_add(*jobs), b.saturating_add(*bytes))
-            })
+        jobs_used(&self.lock())
     }
 
     pub fn requests_seen(&self) -> u64 {
@@ -231,11 +242,12 @@ impl TransientHost {
                 ReplyBody::Commit(decision)
             }
             Body::Lookup => lookup(&state, &envelope),
-            Body::JobAdmit { jobs, bytes, .. } => self.job_admit(&mut state, *jobs, *bytes),
-            Body::JobRelease { ticket } => {
-                state.jobs.remove(ticket);
-                ReplyBody::Ack
-            }
+            Body::JobAdmit {
+                action,
+                jobs,
+                bytes,
+            } => self.job_admit(&mut state, &envelope, *action, *jobs, *bytes),
+            Body::JobRelease { ticket } => job_release(&mut state, &envelope, *ticket),
             Body::Diagnostic(message) => {
                 if state.diagnostics.len() < self.config.max_diagnostics {
                     state.diagnostics.push(DiagnosticRecord {
@@ -272,7 +284,15 @@ impl TransientHost {
             Some(token) => *token,
             None => {
                 let token = state.next_token;
-                state.next_token += 1;
+                // An exhausted counter issues nothing (fail closed) instead of wrapping.
+                let Some(next) = token.checked_add(1) else {
+                    return ReplyBody::Grant(GrantDecision {
+                        granted: false,
+                        token: 0,
+                        reason: Some(DenyReason::Missing),
+                    });
+                };
+                state.next_token = next;
                 state.tokens.insert(key, token);
                 token
             }
@@ -284,13 +304,32 @@ impl TransientHost {
         })
     }
 
-    fn job_admit(&self, state: &mut State, jobs: u32, bytes: u64) -> ReplyBody {
-        let (used_jobs, used_bytes) = state
-            .jobs
-            .values()
-            .fold((0u32, 0u64), |(j, b), (jobs, bytes)| {
-                (j.saturating_add(*jobs), b.saturating_add(*bytes))
-            });
+    /// Admission is authorized like any other request: the principal must hold a standing grant
+    /// for the resource and action, and the ticket it receives is bound to that account,
+    /// principal and resource.
+    fn job_admit(
+        &self,
+        state: &mut State,
+        envelope: &Envelope,
+        action: ActionWire,
+        jobs: u32,
+        bytes: u64,
+    ) -> ReplyBody {
+        let key = (
+            envelope.actor.account_id.clone(),
+            envelope.actor.principal_id.clone(),
+            envelope.resource_id.clone(),
+            action,
+        );
+        if !state.grants.contains(&key) {
+            let code = if state.revoked.contains(&key) {
+                JobDenyCode::GrantRevoked
+            } else {
+                JobDenyCode::GrantMissing
+            };
+            return ReplyBody::Job(JobDecision::Denied { code });
+        }
+        let (used_jobs, used_bytes) = jobs_used(state);
         let fits = used_jobs.checked_add(jobs).is_some_and(|n| n <= self.config.job_capacity)
             && used_bytes
                 .checked_add(bytes)
@@ -301,8 +340,22 @@ impl TransientHost {
             });
         }
         let ticket = state.next_ticket;
-        state.next_ticket += 1;
-        state.jobs.insert(ticket, (jobs, bytes));
+        let Some(next) = ticket.checked_add(1) else {
+            return ReplyBody::Job(JobDecision::Refused {
+                retry_after_ms: self.config.retry_after_ms,
+            });
+        };
+        state.next_ticket = next;
+        state.jobs.insert(
+            ticket,
+            JobEntry {
+                account: envelope.actor.account_id.clone(),
+                principal: envelope.actor.principal_id.clone(),
+                resource: envelope.resource_id.clone(),
+                jobs,
+                bytes,
+            },
+        );
         ReplyBody::Job(JobDecision::Admitted { ticket })
     }
 
@@ -331,7 +384,7 @@ impl TransientHost {
         if fault == Some(Fault::BumpEpoch)
             && let Some(r) = state.resources.get_mut(resource)
         {
-            r.epoch += 1;
+            r.epoch = r.epoch.saturating_add(1);
         }
         let reject = |code| (CommitDecision::Rejected { code }, false);
 
@@ -361,9 +414,15 @@ impl TransientHost {
         let Some(current) = state.resources.get(resource) else {
             return reject(RejectCode::ResourceUnknown);
         };
-        // 3. Lease-epoch fence, then expected-revision compare.
+        // 3. Lease-epoch fence, then expected-revision compare. The epoch is host-owned: only the
+        //    host's own current epoch passes. An older one is stale; a newer one was not issued by
+        //    the host and is not adopted (a caller could otherwise fence every other writer; test
+        //    `lease_epoch_is_issued_by_the_host_not_adopted_from_callers`).
         if envelope.lease_epoch < current.epoch {
             return (CommitDecision::StaleEpoch, false);
+        }
+        if envelope.lease_epoch > current.epoch {
+            return reject(RejectCode::EpochNotIssued);
         }
         if envelope.expected_revision != current.revision {
             return (
@@ -373,7 +432,7 @@ impl TransientHost {
                 false,
             );
         }
-        if commit.successor_revision != envelope.expected_revision.saturating_add(1) {
+        if envelope.expected_revision.checked_add(1) != Some(commit.successor_revision) {
             return reject(RejectCode::SuccessorMismatch);
         }
         if state.idempotency.len() >= self.config.max_receipts {
@@ -384,7 +443,10 @@ impl TransientHost {
             return reject(RejectCode::InvalidRequest);
         };
         // 4. Commit atomically (one lock): state, receipt and idempotency entry together.
-        state.sequence += 1;
+        let Some(sequence) = state.sequence.checked_add(1) else {
+            return reject(RejectCode::ReceiptsFull);
+        };
+        state.sequence = sequence;
         let receipt = ReceiptWire {
             revision: commit.successor_revision,
             sequence: state.sequence,
@@ -393,7 +455,6 @@ impl TransientHost {
         };
         if let Some(r) = state.resources.get_mut(resource) {
             r.revision = commit.successor_revision;
-            r.epoch = envelope.lease_epoch;
             r.document = document;
         }
         state.receipts.push(receipt.clone());
@@ -409,6 +470,32 @@ impl TransientHost {
         );
         (CommitDecision::Accepted(receipt), fault == Some(Fault::DropAck))
     }
+}
+
+/// (jobs, bytes) held by admitted, unreleased tickets.
+fn jobs_used(state: &State) -> (u32, u64) {
+    state.jobs.values().fold((0, 0), |(j, b), entry| {
+        (j.saturating_add(entry.jobs), b.saturating_add(entry.bytes))
+    })
+}
+
+/// Only the owner (account, principal and resource the ticket was admitted for) releases a
+/// ticket; any other caller is refused and nothing changes. An unknown ticket (already released)
+/// is acknowledged, so a retried release is harmless.
+fn job_release(state: &mut State, envelope: &Envelope, ticket: u64) -> ReplyBody {
+    let Some(entry) = state.jobs.get(&ticket) else {
+        return ReplyBody::Ack;
+    };
+    let owner = entry.account == envelope.actor.account_id
+        && entry.principal == envelope.actor.principal_id
+        && entry.resource == envelope.resource_id;
+    if !owner {
+        return ReplyBody::Job(JobDecision::Denied {
+            code: JobDenyCode::NotTicketOwner,
+        });
+    }
+    state.jobs.remove(&ticket);
+    ReplyBody::Ack
 }
 
 fn lookup(state: &State, envelope: &Envelope) -> ReplyBody {
@@ -429,7 +516,10 @@ fn lookup(state: &State, envelope: &Envelope) -> ReplyBody {
 
 impl HostBridge for TransientHost {
     fn handle(&self, request: &[u8]) -> Vec<u8> {
-        self.lock().requests += 1;
+        {
+            let mut state = self.lock();
+            state.requests = state.requests.saturating_add(1);
+        }
         let limits = self.config.limits;
         let (reply, drop_ack) = match decode_envelope(request, &limits) {
             Ok(envelope) => self.dispatch(envelope),

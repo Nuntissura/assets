@@ -519,3 +519,340 @@ fn wire_strictness_and_descriptor() {
         assert!(later.iter().all(|a| a["status"] == "NOT_IMPLEMENTED_HOST_ONLY"));
     });
 }
+
+// ----- review R5 regressions -------------------------------------------------------------------
+
+const DOC_2: &str = "SDOC-019abcde-0000-7000-8000-000000000002";
+
+fn other_actor(account: &str, principal: &str) -> ActorContext {
+    ActorContext::new(account, principal, "owner", "owner-principal", "space", "session-2").unwrap()
+}
+
+fn request(
+    actor: &ActorContext,
+    resource: &str,
+    key: Option<&str>,
+    expected_revision: u64,
+    lease_epoch: u64,
+    body: Body,
+) -> Vec<u8> {
+    encode_envelope(
+        &Envelope {
+            bridge_version: BRIDGE_VERSION,
+            correlation_id: 99,
+            idempotency_key: key.map(str::to_owned),
+            actor: ActorWire::from_context(actor),
+            resource_id: resource.to_owned(),
+            expected_revision,
+            lease_epoch,
+            body,
+        },
+        &Limits::default(),
+    )
+    .unwrap()
+}
+
+fn ask(host: &impl HostBridge, bytes: &[u8]) -> ReplyBody {
+    decode_reply(&host.handle(bytes), &Limits::default()).unwrap().result
+}
+
+fn admit(host: &impl HostBridge, actor: &ActorContext, resource: &str, jobs: u32, bytes: u64) -> JobDecision {
+    let body = Body::JobAdmit { action: ActionWire::Edit, jobs, bytes };
+    match ask(host, &request(actor, resource, None, 0, EPOCH, body)) {
+        ReplyBody::Job(decision) => decision,
+        other => panic!("admit answered {other:?}"),
+    }
+}
+
+fn release(host: &impl HostBridge, actor: &ActorContext, resource: &str, ticket: u64) -> ReplyBody {
+    ask(host, &request(actor, resource, None, 0, EPOCH, Body::JobRelease { ticket }))
+}
+
+const NOT_OWNER: ReplyBody = ReplyBody::Job(JobDecision::Denied { code: JobDenyCode::NotTicketOwner });
+
+#[test]
+fn job_admission_needs_a_standing_grant() {
+    bounded_case("job_admission_grant", || {
+        let host = TransientHost::default();
+        let (a, b) = (actor(), other_actor("account", "other-principal"));
+        let stranger = other_actor("account-2", "principal");
+        let doc = DomainId::parse(DOC).unwrap();
+        host.grant(&a, &doc, Action::Edit);
+        host.grant(&b, &doc, Action::Edit);
+
+        // No grant, a grant for another action, and a withdrawn grant each get a typed denial
+        // and no ticket; the holder of a standing grant is admitted.
+        assert_eq!(
+            admit(&host, &stranger, DOC, 1, 1),
+            JobDecision::Denied { code: JobDenyCode::GrantMissing }
+        );
+        let export = Body::JobAdmit { action: ActionWire::Export, jobs: 1, bytes: 1 };
+        assert_eq!(
+            ask(&host, &request(&a, DOC, None, 0, EPOCH, export)),
+            ReplyBody::Job(JobDecision::Denied { code: JobDenyCode::GrantMissing })
+        );
+        host.revoke(&b, &doc, Action::Edit);
+        assert_eq!(
+            admit(&host, &b, DOC, 1, 1),
+            JobDecision::Denied { code: JobDenyCode::GrantRevoked }
+        );
+        assert_eq!(host.jobs_in_flight(), (0, 0), "denied admissions hold nothing");
+        assert!(matches!(admit(&host, &a, DOC, 1, 1), JobDecision::Admitted { .. }));
+    });
+}
+
+#[test]
+fn job_tickets_are_released_only_by_their_owner() {
+    bounded_case("job_ticket_owner", || {
+        let host = TransientHost::default();
+        let (a, b) = (actor(), other_actor("account", "other-principal"));
+        let other_account = other_actor("account-2", "principal");
+        let (doc, doc_2) = (DomainId::parse(DOC).unwrap(), DomainId::parse(DOC_2).unwrap());
+        for who in [&a, &b, &other_account] {
+            host.grant(who, &doc, Action::Edit);
+        }
+        host.grant(&a, &doc_2, Action::Edit);
+
+        let JobDecision::Admitted { ticket } = admit(&host, &a, DOC, 1, 100) else {
+            panic!("owner admitted");
+        };
+        assert_eq!(host.jobs_in_flight(), (1, 100));
+
+        // Another principal of the same account (granted!), another account, and the owner on
+        // another resource: each is refused with the typed error and nothing is released.
+        for (who, resource) in [(&b, DOC), (&other_account, DOC), (&a, DOC_2)] {
+            assert_eq!(release(&host, who, resource, ticket), NOT_OWNER);
+            assert_eq!(host.jobs_in_flight(), (1, 100), "a foreign release freed nothing");
+        }
+
+        // The owner releases it; a repeated release is harmless.
+        assert_eq!(release(&host, &a, DOC, ticket), ReplyBody::Ack);
+        assert_eq!(host.jobs_in_flight(), (0, 0));
+        assert_eq!(release(&host, &a, DOC, ticket), ReplyBody::Ack);
+
+        // The accounting attack the finding describes: a full host stays full for a second
+        // actor, whatever it tries to release.
+        let JobDecision::Admitted { ticket: full } = admit(&host, &a, DOC, 4, 1) else {
+            panic!("owner fills the capacity");
+        };
+        let refused = JobDecision::Refused { retry_after_ms: HostConfig::default().retry_after_ms };
+        assert_eq!(admit(&host, &b, DOC, 1, 1), refused);
+        assert_eq!(release(&host, &b, DOC, full), NOT_OWNER);
+        assert_eq!(admit(&host, &b, DOC, 1, 1), refused, "the owner's slots were not freed");
+        assert_eq!(release(&host, &a, DOC, full), ReplyBody::Ack);
+        assert!(matches!(admit(&host, &b, DOC, 1, 1), JobDecision::Admitted { .. }));
+    });
+}
+
+#[test]
+fn lease_epoch_is_issued_by_the_host_not_adopted_from_callers() {
+    bounded_case("lease_epoch_host_owned", || {
+        let mut rig = rig(true);
+        let mallory = other_actor("account", "mallory");
+        let resource = rig.resource.clone();
+        rig.host.inner.grant(&mallory, &resource, Action::Edit);
+        let ReplyBody::Grant(grant) = ask(
+            &*rig.host,
+            &request(&mallory, DOC, None, 0, EPOCH, Body::GrantCheck { action: ActionWire::Edit }),
+        ) else {
+            panic!("grant answer");
+        };
+        assert!(grant.granted);
+        let commit = |epoch: u64, key: &str| {
+            let body = Body::Commit(CommitMsg {
+                grant_token: grant.token,
+                successor_revision: START + 1,
+                binding: "0".repeat(64),
+                document_hex: hex_encode(b"mallory"),
+                revision_updates: Vec::new(),
+            });
+            ask(&*rig.host, &request(&mallory, DOC, Some(key), START, epoch, body))
+        };
+
+        // A granted editor claiming an epoch the host never issued is refused, whatever the
+        // value, and nothing is applied or adopted.
+        for (epoch, key) in [(u64::MAX, "mal-1"), (EPOCH + 1, "mal-2")] {
+            assert_eq!(
+                commit(epoch, key),
+                ReplyBody::Commit(CommitDecision::Rejected { code: RejectCode::EpochNotIssued })
+            );
+            assert_eq!(rig.host.inner.lease_epoch(&resource), Some(EPOCH), "epoch {epoch} not adopted");
+            assert_eq!(rig.host.inner.committed_revision(&resource), Some(START));
+            assert_eq!(rig.host.inner.receipts().len(), 0);
+        }
+
+        // The legitimate writer, holding the host-issued epoch, is not fenced out.
+        let applied = submit(&mut rig, &key("k-1"), &token()).unwrap();
+        assert_eq!(applied.revision, START + 1);
+        assert_eq!(rig.host.inner.lease_epoch(&resource), Some(EPOCH), "a commit leaves the epoch alone");
+        assert_eq!(host_document(&rig), (START + 1, TO.to_owned()));
+        assert_eq!(rig.host.inner.receipts().len(), 1);
+    });
+}
+
+#[test]
+fn hostile_sizes_are_refused_typed() {
+    bounded_case("hostile_sizes", || {
+        // Job admission: extreme costs and sums refuse (checked arithmetic), nothing is held.
+        let host = TransientHost::default();
+        let a = actor();
+        let doc = DomainId::parse(DOC).unwrap();
+        host.grant(&a, &doc, Action::Edit);
+        let refused = JobDecision::Refused { retry_after_ms: HostConfig::default().retry_after_ms };
+        assert_eq!(admit(&host, &a, DOC, u32::MAX, 1), refused, "dims u32::MAX");
+        assert_eq!(admit(&host, &a, DOC, 1, u64::MAX), refused, "bytes u64::MAX");
+        assert_eq!(host.jobs_in_flight(), (0, 0));
+        assert!(matches!(admit(&host, &a, DOC, 3, 1), JobDecision::Admitted { .. }));
+        assert_eq!(admit(&host, &a, DOC, u32::MAX, 0), refused, "sum overflows u32");
+        assert_eq!(host.jobs_in_flight(), (3, 1));
+        // Running aggregate over the byte budget (64 MiB default) is refused, not clipped.
+        let forty = 40 * 1024 * 1024;
+        assert!(matches!(admit(&host, &a, DOC, 0, forty), JobDecision::Admitted { .. }));
+        assert_eq!(admit(&host, &a, DOC, 0, forty), refused, "aggregate over budget");
+        assert_eq!(host.jobs_in_flight(), (3, forty + 1));
+
+        // Wire: the document bound and the update-count bound are typed refusals, on both sides.
+        let limits = Limits::default();
+        let envelope = |hex_bytes: &[u8], updates: usize| Envelope {
+            bridge_version: BRIDGE_VERSION,
+            correlation_id: u64::MAX,
+            idempotency_key: Some("k-1".into()),
+            actor: ActorWire::from_context(&actor()),
+            resource_id: DOC.into(),
+            expected_revision: u64::MAX,
+            lease_epoch: u64::MAX,
+            body: Body::Commit(CommitMsg {
+                grant_token: u64::MAX,
+                successor_revision: u64::MAX,
+                binding: "b".repeat(64),
+                document_hex: hex_encode(hex_bytes),
+                revision_updates: (0..updates)
+                    .map(|_| RevisionUpdateWire { address: "{}".into(), previous_revision: 0, revision: u64::MAX })
+                    .collect(),
+            }),
+        };
+        let at_limit = envelope(b"12345678", MAX_REVISION_UPDATES);
+        let bytes = encode_envelope(&at_limit, &limits).unwrap();
+        assert_eq!(decode_envelope(&bytes, &limits).unwrap(), at_limit, "u64::MAX fields survive exactly");
+        let tight = Limits { max_document_bytes: 4, ..limits };
+        assert_eq!(encode_envelope(&at_limit, &tight).unwrap_err().code(), "document_too_large");
+        assert_eq!(decode_envelope(&bytes, &tight).unwrap_err().code(), "document_too_large");
+        let too_many = envelope(b"", MAX_REVISION_UPDATES + 1);
+        assert_eq!(encode_envelope(&too_many, &limits).unwrap_err().code(), "too_many_updates");
+
+        // Host: a successor that would wrap the revision counter is a typed rejection.
+        let host = TransientHost::default();
+        host.grant(&a, &doc, Action::Edit);
+        host.seed_resource(&doc, u64::MAX, EPOCH, b"x");
+        let ReplyBody::Grant(grant) = ask(
+            &host,
+            &request(&a, DOC, None, 0, EPOCH, Body::GrantCheck { action: ActionWire::Edit }),
+        ) else {
+            panic!("grant answer");
+        };
+        let body = Body::Commit(CommitMsg {
+            grant_token: grant.token,
+            successor_revision: u64::MAX,
+            binding: "0".repeat(64),
+            document_hex: hex_encode(b"y"),
+            revision_updates: Vec::new(),
+        });
+        assert_eq!(
+            ask(&host, &request(&a, DOC, Some("wrap-1"), u64::MAX, EPOCH, body)),
+            ReplyBody::Commit(CommitDecision::Rejected { code: RejectCode::SuccessorMismatch })
+        );
+        assert_eq!(host.committed_revision(&doc), Some(u64::MAX));
+        assert_eq!((host.receipts().len(), host.document_bytes(&doc).unwrap()), (0, b"x".to_vec()));
+    });
+}
+
+#[test]
+fn only_canonical_bytes_decode() {
+    bounded_case("canonical_only", || {
+        let limits = Limits::default();
+        let envelope = Envelope {
+            bridge_version: BRIDGE_VERSION,
+            correlation_id: 7,
+            idempotency_key: Some("k-1".into()),
+            actor: ActorWire::from_context(&actor()),
+            resource_id: DOC.into(),
+            expected_revision: START,
+            lease_epoch: EPOCH,
+            body: Body::Commit(CommitMsg {
+                grant_token: 1,
+                successor_revision: START + 1,
+                binding: "b".repeat(64),
+                document_hex: hex_encode(b"{}"),
+                revision_updates: Vec::new(),
+            }),
+        };
+        let good = String::from_utf8(encode_envelope(&envelope, &limits).unwrap()).unwrap();
+        assert_eq!(decode_envelope(good.as_bytes(), &limits).unwrap(), envelope);
+
+        let code = |text: &str| decode_envelope(text.as_bytes(), &limits).unwrap_err().code();
+        let without_version = good.replacen("\"bridge_version\":1,", "", 1);
+        let reordered = format!("{},\"bridge_version\":1}}", without_version.strip_suffix('}').unwrap());
+        let variants = [
+            ("space after a colon", good.replacen("\"correlation_id\":7", "\"correlation_id\": 7", 1)),
+            ("space after a comma", good.replacen("\"correlation_id\":7,", "\"correlation_id\":7, ", 1)),
+            ("newline between fields", good.replacen(",\"actor\"", ",\n\"actor\"", 1)),
+            ("tab inside the body", good.replacen("\"body\":{", "\"body\":{\t", 1)),
+            ("key order", reordered),
+            ("unicode escape", good.replacen("\"k-1\"", "\"k\\u002d1\"", 1)),
+            ("solidus escape", good.replacen("\"k-1\"", "\"k\\/1\"", 1)),
+        ];
+        for (name, text) in &variants {
+            assert_ne!(text, &good, "variant {name} changed the input");
+            assert_eq!(code(text), "non_canonical", "{name}");
+        }
+        // An omitted null field decodes in serde but is not what the encoder emits.
+        let grant = String::from_utf8(
+            encode_envelope(
+                &Envelope {
+                    idempotency_key: None,
+                    body: Body::GrantCheck { action: ActionWire::Edit },
+                    ..envelope.clone()
+                },
+                &limits,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let omitted = grant.replacen("\"idempotency_key\":null,", "", 1);
+        assert_ne!(omitted, grant);
+        assert_eq!(code(&omitted), "non_canonical", "omitted null");
+        assert!(decode_envelope(grant.as_bytes(), &limits).is_ok());
+
+        // Comment and case decoys never reach the interpreter: the parser or the schema refuses them.
+        let decoys = [
+            ("block comment", good.replacen(",\"actor\"", ",/*x*/\"actor\"", 1)),
+            ("line comment", format!("{good}//x")),
+            ("upper-case key", good.replacen("\"correlation_id\"", "\"Correlation_Id\"", 1)),
+            ("upper-case variant", good.replacen("\"commit\":", "\"Commit\":", 1)),
+            ("single quotes", good.replacen("\"actor\"", "'actor'", 1)),
+        ];
+        for (name, text) in &decoys {
+            assert_ne!(text, &good, "decoy {name} changed the input");
+            assert!(decode_envelope(text.as_bytes(), &limits).is_err(), "decoy {name}");
+        }
+
+        // Number forms the encoder never emits are refused by the parser or the canonical check.
+        for number in ["7.0", "7e0", "7E+0", "07", "+7", "0x7", "7.", "-0"] {
+            let text = good.replacen("\"correlation_id\":7", &format!("\"correlation_id\":{number}"), 1);
+            assert!(decode_envelope(text.as_bytes(), &limits).is_err(), "number form {number}");
+        }
+
+        // Replies are held to the same rule, and so is the host's boundary: a non-canonical
+        // request earns a typed `non_canonical` error reply, not an interpretation.
+        let ack = String::from_utf8(encode_reply(&Reply::new(7, ReplyBody::Ack), &limits).unwrap()).unwrap();
+        let spaced = ack.replacen("\"result\":", "\"result\": ", 1);
+        assert_eq!(decode_reply(spaced.as_bytes(), &limits).unwrap_err().code(), "non_canonical");
+        let host = TransientHost::default();
+        assert_eq!(
+            ask(&host, variants[0].1.as_bytes()),
+            ReplyBody::Error(ErrorReply { code: "non_canonical".into() })
+        );
+        assert_eq!(host.requests_seen(), 1);
+        assert_eq!(host.receipts().len(), 0);
+    });
+}

@@ -1,7 +1,16 @@
 //! Versioned wire envelopes and their strict codec. The wire is compact JSON in canonical field
 //! order (struct order, no whitespace); decoding refuses everything the encoder cannot produce:
 //! unknown or duplicate fields, a foreign `bridge_version`, trailing bytes, oversize input,
-//! malformed ids and non-canonical hex. Nothing here names a host, a store or a transport.
+//! malformed ids and non-canonical hex. Canonical form is enforced, not assumed: a decoded value
+//! is re-encoded and must equal the input byte for byte, so interior whitespace, reordered keys,
+//! `\u` escapes and omitted `null` fields are `non_canonical`. Nothing here names a host, a store
+//! or a transport.
+//!
+//! Proven by `tests/bridge_contract.rs`: canonical-only decoding by `only_canonical_bytes_decode`
+//! (whitespace, key order, escapes, omitted null, number forms, comment and case decoys, the host
+//! boundary, replies); every other refusal and its stable code by `wire_strictness_and_descriptor`;
+//! hostile sizes by `hostile_sizes_are_refused_typed`.
+#![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::{ActorContext, DomainId};
 use hsk_studio_observe::{FailureCode, Outcome};
 use hsk_studio_session::Action;
@@ -13,7 +22,8 @@ pub const MAX_KEY_BYTES: usize = 128;
 pub const MAX_REVISION_UPDATES: usize = 4096;
 const MAX_CODE_BYTES: usize = 64;
 
-/// Decode/encode bounds. Both are enforced before parsing and after, never trusted from input.
+/// Decode/encode bounds. Both are enforced before parsing and after, not taken from the input
+/// (`wire_strictness_and_descriptor`: oversize; `hostile_sizes_are_refused_typed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// Largest accepted/produced message.
@@ -59,6 +69,8 @@ pub enum WireError {
     InvalidLimits,
     InvalidCode,
     EncodeFailed,
+    /// Well-formed and schema-valid, but not the exact bytes the encoder produces for that value.
+    NonCanonical,
 }
 
 impl WireError {
@@ -83,6 +95,7 @@ impl WireError {
             Self::InvalidLimits => "invalid_limits",
             Self::InvalidCode => "invalid_code",
             Self::EncodeFailed => "encode_failed",
+            Self::NonCanonical => "non_canonical",
         }
     }
 }
@@ -188,7 +201,7 @@ pub enum OutcomeWire {
 }
 
 impl OutcomeWire {
-    /// `None` for progress, which is never a terminal diagnostic.
+    /// `None` for progress, which is not a terminal diagnostic.
     pub fn from_observe(outcome: Outcome) -> Option<Self> {
         match outcome {
             Outcome::Progress => None,
@@ -225,6 +238,8 @@ pub enum RejectCode {
     ResourceUnknown,
     ReceiptsFull,
     InvalidRequest,
+    /// The request claims a lease epoch the host has not issued (newer than the host's own).
+    EpochNotIssued,
 }
 
 impl RejectCode {
@@ -237,6 +252,7 @@ impl RejectCode {
             Self::ResourceUnknown => "resource_unknown",
             Self::ReceiptsFull => "receipts_full",
             Self::InvalidRequest => "invalid_request",
+            Self::EpochNotIssued => "epoch_not_issued",
         }
     }
 }
@@ -276,7 +292,8 @@ pub struct CommitMsg {
 pub struct DiagnosticMsg {
     pub operation: OperationWire,
     pub outcome: OutcomeWire,
-    /// Stable snake_case code; never names, paths or document text.
+    /// Stable snake_case code (the character set is enforced by `valid_code`); by construction it
+    /// carries no names, paths or document text.
     pub code: Option<String>,
     pub revision: u64,
 }
@@ -315,7 +332,8 @@ pub struct ReceiptWire {
     pub revision: u64,
     pub sequence: u64,
     pub binding: String,
-    /// Opaque host reference (an event-ledger event id on a real host); carried, never parsed.
+    /// Opaque host reference (an event-ledger event id on a real host); carried as bounded text
+    /// and not interpreted.
     pub host_ref: String,
 }
 
@@ -344,11 +362,24 @@ pub enum LookupDecision {
     Absent,
 }
 
+/// Why the host refused a job request outright (as opposed to `Refused`, which is load: retry).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobDenyCode {
+    /// Admission: the principal holds no standing grant for the resource and action.
+    GrantMissing,
+    /// Admission: the principal's grant for the resource and action was withdrawn.
+    GrantRevoked,
+    /// Release: the ticket was admitted for another account, principal or resource.
+    NotTicketOwner,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum JobDecision {
     Admitted { ticket: u64 },
     Refused { retry_after_ms: u64 },
+    Denied { code: JobDenyCode },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -399,6 +430,7 @@ pub fn diagnostic_outcome(body: &ReplyBody) -> Outcome {
         ReplyBody::Lookup(_) | ReplyBody::Ack => Outcome::Success,
         ReplyBody::Job(JobDecision::Admitted { .. }) => Outcome::Success,
         ReplyBody::Job(JobDecision::Refused { .. }) => Outcome::Failure(FailureCode::Unavailable),
+        ReplyBody::Job(JobDecision::Denied { .. }) => Outcome::Failure(FailureCode::Validation),
         ReplyBody::Error(_) => Outcome::Failure(FailureCode::Validation),
     }
 }
@@ -407,15 +439,16 @@ pub fn diagnostic_outcome(body: &ReplyBody) -> Outcome {
 
 pub fn hex_encode(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
-        out.push(DIGITS[usize::from(byte >> 4)] as char);
-        out.push(DIGITS[usize::from(byte & 0x0f)] as char);
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     out
 }
 
-/// Lowercase hex only (the encoder never produces anything else); bounded by `max_bytes`.
+/// Lowercase hex only (`hex_encode` emits nothing else; `wire_strictness_and_descriptor` refuses
+/// uppercase); bounded by `max_bytes` before any byte is decoded.
 pub fn hex_decode(text: &str, max_bytes: usize) -> Result<Vec<u8>, WireError> {
     let raw = text.as_bytes();
     if !raw.len().is_multiple_of(2) {
@@ -424,13 +457,15 @@ pub fn hex_decode(text: &str, max_bytes: usize) -> Result<Vec<u8>, WireError> {
     if raw.len() / 2 > max_bytes {
         return Err(WireError::DocumentTooLarge);
     }
+    // Digit values are 0..=15 by construction (the match arms bound `b`), so the wrapping
+    // operations never actually wrap.
     let digit = |b: u8| match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'0'..=b'9' => Ok(b.wrapping_sub(b'0')),
+        b'a'..=b'f' => Ok(b.wrapping_sub(b'a').wrapping_add(10)),
         _ => Err(WireError::InvalidHex),
     };
     raw.chunks_exact(2)
-        .map(|pair| Ok((digit(pair[0])? << 4) | digit(pair[1])?))
+        .map(|pair| Ok((digit(pair[0])?.wrapping_shl(4)) | digit(pair[1])?))
         .collect()
 }
 
@@ -534,7 +569,7 @@ struct VersionProbe {
     bridge_version: u32,
 }
 
-fn decode<T: DeserializeOwned>(bytes: &[u8], limits: &Limits) -> Result<T, WireError> {
+fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8], limits: &Limits) -> Result<T, WireError> {
     if !limits.valid() {
         return Err(WireError::InvalidLimits);
     }
@@ -548,11 +583,12 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], limits: &Limits) -> Result<T, WireE
     if bytes[0] != b'{' {
         return Err(WireError::Syntax);
     }
-    if bytes[bytes.len() - 1].is_ascii_whitespace() {
+    if bytes.last().is_some_and(u8::is_ascii_whitespace) {
         return Err(WireError::TrailingBytes);
     }
-    // The generation is read first and alone: a foreign version is `wrong_version`, never a
-    // misleading unknown-field error from a schema this decoder does not speak.
+    // The generation is read first and alone: a foreign version is `wrong_version`
+    // (`wire_strictness_and_descriptor`), not a misleading unknown-field error from a schema this
+    // decoder does not speak.
     let probe = VersionProbe::deserialize(&mut serde_json::Deserializer::from_slice(bytes))
         .map_err(|e| classify(&e))?;
     if probe.bridge_version != BRIDGE_VERSION {
@@ -561,6 +597,13 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], limits: &Limits) -> Result<T, WireE
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = T::deserialize(&mut deserializer).map_err(|e| classify(&e))?;
     deserializer.end().map_err(|e| classify(&e))?;
+    // Canonical form is enforced by construction: whatever the parser tolerated (interior
+    // whitespace, reordered keys, `\u` escapes, an omitted `null` field) is refused unless the
+    // decoded value re-encodes to exactly the bytes received.
+    let canonical = serde_json::to_vec(&value).map_err(|_| WireError::EncodeFailed)?;
+    if canonical != bytes {
+        return Err(WireError::NonCanonical);
+    }
     Ok(value)
 }
 
@@ -572,7 +615,9 @@ fn encode<T: Serialize>(value: &T, limits: &Limits) -> Result<Vec<u8>, WireError
     Ok(bytes)
 }
 
-/// Canonical bytes of a valid envelope; a message that would not decode is never produced.
+/// Canonical bytes of a valid envelope; a message that would not decode is not produced
+/// (`wire_strictness_and_descriptor`: a foreign version is refused at encode; a decoded value
+/// re-encodes to its input).
 pub fn encode_envelope(envelope: &Envelope, limits: &Limits) -> Result<Vec<u8>, WireError> {
     envelope.validate(limits)?;
     encode(envelope, limits)
