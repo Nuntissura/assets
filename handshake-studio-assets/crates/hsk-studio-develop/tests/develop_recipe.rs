@@ -1,4 +1,5 @@
-use hsk_studio_accord::{CancellationToken, DomainId};
+use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+use hsk_studio_observe::{Budget, DeliveryClass, DeliveryError, FailureCode, Observe, Outcome, SinkPort};
 use hsk_studio_develop::*;
 use hsk_studio_pigment::{Grid, Rect};
 
@@ -384,6 +385,30 @@ fn unsupported_process_version_and_cancel_stale() {
         );
         assert_eq!(decode_container(b"II*\0").err(), Some(DevelopError::InvalidContainer));
         assert_eq!(DevelopError::UnsupportedProcessVersion.code(), "unsupported_process_version");
+
+        // Observe terminal outcome mapping through the caller-owned sink.
+        struct Collect(Vec<Vec<u8>>);
+        impl SinkPort for Collect {
+            fn try_send(&mut self, _class: DeliveryClass, bytes: &[u8]) -> Result<(), DeliveryError> {
+                self.0.push(bytes.to_vec());
+                Ok(())
+            }
+        }
+        let reported = |result: Result<DevelopReceipt, DevelopError>| {
+            let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();
+            let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+            let mut observe = Observe::new(9, 3, resource, actor, Budget::new(0, 0).unwrap());
+            let mut sink = Collect(Vec::new());
+            let receipt = report(&result, &CancellationToken::default(), &mut observe, &mut sink, 9, 3).unwrap();
+            assert_eq!(sink.0.len(), 1);
+            receipt.outcome
+        };
+        let ok = run(&plane, &recipe(), 4).0.unwrap();
+        assert_eq!(reported(Ok(ok)), Outcome::Success);
+        assert_eq!(reported(Err(DevelopError::UnsupportedProcessVersion)), Outcome::Failure(FailureCode::Unsupported));
+        assert_eq!(reported(Err(DevelopError::DecoderUnavailable)), Outcome::Failure(FailureCode::Unavailable));
+        assert_eq!(reported(Err(DevelopError::SampleOutOfRange)), Outcome::Failure(FailureCode::Validation));
+        assert_eq!(reported(Err(DevelopError::Canceled)), Outcome::Canceled);
     });
 }
 
