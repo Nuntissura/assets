@@ -70,11 +70,11 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
   title: Implement replaceable content and lifecycle contracts
-  phase: planned
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-state.yaml
-  next_action: Full010 contract/spec selected; dependency/eval final readback/freeze, publication and independent
-    origin proof before coder02 admission
+  next_action: Coder02 implement full010 bounded std-only content companion/public recording-host cases; no parallel
+    Cargo; lead resolves local lock after manifest exists and freezes/publishes candidate before focused proof
   blockers: []
 - wp_id: WP-KUM-011-navigation-and-media-controls-v1
   title: Implement host-fed navigation and background contracts

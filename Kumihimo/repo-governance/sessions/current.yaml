@@ -19,19 +19,19 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6-luna
     reasoning: high
-    assignment: Prepare010 current research/dependency readiness before coding
+    assignment: 010 final std-only readiness published; verify changed local lock closure after manifest freeze
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Await exact-candidate failure dispatch; bind logged revision before inspecting attempts
+    assignment: 010 report syntax failure resolved; await exact candidate failure/resource dispatch
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: 009 final containment readback complete; prepare010 focused cases before coding
+    assignment: 010 twelve frozen cases published; independent origin readback, then await one stabilized candidate
   coder:
     role_id: ROLE-KUM-CODER-02
     thread_id: 01a12cff-0f3f-72e3-b1ca-3befa8471878
@@ -40,8 +40,7 @@ roles:
     completed_implementation_wps:
     - WP-KUM-009-tabs-and-layout-recovery-v1
     rotate_after: 2
-    assignment: WP009 completed; prepare010 readback, no code before full published contract/dependency readiness;
-      second of two
+    assignment: WP010 admitted full published contract; second of two, product/source/tests/example only, no Cargo/lock/Git
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -59,7 +58,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Finalize/publish full WP010 contract/spec/readiness/cases, independent origin proof, then coder02 admission
+next_action: Coder02 implement full010 bounded std-only content companion/public recording-host cases; no parallel
+  Cargo; lead resolves local lock after manifest exists and freezes/publishes candidate before focused proof
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

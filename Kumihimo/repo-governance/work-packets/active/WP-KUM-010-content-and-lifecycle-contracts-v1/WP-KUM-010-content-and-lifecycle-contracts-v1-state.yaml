@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
-generation: 3
-phase: planned
-owner: dev_lead
+generation: 4
+phase: active
+owner: ROLE-KUM-CODER-02
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
 - repo-governance/specification/current/
@@ -13,6 +13,11 @@ proof:
   source_revision: c35af554d2e1710c507b26dc75c3dcdb62263778
   observed: 009done settlement exactoriginread matches;49tests/bothexamples/PASS_SCOPED_RUNTIME; dependency/eval/coder02
     dispatched whole010 stub/spec11 research/choices preparation only; no010 productcode admission
+- kind: full_contract_publication_and_coding_admission
+  source_revision: e5308d55dca869e2807ee57a9b999a8338a9879b
+  observed: Exact origin SHA matched; nine canonical published artifacts independently reread equal currentbytes;23R/14A/21spec
+    refs,12frozen cases, finalstd-only dependencyreadiness, exactSpec11archive/99preserved requirements; coder02
+    admitted product only, no Cargo/lock/Git
 blockers: []
-next_action: Full010 contract/spec selected; dependency/eval final readback/freeze, publication and independent
-  origin proof before coder02 admission
+next_action: Coder02 implement full010 bounded std-only content companion/public recording-host cases; no parallel
+  Cargo; lead resolves local lock after manifest exists and freezes/publishes candidate before focused proof
