@@ -30,11 +30,26 @@ fn channel(v: f64) -> (u8, bool) {
     )
 }
 
-/// Reports a colour whose profile binding is `Assigned`. SVG paint is sRGB and this export has no
-/// way to obtain the profile (Folio's `Resolver::profile` answers availability only, no bytes),
+/// Reports the colour spaces a paint use leaves unconverted. SVG paint is sRGB and this export has
+/// no way to obtain a profile (Folio's `Resolver::profile` answers availability only, no bytes),
 /// so it cannot convert through Prism: the channels are written unchanged as sRGB and that is a
-/// typed loss, never a silent conversion.
-fn note_profile(assigned: bool, label: &str, loss: &mut Vec<LossEntry>) {
+/// typed loss, never a silent conversion. A colour with an `Assigned` profile reports
+/// `colour_profile_not_converted`; an `Unassigned` colour is in the document working space, so
+/// when the document assigns an RGB working space (`working_assigned`) it reports
+/// `working_space_not_converted` (the profile may be sRGB itself, which this export cannot tell).
+fn note_profiles<'c>(
+    colours: impl IntoIterator<Item = &'c StudioColor>,
+    working_assigned: bool,
+    label: &str,
+    loss: &mut Vec<LossEntry>,
+) {
+    let (mut assigned, mut working) = (false, false);
+    for c in colours {
+        match c.colour_profile_id {
+            ProfileBinding::Assigned(_) => assigned = true,
+            ProfileBinding::Unassigned(()) => working |= working_assigned,
+        }
+    }
     if assigned {
         note(
             loss,
@@ -43,15 +58,19 @@ fn note_profile(assigned: bool, label: &str, loss: &mut Vec<LossEntry>) {
             "colour_profile_not_converted",
         );
     }
-}
-
-fn is_assigned(c: &StudioColor) -> bool {
-    matches!(c.colour_profile_id, ProfileBinding::Assigned(_))
+    if working {
+        note(
+            loss,
+            label,
+            LossKind::Unsupported,
+            "working_space_not_converted",
+        );
+    }
 }
 
 /// `#rrggbb` of a Folio colour (SVG colours are 8-bit sRGB); a value off the 8-bit grid is
 /// quantized and reported. The colour-profile binding is not interpreted here: the paint writer
-/// reports an assigned profile once per paint (`note_profile`).
+/// reports unconverted profiles once per paint (`note_profiles`).
 fn hex(c: &StudioColor, label: &str, loss: &mut Vec<LossEntry>) -> String {
     let ((r, rx), (g, gx), (b, bx)) = (channel(c.r), channel(c.g), channel(c.b));
     if !(rx && gx && bx) {
@@ -179,6 +198,9 @@ fn note(loss: &mut Vec<LossEntry>, label: &str, kind: LossKind, code: &'static s
 /// Gradient definitions collected while writing; identical gradients share one definition.
 struct Defs {
     k: f64,
+    /// The document assigns an RGB working space (always false for the flat export, which has no
+    /// document); an `Unassigned` colour is then in that space and is not converted.
+    working_assigned: bool,
     ids: BTreeMap<String, String>,
     text: String,
 }
@@ -188,13 +210,14 @@ impl Defs {
     fn paint(&mut self, paint: &StudioPaint, label: &str, loss: &mut Vec<LossEntry>) -> String {
         match paint {
             StudioPaint::Solid { colour } => {
-                note_profile(is_assigned(colour), label, loss);
+                note_profiles([colour], self.working_assigned, label, loss);
                 hex(colour, label, loss)
             }
             StudioPaint::Gradient { gradient } => {
                 // Per use, also when the definition is shared with an earlier element.
-                note_profile(
-                    gradient.stops.iter().any(|s| is_assigned(&s.colour)),
+                note_profiles(
+                    gradient.stops.iter().map(|s| &s.colour),
+                    self.working_assigned,
                     label,
                     loss,
                 );
@@ -683,7 +706,12 @@ fn finish(open: String, writer: Writer<'_>, body: &str) -> SvgExport {
     }
 }
 
-fn writer(k: f64, ppi: f64, design: &StudioDesignRecords) -> Writer<'_> {
+fn writer(
+    k: f64,
+    ppi: f64,
+    design: &StudioDesignRecords,
+    working_assigned: bool,
+) -> Writer<'_> {
     Writer {
         k,
         ppi,
@@ -700,6 +728,7 @@ fn writer(k: f64, ppi: f64, design: &StudioDesignRecords) -> Writer<'_> {
         checked: BTreeSet::new(),
         defs: Defs {
             k,
+            working_assigned,
             ids: BTreeMap::new(),
             text: String::new(),
         },
@@ -727,7 +756,7 @@ pub fn export_svg_with_loss(
 ) -> Result<SvgExport> {
     let converted = paths.iter().map(convert).collect::<Result<Vec<_>>>()?;
     let (k, open) = header(opts, extent(converted.iter()))?;
-    let mut w = writer(k, opts.pixels_per_inch, design);
+    let mut w = writer(k, opts.pixels_per_inch, design, false);
     let mut body = String::new();
     let mut items = paths.iter().zip(converted).peekable();
     let mut ordinal = 0usize;
@@ -778,7 +807,8 @@ pub fn export_proposal_with_loss(
         ..*opts
     };
     let (k, open) = header(&opts, extent(converted.iter().flatten()))?;
-    let mut w = writer(k, opts.pixels_per_inch, &proposal.design);
+    let working_assigned = matches!(doc.working_space_rgb, ProfileBinding::Assigned(_));
+    let mut w = writer(k, opts.pixels_per_inch, &proposal.design, working_assigned);
     let mut body = String::new();
     // Children per parent layer id (None = artboard or root), in document order.
     let mut children: BTreeMap<Option<&str>, Vec<usize>> = BTreeMap::new();

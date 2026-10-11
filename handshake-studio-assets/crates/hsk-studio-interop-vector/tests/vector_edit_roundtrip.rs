@@ -506,3 +506,55 @@ fn assigned_colour_profile_export_is_a_typed_loss() {
         assert_eq!(count(&out.loss, "colour_profile_not_converted"), 2, "{:?}", out.loss);
     });
 }
+
+/// R6 finding (silent loss): `export_proposal` ignored the document `working_space_rgb`, so
+/// Unassigned colours of a document with an assigned RGB working space were written as sRGB hex
+/// with no loss. The export cannot read profile bytes, so it reports `working_space_not_converted`
+/// once per paint use and leaves the channels unchanged.
+#[test]
+fn assigned_working_space_export_is_a_typed_loss() {
+    bounded_case("assigned_working_space_export_is_a_typed_loss", || {
+        let count = |loss: &[LossEntry], code: &str| loss.iter().filter(|l| l.code == code).count();
+        let opts = ExportOptions::default();
+        let bind = |p: &mut VectorProposal| {
+            let mut doc = p.snapshot.document().clone();
+            doc.working_space_rgb = ProfileBinding::Assigned("SCPF-00000009-0000-7000-8000-000000000002".into());
+            p.snapshot = validate_document(doc, Budget::default(), &CancellationToken::default(), &Unresolved).unwrap();
+        };
+
+        let solid_svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="10" height="10" fill="#336699" stroke="#ff0000"/></svg>"##;
+        let mut p = import(solid_svg).unwrap();
+        let clean = export_proposal_with_loss(&p, &opts).unwrap();
+        assert_eq!(count(&clean.loss, "working_space_not_converted"), 0, "{:?}", clean.loss);
+
+        bind(&mut p);
+        let out = export_proposal_with_loss(&p, &opts).unwrap();
+        assert!(out.text.contains("fill=\"#336699\""), "channels are written unchanged: {}", out.text);
+        // Fill and stroke are two paint uses of Unassigned colours in the assigned working space.
+        assert_eq!(count(&out.loss, "working_space_not_converted"), 2, "{:?}", out.loss);
+        assert_eq!(count(&out.loss, "colour_profile_not_converted"), 0, "{:?}", out.loss);
+        assert!(out.loss.iter().filter(|l| l.code == "working_space_not_converted").all(|l| l.kind == LossKind::Unsupported));
+
+        // A gradient shared by two elements: reported per use, defined once.
+        let grad_svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="20" y2="0"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect width="10" height="10" fill="url(#g)"/><rect x="10" width="10" height="10" fill="url(#g)"/></svg>"##;
+        let mut g = import(grad_svg).unwrap();
+        bind(&mut g);
+        let out = export_proposal_with_loss(&g, &opts).unwrap();
+        assert_eq!(out.text.matches("<linearGradient").count(), 1, "{}", out.text);
+        assert_eq!(count(&out.loss, "working_space_not_converted"), 2, "{:?}", out.loss);
+
+        // A colour with its own Assigned profile reports the profile, not the working space.
+        for style in &mut p.design.paint_styles {
+            for row in &mut style.rows {
+                let (StudioAppearanceRow::Fill { paint, .. } | StudioAppearanceRow::Stroke { paint, .. }) = row;
+                if let StudioPaint::Solid { colour } = paint {
+                    colour.colour_profile_id =
+                        ProfileBinding::Assigned("SCPF-00000009-0000-7000-8000-000000000001".into());
+                }
+            }
+        }
+        let own = export_proposal_with_loss(&p, &opts).unwrap();
+        assert_eq!(count(&own.loss, "colour_profile_not_converted"), 2, "{:?}", own.loss);
+        assert_eq!(count(&own.loss, "working_space_not_converted"), 0, "{:?}", own.loss);
+    });
+}
