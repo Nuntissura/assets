@@ -27,6 +27,21 @@ const KNOWN_FINDINGS: &[(&str, &str, bool, &str)] = &[
     // with linear interpolation to 2e-5): 33-entry table off by 1.2e-4 where lcms2 is off by 2e-5.
     ("curv_table_to_linear", "relative_colorimetric", false, "PRISM-CURV-TABLE-INTERP-001"),
     ("curv_table_dense_gray_scan", "relative_colorimetric", false, "PRISM-CURV-TABLE-INTERP-001"),
+    // `curv` count=1 gamma below 2.2 (checked 1.5, 1.8, 2.0, 2.1; 1.0, 2.2 and 2.4 are correct): a pixel with an
+    // exact 0.0 channel next to non-zero channels converts to XYZ 0 (2.1: off by up to 4.9e-4). Primaries and
+    // secondaries of any such RGB source are lost; ProPhoto RGB is affected end to end.
+    ("curv_gamma_384_mixed_zero_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
+    ("curv_gamma_461_mixed_zero_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
+    ("curv_gamma_512_mixed_zero_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
+    ("curv_gamma_538_mixed_zero_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
+    ("srgb_curv18_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
+    ("prophoto_curv18_to_xyz_d50", "relative_colorimetric", false, "PRISM-CURV-GAMMA-ZERO-001"),
+    // Same gamma family on the BPC path: the black point comes out as L* -1.5e11 and the output is destroyed.
+    ("srgb_curv18_bpc_to_srgb_linear", "relative_colorimetric", true, "PRISM-RGB-BPC-CURV-GAMMA-001"),
+    // The source leg clamps PCS XYZ at 0: Display P3 red has Z -0.00105 after Bradford adaptation to D50.
+    ("p3_para3_to_xyz_d50", "relative_colorimetric", false, "PRISM-SOURCE-XYZ-NEGATIVE-CLAMP-001"),
+    // Destination `curv` table inverse: 1024-entry sRGB table, device value off by up to 3.8e-4 (parametric: 3e-6).
+    ("lab_to_srgb_curv_table1024_clipped", "relative_colorimetric", false, "PRISM-TABLE-TRC-INVERSE-001"),
 ];
 
 fn known_finding(id: &str, intent: &str, bpc: bool) -> Option<&'static str> {
@@ -193,6 +208,13 @@ t0_cases! {
     srgb_curv18_bpc_to_srgb_linear => "srgb_curv18_bpc_to_srgb_linear",
     lab_to_srgb_para3_clipped => "lab_to_srgb_para3_clipped",
     lab_to_srgb_curv_table1024_clipped => "lab_to_srgb_curv_table1024_clipped",
+    curv_gamma_256_mixed_zero_to_xyz_d50 => "curv_gamma_256_mixed_zero_to_xyz_d50",
+    curv_gamma_384_mixed_zero_to_xyz_d50 => "curv_gamma_384_mixed_zero_to_xyz_d50",
+    curv_gamma_461_mixed_zero_to_xyz_d50 => "curv_gamma_461_mixed_zero_to_xyz_d50",
+    curv_gamma_512_mixed_zero_to_xyz_d50 => "curv_gamma_512_mixed_zero_to_xyz_d50",
+    curv_gamma_538_mixed_zero_to_xyz_d50 => "curv_gamma_538_mixed_zero_to_xyz_d50",
+    curv_gamma_563_mixed_zero_to_xyz_d50 => "curv_gamma_563_mixed_zero_to_xyz_d50",
+    curv_gamma_614_mixed_zero_to_xyz_d50 => "curv_gamma_614_mixed_zero_to_xyz_d50",
     lab_to_srgb => "lab_to_srgb",
     lab_to_linear_srgb_out_of_gamut => "lab_to_linear_srgb_out_of_gamut",
 }
