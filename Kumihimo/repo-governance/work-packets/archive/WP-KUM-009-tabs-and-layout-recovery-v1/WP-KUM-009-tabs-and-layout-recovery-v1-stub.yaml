@@ -1,0 +1,29 @@
+schema_version: kumihimo.wp-contract.v1
+kind: work_packet_stub
+wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
+title: Implement tabs, groups and persisted arrangement
+scope:
+- Tab groups/colors/overflow, semantic versioned snapshots, migration/recovery references, structured commands and
+  layout state; content edits and disposable runtime handles excluded
+files:
+- product/
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/
+- repo-governance/specification/current/
+- repo-governance/topology/
+dependencies:
+- WP-KUM-008-layout-and-tool-docking-v1
+spec_refs:
+- TOPIC-KUM-TABS
+- TOPIC-KUM-RECOVERY
+- TOPIC-KUM-MODEL
+requirements:
+- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+  eval before coding
+- Reuse existing core and verified cache; no parallel Cargo or long default suites
+- Preserve host ownership and existing accepted scope; explicit exact platform proof
+acceptance:
+- Round-trip nested IDs/order/placement, missing-provider placeholders, old/unsupported schema, stale commands and
+  host-declared tab/live budgets
+proof:
+- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+status_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml

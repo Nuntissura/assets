@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 8
+revision: 9
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -26,6 +26,8 @@ content_blocks:
 # Planned
 
 Seven feature areas now have partial core implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.
+
+WP009 selects complete headless tab/group/pin/list semantics, bounded semantic JSON/schema recovery and every carried layout operation. Core0.3 remains default std-only; optional saved-type Serde and a small JSON package are independently selected. Incarnation/lineage, monotone live activation, closed-tool safety and explicit host save protocol are fixed before coding. This is next-packet scope selection, not runtime implementation proof.
 
 A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 

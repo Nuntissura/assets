@@ -1,29 +1,247 @@
 schema_version: kumihimo.wp-contract.v1
-kind: work_packet_stub
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-title: Implement tabs, groups and persisted arrangement
+title: Implement tab semantics and versioned arrangement recovery
 scope:
-- Tab groups/colors/overflow, semantic versioned snapshots, migration/recovery references, structured commands and
-  layout state; content edits and disposable runtime handles excluded
+- Complete the original tab/group/pin/overflow and semantic versioned arrangement scope over the existing canonical
+  core
+- Add real bounded optional JSON wire roundtrip, explicit schema/restore/placeholder/save-stamp contracts without
+  importing engines or file IO
+- Implement all carried equalize/swap/maximize/restore-layout operations and safe incarnation-bound restore
+- Retain default core independence, small cohesive modules, prior accepted behavior and exact focused platform proof
 files:
 - product/
+- README.md
+- repo-governance/codex/build-rules/current/build-rules.yaml
 - repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/
+- repo-governance/work-packets/archive/WP-KUM-009-tabs-and-layout-recovery-v1/
 - repo-governance/specification/current/
+- repo-governance/specification/spec-archive/
 - repo-governance/topology/
+- repo-governance/sessions/
+- repo-governance/taskboard/
+- repo-governance/registry/
 dependencies:
 - WP-KUM-008-layout-and-tool-docking-v1
 spec_refs:
-- TOPIC-KUM-TABS
-- TOPIC-KUM-RECOVERY
-- TOPIC-KUM-MODEL
+- REQ-KUM-TABS-001
+- REQ-KUM-TABS-002
+- REQ-KUM-TABS-003
+- REQ-KUM-TABS-004
+- REQ-KUM-TABS-005
+- REQ-KUM-TABS-006
+- REQ-KUM-RECOVERY-001
+- REQ-KUM-RECOVERY-002
+- REQ-KUM-RECOVERY-003
+- REQ-KUM-RECOVERY-004
+- REQ-KUM-RECOVERY-005
+- REQ-KUM-LAYOUT-004
+- REQ-KUM-MODEL-001
+- REQ-KUM-MODEL-002
+- REQ-KUM-BOUNDARIES-005
+- REQ-KUM-CHROME-006
+- REQ-KUM-CHROME-007
 requirements:
-- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
-  eval before coding
-- Reuse existing core and verified cache; no parallel Cargo or long default suites
-- Preserve host ownership and existing accepted scope; explicit exact platform proof
+- '[WP009-R001] Publish and independently reread this full contract/specification, then record dependency readiness
+  and focused eval cases before admitting coder02. Lead owns state/spec/Git and one Cargo lane; coder owns product
+  paths.'
+- '[WP009-R002] Keep the existing cohesive default-std-only Core with small private tab/group/persistence/restore/identity
+  modules. Add only an optional serde feature on saved semantic DTO/leaf types using serde =1.0.229, and one independently
+  consumable product/kumihimo-layout-json package using serde_json =1.0.151. No filesystem, GUI or engine dependency;
+  declare unreleased core0.3/Snapshot3 and first JSON package0.1.'
+- '[WP009-R003] Introduce first durable saved schema1 as a distinct flat PersistedLayout DTO, never serialize live
+  Core/Snapshot/commands/receipts/previews/engine handles. Include canonical nested ownership, open/closed tab/group
+  identities/order/selection/labels/colors/collapse/pins, packing/proportions, tool semantic binding/placement/policies,
+  floats/max projection, effective semantic settings and host recovery references. Include saved next_entity and
+  source lineage/incarnation/generation as provenance; omit live focus/visibility/usability/close-permission assertions
+  and actual content/secrets.'
+- '[WP009-R004] Persist semantic generated IDs and u64 generation/allocator/node selectors as canonical decimal
+  strings in JSON, retaining their distinct types and saved-lineage scope. Validate finite normalized Scalar deserialization
+  through constructors; reject nonfinite, invalid dimensions/weights/endpoints and malformed identifiers. DTO lists
+  or strict visitors must reject duplicate JSON members and duplicate logical entries before map normalization can
+  overwrite input.'
+- '[WP009-R005] The JSON package must offer actual bounded encode/decode with default8MiB configurable byte admission,
+  checked bounded output writing, complete-input consumption, strict schema/unknown fields, duplicate-member rejection
+  and retained serde_json recursion guard. Flat semantic data permits conceptual nesting independent of JSON depth;
+  do not enable unbounded_depth. Structural/entity/layout/string limits are also enforced before activation; byte/entry
+  counts are not a process memory ceiling.'
+- '[WP009-R006] Schema1 is the first durable format; explicitly reject schema0 and unsupported newer schemas without
+  coercion or pretending Snapshot1/2 were file formats. Report supported schema and migration/downgrade policy;
+  no successful legacy migration is claimed without a real supported prior format.'
+- '[WP009-R007] Core construction requires immutable host-supplied nonempty bounded lineage and incarnation tokens,
+  with no hidden randomness/global counters. The host must supply an incarnation fresh across all earlier Core instances;
+  Core detects mismatch but cannot prove uniqueness. Bind Envelope/Outcome/Snapshot inspection and dock/restore/save
+  tokens to identity; check incarnation before receipt lookup or high-water advancement. Wrong-incarnation commands
+  consume no operation/ledger state.'
+- '[WP009-R008] Prepare restore purely on a detached whole-state path that skips legacy ownership repair/migrate_measurements.
+  Bind the complete DTO, target identity/generation and supplied host resolution/bounds/admission policy in a private
+  immutable token. Validate all IDs globally across generated kinds, key/record matches, open/closed membership,
+  selection/groups, provider/resource/tool refs, cycles/ownership, full frame/packing coverage, finite arithmetic,
+  floats and limits before activation. Failure preserves canonical model/generation/next allocation; same-incarnation
+  rejected Envelope bookkeeping remains normal.'
+- '[WP009-R009] Live activation is one ordinary Envelope command for the same saved lineage only. Reject changes
+  to extant entity kind or immutable provider/resource/view-resource identity; distinguish immutable durable keys
+  from mutable restore references. Keep live incarnation, receipts/capacity/high-water and set generation=current+1,
+  next_entity=max(live,saved). Saved next_entity must exceed every active/closed generated ID; generated0/MAX reject,
+  allocatorMAX is an exhausted sentinel, overflow rejects atomically. Host lineage integrity plus extant checks
+  do not prove identity of previously omitted historical records.'
+- '[WP009-R010] Fresh restore takes saved lineage/exact semantic IDs and allocator plus a host-supplied fresh incarnation
+  different from saved source provenance, starts a fresh ledger/op0 and explicit live generation1. Saved generation
+  never rolls back live generation. Old matching-number foreign commands/previews reject. Retained same-incarnation
+  envelopes after live restore replay historical acknowledgments once without reapplying; they are not proof of
+  present membership. No cross-restart exactly-once guarantee.'
+- '[WP009-R011] Providers/resources must carry bounded stable host keys and opaque recovery references alongside
+  semantic typed IDs. Host resolution is supplied data, invokes no engine and is bound into preparation. Missing/incompatible
+  providers become labeled placeholders preserving original identity/reference/placement; effective tools are unusable/inapplicable,
+  and actual runtime assertions initialize unresolved. Do not open files/URLs or treat supplied references as executable
+  paths. Restore bounds are explicit host inputs; adjust offscreen in-app floats into reachable bounds only under
+  selected repair policy, rejecting impossible minima atomically. Native monitor/popout repair remains adapter proof.'
+- '[WP009-R012] Expose immutable generation/identity-stamped save DTO/bytes and a pure current-stamp check. Document
+  the host protocol: one writer, validate before publication, reject stale stamps, atomically replace a complete
+  blob or keep recoverable prior/new blobs, retain last valid data on decode/activation failure. No repository host-store
+  adapter exists, so this packet proves wire/semantic/stamp behavior and declares host IO recovery separately; it
+  never claims atomic file replacement or interrupted-save runtime proof.'
+- '[WP009-R013] Add bounded close/reopen metadata without disposing host content. Keep closed View records as tombstones
+  with original ID/resource, previous frame/index/group/pin metadata; remove only open membership, on selected close
+  choose first remaining tab or none; unselected close retains selection, preserve empty frames. Host-supplied close
+  permission/veto and unsaved indicators are independent; dirty data is never implicit approval. Close requires
+  explicit current host permission and pin policy; rejection preserves the view/state. Reopen preserves identity
+  and clamps saved index within eligible destination, rechecks budgets/pins and resets volatile host permission/availability
+  for confirmation. Sharing capability checks count open placements; closed history is not a second open view, and
+  reopen rechecks sharing.'
+- '[WP009-R014] Closed records count toward aggregate record admission and a host-exposed default1024 closed-view
+  admission, configurable/unrestricted. Reject close when retention would grow beyond its policy; no silent eviction.
+  Lowering limits preserves existing data and allows unchanged/decreasing recovery. Existing per-frame view budgets
+  count open membership. Metadata/key/reference/label byte limits and saved limits/host overrides must be explicit;
+  restore never silently adopts unbounded saved admission over host limits. Persistent identity tokens admit at
+  most128 UTF-8 bytes, durable provider/resource keys256, and label/recovery-reference strings65536 by default;
+  host-configurable persistence string bounds and explicit admission never silently truncate data.'
+- '[WP009-R015] Use one Snapshot-aware effective tool presentation path for validation/measurement/reservation/output.
+  Closed origin or target and unavailable providers cannot become usable/applicable through true host flags. Preserve
+  origin/owner/target/placement, never retarget or auto-reveal. Closed compatible targets remain valid references;
+  explicit rebind to closed/unavailable targets rejects. A closed view-edge anchor is dormant with no active-frame
+  reservation; frame/root/cell placements retain declared visibility/HiddenSpace policy and only effective usability/visibility
+  changes.'
+- '[WP009-R016] Add group rename/recolor and explicit collapse/expand with stable GroupId and color-independent
+  labels/description metadata. Move a group atomically within/across frames using source canonical open member order
+  even when interleaved; tab insertion index is measured after removing incoming members, distinct from group metadata
+  ordering. Preserve group/member identities and settings, update owner and closed member reopen metadata. Source
+  selected departure picks first remaining; destination keeps existing selection or selects first incoming when
+  empty. Whole move rejects on any member pin/budget conflict.'
+- '[WP009-R017] Expose host-selectable pinned deny-close/deny-reorder/deny-cross-frame-move rules and observable
+  rejection reasons. Enforce through every tab/group/reopen route so group moves cannot bypass pins; explicit unpin
+  changes policy. Exact unchanged operations remain no-ops. Preserve individual MoveView after-removal index/group
+  semantics and prior sharing/selection/replay behavior.'
+- '[WP009-R018] Provide a bounded headless tab-list/search projection over the full canonical requested open/closed
+  set, with canonical or label ordering, deterministic ID ties, offset/limit and total counts, default page admission256
+  configurable. Group labels/active-selection/unsaved/placeholder state are exposed without relying on color. Paging
+  does not drop saved records or create engines; visible/virtualized GUI rows and actual live-instance limits remain
+  adapter/lifecycle boundaries.'
+- '[WP009-R019] Implement every carried LAYOUT004 operation: equalize selected workspace resets split/grid/automatic
+  weights to1 while minima still apply (equal spare shares, not necessarily pixels); swap only two docked frame
+  leaves in one workspace changes spatial packing without changing canonical frame/tab identities. Reject unsupported
+  floats/cross-workspace/tool swaps explicitly.'
+- '[WP009-R020] Maximize selects one docked frame as a reversible semantic projection while retaining underlying
+  plan, canonical siblings/floats and all identities. Solve selected frame/descendant constraints, its tools and
+  root-edge tools; hide siblings/floats/cell tools from projection without deleting records or letting their hidden
+  minima reject the active projection. Still validate underlying structure. Persist underlying plan plus maximize
+  target. Restore-layout exits projection only when the full underlying geometry/bounds solve under current host
+  context; failure retains maximize with explicit constraint, and never restores an old Snapshot over intervening
+  tab/group edits.'
+- '[WP009-R021] A shared maximize guard covers source and destination of CreateFrame, MoveFrame, frame-owned child-workspace
+  attachment, SetLayout, docking/floating/redocking/CommitPreview, tool creation/movement/cell changes, equalize
+  and swap before effects in that workspace. Allow independent workspaces, harmless unchanged operations, tab/group
+  metadata/membership, host geometry and tool state/policy updates subject to projected validation. Scrollable may
+  resolve packed minima, but is not a promise to fix out-of-bounds floats.'
+- '[WP009-R022] Preserve structured rejection and detached atomicity for every new route, one generation and bounded
+  complete-envelope replay. Include identity mismatches, missing-provider/closed-tool bypasses, older restore omitting
+  newer frames, stale complete restore/save inputs, malformed duplicates, extreme numbers and lowered-budget recovery
+  in focused consumer proof. GUI/native/platform-engine behavior must never be inferred from headless JSON tests.'
+- '[WP009-R023] Update quiet examples/no-context manual, exact build matrix, product topology and status. Lead runs
+  serial locked/offline proof using stable source/target/sccache, initialj2, no parallel Kumihimo Cargo/cache deletion/process
+  stops. Resolve actual lock closure before compiling, bind each result to exact published source, reuse green proof
+  only if its inputs stay identical; evaluator records observed scoped results.'
 acceptance:
-- Round-trip nested IDs/order/placement, missing-provider placeholders, old/unsupported schema, stale commands and
-  host-declared tab/live budgets
+- '[WP009-A001] Public consumers exercise host-approved/vetoed dirty close, selected/last close, bounded tombstones/reopen,
+  sharing and pins; identity/selection survives or rejection is atomic.'
+- '[WP009-A002] Named colored collapsed groups move atomically with interleaved/open/closed members, explicit indexes,
+  pins/budgets and deterministic selection; labels/active metadata remain exposed.'
+- '[WP009-A003] Bounded canonical search/list pages include all requested records/total counts, never rendered-subset
+  counts, with stable order and no record loss or engine effects.'
+- '[WP009-A004] Actual JSON roundtrip preserves the nested semantic arrangement/identities/packing/groups/tool policies/floats/max
+  state and stable recovery refs; default core dependency graph stays std-only.'
+- '[WP009-A005] Byte/output/schema/duplicate/ID/cycle/reference/count/numeric errors reject before activation and
+  preserve last valid core; no fake Snapshot migration or JSON-number precision loss.'
+- '[WP009-A006] Same-lineage live restore preserves ledger and monotone counters, invalidates stale tokens and rejects
+  extant immutable identity conflicts; fresh restore starts a distinct incarnation and rejects matching-number foreign
+  commands before ledger effects.'
+- '[WP009-A007] Missing-provider/closed targets keep labeled references and tool placement, remain effectively unusable
+  despite true host flags, and become usable only after explicit compatible host resolution/reopen; dormant view
+  anchors reserve no active interior.'
+- '[WP009-A008] Host-selected bounds repair reachable in-app floats or atomically reject; immutable save stamps
+  detect stale publication; host file/monitor/engine effects remain declared unproven boundaries.'
+- '[WP009-A009] Equalize/swap/maximize/restore all operate through structured commands preserving content identities;
+  max guards cover indirect routes and hidden geometry, and failed exit retains projection without overwriting tab
+  edits.'
+- '[WP009-A010] Prior core and new focused public contracts/default-feature and workspace builds/examples pass on
+  observed Windows x64; evaluator binds exact published source and scoped results.'
+- '[WP009-A011] Spec/topology/manual/state/taskboard reflect actual scope; owned changes committed/pushed and exact
+  remote independently verified before done.'
 proof:
-- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+- Published full contract/specification independent reread; dependency readiness and frozen evaluator cases
+- Lead-only offline lockfile resolution before candidate publication; no compile/replay verdict from cache inspection
+- cargo check --manifest-path product/Cargo.toml -p kumihimo-core --no-default-features --locked --offline -j 2
+- cargo check --manifest-path product/Cargo.toml --workspace --all-targets --all-features --locked --offline -j
+  2
+- cargo test --manifest-path product/Cargo.toml --workspace --all-features --locked --offline -j 2
+- cargo run --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core --example workspace -j 2
+- cargo run --manifest-path product/Cargo.toml --locked --offline -p kumihimo-layout-json --example roundtrip -j
+  2
+- python repo-governance/repo-scripts/sync.py --check
+- git diff --check -- Kumihimo
+- git ls-remote origin refs/heads/codex/handpick
+non_goals:
+- Native GUI/virtualized widgets, editor/browser content actions, actual engine/live-instance lifecycle, native
+  popout/monitor adapters, atomic filesystem replacement/interrupted-store runtime, secret-content backup and cross-restart
+  receipt replay
+- Unsupported old/new schema migration, recursive semantic trees, mandatory codec/backend dependencies, broad suites
+  or invented historical identity catalog
+preserved_stub_scope:
+- Original groups/colors/overflow, semantic snapshots/migration-rejection/recovery references, structured commands/layout
+  state, host tab/live budget separation and exact platform proof remain; content edits/disposable handles stay
+  excluded
+- All four accepted LAYOUT004 operations carried from WP008 included; native UI/live engines/host filesystem acceptance
+  remains open in the full specification
+research_basis:
+  sources:
+  - https://docs.rs/crate/serde/1.0.229/source/Cargo.toml
+  - https://docs.rs/crate/serde_json/1.0.151/source/Cargo.toml
+  - https://docs.rs/serde_json/1.0.151/serde_json/struct.Deserializer.html
+  - https://github.com/anhosh/egui_dock/blob/main/src/dock_state/mod.rs
+  - https://docs.rs/egui_tiles/latest/egui_tiles/struct.Tree.html
+  - https://dockview.dev/docs/core/panels/tabOverflow/
+  - https://dockview.dev/docs/core/panels/tabGroups/
+  - https://dockview.dev/docs/core/groups/maximizedGroups/
+  - https://code.visualstudio.com/docs/configure/custom-layout
+  local_refs:
+  - repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-dependency-readiness.yaml
+  - repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-evaluation.yaml
+  selected: Flat semantic DTO/Core validation with optional saved-type serde and one bounded JSON codec; host identity/resolution/IO,
+    canonical tab tombstones and reversible max projection
+  rejected:
+  - Serializing live Snapshot/Core/receipts or toolkit-owned state
+  - RON/new uncached codec without need, unbounded JSON, hidden scope generators, fake legacy migrations or fake
+    host IO proof
+  risks_controls:
+  - 'Restored raw IDs alias old work: host incarnation checked before ledger plus lineage/extant checks and monotone
+    allocator; no absent-history claim'
+  - 'Whole restore panics in legacy repair: dedicated detached whole-state route and older-save test'
+  - 'Close invalidates tool references or true flags bypass closure: retained tombstones and one effective-presentation
+    path for every solver/output'
+  - 'Malformed/duplicate JSON overwrites saved records: strict pre-normalization validation, byte/output bounds
+    and constructor numeric checks'
+  - 'Group moves bypass pins or source order: atomic whole-group route with canonical order/all-member checks'
+  - 'Max hidden panes block geometry or indirect docks bypass guard: projection-aware solve, shared affected-workspace
+    guard and failed-exit preservation'
+  - 'Older async save overwrites new data: identity/generation stamp plus explicit host single-writer atomic/recoverable
+    protocol, no IO claim'
 status_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml

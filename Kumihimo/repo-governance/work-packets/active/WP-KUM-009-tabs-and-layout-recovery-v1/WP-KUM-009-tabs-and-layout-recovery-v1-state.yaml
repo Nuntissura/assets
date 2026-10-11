@@ -1,9 +1,38 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-generation: 1
-phase: planned
-owner: unassigned
-changed_files: []
-proof: []
+generation: 4
+phase: active
+owner: dev_lead
+changed_files:
+- repo-governance/registry/work-packets.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/specification/current/INDEX.json
+- repo-governance/specification/current/primitive-feature-mix-matrix.json
+- repo-governance/specification/current/primitive-list.json
+- repo-governance/specification/current/spec-modules/master-spec.md
+- repo-governance/specification/current/spec-modules/roadmap.md
+- repo-governance/specification/current/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/specification.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-dependency-readiness.yaml
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-evaluation.yaml
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
+- repo-governance/work-packets/archive/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-stub.yaml
+proof:
+- kind: published_predecessor
+  observed: WP008 done settlement ad89a1ca325f4b3b73f92101fbcd795a551597ba independently matches origin; source90f93239
+    passed22 tests/check/example; coder rotated
+- kind: full_contract_preparation
+  observed: R001-R023 full scope from current primary sources/three role deliberation; spec9 selected; all99 accepted
+    requirement records unchanged; v8 exact six-file bundle and original009stub archived
+- kind: precoding_readiness
+  observed: Dependency ready_for_selected_optional_dependencies; eval11cases prepared/runtime not evaluated; coder02
+    full-contract read ready pending publication; actual lock closure remains compile-lane proof
 blockers: []
-next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+next_action: Publish accepted full009/spec9; independently reread remote blobs, then explicitly admit coder02

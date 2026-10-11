@@ -1,0 +1,337 @@
+schema_version: kumihimo.wp-evaluation.v1
+evaluation_id: EVAL-KUM-009-v1
+wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
+evaluator: ROLE-KUM-EVALUATION
+phase: acceptance_cases_prepared
+verdict: PREPARED_NOT_RUNTIME_EVALUATED
+cases_frozen: true
+report_frozen_for_publication: true
+baseline_revision: ad89a1ca325f4b3b73f92101fbcd795a551597ba
+spec_revision: 9
+scope: Full WP009 stub tab/group/pin/overflow semantics, versioned arrangement recovery and carried LAYOUT-004 command preparation;
+  no runtime or native GUI verdict
+inspected_sources:
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
+- repo-governance/specification/current/spec-modules/master-spec.md (TABS, RECOVERY, MODEL, LAYOUT-004)
+- product/kumihimo-core/src/model.rs
+- product/kumihimo-core/src/core.rs
+- product/kumihimo-core/src/command.rs
+- product/kumihimo-core/src/tools.rs
+- product/kumihimo-core/src/arrangement.rs (restore reconciliation seam)
+- product/kumihimo-core/src/docking.rs (internal ownership movement)
+- product/kumihimo-core/src/solver.rs (effective presentation and geometry paths)
+- repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-dependency-readiness.yaml
+observed_baseline:
+- Session-start observed clean ad89a1ca checkout, idle Cargo lane and coder02 read-only onboarding.
+- Full WP009 R001-R023 and spec9 inspected; publication, independent readback and final dependency readiness still precede coding.
+- Existing View stores frame/resource/group; Group stores frame/label/color. Snapshot v2 has arrangement/geometry/tool state but omits
+  Core next_entity, operation high-watermark and retained receipts.
+- Core replay precedes generation validation; current generated entity IDs share one monotonic allocator. Existing tools require valid
+  origin and editing-target view/resource references.
+acceptance_scenarios:
+- case_id: EVAL-KUM-009-001
+  refs:
+  - REQ-KUM-TABS-001
+  - REQ-KUM-MODEL-001
+  method: Reorder/move tabs with selected and unselected siblings, close selected/last/dirty tabs under host allow and veto, then reopen
+    from retained metadata; include two views of one resource.
+  expected: Close requires current explicit host permission and pin approval; veto preserves membership/unsaved state. Approved close
+    retains ViewId/resource/frame/index/group/pin tombstone, removes only open membership; selected close picks first remaining or none,
+    unselected close retains selection. Reopen preserves identity, clamps eligible index, resets volatile confirmation and rechecks
+    sharing/open-view/record/pin budgets. Closed admission defaults1024, configurable/unrestricted with no silent eviction; lowering
+    permits unchanged/decreasing recovery. No content or engine effects follow.
+  contract_refs:
+  - WP009-R013
+  - WP009-R014
+  - WP009-R017
+  - WP009-R022
+  - WP009-A001
+- case_id: EVAL-KUM-009-002
+  refs:
+  - REQ-KUM-TABS-001
+  - REQ-KUM-TABS-002
+  - REQ-KUM-LAYOUT-007
+  method: Close/reopen a view used as tool origin, pinned editing target, compatible rebind target and view-edge anchor; repeat while
+    another editing resource is selected and host target-state flags report usable/applicable true.
+  expected: Closed origin/target or unavailable provider is effectively unusable/inapplicable despite true host flags through one Snapshot-aware
+    validation/measurement/reservation/output path. References/placement remain intact; closed compatible targets are valid references
+    but explicit closed/unavailable rebind rejects. Closed view-edge anchor is dormant with no active-frame reservation; root/frame/cell
+    visibility/HiddenSpace policy survives. No automatic retarget or reveal occurs.
+  contract_refs:
+  - WP009-R011
+  - WP009-R013
+  - WP009-R015
+  - WP009-R022
+  - WP009-A007
+- case_id: EVAL-KUM-009-003
+  refs:
+  - REQ-KUM-TABS-002
+  - REQ-KUM-TABS-003
+  method: Rename/recolor/collapse/expand a group, move it within and across frames containing interleaved grouped/ungrouped tabs, move
+    a selected member and an empty group, then round-trip the arrangement.
+  expected: Stable GroupId/label/color/collapse and canonical open-member order survive, even when interleaved. Tab insertion index
+    is after removal and distinct from group ordering; owner/open members/closed reopen metadata update atomically. Any pin/budget conflict
+    rejects the whole move. Source selected departure picks first remaining; destination retains selection or selects first incoming
+    when empty. Labels/descriptions and active metadata remain color-independent.
+  contract_refs:
+  - WP009-R016
+  - WP009-R017
+  - WP009-R018
+  - WP009-A002
+- case_id: EVAL-KUM-009-004
+  refs:
+  - REQ-KUM-TABS-001
+  - REQ-KUM-TABS-002
+  - REQ-KUM-TABS-005
+  method: Enable declared pin rules, attempt forbidden close/reorder/cross-frame move both individually and through group movement,
+    unpin and repeat; include host close veto and dirty state.
+  expected: Host-selected deny-close/deny-reorder/deny-cross-frame rules return reasons and preserve membership across tab/group/reopen
+    routes. Whole-group conflict rejects atomically; unpin restores ordinary behavior, and exact unchanged operations remain no-ops.
+    Individual MoveView retains after-removal index/group semantics.
+  contract_refs:
+  - WP009-R013
+  - WP009-R016
+  - WP009-R017
+  - WP009-A001
+  - WP009-A002
+- case_id: EVAL-KUM-009-005
+  refs:
+  - REQ-KUM-TABS-004
+  - REQ-KUM-TABS-006
+  method: Serialize variable tab counts in nested frames; query a small overflow/list page with host search and ordering, then find/select
+    an item outside the first page and change declared saved/list/live budgets.
+  expected: Canonical requested open/closed set supplies search/counts with canonical or label ordering, deterministic ID ties and offset/limit;
+    default page admission256 is configurable. Saved/closed/entity and returned-row budgets are distinct; no saved record disappears
+    or engine is created. Mounted widget virtualization and actual live-instance limits remain adapter/lifecycle proof.
+  contract_refs:
+  - WP009-R014
+  - WP009-R018
+  - WP009-A003
+- case_id: EVAL-KUM-009-006
+  refs:
+  - REQ-KUM-RECOVERY-001
+  - REQ-KUM-TABS-002
+  - REQ-KUM-MODEL-001
+  method: Encode/decode and activate a mixed nested arrangement with exact typed IDs/u64 values above JSON safe-integer range, open/closed
+    tab order/selection, group labels/colors/collapse, pins/reopen metadata, split/grid proportions/holes, tool placement/target, floats/max
+    projection, effective overrides and provider recovery references.
+  expected: Actual bounded JSON schema1 wire round-trip preserves selected semantic DTO fields using canonical decimal strings and validated
+    finite normalized scalars. Saved next_entity/source lineage/incarnation/generation are metadata, not imported ledger. Volatile focus/visibility/usability/close-permission
+    assertions, actual content/handles/secrets are excluded and restored runtime state starts unresolved. Default Core remains std-only;
+    optional saved-DTO serde and independent JSON package do not imply a mandatory backend.
+  contract_refs:
+  - WP009-R002
+  - WP009-R003
+  - WP009-R004
+  - WP009-R005
+  - WP009-R011
+  - WP009-R020
+  - WP009-A004
+- case_id: EVAL-KUM-009-007
+  refs:
+  - REQ-KUM-RECOVERY-002
+  - REQ-KUM-LAYOUT-002
+  - REQ-KUM-MODEL-001
+  method: Decode/activate malformed, truncated, oversized and structurally invalid data beside a valid live arrangement; include duplicate
+    IDs/keys, dangling or wrong-kind references, cycles, duplicate membership, invalid groups/tool targets, non-finite/nonpositive geometry
+    and admission overflow. Exercise UTF-8 byte admission at default token128/key256/label-and-recovery-ref65536 bounds, configurable
+    overrides and JSON byte/output boundaries.
+  expected: Declared identity/key uniqueness and schema rules are enforced before activation, with bounded input/traversal and structured
+    rejection. Last valid canonical state and allocation survive failed activation; ordinary rejection receipts may change only through
+    the documented operation path. Content is never disposed as a side effect of rejecting layout data. String admission rejects rather
+    than truncates; saved unbounded limits never silently override host persistence bounds.
+  contract_refs:
+  - WP009-R004
+  - WP009-R005
+  - WP009-R008
+  - WP009-R009
+  - WP009-R014
+  - WP009-R022
+  - WP009-A005
+- case_id: EVAL-KUM-009-008
+  refs:
+  - REQ-KUM-RECOVERY-001
+  - REQ-KUM-RECOVERY-003
+  method: Restore the same saved layout under a host-declared missing provider and changed reachable viewport/monitor availability,
+    then resolve the provider and recovery reference.
+  expected: Missing-provider placeholders retain original recovery references and tab/group identities for later resolution; views are
+    not silently dropped or duplicated. Headless reachable-geometry policy is explicit and rejects impossible constraints or reports
+    fallback. Actual native monitor/window handoff remains adapter proof, not a requirement to create windows here.
+  contract_refs:
+  - WP009-R008
+  - WP009-R011
+  - WP009-R015
+  - WP009-A007
+  - WP009-A008
+- case_id: EVAL-KUM-009-009
+  refs:
+  - REQ-KUM-RECOVERY-004
+  - REQ-KUM-RECOVERY-005
+  method: Round-trip first durable schema1, reject schema0/unknown newer/downgrade requests, and inspect immutable identity/generation-stamped
+    DTO/bytes with pure current-stamp checks after edits and foreign identity. Inspect the documented single-writer atomic-replace/last-valid
+    host protocol without claiming interrupted-storage execution.
+  expected: Supported schema/migration and downgrade rejection are explicit and preserve valid state/recovery references; Snapshot1/2
+    are not fabricated legacy files. Single-writer save protocol exposes stale generation rejection and atomic-replace/last-valid host
+    obligations, but no filesystem/native adapter proof follows. Future real migration and host storage boundaries remain accepted RECOVERY
+    scope; the complete feature remains partial.
+  contract_refs:
+  - WP009-R006
+  - WP009-R007
+  - WP009-R012
+  - WP009-A008
+- case_id: EVAL-KUM-009-010
+  refs:
+  - REQ-KUM-RECOVERY-002
+  - REQ-KUM-RECOVERY-004
+  - REQ-KUM-RECOVERY-005
+  - REQ-KUM-MODEL-001
+  - REQ-KUM-MODEL-002
+  method: Prepare a private immutable token bound to complete DTO/host resolution/bounds/admission inputs and target identity/generation;
+    test intervening live edits, input immutability and older restore omitting newer frames through a dedicated whole-state path. Exercise
+    same-lineage live and fresh restore, active/closed IDs, extant immutable conflicts, retained/expired/pre-restore envelopes/previews,
+    foreign matching-number tokens and counter exhaustion.
+  expected: Incarnation mismatch rejects before ledger effects. Live restore accepts same lineage only, validates detached state without
+    legacy repair, preserves live incarnation/receipts/highwater and advances current generation once, allocator=max(live,saved). Saved
+    allocator exceeds all generated active/closed IDs;0/MAX generated IDs reject, allocatorMAX is exhausted. Fresh restore uses a different
+    host-fresh incarnation, saved lineage/IDs/allocator, generation1 and op0. Retained live envelopes replay historical acknowledgment
+    only; stale tokens never become current. Host token/lineage integrity and extant checks do not prove omitted historical identity
+    or cross-restart exactly-once.
+  contract_refs:
+  - WP009-R007
+  - WP009-R008
+  - WP009-R009
+  - WP009-R010
+  - WP009-R011
+  - WP009-R022
+  - WP009-A006
+- case_id: EVAL-KUM-009-011
+  refs:
+  - REQ-KUM-LAYOUT-004
+  - REQ-KUM-LAYOUT-002
+  - REQ-KUM-MODEL-001
+  method: Invoke equalize, swap, maximize-pane and restore-layout through structured commands. Compare nested split/grid weights, order,
+    tab membership, tool targets and IDs; maximize at an extent that fits the selected pane but not hidden sibling/float minima. Exercise
+    source/destination topology and cell-tool changes through ordinary commands and Dock/CommitPreview, permitted tab/group/geometry
+    edits, and restoring under an infeasible underlying context.
+  expected: Equalize selected workspace split/grid/automatic weights to1 with minima intact; swap only two same-workspace docked frame
+    leaves. Max retains underlying plan/IDs while solving selected descendants/tools plus root-edge tools, excluding hidden sibling/float/cell
+    minima but validating structure. Shared source/destination guards cover all R021 routes before effects; independent scopes/no-ops
+    and tab/group/host-geometry/tool-state-policy updates remain allowed under projected validation. Restore exits only when full current
+    underlying geometry/bounds solve; failure retains max and tab edits. Scrollable does not promise float-bound repair. Actual UI controls
+    remain later proof.
+  contract_refs:
+  - WP009-R019
+  - WP009-R020
+  - WP009-R021
+  - WP009-R022
+  - WP009-A009
+boundary_decisions:
+- decision_id: EVAL-KUM-009-D01
+  status: resolved_from_full_contract
+  refs:
+  - WP009-R013
+  - WP009-R014
+  - WP009-R015
+  decision: Bounded identity-preserving tombstones, explicit current close permission/pins, clamped reopen with sharing/admission checks
+    and volatile reconfirmation. Closed tool references remain valid but unusable, rebind rejects, closed view anchors are dormant and
+    root/frame/cell policy survives. Selected close chooses first remaining or none; unselected close retains selection, with sharing
+    counting only open placements.
+- decision_id: EVAL-KUM-009-D02
+  status: resolved_from_full_contract
+  refs:
+  - WP009-R016
+  - WP009-R017
+  decision: Stable atomic GroupId/member movement in canonical open order, after-removal tab index separate from group ordering, deterministic
+    selection, closed-member reopen metadata transfer and whole-group pin/budget rejection; unchanged operations remain no-ops.
+- decision_id: EVAL-KUM-009-D03
+  status: resolved_from_full_contract
+  refs:
+  - WP009-R014
+  - WP009-R018
+  decision: Canonical requested open/closed search/list with deterministic order/ties, offset/limit/total, default page256 and closed1024
+    host-configurable budgets; records are retained, mounted rows/live engines remain adapter proof.
+- decision_id: EVAL-KUM-009-D04
+  status: resolved_from_full_contract
+  refs:
+  - WP009-R002
+  - WP009-R003
+  - WP009-R004
+  - WP009-R005
+  - WP009-R006
+  - WP009-R011
+  - WP009-R012
+  decision: Default std-only Core0.3/Snapshot3, saved-type optional serde1.0.229 and separate JSON0.1/serde_json1.0.151. Flat schema1,
+    exact decimal IDs/u64, default8MiB configurable byte/output bounds, strict duplicates/fields/complete input/recursion guard and
+    validated numbers. Provider keys/recovery refs preserve placeholders; only immutable save-stamp/interface behavior is proved, unsupported
+    schemas/downgrades reject without invented migrations. Default UTF-8 caps are token128/key256/label-and-recovery-ref65536 bytes,
+    host-configurable and rejecting without truncation.
+- decision_id: EVAL-KUM-009-D05
+  status: resolved_from_full_contract
+  refs:
+  - WP009-R007
+  - WP009-R008
+  - WP009-R009
+  - WP009-R010
+  - WP009-R022
+  decision: Host-supplied bounded lineage/incarnation, mismatch before replay/bookkeeping, pure private whole-state preparation without
+    legacy repair. Same-lineage live activation advances generation once and retains ledger/incarnation with monotone allocator; fresh
+    restore starts generation1/op0/new host incarnation. Global generated ID checks and extant immutable identity checks apply; omitted
+    history and host token uniqueness are not claimed proven.
+- decision_id: EVAL-KUM-009-D06
+  status: resolved_from_full_contract
+  refs:
+  - WP009-R019
+  - WP009-R020
+  - WP009-R021
+  decision: 'All four operations selected: equalize workspace weights, swap docked same-workspace leaves, persisted maximize projection
+    solving only selected descendants/tools/root tools, and exit only when full current geometry/bounds solves. Underlying structure/IDs
+    survive; shared affected-workspace guards cover indirect routes, independent/no-op/tab/group/context policies remain allowed under
+    projected validation.'
+red_team_preparation:
+  authority: Historical preparation controls resolved by full WP009 R007-R022; source seams remain bounded implementation inputs, not
+    findings against a WP009 candidate
+  boundaries:
+  - Incarnation mismatch must precede replay lookup/high-water effects; fresh token inequality with one saved token cannot prove host
+    uniqueness across prior instances.
+  - Same-lineage live restore needs immutable extant identity checks and allocator protection covering closed records/omitted newer
+    IDs; retained receipts are historical acknowledgments, not current membership proof.
+  - Closed records and open frame membership need distinct validation; effective tool usability must not be revived by supplied host
+    true flags, and closed view-edge reservations need explicit dormant handling.
+  - Restore preparation must bind DTO and target generation/incarnation plus provider-resolution/bounds policy; source generation is
+    provenance, not live state.
+  - Bounded codec must reject duplicate input before map overwrites and size before parsing; validated numeric deserialization must
+    preserve constructors, normalized zero and exact Eq.
+  - Maximize projection must not restore an old full Snapshot over intervening tab/group edits; topology/packing/docking restrictions
+    and allowed geometry updates need explicit selection.
+  verified_source_seams:
+  - arrangement.rs lines 201-203 index every prior frame in the candidate; restore omitting newer frames needs a whole-state activation
+    path that skips legacy repair/measurement migration.
+  - tools.rs lines 109-124 uses host flags only; solver consumes presentation in minimum measurement, reservation and output. Closed/provider-missing
+    policy needs one consistent snapshot-aware effective path.
+  - docking.rs line 295 calls ownership movement internally; affected-workspace maximize guards must cover direct and Dock/CommitPreview
+    routes, both source/destination and cell-tool edits.
+  - Retained sibling/float minima belong to ordinary solver geometry; selected maximize projection and restoration under changed constraints
+    need explicit geometry/rejection rules.
+gap_flags:
+- No blocking contradiction found between the full R001-R023/spec9 choices and these focused cases; independent publication readback
+  and final dependency readiness remain prerequisites.
+- No WP009 implementation candidate or runtime proof inspected; prepared cases establish no product behavior.
+proof_plan:
+- Resolve exact published predecessor/readiness under WP009-R001 before coding; frozen cases cover R002-R022 and acceptance A001-A009.
+- Coder owns public consumer assertions plus quiet core/JSON examples and no-context manual under R023; lead owns exact default-core/all-features
+  workspace check/test/example matrix in contract proof.
+- JSON proof uses actual bounded wire bytes, not Snapshot cloning; pure stamp proof never claims host filesystem atomicity.
+- Evaluator inspects stabilized candidate and serialized lead results, binds exact runtime inputs/publication and reuses unchanged green
+  proof instead of duplicate Cargo.
+INDEPENDENT_FINDINGS: []
+RESIDUAL_UNCERTAINTY:
+- Actual implementation, codec byte behavior, focused execution and exact candidate publication remain unevaluated.
+- Mounted/native GUI, provider/live-engine, actual filesystem/interrupted-store and real legacy-format migration remain accepted later
+  boundaries; no complete RECOVERY feature verdict.
+next_action: Lead publishes full contract/spec and prepared report; independently bind published bytes before coder admission, then
+  wait for candidate/source and serialized proof dispatch.
+prepared_binding:
+  contract_sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
+  master_spec_sha256: f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b
+  publication: pending_lead_publication_and_independent_readback

@@ -1,0 +1,559 @@
+schema_version: kumihimo.dependency-readiness.v1
+kind: dependency_readiness
+wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
+role_id: ROLE-KUM-DEPENDENCIES
+updated_at: '2026-10-12'
+scope: Dependency readiness for the full WP009-R001–R023 and WP009-A001–A011 scope, all 17 accepted requirement
+  references, and all carried LAYOUT-004 operations.
+verdict: ready_for_selected_optional_dependencies
+coding_admission:
+  status: not_admitted
+  reason: WP009-R001 requires published contract/spec readback, dependency readiness and frozen evaluator cases
+    before coder02 admission. The full contract/spec9 are read in this worktree, but remote publication/readback,
+    evaluator refresh and explicit lead admission remain pending.
+baseline:
+  prior_remote_baseline:
+    observed_revision: ad89a1ca325f4b3b73f92101fbcd795a551597ba
+    remote_branch: origin/codex/handpick
+    remote_observed_revision: ad89a1ca325f4b3b73f92101fbcd795a551597ba
+    publication_proof:
+      command: git ls-remote origin refs/heads/codex/handpick
+      expected_wp008_outcome: 72903fb43ed2c6a6c57a5fe01825447a7a89373d
+      observed_remote_revision: ad89a1ca325f4b3b73f92101fbcd795a551597ba
+      observed: WP008 outcome commit is an ancestor of the exact observed remote branch tip; local and remote WP009
+        stub blob and current master-spec blob match.
+      exact_blobs:
+        wp009_stub_contract:
+          local: 5282fb0d18df219cd1f6f23423f9762c87812ead
+          remote: 5282fb0d18df219cd1f6f23423f9762c87812ead
+        current_master_spec:
+          local: 98cfc5df3f51266ac1739f4adfb7290f2a25e9f4
+          remote: 98cfc5df3f51266ac1739f4adfb7290f2a25e9f4
+  wp008:
+    state: done
+    published_outcome: 72903fb43ed2c6a6c57a5fe01825447a7a89373d
+    observed_current_state_ref: repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-state.yaml
+    observed: WP008 state is phase done, and its recorded outcome is contained in the exact observed remote tip.
+  current_worktree_readback:
+    contract_kind: full_work_packet_contract
+    contract_requirements: 23
+    acceptance_criteria: 11
+    contract_sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
+    state_generation: 3
+    state_phase: active
+    state_owner: dev_lead
+    contract_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
+    state_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
+    specification_version: 9
+    specification_revision: 9
+    specification_status: accepted_direction_implementation_authorized
+    master_spec_sha256: f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b
+    accepted_requirement_records: 99
+    archived_v8_comparison: 'Compared current v9 against archived v8 after the latest clarification: all 99 requirement
+      IDs and statements match; no additions, removals or changed statements.'
+    remote_publication_status: pending_not_checked_in_this_update
+    git_commands_run: false
+    requirement_ids:
+    - WP009-R001
+    - WP009-R002
+    - WP009-R003
+    - WP009-R004
+    - WP009-R005
+    - WP009-R006
+    - WP009-R007
+    - WP009-R008
+    - WP009-R009
+    - WP009-R010
+    - WP009-R011
+    - WP009-R012
+    - WP009-R013
+    - WP009-R014
+    - WP009-R015
+    - WP009-R016
+    - WP009-R017
+    - WP009-R018
+    - WP009-R019
+    - WP009-R020
+    - WP009-R021
+    - WP009-R022
+    - WP009-R023
+    acceptance_ids:
+    - WP009-A001
+    - WP009-A002
+    - WP009-A003
+    - WP009-A004
+    - WP009-A005
+    - WP009-A006
+    - WP009-A007
+    - WP009-A008
+    - WP009-A009
+    - WP009-A010
+    - WP009-A011
+  core:
+    package: product/kumihimo-core
+    package_version: 0.2.0
+    rust_edition: '2021'
+    rust_version: '1.91'
+    default_runtime_dependencies: []
+    snapshot_version: 2
+    records:
+    - Workspace
+    - Frame
+    - Provider
+    - Resource
+    - View
+    - Group
+    canonical_additional_records:
+    - LayoutPlan
+    - GeometryContext
+    - Tool
+    - FloatingFrame
+    derived_outputs:
+    - GeometryProjection
+    - AutomaticPackingPlan
+    - SolverRectangles
+    observed_source_files:
+    - product/kumihimo-core/src/model.rs
+    - product/kumihimo-core/src/ids.rs
+    - product/kumihimo-core/src/command.rs
+    - product/kumihimo-core/src/core.rs
+    observed_limits: max_records 16384; max_layout_entries 65536 by default; no byte-input limit exists in Core
+      today.
+    observed_api: Core::snapshot returns read-only Snapshot; Core::execute serializes commands with generation checks
+      and bounded complete-envelope replay; no persistence or restore API exists.
+    observed_identity: Generated typed entity IDs and operation sequences are scoped to a Core instance; IDs start
+      at 1 in a fresh Core. Snapshot omits the next-entity allocator, high-water mark and receipt ledger.
+    observed_references: Provider and Resource records contain Core-local IDs and a shared-view capability bit;
+      there is no stable provider key or restore reference today.
+    observed_geometry: LayoutPlan and geometry/tool records are already Core-owned in Snapshot v2; plan NodeId is
+      plan-local and is not a durable entity identity.
+    observed_replay: A live restore that changes arrangement must advance the current generation and preserve the
+      existing operation ledger/high-water mark; a snapshot copy alone cannot provide this.
+spec_scope:
+  specification_version: 9
+  refs:
+  - TOPIC-KUM-TABS
+  - REQ-KUM-TABS-001
+  - REQ-KUM-TABS-002
+  - REQ-KUM-TABS-003
+  - REQ-KUM-TABS-004
+  - REQ-KUM-TABS-005
+  - REQ-KUM-TABS-006
+  - TOPIC-KUM-RECOVERY
+  - REQ-KUM-RECOVERY-001
+  - REQ-KUM-RECOVERY-002
+  - REQ-KUM-RECOVERY-003
+  - REQ-KUM-RECOVERY-004
+  - REQ-KUM-RECOVERY-005
+  - REQ-KUM-LAYOUT-004
+  - TOPIC-KUM-MODEL
+  - REQ-KUM-MODEL-001
+  - REQ-KUM-MODEL-002
+  - REQ-KUM-BOUNDARIES-005
+  - REQ-KUM-CHROME-006
+  - REQ-KUM-CHROME-007
+  contract_spec_refs_match:
+  - REQ-KUM-TABS-001
+  - REQ-KUM-TABS-002
+  - REQ-KUM-TABS-003
+  - REQ-KUM-TABS-004
+  - REQ-KUM-TABS-005
+  - REQ-KUM-TABS-006
+  - REQ-KUM-RECOVERY-001
+  - REQ-KUM-RECOVERY-002
+  - REQ-KUM-RECOVERY-003
+  - REQ-KUM-RECOVERY-004
+  - REQ-KUM-RECOVERY-005
+  - REQ-KUM-LAYOUT-004
+  - REQ-KUM-MODEL-001
+  - REQ-KUM-MODEL-002
+  - REQ-KUM-BOUNDARIES-005
+  - REQ-KUM-CHROME-006
+  - REQ-KUM-CHROME-007
+  requirement_count: 17
+  preserved_scope:
+  - All WP009-R001–R023 requirements and WP009-A001–A011 acceptance criteria are in the current full contract.
+  - 'Preserve all six TABS, five RECOVERY, two MODEL, BOUNDARIES-005 and CHROME-006/007 requirements; carry all
+    four LAYOUT-004 operations: equalize, swap, maximize-pane and restore-layout.'
+  - Keep host ownership, actual bounded JSON/schema/restore/stamp proof, and exact platform boundaries. Content
+    edits, disposable runtime handles, native GUI/popout behavior and host filesystem recovery are not inferred
+    from headless proof.
+  choice_topic: TOPIC-KUM-CHOICES
+  coverage_note: The WP contract captures implementation choices for this packet; TOPIC-KUM-CHOICES remains the
+    source context, while only the 17 listed accepted requirement records define its spec_refs.
+dependency_decision:
+  status: selected_by_dev_lead_and_reconciled_to_full_contract_spec9
+  required_default_profile:
+    core_default_external_dependencies: []
+    independently_usable_core: true
+    compulsory_gui_or_platform_backend: false
+  selected_architecture_candidate:
+    semantic_owner: product/kumihimo-core
+    wire_package: product/kumihimo-layout-json
+    wire_format: JSON
+    core_feature: optional_serde_feature_default_off
+    filesystem_owner: host adapter
+    provider_resolution_owner: host adapter using explicit stable provider keys and opaque restore references
+    scope_note: Exact lead selections are present in WP009-R002–R012 and reconciled below. Current report is dependency-ready;
+      remote publication, lockfile resolution, evaluator refresh and explicit coder admission remain lead-owned
+      predecessors.
+    core_target_version: 0.3.0
+    wire_package_target_version: 0.1.0
+    serde_version: 1.0.229
+    serde_json_version: 1.0.151
+  recommendation:
+  - Implement the distinct flat schema-1 PersistedLayout DTO, validation, preparation and activation in product/kumihimo-core;
+    never serialize live Core, Snapshot, commands, receipts, previews or runtime handles.
+  - Keep kumihimo-core default-std-only. Gate Serde 1.0.229 behind an optional default-off feature on semantic saved
+    DTO types only; the independent product/kumihimo-layout-json package uses serde_json 1.0.151 for bounded byte
+    encoding/decoding.
+  - Persist generated typed IDs, including ProviderId and ResourceId, as canonical decimal strings within saved
+    lineage. Reopening retains the same ViewId; no remapping. Keep host stable provider keys and opaque resource
+    recovery references distinct from IDs; exclude engine handles and runtime provider instances.
+  - Persist next_entity above all active and closed generated IDs plus source lineage/incarnation/generation provenance.
+    Use validating constructors for finite normalized Scalar/f64 values; reject duplicate JSON members, duplicate
+    logical IDs, malformed IDs, unknown fields/schema and incomplete input.
+  - Require host-supplied bounded nonempty lineage and incarnation at Core construction. Enforce incarnation equality
+    before receipt lookup or allocator/operation high-water changes; wrong-incarnation commands consume no operation
+    or ledger state. Freshness/uniqueness across Core instances is a host guarantee.
+  - Prepare restore against detached complete state, binding the DTO, target identity/generation, provider resolution
+    and admission/bounds. Live same-lineage activation retains live incarnation/ledger and monotone high-water;
+    fresh import starts a new ledger/incarnation and seeds from saved next_entity.
+  - Keep filesystem paths, atomic replacement, backups, content/provider engines and runtime resolution in the host
+    adapter. The host uses generation-stamped immutable bytes, a single writer, stale-stamp rejection and atomic
+    replacement or recoverable last-valid storage.
+  live_restore_candidate:
+  - R008 requires detached whole-state preparation that skips legacy ownership repair and measurement migration;
+    validate IDs, references, ownership, cycles, membership, selection, layout coverage, floats, arithmetic and
+    bounds before one activation.
+  - R007 makes incarnation mandatory at Core construction and requires identity checks before replay lookup and
+    high-water advancement. Core can detect mismatch; the host supplies uniqueness across all prior Core instances.
+    Wrong-incarnation commands consume no operation/ledger state.
+  - 'R009 rejects extant entity-kind and immutable provider/resource/view-resource identity changes. It explicitly
+    limits historical identity guarantees to extant records: there is no historical identity fingerprint registry
+    for omitted records. The validated next_entity floor prevents generated-ID reuse; do not claim detection of
+    a previously omitted historical identity.'
+  - 'R009/R010: same-lineage live restore keeps the current incarnation and receipt ledger, advances live generation,
+    and preserves at least the live allocator high-water. Fresh import preserves saved semantic IDs/lineage and
+    allocator floor but starts a fresh host-supplied incarnation, ledger and live generation 1.'
+  - R013 retains closed View records as tombstones and reopens the same ViewId at a policy-admitted location; no
+    durable ID remap. Host veto preserves the complete open view. Close history remains bounded with no silent eviction.
+  - R008 binds the complete DTO, target identity/generation and host resolution/bounds/admission inputs into an
+    immutable prepare token; commit rejects if any bound input is stale. Decode/prepare failures do not enter a
+    Core ledger; rejected execute envelopes follow normal receipt/high-water rules.
+  - Retained receipts acknowledge their original command outcome and do not attest current membership after restore.
+    Cross-restart exactly-once replay is not claimed.
+  wire_identity_and_placeholders:
+  - Use exact decimal-string semantic generated IDs scoped to saved lineage; preserve distinct typed IDs and plan-local
+    NodeId selectors.
+  - Persist stable host provider keys and opaque per-resource recovery references separately from semantic IDs;
+    do not persist handles, credentials, secrets or provider implementation state.
+  - Unavailable providers become labeled placeholders preserving original identity, order, group, selection, placement
+    and recovery reference. Host resolution is explicit and cannot execute a supplied reference as a path or URL.
+  - Reopening a retained closed view preserves its original ViewId; do not remap it. Canonical membership/tab order
+    stays independent of split/grid packing order.
+  - Open and closed membership are validated as distinct sets. Saved records, mounted list rows and live-content
+    budgets remain distinct; overflow pages the full canonical collection without truncation.
+  tab_group_and_budget_candidate:
+  - 'R013: close veto/unsaved indicators remain host-controlled. Selected close chooses first remaining tab or none;
+    unselected close retains selection. Closed records preserve ViewId/resource and previous frame/index/group/pin
+    metadata; close removes only open membership/selection and never disposes host content.'
+  - 'R013: sharing capability checks count open placements only; closed history is not a second open placement.
+    Reopen preserves the same ViewId, clamps the saved index, and rechecks destination budgets, pin policy and sharing.'
+  - 'R014: closed records count toward aggregate admission and default1024 closed-view admission; reject if retention
+    exceeds policy and never silently evict. Existing per-frame view limits count open membership. Lowered limits
+    preserve existing data and admit unchanged/decreasing recovery.'
+  - 'R014: default UTF-8 caps are 128 bytes for persistent identity tokens, 256 bytes for provider/resource keys,
+    and 65536 bytes for labels and recovery references. Persistence caps are host-configurable; exceeding an admitted
+    cap rejects and never truncates data.'
+  - 'R015: open/closed references remain distinct. Closed origins/targets and missing providers are effectively
+    unusable and inapplicable even if host flags say true. Closed compatible targets remain valid references, but
+    explicit rebind to a closed/unavailable target rejects.'
+  - 'R015: a closed View-anchored edge placement is dormant and reserves no active-frame space. Frame-, Workspace-
+    and Cell-anchored placement still follows declared visibility and HiddenSpace Release/Retain policy; effective
+    usability/applicability remains false. No retargeting or auto-reveal.'
+  - 'R016-R018: group identity/metadata/member order/pins survive movement; whole-group moves use canonical source
+    open-member order and after-removal indexes, rejecting atomically on policy conflict. Search/order/page limits
+    never truncate saved or canonical membership.'
+  layout_004_candidate:
+    equalize: 'R019: set every split/grid/automatic weight in the selected workspace to 1; minima still apply and
+      the solver distributes equal spare shares, not necessarily equal pixels. Preserve topology/selectors/identities
+      and reject atomically on constraints.'
+    swap: 'R019: exchange exactly two docked frame-leaf spatial placements in one workspace. Preserve frame/tab/content
+      identities and other placements; reject float, cross-workspace and tool swaps explicitly.'
+    maximize_pane: 'R020: reversible projection of one docked frame, retaining canonical plan, siblings, floats
+      and identities. Solve the selected frame/descendants, its tools and root-edge tools; hide sibling/floating/cell-tool
+      projections without allowing hidden minima to reject the active projection. Validate underlying structure.'
+    restore_layout: 'R020: restore-layout exits maximize only if the full underlying geometry/bounds solve succeeds
+      under current host context. Failure retains maximize with an explicit constraint. It never replaces an old
+      Snapshot or discards intervening tab/group edits.'
+    maximize_guard: 'R021: shared guard rejects structural/docking/packing changes in the maximized workspace through
+      every listed direct or indirect route before effects. It permits independent workspaces, unchanged operations,
+      tab/group metadata and membership, host geometry, and tool state/policy updates subject to projected validation.'
+  schema_and_atomic_save_questions:
+  - Snapshot v2 is documented as having no file-restore guarantee; do not invent or claim a migration from an unpublished
+    serialized Snapshot v2 format.
+  - Define durable schema version 1 as the first persisted form, with no prior durable schema and no retroactive
+    Snapshot migration. Reject unsupported older and newer versions visibly; keep the migration table empty until
+    a genuine prior durable schema exists, and add only real version-to-version migrations later.
+  - Expose a host save protocol over generation-stamped immutable bytes: one writer serializes commits, stale generation
+      stamps reject, and host storage uses atomic replacement or a recoverable last-valid protocol. Never infer
+      file or platform behavior from JSON codec success.
+  - Require duplicate JSON object-key and duplicate typed-record-ID rejection before map normalization can overwrite
+    earlier input. Require total byte-size rejection before parsing/allocation and keep serde_json's default recursion
+    guard enabled.
+  - The inspected product/ tree contains only kumihimo-core, with no application/store adapter. Keep full RECOVERY
+    acceptance open until a real platform adapter supplies atomic replacement/recovery proof; do not invent native-store
+    behavior or mark host persistence complete from JSON tests.
+  dependency_resolution_boundary: Exact versions and package placement are selected by R002. Inspected cache artifacts
+    support candidate availability, but only the lead may establish actual workspace lockfile closure in its serial
+    lane.
+  contract_scope_summary:
+  - 'R001-R006: full promotion, selected optional dependency boundary, semantic schema DTO, canonical decimal IDs,
+    bounded strict JSON and schema-1-only rejection policy.'
+  - 'R007-R012: mandatory host-supplied Core incarnation, detached restore preparation, extant-only immutable identity
+    checks, live/fresh restore rules, provider placeholders and host-owned immutable save stamps/recovery.'
+  - 'R013-R018: bounded tombstones/reopen without ID remap; selected-close picks first remaining or none, unselected
+    close retains selection; open-placement sharing checks and rechecks; host close veto/pins; effective closed/missing-provider
+    tool behavior; groups, overflow/search and independent budgets.'
+  - 'R019-R021: all carried equalize/swap/maximize/restore-layout operations and the precise workspace-wide maximize
+    guard/allowed operations.'
+  - 'R022-R023: structured atomic failures and focused consumer proof, plus quiet examples/manual, exact build matrix/topology/status
+    updates and lead-owned serial locked/offline validation.'
+alternatives:
+- option: Put optional serde derives directly on live Core/Snapshot and serialize current runtime records
+  decision: reject
+  reason: Snapshot omits the entity allocator and replay ledger, uses Core-local IDs and provider runtime IDs, and
+    has no stable provider key. Serializing it directly risks restoring stale commands, identity collisions, hidden
+    runtime state and an accidental migration promise.
+- option: Core DTO plus optional Serde feature, with host-owned codec and I/O
+  decision: viable_alternative
+  reason: Preserves default Core independence and keeps all bytes/platform effects with the host, but it does not
+    provide a concrete bounded byte parser or repository-owned wire round-trip proof in WP009.
+- option: One optional JSON wire package plus optional Core Serde feature
+  decision: selected_by_dev_lead
+  reason: It provides a concrete versioned byte boundary, byte/count/depth budgets and corruption/unknown-version
+    cases while leaving the normal Core dependency graph empty. The added package remains opt-in and owns only format
+    conversion.
+- option: RON as the persistence codec
+  decision: defer
+  reason: RON 0.12.2 is current and has Rust 1.64 MSRV, but exact 0.12.2 source is not cached locally; cached source
+    is 0.12.0. No project need justifies choosing it over broadly interoperable JSON.
+- option: egui_tiles or egui_dock as the canonical semantic model
+  decision: reject_for_core
+  reason: Both are useful field references with optional Serde support, but their canonical state and behavior are
+    coupled to egui presentation and dependencies. They would duplicate Core ownership and bring an unnecessary
+    GUI bundle.
+- option: Dockview as a Core dependency
+  decision: reject
+  reason: Dockview is a TypeScript/browser docking system and cannot serve as the Rust semantic Core; retain only
+    its tab-group, overflow and maximize behavior as research evidence.
+dependency_candidates:
+- crate: serde
+  version: 1.0.229
+  proposed_use: Optional feature for semantic saved DTOs only
+  rust_version: '1.56'
+  local_cache_observation: Exact serde 1.0.229, serde_core 1.0.229 and serde_derive 1.0.229 source/archive artifacts
+    are present. serde_derive has Rust 1.71 MSRV; compatible proc-macro2, quote and syn source/archive artifacts
+    were found.
+  offline_status: Candidate proc-macro closure artifacts observed; no Cargo resolution or offline build was run,
+    so the selected workspace lockfile closure remains unverified.
+  source: https://docs.rs/crate/serde/1.0.229/source/Cargo.toml
+- crate: serde_json
+  version: 1.0.151
+  proposed_use: Optional JSON wire package; disable unbounded_depth and set an application byte limit before parsing.
+  rust_version: '1.71'
+  local_cache_observation: Exact 1.0.151 source/archive is present. Its 1.0.151 crate lock selects itoa 1.0.18,
+    memchr 2.8.3, serde_core 1.0.229 and zmij 1.0.23; source/archive artifacts for each are present. serde/derive
+    closure artifacts are also present, but resolver selection must still be pinned in the project lock.
+  current_upstream: 1.0.152 is current in docs.rs as of 2026-10-12, but exact 1.0.152 cache presence was not observed;
+    1.0.151 is the locally cached, Rust-1.91-compatible candidate.
+  offline_status: Cached candidate only; no Cargo resolution or offline build was run.
+  source: https://docs.rs/crate/serde_json/1.0.151/source/Cargo.toml
+- crate: ron
+  version: 0.12.2
+  proposed_use: Not selected; reference alternative only.
+  rust_version: '1.64'
+  local_cache_observation: Exact 0.12.2 source not present; 0.12.0 source is present.
+  offline_status: Not available at the exact referenced version in the inspected source cache.
+  source: https://github.com/ron-rs/ron/blob/master/Cargo.toml
+research_basis:
+  checked_local_authority:
+  - path: repo-governance/codex/CODEX.md
+    observed: Minimal model-operated profile requires direct bounded work, optional role workflow, current contract/spec
+      reads, scoped writes, and no Cargo for governance-only preparation.
+  - path: repo-governance/codex/build-rules/current/build-rules.yaml
+    observed: Core packages remain independently selectable; actual runtime and platform capabilities must be proven
+      exactly; host effects and persistence boundaries must remain explicit.
+  - path: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
+    observed: Current full WP009-R001–R023 contract and A001–A011 acceptance scope were read at worktree generation
+      3; coding admission remains a separate lead action after publication/readback and frozen evaluation.
+  - path: repo-governance/specification/current/spec-modules/master-spec.md
+    observed: Current accepted spec revision 9 was read. It retains all 99 requirement IDs and statements from archived
+      v8; WP009 covers all 17 referenced requirement records including BOUNDARIES-005 and CHROME-006/007, with LAYOUT-004
+      carried forward.
+  - path: product/README.md
+    observed: The host owns actual content, provider engines and persistence; Snapshot v2 is not a persistence guarantee;
+      GUI and adapters remain unproven.
+  - path: product/kumihimo-core/src/model.rs
+    observed: Snapshot owns flat workspace/frame/view/group plus layout/context/tool/float records; it has no persistent
+      provider-key/recovery-reference fields.
+  - path: product/kumihimo-core/src/ids.rs
+    observed: Typed entity IDs are raw-u64 Core-local references; OperationId is a monotonic Core-scoped sequence.
+  - path: product/kumihimo-core/src/core.rs
+    observed: Core owns allocator and bounded receipt ledger outside Snapshot; command application uses current
+      generation and exact retained envelope replay.
+  - path: product/kumihimo-core/Cargo.toml
+    observed: Current core is package 0.2.0, Rust 1.91, and has an empty default dependency table.
+  - path: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/spec-modules/master-spec.md
+    observed: 'Compared archived v8 and current v9 requirement records: 99 IDs in each, with no added, removed or
+      changed requirement statements.'
+  checked_primary_upstream_sources:
+  - url: https://github.com/serde-rs/serde/blob/master/serde/Cargo.toml
+    observed: Serde 1.0.229 has Rust 1.56 MSRV, a separately gated derive feature and standard-library support;
+      optional derive/serde is an established Cargo feature pattern.
+  - url: https://docs.rs/serde_json/latest/serde_json/struct.Deserializer.html
+    observed: serde_json 1.0.152 supports slice parsing and has a default recursion limit; disabling that limit
+      explicitly warns about stack-overflow risk unless a separate bound/stack strategy exists.
+  - url: https://docs.rs/crate/serde_json/1.0.151/source/Cargo.toml
+    observed: Cached candidate 1.0.151 has Rust 1.71 MSRV and a compact core dependency set; optional indexmap is
+      not needed for a canonical ordered DTO.
+  - url: https://docs.rs/egui_tiles/latest/egui_tiles/struct.Tree.html
+    observed: egui_tiles stores all persistent tile/layout state in a serializable Tree and makes Serde optional;
+      its separate owner Tree remains tied to its own presentation/layout model.
+  - url: https://docs.rs/crate/egui_tiles/latest/source/Cargo.toml
+    observed: egui_tiles 0.17.1 makes serde optional but depends on egui 0.36 plus ahash, itertools and log; not
+      an appropriate Core or persistence dependency bundle.
+  - url: https://docs.rs/egui_dock/latest/egui_dock/dock_state/struct.DockState.html
+    observed: egui_dock documents serializable DockState for surface placement; its ownership is UI DockState/Tree
+      state and does not define Kumihimo provider recovery references.
+  - url: https://github.com/anhosh/egui_dock/blob/main/src/dock_state/mod.rs
+    observed: DockState gates Serialize/Deserialize with its serde feature and explicitly skips translations; this
+      supports selective semantic serialization, not serializing all runtime state.
+  - url: https://dockview.dev/docs/core/panels/tabOverflow/
+    observed: Mature overflow patterns include reachable dropdown lists, optional scrolling and searchable keyboard
+      navigation rather than shrinking every tab.
+  - url: https://dockview.dev/docs/core/panels/tabGroups/
+    observed: Group patterns include stable IDs, labels, colors, collapse state, ordered panel membership and explicit
+      movement/recolor/collapse operations.
+  - url: https://dockview.dev/docs/core/groups/maximizedGroups/
+    observed: Maximization is a reversible viewport projection with an explicit exit operation.
+  - url: https://code.visualstudio.com/docs/configure/custom-layout
+    observed: VS Code distinguishes expand from maximize; maximize hides other groups, while pinned tabs have explicit
+      position, visibility and close-policy semantics.
+  - url: https://code.visualstudio.com/docs/editing/getting-started/userinterface
+    observed: Closing the last editor may close its group or preserve empty groups via explicit host setting; overflow/navigation
+      policy is separate from persisted tab count.
+  - url: https://code.visualstudio.com/docs/editing/codebasics
+    observed: Unsaved editor content and its hot-exit backup are separate from arrangement; layout recovery must
+      not pretend to own provider data.
+  - url: https://github.com/microsoft/vscode/src/vs/sessions/LAYOUT_CONTROLLER.md
+    observed: Saves/restores are serialized to prevent an older asynchronous apply overwriting a newer one; geometry
+      and active-session state have distinct owners.
+  rejected_or_deferred_patterns:
+  - Do not serialize live renderer/provider objects, content, secrets, event handles, previews or Core ledger state
+    into the durable semantic layout.
+  - Do not use JSON unbounded_depth, recursive DTO trees, silent unknown-version coercion, best-effort dropping
+    of unknown providers, or an implicit fallback that discards the last valid layout.
+  - Do not add egui, Dockview, Taffy, a generic math crate or an unrequested filesystem/backend bundle to Core.
+risks_and_controls:
+- risk: Direct Snapshot deserialization reuses Core-local IDs or accepts stale commands while omitting allocator/replay
+    state.
+  control: Use a distinct validated DTO with decimal-string IDs, source lineage/incarnation/generation and validated
+    next_entity; define incarnation and restore generation/ledger rules; preserve canonical state atomically while
+    applying the existing rejection receipt/high-water policy.
+- risk: Missing provider lookup drops tabs or binds saved references to the wrong provider.
+  control: Use host stable provider keys, opaque per-resource recovery references and explicit placeholders that
+    preserve exact order and reference until resolution.
+- risk: A corrupt, oversized or deeply nested payload consumes excessive memory/stack or replaces valid live state.
+  control: Enforce byte limits before JSON parsing, keep DTO flat, retain default parser depth limits, enforce record/layout
+    budgets, validate detached state, and activate only after full validation.
+- risk: Close handling disposes dirty host content before the host veto or loses reopen metadata.
+  control: Make close approval an explicit host boundary; preserve the tab on veto; retain bounded reopen metadata
+    only after accepted close; never dispose provider content in Core.
+- risk: Group movement, pinning or overflow changes canonical membership/order or silently truncates saved tabs.
+  control: Define canonical tab order and group identity independently from spatial packing; treat overflow as a
+    projection over all tabs; expose separate saved/list/live budgets and explicit disabled-command reasons.
+- risk: Maximize or restore-layout silently discards topology changes made during the temporary state.
+  control: Keep maximize reversible over the underlying layout; make restore source/version and intervening-generation
+    behavior explicit and stale-safe.
+- risk: Host filesystem write is torn or a delayed earlier save replaces newer state.
+  control: Bind immutable bytes to captured generation, serialize commit ownership and reject stale stamps; retain
+    platform atomic replacement or recoverable last-valid protocol as an explicit host interface. Full RECOVERY
+    acceptance remains open until a real adapter proves storage behavior.
+- risk: Claimed migration accepts fabricated legacy data or downgrades a newer schema.
+  control: Treat Snapshot v2 as nonpersistent; define durable schema 1 with no legacy migration, reject unsupported
+    older/newer versions, and implement only migrations between genuine published durable versions.
+- risk: The optional persistence package becomes a compulsory backend bundle.
+  control: Keep the Core default graph empty, make format package independently selectable, and prove default Core
+    use without enabling serialization/JSON.
+focused_proof_plan:
+  cases:
+  - case_id: WP009-DTO-001
+    expected: Round-trip all durable workspace/frame IDs, membership order, layout placement, proportions, selection,
+      group state, overrides and opaque recovery references; exclude handles/secrets/ledger/runtime state.
+  - case_id: WP009-DTO-002
+    expected: Reject malformed/duplicate JSON keys and typed IDs, broken references, cycles, invalid geometry, over-count,
+      over-depth and over-byte inputs without changing canonical model, generation or allocator. Decode/preparation
+      failures do not enter a Core ledger; rejected execute envelopes follow the existing high-water/receipt policy.
+  - case_id: WP009-DTO-003
+    expected: Restore with a missing provider to an ordered placeholder preserving identity and recovery references;
+      resolve it later through an explicit host-provided mapping without duplicate views.
+  - case_id: WP009-SCHEMA-001
+    expected: Accept only the explicitly supported schema versions and real migrations; reject unsupported older/newer
+      schemas with a structured result and preserve last valid state.
+  - case_id: WP009-TABS-001
+    expected: Exercise host-approved close, dirty close veto, reopen metadata, individual and group movement, selection,
+      group identity/member order, pin restrictions, overflow search and independent saved/list/live budgets.
+  - case_id: WP009-LAYOUT-004
+    expected: Exercise equalize and swap on the contract's exact target scope; maximize/restore while tabs and groups
+      change and while prohibited topology/plan commands are attempted; keep stable content IDs and enforce minima/generation
+      conflicts.
+  - case_id: WP009-REPLAY-001
+    expected: Prove incarnation is checked before receipt lookup/high-water advancement; pre-restore stale envelopes,
+      cross-Core mismatch, exact retained replay and fresh-Core import cannot repeat, collide or partially apply
+      a restore. Mutate a prepared token's source DTO, target generation and provider policy to prove staleness.
+  - case_id: WP009-STORE-001
+    expected: Verify generation-stamped immutable-byte protocol, single-writer ordering and stale-stamp rejection.
+      Keep full RECOVERY acceptance open until a real platform adapter proves interrupted atomic replacement or
+      last-valid recovery; codec proof is separate.
+  execution_boundary: This dependency readiness report makes no Cargo, product-code, test, Git, or platform-persistence
+    changes. Cache observations do not prove the selected workspace lock closure; the lead resolves the actual lockfile
+    closure in the serial lane before compiling. The evaluator has prepared 11 acceptance scenarios and six boundary
+    decisions against spec9; they do not claim runtime results. The lead publishes and independently rereads the
+    exact contract/spec revision and explicitly admits coder02 only after R001 predecessors pass. Host file/monitor/engine
+    behavior remains outside headless proof.
+handoff:
+  next_action: Lead publishes and independently reads back the exact full WP009/spec9 candidate, resolves selected
+    dependency lock closure in its one serial offline Cargo lane before compiling, and explicitly admits coder02
+    after R001 predecessors pass. Dependency readiness is selected; this report does not admit coding. Full host
+    RECOVERY acceptance remains open until a real adapter proves storage recovery.
+  publication_status: pending_remote_publication_and_independent_readback
+  lock_resolution_status: not_resolved_by_dependency_role; cache inspection is not offline lock closure
+  evaluator_status: 'Validated and frozen: 11 acceptance scenarios and six boundary decisions bind the exact current
+    contract/spec9 hashes; no runtime evaluation claimed.'
+  no_product_cargo_git_changes: true
+schema_and_host_save_boundary:
+- 'R006: durable schema 1 is the first format. Reject schema 0 and unsupported older/newer schemas; Snapshot v1/v2
+  are not file formats. No legacy migration is claimed until a genuine earlier durable schema exists.'
+- 'R012: expose immutable generation/identity-stamped save DTO/bytes and pure current-stamp check. Host owns one-writer
+  ordering, stale-stamp rejection and atomic replacement or recoverable last-valid storage.'
+- No application/store adapter currently supplies platform I/O proof. WP009 proves codec, semantic restore and stamp
+  behavior while explicitly leaving host file/monitor/popout recovery unproven; full RECOVERY acceptance stays open
+  for a real adapter.
+evaluation_readback:
+  artifact_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-evaluation.yaml
+  evaluation_id: EVAL-KUM-009-v1
+  observed_verdict: PREPARED_NOT_RUNTIME_EVALUATED
+  observed_phase: acceptance_cases_prepared
+  observed_spec_revision: 9
+  prepared_acceptance_scenarios: 11
+  prepared_boundary_decisions: 6
+  status: validated_and_frozen_for_spec9; runtime_not_evaluated
+  admission_effect: Evaluation cases are validated and frozen against the exact current full contract/spec9 bytes.
+    R001 coder admission still awaits lead publication, independent published-byte readback and explicit admission.
+  evaluation_sha256: af2083f26737bdf371c94c697b86b450ca73eb845495bf10d976c16b0dfe9863
+  prepared_binding:
+    contract_sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
+    master_spec_sha256: f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b
+    publication: pending_lead_publication_and_independent_readback

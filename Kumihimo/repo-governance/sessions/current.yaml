@@ -7,7 +7,7 @@ git:
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: null
+active_wp: WP-KUM-009-tabs-and-layout-recovery-v1
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
@@ -19,19 +19,19 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6-luna
     reasoning: high
-    assignment: WP008 current field/dependency evidence and readiness before coding
+    assignment: WP009 current research and dependency readiness before coding
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6-luna
     reasoning: high
-    assignment: Inspect cache, resources and build contention; wait for bounded write dispatch
+    assignment: Await frozen009 candidate or actual failure dispatch; build lane idle
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP008 focused acceptance and pre-coding boundary gap review
+    assignment: WP009 focused cases and explicit boundary gap preparation
   coder:
     role_id: ROLE-KUM-CODER-02
     thread_id: 01a12cff-0f3f-72e3-b1ca-3befa8471878
@@ -52,13 +52,13 @@ build_lane:
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
   other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
-  gameplan_relative_git_root: .local/kumihimo-layout/gameplan.yaml
+  gameplan_relative_git_root: .local/kumihimo-recovery/gameplan.yaml
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Rotate coder; dependency/eval prepare full WP009 bounded contract before publication/coding
-next_wp: WP-KUM-009-tabs-and-layout-recovery-v1
+next_action: Publish full009/spec9 after scoped role consistency/readiness; independent published reread then coder02
+  admission
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

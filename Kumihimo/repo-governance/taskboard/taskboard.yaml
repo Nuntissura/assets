@@ -4,7 +4,8 @@ project_id: KUMIHIMO
 source: WP contracts and state
 counts:
   done: 8
-  planned: 6
+  active: 1
+  planned: 5
 work_packets:
 - wp_id: WP-KUM-001-init-v1
   title: Initialize Kumihimo minimal workflow
@@ -67,11 +68,11 @@ work_packets:
   next_action: WP008 complete; rotate coder and prepare full WP009 tabs/layout recovery before coding
   blockers: []
 - wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-  title: Implement tabs, groups and persisted arrangement
-  phase: planned
+  title: Implement tab semantics and versioned arrangement recovery
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
-  next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+  next_action: Publish accepted full009/spec9; independently reread remote blobs, then explicitly admit coder02
   blockers: []
 - wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
   title: Implement replaceable content and lifecycle contracts
