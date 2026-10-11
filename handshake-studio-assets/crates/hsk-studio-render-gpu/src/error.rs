@@ -38,6 +38,11 @@ pub enum GpuError {
     },
     /// Unexpected GPU-side failure (validation error, failed mapping, timeout).
     Gpu(&'static str),
+    /// An adapter and a device were acquired, but the WGSL shader or the compute pipeline failed
+    /// validation (`shader_validation`, `shader_validation_timeout`). A defect of this crate, never
+    /// an environment condition: distinct from `Unavailable` (no adapter/device), so a test or a
+    /// supervisor can never mistake it for "no GPU here".
+    Pipeline(&'static str),
 }
 impl From<BackendError> for GpuError {
     fn from(error: BackendError) -> Self {
@@ -55,6 +60,9 @@ impl From<GpuError> for BackendError {
                 limit: budget,
             },
             GpuError::Gpu(what) => BackendError::Unavailable(what),
+            // The port vocabulary has no internal-defect variant; the code (`shader_validation`)
+            // keeps it distinct from `no_adapter` / `no_device` at the port.
+            GpuError::Pipeline(what) => BackendError::Unavailable(what),
         }
     }
 }
@@ -65,7 +73,7 @@ impl GpuError {
             Self::Unavailable(_) => "backend_unavailable",
             Self::DeviceLost { .. } => "device_lost",
             Self::BudgetExceeded { .. } => "budget_exceeded",
-            Self::Gpu(what) => what,
+            Self::Gpu(what) | Self::Pipeline(what) => what,
         }
     }
 }
@@ -74,6 +82,7 @@ impl std::fmt::Display for GpuError {
         match self {
             Self::Unavailable(reason) => write!(f, "backend_unavailable({})", reason.code()),
             Self::DeviceLost { generation } => write!(f, "device_lost(generation {generation})"),
+            Self::Pipeline(what) => write!(f, "pipeline_failed({what})"),
             other => f.write_str(other.code()),
         }
     }

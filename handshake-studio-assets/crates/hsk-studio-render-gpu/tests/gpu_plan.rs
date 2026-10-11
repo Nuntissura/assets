@@ -1,9 +1,10 @@
-//! Focused proofs for the GPU backend (MT-35546 cases). Everything except the two GPU-execution
-//! tests (`gpu_blend_parity_vs_pigment_blend_math`, `gpu_modes_masks_groups_clip_parity`) is
-//! hardware-independent and must pass on a machine without an adapter. The GPU-execution tests
-//! assert the typed `Unavailable` and print `NOT_PROVEN` when no adapter exists: they never claim
-//! a GPU proof they did not run. Device creation is serialised by `DEVICE_LOCK` and the two GPU
-//! tests share one lazily created backend.
+//! Focused proofs for the GPU backend (MT-35546 cases plus the R3 regressions). The admission,
+//! latch and residency tests are hardware-independent and must pass on a machine without an
+//! adapter. Every GPU-execution proof goes through `gpu_gate`: the ONLY skip (printed
+//! `NOT_PROVEN`) is "no adapter at all" (or the forced `none` backend); an adapter whose device,
+//! shader or pipeline failed, a timeout or a lost device FAILS the test, and
+//! `HSK_STUDIO_TEST_REQUIRE_GPU=1` turns even "no adapter" into a failure. Device creation is
+//! serialised by `DEVICE_LOCK`; the parity tests share one lazily created backend.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::blend_math::{MODES, PixelSite, Rgba, composite_over};
 use hsk_studio_pigment::render_plan::{
@@ -18,6 +19,7 @@ use hsk_studio_render_gpu::{
     ResidentKey, gpu_blend_qualifies, gpu_blend_supported,
 };
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Instant;
 
 static DEVICE_LOCK: Mutex<()> = Mutex::new(());
 fn device_lock() -> MutexGuard<'static, ()> {
@@ -329,6 +331,34 @@ fn no_adapter() -> DeviceOptions {
     DeviceOptions {
         backend: BackendChoice::None,
         ..DeviceOptions::default()
+    }
+}
+fn require_gpu() -> bool {
+    std::env::var("HSK_STUDIO_TEST_REQUIRE_GPU").as_deref() == Ok("1")
+}
+/// Gate of every GPU-execution proof. `Ok(Some)`: a live device. `Ok(None)`: the one legitimate
+/// NOT_PROVEN case, no adapter at all (or the forced `none` backend), and only while
+/// `HSK_STUDIO_TEST_REQUIRE_GPU` is not `1`. Everything else (an adapter whose device or
+/// shader/pipeline failed, a timeout, a lost device) is `Err`: the calling test FAILS, never skips.
+fn gpu_gate(backend: &GpuBackend, what: &str) -> Result<Option<DeviceInfo>, String> {
+    if let Some(info) = backend.device_info() {
+        return Ok(Some(info));
+    }
+    if let Some(failure) = backend.failure() {
+        return Err(format!(
+            "{what}: adapter present but the backend failed: {failure} ({failure:?})"
+        ));
+    }
+    match backend.unavailable_reason() {
+        Some(Reason::NoAdapter) if !require_gpu() => {
+            eprintln!("NOT_PROVEN: no adapter; {what} not run");
+            Ok(None)
+        }
+        other => Err(format!(
+            "{what}: no live device (unavailable {other:?}, lost {}, require_gpu {})",
+            backend.is_lost(),
+            require_gpu()
+        )),
     }
 }
 fn run(
@@ -663,8 +693,97 @@ fn admission_refusals_run_without_adapter() {
     );
 }
 
+/// R3 finding 1 (regression): a leaf root has no layer, so the plan lists no blend operator, but
+/// the executor composites it through the blend kernel (Normal, opacity 1, over transparent). The
+/// class must be that kernel's (Fitted, the crate's GPU blend policy): an Exact floor is refused at
+/// admission, before any source lookup or device work, and the receipt carries `normal: fitted`.
 #[test]
-fn device_loss_and_unavailable_are_explicit() {
+fn leaf_root_reports_the_blend_kernel_class() {
+    let backend = GpuBackend::new(no_adapter());
+    let extent = rect(0, 0, 3, 2);
+    let none = Sources::default();
+    let mut sink = Image::new(extent);
+    let leaf = |node: PlanNode<NoVector>| RenderPlan {
+        revision: 2,
+        target: target(extent),
+        nodes: vec![node],
+        root: PlanNodeId(0),
+    };
+    let solid_root = leaf(solid(extent, [0.3, 0.5, 0.7, 0.25]));
+    let tile_root = leaf(OwnedTile::random(3, 2, 5).input(1, extent));
+    let refused = Err(BackendError::Unsupported {
+        operator: StudioBlendMode::Normal.key(),
+        exactness: Exactness::Fitted,
+    });
+    for plan in [&solid_root, &tile_root] {
+        assert_eq!(
+            run(
+                &backend,
+                plan,
+                &request(2, Exactness::Exact),
+                &none,
+                &mut sink
+            ),
+            refused
+        );
+    }
+    // a Fitted floor admits it; the only refusal left on this backend is the missing device
+    assert_eq!(
+        run(
+            &backend,
+            &solid_root,
+            &request(2, Exactness::Fitted),
+            &none,
+            &mut sink
+        ),
+        Err(BackendError::Unavailable("no_adapter"))
+    );
+    assert_eq!((sink.accepted, backend.resident_bytes()), (0, 0));
+
+    // live device: the receipt names the kernel class, and the leaf texels come back
+    let _guard = device_lock();
+    let shared = shared_backend();
+    if gpu_gate(shared, "leaf-root receipt class")
+        .unwrap_or_else(|e| panic!("{e}"))
+        .is_none()
+    {
+        return;
+    }
+    let receipt = run(
+        shared,
+        &solid_root,
+        &request(2, Exactness::Fitted),
+        &none,
+        &mut sink,
+    )
+    .expect("leaf root executes on the device");
+    assert_eq!(receipt.exactness.lowest, Exactness::Fitted);
+    assert!(
+        receipt
+            .exactness
+            .operators
+            .iter()
+            .any(|o| o.key == StudioBlendMode::Normal.key() && o.exactness == Exactness::Fitted)
+    );
+    for got in &sink.px {
+        let err = got
+            .iter()
+            .zip([0.3_f32, 0.5, 0.7, 0.25])
+            .map(|(g, e)| (g - e).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(err <= 1.0e-6, "leaf texel {got:?}");
+    }
+    eprintln!(
+        "LEAF_ROOT: receipt lowest {:?}, operators {:?}",
+        receipt.exactness.lowest, receipt.exactness.operators
+    );
+}
+
+/// Unit test of the loss LATCH and the unavailable path (no hardware, no real loss): a backend
+/// whose state is injected as lost. The real destroy-and-detect proof is
+/// `device_destroy_is_detected_by_the_lost_callback`.
+#[test]
+fn injected_loss_latch_and_unavailable_are_explicit() {
     let token = CancellationToken::default();
     match GpuContext::acquire(&no_adapter(), &token) {
         Err(GpuError::Unavailable(Reason::NoAdapter)) => {}
@@ -714,25 +833,52 @@ fn device_loss_and_unavailable_are_explicit() {
         Err(BackendError::DeviceLost { generation: 7 })
     );
     assert_eq!((sink.accepted, lost.resident_bytes()), (0, 0));
+}
 
-    // Real device (only when an adapter exists): destroy it through wgpu, observe
-    // DeviceLost{generation}, then an explicit re-acquire bumps the generation and the backend
-    // executes again. Own backend: the shared GPU-test backend must stay alive.
+/// R3 finding 3 (regression): `wgpu::Device::destroy` on a live device must be detected by the
+/// backend ITSELF, through wgpu's device-lost callback (delivered by the poll the backend runs
+/// before every execute and state query). `simulate_device_loss` only destroys and never sets the
+/// latch, so removing the callback wiring in device.rs makes this test fail. A driver-initiated
+/// loss (TDR, adapter removal) is a different trigger and stays NOT_PROVEN.
+#[test]
+fn device_destroy_is_detected_by_the_lost_callback() {
     let _guard = device_lock();
+    // Own backend: the shared GPU-test backend must stay alive.
     let live = GpuBackend::new(DeviceOptions {
         backend: backend_from_env(),
         ..DeviceOptions::default()
     });
-    let Some(info) = live.device_info() else {
-        eprintln!(
-            "NOT_PROVEN: no adapter ({:?}); real device-loss path not exercised",
-            live.unavailable_reason()
-        );
+    let Some(info) = gpu_gate(&live, "device-loss detection").unwrap_or_else(|e| panic!("{e}"))
+    else {
         return;
     };
+    let token = CancellationToken::default();
+    let extent = rect(0, 0, 2, 2);
+    let plan = plan_of(
+        1,
+        extent,
+        vec![solid(extent, [0.1, 0.2, 0.3, 1.0])],
+        vec![layer(0, StudioBlendMode::Normal, 1.0, 1.0)],
+    );
+    let sources = Sources::default();
+    let mut sink = Image::new(extent);
     let first = info.generation;
     assert_eq!(first, 1);
+    run(
+        &live,
+        &plan,
+        &request(1, Exactness::Fitted),
+        &sources,
+        &mut sink,
+    )
+    .expect("the live device executes before the loss");
+    assert!(!live.is_lost());
+
+    // destroy only; the very next execute must find the loss on its own (unlatched by the test)
+    let started = Instant::now();
     assert!(live.simulate_device_loss());
+    let destroyed = Instant::now();
+    let destroy_took = destroyed - started;
     assert_eq!(
         run(
             &live,
@@ -743,7 +889,15 @@ fn device_loss_and_unavailable_are_explicit() {
         ),
         Err(BackendError::DeviceLost { generation: first })
     );
+    eprintln!(
+        "DEVICE_LOSS: {} destroy {destroy_took:?}, detected by the wgpu lost callback on the next \
+         execute in {:?}",
+        info.text(),
+        destroyed.elapsed()
+    );
+    assert!(live.is_lost());
     assert!(live.device_info().is_none());
+    assert!(!live.simulate_device_loss(), "no live device is left");
     let second = live.reacquire(&token).expect("re-acquire after loss");
     assert!(second > first);
     let receipt = run(
@@ -826,6 +980,127 @@ fn residency_lru_budget_accounting() {
     assert!(res.evictions() >= 1);
 }
 
+/// R3 finding 4 (regression): byte accounting near `u64::MAX` never overflows. `used + bytes`
+/// beyond the budget evicts (or is the typed `BudgetExceeded`), it never wraps or panics.
+#[test]
+fn residency_accounting_never_overflows() {
+    let tile = |source: u32| ResidentKey::Tile {
+        source,
+        bounds: rect(0, 0, 4, 4),
+    };
+    let half = 1_u64 << 63;
+    let exceeded = |requested| GpuError::BudgetExceeded {
+        requested,
+        budget: u64::MAX,
+    };
+    let mut res = Residency::new(u64::MAX);
+    let a = res.reserve(tile(1), half).expect("first half");
+    // pinned: the second half cannot fit next to it (u64::MAX - 2^63 < 2^63)
+    assert_eq!(res.reserve(tile(2), half), Err(exceeded(half)));
+    assert_eq!((res.used(), res.evictions()), (half, 0));
+    // unpinned: used + bytes = 2^64 would overflow; the LRU entry is evicted instead
+    assert!(res.unpin(a.id));
+    let b = res.reserve(tile(2), half).expect("evicts the first half");
+    assert_eq!(b.evicted, vec![tile(1)]);
+    assert_eq!(
+        (res.used(), res.peak_used(), res.evictions()),
+        (half, half, 1)
+    );
+    // exactly u64::MAX fits; one more byte is the typed refusal, state intact
+    res.reserve(ResidentKey::Scratch("rest"), half - 1)
+        .expect("fills to u64::MAX");
+    assert_eq!(res.used(), u64::MAX);
+    assert_eq!(
+        res.reserve(ResidentKey::Scratch("one"), 1),
+        Err(exceeded(1))
+    );
+    assert_eq!((res.used(), res.len()), (u64::MAX, 2));
+    // releasing everything returns to zero
+    assert!(res.release(b.id));
+    assert_eq!(res.used(), half - 1);
+}
+
+/// R3 finding 2 (regression): a shader/pipeline validation failure on a machine WITH an adapter
+/// is the typed `GpuError::Pipeline`, distinct from `Unavailable`, and the GPU-proof gate fails on
+/// it instead of skipping (it used to become `Unavailable(NoDevice)`, so every GPU test passed via
+/// its NOT_PROVEN branch).
+#[test]
+fn pipeline_failure_is_typed_and_fails_the_gpu_gate() {
+    const BROKEN_WGSL: &str = "@compute @workgroup_size(8, 8, 1)\nfn composite() {\n    let x: f32 = no_such_symbol;\n}\n";
+    let _guard = device_lock();
+    let broken = GpuBackend::with_shader_source(
+        DeviceOptions {
+            backend: backend_from_env(),
+            ..DeviceOptions::default()
+        },
+        BROKEN_WGSL,
+    );
+    if broken.unavailable_reason() == Some(Reason::NoAdapter) {
+        // No adapter at all: acquisition stops before any shader exists. The gate decides
+        // (NOT_PROVEN here, a failure under HSK_STUDIO_TEST_REQUIRE_GPU=1).
+        let gate = gpu_gate(&broken, "pipeline-failure typing").unwrap_or_else(|e| panic!("{e}"));
+        assert!(gate.is_none());
+        return;
+    }
+    assert_eq!(
+        broken.failure(),
+        Some(GpuError::Pipeline("shader_validation")),
+        "unavailable {:?}",
+        broken.unavailable_reason()
+    );
+    assert_eq!(broken.unavailable_reason(), None);
+    assert!(broken.device_info().is_none() && !broken.is_lost());
+    // the GPU-proof gate refuses to skip: a failure, never NOT_PROVEN
+    let gate = gpu_gate(&broken, "pipeline-failure probe");
+    assert!(gate.is_err(), "gate must fail, got {gate:?}");
+    eprintln!(
+        "PIPELINE_FAILURE: backend {} with an adapter: {:?}; gate refuses to skip",
+        backend_from_env().key(),
+        broken.failure()
+    );
+    // every execute reports the typed failure; at the port its code is never no_adapter/no_device
+    let extent = rect(0, 0, 2, 2);
+    let plan = plan_of(
+        1,
+        extent,
+        vec![solid(extent, [0.1, 0.2, 0.3, 1.0])],
+        vec![layer(0, StudioBlendMode::Normal, 1.0, 1.0)],
+    );
+    let none = Sources::default();
+    let mut sink = Image::new(extent);
+    let detailed = broken.execute_detailed(
+        &plan,
+        &request(1, Exactness::Fitted),
+        &none,
+        &CancellationToken::default(),
+        &mut sink,
+    );
+    assert_eq!(
+        detailed.map(|_| ()),
+        Err(GpuError::Pipeline("shader_validation"))
+    );
+    assert_eq!(
+        run(
+            &broken,
+            &plan,
+            &request(1, Exactness::Fitted),
+            &none,
+            &mut sink
+        ),
+        Err(BackendError::Unavailable("shader_validation"))
+    );
+    // re-acquire builds the same shader and stays the typed failure
+    assert_eq!(
+        broken.reacquire(&CancellationToken::default()),
+        Err(GpuError::Pipeline("shader_validation"))
+    );
+    assert_eq!(
+        broken.failure(),
+        Some(GpuError::Pipeline("shader_validation"))
+    );
+    assert_eq!(sink.accepted, 0);
+}
+
 #[test]
 fn no_wgpu_types_in_public_api() {
     // STU-ARC-002: wgpu is a private leaf. Every `pub` declaration line in the crate sources and
@@ -897,14 +1172,9 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
         vec![solid(tiny, [0.2, 0.4, 0.6, 1.0])],
         vec![layer(0, StudioBlendMode::Normal, 1.0, 1.0)],
     );
-    let Some(info) = backend.device_info() else {
-        // Typed, explicit, and not a pass for the GPU claim: the lane records NOT_PROVEN.
-        let reason = backend.unavailable_reason();
-        eprintln!("NOT_PROVEN: no adapter ({reason:?}); GPU execution parity not run");
-        assert!(matches!(
-            reason,
-            Some(Reason::NoAdapter | Reason::NoDevice | Reason::Timeout)
-        ));
+    let Some(info) = gpu_gate(backend, "GPU execution parity").unwrap_or_else(|e| panic!("{e}"))
+    else {
+        // No adapter at all: typed, explicit, and not a pass for the GPU claim (NOT_PROVEN).
         let mut sink = Image::new(tiny);
         let refused = run(
             backend,
@@ -913,7 +1183,7 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
             &sources0,
             &mut sink,
         );
-        assert!(matches!(refused, Err(BackendError::Unavailable(_))));
+        assert_eq!(refused, Err(BackendError::Unavailable("no_adapter")));
         assert_eq!(sink.accepted, 0);
         return;
     };
@@ -1320,13 +1590,8 @@ fn gpu_modes_masks_groups_clip_parity() {
     const TOL_PER_LAYER: f32 = 1.0e-6;
     let _guard = device_lock();
     let backend = shared_backend();
-    let Some(info) = backend.device_info() else {
-        let reason = backend.unavailable_reason();
-        eprintln!("NOT_PROVEN: no adapter ({reason:?}); slice-2 GPU parity not run");
-        assert!(matches!(
-            reason,
-            Some(Reason::NoAdapter | Reason::NoDevice | Reason::Timeout)
-        ));
+    let Some(info) = gpu_gate(backend, "slice-2 GPU parity").unwrap_or_else(|e| panic!("{e}"))
+    else {
         let extent = rect(0, 0, 2, 2);
         let plan = plan_of(
             1,
@@ -1349,7 +1614,7 @@ fn gpu_modes_masks_groups_clip_parity() {
                 &Sources::default(),
                 &mut sink
             ),
-            Err(BackendError::Unavailable(_))
+            Err(BackendError::Unavailable("no_adapter"))
         ));
         assert_eq!(sink.accepted, 0);
         return;

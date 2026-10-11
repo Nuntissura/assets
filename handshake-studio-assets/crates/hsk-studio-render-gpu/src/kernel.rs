@@ -170,13 +170,16 @@ pub(crate) struct Kernel {
 }
 
 impl Kernel {
-    /// Build the pipeline; shader/pipeline validation failures surface as typed errors, never as
-    /// an uncaptured-error panic.
-    pub(crate) fn new(device: &wgpu::Device) -> Result<Self, GpuError> {
+    /// Build the pipeline from `source` (`None` = the generated [`shader_source`]; `Some` is the
+    /// fault-injection route for a broken shader). Shader/pipeline validation failures surface as
+    /// the typed `GpuError::Pipeline`, never as an uncaptured-error panic and never as
+    /// `Unavailable`.
+    pub(crate) fn new(device: &wgpu::Device, source: Option<&str>) -> Result<Self, GpuError> {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let wgsl = source.map_or_else(shader_source, str::to_owned);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("hsk-studio-render-gpu composite"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(shader_source())),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(wgsl)),
         });
         let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
             binding,
@@ -212,8 +215,8 @@ impl Kernel {
         });
         match crate::device::block_on_bounded(device.pop_error_scope(), None) {
             Some(None) => Ok(Self { pipeline, layout }),
-            Some(Some(_)) => Err(GpuError::Gpu("shader_validation")),
-            None => Err(GpuError::Gpu("shader_validation_timeout")),
+            Some(Some(_)) => Err(GpuError::Pipeline("shader_validation")),
+            None => Err(GpuError::Pipeline("shader_validation_timeout")),
         }
     }
 

@@ -148,6 +148,18 @@ impl GpuContext {
         cancel: &CancellationToken,
         previous_generation: u64,
     ) -> Result<Self, GpuError> {
+        Self::acquire_with(options, cancel, previous_generation, None)
+    }
+
+    /// `acquire_next` with an optional WGSL override (`None` = the generated shader). The override
+    /// exists only for fault injection: a shader that fails validation yields the typed
+    /// `GpuError::Pipeline`, never `Unavailable`.
+    pub(crate) fn acquire_with(
+        options: &DeviceOptions,
+        cancel: &CancellationToken,
+        previous_generation: u64,
+        shader: Option<&str>,
+    ) -> Result<Self, GpuError> {
         let canceled = |_| GpuError::Backend(BackendError::Canceled);
         cancel.check().map_err(canceled)?;
         let candidates: &[wgpu::Backends] = match options.backend {
@@ -213,7 +225,7 @@ impl GpuContext {
             fault.fault.store(true, Ordering::Release);
         }));
 
-        let kernel = Kernel::new(&device)?;
+        let kernel = Kernel::new(&device, shader)?;
         let raw = adapter.get_info();
         let info = DeviceInfo {
             backend: match raw.backend {
@@ -271,11 +283,19 @@ impl GpuContext {
     pub(crate) fn take_fault(&self) -> bool {
         self.signals.fault.swap(false, Ordering::AcqRel)
     }
-    /// Fault injection for supervisors and tests: destroys the device through the real wgpu path
-    /// and latches the same loss state the device-lost callback sets.
+    /// Non-blocking device poll: lets wgpu run its maintenance and deliver a pending device-lost
+    /// callback (wgpu invokes it from a poll once a destroyed device's queue is empty). Returns the
+    /// loss latch afterwards.
+    pub fn poll_lost(&self) -> bool {
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        self.is_lost()
+    }
+    /// Fault injection for supervisors and tests: `wgpu::Device::destroy`, wgpu's own
+    /// lose-the-device path. It does NOT touch the loss latch: only the wgpu device-lost callback
+    /// sets it, delivered during a later poll ([`GpuContext::poll_lost`]; the backend polls before
+    /// every execute and state query). A driver-initiated loss (TDR, adapter removal) is a
+    /// different trigger and is not exercised by this.
     pub fn simulate_device_loss(&self) {
         self.device.destroy();
-        let _ = self.device.poll(wgpu::PollType::Poll);
-        self.signals.lost.store(true, Ordering::Release);
     }
 }

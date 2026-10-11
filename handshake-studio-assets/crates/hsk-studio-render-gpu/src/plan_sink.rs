@@ -8,7 +8,7 @@
 //! groups (own transparent buffer per nesting level, then composited with the layer's mode,
 //! opacity and mask) and pass-through groups (layers composited onto the parent's running
 //! backdrop). Straight alpha, `rgb_f32le` in the plan's colour tag. Everything else (other modes,
-//! vector, clip-to-base, mask density, pass-through opacity, non-isolated blended groups,
+//! vector, mask density, pass-through opacity, non-isolated blended groups,
 //! premultiplied alpha) is refused by `admit` or source preparation as `Unsupported`, typed and
 //! before any upload. There is no CPU fallback: no adapter is `Unavailable`, a lost device is
 //! `DeviceLost`.
@@ -28,9 +28,9 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BackendIdentity, ColourTag, DeviceClass, Exactness,
-    ExecuteRequest, MaskFormat, NoVector, Operator, PlanNode, PlanSources, RenderBackend,
-    RenderPlan, RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
-    TileSink, admit,
+    ExactnessLedger, ExecuteRequest, MaskFormat, NoVector, Operator, PlanNode, PlanSources,
+    RenderBackend, RenderPlan, RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput,
+    TilePlanes, TileSink, admit,
 };
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -410,8 +410,14 @@ fn prepare<'a>(
 
 enum State {
     Ready(Box<GpuContext>),
-    Lost { generation: u64, adapter: String },
+    Lost {
+        generation: u64,
+        adapter: String,
+    },
     Unavailable(Reason),
+    /// Adapter and device were acquired but the backend cannot run: the shader or pipeline failed
+    /// validation (`GpuError::Pipeline`). A defect, not "no GPU": reported as that error.
+    Failed(GpuError),
 }
 struct Inner {
     state: State,
@@ -424,6 +430,8 @@ struct Inner {
 /// GPU backend over the pigment `RenderBackend` port. Device use is serialised by one mutex.
 pub struct GpuBackend {
     options: DeviceOptions,
+    /// WGSL override for fault injection (`None` = the generated shader).
+    shader: Option<String>,
     inner: Mutex<Inner>,
 }
 
@@ -431,16 +439,37 @@ impl GpuBackend {
     /// Try to acquire a headless device now. Never fails: when there is none the backend exists in
     /// the `Unavailable` state and every `execute` reports it (after admission) as a typed error.
     pub fn new(options: DeviceOptions) -> Self {
-        let acquired = GpuContext::acquire(&options, &CancellationToken::default());
+        Self::acquire_into(options, None)
+    }
+
+    /// Fault-injection constructor: acquire with `wgsl` instead of the generated shader (also used
+    /// by `reacquire`). A shader that fails validation leaves the backend in the typed pipeline
+    /// failure state ([`GpuBackend::failure`]), never `Unavailable`.
+    #[doc(hidden)]
+    pub fn with_shader_source(options: DeviceOptions, wgsl: &str) -> Self {
+        Self::acquire_into(options, Some(wgsl.to_owned()))
+    }
+
+    fn acquire_into(options: DeviceOptions, shader: Option<String>) -> Self {
+        let acquired = GpuContext::acquire_with(
+            &options,
+            &CancellationToken::default(),
+            0,
+            shader.as_deref(),
+        );
         let (state, last_generation) = match acquired {
             Ok(ctx) => {
                 let generation = ctx.generation();
                 (State::Ready(Box::new(ctx)), generation)
             }
             Err(GpuError::Unavailable(reason)) => (State::Unavailable(reason), 0),
-            Err(_) => (State::Unavailable(Reason::NoDevice), 0),
+            // A device existed but the backend cannot run (shader/pipeline validation): kept as
+            // its own typed failure, never folded into `Unavailable`.
+            Err(error) => (State::Failed(error), 0),
         };
-        Self::with_state(options, state, last_generation)
+        let mut backend = Self::with_state(options, state, last_generation);
+        backend.shader = shader;
+        backend
     }
 
     /// Fault-injection constructor: a backend whose device of `generation` was already lost (the
@@ -458,6 +487,7 @@ impl GpuBackend {
     fn with_state(options: DeviceOptions, state: State, last_generation: u64) -> Self {
         Self {
             options,
+            shader: None,
             inner: Mutex::new(Inner {
                 state,
                 residency: Residency::new(options.residency_budget_bytes),
@@ -470,21 +500,44 @@ impl GpuBackend {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
+    /// Lock and run the backend's own loss detection: poll a live device so wgpu delivers a pending
+    /// device-lost callback, and move a latched device to `Lost`.
+    fn lock_refreshed(&self) -> MutexGuard<'_, Inner> {
+        let mut inner = self.lock();
+        if let State::Ready(ctx) = &inner.state
+            && ctx.poll_lost()
+        {
+            inner.state = State::Lost {
+                generation: ctx.generation(),
+                adapter: ctx.info().text(),
+            };
+        }
+        inner
+    }
 
     pub fn options(&self) -> DeviceOptions {
         self.options
     }
     /// Description of the live device, `None` when unavailable or lost.
     pub fn device_info(&self) -> Option<DeviceInfo> {
-        match &self.lock().state {
-            State::Ready(ctx) if !ctx.is_lost() => Some(ctx.info().clone()),
+        match &self.lock_refreshed().state {
+            State::Ready(ctx) => Some(ctx.info().clone()),
             _ => None,
         }
     }
-    /// Why no device is available (`None` while a device is live or after a loss).
+    /// Why no device is available (`None` while a device is live, after a loss, or after a
+    /// pipeline failure).
     pub fn unavailable_reason(&self) -> Option<Reason> {
         match &self.lock().state {
             State::Unavailable(reason) => Some(*reason),
+            _ => None,
+        }
+    }
+    /// The typed failure of a backend whose adapter and device exist but whose shader or pipeline
+    /// failed (`GpuError::Pipeline`); `None` in every other state. Never folded into `Unavailable`.
+    pub fn failure(&self) -> Option<GpuError> {
+        match &self.lock().state {
+            State::Failed(error) => Some(*error),
             _ => None,
         }
     }
@@ -493,11 +546,7 @@ impl GpuBackend {
         self.lock().last_generation
     }
     pub fn is_lost(&self) -> bool {
-        match &self.lock().state {
-            State::Ready(ctx) => ctx.is_lost(),
-            State::Lost { .. } => true,
-            State::Unavailable(_) => false,
-        }
+        matches!(self.lock_refreshed().state, State::Lost { .. })
     }
     /// Counters of the most recent successful execution.
     pub fn last_stats(&self) -> Option<GpuStats> {
@@ -507,11 +556,13 @@ impl GpuBackend {
     pub fn resident_bytes(&self) -> u64 {
         self.lock().residency.used()
     }
-    /// Destroy the live device through the real wgpu path and latch the loss; the next `execute`
-    /// returns `DeviceLost{generation}`. Returns `false` when there was no live device.
+    /// Destroy the live device through `wgpu::Device::destroy`. The loss is then detected by the
+    /// backend itself (wgpu's device-lost callback, delivered by the poll before every execute and
+    /// state query), so the next `execute` returns `DeviceLost{generation}`; nothing here sets the
+    /// latch. Returns `false` when there was no live device.
     pub fn simulate_device_loss(&self) -> bool {
-        match &self.lock().state {
-            State::Ready(ctx) if !ctx.is_lost() => {
+        match &self.lock_refreshed().state {
+            State::Ready(ctx) => {
                 ctx.simulate_device_loss();
                 true
             }
@@ -523,7 +574,12 @@ impl GpuBackend {
     /// stays lost, so stale generations are still refused).
     pub fn reacquire(&self, cancel: &CancellationToken) -> Result<u64, GpuError> {
         let mut inner = self.lock();
-        let ctx = GpuContext::acquire_next(&self.options, cancel, inner.last_generation)?;
+        let ctx = GpuContext::acquire_with(
+            &self.options,
+            cancel,
+            inner.last_generation,
+            self.shader.as_deref(),
+        )?;
         let generation = ctx.generation();
         inner.state = State::Ready(Box::new(ctx));
         inner.last_generation = generation;
@@ -543,21 +599,13 @@ impl GpuBackend {
         cancel: &CancellationToken,
         sink: &mut dyn TileSink,
     ) -> Result<(RenderReceipt, GpuStats), GpuError> {
-        let ledger = admit::<NoVector>(plan, self, request, cancel)?;
+        let mut ledger = admit::<NoVector>(plan, self, request, cancel)?;
+        leaf_root_class(plan, self, request, &mut ledger)?;
         let prepared = prepare(plan, sources)?;
         let digest = plan.digest().map_err(|_| GpuError::Gpu("plan_digest"))?;
 
-        let mut guard = self.lock();
+        let mut guard = self.lock_refreshed();
         let inner = &mut *guard;
-        if let State::Ready(ctx) = &inner.state
-            && ctx.is_lost()
-        {
-            let generation = ctx.generation();
-            inner.state = State::Lost {
-                generation,
-                adapter: ctx.info().text(),
-            };
-        }
         let ctx = match &inner.state {
             State::Ready(ctx) => ctx,
             State::Lost { generation, .. } => {
@@ -566,6 +614,7 @@ impl GpuBackend {
                 });
             }
             State::Unavailable(reason) => return Err(GpuError::Unavailable(*reason)),
+            State::Failed(error) => return Err(*error),
         };
 
         let residency = &mut inner.residency;
@@ -613,6 +662,34 @@ impl GpuBackend {
     }
 }
 
+/// A leaf root (`Solid`/`Tile`) has no layer, so the plan lists no blend operator, but `run`
+/// composites it through the blend kernel (Normal, opacity 1, over transparent). That arithmetic
+/// carries the GPU blend class (`Fitted`), so admission checks it against the floor and the receipt
+/// records it; `Exact` is never claimed for a kernel pass.
+fn leaf_root_class(
+    plan: &RenderPlan<NoVector>,
+    backend: &GpuBackend,
+    request: &ExecuteRequest,
+    ledger: &mut ExactnessLedger,
+) -> Result<(), GpuError> {
+    if matches!(
+        plan.nodes.get(plan.root.0 as usize),
+        Some(PlanNode::Group(_))
+    ) {
+        return Ok(());
+    }
+    let op = Operator::Blend(StudioBlendMode::Normal);
+    let class = op.intrinsic().lowest_of(backend.exactness(op));
+    if class == Exactness::Unsupported || class.rank() > request.min_exactness.rank() {
+        return Err(GpuError::Backend(BackendError::Unsupported {
+            operator: op.key(),
+            exactness: class,
+        }));
+    }
+    ledger.record(op.key(), class);
+    Ok(())
+}
+
 fn identity_of(state: &State) -> BackendIdentity {
     let (adapter, generation) = match state {
         State::Ready(ctx) => (ctx.info().text(), ctx.generation()),
@@ -620,7 +697,7 @@ fn identity_of(state: &State) -> BackendIdentity {
             generation,
             adapter,
         } => (adapter.clone(), *generation),
-        State::Unavailable(_) => (String::new(), 0),
+        State::Unavailable(_) | State::Failed(_) => (String::new(), 0),
     };
     BackendIdentity {
         name: RENDERER_NAME,

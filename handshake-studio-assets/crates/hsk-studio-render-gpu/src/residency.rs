@@ -125,8 +125,11 @@ impl Residency {
         if bytes > reachable {
             return Err(exceeded);
         }
+        // Checked: `used + bytes` beyond u64 never wraps or panics; it simply does not fit.
+        let budget = self.budget_bytes;
+        let fits = |used: u64| used.checked_add(bytes).is_some_and(|total| total <= budget);
         let mut evicted = Vec::new();
-        while self.used + bytes > self.budget_bytes {
+        while !fits(self.used) {
             let victim = self
                 .entries
                 .iter()
@@ -140,6 +143,7 @@ impl Residency {
             self.evictions += 1;
             evicted.push(gone.key);
         }
+        let used = self.used.checked_add(bytes).ok_or(exceeded)?;
         let id = self.next_id;
         self.next_id += 1;
         self.entries.push(Entry {
@@ -149,7 +153,7 @@ impl Residency {
             last_used: self.tick,
             pinned: true,
         });
-        self.used += bytes;
+        self.used = used;
         self.peak_used = self.peak_used.max(self.used);
         Ok(Reservation {
             id: ReservationId(id),
