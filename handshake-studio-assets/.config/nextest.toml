@@ -1,0 +1,22 @@
+# Studio workspace test-runner policy (cargo-nextest). Round entrypoint: tools/run-round.sh.
+nextest-version = "0.9.148"
+
+[profile.default]
+fail-fast = false
+retries = 0
+# Per-test cap 120 s (CX-EXEC-005): flagged slow at 30 s, terminated after 4 periods.
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[profile.default.junit]
+# Written to <target-dir>/nextest/default/junit.xml; run-round.sh copies it into the results dir.
+path = "junit.xml"
+
+# Smoke check: run-round.sh --canary selects the first listed test of every selected package
+# (computed from `cargo nextest list`, so it never names stale tests) and runs it with this profile.
+[profile.canary]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "10s", terminate-after = 3 }
+
+[profile.canary.junit]
+path = "junit.xml"

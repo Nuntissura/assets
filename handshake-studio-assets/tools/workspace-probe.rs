@@ -465,6 +465,12 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-pigment", &["serde", "serde_json"]),
     ("hsk-studio-nib", &["kurbo", "sha2"]),
     ("hsk-studio-type", &["bitflags", "bytemuck", "serde_json", "sha2", "unicode-bidi-mirroring", "unicode-ccc", "unicode-properties", "unicode-script"]),
+    ("hsk-studio-develop", &["sha2"]),
+    ("hsk-studio-score", &["rubato"]),
+    ("hsk-studio-composite", &["serde_json"]),
+    ("hsk-studio-render-cpu", &["kurbo", "serde_json"]),
+    ("hsk-studio-package", &["crc32fast", "ruzstd", "serde", "serde_json", "sha2"]),
+    ("hsk-studio-interop-psd", &["miniz_oxide", "serde_json"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.
