@@ -16,7 +16,7 @@ use hsk_studio_pigment::effect_math::{
     EffectError, EffectOp, EffectOrder, GlowSource, StrokePosition, effect_support_px,
     shadow_offset, shadow_split,
 };
-use hsk_studio_pigment::render_plan::StudioBlendMode;
+use hsk_studio_pigment::render_plan::{ExtOperator, StudioBlendMode};
 
 /// Bytes of the uniform block `FxP` in `fx.wgsl`: 16 header words and 751 vec4 of blur taps.
 pub(crate) const FXP_BYTES: u64 = 12_080;
@@ -103,6 +103,9 @@ pub(crate) enum FxError {
 fn from_effect(e: EffectError) -> FxError {
     match e {
         EffectError::Overflow => FxError::Overflow,
+        // A feature pigment recognises and refuses (gradient glow, glow range, jitter, Precise):
+        // its own key, what `admit_extended` reports for it (PLR-006).
+        EffectError::Unsupported(feature) => FxError::Unsupported(feature.key()),
         _ => FxError::Unsupported("effect_parameter"),
     }
 }
@@ -344,7 +347,9 @@ pub(crate) fn compile_effect(
                 }
             }
         },
-        _ => return Err(FxError::Unsupported("effect_kind")),
+        // An effect kind this backend has no passes for: pigment's operator key for it, what
+        // shared admission reports (`ExtOperator::Effect(kind).key()`).
+        _ => return Err(FxError::Unsupported(ExtOperator::Effect(op.kind()).key())),
     };
     Ok(FxEffect {
         steps,

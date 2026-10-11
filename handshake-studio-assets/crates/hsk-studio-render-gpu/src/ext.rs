@@ -148,7 +148,9 @@ pub(crate) fn compile_adjustment(
         }
         AdjustmentOp::Threshold { level } => out.params[0] = [*level, 0.0, 0.0, 0.0],
         AdjustmentOp::Posterize { levels } => out.params[0] = [f32::from(*levels), 0.0, 0.0, 0.0],
-        _ => return Err("adjustment_kind"),
+        // An adjustment this backend has no encoding for: pigment's key for its kind, what
+        // shared admission reports for it (`AdjustmentKind::key`).
+        other => return Err(other.kind().key()),
     }
     Ok(out)
 }

@@ -44,10 +44,11 @@ use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::effect_math::EffectKind;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BackendIdentity, ClipRole, ColourTag, DeviceClass, Exactness,
-    ExactnessLedger, ExecuteRequest, ExtOperator, Group, Knockout, MaskFormat, NoVector, Operator,
-    PlanExtensions, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
-    SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink, admit,
-    admit_extended,
+    ExactnessLedger, ExecuteRequest, ExtOperator, Group, Knockout, MASK_DENSITY_OPERATOR,
+    MaskFormat, NoVector, Operator, PASS_THROUGH_FILL_OPERATOR, PlanError, PlanExtensions,
+    PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
+    SAMPLE_RANGE_OPERATOR, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
+    TileSink, admit, admit_extended,
 };
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -348,7 +349,7 @@ fn verify_tile(
         }
     }
     if out_of_unit {
-        return Err(unsupported("sample_range_outside_unit"));
+        return Err(unsupported(SAMPLE_RANGE_OPERATOR));
     }
     Ok(())
 }
@@ -439,7 +440,7 @@ fn prepare<'a>(
                     .iter()
                     .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
                 {
-                    return Err(unsupported("sample_range_outside_unit"));
+                    return Err(unsupported(SAMPLE_RANGE_OPERATOR));
                 }
                 end(*rect)?;
                 (PNode::Solid { rgba: *rgba }, Some(*rect), 0, 0)
@@ -458,15 +459,23 @@ fn prepare<'a>(
                         _ => None,
                     };
                     // Structural validation already guaranteed pass_through <-> non-isolated group.
-                    if pass_through && (l.opacity < 1.0 || l.fill_opacity < 1.0) {
-                        return Err(unsupported("group_pass_through_opacity"));
+                    // Every refusal key below is pigment's (`Operator::key`, the exported
+                    // `PASS_THROUGH_FILL_OPERATOR` / `MASK_DENSITY_OPERATOR`), in the order shared
+                    // admission applies them (opacity, then fill), so the defence in depth reports
+                    // exactly what `admit` reports (PLR-006, test
+                    // `defence_in_depth_refusal_keys_are_pigments`).
+                    if pass_through && l.opacity < 1.0 {
+                        return Err(unsupported(Operator::PassThroughOpacity.key()));
+                    }
+                    if pass_through && l.fill_opacity < 1.0 {
+                        return Err(unsupported(PASS_THROUGH_FILL_OPERATOR));
                     }
                     if !pass_through {
                         if child_isolated == Some(false) {
-                            return Err(unsupported("group_non_isolated_blended"));
+                            return Err(unsupported(Operator::NonIsolatedBlendedGroup.key()));
                         }
                         if !gpu_blend_supported(l.mode) {
-                            return Err(unsupported("blend_mode"));
+                            return Err(unsupported(Operator::Blend(l.mode).key()));
                         }
                     }
                     // The envelope entry of this (group, layer), if the extended path has one.
@@ -512,7 +521,7 @@ fn prepare<'a>(
                         Some(m) if m.is_clip_to_base() => None,
                         Some(m) => {
                             if m.density != 1.0 && extensions.is_none() {
-                                return Err(unsupported("mask_density"));
+                                return Err(unsupported(MASK_DENSITY_OPERATOR));
                             }
                             if pass_through {
                                 return Err(unsupported("mask_on_pass_through"));
@@ -520,7 +529,9 @@ fn prepare<'a>(
                             let wide = match m.format {
                                 MaskFormat::CoverageU8 => false,
                                 MaskFormat::CoverageU16Le => true,
-                                _ => return Err(unsupported("mask_format")),
+                                // A format this backend has no reader for: pigment's operator
+                                // key for it (`Operator::Mask(format).key()`).
+                                other => return Err(unsupported(Operator::Mask(other).key())),
                             };
                             let plane = sources
                                 .mask(m.key)
@@ -652,6 +663,8 @@ fn prepare<'a>(
                         below
                     }
                 };
+                // The node index of this group, read before the run walk below shadows `i`.
+                let group_node = u32::try_from(i).map_err(|_| overflow())?;
                 let mut i = 0;
                 while i < layers.len() {
                     let mut j = i.saturating_add(1);
@@ -661,8 +674,13 @@ fn prepare<'a>(
                     if j == i.saturating_add(1) {
                         group_need = group_need.max(child_depth(i));
                     } else {
+                        // Pigment validation refuses a pass-through clip base first
+                        // (`ClipBasePassThrough`); defence in depth with pigment's own error value
+                        // for the group node, never a local spelling (PLR-006).
                         if layers[i].mode == StudioBlendMode::PassThrough {
-                            return Err(unsupported("clip_base_pass_through"));
+                            return Err(GpuError::Backend(BackendError::InvalidPlan(
+                                PlanError::ClipBasePassThrough { node: group_node },
+                            )));
                         }
                         group_need = group_need.max(
                             (i..j)
@@ -2264,6 +2282,9 @@ fn run(
     }
     Ok(chunks)
 }
+
+#[cfg(test)]
+mod refusal_keys;
 
 /// Defence in depth for Blend-If on a clip role: `admit_extended` refuses it first, so `prepare`
 /// cannot be reached with one through the public API; the roles and keys it uses are tested here.
