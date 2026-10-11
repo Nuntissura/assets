@@ -236,3 +236,98 @@ fn state_completeness_and_cancel_mid_process() {
         assert_eq!((s.canceled, s.workers_live, s.in_flight_bytes), (1, 0, 0));
     });
 }
+
+#[test]
+fn worker_cannot_rewrite_the_state_version() {
+    bounded_case("worker_cannot_rewrite_the_state_version", || {
+        // R6 trust boundary: the host used to adopt the version a worker reported (E_STALE detail,
+        // ParamSet.version, State.version), so a misbehaving plugin process could rewind
+        // `state_version` and have a block prepared under older state accepted. The host owns the
+        // counter now: ParamSet must report exactly host + 1, a capture must report the host version,
+        // and a worker that calls the host's own version stale is inconsistent. In every case the
+        // worker is reclaimed, the host version is untouched and nothing is published.
+        let file = PluginFile::new();
+        let cancel = CancellationToken::default();
+        let (left, right) = signal(256);
+        let sp = spec(256, 0);
+        let channels: [&[f32]; 2] = [&left, &right];
+        let input = InputBlock::new(&sp, &channels);
+
+        // Control: an honest worker is accepted by every one of the new checks.
+        let honest = fault_host(&[]);
+        let mut instance = honest
+            .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
+            .unwrap();
+        assert_eq!(
+            instance.set_parameter(Parameter { id: 0, value: 0.25 }, &cancel, DEADLINE),
+            Ok(2)
+        );
+        assert_eq!(
+            instance
+                .capture_state(&cancel, DEADLINE, 64)
+                .unwrap()
+                .state_version,
+            2
+        );
+        let mut out = prefilled(256);
+        assert_eq!(
+            instance
+                .process_expecting(2, &input, &mut out, &cancel, DEADLINE)
+                .unwrap()
+                .state_version,
+            2
+        );
+        instance.retire_in_place();
+
+        for (fault, call) in [
+            ("lie-param-version", "set_parameter"),
+            ("lie-capture-version", "capture_state"),
+            ("stale-on-block=1", "process"),
+        ] {
+            let host = fault_host(&[fault]);
+            let mut instance = host
+                .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
+                .unwrap();
+            let pid = instance.pid().unwrap();
+            assert_eq!(instance.state_version(), 1);
+            let mut out = prefilled(256);
+            let error = match call {
+                "set_parameter" => instance
+                    .set_parameter(Parameter { id: 0, value: 0.25 }, &cancel, DEADLINE)
+                    .unwrap_err(),
+                "capture_state" => instance.capture_state(&cancel, DEADLINE, 64).unwrap_err(),
+                _ => instance
+                    .process_expecting(1, &input, &mut out, &cancel, DEADLINE)
+                    .unwrap_err(),
+            };
+            assert_eq!(
+                error,
+                PluginError::Protocol(ProtocolFault::UnexpectedKind),
+                "{fault}: a dishonest version is a protocol fault, not an adopted number"
+            );
+            assert_eq!(
+                instance.state_version(),
+                1,
+                "{fault}: the host counter is not rewritten"
+            );
+            assert_eq!(instance.lifecycle(), LifecycleState::Draining, "{fault}");
+            let report = instance.last_fault().unwrap();
+            assert_eq!(report.error, error, "{fault}");
+            assert!(report.reaped, "{fault}");
+            assert!(!pid_alive(pid), "{fault}: the worker must be gone");
+            if call == "process" {
+                assert!(
+                    silent(&out, 256),
+                    "{fault}: nothing from the worker is published"
+                );
+            }
+            instance.retire_in_place();
+            let s = host.stats();
+            assert_eq!(
+                (s.protocol_faults, s.workers_live, s.in_flight_bytes),
+                (1, 0, 0),
+                "{fault}"
+            );
+        }
+    });
+}

@@ -17,13 +17,20 @@
 //!   start of the next block; parameter metadata (ranges) is not read;
 //! * threads: load, activation and processing all run on the worker's single thread (CLAP main-thread
 //!   and audio-thread affinity is NOT_PROVEN);
-//! * TOCTOU: the worker hashes the file and the dynamic loader then opens it again by path; a private
-//!   staging copy is the planned fix (needs a host-provided private directory).
+//! * hash-then-load (TOCTOU): closed by a private staging copy. The worker hashes the bytes it read
+//!   through one handle, writes exactly those bytes into a file it creates exclusively in the directory
+//!   the host made for it (`--stage-dir`), re-verifies the copy through a kept handle and gives the
+//!   LOADER the copy's path (`staging.rs`). Without `--stage-dir` the backend refuses to load. A plugin
+//!   that needs sibling files does not work from a lone copy.
 //!
 //! Proof status: CLAP stays NOT_PROVEN until a real plugin runs through this path
 //! (`tests/clap_fixture.rs` does that when a fixture library is supplied).
 #![deny(clippy::arithmetic_side_effects)]
-use crate::backend::{Backend, Captured, Configured, ProbeInfo, Processed, Refusal, verify_file};
+use crate::backend::{
+    Backend, Captured, Configured, MAX_PLUGIN_FILE_BYTES, ProbeInfo, Processed, Refusal,
+    check_supported, refusal_of_stage,
+};
+use crate::staging::{StagedFile, stage_verified};
 use crate::types::{Completeness, PluginFormat, SUPPORTED_CLAP_ABI};
 use crate::wire::{
     ConfigureSpec, E_BUDGET, E_CONFIG, E_NOT_CONFIGURED, E_PLUGIN, E_STALE, E_UNAVAILABLE,
@@ -33,6 +40,7 @@ use clack_host::events::event_types::ParamValueEvent;
 use clack_host::prelude::*;
 use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ};
 use std::ffi::CString;
+use std::path::{Path, PathBuf};
 
 /// Identity the CLAP backend reports in HELLO and receipts.
 pub const CLAP_IDENTITY: &str = "clack-host@0.2.0";
@@ -59,13 +67,14 @@ struct Chosen {
     name: String,
 }
 
-/// Loads the library at the verified path and returns the entry.
-fn load_entry(spec: &PluginSpec) -> Result<PluginEntry, Refusal> {
+/// Loads the library at the path of the VERIFIED STAGING COPY and returns the entry.
+fn load_entry(staged: &Path) -> Result<PluginEntry, Refusal> {
     // SAFETY: loading a dynamic library runs its initializers, which is why this only happens in the
     // isolated worker process: the host kills this process at any deadline or cancel, bounds its
-    // lifetime and reaps it. `verify_file` has just confirmed that the file's SHA-256 equals the
-    // caller-approved hash, and the caller's grant names that same hash.
-    unsafe { PluginEntry::load(&spec.path) }.map_err(|_| (E_UNAVAILABLE, 0))
+    // lifetime and reaps it. `staged` is the private copy whose bytes `stage_verified` hashed (twice,
+    // the second time through the handle that stays open until the library is unloaded) against the
+    // caller-approved SHA-256; the original path is never given to the loader.
+    unsafe { PluginEntry::load(staged) }.map_err(|_| (E_UNAVAILABLE, 0))
 }
 
 fn first_plugin(entry: &PluginEntry) -> Result<Chosen, Refusal> {
@@ -92,6 +101,9 @@ struct Loaded {
     max_frames: usize,
     version: u64,
     pending: Vec<(ClapId, f64)>,
+    /// Declared last: fields drop in order, so the library (held by `instance`) is unloaded before the
+    /// staging copy is removed.
+    _staged: StagedFile,
 }
 
 impl Drop for Loaded {
@@ -103,14 +115,36 @@ impl Drop for Loaded {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct ClapBackend {
     loaded: Option<Loaded>,
+    /// Private directory the host made for this worker; `None`: loading is refused.
+    stage_dir: Option<PathBuf>,
+    staged: u64,
 }
 
 impl ClapBackend {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(stage_dir: Option<PathBuf>) -> Self {
+        Self {
+            loaded: None,
+            stage_dir,
+            staged: 0,
+        }
+    }
+
+    /// Gate, then the verified private copy of the approved file. The only way to obtain a path for
+    /// `load_entry`.
+    fn stage(&mut self, spec: &PluginSpec) -> Result<StagedFile, Refusal> {
+        check_supported(spec)?;
+        let dir = self.stage_dir.as_deref().ok_or((E_UNAVAILABLE, 0))?;
+        self.staged = self.staged.checked_add(1).ok_or((E_UNAVAILABLE, 0))?;
+        stage_verified(
+            Path::new(&spec.path),
+            &spec.sha,
+            MAX_PLUGIN_FILE_BYTES,
+            dir,
+            self.staged,
+        )
+        .map_err(refusal_of_stage)
     }
 }
 
@@ -124,8 +158,9 @@ impl Backend for ClapBackend {
     }
 
     fn probe(&mut self, spec: &PluginSpec) -> Result<ProbeInfo, Refusal> {
-        verify_file(spec)?;
-        let entry = load_entry(spec)?;
+        // Declared before `entry`: locals drop in reverse order, so the library is unloaded first.
+        let staged = self.stage(spec)?;
+        let entry = load_entry(staged.path())?;
         let chosen = first_plugin(&entry)?;
         Ok(ProbeInfo {
             plugin_id: chosen.id.to_string_lossy().into_owned(),
@@ -139,7 +174,7 @@ impl Backend for ClapBackend {
 
     fn configure(&mut self, spec: &PluginSpec, cfg: &ConfigureSpec) -> Result<Configured, Refusal> {
         self.loaded = None;
-        verify_file(spec)?;
+        check_supported(spec)?;
         let channels = usize::from(cfg.channels);
         let max_frames = usize::try_from(cfg.max_frames).unwrap_or(usize::MAX);
         if channels == 0
@@ -156,7 +191,9 @@ impl Backend for ClapBackend {
             let id = ClapId::from_raw(*param).ok_or((E_CONFIG, u64::from(*param)))?;
             pending.push((id, *value));
         }
-        let entry = load_entry(spec)?;
+        // `staged` outlives `entry`, `instance` and the processor (see `Loaded::_staged`).
+        let staged = self.stage(spec)?;
+        let entry = load_entry(staged.path())?;
         let chosen = first_plugin(&entry)?;
         let host_info = HostInfo::new(
             "Handshake Studio score-plugin worker",
@@ -193,6 +230,7 @@ impl Backend for ClapBackend {
             max_frames,
             version: 1,
             pending,
+            _staged: staged,
         });
         Ok(Configured {
             latency: 0,

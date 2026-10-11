@@ -22,6 +22,7 @@
 //! vocabulary (the caller maps [`Classified`] to its own errors). There is no heartbeat: liveness is
 //! the request deadline. Only `Child` handles this module spawned are ever killed. NOT_PROVEN: an
 //! operating-system memory or CPU cap (a Windows Job Object needs `unsafe`).
+#![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::CancellationToken;
 use std::{
     path::PathBuf,
@@ -39,6 +40,17 @@ use std::{
 pub(crate) const WAIT_SLICE: Duration = Duration::from_millis(5);
 /// How long a worker that closed its stdout gets to exit by itself (to read its true exit code).
 pub(crate) const EXIT_PATIENCE: Duration = Duration::from_millis(500);
+/// Longest wait this module will compute an `Instant` for. A caller-supplied duration above it is
+/// clamped, so `Instant + Duration` cannot overflow (it panics in std) whatever a limit says
+/// (test: `tests::deadline_arithmetic_never_overflows`).
+pub(crate) const WAIT_CEILING: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// `now + wait`, clamped to [`WAIT_CEILING`]. If even that cannot be represented the deadline is
+/// `now`, so a wait ends at once instead of panicking or never ending.
+pub(crate) fn after(wait: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(wait.min(WAIT_CEILING)).unwrap_or(now)
+}
 
 /// Win32 `CREATE_NO_WINDOW` process creation flag (0x08000000, Process Creation Flags, Win32 docs).
 #[cfg(windows)]
@@ -53,19 +65,16 @@ fn quiet(command: &mut Command) {
 #[cfg(not(windows))]
 fn quiet(_command: &mut Command) {}
 
-/// `program_name` (plus the platform executable suffix) next to the running executable, or one
-/// directory above it (test and example binaries live in `deps/` and `examples/`).
+/// `program_name` (plus the platform executable suffix) in the running executable's own directory
+/// and nowhere else. A parent directory is not searched: a planted binary one level up must not become
+/// the worker (callers that run from `deps/` or `examples/` pass the program explicitly).
 pub(crate) fn discover_program(program_name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+    find_beside(&std::env::current_exe().ok()?, program_name)
+}
+
+fn find_beside(exe: &std::path::Path, program_name: &str) -> Option<PathBuf> {
     let name = format!("{program_name}{}", std::env::consts::EXE_SUFFIX);
-    let dir = exe.parent()?;
-    [
-        Some(dir.join(&name)),
-        dir.parent().map(|parent| parent.join(&name)),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|candidate| candidate.is_file())
+    Some(exe.parent()?.join(name)).filter(|candidate| candidate.is_file())
 }
 
 /// One spawned process in the host-owned ledger (STU-PAR-005 shape; the real ledger is host-side).
@@ -225,6 +234,9 @@ pub(crate) struct Session<F, E> {
     pid: u32,
     shared: Arc<Shared>,
     finished: Option<Terminated>,
+    /// Caller state that must outlive the child (for example a private directory the child uses);
+    /// dropped after `Drop::drop` has killed and reaped it, before the permit is released.
+    _keepalive: Option<Box<dyn Send>>,
     /// Last field: released only after `Drop::drop` has killed and reaped the child.
     _permit: Permit,
 }
@@ -259,6 +271,18 @@ fn io_loop<F, E>(
             return;
         }
     }
+}
+
+/// What one spawn needs beyond the supervisor's fixed configuration.
+pub(crate) struct SpawnRequest<'a> {
+    /// Owner recorded in the process ledger.
+    pub owner_session: &'a str,
+    /// Arguments appended to the configured ones for this spawn only.
+    pub extra_args: &'a [String],
+    /// Dropped once the child is reaped (or at once when no child was started).
+    pub keepalive: Option<Box<dyn Send>>,
+    /// Largest first (HELLO) frame the reader may accept.
+    pub hello_cap: u32,
 }
 
 /// Process supervisor. Cheap to clone: clones share one budget, ledger and counters.
@@ -308,7 +332,7 @@ impl Supervisor {
         shared
             .workers
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |w| {
-                (w < max_workers).then_some(w + 1)
+                w.checked_add(1).filter(|next| *next <= max_workers)
             })
             .map_err(|_| Refused)?;
         let max_bytes = shared.config.max_in_flight_bytes;
@@ -329,18 +353,25 @@ impl Supervisor {
 
     /// Spawns a worker, registers it in the ledger and reads its first frame within the spawn timeout.
     /// From the moment the child exists, every error path drops the session, which kills and reaps it.
+    /// `extra_args` follow the configured arguments for this spawn only; `keepalive` is dropped once
+    /// the child is reaped (or at once when no child was started).
     pub(crate) fn spawn<F, E>(
         &self,
         permit: Permit,
-        owner_session: &str,
+        request: SpawnRequest<'_>,
         read: ReadFn<F, E>,
-        hello_cap: u32,
         cancel: &CancellationToken,
     ) -> Result<(Session<F, E>, F), SpawnError<E>>
     where
         F: Send + 'static,
         E: Send + 'static,
     {
+        let SpawnRequest {
+            owner_session,
+            extra_args,
+            keepalive,
+            hello_cap,
+        } = request;
         let shared = &self.shared;
         if cancel.check().is_err() {
             return Err(SpawnError::Canceled);
@@ -348,6 +379,7 @@ impl Supervisor {
         let mut command = Command::new(&shared.config.program);
         command
             .args(&shared.config.args)
+            .args(extra_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -368,7 +400,7 @@ impl Supervisor {
                 reaped: false,
                 exit_code: None,
             });
-            ledger.len() - 1
+            ledger.len().saturating_sub(1)
         };
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         let (replies_tx, replies_rx) = mpsc::channel::<Result<F, ReadFailure<E>>>();
@@ -382,6 +414,7 @@ impl Supervisor {
             pid,
             shared: Arc::clone(shared),
             finished: None,
+            _keepalive: keepalive,
             _permit: permit,
         };
         let (Some(stdin), Some(stdout)) = (stdin, stdout) else {
@@ -391,7 +424,7 @@ impl Supervisor {
             .name("score-plugin-worker-io".to_owned())
             .spawn(move || io_loop(stdin, stdout, read, hello_cap, &jobs_rx, &replies_tx))
             .map_err(|_| SpawnError::Unavailable)?;
-        let wall = Instant::now() + shared.config.spawn_timeout;
+        let wall = after(shared.config.spawn_timeout);
         match session.wait(cancel, wall) {
             Waited::Frame(first) => Ok((session, first)),
             Waited::Canceled => Err(session.handshake_failed(Failure::Canceled)),
@@ -450,7 +483,7 @@ impl<F, E> Session<F, E> {
         if self.jobs.send(Job { frame, cap }).is_err() {
             return Err(Failure::Read(ReadFailure::Closed));
         }
-        match self.wait(cancel, Instant::now() + deadline) {
+        match self.wait(cancel, after(deadline)) {
             Waited::Frame(reply) => Ok(reply),
             Waited::Canceled => Err(Failure::Canceled),
             Waited::TimedOut => Err(Failure::Deadline),
@@ -464,7 +497,7 @@ impl<F, E> Session<F, E> {
         if let Some(done) = self.finished {
             return done;
         }
-        let until = Instant::now() + patience;
+        let until = after(patience);
         let mut done = Terminated {
             killed: false,
             reaped: false,
@@ -535,5 +568,64 @@ impl<F, E> Drop for Session<F, E> {
     fn drop(&mut self) {
         // Reached on every error path after the child exists: kill if still running, then reap.
         let _ = self.terminate(Duration::ZERO);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deadline_arithmetic_never_overflows() {
+        // Instant + Duration panics on overflow in std; `after` clamps instead (R6: spawn_timeout
+        // and shutdown_grace were unbounded and reached `Instant::now() + limit`).
+        let start = Instant::now();
+        for wait in [
+            Duration::MAX,
+            Duration::from_secs(u64::MAX),
+            Duration::from_secs(u64::MAX / 2),
+            WAIT_CEILING,
+        ] {
+            let at = after(wait);
+            assert!(at >= start, "{wait:?}");
+            assert!(
+                at <= Instant::now() + WAIT_CEILING + Duration::from_secs(1),
+                "{wait:?} was not clamped"
+            );
+        }
+        // A small wait is honoured exactly (within the clock), not clamped away.
+        let soon = after(Duration::from_millis(250));
+        assert!(soon >= start + Duration::from_millis(250));
+        assert!(soon < start + Duration::from_secs(60));
+    }
+
+    #[test]
+    fn worker_is_found_only_beside_the_running_executable() {
+        // R6: the parent directory was also searched, so a binary planted one level up could become
+        // the worker. Layout: <root>/parent/<name> (planted), <root>/parent/deps/test.exe.
+        let root = std::env::temp_dir().join(format!(
+            "hsk-score-plugin-discover-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let deps = root.join("parent").join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let name = format!("hsk-planted-worker{}", std::env::consts::EXE_SUFFIX);
+        let exe = deps.join(format!("test{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&exe, b"x").unwrap();
+        let planted_in_parent = root.join("parent").join(&name);
+        std::fs::write(&planted_in_parent, b"planted").unwrap();
+
+        let found = find_beside(&exe, "hsk-planted-worker");
+        let beside = deps.join(&name);
+        std::fs::write(&beside, b"own").unwrap();
+        let found_beside = find_beside(&exe, "hsk-planted-worker");
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(
+            found, None,
+            "a parent-directory binary must not be accepted"
+        );
+        assert_eq!(found_beside, Some(beside));
     }
 }

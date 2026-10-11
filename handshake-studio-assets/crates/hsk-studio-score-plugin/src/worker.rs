@@ -11,7 +11,9 @@
 //! instead of aborting. The worker exits 0 when stdin closes or after a Shutdown request, and [`BACKEND_UNAVAILABLE_EXIT_CODE`] when asked for a backend
 //! this build does not contain.
 //!
-//! Command line: `--backend reference|clap` and `--latency N` (reference). Test-only fault injection
+//! Command line: `--backend reference|clap`, `--latency N` (reference) and `--stage-dir DIR` (the private
+//! directory the host made for this worker; the CLAP backend loads only a verified copy staged there and
+//! refuses to load without it, see `staging.rs`). Test-only fault injection
 //! (`--fault SPEC`, see `faults.rs`) exists only in builds with the non-default cargo feature
 //! `test-faults`; without it `--fault` is an unknown flag and the worker exits 2.
 #![deny(clippy::arithmetic_side_effects)]
@@ -20,6 +22,7 @@ use crate::types::{Arch, Completeness};
 use crate::wire::{self, Frame, Hello, Reply, Request, WireError};
 use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS};
 use std::io::{self, Write};
+use std::path::PathBuf;
 
 #[cfg(feature = "test-faults")]
 use crate::faults::Faults;
@@ -30,12 +33,16 @@ use no_faults::Faults;
 #[cfg(not(feature = "test-faults"))]
 mod no_faults {
     use crate::types::Completeness;
+    use crate::wire::Reply;
     use std::io::Write;
 
     #[derive(Default)]
     pub(super) struct Faults(());
 
     impl Faults {
+        pub(super) fn tamper(&self, _block: u64, reply: Reply) -> Reply {
+            reply
+        }
         pub(super) fn completeness(&self) -> Completeness {
             Completeness::Complete
         }
@@ -65,6 +72,7 @@ enum BackendChoice {
 struct Options {
     backend: BackendChoice,
     latency: u32,
+    stage_dir: Option<PathBuf>,
     faults: Faults,
 }
 
@@ -73,6 +81,7 @@ impl Options {
         let mut options = Self {
             backend: BackendChoice::Reference,
             latency: 0,
+            stage_dir: None,
             faults: Faults::default(),
         };
         let mut it = args.iter();
@@ -88,6 +97,10 @@ impl Options {
                 }
                 "--latency" => {
                     options.latency = value.parse().ok().filter(|l| *l <= MAX_LATENCY)?;
+                }
+                "--stage-dir" => {
+                    options.stage_dir = Some(PathBuf::from(value)).filter(|p| p.is_dir());
+                    options.stage_dir.as_ref()?;
                 }
                 #[cfg(feature = "test-faults")]
                 "--fault" => options.faults.add(value)?,
@@ -107,7 +120,9 @@ impl Options {
                 Some(Box::new(Reference::new(self.latency, self.completeness())))
             }
             #[cfg(feature = "clap")]
-            BackendChoice::Clap => Some(Box::new(crate::clap_backend::ClapBackend::new())),
+            BackendChoice::Clap => Some(Box::new(crate::clap_backend::ClapBackend::new(
+                self.stage_dir.clone(),
+            ))),
             #[cfg(not(feature = "clap"))]
             BackendChoice::Clap => None,
         }
@@ -199,6 +214,7 @@ impl Server<'_> {
                     },
                     Err(error) => refusal(id, error),
                 };
+                let reply = self.options.faults.tamper(self.blocks, reply);
                 self.send(&reply)
             }
             Request::SetParam { id, param, value } => {
@@ -206,6 +222,7 @@ impl Server<'_> {
                     Ok(version) => Reply::ParamSet { id, version },
                     Err(error) => refusal(id, error),
                 };
+                let reply = self.options.faults.tamper(0, reply);
                 self.send(&reply)
             }
             Request::Capture { id, max_bytes } => {
@@ -218,6 +235,7 @@ impl Server<'_> {
                     },
                     Err(error) => refusal(id, error),
                 };
+                let reply = self.options.faults.tamper(0, reply);
                 self.send(&reply)
             }
             Request::Shutdown { id } => {

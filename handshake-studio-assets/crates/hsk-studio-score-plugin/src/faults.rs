@@ -2,12 +2,14 @@
 //! fault code ships in a normal build). Set only through `HostOptions::test_args` for the child the
 //! host spawns: `--fault SPEC` with `crash-on-block=N`, `hang-on-block=N`, `garbage-on-block=N`,
 //! `oversize-on-block=N`, `short-on-block=N`, `hang-on-probe`, `partial-state`, `no-state` (block
-//! numbers count Process requests from 1).
+//! numbers count Process requests from 1), and three dishonest-worker faults that rewrite a reply:
+//! `lie-param-version` (ParamSet reports the version one lower), `lie-capture-version` (state capture
+//! reports a version 40 higher), `stale-on-block=N` (block N is answered "stale" with detail 0).
 //!
 //! A crash exits with [`FAULT_EXIT_CODE`] instead of aborting, so the platform crash reporter (on
 //! Windows a possible foreground dialog) never runs.
 use crate::types::Completeness;
-use crate::wire;
+use crate::wire::{self, Reply};
 use std::{io::Write, thread, time::Duration};
 
 /// Exit code of an injected crash.
@@ -25,6 +27,9 @@ enum Fault {
     HangOnProbe,
     PartialState,
     NoState,
+    LieParamVersion,
+    LieCaptureVersion,
+    StaleOnBlock(u64),
 }
 
 #[derive(Default)]
@@ -46,6 +51,9 @@ impl Faults {
             ("hang-on-probe", None) => Fault::HangOnProbe,
             ("partial-state", None) => Fault::PartialState,
             ("no-state", None) => Fault::NoState,
+            ("lie-param-version", None) => Fault::LieParamVersion,
+            ("lie-capture-version", None) => Fault::LieCaptureVersion,
+            ("stale-on-block", Some(n)) => Fault::StaleOnBlock(n),
             _ => return None,
         });
         Some(())
@@ -62,6 +70,36 @@ impl Faults {
             Completeness::Partial
         } else {
             Completeness::Complete
+        }
+    }
+
+    /// Rewrites an honest reply the way a misbehaving plugin process would (`block` is the Process
+    /// request number for Process replies, 0 otherwise).
+    pub(crate) fn tamper(&self, block: u64, reply: Reply) -> Reply {
+        match reply {
+            Reply::ParamSet { id, version } if self.has(Fault::LieParamVersion) => {
+                Reply::ParamSet {
+                    id,
+                    version: version.saturating_sub(1),
+                }
+            }
+            Reply::State {
+                id,
+                version,
+                completeness,
+                bytes,
+            } if self.has(Fault::LieCaptureVersion) => Reply::State {
+                id,
+                version: version.saturating_add(40),
+                completeness,
+                bytes,
+            },
+            Reply::Processed { id, .. } if self.has(Fault::StaleOnBlock(block)) => Reply::Error {
+                id,
+                code: wire::E_STALE,
+                detail: 0,
+            },
+            other => other,
         }
     }
 

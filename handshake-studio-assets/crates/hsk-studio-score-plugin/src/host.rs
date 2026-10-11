@@ -12,9 +12,10 @@
 //! plugin data (test: `tests/fault_injection.rs::process_faults_are_contained`) and the instance is `Draining`: only `retire` is legal.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{PluginError, ProtocolFault};
+use crate::stage_root::StageRoot;
 use crate::supervisor::{
-    Classified, Failure, Permit, ReadFailure, SpawnError, Supervisor, SupervisorConfig, Terminated,
-    discover_program,
+    Classified, Failure, Permit, ReadFailure, SpawnError, SpawnRequest, Supervisor,
+    SupervisorConfig, Terminated, discover_program,
 };
 pub use crate::supervisor::{ProcessLedgerEntry, SupervisorStats as HostStats};
 use crate::types::{
@@ -27,6 +28,7 @@ use crate::worker::{BACKEND_UNAVAILABLE_EXIT_CODE, WORKER_PROGRAM};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_score::{ChannelLayout, InputBlock, OutputBlock, sha256};
 use std::{
+    io::Read,
     path::PathBuf,
     process::ChildStdout,
     sync::{
@@ -39,20 +41,23 @@ use std::{
 /// In-flight bytes admitted for a probe (no audio buffers).
 const PROBE_BYTES: u64 = 64 << 10;
 
-/// Host-wide bounds. Zero values are rejected by [`IsolatedHost::new`].
+/// Host-wide bounds. [`IsolatedHost::new`] rejects zero values and any duration above
+/// [`MAX_DEADLINE`] with `InvalidConfig` (test: `foundation_contract::host_limits_are_bounded_at_admission`).
 #[derive(Clone, Debug)]
 pub struct HostLimits {
     /// Most worker processes alive at once (probes included); a call beyond that is refused at once.
     pub max_workers: usize,
-    /// Most bytes of block and state buffers reserved across all live workers.
+    /// Most bytes reserved across all live workers: block and state buffers plus, per worker, the
+    /// size of the approved plugin file (the host reads it into one buffer to hash it).
     pub max_in_flight_bytes: u64,
     /// Largest frame either side accepts; bounds `max_block_frames * channels * 4`.
     pub max_frame_bytes: u32,
-    /// Largest approved plugin file the host will hash.
+    /// Largest approved plugin file the host will hash. The file size is also charged to
+    /// `max_in_flight_bytes`, so the buffer is bounded by the budget whatever this is set to.
     pub max_plugin_file_bytes: u64,
-    /// Time a new worker gets to complete its HELLO handshake.
+    /// Time a new worker gets to complete its HELLO handshake (1 ms ..= [`MAX_DEADLINE`]).
     pub spawn_timeout: Duration,
-    /// Time retire waits for the worker to exit by itself before killing it.
+    /// Time retire waits for the worker to exit by itself before killing it (1 ms ..= [`MAX_DEADLINE`]).
     pub shutdown_grace: Duration,
 }
 
@@ -84,11 +89,15 @@ pub enum WorkerBackend {
 /// Host construction options.
 #[derive(Clone, Debug, Default)]
 pub struct HostOptions {
-    /// Worker executable. `None`: `score-plugin-worker` next to the running executable (or one
-    /// directory above it, for test and example binaries).
+    /// Worker executable. `None`: `score-plugin-worker` in the running executable's own directory
+    /// (no other directory is searched; test and example binaries pass the program explicitly).
     pub program: Option<PathBuf>,
     pub limits: HostLimits,
     pub backend: WorkerBackend,
+    /// Directory under which the host makes its private staging directory (only used with
+    /// `WorkerBackend::Clap`, whose worker loads a verified copy of the plugin instead of the approved
+    /// path). `None`: the host process's temp directory.
+    pub staging_root: Option<PathBuf>,
     /// Delay, in samples, the reference backend applies (0 = none). Ignored by the CLAP backend.
     pub reference_latency: u32,
     /// Extra worker command-line arguments for fault injection (`--fault SPEC`). Exists only in
@@ -108,6 +117,9 @@ struct Shared {
     supervisor: Supervisor,
     limits: HostLimits,
     next_instance: AtomicU64,
+    /// Private staging directory for the CLAP backend (`None` for the reference backend, which never
+    /// loads the file).
+    stage: Option<Arc<StageRoot>>,
 }
 
 type WorkerSession = crate::supervisor::Session<Frame, ProtocolFault>;
@@ -187,25 +199,48 @@ fn start_worker(
     expected_clap_abi: u32,
     cancel: &CancellationToken,
 ) -> Result<Started, PluginError> {
-    let (mut session, first) =
-        match shared
-            .supervisor
-            .spawn(permit, owner_session, read_reply, wire::HELLO_CAP, cancel)
-        {
-            Ok(started) => started,
-            Err(SpawnError::Canceled) => return Err(PluginError::Canceled),
-            Err(SpawnError::Unavailable) => return Err(PluginError::Unavailable),
-            Err(SpawnError::Handshake(classified, done)) => {
-                // A worker that exits at once with the "backend not built" code never said HELLO.
-                let unbuilt = matches!(classified, Classified::Crashed { .. })
-                    && done.exit_code == Some(BACKEND_UNAVAILABLE_EXIT_CODE);
-                return Err(if unbuilt {
-                    PluginError::Unavailable
-                } else {
-                    error_of(classified, true)
-                });
-            }
-        };
+    // The CLAP worker loads a verified private copy, never the approved path: it gets a directory of its
+    // own, removed after the reap (the supervisor drops the guard with the session).
+    let (extra_args, keepalive): (Vec<String>, Option<Box<dyn Send>>) = match &shared.stage {
+        None => (Vec::new(), None),
+        Some(root) => {
+            let stage = root.worker_dir().map_err(|_| PluginError::Unavailable)?;
+            let dir = stage
+                .path()
+                .to_str()
+                .ok_or(PluginError::InvalidConfig)?
+                .to_owned();
+            (
+                vec!["--stage-dir".to_owned(), dir],
+                Some(Box::new(stage) as Box<dyn Send>),
+            )
+        }
+    };
+    let (mut session, first) = match shared.supervisor.spawn(
+        permit,
+        SpawnRequest {
+            owner_session,
+            extra_args: &extra_args,
+            keepalive,
+            hello_cap: wire::HELLO_CAP,
+        },
+        read_reply,
+        cancel,
+    ) {
+        Ok(started) => started,
+        Err(SpawnError::Canceled) => return Err(PluginError::Canceled),
+        Err(SpawnError::Unavailable) => return Err(PluginError::Unavailable),
+        Err(SpawnError::Handshake(classified, done)) => {
+            // A worker that exits at once with the "backend not built" code never said HELLO.
+            let unbuilt = matches!(classified, Classified::Crashed { .. })
+                && done.exit_code == Some(BACKEND_UNAVAILABLE_EXIT_CODE);
+            return Err(if unbuilt {
+                PluginError::Unavailable
+            } else {
+                error_of(classified, true)
+            });
+        }
+    };
     let hello = match wire::decode_hello(&first) {
         Ok(hello) => hello,
         Err(error) => return Err(fail_session(&mut session, framing(error), true).0),
@@ -241,9 +276,9 @@ fn authorize(plugin: &ApprovedPlugin, grant: Option<&PluginGrant>) -> Result<Str
     Ok(grant.actor.session_id().to_owned())
 }
 
-/// Reads the approved file (bounded) and compares its SHA-256 with the approval. This is a read, not a
-/// load: the host does not map or execute the file.
-fn verify_content(plugin: &ApprovedPlugin, max_bytes: u64) -> Result<(), PluginError> {
+/// Size of the approved file, checked against the per-file bound. The caller charges it to the
+/// admission budget BEFORE the file is read (the read buffer is that large).
+fn plugin_file_len(plugin: &ApprovedPlugin, max_bytes: u64) -> Result<u64, PluginError> {
     let meta = std::fs::metadata(&plugin.path).map_err(|_| PluginError::Unavailable)?;
     if !meta.is_file() {
         return Err(PluginError::Unavailable);
@@ -251,8 +286,21 @@ fn verify_content(plugin: &ApprovedPlugin, max_bytes: u64) -> Result<(), PluginE
     if meta.len() > max_bytes {
         return Err(PluginError::BudgetExceeded);
     }
-    let bytes = std::fs::read(&plugin.path).map_err(|_| PluginError::Unavailable)?;
-    if u64::try_from(bytes.len()).map_or(true, |len| len > max_bytes) {
+    Ok(meta.len())
+}
+
+/// Reads the approved file (at most the `charged` bytes the caller reserved) and compares its SHA-256
+/// with the approval. This is a read, not a load: the host does not map or execute the file. It is an
+/// early refusal only; the worker hashes the bytes it will actually load (see `staging.rs`). A file
+/// that grew past the charged size is refused, not read further.
+fn verify_content(plugin: &ApprovedPlugin, charged: u64) -> Result<(), PluginError> {
+    let file = std::fs::File::open(&plugin.path).map_err(|_| PluginError::Unavailable)?;
+    let mut bytes =
+        Vec::with_capacity(usize::try_from(charged).map_err(|_| PluginError::BudgetExceeded)?);
+    file.take(charged.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| PluginError::Unavailable)?;
+    if u64::try_from(bytes.len()).map_or(true, |len| len > charged) {
         return Err(PluginError::BudgetExceeded);
     }
     if sha256(&bytes) == plugin.content_sha256 {
@@ -291,7 +339,9 @@ impl IsolatedHost {
             || limits.max_frame_bytes == 0
             || limits.max_plugin_file_bytes == 0
             || limits.spawn_timeout.is_zero()
+            || limits.spawn_timeout > MAX_DEADLINE
             || limits.shutdown_grace.is_zero()
+            || limits.shutdown_grace > MAX_DEADLINE
         {
             return Err(PluginError::InvalidConfig);
         }
@@ -313,6 +363,17 @@ impl IsolatedHost {
         }
         #[cfg(feature = "test-faults")]
         args.extend(options.test_args.iter().cloned());
+        let stage = if options.backend == WorkerBackend::Clap {
+            let base = options
+                .staging_root
+                .clone()
+                .unwrap_or_else(std::env::temp_dir);
+            Some(Arc::new(
+                StageRoot::create(&base).map_err(|_| PluginError::Unavailable)?,
+            ))
+        } else {
+            None
+        };
         let supervisor = Supervisor::new(SupervisorConfig {
             program,
             args,
@@ -325,6 +386,7 @@ impl IsolatedHost {
                 supervisor,
                 limits: options.limits,
                 next_instance: AtomicU64::new(1),
+                stage,
             }),
         })
     }
@@ -365,17 +427,20 @@ impl IsolatedHost {
         {
             return Err(PluginError::BudgetExceeded);
         }
-        // Request and reply buffers plus the largest state blob stay reserved until the reap.
+        // Request and reply buffers, the largest state blob and the plugin-file hashing buffer stay
+        // reserved until the reap.
+        let file_len = plugin_file_len(&config.plugin, limits.max_plugin_file_bytes)?;
         let reserved = block_bytes
             .checked_mul(2)
             .and_then(|n| n.checked_add(u64::from(config.max_state_bytes)))
+            .and_then(|n| n.checked_add(file_len))
             .ok_or(PluginError::BudgetExceeded)?;
         let permit = self
             .shared
             .supervisor
             .admit(reserved)
             .map_err(|_| PluginError::BudgetExceeded)?;
-        verify_content(&config.plugin, limits.max_plugin_file_bytes)?;
+        verify_content(&config.plugin, file_len)?;
         let spec = spec_of(&config.plugin)?;
         let Started { mut session, .. } = start_worker(
             &self.shared,
@@ -453,12 +518,13 @@ impl PluginProvider for IsolatedHost {
         check_deadline(deadline)?;
         let owner = authorize(plugin, grant)?;
         let limits = &self.shared.limits;
+        let file_len = plugin_file_len(plugin, limits.max_plugin_file_bytes)?;
         let permit = self
             .shared
             .supervisor
-            .admit(PROBE_BYTES)
+            .admit(PROBE_BYTES.saturating_add(file_len))
             .map_err(|_| PluginError::BudgetExceeded)?;
-        verify_content(plugin, limits.max_plugin_file_bytes)?;
+        verify_content(plugin, file_len)?;
         let spec = spec_of(plugin)?;
         let Started { mut session, hello } =
             start_worker(&self.shared, permit, &owner, plugin.abi_version, cancel)?;
@@ -788,10 +854,14 @@ impl PluginInstance for IsolatedInstance {
                     completeness,
                 })
             }
-            Ok(Reply::Error { code, detail, .. }) => {
+            Ok(Reply::Error { code, .. }) => {
                 silence(out, frames);
                 if code == wire::E_STALE {
-                    self.state_version = detail;
+                    // The host sent its own current version (checked above), so a worker that calls
+                    // it stale disagrees with the host's counter. The host owns that counter and
+                    // never adopts a number from the worker: the worker is inconsistent, reclaim it
+                    // (test: `fault_injection::worker_cannot_rewrite_the_state_version`).
+                    return Err(self.fail(mismatch(), true));
                 }
                 Err(self.refuse(wire::error_of(code), true))
             }
@@ -825,8 +895,14 @@ impl PluginInstance for IsolatedInstance {
         };
         match call(session, id, frame, wire::REPLY_SLACK, deadline, cancel) {
             Ok(Reply::ParamSet { version, .. }) => {
-                self.state_version = version;
-                Ok(version)
+                // One parameter change is exactly one version step; any other number is the worker
+                // rewriting the host's counter.
+                if self.state_version.checked_add(1) == Some(version) {
+                    self.state_version = version;
+                    Ok(version)
+                } else {
+                    Err(self.fail(mismatch(), false))
+                }
             }
             Ok(Reply::Error { code, .. }) => Err(self.refuse(wire::error_of(code), false)),
             Ok(_) => Err(self.fail(mismatch(), false)),
@@ -860,17 +936,17 @@ impl PluginInstance for IsolatedInstance {
                 ..
             }) => {
                 let known = Completeness::from_wire(completeness);
+                let fits = bytes.len() <= usize::try_from(max_bytes).unwrap_or(0);
                 match known {
-                    Some(completeness)
-                        if bytes.len() <= usize::try_from(max_bytes).unwrap_or(0) =>
-                    {
-                        self.state_version = version;
+                    // A capture reports the current version; it does not change it.
+                    Some(completeness) if fits && version == self.state_version => {
                         Ok(StateCapture {
                             state_version: version,
                             completeness,
                             bytes,
                         })
                     }
+                    Some(_) if fits => Err(self.fail(mismatch(), false)),
                     _ => Err(self.fail(
                         Failure::Read(ReadFailure::Failed(ProtocolFault::Oversize)),
                         false,

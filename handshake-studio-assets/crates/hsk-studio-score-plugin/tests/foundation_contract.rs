@@ -12,9 +12,12 @@ use hsk_studio_observe::{
     Budget, DeliveryClass, DeliveryError, Error as ObserveError, FailureCode, MAX_FRAME_BYTES,
     Observe, Outcome, SinkPort,
 };
-use hsk_studio_score::{ChannelLayout, Engine, InputBlock, OutputBlock, RequestContext};
+use hsk_studio_score::{ChannelLayout, Engine, InputBlock, OutputBlock, RequestContext, sha256};
 use hsk_studio_score_plugin::*;
-use std::time::{Duration, Instant};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 #[test]
 fn worker_gain_block_exact() {
@@ -482,5 +485,299 @@ fn admission_and_cancel() {
             );
             assert_eq!(sink.0.len(), 1);
         }
+    });
+}
+
+#[test]
+fn host_limits_are_bounded_at_admission() {
+    bounded_case("host_limits_are_bounded_at_admission", || {
+        // R6: spawn_timeout and shutdown_grace were only checked non-zero, so Duration::MAX reached
+        // `Instant::now() + limit` in the supervisor and panicked inside the host. Now every duration
+        // limit is 1 ms ..= MAX_DEADLINE at admission, with a typed error.
+        let base = HostLimits::default();
+        let refused = |limits: HostLimits| IsolatedHost::new(options(limits, 0)).err();
+        let one_over = MAX_DEADLINE + Duration::from_millis(1);
+        for (name, limits) in [
+            (
+                "spawn_timeout MAX",
+                HostLimits {
+                    spawn_timeout: Duration::MAX,
+                    ..base.clone()
+                },
+            ),
+            (
+                "spawn_timeout over",
+                HostLimits {
+                    spawn_timeout: one_over,
+                    ..base.clone()
+                },
+            ),
+            (
+                "spawn_timeout zero",
+                HostLimits {
+                    spawn_timeout: Duration::ZERO,
+                    ..base.clone()
+                },
+            ),
+            (
+                "shutdown_grace MAX",
+                HostLimits {
+                    shutdown_grace: Duration::MAX,
+                    ..base.clone()
+                },
+            ),
+            (
+                "shutdown_grace over",
+                HostLimits {
+                    shutdown_grace: one_over,
+                    ..base.clone()
+                },
+            ),
+            (
+                "shutdown_grace zero",
+                HostLimits {
+                    shutdown_grace: Duration::ZERO,
+                    ..base.clone()
+                },
+            ),
+        ] {
+            assert_eq!(refused(limits), Some(PluginError::InvalidConfig), "{name}");
+        }
+
+        // The largest accepted values work end to end (spawn, handshake, probe, shutdown, reap).
+        let widest = HostLimits {
+            spawn_timeout: MAX_DEADLINE,
+            shutdown_grace: MAX_DEADLINE,
+            ..base
+        };
+        let host = host_with(widest, 0);
+        let file = PluginFile::new();
+        let cancel = CancellationToken::default();
+        host.probe(&file.approved(), Some(&grant()), &cancel, MAX_DEADLINE)
+            .unwrap();
+        let s = host.stats();
+        assert_eq!((s.spawned, s.reaped, s.workers_live), (1, 1, 0));
+
+        // A per-call deadline of Duration::MAX is refused before any process exists.
+        for deadline in [
+            Duration::MAX,
+            MAX_DEADLINE + Duration::from_millis(1),
+            Duration::ZERO,
+        ] {
+            assert_eq!(
+                host.probe(&file.approved(), Some(&grant()), &cancel, deadline)
+                    .unwrap_err(),
+                PluginError::InvalidConfig
+            );
+            assert_eq!(
+                host.activate_isolated(&config(&file, 0.5), &cancel, deadline)
+                    .unwrap_err(),
+                PluginError::InvalidConfig
+            );
+        }
+        let mut instance = host
+            .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
+            .unwrap();
+        let (left, right) = signal(256);
+        let sp = spec(256, 0);
+        let channels: [&[f32]; 2] = [&left, &right];
+        let input = InputBlock::new(&sp, &channels);
+        let mut out = prefilled(256);
+        assert_eq!(
+            instance
+                .process(&input, &mut out, &cancel, Duration::MAX)
+                .unwrap_err(),
+            PluginError::InvalidConfig
+        );
+        assert!(
+            out.backing().iter().all(|s| *s == 7.0),
+            "a refused call must not touch the output"
+        );
+        assert_eq!(
+            instance
+                .set_parameter(Parameter { id: 0, value: 0.25 }, &cancel, Duration::MAX)
+                .unwrap_err(),
+            PluginError::InvalidConfig
+        );
+        assert_eq!(
+            instance
+                .capture_state(&cancel, Duration::MAX, 64)
+                .unwrap_err(),
+            PluginError::InvalidConfig
+        );
+        assert_eq!(
+            instance.lifecycle(),
+            LifecycleState::Active,
+            "refusals leave the worker running"
+        );
+        assert!(instance.retire_in_place().reaped);
+        assert_eq!(
+            host.stats().spawned,
+            2,
+            "only the probe and this one activation spawned"
+        );
+    });
+}
+
+#[test]
+fn plugin_file_size_is_charged_to_the_budget() {
+    bounded_case("plugin_file_size_is_charged_to_the_budget", || {
+        // R6: the host hashes the approved file through one buffer of up to max_plugin_file_bytes
+        // (default 512 MiB) that no budget saw. The file size is now reserved with the permit
+        // BEFORE the file is read. (A streaming hash over a fixed buffer needs hsk-studio-score to
+        // export its streaming Sha256: NOT_PROVEN, see DESCRIPTOR.)
+        let bytes = vec![0x5A_u8; 1000];
+        let sha = sha256(&bytes);
+        let file = PluginFile::with_bytes(&bytes);
+        let cancel = CancellationToken::default();
+        let grant = PluginGrant {
+            actor: actor(),
+            content_sha256: sha,
+        };
+        let config = ProcessConfig {
+            plugin: file.approved_with(sha),
+            grant: Some(grant.clone()),
+            sample_rate_hz: 48_000,
+            layout: ChannelLayout::stereo(),
+            max_block_frames: 256,
+            parameters: Vec::new(),
+            max_state_bytes: 64,
+        };
+        // Without the file an instance reserves 2 x (256 frames x 2 channels x 4) + 64 = 4160 bytes.
+        let buffers = 4160_u64;
+        let tight = host_with(
+            HostLimits {
+                max_in_flight_bytes: buffers,
+                ..HostLimits::default()
+            },
+            0,
+        );
+        assert_eq!(
+            tight
+                .activate_isolated(&config, &cancel, DEADLINE)
+                .unwrap_err(),
+            PluginError::BudgetExceeded
+        );
+        assert_eq!(
+            (tight.stats().spawned, tight.stats().in_flight_bytes),
+            (0, 0)
+        );
+
+        let exact = host_with(
+            HostLimits {
+                max_in_flight_bytes: buffers + 1000,
+                ..HostLimits::default()
+            },
+            0,
+        );
+        let mut instance = exact.activate_isolated(&config, &cancel, DEADLINE).unwrap();
+        assert_eq!(exact.stats().in_flight_bytes, buffers + 1000);
+        let report = instance.retire_in_place();
+        assert_eq!(report.released_bytes, buffers + 1000);
+        assert_eq!(exact.stats().in_flight_bytes, 0);
+
+        // Probe: 64 KiB of probe buffers plus the file.
+        let probe_bytes = 64_u64 << 10;
+        for (limit, ok) in [(probe_bytes + 999, false), (probe_bytes + 1000, true)] {
+            let host = host_with(
+                HostLimits {
+                    max_in_flight_bytes: limit,
+                    ..HostLimits::default()
+                },
+                0,
+            );
+            let result = host.probe(&file.approved_with(sha), Some(&grant), &cancel, DEADLINE);
+            assert_eq!(result.is_ok(), ok, "limit {limit}: {result:?}");
+            if !ok {
+                assert_eq!(result.unwrap_err(), PluginError::BudgetExceeded);
+                assert_eq!(host.stats().spawned, 0);
+            }
+        }
+
+        // The per-file bound still applies.
+        let small = host_with(
+            HostLimits {
+                max_plugin_file_bytes: 999,
+                ..HostLimits::default()
+            },
+            0,
+        );
+        assert_eq!(
+            small
+                .probe(&file.approved_with(sha), Some(&grant), &cancel, DEADLINE)
+                .unwrap_err(),
+            PluginError::BudgetExceeded
+        );
+        assert_eq!(small.stats().spawned, 0);
+    });
+}
+
+fn entries(dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
+struct RemoveDir(PathBuf);
+impl Drop for RemoveDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn staging_directories_follow_the_worker() {
+    bounded_case("staging_directories_follow_the_worker", || {
+        let root = RemoveDir(std::env::temp_dir().join(format!(
+            "hsk-score-plugin-stage-root-{}",
+            std::process::id()
+        )));
+        std::fs::create_dir_all(&root.0).unwrap();
+        let file = PluginFile::new();
+        let cancel = CancellationToken::default();
+
+        // The reference backend never loads the file, so the host makes no staging directory.
+        let mut reference = options(HostLimits::default(), 0);
+        reference.staging_root = Some(root.0.clone());
+        let reference_host = IsolatedHost::new(reference).unwrap();
+        reference_host
+            .probe(&file.approved(), Some(&grant()), &cancel, DEADLINE)
+            .unwrap();
+        assert!(
+            entries(&root.0).is_empty(),
+            "no staging directory for the reference backend"
+        );
+        drop(reference_host);
+
+        // The CLAP backend gets one private directory per host and one subdirectory per worker; the
+        // plugin "abc" cannot be served (a default-feature worker has no CLAP backend and exits;
+        // a clap worker finds no library in the verified copy), so the probe is unavailable.
+        let mut clap = options(HostLimits::default(), 0);
+        clap.backend = WorkerBackend::Clap;
+        clap.staging_root = Some(root.0.clone());
+        let host = IsolatedHost::new(clap).unwrap();
+        let host_dirs = entries(&root.0);
+        assert_eq!(host_dirs.len(), 1, "{host_dirs:?}");
+        assert!(entries(&host_dirs[0]).is_empty());
+        assert_eq!(
+            host.probe(&file.approved(), Some(&grant()), &cancel, DEADLINE)
+                .unwrap_err(),
+            PluginError::Unavailable
+        );
+        let s = host.stats();
+        assert_eq!((s.spawned, s.reaped, s.workers_live), (1, 1, 0));
+        assert!(
+            entries(&host_dirs[0]).is_empty(),
+            "the worker directory is removed once the worker is reaped: {:?}",
+            entries(&host_dirs[0])
+        );
+        drop(host);
+        assert!(
+            !host_dirs[0].exists(),
+            "the host directory goes with the host"
+        );
+        assert!(entries(&root.0).is_empty());
     });
 }

@@ -5,6 +5,8 @@
 //! load or run the approved plugin file (it only verifies its SHA-256). The native CLAP backend
 //! (feature `clap`, `clap_backend.rs`) is the only code that loads foreign plugin code.
 #![deny(clippy::arithmetic_side_effects)]
+#[cfg(feature = "clap")]
+use crate::staging::StageError;
 use crate::types::{Arch, Completeness, PluginFormat, SUPPORTED_CLAP_ABI};
 use crate::wire::{
     ConfigureSpec, E_ABI, E_BUDGET, E_CONFIG, E_HASH, E_NOT_CONFIGURED, E_STALE, E_UNAVAILABLE,
@@ -14,7 +16,7 @@ use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ, sha25
 
 /// Identity the reference backend reports in HELLO and receipts.
 pub const REFERENCE_IDENTITY: &str = "reference-gain-delay@1";
-const MAX_PLUGIN_FILE_BYTES: u64 = 512 << 20;
+pub(crate) const MAX_PLUGIN_FILE_BYTES: u64 = 512 << 20;
 
 /// A typed refusal: worker error code and a detail number (for example the current state version).
 pub(crate) type Refusal = (u8, u64);
@@ -66,14 +68,19 @@ pub(crate) trait Backend {
     fn capture_state(&mut self, max_bytes: u32) -> Result<Captured, Refusal>;
 }
 
-/// Format, architecture and ABI gate plus the content hash check, before anything is "loaded".
-pub(crate) fn verify_file(spec: &PluginSpec) -> Result<(), Refusal> {
+/// Format, architecture and ABI gate; nothing is read.
+pub(crate) fn check_supported(spec: &PluginSpec) -> Result<(), Refusal> {
     let supported = PluginFormat::from_wire(spec.format) == Some(PluginFormat::Clap)
         && spec.abi == SUPPORTED_CLAP_ABI
         && Arch::host().map(Arch::wire) == Some(spec.arch);
-    if !supported {
-        return Err((E_ABI, 0));
-    }
+    if supported { Ok(()) } else { Err((E_ABI, 0)) }
+}
+
+/// The gate plus the content hash check of the REFERENCE backend, which only verifies the file and
+/// never loads or executes it (so no staging copy is needed there). One read of the whole file: a
+/// streaming hash over a fixed buffer needs `hsk-studio-score` to export its streaming `Sha256`.
+pub(crate) fn verify_file(spec: &PluginSpec) -> Result<(), Refusal> {
+    check_supported(spec)?;
     let meta = std::fs::metadata(&spec.path).map_err(|_| (E_UNAVAILABLE, 0))?;
     if !meta.is_file() || meta.len() > MAX_PLUGIN_FILE_BYTES {
         return Err((E_UNAVAILABLE, 0));
@@ -83,6 +90,16 @@ pub(crate) fn verify_file(spec: &PluginSpec) -> Result<(), Refusal> {
         Ok(())
     } else {
         Err((E_HASH, 0))
+    }
+}
+
+/// Worker refusal for a failed staging copy.
+#[cfg(feature = "clap")]
+pub(crate) fn refusal_of_stage(error: StageError) -> Refusal {
+    match error {
+        StageError::Unavailable => (E_UNAVAILABLE, 0),
+        StageError::Budget => (E_BUDGET, 0),
+        StageError::Hash => (E_HASH, 0),
     }
 }
 

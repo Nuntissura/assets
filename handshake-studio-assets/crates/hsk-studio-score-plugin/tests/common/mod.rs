@@ -44,20 +44,28 @@ pub struct PluginFile(pub PathBuf);
 
 impl PluginFile {
     pub fn new() -> Self {
+        Self::with_bytes(b"abc")
+    }
+
+    pub fn with_bytes(bytes: &[u8]) -> Self {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let path = std::env::temp_dir().join(format!(
             "hsk-score-plugin-{}-{}.bin",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::AcqRel)
         ));
-        std::fs::write(&path, b"abc").unwrap();
+        std::fs::write(&path, bytes).unwrap();
         Self(path)
     }
 
     pub fn approved(&self) -> ApprovedPlugin {
+        self.approved_with(ABC_SHA256)
+    }
+
+    pub fn approved_with(&self, content_sha256: [u8; 32]) -> ApprovedPlugin {
         ApprovedPlugin {
             path: self.0.clone(),
-            content_sha256: ABC_SHA256,
+            content_sha256,
             format: PluginFormat::Clap,
             arch: Arch::host().expect("known arch"),
             abi_version: SUPPORTED_CLAP_ABI,

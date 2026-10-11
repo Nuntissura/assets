@@ -441,3 +441,130 @@ fn clap_refuses_tampered_and_non_library_files() {
         );
     });
 }
+
+/// A copy of the fixture library in a directory of its own (same file name), removed on drop.
+struct LibraryCopy {
+    dir: PathBuf,
+    path: PathBuf,
+}
+
+impl LibraryCopy {
+    fn new(source: &Path) -> Self {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "hsk-score-plugin-clap-orig-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::AcqRel)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(source.file_name().unwrap());
+        std::fs::copy(source, &path).unwrap();
+        Self { dir, path }
+    }
+}
+
+impl Drop for LibraryCopy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn clap_loads_a_private_verified_copy_not_the_approved_path() {
+    bounded_case(
+        "clap_loads_a_private_verified_copy_not_the_approved_path",
+        || {
+            let Some(fixture) = fixture_path(
+                "clap_loads_a_private_verified_copy_not_the_approved_path",
+                "clap-gain",
+            ) else {
+                return;
+            };
+            // R6 TOCTOU: the worker used to hash the approved path and then hand the same path to the
+            // dynamic loader. The loader now gets a private copy the worker verified (hashed twice, the
+            // second time through a handle that stays open). Black-box proof from the operating system:
+            // while the plugin runs, the approved file can be DELETED. Windows refuses to delete an image
+            // that is mapped, so the loaded image cannot be the approved path.
+            let original = LibraryCopy::new(&fixture);
+            let bytes = std::fs::read(&original.path).expect("copy readable");
+            let plugin = approved(original.path.clone(), sha256(&bytes));
+            let staging = std::env::temp_dir().join(format!(
+                "hsk-score-plugin-clap-stage-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&staging);
+            std::fs::create_dir_all(&staging).unwrap();
+            let mut options = HostOptions::default().with_worker_program(WORKER);
+            options.backend = WorkerBackend::Clap;
+            options.staging_root = Some(staging.clone());
+            let host = IsolatedHost::new(options).unwrap();
+            let cancel = CancellationToken::default();
+            let mut instance = host
+                .activate_isolated(&config(plugin), &cancel, DEADLINE)
+                .unwrap();
+            let module = original
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            assert!(module_loaded_in(instance.pid().unwrap(), &module));
+
+            // The staged copy exists inside the host's private directory while the plugin is loaded.
+            let host_dir = std::fs::read_dir(&staging)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let staged = host_dir.join("w1").join("s1").join(&module);
+            assert!(staged.is_file(), "staged copy {staged:?} missing");
+            assert_eq!(std::fs::read(&staged).unwrap(), bytes);
+
+            #[cfg(windows)]
+            {
+                std::fs::remove_file(&original.path)
+                    .expect("the approved file must not be the mapped image");
+                assert!(!original.path.exists());
+                // The mapped copy is protected the other way: it cannot be deleted while loaded.
+                assert!(std::fs::remove_file(&staged).is_err());
+            }
+            #[cfg(not(windows))]
+            println!(
+                "NOT_PROVEN: clap_loads_a_private_verified_copy_not_the_approved_path unlink-oracle reason=this platform lets a mapped file be unlinked"
+            );
+
+            // The plugin keeps working after the approved file is gone.
+            let left: Vec<f32> = (0..256).map(|n| (n % 251) as f32 / 256.0 - 0.5).collect();
+            let right: Vec<f32> = left.iter().map(|s| -s).collect();
+            let spec = BlockSpec {
+                sample_rate_hz: 48_000,
+                layout: ChannelLayout::stereo(),
+                frames: 256,
+                start_sample: 0,
+            };
+            let channels: [&[f32]; 2] = [&left, &right];
+            let mut out = OutputBlock::with_capacity(ChannelLayout::stereo(), 256).unwrap();
+            instance
+                .process(
+                    &InputBlock::new(&spec, &channels),
+                    &mut out,
+                    &cancel,
+                    DEADLINE,
+                )
+                .unwrap();
+            let want: Vec<f32> = left.iter().map(|s| s * 0.5).collect();
+            assert_eq!(bits(&out.backing()[..256]), bits(&want));
+
+            let report = instance.retire_in_place();
+            assert!(report.reaped);
+            assert!(
+                std::fs::read_dir(&host_dir).unwrap().next().is_none(),
+                "the worker staging directory is removed after the reap"
+            );
+            drop(host);
+            assert!(!host_dir.exists());
+            let _ = std::fs::remove_dir_all(&staging);
+        },
+    );
+}
