@@ -30,6 +30,7 @@ pub struct ClipResampler {
     input_rate_hz: u32,
     output_rate_hz: u32,
     channels: usize,
+    chunk_frames: usize,
     pad_input_frames: usize,
     drop_output_frames: usize,
     padded: Vec<f32>,
@@ -139,6 +140,7 @@ impl ClipResampler {
             input_rate_hz,
             output_rate_hz,
             channels,
+            chunk_frames,
             pad_input_frames,
             drop_output_frames,
             padded: Vec::new(),
@@ -155,6 +157,26 @@ impl ClipResampler {
     }
     pub fn drop_output_frames(&self) -> usize {
         self.drop_output_frames
+    }
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+    /// Internal rubato input chunk size this resampler was built with.
+    pub fn chunk_frames(&self) -> usize {
+        self.chunk_frames
+    }
+    /// Canonical description of this converter's configuration (kind, rates, channels, chunk size
+    /// and the alignment pad/drop it derived). Bounce receipts hash it into a graph identity.
+    pub fn identity(&self) -> String {
+        format!(
+            "clip_resampler:sinc_len={SINC_LEN};window=blackman_harris2;in={};out={};channels={};chunk={};pad={};drop={}",
+            self.input_rate_hz,
+            self.output_rate_hz,
+            self.channels,
+            self.chunk_frames,
+            self.pad_input_frames,
+            self.drop_output_frames
+        )
     }
     /// Exact output frame count for a clip: `ceil(input_frames * output_rate / input_rate)`.
     pub fn output_frames_for(&self, input_frames: usize) -> Option<usize> {
@@ -173,7 +195,11 @@ impl ClipResampler {
 }
 
 /// `ceil(frames * out / in)` in u128; `None` when it does not fit `usize`.
-fn requested_frames(frames: usize, input_rate_hz: u32, output_rate_hz: u32) -> Option<usize> {
+pub(crate) fn requested_frames(
+    frames: usize,
+    input_rate_hz: u32,
+    output_rate_hz: u32,
+) -> Option<usize> {
     let numerator = u128::try_from(frames).ok()? * u128::from(output_rate_hz);
     let denominator = u128::from(input_rate_hz);
     usize::try_from(numerator.div_ceil(denominator)).ok()
@@ -181,7 +207,11 @@ fn requested_frames(frames: usize, input_rate_hz: u32, output_rate_hz: u32) -> O
 
 /// Maps an input-timeline sample to the output timeline; refuses positions that are not
 /// representable exactly at the output rate (no silent rounding).
-fn map_start(sample: u64, input_rate_hz: u32, output_rate_hz: u32) -> Result<u64, ScoreError> {
+pub(crate) fn map_start(
+    sample: u64,
+    input_rate_hz: u32,
+    output_rate_hz: u32,
+) -> Result<u64, ScoreError> {
     let scaled = u128::from(sample) * u128::from(output_rate_hz);
     let rate = u128::from(input_rate_hz);
     if !scaled.is_multiple_of(rate) {
@@ -203,7 +233,19 @@ impl Engine {
         cancel: &CancellationToken,
     ) -> Result<ResampleReceipt, ScoreError> {
         let _slot = self.admit(ctx, cancel)?;
+        self.resample_held(ctx, input, resampler, out, cancel)
+    }
 
+    /// Body of [`Engine::resample`]; the caller already holds the engine slot (also the SRC stage
+    /// of [`Engine::bounce_resampled`]).
+    pub(crate) fn resample_held(
+        &self,
+        ctx: &RequestContext,
+        input: &InputBlock<'_>,
+        resampler: &mut ClipResampler,
+        out: &mut OutputBlock,
+        cancel: &CancellationToken,
+    ) -> Result<ResampleReceipt, ScoreError> {
         input.validate()?;
         let spec = input.spec();
         if spec.sample_rate_hz != resampler.input_rate_hz {

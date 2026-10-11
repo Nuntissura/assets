@@ -1,5 +1,5 @@
 use crate::error::ScoreError;
-use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
+use hsk_studio_accord::{Rounding, Ticks, Timescale};
 
 /// Widest layout accepted (the `sixteen_channel` master configuration, STU-FX-137).
 pub const MAX_CHANNELS: usize = 16;
@@ -66,21 +66,26 @@ impl BlockSpec {
     }
 }
 
-/// Exact ticks per sample (STU-VID-012). Rejects rate 0, rates above [`MAX_SAMPLE_RATE_HZ`] and
-/// rates that do not divide `TICKS_PER_SECOND`.
+/// Exact ticks per sample (STU-VID-012). Rejects rate 0, rates above [`MAX_SAMPLE_RATE_HZ`] (an
+/// authored bound) and rates that do not divide `TICKS_PER_SECOND`. The divisor rule is accord's
+/// ([`Timescale::exact_ticks_per_unit`]); this crate keeps no copy of it (CX-CAP-001).
 pub fn ticks_per_sample(rate_hz: u32) -> Result<u64, ScoreError> {
-    let rate = u64::from(rate_hz);
-    if rate == 0 || rate_hz > MAX_SAMPLE_RATE_HZ || !TICKS_PER_SECOND.is_multiple_of(rate) {
+    if rate_hz > MAX_SAMPLE_RATE_HZ {
         return Err(ScoreError::InvalidRate);
     }
-    Ok(TICKS_PER_SECOND / rate)
+    Timescale::new(rate_hz)
+        .ok()
+        .and_then(Timescale::exact_ticks_per_unit)
+        .ok_or(ScoreError::InvalidRate)
 }
 
+/// Sample position to ticks through accord's exact conversion; overflow is a typed error.
 pub fn sample_to_ticks(sample: u64, rate_hz: u32) -> Result<Ticks, ScoreError> {
-    sample
-        .checked_mul(ticks_per_sample(rate_hz)?)
-        .map(Ticks::new)
-        .ok_or(ScoreError::PositionOverflow)
+    ticks_per_sample(rate_hz)?;
+    Timescale::new(rate_hz)
+        .and_then(|scale| scale.ticks_from_units(sample, Rounding::Floor))
+        .map(|converted| converted.value)
+        .map_err(|_| ScoreError::PositionOverflow)
 }
 
 /// Floor conversion: `(sample, remainder_ticks)`; the remainder is explicit, never rounded away.

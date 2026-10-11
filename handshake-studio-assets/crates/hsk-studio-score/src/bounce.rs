@@ -89,7 +89,7 @@ impl BounceReceipt {
     }
 }
 
-fn identity_digest(identity: &str) -> [u8; 32] {
+pub(crate) fn identity_digest(identity: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(IDENTITY_DOMAIN);
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
@@ -116,7 +116,20 @@ impl Engine {
         cancel: &CancellationToken,
     ) -> Result<BounceReceipt, ScoreError> {
         let _slot = self.admit(ctx, cancel)?;
+        self.bounce_held(ctx, request, proc, out, sink, cancel)
+    }
 
+    /// Body of [`Engine::bounce`]; the caller already holds the engine slot (also used for the
+    /// pre and post stages of [`Engine::bounce_resampled`]).
+    pub(crate) fn bounce_held(
+        &self,
+        ctx: &RequestContext,
+        request: &BounceRequest<'_>,
+        proc: &mut dyn Processor,
+        out: &mut OutputBlock,
+        sink: &mut dyn FnMut(BounceChunk<'_>) -> Result<(), ScoreError>,
+        cancel: &CancellationToken,
+    ) -> Result<BounceReceipt, ScoreError> {
         let channels = request.layout.channels();
         // Output side: the layout the processor writes, fixed by the caller's output block.
         let out_labels: Vec<u16> = out.layout().labels().to_vec();
