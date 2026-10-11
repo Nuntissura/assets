@@ -527,3 +527,68 @@ fn clipped_layers_lower_to_clip_to_base_and_unsupported_cases_are_refused() {
         assert!(unavailable(lowered(&clipped_root, BlendSpace::Encoded, &root)).contains("clip_without_base"));
     });
 }
+
+#[test]
+fn pass_through_group_as_clip_base_is_unavailable_and_unsupported_in_the_ledger() {
+    bounded_case("pass_through_group_as_clip_base", || {
+        // Root group 1 = [group 7 (the base; contains raster 2), raster 3 clipped to it]. Group
+        // mode 1 = pass_through (non-isolated), 2 = Normal (isolated). Photoshop semantics for a
+        // pass-through clip base are UNVERIFIED (oracle pending): refused, never guessed.
+        let root = addr(1, "mix", "out");
+        let token = CancellationToken::default();
+        let fixture = |mode: u16| {
+            let mut v = tiled();
+            v["layers"].as_array_mut().unwrap().push(layer(7, "group", json!({"payload_kind":"group"})));
+            v["graph"]["operations"].as_array_mut().unwrap().push(composite(7));
+            v["graph"]["edges"] = json!([
+                edge(address(2, "source", "out"), address(7, "mix", "inputs"), 0),
+                edge(address(7, "mix", "out"), address(1, "mix", "inputs"), 0),
+                edge(address(3, "source", "out"), address(1, "mix", "inputs"), 1),
+            ]);
+            v["layers"][5]["appearance"] = appearance(100.0, 100.0, mode, mode == 1);
+            v["layers"][2]["appearance"] = appearance(100.0, 100.0, 2, false);
+            v["layers"][2]["appearance"]["clipped"] = json!(true);
+            v
+        };
+
+        // Pass-through base: typed Unavailable at lowering, Unsupported in the evaluation ledger
+        // and on the parent step.
+        let v = fixture(1);
+        match lowered(&v, BlendSpace::Encoded, &root) {
+            Err(CompositeError::Unavailable(reason)) => assert!(reason.contains("clip_base_pass_through"), "{reason}"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        let snap = open(&v);
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let report = evaluate(&plan, &snap, &token).unwrap();
+        assert_eq!(report.receipt.exactness.lowest, Exactness::Unsupported);
+        assert!(report
+            .receipt
+            .exactness
+            .operators
+            .iter()
+            .any(|o| o.key == "clip_base_pass_through" && o.exactness == Exactness::Unsupported));
+        match &report.step(&root).unwrap().status {
+            StepStatus::Unavailable(reason) => assert!(reason.contains("clip_base_pass_through"), "{reason}"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+
+        // A hidden pass-through base takes its clipped layer with it: nothing to refuse.
+        let mut hidden = fixture(1);
+        hidden["layers"][5]["visible"] = json!(false);
+        let low = lowered(&hidden, BlendSpace::Encoded, &root).unwrap();
+        let PlanNode::Group(top) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("root") };
+        assert!(top.layers.is_empty());
+        let snap = open(&hidden);
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let report = evaluate(&plan, &snap, &token).unwrap();
+        assert_ne!(report.receipt.exactness.lowest, Exactness::Unsupported);
+
+        // An isolated (Normal) group base is fine: the clipped layer lowers to the clip route.
+        let low = lowered(&fixture(2), BlendSpace::Encoded, &root).unwrap();
+        let PlanNode::Group(top) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("root") };
+        assert_eq!(top.layers.len(), 2);
+        assert!(top.layers[0].mask.is_none());
+        assert_eq!(top.layers[1].mask, Some(MaskInput::clip_to_base()));
+    });
+}

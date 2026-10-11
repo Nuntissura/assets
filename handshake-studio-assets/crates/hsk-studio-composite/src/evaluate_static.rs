@@ -289,6 +289,8 @@ pub fn evaluate(
                 let mut extent = None;
                 let mut blocked: Option<String> = None;
                 let mut have_base = false;
+                // The current clip base is a rendered (visible, non-empty) pass-through group.
+                let mut pass_through_base = false;
                 for input in inputs {
                     let Some(&i) = seen.get(input) else {
                         return Err(if all.contains(input) {
@@ -308,6 +310,19 @@ pub fn evaluate(
                         });
                     }
                     have_base |= !clipped;
+                    // A pass-through group has no isolated content to take a base alpha from, and
+                    // the backends refuse it; Photoshop's semantics for it are UNVERIFIED (oracle
+                    // pending). A hidden or empty base (or clipped layer) is dropped, not refused.
+                    let rendered = child.visible && child.extent.is_some();
+                    if !clipped {
+                        pass_through_base =
+                            rendered && plan.steps[i].appearance().mode == StudioBlendMode::PassThrough;
+                    } else if pass_through_base && rendered {
+                        ledger.record("clip_base_pass_through", Exactness::Unsupported);
+                        blocked.get_or_insert_with(|| {
+                            format!("clip_base_pass_through:{}", child.addr.text())
+                        });
+                    }
                     if !child.visible {
                         continue;
                     }

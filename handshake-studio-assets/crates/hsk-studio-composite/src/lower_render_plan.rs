@@ -16,7 +16,10 @@
 //! the same group and lowers to pigment's clip-to-base route (`MaskInput::clip_to_base`, Approximate:
 //! the Photoshop rule is UNVERIFIED). Hidden base = clipped layers dropped with it. Never silently
 //! ignored: a clipped layer with no base, with its own mask (one mask slot) or referencing a
-//! pass-through group, and an enabled mask without coverage, are `Unavailable`. A disabled mask is
+//! pass-through group, a pass-through group serving as the clip base (`clip_base_pass_through`,
+//! Unsupported in the evaluation ledger, consistent with the backends; Photoshop's semantics for it
+//! are UNVERIFIED pending the oracle), and an enabled mask without coverage, are `Unavailable`. A
+//! hidden or empty pass-through base drops its clipped layers instead. A disabled mask is
 //! an authored "no mask" and is omitted. Hidden and empty layers are not emitted.
 //!
 //! The requested root is rendered regardless of its own visibility flag. Its own appearance is
@@ -369,6 +372,8 @@ pub fn lower_to_render_plan(
                 let mut group_layers = Vec::with_capacity(inputs.len());
                 // Was the nearest unclipped input below emitted? (`None`: no unclipped input yet.)
                 let mut base_emitted: Option<bool> = None;
+                // Is that base a pass-through group (no isolated content to take a base alpha from)?
+                let mut base_pass_through = false;
                 for input in inputs {
                     let child = index[input];
                     let emitted = if plan.steps[child].visible() {
@@ -377,6 +382,14 @@ pub fn lower_to_render_plan(
                         None
                     };
                     if plan.steps[child].appearance().clipped {
+                        // Emitted clipped layer on a pass-through base: backends refuse it, and
+                        // Photoshop's semantics are UNVERIFIED (oracle pending), so never guess.
+                        if base_pass_through && emitted.is_some() {
+                            return Err(CompositeError::Unavailable(format!(
+                                "{}:clip_base_pass_through",
+                                input.text()
+                            )));
+                        }
                         match base_emitted {
                             None => {
                                 return Err(CompositeError::Unavailable(format!(
@@ -390,6 +403,8 @@ pub fn lower_to_render_plan(
                         }
                     } else {
                         base_emitted = Some(emitted.is_some());
+                        base_pass_through = emitted.is_some()
+                            && plan.steps[child].appearance().mode == StudioBlendMode::PassThrough;
                     }
                     let Some(id) = emitted.as_ref() else {
                         continue;
