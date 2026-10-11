@@ -18,3 +18,7 @@ path = "src/lib.rs"
 [[example]]
 name = "pulse-consumer"
 path = "examples/pulse-consumer.rs"
+
+[[example]]
+name = "pulse-timeline-consumer"
+path = "examples/pulse-timeline-consumer.rs"

@@ -629,3 +629,278 @@ fn refusals_cancel_and_folio_validation() {
         assert!(ok.snapshot().resolution_issues().is_empty());
     });
 }
+
+fn present(p: &EditProposal, n: u32) -> bool {
+    p.snapshot().document().sequences[0]
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .any(|c| c.clip_id == cid(n))
+}
+fn range(from_frames: u64, to_frames: u64) -> TickRange {
+    TickRange::new(Ticks::new(from_frames * F), Ticks::new(to_frames * F)).unwrap()
+}
+
+/// V1 (targeted) [A 0..3F, B 3F..6F, C 6F..9F]; A1 (sync-locked, not targeted) [X 0..2F, Q 7F..9F].
+fn cut_fixture(mutate: impl FnOnce(&mut Vec<StudioTrack>)) -> Snapshot {
+    let mut a1 = track(
+        2,
+        TrackKind::Audio,
+        0,
+        vec![clip(4, 0, 2 * F, 0, 2 * F), clip(5, 0, 2 * F, 7 * F, 2 * F)],
+    );
+    a1.targeted = false;
+    let mut tracks = vec![
+        track(
+            1,
+            TrackKind::Video,
+            0,
+            vec![
+                clip(1, 0, 3 * F, 0, 3 * F),
+                clip(2, 0, 3 * F, 3 * F, 3 * F),
+                clip(3, 0, 3 * F, 6 * F, 3 * F),
+            ],
+        ),
+        a1,
+    ];
+    mutate(&mut tracks);
+    snapshot(tracks)
+}
+
+#[test]
+fn lift_extract_range_and_close_gap_exact_ticks() {
+    bounded_case("lift_extract_range_and_close_gap_exact_ticks", || {
+        let snap = cut_fixture(|_| {});
+        // Lift: B leaves a gap; nothing else moves and the sequence keeps its length.
+        let lifted = plan(&snap, &TimelineEdit::LiftClip { clip_id: cid(2) }, None).unwrap();
+        assert!(!present(&lifted, 2));
+        assert_eq!(after(&lifted, 3).timeline_start.value(), 60_963_840_000);
+        assert!(matches!(lifted.changes(), [ClipChange::Remove { .. }]));
+        assert!(lifted.write_footprint().contains(&id("STRK", 1)));
+        assert_eq!(
+            lifted.snapshot().document().sequences[0].duration.value(),
+            9 * F
+        );
+        // Extract (ripple delete): C closes up by 3F; the sync-locked audio track shifts Q with it.
+        let extract = TimelineEdit::ExtractClip { clip_id: cid(2) };
+        let extracted = plan(&snap, &extract, None).unwrap();
+        assert_eq!(after(&extracted, 3).timeline_start.value(), 30_481_920_000);
+        assert_eq!(after(&extracted, 5).timeline_start.value(), 40_642_560_000);
+        assert_eq!(window(&after(&extracted, 4)), [0, 2 * F, 0, 2 * F]);
+        assert_eq!(extracted.changes().len(), 3);
+        assert_eq!(
+            extracted.snapshot().document().sequences[0]
+                .duration
+                .value(),
+            6 * F
+        );
+        // Content on a sync-locked track inside the removed span blocks the ripple.
+        let blocked = cut_fixture(|t| t[1].clips.insert(1, clip(6, 0, 2 * F, 4 * F, 2 * F)));
+        assert_eq!(
+            err(plan(&blocked, &extract, None)),
+            PulseError::SyncLockBlocked
+        );
+        // Range extract over [4F, 7F) on the targeted video track: B loses its tail, C its head.
+        let span = TimelineEdit::ExtractRange {
+            span: range(4, 7),
+            fresh_clip_ids: vec![],
+        };
+        let cut = plan(&snap, &span, None).unwrap();
+        assert_eq!(window(&after(&cut, 2)), [0, F, 3 * F, F]);
+        assert_eq!(window(&after(&cut, 3)), [F, 3 * F, 4 * F, 2 * F]);
+        assert_eq!(after(&cut, 1).duration.value(), 3 * F);
+        assert_eq!(after(&cut, 5).timeline_start.value(), 40_642_560_000);
+        // A straddled clip splits; the right half needs a caller-supplied unique id.
+        let straddle = |ids: Vec<String>| TimelineEdit::LiftRange {
+            span: range(1, 2),
+            fresh_clip_ids: ids,
+        };
+        let split = plan(&snap, &straddle(vec![cid(11)]), None).unwrap();
+        assert_eq!(window(&after(&split, 1)), [0, F, 0, F]);
+        assert_eq!(window(&after(&split, 11)), [2 * F, 3 * F, 2 * F, F]);
+        assert_eq!(
+            err(plan(&snap, &straddle(vec![]), None)),
+            PulseError::InsufficientIds
+        );
+        assert_eq!(
+            err(plan(&snap, &straddle(vec![cid(1)]), None)),
+            PulseError::DuplicateId
+        );
+        let off_grid = TimelineEdit::LiftRange {
+            span: TickRange::new(Ticks::new(F + 1), Ticks::new(2 * F)).unwrap(),
+            fresh_clip_ids: vec![cid(11)],
+        };
+        assert_eq!(
+            err(plan(&snap, &off_grid, None)),
+            PulseError::NotFrameAligned
+        );
+        let locked = cut_fixture(|t| t[0].locked = true);
+        assert_eq!(
+            err(plan(&locked, &straddle(vec![cid(11)]), None)),
+            PulseError::TrackLocked
+        );
+        let linked_in_span = cut_fixture(|t| t[0].clips[0] = linked(clip(1, 0, 3 * F, 0, 3 * F)));
+        assert_eq!(
+            err(plan(&linked_in_span, &straddle(vec![cid(11)]), None)),
+            PulseError::LinkedEditUnsupported
+        );
+        // Close gap: lift B, then close the 3F gap it left (Q on A1 follows, X stays).
+        let close = |track: u32, frames: u64| TimelineEdit::CloseGap {
+            track_id: id("STRK", track),
+            at: Ticks::new(frames * F),
+        };
+        let closed = plan(lifted.snapshot(), &close(1, 4), None).unwrap();
+        assert_eq!((closed.base_revision(), closed.target_revision()), (4, 5));
+        assert_eq!(after(&closed, 3).timeline_start.value(), 30_481_920_000);
+        assert_eq!(after(&closed, 5).timeline_start.value(), 40_642_560_000);
+        assert_eq!(
+            err(plan(lifted.snapshot(), &close(1, 2), None)),
+            PulseError::OutsideRange
+        );
+        assert_eq!(
+            err(plan(lifted.snapshot(), &close(1, 6), None)),
+            PulseError::OutsideRange
+        );
+        assert_eq!(
+            err(plan(lifted.snapshot(), &close(9, 4), None)),
+            PulseError::UnknownTrack
+        );
+        // A sync-locked video track cannot absorb a shift that is not a whole number of frames.
+        let mut audio = track(
+            2,
+            TrackKind::Audio,
+            0,
+            vec![clip(7, 0, 2 * F + 1, 0, 2 * F + 1)],
+        );
+        audio.targeted = false;
+        let mixed = snapshot(vec![
+            audio,
+            track(
+                1,
+                TrackKind::Video,
+                0,
+                vec![clip(8, 0, 3 * F, 3 * F, 3 * F)],
+            ),
+        ]);
+        let by_audio = plan(&mixed, &TimelineEdit::ExtractClip { clip_id: cid(7) }, None);
+        assert_eq!(err(by_audio), PulseError::NotFrameAligned);
+    });
+}
+
+/// V1 [A g1, B g2, C g3] and A1 [AA g1, BB g2, CC g3], each clip 3F long with source 0..3F.
+fn linked_three(mutate: impl FnOnce(&mut Vec<StudioTrack>)) -> Snapshot {
+    let row = |first: u32| -> Vec<StudioClip> {
+        (0..3)
+            .map(|i| {
+                let mut c = clip(first + i, 0, 3 * F, u64::from(i) * 3 * F, 3 * F);
+                c.link_group = Some(format!("g{}", 1 + i));
+                c
+            })
+            .collect()
+    };
+    let mut tracks = vec![
+        track(1, TrackKind::Video, 0, row(1)),
+        track(2, TrackKind::Audio, 0, row(4)),
+    ];
+    mutate(&mut tracks);
+    snapshot(tracks)
+}
+
+#[test]
+fn linked_razor_roll_slide_extract_exact_ticks() {
+    bounded_case("linked_razor_roll_slide_extract_exact_ticks", || {
+        let snap = linked_three(|_| {});
+        let ten = Some(10 * F);
+        let group = |p: &EditProposal, n: u32| after(p, n).link_group;
+        // Razor splits every member; right halves form a new link group with caller-given ids.
+        let razor = |linked: Option<LinkedRazor>| TimelineEdit::Razor {
+            clip_id: cid(1),
+            at: Ticks::new(F),
+            new_right_clip_id: cid(11),
+            linked,
+        };
+        let extra = |group: &str, partners: Vec<(u32, u32)>| LinkedRazor {
+            right_link_group: group.into(),
+            right_clip_ids: partners
+                .into_iter()
+                .map(|(a, b)| (cid(a), cid(b)))
+                .collect(),
+        };
+        let p = plan(&snap, &razor(Some(extra("g1r", vec![(4, 14)]))), ten).unwrap();
+        for (left, right) in [(1, 11), (4, 14)] {
+            assert_eq!(window(&after(&p, left)), [0, F, 0, F]);
+            assert_eq!(window(&after(&p, right)), [F, 3 * F, F, 2 * F]);
+            assert_eq!(group(&p, left).as_deref(), Some("g1"));
+            assert_eq!(group(&p, right).as_deref(), Some("g1r"));
+        }
+        assert_eq!(p.changes().len(), 4);
+        assert_eq!(
+            err(plan(&snap, &razor(None), ten)),
+            PulseError::InsufficientIds
+        );
+        assert_eq!(
+            err(plan(&snap, &razor(Some(extra("g1r", vec![]))), ten)),
+            PulseError::InsufficientIds
+        );
+        assert_eq!(
+            err(plan(&snap, &razor(Some(extra("g1", vec![(4, 14)]))), ten)),
+            PulseError::DuplicateId
+        );
+        assert_eq!(
+            err(plan(&snap, &razor(Some(extra("g2", vec![(4, 14)]))), ten)),
+            PulseError::DuplicateId
+        );
+        assert_eq!(
+            err(plan(&snap, &razor(Some(extra("g1r", vec![(4, 11)]))), ten)),
+            PulseError::DuplicateId
+        );
+        // Roll: both members edits move together.
+        let roll = TimelineEdit::Roll {
+            left_clip_id: cid(1),
+            delta: frames(1),
+        };
+        let p = plan(&snap, &roll, ten).unwrap();
+        for (left, right) in [(1, 2), (4, 5)] {
+            assert_eq!(window(&after(&p, left)), [0, 4 * F, 0, 4 * F]);
+            assert_eq!(window(&after(&p, right)), [F, 3 * F, 4 * F, 2 * F]);
+        }
+        assert_eq!(after(&p, 3).timeline_start.value(), 6 * F);
+        // Slide: the previous clips lengthen, the next ones shorten, on both tracks.
+        let slide = TimelineEdit::Slide {
+            clip_id: cid(2),
+            delta: frames(1),
+        };
+        let p = plan(&snap, &slide, ten).unwrap();
+        for (prev, mid, next) in [(1, 2, 3), (4, 5, 6)] {
+            assert_eq!(window(&after(&p, prev)), [0, 4 * F, 0, 4 * F]);
+            assert_eq!(window(&after(&p, mid)), [0, 3 * F, 4 * F, 3 * F]);
+            assert_eq!(window(&after(&p, next)), [F, 3 * F, 7 * F, 2 * F]);
+        }
+        // A link group with a member outside the edit is not closed over it: refused.
+        let open = linked_three(|t| {
+            let mut far = track(
+                3,
+                TrackKind::Audio,
+                1,
+                vec![clip(7, 0, 3 * F, 20 * F, 3 * F)],
+            );
+            far.clips[0].link_group = Some("g2".into());
+            t.push(far);
+        });
+        assert_eq!(
+            err(plan(&open, &roll, ten)),
+            PulseError::LinkedEditUnsupported
+        );
+        let locked = linked_three(|t| t[1].locked = true);
+        assert_eq!(err(plan(&locked, &roll, ten)), PulseError::TrackLocked);
+        // Linked lift/extract remove the whole group; extract closes both tracks.
+        let lifted = plan(&snap, &TimelineEdit::LiftClip { clip_id: cid(2) }, ten).unwrap();
+        assert!(!present(&lifted, 2) && !present(&lifted, 5) && present(&lifted, 3));
+        assert_eq!(lifted.changes().len(), 2);
+        let p = plan(&snap, &TimelineEdit::ExtractClip { clip_id: cid(2) }, ten).unwrap();
+        for n in [3, 6] {
+            assert_eq!(window(&after(&p, n)), [0, 3 * F, 3 * F, 3 * F]);
+        }
+        assert_eq!(p.snapshot().document().sequences[0].duration.value(), 6 * F);
+    });
+}
