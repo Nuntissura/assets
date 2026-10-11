@@ -121,6 +121,32 @@ fn open(bytes: &[u8]) -> PdfDoc {
     PdfDoc::open(bytes, &limits(), &token()).expect("open")
 }
 
+/// The region selector alone (no flattening, no canonical rewrite), saved: what the selector removed
+/// and kept in the page content. Operator decision D27: `redact_and_save` replaces the region's page by
+/// its raster, so the selector's rewritten streams never reach its output.
+fn selector_save(pdf: &[u8], region: RedactionRegion, policy: UnsupportedPolicy) -> Vec<u8> {
+    let mut doc = open(pdf);
+    doc.redact_region(&region, policy, &token()).expect("select");
+    doc.save_full(&token()).expect("save")
+}
+
+/// D27: text a test wants the proof to read in a redaction output lives on a second page (object 90,
+/// content 91, `resources`), because the region's page is flattened and none of its text survives.
+fn with_page_two(objs: Vec<(u32, Vec<u8>)>, content: &str, resources: &str) -> Vec<(u32, Vec<u8>)> {
+    with_page_two_bytes(objs, content.as_bytes(), resources)
+}
+
+fn with_page_two_bytes(mut objs: Vec<(u32, Vec<u8>)>, content: &[u8], resources: &str) -> Vec<(u32, Vec<u8>)> {
+    for (n, body) in objs.iter_mut() {
+        if *n == 2 {
+            *body = b"<< /Type /Pages /Kids [3 0 R 90 0 R] /Count 2 >>".to_vec();
+        }
+    }
+    objs.push((90, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 91 0 R /Resources << {resources} >> >>").into_bytes()));
+    objs.push((91, stream_body("", content)));
+    objs
+}
+
 // ------------------------------------------------------------------- tests
 
 #[test]
@@ -191,8 +217,12 @@ fn redacted_text_absent_all_reachable_streams() {
         assert!(find(&out.bytes, n).is_none(), "raw bytes still hold {:?}", String::from_utf8_lossy(n));
         assert!(streams.iter().all(|s| find(s, n).is_none()), "a decoded stream still holds {:?}", String::from_utf8_lossy(n));
     }
-    // Text outside the region survived, in the rewritten (deflated) content stream.
-    assert!(streams.iter().any(|s| find(s, b"[(Public ) -250 (text)] TJ").is_some()));
+    // D27: the region's page is its raster; its text outside the region survives as pixels only. The
+    // selector itself keeps that text (rewritten, deflated) in the page content.
+    assert!(streams.iter().all(|s| find(s, b"(Public ) -250 (text)").is_none()), "no text of the flattened page survives");
+    assert_eq!(out.flattened.len(), 1); // D27-new-api
+    let kept = independent_streams(&selector_save(&v2, region, UnsupportedPolicy::Refuse));
+    assert!(kept.iter().any(|s| find(s, b"[(Public ) -250 (text)] TJ").is_some()));
     // The crate's own verifier agrees on a wider needle set (previous revision + orphans).
     let wide: Vec<Vec<u8>> = needles.iter().map(|n| n.to_vec()).collect();
     let proof = verify_payload_absent(&out.bytes, &wide, &Limits::default(), &token()).unwrap();
@@ -482,7 +512,12 @@ fn form_xobject_text_redaction_copy_on_write() {
     let mut doc = open(&two);
     let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
     assert_eq!(out.reports[0].removed_text, vec![b"SECRET-FORM".to_vec()]);
-    let streams = independent_streams(&out.bytes);
+    // D27: the page is its raster, so neither use of the form reaches the saved file.
+    assert!(find(&out.bytes, b"SECRET-FORM").is_none() && independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-FORM").is_none()));
+    assert!(out.proof.hits.is_empty() && out.residual_in_region == 0, "{:?}", out.proof);
+    assert!(out.is_proven());
+    // The selector rewrites only the use under the region (copy-on-write).
+    let streams = independent_streams(&selector_save(&two, region, UnsupportedPolicy::Refuse));
     assert_eq!(
         streams.iter().map(|s| count(s, b"SECRET-FORM")).sum::<usize>(),
         1,
@@ -490,8 +525,6 @@ fn form_xobject_text_redaction_copy_on_write() {
     );
     let page = streams.iter().find(|s| find(s, b"(page text)").is_some()).expect("page content");
     assert_eq!((count(page, b"/Fm1 Do"), count(page, b"/HskRd0 Do")), (1, 1));
-    assert!(out.proof.hits.is_empty() && out.proof.kept_text_collisions.len() == 1 && out.residual_in_region == 0, "{:?}", out.proof);
-    assert!(out.is_proven());
 
     // One use with a nested form: both strings vanish from every byte, the old forms are dropped.
     let one = form_doc(
@@ -518,7 +551,8 @@ fn form_xobject_text_redaction_copy_on_write() {
         assert!(find(&out.bytes, n).is_none());
         assert!(streams.iter().all(|s| find(s, n).is_none()));
     }
-    assert!(streams.iter().any(|s| find(s, b"(page text)").is_some()));
+    // D27: the page text is on the flattened page (pixels only).
+    assert!(streams.iter().all(|s| find(s, b"(page text)").is_none()));
     assert!(out.proof.hits.is_empty() && out.proof.kept_text_collisions.is_empty());
     assert!(out.is_proven());
 }
@@ -651,7 +685,9 @@ fn lzw_filter_decodes_and_is_bomb_bounded() {
     let mut doc = open(&build(&objs, "", b""));
     let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
     assert_eq!(out.reports[0].removed_text, vec![b"SECRET-LZW".to_vec()]);
-    let streams = independent_streams(&out.bytes);
+    assert!(independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-LZW").is_none()));
+    // The selector's rewrite of the page (the flattened page's streams do not reach the output, D27).
+    let streams = independent_streams(&selector_save(&build(&objs, "", b""), region, UnsupportedPolicy::Refuse));
     assert!(
         streams.iter().any(|s| find(s, b"1 0 0 1 399 1197 cm").is_some()),
         "whole LZW stream decoded across code-width changes"
@@ -671,8 +707,12 @@ fn lzw_filter_decodes_and_is_bomb_bounded() {
 #[test]
 fn proof_context_rule_kept_text_collision_is_not_a_leak() {
     let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    // D27: the region's page is flattened, so the kept text the proof reads is on page two (everything
+    // after the first line).
     let run = |content: &str, info: &str| {
-        let mut doc = open(&build(&base_objs(content.as_bytes(), info), "/Info 7 0 R", b""));
+        let (first, second) = content.split_once('\n').expect("two parts");
+        let objs = with_page_two(base_objs(first.as_bytes(), info), second, "/Font << /F1 6 0 R >>");
+        let mut doc = open(&build(&objs, "/Info 7 0 R", b""));
         redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap()
     };
     let natural = "BT /F1 12 Tf 72 700 Td (budget plan) Tj ET\nBT /F1 12 Tf 72 400 Td (the budget plan is on page two) Tj ET";
@@ -1050,16 +1090,16 @@ fn widget_values_are_an_explicit_option_and_kept_text_is_reported() {
 fn region_redaction_with_text_fields_closes_outline_and_annotation_leaks() {
     // The appearance names /Helv, listed in /AcroForm /DR (since R9 an unresolved font name is opaque).
     let objs: Vec<(u32, Vec<u8>)> = vec![
+        // D27: the region's page is flattened, so the kept text and the annotation are on page two.
         (1, b"<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /AcroForm << /Fields [] /DR << /Font << /Helv 6 0 R >> >> >> >>".to_vec()),
-        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R 90 0 R] /Count 2 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> >>".to_vec()),
+        (4, stream_body("", b"BT /F1 12 Tf 72 700 Td (Budget Plan) Tj ET")),
         (
-            3,
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> /Annots [5 0 R] >>".to_vec(),
+            90,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 91 0 R /Resources << /Font << /F1 6 0 R >> >> /Annots [5 0 R] >>".to_vec(),
         ),
-        (
-            4,
-            stream_body("", b"BT /F1 12 Tf 72 700 Td (Budget Plan) Tj ET\nBT /F1 12 Tf 72 400 Td (the Budget Plan is on page two) Tj ET"),
-        ),
+        (91, stream_body("", b"BT /F1 12 Tf 72 400 Td (the Budget Plan is on page two) Tj ET")),
         (5, b"<< /Type /Annot /Subtype /FreeText /Rect [100 300 300 340] /Contents (Budget Plan note) /AP << /N 13 0 R >> >>".to_vec()),
         (6, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec()),
         (10, b"<< /Type /Outlines /First 11 0 R /Last 11 0 R /Count 1 >>".to_vec()),
@@ -1468,10 +1508,19 @@ const IMG: &str = "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace
 const TEXT_IN_REGION: &str = "BT /F1 12 Tf 72 700 Td (SECRET-ALPHA) Tj ET";
 
 /// base_objs page with the image object 8 replaced and the given content.
+/// D27: the region's page is flattened, so everything after the first line of `content` (where the
+/// proof should still see it) is drawn on page two.
 fn raster_doc(img_dict_extra: &str, img_data: &[u8], content: &str) -> Vec<u8> {
-    let mut objs = base_objs(content.as_bytes(), "<< /Title (T) >>");
+    let (first, second) = content.split_once('\n').unwrap_or((content, ""));
+    raster_doc2(img_dict_extra, img_data, first, second)
+}
+
+/// Image 8 (`IMG` + `img_dict_extra`), `page_one` on the region's page and `page_two` on page two.
+fn raster_doc2(img_dict_extra: &str, img_data: &[u8], page_one: &str, page_two: &str) -> Vec<u8> {
+    let mut objs = base_objs(page_one.as_bytes(), "<< /Title (T) >>");
     objs[7].1 = stream_body(&format!("{IMG} {img_dict_extra}"), img_data);
-    build(&objs, "/Info 7 0 R", b"")
+    let res = if page_two.contains("/Im1") { "/Font << /F1 6 0 R >> /XObject << /Im1 8 0 R >>" } else { "/Font << /F1 6 0 R >>" };
+    build(&with_page_two(objs, page_two, res), "/Info 7 0 R", b"")
 }
 
 #[test]
@@ -1482,7 +1531,6 @@ fn raster_class_is_listed_and_region_images_are_removed() {
         redact_and_save(&mut doc, &[region], policy, &token())
     };
     let outside = format!("{TEXT_IN_REGION}\nq 100 0 0 100 300 300 cm /Im1 Do Q");
-    let both = format!("{TEXT_IN_REGION}\nq 100 0 0 100 50 650 cm /Im1 Do Q\nq 100 0 0 100 300 300 cm /Im1 Do Q");
     let only_in = format!("{TEXT_IN_REGION}\nq 100 0 0 100 50 650 cm /Im1 Do Q");
 
     // The class: image XObject, chain ends in a raster codec after implemented filters. Listed,
@@ -1536,12 +1584,16 @@ fn raster_class_is_listed_and_region_images_are_removed() {
         assert!(!proof.fully_decoded() && !proof.is_clean() && proof.raster_streams.is_empty(), "{dict} image={image}: {proof:?}");
     }
 
-    // A region over an image is not proven unless the image is removed.
-    let pdf = raster_doc("/Filter /DCTDecode", &jpeg(b"x"), &both);
-    assert_eq!(run(&pdf, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::Image));
-    let partial = run(&pdf, UnsupportedPolicy::ReportAndContinue).unwrap();
-    assert_eq!(partial.reports[0].unredacted, vec![RedactionClass::Image]);
-    assert!(!partial.region_cleared() && !partial.is_proven());
+    // A region over an image (placed again on page two): the selector alone cannot remove it (fail
+    // closed); redact_and_save flattens the page, so the image under the region is painted over (D27).
+    let pdf = raster_doc2("/Filter /DCTDecode", &jpeg(b"x"), &only_in, "q 100 0 0 100 300 300 cm /Im1 Do Q");
+    assert_eq!(open(&pdf).redact_region(&region, UnsupportedPolicy::Refuse, &token()).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::Image));
+    for policy in [UnsupportedPolicy::Refuse, UnsupportedPolicy::ReportAndContinue] {
+        let out = run(&pdf, policy).unwrap();
+        assert!(out.reports[0].unredacted.is_empty() && out.reports[0].complete, "{policy:?}");
+        assert_eq!(out.reports[0].painted_over, vec![RedactionClass::Image]); // D27-new-api
+        assert!(out.region_cleared() && out.is_proven(), "{policy:?}: {:?}", out.not_proven_reasons());
+    }
     // RemoveImages: the placement inside the region goes, the one outside stays, the image object
     // stays because it is still used.
     let removed = run(&pdf, UnsupportedPolicy::RemoveImages).unwrap();
@@ -1552,20 +1604,24 @@ fn raster_class_is_listed_and_region_images_are_removed() {
     assert_eq!(streams.iter().map(|s| count(s, b"/Im1 Do")).sum::<usize>(), 1);
     assert!(find(&removed.bytes, b"/Subtype /Image").is_some() && removed.proof.raster_streams.len() == 1);
     // Only placement in the region: the image and its resource entry leave the file.
-    let removed = run(&raster_doc("/Filter /DCTDecode", &jpeg(b"x"), &only_in), UnsupportedPolicy::RemoveImages).unwrap();
+    let removed = run(&raster_doc2("/Filter /DCTDecode", &jpeg(b"x"), &only_in, ""), UnsupportedPolicy::RemoveImages).unwrap();
     assert!(removed.is_proven());
-    assert!(find(&removed.bytes, b"/Subtype /Image").is_none() && find(&removed.bytes, b"/Im1").is_none());
+    assert!(find(&removed.bytes, b"/DCTDecode").is_none() && find(&removed.bytes, b"/Im1").is_none());
     assert!(removed.proof.raster_streams.is_empty());
     assert_eq!(independent_streams(&removed.bytes).iter().map(|s| count(s, b"/Im1 Do")).sum::<usize>(), 0);
 
     // Inline images: same class and same rules (the data is a JPEG: PLR-040).
+    // D27: an inline image the proof should read is drawn on page two; one near the region (and the
+    // unknown filter, which the selector must refuse) on the region's page.
     let inline = |at: &str, filter: &str| {
-        let mut c = format!("{TEXT_IN_REGION}\nq 50 0 0 50 {at} cm BI /W 1 /H 1 /CS /G /BPC 8 /F /{filter} ID ").into_bytes();
+        let mut c = format!("q 50 0 0 50 {at} cm BI /W 1 /H 1 /CS /G /BPC 8 /F /{filter} ID ").into_bytes();
         c.extend_from_slice(&jpeg(b"XXJPEGDATAXX"));
         c.extend_from_slice(b"\nEI Q");
-        let mut objs = base_objs(&c, "<< /Title (T) >>");
+        let here = at == "80 660" || filter == "Foo";
+        let (one, two) = if here { ([TEXT_IN_REGION.as_bytes(), b"\n", &c].concat(), Vec::new()) } else { (TEXT_IN_REGION.as_bytes().to_vec(), c) };
+        let mut objs = base_objs(&one, "<< /Title (T) >>");
         objs[7].1 = stream_body(&format!("{IMG} "), b"x");
-        build(&objs, "/Info 7 0 R", b"")
+        build(&with_page_two_bytes(objs, &two, "/Font << /F1 6 0 R >>"), "/Info 7 0 R", b"")
     };
     let out = run(&inline("300 300", "DCT"), UnsupportedPolicy::Refuse).unwrap();
     // The proof over the source lists the inline image; the redaction's output holds it as an image
@@ -1575,7 +1631,10 @@ fn raster_class_is_listed_and_region_images_are_removed() {
     assert!(out.proof.raster_streams.iter().any(|r| !r.inline && r.filter == "DCTDecode" && r.class == RASTER_CLASS), "{:?}", out.proof.raster_streams);
     assert!(out.is_proven(), "{:?}", out.proof);
     let near = inline("80 660", "DCT");
-    assert_eq!(run(&near, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::InlineImage));
+    assert_eq!(open(&near).redact_region(&region, UnsupportedPolicy::Refuse, &token()).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::InlineImage));
+    let painted = run(&near, UnsupportedPolicy::Refuse).unwrap();
+    assert_eq!(painted.reports[0].painted_over, vec![RedactionClass::InlineImage]); // D27-new-api
+    assert!(painted.is_proven() && independent_streams(&painted.bytes).iter().all(|s| find(s, b"XXJPEGDATAXX").is_none()));
     let removed = run(&near, UnsupportedPolicy::RemoveImages).unwrap();
     assert_eq!(removed.reports[0].inline_images_removed, 1);
     assert!(removed.is_proven() && independent_streams(&removed.bytes).iter().all(|s| find(s, b"XXJPEGDATAXX").is_none()));
