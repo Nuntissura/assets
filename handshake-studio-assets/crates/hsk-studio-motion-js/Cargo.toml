@@ -6,11 +6,13 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+quickjs = ["dep:rquickjs"]
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-motion = { path = "../hsk-studio-motion", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"], optional = true }
 
 [lib]
 path = "src/lib.rs"

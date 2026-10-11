@@ -11,7 +11,10 @@
 //!   reachability, no `Math.random`, no ambient clock (use `HostBridge::utc_ms`), no async/timers;
 //! * result conversion is bounded by `max_output_nodes`/`max_output_depth` and never runs getters,
 //!   proxies or user coercions; anything else is `EngineFailure::Output`.
+use crate::clock::Clock;
+use hsk_studio_accord::CancellationToken;
 use hsk_studio_motion::{EvalTick, ExprError, SourceSpan};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EngineIdentity {
@@ -32,8 +35,13 @@ pub struct EngineLimits {
 }
 
 /// Immutable inputs of one evaluation (MOT-255: revision + canonical tick + explicit seed).
-#[derive(Clone, Copy, Debug)]
+/// `cancel`, `clock` and `deadline_ns` are owned handles so an engine may poll them from its own
+/// `'static` interrupt callbacks and threads without borrowing the bridge.
+#[derive(Clone, Debug)]
 pub struct EvalJob<'a> {
+    pub cancel: CancellationToken,
+    pub clock: Arc<dyn Clock>,
+    pub deadline_ns: u64,
     pub source: &'a str,
     pub dimension: usize,
     pub base: Option<&'a [f64]>,
@@ -143,6 +151,8 @@ pub struct EngineRun {
 pub trait HostBridge {
     /// Reads another property (`tick = None` -> the canonical evaluation tick).
     fn read(&mut self, path: &str, tick: Option<EvalTick>) -> Result<Vec<f64>, EngineFailure>;
+    /// Units left in the shared `Fuel` (an engine bounds its in-engine polling by this).
+    fn fuel_remaining(&self) -> u64;
     /// Shared checkpoint: polls cancel/deadline, then charges the shared `Fuel`.
     fn charge(&mut self, units: u64) -> Result<(), EngineFailure>;
     /// Polls cancel/deadline without charging.

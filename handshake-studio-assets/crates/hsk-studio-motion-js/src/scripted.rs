@@ -13,7 +13,7 @@ use crate::{
         BudgetKind, Engine, EngineFailure, EngineIdentity, EngineRun, EvalJob, HostBridge, JsValue,
         RealmReceipt, ThrownKind,
     },
-    provider::ManualClock,
+    clock::ManualClock,
 };
 use hsk_studio_motion::{EvalTick, SourceSpan};
 use std::{collections::BTreeMap, sync::Arc};

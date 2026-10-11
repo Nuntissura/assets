@@ -2,6 +2,7 @@
 //! Owns quota/fuel/deadline accounting, typed error mapping, fresh-realm and permit accounting.
 //! Pure Motion never depends on this crate; a thrown script error never escapes as a panic.
 use crate::{
+    clock::{Clock, SystemClock},
     engine::{
         BudgetKind, Engine, EngineFailure, EngineIdentity, EvalJob, EngineLimits, HostBridge,
         JsValue, ThrownKind,
@@ -21,57 +22,10 @@ use std::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     thread::{self, ThreadId},
-    time::Instant,
 };
 
 /// Provider/profile identifier recorded in Motion receipts.
 pub const PROFILE_ID: &str = "motion-js-es2018@1";
-
-/// Monotonic nanosecond source for the cooperative deadline (a resource guard, never a value).
-pub trait Clock: Send + Sync {
-    fn now_ns(&self) -> u64;
-}
-
-#[derive(Debug)]
-pub struct SystemClock(Instant);
-
-impl SystemClock {
-    pub fn new() -> Self {
-        Self(Instant::now())
-    }
-}
-
-impl Default for SystemClock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Clock for SystemClock {
-    fn now_ns(&self) -> u64 {
-        u64::try_from(self.0.elapsed().as_nanos()).unwrap_or(u64::MAX)
-    }
-}
-
-/// Deterministic clock for tests and replay: time moves only when told to.
-#[derive(Debug, Default)]
-pub struct ManualClock(AtomicU64);
-
-impl ManualClock {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn advance_ms(&self, ms: u64) {
-        self.0.fetch_add(ms.saturating_mul(1_000_000), Ordering::AcqRel);
-    }
-}
-
-impl Clock for ManualClock {
-    fn now_ns(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
-    }
-}
 
 #[derive(Debug, Default)]
 struct Counters {
@@ -290,6 +244,10 @@ fn host_failure(error: ExprError) -> EngineFailure {
 }
 
 impl HostBridge for Bridge<'_> {
+    fn fuel_remaining(&self) -> u64 {
+        self.fuel.remaining()
+    }
+
     fn checkpoint(&mut self) -> Result<(), EngineFailure> {
         self.counters.checkpoints.fetch_add(1, Ordering::AcqRel);
         self.cancel.check().map_err(|_| EngineFailure::Canceled)?;
@@ -390,6 +348,9 @@ impl<E: Engine> ExpressionProvider for MotionJsProvider<E> {
             .now_ns()
             .saturating_add(u64::try_from(self.quotas.deadline().as_nanos()).unwrap_or(u64::MAX));
         let job = EvalJob {
+            cancel: cancel.clone(),
+            clock: Arc::clone(&self.clock),
+            deadline_ns,
             source: request.source,
             dimension: request.dimension,
             base: request.base,
