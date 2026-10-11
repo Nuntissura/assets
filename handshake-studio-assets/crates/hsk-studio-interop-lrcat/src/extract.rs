@@ -966,6 +966,8 @@ pub fn extract_catalog(
     }
     let mut seen_names: HashSet<String> = HashSet::new();
     for t in &schema.tables {
+        // The lowercase copy is a second retained copy of the (payload-bounded) table name.
+        db.charge(entry_bytes::<String>().saturating_add(t.name.len() as u64))?;
         if !seen_names.insert(t.name.to_ascii_lowercase()) {
             x.loss("schema", &sanitize(&t.name), Disposition::Unsupported, "duplicate_table", 1, None);
         }
