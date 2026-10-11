@@ -81,7 +81,7 @@ fn base_objs(content: &[u8], info: &str) -> Vec<(u32, Vec<u8>)> {
         (4, stream_body("", content)),
         (5, b"<< /Type /Annot /Subtype /Text /Rect [72 695 120 715] /Contents (note-SECRET-NOTE) /P 3 0 R >>".to_vec()),
         (6, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec()),
-        (7, info.as_bytes().to_vec()),
+        (7, if info.is_empty() { b"<< >>".to_vec() } else { info.as_bytes().to_vec() }),
         (8, stream_body("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", &[0u8])),
     ]
 }

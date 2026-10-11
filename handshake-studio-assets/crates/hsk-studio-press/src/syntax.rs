@@ -151,6 +151,7 @@ impl<'a> Lexer<'a> {
 
     /// Reads a run of regular characters (keyword or operator).
     pub fn read_keyword(&mut self) -> &'a [u8] {
+        self.pos = self.pos.min(self.data.len());
         let start = self.pos;
         while self.pos < self.data.len() && is_regular(self.data[self.pos]) {
             self.pos += 1;
@@ -228,6 +229,9 @@ impl<'a> Lexer<'a> {
         // positioned at "<<"
         self.pos += 2;
         let mut dict = Dict::default();
+        // Duplicate-key lookups stay linear for small dictionaries; large ones get a hash index so
+        // a hostile dictionary of millions of keys cannot cost quadratic time.
+        let mut index: Option<std::collections::HashMap<Vec<u8>, usize>> = None;
         loop {
             self.skip_ws();
             match self.peek() {
@@ -242,10 +246,21 @@ impl<'a> Lexer<'a> {
                 Some(b'/') => {
                     let key = self.parse_name();
                     let value = self.parse_object(depth + 1, true)?;
-                    if let Some(slot) = dict.entries.iter_mut().find(|(k, _)| *k == key) {
-                        slot.1 = value;
-                    } else {
-                        dict.entries.push((key, value));
+                    let existing = match &index {
+                        Some(m) => m.get(&key).copied(),
+                        None => dict.entries.iter().position(|(k, _)| *k == key),
+                    };
+                    match existing {
+                        Some(i) => dict.entries[i].1 = value,
+                        None => {
+                            if let Some(m) = &mut index {
+                                m.insert(key.clone(), dict.entries.len());
+                            }
+                            dict.entries.push((key, value));
+                            if index.is_none() && dict.entries.len() >= 32 {
+                                index = Some(dict.entries.iter().enumerate().map(|(i, (k, _))| (k.clone(), i)).collect());
+                            }
+                        }
                     }
                 }
                 Some(_) => return Err(PressError::Malformed("dict_key")),

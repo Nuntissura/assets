@@ -49,6 +49,9 @@ fn rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).rposition(|w| w == needle)
 }
 
+/// Parsed indirect object: number, value, and the verbatim body span when it can be copied.
+type Indirect = (u32, Object, Option<(usize, usize)>);
+
 struct Reader<'a> {
     bytes: &'a [u8],
     base: usize,
@@ -137,7 +140,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Parses `num gen obj <object> [stream ... endstream]` at `abs`.
-    fn indirect_at(&mut self, abs: usize, xref: &BTreeMap<u32, Xref>) -> Result<(u32, Object, (usize, usize))> {
+    fn indirect_at(&mut self, abs: usize, xref: &BTreeMap<u32, Xref>) -> Result<Indirect> {
         let mut lx = self.lexer(abs);
         let num = lx.read_uint()?;
         let _generation = lx.read_uint()?;
@@ -146,23 +149,29 @@ impl<'a> Reader<'a> {
             return Err(PressError::Malformed("obj_keyword"));
         }
         lx.skip_ws();
+        let num = u32::try_from(num).map_err(|_| PressError::Malformed("object_number"))?;
+        if lx.starts_with(b"endobj") {
+            // `n g obj endobj` is the null object.
+            return Ok((num, Object::Null, None));
+        }
         let start = lx.pos;
         let obj = lx.parse_object(0, true)?;
         let obj = match obj {
             Object::Dict(dict) => {
+                let after_dict = lx.pos;
                 lx.skip_ws();
                 if lx.starts_with(b"stream") {
                     lx.pos += 6;
                     let data = self.read_stream_data(&mut lx, &dict, xref)?;
                     Object::Stream(Box::new(Stream { dict, data }))
                 } else {
+                    lx.pos = after_dict;
                     Object::Dict(dict)
                 }
             }
             other => other,
         };
-        let num = u32::try_from(num).map_err(|_| PressError::Malformed("object_number"))?;
-        Ok((num, obj, (start, lx.pos)))
+        Ok((num, obj, Some((start, lx.pos))))
     }
 
     fn read_section(
@@ -192,7 +201,10 @@ impl<'a> Reader<'a> {
                     lx.skip_ws();
                     let kind = lx.peek();
                     lx.pos += 1;
-                    let num = u32::try_from(first + i).map_err(|_| PressError::Malformed("xref_number"))?;
+                    let num = first
+                        .checked_add(i)
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or(PressError::Malformed("xref_number"))?;
                     let entry = match kind {
                         Some(b'n') => Xref::Offset(
                             usize::try_from(off).map_err(|_| PressError::Malformed("xref_offset"))?,
@@ -263,7 +275,10 @@ impl<'a> Reader<'a> {
                     field[k] = v;
                 }
                 let kind = if w[0] == 0 { 1 } else { field[0] };
-                let num = u32::try_from(first + i).map_err(|_| PressError::Malformed("xref_number"))?;
+                let num = first
+                    .checked_add(i)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or(PressError::Malformed("xref_number"))?;
                 let entry = match kind {
                     0 => Xref::Free,
                     1 => Xref::Offset(
@@ -366,7 +381,7 @@ pub(crate) fn parse_document(bytes: &[u8], limits: &Limits, cancel: &Cancellatio
                 if n != *num {
                     return Err(PressError::Malformed("object_number_mismatch"));
                 }
-                objects.insert(*num, Entry { generation, obj, span: Some(span) });
+                objects.insert(*num, Entry { generation, obj, span });
             }
             Xref::InStream { stm } => {
                 in_streams.entry(stm).or_default().insert(*num);
