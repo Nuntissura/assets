@@ -955,6 +955,22 @@ fn repeated_media_sample_is_a_shortfall_not_a_silent_success() {
                 );
             }
 
+            // A count that runs past the presentation (even u64::MAX) is `OutOfRange` before anything is
+            // allocated or read, for an export and, unchanged, for a preview.
+            for count in [5, u64::MAX] {
+                let sink = &mut NeverReached("count past the end");
+                let result = deliver_mov(&bytes, None, export, (0, count), sink);
+                assert!(
+                    matches!(result, Err(ReelError::OutOfRange { .. })),
+                    "export count {count}: {result:?}"
+                );
+                let result = deliver_mov(&bytes, None, preview, (0, count), &mut Count::default());
+                assert!(
+                    matches!(result, Err(ReelError::OutOfRange { .. })),
+                    "preview count {count}: {result:?}"
+                );
+            }
+
             // Export of ranges that hold each media sample once: exact, complete, every unit delivered
             // (20/2 is s1 then s0: two different samples, delivered in decode order).
             for (start, count) in [(0, 2), (40, 2), (20, 2), (20, 1), (40, 1)] {
