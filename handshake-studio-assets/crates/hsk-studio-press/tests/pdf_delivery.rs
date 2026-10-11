@@ -132,6 +132,118 @@ fn selector_save(pdf: &[u8], region: RedactionRegion, policy: UnsupportedPolicy)
 
 /// D27: text a test wants the proof to read in a redaction output lives on a second page (object 90,
 /// content 91, `resources`), because the region's page is flattened and none of its text survives.
+/// The objects of a `build` fixture (one `N 0 obj ... endobj` each, one xref section) and the extra
+/// trailer entries after `/Root 1 0 R`; `None` for anything else (an incremental file, junk).
+fn objects_of(pdf: &[u8]) -> Option<(Vec<(u32, Vec<u8>)>, String)> {
+    if count(pdf, b"trailer") != 1 {
+        return None;
+    }
+    let xref = find(pdf, b"\nxref\n")?;
+    let body = &pdf[..xref + 1];
+    let mut objs = Vec::new();
+    let mut i = 0;
+    while let Some(p) = find(&body[i..], b" 0 obj\n") {
+        let at = i + p;
+        let start = body[..at].iter().rposition(|b| *b == b'\n').map_or(0, |x| x + 1);
+        let num: u32 = std::str::from_utf8(&body[start..at]).ok()?.parse().ok()?;
+        let from = at + 7;
+        let end = from + find(&body[from..], b"\nendobj\n")?;
+        objs.push((num, body[from..end].to_vec()));
+        i = end + 8;
+    }
+    let t = find(pdf, b"trailer\n<< ")?;
+    let te = t + find(&pdf[t..], b" >>\nstartxref")?;
+    let trailer = std::str::from_utf8(&pdf[t + 11..te]).ok()?;
+    Some((objs, trailer.split_once("/Root 1 0 R")?.1.trim().to_string()))
+}
+
+/// The `<< ... >>` value that follows `key` in `dict` (balanced).
+fn dict_value(dict: &str, key: &str) -> Option<String> {
+    let at = dict.find(key)? + key.len();
+    let rest = &dict[at..];
+    let mut depth = 0usize;
+    let b = rest.as_bytes();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if &b[i..i + 2] == b"<<" {
+            depth += 1;
+            i += 2;
+        } else if &b[i..i + 2] == b">>" {
+            depth -= 1;
+            i += 2;
+            if depth == 0 {
+                return Some(rest[..i].to_string());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Operator decision D27: `redact_and_save` replaces the region's page by its raster, so nothing else on
+/// it survives for the proof to read. A one-page fixture (object 3, plain content stream 4) is split
+/// for the proof tests: page one keeps the FIRST content line (the text in the region) and the
+/// annotations whose /Rect touches `rect`; page two (object 90, content 91 then any further content
+/// streams of page one) gets every other line and annotation, with the same /Resources. Anything else
+/// is returned unchanged.
+fn split_region_page(pdf: &[u8], rect: [f64; 4]) -> Vec<u8> {
+    let split = || -> Option<Vec<u8>> {
+        let (mut objs, extra) = objects_of(pdf)?;
+        let get = |n: u32| objs.iter().find(|(k, _)| *k == n).map(|(_, b)| b.clone());
+        if get(2)? != b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec() || get(90).is_some() || get(91).is_some() {
+            return None;
+        }
+        let page = String::from_utf8(get(3)?).ok()?;
+        let c4 = get(4)?;
+        let s = find(&c4, b">>\nstream\n")? + 10;
+        let data = c4.get(s..c4.len().checked_sub(10)?)?.to_vec();
+        if !c4.ends_with(b"\nendstream") || find(&c4[..s], b"/Filter").is_some() {
+            return None;
+        }
+        let (first, rest) = match data.iter().position(|b| *b == b'\n') {
+            Some(n) => (data[..n].to_vec(), data[n + 1..].to_vec()),
+            None => (data.clone(), Vec::new()),
+        };
+        let res = dict_value(&page, "/Resources ")?;
+        let more = if page.contains("/Contents [4 0 R 27 0 R]") { " 27 0 R" } else if page.contains("/Contents 4 0 R") { "" } else { return None };
+        let annots: Vec<u32> = match page.find("/Annots [") {
+            Some(a) => {
+                let list = &page[a + 9..a + 9 + page[a + 9..].find(']')?];
+                list.split(" 0 R").filter_map(|x| x.trim().parse().ok()).collect()
+            }
+            None => Vec::new(),
+        };
+        let touches = |n: u32| -> bool {
+            let Some(body) = get(n) else { return true };
+            let body = String::from_utf8_lossy(&body).into_owned();
+            let Some(r) = body.find("/Rect [") else { return true };
+            let nums: Vec<f64> = body[r + 7..].split(']').next().unwrap_or("").split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            nums.len() != 4 || (nums[0].min(nums[2]) <= rect[2] && nums[0].max(nums[2]) >= rect[0] && nums[1].min(nums[3]) <= rect[3] && nums[1].max(nums[3]) >= rect[1])
+        };
+        let (keep, moved): (Vec<u32>, Vec<u32>) = annots.iter().partition(|n| touches(**n));
+        if rest.iter().all(|b| b.is_ascii_whitespace()) && moved.is_empty() && more.is_empty() {
+            return None;
+        }
+        let list = |v: &[u32]| v.iter().map(|n| format!("{n} 0 R")).collect::<Vec<_>>().join(" ");
+        let new_page = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources {res} /Annots [{}] >>", list(&keep));
+        let page_two = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents [91 0 R{more}] /Resources {res} /Annots [{}] >>", list(&moved));
+        for (n, body) in objs.iter_mut() {
+            match *n {
+                2 => *body = b"<< /Type /Pages /Kids [3 0 R 90 0 R] /Count 2 >>".to_vec(),
+                3 => *body = new_page.clone().into_bytes(),
+                4 => *body = stream_body("", &first),
+                _ if moved.contains(n) => *body = String::from_utf8_lossy(body).replace("/P 3 0 R", "/P 90 0 R").into_bytes(),
+                _ => {}
+            }
+        }
+        objs.push((90, page_two.into_bytes()));
+        objs.push((91, stream_body("", &rest)));
+        Some(build(&objs, &extra, b""))
+    };
+    split().unwrap_or_else(|| pdf.to_vec())
+}
+
 fn with_page_two(objs: Vec<(u32, Vec<u8>)>, content: &str, resources: &str) -> Vec<(u32, Vec<u8>)> {
     with_page_two_bytes(objs, content.as_bytes(), resources)
 }
@@ -1136,7 +1248,9 @@ fn region_redaction_with_text_fields_closes_outline_and_annotation_leaks() {
         ]
     );
     let strings = all_strings(&fixed.bytes);
-    assert_eq!(strings.iter().filter(|s| s.contains("budget plan")).collect::<Vec<_>>(), vec!["the budget plan is on page two"]);
+    let mut kept: Vec<_> = strings.iter().filter(|s| s.contains("budget plan")).collect();
+    kept.dedup(); // page two's canonical content is plain: the raw and the stream scan both see it
+    assert_eq!(kept, vec!["the budget plan is on page two"]);
     assert!(strings.iter().any(|s| s == "online retrieval [redacted]") && strings.iter().any(|s| s == "[redacted] note"));
 }
 
@@ -2524,8 +2638,10 @@ fn name_trees_submit_fields_and_embedded_content_redacted() {
 
 const R7_REGION: RedactionRegion = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
 
+/// Redacts `R7_REGION` of the fixture split by `split_region_page` (D27: the region's page is flattened,
+/// the rest of the fixture's page is page two, where the proof still reads it).
 fn r7_run(pdf: &[u8]) -> hsk_studio_press::RedactedOutput {
-    let mut doc = open(pdf);
+    let mut doc = open(&split_region_page(pdf, R7_REGION.rect));
     redact_and_save(&mut doc, &[R7_REGION], UnsupportedPolicy::Refuse, &token()).unwrap()
 }
 
