@@ -10,7 +10,6 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, Inspection, Resolver, Snapshot, inspect_bytes};
 use hsk_studio_pigment::Grid;
-use hsk_studio_pigment::blend_math::StudioBlendMode;
 use hsk_studio_prism::{hash_hex, profile_hash};
 use serde_json::{Value, json};
 
@@ -26,6 +25,7 @@ use crate::resources::{RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED};
 /// Pigment tile edge in pixels (columns and rows are cells of a canvas-origin grid).
 pub const TILE_EDGE: u32 = 256;
 const TILE_FORMAT: &str = "rgb_f32le";
+const MASK_FORMAT: &str = "coverage_u8";
 const MAX_EMBEDDED_OPAQUE_BYTES: usize = 65_536;
 
 const ADJUSTMENT_KEYS: [&[u8; 4]; 17] = [
@@ -84,25 +84,33 @@ pub struct TileBlob {
     pub content_sha256_hex: String,
 }
 
-/// Layer properties Folio v1 cannot hold.
+/// One mask coverage tile: `coverage_u8`, one full grid cell, straight 0..=255.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LayerAppearance {
+pub struct MaskTileBlob {
+    pub layer_id: String,
+    pub object_key: String,
+    pub column: i64,
+    pub row: i64,
+    pub coverage: Vec<u8>,
+    /// Digest recorded in the Folio mask `TileRef`: SHA-256 over `coverage`.
+    pub sha256_hex: String,
+}
+
+/// PSD-side properties Folio still has no field for. Opacity, fill opacity, blend mode, clipping,
+/// group isolation and the mask reference are written to the Folio layer itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayerExtras {
     pub layer_id: String,
     pub psd_index: usize,
-    pub opacity: u8,
+    /// The blend key exactly as stored (byte-preserved; unknown keys stay readable here).
     pub blend_key: [u8; 4],
-    /// `None` for a key outside the 28 known ones (typed loss, never Normal).
-    pub blend_mode: Option<BlendMode>,
-    /// The same mode as Pigment's `StudioBlendMode` (single owner of the enumeration).
-    pub studio_blend: Option<StudioBlendMode>,
-    /// `pass` on a group record: the group composites its children straight into the backdrop.
-    /// It is a group flag, never a leaf layer mode (a leaf with `pass` has `studio_blend` None).
-    pub pass_through: bool,
-    pub clipped: bool,
+    /// Blend key carried by `lsct` on a group record, when present.
+    pub group_blend_key: Option<[u8; 4]>,
     pub blend_clipped_elements: Option<bool>,
     pub blend_interior_elements: Option<bool>,
     pub knockout: Option<bool>,
-    pub group_blend_key: Option<[u8; 4]>,
+    /// Coverage outside the mask rectangle (0 or 255); Folio `StudioMask` has no such field.
+    pub mask_default_color: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,7 +135,8 @@ pub struct Provenance {
 pub struct ImportProposal {
     pub snapshot: Snapshot,
     pub tiles: Vec<TileBlob>,
-    pub appearance: Vec<LayerAppearance>,
+    pub mask_tiles: Vec<MaskTileBlob>,
+    pub extras: Vec<LayerExtras>,
     pub layer_map: Vec<LayerMapEntry>,
     pub loss: LossReport,
     pub provenance: Provenance,
@@ -208,7 +217,8 @@ struct Builder<'a, 'm> {
     operations: Vec<Value>,
     edges: Vec<Value>,
     tiles: Vec<TileBlob>,
-    appearance: Vec<LayerAppearance>,
+    mask_tiles: Vec<MaskTileBlob>,
+    extras: Vec<LayerExtras>,
     map: Vec<LayerMapEntry>,
     loss: LossReport,
     tile_bytes: usize,
@@ -219,28 +229,42 @@ impl Builder<'_, '_> {
         self.loss.entries.push(crate::loss::LossEntry { path, kind, code });
     }
 
-    fn record_appearance(&mut self, layer_id: &str, index: usize, layer: &PsdLayer, is_group: bool) {
-        let mode = layer.blend_mode();
-        let pass_through = is_group && mode == Some(BlendMode::PassThrough);
-        let studio_blend = match mode {
-            Some(BlendMode::PassThrough) if !is_group => None,
-            other => other.map(BlendMode::studio_mode),
-        };
-        self.appearance.push(LayerAppearance {
+    fn record(&mut self, layer_id: &str, index: usize, layer: &PsdLayer, mask_default: Option<u8>) {
+        self.extras.push(LayerExtras {
             layer_id: layer_id.to_owned(),
             psd_index: index,
-            opacity: layer.opacity,
             blend_key: layer.blend_key,
-            blend_mode: layer.blend_mode(),
-            studio_blend,
-            pass_through,
-            clipped: layer.clipping == 1,
+            group_blend_key: layer.group_blend_key(),
             blend_clipped_elements: layer.blend_clipped_elements(),
             blend_interior_elements: layer.blend_interior_elements(),
             knockout: layer.knockout(),
-            group_blend_key: layer.group_blend_key(),
+            mask_default_color: mask_default,
         });
         self.map.push(LayerMapEntry { layer_id: layer_id.to_owned(), psd_index: index });
+    }
+
+    /// The Folio `appearance` object. A leaf never reaches here with an unknown or `pass` key
+    /// (those layers are unsupported payloads); an unknown key on a group record keeps the
+    /// structural placeholder `isolated`/normal, with the typed loss entry and the raw key in the
+    /// extras.
+    fn appearance_json(layer: &PsdLayer, is_group: bool, mask: Option<Value>) -> Value {
+        let (blend, isolation) = match (is_group, layer.blend_mode()) {
+            (true, Some(BlendMode::PassThrough)) => (1u16, "pass_through"),
+            (_, Some(mode)) => (mode.studio_mode() as u16, "isolated"),
+            (_, None) => (2u16, "isolated"),
+        };
+        let percent = |byte: u8| (f64::from(byte) * 100.0 / 255.0 * 10.0).round() / 10.0;
+        let mut a = json!({
+            "opacity": percent(layer.opacity),
+            "fill_opacity": percent(layer.fill_opacity().unwrap_or(255)),
+            "blend_mode": blend,
+            "clipped": layer.clipping == 1,
+            "isolation": isolation,
+        });
+        if let Some(mask) = mask {
+            a["mask"] = mask;
+        }
+        a
     }
 
     /// Walks nodes in panel order; returns the output ports of the nodes that composite, in the
@@ -265,11 +289,15 @@ impl Builder<'_, '_> {
         let doc = self.doc;
         let layer = &doc.layers()[folder];
         let id = self.mint.layer_id();
+        let mask = self.mask_for(folder, layer, &id)?;
+        let mask_default = layer.mask().map(|m| m.default_color);
+        let appearance = Self::appearance_json(layer, true, mask);
         self.layers.push(json!({
             "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
             "kind": "group", "payload": {"payload_kind": "group"}, "visible": layer.visible(),
+            "appearance": appearance,
         }));
-        self.record_appearance(&id, folder, layer, true);
+        self.record(&id, folder, layer, mask_default);
         let inner_parent = json!({"node_kind": "layer", "node_id": id});
         let child_outputs = self.walk(children, &inner_parent)?;
         self.operations.push(json!({
@@ -313,35 +341,133 @@ impl Builder<'_, '_> {
                 "visible": layer.visible(),
             }));
             self.note(format!("layer[{index}]"), LossKind::Unsupported, code);
-            self.record_appearance(&id, index, layer, false);
+            self.record(&id, index, layer, None);
             return Ok(None);
         }
         if layer.blocks.iter().any(|b| CACHED_PIXEL_KEYS.contains(&&b.key)) {
             self.note(format!("layer[{index}]/pixels"), LossKind::Rasterized, "cached_pixels_display_truth");
         }
-        if !self.pixels_mapped {
+        // A leaf whose blend key is unknown, or `pass` (a group property), has no Studio mode: it
+        // becomes an explicit unsupported payload instead of a silent Normal.
+        let blend_problem = match layer.blend_mode() {
+            None => Some("blend_mode_unknown"),
+            Some(BlendMode::PassThrough) => Some("pass_through_on_leaf_layer"),
+            Some(_) => None,
+        };
+        if !self.pixels_mapped || blend_problem.is_some() {
+            let reason = blend_problem.unwrap_or("color_mode_or_depth_unmapped");
             self.layers.push(json!({
                 "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
                 "kind": "psd_raster_unmapped",
                 "payload": {"payload_kind": "unsupported", "kind": "psd_raster_unmapped",
-                    "schema_id": "psd.raster", "encoded_bytes": Vec::<u8>::new(), "reason": "color_mode_or_depth_unmapped"},
+                    "schema_id": "psd.raster", "encoded_bytes": Vec::<u8>::new(), "reason": reason},
                 "visible": layer.visible(),
             }));
             self.note(format!("layer[{index}]/pixels"), LossKind::Unsupported, "raster_pixels_unmapped");
-            self.record_appearance(&id, index, layer, false);
+            self.record(&id, index, layer, None);
             return Ok(None);
         }
         let tiles = self.tiles_for(index, layer, &id)?;
+        let mask = self.mask_for(index, layer, &id)?;
+        let mask_default = layer.mask().map(|m| m.default_color);
+        let appearance = Self::appearance_json(layer, false, mask);
         self.layers.push(json!({
             "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
             "kind": "raster", "payload": {"payload_kind": "raster", "tiles": tiles}, "visible": layer.visible(),
+            "appearance": appearance,
         }));
         self.operations.push(json!({
             "layer_id": id, "operation_key": "source", "operation_kind": "source",
             "inputs": [], "outputs": [port("out", "one", "source")],
         }));
-        self.record_appearance(&id, index, layer, false);
+        self.record(&id, index, layer, mask_default);
         Ok(Some(address(&id, "source", "out")))
+    }
+
+    /// Folio `StudioMask` for the layer's user mask (the real user mask when both a user and a
+    /// vector mask exist): coverage tiles over the layer rectangle (the mask rectangle for a layer
+    /// without pixels), `default_color` outside the mask rectangle. Flags: bit 1 disabled; bit 0
+    /// ("position relative to layer") is read as linked (UNVERIFIED against Photoshop).
+    fn mask_for(&mut self, index: usize, layer: &PsdLayer, layer_id: &str) -> Result<Option<Value>> {
+        if !self.pixels_mapped {
+            return Ok(None);
+        }
+        let Some(mask) = layer.mask() else {
+            return Ok(None);
+        };
+        let header = &self.doc.header;
+        let real = layer.channels.iter().any(|c| c.id == -3) && mask.real_rect.is_some();
+        let channel_id: i16 = if real { -3 } else { -2 };
+        let (rect, default, flags) = if real {
+            (
+                mask.real_rect.unwrap_or(mask.rect),
+                mask.real_default_color.unwrap_or(mask.default_color),
+                mask.real_flags.unwrap_or(mask.flags),
+            )
+        } else {
+            (mask.rect, mask.default_color, mask.flags)
+        };
+        if flags & 0x10 != 0 {
+            self.note(format!("layer[{index}]/mask"), LossKind::PreservedOpaque, "mask_density_feather_not_stored");
+        }
+        let enabled = flags & 0x02 == 0;
+        let linked = flags & 0x01 != 0;
+        let Some(plane) = layer.decode_channel(channel_id, header, self.cfg.limits, self.cancel)? else {
+            self.note(format!("layer[{index}]/mask"), LossKind::Unsupported, "mask_channel_missing");
+            return Ok(None);
+        };
+        let region = if layer.rect.area() > 0 { layer.rect } else { rect };
+        let mut refs = Vec::new();
+        if region.area() > 0 {
+            let grid = Grid { origin_x: 0, origin_y: 0, tile_width: TILE_EDGE, tile_height: TILE_EDGE };
+            let edge = i64::from(TILE_EDGE);
+            let (left, top, right, bottom) =
+                (i64::from(region.left), i64::from(region.top), i64::from(region.right), i64::from(region.bottom));
+            let (mleft, mtop) = (i64::from(rect.left), i64::from(rect.top));
+            let (mright, mbottom) = (i64::from(rect.right), i64::from(rect.bottom));
+            let mwidth = rect.width() as usize;
+            for row in floor_div(top, edge)..=floor_div(bottom - 1, edge) {
+                for column in floor_div(left, edge)..=floor_div(right - 1, edge) {
+                    self.cancel.check()?;
+                    let bounds = grid.bounds(column, row).map_err(|_| PsdError::Overflow)?;
+                    let x0 = bounds.x.max(left);
+                    let x1 = (bounds.x + i64::from(bounds.width)).min(right);
+                    let y0 = bounds.y.max(top);
+                    let y1 = (bounds.y + i64::from(bounds.height)).min(bottom);
+                    let mut coverage = vec![0u8; (TILE_EDGE as usize) * (TILE_EDGE as usize)];
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let inside = x >= mleft && x < mright && y >= mtop && y < mbottom;
+                            let value = if inside { plane.bytes[(y - mtop) as usize * mwidth + (x - mleft) as usize] } else { default };
+                            coverage[(y - bounds.y) as usize * TILE_EDGE as usize + (x - bounds.x) as usize] = value;
+                        }
+                    }
+                    self.tile_bytes = self.tile_bytes.saturating_add(coverage.len());
+                    if self.tile_bytes > self.cfg.limits.max_decoded_bytes {
+                        return Err(PsdError::PixelLimit);
+                    }
+                    let object_key = format!("m_{column}_{row}");
+                    let digest = hash_hex(&profile_hash(&coverage));
+                    refs.push(json!({
+                        "object_key": object_key, "layer_id": layer_id, "column": column, "row": row,
+                        "width": px(f64::from(TILE_EDGE)), "height": px(f64::from(TILE_EDGE)),
+                        "format": MASK_FORMAT, "colour_profile_id": self.profile_id,
+                        "schema_id": "hsk.studio.raster_tile@1",
+                        "content_digest": {"algorithm": "sha256", "digest": digest},
+                        "artifact_manifest_id": self.mint.tile_manifest_id(layer_id, &object_key),
+                    }));
+                    self.mask_tiles.push(MaskTileBlob {
+                        layer_id: layer_id.to_owned(),
+                        object_key,
+                        column,
+                        row,
+                        coverage,
+                        sha256_hex: digest,
+                    });
+                }
+            }
+        }
+        Ok(Some(json!({"tiles": refs, "enabled": enabled, "linked": linked})))
     }
 
     fn tiles_for(&mut self, index: usize, layer: &PsdLayer, layer_id: &str) -> Result<Vec<Value>> {
@@ -459,7 +585,8 @@ pub fn to_proposal(
         operations: Vec::new(),
         edges: Vec::new(),
         tiles: Vec::new(),
-        appearance: Vec::new(),
+        mask_tiles: Vec::new(),
+        extras: Vec::new(),
         map: Vec::new(),
         loss: doc.loss_report(cfg.limits),
         tile_bytes: 0,
@@ -477,7 +604,7 @@ pub fn to_proposal(
     if doc.resources.find(RESOURCE_ICC_UNTAGGED).is_some_and(|r| r.data.first() == Some(&1)) && icc.is_none() {
         b.note("document/profile".into(), LossKind::Preserved, "profile_untagged_by_author");
     }
-    b.note("document/appearance".into(), LossKind::Preserved, "opacity_blend_clipping_sidecar_only");
+    b.note("document/layer_extras".into(), LossKind::Preserved, "layer_extras_sidecar_only");
     if doc.resources.find(RESOURCE_ICC_PROFILE).is_some() && !pixels_mapped {
         b.note("document/profile".into(), LossKind::PreservedOpaque, "icc_profile_not_applied");
     }
@@ -515,7 +642,8 @@ pub fn to_proposal(
     Ok(ImportProposal {
         snapshot,
         tiles: b.tiles,
-        appearance: b.appearance,
+        mask_tiles: b.mask_tiles,
+        extras: b.extras,
         layer_map: b.map,
         loss: b.loss,
         provenance: Provenance {

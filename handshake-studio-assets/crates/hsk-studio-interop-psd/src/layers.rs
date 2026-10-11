@@ -328,6 +328,12 @@ impl PsdLayer {
         self.flag_block(b"tsly")
     }
 
+    /// `iOpa`: fill opacity, 0..=255. The key is not described by the specification text; other
+    /// readers treat its first byte as fill opacity (UNVERIFIED against Photoshop output).
+    pub fn fill_opacity(&self) -> Option<u8> {
+        self.block(b"iOpa")?.data.first().copied()
+    }
+
     pub fn mask(&self) -> Option<LayerMask> {
         if self.mask_raw.is_empty() { None } else { LayerMask::parse(&self.mask_raw) }
     }

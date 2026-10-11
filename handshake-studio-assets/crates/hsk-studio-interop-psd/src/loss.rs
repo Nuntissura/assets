@@ -100,7 +100,7 @@ enum KeyClass {
 
 fn classify(key: [u8; 4]) -> KeyClass {
     match &key {
-        b"lsct" | b"lsdk" | b"luni" | b"lyid" | b"clbl" | b"infx" | b"knko" | b"tsly" => KeyClass::Mapped,
+        b"lsct" | b"lsdk" | b"luni" | b"lyid" | b"clbl" | b"infx" | b"knko" | b"tsly" | b"iOpa" => KeyClass::Mapped,
         b"TySh" | b"tySh" | b"Txt2" => KeyClass::Opaque("text_layer_not_editable"),
         b"SoLd" | b"SoLE" | b"PlLd" | b"plLd" | b"lnk2" | b"lnkD" | b"lnk3" | b"lnkE" => {
             KeyClass::Opaque("smart_object_not_editable")

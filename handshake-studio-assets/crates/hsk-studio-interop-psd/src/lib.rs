@@ -36,8 +36,8 @@ pub use limits::Limits;
 pub use loss::{LossEntry, LossKind, LossReport, key_text};
 pub use pixels::Plane;
 pub use proposal::{
-    IdMint, ImportProposal, LayerAppearance, LayerMapEntry, ProposalConfig, Provenance, SourceIdentity, TILE_EDGE, TileBlob,
-    to_proposal,
+    IdMint, ImportProposal, LayerExtras, LayerMapEntry, MaskTileBlob, ProposalConfig, Provenance, SourceIdentity, TILE_EDGE,
+    TileBlob, to_proposal,
 };
 pub use report::{ReportContext, outcome_of, report};
 pub use writer::write_psd;

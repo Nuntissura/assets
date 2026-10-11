@@ -254,12 +254,23 @@ fn fixture() -> Vec<u8> {
         (1, 0, vec![11, 12, 13, 14, 15, 16, 17, 18]),
         (2, 0, vec![21, 22, 23, 24, 25, 26, 27, 28]),
         (-1, 0, vec![255, 255, 0, 0, 255, 255, 0, 0]),
+        (-2, 0, vec![255, 128, 0, 255]),
     ];
+    // user mask: rectangle top 0, left 1, bottom 2, right 3; default 0; flags 1 (relative to layer)
+    bg.mask = {
+        let mut m = Vec::new();
+        for v in [0i32, 1, 2, 3] {
+            m.extend(v.to_be_bytes());
+        }
+        m.extend([0, 1, 0, 0]);
+        m
+    };
 
     let mut fg = TLayer::new("fg", [0, 1, 2, 3]);
     fg.key = *b"scrn";
     fg.clipping = 1;
     fg.flags = 0x0A;
+    fg.blocks = vec![layer_block(b"iOpa", &[128], false)];
     fg.channels = vec![
         (0, 1, rle(&[&[9, 9], &[1, 2]], false)),
         (1, 1, rle(&[&[8, 8], &[3, 4]], false)),
@@ -399,6 +410,8 @@ fn layers_groups_resources_and_merged_decode() {
         assert_eq!(plane(0, 0), [200]);
         assert_eq!(plane(2, 1), [11, 12, 13, 14, 15, 16, 17, 18]);
         assert_eq!(plane(2, -1), [255, 255, 0, 0, 255, 255, 0, 0]);
+        assert_eq!(plane(2, -2), [255, 128, 0, 255], "mask channel is sized by the mask rectangle");
+        assert_eq!(layers[3].fill_opacity(), Some(128));
         assert_eq!(plane(3, 0), [9, 9, 1, 2]);
         assert_eq!(plane(3, 2), [7, 7, 5, 6]);
         assert_eq!(plane(4, 0), [100, 101, 102], "zip");
@@ -619,7 +632,7 @@ fn hostile_inputs_are_rejected_with_distinct_codes() {
 
 // ---- proposal, edit loop, observe ----------------------------------------------------------
 
-use hsk_studio_folio::{Budget, Parent, Payload, Resolution, Resolver};
+use hsk_studio_folio::{Budget, Isolation, Parent, Payload, Resolution, Resolver};
 use hsk_studio_observe::{DeliveryClass, DeliveryError, FailureCode, Outcome, SinkPort};
 
 struct Mint(u64);
@@ -721,19 +734,36 @@ fn proposal_edit_loop_roundtrip_and_observe() {
         let id_of = |name: &str| folio_doc.layers.iter().find(|l| l.name == name).unwrap().layer_id.as_str();
         assert_eq!(into_group, [id_of("bg"), id_of("fg"), id_of("zip")], "ordinal 0 is the bottom-most child");
 
-        let appearance = |name: &str| proposal.appearance.iter().find(|a| a.layer_id == id_of(name)).unwrap();
-        let bg_look = appearance("bg");
-        assert_eq!((bg_look.opacity, bg_look.blend_mode, bg_look.clipped), (128, Some(BlendMode::Multiply), false));
-        assert_eq!(bg_look.studio_blend, Some(hsk_studio_pigment::blend_math::StudioBlendMode::Multiply));
+        let explicit = |name: &str| {
+            folio_doc.layers.iter().find(|l| l.name == name).unwrap().appearance.clone().expect("importer writes appearance")
+        };
+        let bg_look = explicit("bg");
+        assert_eq!((bg_look.opacity, bg_look.fill_opacity, bg_look.blend_mode, bg_look.clipped), (50.2, 100.0, 5, false));
+        assert_eq!(bg_look.isolation, Isolation::Isolated);
         // every one of the 28 PSD keys has a Studio member, and no two keys share one
         let studio: std::collections::BTreeSet<u16> = BlendMode::ALL.iter().map(|m| m.studio_mode() as u16).collect();
         assert_eq!(studio.len(), 28);
-        let fg_look = appearance("fg");
-        assert_eq!((fg_look.blend_mode, fg_look.clipped), (Some(BlendMode::Screen), true));
-        let group_look = appearance("Group \u{fc}");
-        assert_eq!(group_look.blend_mode, Some(BlendMode::PassThrough));
-        assert!(group_look.pass_through, "pass on a group record is the pass-through flag");
-        assert!(!bg_look.pass_through && !fg_look.pass_through);
+        assert_eq!(BlendMode::Multiply.studio_mode() as u16, bg_look.blend_mode);
+        let fg_look = explicit("fg");
+        assert_eq!((fg_look.blend_mode, fg_look.clipped, fg_look.fill_opacity, fg_look.opacity), (9, true, 50.2, 100.0));
+        let group_look = explicit("Group \u{fc}");
+        assert_eq!((group_look.blend_mode, group_look.isolation), (1, Isolation::PassThrough), "pass on a group is pass_through");
+        assert_eq!(folio_doc.layers[4].effective_appearance().blend_mode, 2, "base is a plain normal layer");
+
+        // user mask: coverage tiles over the layer rectangle, default 0 outside the mask rectangle
+        let mask = bg_look.mask.as_ref().expect("bg mask");
+        assert_eq!((mask.enabled, mask.linked, mask.tiles.len()), (true, true, 1));
+        assert_eq!(mask.tiles[0].format, "coverage_u8");
+        let mask_tile = &proposal.mask_tiles[0];
+        assert_eq!(mask_tile.layer_id, id_of("bg"));
+        assert_eq!(mask_tile.coverage.len(), 256 * 256);
+        assert_eq!(&mask_tile.coverage[0..4], [0, 255, 128, 0]);
+        assert_eq!(&mask_tile.coverage[256..260], [0, 0, 255, 0]);
+        assert_eq!(mask.tiles[0].content_digest.digest, mask_tile.sha256_hex);
+        // what Folio still lacks stays in the sidecar
+        let extras = |name: &str| proposal.extras.iter().find(|e| e.layer_id == id_of(name)).unwrap();
+        assert_eq!((extras("bg").blend_key, extras("bg").mask_default_color), (*b"mul ", Some(0)));
+        assert_eq!(extras("Group \u{fc}").group_blend_key, Some(*b"pass"));
 
         assert_eq!(proposal.tiles.len(), 4);
         let bg = proposal.tiles.iter().find(|t| t.layer_id == id_of("bg")).unwrap();
@@ -758,7 +788,7 @@ fn proposal_edit_loop_roundtrip_and_observe() {
 
         assert!(proposal.loss.has_code("icc_profile_not_applied"));
         assert!(proposal.loss.has_code("profile_assumed_srgb"));
-        assert!(proposal.loss.has_code("opacity_blend_clipping_sidecar_only"));
+        assert!(proposal.loss.has_code("layer_extras_sidecar_only"));
         assert_eq!(proposal.provenance.byte_len, original.len());
         assert_eq!(proposal.provenance.source_sha256_hex.len(), 64);
         assert!(proposal.provenance.assumed_profile && proposal.provenance.icc_sha256_hex.is_some());
@@ -775,6 +805,7 @@ fn proposal_edit_loop_roundtrip_and_observe() {
         assert_eq!(back.layers()[3].name, "Foreground");
         assert_eq!(back.layers()[3].channels, doc.layers()[3].channels, "pixel payloads untouched");
         assert_eq!(back.layers()[3].blend_key, *b"scrn");
+        assert_eq!(back.layers()[3].fill_opacity(), Some(128), "iOpa untouched");
         assert!(back.layers()[3].hidden());
         for i in [0usize, 1, 2, 4, 5] {
             assert_eq!(back.layers()[i], doc.layers()[i], "layer {i} unchanged");
