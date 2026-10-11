@@ -278,6 +278,89 @@ pub struct SegmentReceipt {
     pub complete: bool,
     /// False when any media-time to tick conversion in this segment needed rounding.
     pub ticks_exact: bool,
+    /// Pixel layout of the `ChunkKind::VideoFrame` chunks of a compressed-video decode (`None` for every
+    /// other segment).
+    pub video: Option<VideoFormat>,
+}
+
+/// Chroma layout of a decoded video frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChromaFormat {
+    Mono,
+    Yuv420,
+    Yuv422,
+    Yuv444,
+}
+
+impl ChromaFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mono => "mono",
+            Self::Yuv420 => "420",
+            Self::Yuv422 => "422",
+            Self::Yuv444 => "444",
+        }
+    }
+}
+
+/// Where a decoded frame's colour code points came from. Never guessed: `Untagged` carries the ITU-T
+/// H.273 "unspecified" value (2) and leaves the assumption to the consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorOrigin {
+    /// The codec's own sequence header (authoritative).
+    SequenceHeader,
+    /// The container (`colr` nclx) because the bitstream carried no colour description.
+    Container,
+    Untagged,
+}
+
+/// ITU-T H.273 code points plus range. `full_range` always comes from the bitstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorInfo {
+    pub primaries: u16,
+    pub transfer: u16,
+    pub matrix: u16,
+    pub full_range: bool,
+    pub origin: ColorOrigin,
+}
+
+/// Layout of one decoded frame as delivered in `Chunk::bytes`: planes Y, U, V in that order (Y only for
+/// `Mono`), each plane tightly packed row-major, one byte per sample at 8 bits and two bytes per sample
+/// (little-endian) above 8 bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoFormat {
+    pub width: u32,
+    pub height: u32,
+    pub bit_depth: u8,
+    pub chroma: ChromaFormat,
+    pub color: ColorInfo,
+}
+
+impl VideoFormat {
+    pub const fn bytes_per_sample(&self) -> usize {
+        if self.bit_depth > 8 { 2 } else { 1 }
+    }
+
+    /// `(width, height)` of each plane in delivery order.
+    pub fn plane_dims(&self) -> Vec<(u32, u32)> {
+        let (w, h) = (self.width, self.height);
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        match self.chroma {
+            ChromaFormat::Mono => vec![(w, h)],
+            ChromaFormat::Yuv420 => vec![(w, h), (cw, ch), (cw, ch)],
+            ChromaFormat::Yuv422 => vec![(w, h), (cw, h), (cw, h)],
+            ChromaFormat::Yuv444 => vec![(w, h), (w, h), (w, h)],
+        }
+    }
+
+    /// Total bytes of one packed frame; `None` when it does not fit `usize`.
+    pub fn frame_bytes(&self) -> Option<usize> {
+        let bps = self.bytes_per_sample() as u64;
+        let samples = self.plane_dims().iter().try_fold(0u64, |acc, (w, h)| {
+            acc.checked_add(u64::from(*w) * u64::from(*h))
+        })?;
+        usize::try_from(samples.checked_mul(bps)?).ok()
+    }
 }
 
 pub trait MediaProvider: Send + Sync {

@@ -420,6 +420,7 @@ impl IsobmffProvider {
             bytes_read: payload,
             complete: true,
             ticks_exact: track.ticks_exact,
+            video: None,
         })
     }
 }

@@ -155,6 +155,9 @@ pub struct TrackIndex {
     pub color: ColorTag,
     /// `pasp` pixel aspect ratio (horizontal, vertical spacing).
     pub pixel_aspect: Option<(u32, u32)>,
+    /// Codec configuration record of the first sample entry (`av1C` payload); empty when absent or when
+    /// the container reader has none.
+    pub codec_config: Vec<u8>,
     pub edits: Vec<EditSegment>,
     /// False when any media-time to tick conversion on this track needed rounding.
     pub ticks_exact: bool,
@@ -262,6 +265,7 @@ impl TrackIndex {
             audio: parts.audio,
             color: ColorTag::Untagged,
             pixel_aspect: None,
+            codec_config: Vec::new(),
             edits: Vec::new(),
             ticks_exact: true,
             timecode: None,
@@ -621,13 +625,17 @@ struct SampleDescription {
     audio: Option<AudioFormat>,
     color: ColorTag,
     pixel_aspect: Option<(u32, u32)>,
+    codec_config: Vec<u8>,
     timecode: Option<TimecodeDescription>,
 }
 
-/// Sample-entry child boxes (`colr`, `pasp`). A malformed child ends the scan: metadata is advisory and
-/// must never fail an otherwise indexable track.
-fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>) {
-    let (mut color, mut aspect) = (ColorTag::Untagged, None);
+/// Largest codec configuration record kept (`av1C` carries one sequence header, tens of bytes).
+const MAX_CODEC_CONFIG: usize = 64 * 1024;
+
+/// Sample-entry child boxes (`colr`, `pasp`, `av1C`). A malformed child ends the scan: metadata is
+/// advisory and must never fail an otherwise indexable track.
+fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>, Vec<u8>) {
+    let (mut color, mut aspect, mut config) = (ColorTag::Untagged, None, Vec::new());
     for item in boxes(rest) {
         let Ok((kind, payload)) = item else { break };
         match &kind {
@@ -662,10 +670,11 @@ fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>) {
                     aspect = Some((word(0), word(4)));
                 }
             }
+            b"av1C" if payload.len() <= MAX_CODEC_CONFIG => config = payload.to_vec(),
             _ => {}
         }
     }
-    (color, aspect)
+    (color, aspect, config)
 }
 
 fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, ReelError> {
@@ -679,6 +688,7 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
             audio: None,
             color: ColorTag::Untagged,
             pixel_aspect: None,
+            codec_config: Vec::new(),
             timecode: None,
         });
     }
@@ -695,7 +705,7 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
     e.skip(8)?; // reserved[6] + data_reference_index
     let (mut width, mut height, mut audio) = (0, 0, None);
     let (mut color, mut pixel_aspect) = (ColorTag::Untagged, None);
-    let mut timecode = None;
+    let (mut timecode, mut codec_config) = (None, Vec::new());
     match kind {
         TrackKind::Video => {
             e.skip(16)?;
@@ -704,7 +714,7 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
             // hres, vres, reserved, frame_count, compressorname[32], depth, pre_defined
             e.skip(50)?;
             let remaining = e.remaining();
-            (color, pixel_aspect) = parse_visual_children(e.take(remaining)?);
+            (color, pixel_aspect, codec_config) = parse_visual_children(e.take(remaining)?);
         }
         TrackKind::Audio => {
             let version = e.u16()?;
@@ -766,6 +776,7 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
         audio,
         color,
         pixel_aspect,
+        codec_config,
         timecode,
     })
 }
@@ -1061,6 +1072,7 @@ fn track_from_tables(
         audio: desc.audio,
         color: desc.color,
         pixel_aspect: desc.pixel_aspect,
+        codec_config: desc.codec_config,
         edits: Vec::new(),
         ticks_exact: true,
         timecode: desc.timecode,
@@ -1555,7 +1567,23 @@ impl IsobmffProvider {
     ) -> Result<SegmentReceipt, ReelError> {
         let track = select_track(index, req.track)?;
         if req.output == OutputMode::Decoded {
-            // Only uncompressed PCM decodes here; compressed sample entries have no registered decoder.
+            #[cfg(feature = "av1")]
+            if track.codec == *b"av01" {
+                return crate::av1::decode_video_track(
+                    src,
+                    track,
+                    &track.codec_config,
+                    track.color,
+                    fourcc_string(track.codec),
+                    "isobmff-demux",
+                    req,
+                    limits,
+                    cancel,
+                    sink,
+                );
+            }
+            // Only uncompressed PCM decodes here; other compressed sample entries have no registered
+            // decoder.
             return match pcm::pcm_format(track.codec, track.audio.as_ref())? {
                 Some(_) => match &track.pcm {
                     Some(stream) => self.deliver_pcm(src, track, stream, req, limits, cancel, sink),
@@ -1693,5 +1721,6 @@ pub(crate) fn deliver_packets(
         bytes_read: payload,
         complete: true,
         ticks_exact,
+        video: None,
     })
 }

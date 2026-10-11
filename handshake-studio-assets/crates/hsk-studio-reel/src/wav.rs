@@ -349,6 +349,7 @@ impl MediaProvider for WavProvider {
             bytes_read: info.header_bytes + payload,
             complete: true,
             ticks_exact: true,
+            video: None,
         })
     }
 

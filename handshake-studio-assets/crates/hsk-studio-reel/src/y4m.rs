@@ -339,6 +339,7 @@ impl MediaProvider for Y4mProvider {
             bytes_read: info.header_bytes + delivered * record,
             complete: true,
             ticks_exact: true,
+            video: None,
         })
     }
 

@@ -1344,7 +1344,27 @@ impl MatroskaProvider {
     ) -> Result<SegmentReceipt, ReelError> {
         let track = select_track(index, req.track)?;
         if req.output == OutputMode::Decoded {
-            // No pure-Rust decoder is registered for any Matroska CodecID in this slice.
+            #[cfg(feature = "av1")]
+            if track.info.codec_id == "V_AV1" {
+                if track.info.content_encoded {
+                    return Err(ReelError::Unsupported {
+                        what: "content-encoding",
+                    });
+                }
+                return crate::av1::decode_video_track(
+                    src,
+                    &track.index,
+                    &track.info.codec_private,
+                    crate::isobmff::ColorTag::Untagged,
+                    track.info.codec_id.clone(),
+                    "matroska-demux",
+                    req,
+                    limits,
+                    cancel,
+                    sink,
+                );
+            }
+            // No other decoder is registered for any Matroska CodecID in this slice.
             return Err(ReelError::CodecUnavailable {
                 codec: track.info.codec_id.clone(),
             });
