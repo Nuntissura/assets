@@ -2,7 +2,7 @@ use crate::block::{InputBlock, OutputBlock};
 use crate::dsp::{db_to_linear, per_channel};
 use crate::engine::Processor;
 use crate::error::ScoreError;
-use crate::layout::{ChannelLayout, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ};
+use crate::layout::{ChannelLayout, MAX_CHANNELS, ticks_per_sample};
 use hsk_studio_accord::CancellationToken;
 use std::f64::consts::PI;
 
@@ -153,9 +153,7 @@ impl Equalizer {
         sections: &[BiquadSpec],
         master_gain_db: f64,
     ) -> Result<Self, ScoreError> {
-        if sample_rate_hz == 0 || sample_rate_hz > MAX_SAMPLE_RATE_HZ {
-            return Err(ScoreError::InvalidRate);
-        }
+        ticks_per_sample(sample_rate_hz)?;
         if !(1..=MAX_CHANNELS).contains(&channels) {
             return Err(ScoreError::InvalidLayout);
         }

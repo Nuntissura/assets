@@ -23,7 +23,9 @@ struct Stage {
 
 /// Ordered, individually bypassable effect stack (STU-FX-135) that is itself a [`Processor`].
 ///
-/// All intermediate buffers are allocated in [`Chain::new`]; `process` allocates nothing.
+/// All intermediate buffers are allocated in [`Chain::new`]; `process` allocates nothing. Every
+/// stage's output is checked for NaN and infinity before the next stage reads it (the last stage
+/// is checked by the engine before publication); the chain then fails with `NotFinite`.
 /// Latency is the sum over active stages. Bypass is allowed only for layout-preserving stages and
 /// removes the stage's latency from the stack (the receipt reports the live total); un-bypassing
 /// resets the stage because its history is stale.
@@ -187,6 +189,12 @@ impl Processor for Chain {
             let target = if i == last { &mut *out } else { &mut rest[0] };
             self.stages[i].processor.process(&stage_input, target, cancel)?;
             if i != last {
+                // A stage that overflowed is refused here instead of leaving it to a later stage
+                // (a limiter would clamp an infinity into plausible-looking full-scale output);
+                // the last stage's output is guarded by the engine before publication.
+                if !rest[0].frames_finite(frames) {
+                    return Err(ScoreError::NotFinite);
+                }
                 previous = Some(i);
             }
         }

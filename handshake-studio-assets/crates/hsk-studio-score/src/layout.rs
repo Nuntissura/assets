@@ -5,7 +5,9 @@ use hsk_studio_accord::{Rounding, Ticks, Timescale};
 pub const MAX_CHANNELS: usize = 16;
 /// Authored bound on frames in one block / one output capacity (not a spec value).
 pub const MAX_BLOCK_FRAMES: usize = 1 << 20;
-/// Authored bound on sample rate (not a spec value); keeps lookahead buffers bounded.
+/// Authored bound on sample rate (not a spec value); keeps lookahead buffers bounded. The
+/// admitted rates are exactly the divisors of `TICKS_PER_SECOND` (254_016_000_000 =
+/// 2^12 * 3^4 * 5^6 * 7^2) up to this bound; see [`ticks_per_sample`].
 pub const MAX_SAMPLE_RATE_HZ: u32 = 768_000;
 /// Studio default sequence sample rate (STU-FX-137).
 pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 48_000;
@@ -69,6 +71,11 @@ impl BlockSpec {
 /// Exact ticks per sample (STU-VID-012). Rejects rate 0, rates above [`MAX_SAMPLE_RATE_HZ`] (an
 /// authored bound) and rates that do not divide `TICKS_PER_SECOND`. The divisor rule is accord's
 /// ([`Timescale::exact_ticks_per_unit`]); this crate keeps no copy of it (CX-CAP-001).
+///
+/// This is the single rate gate of the crate: block admission ([`InputBlock::validate`](crate::InputBlock::validate)),
+/// bounces, the converter and the rate-bound processors (`HardLimiter`, `Equalizer`) all call it,
+/// so a rate that is not admitted here (for example 44_101 or 47_999 Hz) is refused with
+/// `InvalidRate` everywhere instead of being admitted and failing later at the tick conversion.
 pub fn ticks_per_sample(rate_hz: u32) -> Result<u64, ScoreError> {
     if rate_hz > MAX_SAMPLE_RATE_HZ {
         return Err(ScoreError::InvalidRate);

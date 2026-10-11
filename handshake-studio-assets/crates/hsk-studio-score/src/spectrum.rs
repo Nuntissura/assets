@@ -1,3 +1,4 @@
+use crate::block::all_finite;
 use crate::error::ScoreError;
 use hsk_studio_accord::CancellationToken;
 use std::f64::consts::PI;
@@ -96,6 +97,11 @@ impl SpectrumAnalyzer {
             let magnitude = self.re[k].hypot(self.im[k]);
             let scale = if k == 0 || k == last { 1.0 } else { 2.0 };
             *bin = (scale * magnitude / self.window_sum) as f32;
+        }
+        // Finite samples can still read past `f32::MAX` in a bin (a full-scale square wave reads
+        // about 1.21 times its amplitude); an overflowing spectrum is refused, not returned.
+        if !all_finite(&self.bins) {
+            return Err(ScoreError::NotFinite);
         }
         Ok(&self.bins)
     }

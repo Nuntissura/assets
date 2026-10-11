@@ -3,8 +3,7 @@ use crate::digest::Sha256;
 use crate::engine::{Engine, Processor, RequestContext};
 use crate::error::ScoreError;
 use crate::layout::{
-    BlockSpec, ChannelLayout, MAX_BLOCK_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ, sample_to_ticks,
-    ticks_per_sample,
+    BlockSpec, ChannelLayout, MAX_BLOCK_FRAMES, MAX_CHANNELS, sample_to_ticks, ticks_per_sample,
 };
 use hsk_studio_accord::{CancellationToken, Ticks};
 
@@ -143,9 +142,6 @@ impl Engine {
         }
         if request.channels.iter().any(|c| c.len() != frames) {
             return Err(ScoreError::LengthMismatch);
-        }
-        if request.sample_rate_hz == 0 || request.sample_rate_hz > MAX_SAMPLE_RATE_HZ {
-            return Err(ScoreError::InvalidRate);
         }
         ticks_per_sample(request.sample_rate_hz)?;
         if proc

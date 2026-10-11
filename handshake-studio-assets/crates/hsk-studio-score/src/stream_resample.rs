@@ -12,6 +12,7 @@
 //! Memory: rubato's own history plus `stream_in` (`channels * chunk_frames`) and `stream_out`
 //! (`channels * output_frames_max`), both sized by [`ClipResampler::begin_stream`]; a push or a
 //! finish allocates nothing here.
+use crate::block::all_finite;
 use crate::error::ScoreError;
 use crate::layout::MAX_CHANNELS;
 use crate::resample::{ClipResampler, requested_frames};
@@ -293,6 +294,15 @@ impl ClipResampler {
         let take = (produced - skip).min(self.stream.remaining);
         if take == 0 {
             return Ok(());
+        }
+        // The sinc sum of finite samples can still exceed `f32::MAX`: a chunk holding a NaN or
+        // infinity never reaches the receiver or the meters; the stream ends with `NotFinite`
+        // (chunks delivered before it were finite and stay provisional, as for any failure).
+        if (0..channels).any(|ch| {
+            let base = ch * out_max + skip;
+            !all_finite(&self.stream_out[base..base + take])
+        }) {
+            return Err(ScoreError::NotFinite);
         }
         let mut views: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
         for (ch, slot) in views.iter_mut().enumerate().take(channels) {

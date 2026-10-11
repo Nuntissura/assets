@@ -1,5 +1,13 @@
 use crate::error::ScoreError;
-use crate::layout::{BlockSpec, ChannelLayout, MAX_BLOCK_FRAMES, MAX_SAMPLE_RATE_HZ};
+use crate::layout::{BlockSpec, ChannelLayout, MAX_BLOCK_FRAMES, ticks_per_sample};
+
+/// `true` when every sample is finite. Scans in groups of 64 with a branch-free fold (so the
+/// group vectorises) and leaves at the first group that holds a NaN or infinity.
+pub(crate) fn all_finite(samples: &[f32]) -> bool {
+    samples
+        .chunks(64)
+        .all(|group| group.iter().fold(true, |ok, s| ok & s.is_finite()))
+}
 
 /// Immutable planar PCM view: one `f32` slice per channel, all `spec.frames` long.
 /// Construction never fails; [`InputBlock::validate`] is the admission gate.
@@ -37,7 +45,10 @@ impl<'a> InputBlock<'a> {
     }
 
     /// Read-only admission checks; never writes. Order: frames, rate, channel count, slice
-    /// lengths, position overflow, then the finite scan over every sample.
+    /// lengths, position overflow, then the finite scan over every sample. The rate must be in
+    /// the admitted set of [`ticks_per_sample`] (an exact tick divisor up to
+    /// `MAX_SAMPLE_RATE_HZ`), so block positions convert to ticks exactly; anything else is
+    /// `InvalidRate`.
     pub fn validate(&self) -> Result<(), ScoreError> {
         let spec = self.spec;
         if spec.frames == 0 {
@@ -46,9 +57,7 @@ impl<'a> InputBlock<'a> {
         if spec.frames > MAX_BLOCK_FRAMES {
             return Err(ScoreError::CapacityExceeded);
         }
-        if spec.sample_rate_hz == 0 || spec.sample_rate_hz > MAX_SAMPLE_RATE_HZ {
-            return Err(ScoreError::InvalidRate);
-        }
+        ticks_per_sample(spec.sample_rate_hz)?;
         if self.channels.len() != spec.layout.channels() {
             return Err(ScoreError::ChannelMismatch);
         }
@@ -149,6 +158,13 @@ impl OutputBlock {
     }
     pub(crate) fn backing_mut(&mut self) -> &mut [f32] {
         &mut self.data
+    }
+    /// `true` when the first `frames` samples of every channel are finite (unpublished output
+    /// guard; samples past `frames` are not looked at).
+    pub(crate) fn frames_finite(&self, frames: usize) -> bool {
+        self.data
+            .chunks(self.capacity)
+            .all(|channel| all_finite(&channel[..frames.min(self.capacity)]))
     }
     pub(crate) fn unpublish(&mut self) {
         self.published = None;

@@ -341,6 +341,12 @@ impl Engine {
                 backing[base + requested..base + capacity].fill(0.0);
             }
         }
+        // The sinc sum of finite samples can still exceed `f32::MAX`; the clip is discarded
+        // unpublished before anything reads it.
+        if !out.frames_finite(requested) {
+            resampler.inner.reset();
+            return Err(ScoreError::NotFinite);
+        }
         let end_sample = u64::try_from(requested)
             .ok()
             .and_then(|frames| out_start.checked_add(frames))

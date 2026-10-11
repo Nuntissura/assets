@@ -7,8 +7,7 @@ use crate::digest::Sha256;
 use crate::engine::{BlockReceipt, Engine, Processor, RequestContext};
 use crate::error::ScoreError;
 use crate::layout::{
-    BlockSpec, ChannelLayout, MAX_BLOCK_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ, sample_to_ticks,
-    ticks_per_sample,
+    BlockSpec, ChannelLayout, MAX_BLOCK_FRAMES, MAX_CHANNELS, sample_to_ticks, ticks_per_sample,
 };
 use crate::resample::{ClipResampler, ResampleReceipt, map_start, requested_frames};
 use crate::stage::{StageRunner, StageSetup};
@@ -223,9 +222,6 @@ fn plan(
         return Err(ScoreError::LengthMismatch);
     }
     let (input_rate, output_rate) = (request.sample_rate_hz, resampler.output_rate_hz());
-    if input_rate == 0 || input_rate > MAX_SAMPLE_RATE_HZ {
-        return Err(ScoreError::InvalidRate);
-    }
     ticks_per_sample(input_rate)?;
     if resampler.input_rate_hz() != input_rate
         || pre

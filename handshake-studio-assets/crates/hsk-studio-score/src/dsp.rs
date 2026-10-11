@@ -1,7 +1,7 @@
 use crate::block::{InputBlock, OutputBlock};
 use crate::engine::Processor;
 use crate::error::ScoreError;
-use crate::layout::{CANCEL_CHECK_FRAMES, ChannelLayout, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ};
+use crate::layout::{CANCEL_CHECK_FRAMES, ChannelLayout, MAX_CHANNELS, ticks_per_sample};
 use hsk_studio_accord::CancellationToken;
 use std::collections::VecDeque;
 use std::f64::consts::FRAC_PI_4;
@@ -392,9 +392,7 @@ impl HardLimiter {
         channels: usize,
         params: HardLimiterParams,
     ) -> Result<Self, ScoreError> {
-        if sample_rate_hz == 0 || sample_rate_hz > MAX_SAMPLE_RATE_HZ {
-            return Err(ScoreError::InvalidRate);
-        }
+        ticks_per_sample(sample_rate_hz)?;
         if !(1..=MAX_CHANNELS).contains(&channels) {
             return Err(ScoreError::InvalidLayout);
         }

@@ -21,7 +21,8 @@ pub enum ScoreError {
     StaleRevision,
     /// The request carried no actor grant context.
     MissingContext,
-    /// A sample or parameter is NaN or infinite.
+    /// A sample or parameter is NaN or infinite, or a stage produced a NaN or infinity from
+    /// finite input (an overflowing gain, sum or filter); such output is discarded, never published.
     NotFinite,
     /// A parameter, frame count or configuration value is outside its declared range.
     OutOfRange,

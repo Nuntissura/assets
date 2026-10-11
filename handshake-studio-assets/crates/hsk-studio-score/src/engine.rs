@@ -211,6 +211,8 @@ impl Engine {
     /// Everything that can be refused is checked before the first write to `out`; a refused
     /// request leaves `out` (including its previous publication) untouched. After the block
     /// begins, it either completes and publishes, or is discarded unpublished (processor reset).
+    /// A block whose processed output holds a NaN or infinity (for example a gain that overflows
+    /// `f32`) is discarded the same way with `NotFinite`; it is never published.
     pub fn process(
         &self,
         ctx: &RequestContext,
@@ -249,9 +251,20 @@ impl Engine {
         let end_sample = spec.end_sample()?;
 
         out.unpublish();
+        // Output guard: finite input and finite parameters do not bound the result (a gain of
+        // `f32::MAX` on 2.0 is infinity, and `inf - inf` is NaN), so the processed block itself is
+        // scanned once before it can be published or handed to a sink. Cancel and revision are
+        // observed first, so a block that is discarded anyway is not scanned.
         let settled = proc
             .process(input, out, cancel)
-            .and_then(|()| self.settle(ctx, cancel));
+            .and_then(|()| self.settle(ctx, cancel))
+            .and_then(|()| {
+                if out.frames_finite(spec.frames) {
+                    Ok(())
+                } else {
+                    Err(ScoreError::NotFinite)
+                }
+            });
         if let Err(error) = settled {
             proc.reset();
             return Err(error);

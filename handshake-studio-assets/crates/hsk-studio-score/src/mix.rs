@@ -19,7 +19,8 @@ impl Engine {
     /// Sums an ordered send list into a submix block: `out = sum_i level_i * send_i`, accumulated
     /// in send order (deterministic). Every send must share the submix layout, rate, start sample
     /// and frame count. Same admission, cancel, revision and publication rules as `process`;
-    /// nothing is written before every send validated.
+    /// nothing is written before every send validated. A sum that overflows to infinity or NaN is
+    /// discarded unpublished with `NotFinite`.
     pub fn mix(
         &self,
         ctx: &RequestContext,
@@ -77,6 +78,10 @@ impl Engine {
             }
         }
         written.and_then(|()| self.settle(ctx, cancel))?;
+        // Finite sends and levels can still sum past `f32::MAX`; the block is discarded unpublished.
+        if !out.frames_finite(frames) {
+            return Err(ScoreError::NotFinite);
+        }
 
         let receipt = BlockReceipt::measure(
             out,
