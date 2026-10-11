@@ -13,8 +13,8 @@ use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, composite_over
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, Applicability, BackendError, BackendIdentity, DeviceClass, Exactness,
     ExecuteRequest, MaskFormat, Operator, PlanNode, PlanSources, RenderBackend, RenderPlan,
-    RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
-    TileSink, admit,
+    RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink,
+    admit,
 };
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,10 +59,7 @@ impl SourceFault {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderError {
     Backend(BackendError),
-    Source {
-        key: SourceKey,
-        fault: SourceFault,
-    },
+    Source { key: SourceKey, fault: SourceFault },
     InvalidConfig(&'static str),
 }
 impl From<BackendError> for RenderError {
@@ -229,7 +226,10 @@ fn union(a: Option<Rect>, b: Option<Rect>) -> Result<Option<Rect>, RenderError> 
     }))
 }
 fn unit_rgb(rgba: [f32; 4]) -> Result<(), RenderError> {
-    if rgba.iter().all(|c| c.is_finite() && (0.0..=1.0).contains(c)) {
+    if rgba
+        .iter()
+        .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
+    {
         Ok(())
     } else {
         Err(unsupported("sample_range_outside_unit"))
@@ -277,11 +277,23 @@ fn verify_tile(
     if !planes.matches(input, plan_space) {
         return Err(source(key, SourceFault::Declared));
     }
-    plane_ok(planes.colour, planes.colour_stride_bytes, planes.width, planes.height, 12)
-        .and_then(|()| {
-            plane_ok(planes.alpha, planes.alpha_stride_bytes, planes.width, planes.height, 4)
-        })
-        .map_err(|f| source(key, f))?;
+    plane_ok(
+        planes.colour,
+        planes.colour_stride_bytes,
+        planes.width,
+        planes.height,
+        12,
+    )
+    .and_then(|()| {
+        plane_ok(
+            planes.alpha,
+            planes.alpha_stride_bytes,
+            planes.width,
+            planes.height,
+            4,
+        )
+    })
+    .map_err(|f| source(key, f))?;
     if hsk_studio_prism::profile_hash(planes.colour) != planes.colour_sha256
         || hsk_studio_prism::profile_hash(planes.alpha) != planes.alpha_sha256
     {
@@ -446,12 +458,12 @@ fn prepare<'a, V: VectorSource>(
                                     },
                                 )
                             })?;
-                            if let Some(region) = bounds[input].and_then(|b| {
-                                intersect(b, target.extent).ok().flatten()
-                            }) && !plane
-                                .bounds
-                                .contains(region)
-                                .map_err(|_| BackendError::Overflow)?
+                            if let Some(region) = bounds[input]
+                                .and_then(|b| intersect(b, target.extent).ok().flatten())
+                                && !plane
+                                    .bounds
+                                    .contains(region)
+                                    .map_err(|_| BackendError::Overflow)?
                             {
                                 return Err(source(m.key, SourceFault::MaskGap));
                             }
@@ -554,15 +566,18 @@ impl Eval<'_, '_> {
                 let result: &[[f32; 4]] = buffer;
                 self.composite(layer, region, chunk, dst, |_, _, at| (result[at], 1.0))
             }
-            PNode::Tile { planes, rect } => {
-                self.composite(layer, region, chunk, dst, |x, y, _| {
-                    (tile_pixel(planes, (x - rect.x) as u32, (y - rect.y) as u32), 1.0)
-                })
+            PNode::Tile { planes, rect } => self.composite(layer, region, chunk, dst, |x, y, _| {
+                (
+                    tile_pixel(planes, (x - rect.x) as u32, (y - rect.y) as u32),
+                    1.0,
+                )
+            }),
+            PNode::Solid { rgba } => {
+                self.composite(layer, region, chunk, dst, |_, _, _| (*rgba, 1.0))
             }
-            PNode::Solid { rgba } => self.composite(layer, region, chunk, dst, |_, _, _| (*rgba, 1.0)),
-            PNode::Vector { path, rgba } => {
-                self.composite(layer, region, chunk, dst, |x, y, _| (*rgba, path.coverage(x, y)))
-            }
+            PNode::Vector { path, rgba } => self.composite(layer, region, chunk, dst, |x, y, _| {
+                (*rgba, path.coverage(x, y))
+            }),
             PNode::Unused => Err(unsupported("plan_shape")),
         }
     }
@@ -646,10 +661,7 @@ impl Renderer {
         }
         let live = self.live.fetch_add(bytes, Ordering::AcqRel) + bytes;
         self.peak.fetch_max(live, Ordering::AcqRel);
-        Ok(ScratchLease {
-            owner: self,
-            bytes,
-        })
+        Ok(ScratchLease { owner: self, bytes })
     }
 
     /// Execute with the detailed internal error. Order: admission (cancel, stale revision, plan
@@ -673,7 +685,8 @@ impl Renderer {
         let extent = plan.target.extent;
         let (extent_x1, extent_y1) = end(extent)?;
         let side = i64::from(self.chunk);
-        let max_pixels = u64::from(self.chunk.min(extent.width)) * u64::from(self.chunk.min(extent.height));
+        let max_pixels =
+            u64::from(self.chunk.min(extent.width)) * u64::from(self.chunk.min(extent.height));
         let depth = prepared.need[prepared.root] as u64;
         let scratch_bytes = max_pixels
             .checked_mul(SCRATCH_BYTES_PER_PIXEL + GROUP_SCRATCH_BYTES_PER_PIXEL * depth)
@@ -794,4 +807,3 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             .map_err(BackendError::from)
     }
 }
-

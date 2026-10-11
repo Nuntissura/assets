@@ -225,7 +225,10 @@ struct Sources<'a> {
 }
 impl PlanSources for Sources<'_> {
     fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
-        self.tiles.iter().find(|(k, _)| *k == key.0).map(|(_, t)| *t)
+        self.tiles
+            .iter()
+            .find(|(k, _)| *k == key.0)
+            .map(|(_, t)| *t)
     }
     fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
         let (_, m) = self.masks.iter().find(|(k, _)| *k == key.0)?;
@@ -324,7 +327,13 @@ fn run<V: VectorSource + serde::Serialize + Send + Sync>(
     sources: &dyn PlanSources,
     sink: &mut Collect,
 ) -> Result<RenderReceipt, BackendError> {
-    renderer.execute(plan, &req(min), sources, &CancellationToken::default(), sink)
+    renderer.execute(
+        plan,
+        &req(min),
+        sources,
+        &CancellationToken::default(),
+        sink,
+    )
 }
 fn render<V: VectorSource + serde::Serialize + Send + Sync>(
     plan: &RenderPlan<V>,
@@ -384,7 +393,10 @@ fn known_alpha_mask_sample_math() {
             ],
             2,
         );
-        close(render(&p, 1, &Sources::default()).pixel(0, 0), [0.4, 0.3, 0.45, 1.0]);
+        close(
+            render(&p, 1, &Sources::default()).pixel(0, 0),
+            [0.4, 0.3, 0.45, 1.0],
+        );
         // Transparent source adds nothing; opacity 0 adds nothing.
         for (a, o) in [(0.0_f32, 1.0_f32), (1.0, 0.0)] {
             let p: RenderPlan = plan(
@@ -404,7 +416,10 @@ fn known_alpha_mask_sample_math() {
             );
             let sink = render(&p, 1, &Sources::default());
             let [r, g, b, alpha] = sink.pixel(0, 0);
-            assert_eq!([r, g, b, alpha].map(f32::to_bits), [0.2_f32, 0.4, 0.6, 1.0].map(f32::to_bits));
+            assert_eq!(
+                [r, g, b, alpha].map(f32::to_bits),
+                [0.2_f32, 0.4, 0.6, 1.0].map(f32::to_bits)
+            );
         }
 
         // Mask plane as coverage (u8: v/255; inverted: 1-c; u16: v/65535).
@@ -424,7 +439,10 @@ fn known_alpha_mask_sample_math() {
         let lerp = |c: f32| [0.5 * (1.0 - c) + c, 0.5 * (1.0 - c), 0.5 * (1.0 - c), 1.0];
         for (l, coverage) in [
             (masked, [0.0, 51.0 / 255.0, 1.0, 128.0 / 255.0]),
-            (inverted, [1.0, 1.0 - 51.0 / 255.0, 0.0, 1.0 - 128.0 / 255.0]),
+            (
+                inverted,
+                [1.0, 1.0 - 51.0 / 255.0, 0.0, 1.0 - 128.0 / 255.0],
+            ),
             (wide, [1.0, 0.0, 32768.0 / 65535.0, 0.0]),
         ] {
             let p: RenderPlan = plan(
@@ -482,7 +500,11 @@ fn known_alpha_mask_sample_math() {
             .collect();
         let extent = rect(0, 0, 20, 20);
         for (winding, want) in [(Winding::NonZero, 1.0), (Winding::EvenOdd, 0.0)] {
-            let sink = render(&plan(extent, vec![vector(&star, winding, 4)], 0), 8, &Sources::default());
+            let sink = render(
+                &plan(extent, vec![vector(&star, winding, 4)], 0),
+                8,
+                &Sources::default(),
+            );
             assert_eq!(sink.pixel(10, 10)[3], want, "{winding:?} centre");
             assert_eq!(sink.pixel(9, 9)[3], want, "{winding:?} centre");
             assert_eq!(sink.pixel(0, 0)[3], 0.0, "{winding:?} outside");
@@ -531,7 +553,10 @@ fn chunk_boundary_equals_independent_reference() {
             let c = tile_rgb(x, y);
             [c[0], c[1], c[2], 0.5]
         });
-        let checker = MaskData::u8(extent, |x, y| if (x + y).rem_euclid(2) == 1 { 255 } else { 0 });
+        let checker = MaskData::u8(
+            extent,
+            |x, y| if (x + y).rem_euclid(2) == 1 { 255 } else { 0 },
+        );
         let (r1, r2) = (rect(-2, 1, 3, 2), rect(0, 2, 3, 2));
         let (a1, b2) = ([0.5_f32, 0.25, 0.125], [0.75_f32, 0.5, 0.25]);
         let base = [0.25_f32, 0.5, 0.75];
@@ -631,8 +656,15 @@ fn chunk_boundary_equals_independent_reference() {
             let receipt = run(&renderer, &p, Exactness::Approximate, &sources, &mut sink).unwrap();
             assert_eq!(receipt.chunks, chunks, "chunk {chunk}");
             assert_eq!(receipt.nodes_executed, 8);
-            assert!(sink.writes.iter().all(|w| *w == 1), "each pixel exactly once");
-            assert!(sink.rects.iter().all(|r| r.width <= chunk && r.height <= chunk));
+            assert!(
+                sink.writes.iter().all(|w| *w == 1),
+                "each pixel exactly once"
+            );
+            assert!(
+                sink.rects
+                    .iter()
+                    .all(|r| r.width <= chunk && r.height <= chunk)
+            );
             assert_eq!(sink.colour, want_colour, "colour plane, chunk {chunk}");
             assert_eq!(sink.alpha, want_alpha, "alpha plane, chunk {chunk}");
             assert_eq!(renderer.live_scratch_bytes(), 0);
@@ -722,7 +754,13 @@ fn chunk_boundary_equals_independent_reference() {
         let mut sink = Collect::new(extent);
         let error = Renderer::new(3)
             .unwrap()
-            .execute_detailed(&p, &req(Exactness::Exact), &sources, &CancellationToken::default(), &mut sink)
+            .execute_detailed(
+                &p,
+                &req(Exactness::Exact),
+                &sources,
+                &CancellationToken::default(),
+                &mut sink,
+            )
             .unwrap_err();
         assert_eq!(
             error,
@@ -750,9 +788,11 @@ fn sink_error_cancel_releases_bytes() {
         let renderer = Renderer::new(2).unwrap();
         let token = CancellationToken::default();
         let none = Sources::default();
-        let go = |renderer: &Renderer, request: &ExecuteRequest, token: &CancellationToken, sink: &mut Collect| {
-            renderer.execute(&p, request, &none, token, sink)
-        };
+        let go =
+            |renderer: &Renderer,
+             request: &ExecuteRequest,
+             token: &CancellationToken,
+             sink: &mut Collect| { renderer.execute(&p, request, &none, token, sink) };
 
         // Sink fails on its second chunk: typed error, no receipt, scratch released.
         let mut sink = Collect::new(extent);
@@ -809,7 +849,14 @@ fn sink_error_cancel_releases_bytes() {
                 limit: 127
             }
         );
-        assert_eq!((sink.calls, tight.live_scratch_bytes(), tight.peak_scratch_bytes()), (0, 0, 0));
+        assert_eq!(
+            (
+                sink.calls,
+                tight.live_scratch_bytes(),
+                tight.peak_scratch_bytes()
+            ),
+            (0, 0, 0)
+        );
 
         // Each nested isolated group adds one RGBA scratch buffer: depth 2 -> 4 px x (32 + 2*16).
         let nested: RenderPlan = plan(
@@ -824,12 +871,17 @@ fn sink_error_cancel_releases_bytes() {
         );
         let deep = Renderer::new(2).unwrap();
         let mut sink = Collect::new(extent);
-        let receipt = deep.execute(&nested, &req(Exactness::Exact), &none, &token, &mut sink).unwrap();
+        let receipt = deep
+            .execute(&nested, &req(Exactness::Exact), &none, &token, &mut sink)
+            .unwrap();
         assert_eq!(receipt.peak_working_bytes, 4 * (32 + 2 * 16));
         assert_eq!(deep.live_scratch_bytes(), 0);
         assert_eq!(sink.pixel(4, 2), [0.5, 0.5, 0.5, 1.0]);
 
-        assert_eq!(Renderer::new(0).err(), Some(RenderError::InvalidConfig("chunk")));
+        assert_eq!(
+            Renderer::new(0).err(),
+            Some(RenderError::InvalidConfig("chunk"))
+        );
         assert_eq!(
             Renderer::new(MAX_CHUNK_SIDE + 1).err(),
             Some(RenderError::InvalidConfig("chunk"))
@@ -845,14 +897,26 @@ fn unsupported_op_stale_result() {
         let none = Sources::default();
         let check = |p: &RenderPlan, min: Exactness, sources: &dyn PlanSources| {
             let mut sink = Collect::new(extent);
-            let result = renderer.execute_detailed(p, &req(min), sources, &CancellationToken::default(), &mut sink);
-            assert_eq!(sink.calls, 0, "refused before the first sink call: {result:?}");
+            let result = renderer.execute_detailed(
+                p,
+                &req(min),
+                sources,
+                &CancellationToken::default(),
+                &mut sink,
+            );
+            assert_eq!(
+                sink.calls, 0,
+                "refused before the first sink call: {result:?}"
+            );
             assert_eq!(renderer.live_scratch_bytes(), 0);
             result.unwrap_err()
         };
         let backend = |e: BackendError| RenderError::Backend(e);
         let unsupported = |operator: &'static str, exactness: Exactness| {
-            backend(BackendError::Unsupported { operator, exactness })
+            backend(BackendError::Unsupported {
+                operator,
+                exactness,
+            })
         };
         let two = |mode: StudioBlendMode, opacity: f32| -> RenderPlan {
             plan(
@@ -862,7 +926,10 @@ fn unsupported_op_stale_result() {
                     solid(extent, [1.0, 0.0, 0.0, 1.0]),
                     group(
                         true,
-                        vec![layer(0, StudioBlendMode::Normal, 1.0), layer(1, mode, opacity)],
+                        vec![
+                            layer(0, StudioBlendMode::Normal, 1.0),
+                            layer(1, mode, opacity),
+                        ],
                     ),
                 ],
                 2,
@@ -875,8 +942,13 @@ fn unsupported_op_stale_result() {
         stale.expected_revision = 8;
         let mut sink = Collect::new(extent);
         assert_eq!(
-            renderer.execute(&ok, &stale, &none, &CancellationToken::default(), &mut sink).unwrap_err(),
-            BackendError::StaleRevision { expected: 8, found: 7 }
+            renderer
+                .execute(&ok, &stale, &none, &CancellationToken::default(), &mut sink)
+                .unwrap_err(),
+            BackendError::StaleRevision {
+                expected: 8,
+                found: 7
+            }
         );
         assert_eq!(sink.calls, 0);
 
@@ -888,14 +960,31 @@ fn unsupported_op_stale_result() {
             unsupported("hard_mix", Exactness::Approximate)
         );
         let mut sink = Collect::new(extent);
-        run(&renderer, &hard_mix, Exactness::Approximate, &none, &mut sink).unwrap();
+        run(
+            &renderer,
+            &hard_mix,
+            Exactness::Approximate,
+            &none,
+            &mut sink,
+        )
+        .unwrap();
         assert_eq!(
-            check(&two(StudioBlendMode::Average, 1.0), Exactness::Approximate, &none),
+            check(
+                &two(StudioBlendMode::Average, 1.0),
+                Exactness::Approximate,
+                &none
+            ),
             unsupported("average", Exactness::Unsupported)
         );
         assert!(matches!(
-            check(&two(StudioBlendMode::Behind, 1.0), Exactness::Approximate, &none),
-            RenderError::Backend(BackendError::InvalidPlan(PlanError::ModeNotApplicable { .. }))
+            check(
+                &two(StudioBlendMode::Behind, 1.0),
+                Exactness::Approximate,
+                &none
+            ),
+            RenderError::Backend(BackendError::InvalidPlan(
+                PlanError::ModeNotApplicable { .. }
+            ))
         ));
         // fill_opacity < 1 on a non-Normal mode is Approximate (unverified Photoshop semantics).
         let mut fill = layer(1, StudioBlendMode::Multiply, 1.0);
@@ -963,7 +1052,14 @@ fn unsupported_op_stale_result() {
         let key = SourceKey(1);
         let faulty = |fault| RenderError::Source { key, fault };
         let mut sink = Collect::new(extent);
-        run(&renderer, &good, Exactness::Exact, &one(tile.planes()), &mut sink).unwrap();
+        run(
+            &renderer,
+            &good,
+            Exactness::Exact,
+            &one(tile.planes()),
+            &mut sink,
+        )
+        .unwrap();
         assert_eq!(sink.pixel(1, 1), [0.5, 0.25, 0.125, 1.0]);
 
         assert_eq!(
@@ -972,9 +1068,27 @@ fn unsupported_op_stale_result() {
         );
         let planes = tile.planes();
         for (broken, fault) in [
-            (TilePlanes { colour_stride_bytes: 20, ..planes }, SourceFault::MalformedStride),
-            (TilePlanes { alpha_stride_bytes: 10, ..planes }, SourceFault::MalformedStride),
-            (TilePlanes { colour_sha256: [9; 32], ..planes }, SourceFault::Declared),
+            (
+                TilePlanes {
+                    colour_stride_bytes: 20,
+                    ..planes
+                },
+                SourceFault::MalformedStride,
+            ),
+            (
+                TilePlanes {
+                    alpha_stride_bytes: 10,
+                    ..planes
+                },
+                SourceFault::MalformedStride,
+            ),
+            (
+                TilePlanes {
+                    colour_sha256: [9; 32],
+                    ..planes
+                },
+                SourceFault::Declared,
+            ),
             (
                 TilePlanes {
                     space: ColourTag {
@@ -993,7 +1107,14 @@ fn unsupported_op_stale_result() {
         let mut tampered = tile.colour.clone();
         tampered[0] ^= 1;
         assert_eq!(
-            check(&good, Exactness::Exact, &one(TilePlanes { colour: &tampered, ..planes })),
+            check(
+                &good,
+                Exactness::Exact,
+                &one(TilePlanes {
+                    colour: &tampered,
+                    ..planes
+                })
+            ),
             faulty(SourceFault::HashMismatch)
         );
         let bad_value = |index: usize, value: f32, alpha: bool| {
@@ -1013,7 +1134,10 @@ fn unsupported_op_stale_result() {
             let p = with_tile(data.input(1, 0, 0));
             check(&p, Exactness::Exact, &one(data.planes()))
         };
-        assert_eq!(bad_value(0, f32::NAN, false), faulty(SourceFault::Nonfinite));
+        assert_eq!(
+            bad_value(0, f32::NAN, false),
+            faulty(SourceFault::Nonfinite)
+        );
         assert_eq!(bad_value(0, 1.5, true), faulty(SourceFault::AlphaRange));
         assert_eq!(
             bad_value(0, 1.5, false),
@@ -1023,7 +1147,11 @@ fn unsupported_op_stale_result() {
         let mut premultiplied = tile.input(1, 0, 0);
         premultiplied.alpha = AlphaConvention::Premultiplied;
         assert_eq!(
-            check(&with_tile(premultiplied), Exactness::Exact, &one(tile.planes())),
+            check(
+                &with_tile(premultiplied),
+                Exactness::Exact,
+                &one(tile.planes())
+            ),
             unsupported("alpha_premultiplied", Exactness::Unsupported)
         );
 
@@ -1048,7 +1176,14 @@ fn unsupported_op_stale_result() {
         };
         let mkey = SourceKey(4);
         let mut sink = Collect::new(extent);
-        run(&renderer, &with_mask(mask.input(4, false)), Exactness::Exact, &masks, &mut sink).unwrap();
+        run(
+            &renderer,
+            &with_mask(mask.input(4, false)),
+            Exactness::Exact,
+            &masks,
+            &mut sink,
+        )
+        .unwrap();
         assert_eq!(sink.pixel(0, 0), [1.0, 0.0, 0.0, 1.0]);
         let mut half = mask.input(4, false);
         half.density = 0.5;
@@ -1064,7 +1199,10 @@ fn unsupported_op_stale_result() {
         wrong_hash.sha256 = [3; 32];
         assert_eq!(
             check(&with_mask(wrong_hash), Exactness::Exact, &masks),
-            RenderError::Source { key: mkey, fault: SourceFault::Declared }
+            RenderError::Source {
+                key: mkey,
+                fault: SourceFault::Declared
+            }
         );
         // A mask that does not cover the whole layer inside the target is a gap, not a 0 or 1.
         let small = MaskData::u8(rect(0, 0, 1, 2), |_, _| 255);
@@ -1074,7 +1212,10 @@ fn unsupported_op_stale_result() {
         };
         assert_eq!(
             check(&with_mask(small.input(4, false)), Exactness::Exact, &gap),
-            RenderError::Source { key: mkey, fault: SourceFault::MaskGap }
+            RenderError::Source {
+                key: mkey,
+                fault: SourceFault::MaskGap
+            }
         );
     });
 }
@@ -1095,7 +1236,11 @@ fn receipt_binds_revision_profile_and_observe() {
             extent,
             vec![
                 solid(extent, [0.5, 0.5, 0.5, 1.0]),
-                vector(&[(10.0, 20.0), (14.0, 20.0), (12.0, 22.0)], Winding::NonZero, 4),
+                vector(
+                    &[(10.0, 20.0), (14.0, 20.0), (12.0, 22.0)],
+                    Winding::NonZero,
+                    4,
+                ),
                 group(
                     true,
                     vec![
@@ -1110,7 +1255,13 @@ fn receipt_binds_revision_profile_and_observe() {
         let token = CancellationToken::default();
         let mut sink = Collect::new(extent);
         let receipt = renderer
-            .execute(&p, &req(Exactness::Approximate), &Sources::default(), &token, &mut sink)
+            .execute(
+                &p,
+                &req(Exactness::Approximate),
+                &Sources::default(),
+                &token,
+                &mut sink,
+            )
             .unwrap();
         assert_eq!(receipt.plan_revision, 7);
         assert_eq!(receipt.plan_digest, p.digest().unwrap());
@@ -1118,10 +1269,20 @@ fn receipt_binds_revision_profile_and_observe() {
         if let PlanNode::Vector(v) = &mut moved.nodes[1] {
             v.anchors[0] = anchor(px(11.0, 20.0), px(0.0, 0.0), px(0.0, 0.0));
         }
-        assert_ne!(receipt.plan_digest, moved.digest().unwrap(), "digest binds the vector payload");
+        assert_ne!(
+            receipt.plan_digest,
+            moved.digest().unwrap(),
+            "digest binds the vector payload"
+        );
         assert_eq!(receipt.target.space, tag());
-        assert_eq!(receipt.target.space.profile_sha256, profile_hash(b"working-profile"));
-        assert_eq!((receipt.target.format, receipt.target.alpha), (SampleFormat::RgbF32Le, AlphaConvention::Straight));
+        assert_eq!(
+            receipt.target.space.profile_sha256,
+            profile_hash(b"working-profile")
+        );
+        assert_eq!(
+            (receipt.target.format, receipt.target.alpha),
+            (SampleFormat::RgbF32Le, AlphaConvention::Straight)
+        );
         assert_eq!(receipt.region, extent);
         assert_eq!(receipt.backend.name, "hsk-studio-render-cpu");
         assert_eq!(receipt.backend.version, "0.1");
@@ -1142,14 +1303,27 @@ fn receipt_binds_revision_profile_and_observe() {
         assert_eq!(class("vector"), Some(Exactness::Approximate));
         assert_eq!(class("solid"), Some(Exactness::Exact));
         assert_eq!(class("multiply"), Some(Exactness::Exact));
-        assert_eq!(class("group_isolated"), None, "root is not referenced by a layer");
+        assert_eq!(
+            class("group_isolated"),
+            None,
+            "root is not referenced by a layer"
+        );
         // The same plan is refused when the caller demands an Exact floor.
         let mut refused = Collect::new(extent);
         assert_eq!(
             renderer
-                .execute(&p, &req(Exactness::Exact), &Sources::default(), &token, &mut refused)
+                .execute(
+                    &p,
+                    &req(Exactness::Exact),
+                    &Sources::default(),
+                    &token,
+                    &mut refused
+                )
                 .unwrap_err(),
-            BackendError::Unsupported { operator: "vector", exactness: Exactness::Approximate }
+            BackendError::Unsupported {
+                operator: "vector",
+                exactness: Exactness::Approximate
+            }
         );
         assert_eq!(refused.calls, 0);
 
@@ -1162,7 +1336,10 @@ fn receipt_binds_revision_profile_and_observe() {
         let mut frames = Frames(vec![]);
         let ok = Ok(receipt);
         let emitted = report(&ok, 42, 7, &token, &mut observe_ok, &mut frames).unwrap();
-        assert_eq!((emitted.outcome, emitted.revision, emitted.correlation_id), (Outcome::Success, 7, 42));
+        assert_eq!(
+            (emitted.outcome, emitted.revision, emitted.correlation_id),
+            (Outcome::Success, 7, 42)
+        );
         assert_eq!(frames.0.len(), 1);
         assert_eq!(frames.0[0].0, DeliveryClass::Terminal);
         assert!(observe_ok.state().terminal_closed);
@@ -1173,14 +1350,35 @@ fn receipt_binds_revision_profile_and_observe() {
         for (error, want) in [
             (BackendError::Canceled, Outcome::Canceled),
             (
-                BackendError::Unsupported { operator: "x", exactness: Exactness::Unsupported },
+                BackendError::Unsupported {
+                    operator: "x",
+                    exactness: Exactness::Unsupported,
+                },
                 Outcome::Failure(FailureCode::Unsupported),
             ),
-            (BackendError::StaleRevision { expected: 8, found: 7 }, Outcome::Failure(FailureCode::Validation)),
-            (BackendError::SourceMismatch(SourceKey(1)), Outcome::Failure(FailureCode::Validation)),
-            (BackendError::Sink(SinkError::Unavailable), Outcome::Failure(FailureCode::Unavailable)),
-            (BackendError::DeadlineExceeded, Outcome::Failure(FailureCode::Unavailable)),
-            (BackendError::UnresolvedSource(SourceKey(1)), Outcome::Failure(FailureCode::Unavailable)),
+            (
+                BackendError::StaleRevision {
+                    expected: 8,
+                    found: 7,
+                },
+                Outcome::Failure(FailureCode::Validation),
+            ),
+            (
+                BackendError::SourceMismatch(SourceKey(1)),
+                Outcome::Failure(FailureCode::Validation),
+            ),
+            (
+                BackendError::Sink(SinkError::Unavailable),
+                Outcome::Failure(FailureCode::Unavailable),
+            ),
+            (
+                BackendError::DeadlineExceeded,
+                Outcome::Failure(FailureCode::Unavailable),
+            ),
+            (
+                BackendError::UnresolvedSource(SourceKey(1)),
+                Outcome::Failure(FailureCode::Unavailable),
+            ),
         ] {
             let mut observe = observe();
             let mut frames = Frames(vec![]);
@@ -1190,13 +1388,23 @@ fn receipt_binds_revision_profile_and_observe() {
         }
 
         // Descriptor is valid JSON and its stated limits equal the code constants.
-        let descriptor: serde_json::Value = serde_json::from_str(hsk_studio_render_cpu::DESCRIPTOR).unwrap();
+        let descriptor: serde_json::Value =
+            serde_json::from_str(hsk_studio_render_cpu::DESCRIPTOR).unwrap();
         assert_eq!(descriptor["module"], "STUDIO-MODULE-RENDER_CPU");
-        assert_eq!(descriptor["renderer"], format!("{RENDERER_NAME}/{RENDERER_VERSION}"));
+        assert_eq!(
+            descriptor["renderer"],
+            format!("{RENDERER_NAME}/{RENDERER_VERSION}")
+        );
         assert_eq!(descriptor["limits"]["anchors_per_path"], MAX_ANCHORS);
         assert_eq!(descriptor["limits"]["chunk_side_max"], MAX_CHUNK_SIDE);
-        assert_eq!(descriptor["limits"]["default_chunk_side"], DEFAULT_CHUNK_SIDE);
-        assert_eq!(descriptor["limits"]["scratch_bytes_per_chunk_pixel"], SCRATCH_BYTES_PER_PIXEL);
+        assert_eq!(
+            descriptor["limits"]["default_chunk_side"],
+            DEFAULT_CHUNK_SIDE
+        );
+        assert_eq!(
+            descriptor["limits"]["scratch_bytes_per_chunk_pixel"],
+            SCRATCH_BYTES_PER_PIXEL
+        );
         assert_eq!(
             descriptor["limits"]["scratch_bytes_per_isolated_group_depth_pixel"],
             plan_sink::GROUP_SCRATCH_BYTES_PER_PIXEL

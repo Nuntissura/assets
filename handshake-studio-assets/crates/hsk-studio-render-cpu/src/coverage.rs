@@ -2,10 +2,10 @@
 //! on an N x N pixel-centred grid. Coverage is `hits / N^2`, so a pixel fully inside is exactly 1.0,
 //! fully outside exactly 0.0, and an axis-aligned half-pixel edge exactly 0.5 for even N.
 use crate::plan_sink::{RenderError, unsupported};
-use hsk_studio_pigment::render_plan::BackendError;
 use hsk_studio_accord::Unit;
 use hsk_studio_nib::{Anchor, Point, Winding};
 use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::render_plan::BackendError;
 use kurbo::{BezPath, Shape};
 
 /// Magnitude cap (pixels) so integer bounds and sample coordinates stay exact in binary64.
@@ -86,8 +86,10 @@ impl PreparedPath {
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
             return Err(unsupported("vector_geometry"));
         }
-        let width = u32::try_from((x1 - x0) as i64).map_err(|_| RenderError::Backend(BackendError::Overflow))?;
-        let height = u32::try_from((y1 - y0) as i64).map_err(|_| RenderError::Backend(BackendError::Overflow))?;
+        let width = u32::try_from((x1 - x0) as i64)
+            .map_err(|_| RenderError::Backend(BackendError::Overflow))?;
+        let height = u32::try_from((y1 - y0) as i64)
+            .map_err(|_| RenderError::Backend(BackendError::Overflow))?;
         Ok(Self {
             path,
             bounds: Rect {

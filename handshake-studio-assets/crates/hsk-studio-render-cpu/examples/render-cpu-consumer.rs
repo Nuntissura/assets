@@ -2,12 +2,12 @@
 //! hand-computed oracle (backdrop 0.2/0.4/0.6, red source at opacity 0.5) through the pigment
 //! `RenderBackend` port and fails on mismatch.
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, BlendSpace, ColourTag, ExecuteRequest, Exactness, Group, Layer,
-    NoVector, OutputTarget, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan,
-    SampleFormat, SinkError, SourceKey, StudioBlendMode, TilePlanes, TileSink,
+    AlphaConvention, BlendSpace, ColourTag, Exactness, ExecuteRequest, Group, Layer, NoVector,
+    OutputTarget, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan, SampleFormat,
+    SinkError, SourceKey, StudioBlendMode, TilePlanes, TileSink,
 };
+use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_render_cpu::{DESCRIPTOR, Renderer};
 use std::env;
 
@@ -79,10 +79,7 @@ fn selftest() -> Result<(), String> {
                 },
                 PlanNode::Group(Group {
                     isolated: true,
-                    layers: vec![
-                        layer(0, StudioBlendMode::Normal, 1.0),
-                        layer(1, mode, 0.5),
-                    ],
+                    layers: vec![layer(0, StudioBlendMode::Normal, 1.0), layer(1, mode, 0.5)],
                 }),
             ],
             root: PlanNodeId(2),
@@ -98,10 +95,19 @@ fn selftest() -> Result<(), String> {
             alpha: vec![],
         };
         let receipt = Renderer::default()
-            .execute(&plan, &request, &NoSources, &CancellationToken::default(), &mut sink)
+            .execute(
+                &plan,
+                &request,
+                &NoSources,
+                &CancellationToken::default(),
+                &mut sink,
+            )
             .map_err(|e| e.code().to_owned())?;
         let (c, a) = (f32s(&sink.colour), f32s(&sink.alpha));
-        let ok = c.iter().zip(expect).all(|(got, want)| (got - want).abs() < 1e-6)
+        let ok = c
+            .iter()
+            .zip(expect)
+            .all(|(got, want)| (got - want).abs() < 1e-6)
             && (a[0] - 1.0).abs() < 1e-6;
         println!(
             "{} colour={c:?} alpha={a:?} chunks={} nodes={} lowest={}",
@@ -119,7 +125,12 @@ fn selftest() -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["--descriptor"] | ["--help"] => println!("{DESCRIPTOR}"),
         ["--selftest"] => {
             if let Err(error) = selftest() {
