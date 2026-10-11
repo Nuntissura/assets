@@ -5,11 +5,13 @@
 //! never faked, skipped or treated as Normal.
 use crate::{
     CompositeError,
-    blend::{Applicability, BlendError, BlendReceipt},
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step},
 };
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Length, Payload, ProfileBinding, Resolution, Snapshot, TileRef};
+use hsk_studio_pigment::blend_math::{
+    Applicability, BlendError, BlendSpace, Exactness, ExactnessLedger, StudioBlendMode,
+};
 use hsk_studio_pigment::{Grid, Rect};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,12 +38,13 @@ pub struct Unavailable {
 }
 
 /// Receipt of a static evaluation (STU-ARC-015 shape, minimal): revision, declared blend space,
-/// whether the blending profile is bound, and the lowest operator fidelity class.
+/// whether the blending profile is bound, and the exactness ledger (lowest class + operators).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderReceipt {
     pub revision: u64,
     pub blend_profile_bound: bool,
-    pub blend: BlendReceipt,
+    pub blend_space: BlendSpace,
+    pub exactness: ExactnessLedger,
     /// Always true: this evaluator never pulls temporal, audio or native providers (STU-CMP-093).
     pub static_closure: bool,
 }
@@ -80,7 +83,7 @@ fn px(l: &Length) -> Option<u32> {
     }
 }
 
-fn union(current: Option<Rect>, next: Rect) -> Result<Option<Rect>, CompositeError> {
+pub(crate) fn union(current: Option<Rect>, next: Rect) -> Result<Option<Rect>, CompositeError> {
     let Some(a) = current else {
         return Ok(Some(next));
     };
@@ -101,8 +104,9 @@ fn union(current: Option<Rect>, next: Rect) -> Result<Option<Rect>, CompositeErr
     }
 }
 
-/// Tile (column, row) lies on a grid of the layer's largest tile size; each tile keeps its own size.
-fn raster_extent(tiles: &[TileRef]) -> Result<Option<Rect>, CompositeError> {
+/// Placement rectangle of every tile, in tile order. A tile (column, row) lies on a grid of the
+/// layer's largest tile size; each tile keeps its own size. Shared by extents and plan lowering.
+pub(crate) fn tile_rects(tiles: &[TileRef]) -> Result<Vec<Rect>, CompositeError> {
     let mut grid_w = 0u32;
     let mut grid_h = 0u32;
     for t in tiles {
@@ -118,23 +122,28 @@ fn raster_extent(tiles: &[TileRef]) -> Result<Option<Rect>, CompositeError> {
         tile_width: grid_w,
         tile_height: grid_h,
     };
-    let mut extent = None;
+    let mut rects = Vec::with_capacity(tiles.len());
     for t in tiles {
-        let (Some(w), Some(h)) = (px(&t.width), px(&t.height)) else {
+        let (Some(width), Some(height)) = (px(&t.width), px(&t.height)) else {
             return Err(CompositeError::UnsupportedDescriptor("tile_size".into()));
         };
         let cell = grid
             .bounds(t.column, t.row)
             .map_err(|_| CompositeError::Overflow)?;
-        extent = union(
-            extent,
-            Rect {
-                x: cell.x,
-                y: cell.y,
-                width: w,
-                height: h,
-            },
-        )?;
+        rects.push(Rect {
+            x: cell.x,
+            y: cell.y,
+            width,
+            height,
+        });
+    }
+    Ok(rects)
+}
+
+fn raster_extent(tiles: &[TileRef]) -> Result<Option<Rect>, CompositeError> {
+    let mut extent = None;
+    for rect in tile_rects(tiles)? {
+        extent = union(extent, rect)?;
     }
     Ok(extent)
 }
@@ -147,6 +156,60 @@ fn resolution_key(r: Resolution) -> &'static str {
         Resolution::Unauthorized => "unauthorized",
         Resolution::Unsupported => "unsupported",
     }
+}
+
+/// Typed capability check for the step's blend mode (STU-RAS-155): `pass_through` belongs to
+/// groups, `behind`/`clear` are tool-only and unrecovered modes have no function.
+fn check_applicability(mode: StudioBlendMode, composite: bool) -> Result<(), CompositeError> {
+    match mode.facts().applicability {
+        Applicability::Layer => Ok(()),
+        Applicability::GroupOnly if composite => Ok(()),
+        Applicability::GroupOnly => Err(BlendError::GroupOnly(mode).into()),
+        Applicability::ToolOnly => Err(BlendError::ToolOnly(mode).into()),
+        Applicability::Unspecified => Err(BlendError::Unsupported(mode).into()),
+    }
+}
+
+/// Everything a step uses, keyed like pigment's `Operator`s so ledgers read the same way.
+fn record_appearance(ledger: &mut ExactnessLedger, step: &Step) {
+    if matches!(step, Step::Source { .. }) {
+        ledger.record("source", Exactness::Exact);
+    }
+    let a = step.appearance();
+    let facts = a.mode.facts();
+    ledger.record(facts.key, facts.exactness);
+    if a.fill_opacity < 1.0 && a.mode != StudioBlendMode::Normal {
+        ledger.record("fill_opacity", Exactness::Approximate);
+    }
+    if a.opacity < 1.0 && a.mode == StudioBlendMode::PassThrough {
+        ledger.record("group_pass_through_opacity", Exactness::Approximate);
+    }
+    if a.clipped {
+        ledger.record("clipping", Exactness::Unsupported);
+    }
+}
+
+/// Why the step cannot be rendered although its payload can: clipping has no route in the render
+/// IR yet, and an enabled mask without coverage tiles has unspecified meaning (not guessed).
+fn appearance_block(
+    layers: &BTreeMap<&str, &hsk_studio_folio::StudioLayer>,
+    step: &Step,
+) -> Option<&'static str> {
+    let a = step.appearance();
+    if a.clipped {
+        return Some("clipping_unsupported");
+    }
+    if a.mask {
+        let tiles = layers
+            .get(step.addr().layer_id.as_str())
+            .and_then(|l| l.appearance.as_ref())
+            .and_then(|ap| ap.mask.as_ref())
+            .map_or(0, |m| m.tiles.len());
+        if tiles == 0 {
+            return Some("mask_empty");
+        }
+    }
+    None
 }
 
 /// Evaluate `plan` against `snap`. Fails with `StaleRevision` when the plan and snapshot revisions
@@ -172,11 +235,16 @@ pub fn evaluate(
         return Err(CompositeError::UnsupportedDescriptor("duplicate_step".into()));
     }
 
-    let mut blend = BlendReceipt::new(plan.blend_space);
+    let mut ledger = ExactnessLedger::default();
     let mut evals: Vec<StepEval> = Vec::with_capacity(plan.steps.len());
     let mut seen: BTreeMap<&NodeAddr, usize> = BTreeMap::new();
     for step in &plan.steps {
         cancel.check().map_err(|_| CompositeError::Canceled)?;
+        check_applicability(
+            step.appearance().mode,
+            matches!(step, Step::Composite { .. }),
+        )?;
+        record_appearance(&mut ledger, step);
         let eval = match step {
             Step::Source {
                 addr,
@@ -184,7 +252,6 @@ pub fn evaluate(
                 visible,
                 ..
             } => {
-                blend.record("source", step.fidelity());
                 let payload = layers.get(addr.layer_id.as_str()).map(|l| &l.payload);
                 let (extent, status) = match (value, payload) {
                     (SourceValue::Image, Some(Payload::Raster { tiles })) => {
@@ -211,20 +278,8 @@ pub fn evaluate(
                 addr,
                 inputs,
                 visible,
-                mode,
                 ..
             } => {
-                let info = mode.info();
-                match info.applicability {
-                    Applicability::Layer | Applicability::GroupOnly => {}
-                    Applicability::ToolOnly => {
-                        return Err(BlendError::ToolOnly(*mode).into());
-                    }
-                    Applicability::Unspecified => {
-                        return Err(BlendError::Unsupported(*mode).into());
-                    }
-                }
-                blend.record(info.key, info.fidelity);
                 let mut extent = None;
                 let mut blocked = None;
                 for input in inputs {
@@ -266,6 +321,15 @@ pub fn evaluate(
                 }
             }
         };
+        // Appearance the renderer cannot honour yet makes the step unavailable (never ignored).
+        let eval = match appearance_block(&layers, step) {
+            Some(reason) => StepEval {
+                extent: None,
+                status: StepStatus::Unavailable(reason.into()),
+                ..eval
+            },
+            None => eval,
+        };
         seen.insert(step.addr(), evals.len());
         evals.push(eval);
     }
@@ -297,7 +361,8 @@ pub fn evaluate(
         receipt: RenderReceipt {
             revision: plan.revision,
             blend_profile_bound: plan.blend_profile_bound,
-            blend,
+            blend_space: plan.blend_space,
+            exactness: ledger,
             static_closure: true,
         },
     })

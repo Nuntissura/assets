@@ -1,133 +1,19 @@
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_composite::{
-    BlendError, BlendMode, BlendSpace, CompositeError, DESCRIPTOR, Fidelity, Limits, LoweredPlan,
-    NodeAddr, Step, StepStatus, eval_outcome, evaluate, layer_projection, lower, node_projection,
+    BlendError, StudioBlendMode, BlendSpace, CompositeError, DESCRIPTOR, Exactness, Limits,
+    Step, StepStatus, eval_outcome, evaluate, layer_projection, lower, node_projection,
     outcome_of, report,
 };
 use hsk_studio_folio::{
-    Budget, Inspection, PortAddress, Resolution, Resolver, Snapshot, TileRef, Unresolved,
-    inspect_bytes,
+    PortAddress, Unresolved,
 };
 use hsk_studio_observe::{
     Budget as ObserveBudget, DeliveryClass, DeliveryError, FailureCode, Observe, Outcome, SinkPort,
 };
 use serde_json::{Value, json};
 
-fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
-    use std::{
-        panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-        sync::mpsc,
-        time::Duration,
-    };
-    let (sender, receiver) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let outcome = catch_unwind(AssertUnwindSafe(body));
-        let _ = sender.send(outcome);
-    });
-    match receiver.recv_timeout(Duration::from_secs(30)) {
-        Ok(Ok(())) => {}
-        Ok(Err(p)) => resume_unwind(p),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            panic!("case {name} exceeded declared 30-second deadline")
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            panic!("case {name} lost deadline worker result")
-        }
-    }
-}
-
-fn identity(prefix: &str, n: u8) -> String {
-    format!("{prefix}-019abcde-0000-7000-8000-{n:012x}")
-}
-fn address(n: u8, op: &str, port: &str) -> Value {
-    json!({"layer_id":identity("SLYR",n),"operation_key":op,"port_key":port})
-}
-fn source(n: u8, ty: &str) -> Value {
-    json!({"layer_id":identity("SLYR",n),"operation_key":"source","operation_kind":"source","inputs":[],"outputs":[{"port_key":"out","value_type":ty,"cardinality":"one","semantic":"source"}]})
-}
-fn composite(n: u8) -> Value {
-    json!({"layer_id":identity("SLYR",n),"operation_key":"mix","operation_kind":"composite","inputs":[{"port_key":"inputs","value_type":"image","cardinality":"many","semantic":"ordered_composite"}],"outputs":[{"port_key":"out","value_type":"image","cardinality":"one","semantic":"composite_result"}]})
-}
-fn layer(n: u8, kind: &str, payload: Value) -> Value {
-    json!({"schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",n),"name":format!("layer-{n}"),"parent":null,"kind":kind,"payload":payload,"visible":true})
-}
-fn edge(source: Value, target: Value, n: u64) -> Value {
-    json!({"source":source,"target":target,"dependency_kind":"data","input_ordinal":n})
-}
-fn tile(layer_n: u8, key: &str, column: i64, row: i64, w: u32, h: u32) -> Value {
-    json!({"object_key":key,"layer_id":identity("SLYR",layer_n),"column":column,"row":row,
-        "width":{"value":w,"unit":"px"},"height":{"value":h,"unit":"px"},"format":"caller-format",
-        "colour_profile_id":identity("SCPF",1),"schema_id":"hsk.studio.raster_tile@1",
-        "content_digest":{"algorithm":"sha256","digest":"00"},"artifact_manifest_id":"manifest-1"})
-}
-/// Folio foundation fixture: group 1 composites rasters 2 then 3 (edges stored out of order);
-/// vector 4 and text 5 are standalone sources.
-fn mixed() -> Value {
-    json!({
-        "schema_id":"hsk.studio.document@1","document_id":identity("SDOC",1),"revision":7,"geometry_unit":"mm","colour_mode":3,"bits_per_channel":8,
-        "working_space_rgb":null,"working_space_cmyk":null,"working_space_gray":null,"working_space_spot":null,"blending_space":null,
-        "artboards":[],"page_spreads":[],
-        "layers":[layer(1,"group",json!({"payload_kind":"group"})),layer(2,"raster",json!({"payload_kind":"raster","tiles":[]})),layer(3,"raster",json!({"payload_kind":"raster","tiles":[]})),layer(4,"vector",json!({"payload_kind":"vector","path_ids":[identity("SVPT",1)]})),layer(5,"text",json!({"payload_kind":"text","story_id":identity("STXT",1)}))],
-        "graph":{"schema_id":"hsk.studio.layer_graph@1","operations":[source(2,"image"),source(3,"image"),source(4,"vector"),source(5,"text"),composite(1)],"edges":[edge(address(3,"source","out"),address(1,"mix","inputs"),1),edge(address(2,"source","out"),address(1,"mix","inputs"),0)],"outputs":[address(1,"mix","out"),address(4,"source","out"),address(5,"source","out")]}
-    })
-}
-fn assign_all_profiles(v: &mut Value) {
-    for name in [
-        "working_space_rgb",
-        "working_space_cmyk",
-        "working_space_gray",
-        "working_space_spot",
-        "blending_space",
-    ] {
-        v[name] = json!(identity("SCPF", 1));
-    }
-}
-
-struct Available;
-impl Resolver for Available {
-    fn primitive(&self, _: &str, _: &str) -> Resolution {
-        Resolution::Available
-    }
-    fn profile(&self, _: &str) -> Resolution {
-        Resolution::Available
-    }
-    fn tile(&self, _: &TileRef) -> Resolution {
-        Resolution::Available
-    }
-    fn format_supported(&self, _: &str) -> bool {
-        true
-    }
-    fn primitive_layer_binding(&self, _: &str, _: &str) -> bool {
-        false
-    }
-}
-fn open_bytes(bytes: &[u8], resolver: &dyn Resolver) -> Snapshot {
-    match inspect_bytes(bytes, Budget::default(), &CancellationToken::default(), resolver).unwrap()
-    {
-        Inspection::Editable(s) => s,
-        Inspection::ReadOnly(_) => panic!("typed document became read-only"),
-    }
-}
-fn open(v: &Value) -> Snapshot {
-    open_bytes(&serde_json::to_vec(v).unwrap(), &Available)
-}
-fn plan_of(s: &Snapshot) -> LoweredPlan {
-    lower(
-        s,
-        s.document().revision,
-        BlendSpace::Encoded,
-        &Limits::default(),
-        &CancellationToken::default(),
-    )
-    .unwrap()
-}
-fn addr(n: u8, op: &str, port: &str) -> NodeAddr {
-    NodeAddr {
-        layer_id: identity("SLYR", n),
-        operation_key: op.into(),
-        port_key: port.into(),
-    }
-}
+mod common;
+use common::*;
 
 #[test]
 fn layer_node_projection_same_authored_ids() {
@@ -229,13 +115,13 @@ fn fanout_cycle_refusal_cancel_stale() {
 
         // Refusals: tool-only / unrecovered composite modes are typed errors, never Normal.
         for (mode, expected) in [
-            (BlendMode::Behind, BlendError::ToolOnly(BlendMode::Behind)),
-            (BlendMode::Average, BlendError::Unsupported(BlendMode::Average)),
+            (StudioBlendMode::Behind, BlendError::ToolOnly(StudioBlendMode::Behind)),
+            (StudioBlendMode::Average, BlendError::Unsupported(StudioBlendMode::Average)),
         ] {
             let mut refused = plan.clone();
             for s in &mut refused.steps {
-                if let Step::Composite { mode: m, .. } = s {
-                    *m = mode;
+                if let Step::Composite { appearance: a, .. } = s {
+                    a.mode = mode;
                 }
             }
             assert_eq!(evaluate(&refused, &snap, &token), Err(CompositeError::Blend(expected)));
@@ -279,7 +165,7 @@ fn fanout_cycle_refusal_cancel_stale() {
             Outcome::Failure(FailureCode::Validation)
         );
         assert_eq!(
-            outcome_of::<()>(&Err(CompositeError::Blend(BlendError::ToolOnly(BlendMode::Clear)))),
+            outcome_of::<()>(&Err(CompositeError::Blend(BlendError::ToolOnly(StudioBlendMode::Clear)))),
             Outcome::Failure(FailureCode::Unsupported)
         );
     });
@@ -311,7 +197,6 @@ fn static_closure_no_temporal_provider() {
             "hsk-studio-accord",
             "hsk-studio-folio",
             "hsk-studio-pigment",
-            "hsk-studio-prism",
             "hsk-studio-observe",
             "serde_json",
         ];
@@ -320,7 +205,15 @@ fn static_closure_no_temporal_provider() {
         let d: Value = serde_json::from_str(DESCRIPTOR).unwrap();
         assert_eq!(d["owner"], "STUDIO-MODULE-COMPOSITE");
         assert_eq!(d["limits"]["case_seconds"], 30);
-        assert_eq!(d["model"]["blend"]["modes"], 35);
+        assert_eq!(d["version"], 2);
+        assert!(d["model"]["owner_of_blend_maths"].as_str().unwrap().contains("hsk_studio_pigment::blend_math"));
+        // CX-CAP-001: composite keeps no second copy of the blend enumeration or maths.
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
+            let text = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            for banned in ["enum StudioBlendMode", "enum BlendMode", "MODE_TABLE", "fn blend_rgb", "fn composite_over"] {
+                assert!(!text.contains(banned), "second blend owner: {banned}");
+            }
+        }
     });
 }
 
@@ -387,14 +280,14 @@ fn extents_hidden_and_unavailable() {
         ready["graph"]["operations"] = json!([source(2, "image"), source(3, "image"), composite(1)]);
         ready["graph"]["outputs"] = json!([address(1, "mix", "out")]);
         let ready_snap = open(&ready);
-        let linear = lower(&ready_snap, 7, BlendSpace::Linear, &Limits::default(), &token).unwrap();
+        let linear = lower(&ready_snap, 7, BlendSpace::LinearLight, &Limits::default(), &token).unwrap();
         assert!(linear.blend_profile_bound);
         let ready_report = evaluate(&linear, &ready_snap, &token).unwrap();
         assert_eq!(ready_report.require_ready(), Ok(()));
         assert_eq!(eval_outcome(&Ok(ready_report.clone())), Outcome::Success);
         // The declared blend space and lowest fidelity travel in the receipt.
-        assert_eq!(ready_report.receipt.blend.space, BlendSpace::Linear);
-        assert_eq!(ready_report.receipt.blend.lowest, Fidelity::Exact);
+        assert_eq!(ready_report.receipt.blend_space, BlendSpace::LinearLight);
+        assert_eq!(ready_report.receipt.exactness.lowest, Exactness::Exact);
         assert!(ready_report.receipt.blend_profile_bound);
         assert!(ready_report.receipt.static_closure);
     });
@@ -409,26 +302,25 @@ impl SinkPort for Collector {
 }
 
 #[test]
-fn receipt_lowest_fidelity_and_observe_report() {
-    bounded_case("receipt_lowest_fidelity_and_observe_report", || {
+fn receipt_lowest_exactness_and_observe_report() {
+    bounded_case("receipt_lowest_exactness_and_observe_report", || {
         let token = CancellationToken::default();
         let snap = open(&mixed());
         let mut plan = plan_of(&snap);
         // An approximate composite operator lowers the receipt's class; it never reads as Exact.
         for s in &mut plan.steps {
-            if let Step::Composite { mode, .. } = s {
-                *mode = BlendMode::LinearBurn;
+            if let Step::Composite { appearance, .. } = s {
+                appearance.mode = StudioBlendMode::LinearBurn;
             }
         }
         let report_data = evaluate(&plan, &snap, &token).unwrap();
-        assert_eq!(report_data.receipt.blend.lowest, Fidelity::Approximate);
+        assert_eq!(report_data.receipt.exactness.lowest, Exactness::Approximate);
         assert!(report_data
             .receipt
-            .blend
-            .operators
+            .exactness.operators
             .iter()
-            .any(|o| o.key == "linear_burn" && o.fidelity == Fidelity::Approximate));
-        assert_eq!(plan.lowest_fidelity(), Fidelity::Approximate);
+            .any(|o| o.key == "linear_burn" && o.exactness == Exactness::Approximate));
+        assert_eq!(plan.lowest_exactness(), Exactness::Approximate);
 
         // Terminal outcome delivery through the caller-owned sink; no project text is sent.
         let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();

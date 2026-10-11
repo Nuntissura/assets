@@ -1,6 +1,6 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_composite::{
-    BlendSpace, DESCRIPTOR, Limits, Step, StepStatus, blend::MODE_TABLE, evaluate, lower,
+    BlendSpace, DESCRIPTOR, Limits, MODES, Step, StepStatus, evaluate, lower,
 };
 use hsk_studio_folio::{Budget, Inspection, Unresolved, inspect_bytes};
 use std::{
@@ -18,12 +18,12 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     if args == ["--modes"] {
-        for row in MODE_TABLE {
+        for row in MODES {
             println!(
                 "{:>2} {:<18} {:<11} {}",
                 row.mode.discriminant(),
                 row.key,
-                row.fidelity.key(),
+                row.exactness.key(),
                 row.reference
             );
         }
@@ -32,6 +32,7 @@ fn run() -> Result<(), String> {
     let mut doc = None;
     let mut expected = None;
     let mut space = BlendSpace::Encoded;
+    let usage = "usage: composite-consumer --descriptor | --modes | --doc FILE --expected-revision N [--space encoded|linear_light] [--cancel]";
     let mut cancel = false;
     let mut i = 0;
     while i < args.len() {
@@ -46,12 +47,14 @@ fn run() -> Result<(), String> {
             "--expected-revision" => {
                 expected = Some(value.parse::<u64>().map_err(|_| "invalid revision")?)
             }
-            "--space" => space = BlendSpace::parse(value).ok_or("space must be encoded|linear")?,
+            "--space" => {
+                space = BlendSpace::parse(value).ok_or("space must be encoded|linear_light")?
+            }
             _ => return Err("unknown flag".into()),
         }
         i += 2;
     }
-    let path = doc.ok_or("usage: composite-consumer --descriptor | --modes | --doc FILE --expected-revision N [--space encoded|linear] [--cancel]")?;
+    let path = doc.ok_or(usage)?;
     let expected = expected.ok_or("expected revision required")?;
     let mut bytes = Vec::new();
     File::open(path)
@@ -80,7 +83,7 @@ fn run() -> Result<(), String> {
         plan.revision,
         plan.blend_space.key(),
         plan.blend_profile_bound,
-        report.receipt.blend.lowest.key()
+        report.receipt.exactness.lowest.key()
     );
     for (step, eval) in plan.steps.iter().zip(&report.steps) {
         let kind = match step {

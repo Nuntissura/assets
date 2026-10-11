@@ -5,14 +5,12 @@
 //!
 //! Order convention (SPEC GAP, UNVERIFIED against Photoshop): `input_ordinal` 0 is composited
 //! first, i.e. it is the bottom-most input.
-use crate::{
-    CompositeError,
-    blend::{BlendMode, BlendSpace, Fidelity},
-};
+use crate::CompositeError;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     OperationKind, PortAddress, ProfileBinding, Snapshot, StudioLayer, ValueType,
 };
+use hsk_studio_pigment::blend_math::{BlendSpace, Exactness, StudioBlendMode};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Authored address of one output port (`layer_id`, `operation_key`, `port_key`).
@@ -62,13 +60,65 @@ pub enum SourceValue {
     Text,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Authored appearance of one layer as lowered (STU-RAS-006): Folio stores opacity and fill
+/// opacity as percent, the plan holds fractions. An absent Folio appearance lowers to the kind's
+/// identity (group = pass_through, other = normal, 100 percent, not clipped, no mask).
+/// `mask` means an ENABLED mask is present; its coverage tiles stay in the snapshot. `linked` is an
+/// authoring property (the mask follows the layer when edited) and does not change rendering.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StepAppearance {
+    pub mode: StudioBlendMode,
+    pub opacity: f32,
+    pub fill_opacity: f32,
+    pub clipped: bool,
+    pub mask: bool,
+}
+
+impl StepAppearance {
+    pub const fn identity(group: bool) -> Self {
+        Self {
+            mode: if group {
+                StudioBlendMode::PassThrough
+            } else {
+                StudioBlendMode::Normal
+            },
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            clipped: false,
+            mask: false,
+        }
+    }
+    /// Does this appearance change nothing when rendered on its own over a transparent backdrop?
+    /// (The blend mode is irrelevant there: W3C `ab = 0` gives `Cs' = Cs`.)
+    pub fn is_neutral_over_transparent(&self) -> bool {
+        self.opacity >= 1.0 && self.fill_opacity >= 1.0 && !self.mask && !self.clipped
+    }
+    /// Lowest class over everything this appearance uses. Mirrors pigment's `Operator` accounting:
+    /// fill opacity with a non-Normal mode and pass-through below full opacity are Approximate;
+    /// clipping has no renderer route yet and is Unsupported.
+    pub fn exactness(&self) -> Exactness {
+        let mut lowest = self.mode.facts().exactness;
+        if self.fill_opacity < 1.0 && self.mode != StudioBlendMode::Normal {
+            lowest = lowest.lowest_of(Exactness::Approximate);
+        }
+        if self.opacity < 1.0 && self.mode == StudioBlendMode::PassThrough {
+            lowest = lowest.lowest_of(Exactness::Approximate);
+        }
+        if self.clipped {
+            lowest = Exactness::Unsupported;
+        }
+        lowest
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Step {
     Source {
         addr: NodeAddr,
         layer_kind: String,
         value: SourceValue,
         visible: bool,
+        appearance: StepAppearance,
     },
     Composite {
         addr: NodeAddr,
@@ -76,9 +126,7 @@ pub enum Step {
         /// Output addresses of the composited inputs, ordered by authored `input_ordinal`.
         inputs: Vec<NodeAddr>,
         visible: bool,
-        /// The foundation composite descriptor carries no authored blend parameter; this is the
-        /// spec default for groups (STU-RAS-154: default group blend is Pass Through).
-        mode: BlendMode,
+        appearance: StepAppearance,
     },
 }
 
@@ -93,16 +141,18 @@ impl Step {
             Self::Source { visible, .. } | Self::Composite { visible, .. } => *visible,
         }
     }
-    pub fn fidelity(&self) -> Fidelity {
+    pub fn appearance(&self) -> &StepAppearance {
         match self {
-            Self::Source { .. } => Fidelity::Exact,
-            Self::Composite { mode, .. } => mode.info().fidelity,
+            Self::Source { appearance, .. } | Self::Composite { appearance, .. } => appearance,
         }
+    }
+    pub fn exactness(&self) -> Exactness {
+        self.appearance().exactness()
     }
 }
 
 /// Topologically ordered, revision-bound plan. Fanout appears once and is referenced by address.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LoweredPlan {
     pub revision: u64,
     /// Explicit document-level input; recorded in the render receipt (STU-CMP-021).
@@ -114,10 +164,10 @@ pub struct LoweredPlan {
 }
 
 impl LoweredPlan {
-    pub fn lowest_fidelity(&self) -> Fidelity {
+    pub fn lowest_exactness(&self) -> Exactness {
         self.steps
             .iter()
-            .fold(Fidelity::Exact, |lowest, s| lowest.lowest_of(s.fidelity()))
+            .fold(Exactness::Exact, |lowest, s| lowest.lowest_of(s.exactness()))
     }
 }
 
@@ -242,6 +292,14 @@ pub fn lower(
             operation_key: op.operation_key.clone(),
             port_key: out.port_key.clone(),
         };
+        let authored = layer.effective_appearance();
+        let appearance = StepAppearance {
+            mode: StudioBlendMode::try_from(authored.blend_mode)?,
+            opacity: authored.opacity_fraction() as f32,
+            fill_opacity: authored.fill_opacity_fraction() as f32,
+            clipped: authored.clipped,
+            mask: authored.mask.as_ref().is_some_and(|m| m.enabled),
+        };
         steps.push(match op.operation_kind {
             OperationKind::Source => Step::Source {
                 addr,
@@ -252,13 +310,14 @@ pub fn lower(
                     ValueType::Text => SourceValue::Text,
                 },
                 visible: layer.visible,
+                appearance,
             },
             OperationKind::Composite => Step::Composite {
                 addr,
                 layer_kind: layer.kind.clone(),
                 inputs: std::mem::take(&mut ordered_inputs[i]),
                 visible: layer.visible,
-                mode: BlendMode::PassThrough,
+                appearance,
             },
         });
         for next in &dependents[i] {
