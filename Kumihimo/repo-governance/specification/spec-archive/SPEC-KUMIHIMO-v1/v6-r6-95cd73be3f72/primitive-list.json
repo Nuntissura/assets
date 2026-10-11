@@ -1,0 +1,96 @@
+{
+  "kind": "derived_primitive_list",
+  "spec_revision": 6,
+  "primitives": [
+    {
+      "primitive_id": "PRIM-KUM-WORKSPACE",
+      "title": "Reusable window and frame workspace",
+      "contract": "Host-independent identity, configuration and lifecycle contract for reusable window and frame workspace"
+    },
+    {
+      "primitive_id": "PRIM-KUM-BOUNDARIES",
+      "title": "Windows, frames and host content",
+      "contract": "Stable arrangement identities and host-owned content references; platform and content adapters own external effects. The core is presentation-independent; optional GUI and host-content adapters remain separately selectable."
+    },
+    {
+      "primitive_id": "PRIM-KUM-LAYOUT",
+      "title": "Nested windows, alignment and resizing",
+      "contract": "Recursive frame/workspace containment and arrangement with no fixed count; each workspace owns local geometry and child identities, while platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-TABS",
+      "title": "Tabs, named groups and color labels",
+      "contract": "Host-independent contract for tabs, named groups and color labels; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-POPOUTS",
+      "title": "Floating frames, native popouts and temporary popups",
+      "contract": "Host-independent contract for floating frames, native popouts and temporary popups; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-CHROME",
+      "title": "Configurable bars, borders and host settings",
+      "contract": "Host-independent contract for configurable bars, borders and host settings; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-CONTENT",
+      "title": "Hosted modules and plugin contracts",
+      "contract": "Host-independent contract for hosted modules and plugin contracts; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-RENDER",
+      "title": "2D, 3D and rendering surfaces",
+      "contract": "Host-independent contract for 2d, 3d and rendering surfaces; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-PERFORMANCE",
+      "title": "Redraw scheduling and responsiveness",
+      "contract": "Host-independent contract for redraw scheduling and responsiveness; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-TEXT",
+      "title": "Text reflow and media inside documents",
+      "contract": "Host-independent contract for text reflow and media inside documents; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-NAVIGATION",
+      "title": "Large scrollbars and content minimaps",
+      "contract": "Host-independent contract for large scrollbars and content minimaps; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-BACKGROUNDS",
+      "title": "Image and video backgrounds",
+      "contract": "Host-independent contract for image and video backgrounds; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-LIFECYCLE",
+      "title": "Many saved tabs and bounded live content",
+      "contract": "Host-directed lifecycle requests and acknowledged provider state over persistent tab references and bounded live reservations."
+    },
+    {
+      "primitive_id": "PRIM-KUM-SERVO",
+      "title": "Future Handshake browser and Servo adapter",
+      "contract": "Host-independent contract for future handshake browser and servo adapter; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-RECOVERY",
+      "title": "Saving layouts and recovering interrupted work",
+      "contract": "Host-independent contract for saving layouts and recovering interrupted work; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-INPUT",
+      "title": "Tablet input, keyboard and accessibility",
+      "contract": "Host-independent contract for tablet input, keyboard and accessibility; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-MODEL",
+      "title": "Model operation, diagnostics and the built-in manual",
+      "contract": "Host-independent contract for model operation, diagnostics and the built-in manual; platform effects remain in adapters."
+    },
+    {
+      "primitive_id": "PRIM-KUM-PLATFORMS",
+      "title": "Desktop, web and ARM development",
+      "contract": "Host-independent contract for desktop, web and arm development; platform effects remain in adapters."
+    }
+  ]
+}

@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 6
-  revision: 6
+  version: 7
+  revision: 7
   status: accepted_direction_implementation_authorized
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 6
-    digest: sha256:93accdfd9a0c48e5b60ff64f70c0646c80fe357a3b0f94cd1931915e9d074350
+    revision: 7
+    digest: sha256:e38469bcf43f8316b3082daf43fa937b6df33d2d5e6e4def4547c85e10ff8df9
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -345,8 +345,8 @@ storage:
     - DEC-KUM-OPTIONAL-IDEAS
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
-    revision: 6
-    digest: sha256:2f67ce75009e78966e4ea8479f593cf7a7e57bc8817f475ed14e532df15091d1
+    revision: 7
+    digest: sha256:0ce39a647121ea7b6bc5c6c0dfca6b85cd9abd6b3114c243b8fb0be015899252
     semantic_entity_refs:
     - TOPIC-KUM-ROADMAP
   document_record_required_fields:

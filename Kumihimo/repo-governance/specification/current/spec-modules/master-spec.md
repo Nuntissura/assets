@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 6
+revision: 7
 title: Kumihimo master specification
 updated_at: '2026-10-11'
 ---
@@ -493,6 +493,12 @@ Hosts choose nested splits, grids, docking and supported floating frames. Recurs
 Shared split lines align neighbors. Snap previews show where a dragged frame will land. Minimum usable sizes and disclosed overflow preserve access to content in a dense or deeply nested arrangement. Exact parent-relative snap subdivisions and overlapping placement remain in prep research until separately accepted.
 
 Toolbars and tool panels can also be movable surfaces. A toolbar can move from the Studio tab to its containing frame or the root workspace edge; panels can occupy eligible grid positions. The host selects which neighbours or proportions absorb reserved space, and the layout core calculates the resulting geometry. This does not adopt unrestricted overlapping placement or morphing borders. The initial model uses flat records with explicit workspace-to-owner-frame and frame-to-placement-workspace relations; frames may own a child workspace. This preserves recursive frame-owned workspaces without a fixed depth. Tab-owned nested workspaces remain a later optional extension.
+
+The next headless geometry packet uses flat packing nodes for horizontal/vertical splits and regular weighted grids with explicit non-spanning cells and holes. Each non-floating canonical frame has exactly one leaf. Packing is separate from containment, and Core owns both through one generation and operation ledger; geometry rectangles are derived. Default/unconfigured packing follows frame order. Configured creation or legacy movement removes/prunes the source leaf and appends at the destination root: append to a compatible split or wrap the retained root in a horizontal split. Preserve unrelated proportions, grid tracks/holes and explicit configured-empty state; nested child-workspace plans survive subtree moves. Legacy indexes continue to describe canonical frame order after removal, while explicit docking chooses spatial location. Same-parent unchanged order remains a no-op.
+
+Coordinates use validated finite f64 logical DIPs, normalized signed zero, positive weights and nonnegative extents, gaps and minima. Invalid numbers reject before envelope construction; checked arithmetic and impossible constraints reject without changing arrangement. Iterative passes propagate minima and allocate remaining space according to host weights using shared edges. Canonical geometry context contains viewport, measurement/minimum/gap inputs, host tool state and policies; changing any preview input changes generation. Undersized handling is an explicit host choice between rejection and scrollable virtual extent with required extent, clipping and all existing pane rectangles. Actual scrolling/reveal remains adapter work.
+
+Docking previews apply to existing frames/tools over detached hypothetical state, touching no canonical records, generation, stable entity allocation or receipt ledger. Cancellation discards the result. Commit revalidates intent, generation and eligibility through the ordinary operation envelope. Plan-local node selectors may change on structural repair and are separate from stable frame/view/tool identities. Snapping considers only eligible existing edges, shared split boundaries and grid cells with deterministic ties. In-app floats keep one workspace owner, bounded geometry, identities and a return docking location; native popout and modal/temporary-overlay behavior remains separate. Equalize, swap, maximize-pane and restore-layout remain accepted outstanding scope for the following layout-recovery packet.
 ```
 
 ```yaml
@@ -1111,6 +1117,8 @@ Allow full, compact, contextual and hidden frame controls. Hidden controls need 
 Docking location and editing target are independent. A Studio toolbar moved to the main workspace can remain pinned to its original view. Binding, visibility, command enablement and keyboard focus are separate host-exposed policies. The proposed useful default is now the accepted default profile: keep the target pinned, show tools while that target is visible and usable, hide them for an inactive hidden tab, and restore placement on return. Hosts may override that profile; ordinary tool use does not automatically reveal an editor or pick another open file. Clicking the toolbar itself must preserve its target. A visible Studio view alongside focused Notes can retain its tools.
 
 Hosts choose whether hidden docked tools release their space or leave it reserved. They also declare supported orientations, sizes and destinations. The core handles placement and geometry; optional GUI adapters supply controls; providers supply actual tool actions. Hiding a toolbar does not unload its editor.
+
+The first portable tool-placement packet stores original host owner/origin and bound editing view/resource independently of tab/frame/workspace edge or grid-cell placement. Hosts declare compatible rebinding, eligibility, orientation, preferred/minimum sizes and ordering; only an explicit compatible host rebind changes the target. Binding/visibility policies and supplied target visibility, usability and command applicability are independent of keyboard focus. The default remains pinned with visibility while its target is visible and usable. No provider command is invoked by these semantic controls. Edge strips reserve in top, bottom, left, right order, then host order and tool identity for ties. Hidden release/retain controls reservation; remaining space follows host proportions/minima. Cell conflicts or forbidden placement reject atomically.
 ```
 
 ```yaml
@@ -3507,6 +3515,8 @@ Optional research proposals include scrolling workspaces inspired by Niri, a zoo
 The first implemented packet is one small portable core package for typed identities, in-memory recursive containment, content/view references and deterministic validated operations. The first packet avoids GUI/browser/rendering dependencies and native effects. Geometry, persistent snapshots and concrete adapters are subsequent bounded packets. Flat canonical records and iterative ancestry checks avoid making recursive model depth depend on the call stack. No toolkit is selected by this choice.
 
 The verified core uses flat typed records, frame-owned child workspaces and distinct view/resource identities. Practical admission defaults to 16,384 total records, with an explicit host-selected unrestricted policy and optional depth/per-frame view limits. Lowering limits preserves existing records and permits recovery moves. Record counts are not byte or live-engine memory ceilings. Complete-envelope replay is retained within a configured receipt count; expired operation sequences reject rather than repeat effects. This synchronous in-memory boundary provides no file recovery or cross-restart deduplication. Windows x64 MSVC with Rust 1.91.1 is the observed proof; ARM64 and WASM execution remain unverified.
+
+Geometry/tool work is authorized inside cohesive private modules of the same std-only core package; a pure solver owns no second arrangement, generation or ledger. General CSS/intrinsic layout and a toolkit dependency are not required for this bounded scope. The public extension is explicitly unreleased package 0.2 and Snapshot version 2; file restore/migration remains future work. Tools count toward aggregate entity admission. A separate aggregate layout-entry budget counts nodes, tracks, child references and retained geometry/policy entries, defaults to 65,536 and is host-configurable or explicitly unrestricted. Lowering budgets preserves existing data, rejects growth and permits unchanged/decreasing recovery; neither entity nor entry counts claim a byte/memory ceiling. These choices are planned, not runtime proof of the next packet.
 ```
 
 ```yaml

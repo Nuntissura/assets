@@ -1,29 +1,106 @@
 schema_version: kumihimo.wp-contract.v1
-kind: work_packet_stub
 wp_id: WP-KUM-008-layout-and-tool-docking-v1
 title: Implement geometry and scoped docking
 scope:
-- Shared split/grid geometry, minimum sizes, tool edges/grid positions, snapping to eligible layout boundaries, reservation policy,
-  drag preview/cancellation and core float placement; native popouts remain adapter work
+- Extend the canonical portable core with flat split/grid packing, finite shared geometry and host-controlled minimum sizes, gaps, proportions and overflow
+- Store independently dockable host tool surfaces at eligible tab/frame/workspace edges or grid cells, preserving original owner and editing target
+- Implement generation-bound pure docking previews, cancellation, directional commits, eligible-boundary snapping and bounded in-app frame floats
+- Reconcile existing frame creation/movement with configured packing under the same Core owner, generation and bounded operation ledger
+- Extend the public consumer contracts, quiet runnable example and no-context manual; retain prior ownership/replay behavior
 files:
 - product/
+- README.md
+- repo-governance/codex/build-rules/current/build-rules.yaml
 - repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/
 - repo-governance/specification/current/
+- repo-governance/specification/spec-archive/
 - repo-governance/topology/
+- repo-governance/sessions/
+- repo-governance/taskboard/
+- repo-governance/registry/
 dependencies:
 - WP-KUM-007-core-model-v1
 spec_refs:
-- TOPIC-KUM-LAYOUT
-- TOPIC-KUM-CHROME
-- TOPIC-KUM-POPOUTS
+- REQ-KUM-BOUNDARIES-005
+- REQ-KUM-BOUNDARIES-006
+- REQ-KUM-LAYOUT-001
+- REQ-KUM-LAYOUT-002
+- REQ-KUM-LAYOUT-003
+- REQ-KUM-LAYOUT-005
+- REQ-KUM-LAYOUT-006
+- REQ-KUM-LAYOUT-007
+- REQ-KUM-CHROME-006
+- REQ-KUM-CHROME-007
+- REQ-KUM-CHROME-008
+- REQ-KUM-CHROME-009
+- REQ-KUM-CHROME-010
+- REQ-KUM-POPOUTS-001
+- REQ-KUM-MODEL-001
+- REQ-KUM-MODEL-002
 requirements:
-- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
-  eval before coding
-- Reuse existing core and verified cache; no parallel Cargo or long default suites
-- Preserve host ownership and existing accepted scope; explicit exact platform proof
+- '[WP008-R001] Admit product coding only after this full contract and specification are published and the dependency report records readiness; use focused evaluator cases before coding.'
+- '[WP008-R002] Keep one cohesive headless kumihimo-core package with private layout, geometry, tool-policy and docking modules; Core Snapshot owns semantic state, one generation and one receipt ledger. Pure solver results own no independent arrangement.'
+- '[WP008-R003] Use flat layout nodes for horizontal/vertical splits and regular weighted row/column grids with explicit non-spanning cells and permitted holes. Validate references, cycles, unique parents and exactly one leaf per non-floating canonical frame; never infer membership from a visible subset.'
+- '[WP008-R004] Original CreateFrame/MoveFrame and explicit docking must atomically reconcile affected packing: remove/prune a departing leaf and append to the destination root or selected docking location while preserving unrelated branches/proportions. Unconfigured scopes use derived automatic packing. Never silently discard a configured plan; moved frame-owned child-workspace plans remain intact.'
+- '[WP008-R018] Legacy indexes retain their after-removal canonical Workspace.frames meaning. Same-parent unchanged order stays a no-op. Changed legacy moves repair custom spatial packing separately: append to a compatible root split or wrap the retained leaf/grid root in a horizontal split, preserving its proportions. Source pruning preserves remaining grid tracks/holes and explicit configured-empty state. Explicit docking selects spatial placement.'
+- '[WP008-R005] Use validated finite f64 logical DIP scalars with normalized signed zero and reflexive exact envelope equality. Reject NaN/infinity before constructing commands, require positive weights and nonnegative dimensions/minima/gaps, and return structured arithmetic/constraint errors without changing canonical state.'
+- '[WP008-R006] Compute shared edges with an iterative minimum pass and allocation pass. Satisfy minima before distributing spare space according to host weights, report the declared allocation rule, and never recursively own/traverse nesting. Successful rectangles and endpoints are finite with nonnegative extents.'
+- '[WP008-R007] Store geometry context through canonical commands: viewport, measurement/minimum/gap/proportion inputs, host target state and relevant placement/reservation policies. A change to any preview input invalidates its generation; no mutable external measurement bypass may make a stale preview appear current.'
+- '[WP008-R008] Expose explicit reject versus scrollable virtual-extent handling for undersized viewports; return required extent, clipping and geometry accounting for every existing pane. GUI scrolling/reveal is later adapter proof; rejection preserves records.'
+- '[WP008-R009] Tool records keep original host owner/origin, bound editing view/resource and placement separate. Validate references, declared compatible rebinding and host eligibility. Outward movement changes placement only; default binding is pinned and ordinary tool use never auto-reveals an editor or selects a different file.'
+- '[WP008-R010] Expose binding and visibility policies plus independently supplied target visibility/usability/applicability. Pinned visible-and-usable is the default; keyboard focus alone never hides or retargets tools. Explicit compatible rebinding is host-driven; providers execute no commands in this packet.'
+- '[WP008-R011] Accept host tool orientations, preferred/minimum sizes, allowed edges/cells and ordering. Reserve strips in top,bottom,left,right order, then host order and ToolId for ties. Hidden release/retain policy changes derived reservation only; remaining space follows host-supplied proportions and minima, and hiding has no engine lifecycle effect.'
+- '[WP008-R012] Floating frames remain owned by one workspace and retain frame/view/resource identities, explicit in-app surface kind and a return docking location. Enforce full host workspace bounds and minima; reject impossible floats atomically. Native popouts and temporary/modal overlays are separate later surfaces.'
+- '[WP008-R013] Preview through the same validation/solver over a detached hypothetical arrangement; consume no canonical model generation, entity allocation or ledger outcome. Cancellation discards the preview. Commit revalidates its generation and intent through the existing Envelope operation/replay path; never accept caller-supplied geometry as canonical state.'
+- '[WP008-R019] Preview applies only to existing frames/tools; hypothetical local packing nodes are not stable entity allocations. Layout node selectors are plan-local metadata, distinct from stable frame/view/tool identity, and structural repair may change those selectors.'
+- '[WP008-R014] Generate snap candidates only for explicitly eligible existing edges, shared split boundaries and regular grid cells; use deterministic distance/tie ordering. Exact parent-relative subdivisions, arbitrary overlap, spans and hysteresis remain unaccepted research.'
+- '[WP008-R015] Include tool entities in the aggregate record policy and add an exposed aggregate layout-entry policy for nodes, tracks, child references and retained context/policy entries. Default entry admission is 65536, explicitly host-configurable or unrestricted. Lowering limits preserves existing state; reject growth, permit unchanged/decreasing recovery, and disclose that counts are not memory/byte ceilings.'
+- '[WP008-R016] Declare Snapshot version 2 and unreleased package version 0.2 for the public record/command extension; no file restore/migration guarantee is introduced. Preserve existing behavioral contracts, local identity scope, bounded complete-envelope replay and overflow rejection.'
+- '[WP008-R017] Coder owns product paths; lead owns specification/state/Git; dependency/eval/diagnostic roles own their dispatched reports. Reuse stable source/target/cache, serialize all Kumihimo Cargo and use only affected short proof.'
 acceptance:
-- Finite/minimum-size geometry; moves preserve identity/target; forbidden destinations and cancellation restore;
-  released/reserved edge space follows host policy
+- '[WP008-A001] Public consumer constructs nested split/grid scopes with variable counts; all canonical frames occur exactly once, neighboring shared edges align, minima/gaps/host proportions apply, and existing creation/moves preserve unrelated packing and child-local configuration.'
+- '[WP008-A002] Non-finite numeric input, malformed/cyclic/duplicate plans, wrong references, invalid cells/orientations, impossible minima, overflow, forbidden destinations and practical admission return structured rejection with unchanged full model, generation and next entity allocation.'
+- '[WP008-A003] Undersized reject and virtual-extent policies are observable; every saved frame remains accounted for and can become geometrically reachable after the viewport/host policy changes. No actual scrolling GUI is claimed.'
+- '[WP008-A004] A pinned Studio tool moved to a root edge/cell retains its original editing view/resource while another file exists; tool/Notes focus does not retarget or hide a visible usable target. Hidden-target release/retain and return preserve placement and target.'
+- '[WP008-A005] Multiple edge tools use declared order/orientation and minimum sizes; reservations follow host policy without silent overlap or negative content geometry. Grid conflicts and incompatible rebinds reject atomically.'
+- '[WP008-A006] Valid/invalid preview and cancel preserve model, generation, allocation and ledger. A current preview commit produces its validated arrangement once; intervening topology, viewport, measurement or policy change makes commit stale. Exact retained replay repeats no mutation.'
+- '[WP008-A007] In-app float/redock and eligible snapping preserve identities; impossible float or forbidden/ineligible snap rejects. No native-window or unsupported overlap claim follows.'
+- '[WP008-A008] Existing WP007 consumer behavior and new focused contracts pass with the minimal console example on the observed host; no runtime external dependencies, GUI/browser/renderer or file effects are introduced.'
+- '[WP008-A009] Evaluator records observed exact-candidate results; spec/topology/state/board reflect bounded implemented scope only; owned changes are committed/pushed and the exact remote is independently verified.'
 proof:
-- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+- Dependency readiness and independent read of published full specification/contract predecessor
+- cargo check --manifest-path product/Cargo.toml --all-targets --locked --offline -j 2
+- cargo test --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core -j 2
+- cargo run --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core --example workspace -j 2
+- python repo-governance/repo-scripts/sync.py --check
+- git diff --check -- Kumihimo
+- git ls-remote origin refs/heads/codex/handpick
+carried_forward:
+- REQ-KUM-LAYOUT-004 equalize, swap, maximize-pane and restore-layout remain accepted outstanding work for WP-KUM-009-tabs-and-layout-recovery-v1; this packet does not mark them implemented
+non_goals:
+- GUI controls or visual acceptance, native popout handoff, temporary/modal overlays, file persistence/restore, content/editor/provider command invocation or actual lifecycle enforcement
+- General CSS/intrinsic content layout, cell spans, exact parent-relative snap subdivisions, unrestricted overlapping placement, animated borders or a new toolkit dependency
+research_basis:
+  local_refs:
+  - repo-governance/docs/research/window-frame-field-research.md
+  - repo-governance/docs/research/modularity-and-technical-gaps.md
+  - repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-dependency-readiness.yaml
+  sources:
+  - https://raw.githubusercontent.com/rerun-io/egui_tiles/main/src/container/linear.rs
+  - https://raw.githubusercontent.com/rerun-io/egui_tiles/main/src/container/grid.rs
+  - https://github.com/microsoft/vscode/blob/main/src/vs/base/browser/ui/grid/gridview.ts
+  - https://doc.qt.io/qt-6/qtoolbar.html
+  - https://dockview.dev/docs/core/groups/floatingGroups/
+  - https://github.com/DioxusLabs/taffy
+  selected: Standard-library flat semantic records and pure iterative geometry inside the existing canonical Core, with explicit finite/envelope numeric semantics and host policy
+  rejected:
+  - GUI toolkit-owned competing tree or duplicate arrangement/generation wrapper
+  - General CSS solver and intrinsic measurement scope absent from this packet
+  risks_controls:
+  - 'Packing diverges after original moves: one owner, atomic reconciliation and full canonical coverage assertions'
+  - 'NaN breaks envelope equality or allocation overflows: validated scalars, signed-zero normalization, checked arithmetic and exact replay tests'
+  - 'Toolbar acts on wrong file: independent original owner, pinned target and placement; incompatible explicit rebind rejected'
+  - 'Preview becomes stale after resize/policy: every relevant input owned by canonical context generation and revalidated at commit'
+  - 'Minima or hidden reservations make content unreachable: explicit rejection/virtual extent and returned clip/accounting; actual GUI access remains future proof'
+  - 'Added metadata bypasses admission: explicit aggregate entity and layout-entry policies, unchanged-state rejection and lowered-budget recovery'
 status_ref: repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-state.yaml

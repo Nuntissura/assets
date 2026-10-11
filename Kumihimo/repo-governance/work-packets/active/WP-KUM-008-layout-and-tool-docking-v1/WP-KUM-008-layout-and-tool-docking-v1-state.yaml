@@ -1,9 +1,35 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-008-layout-and-tool-docking-v1
-generation: 1
-phase: planned
-owner: unassigned
-changed_files: []
-proof: []
+generation: 3
+phase: active
+owner: dev_lead
+changed_files:
+- repo-governance/registry/work-packets.yaml
+- repo-governance/sessions/SESSION-KUM-2026-10-11-v1-diagnostics.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/specification/current/INDEX.json
+- repo-governance/specification/current/primitive-feature-mix-matrix.json
+- repo-governance/specification/current/primitive-list.json
+- repo-governance/specification/current/spec-modules/master-spec.md
+- repo-governance/specification/current/spec-modules/roadmap.md
+- repo-governance/specification/current/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/specification.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-dependency-readiness.yaml
+- repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-evaluation.yaml
+- repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-state.yaml
+proof:
+- kind: published_predecessor
+  observed: WP007 done; independent origin read matches clean 95cd73be3f7263ca5968dc8635773d20396f9cf2
+- kind: contract_preparation
+  observed: Full R001-R019 contract and spec7 selected from team/current primary source review; all99 accepted requirement
+    records unchanged; v6 bundle archived exactly
 blockers: []
-next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+next_action: Inspect definitive dependency/eval preparation; publish full packet/spec, independently read remote,
+  then admit coder01

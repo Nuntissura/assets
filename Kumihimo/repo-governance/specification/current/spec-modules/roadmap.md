@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 6
+revision: 7
 title: Kumihimo roadmap
 updated_at: '2026-10-11'
 ---

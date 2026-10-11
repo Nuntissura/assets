@@ -56,10 +56,11 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-008-layout-and-tool-docking-v1
   title: Implement geometry and scoped docking
-  phase: planned
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-state.yaml
-  next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+  next_action: Inspect definitive dependency/eval preparation; publish full packet/spec, independently read remote,
+    then admit coder01
   blockers: []
 - wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
   title: Implement tabs, groups and persisted arrangement
