@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-005-modularity-and-technical-research-v1
-generation: 2
-phase: active
+generation: 3
+phase: done
 owner: model_maintainer
 changed_files:
 - README.md
@@ -42,6 +42,8 @@ proof:
 - kind: prep_only
   observed: All 18 roadmap features remain planned; product and tracked repo scripts unchanged; no build, GUI implementation
     or library adoption
+- kind: remote_publication
+  observed: git ls-remote origin refs/heads/codex/handpick independently matched spec/research commit 0b834250fb1b7c9b254eabb3ea5fce50f110c140
 blockers: []
-next_action: Commit and push owned modularity/spec/research changes; verify exact remote revision before settling
-  WP status
+next_action: Continue prep discussion from the proposed technical gaps; accepted modularity is in spec revision
+  4 and all runtime features remain planned
