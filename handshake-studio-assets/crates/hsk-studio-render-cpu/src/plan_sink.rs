@@ -619,7 +619,9 @@ fn prepare<'a, V: VectorSource>(
                                 MaskFormat::CoverageU8 => false,
                                 MaskFormat::CoverageU16Le => true,
                                 // A format this backend has no reader for: pigment's operator
-                                // key for it (`Operator::Mask(format).key()`).
+                                // key for it (`Operator::Mask(format).key()`). Defence in depth:
+                                // `exactness` names the formats with a reader and answers
+                                // Unsupported for any other, so shared admission refuses first.
                                 other => return Err(unsupported(Operator::Mask(other).key())),
                             };
                             if plane.sample_format != m.format.key()
@@ -1671,11 +1673,19 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
             // Pigment's run semantics are implemented as documented; the Photoshop rule is
             // UNVERIFIED, so the class stays Approximate.
             Operator::Mask(MaskFormat::BaseAlpha) => Exactness::Approximate,
+            // The coverage planes `prepare` has a reader for (the match on `m.format` there). The
+            // formats are named, not covered by a wildcard: a format pigment adds later has no
+            // reader here, so it must be Unsupported at shared admission (the last arm) instead of
+            // Exact there and refused afterwards by the local mask-format check (R8-review-a;
+            // pigment tripwire `every_enum_a_backend_refuses_on_has_an_admission_decision`).
             Operator::Tile
             | Operator::Solid
             | Operator::IsolatedGroup
             | Operator::PassThroughGroup
-            | Operator::Mask(_) => Exactness::Exact,
+            | Operator::Mask(MaskFormat::CoverageU8 | MaskFormat::CoverageU16Le) => {
+                Exactness::Exact
+            }
+            Operator::Mask(_) => Exactness::Unsupported,
             // Supersampled coverage approximates area coverage; exact only on sample-aligned edges.
             Operator::Vector | Operator::FillOpacity => Exactness::Approximate,
             Operator::Blend(mode) => {

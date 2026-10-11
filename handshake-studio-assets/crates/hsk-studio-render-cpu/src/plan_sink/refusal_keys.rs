@@ -334,6 +334,46 @@ fn defence_in_depth_refusal_keys_are_pigments() {
     );
 }
 
+/// SMB-PARITY-FOLLOWUP (R8-review-a): the mask formats this backend has a reader for are named in
+/// `exactness`, so a format pigment adds later falls to Unsupported at shared admission instead of
+/// being admitted as Exact and refused afterwards by the local mask-format check. Today's three
+/// formats cannot tell the named arms from a wildcard; the fall-through itself is proven by the
+/// pigment tripwire (compile time) and by the lane's red proof with a fourth variant.
+#[test]
+fn mask_formats_are_declared_by_name() {
+    let renderer = Renderer::new(4).unwrap();
+    let declared = |format| RenderBackend::<NoVector>::exactness(&renderer, Operator::Mask(format));
+    // The coverage planes with a reader: Exact, pigment's own class for the operator.
+    for format in [MaskFormat::CoverageU8, MaskFormat::CoverageU16Le] {
+        assert_eq!(declared(format), Exactness::Exact, "{}", format.key());
+        assert_eq!(Operator::Mask(format).intrinsic(), Exactness::Exact);
+        // ... and a plan with such a mask is admitted by shared admission.
+        let masked = Layer {
+            mask: Some(MaskInput {
+                key: SourceKey(1),
+                placement: SIDE,
+                format,
+                sha256: [0; 32],
+                inverted: false,
+                density: 1.0,
+            }),
+            ..mk_layer(0, StudioBlendMode::Normal, 1.0, 1.0)
+        };
+        let plan = one_layer_plan(white(), masked);
+        assert!(
+            admit::<NoVector>(&plan, &renderer, &request(), &CancellationToken::default()).is_ok(),
+            "{}",
+            format.key()
+        );
+    }
+    // The clip route keeps pigment's class (Approximate; the Photoshop rule is UNVERIFIED).
+    assert_eq!(declared(MaskFormat::BaseAlpha), Exactness::Approximate);
+    assert_eq!(
+        declared(MaskFormat::BaseAlpha),
+        Operator::Mask(MaskFormat::BaseAlpha).intrinsic()
+    );
+}
+
 fn overlay_fx(group: u32, layer: u32) -> LayerExtension {
     LayerExtension::new(PlanNodeId(group), layer).with_effects(vec![EffectOp::ColourOverlay(
         ColourOverlayOp::new([1.0, 0.0, 0.0], StudioBlendMode::Normal, 0.5),
