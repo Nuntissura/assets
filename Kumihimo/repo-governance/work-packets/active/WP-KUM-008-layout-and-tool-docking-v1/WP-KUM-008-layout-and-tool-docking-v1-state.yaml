@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-008-layout-and-tool-docking-v1
-generation: 6
-phase: active
+generation: 7
+phase: done
 owner: coder_01
 changed_files:
 - README.md
@@ -90,5 +90,11 @@ proof:
   source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
   observed: 'EVAL-KUM-008-v1 PASS_SCOPED_RUNTIME: actual logs, exact published source and all18 unchanged runtime
     inputs independently inspected; F01 regression green'
+- kind: outcome_publication
+  expected_revision: 72903fb43ed2c6a6c57a5fe01825447a7a89373d
+  observed_revision: 72903fb43ed2c6a6c57a5fe01825447a7a89373d
+  command: git ls-remote origin refs/heads/codex/handpick
+  observed: Exact published outcome independently matches; all18 tested runtime blobs retained; spec8/manual/evaluation/topology
+    contained
 blockers: []
-next_action: Publish verified WP008 outcome; independent exact remote read precedes done status and coder rotation
+next_action: WP008 complete; rotate coder and prepare full WP009 tabs/layout recovery before coding

@@ -162,8 +162,16 @@ runtime_proof:
     EVAL-KUM-008-008: Metadata admission/lowered unchanged recovery, tool record budget and all retained WP007 contracts passed
     EVAL-KUM-008-009: Deferred accepted WP009 scope, excluded from WP008 runtime verdict
 outcome_publication:
-  status: pending_lead_closing_publication
-  proof_limit: Runtime verdict is bound to the tested candidate; final outcome/report commit and remote proof have not yet been inspected
+  status: independently_verified
+  observed_at: '2026-10-12'
+  revision: 72903fb43ed2c6a6c57a5fe01825447a7a89373d
+  tested_candidate: 90f93239d2e474e28451cab15458454ecd1649dc
+  command: git ls-remote origin refs/heads/codex/handpick
+  expected: Exact closing revision and preserved tested runtime inputs
+  observed: Remote matched 72903fb43ed2c6a6c57a5fe01825447a7a89373d; all 18 runtime Git blobs and current files equal tested candidate bytes; 19-file product membership unchanged
+  inspected_published_artifacts: Published evaluation contains PASS_SCOPED_RUNTIME bound to tested candidate; specification identity is version/revision 8; README diff contains only proof paragraph and updated_at
+  supersedes: Historical closing-publication pending statements elsewhere in this report; runtime verdict remains bound to tested candidate
+  proof_limit: No runtime rerun required because runtime inputs are unchanged; lead owns final done-state publication
 INDEPENDENT_FINDINGS:
   - finding_id: EVAL-KUM-008-F01
     status: resolved_scoped_runtime
