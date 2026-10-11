@@ -28,13 +28,18 @@ fn add(a: usize, b: usize) -> usize {
     a.saturating_add(b)
 }
 
-/// End index (exclusive) of the string literal starting at `b[i]`; `None` when unterminated.
+/// End index (exclusive) of the string literal starting at `b[i]`; `None` when unterminated. A newline ends it: CSS
+/// preprocessing reads CR, FF and CR LF as LF (CSS Syntax 3, 3.3).
 fn skip_string(b: &[u8], i: usize) -> Option<usize> {
     let q = b[i];
     let mut j = add(i, 1);
     loop {
         match b.get(j) {
-            None | Some(b'\n') => return None,
+            None | Some(b'\n' | b'\r' | 0x0c) => return None,
+            // An escaped newline continues the string; CR LF is one newline.
+            Some(b'\\') if b.get(add(j, 1)) == Some(&b'\r') && b.get(add(j, 2)) == Some(&b'\n') => {
+                j = add(j, 3)
+            }
             Some(b'\\') => j = add(j, 2),
             Some(&c) if c == q => return Some(add(j, 1)),
             Some(_) => j = add(j, 1),
@@ -50,7 +55,10 @@ pub(crate) struct MediaCtx {
 
 pub(crate) struct RawRule {
     pub selector_span: Range<usize>,
-    pub decl_span: Range<usize>,
+    /// Selector text as the CSS parser reads it (from the preprocessed style text, not the source bytes).
+    pub selector: String,
+    /// Declaration block contents as the CSS parser reads them.
+    pub declarations: String,
     pub media: Option<usize>,
 }
 
@@ -80,19 +88,20 @@ pub(crate) struct Stylesheet {
     pub unsupported: Vec<(Range<usize>, RuleRefusal)>,
 }
 
+/// Maps a range of the scanned text to the source bytes it came from (location only).
+pub(crate) type Locate<'a> = &'a dyn Fn(&Range<usize>) -> Range<usize>;
+
 /// Index of the first `{`, `;` or `}` at or after `from`, outside strings, comments and parentheses.
-fn prelude_end(b: &[u8], from: usize, base: usize) -> Result<(usize, u8), WebError> {
+fn prelude_end(b: &[u8], from: usize, at: Locate<'_>) -> Result<(usize, u8), WebError> {
     let len = b.len();
     let (mut j, mut parens) = (from, 0usize);
     while j < len {
         match b[j] {
             b'/' if b.get(add(j, 1)) == Some(&b'*') => match find(&b[add(j, 2)..], b"*/") {
                 Some(off) => j = add(add(j, 2), add(off, 2)),
-                None => return Err(css_error(add(base, j)..add(base, len))),
+                None => return Err(css_error(at(&(j..len)))),
             },
-            b'"' | b'\'' => {
-                j = skip_string(b, j).ok_or_else(|| css_error(add(base, j)..add(base, len)))?
-            }
+            b'"' | b'\'' => j = skip_string(b, j).ok_or_else(|| css_error(at(&(j..len))))?,
             b'(' => {
                 parens = add(parens, 1);
                 j = add(j, 1);
@@ -105,22 +114,20 @@ fn prelude_end(b: &[u8], from: usize, base: usize) -> Result<(usize, u8), WebErr
             _ => j = add(j, 1),
         }
     }
-    Err(css_error(add(base, from)..add(base, len)))
+    Err(css_error(at(&(from..len))))
 }
 
 /// End (exclusive) of the block opened at `b[open]`, and whether it contains a nested block.
-fn block_end(b: &[u8], open: usize, base: usize) -> Result<(usize, bool), WebError> {
+fn block_end(b: &[u8], open: usize, at: Locate<'_>) -> Result<(usize, bool), WebError> {
     let len = b.len();
     let (mut j, mut depth, mut nested) = (open, 0usize, false);
     while j < len {
         match b[j] {
             b'/' if b.get(add(j, 1)) == Some(&b'*') => match find(&b[add(j, 2)..], b"*/") {
                 Some(off) => j = add(add(j, 2), add(off, 2)),
-                None => return Err(css_error(add(base, j)..add(base, len))),
+                None => return Err(css_error(at(&(j..len)))),
             },
-            b'"' | b'\'' => {
-                j = skip_string(b, j).ok_or_else(|| css_error(add(base, j)..add(base, len)))?
-            }
+            b'"' | b'\'' => j = skip_string(b, j).ok_or_else(|| css_error(at(&(j..len))))?,
             b'{' => {
                 depth = add(depth, 1);
                 nested |= depth > 1;
@@ -136,7 +143,7 @@ fn block_end(b: &[u8], open: usize, base: usize) -> Result<(usize, bool), WebErr
             _ => j = add(j, 1),
         }
     }
-    Err(css_error(add(base, open)..add(base, len)))
+    Err(css_error(at(&(open..len))))
 }
 
 fn trimmed(css: &str, range: Range<usize>) -> Range<usize> {
@@ -146,11 +153,12 @@ fn trimmed(css: &str, range: Range<usize>) -> Range<usize> {
     start..add(start, raw.trim().len())
 }
 
-/// Scan one stylesheet body into `out` (flat rules with their `@media` context chain). Spans are document
-/// offsets (`base` + offset in `css`).
+/// Scan one stylesheet into `out` (flat rules with their `@media` context chain). `css` is the text a browser's CSS
+/// parser reads (`WebDoc::sheet`: preprocessed, not the source bytes); selectors and declarations are taken from it, and
+/// spans are document offsets through `at`.
 pub(crate) fn parse_stylesheet(
     css: &str,
-    base: usize,
+    at: Locate<'_>,
     out: &mut Stylesheet,
     limits: &Limits,
     cancel: &CancellationToken,
@@ -164,8 +172,7 @@ pub(crate) fn parse_stylesheet(
             if b[i].is_ascii_whitespace() {
                 i = add(i, 1);
             } else if b[i] == b'/' && b.get(add(i, 1)) == Some(&b'*') {
-                let off = find(&b[add(i, 2)..], b"*/")
-                    .ok_or_else(|| css_error(add(base, i)..add(base, len)))?;
+                let off = find(&b[add(i, 2)..], b"*/").ok_or_else(|| css_error(at(&(i..len))))?;
                 i = add(add(i, 2), add(off, 2));
             } else {
                 break;
@@ -181,13 +188,13 @@ pub(crate) fn parse_stylesheet(
         if add(out.rules.len(), out.media.len()) >= limits.max_rules {
             return Err(WebError::LimitExceeded {
                 limit: LimitKind::Rules,
-                span: add(base, i)..add(base, add(i, 1)),
+                span: at(&(i..add(i, 1))),
             });
         }
         match b[i] {
             b'}' => {
                 if stack.pop().is_none() {
-                    return Err(css_error(add(base, i)..add(base, add(i, 1))));
+                    return Err(css_error(at(&(i..add(i, 1)))));
                 }
                 i = add(i, 1);
             }
@@ -197,70 +204,66 @@ pub(crate) fn parse_stylesheet(
                     name_end = add(name_end, 1);
                 }
                 let name = css[add(i, 1)..name_end].to_ascii_lowercase();
-                let (end, term) = prelude_end(b, name_end, base)?;
+                let (end, term) = prelude_end(b, name_end, at)?;
                 if name == "media" && term == b'{' {
                     if stack.len() >= MAX_MEDIA_NESTING {
                         return Err(WebError::LimitExceeded {
                             limit: LimitKind::Depth,
-                            span: add(base, i)..add(base, end),
+                            span: at(&(i..end)),
                         });
                     }
                     let q = trimmed(css, name_end..end);
-                    let breakpoints =
-                        parse_media_query(&css[q.clone()]).map_err(|e| e.shift(add(base, q.start)));
+                    let breakpoints = parse_media_query(&css[q.clone()]).map_err(|e| {
+                        e.map_span(|s| at(&(add(q.start, s.start)..add(q.start, s.end))))
+                    });
                     out.media.push(MediaCtx {
-                        query_span: add(base, q.start)..add(base, q.end),
+                        query_span: at(&q),
                         breakpoints,
                         parent: stack.last().copied(),
                     });
                     stack.push(out.media.len().saturating_sub(1));
                     i = add(end, 1);
                 } else if term == b'{' {
-                    let (after, _) = block_end(b, end, base)?;
-                    out.unsupported
-                        .push((add(base, i)..add(base, after), RuleRefusal::AtRule));
+                    let (after, _) = block_end(b, end, at)?;
+                    out.unsupported.push((at(&(i..after)), RuleRefusal::AtRule));
                     i = after;
                 } else if term == b';' {
                     out.unsupported
-                        .push((add(base, i)..add(base, add(end, 1)), RuleRefusal::AtRule));
+                        .push((at(&(i..add(end, 1))), RuleRefusal::AtRule));
                     i = add(end, 1);
                 } else {
-                    out.unsupported
-                        .push((add(base, i)..add(base, end), RuleRefusal::AtRule));
+                    out.unsupported.push((at(&(i..end)), RuleRefusal::AtRule));
                     i = end;
                 }
             }
             _ => {
-                let (end, term) = prelude_end(b, i, base)?;
+                let (end, term) = prelude_end(b, i, at)?;
                 let sel = trimmed(css, i..end);
                 match term {
                     b'{' => {
-                        let (after, nested) = block_end(b, end, base)?;
+                        let (after, nested) = block_end(b, end, at)?;
                         if nested {
-                            out.unsupported.push((
-                                add(base, sel.start)..add(base, after),
-                                RuleRefusal::NestedBlock,
-                            ));
+                            out.unsupported
+                                .push((at(&(sel.start..after)), RuleRefusal::NestedBlock));
                         } else {
+                            let decls = add(end, 1)..after.saturating_sub(1);
                             out.rules.push(RawRule {
-                                selector_span: add(base, sel.start)..add(base, sel.end),
-                                decl_span: add(base, add(end, 1))
-                                    ..add(base, after.saturating_sub(1)),
+                                selector_span: at(&sel),
+                                selector: css[sel.clone()].to_owned(),
+                                declarations: css[decls].to_owned(),
                                 media: stack.last().copied(),
                             });
                         }
                         i = after;
                     }
                     b';' => {
-                        out.unsupported.push((
-                            add(base, sel.start)..add(base, add(end, 1)),
-                            RuleRefusal::Selector,
-                        ));
+                        out.unsupported
+                            .push((at(&(sel.start..add(end, 1))), RuleRefusal::Selector));
                         i = add(end, 1);
                     }
                     _ => {
                         out.unsupported
-                            .push((add(base, sel.start)..add(base, end), RuleRefusal::Selector));
+                            .push((at(&(sel.start..end)), RuleRefusal::Selector));
                         i = end;
                     }
                 }
@@ -268,7 +271,7 @@ pub(crate) fn parse_stylesheet(
         }
     }
     if !stack.is_empty() {
-        return Err(css_error(add(base, len)..add(base, len)));
+        return Err(css_error(at(&(len..len))));
     }
     Ok(())
 }

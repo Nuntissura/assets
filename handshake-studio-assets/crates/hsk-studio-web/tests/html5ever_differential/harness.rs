@@ -3,7 +3,7 @@
 use crate::events::{Category, Ev, drop_implied, first_difference};
 use crate::model::{has_skeleton, model_attribute_count, model_events, parse_model};
 use crate::oracle::{Mode, reference_events};
-use hsk_studio_web::LossKind;
+use hsk_studio_web::{LossKind, NodeKind, WebDoc};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -23,10 +23,39 @@ pub enum Outcome {
     Compared(Vec<Disagreement>),
 }
 
+/// Oracle correction O1 (an html5ever 0.40.1 deviation from the HTML Standard, not a crate normalisation): html5ever's
+/// tree builder takes the "ignore the next LF" flag of `pre`, `listing` and `textarea` on every token it is handed,
+/// parse errors included (`tree_builder/mod.rs:481` runs `self.ignore_lf.take()` before the `ParseError` arm), so the
+/// missing-end-tag-name parse error of an `</>` right after `<pre>` makes it keep the LF. The Standard emits no token for
+/// `</>` (13.2.5.7, U+003E: a parse error, then the data state) and 13.2.6.4.7 ignores the next LF token. The reference is
+/// therefore given the input without each `</>` the crate reads as such (no token) that directly follows a `>` or starts
+/// the input: there the tokenizer is in the data state with nothing pending, so removing it changes no token. Every other
+/// `</>` (after `<` or `&`, where removal would change tokens) is left in place.
+fn oracle_input(doc: &WebDoc, input: &str) -> String {
+    let b = input.as_bytes();
+    let mut cut: Vec<std::ops::Range<usize>> = (0..doc.len())
+        .filter_map(|id| doc.node(id))
+        .filter(|n| n.kind == NodeKind::Unsupported && doc.slice(&n.span) == "</>")
+        .map(|n| n.span.clone())
+        .collect();
+    cut.sort_by_key(|s| s.start);
+    let mut out = String::with_capacity(input.len());
+    let mut from = 0;
+    for span in cut {
+        let after_markup = span.start == 0 || b[span.start - 1] == b'>';
+        if after_markup && span.start >= from {
+            out.push_str(&input[from..span.start]);
+            from = span.end;
+        }
+    }
+    out.push_str(&input[from..]);
+    out
+}
+
 /// Compare the crate's reading of `input` with html5ever's, once per scripting-flag reading. The crate reads whole
 /// documents; an input with an authored `html`, `head` or `body` element is compared against a whole-document parse
 /// (the fragment parser's `div` context ignores those start tags). Normalisations N1 (always) and N2 (whole documents)
-/// are documented in `model`.
+/// are documented in `model`; the oracle correction O1 in `oracle_input`.
 pub fn check(input: &str, mode: Mode) -> Outcome {
     let doc = match parse_model(input) {
         Ok(doc) => doc,
@@ -37,11 +66,35 @@ pub fn check(input: &str, mode: Mode) -> Outcome {
     } else {
         mode
     };
+    let reference_input = oracle_input(&doc, input);
     let mut found = Vec::new();
     for scripting in [true, false] {
         let actual = model_events(&doc, scripting, mode == Mode::Document);
-        let expected = drop_implied(&reference_events(input, mode, scripting), &actual);
-        if let Some(d) = first_difference(&expected, &actual) {
+        let expected = drop_implied(
+            &reference_events(&reference_input, mode, scripting),
+            &actual,
+        );
+        let difference = first_difference(&expected, &actual);
+        if !scripting && difference.is_none() {
+            // Gate-level check: the style text the crate's asset scan and preview read (`WebDoc::stylesheet_text`) must be
+            // the child text content a browser's DOM hands to CSS, for every `style` element (HTML and foreign).
+            let reference = style_texts(&expected);
+            let crate_texts: Vec<String> = (0..doc.len())
+                .filter(|&id| doc.local_name(id).as_deref() == Some("style"))
+                .map(|id| doc.stylesheet_text(id).unwrap_or_default())
+                .collect();
+            if reference != crate_texts {
+                found.push(Disagreement {
+                    category: Category::RawText,
+                    sub: "style-sheet-text",
+                    scripting,
+                    detail: format!(
+                        "      html5ever style text content {reference:?}\n      hsk-web stylesheet_text      {crate_texts:?}\n"
+                    ),
+                });
+            }
+        }
+        if let Some(d) = difference {
             found.push(Disagreement {
                 category: d.category,
                 sub: d.sub,
@@ -74,6 +127,35 @@ pub fn check(input: &str, mode: Mode) -> Outcome {
         }
     }
     Outcome::Compared(found)
+}
+
+/// The child text content of every `style` element (any namespace) in document order: the text nodes directly inside it,
+/// concatenated (what a browser's DOM hands to its CSS parser; nested elements and comments add nothing).
+fn style_texts(events: &[Ev]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut open: Vec<Option<usize>> = Vec::new();
+    for ev in events {
+        match ev {
+            Ev::Open { name, .. } => {
+                if name == "style" {
+                    out.push(String::new());
+                    open.push(Some(out.len() - 1));
+                } else {
+                    open.push(None);
+                }
+            }
+            Ev::Close => {
+                open.pop();
+            }
+            Ev::Text(t) => {
+                if let Some(Some(i)) = open.last() {
+                    out[*i].push_str(t);
+                }
+            }
+            Ev::Comment(_) => {}
+        }
+    }
+    out
 }
 
 /// One input's outcome as a short string: `refused:<code>`, `agrees`, or `disagrees:<CATEGORY>/<signature>`.

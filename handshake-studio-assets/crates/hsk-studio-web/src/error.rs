@@ -244,15 +244,14 @@ impl WebError {
         }
     }
 
-    pub(crate) fn shift(mut self, by: usize) -> Self {
+    /// The same error with its span (if any) passed through `f` (offsets in parsed text -> source offsets).
+    pub(crate) fn map_span(mut self, f: impl Fn(&Range<usize>) -> Range<usize>) -> Self {
         match &mut self {
             Self::LimitExceeded { span, .. }
             | Self::Malformed { span, .. }
             | Self::Unsupported { span, .. }
             | Self::InvalidSpan { span }
-            | Self::Conflict { span } => {
-                *span = span.start.saturating_add(by)..span.end.saturating_add(by)
-            }
+            | Self::Conflict { span } => *span = f(span),
             _ => {}
         }
         self

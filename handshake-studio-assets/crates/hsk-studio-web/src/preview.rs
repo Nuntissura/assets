@@ -3,7 +3,11 @@
 //! same `WebDoc` that drives the editor drives the preview, and the result carries its source revision
 //! (STU-ARC-015). No layout, no full cascade: only `display` is resolved, from simple selectors
 //! (`tag`, `*`, `.class`, `#id`, compounds and comma lists) by importance, origin, specificity and order.
-//! Everything outside that is listed in `unsupported`, never guessed. Nothing is fetched or executed.
+//! Everything outside that is listed in `unsupported`, never guessed. Nothing is fetched or executed. Style text is the
+//! text a browser's CSS parser reads (`WebDoc::sheet`: the RAWTEXT body after input-stream preprocessing), attribute
+//! values are decoded (`WebDoc::attr_value`); raw spans only locate rules.
+
+#![deny(clippy::arithmetic_side_effects)]
 
 use crate::css::{
     Compound, Declaration, ElemInfo, RuleRefusal, Stylesheet, parse_declarations, parse_selectors,
@@ -330,18 +334,12 @@ pub fn preview_tree(
         {
             labels_for.entry(f).or_insert(id);
         }
-        if tag == "style" && node.content == ContentModel::RawText {
-            for &child in &node.children {
-                if let Some(raw) = doc.node(child).filter(|c| c.kind == NodeKind::Raw) {
-                    parse_stylesheet(
-                        doc.slice(&raw.span),
-                        raw.span.start,
-                        &mut sheet,
-                        &limits,
-                        cancel,
-                    )?;
-                }
-            }
+        // The style text a browser's CSS parser reads (preprocessed body), not the raw span bytes; spans map back.
+        if tag == "style"
+            && node.content == ContentModel::RawText
+            && let Some(style) = doc.sheet(id)
+        {
+            parse_stylesheet(&style.text, &|r| style.span(r), &mut sheet, &limits, cancel)?;
         }
         let classes = attr(doc, id, "class")
             .map(|c| c.split_whitespace().map(str::to_owned).collect())
@@ -388,7 +386,7 @@ pub fn preview_tree(
                 }
             }
         }
-        let selector = doc.source()[rule.selector_span.clone()].to_owned();
+        let selector = rule.selector.clone();
         let Some(selectors) = parse_selectors(&selector) else {
             unsupported.push(UnsupportedRule {
                 span: rule.selector_span.clone(),
@@ -407,7 +405,7 @@ pub fn preview_tree(
                 selector,
                 selector_span: rule.selector_span.clone(),
                 specificity,
-                declarations: parse_declarations(&doc.source()[rule.decl_span.clone()]),
+                declarations: parse_declarations(&rule.declarations),
                 media: chain
                     .iter()
                     .map(|&m| sheet.media[m].query_span.clone())
@@ -442,7 +440,7 @@ pub fn preview_tree(
             else {
                 continue;
             };
-            rule.public.matched_count += 1;
+            rule.public.matched_count = rule.public.matched_count.saturating_add(1);
             if rule.public.matched.len() < MAX_MATCHES_LISTED {
                 rule.public.matched.push(id);
             }
@@ -544,13 +542,14 @@ pub fn preview_tree(
             a11y_hidden,
         });
         if hidden.is_none() {
-            let next_sectioning = sectioning + usize::from(SECTIONING.contains(&tag.as_str()));
+            let next_sectioning =
+                sectioning.saturating_add(usize::from(SECTIONING.contains(&tag.as_str())));
             if let Some(node) = doc.node(id) {
                 work.extend(
                     node.children
                         .iter()
                         .rev()
-                        .map(|&c| (c, depth + 1, a11y_hidden, next_sectioning)),
+                        .map(|&c| (c, depth.saturating_add(1), a11y_hidden, next_sectioning)),
                 );
             }
         }

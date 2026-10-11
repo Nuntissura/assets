@@ -7,9 +7,11 @@
 //! test with the minimised input printed. The crate's public model cannot express some comparisons; see the lane notes.
 //!
 //! Compared: element namespace and name (the crate's `local_name`), effective attributes (first duplicate wins; names as
-//! the tokenizer builds them, values as the crate decodes them), decoded text, RCDATA bodies (the crate's decoded
-//! `text_content`), raw-text / script / `noscript` bodies (source slices compared after newline normalisation and NUL
-//! replacement), comments, CDATA and bogus comments. Not expressible through the public model: attribute namespaces and
+//! the tokenizer builds them, values as the crate decodes them), decoded text, RCDATA, RAWTEXT and script bodies,
+//! comments and CDATA sections (the crate's own character data from `WebDoc::view`), bogus comments (opaque in the crate,
+//! preprocessed here), and per `style` element the text a browser's CSS parser reads against the crate's
+//! `WebDoc::stylesheet_text` (the text its asset scan and preview interpret; signature `style-sheet-text`). The scripting
+//! enabled reading of `noscript` is compared as the preprocessed source slice. Not expressible through the public model: attribute namespaces and
 //! prefixes, SVG tag and attribute case adjustment (compared lowercase), the markup reading of `noscript` under scripting
 //! (compared as the source slice). Inputs with an authored `html`, `head` or `body` element are compared against a whole
 //! document parse; the documented normalisations N1 (implied elements) and N2 (skeleton whitespace) are in `model`.
@@ -517,6 +519,22 @@ fn tree_construction_dispositions_are_pinned() {
             ("<p><ol></ol></p>", "refused:implied_end_tag"),
             (
                 "<p><blockquote></blockquote></p>",
+                "refused:implied_end_tag",
+            ),
+            (
+                "<table><colgroup></image><col></colgroup></table>",
+                "refused:table_content",
+            ),
+            (
+                "<ruby><rb><rtc></rtc></rb></ruby>",
+                "refused:implied_end_tag",
+            ),
+            (
+                "<select><option><option></option></option></select>",
+                "refused:implied_end_tag",
+            ),
+            (
+                "<option><optgroup></optgroup></option>",
                 "refused:implied_end_tag",
             ),
         ];

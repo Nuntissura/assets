@@ -398,6 +398,16 @@ pub fn comments_and_declarations() -> Cases {
             "<svg><![cdata[x]]></svg>",
             "<svg><!-- a --><![CDATA[x]]><!-- b --></svg>",
             "<svg><style><![CDATA[a&lt;b]]></style></svg>",
+            // The same comment-end states inside body content: at the document start a text run that begins with
+            // whitespace after a comment loses that whitespace in a browser (narrow N2: the crate refuses those inputs).
+            "<div><!-- a ---> b</div>",
+            "<div><!-- a ----> b</div>",
+            "<div><!-- a --!> --!> b</div>",
+            "<div><!--<!-- --> --></div>",
+            "<div><!--<!--> --></div>",
+            "<div><!-- <!-- a --> b --></div>",
+            "<div><!-- a <!-- b --!> c --></div>",
+            "<div><? a > b ?><b>y</b></div>",
         ],
     )
 }
@@ -799,11 +809,17 @@ pub fn tree_construction_restructuring() -> Cases {
             "<p><dl></dl></p>",
             "<p><ol></ol></p>",
             "<p><blockquote></blockquote></p>",
+            // R9: `</image>` has no column group entry, so "anything else" pops an authored colgroup (pre-review F2); the
+            // rb/rtc, option-in-select and optgroup-without-select arms of the detection rule (review B rule rows).
+            "<table><colgroup></image><col></colgroup></table>",
+            "<ruby><rb><rtc></rtc></rb></ruby>",
+            "<select><option><option></option></option></select>",
+            "<option><optgroup></optgroup></option>",
         ],
     )
 }
 
-/// 13.2.4.3 scopes, 13.2.4.4 markers, 13.2.6.4.7-.15: inputs the crate's tree-construction rule accepts because a scope
+/// 13.2.4.2 scopes, 13.2.4.3 markers, 13.2.6.4.7-.15: inputs the crate's tree-construction rule accepts because a scope
 /// boundary, a marker, a special element or the table structure keeps the authored tree (the accepting side of the
 /// detection rule in `dom::construction`); every one must be compared and agree after N1.
 pub fn tree_construction_accepted() -> Cases {
@@ -952,6 +968,17 @@ pub fn nulls_and_newlines() -> Cases {
             "<svg><desc>a\0b</desc></svg>",
             "<math><mi>a\0b</mi></math>",
             "<svg><![CDATA[a\0b]]></svg>",
+            // CDATA data is preprocessed like the rest of the input stream (R9 pre-review F1): a CR before `]]>` is an LF,
+            // so it does not join with an LF after the section; foreign style text is the joined child text content.
+            "<svg><text><![CDATA[a\r\nb\rc]]></text></svg>",
+            "<svg><text><![CDATA[x\r]]>\ny</text></svg>",
+            "<svg><style>a<![CDATA[\r]]>\nb</style></svg>",
+            "<svg><style>:root{b:\"x\\<![CDATA[\r]]>\n;background:url(https://e.invalid/p.png)}</style></svg>",
+            "<svg><style>:root{b:\"x\\<![CDATA[\r]]><![CDATA[\n;background:url(//e.invalid/q)}]]></style></svg>",
+            "<svg><style>:root{b:\"x\\<![CDATA[\r]]><!-- c -->\n;background:url(//e.invalid/r)}</style></svg>",
+            "<svg><style>a<![CDATA[\r\r\n]]>b<![CDATA[\0]]></style></svg>",
+            "<math><mi><![CDATA[a\0b\r]]></mi></math>",
+            "<svg><foreignObject><![CDATA[a\0b]]></foreignObject></svg>",
             "<svg><text>a\r\nb</text></svg>",
             "<script>a\0b</script>",
             "<script>a\r\nb\rc</script>",
@@ -1012,6 +1039,14 @@ pub fn leading_newlines() -> Cases {
             "<textarea>&#10;abc</textarea>",
             "<textarea>&NewLine;abc</textarea>",
             "<textarea>abc\n</textarea>",
+            // 13.2.5.7: `</>` emits no token, so the newline after it is still the next token (R9 pre-review F3); a bogus
+            // comment (`</ x>`) and an ignored end tag (`</image>`) are tokens, so the newline after them stays.
+            "<pre></>\nabc</pre>",
+            "<pre></></>\r\nabc</pre>",
+            "<listing></>&#10;abc</listing>",
+            "<pre></ x>\nabc</pre>",
+            "<pre></image>\nabc</pre>",
+            "<pre></>a</>\nb</pre>",
         ],
     )
 }

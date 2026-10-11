@@ -1,18 +1,21 @@
 //! hsk-studio-web's reading of a document, reduced to the same event list as the reference.
 //!
 //! Only what the crate's public model exposes is compared: `WebDoc::view()` rows (kind, `local_name` tag, tokenizer-built
-//! attribute names, decoded attribute values, decoded text), `WebDoc::text_content` of RCDATA elements, `Node::namespace`,
-//! `Node::content` and spans. Opaque source slices (raw-text bodies, comments, bogus markup, CDATA) are source bytes by
-//! design, so they get the input-stream preprocessing a tokenizer applies (newline normalisation, NUL) before they are
-//! compared. Decoded values are compared exactly as the crate exposes them.
+//! attribute names, decoded attribute values, and the crate's own character data for text, RCDATA, RAWTEXT and script
+//! bodies, comments and CDATA sections), `Node::namespace`, `Node::content` and spans. The comparator never preprocesses
+//! what the crate already reads (so the crate's newline and U+0000 handling is what is compared); only nodes the crate
+//! keeps opaque by design (bogus comments, processing instructions, the scripting-enabled raw-text reading of `noscript`)
+//! get the tokenizer's preprocessing here.
 //!
 //! Documented normalisations (crate docs, `dom` module), applied here and nowhere else:
 //! - N1 implied elements: the reference's implied `html`, `head`, `body`, `tbody` and `colgroup` elements are removed and
 //!   their children spliced into their parent (`events::drop_implied`); the crate's tree has authored elements only.
-//! - N2 skeleton whitespace (whole-document comparisons only): leading whitespace of text before `<html>` and between
-//!   `<html>` and its first element is dropped (the "initial", "before html" and "before head" modes ignore it), and
-//!   whitespace text after the body element (after `</body>` and after `</html>`) is emitted at the end of the body
-//!   element ("after body" / "after after body" insert it there; with an implied body that is the end of `html`).
+//! - N2 skeleton whitespace (whole-document comparisons only), whitespace-only text nodes only: those before `<html>` and
+//!   between `<html>` and its first element are dropped (the "initial", "before html" and "before head" modes ignore
+//!   whitespace), and those after the body element (after `</body>` and after `</html>`) are emitted at the end of the
+//!   body element ("after body" / "after after body" insert them there; with an implied body that is the end of `html`).
+//!   A skeleton text run with leading whitespace and other characters is refused by the crate, so it is never trimmed
+//!   here (if it were accepted, the difference would show).
 
 use crate::events::{Ev, Events, Ns};
 use hsk_studio_accord::CancellationToken;
@@ -52,30 +55,13 @@ fn ns_of(ns: Namespace) -> Ns {
     }
 }
 
-/// Comment data of a `<!-- ... -->` slice (the crate keeps the whole span; `--!>` and the abrupt `<!-->` / `<!--->` forms
-/// end comments too).
-fn comment_data(slice: &str) -> &str {
-    let inner = slice.strip_prefix("<!--").unwrap_or(slice);
-    if inner == ">" || inner == "->" {
-        return "";
-    }
-    inner
-        .strip_suffix("-->")
-        .or_else(|| inner.strip_suffix("--!>"))
-        .unwrap_or(inner)
-}
-
-/// What an opaque unsupported span is to a tokenizer: CDATA text under a foreign element (preprocessed; its U+0000
-/// character tokens become U+FFFD under the foreign-content rules), otherwise a bogus comment (`<!x>`, `<?x?>`, `</ x>`,
-/// `<![CDATA[x]]>` in HTML content); `</>` produces nothing, and an end tag (`</` followed by an ASCII letter) is a token
-/// the tree builder ignored (the crate keeps one as an opaque node only then: `</image>`).
-fn unsupported_event(slice: &str, parent_ns: Ns) -> Option<Ev> {
-    if parent_ns != Ns::Html
-        && let Some(inner) = slice
-            .strip_prefix("<![CDATA[")
-            .and_then(|s| s.strip_suffix("]]>"))
-    {
-        return Some(Ev::Text(preprocess(inner)));
+/// What an opaque unsupported span is to a tokenizer: a CDATA section under a foreign element is text (the crate's own
+/// character data, `crate_text`), otherwise a bogus comment (`<!x>`, `<?x?>`, `</ x>`, `<![CDATA[x]]>` in HTML content);
+/// `</>` produces nothing, and an end tag (`</` followed by an ASCII letter) is a token the tree builder ignored (the
+/// crate keeps one as an opaque node only then: `</image>`).
+fn unsupported_event(slice: &str, parent_ns: Ns, crate_text: Option<&str>) -> Option<Ev> {
+    if parent_ns != Ns::Html && slice.starts_with("<![CDATA[") && slice.ends_with("]]>") {
+        return Some(Ev::Text(crate_text.unwrap_or_default().to_owned()));
     }
     if slice == "</>" {
         return None;
@@ -101,8 +87,9 @@ fn html_element(doc: &WebDoc, id: NodeId, name: &str) -> bool {
         && doc.local_name(id).as_deref() == Some(name)
 }
 
+/// Whitespace character tokens of the skeleton modes (13.2.6.4.1-.3); a CR here comes from a `&#13;` reference.
 fn is_html_space(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\u{c}')
+    matches!(c, ' ' | '\t' | '\n' | '\u{c}' | '\r')
 }
 
 /// N2 for a whole-document comparison: text nodes whose leading whitespace the skeleton modes drop, and whitespace text
@@ -122,19 +109,20 @@ fn skeleton(doc: &WebDoc, text_of: &HashMap<NodeId, String>) -> Skeleton {
         container: None,
     };
     let root = children(doc.root());
-    // Leading whitespace: root-level text before the first element, then (when that element is an authored html) its
-    // text children before its first element, until a non-whitespace character.
+    // Leading whitespace: whitespace-only root-level text before the first element, then (when that element is an
+    // authored html) its whitespace-only text children before its first element; a text with another character ends the
+    // skeleton modes and is never trimmed.
     let mut level = root.clone();
     'levels: loop {
         let mut next = None;
         for &id in &level {
             match doc.node(id).map(|n| n.kind) {
                 Some(NodeKind::Text) => {
-                    s.trim_leading.insert(id);
                     let text = text_of.get(&id).map_or("", String::as_str);
                     if !text.trim_start_matches(is_html_space).is_empty() {
                         break 'levels;
                     }
+                    s.trim_leading.insert(id);
                 }
                 Some(NodeKind::Element) => {
                     if html_element(doc, id, "html") {
@@ -246,24 +234,31 @@ pub fn model_events(doc: &WebDoc, scripting: bool, document: bool) -> Vec<Ev> {
                 }
             }
             NodeKind::Raw => {
-                let owner = node
-                    .parent
-                    .and_then(|p| doc.node(p).map(|n| (p, n.content)));
-                match owner {
-                    // RCDATA: the crate's decoded character data (references, newlines, U+FFFD, textarea's first LF).
-                    Some((p, ContentModel::Rcdata)) => out.push(Ev::Text(doc.text_content(p))),
-                    _ => out.push(Ev::Text(preprocess(doc.slice(&row.span)))),
+                // The crate's character data: RCDATA decoded (references, newlines, U+FFFD, textarea's first LF), RAWTEXT
+                // and script bodies as the tokenizer emits them (newlines, U+FFFD). Cross-check: RCDATA view text equals
+                // `text_content` of the owner.
+                let text = row.text.clone().unwrap_or_default();
+                if let Some(p) = node.parent.filter(|&p| {
+                    doc.node(p)
+                        .is_some_and(|n| n.content == ContentModel::Rcdata)
+                }) {
+                    assert_eq!(
+                        text,
+                        doc.text_content(p),
+                        "RCDATA view text and text_content agree"
+                    );
                 }
+                out.push(Ev::Text(text));
             }
-            NodeKind::Comment => {
-                out.push(Ev::Comment(preprocess(comment_data(doc.slice(&row.span)))))
-            }
+            NodeKind::Comment => out.push(Ev::Comment(row.text.clone().unwrap_or_default())),
             NodeKind::Unsupported => {
                 let parent_ns = node
                     .parent
                     .and_then(|p| doc.node(p))
                     .map_or(Ns::Html, |p| ns_of(p.namespace));
-                if let Some(ev) = unsupported_event(doc.slice(&row.span), parent_ns) {
+                if let Some(ev) =
+                    unsupported_event(doc.slice(&row.span), parent_ns, row.text.as_deref())
+                {
                     out.push(ev);
                 }
             }

@@ -5,11 +5,12 @@
 //! - It inserts implied elements: `html`, `head` and `body` when their start tags are absent (13.2.6.4.2, .3, .6 "anything
 //!   else"), `tbody` for a `tr` directly in a `table` (13.2.6.4.9 "td, th, tr"), `colgroup` for a `col` directly in a
 //!   `table` (13.2.6.4.9 "col"). No authored element changes its parent or order; this is a documented normalisation
-//!   (`WebDoc` docs), not a refusal. Whitespace-only text at the document skeleton level is the one non-element case:
-//!   the "initial", "before html" and "before head" modes drop it, "after body" and "after after body" insert it into
-//!   the body element (13.2.6.4.1-.3, .19, .22).
-//! - It re-parents, reorders or drops authored nodes. Such inputs are refused typed, by the detection rule below,
-//!   before the node is added (one input per rule row: `tests/html_parity.rs`
+//!   (`WebDoc` docs), not a refusal. Whitespace-only text nodes at the document skeleton level are the one non-element
+//!   case (N2): the "initial", "before html" and "before head" modes drop them, "after body" and "after after body"
+//!   insert them into the body element (13.2.6.4.1-.3, .19, .22). N2 is whitespace-only text nodes only; the comparator
+//!   (`tests/html5ever_differential/model.rs`, `Skeleton`) normalises exactly those.
+//! - It re-parents, reorders or drops authored nodes (or characters of one). Such inputs are refused typed, by the
+//!   detection rule below, before the node is added (at least one input per rule row and arm: `tests/html_parity.rs`
 //!   `tree_construction_that_moves_authored_nodes_is_refused_typed`; against html5ever: the differential target's
 //!   tree-construction group, `tree_construction_dispositions_are_pinned`, whole documents and the generated corpora,
 //!   all without a disagreement outside N1/N2). The rule is conservative: where the HTML Standard and html5ever 0.40.1
@@ -17,12 +18,14 @@
 //!   used, so a token either engine would restructure is refused; some inputs a browser keeps as authored are refused
 //!   too (template contents follow the "in body" rules here, an implied `tr` is not accepted).
 //!
-//! Detection rule (the crate already requires every non-void element to be closed by its own end tag, properly nested):
+//! Detection rule (the crate already requires every non-void element to be closed by its own end tag, properly nested;
+//! the only other end tags it keeps are `</image>`, which matches no element, and `</>`, which is no token at all):
 //!
 //! | Context (crate current node) | Refused start tags / tokens | Spec step |
 //! |---|---|---|
 //! | any, HTML rules | `html`, `head`, `body` outside their skeleton position; `caption col colgroup frame tbody td tfoot th thead tr` | 13.2.6.4.7 (ignored) |
 //! | any | DOCTYPE after the "initial" mode | 13.2.6.4.2-.22 (ignored) |
+//! | document root, `html` ("initial", "before html", "before head") | a text run that starts with whitespace and has other characters (its leading whitespace is dropped) | 13.2.6.4.1-.3 |
 //! | `p` in button scope | `address article aside blockquote center details dialog dir div dl fieldset figcaption figure footer header hgroup main menu nav ol p search section summary ul h1-h6 pre listing form li dd dt plaintext table hr xmp` | 13.2.6.4.7 "close a p element" (table: both quirks readings) |
 //! | current node `h1`-`h6` | `h1`-`h6` | 13.2.6.4.7 |
 //! | open `form` | `form` | 13.2.6.4.7 (ignored) |
@@ -35,11 +38,18 @@
 //! | `ruby` in scope and an implied-end-tag current node | `rb rtc` (`rp rt`, `rtc` exempt) | 13.2.6.4.7 |
 //! | anywhere | `selectedcontent` (engines clone option content into it after parsing) | 4.10.7 |
 //! | `table`, `tbody`, `thead`, `tfoot`, `tr` | everything except `caption colgroup col tbody thead tfoot tr` (in `table`), `tr` (in sections), `td th` (in `tr`), `style script template`, `input type=hidden`; non-whitespace text | 13.2.6.4.9-.15 (foster parenting, implied `tr`, closing table parts) |
-//! | `colgroup` | everything except `col`, `template`, whitespace | 13.2.6.4.12 |
+//! | `colgroup` | everything except `col`, `template`, whitespace, comments; also `</image>` (any end tag the crate keeps without closing an element: "anything else" pops the colgroup) | 13.2.6.4.12 |
 //! | `noscript` in `head` (scripting disabled) | everything except `basefont bgsound link meta noframes style`, whitespace, comments | 13.2.6.4.5 |
 //! | authored `head` open | anything the "in head" mode does not insert into the head | 13.2.6.4.4 |
 //! | after `</head>` | `base basefont bgsound link meta noframes script style template title` (moved into the head) | 13.2.6.4.6 |
-//! | after `</body>` / `</html>` | anything but whitespace, comments and `</html>` (moved into the body) | 13.2.6.4.19, .22 |
+//! | after `</body>` / `</html>` | anything but whitespace, comments and `</html>` (moved into the body; also `</image>`) | 13.2.6.4.19, .22 |
+//!
+//! End tags the crate accepts, per row: the end tag of the current node pops exactly that node in every insertion mode
+//! listed (in body "any other end tag" and the special `p li dd dt h1-h6 form a nobr button` steps find it as the current
+//! node; the table, section, row, cell, caption and column group modes close their own element; head noscript, head and
+//! skeleton end tags switch modes as `tree_end` records). `</image>` is ignored everywhere except the column group (F2
+//! of the R9 pre-review: refused) and after `</body>` / `</html>` (refused). `</>` emits no token, so it never changes a
+//! mode or the first-LF rule (`WebDoc::first_token_after_start_tag`).
 
 #![deny(clippy::arithmetic_side_effects)]
 
@@ -143,13 +153,13 @@ const HEADINGS: &[&str] = &["h1", "h2", "h3", "h4", "h5", "h6"];
 const IMPLIED_END: &[&str] = &[
     "dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc",
 ];
-/// HTML scope boundaries of "has an element in scope" present in both the HTML Standard (13.2.4.3) and html5ever 0.40.1.
+/// HTML scope boundaries of "has an element in scope" present in both the HTML Standard (13.2.4.2) and html5ever 0.40.1.
 const SCOPE_HTML: &[&str] = &[
     "applet", "caption", "html", "table", "td", "th", "marquee", "object", "select", "template",
 ];
 const SCOPE_MATHML: &[&str] = &["mi", "mo", "mn", "ms", "mtext"];
 const SCOPE_SVG: &[&str] = &["foreignObject", "desc", "title"];
-/// The "special" category (13.2.4.3) restricted to the HTML names both the Standard and html5ever list.
+/// The "special" category (13.2.4.2) restricted to the HTML names both the Standard and html5ever list.
 const SPECIAL: &[&str] = &[
     "address",
     "applet",
@@ -233,7 +243,7 @@ const SPECIAL: &[&str] = &[
     "wbr",
     "xmp",
 ];
-/// Elements that put a marker on the list of active formatting elements (13.2.4.4).
+/// Elements that put a marker on the list of active formatting elements (13.2.4.3).
 const MARKERS: &[&str] = &[
     "applet", "marquee", "object", "td", "th", "caption", "template",
 ];
@@ -264,7 +274,7 @@ impl Parser<'_> {
         self.stack.iter().any(|f| self.html_is(f, names))
     }
 
-    /// "Has an element in scope" (13.2.4.3) with the shared boundary set plus `extra` (button scope: `button`).
+    /// "Has an element in scope" (13.2.4.2) with the shared boundary set plus `extra` (button scope: `button`).
     fn in_scope(&self, target: &[&str], extra: &[&str]) -> bool {
         for f in self.stack.iter().rev() {
             if self.html_is(f, target) {
@@ -319,6 +329,14 @@ impl Parser<'_> {
             }
         }
         false
+    }
+
+    /// The skeleton mode ignores whitespace character tokens ("initial", "before html", "before head": 13.2.6.4.1-.3).
+    fn drops_whitespace(&self) -> bool {
+        matches!(
+            self.mode,
+            Mode::Initial | Mode::BeforeHtml | Mode::BeforeHead
+        )
     }
 
     /// The crate's current node is the document root or an authored `html` / `head` element: tokens there are placed by
@@ -389,6 +407,20 @@ impl Parser<'_> {
         let bytes = self.b.get(span.clone()).unwrap_or_default();
         let top = self.top();
         if self.at_skeleton() {
+            if self.drops_whitespace() {
+                // N2 covers whitespace-only text nodes only. These modes ignore each leading whitespace character token
+                // (written as a character or a reference) and keep the rest of the run, so the node's value would
+                // differ. Tokens as the tokenizer emits them; U+0000 is a token too (it ends the skeleton modes).
+                let tokens = decode(
+                    self.src.get(span.clone()).unwrap_or_default(),
+                    Context::ReplaceNul,
+                )
+                .text;
+                let rest = tokens.trim_start_matches(['\t', '\n', '\u{c}', '\r', ' ']);
+                if rest.len() < tokens.len() && !rest.is_empty() {
+                    return Err(refuse(UnsupportedKind::DocumentStructure, span));
+                }
+            }
             let lead = bytes.iter().take_while(|&&c| is_ws(c)).count();
             if lead > 0 {
                 self.skeleton(Tok::Space, span)?;
@@ -586,10 +618,17 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// An end tag the tree builder ignores (`</image>`: no element ever has that name in HTML content). In the "initial"
-    /// mode it is "anything else" first (the mode becomes "before html", so a later DOCTYPE is ignored); after `</body>`
-    /// or `</html>` it switches back to "in body", so it is refused there.
+    /// An end tag the crate keeps without an element to close (`</image>`: no element ever has that name in HTML
+    /// content). Every insertion mode ignores it ("any other end tag": in head, in head noscript, after head, in body and
+    /// the modes that defer to it, in template; "before html"/"before head" ignore it too), except: in the "initial" mode
+    /// it is "anything else" first (the mode becomes "before html", so a later DOCTYPE is ignored); after `</body>` or
+    /// `</html>` it switches back to "in body" (refused, content moves into the body); and "in column group" has no end
+    /// tag entry for it, so "anything else" pops the authored `colgroup` and the following nodes land in the table
+    /// (13.2.6.4.12, refused).
     pub(super) fn tree_ignored_end(&mut self, span: &Range<usize>) -> Result<(), WebError> {
+        if self.current_is(&["colgroup"]) {
+            return Err(refuse(UnsupportedKind::TableContent, span));
+        }
         match self.mode {
             Mode::AfterBody | Mode::AfterAfterBody => {
                 Err(refuse(UnsupportedKind::DocumentStructure, span))

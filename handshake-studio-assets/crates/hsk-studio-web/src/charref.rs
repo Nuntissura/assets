@@ -61,6 +61,90 @@ fn push_literal(out: &mut String, s: &str, context: Context) {
     out.push_str(&s[run..]);
 }
 
+/// Source text as the tokenizer hands it on where there are no character references (RAWTEXT and script data bodies,
+/// CDATA sections, comment data): input-stream preprocessing (13.2.3.5: CR LF and a lone CR become LF) and the U+0000
+/// rule of `context` (U+FFFD, or dropped in `Context::Text`). Consumers read `text`; `span` maps a range of `text` back to
+/// the source bytes it came from, for location only.
+///
+/// The map holds one mark per CR LF pair and per U+0000 of the slice, at most `max_marks` (the document's node limit);
+/// beyond that it is dropped and `span` answers the whole slice (bounded memory for hostile input). `text` is at most
+/// `3 * src.len()` bytes (each U+0000 becomes the three bytes of U+FFFD).
+#[derive(Clone, Debug)]
+pub(crate) struct CharData {
+    pub text: String,
+    /// Source offset of the slice.
+    origin: usize,
+    /// Length of the source slice.
+    len: usize,
+    /// (offset in `text`, offset in the slice) after every place where the two stop advancing together; `None` when the
+    /// mark budget was exceeded.
+    marks: Option<Vec<(usize, usize)>>,
+}
+
+impl CharData {
+    pub(crate) fn new(src: &str, origin: usize, context: Context, max_marks: usize) -> Self {
+        let b = src.as_bytes();
+        let mut text = String::with_capacity(src.len());
+        let mut marks = Some(Vec::new());
+        let mut run = 0usize;
+        let mut i = 0usize;
+        while let Some(&c) = b.get(i) {
+            if c != b'\r' && c != 0 {
+                i = i.saturating_add(1);
+                continue;
+            }
+            text.push_str(&src[run..i]);
+            let mut mark = c == 0;
+            if c == b'\r' {
+                text.push('\n');
+                if b.get(i.saturating_add(1)) == Some(&b'\n') {
+                    i = i.saturating_add(1);
+                    mark = true;
+                }
+            } else if context != Context::Text {
+                text.push('\u{fffd}');
+            }
+            i = i.saturating_add(1);
+            run = i;
+            if mark && let Some(list) = marks.as_mut() {
+                if list.len() >= max_marks {
+                    marks = None;
+                } else {
+                    list.push((text.len(), i));
+                }
+            }
+        }
+        text.push_str(&src[run..]);
+        Self {
+            text,
+            origin,
+            len: src.len(),
+            marks,
+        }
+    }
+
+    /// Source offset of offset `t` of `text` (a character boundary).
+    fn source(&self, t: usize, marks: &[(usize, usize)]) -> usize {
+        let k = marks.partition_point(|m| m.0 <= t);
+        let (tp, sp) = k
+            .checked_sub(1)
+            .and_then(|k| marks.get(k))
+            .copied()
+            .unwrap_or((0, 0));
+        self.origin
+            .saturating_add(sp)
+            .saturating_add(t.saturating_sub(tp))
+    }
+
+    /// Source bytes that `r` (a range of `text`) was read from; the whole slice when the map was dropped.
+    pub(crate) fn span(&self, r: &Range<usize>) -> Range<usize> {
+        match &self.marks {
+            Some(marks) => self.source(r.start, marks)..self.source(r.end, marks),
+            None => self.origin..self.origin.saturating_add(self.len),
+        }
+    }
+}
+
 pub(crate) struct Decoded {
     pub text: String,
     /// Input ranges of `&name;` forms whose name is not in the table (literal text for a browser too).
@@ -227,7 +311,7 @@ pub(crate) fn decode(input: &str, context: Context) -> Decoded {
 
 #[cfg(test)]
 mod tests {
-    use super::{Context, decode};
+    use super::{CharData, Context, decode};
 
     #[test]
     fn table_is_sorted_and_complete() {
@@ -274,5 +358,33 @@ mod tests {
             );
         }
         assert!(decode(&nuls, Context::Text).text.is_empty());
+    }
+
+    /// `CharData`: preprocessing without references, and the map back to the source (a U+FFFD maps to its NUL, the LF of
+    /// a CR LF to the pair, text after a dropped NUL to the bytes after it); over the mark budget the map answers the whole
+    /// slice.
+    #[test]
+    fn char_data_maps_text_back_to_source() {
+        let src = "a\r\nb\0c\rd";
+        let d = CharData::new(src, 100, Context::ReplaceNul, 16);
+        assert_eq!(d.text, "a\nb\u{fffd}c\nd");
+        let at = |s: &str| d.text.find(s).unwrap();
+        assert_eq!(d.span(&(at("b")..at("b") + 1)), 103..104);
+        assert_eq!(d.span(&(at("\u{fffd}")..at("c"))), 104..105);
+        assert_eq!(d.span(&(at("d")..d.text.len())), 107..108);
+        assert_eq!(
+            d.span(&(1..2)),
+            101..103,
+            "the LF of CR LF maps to the pair"
+        );
+        let dropped = CharData::new("x\0\0y", 0, Context::Text, 16);
+        assert_eq!(dropped.text, "xy");
+        assert_eq!(dropped.span(&(1..2)), 3..4);
+        let plain = CharData::new("abc", 7, Context::ReplaceNul, 0);
+        assert_eq!(plain.text, "abc");
+        assert_eq!(plain.span(&(1..2)), 8..9);
+        let over = CharData::new("\0\0\0", 5, Context::ReplaceNul, 2);
+        assert_eq!(over.text.len(), 9, "3 bytes per U+0000");
+        assert_eq!(over.span(&(3..6)), 5..8, "over budget: the whole slice");
     }
 }

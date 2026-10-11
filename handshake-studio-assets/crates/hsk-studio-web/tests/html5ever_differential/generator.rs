@@ -394,13 +394,32 @@ impl Generator {
                 out.push_str(self.rng.pick(WORDS));
             }
         }
-        if ctx != Ctx::Html && self.rng.pct(8) {
-            out.push_str(self.rng.pick(&[
-                "<![CDATA[x<y]]>",
-                "<![CDATA[]]>",
-                "<![CDATA[a&amp;b]]>",
-                "<![CDATA[x]]]]>",
-            ]));
+        let noise = self.theme == Theme::Noise;
+        if ctx != Ctx::Html && self.rng.pct(if noise { 30 } else { 8 }) {
+            if noise {
+                // CR, CR LF and U+0000 inside CDATA sections: the tokenizer preprocesses the input stream before the
+                // CDATA state (a CR before `]]>` is an LF), so a CDATA piece and the text after it must not be joined raw
+                // (R9 pre-review F1: an LF-led text after a CR-ended section).
+                out.push_str(self.rng.pick(&[
+                    "<![CDATA[\r]]>",
+                    "<![CDATA[x\r]]>",
+                    "<![CDATA[a\r\nb]]>",
+                    "<![CDATA[\r\r\n]]>",
+                    "<![CDATA[a\0b]]>",
+                    "<![CDATA[\\\r]]>",
+                    "<![CDATA[x<y]]>",
+                ]));
+                if self.rng.pct(50) {
+                    out.push('\n');
+                }
+            } else {
+                out.push_str(self.rng.pick(&[
+                    "<![CDATA[x<y]]>",
+                    "<![CDATA[]]>",
+                    "<![CDATA[a&amp;b]]>",
+                    "<![CDATA[x]]]]>",
+                ]));
+            }
         }
     }
 
@@ -598,6 +617,12 @@ impl Generator {
                 out.push_str(name);
                 self.attrs(out, HTML_ATTRS);
                 out.push('>');
+                if matches!(self.theme, Theme::Mixed | Theme::Noise) && self.rng.pct(20) {
+                    // `</>` emits no token (13.2.5.7), so a newline after it is still the first token and is dropped (R9
+                    // pre-review F3); `</ x>` is a bogus comment token, after which the newline stays.
+                    out.push_str(self.rng.pick(&["</>", "</>", "</></>", "</ x>"]));
+                    out.push_str(self.rng.pick(&["\n", "\n", "\r\n", "&#10;", "\nx"]));
+                }
                 self.items(out, Ctx::Html, depth + 1, in_a);
                 self.close(out, name);
             }

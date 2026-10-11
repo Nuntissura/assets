@@ -9,14 +9,17 @@
 //!
 //! Values are read the way a browser reads them before they are classified. The document comes from `dom::parse`,
 //! whose tokenizer states and tree-construction context follow the HTML parser (or refuse the document typed), so
-//! every `style` is RAWTEXT exactly where a browser makes it RAWTEXT. Attribute values are decoded with the exact
-//! attribute-value character-reference rules (`charref`, complete WHATWG table), foreign-content style text with the
-//! text rules; style text is then tokenized per CSS Syntax Level 3 (`cssurl`).
+//! every `style` is RAWTEXT exactly where a browser makes it RAWTEXT. Every text the gate interprets is the text the
+//! parser hands on, never the raw span bytes: attribute values are decoded with input-stream preprocessing, the
+//! attribute-value U+0000 rule and the exact attribute-value character-reference rules (`charref`, complete WHATWG
+//! table); style text is `WebDoc::sheet` (HTML: the RAWTEXT body preprocessed; foreign: text nodes and CDATA sections
+//! under the foreign-content rules, preprocessed, concatenated); style text is then tokenized per CSS Syntax Level 3
+//! (`cssurl`). Raw spans only locate a reference (the whole value or content span when decoding moved offsets).
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::charref::{Context, decode};
 use crate::cssurl::css_references;
-use crate::dom::{ContentModel, NodeId, NodeKind, WebDoc};
+use crate::dom::{NodeId, NodeKind, WebDoc};
 use crate::error::{LimitKind, WebError};
 use hsk_studio_accord::CancellationToken;
 use std::ops::Range;
@@ -428,24 +431,18 @@ impl Collector<'_> {
         self.push(node, source, reference.to_owned(), span, outcome)
     }
 
-    /// References in CSS `css`, whose first byte is document offset `origin` (`exact`: `css` is the source bytes).
+    /// References in CSS `css` (the text a browser's CSS parser reads); `locate` maps a range of `css` to the source bytes
+    /// it came from (location only).
     fn css(
         &mut self,
         node: NodeId,
         source: &AssetSource,
         css: &str,
-        origin: usize,
-        exact: bool,
-        whole: &Range<usize>,
+        locate: &dyn Fn(&Range<usize>) -> Range<usize>,
     ) -> Result<(), WebError> {
         let room = self.limit.saturating_sub(self.out.len()).saturating_add(1);
         for r in css_references(css, room) {
-            let span = if exact {
-                origin.saturating_add(r.span.start)..origin.saturating_add(r.span.end)
-            } else {
-                whole.clone()
-            };
-            self.reference(node, source.clone(), &r.value, r.bad, span)?;
+            self.reference(node, source.clone(), &r.value, r.bad, locate(&r.span))?;
         }
         Ok(())
     }
@@ -517,7 +514,7 @@ impl Collector<'_> {
                     self.reference(node, source, &text[r.clone()], false, sub(&r))?;
                 }
             }
-            Kind::Css => self.css(node, &source, text, value_span.start, exact, &value_span)?,
+            Kind::Css => self.css(node, &source, text, &sub)?,
             Kind::InlineDoc => {
                 if !text.trim().is_empty() {
                     self.push(
@@ -533,60 +530,19 @@ impl Collector<'_> {
         Ok(())
     }
 
-    /// A style sheet's text: the RAWTEXT body of an HTML `style` (never character-reference decoded), or the child text
-    /// content of a foreign `style` (its text nodes' character data as the foreign-content rules build it, and its CDATA
-    /// sections, concatenated in order, as the DOM joins them before CSS sees them; comments and child elements
-    /// contribute nothing).
+    /// A style sheet: exactly the text a browser's CSS parser reads (`WebDoc::sheet`): the RAWTEXT body of an HTML
+    /// `style` after input-stream preprocessing (never character-reference decoded), or the child text content of a
+    /// foreign `style` (its text nodes' and CDATA sections' character data, each preprocessed as the tokenizer and the
+    /// foreign-content rules build it, concatenated in order; comments and child elements contribute nothing). The raw
+    /// span bytes are only used to locate a reference.
     fn style_children(&mut self, id: NodeId) -> Result<(), WebError> {
-        let doc = self.doc;
-        let Some(node) = doc.node(id) else {
+        let Some(sheet) = self.doc.sheet(id) else {
             return Ok(());
         };
-        let source = AssetSource::StyleBody;
-        if node.content == ContentModel::RawText {
-            for &child in &node.children {
-                if let Some(c) = doc.node(child).filter(|c| c.kind == NodeKind::Raw) {
-                    self.css(id, &source, doc.slice(&c.span), c.span.start, true, &c.span)?;
-                }
-            }
+        if sheet.text.is_empty() {
             return Ok(());
         }
-        const OPEN: &str = "<![CDATA[";
-        let mut text = String::new();
-        let mut parts = 0usize;
-        let mut exact_origin: Option<usize> = None;
-        for &child in &node.children {
-            let Some(c) = doc.node(child) else { continue };
-            let raw = doc.slice(&c.span);
-            let (piece, origin) = match c.kind {
-                NodeKind::Text => {
-                    let d = doc.text_value(child).unwrap_or_default();
-                    let origin = (d == raw).then_some(c.span.start);
-                    (d, origin)
-                }
-                NodeKind::Unsupported => {
-                    match raw.strip_prefix(OPEN).and_then(|t| t.strip_suffix("]]>")) {
-                        Some(inner) => (
-                            inner.to_owned(),
-                            Some(c.span.start.saturating_add(OPEN.len())),
-                        ),
-                        None => continue,
-                    }
-                }
-                _ => continue,
-            };
-            parts = parts.saturating_add(1);
-            exact_origin = origin;
-            text.push_str(&piece);
-        }
-        if text.is_empty() {
-            return Ok(());
-        }
-        let whole = node.content_span().unwrap_or_else(|| node.span.clone());
-        match (parts, exact_origin) {
-            (1, Some(origin)) => self.css(id, &source, &text, origin, true, &whole),
-            _ => self.css(id, &source, &text, whole.start, false, &whole),
-        }
+        self.css(id, &AssetSource::StyleBody, &sheet.text, &|r| sheet.span(r))
     }
 }
 

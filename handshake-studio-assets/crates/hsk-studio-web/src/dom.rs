@@ -24,26 +24,33 @@
 //! Tree construction (`construction`): the tree is the authored tree. A browser's tree for the same bytes (document
 //! parsing, scripting enabled or disabled) equals it after two documented normalisations: (N1) the browser inserts
 //! implied `html`, `head`, `body`, `tbody` (around a `tr` directly in a `table`) and `colgroup` (around a `col` directly
-//! in a `table`) elements that are not in the source; (N2) whitespace-only text at the document skeleton level (before
-//! `<html>`, between `<html>` and `<head>`, after `</body>` and `</html>`) is dropped or moved into the body. Inputs
-//! where a browser re-parents, reorders or drops an authored node are refused typed; the detection rule and its proofs
-//! are in `construction`. The name `image` in HTML content is read as `img` (13.2.6.4.7) and `</image>` is an ignored
-//! end tag.
+//! in a `table`) elements that are not in the source; (N2) whitespace-only text nodes at the document skeleton level are
+//! dropped (before `<html>`, between `<html>` and `<head>`: the "initial", "before html" and "before head" modes ignore
+//! whitespace) or moved into the body (after `</body>` and `</html>`). Inputs where a browser re-parents, reorders or
+//! drops an authored node or part of one are refused typed (a text run there that starts with whitespace and goes on
+//! with other characters loses its leading whitespace, so it is refused); the detection rule and its proofs are in
+//! `construction`. The name `image` in HTML content is read as `img` (13.2.6.4.7) and `</image>` is an ignored end tag.
 //!
-//! Spans and decoded values: every node keeps the exact source span of its bytes. Decoded values (`WebDoc::local_name`,
-//! `WebDoc::attr_local_name`, `WebDoc::attr_value`, `ViewRow::text` of text nodes, `WebDoc::text_content`) are what the
-//! tokenizer and tree builder build from those bytes: input-stream preprocessing (CR LF and a lone CR become LF; a
-//! `&#13;` reference stays CR), U+0000 replaced by U+FFFD in tag names, attribute names, attribute values, RCDATA and
-//! foreign-content text and dropped from HTML-content text, character references decoded, names ASCII-lowercased, and
-//! the first LF token after a `pre`, `listing` or `textarea` start tag dropped (also when it is spelled CR, CR LF or as
-//! a character reference). A decoded value therefore has no byte-for-byte position map into its span; edits replace
-//! whole spans (`dom_values_are_decoded_and_spans_keep_the_source_bytes` pins the relation).
+//! Spans and decoded values: every node keeps the exact source span of its bytes; spans locate, values are read from the
+//! decoded text. Decoded values (`WebDoc::local_name`, `WebDoc::attr_local_name`, `WebDoc::attr_value`, `ViewRow::text`,
+//! `WebDoc::text_content`, `WebDoc::stylesheet_text`) are what the tokenizer and tree builder build from those bytes:
+//! input-stream preprocessing (CR LF and a lone CR become LF; a `&#13;` reference stays CR), U+0000 replaced by U+FFFD
+//! in tag names, attribute names, attribute values, RCDATA, RAWTEXT and script bodies, comments and foreign-content text
+//! and CDATA sections, and dropped from HTML-content text, character references decoded (not in RAWTEXT, script data,
+//! comments or CDATA), names ASCII-lowercased, and the first LF token after a `pre`, `listing` or `textarea` start tag
+//! dropped (also when it is spelled CR, CR LF or as a character reference, and when only `</>`, which emits no token,
+//! precedes it). A CDATA section in foreign content is text (its data is part of `text_content`). The consumers that
+//! interpret text (asset scan, preview, media blocks) read these values, not the raw span bytes
+//! (`text_consumers_read_the_text_a_browser_builds`, `foreign_style_cdata_is_preprocessed_before_css`). A value with
+//! references has no byte-for-byte position map into its span (its consumers report the whole span); preprocessing
+//! without references keeps a map (`charref::CharData`). Edits replace whole spans
+//! (`dom_values_are_decoded_and_spans_keep_the_source_bytes` pins the relation).
 
 #![deny(clippy::arithmetic_side_effects)]
 
 mod construction;
 
-use crate::charref::{Context, decode};
+use crate::charref::{CharData, Context, decode};
 use crate::error::{LimitKind, LossKind, LossReport, MalformedKind, UnsupportedKind, WebError};
 use construction::Mode;
 use hsk_studio_accord::CancellationToken;
@@ -263,9 +270,12 @@ pub struct Node {
     pub protected: bool,
     /// Namespace of an element as an HTML parser assigns it; `Html` for every other node kind.
     pub namespace: Namespace,
-    /// Text node whose characters the foreign-content rules insert (13.2.6.5): U+0000 becomes U+FFFD instead of being
-    /// dropped.
+    /// Text node (or CDATA section) whose characters the foreign-content rules insert (13.2.6.5): U+0000 becomes U+FFFD
+    /// instead of being dropped.
     foreign_text: bool,
+    /// `Unsupported` node that is a CDATA section (markup declaration open state: the adjusted current node is not an
+    /// HTML element): its data is character tokens (CDATA section state), so a browser's DOM has it as text.
+    cdata: bool,
 }
 impl Node {
     fn new(kind: NodeKind, span: Range<usize>) -> Self {
@@ -284,6 +294,7 @@ impl Node {
             protected: false,
             namespace: Namespace::Html,
             foreign_text: false,
+            cdata: false,
         }
     }
     /// Bytes between the open and close tag; `None` for void, self-closed and non-element nodes.
@@ -320,10 +331,29 @@ pub struct ViewRow {
     /// Attribute names as the tokenizer builds them (`WebDoc::attr_local_name`) with decoded values (`None` for
     /// valueless attributes).
     pub attrs: Vec<(String, Option<String>)>,
-    /// Decoded text for text nodes (`WebDoc` docs: newlines, U+0000, references, first LF in `pre`/`listing`), the
-    /// source slice for raw nodes (decoded RCDATA: `WebDoc::text_content` of the owner), comment body for comments.
+    /// The character data a browser builds (`WebDoc` docs): decoded text for text nodes (newlines, U+0000, references,
+    /// first LF in `pre`/`listing`), the decoded body of an RCDATA element, the body of a RAWTEXT / script element as the
+    /// tokenizer emits it (newlines preprocessed, U+0000 as U+FFFD), the data of a CDATA section in foreign content and of
+    /// a comment (preprocessed, U+0000 as U+FFFD or dropped like text at an integration point). Doctype, processing
+    /// instruction, bogus markup and ignored end tag nodes give their source slice (opaque). `span` locates the bytes.
     pub text: Option<String>,
     pub span: Range<usize>,
+}
+
+/// A style sheet's text as a browser's CSS parser reads it (`WebDoc::sheet`) and how its offsets map back to the source.
+pub(crate) struct Sheet {
+    pub text: String,
+    /// Exact map for an HTML `style` body or a lone text / CDATA piece; `None`: only `whole` locates the text.
+    map: Option<CharData>,
+    whole: Range<usize>,
+}
+impl Sheet {
+    /// Source bytes of `r` (a range of `text`): exact through the preprocessing map, else the element's whole content.
+    pub(crate) fn span(&self, r: &Range<usize>) -> Range<usize> {
+        self.map
+            .as_ref()
+            .map_or_else(|| self.whole.clone(), |m| m.span(r))
+    }
 }
 
 /// One source revision, its projected tree and the findings made while projecting it.
@@ -789,7 +819,9 @@ impl<'a> Parser<'a> {
         } else if rest.starts_with(b"<![CDATA[") {
             // A CDATA section exists only where the current node is not an HTML element; in HTML content the same bytes
             // are a bogus comment that ends at the first `>`.
-            let end = if self.top().id != 0 && self.top().ns != Namespace::Html {
+            let top = self.top();
+            let section = top.id != 0 && top.ns != Namespace::Html;
+            let end = if section {
                 find(&rest[9..], b"]]>").map(|off| at(at(start, 9), at(off, 3)))
             } else {
                 rest.iter()
@@ -803,7 +835,13 @@ impl<'a> Parser<'a> {
                 });
             };
             self.loss.push(LossKind::Cdata, start..end);
-            self.leaf(NodeKind::Unsupported, end)
+            let mut node = Node::new(NodeKind::Unsupported, start..end);
+            node.cdata = section;
+            // Its character tokens go through the same dispatcher as text (integration points: HTML rules).
+            node.foreign_text = section && !top.html_ip && !top.mathml_text_ip;
+            self.push(node)?;
+            self.pos = end;
+            Ok(())
         } else {
             self.bogus(LossKind::BogusMarkup)
         }
@@ -1356,10 +1394,46 @@ impl WebDoc {
         Some(cur)
     }
 
-    /// The character data a browser builds for a text node, or for the body of an RCDATA element (`title`,
-    /// `textarea`); `None` for every other node. See the `WebDoc` docs: newlines normalised, U+0000 dropped in HTML
-    /// content and U+FFFD in foreign content and RCDATA, references decoded, the first LF after a `pre`, `listing` or
-    /// `textarea` start tag dropped.
+    /// `id` is an `</>` node: the end tag open state reads `</` + `>` as a parse error that emits no token (13.2.5.7).
+    fn emits_no_token(&self, id: NodeId) -> bool {
+        self.nodes
+            .get(id)
+            .is_some_and(|n| n.kind == NodeKind::Unsupported && self.slice(&n.span) == "</>")
+    }
+
+    /// `id` is the first token the tree builder sees after its parent's start tag: every earlier sibling is an `</>`,
+    /// which emits no token. Siblings are checked nearest first, so a run of `</>` is walked once per parent.
+    pub(crate) fn first_token_after_start_tag(&self, id: NodeId) -> bool {
+        let Some(node) = self.nodes.get(id) else {
+            return false;
+        };
+        let Some(parent) = node.parent.and_then(|p| self.nodes.get(p)) else {
+            return false;
+        };
+        parent
+            .children
+            .iter()
+            .take(node.index)
+            .rev()
+            .all(|&c| self.emits_no_token(c))
+    }
+
+    /// An HTML `pre`, `listing` or `textarea` element: the tree builder drops an LF token right after its start tag
+    /// (13.2.6.4.7). Foreign elements of those names have no such rule.
+    pub(crate) fn drops_first_lf(&self, id: NodeId) -> bool {
+        self.nodes
+            .get(id)
+            .is_some_and(|n| n.kind == NodeKind::Element && n.namespace == Namespace::Html)
+            && self
+                .tag_name(id)
+                .is_some_and(|n| in_set(&["pre", "listing", "textarea"], n))
+    }
+
+    /// The character data a browser builds for a text node, for the body of an RCDATA element (`title`, `textarea`) and
+    /// for a CDATA section in foreign content (no references; its U+0000 follows the same dispatcher as text); `None` for
+    /// every other node. See the `WebDoc` docs: newlines normalised, U+0000 dropped in HTML content and U+FFFD in foreign
+    /// content and RCDATA, references decoded, the first LF token after a `pre`, `listing` or `textarea` start tag
+    /// dropped (the first token: an `</>` before it emits none).
     pub(crate) fn text_value(&self, id: NodeId) -> Option<String> {
         let node = self.nodes.get(id)?;
         let parent = node.parent.and_then(|p| self.nodes.get(p))?;
@@ -1367,25 +1441,169 @@ impl WebDoc {
             NodeKind::Text if node.foreign_text => Context::ReplaceNul,
             NodeKind::Text => Context::Text,
             NodeKind::Raw if parent.content == ContentModel::Rcdata => Context::ReplaceNul,
+            NodeKind::Unsupported if node.cdata => {
+                let context = if node.foreign_text {
+                    Context::ReplaceNul
+                } else {
+                    Context::Text
+                };
+                return Some(self.cdata_data(id, context)?.text);
+            }
             _ => return None,
         };
         let slice = self.slice(&node.span);
         let mut text = decode(slice, context).text;
         // 13.2.6.4.7 "pre, listing" / "textarea": if the next token is an LF character token, it is ignored. That token
         // is the first character after preprocessing (LF, CR, CR LF) or the first code point of a character reference.
-        let after_start_tag = node.index == 0
-            && parent.kind == NodeKind::Element
-            && parent.namespace == Namespace::Html
-            && node
-                .parent
-                .and_then(|p| self.tag_name(p))
-                .is_some_and(|n| in_set(&["pre", "listing", "textarea"], n));
         let lf_token =
             slice.starts_with(['\n', '\r']) || (slice.starts_with('&') && text.starts_with('\n'));
-        if after_start_tag && lf_token {
+        if lf_token
+            && node.parent.is_some_and(|p| self.drops_first_lf(p))
+            && self.first_token_after_start_tag(id)
+        {
             text.remove(0);
         }
         Some(text)
+    }
+
+    /// The data of CDATA section `id` (between `<![CDATA[` and `]]>`) as character tokens: preprocessed, no references.
+    fn cdata_data(&self, id: NodeId, context: Context) -> Option<CharData> {
+        let node = self.nodes.get(id)?;
+        let inner = at(node.span.start, 9)..node.span.end.saturating_sub(3);
+        (node.cdata && inner.start <= inner.end).then(|| {
+            CharData::new(
+                self.slice(&inner),
+                inner.start,
+                context,
+                self.limits.max_nodes,
+            )
+        })
+    }
+
+    /// The body of a RAWTEXT or script-data element (`script style xmp iframe noembed noframes`) as the tokenizer emits
+    /// it: newlines preprocessed, U+0000 as U+FFFD (13.2.5.3, .4), no references; with the map back to its source bytes.
+    pub(crate) fn raw_text_data(&self, id: NodeId) -> Option<CharData> {
+        let node = self.nodes.get(id)?;
+        let parent = node.parent.and_then(|p| self.nodes.get(p))?;
+        (node.kind == NodeKind::Raw && parent.content == ContentModel::RawText).then(|| {
+            CharData::new(
+                self.slice(&node.span),
+                node.span.start,
+                Context::ReplaceNul,
+                self.limits.max_nodes,
+            )
+        })
+    }
+
+    /// Comment data as the comment states build it (`<!--`, `-->`, `--!>`, `<!-->`, `<!--->` excluded; newlines
+    /// preprocessed; U+0000 as U+FFFD).
+    fn comment_value(&self, id: NodeId) -> Option<String> {
+        let node = self.nodes.get(id)?;
+        if node.kind != NodeKind::Comment {
+            return None;
+        }
+        let s = self.slice(&node.span);
+        let inner = s.strip_prefix("<!--").unwrap_or(s);
+        let data = if inner == ">" || inner == "->" {
+            ""
+        } else {
+            inner
+                .strip_suffix("-->")
+                .or_else(|| inner.strip_suffix("--!>"))
+                .unwrap_or(inner)
+        };
+        Some(CharData::new(data, 0, Context::ReplaceNul, 0).text)
+    }
+
+    /// The text a browser hands to its CSS parser for a `style` element (`id`, any namespace), with the map back to
+    /// the source: an HTML `style` is RAWTEXT, its body as the tokenizer emits it (`raw_text_data`); a foreign `style` is
+    /// its child text content, the character data of its text nodes and CDATA sections concatenated in order
+    /// (`text_value`; comments and child elements add nothing). `None` for other nodes.
+    pub(crate) fn sheet(&self, id: NodeId) -> Option<Sheet> {
+        let node = self.nodes.get(id)?;
+        if node.kind != NodeKind::Element || self.local_name(id).as_deref() != Some("style") {
+            return None;
+        }
+        let whole = node.content_span().unwrap_or_else(|| node.span.clone());
+        if node.content == ContentModel::RawText {
+            // `raw_body` gives a RAWTEXT element at most one `Raw` child.
+            let data = node.children.iter().find_map(|&c| self.raw_text_data(c));
+            return Some(match data {
+                Some(data) => Sheet {
+                    text: data.text.clone(),
+                    map: Some(data),
+                    whole,
+                },
+                None => Sheet {
+                    text: String::new(),
+                    map: None,
+                    whole,
+                },
+            });
+        }
+        let mut text = String::new();
+        let mut pieces = 0usize;
+        let mut single: Option<CharData> = None;
+        for &child in &node.children {
+            let Some(c) = self.nodes.get(child) else {
+                continue;
+            };
+            let Some(piece) = self.text_value(child) else {
+                continue;
+            };
+            pieces = pieces.saturating_add(1);
+            // A lone piece maps back exactly when it is a CDATA section (no references) or source text read unchanged.
+            single = if c.cdata {
+                self.cdata_data(child, Context::ReplaceNul)
+                    .filter(|d| d.text == piece)
+            } else if self.slice(&c.span) == piece {
+                Some(CharData::new(
+                    self.slice(&c.span),
+                    c.span.start,
+                    Context::ReplaceNul,
+                    0,
+                ))
+            } else {
+                None
+            };
+            text.push_str(&piece);
+        }
+        Some(Sheet {
+            text,
+            map: single.filter(|_| pieces == 1),
+            whole,
+        })
+    }
+
+    /// The text a browser's CSS parser reads for `style` element `id` (`None` for other nodes): an HTML `style` body after
+    /// input-stream preprocessing, or a foreign `style`'s child text content (text nodes and CDATA sections, decoded and
+    /// preprocessed, concatenated). The asset scan and the preview read exactly this text.
+    pub fn stylesheet_text(&self, id: NodeId) -> Option<String> {
+        self.sheet(id).map(|s| s.text)
+    }
+
+    /// A start tag `tag` inserted as a child of `parent` follows the HTML rules (13.2.6 dispatcher): the parent is the
+    /// document, an HTML element, an HTML integration point, a MathML text integration point (except for `mglyph` and
+    /// `malignmark`), or `annotation-xml` for `svg`. Otherwise the new element is foreign content in the parent's
+    /// namespace (no RAWTEXT, RCDATA or first-LF rule).
+    pub(crate) fn child_follows_html_rules(&self, parent: NodeId, tag: &str) -> bool {
+        let Some(node) = self.nodes.get(parent) else {
+            return false;
+        };
+        if node.kind == NodeKind::Document || node.namespace == Namespace::Html {
+            return true;
+        }
+        let name = self.local_name(parent).unwrap_or_default();
+        let encoding = self
+            .attribute(parent, "encoding")
+            .and_then(|a| self.attr_value(a));
+        is_html_integration_point(node.namespace, &name, encoding.as_deref())
+            || (node.namespace == Namespace::MathMl
+                && in_set(&["mi", "mo", "mn", "ms", "mtext"], &name)
+                && !in_set(&["mglyph", "malignmark"], tag))
+            || (node.namespace == Namespace::MathMl
+                && name == "annotation-xml"
+                && tag.eq_ignore_ascii_case("svg"))
     }
 
     /// Decoded text content of a subtree (script/style bodies and comments excluded): the concatenated character data
@@ -1430,19 +1648,15 @@ impl WebDoc {
             let node = &self.nodes[id];
             let text = match node.kind {
                 NodeKind::Text => self.text_value(id),
-                NodeKind::Raw | NodeKind::Doctype | NodeKind::Unsupported => {
+                NodeKind::Raw => self
+                    .text_value(id)
+                    .or_else(|| self.raw_text_data(id).map(|d| d.text)),
+                NodeKind::Unsupported if node.cdata => self.text_value(id),
+                NodeKind::Doctype | NodeKind::Unsupported => {
                     Some(self.slice(&node.span).to_owned())
                 }
-                NodeKind::Comment => {
-                    let s = self.slice(&node.span);
-                    Some(
-                        s.strip_prefix("<!--")
-                            .map(|s| s.strip_suffix("-->").unwrap_or(s))
-                            .unwrap_or(s)
-                            .to_owned(),
-                    )
-                }
-                _ => None,
+                NodeKind::Comment => self.comment_value(id),
+                NodeKind::Document | NodeKind::Element => None,
             };
             rows.push(ViewRow {
                 id,
