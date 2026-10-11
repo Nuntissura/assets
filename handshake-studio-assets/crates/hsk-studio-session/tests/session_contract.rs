@@ -13,6 +13,8 @@ use hsk_studio_package::{
 use hsk_studio_session::*;
 use serde_json::{Value, json};
 use std::{
+    alloc::{GlobalAlloc, Layout, System},
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
@@ -21,6 +23,77 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+
+// ----- per-thread allocation accounting (memory bound assertions) -----------------------------
+// Each test body runs on its own thread, so live/peak bytes are attributable to that body alone.
+
+thread_local! {
+    static LIVE: Cell<isize> = const { Cell::new(0) };
+    static PEAK: Cell<isize> = const { Cell::new(0) };
+}
+
+fn track(delta: isize) {
+    let _ = LIVE.try_with(|live| {
+        let now = live.get() + delta;
+        live.set(now);
+        let _ = PEAK.try_with(|peak| {
+            if now > peak.get() {
+                peak.set(now);
+            }
+        });
+    });
+}
+
+struct Tracking;
+// SAFETY: every method forwards to the system allocator unchanged; the counters only observe.
+unsafe impl GlobalAlloc for Tracking {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() {
+            track(layout.size() as isize);
+        }
+        ptr
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            track(layout.size() as isize);
+        }
+        ptr
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+        track(-(layout.size() as isize));
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let moved = unsafe { System.realloc(ptr, layout, new_size) };
+        if !moved.is_null() {
+            track(new_size as isize - layout.size() as isize);
+        }
+        moved
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Tracking = Tracking;
+
+/// Live and peak bytes allocated by the current thread since `probe()`.
+struct Probe {
+    base: isize,
+}
+fn probe() -> Probe {
+    let base = LIVE.with(Cell::get);
+    PEAK.with(|peak| peak.set(base));
+    Probe { base }
+}
+impl Probe {
+    fn peak(&self) -> usize {
+        (PEAK.with(Cell::get) - self.base).max(0) as usize
+    }
+    fn retained(&self) -> usize {
+        (LIVE.with(Cell::get) - self.base).max(0) as usize
+    }
+}
 
 fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
     use std::{
@@ -120,11 +193,15 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
+        Self::with_blob(name, BLOB.to_vec())
+    }
+
+    fn with_blob(name: &str, blob: Vec<u8>) -> Self {
         let dir =
             std::env::temp_dir().join(format!("hsk-studio-session-{name}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let mut assets = MemoryAssetSource::new();
-        let digest = assets.insert(BLOB.to_vec());
+        let digest = assets.insert(blob);
         let snapshot = match folio::inspect_bytes(
             &serde_json::to_vec(&document_json(&digest.digest)).unwrap(),
             folio::Budget::default(),
@@ -1442,5 +1519,374 @@ fn export_checkpoint_is_verified_and_previews_follow_the_revision() {
             ]
         );
         assert_eq!(frames.count() as u64, session.operations());
+    });
+}
+
+// ----- slice 3: lazy package source and host-supplied previews --------------------------------
+
+const BIG: usize = 4 * 1024 * 1024;
+
+fn big_blob() -> Vec<u8> {
+    let mut x: u32 = 12345;
+    (0..BIG)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+fn gray_preview(side: u32, fill: u8) -> PreviewImage {
+    PreviewImage {
+        info: PreviewInfo {
+            format: PixelFormat::Gray8,
+            width: side,
+            height: side,
+            color: "srgb".to_owned(),
+        },
+        pixels: vec![fill; (side * side) as usize],
+    }
+}
+
+fn independent(path: &PathBuf) -> hsk_studio_package::Opened {
+    read_package(
+        &fs::read(path).unwrap(),
+        &Limits::default(),
+        folio::Budget::default(),
+        &Granted,
+        &token(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn lazy_source_holds_no_assets_and_save_streams_them_on_demand() {
+    bounded_case("lazy_source_holds_no_assets_and_save_streams", || {
+        let blob = big_blob();
+        let fixture = Fixture::with_blob("lazy", blob.clone());
+        let total = fixture.bytes.len() as u64;
+        let frames = Frames::default();
+
+        // Open verifies the whole archive in bounded chunks and keeps none of the 8 MiB asset.
+        let mark = probe();
+        let mut session = open(&fixture, &frames);
+        let (open_peak, open_retained) = (mark.peak(), mark.retained());
+        assert!(
+            open_peak < BIG / 2,
+            "open peak {open_peak} must stay far below the asset"
+        );
+        assert!(open_retained < BIG / 16, "open retained {open_retained}");
+        assert!(session.resident_bytes() < 64 * 1024);
+        let read_open = session.source_bytes_read();
+        assert!(
+            (total - 64 * 1024..=total + 64 * 1024).contains(&read_open),
+            "one verification pass over the archive: read {read_open} of {total}"
+        );
+
+        // An edit touches no asset bytes at all.
+        let params = json_bytes(&rename_patch(1, "layer-1", "renamed-layer", 0, "edit-1"));
+        let mark = probe();
+        session.submit(ID, &params, 7, &token()).unwrap();
+        assert_eq!(session.source_bytes_read(), read_open);
+        assert!(mark.peak() < 256 * 1024 && mark.retained() < 256 * 1024);
+
+        // Save pulls the asset from the source on demand: read once, then one verification pass
+        // over the written file; nothing is read twice and nothing stays resident afterwards.
+        let before = session.source_bytes_read();
+        let mark = probe();
+        let saved = session.save(&token()).unwrap();
+        let (save_peak, save_retained) = (mark.peak(), mark.retained());
+        let save_read = session.source_bytes_read() - before;
+        eprintln!(
+            "measured: package {total} asset {BIG} | open peak {open_peak} retained {open_retained} read {read_open} | save peak {save_peak} retained {save_retained} read {save_read}"
+        );
+        assert!(
+            save_read >= BIG as u64,
+            "the asset was read from the source: {save_read}"
+        );
+        assert!(
+            save_read <= BIG as u64 + total + 64 * 1024,
+            "asset once + one verification pass, read {save_read}"
+        );
+        // Package's writer collects every asset before writing and save_atomic takes whole
+        // bytes (output buffer + read-back), so one save costs a few copies of the package
+        // (measured 4.1x here). That is the ceiling: the session itself adds none at rest.
+        assert!(save_peak <= 5 * BIG, "save peak {save_peak}");
+        assert!(save_retained < BIG / 16, "save retained {save_retained}");
+        assert_eq!(
+            (
+                saved.revision,
+                saved.previews_preserved,
+                saved.previews_dropped
+            ),
+            (8, 0, 1)
+        );
+
+        // Independent oracle: the package reader, not the session.
+        let opened = independent(&fixture.path);
+        assert_eq!(
+            opened.snapshot().unwrap().document().layers[0].name,
+            "renamed-layer"
+        );
+        assert_eq!(opened.assets.get(&sha256_hex_of(&blob)), Some(&blob));
+        assert_eq!(opened.quarantined[0].bytes, OPAQUE);
+
+        // The saved file is the source from now on: Save As twice, same bytes (deterministic).
+        let (copy_a, copy_b) = (
+            fixture.dir.join("a.handshake"),
+            fixture.dir.join("b.handshake"),
+        );
+        session.save_to(&copy_a, &token()).unwrap();
+        fs::remove_file(&fixture.path).unwrap();
+        session.save_to(&copy_b, &token()).unwrap();
+        assert_eq!(fs::read(&copy_a).unwrap(), fs::read(&copy_b).unwrap());
+        assert_eq!(session.origin(), Some(copy_b.as_path()));
+        assert_eq!(frames.count() as u64, session.operations());
+    });
+}
+
+#[test]
+fn host_supplied_previews_follow_the_revision() {
+    bounded_case("host_supplied_previews_follow_the_revision", || {
+        let fixture = Fixture::new("previews");
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+        let baseline = session.resident_bytes();
+        let limits = Limits::default();
+        let on_disk = |fixture: &Fixture| {
+            list_previews(&fs::read(&fixture.path).unwrap(), &limits, &token()).unwrap()
+        };
+
+        // Refusals store nothing: wrong revision, wrong pixel count, duplicate content, too many.
+        let fresh = gray_preview(4, 200);
+        assert_eq!(
+            session
+                .set_previews(6, vec![fresh.clone()], &token())
+                .unwrap_err()
+                .error,
+            SessionError::StaleRevision {
+                expected: 6,
+                current: 7
+            }
+        );
+        let mut short = gray_preview(4, 1);
+        short.pixels.pop();
+        assert_eq!(
+            session
+                .set_previews(7, vec![short], &token())
+                .unwrap_err()
+                .code(),
+            "preview_mismatch"
+        );
+        assert_eq!(
+            session
+                .set_previews(7, vec![fresh.clone(), fresh.clone()], &token())
+                .unwrap_err()
+                .code(),
+            "preview_mismatch"
+        );
+        let many: Vec<PreviewImage> = (0..=MAX_SUPPLIED_PREVIEWS as u8)
+            .map(|n| gray_preview(2, n))
+            .collect();
+        assert_eq!(
+            session.set_previews(7, many, &token()).unwrap_err().code(),
+            "too_many_entries"
+        );
+        assert_eq!(session.resident_bytes(), baseline);
+
+        // Accepted for the current revision: replaces the source's preview at the next save.
+        let accepted = session
+            .set_previews(7, vec![fresh.clone()], &token())
+            .unwrap();
+        assert_eq!((accepted.accepted, accepted.bytes), (1, 16));
+        assert_eq!(session.resident_bytes(), baseline + 16);
+        let saved = session.save(&token()).unwrap();
+        assert_eq!((saved.previews_preserved, saved.previews_dropped), (1, 1));
+        let listed = on_disk(&fixture);
+        assert_eq!(listed.len(), 1);
+        let bytes = fs::read(&fixture.path).unwrap();
+        let image = read_preview(&bytes, &limits, &listed[0].name, &token()).unwrap();
+        assert_eq!(
+            (image.pixels, image.info),
+            (fresh.pixels.clone(), fresh.info.clone())
+        );
+        assert_eq!(
+            session.resident_bytes(),
+            baseline,
+            "supplied previews are released once written"
+        );
+
+        // Now they live in the saved source and are read from it lazily on the next save.
+        let again = session.save(&token()).unwrap();
+        assert_eq!((again.previews_preserved, again.previews_dropped), (1, 0));
+        assert_eq!(on_disk(&fixture).len(), 1);
+
+        // After an edit the source preview describes the old revision; a host that supplied for
+        // the old revision is refused, one that supplies for the new revision is accepted...
+        let rename = |from: &str, to: &str, read: u64, name: &str| {
+            json_bytes(&rename_patch(1, from, to, read, name))
+        };
+        session
+            .submit(
+                ID,
+                &rename("layer-1", "renamed-layer", 0, "e1"),
+                7,
+                &token(),
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .set_previews(7, vec![fresh.clone()], &token())
+                .unwrap_err()
+                .error,
+            SessionError::StaleRevision {
+                expected: 7,
+                current: 8
+            }
+        );
+        let one_by_one = PreviewImage {
+            info: PreviewInfo {
+                format: PixelFormat::Rgb8,
+                width: 1,
+                height: 1,
+                color: "srgb".to_owned(),
+            },
+            pixels: vec![1, 2, 3],
+        };
+        session
+            .set_previews(8, vec![one_by_one.clone()], &token())
+            .unwrap();
+        // ...and an edit after that makes the supplied set stale too: both are dropped, counted.
+        session
+            .submit(
+                ID,
+                &rename("renamed-layer", "renamed-again", 1, "e2"),
+                8,
+                &token(),
+            )
+            .unwrap();
+        let cp = session.export_checkpoint(&token()).unwrap();
+        assert_eq!(
+            (cp.revision, cp.previews_preserved, cp.previews_dropped),
+            (9, 0, 2)
+        );
+        assert!(
+            list_previews(&cp.bytes, &limits, &token())
+                .unwrap()
+                .is_empty()
+        );
+        let saved = session.save(&token()).unwrap();
+        assert_eq!((saved.previews_preserved, saved.previews_dropped), (0, 2));
+        assert!(on_disk(&fixture).is_empty());
+        let last = session.export_checkpoint(&token()).unwrap();
+        assert_eq!(
+            (last.previews_preserved, last.previews_dropped),
+            (0, 0),
+            "nothing left to drop"
+        );
+        assert_eq!(frames.count() as u64, session.operations());
+    });
+}
+
+#[test]
+fn lazy_failures_are_typed_cancel_reads_nothing_and_memory_sessions_work() {
+    bounded_case("lazy_failures_typed_cancel_memory_sessions", || {
+        let blob: Vec<u8> = (0..1_048_576u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let fixture = Fixture::with_blob("lazyfail", blob.clone());
+        let frames = Frames::default();
+        let mut session = open(&fixture, &frames);
+
+        // Parity with the package reader: the opaque entry is preserved and reported as loss.
+        assert_eq!(session.loss().len(), 1);
+        assert_eq!(session.loss()[0].name, "vendor/extra.bin");
+        assert_eq!(
+            session.loss()[0].reason,
+            hsk_studio_package::LossReason::Opaque
+        );
+
+        // A canceled save reads nothing and leaves the file alone.
+        let reads = session.source_bytes_read();
+        let canceled = token();
+        canceled.cancel();
+        assert_eq!(
+            session.save(&canceled).unwrap_err().error,
+            SessionError::Canceled
+        );
+        assert_eq!(session.source_bytes_read(), reads);
+        assert_eq!(fs::read(&fixture.path).unwrap(), fixture.bytes);
+
+        // The asset body is only read (and verified) when needed: damage it behind the
+        // session's back and the save fails with the true cause, not a vague "asset absent".
+        let at = fixture
+            .bytes
+            .windows(64)
+            .position(|w| w == &blob[..64])
+            .expect("asset body in archive")
+            + 10;
+        let flip = |value: u8| {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .open(&fixture.path)
+                .unwrap();
+            file.seek(SeekFrom::Start(at as u64)).unwrap();
+            file.write_all(&[value]).unwrap();
+        };
+        flip(blob[10] ^ 0xff);
+        let damaged = fs::read(&fixture.path).unwrap();
+        let failed = session.save(&token()).unwrap_err();
+        assert_eq!(failed.code(), "hash_mismatch");
+        assert_eq!(
+            delivered(failed.report).outcome,
+            Outcome::Failure(FailureCode::Validation)
+        );
+        assert_eq!(
+            fs::read(&fixture.path).unwrap(),
+            damaged,
+            "last-good destination untouched"
+        );
+        let elsewhere = fixture.dir.join("elsewhere.handshake");
+        assert_eq!(
+            session.save_to(&elsewhere, &token()).unwrap_err().code(),
+            "hash_mismatch"
+        );
+        assert!(!elsewhere.exists());
+        assert_eq!(
+            fixture.files(),
+            ["doc.handshake"],
+            "no temp or marker left behind"
+        );
+        assert_eq!(session.document_revision(), 7);
+
+        // Nothing was cached: repair the byte and the same session saves correctly.
+        flip(blob[10]);
+        session.save_to(&elsewhere, &token()).unwrap();
+        assert_eq!(
+            independent(&elsewhere).assets.get(&sha256_hex_of(&blob)),
+            Some(&blob)
+        );
+
+        // An in-memory session is lazy over its own copy, edits, and saves to a fresh path.
+        let mut memory = Session::open_bytes(
+            &fixture.bytes,
+            SessionConfig::new(actor_context()),
+            ports(&Frames::default()),
+            &token(),
+        )
+        .unwrap();
+        let params = json_bytes(&rename_patch(1, "layer-1", "from-memory", 0, "edit-m"));
+        memory.submit(ID, &params, 7, &token()).unwrap();
+        let target = fixture.dir.join("memory.handshake");
+        memory.save_to(&target, &token()).unwrap();
+        let opened = independent(&target);
+        assert_eq!(
+            opened.snapshot().unwrap().document().layers[0].name,
+            "from-memory"
+        );
+        assert_eq!(opened.assets.get(&sha256_hex_of(&blob)), Some(&blob));
+        memory.save(&token()).unwrap();
+        assert_eq!(memory.origin(), Some(target.as_path()));
     });
 }
