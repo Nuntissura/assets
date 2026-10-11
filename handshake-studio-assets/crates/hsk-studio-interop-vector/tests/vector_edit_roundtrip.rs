@@ -293,9 +293,9 @@ fn unit_loss_stale_profile() {
         assert!((end.0 - 15.0).abs() < 1e-9 && end.1.abs() < 1e-9);
 
         // A pattern paint server and a filter: reported, never silently dropped.
-        let gradient = r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><pattern id="p"/></defs><rect width="10" height="10" fill="url(#p)" filter="url(#f)"/></svg>"##;
+        let gradient = r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><pattern id="p" width="2" height="2"><rect width="1" height="1"/></pattern></defs><rect width="10" height="10" fill="url(#p)" filter="url(#f)"/></svg>"##;
         let p = import(gradient).unwrap();
-        for code in ["unsupported_pattern", "unsupported_paint_server", "unsupported_filter"] {
+        for code in ["pattern_definition_not_stored", "pattern_paint_not_representable", "unsupported_filter"] {
             assert!(p.has_loss_code(code), "missing {code}: {:?}", p.loss);
         }
 

@@ -444,7 +444,7 @@ fn gradient_references_hostile_and_degenerate() {
 fn design_records_are_the_single_source() {
     bounded_case("design_records_are_the_single_source", || {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
-  <defs><pattern id="pt"/></defs>
+  <defs><pattern id="pt" width="2" height="2"><rect width="1" height="1"/></pattern></defs>
   <rect id="a" x="0" y="0" width="10" height="10" fill="#336699" fill-opacity="0.3" stroke="#000" stroke-width="2" stroke-opacity="0.5"/>
   <rect id="b" x="20" y="0" width="10" height="10" fill="#336699" fill-opacity="0.3" stroke="#000" stroke-width="2" stroke-opacity="0.5"/>
   <rect id="pat" x="40" y="0" width="10" height="10" fill="url(#pt)"/>
@@ -470,7 +470,7 @@ fn design_records_are_the_single_source() {
         let style = style_of(&p, "a").unwrap();
         assert_eq!(style_of(&p, "b").unwrap().style_id, style.style_id);
         assert!(style_of(&p, "pat").is_none());
-        assert!(p.has_loss_code("unsupported_pattern") && p.has_loss_code("unsupported_paint_server"));
+        assert!(p.has_loss_code("pattern_definition_not_stored") && p.has_loss_code("pattern_paint_not_representable"));
         assert_eq!(p.design.nodes.len(), 2);
         assert_eq!(style.rows.len(), 2);
 

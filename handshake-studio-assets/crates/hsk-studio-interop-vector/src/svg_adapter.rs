@@ -1,6 +1,7 @@
 //! SVG import into a Folio proposal plus nib anchor geometry, and deterministic SVG export of the
 //! supported subset. Input is hostile: DTD internal subsets are refused, no link is ever
 //! followed, and node, depth, segment and byte budgets are enforced while decoding.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Result, VectorError};
 use crate::gzip;
 use crate::ids::IdMint;
@@ -22,6 +23,9 @@ use roxmltree::{Document, Node, ParsingOptions};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::str::FromStr;
+
+mod css;
+mod masking;
 
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
 const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
@@ -100,6 +104,42 @@ impl Affine {
             .all(|v| v.is_finite())
     }
 
+    /// The inverse map; `None` when the matrix is singular or not finite.
+    fn inverse(self) -> Option<Self> {
+        let det = self.a * self.d - self.b * self.c;
+        if !det.is_finite() || det.abs() < 1e-18 {
+            return None;
+        }
+        let (a, b, c, d) = (self.d / det, -self.b / det, -self.c / det, self.a / det);
+        let inverse = Self {
+            a,
+            b,
+            c,
+            d,
+            e: -(a * self.e + c * self.f),
+            f: -(b * self.e + d * self.f),
+        };
+        inverse.finite().then_some(inverse)
+    }
+
+    /// Largest singular value of the linear part (the most any length is stretched).
+    fn max_scale(self) -> f64 {
+        let t = self.a * self.a + self.b * self.b + self.c * self.c + self.d * self.d;
+        let det = self.a * self.d - self.b * self.c;
+        let disc = (t * t - 4.0 * det * det).max(0.0).sqrt();
+        ((t + disc) / 2.0).sqrt()
+    }
+
+    /// Smallest singular value of the linear part (the least any length is stretched).
+    fn min_scale(self) -> f64 {
+        let largest = self.max_scale();
+        if largest > 0.0 {
+            (self.a * self.d - self.b * self.c).abs() / largest
+        } else {
+            0.0
+        }
+    }
+
     /// Geometric mean scale, used for stroke widths.
     fn mean_scale(self) -> f64 {
         (self.a * self.d - self.b * self.c).abs().sqrt()
@@ -158,7 +198,7 @@ impl SubpathBuilder {
         if sub.anchors.len() >= 2 {
             self.done.push(sub);
         } else {
-            self.degenerate += 1;
+            self.degenerate = self.degenerate.saturating_add(1);
         }
     }
 
@@ -220,8 +260,9 @@ impl SubpathBuilder {
         cur.closed = true;
         if cur.anchors.len() >= 2 {
             let first = cur.anchors[0].pos;
-            if near(cur.anchors[cur.anchors.len() - 1].pos, first) {
-                let last = cur.anchors.pop().expect("length checked");
+            if cur.anchors.last().is_some_and(|l| near(l.pos, first))
+                && let Some(last) = cur.anchors.pop()
+            {
                 cur.anchors[0].cin = last.cin;
             }
         }
@@ -275,6 +316,8 @@ struct Inherited {
     dash_offset: f64,
     /// `paint-order` puts the stroke below the fill.
     stroke_first: bool,
+    /// `clip-rule`: only read for shapes inside a `clipPath`.
+    clip_rule: Winding,
 }
 
 impl Inherited {
@@ -294,14 +337,31 @@ impl Inherited {
             dash: Vec::new(),
             dash_offset: 0.0,
             stroke_first: false,
+            clip_rule: Winding::NonZero,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Properties that are not inherited.
+#[derive(Clone, Debug)]
 struct Local {
     opacity: f64,
     display_none: bool,
+    /// `clip-path` value when it is not `none`.
+    clip_path: Option<String>,
+    /// `mask` value when it is not `none`.
+    mask: Option<String>,
+}
+
+impl Local {
+    fn new() -> Self {
+        Self {
+            opacity: 1.0,
+            display_none: false,
+            clip_path: None,
+            mask: None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -383,7 +443,7 @@ fn find_from(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     hay.get(from..)?
         .windows(needle.len())
         .position(|w| w == needle)
-        .map(|p| from + p)
+        .map(|p| from.saturating_add(p))
 }
 
 /// Walks the prolog as the XML grammar does (`Misc*` = whitespace, comments and processing
@@ -396,27 +456,27 @@ fn scan_prolog(text: &str) -> Prolog {
     let mut at = 0;
     loop {
         while b.get(at).is_some_and(|c| matches!(c, b' ' | b'\t' | b'\r' | b'\n')) {
-            at += 1;
+            at = at.saturating_add(1);
         }
         let rest = &b[at..];
         if rest.starts_with(b"<?") {
-            match find_from(b, at + 2, b"?>") {
-                Some(end) => at = end + 2,
+            match find_from(b, at.saturating_add(2), b"?>") {
+                Some(end) => at = end.saturating_add(2),
                 None => return Prolog::NoDoctype,
             }
         } else if rest.starts_with(b"<!--") {
-            match find_from(b, at + 4, b"-->") {
-                Some(end) => at = end + 3,
+            match find_from(b, at.saturating_add(4), b"-->") {
+                Some(end) => at = end.saturating_add(3),
                 None => return Prolog::NoDoctype,
             }
         } else if rest.starts_with(b"<!DOCTYPE") {
             let mut quote = 0u8;
-            for (i, &c) in b.iter().enumerate().skip(at + 9) {
+            for (i, &c) in b.iter().enumerate().skip(at.saturating_add(9)) {
                 match (quote, c) {
                     (0, b'"' | b'\'') => quote = c,
                     (q, c) if q != 0 && q == c => quote = 0,
                     (0, b'[') => return Prolog::InternalSubset,
-                    (0, b'>') => return Prolog::ExternalIdOnly(at..i + 1),
+                    (0, b'>') => return Prolog::ExternalIdOnly(at..i.saturating_add(1)),
                     _ => {}
                 }
             }
@@ -447,6 +507,13 @@ struct Importer<'a, 'd> {
     gradients: BTreeMap<&'d str, Node<'d, 'd>>,
     /// Viewport in user units: the basis of percentage lengths in `userSpaceOnUse` gradients.
     user_viewport: [f64; 2],
+    /// Every SVG element by `id` (first wins), found by one pass before the walk.
+    ids: BTreeMap<&'d str, Node<'d, 'd>>,
+    /// Reference work (see `masking`): spent so far and the cap derived from the limits.
+    ref_spent: usize,
+    ref_budget: usize,
+    /// Stroke outset in points of each entry of `paths` (0 without a stroke).
+    outsets: Vec<f64>,
 }
 
 /// Imports an SVG into a Folio proposal (nodes) plus nib anchor geometry, with a typed loss report.
@@ -524,13 +591,16 @@ pub fn import_svg(
         .value();
 
     let mut gradients = BTreeMap::new();
+    let mut ids = BTreeMap::new();
     for node in doc.descendants() {
         if node.is_element()
             && node.tag_name().namespace() == Some(SVG_NS)
-            && matches!(node.tag_name().name(), "linearGradient" | "radialGradient")
             && let Some(id) = plain_attr(node, "id")
         {
-            gradients.entry(id).or_insert(node);
+            ids.entry(id).or_insert(node);
+            if matches!(node.tag_name().name(), "linearGradient" | "radialGradient") {
+                gradients.entry(id).or_insert(node);
+            }
         }
     }
     let mut imp = Importer {
@@ -549,6 +619,14 @@ pub fn import_svg(
         elements: 1,
         gradients,
         user_viewport: DEFAULT_VIEWPORT,
+        ids,
+        ref_spent: 0,
+        ref_budget: policy
+            .limits
+            .max_segments
+            .saturating_add(policy.limits.max_nodes as usize)
+            .saturating_mul(masking::REFERENCE_WORK_FACTOR),
+        outsets: Vec::new(),
     };
     let document_id = imp.mint_id("SDOC")?;
     let artboard_id = imp.mint_id("SART")?;
@@ -629,6 +707,15 @@ pub fn import_svg(
         ctx.matrix = ctx.matrix.then(t);
     }
     imp.walk_children(root, &ctx, root_loc)?;
+    imp.masking(
+        &local,
+        ctx.matrix,
+        masking::Target {
+            layer: None,
+            first_path: 0,
+        },
+        root_loc,
+    )?;
 
     let Importer {
         loss,
@@ -811,7 +898,7 @@ impl<'d> Importer<'_, 'd> {
             }
             let tag = child.tag_name().name();
             let n = counts.entry(tag).or_insert(0);
-            *n += 1;
+            *n = n.saturating_add(1);
             let child_loc = format!("{loc}/{tag}[{n}]");
             self.element(child, ctx, &child_loc)?;
         }
@@ -832,6 +919,11 @@ impl<'d> Importer<'_, 'd> {
             "defs" => self.defs(el, loc),
             // Gradients are resolved where a paint references them (see `gradient`).
             "linearGradient" | "radialGradient" => Ok(()),
+            // Resolved where they are used (see `masking`).
+            "pattern" | "clipPath" | "mask" => {
+                self.definition_note(el.tag_name().name(), loc);
+                Ok(())
+            }
             "title" | "desc" | "metadata" => {
                 self.note(loc, LossKind::Ignored, "metadata");
                 Ok(())
@@ -859,7 +951,7 @@ impl<'d> Importer<'_, 'd> {
             }
             let tag = child.tag_name().name();
             let n = counts.entry(tag).or_insert(0);
-            *n += 1;
+            *n = n.saturating_add(1);
             let child_loc = format!("{loc}/{tag}[{n}]");
             let svg = child.tag_name().namespace() == Some(SVG_NS);
             if svg && matches!(tag, "linearGradient" | "radialGradient") {
@@ -870,6 +962,8 @@ impl<'d> Importer<'_, 'd> {
                 self.note(&child_loc, LossKind::Ignored, "foreign_namespace_element");
             } else if matches!(tag, "title" | "desc" | "metadata") {
                 self.note(&child_loc, LossKind::Ignored, "metadata");
+            } else if matches!(tag, "pattern" | "clipPath" | "mask") {
+                self.definition_note(tag, &child_loc);
             } else {
                 self.note(&child_loc, LossKind::Unsupported, unsupported_code(tag));
             }
@@ -909,17 +1003,28 @@ impl<'d> Importer<'_, 'd> {
 
     /// Applies presentation attributes then inline `style` declarations to `st`.
     fn cascade(&mut self, el: Node, loc: &str, st: &mut Inherited) -> Local {
-        let mut local = Local {
-            opacity: 1.0,
-            display_none: false,
-        };
+        let mut local = Local::new();
         for (name, value) in collect_props(el) {
-            self.apply_prop(name, value, st, &mut local, loc);
+            self.apply_prop(&name, &value, st, &mut local, loc);
         }
         local
     }
 
     fn paint(&mut self, value: &str, current: PaintValue, loc: &str) -> PaintValue {
+        // `url()` is tokenised (case, quotes, escapes, whitespace), never matched as raw text.
+        if let Some(f) = css::url_function(value) {
+            return match f.target {
+                css::UrlTarget::Local(id) => PaintValue::Url(Rc::from(id), fallback_of(&f.rest)),
+                css::UrlTarget::External => {
+                    self.note(loc, LossKind::ExternalDenied, "external_paint_denied");
+                    current
+                }
+                css::UrlTarget::Malformed => {
+                    self.note(loc, LossKind::Unsupported, "paint_unparsed");
+                    current
+                }
+            };
+        }
         match svgtypes::Paint::from_str(value) {
             Ok(svgtypes::Paint::None) => PaintValue::None,
             Ok(svgtypes::Paint::Inherit) => current,
@@ -943,11 +1048,7 @@ impl<'d> Importer<'_, 'd> {
                 current
             }
             Err(_) => {
-                if value.contains("url(") {
-                    self.note(loc, LossKind::ExternalDenied, "external_paint_denied");
-                } else {
-                    self.note(loc, LossKind::Unsupported, "paint_unparsed");
-                }
+                self.note(loc, LossKind::Unsupported, "paint_unparsed");
                 current
             }
         }
@@ -1036,10 +1137,17 @@ impl<'d> Importer<'_, 'd> {
                 },
             },
             "filter" if value != "none" => self.note(loc, LossKind::Unsupported, "unsupported_filter"),
-            "mask" if value != "none" => self.note(loc, LossKind::Unsupported, "unsupported_mask"),
-            "clip-path" if value != "none" => {
-                self.note(loc, LossKind::Unsupported, "unsupported_clip_path");
+            // Resolved once the element's geometry is known (see `masking`).
+            "mask" => local.mask = (!value.eq_ignore_ascii_case("none")).then(|| value.to_owned()),
+            "clip-path" => {
+                local.clip_path = (!value.eq_ignore_ascii_case("none")).then(|| value.to_owned());
             }
+            "clip-rule" => match value {
+                "nonzero" => st.clip_rule = Winding::NonZero,
+                "evenodd" => st.clip_rule = Winding::EvenOdd,
+                "inherit" => {}
+                _ => self.note(loc, LossKind::Unsupported, "clip_rule_unparsed"),
+            },
             "mix-blend-mode" if value != "normal" => {
                 self.note(loc, LossKind::Unsupported, "unsupported_mix_blend_mode");
             }
@@ -1115,6 +1223,7 @@ impl<'d> Importer<'_, 'd> {
             inner.matrix = ctx.matrix.then(t);
         }
         let layer_id = self.mint_id("SLYR")?;
+        let (first_path, layer_index) = (self.paths.len(), self.layers.len());
         self.layers.push(StudioLayer {
             schema_id: LayerSchema::V1,
             layer_id: layer_id.clone(),
@@ -1130,8 +1239,17 @@ impl<'d> Importer<'_, 'd> {
             node_kind: NodeKind::Layer,
             node_id: layer_id,
         });
-        inner.depth += 1;
-        self.walk_children(el, &inner, loc)
+        inner.depth = inner.depth.saturating_add(1);
+        self.walk_children(el, &inner, loc)?;
+        self.masking(
+            &local,
+            inner.matrix,
+            masking::Target {
+                layer: Some(layer_index),
+                first_path,
+            },
+            loc,
+        )
     }
 
     fn len_attr(&mut self, el: Node, name: &str, loc: &str) -> f64 {
@@ -1203,7 +1321,7 @@ impl<'d> Importer<'_, 'd> {
                 let points = plain_attr(el, "points").unwrap_or("");
                 let mut count = 0usize;
                 for (x, y) in svgtypes::PointsParser::from(points) {
-                    count += 1;
+                    count = count.saturating_add(1);
                     if count.is_multiple_of(512) {
                         self.checkpoint()?;
                     }
@@ -1239,7 +1357,7 @@ impl<'d> Importer<'_, 'd> {
         }
         let mut count = 0usize;
         for seg in svgtypes::SimplifyingPathParser::from(d) {
-            count += 1;
+            count = count.saturating_add(1);
             if count.is_multiple_of(256) {
                 self.checkpoint()?;
             }
@@ -1289,18 +1407,49 @@ impl<'d> Importer<'_, 'd> {
             PaintValue::None => None,
             PaintValue::Current => solid(st.color),
             PaintValue::Color(r, g, b, a) => solid((*r, *g, *b, *a)),
-            PaintValue::Url(id, fallback) => match self.gradient(id, opacity, bbox, m, loc)? {
-                GradientOutcome::Paint(p) => Some(p),
-                GradientOutcome::Nothing => None,
-                GradientOutcome::Missing => {
-                    self.note(loc, LossKind::Unsupported, "unsupported_paint_server");
-                    match fallback {
-                        Fallback::Color(r, g, b, a) => solid((*r, *g, *b, *a)),
-                        Fallback::Current => solid(st.color),
-                        Fallback::None | Fallback::Unspecified => None,
+            PaintValue::Url(id, fallback) => {
+                let is_pattern = self
+                    .ids
+                    .get(&**id)
+                    .is_some_and(|n| n.tag_name().name() == "pattern");
+                let outcome = if is_pattern {
+                    match self.pattern_paint(id, loc)? {
+                        masking::PatternPaint::NoPaint => GradientOutcome::Nothing,
+                        masking::PatternPaint::NotRepresentable => {
+                            // A real tiling Folio has no paint kind for (STU-VEC-017): typed
+                            // loss; the author's fallback colour, if any, stands in for it.
+                            self.note(loc, LossKind::Unsupported, "pattern_paint_not_representable");
+                            if matches!(fallback, Fallback::Color(..) | Fallback::Current) {
+                                self.note(loc, LossKind::Approximated, "pattern_fallback_color_used");
+                            }
+                            GradientOutcome::Missing
+                        }
+                        masking::PatternPaint::Invalid => GradientOutcome::Missing,
+                    }
+                } else if self
+                    .ids
+                    .get(&**id)
+                    .is_some_and(|n| matches!(n.tag_name().name(), "linearGradient" | "radialGradient"))
+                {
+                    self.gradient(id, opacity, bbox, m, loc)?
+                } else {
+                    GradientOutcome::Missing
+                };
+                match outcome {
+                    GradientOutcome::Paint(p) => Some(p),
+                    GradientOutcome::Nothing => None,
+                    GradientOutcome::Missing => {
+                        if !is_pattern {
+                            self.note(loc, LossKind::Unsupported, "unsupported_paint_server");
+                        }
+                        match fallback {
+                            Fallback::Color(r, g, b, a) => solid((*r, *g, *b, *a)),
+                            Fallback::Current => solid(st.color),
+                            Fallback::None | Fallback::Unspecified => None,
+                        }
                     }
                 }
-            },
+            }
         })
     }
 
@@ -1318,13 +1467,8 @@ impl<'d> Importer<'_, 'd> {
             return Ok(GradientOutcome::Missing);
         };
         let mut chain: Vec<Node<'d, 'd>> = vec![first];
-        while chain.len() < MAX_GRADIENT_CHAIN {
-            let current = chain[chain.len() - 1];
-            let href = current
-                .attributes()
-                .find(|a| a.name() == "href" && matches!(a.namespace(), None | Some(XLINK_NS)))
-                .map(|a| a.value().trim());
-            let Some(href) = href else { break };
+        while let Some(&current) = chain.last() {
+            let Some(href) = href_of(current) else { break };
             let Some(target) = href.strip_prefix('#') else {
                 self.note(loc, LossKind::ExternalDenied, "external_href_denied");
                 break;
@@ -1334,6 +1478,11 @@ impl<'d> Importer<'_, 'd> {
             };
             if chain.iter().any(|n| n.id() == next.id()) {
                 self.note(loc, LossKind::Unsupported, "gradient_href_cycle");
+                break;
+            }
+            if chain.len() >= MAX_GRADIENT_CHAIN {
+                // Attributes and stops beyond the cap are not inherited: say so.
+                self.note(loc, LossKind::Unsupported, "gradient_href_chain_too_long");
                 break;
             }
             chain.push(next);
@@ -1536,7 +1685,8 @@ impl<'d> Importer<'_, 'd> {
             let mut color = (0u8, 0u8, 0u8, 1.0_f64);
             let mut stop_opacity = 1.0_f64;
             for (name, value) in collect_props(stop) {
-                match name {
+                let value = value.as_str();
+                match name.as_str() {
                     "stop-color" if value == "currentColor" => {
                         self.note(loc, LossKind::Approximated, "stop_color_current_color");
                     }
@@ -1580,10 +1730,10 @@ impl<'d> Importer<'_, 'd> {
         if let Some(&i) = self.style_index.get(&key) {
             return Ok(self.styles[i].style_id.clone());
         }
-        let cost = rows.iter().fold(1, |n, row| n + 1 + row_weight(row));
+        let cost = rows.iter().fold(1usize, |n, row| n.saturating_add(1).saturating_add(row_weight(row)));
         self.spend_design(cost)?;
         let style_id = self.mint_id("SSTY")?;
-        let ordinal = self.styles.len() + 1;
+        let ordinal = self.styles.len().saturating_add(1);
         self.style_index.insert(key, self.styles.len());
         self.gradient_provenance
             .extend(units.into_iter().map(|(row, units)| GradientProvenance {
@@ -1632,6 +1782,23 @@ impl<'d> Importer<'_, 'd> {
             self.resolve_paint(&st.stroke, st, st.stroke_opacity, bbox, m, loc)?
         } else {
             None
+        };
+        // Upper bound of how far the stroke reaches past the geometry: half the width, stretched
+        // by the largest scale, by the miter limit or the square cap diagonal.
+        let outset = if stroke.is_some() {
+            let join = if st.join == StrokeJoin::Miter {
+                st.miter_limit
+            } else {
+                1.0
+            };
+            let cap = if st.cap == StrokeCap::Projecting {
+                std::f64::consts::SQRT_2
+            } else {
+                1.0
+            };
+            0.5 * st.stroke_width * m.max_scale() * join.max(cap).max(1.0)
+        } else {
+            0.0
         };
         let scale = m.mean_scale();
         let stroke_row = stroke
@@ -1689,6 +1856,7 @@ impl<'d> Importer<'_, 'd> {
             Some(self.style_id(rows, units)?)
         };
         let layer_id = self.mint_id("SLYR")?;
+        let first_path = self.paths.len();
         let mut path_ids = Vec::with_capacity(subpaths.len());
         for sub in subpaths {
             let mut anchors = Vec::with_capacity(sub.anchors.len());
@@ -1708,6 +1876,7 @@ impl<'d> Importer<'_, 'd> {
             }
             let path_id = self.mint_id("SVPT")?;
             path_ids.push(path_id.clone());
+            self.outsets.push(outset);
             self.paths.push(VectorPath {
                 path_id,
                 layer_id: layer_id.clone(),
@@ -1733,6 +1902,7 @@ impl<'d> Importer<'_, 'd> {
                 style_refs: BTreeMap::from([(LAYER_STYLE_REF.to_owned(), style_id)]),
             });
         }
+        let layer_index = self.layers.len();
         self.layers.push(StudioLayer {
             schema_id: LayerSchema::V1,
             layer_id,
@@ -1744,7 +1914,15 @@ impl<'d> Importer<'_, 'd> {
             appearance: Self::appearance(local.opacity),
             text_frame: None,
         });
-        Ok(())
+        self.masking(
+            local,
+            m,
+            masking::Target {
+                layer: Some(layer_index),
+                first_path,
+            },
+            loc,
+        )
     }
 }
 
@@ -1835,11 +2013,10 @@ fn row_weight(row: &StudioAppearanceRow) -> usize {
         StudioAppearanceRow::Fill { paint, .. } => (paint, 0),
         StudioAppearanceRow::Stroke { paint, stroke, .. } => (paint, stroke.dash.len() / 2),
     };
-    dashes
-        + match paint {
-            StudioPaint::Solid { .. } => 0,
-            StudioPaint::Gradient { gradient } => gradient.stops.len(),
-        }
+    dashes.saturating_add(match paint {
+        StudioPaint::Solid { .. } => 0,
+        StudioPaint::Gradient { gradient } => gradient.stops.len(),
+    })
 }
 
 enum GradientOutcome {
@@ -1857,23 +2034,62 @@ fn is_svg_stop(n: Node) -> bool {
     n.is_element() && n.tag_name().namespace() == Some(SVG_NS) && n.tag_name().name() == "stop"
 }
 
-/// Presentation attributes followed by inline `style` declarations, in cascade order.
-fn collect_props<'a>(el: Node<'a, '_>) -> Vec<(&'a str, &'a str)> {
-    let mut props: Vec<(&str, &str)> = el
+/// Presentation attributes followed by inline `style` declarations, in cascade order. The style
+/// text is tokenised as CSS (`css::declarations`): comments, strings, brackets and escapes are
+/// honoured and property names compare case-insensitively.
+fn collect_props(el: Node) -> Vec<(String, String)> {
+    let mut props: Vec<(String, String)> = el
         .attributes()
         .filter(|a| a.namespace().is_none())
-        .map(|a| (a.name(), a.value().trim()))
+        .map(|a| (a.name().to_owned(), a.value().trim().to_owned()))
         .collect();
     if let Some(style) = plain_attr(el, "style") {
-        for decl in style.split(';') {
-            if let Some((name, value)) = decl.split_once(':') {
-                let value = value.trim();
-                let value = value.strip_suffix("!important").map_or(value, str::trim_end);
-                props.push((name.trim(), value));
-            }
-        }
+        props.extend(css::declarations(style));
     }
     props
+}
+
+/// The fallback after a `url(#id)` paint: `none`, `currentColor` or a colour; anything else is
+/// ignored (SVG 2, 13.2).
+fn fallback_of(rest: &str) -> Fallback {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        Fallback::Unspecified
+    } else if rest.eq_ignore_ascii_case("none") {
+        Fallback::None
+    } else if rest.eq_ignore_ascii_case("currentcolor") {
+        Fallback::Current
+    } else {
+        match svgtypes::Color::from_str(rest) {
+            Ok(c) => Fallback::Color(c.red, c.green, c.blue, f64::from(c.alpha) / 255.0),
+            Err(_) => Fallback::Unspecified,
+        }
+    }
+}
+
+/// The `href` of an element: the plain attribute, else `xlink:href` (SVG 2, 16.1.6).
+fn href_of<'a>(el: Node<'a, '_>) -> Option<&'a str> {
+    el.attributes()
+        .find(|a| a.name() == "href" && a.namespace().is_none())
+        .or_else(|| {
+            el.attributes()
+                .find(|a| a.name() == "href" && a.namespace() == Some(XLINK_NS))
+        })
+        .map(|a| a.value().trim())
+}
+
+/// A `transform` list as one matrix; `None` when it does not parse or is not finite.
+fn parse_transform(text: &str) -> Option<Affine> {
+    let t = svgtypes::Transform::from_str(text).ok()?;
+    let m = Affine {
+        a: t.a,
+        b: t.b,
+        c: t.c,
+        d: t.d,
+        e: t.e,
+        f: t.f,
+    };
+    m.finite().then_some(m)
 }
 
 /// `paint-order`: true when the stroke is painted before the fill. `None` for unknown keywords.
@@ -1899,6 +2115,15 @@ fn paint_order_stroke_first(value: &str) -> Option<bool> {
 
 /// Tight bounding box `[x0, y0, x1, y1]` of all subpaths in user space (curve extrema included).
 fn user_bbox(subpaths: &[RawSubpath]) -> Option<[f64; 4]> {
+    bbox_of(subpaths, Affine::IDENTITY)
+}
+
+/// Tight bounding box of the subpaths after `map`: the control points are mapped first and the
+/// curve extrema are found in the target space, so the box is exact for any affine map.
+fn bbox_of<'a>(
+    subpaths: impl IntoIterator<Item = &'a RawSubpath>,
+    map: Affine,
+) -> Option<[f64; 4]> {
     let mut b: Option<[f64; 4]> = None;
     let mut extend = |p: [f64; 2]| {
         b = Some(match b {
@@ -1910,15 +2135,21 @@ fn user_bbox(subpaths: &[RawSubpath]) -> Option<[f64; 4]> {
         let n = sub.anchors.len();
         let segments = if sub.closed { n } else { n.saturating_sub(1) };
         for a in &sub.anchors {
-            extend(a.pos);
+            extend(map.apply(a.pos));
         }
         for i in 0..segments {
-            let (p, q) = (&sub.anchors[i], &sub.anchors[(i + 1) % n]);
+            let next = if i.saturating_add(1) < n {
+                i.saturating_add(1)
+            } else {
+                0
+            };
+            let (p, q) = (&sub.anchors[i], &sub.anchors[next]);
             if p.cout == p.pos && q.cin == q.pos {
                 continue;
             }
+            let [s0, s1, s2, s3] = [p.pos, p.cout, q.cin, q.pos].map(|v| map.apply(v));
             for axis in 0..2 {
-                let (p0, c1, c2, p1) = (p.pos[axis], p.cout[axis], q.cin[axis], q.pos[axis]);
+                let (p0, c1, c2, p1) = (s0[axis], s1[axis], s2[axis], s3[axis]);
                 let (d0, d1, d2) = (c1 - p0, c2 - c1, p1 - c2);
                 // B'(t) / 3 = a t^2 + b t + c
                 let (a, bq, c) = (d0 - 2.0 * d1 + d2, 2.0 * (d1 - d0), d0);
@@ -1938,7 +2169,7 @@ fn user_bbox(subpaths: &[RawSubpath]) -> Option<[f64; 4]> {
                     if t > 0.0 && t < 1.0 {
                         let u = 1.0 - t;
                         let at = |k: usize| {
-                            let (p0, c1, c2, p1) = (p.pos[k], p.cout[k], q.cin[k], q.pos[k]);
+                            let (p0, c1, c2, p1) = (s0[k], s1[k], s2[k], s3[k]);
                             u * u * u * p0 + 3.0 * u * u * t * c1 + 3.0 * u * t * t * c2 + t * t * t * p1
                         };
                         extend([at(0), at(1)]);

@@ -3,15 +3,16 @@
 //! Paint, stroke and appearance rows are read from Folio design records: each vector layer's
 //! `StudioNodeDesign.style_refs[LAYER_STYLE_REF]` names a `PAINT` style, validated by Folio before
 //! it is read.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Result, VectorError};
 use crate::model::*;
 use hsk_studio_accord::{CancellationToken, Length as AccordLength, Unit};
 use hsk_studio_folio::{
-    BLEND_NORMAL, Budget, GeometryUnit, GradientInterpolation, GradientSpread,
+    BLEND_NORMAL, BLEND_PASS_THROUGH, Budget, GeometryUnit, GradientInterpolation, GradientSpread,
     Length as FolioLength, Parent, Payload, ProfileBinding, Resolution, StrokeAlign, StrokeCap,
     StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords, StudioGradient,
-    StudioGradientGeometry, StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioStrokeStyle,
-    Unresolved, validate_paint_style,
+    StudioGradientGeometry, StudioLayer, StudioNodeDesign, StudioPaint, StudioPaintStyle,
+    StudioStrokeStyle, Unresolved, validate_paint_style,
 };
 use hsk_studio_nib::Winding;
 use std::collections::{BTreeMap, BTreeSet};
@@ -160,11 +161,12 @@ fn path_data(p: &VectorPath, segs: &[Seg], k: f64) -> String {
     let at = |v: [f64; 2]| format!("{} {}", num(v[0] * k), num(v[1] * k));
     let mut d = format!("M{}", at(segs[0].pos));
     let n = segs.len();
-    let count = if p.closed { n } else { n - 1 };
+    let count = if p.closed { n } else { n.saturating_sub(1) };
     for s in 0..count {
-        let (a, b) = (&segs[s], &segs[(s + 1) % n]);
+        let next = s.saturating_add(1);
+        let (a, b) = (&segs[s], &segs[if next < n { next } else { 0 }]);
         let straight = a.cout == a.pos && b.cin == b.pos;
-        let closing = p.closed && s + 1 == count;
+        let closing = p.closed && next == count;
         if straight {
             if !closing {
                 d.push_str(&format!(" L{}", at(b.pos)));
@@ -193,6 +195,56 @@ fn note(loss: &mut Vec<LossEntry>, label: &str, kind: LossKind, code: &'static s
         kind,
         code,
     });
+}
+
+/// Layer appearance that SVG cannot hold (Folio raster mask coverage, clip-to-base, blend modes,
+/// fill opacity), reported so an export never drops it silently. Element opacity and visibility
+/// are written; a mask is the Folio `StudioMask` (coverage tiles) and has no SVG counterpart.
+fn appearance_losses(layer: &StudioLayer, label: &str, loss: &mut Vec<LossEntry>) {
+    let Some(a) = &layer.appearance else {
+        return;
+    };
+    if let Some(mask) = &a.mask {
+        if mask.enabled {
+            note(loss, label, LossKind::Unsupported, "layer_mask_not_exported");
+        } else {
+            note(loss, label, LossKind::Ignored, "layer_mask_disabled_not_exported");
+        }
+    }
+    if a.clipped {
+        note(
+            loss,
+            label,
+            LossKind::Unsupported,
+            "layer_clipped_to_base_not_exported",
+        );
+    }
+    if a.blend_mode == BLEND_PASS_THROUGH && matches!(layer.payload, Payload::Group) {
+        // An SVG group with opacity is always isolated.
+        if a.opacity < 100.0 {
+            note(
+                loss,
+                label,
+                LossKind::Approximated,
+                "group_pass_through_isolated",
+            );
+        }
+    } else if a.blend_mode != BLEND_NORMAL {
+        note(
+            loss,
+            label,
+            LossKind::Unsupported,
+            "layer_blend_mode_not_exported",
+        );
+    }
+    if a.fill_opacity < 100.0 {
+        note(
+            loss,
+            label,
+            LossKind::Unsupported,
+            "layer_fill_opacity_not_exported",
+        );
+    }
 }
 
 /// Gradient definitions collected while writing; identical gradients share one definition.
@@ -244,7 +296,7 @@ impl Defs {
                 if let Some(id) = self.ids.get(&key) {
                     return format!("url(#{id})");
                 }
-                let id = format!("g{}", self.ids.len() + 1);
+                let id = format!("g{}", self.ids.len().saturating_add(1));
                 self.write_gradient(&id, gradient, label, loss);
                 self.ids.insert(key, id.clone());
                 format!("url(#{id})")
@@ -766,7 +818,7 @@ pub fn export_svg_with_loss(
         while let Some(next) = items.next_if(|(p, _)| &p.layer_id == layer) {
             group.push(next);
         }
-        ordinal += 1;
+        ordinal = ordinal.saturating_add(1);
         w.layer_paths(&mut body, 1, &group, "", &format!("/layer[{ordinal}]"))?;
     }
     Ok(finish(open, w, &body))
@@ -833,7 +885,7 @@ pub fn export_proposal_with_loss(
     while let Some((i, entering)) = stack.pop() {
         let layer = &doc.layers[i];
         if !entering {
-            depth -= 1;
+            depth = depth.saturating_sub(1);
             body.push_str(&"  ".repeat(depth));
             body.push_str("</g>\n");
             continue;
@@ -857,9 +909,11 @@ pub fn export_proposal_with_loss(
         }
         match &layer.payload {
             Payload::Group => {
+                let label = format!("/layer[{}]", i.saturating_add(1));
+                appearance_losses(layer, &label, &mut w.loss);
                 body.push_str(&"  ".repeat(depth));
                 body.push_str(&format!("<g{extra}>\n"));
-                depth += 1;
+                depth = depth.saturating_add(1);
                 stack.push((i, false));
                 for &c in children
                     .get(&Some(layer.layer_id.as_str()))
@@ -879,7 +933,8 @@ pub fn export_proposal_with_loss(
                     .filter_map(|&j| converted[j].take().map(|segs| (&proposal.paths[j], segs)))
                     .collect();
                 if !group.is_empty() {
-                    let label = format!("/layer[{}]", i + 1);
+                    let label = format!("/layer[{}]", i.saturating_add(1));
+                    appearance_losses(layer, &label, &mut w.loss);
                     w.layer_paths(&mut body, depth, &group, &extra, &label)?;
                 }
             }
