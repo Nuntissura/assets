@@ -6,8 +6,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::dom::{
-    ContentModel, NodeId, NodeKey, NodeKind, Quote, RAWTEXT, VOID, WebDoc, find_raw_text_close,
-    in_set, parse, sha256_hex,
+    ContentModel, Namespace, NodeId, NodeKey, NodeKind, Quote, RAWTEXT, VOID, WebDoc,
+    find_raw_text_close, in_set, parse, sha256_hex,
 };
 use crate::entity::{escape_attr, escape_text};
 use crate::error::{EditRefusal, LimitKind, LossKind, MalformedKind, UnsupportedKind, WebError};
@@ -296,14 +296,44 @@ fn closes_raw(text: &str, name: &str) -> bool {
     find_raw_text_close(body.as_bytes(), 0, name) != Some(text.len())
 }
 
+/// An HTML `pre`, `listing` or `textarea` element: the tree builder drops an LF token right after its start tag.
+fn drops_first_lf(doc: &WebDoc, id: NodeId) -> bool {
+    doc.node(id)
+        .is_some_and(|n| n.kind == NodeKind::Element && n.namespace == Namespace::Html)
+        && doc
+            .local_name(id)
+            .is_some_and(|n| in_set(&["pre", "listing", "textarea"], &n))
+}
+
+/// Text written as the first content of a `drops_first_lf` element: one extra LF in front of a value that starts with LF,
+/// so the value reads back unchanged (13.2.6.4.7 "pre, listing", "textarea").
+fn keep_first_lf(mut written: String) -> String {
+    if written.starts_with('\n') {
+        written.insert(0, '\n');
+    }
+    written
+}
+
 /// Set the text of a text node, or the text content of an element that has only text children. Text is
-/// given decoded and escaped on write (`& < >`); raw-text elements (`script`, `style`, ...) take it verbatim
-/// unless it would close the element. Elements with markup children, void and opaque nodes are refused.
+/// given decoded and escaped on write (`& < >`, CR as `&#13;`); a value written right after a `pre`, `listing` or
+/// `textarea` start tag that starts with LF gets one extra LF (the tree builder drops the first). Raw-text elements
+/// (`script`, `style`, ...) take it verbatim unless it would close the element (RAWTEXT has no references, so a CR or
+/// U+0000 there reads back as LF or U+FFFD). Elements with markup children, void and opaque nodes are refused.
 pub fn set_text(doc: &WebDoc, key: &NodeKey, text: &str) -> Result<SourcePatch, WebError> {
     let id = doc.resolve(key).ok_or(WebError::NoSuchNode)?;
     let node = doc.node(id).ok_or(WebError::NoSuchNode)?;
     match node.kind {
-        NodeKind::Text => Ok(single(doc, node.span.clone(), escape_text(text))),
+        NodeKind::Text => {
+            let first_in_pre =
+                node.index == 0 && node.parent.is_some_and(|p| drops_first_lf(doc, p));
+            let written = escape_text(text);
+            let written = if first_in_pre {
+                keep_first_lf(written)
+            } else {
+                written
+            };
+            Ok(single(doc, node.span.clone(), written))
+        }
         NodeKind::Element => {
             let Some(content) = node.content_span() else {
                 return Err(WebError::NotEditable {
@@ -340,6 +370,11 @@ pub fn set_text(doc: &WebDoc, key: &NodeKey, text: &str) -> Result<SourcePatch, 
                     }
                     escape_text(text)
                 }
+            };
+            let replacement = if drops_first_lf(doc, id) {
+                keep_first_lf(replacement)
+            } else {
+                replacement
             };
             Ok(single(doc, content, replacement))
         }
@@ -500,10 +535,16 @@ pub fn insert_element(
     if !void {
         let raw = in_set(RAWTEXT, tag);
         if let Some(text) = text {
-            fragment.push_str(&if raw {
+            let written = if raw {
                 text.to_owned()
             } else {
                 escape_text(text)
+            };
+            // 13.2.6.4.7: an LF right after a `pre`, `listing` or `textarea` start tag is dropped.
+            fragment.push_str(&if in_set(&["pre", "listing", "textarea"], tag) {
+                keep_first_lf(written)
+            } else {
+                written
             });
         }
         fragment.push_str(&format!("</{tag}>"));
