@@ -11,7 +11,10 @@
 //! * curves: `curv` count 0 identity, count 1 gamma (u8Fixed8), count n table with linear interpolation;
 //!   `para` types 0-4. Table curves clamp their input to 0..1; parametric curves are evaluated unbounded.
 //! * CLUT: inputs clamped to 0..1; 1 input linear, 2 bilinear, 3 tetrahedral, more inputs linear in the
-//!   first input over the remaining ones (the lcms2 `Eval4Inputs` scheme).
+//!   first input over the remaining ones (the lcms2 `Eval4Inputs` scheme). A PCS -> device table indexed by
+//!   Lab interpolates its 3D CLUT trilinearly, as LittleCMS 2 does for every Lab-PCS output table
+//!   (`_cmsReadOutputLUT` -> `ChangeInterpolationToTrilinear`; measured on the 13^3 synthetic CMYK B2A1:
+//!   trilinear reproduces lcms2 to 1e-6, tetrahedral differs by 0.12 in magenta near black).
 //! * `mft1`/`mft2`: matrix (3 inputs, non-identity only), input tables, CLUT, output tables. `mAB `: A
 //!   curves, CLUT, M curves, matrix + offset, B curves. `mBA `: the reverse order.
 //! * PCS encodings: XYZ u1Fixed15 (1.0 = 32768/65535), Lab v4 (`mAB `/`mBA `/`mft1`), Lab legacy v2
@@ -26,36 +29,59 @@ use moxcms::{ColorProfile, DataColorSpace, LutStore, LutWarehouse, ToneReprCurve
 pub(crate) const D50: [f64; 3] = [0.9642, 1.0, 0.8249];
 
 // ------------------------------------------------------------------ deterministic elementary functions
-const LN2_HI: f64 = 6.931_471_803_691_238_164_90e-1;
+// Table-driven ln / exp. Every table is computed by const evaluation (IEEE-exact, same on every host)
+// from slowly converging but exact series; the run-time polynomials are evaluated in a fixed order.
+const LN2_HI: f64 = 6.931_471_803_691_238_164_90e-1; // low 32 bits zero: n * LN2_HI is exact for |n| < 2^20
 const LN2_LO: f64 = 1.908_214_929_270_587_700_02e-10;
 const LOG2E: f64 = 1.442_695_040_888_963_407_4;
-const SQRT2: f64 = 1.414_213_562_373_095_048_8;
-/// 2 / (2k + 1), k = 0..=13: 2 atanh(s) = s * sum(c_k s^2k), |s| <= 0.1716 -> truncation < 1e-19.
-const ATANH: [f64; 14] = {
-    let mut c = [0.0; 14];
-    let mut k = 0;
-    while k < 14 {
-        c[k] = 2.0 / (2 * k + 1) as f64;
-        k += 1;
+const TAB: usize = 256;
+
+/// ln(c) for c in [1, 2) by the atanh series (|s| <= 1/3, 40 terms: truncation < 1e-40).
+const fn ln_series(c: f64) -> f64 {
+    let s = (c - 1.0) / (c + 1.0);
+    let s2 = s * s;
+    let mut p = 0.0;
+    let mut k = 40;
+    while k > 0 {
+        k -= 1;
+        p = p * s2 + 2.0 / (2 * k + 1) as f64;
     }
-    c
+    s * p
+}
+/// e^r for |r| < 0.7 by Taylor (30 terms).
+const fn exp_series(r: f64) -> f64 {
+    let mut p = 1.0;
+    let mut k = 30;
+    while k > 0 {
+        p = 1.0 + p * r / k as f64;
+        k -= 1;
+    }
+    p
+}
+/// (c_j, 1 / c_j, ln c_j) with c_j = 1 + (j + 1/2) / 256, the centre of each mantissa bucket.
+const LN_TAB: [(f64, f64, f64); TAB] = {
+    let mut t = [(0.0, 0.0, 0.0); TAB];
+    let mut j = 0;
+    while j < TAB {
+        let c = 1.0 + (2 * j + 1) as f64 / (2 * TAB) as f64;
+        t[j] = (c, 1.0 / c, ln_series(c));
+        j += 1;
+    }
+    t
 };
-/// 1 / k!, k = 0..=14: |r| <= 0.347 -> truncation < 4e-18.
-const INV_FACT: [f64; 15] = {
-    let mut c = [0.0; 15];
-    let mut f = 1.0;
-    let mut k = 0;
-    while k < 15 {
-        if k > 0 {
-            f *= k as f64;
-        }
-        c[k] = 1.0 / f;
-        k += 1;
+/// 2^(j / 256).
+const EXP_TAB: [f64; TAB] = {
+    let mut t = [0.0; TAB];
+    let mut j = 0;
+    while j < TAB {
+        t[j] = exp_series(j as f64 * (LN2_HI + LN2_LO) / TAB as f64);
+        j += 1;
     }
-    c
+    t
 };
 
-/// Natural logarithm of a finite x > 0.
+/// Natural logarithm of a finite x > 0 (absolute error about 2e-16 plus |ln x| * 1e-16).
+#[inline]
 fn ln(x: f64) -> f64 {
     let mut bits = x.to_bits();
     let mut e = ((bits >> 52) & 0x7ff) as i32;
@@ -64,23 +90,22 @@ fn ln(x: f64) -> f64 {
         bits = (x * 18_014_398_509_481_984.0).to_bits();
         e = ((bits >> 52) & 0x7ff) as i32 - 54;
     }
-    let mut m = f64::from_bits((bits & 0x000f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000);
-    let mut k = e - 1023;
-    if m > SQRT2 {
-        m *= 0.5;
-        k += 1;
-    }
-    let s = (m - 1.0) / (m + 1.0);
-    let s2 = s * s;
-    let mut p = ATANH[13];
-    for c in ATANH[..13].iter().rev() {
-        p = p * s2 + c;
-    }
-    let kf = f64::from(k);
-    kf * LN2_HI + (kf * LN2_LO + s * p)
+    let m = f64::from_bits((bits & 0x000f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000);
+    let (c, inv, lc) = LN_TAB[((bits >> 44) & 0xff) as usize];
+    // |r| <= 1/513; m - c is exact (same binade, c has 9 significant bits).
+    let r = (m - c) * inv;
+    // log1p(r) to degree 6 (truncation < 4e-19), Estrin order.
+    let r2 = r * r;
+    let a = r - 0.5 * r2;
+    let b = (1.0 / 3.0) - 0.25 * r;
+    let d = 0.2 - (1.0 / 6.0) * r;
+    let p = a + r2 * r * (b + r2 * d);
+    let kf = f64::from(e - 1023);
+    (kf * LN2_HI + lc) + (kf * LN2_LO + p)
 }
 
 /// 2^n as an exact scale factor.
+#[inline]
 fn scale2(v: f64, n: i32) -> f64 {
     let pow2 = |k: i32| f64::from_bits(((k + 1023) as u64) << 52);
     if n > 1023 {
@@ -92,6 +117,7 @@ fn scale2(v: f64, n: i32) -> f64 {
     }
 }
 
+#[inline]
 fn exp(z: f64) -> f64 {
     if z.is_nan() {
         return z;
@@ -102,16 +128,18 @@ fn exp(z: f64) -> f64 {
     if z < -745.2 {
         return 0.0;
     }
-    let n = (z * LOG2E).round();
-    let r = (z - n * LN2_HI) - n * LN2_LO;
-    let mut p = INV_FACT[14];
-    for c in INV_FACT[..14].iter().rev() {
-        p = p * r + c;
-    }
-    scale2(p, n as i32)
+    // z = n ln2 / 256 + r, |r| <= ln2 / 512.
+    let n = (z * (TAB as f64 * LOG2E)).round();
+    let r = (z - n * (LN2_HI / TAB as f64)) - n * (LN2_LO / TAB as f64);
+    // e^r to degree 5 (truncation < 1e-18), Estrin order.
+    let r2 = r * r;
+    let p = (1.0 + r) + r2 * ((0.5 + r * (1.0 / 6.0)) + r2 * ((1.0 / 24.0) + r * (1.0 / 120.0)));
+    let ni = n as i32;
+    scale2(EXP_TAB[ni.rem_euclid(TAB as i32) as usize] * p, ni.div_euclid(TAB as i32))
 }
 
-/// x^y for x >= 0 (NaN for negative or NaN input). Relative error about 1e-14 for |y ln x| < 100.
+/// x^y for x >= 0 (NaN for negative or NaN input). Relative error about |y ln x| * 2e-16.
+#[inline]
 pub(crate) fn pow(x: f64, y: f64) -> f64 {
     if x.is_nan() || y.is_nan() || x < 0.0 {
         return f64::NAN;
@@ -339,6 +367,7 @@ pub(crate) struct Clut {
     grid: Vec<usize>,
     strides: Vec<usize>,
     data: Vec<f64>,
+    trilinear: bool,
 }
 
 fn store_values(store: &LutStore) -> Vec<f64> {
@@ -378,6 +407,7 @@ impl Clut {
             grid: grid.to_vec(),
             strides,
             data,
+            trilinear: false,
         })
     }
 
@@ -408,6 +438,7 @@ impl Clut {
                     out[k] = a + fx * (b - a);
                 }
             }
+            3 if self.trilinear => self.trilinear3(dim, base, input, out),
             3 => self.tetrahedral(dim, base, input, out),
             _ => {
                 let (i, f) = locate(input[dim], self.grid[dim]);
@@ -418,6 +449,24 @@ impl Clut {
                     out[k] = a[k] + f * (b[k] - a[k]);
                 }
             }
+        }
+    }
+
+    /// Trilinear interpolation over the last three inputs.
+    fn trilinear3(&self, dim: usize, base: usize, input: &[f64], out: &mut [f64]) {
+        let (x0, fx) = locate(input[dim], self.grid[dim]);
+        let (y0, fy) = locate(input[dim + 1], self.grid[dim + 1]);
+        let (z0, fz) = locate(input[dim + 2], self.grid[dim + 2]);
+        let (sx, sy, sz) = (self.strides[dim], self.strides[dim + 1], self.strides[dim + 2]);
+        let p0 = base + x0 * sx + y0 * sy + z0 * sz;
+        let lerp = |a: f64, b: f64, t: f64| a + t * (b - a);
+        for k in 0..self.outputs {
+            let d = |off: usize| self.data[p0 + off + k];
+            let x00 = lerp(d(0), d(sx), fx);
+            let x10 = lerp(d(sy), d(sx + sy), fx);
+            let x01 = lerp(d(sz), d(sx + sz), fx);
+            let x11 = lerp(d(sy + sz), d(sx + sy + sz), fx);
+            out[k] = lerp(lerp(x00, x10, fy), lerp(x01, x11, fy), fz);
         }
     }
 
@@ -536,7 +585,19 @@ pub(crate) struct Table {
 }
 
 impl Table {
-    fn new(w: &LutWarehouse, to_pcs: bool) -> Result<Self, WideError> {
+    /// `lab_indexed`: a PCS -> device table of a Lab-PCS profile (3D CLUT interpolated trilinearly).
+    fn new(w: &LutWarehouse, to_pcs: bool, lab_indexed: bool) -> Result<Self, WideError> {
+        let mut t = Self::build(w, to_pcs)?;
+        if lab_indexed {
+            match &mut t.pipe {
+                Pipe::Legacy { clut, .. } => clut.trilinear = true,
+                Pipe::Multi { clut: Some(clut), .. } => clut.trilinear = true,
+                Pipe::Multi { clut: None, .. } => {}
+            }
+        }
+        Ok(t)
+    }
+    fn build(w: &LutWarehouse, to_pcs: bool) -> Result<Self, WideError> {
         match w {
             LutWarehouse::Lut(l) => {
                 let (inputs, outputs) = (usize::from(l.num_input_channels), usize::from(l.num_output_channels));
@@ -775,7 +836,7 @@ pub(crate) fn inverse3(m: Mat3) -> Option<Mat3> {
 /// Device -> PCS stage of `p` for `intent` (ICC.1:2022 8.10.2 precedence).
 pub(crate) fn to_pcs(p: &ColorProfile, d: &WideProfileDescriptor, intent: Intent) -> Result<ToPcs, WideError> {
     if let Some(w) = pick([&p.lut_a_to_b_perceptual, &p.lut_a_to_b_colorimetric, &p.lut_a_to_b_saturation], intent) {
-        let table = Table::new(w, true)?;
+        let table = Table::new(w, true, false)?;
         if table.inputs != d.device.channels() || table.outputs != 3 {
             return Err(WideError::MalformedProfile);
         }
@@ -793,7 +854,7 @@ pub(crate) fn to_pcs(p: &ColorProfile, d: &WideProfileDescriptor, intent: Intent
 /// PCS -> device stage of `p` for `intent` (ICC.1:2022 8.10.2 precedence).
 pub(crate) fn from_pcs(p: &ColorProfile, d: &WideProfileDescriptor, intent: Intent) -> Result<FromPcs, WideError> {
     if let Some(w) = pick([&p.lut_b_to_a_perceptual, &p.lut_b_to_a_colorimetric, &p.lut_b_to_a_saturation], intent) {
-        let table = Table::new(w, false)?;
+        let table = Table::new(w, false, p.pcs == DataColorSpace::Lab)?;
         if table.inputs != 3 || table.outputs != d.device.channels() {
             return Err(WideError::MalformedProfile);
         }

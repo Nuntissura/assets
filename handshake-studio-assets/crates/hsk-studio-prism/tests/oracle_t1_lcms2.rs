@@ -69,6 +69,19 @@ const KNOWN_FINDINGS: &[(&str, &str, bool, &str)] = &[
     ("m_srgb_to_p3_v4", "absolute_colorimetric", true, "DIV-ABS-V2-DISPLAY-WTPT-001"),
     ("m_srgb_to_prophoto", "absolute_colorimetric", false, "DIV-ABS-V2-DISPLAY-WTPT-001"),
     ("m_srgb_to_prophoto", "absolute_colorimetric", true, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    // v2 display sources (HP sRGB, Adobe RGB) into CMYK: with the source wtpt forced to D50 the engine agrees (max 0.006).
+    ("l_adobergb_to_swop", "absolute_colorimetric", false, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    ("l_adobergb_to_swop", "absolute_colorimetric", true, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    ("l_srgb_to_fogra39", "absolute_colorimetric", false, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    ("l_srgb_to_fogra39", "absolute_colorimetric", true, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    ("l_srgb_to_swop", "absolute_colorimetric", false, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    ("l_srgb_to_swop", "absolute_colorimetric", true, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    ("l_srgb_to_synth_cmyk", "absolute_colorimetric", false, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    ("l_srgb_to_synth_cmyk", "absolute_colorimetric", true, "DIV-ABS-V2-DISPLAY-WTPT-001"),
+    // DIV-CMYK-PERCEPTUAL-BPC-BLACK-001: Perceptual/saturation BPC from a v2 CMYK source: the engine uses the ISO local black (SWOP L* 0.86 through
+    // B2A0 -> A2B0), lcms2 the darkest colorant (L* 0.0), so the engine scales by 1.00096 where lcms2 does not; BPC off passes (max 0.36/0.73).
+    ("l_swop_to_fogra39", "perceptual", true, "DIV-CMYK-PERCEPTUAL-BPC-BLACK-001"),
+    ("l_swop_to_fogra39", "saturation", true, "DIV-CMYK-PERCEPTUAL-BPC-BLACK-001"),
     // DIV-V4-PERCEPTUAL-BLACK-001: lcms2 forces BPC for perceptual/saturation when a v4 profile with non-zero black is involved (its perceptual BPC-off result equals relative BPC-on); the engine keeps BPC an independent flag (STU-COL-136); also v4 reference-medium black.
     ("dst_leg_synth_rgb_v4_para4", "perceptual", false, "DIV-V4-PERCEPTUAL-BLACK-001"),
     ("dst_leg_synth_rgb_v4_para4", "saturation", false, "DIV-V4-PERCEPTUAL-BLACK-001"),
@@ -78,22 +91,6 @@ const KNOWN_FINDINGS: &[(&str, &str, bool, &str)] = &[
     ("l_synth_cmyk_to_synth_v4para4", "saturation", false, "DIV-V4-PERCEPTUAL-BLACK-001"),
     ("m_synth_v2table_to_synth_v4para4", "perceptual", false, "DIV-V4-PERCEPTUAL-BLACK-001"),
     ("m_synth_v2table_to_synth_v4para4", "saturation", false, "DIV-V4-PERCEPTUAL-BLACK-001"),
-    // PRISM-LUT-DEST-ACCURACY-001: PCS -> CMYK table destinations: in-gamut Lab -> CMYK differs from exact table evaluation (mean 1.2-2.9, max 7-14 dE2000), worst in shadows; every RGB/CMYK -> CMYK pair misses the LUT gate.
-    ("dst_leg_synth_cmyk_v2", "absolute_colorimetric", false, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("dst_leg_synth_cmyk_v2", "perceptual", false, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("dst_leg_synth_cmyk_v2", "relative_colorimetric", false, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("dst_leg_synth_cmyk_v2", "saturation", false, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_adobergb_to_swop", "absolute_colorimetric", false, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_adobergb_to_swop", "absolute_colorimetric", true, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_srgb_to_fogra39", "absolute_colorimetric", false, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_srgb_to_fogra39", "absolute_colorimetric", true, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_srgb_to_swop", "absolute_colorimetric", false, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_srgb_to_swop", "absolute_colorimetric", true, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_srgb_to_synth_cmyk", "absolute_colorimetric", false, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_srgb_to_synth_cmyk", "absolute_colorimetric", true, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_srgb_to_synth_cmyk", "perceptual", true, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_swop_to_fogra39", "perceptual", true, "PRISM-LUT-DEST-ACCURACY-001"),
-    ("l_swop_to_fogra39", "saturation", true, "PRISM-LUT-DEST-ACCURACY-001"),
 ];
 
 fn known_finding(id: &str, intent: &str, bpc: bool) -> Option<&'static str> {

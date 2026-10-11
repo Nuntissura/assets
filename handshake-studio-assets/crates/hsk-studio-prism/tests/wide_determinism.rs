@@ -56,7 +56,7 @@ fn build_has_no_simd_no_fma_contraction_and_receipts_name_the_engine() {
         // `mul_add`); Rust never contracts it to fused multiply-add, whatever the target features.
         let build = engine_build();
         assert!(!build.fma_contraction, "the wide path must not depend on fused multiply-add");
-        assert!(!build.simd && !build.fixed_point && build.interpolation == "tetrahedral" && build.barycentric_weights == "exact_f64");
+        assert!(!build.simd && !build.fixed_point && build.interpolation == "tetrahedral_lab_output_trilinear" && build.barycentric_weights == "exact_f64");
         // The receipt of a real conversion carries the identity and a digest.
         let ctx = Ctx::new();
         let mut eng = engine(&ctx);
