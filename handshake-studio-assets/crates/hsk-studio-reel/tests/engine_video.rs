@@ -52,11 +52,15 @@ impl ChunkSink for Count {
     }
 }
 
-/// A sink that must never be reached: a refused export delivers nothing.
-struct NeverReached;
+/// A sink that must not be reached: a refused export delivers nothing. Carries the case name so a
+/// failure names the delivery site.
+struct NeverReached(&'static str);
 impl ChunkSink for NeverReached {
     fn accept(&mut self, _: Chunk<'_>) -> Result<(), ReelError> {
-        panic!("sink reached although the export must be refused first");
+        panic!(
+            "{}: sink reached although the export must be refused first",
+            self.0
+        );
     }
 }
 
@@ -357,7 +361,7 @@ fn export_is_exact_or_error_for_every_provider() {
                 case,
                 case.unaligned,
                 Purpose::Export,
-                &mut NeverReached,
+                &mut NeverReached(name),
             )
             .unwrap_err();
             assert_eq!(
