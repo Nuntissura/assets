@@ -105,7 +105,8 @@ fn output_is_chunk_repeat_and_cold_start_invariant_with_pinned_digests() {
         if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
             assert_eq!(got, PINNED, "pinned x86_64-windows digests changed");
         } else {
-            eprintln!("UNPINNED target: compare the DIGESTS line with the x86_64-windows values");
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "NOT_PROVEN: wide_determinism pinned_digests reason=unpinned_target compare the DIGESTS line with the x86_64-windows values");
         }
     });
 }

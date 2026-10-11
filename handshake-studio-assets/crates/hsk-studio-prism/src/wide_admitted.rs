@@ -11,7 +11,7 @@
 //!   strings, and the output lease, which travels with the returned `AdmittedWideTransform`.
 //!
 //! The byte counts are conservative upper bounds of requested owned allocations derived from the ICC tag
-//! table before parsing (never allocator bookkeeping or RSS):
+//! table before parsing (not allocator bookkeeping or RSS):
 //! * parse (moxcms `ColorProfile`): every tag decodes to at most `PARSE_FACTOR` times its stored size (u8
 //!   and u16 tables keep their width, text widens at most 2x), plus `PARSE_FIXED` per profile; tags that
 //!   share data are counted once per referencing tag;
@@ -23,6 +23,7 @@
 //!
 //! Requests are bounded by `MAX_WIDE_PIXELS`; callers wanting smaller resident output (develop: chunks)
 //! split their frame into several requests, each charged separately.
+#![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
 use crate::admitted::{actor_bytes, add, reserve, reserve_without_cancellation, supported_target};
 use crate::wide::{CHUNK_PIXELS, MAX_WIDE_PIXELS, frame, verify};
 use crate::{
@@ -39,6 +40,10 @@ const PLAN_FIXED: u64 = 16 * 1024;
 const BPC_STAGES: u64 = 4;
 /// 256 Lab points, their device values (up to 4 channels) and L* in f64/f32 work vectors.
 const BPC_RAMP_BYTES: u64 = 256 * (8 + 8 + 4 * 4 + 3 * 8);
+
+fn mul(a: u64, b: u64) -> Result<u64, Error> {
+    a.checked_mul(b).ok_or(Error::InvalidBudget)
+}
 
 /// Refusal of the admitted wide route: the ledger or a request precondition (nothing parsed, nothing
 /// delivered), a typed wide refusal found from the framing before the engine ran (nothing parsed, nothing
@@ -82,7 +87,9 @@ impl<R: ProviderReservation> AdmittedWideTransform<R> {
 fn stored_tag_bytes(input: ProfileInput<'_>) -> Result<u64, AdmittedWideError> {
     verify(input).map_err(wide_refusal)?;
     let tags = frame(input.bytes).map_err(wide_refusal)?;
-    Ok(tags.iter().map(|t| t.size as u64).sum::<u64>() + input.bytes.len() as u64)
+    tags.iter()
+        .try_fold(input.bytes.len() as u64, |acc, t| acc.checked_add(t.size as u64))
+        .ok_or(AdmittedWideError::Admission(Error::InvalidBudget))
 }
 /// A refusal found before the engine ran (framing, identity, hash, cache capacity): nothing delivered.
 fn wide_refusal(error: WideError) -> AdmittedWideError {
@@ -115,7 +122,7 @@ impl<A: ProviderAdmission> AdmittedWideEngine<A> {
             actor_bytes(actor),
             add(
                 WideEngine::entry_bytes(cache_entries) as u64,
-                (cache_entries * std::mem::size_of::<A::Reservation>()) as u64,
+                mul(cache_entries as u64, std::mem::size_of::<A::Reservation>() as u64)?,
             )?,
         )?;
         let provider_lease = reserve_without_cancellation(&admission, cost)?;
@@ -174,7 +181,7 @@ impl<A: ProviderAdmission> AdmittedWideEngine<A> {
         t: &CancellationToken,
     ) -> Result<WideProfileDescriptor, AdmittedWideError> {
         let stored = stored_tag_bytes(input)?;
-        let _parse = reserve(&self.admission, add(stored * PARSE_FACTOR, PARSE_FIXED)?, t)?;
+        let _parse = reserve(&self.admission, add(mul(stored, PARSE_FACTOR)?, PARSE_FIXED)?, t)?;
         self.engine.inspect_profile(input, t).map_err(wide_refusal)
     }
 
@@ -197,18 +204,20 @@ impl<A: ProviderAdmission> AdmittedWideEngine<A> {
             },
             channels_of(r.destination.bytes).unwrap_or(4),
         );
-        let count = r.pixels.len() as u64 / in_ch;
+        let count = (r.pixels.len() as u64).checked_div(in_ch).ok_or(Error::InvalidBudget)?;
         if count > MAX_WIDE_PIXELS as u64 {
             return Err(Error::PixelLimit.into());
         }
-        let ids = r.destination.profile_id.as_str().len() as u64
-            + match r.source {
+        let ids = add(
+            r.destination.profile_id.as_str().len() as u64,
+            match r.source {
                 WideSource::Profile(p) => p.profile_id.as_str().len() as u64,
                 WideSource::Lab => 0,
-            };
-        let output = add(count * out_ch * 4, 4 * ids)?;
+            },
+        )?;
+        let output = add(mul(mul(count, out_ch)?, 4)?, mul(ids, 4)?)?;
         let request = add(
-            (CHUNK_PIXELS as u64) * out_ch * 4,
+            mul(mul(CHUNK_PIXELS as u64, out_ch)?, 4)?,
             add(
                 hsk_studio_observe::MAX_FRAME_BYTES as u64,
                 add(actor_bytes(self.engine.actor()), r.resource_id.as_str().len() as u64)?,
@@ -223,10 +232,10 @@ impl<A: ProviderAdmission> AdmittedWideEngine<A> {
             if let WideSource::Profile(p) = r.source {
                 stored = add(stored, stored_tag_bytes(p)?)?;
             }
-            let plan = add(stored * PLAN_FACTOR, 2 * PLAN_FIXED)?;
+            let plan = add(mul(stored, PLAN_FACTOR)?, mul(PLAN_FIXED, 2)?)?;
             let build = add(
-                add(stored * PARSE_FACTOR, 2 * PARSE_FIXED)?,
-                if r.black_point_compensation { add(plan * BPC_STAGES, BPC_RAMP_BYTES)? } else { 0 },
+                add(mul(stored, PARSE_FACTOR)?, mul(PARSE_FIXED, 2)?)?,
+                if r.black_point_compensation { add(mul(plan, BPC_STAGES)?, BPC_RAMP_BYTES)? } else { 0 },
             )?;
             (Some(build), Some(plan))
         } else {

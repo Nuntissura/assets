@@ -20,11 +20,12 @@
 //!    so white is fixed and the source black lands on the destination black. (Prism's legs carry
 //!    the PCS as `XYZ / D50`, where the same map reads `n' = scale * n + (1 - scale)`.)
 //! 6. moxcms's own black-point scaling (RGB v4, perceptual or saturation, only where a table is
-//!    involved) never runs: the wide path evaluates every stage in Prism (`icc_eval.rs`). When moxcms
+//!    involved) does not run (tests/wide_bpc.rs engine_builtin_black_scaling_is_suppressed_never_doubled): the wide path evaluates every stage in Prism (`icc_eval.rs`). When moxcms
 //!    would have applied it, the receipt says `engine_builtin_suppressed`, and Prism applies exactly one
 //!    compensation, or none when the flag is off.
-//! 7. Every probe (vertices, local black, ramp) runs through the exact Prism stages, never a re-baked
+//! 7. Every probe (vertices, local black, ramp) runs through the exact Prism stages, not a re-baked
 //!    grid (SMB-PRISM-ENG-6: the 17^4 bake moved the CMYK local black by 0.08 L*).
+#![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
 use crate::Intent;
 use crate::icc_eval::{self, FromPcs, ToPcs};
 use crate::wide::{BpcReport, DeviceSpace, PcsMap, ProfileKind, WideError, WideProfileDescriptor};
@@ -208,7 +209,7 @@ pub(crate) fn compute(
         }
         canceled()?;
         for i in (0..RAMP - 1).rev() {
-            out_l[i] = out_l[i].min(out_l[i + 1]);
+            out_l[i] = out_l[i].min(out_l[i.saturating_add(1)]);
         }
         let (min_l, max_l) = (out_l[0], out_l[RAMP - 1]);
         if min_l >= max_l {

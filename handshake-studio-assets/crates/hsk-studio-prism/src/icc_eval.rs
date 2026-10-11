@@ -2,7 +2,8 @@
 //!
 //! moxcms 0.9.1 only PARSES profiles here; every number of a wide conversion is computed in this file in
 //! f64 from IEEE basic operations (+, -, *, /, comparisons, rounding): no libm transcendental and no fused
-//! multiply-add, so a result is the same on every host. Why not moxcms transforms: its pure-gamma `curv`
+//! multiply-add, so a result is meant to be identical on every IEEE-754 host (this host's digests are pinned by
+//! tests/wide_determinism.rs; a second-host comparison of its DIGESTS line is not done yet). Why not moxcms transforms: its pure-gamma `curv`
 //! path uses a pow without a zero guard (gamma 1.8 at 0.0 gives -1.3e8), a type-0 parametric curve maps
 //! negatives to 0, curve tables are looked up with a truncated 14-bit index, table inverses are 16-bit,
 //! and table profiles are re-baked onto 33^3 / 17^4 grids (diagnostics/prism-eng6.md).
@@ -22,6 +23,7 @@
 //! * Tag precedence per ICC.1:2022 8.10.2: the intent's table, else table 0, else matrix/TRC.
 //!
 //! The wide path carries PCS XYZ normalised by the D50 white (`n = XYZ / D50`), unclamped.
+#![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
 use crate::Intent;
 use crate::wide::{DeviceSpace, WideError, WideProfileDescriptor};
 use moxcms::{ColorProfile, DataColorSpace, LutStore, LutWarehouse, ToneReprCurve};
@@ -42,20 +44,20 @@ const fn ln_series(c: f64) -> f64 {
     let s = (c - 1.0) / (c + 1.0);
     let s2 = s * s;
     let mut p = 0.0;
-    let mut k = 40;
+    let mut k: u32 = 40;
     while k > 0 {
-        k -= 1;
-        p = p * s2 + 2.0 / (2 * k + 1) as f64;
+        k = k.saturating_sub(1);
+        p = p * s2 + 2.0 / k.saturating_mul(2).saturating_add(1) as f64;
     }
     s * p
 }
 /// e^r for |r| < 0.7 by Taylor (30 terms).
 const fn exp_series(r: f64) -> f64 {
     let mut p = 1.0;
-    let mut k = 30;
+    let mut k: u32 = 30;
     while k > 0 {
         p = 1.0 + p * r / k as f64;
-        k -= 1;
+        k = k.saturating_sub(1);
     }
     p
 }
@@ -89,7 +91,8 @@ fn ln(x: f64) -> f64 {
     if e == 0 {
         // Subnormal: scale by 2^54 first.
         bits = (x * 18_014_398_509_481_984.0).to_bits();
-        e = ((bits >> 52) & 0x7ff) as i32 - 54;
+        // e in 0..=2047 (11-bit field): no overflow.
+        e = (((bits >> 52) & 0x7ff) as i32).saturating_sub(54);
     }
     let m = f64::from_bits((bits & 0x000f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000);
     let (c, inv, lc) = LN_TAB[((bits >> 44) & 0xff) as usize];
@@ -101,20 +104,21 @@ fn ln(x: f64) -> f64 {
     let b = (1.0 / 3.0) - 0.25 * r;
     let d = 0.2 - (1.0 / 6.0) * r;
     let p = a + r2 * r * (b + r2 * d);
-    let kf = f64::from(e - 1023);
+    let kf = f64::from(e.saturating_sub(1023));
     (kf * LN2_HI + lc) + (kf * LN2_LO + p)
 }
 
 /// 2^n as an exact scale factor.
 #[inline]
 fn scale2(v: f64, n: i32) -> f64 {
-    let pow2 = |k: i32| f64::from_bits(((k + 1023) as u64) << 52);
+    // k is clamped to -1022..=1023 by every caller below, so the biased exponent is 1..=2046.
+    let pow2 = |k: i32| f64::from_bits((k.clamp(-1022, 1023).saturating_add(1023) as u64) << 52);
     if n > 1023 {
-        v * pow2(1023) * pow2((n - 1023).min(1023))
+        v * pow2(1023) * pow2(n.saturating_sub(1023).min(1023))
     } else if n >= -1022 {
         v * pow2(n)
     } else {
-        v * pow2(-1022) * pow2((n + 1022).max(-1022))
+        v * pow2(-1022) * pow2(n.saturating_add(1022).max(-1022))
     }
 }
 
@@ -235,7 +239,7 @@ impl Curve {
     /// A table that is exactly the identity ramp is the identity (no clamp needed in table pipelines,
     /// where a CLUT or a 0..1 producer follows or precedes it).
     fn table(t: Vec<f64>) -> Self {
-        let n = (t.len() - 1) as f64;
+        let n = t.len().saturating_sub(1) as f64;
         if t.iter().enumerate().all(|(i, v)| (v - i as f64 / n).abs() < 1e-12) {
             Self::Identity
         } else {
@@ -255,11 +259,13 @@ impl Curve {
                 }
             }
             Self::Table(t) => {
+                // t.len() >= 2 (Curve::from_mox and split_tables).
                 let x = if x > 0.0 { x.min(1.0) } else { 0.0 };
-                let pos = x * (t.len() - 1) as f64;
-                let i = (pos as usize).min(t.len() - 2);
+                let pos = x * t.len().saturating_sub(1) as f64;
+                let i = (pos as usize).min(t.len().saturating_sub(2));
                 let f = pos - i as f64;
-                t[i] + f * (t[i + 1] - t[i])
+                let j = i.saturating_add(1);
+                t[i] + f * (t[j] - t[i])
             }
             Self::Param { kind, p } => {
                 let [g, a, b, c, d, e, f] = *p;
@@ -327,28 +333,30 @@ impl Curve {
     }
 }
 
-/// Exact inverse of a monotonic piecewise-linear table (entries at i / (n - 1)).
+/// Exact inverse of a monotonic piecewise-linear table (entries at i / (n - 1)); `t.len() >= 2`
+/// (`Curve::from_mox` and `split_tables` refuse shorter tables).
 fn table_inverse(t: &[f64], y: f64) -> f64 {
     let n = t.len();
-    let step = 1.0 / (n - 1) as f64;
-    let ascending = t[n - 1] >= t[0];
+    let last = n.saturating_sub(1);
+    let step = 1.0 / last as f64;
+    let ascending = t[last] >= t[0];
     let at = |i: usize| if ascending { t[i] } else { -t[i] };
     let v = if ascending { y } else { -y };
     let seg = |i: usize| {
-        let (lo, hi) = (at(i), at(i + 1));
+        let (lo, hi) = (at(i), at(i.saturating_add(1).min(last)));
         let base = i as f64 * step;
         if hi > lo { base + (v - lo) / (hi - lo) * step } else { base }
     };
     if v <= at(0) {
         return seg(0).min(0.0);
     }
-    if v >= at(n - 1) {
-        return seg(n - 2).max(1.0);
+    if v >= at(last) {
+        return seg(n.saturating_sub(2)).max(1.0);
     }
     // Largest index with at(i) <= v.
-    let (mut lo, mut hi) = (0usize, n - 1);
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
+    let (mut lo, mut hi) = (0usize, last);
+    while hi.saturating_sub(lo) > 1 {
+        let mid = lo.saturating_add(hi.saturating_sub(lo) / 2);
         if at(mid) <= v {
             lo = mid;
         } else {
@@ -382,9 +390,21 @@ fn store_values(store: &LutStore) -> Vec<f64> {
 fn unit(v: f64) -> f64 {
     if v > 0.0 { v.min(1.0) } else { 0.0 }
 }
+/// Index arithmetic of a validated CLUT. `Clut::new` checks with checked arithmetic that every
+/// `grid * stride` product fits and that the largest reachable node index is below `data.len()`, so these
+/// wrapping operations cannot wrap (oversized grids are refused: tests/wide_hostile.rs).
+#[inline]
+fn ix(a: usize, b: usize) -> usize {
+    a.wrapping_add(b)
+}
+#[inline]
+fn ixm(a: usize, b: usize) -> usize {
+    a.wrapping_mul(b)
+}
+/// Cell index and fraction of `v` on a grid of `n >= 2` points.
 fn locate(v: f64, n: usize) -> (usize, f64) {
-    let pos = unit(v) * (n - 1) as f64;
-    let i = (pos as usize).min(n - 2);
+    let pos = unit(v) * n.wrapping_sub(1) as f64;
+    let i = (pos as usize).min(n.wrapping_sub(2));
     (i, pos - i as f64)
 }
 
@@ -395,12 +415,20 @@ impl Clut {
         if inputs == 0 || inputs > 8 || outputs == 0 || outputs > MAX_CH || grid.iter().any(|g| *g < 2) {
             return Err(WideError::UnsupportedProfile);
         }
+        // strides[i] = outputs * product(grid[i + 1..]), all checked.
         let mut strides = vec![outputs; inputs];
-        for i in (0..inputs - 1).rev() {
-            strides[i] = strides[i + 1] * grid[i + 1];
+        for i in (1..inputs).rev() {
+            strides[i.saturating_sub(1)] = strides[i].checked_mul(grid[i]).ok_or(WideError::MalformedProfile)?;
+        }
+        let total = strides[0].checked_mul(grid[0]).ok_or(WideError::MalformedProfile)?;
+        // Largest reachable index: sum((grid - 1) * stride) + outputs - 1 (= total - 1), checked.
+        let mut last = outputs.checked_sub(1).ok_or(WideError::MalformedProfile)?;
+        for (g, st) in grid.iter().zip(&strides) {
+            let step = g.checked_sub(1).and_then(|v| v.checked_mul(*st)).ok_or(WideError::MalformedProfile)?;
+            last = last.checked_add(step).ok_or(WideError::MalformedProfile)?;
         }
         let data = store_values(store);
-        if data.len() != strides[0] * grid[0] {
+        if data.len() != total || last >= total {
             return Err(WideError::MalformedProfile);
         }
         Ok(Self {
@@ -419,24 +447,26 @@ impl Clut {
 
     fn eval_from(&self, dim: usize, base: usize, input: &[f64], out: &mut [f64]) {
         let o = self.outputs;
-        match self.inputs - dim {
+        let next = ix(dim, 1);
+        match self.inputs.wrapping_sub(dim) {
             1 => {
                 let (i, f) = locate(input[dim], self.grid[dim]);
-                let (p0, p1) = (base + i * self.strides[dim], base + (i + 1) * self.strides[dim]);
+                let p0 = ix(base, ixm(i, self.strides[dim]));
+                let p1 = ix(p0, self.strides[dim]);
                 for k in 0..o {
-                    let (a, b) = (self.data[p0 + k], self.data[p1 + k]);
+                    let (a, b) = (self.data[ix(p0, k)], self.data[ix(p1, k)]);
                     out[k] = a + f * (b - a);
                 }
             }
             2 => {
                 let (i, fx) = locate(input[dim], self.grid[dim]);
-                let (j, fy) = locate(input[dim + 1], self.grid[dim + 1]);
-                let (sx, sy) = (self.strides[dim], self.strides[dim + 1]);
-                let p = base + i * sx + j * sy;
+                let (j, fy) = locate(input[next], self.grid[next]);
+                let (sx, sy) = (self.strides[dim], self.strides[next]);
+                let p = ix(base, ix(ixm(i, sx), ixm(j, sy)));
                 for k in 0..o {
-                    let d = |off: usize| self.data[p + off + k];
+                    let d = |off: usize| self.data[ix(ix(p, off), k)];
                     let a = d(0) + fy * (d(sy) - d(0));
-                    let b = d(sx) + fy * (d(sx + sy) - d(sx));
+                    let b = d(sx) + fy * (d(ix(sx, sy)) - d(sx));
                     out[k] = a + fx * (b - a);
                 }
             }
@@ -445,8 +475,9 @@ impl Clut {
             _ => {
                 let (i, f) = locate(input[dim], self.grid[dim]);
                 let (mut a, mut b) = ([0.0; MAX_CH], [0.0; MAX_CH]);
-                self.eval_from(dim + 1, base + i * self.strides[dim], input, &mut a);
-                self.eval_from(dim + 1, base + (i + 1) * self.strides[dim], input, &mut b);
+                let p0 = ix(base, ixm(i, self.strides[dim]));
+                self.eval_from(next, p0, input, &mut a);
+                self.eval_from(next, ix(p0, self.strides[dim]), input, &mut b);
                 for k in 0..o {
                     out[k] = a[k] + f * (b[k] - a[k]);
                 }
@@ -454,49 +485,54 @@ impl Clut {
         }
     }
 
+    /// Cell origin, strides and fractions of the last three inputs starting at `dim`.
+    fn cell3(&self, dim: usize, base: usize, input: &[f64]) -> (usize, [usize; 3], [f64; 3]) {
+        let (d1, d2) = (ix(dim, 1), ix(dim, 2));
+        let (x0, fx) = locate(input[dim], self.grid[dim]);
+        let (y0, fy) = locate(input[d1], self.grid[d1]);
+        let (z0, fz) = locate(input[d2], self.grid[d2]);
+        let s = [self.strides[dim], self.strides[d1], self.strides[d2]];
+        let p0 = ix(base, ix(ixm(x0, s[0]), ix(ixm(y0, s[1]), ixm(z0, s[2]))));
+        (p0, s, [fx, fy, fz])
+    }
+
     /// Trilinear interpolation over the last three inputs.
     fn trilinear3(&self, dim: usize, base: usize, input: &[f64], out: &mut [f64]) {
-        let (x0, fx) = locate(input[dim], self.grid[dim]);
-        let (y0, fy) = locate(input[dim + 1], self.grid[dim + 1]);
-        let (z0, fz) = locate(input[dim + 2], self.grid[dim + 2]);
-        let (sx, sy, sz) = (self.strides[dim], self.strides[dim + 1], self.strides[dim + 2]);
-        let p0 = base + x0 * sx + y0 * sy + z0 * sz;
+        let (p0, [sx, sy, sz], [fx, fy, fz]) = self.cell3(dim, base, input);
         let lerp = |a: f64, b: f64, t: f64| a + t * (b - a);
         for k in 0..self.outputs {
-            let d = |off: usize| self.data[p0 + off + k];
+            let d = |off: usize| self.data[ix(ix(p0, off), k)];
             let x00 = lerp(d(0), d(sx), fx);
-            let x10 = lerp(d(sy), d(sx + sy), fx);
-            let x01 = lerp(d(sz), d(sx + sz), fx);
-            let x11 = lerp(d(sy + sz), d(sx + sy + sz), fx);
+            let x10 = lerp(d(sy), d(ix(sx, sy)), fx);
+            let x01 = lerp(d(sz), d(ix(sx, sz)), fx);
+            let x11 = lerp(d(ix(sy, sz)), d(ix(ix(sx, sy), sz)), fx);
             out[k] = lerp(lerp(x00, x10, fy), lerp(x01, x11, fy), fz);
         }
     }
 
     /// Tetrahedral interpolation over the last three inputs (same tetrahedra as lcms2).
     fn tetrahedral(&self, dim: usize, base: usize, input: &[f64], out: &mut [f64]) {
-        let (x0, rx) = locate(input[dim], self.grid[dim]);
-        let (y0, ry) = locate(input[dim + 1], self.grid[dim + 1]);
-        let (z0, rz) = locate(input[dim + 2], self.grid[dim + 2]);
-        let (sx, sy, sz) = (self.strides[dim], self.strides[dim + 1], self.strides[dim + 2]);
-        let p0 = base + x0 * sx + y0 * sy + z0 * sz;
+        let (p0, [sx, sy, sz], [rx, ry, rz]) = self.cell3(dim, base, input);
+        let (xy, xz, yz) = (ix(sx, sy), ix(sx, sz), ix(sy, sz));
+        let xyz = ix(xy, sz);
         // (c1 = a - b, c2 = c - d, c3 = e - f) as offsets from p0.
         let t: [usize; 6] = if rx >= ry && ry >= rz {
-            [sx, 0, sx + sy, sx, sx + sy + sz, sx + sy]
+            [sx, 0, xy, sx, xyz, xy]
         } else if rx >= rz && rz >= ry {
-            [sx, 0, sx + sy + sz, sx + sz, sx + sz, sx]
+            [sx, 0, xyz, xz, xz, sx]
         } else if rz >= rx && rx >= ry {
-            [sx + sz, sz, sx + sy + sz, sx + sz, sz, 0]
+            [xz, sz, xyz, xz, sz, 0]
         } else if ry >= rx && rx >= rz {
-            [sx + sy, sy, sy, 0, sx + sy + sz, sx + sy]
+            [xy, sy, sy, 0, xyz, xy]
         } else if ry >= rz && rz >= rx {
-            [sx + sy + sz, sy + sz, sy, 0, sy + sz, sy]
+            [xyz, yz, sy, 0, yz, sy]
         } else if rz >= ry && ry >= rx {
-            [sx + sy + sz, sy + sz, sy + sz, sz, sz, 0]
+            [xyz, yz, yz, sz, sz, 0]
         } else {
             [0; 6]
         };
         for k in 0..self.outputs {
-            let d = |off: usize| self.data[p0 + off + k];
+            let d = |off: usize| self.data[ix(ix(p0, off), k)];
             let c0 = d(0);
             out[k] = c0 + (d(t[0]) - d(t[1])) * rx + (d(t[2]) - d(t[3])) * ry + (d(t[4]) - d(t[5])) * rz;
         }
@@ -568,7 +604,7 @@ fn curves(list: &[ToneReprCurve]) -> Result<Vec<Curve>, WideError> {
 }
 fn split_tables(store: &LutStore, channels: usize, entries: usize) -> Result<Vec<Curve>, WideError> {
     let values = store_values(store);
-    if entries < 2 || values.len() != channels * entries {
+    if entries < 2 || Some(values.len()) != channels.checked_mul(entries) {
         return Err(WideError::MalformedProfile);
     }
     Ok(values.chunks_exact(entries).map(|c| Curve::table(c.to_vec())).collect())
@@ -819,7 +855,8 @@ fn colorants_over_d50(p: &ColorProfile) -> Mat3 {
 }
 pub(crate) fn inverse3(m: Mat3) -> Option<Mat3> {
     let c = |r: usize, k: usize| {
-        let (r1, r2, k1, k2) = ((r + 1) % 3, (r + 2) % 3, (k + 1) % 3, (k + 2) % 3);
+        const NEXT: [usize; 3] = [1, 2, 0];
+        let (r1, r2, k1, k2) = (NEXT[r], NEXT[NEXT[r]], NEXT[k], NEXT[NEXT[k]]);
         m[r1][k1] * m[r2][k2] - m[r1][k2] * m[r2][k1]
     };
     let det = m[0][0] * c(0, 0) + m[0][1] * c(0, 1) + m[0][2] * c(0, 2);

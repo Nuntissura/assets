@@ -9,6 +9,7 @@
 //! destination relative value is `x_src * MW_src / MW_dst`. The black point compensation flag is
 //! ignored for this intent (receipt rule `absolute_ignores_bpc`). A profile without `wtpt` is
 //! refused (`MissingMediaWhite`) rather than assumed to be D50.
+#![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
 use crate::Intent;
 use crate::bpc::{BpcInputs, compute};
 use crate::icc_eval::{self, D50, Fused};
@@ -20,7 +21,7 @@ use moxcms::ColorProfile;
 
 /// moxcms applies a constant-black scaling only for perceptual/saturation between two RGB ICC v4
 /// profiles of which at least one is table-based (its `detect_black_point` is `None` for CMYK, Gray
-/// and v2 profiles, and the scaling lives only in the table paths). Prism never runs a moxcms
+/// and v2 profiles, and the scaling lives only in the table paths). Prism runs no moxcms
 /// transform on the wide path, so this only feeds the receipt's `engine_builtin_suppressed`.
 fn engine_builtin_would_apply(
     intent: Intent,

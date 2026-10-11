@@ -16,6 +16,7 @@
 //! b1f0a5f6e3d104d6176699cf05efdfe1725095cd984fdf4422ddc3093726361c;
 //! sync.rs387-405,424-432 SHA256
 //! 768776d4a37cfeb28c71a0c6d8b2ad33332d11ceaef7e47cb01463bd71b9048a.
+#![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
 use super::*;
 use std::{
     alloc::Layout as AllocationLayout,
@@ -160,12 +161,13 @@ pub fn linear_profile_cost(
 // This conservative upper layout remains valid under Rust struct field reordering.
 fn field_slot<T>() -> Result<usize, Error> {
     size_of::<T>()
-        .checked_add(align_of::<T>() - 1)
+        .checked_add(align_of::<T>().saturating_sub(1))
         .ok_or(Error::InvalidBudget)
 }
 fn aligned(n: usize, a: usize) -> Result<usize, Error> {
-    n.checked_add(a - 1)
-        .map(|v| v / a * a)
+    n.checked_add(a.saturating_sub(1))
+        .and_then(|v| v.checked_div(a))
+        .and_then(|v| v.checked_mul(a))
         .ok_or(Error::InvalidBudget)
 }
 pub fn analytical_executor_bytes() -> Result<u64, Error> {
@@ -180,7 +182,7 @@ pub fn analytical_executor_bytes() -> Result<u64, Error> {
     )?;
     let executor = aligned(
         profile
-            .checked_add(a - 1)
+            .checked_add(a.saturating_sub(1))
             .and_then(|v| v.checked_add(field_slot::<usize>().ok()?))
             .ok_or(Error::InvalidBudget)?,
         a.max(align_of::<usize>()),
@@ -409,7 +411,7 @@ impl<A: ProviderAdmission> AdmittedPrism<A> {
         let transient = add(
             add(source_cost.parser_bytes, destination_cost.parser_bytes)?,
             add(
-                bytes_for::<f32>(r.pixels.len().min(64) * 6)?,
+                bytes_for::<f32>(r.pixels.len().min(64).saturating_mul(6))?,
                 add(
                     actor_bytes(&self.actor),
                     add(
@@ -461,7 +463,7 @@ impl<A: ProviderAdmission> AdmittedPrism<A> {
         };
         canceled(t)?;
         let mut output = Vec::with_capacity(r.pixels.len());
-        let chunk_capacity = r.pixels.len().min(64) * 3;
+        let chunk_capacity = r.pixels.len().min(64).saturating_mul(3);
         let mut flat = Vec::with_capacity(chunk_capacity);
         let mut converted = Vec::with_capacity(chunk_capacity);
         for chunk in r.pixels.chunks(64) {

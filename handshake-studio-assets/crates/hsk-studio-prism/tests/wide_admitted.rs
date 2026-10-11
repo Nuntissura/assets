@@ -50,7 +50,8 @@ impl ProviderAdmission for Admission {
 #[test]
 fn admitted_wide_engine_charges_plans_outputs_and_requests_before_allocating() {
     if !cfg!(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")) {
-        eprintln!("NOT_PROVEN: wide_admitted target reason=admission_route_supported_on_x86_64_windows_msvc_only");
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "NOT_PROVEN: wide_admitted target reason=admission_route_supported_on_x86_64_windows_msvc_only");
         return;
     }
     let ctx = Ctx::new();
