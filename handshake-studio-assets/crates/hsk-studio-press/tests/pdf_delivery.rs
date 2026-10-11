@@ -2929,7 +2929,7 @@ fn unmappable_glyph_names_and_encodingless_fonts_are_opaque() {
     let out = type3_run(doc_with(type3("/g1 /g2"), vec![glyph.clone()], &show("<0102>")));
     assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText) && out.proof.opaque_text_streams.len() == 1, "Type 3, unmappable names: {:?}", out.not_proven_reasons());
     let read = type3_run(doc_with(type3(DIFF_NAMES), vec![glyph.clone()], &show(DIFF_CODES)));
-    assert_eq!(read.reports[0].unredacted, vec![RedactionClass::Type3Text]);
+    assert_eq!(read.reports[0].unredacted, vec![RedactionClass::Type3Text]); // R8-new-api
     assert!(!read.not_proven_reasons().contains(&NotProven::OpaqueText) && read.proof.hits.is_empty(), "Type 3, readable names: {:?}", read.not_proven_reasons());
     assert_eq!(read.proof.kept_text_collisions.len(), 1, "the Type 3 text is read: the kept instance is a collision, not invisible");
 }
@@ -3117,6 +3117,20 @@ fn kerned_tj_runs_are_read_whole() {
     let form = stream_body("/Type /XObject /Subtype /Form /BBox [0 0 9 9] /Resources << /Font << /F2 6 0 R >> >>", b"BT /F2 12 Tf [(SECRET-) -15 (ALPHA)] TJ ET");
     let out = r7_run(&r8_doc(&r8_page(""), "", "/Hidden 33 0 R", vec![(33, form)]));
     assert!(!out.is_proven() && decoded_text_hit(&out.proof, 33), "kerned stray form: {:?}", out.proof.hits);
+    // The removal side: kerned pieces each shorter than a distinctive needle are searched as the run
+    // they draw; its twin in an outline title is a leak, and a text policy redacts it.
+    let outline = vec![
+        (40, b"<< /Type /Outlines /First 41 0 R /Last 41 0 R /Count 1 >>".to_vec()),
+        (41, b"<< /Title (SECRET-ALPHA plan) /Parent 40 0 R >>".to_vec()),
+    ];
+    let pieces = "BT /F2 12 Tf 72 700 Td [(SECR) -10 (ET-A) -10 (LPHA)] TJ ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET";
+    let pdf = r8_doc(pieces, "", "/Outlines 40 0 R", outline);
+    let out = r7_run(&pdf);
+    assert!(!out.is_proven() && out.proof.hits.iter().any(|h| h.location == PayloadLocation::StringObject { object: 41 }), "kerned removed pieces: {:?}", out.proof.hits);
+    assert_eq!((out.reports[0].text_strings_removed, out.reports[0].removed_text.last()), (3, Some(&b"SECRET-ALPHA".to_vec())));
+    let mut doc = open(&pdf);
+    let with = redact_and_save_with(&mut doc, &[R7_REGION], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
+    assert!(with.is_proven() && !leaks(&with.bytes, "secret-alpha"), "{:?}", with.not_proven_reasons());
     // Controls: a different word split the same way is not a hit; kerned kept page text is a collision.
     let p = ap("BT /F2 12 Tf 2 5 Td [(SECRET-) -15 (BETA)] TJ ET");
     assert!(p.is_clean(), "{:?}", p.hits);

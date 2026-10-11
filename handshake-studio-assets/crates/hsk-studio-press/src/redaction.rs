@@ -61,7 +61,10 @@ pub enum UnsupportedPolicy {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RedactionReport {
     pub page_index: u32,
+    /// Removed string operands (elements of a `TJ` counted one by one).
     pub text_strings_removed: u32,
+    /// The removed string operands, and for every run of two or more adjacent removed elements of one
+    /// `TJ` that run joined (what a viewer draws as one run; R8 F2, test `kerned_tj_runs_are_read_whole`).
     pub removed_text: Vec<Vec<u8>>,
     /// `removed_text[i]` as its font draws it: its simple font's encoding reading when that is complete
     /// and tells more than the bytes, else its `/ToUnicode` reading (`None`: the bytes are the text, or
@@ -180,6 +183,8 @@ struct Interp<'a> {
     fonts: BTreeMap<Vec<u8>, FontInfo>,
     unsupported: Vec<RedactionClass>,
     removed: Vec<Vec<u8>>,
+    /// Removed string operands (`removed` also holds joined runs).
+    strings_removed: u32,
     /// `removed[i]` read through its font's `/ToUnicode`.
     removed_unicode: Vec<Option<String>>,
     /// `removed[i]` has no complete reading.
@@ -240,6 +245,7 @@ impl<'a> Interp<'a> {
             fonts: BTreeMap::new(),
             unsupported: Vec::new(),
             removed: Vec::new(),
+            strings_removed: 0,
             removed_unicode: Vec::new(),
             removed_unreadable: Vec::new(),
             layout_shift: false,
@@ -297,8 +303,9 @@ impl<'a> Interp<'a> {
                         .and_then(|d| d.get("MissingWidth"))
                         .and_then(|m| doc.resolve(m).as_f64())
                         .unwrap_or(0.0);
-                    // Charged to the pass budget; running out is a refusal (InputLimit), never "no
-                    // encoding": the removed text's reading must not be lost silently (R8 F3/D3).
+                    // Charged to the pass budget; running out is a refusal (InputLimit), not "no
+                    // encoding": the removed text's reading must not be lost silently (R8 F3/D3; test
+                    // unreadable_removed_text_is_never_proven, budget case).
                     let enc = Some(Rc::new(SimpleEncoding::of_font(&doc.objects, fd, &mut self.budget)?));
                     let type3 = fd.get("Subtype").map(|t| doc.resolve(t)).is_some_and(|t| t.is_name("Type3"));
                     FontInfo { first, known: !widths.is_empty(), widths, missing, composite: false, resolved: true, type3, vertical: false, cmap, enc }
@@ -310,7 +317,7 @@ impl<'a> Interp<'a> {
     }
 
     /// The font's `/ToUnicode` map, when it has a decodable one (decoded under the pass budget). A
-    /// budget overrun or cancellation is returned, never read as "no map" (R8 F3/D3).
+    /// budget overrun or cancellation is returned as the error, not read as "no map" (R8 F3/D3).
     fn load_to_unicode(&mut self, fd: &Dict) -> Result<Option<Rc<Cmap>>> {
         let Some(tu) = fd.get("ToUnicode") else { return Ok(None) };
         let Object::Stream(tu) = self.doc.resolve(tu) else { return Ok(None) };
@@ -423,6 +430,26 @@ impl<'a> Interp<'a> {
         let hit = touches(&bbox(&pts), &self.region);
         self.tm = mul(&translate(adv * self.g.th, 0.0), &self.tm);
         Ok(Shown { hit, adv, exact: font.known && !font.composite && !font.type3 })
+    }
+
+    /// Records `s` (removed, or a joined run of removed elements) with its reading.
+    fn record_removed(&mut self, s: &[u8]) -> Result<()> {
+        let (u, complete) = self.reading_of(s)?;
+        self.removed.push(s.to_vec());
+        self.removed_unicode.push(u);
+        self.removed_unreadable.push(!complete);
+        Ok(())
+    }
+
+    /// Ends a run of adjacent removed elements of one `TJ`: two or more are also recorded joined,
+    /// the text a viewer draws as one run, so kerned pieces shorter than a distinctive needle are still
+    /// searched as the word they form (R8 F2; test `kerned_tj_runs_are_read_whole`).
+    fn flush_run(&mut self, run: &mut (Vec<u8>, u32)) -> Result<()> {
+        let (bytes, n) = std::mem::take(run);
+        if n >= 2 {
+            self.record_removed(&bytes)?;
+        }
+        Ok(())
     }
 
     /// Kerning number that reproduces the advance of a removed string, when exactly known.
@@ -671,10 +698,8 @@ impl<'a> Interp<'a> {
                     };
                     let shown = self.show(s)?;
                     if shown.hit {
-                        self.removed.push(s.clone());
-                        let (u, complete) = self.reading_of(s)?;
-                        self.removed_unicode.push(u);
-                        self.removed_unreadable.push(!complete);
+                        self.strings_removed = self.strings_removed.saturating_add(1);
+                        self.record_removed(s)?;
                         changed = true;
                         keep = false;
                         out.extend_from_slice(&prefix);
@@ -690,20 +715,25 @@ impl<'a> Interp<'a> {
                     };
                     let mut new_items: Vec<Object> = Vec::with_capacity(items.len());
                     let mut any = false;
+                    // Adjacent removed elements draw one run: its joined bytes are a needle too.
+                    let mut run: (Vec<u8>, u32) = (Vec::new(), 0);
                     for item in items {
                         match item {
                             Object::Str(s) => {
                                 let shown = self.show(s)?;
                                 if shown.hit {
                                     any = true;
-                                    self.removed.push(s.clone());
-                                    let (u, complete) = self.reading_of(s)?;
-                                    self.removed_unicode.push(u);
-                                    self.removed_unreadable.push(!complete);
+                                    self.strings_removed = self.strings_removed.saturating_add(1);
+                                    self.record_removed(s)?;
+                                    run.0.extend_from_slice(s);
+                                    run.1 = run.1.saturating_add(1);
                                     if let Some(n) = self.spacer(&shown) {
                                         new_items.push(Object::Real(n));
                                     }
                                 } else {
+                                    if !s.is_empty() {
+                                        self.flush_run(&mut run)?;
+                                    }
                                     new_items.push(item.clone());
                                 }
                             }
@@ -715,6 +745,7 @@ impl<'a> Interp<'a> {
                             _ => return Err(PressError::Malformed("tj_element")),
                         }
                     }
+                    self.flush_run(&mut run)?;
                     if any {
                         changed = true;
                         keep = false;
@@ -950,7 +981,7 @@ impl PdfDoc {
         } else {
             Some(interp.resources_with(resources, &pass.additions, &pass.removals))
         };
-        let Interp { unsupported, removed, removed_unicode, removed_unreadable, layout_shift, new_objects, next_num, images_removed, inline_removed, .. } = interp;
+        let Interp { unsupported, removed, strings_removed, removed_unicode, removed_unreadable, layout_shift, new_objects, next_num, images_removed, inline_removed, .. } = interp;
         let (new_content, changed) = (pass.out, pass.changed);
         if policy != UnsupportedPolicy::ReportAndContinue
             && let Some(class) = unsupported.first()
@@ -1086,7 +1117,7 @@ impl PdfDoc {
         unredacted.sort_by_key(|c| c.as_str());
         Ok(RedactionReport {
             page_index: region.page_index,
-            text_strings_removed: u32::try_from(removed.len()).unwrap_or(u32::MAX),
+            text_strings_removed: strings_removed,
             removed_text: removed,
             removed_unicode,
             removed_unreadable,

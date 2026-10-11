@@ -162,7 +162,9 @@ pub(crate) enum Role {
     /// A content stream (form, tiling pattern, Type3 glyph procedure, stream with resources) that no
     /// page or appearance draws, read with its own resources; the content of a page object outside the
     /// page tree, read with that page's resources; any other stream that tokenizes as content, read
-    /// with none. Never kept text; a font name it cannot resolve makes its text opaque.
+    /// with none. Not kept text; a font name it cannot resolve makes its text opaque (tests
+    /// `stray_streams_and_hidden_payloads_are_not_kept_text`,
+    /// `partial_tounicode_and_unreachable_pages_are_read_or_opaque`).
     Stray,
 }
 

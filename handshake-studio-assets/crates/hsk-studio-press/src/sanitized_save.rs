@@ -110,8 +110,10 @@ pub enum NotProven {
     Structure,
     /// A stream with an unimplemented filter outside the raster class (`streams_not_decodable`).
     UndecodableStream,
-    /// A text-needle search was requested and some content draws text with a composite font that
-    /// has no usable `/ToUnicode` (`opaque_text_streams`): that text was not checked.
+    /// A text-needle search was requested and some content draws text this proof cannot read
+    /// (`opaque_text_streams`: a composite font without a usable `/ToUnicode` or with a code it does
+    /// not name, a simple-font code nothing reads, a font name page or stray content cannot resolve):
+    /// that text was not checked.
     OpaqueText,
     /// A redaction region still holds a mark that was not removed (an image without
     /// `RemoveImages`, a vector, a deep form).
@@ -162,8 +164,10 @@ pub struct PayloadProof {
     pub streams_not_decodable: Vec<(u32, String)>,
     /// Raster image streams excluded from the text-needle proof (listed, not blocking; test raster_class_is_listed_and_region_images_are_removed).
     pub raster_streams: Vec<RasterStream>,
-    /// Content streams that draw text with a composite font having no usable `/ToUnicode` (or page
-    /// content naming a font its resources do not hold): that text is invisible to this proof.
+    /// Content streams that draw text this proof cannot read: a composite font without a usable
+    /// `/ToUnicode` or with a code the map does not name, a simple-font code neither its encoding nor
+    /// its `/ToUnicode` reads, or page and stray content naming a font its resources do not hold (tests
+    /// `opaque_composite_text_blocks_the_proof`, `partial_tounicode_and_unreachable_pages_are_read_or_opaque`).
     /// Blocks `is_clean` when `needles_searched > 0` (reason `NotProven::OpaqueText`).
     pub opaque_text_streams: Vec<u32>,
     /// `(object, first filter)` of streams with non-whitespace input after a filter's end-of-data
@@ -573,15 +577,17 @@ fn inline_images(
 /// Context rule (what makes the proof usable for natural-language documents without weakening
 /// it): a needle inside a TEXT-SHOWING operator (Tj, TJ, ', ") of a stream that is drawn ONLY as
 /// kept page text (page content, and forms a page draws by `Do`; test
-/// `listed_but_undrawn_forms_are_not_kept_text`), where that operator's own string value or
-/// ToUnicode text carries the needle, is a kept-text collision, reported in `kept_text_collisions`,
-/// because the same word legitimately occurs in kept text (the in-region instance is proven gone by
-/// the residual pass in [`redact_and_save`]). A needle anywhere else is a leak and lands in `hits`:
-/// raw bytes (headers, dictionaries, comments, object text, xref, orphan bodies, bytes after an
-/// end-of-data marker), string/name objects and dictionary keys (metadata, annotation contents,
-/// outlines, ActualText), non-show content operands (marked-content properties), inline-image data,
-/// every decoded non-content stream (XMP, embedded files, thumbnails, private data, object streams),
-/// stray content that no page draws, and all text of annotation appearance streams.
+/// `listed_but_undrawn_forms_are_not_kept_text`), where a reading that operator DRAWS carries the
+/// needle (its font reading: encoding, `/ToUnicode`, the joined run of a kerned `TJ`; its bytes only
+/// where its simple font reads them as the same letters, test `kept_text_needs_a_drawn_reading`), is a
+/// kept-text collision, reported in `kept_text_collisions`, because the same word legitimately occurs
+/// in kept text (the in-region instance is proven gone by the residual pass in [`redact_and_save`]). A
+/// needle anywhere else is a leak and lands in `hits`: raw bytes (headers, dictionaries, comments,
+/// object text, xref, orphan bodies, bytes after an end-of-data marker), string/name objects and
+/// dictionary keys (metadata, annotation contents, outlines, ActualText), non-show content operands
+/// (marked-content properties), inline-image data, every decoded non-content stream (XMP, embedded
+/// files, thumbnails, private data, object streams), stray content that no page draws (page objects
+/// outside the page tree included), and all text of annotation appearance streams.
 pub fn verify_payload_absent(
     output: &[u8],
     needles: &[Vec<u8>],
