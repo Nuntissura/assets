@@ -26,8 +26,16 @@ use hsk_studio_folio::{
     StrokeFillType, StrokePosition, StudioColor, StudioContour, StudioContourPoint, StudioEffect, StudioEffectKind,
     StudioEffectStack,
 };
+pub(crate) use hsk_studio_pigment::effect_math::{MAX_EFFECTS_PER_LAYER, MAX_EFFECTS_PER_PLAN};
 
 use crate::adjust::{Mapped, Note, Reason};
+
+/// The loss code of a layer whose effect stack has more mapped instances than [`MAX_EFFECTS_PER_LAYER`].
+/// The stack is not mapped (the `lfx2` block stays byte-exact in the document); the layer and the rest of the
+/// document import. Pigment owns both effect limits (per layer and per plan); a stack over the first would be
+/// refused by the render plan, and Folio's own ceiling (`MAX_EFFECTS`) is above it, so Folio never has to.
+pub(crate) const EFFECTS_OVER_BUDGET: Reason = "effects_over_budget";
+const _: () = assert!(MAX_EFFECTS_PER_LAYER <= MAX_EFFECTS, "pigment's per-layer limit must be inside Folio's");
 use crate::blend::studio_blend_for_key;
 use crate::descriptor::{self, Object, Value};
 use crate::layers::PsdLayer;
@@ -331,8 +339,9 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
 }
 
 /// Maps the effects block of `layer`. `None` when it has no `lfx2` / `lmfx` block; `Err` when the
-/// descriptor cannot be read or exceeds the instance ceiling. `stack_id` mints the `SEFX` identity
-/// and is only called once the descriptor parsed.
+/// descriptor cannot be read or maps more than [`MAX_EFFECTS_PER_LAYER`] instances
+/// ([`EFFECTS_OVER_BUDGET`]). `stack_id` mints the `SEFX` identity and is only called once the
+/// descriptor parsed and the stack is within its limit.
 pub(crate) fn effect_stack(
     layer: &PsdLayer,
     stack_id: impl FnOnce() -> Option<String>,
@@ -378,11 +387,15 @@ fn map_stack(data: &[u8], stack_id: impl FnOnce() -> Option<String>, limits: &Li
             }
         };
         for object in objects {
-            if effects.len() >= MAX_EFFECTS {
-                return Err("effects_limit");
-            }
             match map_effect(slot, object, effects.len(), &mut notes) {
-                Ok(effect) => effects.push(effect),
+                Ok(effect) => {
+                    // The instance that would be one past the limit refuses the whole stack, before any
+                    // more of the descriptor is mapped (test `effects_heavy_layers_lose_their_stack_...`).
+                    if effects.len() >= MAX_EFFECTS_PER_LAYER {
+                        return Err(EFFECTS_OVER_BUDGET);
+                    }
+                    effects.push(effect);
+                }
                 Err(code) => notes.push((LossKind::Unsupported, code)),
             }
         }

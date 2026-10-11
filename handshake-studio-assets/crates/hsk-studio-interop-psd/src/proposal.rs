@@ -454,6 +454,8 @@ struct Builder<'a, 'm, 'c> {
     tile_bytes: usize,
     /// Raster records collected per layer (adjustment, mask parameters, Blend-If, effects).
     records: Vec<StudioRasterLayerRecord>,
+    /// Effect instances held by `records` (the running aggregate against pigment's per-plan limit).
+    effect_instances: usize,
 }
 
 /// Flags of the mask whose coverage is mapped: the real user mask's when one exists.
@@ -473,6 +475,11 @@ impl Builder<'_, '_, '_> {
     /// density/feather/invert, Blend-If ranges with the knockout and blend toggles, and (for raster
     /// and group layers) its effect stack. Every source block stays in the document; what a record
     /// does not hold is reported through the notes of the mapping.
+    ///
+    /// Effect limits are pigment's (`MAX_EFFECTS_PER_LAYER`, `MAX_EFFECTS_PER_PLAN`): a stack over the
+    /// per-layer limit is not mapped and the layer reports `effects_over_budget` (path names the layer
+    /// id); once the mapped instances of the document pass the per-plan limit the import is refused
+    /// with [`PsdError::EffectLimit`]. Test `effects_over_the_plan_limit_are_a_typed_input_error_not_a_mapping_defect`.
     fn collect_records(
         &mut self,
         index: usize,
@@ -481,7 +488,7 @@ impl Builder<'_, '_, '_> {
         has_appearance_mask: bool,
         adjustment: Option<StudioAdjustment>,
         allow_effects: bool,
-    ) {
+    ) -> Result<()> {
         let mut record = StudioRasterLayerRecord::new(layer_id);
         record.adjustment = adjustment;
         if let Some(mask) = layer.mask() {
@@ -520,9 +527,17 @@ impl Builder<'_, '_, '_> {
             let mint = &mut *self.mint;
             match effects::effect_stack(layer, || mint.effect_stack_id(layer_id), limits) {
                 Some(Ok(m)) => {
+                    self.effect_instances = self
+                        .effect_instances
+                        .checked_add(m.value.effects.len())
+                        .filter(|total| *total <= effects::MAX_EFFECTS_PER_PLAN)
+                        .ok_or(PsdError::EffectLimit)?;
                     self.notes(&path, m.notes);
                     self.note(path, LossKind::Preserved, "effects_mapped_to_record_not_rendered");
                     record.effects = Some(m.value);
+                }
+                Some(Err(reason)) if reason == effects::EFFECTS_OVER_BUDGET => {
+                    self.note(format!("{path}(layer_id={layer_id})"), LossKind::Unsupported, reason);
                 }
                 Some(Err(reason)) => self.note(path, LossKind::Unsupported, reason),
                 None => {}
@@ -535,6 +550,7 @@ impl Builder<'_, '_, '_> {
         {
             self.records.push(record);
         }
+        Ok(())
     }
 
     /// Maps an adjustment layer whose block this crate parses to an `adjustment` layer with a
@@ -592,7 +608,7 @@ impl Builder<'_, '_, '_> {
         self.loss.entries.retain(|e| !(e.path == path && e.code == "adjustment_layer_not_applied"));
         self.note(path.clone(), LossKind::Preserved, "adjustment_mapped_to_record");
         self.notes(&path, mapped.notes);
-        self.collect_records(index, layer, id, has_mask, Some(mapped.value), false);
+        self.collect_records(index, layer, id, has_mask, Some(mapped.value), false)?;
         Ok(Some(StackEntry {
             out: address(id, "source", "out"),
             layer_id: id.to_owned(),
@@ -821,7 +837,7 @@ impl Builder<'_, '_, '_> {
             "appearance": appearance,
         }));
         self.record(&id, folder, layer, mask_default);
-        self.collect_records(folder, layer, &id, has_mask, None, true);
+        self.collect_records(folder, layer, &id, has_mask, None, true)?;
         let inner_parent = json!({"node_kind": "layer", "node_id": id});
         let children = self.walk(children, &inner_parent)?;
         self.operations.push(json!({
@@ -923,7 +939,7 @@ impl Builder<'_, '_, '_> {
             "inputs": [], "outputs": [port("out", "one", "source")],
         }));
         self.record(&id, index, layer, mask_default);
-        self.collect_records(index, layer, &id, has_mask, None, true);
+        self.collect_records(index, layer, &id, has_mask, None, true)?;
         Ok(Some(StackEntry {
             out: address(&id, "source", "out"),
             layer_id: id,
@@ -1556,6 +1572,7 @@ pub fn to_proposal(
         loss: doc.loss_report(cfg.limits),
         tile_bytes: 0,
         records: Vec::new(),
+        effect_instances: 0,
     };
     let converter_present = b.converter.is_some();
     // Panel order is top-first; graph outputs follow the group convention (bottom-most first).
@@ -1713,9 +1730,17 @@ pub fn to_proposal(
     let mut raster_records = StudioRasterRecords::new(document_id);
     raster_records.layers = std::mem::take(&mut b.records);
     if !raster_records.layers.is_empty() {
+        // Folio charges one node per record layer and one per effect instance (`validate_raster_records`).
+        // Both counts are the importer's own and are bounded before this point (layers by `Limits::max_layers`,
+        // effect instances by pigment's per-plan limit, `Builder::collect_records`), so the node budget of
+        // THIS validation is sized to that need (not lowered below the caller's `nodes`); the caller's other
+        // dimensions apply unchanged. The input cannot exhaust it (tests/effects_budget.rs
+        // `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`).
+        let needed = raster_records.layers.len().checked_add(b.effect_instances).ok_or(PsdError::Overflow)?;
+        let records_budget = Budget { nodes: cfg.budget.nodes.max(needed), ..cfg.budget };
         // The parsers pre-check the Folio ranges; a rejection here is a mapping defect, not input
         // (tests/adjustment_records.rs `non_finite_descriptor_numbers_are_typed_losses_not_import_failures`).
-        validate_raster_records(&raster_records, snapshot.document(), cfg.budget, cancel, cfg.resolver).map_err(|d| {
+        validate_raster_records(&raster_records, snapshot.document(), records_budget, cancel, cfg.resolver).map_err(|d| {
             if d.code == hsk_studio_folio::Code::Canceled { PsdError::Canceled } else { PsdError::Proposal("raster_records_rejected") }
         })?;
     }
