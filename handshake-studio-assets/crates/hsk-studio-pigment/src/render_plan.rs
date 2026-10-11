@@ -15,7 +15,8 @@ pub use crate::blend_math::{
 
 mod extensions;
 pub use extensions::{
-    ALPHA_BOUNDARY_EXACTNESS, ExtOperator, Knockout, LayerExtension, PlanExtensions, admit_extended,
+    ALPHA_BOUNDARY_EXACTNESS, ExtOperator, Knockout, LayerExtension, PlanExtensions,
+    admit_extended, admit_extended_with_limits,
 };
 
 /// Blending profile + linearity every plan input must already be in (STU-COL-162/163).
@@ -213,18 +214,81 @@ pub struct RenderPlan<V = NoVector> {
     pub root: PlanNodeId,
 }
 
+/// The plan budgets [`RenderPlan::validate`] enforces: node count, total layer count over all
+/// groups, and group nesting depth. [`PlanLimits::MAXIMUM`] holds the hard maxima and is what
+/// `Default` and [`admit`] use. A host may TIGHTEN any field through [`admit_with_limits`] and
+/// [`admit_extended_with_limits`] (or by calling [`RenderPlan::validate`]); a field above its
+/// maximum is refused as [`PlanError::LimitAboveMaximum`] by every one of those entry points, never
+/// clamped (test `tests/plan_limits.rs` `loosening_past_the_maxima_is_a_typed_error_everywhere`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanLimits {
     pub max_nodes: usize,
     pub max_layers: usize,
     pub max_depth: usize,
 }
+impl PlanLimits {
+    /// The hard maxima (`Default`): 65 536 nodes, 65 536 layers, nesting depth 64 (test
+    /// `tests/plan_limits.rs` `defaults_are_the_maxima_and_unchanged`).
+    pub const MAXIMUM: Self = Self {
+        max_nodes: 65_536,
+        max_layers: 65_536,
+        max_depth: 64,
+    };
+    /// `Ok` when no field is above [`PlanLimits::MAXIMUM`] (smaller, including zero, only
+    /// tightens); otherwise [`PlanError::LimitAboveMaximum`] naming the first offending field in the
+    /// order nodes, layers, depth. [`RenderPlan::validate`] runs this first, so the maxima hold
+    /// for every caller that passes limits, not only for the admission functions.
+    pub fn within_maximum(&self) -> Result<(), PlanError> {
+        let fields = [
+            (
+                PlanLimitKind::Nodes,
+                self.max_nodes,
+                Self::MAXIMUM.max_nodes,
+            ),
+            (
+                PlanLimitKind::Layers,
+                self.max_layers,
+                Self::MAXIMUM.max_layers,
+            ),
+            (
+                PlanLimitKind::Depth,
+                self.max_depth,
+                Self::MAXIMUM.max_depth,
+            ),
+        ];
+        for (kind, requested, maximum) in fields {
+            if requested > maximum {
+                return Err(PlanError::LimitAboveMaximum {
+                    kind,
+                    requested: u64::try_from(requested).unwrap_or(u64::MAX),
+                    maximum: u64::try_from(maximum).unwrap_or(u64::MAX),
+                });
+            }
+        }
+        Ok(())
+    }
+}
 impl Default for PlanLimits {
     fn default() -> Self {
-        Self {
-            max_nodes: 65_536,
-            max_layers: 65_536,
-            max_depth: 64,
+        Self::MAXIMUM
+    }
+}
+/// Which [`PlanLimits`] field a [`PlanError::LimitAboveMaximum`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlanLimitKind {
+    /// [`PlanLimits::max_nodes`].
+    Nodes,
+    /// [`PlanLimits::max_layers`].
+    Layers,
+    /// [`PlanLimits::max_depth`].
+    Depth,
+}
+impl PlanLimitKind {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Nodes => "max_nodes",
+            Self::Layers => "max_layers",
+            Self::Depth => "max_depth",
         }
     }
 }
@@ -335,6 +399,13 @@ pub enum PlanError {
         node: u32,
         feature: crate::effect_math::EffectFeature,
     },
+    /// A [`PlanLimits`] field is above its hard maximum ([`PlanLimits::MAXIMUM`]): limits can only
+    /// tighten. Not a defect of the plan: the caller's limits are refused before the plan is read.
+    LimitAboveMaximum {
+        kind: PlanLimitKind,
+        requested: u64,
+        maximum: u64,
+    },
 }
 impl PlanError {
     pub const fn code(self) -> &'static str {
@@ -369,6 +440,7 @@ impl PlanError {
             Self::EffectParameter { .. } => "plan_effect_parameter",
             Self::EffectLimit { .. } => "plan_effect_limit",
             Self::EffectUnsupported { .. } => "plan_effect_unsupported",
+            Self::LimitAboveMaximum { .. } => "plan_limit_above_maximum",
         }
     }
 }
@@ -384,9 +456,28 @@ fn rect_ok(r: Rect, node: u32) -> Result<(), PlanError> {
 }
 
 impl<V> RenderPlan<V> {
-    /// Structural validation shared by every backend. Returns the distinct operators in first-use
-    /// order. Unspecified modes pass here and are refused by [`admit`] as Unsupported.
+    /// Validation shared by every backend, in two parts that read different node sets.
+    ///
+    /// Structure is checked over EVERY node, reachable or not: the limits, root and input indexes
+    /// (a forward reference is also what makes a cycle impossible), rects, finite and unit ranges,
+    /// mode applicability and the clipping-run rules. A malformed node is a defect of the plan
+    /// whether or not a layer reaches it.
+    ///
+    /// Capability is collected over the nodes REACHABLE from the root only: the returned operators,
+    /// distinct and in first-use order (node index order), are what a backend has to support to
+    /// execute the plan. Both backends skip a node no layer reaches before they look at it
+    /// (render-cpu and render-gpu `prepare`: `reach`), and every admission predicate reads the same
+    /// set ([`RenderPlan::has_pass_through_mask`] and its siblings), so an unreachable node that
+    /// uses an operator a backend refuses admits, while the same node reached from the root is
+    /// refused with the same key (tests `tests/plan_reachability.rs`
+    /// `unreachable_unsupported_operator_admits_reachable_one_is_refused`,
+    /// `structure_stays_checked_on_unreachable_nodes`). Unspecified modes pass here and are refused
+    /// by [`admit`] as Unsupported.
+    ///
+    /// `limits` can only tighten the budgets: a field above [`PlanLimits::MAXIMUM`] is refused as
+    /// [`PlanError::LimitAboveMaximum`] before the plan is read.
     pub fn validate(&self, limits: &PlanLimits) -> Result<Vec<Operator>, PlanError> {
+        limits.within_maximum()?;
         if self.nodes.is_empty() {
             return Err(PlanError::Empty);
         }
@@ -397,16 +488,21 @@ impl<V> RenderPlan<V> {
             return Err(PlanError::RootOutOfRange);
         }
         rect_ok(self.target.extent, self.root.0)?;
-        let mut ops: Vec<Operator> = Vec::new();
-        let mut add = |op: Operator| {
-            if !ops.contains(&op) {
-                ops.push(op);
-            }
-        };
+        // Operators each node uses, in node order. Every check below runs for every node; whether
+        // an operator counts is decided once, after the structure passed, from the reachable set
+        // (so an over-budget plan is refused before the traversal, and the candidates are bounded
+        // by the layer budget already checked).
+        let mut used: Vec<(usize, Operator)> = Vec::new();
         let mut depth = vec![1usize; self.nodes.len()];
         let mut layers = 0usize;
         for (i, node) in self.nodes.iter().enumerate() {
             let n = i as u32;
+            let first = used.len();
+            let mut add = |op: Operator| {
+                if !used[first..].contains(&(i, op)) {
+                    used.push((i, op));
+                }
+            };
             match node {
                 PlanNode::Tile(t) => {
                     rect_ok(t.placement, n)?;
@@ -522,6 +618,14 @@ impl<V> RenderPlan<V> {
                 }
             }
         }
+        // Capability: only the operators of nodes the root reaches, distinct, in node order.
+        let reachable = self.reachable_nodes();
+        let mut ops: Vec<Operator> = Vec::new();
+        for (i, op) in used {
+            if reachable.get(i).copied().unwrap_or(false) && !ops.contains(&op) {
+                ops.push(op);
+            }
+        }
         Ok(ops)
     }
 }
@@ -554,8 +658,9 @@ impl<V> RenderPlan<V> {
     /// `flags[n]`: node `n` is reachable from the root through group layer inputs. This is the set
     /// both backends execute: every other node is skipped before its source is verified and before
     /// its layer checks (render-cpu `prepare`, render-gpu `prepare`: `reach`), so a rule that a
-    /// backend enforces on a node must be decided here on the same set. An index outside the plan
-    /// is ignored (`validate` refuses it), so this never panics on an unvalidated plan.
+    /// backend enforces on a node must be decided here on the same set (the operator collection of
+    /// [`RenderPlan::validate`] included). An index outside the plan is ignored (`validate` refuses
+    /// it), so this never panics on an unvalidated plan.
     fn reachable_nodes(&self) -> Vec<bool> {
         let mut flags = vec![false; self.nodes.len()];
         let mut pending = vec![self.root.0 as usize];
@@ -859,13 +964,37 @@ pub trait RenderBackend<V = NoVector>: Send + Sync {
 /// Last, the plan-level parity rules of [`admit_plan_rules`] run (a mask on a pass-through layer,
 /// the premultiplied alpha capability, the leaf-root Normal class), so a refusal that existed
 /// before them keeps its key. Returns the ledger for the receipt.
+///
+/// Validates with the default (maximum) [`PlanLimits`]; a host that wants tighter budgets calls
+/// [`admit_with_limits`], which is this function with the caller's limits.
 pub fn admit<V>(
     plan: &RenderPlan<V>,
     backend: &(impl RenderBackend<V> + ?Sized),
     request: &ExecuteRequest,
     cancel: &CancellationToken,
 ) -> Result<ExactnessLedger, BackendError> {
-    let mut ledger = admit_core(plan, backend, request, cancel)?;
+    admit_with_limits(plan, &PlanLimits::default(), backend, request, cancel)
+}
+
+/// [`admit`] with caller-supplied [`PlanLimits`]: every step and refusal key is the same, but
+/// [`RenderPlan::validate`] enforces `limits` instead of the maxima, so a host can refuse a plan
+/// that the defaults admit (more nodes, more layers or a deeper nesting than it will render):
+/// `BackendError::InvalidPlan(PlanError::BudgetExceeded)` for nodes and layers,
+/// `PlanError::TooDeep` for depth, before any source lookup or sink call. Limits can only tighten:
+/// a field above [`PlanLimits::MAXIMUM`] is refused as
+/// `BackendError::InvalidPlan(PlanError::LimitAboveMaximum)`, after the cancel and stale-revision
+/// checks and before the plan is read, never clamped (test `tests/plan_limits.rs`
+/// `tightened_limits_refuse_what_the_defaults_admit` and
+/// `loosening_past_the_maxima_is_a_typed_error_everywhere`). `PlanLimits::default()` gives exactly
+/// [`admit`] (test `defaults_are_the_maxima_and_unchanged`).
+pub fn admit_with_limits<V>(
+    plan: &RenderPlan<V>,
+    limits: &PlanLimits,
+    backend: &(impl RenderBackend<V> + ?Sized),
+    request: &ExecuteRequest,
+    cancel: &CancellationToken,
+) -> Result<ExactnessLedger, BackendError> {
+    let mut ledger = admit_core(plan, limits, backend, request, cancel)?;
     if plan.has_mask_density() {
         return Err(BackendError::Unsupported {
             operator: MASK_DENSITY_OPERATOR,
@@ -966,6 +1095,7 @@ impl<V> RenderPlan<V> {
 /// [`admit`] without the v1-only mask-density refusal (shared with [`admit_extended`]).
 pub(crate) fn admit_core<V, B: RenderBackend<V> + ?Sized>(
     plan: &RenderPlan<V>,
+    limits: &PlanLimits,
     backend: &B,
     request: &ExecuteRequest,
     cancel: &CancellationToken,
@@ -977,9 +1107,7 @@ pub(crate) fn admit_core<V, B: RenderBackend<V> + ?Sized>(
             found: plan.revision,
         });
     }
-    let operators = plan
-        .validate(&PlanLimits::default())
-        .map_err(BackendError::InvalidPlan)?;
+    let operators = plan.validate(limits).map_err(BackendError::InvalidPlan)?;
     if operators.contains(&Operator::Mask(MaskFormat::BaseAlpha)) && !backend.supports_clip_to_base()
     {
         return Err(BackendError::Unsupported {
@@ -1013,7 +1141,7 @@ pub(crate) fn admit_core<V, B: RenderBackend<V> + ?Sized>(
     Ok(ledger)
 }
 
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference, no pass-through base; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pass_through_fill":"a pass-through layer with fill_opacity < 1 in a group reachable from the root is intrinsically unsupported: admit refuses it for every backend as group_pass_through_fill_opacity (validate no longer rates it fill_opacity; the backends skip unreachable nodes, so an unreachable one is not counted; tests plan_extensions pass_through_fill_is_refused_uniformly_by_admit, admit_parity unreachable_pass_through_fill_is_not_counted_like_the_backends)","mask_density":"v1 admit refuses a coverage mask with density < 1 in a group reachable from the root as mask_density for every backend; admit_extended admits it as ExtOperator::MaskDensity when the backend supports it; an unreachable group is not counted (tests plan_extensions mask_density_is_refused_by_v1_admit_and_admitted_through_the_envelope, admit_parity unreachable_mask_density_is_not_counted_like_the_backends)","sample_range":"a Solid colour channel outside [0,1] on a node reachable from the root is refused by shared admission as sample_range_outside_unit (no HDR operator class yet; an unreachable Solid is never read by a backend and is not counted; tests plan_extensions solid_outside_unit_is_refused_by_shared_admission, admit_parity unreachable_solid_outside_unit_is_not_counted_like_the_backends)","blend_if_clip":"no public source defines Blend-If on a clip base or on a clipped layer, so a non-identity Blend-If there is intrinsically unsupported: admit_extended refuses it for every backend as blend_if_clip_base | blend_if_clipped_layer (ExtOperator::BlendIfClipBase | BlendIfClippedLayer, class unsupported even for a backend claiming every operator Exact); identity ranges and Blend-If on unclipped layers are unchanged (test blend_if_clip clip_roles_refuse_blend_if_uniformly_for_every_backend)","effects_ops":"effects together with a non-identity Blend-If on one layer have no public composition rule, so admit_extended refuses the layer for every backend as effects_with_blend_if (ExtOperator::EffectsWithBlendIf, intrinsically unsupported even for a backend claiming every operator Exact; reported instead of blend_if); a layer with effects whose content holds another layer with effects is reported as effects_nested (ExtOperator::EffectsNested, class approximate like the effects), which each backend declares through extension_exactness and admission refuses for a backend reporting it unsupported (tests/effects_ops.rs)","admission_parity":"plan-level rules run last in admit and admit_extended (admit_plan_rules), so earlier refusals keep their keys: a coverage mask on a pass-through layer of a group reachable from the root is intrinsically unsupported for every backend as mask_on_pass_through (no group result to weigh; the backends skip unreachable nodes, so an unreachable one is not counted; tests/admit_parity.rs pass_through_mask_is_refused_for_every_backend, unreachable_nodes_are_not_counted_like_the_backends); a premultiplied alpha convention at the target or at a tile input reachable from the root is the declarable ExtOperator::AlphaPremultiplied (key alpha_premultiplied, intrinsic approximate, undeclared = unsupported; tests/admit_parity.rs premultiplied_alpha_is_a_declared_capability, unreachable_nodes_are_not_counted_like_the_backends); a leaf root is checked against the backend class of Blend(Normal) at admission (ledger unchanged; tests/admit_parity.rs leaf_root_normal_class_is_decided_at_admission)","extensions":"PlanExtensions envelope next to the unchanged v1 plan (v1 types are literal-built/exhaustively matched by dependents): per (group, layer) adjustment layer (AdjustmentOp on a transparent Solid placeholder; colour lerp(Cb, B(Cb, f(Cb)), k), alpha kept), Blend-If entries (coverage_math), mask feather px, knockout (anything but none refused); ExtOperator classes; admit_extended; RenderBackend::extension_exactness (default unsupported) and execute_extended (default: empty envelope = execute, else refuse); digest_with","effects":"LayerExtension.effects: Vec<effect_math::EffectOp> (drop shadow and outer glow behind the content; colour overlay, solid stroke, inner shadow and inner glow over it; list order within each placement; Approximate, Photoshop parity NOT_PROVEN, D5 cases 12-17); glow gradient, glow range other than 100 %, glow jitter and the Precise glow technique are refused as glow_gradient|glow_range|glow_jitter|glow_technique_precise (tests/effects_wave2.rs glow_refusals_envelope_admission_and_budget); refused on adjustment, pass-through and clipping-run layers and above the size/count limits (tests/effects.rs effect_limits_validation_and_budget); backends without support are refused as the effect key before any sink call, and an effect blend mode the backend refuses is refused as that mode (tests/effects.rs effect_without_backend_support_is_refused_before_the_sink)","pending":["STU-CMP-020 members without discriminant","Blend-If on a clip base or a clipped layer (refused until D5 cases 18-23 define it)","STU-CMP-020a stencil/silhouette node kinds","knockout shallow/deep, the other layer effects (satin, gradient/pattern overlay, bevel, gradient glows), mattes, time","clipped layer with its own mask","backend implementations of the envelope operators"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call; admit_with_limits and admit_extended_with_limits take caller PlanLimits (admit and admit_extended use the defaults)","validate":"two parts: structure (limits, indexes, forward references, rects, ranges, mode applicability, clipping-run rules) is checked over every node, reachable or not; the operators a backend must support are collected over the nodes reachable from the root only, like the admission predicates and both backends, so an unreachable node with an operator a backend refuses admits and the same node reached from the root is refused with the same key (tests plan_reachability unreachable_unsupported_operator_admits_reachable_one_is_refused, structure_stays_checked_on_unreachable_nodes)","plan_limits":"PlanLimits{max_nodes, max_layers, max_depth}; PlanLimits::MAXIMUM (65536, 65536, 64) is Default and what admit uses; a caller may only tighten: admit_with_limits and admit_extended_with_limits refuse a plan above the tightened limit as plan_budget_exceeded (nodes, layers) or plan_too_deep (depth) before any sink call, and a limit above MAXIMUM is refused as plan_limit_above_maximum (PlanError::LimitAboveMaximum, never clamped) by admit_with_limits, admit_extended_with_limits and RenderPlan::validate; zero tightens; the envelope budgets (effects per layer and per plan, effect size) are fixed constants outside PlanLimits (tests plan_limits tightened_limits_refuse_what_the_defaults_admit, loosening_past_the_maxima_is_a_typed_error_everywhere, defaults_are_the_maxima_and_unchanged)","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference, no pass-through base; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pass_through_fill":"a pass-through layer with fill_opacity < 1 in a group reachable from the root is intrinsically unsupported: admit refuses it for every backend as group_pass_through_fill_opacity (validate no longer rates it fill_opacity; the backends skip unreachable nodes, so an unreachable one is not counted; tests plan_extensions pass_through_fill_is_refused_uniformly_by_admit, admit_parity unreachable_pass_through_fill_is_not_counted_like_the_backends)","mask_density":"v1 admit refuses a coverage mask with density < 1 in a group reachable from the root as mask_density for every backend; admit_extended admits it as ExtOperator::MaskDensity when the backend supports it; an unreachable group is not counted (tests plan_extensions mask_density_is_refused_by_v1_admit_and_admitted_through_the_envelope, admit_parity unreachable_mask_density_is_not_counted_like_the_backends)","sample_range":"a Solid colour channel outside [0,1] on a node reachable from the root is refused by shared admission as sample_range_outside_unit (no HDR operator class yet; an unreachable Solid is never read by a backend and is not counted; tests plan_extensions solid_outside_unit_is_refused_by_shared_admission, admit_parity unreachable_solid_outside_unit_is_not_counted_like_the_backends)","blend_if_clip":"no public source defines Blend-If on a clip base or on a clipped layer, so a non-identity Blend-If there is intrinsically unsupported: admit_extended refuses it for every backend as blend_if_clip_base | blend_if_clipped_layer (ExtOperator::BlendIfClipBase | BlendIfClippedLayer, class unsupported even for a backend claiming every operator Exact); identity ranges and Blend-If on unclipped layers are unchanged (test blend_if_clip clip_roles_refuse_blend_if_uniformly_for_every_backend)","effects_ops":"effects together with a non-identity Blend-If on one layer have no public composition rule, so admit_extended refuses the layer for every backend as effects_with_blend_if (ExtOperator::EffectsWithBlendIf, intrinsically unsupported even for a backend claiming every operator Exact; reported instead of blend_if); a layer with effects whose content holds another layer with effects is reported as effects_nested (ExtOperator::EffectsNested, class approximate like the effects), which each backend declares through extension_exactness and admission refuses for a backend reporting it unsupported (tests/effects_ops.rs)","admission_parity":"plan-level rules run last in admit and admit_extended (admit_plan_rules), so earlier refusals keep their keys: a coverage mask on a pass-through layer of a group reachable from the root is intrinsically unsupported for every backend as mask_on_pass_through (no group result to weigh; the backends skip unreachable nodes, so an unreachable one is not counted; tests/admit_parity.rs pass_through_mask_is_refused_for_every_backend, unreachable_nodes_are_not_counted_like_the_backends); a premultiplied alpha convention at the target or at a tile input reachable from the root is the declarable ExtOperator::AlphaPremultiplied (key alpha_premultiplied, intrinsic approximate, undeclared = unsupported; tests/admit_parity.rs premultiplied_alpha_is_a_declared_capability, unreachable_nodes_are_not_counted_like_the_backends); a leaf root is checked against the backend class of Blend(Normal) at admission (ledger unchanged; tests/admit_parity.rs leaf_root_normal_class_is_decided_at_admission)","extensions":"PlanExtensions envelope next to the unchanged v1 plan (v1 types are literal-built/exhaustively matched by dependents): per (group, layer) adjustment layer (AdjustmentOp on a transparent Solid placeholder; colour lerp(Cb, B(Cb, f(Cb)), k), alpha kept), Blend-If entries (coverage_math), mask feather px, knockout (anything but none refused); ExtOperator classes; admit_extended; RenderBackend::extension_exactness (default unsupported) and execute_extended (default: empty envelope = execute, else refuse); digest_with","effects":"LayerExtension.effects: Vec<effect_math::EffectOp> (drop shadow and outer glow behind the content; colour overlay, solid stroke, inner shadow and inner glow over it; list order within each placement; Approximate, Photoshop parity NOT_PROVEN, D5 cases 12-17); glow gradient, glow range other than 100 %, glow jitter and the Precise glow technique are refused as glow_gradient|glow_range|glow_jitter|glow_technique_precise (tests/effects_wave2.rs glow_refusals_envelope_admission_and_budget); refused on adjustment, pass-through and clipping-run layers and above the size/count limits (tests/effects.rs effect_limits_validation_and_budget); backends without support are refused as the effect key before any sink call, and an effect blend mode the backend refuses is refused as that mode (tests/effects.rs effect_without_backend_support_is_refused_before_the_sink)","pending":["STU-CMP-020 members without discriminant","Blend-If on a clip base or a clipped layer (refused until D5 cases 18-23 define it)","STU-CMP-020a stencil/silhouette node kinds","knockout shallow/deep, the other layer effects (satin, gradient/pattern overlay, bevel, gradient glows), mattes, time","clipped layer with its own mask","backend implementations of the envelope operators"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;
 
 #[cfg(test)]
 mod admission_decisions {

@@ -9,7 +9,8 @@
 //! [`RenderBackend::extension_exactness`] (default: nothing supported).
 use super::{
     Applicability, BackendError, ClipRole, ExactnessLedger, ExecuteRequest, MaskFormat, Operator,
-    PlanError, PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core, admit_plan_rules,
+    PlanError, PlanLimits, PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core,
+    admit_plan_rules,
 };
 use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
 use crate::blend_math::{Exactness, StudioBlendMode};
@@ -454,6 +455,9 @@ impl PlanExtensions {
 /// the feature; other envelope defects map to `BackendError::InvalidPlan`. The plan-level parity
 /// rules of [`super::admit`] (mask on a pass-through layer, premultiplied alpha, leaf-root Normal
 /// class) run last here too.
+///
+/// Validates the plan with the default (maximum) [`PlanLimits`]; [`admit_extended_with_limits`] is
+/// this function with the caller's (tighter) limits.
 pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
     plan: &RenderPlan<V>,
     extensions: &PlanExtensions,
@@ -461,7 +465,32 @@ pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
     request: &ExecuteRequest,
     cancel: &CancellationToken,
 ) -> Result<ExactnessLedger, BackendError> {
-    let mut ledger = admit_core(plan, backend, request, cancel)?;
+    admit_extended_with_limits(
+        plan,
+        extensions,
+        &PlanLimits::default(),
+        backend,
+        request,
+        cancel,
+    )
+}
+
+/// [`admit_extended`] with caller-supplied [`PlanLimits`], on the same terms as
+/// [`admit_with_limits`]: the plan is validated with `limits` (tighter budgets refuse a plan the
+/// defaults admit, a field above [`PlanLimits::MAXIMUM`] is refused as
+/// `BackendError::InvalidPlan(PlanError::LimitAboveMaximum)` before the plan or the envelope is
+/// read), every later step and refusal key is unchanged. The envelope's own budgets
+/// (`MAX_EFFECTS_PER_LAYER`, `MAX_EFFECTS_PER_PLAN`, effect sizes) are fixed constants and are not
+/// part of `PlanLimits` (tests `tests/plan_limits.rs`).
+pub fn admit_extended_with_limits<V, B: RenderBackend<V> + ?Sized>(
+    plan: &RenderPlan<V>,
+    extensions: &PlanExtensions,
+    limits: &PlanLimits,
+    backend: &B,
+    request: &ExecuteRequest,
+    cancel: &CancellationToken,
+) -> Result<ExactnessLedger, BackendError> {
+    let mut ledger = admit_core(plan, limits, backend, request, cancel)?;
     let operators = extensions.validate(plan).map_err(|e| match e {
         PlanError::KnockoutUnsupported { depth, .. } => BackendError::Unsupported {
             operator: depth.key(),
