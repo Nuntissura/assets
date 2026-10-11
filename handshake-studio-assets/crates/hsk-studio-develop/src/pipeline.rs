@@ -1,7 +1,7 @@
 //! Decoded-CFA source plane, normalisation, bilinear reflect demosaic and the develop stages
 //! (STU-CON-043..045). Scalar oracle only: written products, no FMA, checked arithmetic.
 use crate::DevelopError;
-use crate::convert::ProfileConverter;
+use crate::convert::{ConversionStats, ProfileConverter};
 use crate::recipe::{
     DEMOSAIC_ALGORITHM, DevelopRecipe, ENGINE_VERSION, MATH_TOKEN, PROCESS_VERSION,
     PreparedRecipe,
@@ -531,7 +531,7 @@ pub struct DevelopedTile {
     pub coverage: Vec<u8>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DevelopReceipt {
     pub source_sha256: [u8; 32],
     pub source_revision: u64,
@@ -544,10 +544,13 @@ pub struct DevelopReceipt {
     /// Actual route; never claims SIMD.
     pub route: &'static str,
     /// "identity_uninspected" (no converter, profiles equal), "identity_inspected" (converter
-    /// inspected both, equal) or "prism_admitted" (converted through the admitted Prism route).
+    /// inspected both, equal) or "prism_admitted_wide" (both profiles inspected through the
+    /// admitted Prism route, pixels converted by Prism's wide engine).
     pub profile_route: &'static str,
-    /// Number of converter calls (Prism transforms of at most 64 pixels each).
+    /// Number of converter requests (wide Prism transforms of at most `WIDE_CHUNK_PIXELS`).
     pub profile_calls: u32,
+    /// Plan-cache use and destination clip report of the converter (default when none ran).
+    pub profile_stats: ConversionStats,
     pub limits: &'static str,
     pub source_bounds: (u32, u32, u32, u32),
     pub output: Rect,
@@ -648,7 +651,7 @@ pub fn develop(
     develop_with(request, None, cancel, sink)
 }
 
-/// [`develop`] with an optional working -> output profile converter (Prism admitted route).
+/// [`develop`] with an optional working -> output profile converter (admitted inspection, wide Prism transform).
 /// A recipe whose working and output profiles differ requires a converter whose bindings match
 /// the recipe exactly; with a converter, both profiles are inspected (admitted, linear-light)
 /// before any pixel is computed, and identical profiles skip the transform only after that.
@@ -678,7 +681,7 @@ pub fn develop_with(
             }
             c.inspect(cancel)?;
             if prepared.profile_transform {
-                "prism_admitted"
+                "prism_admitted_wide"
             } else {
                 "identity_inspected"
             }
@@ -808,6 +811,7 @@ pub fn develop_with(
         route: "scalar",
         profile_route,
         profile_calls: converter.as_deref().map_or(0, |c| c.calls()),
+        profile_stats: converter.as_deref().map_or_else(ConversionStats::default, |c| c.stats()),
         limits: limits.name(),
         source_bounds: (x0, y0, x1, y1),
         output,
