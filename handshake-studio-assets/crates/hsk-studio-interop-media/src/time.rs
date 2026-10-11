@@ -1,12 +1,15 @@
 //! Interchange time adapters: the only place rational/decimal/timecode time becomes ticks
 //! (STU-VID-012/013/013a). Stored authority stays integer ticks at 254016000000/s.
 //!
+//! Rational-to-tick and fps arithmetic is Accord's (`Timescale`, `FrameRate::from_fps` /
+//! `fps_fraction`); this module keeps the interchange spellings, loss reporting and typed errors.
+//!
 //! NOTE: the timecode label arithmetic here (non-drop and drop-frame) deliberately mirrors
-//! `hsk-studio-pulse`, which owns time. `pulse` is not in this crate's allowed dependency list
-//! (root `workspace.metadata.studio.dependencies.hsk-studio-interop-media`), so the minimal copy
-//! lives here until the lead adds that edge; then these functions collapse onto pulse.
+//! `hsk-studio-pulse`, which owns time. `pulse` is not yet in this crate's dependencies (root
+//! `workspace.metadata.studio.dependencies.hsk-studio-interop-media`), so the minimal copy
+//! lives here until that edge is added; then these functions collapse onto pulse.
 use crate::error::{ErrorKind, InteropError, Result};
-use hsk_studio_accord::{FrameRate, TICKS_PER_SECOND, Ticks};
+use hsk_studio_accord::{FrameRate, Rounding, Ticks, Timescale};
 
 fn fail<T>(kind: ErrorKind) -> Result<T> {
     Err(InteropError::new(kind))
@@ -59,17 +62,7 @@ pub fn frame_rate_from_fraction(num: u64, den: u64) -> Result<FrameRate> {
     if num == 0 || den == 0 {
         return fail(ErrorKind::InvalidFrameRate);
     }
-    let scaled = u128::from(TICKS_PER_SECOND) * u128::from(den);
-    if !scaled.is_multiple_of(u128::from(num)) {
-        return fail(ErrorKind::UnsupportedFrameRate);
-    }
-    let ticks_per_frame = u64::try_from(scaled / u128::from(num))
-        .map_err(|_| InteropError::new(ErrorKind::UnsupportedFrameRate))?;
-    let (rate, exactness) = frame_rate_from_ticks(ticks_per_frame)?;
-    if exactness != Exactness::Exact {
-        return fail(ErrorKind::UnsupportedFrameRate);
-    }
-    Ok(rate)
+    Ok(FrameRate::from_fps(num, den)?)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,33 +105,27 @@ pub fn parse_frame_rate(text: &str) -> Result<(FrameRate, RateSpelling)> {
 
 /// Reduced frames per second as `(numerator, denominator)`, e.g. 29.97 -> (30000, 1001).
 pub fn fps_fraction(rate: FrameRate) -> (u64, u64) {
-    reduce(TICKS_PER_SECOND, rate.ticks_per_frame())
+    rate.fps_fraction()
 }
 
 /// `value` units at `rate_num/rate_den` units per second to ticks. Exact when the division is
-/// whole; otherwise rounded half-away-from-zero and reported as `Approximate`.
+/// whole; otherwise rounded to nearest (identical to half-away-from-zero for the non-negative
+/// values accepted here) and reported as `Approximate`.
 pub fn rational_to_ticks(value: i64, rate_num: u32, rate_den: u32) -> Result<(Ticks, Exactness)> {
     if rate_num == 0 || rate_den == 0 {
         return fail(ErrorKind::InvalidRational);
     }
-    let value = u128::try_from(value).map_err(|_| InteropError::new(ErrorKind::NegativeTime))?;
-    let scaled = value
-        .checked_mul(u128::from(TICKS_PER_SECOND))
-        .and_then(|v| v.checked_mul(u128::from(rate_den)))
-        .ok_or(InteropError::new(ErrorKind::TimecodeOverflow))?;
-    let num = u128::from(rate_num);
-    let (quotient, remainder) = (scaled / num, scaled % num);
-    let (rounded, exactness) = if remainder == 0 {
-        (quotient, Exactness::Exact)
-    } else {
-        (
-            quotient + u128::from(remainder * 2 >= num),
-            Exactness::Approximate(RoundingRule::HalfAwayFromZero),
-        )
-    };
-    let ticks =
-        u64::try_from(rounded).map_err(|_| InteropError::new(ErrorKind::TimecodeOverflow))?;
-    Ok((Ticks::new(ticks), exactness))
+    let value = u64::try_from(value).map_err(|_| InteropError::new(ErrorKind::NegativeTime))?;
+    let converted = Timescale::rational(u64::from(rate_num), u64::from(rate_den))?
+        .ticks_from_units(value, Rounding::NearestHalfUp)?;
+    Ok((
+        converted.value,
+        if converted.exact {
+            Exactness::Exact
+        } else {
+            Exactness::Approximate(RoundingRule::HalfAwayFromZero)
+        },
+    ))
 }
 
 /// `(nominal fps, NTSC 1001 rate)`; `None` = no integer timecode base (12.5 fps).
