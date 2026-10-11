@@ -7,11 +7,17 @@
 //! borrowed values; results are proposals and typed refusals, never mutations of the inputs.
 #![forbid(unsafe_code)]
 
+mod auto_layout;
 mod constraints;
 mod folio_bridge;
 mod instance_resolution;
 mod prototype;
 
+pub use auto_layout::{
+    AlignContent, AutoLayout, AutoLayoutResult, AxisSizing, ChildAlign, ChildSizing, CounterAlign,
+    LayoutLimits, LayoutMode, LayoutNode, PlacedBox, Placement, Positioning, PrimaryAlign,
+    SizeClamps, WrapMode, solve_auto_layout,
+};
 pub use constraints::{
     ConstraintKind, Constraints, NodeGeometry, PlacedNode, RectPt, SizePt, apply_constraints,
     resize_component,
@@ -80,6 +86,12 @@ pub enum ComponentsError {
         field: String,
     },
     InvalidGeometry,
+    /// Auto-layout input outside its STU-DS-144..149 contract (range, clamp order, id, root FILL).
+    InvalidLayout(String),
+    /// Container AUTO/FIXED, child HUG/FILL/FIXED, `layout_grow` and `layout_align` disagree.
+    InconsistentSizing(String),
+    /// Spec-recognised auto-layout feature this slice refuses (GRID, BASELINE, stroke accounting...).
+    UnsupportedLayout(String),
     /// A prototype destination or start frame is not a frame of the document.
     PrototypeTarget(String),
     UnsupportedPrototype(String),
@@ -109,6 +121,9 @@ impl ComponentsError {
             Self::MissingModeValue { .. } => "missing_mode_value",
             Self::StaleProperty { .. } => "stale_property",
             Self::InvalidGeometry => "invalid_geometry",
+            Self::InvalidLayout(_) => "invalid_layout",
+            Self::InconsistentSizing(_) => "inconsistent_sizing",
+            Self::UnsupportedLayout(_) => "unsupported_layout",
             Self::PrototypeTarget(_) => "prototype_target",
             Self::UnsupportedPrototype(_) => "unsupported_prototype",
             Self::BudgetExceeded => "budget_exceeded",
@@ -119,7 +134,9 @@ impl ComponentsError {
     pub fn failure_code(&self) -> Option<FailureCode> {
         match self {
             Self::Canceled => None,
-            Self::BudgetExceeded | Self::UnsupportedPrototype(_) => Some(FailureCode::Unsupported),
+            Self::BudgetExceeded | Self::UnsupportedPrototype(_) | Self::UnsupportedLayout(_) => {
+                Some(FailureCode::Unsupported)
+            }
             Self::NoSuchComponent(_) | Self::NoSuchVariable(_) | Self::NoSuchCollection(_) => {
                 Some(FailureCode::Unavailable)
             }
@@ -160,4 +177,4 @@ pub fn report<T>(
     )
 }
 
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-COMPONENTS","version":1,"operation":"resolve_instance / propose_overrides / resolve_variable / apply_constraints / resize_component / validate_flow: component definitions and variant sets, instances with property-granular overrides, variables with collections, modes and alias chains, constraint-based resize and a prototype action graph, all as pure values and revision-footprint proposals","operator":{"intent":"See exactly which value an instance field gets and from where, change one property without disturbing others, resize a component and see where children land, and check that prototype clicks lead to real frames","result":"Resolution {component_id, fields[{node_id, field, value, source, reads}]}, OverrideProposal {instance, resolution, write_footprint, read_footprint}, PlacedNode[] in points, FlowReport {reachable_frames, warnings} or a typed refusal","recovery":"alias_cycle/type_mismatch: fix the variable definitions; missing_mode_value: give every collection mode a value; unsupported_property: define the component property first; field_not_overridable: only the STU-DS-115 fields can be overridden; ambiguous_source: remove the duplicate literal/variable binding or duplicate override; stale_property: re-read the instance and re-propose; invalid_geometry: use finite non-negative point sizes and a parent large enough for stretched children; prototype_target: point actions at an existing artboard; canceled: nothing was produced"},"model":{"precedence":"STU-DS-116: local override, then instance component property (else the property default), then the definition literal, then the definition variable binding; exactly one source per field","variants":"instance of a set resolves to default_variant_id; VARIANT-type instance properties re-select the member; completeness and duplicate assignments are refused when the set is registered","variables":"collection modes (min 1), exactly one value per mode, alias chains walked with cycle and type checks, mode chosen per collection (default mode otherwise); a missing mode value is an error, never zero","overrides":"STU-DS-117 shape plus a values map on each record (spec gap: value location is unspecified); never a flattened subtree copy; base definitions are never mutated","constraints":"MIN/CENTER/MAX/STRETCH/SCALE per axis in points, default MIN/MIN; a stretched child that would collapse below zero is refused, not clamped","prototype":"reactions {node_id, trigger|null, actions[]}; NAVIGATE/OVERLAY/SWAP destinations must be artboards of the Folio document; reachability from the start frame; actions after a navigation are warnings","footprints":"proposal footprint = written (node, field) keys plus the definition/variable record keys they read; drift outside it is admissible, drift inside it is stale_property (STU-ARC-011, STU-DS-163)"},"limits":{"max_nodes":4096,"max_fields":65536,"max_alias_depth":32,"max_reactions":4096,"max_actions":16384},"cancel":"CancellationToken is checked at entry, per node and per alias hop","argus":{"inspect":"all result types are plain data","action":"the same call with the same token","capture":"caller captures the result and the Observe frame bytes under a fresh grant"},"diagnostics":"report() emits one Observe terminal outcome; no ids, names or values are serialized by this crate","authority":"Folio has no design-frame, component, instance-record, variable or reaction type: records stay crate-local values and an instance is a Folio layer of kind component_instance referencing SCIN-*; host grants, history and acceptance remain pending"}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-COMPONENTS","version":1,"operation":"resolve_instance / propose_overrides / resolve_variable / apply_constraints / resize_component / validate_flow / solve_auto_layout: component definitions and variant sets, instances with property-granular overrides, variables with collections, modes and alias chains, constraint-based resize and a prototype action graph, all as pure values and revision-footprint proposals","operator":{"intent":"See exactly which value an instance field gets and from where, change one property without disturbing others, resize a component and see where children land, and check that prototype clicks lead to real frames","result":"Resolution {component_id, fields[{node_id, field, value, source, reads}]}, OverrideProposal {instance, resolution, write_footprint, read_footprint}, PlacedNode[] in points, FlowReport {reachable_frames, warnings} or a typed refusal","recovery":"alias_cycle/type_mismatch: fix the variable definitions; missing_mode_value: give every collection mode a value; unsupported_property: define the component property first; field_not_overridable: only the STU-DS-115 fields can be overridden; ambiguous_source: remove the duplicate literal/variable binding or duplicate override; stale_property: re-read the instance and re-propose; invalid_geometry: use finite non-negative point sizes and a parent large enough for stretched children; prototype_target: point actions at an existing artboard; canceled: nothing was produced"},"model":{"precedence":"STU-DS-116: local override, then instance component property (else the property default), then the definition literal, then the definition variable binding; exactly one source per field","variants":"instance of a set resolves to default_variant_id; VARIANT-type instance properties re-select the member; completeness and duplicate assignments are refused when the set is registered","variables":"collection modes (min 1), exactly one value per mode, alias chains walked with cycle and type checks, mode chosen per collection (default mode otherwise); a missing mode value is an error, never zero","overrides":"STU-DS-117 shape plus a values map on each record (spec gap: value location is unspecified); never a flattened subtree copy; base definitions are never mutated","constraints":"MIN/CENTER/MAX/STRETCH/SCALE per axis in points, default MIN/MIN; a stretched child that would collapse below zero is refused, not clamped","auto_layout":"STU-DS-144..149 subset in f64 points: horizontal/vertical flow, wrap, gaps (negative legal), padding, primary/counter alignment, SPACE_BETWEEN, fixed/hug/fill with min/max clamps and equal-share grow, absolute children placed by constraints, nesting; container AUTO/FIXED and child HUG/FILL/layout_grow/layout_align must agree (inconsistent_sizing); GRID, BASELINE, strokes_included_in_layout, hug with wrap or space-between are refused as unsupported_layout; taffy not adopted (f32/negative-gap behaviour UNVERIFIED)","prototype":"reactions {node_id, trigger|null, actions[]}; NAVIGATE/OVERLAY/SWAP destinations must be artboards of the Folio document; reachability from the start frame; actions after a navigation are warnings","footprints":"proposal footprint = written (node, field) keys plus the definition/variable record keys they read; drift outside it is admissible, drift inside it is stale_property (STU-ARC-011, STU-DS-163)"},"limits":{"max_nodes":4096,"max_fields":65536,"max_alias_depth":32,"max_layout_nodes":4096,"max_layout_depth":32,"max_reactions":4096,"max_actions":16384},"cancel":"CancellationToken is checked at entry, per node and per alias hop","argus":{"inspect":"all result types are plain data","action":"the same call with the same token","capture":"caller captures the result and the Observe frame bytes under a fresh grant"},"diagnostics":"report() emits one Observe terminal outcome; no ids, names or values are serialized by this crate","authority":"Folio has no design-frame, component, instance-record, variable or reaction type: records stay crate-local values and an instance is a Folio layer of kind component_instance referencing SCIN-*; host grants, history and acceptance remain pending"}"#;
