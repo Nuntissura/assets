@@ -350,6 +350,9 @@ fn fidelity_table_refusals_and_receipt() {
             let keys: Vec<_> = receipt.operators.iter().map(|o| o.key).collect();
             assert_eq!(keys, ["multiply", "linear_burn", "screen"]);
         }
+        // The host's validated prism transfer classification maps onto the declared blend space.
+        assert_eq!(BlendSpace::from(hsk_studio_prism::Transfer::LinearLight), BlendSpace::Linear);
+        assert_eq!(BlendSpace::from(hsk_studio_prism::Transfer::Encoded), BlendSpace::Encoded);
         assert_eq!(BlendSpace::parse("linear"), Some(BlendSpace::Linear));
         assert_eq!(BlendSpace::parse("srgb"), None);
     });

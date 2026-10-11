@@ -311,6 +311,7 @@ fn static_closure_no_temporal_provider() {
             "hsk-studio-accord",
             "hsk-studio-folio",
             "hsk-studio-pigment",
+            "hsk-studio-prism",
             "hsk-studio-observe",
             "serde_json",
         ];

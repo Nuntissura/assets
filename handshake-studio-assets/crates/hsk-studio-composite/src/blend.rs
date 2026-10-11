@@ -34,6 +34,17 @@ impl BlendSpace {
     }
 }
 
+/// The host resolves the document's blending-space profile through prism and passes the validated
+/// transfer classification here; composite itself never reads or converts profiles.
+impl From<hsk_studio_prism::Transfer> for BlendSpace {
+    fn from(transfer: hsk_studio_prism::Transfer) -> Self {
+        match transfer {
+            hsk_studio_prism::Transfer::LinearLight => Self::Linear,
+            hsk_studio_prism::Transfer::Encoded => Self::Encoded,
+        }
+    }
+}
+
 /// Fidelity class of one operator, best to worst. "Exact" means the cited published formula
 /// is implemented verbatim; it is NOT a claim of Adobe output parity (see `ModeInfo::reference`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
