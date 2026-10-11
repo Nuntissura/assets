@@ -53,7 +53,9 @@ pub enum MkvCompression {
 pub enum MkvEncodingKind {
     Compression(MkvCompression),
     /// ContentEncodingType 1; `algo` is ContentEncAlgo (5 = AES). Never undone here.
-    Encryption { algo: u64 },
+    Encryption {
+        algo: u64,
+    },
     /// Type 0 without a ContentCompression, or an unknown type/algorithm: not interpretable.
     Malformed,
 }
@@ -177,7 +179,10 @@ impl ContentPlan {
         }
         let mut ordered: Vec<&MkvContentEncoding> = encodings.iter().collect();
         ordered.sort_by_key(|encoding| std::cmp::Reverse(encoding.order));
-        if ordered.windows(2).any(|pair| pair[0].order == pair[1].order) {
+        if ordered
+            .windows(2)
+            .any(|pair| pair[0].order == pair[1].order)
+        {
             return Err(ReelError::Corrupt {
                 what: "content-encoding-order",
             });

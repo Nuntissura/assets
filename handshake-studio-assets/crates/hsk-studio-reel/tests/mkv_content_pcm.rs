@@ -252,11 +252,21 @@ fn matroska_pcm_decodes_bit_exact_against_the_ffmpeg_oracle() {
                 "{}",
                 f.name
             );
-            assert_eq!(track.info.sampling_frequency, f64::from(f.rate), "{}", f.name);
+            assert_eq!(
+                track.info.sampling_frequency,
+                f64::from(f.rate),
+                "{}",
+                f.name
+            );
             let samples = track.index.samples();
             assert_eq!(samples.len(), f.blocks.len(), "{}", f.name);
             for (k, (pts, size, pos)) in f.blocks.iter().enumerate() {
-                assert_eq!(samples[k].offset, pos + SIMPLE_BLOCK_HEADER, "{} {k}", f.name);
+                assert_eq!(
+                    samples[k].offset,
+                    pos + SIMPLE_BLOCK_HEADER,
+                    "{} {k}",
+                    f.name
+                );
                 assert_eq!(
                     (samples[k].pts, samples[k].size),
                     (*pts, *size),
@@ -284,7 +294,12 @@ fn matroska_pcm_decodes_bit_exact_against_the_ffmpeg_oracle() {
             assert_eq!(receipt.codec, f.output, "{}", f.name);
             assert_eq!(receipt.decoder_id, "matroska-pcm");
             assert_eq!(receipt.actual.units, frames, "{}", f.name);
-            assert_eq!(receipt.actual.end_pts, Ticks::new(frames * tps), "{}", f.name);
+            assert_eq!(
+                receipt.actual.end_pts,
+                Ticks::new(frames * tps),
+                "{}",
+                f.name
+            );
             // Payload bytes read plus the index that was built from the same source for this call.
             assert_eq!(
                 receipt.bytes_read,
@@ -297,7 +312,12 @@ fn matroska_pcm_decodes_bit_exact_against_the_ffmpeg_oracle() {
             let mut cursor = 0u64;
             for (k, chunk) in sink.chunks.iter().enumerate() {
                 assert_eq!(chunk.0, ChunkKind::AudioSamples);
-                assert_eq!((chunk.1 as u64, chunk.2), (cursor * tps, cursor), "{} {k}", f.name);
+                assert_eq!(
+                    (chunk.1 as u64, chunk.2),
+                    (cursor * tps, cursor),
+                    "{} {k}",
+                    f.name
+                );
                 cursor += (chunk.4.len() / block) as u64;
             }
 
@@ -306,11 +326,21 @@ fn matroska_pcm_decodes_bit_exact_against_the_ffmpeg_oracle() {
             let part: Vec<u8> = sink.chunks.iter().flat_map(|c| c.4.clone()).collect();
             assert_eq!(part, raw[1000 * block..1100 * block], "{}", f.name);
             assert_eq!(receipt.disposition, Disposition::Exact, "{}", f.name);
-            assert_eq!(receipt.actual.start_pts, Ticks::new(1000 * tps), "{}", f.name);
+            assert_eq!(
+                receipt.actual.start_pts,
+                Ticks::new(1000 * tps),
+                "{}",
+                f.name
+            );
             // A start inside a frame is reported as the containing frame, never silently moved.
             let (receipt, _) = pcm_decode(f, 1000 * tps + 1, 100);
             assert_eq!(receipt.disposition, Disposition::Approximate, "{}", f.name);
-            assert_eq!(receipt.actual.start_pts, Ticks::new(1000 * tps), "{}", f.name);
+            assert_eq!(
+                receipt.actual.start_pts,
+                Ticks::new(1000 * tps),
+                "{}",
+                f.name
+            );
 
             // Beyond the stream: typed, never clamped.
             for (start, count) in [(frames * tps, 1), (0, frames + 1), (u64::MAX / 2, 1)] {
@@ -321,7 +351,12 @@ fn matroska_pcm_decodes_bit_exact_against_the_ffmpeg_oracle() {
                     &mut NeverReached,
                 )
                 .unwrap_err();
-                assert_eq!(err.code(), "MEDIA_OUT_OF_RANGE", "{} {start} {count}", f.name);
+                assert_eq!(
+                    err.code(),
+                    "MEDIA_OUT_OF_RANGE",
+                    "{} {start} {count}",
+                    f.name
+                );
             }
             // A chunk limit smaller than one frame is a limit, not a truncated frame.
             let tiny = Limits {
@@ -370,13 +405,15 @@ fn matroska_pcm_decodes_bit_exact_against_the_ffmpeg_oracle() {
                 &CancellationToken::default(),
             )
             .unwrap();
-        assert_eq!((layout.units, layout.ticks_per_unit, layout.channels), (4800, 5_292_000, 2));
+        assert_eq!(
+            (layout.units, layout.ticks_per_unit, layout.channels),
+            (4800, 5_292_000, 2)
+        );
     });
 }
 
-#[test]
-fn matroska_pcm_hostile_parameters_and_timestamps_refuse_cleanly() {
-    bounded_case("matroska_pcm_hostile", || {
+fn pcm_hostile_parameters_and_timestamps_refuse_cleanly() {
+    {
         let f = &PCM[0];
         let decode = |bytes: &[u8]| {
             run(
@@ -387,11 +424,19 @@ fn matroska_pcm_hostile_parameters_and_timestamps_refuse_cleanly() {
             )
         };
         // Block timestamps are only a consistency check: a 1-unit rounding difference is accepted ...
-        let rounded = patched(f.bytes, &[0x81, 0x00, 0x15, 0x80], &[0x81, 0x00, 0x16, 0x80]);
+        let rounded = patched(
+            f.bytes,
+            &[0x81, 0x00, 0x15, 0x80],
+            &[0x81, 0x00, 0x16, 0x80],
+        );
         assert!(decode(&rounded).is_ok());
         // ... a block that starts far from where the running frame count puts it (dropped audio) is a
         // typed refusal for decoding, while the file still indexes.
-        let gap = patched(f.bytes, &[0x81, 0x00, 0x15, 0x80], &[0x81, 0x00, 0x50, 0x80]);
+        let gap = patched(
+            f.bytes,
+            &[0x81, 0x00, 0x15, 0x80],
+            &[0x81, 0x00, 0x50, 0x80],
+        );
         assert!(index_of(&gap).is_ok());
         assert_eq!(
             decode(&gap).unwrap_err(),
@@ -401,8 +446,16 @@ fn matroska_pcm_hostile_parameters_and_timestamps_refuse_cleanly() {
         );
         // Declared layout the PCM path cannot honour: bit depth 12, channel count 0, sampling rate 0.
         for (pattern, replacement, what) in [
-            (&[0x62u8, 0x64, 0x81, 0x10][..], &[0x62u8, 0x64, 0x81, 0x0C][..], "pcm-bit-depth"),
-            (&[0x9Fu8, 0x81, 0x02][..], &[0x9Fu8, 0x81, 0x00][..], "pcm-channel-count"),
+            (
+                &[0x62u8, 0x64, 0x81, 0x10][..],
+                &[0x62u8, 0x64, 0x81, 0x0C][..],
+                "pcm-bit-depth",
+            ),
+            (
+                &[0x9Fu8, 0x81, 0x02][..],
+                &[0x9Fu8, 0x81, 0x00][..],
+                "pcm-channel-count",
+            ),
         ] {
             let bytes = patched(f.bytes, pattern, replacement);
             assert!(index_of(&bytes).is_ok(), "{what}");
@@ -441,8 +494,13 @@ fn matroska_pcm_hostile_parameters_and_timestamps_refuse_cleanly() {
             &CancellationToken::default(),
         )
         .unwrap_err();
-        assert_eq!(err, ReelError::LimitExceeded { what: "sample-count" });
-    });
+        assert_eq!(
+            err,
+            ReelError::LimitExceeded {
+                what: "sample-count"
+            }
+        );
+    }
 }
 
 const ENC_ZLIB: &[u8] = include_bytes!("fixtures/mkv/enc-zlib.mkv");
@@ -465,7 +523,11 @@ const FRAME_SHA: [&str; 7] = [
 /// Presentation time (ms) of each frame: five blocks, the last one laced with three frames.
 const FRAME_MS: [u64; 7] = [0, 40, 80, 120, 160, 200, 240];
 
-fn packets(bytes: &[u8], start_ms: u64, count: u64) -> Result<(SegmentReceipt, Collect), ReelError> {
+fn packets(
+    bytes: &[u8],
+    start_ms: u64,
+    count: u64,
+) -> Result<(SegmentReceipt, Collect), ReelError> {
     let mut sink = Collect::default();
     let receipt = run(
         bytes,
@@ -482,11 +544,17 @@ fn matroska_content_encodings_are_undone_exactly_like_ffprobe_and_python_zlib() 
         for (name, bytes) in [
             ("zlib", ENC_ZLIB),
             ("header stripping", ENC_STRIP),
-            ("stacked zlib + header stripping, private scope", ENC_STACKED),
+            (
+                "stacked zlib + header stripping, private scope",
+                ENC_STACKED,
+            ),
         ] {
             let index = index_of(bytes).unwrap();
             let track = index.track(1).unwrap();
-            assert!(track.info.content_encoded && track.info.content_refusal.is_none(), "{name}");
+            assert!(
+                track.info.content_encoded && track.info.content_refusal.is_none(),
+                "{name}"
+            );
             assert_eq!(track.index.samples().len(), 7, "{name}");
 
             // All seven frames (the last three share one Xiph-laced block; lacing data is not encoded).
@@ -495,13 +563,25 @@ fn matroska_content_encodings_are_undone_exactly_like_ffprobe_and_python_zlib() 
             for (k, chunk) in sink.chunks.iter().enumerate() {
                 assert_eq!(chunk.4.len(), FRAME_SIZES[k], "{name} frame {k}");
                 assert_eq!(sha(&chunk.4), FRAME_SHA[k], "{name} frame {k}");
-                assert_eq!((chunk.1 as u64, chunk.2), (FRAME_MS[k] * MS, k as u64), "{name} {k}");
+                assert_eq!(
+                    (chunk.1 as u64, chunk.2),
+                    (FRAME_MS[k] * MS, k as u64),
+                    "{name} {k}"
+                );
                 assert!(!chunk.3, "{name} {k}: not pre-roll");
             }
-            assert!(receipt.complete && receipt.disposition == Disposition::Exact, "{name}");
+            assert!(
+                receipt.complete && receipt.disposition == Disposition::Exact,
+                "{name}"
+            );
             // The receipt counts the STORED bytes it read (plus the index built for this call), not the
             // decoded size.
-            let stored: u64 = track.index.samples().iter().map(|s| u64::from(s.size)).sum();
+            let stored: u64 = track
+                .index
+                .samples()
+                .iter()
+                .map(|s| u64::from(s.size))
+                .sum();
             assert_eq!(receipt.bytes_read, stored + index.bytes_read, "{name}");
             let decoded: usize = FRAME_SIZES.iter().sum();
             if name != "header stripping" {
@@ -512,7 +592,11 @@ fn matroska_content_encodings_are_undone_exactly_like_ffprobe_and_python_zlib() 
             let (_, sink) = packets(bytes, 200, 2).unwrap();
             assert_eq!(sink.chunks.len(), 7, "{name}: sync sample 0 .. frame 6");
             for (k, chunk) in sink.chunks.iter().enumerate() {
-                assert_eq!(sha(&chunk.4), FRAME_SHA[k], "{name} random access frame {k}");
+                assert_eq!(
+                    sha(&chunk.4),
+                    FRAME_SHA[k],
+                    "{name} random access frame {k}"
+                );
                 assert_eq!(chunk.3, k < 5, "{name} frame {k} pre-roll flag");
             }
         }
@@ -562,9 +646,8 @@ fn matroska_content_encodings_are_undone_exactly_like_ffprobe_and_python_zlib() 
     });
 }
 
-#[test]
-fn matroska_content_encodings_hostile_inputs_refuse_cleanly() {
-    bounded_case("matroska_content_encodings_hostile", || {
+fn content_encodings_hostile_inputs_refuse_cleanly() {
+    {
         let packets_with = |bytes: &[u8], sink: &mut dyn ChunkSink| {
             run(
                 bytes,
@@ -581,30 +664,72 @@ fn matroska_content_encodings_hostile_inputs_refuse_cleanly() {
         };
         // Encryption (ContentEncodingType 1) is refused with its own typed reason.
         assert_eq!(
-            refused(&patched(ENC_ZLIB, &[0x50, 0x33, 0x81, 0x00], &[0x50, 0x33, 0x81, 0x01])),
+            refused(&patched(
+                ENC_ZLIB,
+                &[0x50, 0x33, 0x81, 0x00],
+                &[0x50, 0x33, 0x81, 0x01]
+            )),
             ReelError::Unsupported {
                 what: "content-encryption"
             }
         );
         // Deprecated algorithms (bzlib 1, lzo1x 2), an unknown algorithm and bad scopes.
         for (algo, want) in [
-            (0x01, ReelError::Unsupported { what: "content-compression-algo" }),
-            (0x02, ReelError::Unsupported { what: "content-compression-algo" }),
-            (0x09, ReelError::Unsupported { what: "content-encoding" }),
+            (
+                0x01,
+                ReelError::Unsupported {
+                    what: "content-compression-algo",
+                },
+            ),
+            (
+                0x02,
+                ReelError::Unsupported {
+                    what: "content-compression-algo",
+                },
+            ),
+            (
+                0x09,
+                ReelError::Unsupported {
+                    what: "content-encoding",
+                },
+            ),
         ] {
             assert_eq!(
-                refused(&patched(ENC_ZLIB, &[0x42, 0x54, 0x81, 0x00], &[0x42, 0x54, 0x81, algo])),
+                refused(&patched(
+                    ENC_ZLIB,
+                    &[0x42, 0x54, 0x81, 0x00],
+                    &[0x42, 0x54, 0x81, algo]
+                )),
                 want,
                 "algo {algo}"
             );
         }
         for (scope, want) in [
-            (0x04, ReelError::Unsupported { what: "content-encoding-scope-next" }),
-            (0x00, ReelError::Corrupt { what: "content-encoding-scope" }),
-            (0x08, ReelError::Corrupt { what: "content-encoding-scope" }),
+            (
+                0x04,
+                ReelError::Unsupported {
+                    what: "content-encoding-scope-next",
+                },
+            ),
+            (
+                0x00,
+                ReelError::Corrupt {
+                    what: "content-encoding-scope",
+                },
+            ),
+            (
+                0x08,
+                ReelError::Corrupt {
+                    what: "content-encoding-scope",
+                },
+            ),
         ] {
             assert_eq!(
-                refused(&patched(ENC_ZLIB, &[0x50, 0x32, 0x81, 0x01], &[0x50, 0x32, 0x81, scope])),
+                refused(&patched(
+                    ENC_ZLIB,
+                    &[0x50, 0x32, 0x81, 0x01],
+                    &[0x50, 0x32, 0x81, scope]
+                )),
                 want,
                 "scope {scope}"
             );
@@ -621,7 +746,9 @@ fn matroska_content_encodings_hostile_inputs_refuse_cleanly() {
             bytes[at] ^= 0xFF;
             assert_eq!(
                 packets_with(&bytes, &mut Collect::default()).unwrap_err(),
-                ReelError::Corrupt { what: "content-zlib" },
+                ReelError::Corrupt {
+                    what: "content-zlib"
+                },
                 "flip at {at}"
             );
         }
@@ -663,7 +790,9 @@ fn matroska_content_encodings_hostile_inputs_refuse_cleanly() {
                 &CancellationToken::default()
             )
             .unwrap_err(),
-            ReelError::LimitExceeded { what: "sample-count" }
+            ReelError::LimitExceeded {
+                what: "sample-count"
+            }
         );
 
         // Every single-byte corruption of both encoded files: a typed result or success, never a panic.
@@ -675,5 +804,15 @@ fn matroska_content_encodings_hostile_inputs_refuse_cleanly() {
                 let _ = packets_with(&hostile, &mut Collect::default());
             }
         }
+    }
+}
+
+/// Hostile inputs of both features (V4-02): declared parameters, aggregate budgets (sample budget,
+/// decoded-size cap), damaged streams and single-byte corruption of whole files.
+#[test]
+fn matroska_pcm_and_content_encoding_hostile_inputs_refuse_cleanly() {
+    bounded_case("matroska_hostile", || {
+        pcm_hostile_parameters_and_timestamps_refuse_cleanly();
+        content_encodings_hostile_inputs_refuse_cleanly();
     });
 }

@@ -20,8 +20,8 @@ mod pcm;
 mod timecode;
 
 pub use fragments::{SegmentIndex, SegmentIndexEntry};
-pub use pcm::{PcmFormat, PcmStream, PcmWindow, pcm_format};
 pub(crate) use pcm::deliver_pcm_stream;
+pub use pcm::{PcmFormat, PcmStream, PcmWindow, pcm_format};
 pub use timecode::{TimecodeDescription, TimecodeStart, read_timecode_start};
 
 pub const ISOBMFF_PROVIDER_ID: &str = "isobmff";

@@ -203,9 +203,7 @@ impl PcmStream {
     }
 
     pub(super) fn approx_bytes(&self) -> usize {
-        self.runs
-            .len()
-            .saturating_mul(std::mem::size_of::<Run>())
+        self.runs.len().saturating_mul(std::mem::size_of::<Run>())
     }
     pub fn chunk_runs(&self) -> usize {
         self.runs.len()
@@ -264,7 +262,10 @@ pub(super) fn try_compact(
         if per_chunk == 0 {
             continue;
         }
-        if consumed.checked_add(per_chunk).is_none_or(|total| total > n) {
+        if consumed
+            .checked_add(per_chunk)
+            .is_none_or(|total| total > n)
+        {
             return Err(ReelError::Corrupt {
                 what: "stsc-exceeds-stsz",
             });
@@ -465,7 +466,11 @@ pub(crate) fn deliver_pcm_stream(
             .first_frame
             .checked_add(cursor)
             .ok_or_else(tick_range)?;
-        while stream.runs.get(run_i).is_some_and(|r| r.end() <= media_frame) {
+        while stream
+            .runs
+            .get(run_i)
+            .is_some_and(|r| r.end() <= media_frame)
+        {
             run_i = run_i.saturating_add(1);
         }
         let run = stream.runs.get(run_i).ok_or(ReelError::Corrupt {

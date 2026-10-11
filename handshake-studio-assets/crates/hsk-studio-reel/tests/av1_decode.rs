@@ -200,7 +200,10 @@ const ORACLE_1080P: [&str; 2] = [
 fn av1_1080p_decodes_at_default_limits_and_a_smaller_limit_still_refuses_it() {
     let (receipt, sink) = decode(MP4_1080P, 0, 2, &Limits::default()).unwrap();
     let video = receipt.video.expect("video format on the receipt");
-    assert_eq!((video.width, video.height, video.bit_depth), (1920, 1080, 8));
+    assert_eq!(
+        (video.width, video.height, video.bit_depth),
+        (1920, 1080, 8)
+    );
     assert_eq!(video.chroma, ChromaFormat::Yuv420);
     assert_eq!(video.frame_bytes(), Some(3_110_400));
     assert!(receipt.complete && receipt.actual.units == 2);

@@ -20,9 +20,7 @@ use crate::isobmff::{
 use crate::mkv_content::{ContentPlan, DecodeSink, parse_content_encodings};
 use crate::mkv_pcm::{build_pcm_stream, pcm_format_of};
 use crate::model::*;
-use crate::video::{
-    VideoCodec, VideoContent, VideoRoute, VideoTrack, decode_video_track_with,
-};
+use crate::video::{VideoCodec, VideoContent, VideoRoute, VideoTrack, decode_video_track_with};
 use hsk_studio_accord::{CancellationToken, Rounding, Ticks, Timescale};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -928,8 +926,8 @@ fn parse_block(
         payload_len.min(LACE_PEEK) as usize,
         "lace-header",
     )?;
-    let count = usize::from(*head_bytes.first().ok_or(corrupt("lace-header-truncated"))?)
-        .saturating_add(1);
+    let count =
+        usize::from(*head_bytes.first().ok_or(corrupt("lace-header-truncated"))?).saturating_add(1);
     let mut p = 1usize;
     let mut sizes: Vec<u64> = Vec::with_capacity(count);
     match lacing {
