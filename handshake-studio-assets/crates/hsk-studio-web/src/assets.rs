@@ -9,8 +9,10 @@
 //!
 //! Values are read the way a browser reads them before they are classified. The document comes from `dom::parse`,
 //! whose tokenizer states and tree-construction context follow the HTML parser (or refuse the document typed), so
-//! every `style` is RAWTEXT exactly where a browser makes it RAWTEXT. Every text the gate interprets is the text the
-//! parser hands on, never the raw span bytes: attribute values are decoded with input-stream preprocessing, the
+//! every `style` is RAWTEXT exactly where a browser makes it RAWTEXT. The texts the gate interprets are the texts the
+//! parser hands on, not the raw span bytes (R9 tests `foreign_style_cdata_is_preprocessed_before_css`,
+//! `text_consumers_read_the_text_a_browser_builds`, `raw_nul_in_url_attributes_reads_like_a_reference_to_it`; the
+//! differential check `style-sheet-text`): attribute values are decoded with input-stream preprocessing, the
 //! attribute-value U+0000 rule and the exact attribute-value character-reference rules (`charref`, complete WHATWG
 //! table); style text is `WebDoc::sheet` (HTML: the RAWTEXT body preprocessed; foreign: text nodes and CDATA sections
 //! under the foreign-content rules, preprocessed, concatenated); style text is then tokenized per CSS Syntax Level 3

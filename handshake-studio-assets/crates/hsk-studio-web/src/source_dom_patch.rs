@@ -505,8 +505,9 @@ pub fn insert_fragment(
 /// well-formed element after parsing. How the text is written follows the destination (13.2.6 dispatcher,
 /// `WebDoc::child_follows_html_rules`): under the HTML rules a raw-text tag takes it verbatim and an HTML `pre`,
 /// `listing` or `textarea` gets one extra LF before a value that starts with LF; in foreign content (an `svg` or `math`
-/// parent that is not an integration point) the new element is a foreign element, so the text is always escaped and no
-/// LF is added (a foreign `textarea` keeps its first LF).
+/// parent that is not an integration point) the new element is a foreign element, so the text is escaped and no LF is
+/// added (a foreign `textarea` keeps its first LF). Proof: `insert_into_foreign_content_follows_the_foreign_rules`,
+/// `edits_write_values_that_read_back_exactly`.
 pub fn insert_element(
     doc: &WebDoc,
     parent: &NodeKey,
