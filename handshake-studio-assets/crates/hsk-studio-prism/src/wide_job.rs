@@ -32,7 +32,7 @@
 use crate::wide::{
     CHUNK_PIXELS, CHUNK_STAGE_BYTES, ClipMethod, ClipReport, ForwardSink, MAX_WIDE_PIXELS, Plan, SourceSpace,
     WIDE_ENGINE_NAME, WIDE_ENGINE_VERSION, WideChunkAccount, WideEngine, WideError, WideFailure,
-    WideProfileDescriptor, WideReceipt, WideSource, canceled, engine_build,
+    WideProfileDescriptor, WideReceipt, WideSource, canceled, canceled_at_chunk, engine_build,
 };
 use crate::{EvaluationOptions, Intent, ProfileInput};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
@@ -376,7 +376,7 @@ impl WideJob<'_> {
             let mut chunks = WideChunkAccount::new(self.out_ch);
             let (chunk_in, chunk_out) = (CHUNK_PIXELS.saturating_mul(self.in_ch), CHUNK_PIXELS.saturating_mul(self.out_ch));
             for (px_chunk, out_chunk) in pixels.chunks(chunk_in).zip(out.chunks_mut(chunk_out)) {
-                canceled(cancel)?;
+                canceled_at_chunk(cancel, chunks.chunks)?;
                 chunks.begin(px_chunk.len().checked_div(self.in_ch).unwrap_or(0));
                 for (px, o) in px_chunk.chunks_exact(self.in_ch).zip(out_chunk.chunks_exact_mut(self.out_ch)) {
                     if let Some(lin) = self.plan.pixel(px, self.lab, o) {
@@ -385,7 +385,7 @@ impl WideJob<'_> {
                 }
                 seal_chunk(out_chunk, &mut stage, &mut hasher)?;
             }
-            canceled(cancel)?;
+            canceled_at_chunk(cancel, chunks.chunks)?;
             Ok(BandRecord {
                 clip,
                 chunks,
@@ -418,7 +418,7 @@ impl WideJob<'_> {
             let mut stage = [0u8; CHUNK_STAGE_BYTES];
             let mut chunks = WideChunkAccount::new(ch);
             for chunk in buffer.chunks_mut(CHUNK_PIXELS.saturating_mul(ch)) {
-                canceled(cancel)?;
+                canceled_at_chunk(cancel, chunks.chunks)?;
                 chunks.begin(chunk.len().checked_div(ch).unwrap_or(0));
                 for px in chunk.chunks_exact_mut(ch) {
                     let mut src = [0.0f32; 4];
@@ -429,7 +429,7 @@ impl WideJob<'_> {
                 }
                 seal_chunk(chunk, &mut stage, &mut hasher)?;
             }
-            canceled(cancel)?;
+            canceled_at_chunk(cancel, chunks.chunks)?;
             Ok(BandRecord {
                 clip,
                 chunks,
@@ -582,3 +582,6 @@ impl WideJob<'_> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

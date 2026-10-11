@@ -3,7 +3,7 @@
 //! SMB-PRISM-ENG-6 R6 remediation: every wide conversion (request or job band) runs in chunks of at most
 //! `ADMITTED_CHUNK_PIXELS` = 64 pixels, each with its own cancellation check, and reports them in
 //! `WideReceipt::chunks` / `WideBandReport::chunks`. This file proves the bound, the accounting, the absence of
-//! allocation inside a band, the chunk-granular cancellation and bit identity with the plain request path.
+//! allocation inside a band, the chunk-granular cancellation (here a pre-canceled token; the mid-band edges are deterministic unit tests in src/wide_job/tests.rs) and bit identity with the plain request path.
 //! The ignored bench prices the literal reading (a caller driving one admitted transform call per 64 pixels).
 mod wide_support;
 use hsk_studio_accord::CancellationToken;
@@ -206,44 +206,27 @@ fn chunk_accounting_is_bounded_deterministic_and_allocation_free() {
     }
 }
 
-/// The cancellation token is read before every chunk: a band canceled from another thread stops on a chunk edge
-/// (the converted prefix is a whole number of chunks) and writes nothing after that.
+/// A token that is already canceled stops a band at its first chunk edge: nothing is written, whatever the band
+/// size, through both conversion entry points. The mid-band cases (a cancel at chunk k leaves exactly k chunks, an
+/// in-place band is converted prefix + untouched rest, a cancel after the last chunk leaves the whole band
+/// converted) are deterministic unit tests in src/wide_job/tests.rs (the token is tripped at an exact chunk edge
+/// by a cfg(test) hook, no timing).
 #[test]
-fn cancellation_is_checked_between_chunks_of_at_most_64_pixels() {
+fn a_canceled_token_stops_a_band_before_its_first_chunk() {
     let ctx = Ctx::new();
     let t = CancellationToken::default();
+    let canceled = CancellationToken::default();
+    canceled.cancel();
     let n = MAX_WIDE_PIXELS;
     let input = device_pixels(3, n, 0x9e37_79b9_7f4a_7c15);
     let mut eng = engine(&ctx);
-    // Reference run: the whole band, timed (input check included), so the cancel can land mid-conversion.
-    let job = eng.prepare_job(&job_request(&ctx, SRGB, P3, WideBands::Sizes(&[n]), Intent::RelativeColorimetric, false), &t).unwrap();
-    let mut reference = vec![f32::NAN; n * 3];
-    let start = Instant::now();
-    assert_eq!(job.convert_band(0, &input, &mut reference, &t).unwrap().chunks, expected(n, 3));
-    let full = start.elapsed();
-    job.finish(&t, &mut Collect(Vec::new())).unwrap();
-    // Canceled run: another thread cancels at half of the full time.
-    let job = eng.prepare_job(&job_request(&ctx, SRGB, P3, WideBands::Sizes(&[n]), Intent::RelativeColorimetric, false), &t).unwrap();
+    let job = eng.prepare_job(&job_request(&ctx, SRGB, P3, WideBands::Sizes(&[n, n]), Intent::RelativeColorimetric, false), &t).unwrap();
     let mut out = vec![f32::NAN; n * 3];
-    let cancel = CancellationToken::default();
-    let started = std::sync::atomic::AtomicBool::new(false);
-    let result = std::thread::scope(|s| {
-        s.spawn(|| {
-            while !started.load(SeqCst) {
-                std::thread::yield_now();
-            }
-            std::thread::sleep(full / 2);
-            cancel.cancel();
-        });
-        started.store(true, SeqCst);
-        job.convert_band(0, &input, &mut out, &cancel)
-    });
-    assert_eq!(result.err(), Some(WideError::Canceled), "the band finished within half of its reference time");
-    let done = out.iter().position(|v| v.is_nan()).map_or(n, |i| i / 3);
-    assert_eq!(done % BOUND, 0, "converted prefix of {done} pixels is not a whole number of {BOUND}-pixel chunks");
-    assert!(out[done * 3..].iter().all(|v| v.is_nan()), "pixels after the cancel point were written");
-    assert_eq!(bits(&out[..done * 3]), bits(&reference[..done * 3]), "the converted prefix equals the uninterrupted run");
-    eprintln!("WIDE_CHUNKS_CANCEL {{\"band_pixels\":{n},\"converted_before_cancel\":{done},\"chunk_aligned\":true}}");
+    assert_eq!(job.convert_band(0, &input, &mut out, &canceled).err(), Some(WideError::Canceled));
+    assert!(out.iter().all(|v| v.is_nan()), "a band canceled before its first chunk wrote output");
+    let mut buffer = input.clone();
+    assert_eq!(job.convert_band_in_place(1, &mut buffer, &canceled).err(), Some(WideError::Canceled));
+    assert_eq!(bits(&buffer), bits(&input), "an in-place band canceled before its first chunk changed the caller's input");
     assert_eq!(job.finish(&t, &mut Collect(Vec::new())).err().map(|f| f.error), Some(WideError::Canceled));
 }
 
