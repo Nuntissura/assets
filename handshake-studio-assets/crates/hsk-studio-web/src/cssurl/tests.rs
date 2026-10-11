@@ -738,3 +738,16 @@ fn nesting_beyond_the_limit_is_refused() {
     // Mismatched closers do not end a block (5.4): `image-set(]` still scans its strings.
     assert_eq!(refs("b:image-set(] 'a.png' } ) 'b.png'"), [u("a.png")]);
 }
+
+/// V4-02: the output never exceeds `limit` (the caller passes the room left under `max_nodes` plus one and refuses typed
+/// beyond it), on the single-reading path and on the union path of both non-ASCII readings.
+#[test]
+fn output_is_bounded_by_the_limit() {
+    let many = "url(a) ".repeat(50);
+    assert_eq!(css_references(&many, 7).unwrap().len(), 7);
+    let union = format!("x\u{a0}url(b) {many}");
+    let found = css_references(&union, 7).unwrap();
+    assert_eq!(found.len(), 7);
+    assert_eq!(found[0].value, "b");
+    assert_eq!(css_references(&many, 0).unwrap().len(), 0);
+}

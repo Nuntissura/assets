@@ -241,7 +241,8 @@ fn css_urls_differ(doc: &WebDoc, expected: &[Ev]) -> Option<String> {
     let mut sheets = texts.iter();
     let mut labels: Vec<String> = Vec::new();
     let mut reference_lists: Vec<CarrierUrls> = Vec::new();
-    let mut not_loadable: Vec<String> = Vec::new();
+    // How many times the reference reads each value as a loadable URL (bad and computed readings excluded).
+    let mut loadable: BTreeMap<String, usize> = BTreeMap::new();
     for ev in expected {
         let Ev::Open { name, attrs, .. } = ev else {
             continue;
@@ -256,12 +257,9 @@ fn css_urls_differ(doc: &WebDoc, expected: &[Ev]) -> Option<String> {
         }
         for (label, text) in carriers {
             let found = urls(text);
-            not_loadable.extend(
-                found
-                    .iter()
-                    .filter(|u| u.kind != UrlKind::Url)
-                    .map(|u| u.value.clone()),
-            );
+            for u in found.iter().filter(|u| u.kind == UrlKind::Url) {
+                *loadable.entry(u.value.clone()).or_insert(0) += 1;
+            }
             let mut list: CarrierUrls = found
                 .into_iter()
                 .map(|u| (u.kind == UrlKind::Computed, u.value))
@@ -276,10 +274,16 @@ fn css_urls_differ(doc: &WebDoc, expected: &[Ev]) -> Option<String> {
             "      carriers           {labels:?}\n      reference css urls {reference_lists:?}\n      hsk-web css urls   {crate_lists:?}\n"
         ));
     }
-    // Bad urls, bad strings and computed URLs are never granted (the port is not asked about them).
-    let wrongly_granted: Vec<&String> = not_loadable
+    // Bad urls, bad strings and computed URLs are never granted (the port is not asked about them): no value is granted
+    // more often than the reference reads it as a loadable URL.
+    let mut granted_count: BTreeMap<&String, usize> = BTreeMap::new();
+    for v in &granted {
+        *granted_count.entry(v).or_insert(0) += 1;
+    }
+    let wrongly_granted: Vec<&String> = granted_count
         .iter()
-        .filter(|v| granted.contains(v))
+        .filter(|(v, n)| **n > loadable.get(v.as_str()).copied().unwrap_or(0))
+        .map(|(v, _)| *v)
         .collect();
     if !wrongly_granted.is_empty() {
         return Some(format!(
