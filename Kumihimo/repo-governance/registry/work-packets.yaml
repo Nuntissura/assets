@@ -26,9 +26,9 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-004-spec-clarifications-v1
   title: Correct recursive window scope and host navigation modes
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-004-spec-clarifications-v1/WP-KUM-004-spec-clarifications-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-004-spec-clarifications-v1/WP-KUM-004-spec-clarifications-v1-state.yaml
-  next_action: Commit owned corrections, push codex/handpick and independently verify the exact remote revision
-    before marking done
+  next_action: Await further prep discussion; recursive composition and four host navigation modes are specified,
+    all runtime features remain planned
   blockers: []

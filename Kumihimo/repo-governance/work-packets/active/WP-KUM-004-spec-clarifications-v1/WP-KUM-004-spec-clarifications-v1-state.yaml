@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-004-spec-clarifications-v1
-generation: 2
-phase: active
+generation: 3
+phase: done
 owner: model_maintainer
 changed_files:
 - README.md
@@ -43,6 +43,8 @@ proof:
     tracked repo scripts is empty
 - kind: diff_check
   observed: git diff --check -- Kumihimo passed
+- kind: remote_publication
+  observed: git ls-remote origin refs/heads/codex/handpick independently matched correction commit dcf88d7bf56c59b1f17dc480ed01516cf83295a5
 blockers: []
-next_action: Commit owned corrections, push codex/handpick and independently verify the exact remote revision before
-  marking done
+next_action: Await further prep discussion; recursive composition and four host navigation modes are specified,
+  all runtime features remain planned
