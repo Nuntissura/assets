@@ -2900,26 +2900,28 @@ fn listed_but_undrawn_forms_are_not_kept_text() {
     };
     let form = |body: &str, res: &str| stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> {res} >>"), body.as_bytes());
     let secret = "BT /F1 12 Tf 300 300 Td (SECRET-ALPHA) Tj ET";
-    // R13-adapted (R13-F6): listed under the resources the split gives BOTH pages, never drawn: a source
-    // of the flattened page one that no kept page draws, so it leaves the file.
+    // R13-adapted (R13-F6): the split gives BOTH pages the fixture's resources, so a form listed there
+    // and never drawn is a source of the flattened page one that no kept page draws: it leaves the file
+    // (listed directly, and listed by a drawn form).
+    let gone = |out: &hsk_studio_press::RedactedOutput| independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-ALPHA").is_none());
     let out = r7_run(&doc(&page, "/Fm9 20 0 R", vec![(20, form(secret, ""))]));
-    assert!(independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-ALPHA").is_none()), "an undrawn source of the flattened page survives");
-    // Listed only by the kept page two, never drawn: payload, not kept text (the N7 subject).
-    let two = build(
-        &{
-            let mut objs = with_page_two(base_objs(TEXT_IN_REGION.as_bytes(), "<< /Title (T) >>"), "BT /F1 12 Tf 72 400 Td (Public) Tj ET", "/Font << /F1 6 0 R >> /XObject << /Fm9 20 0 R >>");
-            objs.push((20, form(secret, "")));
-            objs
-        },
-        "/Info 7 0 R",
-        b"",
-    );
-    let out = r7_run(&two);
+    assert!(gone(&out), "an undrawn source of the flattened page survives");
+    let out = r7_run(&doc(&format!("{page}\nq /Fm1 Do Q"), "/Fm1 21 0 R", vec![(21, form("BT /F1 9 Tf (shell) Tj ET", "/XObject << /Fm9 20 0 R >>")), (20, form(secret, ""))]));
+    assert!(gone(&out), "a source listed by a drawn form survives");
+    // The N7 subject on a page that is not flattened: forms listed only by the kept page two.
+    let two = |content: &str, xobjects: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = with_page_two(base_objs(TEXT_IN_REGION.as_bytes(), "<< /Title (T) >>"), content, &format!("/Font << /F1 6 0 R >> /XObject << {xobjects} >>"));
+        objs.extend(extra);
+        build(&objs, "/Info 7 0 R", b"")
+    };
+    let public = "BT /F1 12 Tf 72 400 Td (Public) Tj ET";
+    // Listed under the page resources, never drawn.
+    let out = r7_run(&two(public, "/Fm9 20 0 R", vec![(20, form(secret, ""))]));
     assert!(!out.is_proven(), "an undrawn form is payload, not kept text");
     assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 20, .. })), "{:?}", out.proof);
     assert!(out.proof.kept_text_collisions.iter().all(|c| c.object != 20));
     // Listed by a drawn form, never drawn by it.
-    let out = r7_run(&doc(&format!("{page}\nq /Fm1 Do Q"), "/Fm1 21 0 R", vec![(21, form("BT /F1 9 Tf (shell) Tj ET", "/XObject << /Fm9 20 0 R >>")), (20, form(secret, ""))]));
+    let out = r7_run(&two(&format!("{public}\nq /Fm1 Do Q"), "/Fm1 21 0 R", vec![(21, form("BT /F1 9 Tf (shell) Tj ET", "/XObject << /Fm9 20 0 R >>")), (20, form(secret, ""))]));
     assert!(!out.is_proven() && out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 20, .. })), "{:?}", out.proof);
     // Control: drawn by the page, the same form is kept text (a collision, not a leak).
     let out = r7_run(&doc(&format!("{page}\nq /Fm9 Do Q"), "/Fm9 20 0 R", vec![(20, form(secret, ""))]));
