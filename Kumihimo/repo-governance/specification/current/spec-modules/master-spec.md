@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 2
+revision: 3
 title: Kumihimo master specification
 updated_at: '2026-10-11'
 ---
@@ -33,7 +33,7 @@ content_blocks:
 
 Kumihimo holds and arranges content supplied by a host app: editors, browsers, media, tools and graphics. It targets reusable Rust logic with separate desktop and web presentation adapters.
 
-The original six requirements below remain unchanged. The following topics expand their intended behavior. All product features are planned; initialization and a checked specification do not prove a working GUI, rendering speed or browser compatibility.
+The baseline reflects the clarified intent: recursively nested windows and tabs without a fixed count. The following topics expand that behavior. All product features are planned; initialization and a checked specification do not prove a working GUI, rendering speed or browser compatibility.
 
 Read the explanation at the start of each topic for the plain-language intent. The structured block records the corresponding requirements and focused acceptance scenarios. Optional field-inspired ideas live in the research note and are not required features.
 ```
@@ -57,8 +57,9 @@ requirements:
 - requirement_id: REQ-KUM-WORKSPACE-002
   anchor_refs:
   - TOPIC-KUM-WORKSPACE
-  statement: Support an eight-pane resizable grid with multiple tabs per pane, grouped tabs, color labels, docking,
-    floating panes and capability-checked native popouts.
+  statement: Support recursively nested windows/frames and variable tab counts with no fixed architectural window,
+    nesting or tab-count ceiling, grouped tabs, color labels, resizable arrangements, docking, floating frames and
+    capability-checked native popouts.
   rationale: Preserve the operator-requested reusable workspace behavior.
   acceptance_refs:
   - ACC-KUM-WORKSPACE-002
@@ -134,9 +135,10 @@ acceptance:
 - acceptance_id: ACC-KUM-WORKSPACE-002
   requirement_refs:
   - REQ-KUM-WORKSPACE-002
-  method: Focused feature scenario when implemented; specification structure only during initialization.
-  expected_result: Support an eight-pane resizable grid with multiple tabs per pane, grouped tabs, color labels,
-    docking, floating panes and capability-checked native popouts.
+  method: Inspect the future composition model and create nested layouts with differing child-window and tab counts.
+  expected_result: Support recursively nested windows/frames and variable tab counts with no fixed architectural
+    window, nesting or tab-count ceiling, grouped tabs, color labels, resizable arrangements, docking, floating
+    frames and capability-checked native popouts.
 - acceptance_id: ACC-KUM-WORKSPACE-003
   requirement_refs:
   - REQ-KUM-WORKSPACE-003
@@ -188,7 +190,7 @@ product:
   purpose: Arrange diverse hosted content in reusable, configurable windows and frames.
   operator_outcomes:
   - Reusable workspace behavior across desktop and web applications
-  - Eight-pane tabbed workspaces with flexible content
+  - Recursively nested tabbed windows with host-chosen counts and flexible content
   supported_users_and_actors:
   - Host developers
   - Operators using keyboard, pointer, touch and pen
@@ -373,7 +375,7 @@ decisions:
 ```yaml
 kind: specification_topic
 topic_id: TOPIC-KUM-LAYOUT
-title: Eight-pane layouts, alignment and resizing
+title: Nested windows, alignment and resizing
 content_blocks:
 - block_id: explanation
   kind: prose
@@ -384,6 +386,7 @@ content_blocks:
   - REQ-KUM-LAYOUT-003
   - REQ-KUM-LAYOUT-004
   - REQ-KUM-LAYOUT-005
+  - REQ-KUM-LAYOUT-006
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -391,11 +394,13 @@ content_blocks:
 ```
 
 ```markdown
-## Your everyday workspace
+## Windows inside windows
 
-Ship a stock eight-pane arrangement with tabs in every pane. Eight is a starting preset, not a maximum. Nested horizontal and vertical splits allow other grids and arrangements; panes can grow temporarily and return to their previous size.
+There is no fixed number of windows, tabs or nesting levels in the conceptual model. A window can contain a workspace of child windows, and each child can itself contain another workspace and its own tabs. Twenty child windows with thirty tabs each is an illustration, not a preset or ceiling.
 
-Shared split lines align neighbors. Snap previews show where a dragged pane will land. Minimum usable sizes prevent a crowded layout from silently crushing content; if the tablet is too small, the host chooses a disclosed overflow or simplified preset.
+Hosts choose nested splits, grids, docking and supported floating frames. Recursive window containment is separate from a tree of split lines. Window-count, nesting and tab-count settings belong to the host; practical resource/admission policies remain explicit and configurable rather than defining a fixed-size asset.
+
+Shared split lines align neighbors. Snap previews show where a dragged frame will land. Minimum usable sizes and disclosed overflow preserve access to content in a dense or deeply nested arrangement. Exact parent-relative snap subdivisions and overlapping placement remain in prep research until separately accepted.
 ```
 
 ```yaml
@@ -403,8 +408,9 @@ requirements:
 - requirement_id: REQ-KUM-LAYOUT-001
   anchor_refs:
   - TOPIC-KUM-LAYOUT
-  statement: Provide a stock eight-pane resizable preset, multiple tabs per pane and arbitrary bounded nested horizontal/vertical
-    splits; expose pane-count and nesting limits to the host.
+  statement: Allow host-chosen window counts and arrangements with no stock pane count or fixed architectural nesting
+    ceiling; support recursive window workspaces and horizontal/vertical splits, with any practical admission limits
+    exposed as host policy.
   rationale: Provide reusable host behavior with explicit ownership and recoverable failure.
   acceptance_refs:
   - ACC-KUM-LAYOUT-001
@@ -470,17 +476,32 @@ requirements:
   - FEAT-KUM-LAYOUT
   primitive_refs:
   - PRIM-KUM-LAYOUT
+- requirement_id: REQ-KUM-LAYOUT-006
+  anchor_refs:
+  - TOPIC-KUM-LAYOUT
+  statement: A frame shall be able to host another Kumihimo workspace with its own child frames and tabs; preserve
+    explicit parent/workspace identities and reject containment cycles without imposing a fixed conceptual depth.
+  rationale: Provide reusable host behavior with explicit ownership and recoverable failure.
+  acceptance_refs:
+  - ACC-KUM-LAYOUT-006
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-LAYOUT
+  primitive_refs:
+  - PRIM-KUM-LAYOUT
 acceptance:
 - acceptance_id: ACC-KUM-LAYOUT-001
   requirement_refs:
   - REQ-KUM-LAYOUT-001
-  method: Load the preset, fill every pane, split and merge under configured limits.
-  expected_result: Eight usable panes appear initially; valid edits work and limit violations return an explicit
-    rejection.
+  method: Inspect the future data model; construct a window with 20 child windows and 30 tabs in each, then change
+    the counts and add another nesting level.
+  expected_result: The example is supported by the composition model without becoming a preset or ceiling; configured
+    practical policy is reported separately.
 - acceptance_id: ACC-KUM-LAYOUT-002
   requirement_refs:
   - REQ-KUM-LAYOUT-002
-  method: Resize an eight-pane layout at normal, narrow and invalid dimensions.
+  method: Resize host-chosen sparse and dense nested layouts at normal, narrow and invalid dimensions.
   expected_result: Neighbors share boundaries; sizes remain finite and nonnegative; impossible layouts have a visible
     fallback or rejection.
 - acceptance_id: ACC-KUM-LAYOUT-003
@@ -496,24 +517,31 @@ acceptance:
 - acceptance_id: ACC-KUM-LAYOUT-005
   requirement_refs:
   - REQ-KUM-LAYOUT-005
-  method: Shrink below the eight-pane minimum and recover the original size.
+  method: Shrink a host-chosen layout below its current usable minimum and recover the original size.
   expected_result: No content disappears or becomes permanently unreachable; the chosen fallback is reported.
+- acceptance_id: ACC-KUM-LAYOUT-006
+  requirement_refs:
+  - REQ-KUM-LAYOUT-006
+  method: Create multiple containment levels, move a child between eligible parents and attempt a cycle.
+  expected_result: Nested workspaces retain independent child/tab identities and local arrangement; valid moves
+    preserve resources and cycles are rejected.
 features:
 - feature_id: FEAT-KUM-LAYOUT
-  title: Eight-pane layouts, alignment and resizing
+  title: Nested windows, alignment and resizing
   requirement_refs:
   - REQ-KUM-LAYOUT-001
   - REQ-KUM-LAYOUT-002
   - REQ-KUM-LAYOUT-003
   - REQ-KUM-LAYOUT-004
   - REQ-KUM-LAYOUT-005
+  - REQ-KUM-LAYOUT-006
   primitive_refs:
   - PRIM-KUM-LAYOUT
 primitives:
 - primitive_id: PRIM-KUM-LAYOUT
-  title: Eight-pane layouts, alignment and resizing
-  contract: Host-independent contract for eight-pane layouts, alignment and resizing; platform effects remain in
-    adapters.
+  title: Nested windows, alignment and resizing
+  contract: Recursive frame/workspace containment and arrangement with no fixed count; each workspace owns local
+    geometry and child identities, while platform effects remain in adapters.
 primitive_feature_relations:
 - relation_id: REL-KUM-LAYOUT
   primitive_ref: PRIM-KUM-LAYOUT
@@ -534,6 +562,7 @@ gui_design:
   - ACC-KUM-LAYOUT-003
   - ACC-KUM-LAYOUT-004
   - ACC-KUM-LAYOUT-005
+  - ACC-KUM-LAYOUT-006
 decisions:
 - decision_id: DEC-KUM-LAYOUT
   anchor_refs:
@@ -562,6 +591,7 @@ content_blocks:
   - REQ-KUM-TABS-003
   - REQ-KUM-TABS-004
   - REQ-KUM-TABS-005
+  - REQ-KUM-TABS-006
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -571,7 +601,7 @@ content_blocks:
 ```markdown
 ## Keep groups recognizable
 
-Each pane contains a tab strip. Groups have their own identity, name and color label; a group is distinct from the pane that currently holds it. Move tabs individually or move a group together.
+Each window/frame can have its own tab strip with a host-chosen number of tabs; the asset has no fixed tab count. This applies equally to nested child windows. Groups have their own identity, name and color label; a group is distinct from the pane that currently holds it. Move tabs individually or move a group together.
 
 Color helps recognition, but a readable name or marker remains available. Overflow should expose search or a list instead of making every tab tiny. Large saved collections require a virtualized list rather than a live widget and engine for every saved tab.
 ```
@@ -648,6 +678,21 @@ requirements:
   - FEAT-KUM-TABS
   primitive_refs:
   - PRIM-KUM-TABS
+- requirement_id: REQ-KUM-TABS-006
+  anchor_refs:
+  - TOPIC-KUM-TABS
+  statement: Support a host-chosen number of tabs in every eligible window/frame, including nested children; do
+    not encode a fixed architectural tab-count ceiling, and expose any practical ingestion/live-view limits separately
+    through host policy.
+  rationale: Provide reusable host behavior with explicit ownership and recoverable failure.
+  acceptance_refs:
+  - ACC-KUM-TABS-006
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-TABS
+  primitive_refs:
+  - PRIM-KUM-TABS
 acceptance:
 - acceptance_id: ACC-KUM-TABS-001
   requirement_refs:
@@ -676,6 +721,13 @@ acceptance:
   - REQ-KUM-TABS-005
   method: Enable pinning, try a forbidden close or move, then unpin.
   expected_result: Configured pin rules apply with a reason; unpinning restores ordinary operations.
+- acceptance_id: ACC-KUM-TABS-006
+  requirement_refs:
+  - REQ-KUM-TABS-006
+  method: Create the illustrative 20-child-window layout with 30 tabs per child; add/remove tabs and repeat inside
+    a nested child.
+  expected_result: Each frame owns independent tab membership; counts remain configurable and example values never
+    become presets or ceilings.
 features:
 - feature_id: FEAT-KUM-TABS
   title: Tabs, named groups and color labels
@@ -685,6 +737,7 @@ features:
   - REQ-KUM-TABS-003
   - REQ-KUM-TABS-004
   - REQ-KUM-TABS-005
+  - REQ-KUM-TABS-006
   primitive_refs:
   - PRIM-KUM-TABS
 primitives:
@@ -711,6 +764,7 @@ gui_design:
   - ACC-KUM-TABS-003
   - ACC-KUM-TABS-004
   - ACC-KUM-TABS-005
+  - ACC-KUM-TABS-006
 decisions:
 - decision_id: DEC-KUM-TABS
   anchor_refs:
@@ -1707,6 +1761,8 @@ content_blocks:
   - REQ-KUM-NAVIGATION-002
   - REQ-KUM-NAVIGATION-003
   - REQ-KUM-NAVIGATION-004
+  - REQ-KUM-NAVIGATION-005
+  - REQ-KUM-NAVIGATION-006
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -1719,6 +1775,12 @@ content_blocks:
 Offer adjustable scrollbar rail width, visible thumb width, minimum thumb length, hit area and visibility. The thumb may be larger than its purely proportional size, while still covering the full scroll range.
 
 The host owns scrollable content and its position. A minimap needs host-provided meaning: text lines, markers, scene locations or document sections. Kumihimo provides the slot and navigation connection. A map of the whole workspace is a separate optional idea.
+
+The host selects navigation presentation per its profile/workspace/surface settings: scrollbar thumb and rail only; minimap always visible; scrollbar and minimap together; or scrollbar at rest that transforms into a temporary minimap while scrubbing. The transient behavior is one selectable mode, not a compulsory default.
+
+In transient mode, grabbing the thumb expands a map beside the document and turns the held object into the map's viewport rectangle. Continue the same vertical drag; release hides the map and restores the rail/thumb at the new position. Expansion preserves the grab anchor and document layout. Other modes retain their configured persistent controls.
+
+If a content provider cannot supply minimap data, report that capability and use the host's declared fallback rather than inventing an overview.
 ```
 
 ```yaml
@@ -1779,6 +1841,36 @@ requirements:
   - FEAT-KUM-NAVIGATION
   primitive_refs:
   - PRIM-KUM-NAVIGATION
+- requirement_id: REQ-KUM-NAVIGATION-005
+  anchor_refs:
+  - TOPIC-KUM-NAVIGATION
+  statement: 'Expose host-selectable navigation modes: scrollbar thumb/rail only, always-visible minimap, persistent
+    scrollbar plus minimap, and scrollbar-at-rest with minimap shown during scrubbing; apply existing settings precedence
+    per host/workspace/surface and report unsupported provider capabilities with an explicit host-selected fallback.'
+  rationale: Provide reusable host behavior with explicit ownership and recoverable failure.
+  acceptance_refs:
+  - ACC-KUM-NAVIGATION-005
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-NAVIGATION
+  primitive_refs:
+  - PRIM-KUM-NAVIGATION
+- requirement_id: REQ-KUM-NAVIGATION-006
+  anchor_refs:
+  - TOPIC-KUM-NAVIGATION
+  statement: In scrub-to-minimap mode, preserve one continuous drag while the thumb/rail presentation expands into
+    a map beside the document and the grabbed thumb becomes its viewport rectangle; releasing or settling cancellation
+    restores a usable ordinary scrollbar without changing document position merely because the representation changed.
+  rationale: Provide reusable host behavior with explicit ownership and recoverable failure.
+  acceptance_refs:
+  - ACC-KUM-NAVIGATION-006
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-NAVIGATION
+  primitive_refs:
+  - PRIM-KUM-NAVIGATION
 acceptance:
 - acceptance_id: ACC-KUM-NAVIGATION-001
   requirement_refs:
@@ -1800,6 +1892,20 @@ acceptance:
   - REQ-KUM-NAVIGATION-004
   method: Navigate a large provider that supplies a sparse overview.
   expected_result: Frame work stays bounded by the supplied overview/window rather than loading all content.
+- acceptance_id: ACC-KUM-NAVIGATION-005
+  requirement_refs:
+  - REQ-KUM-NAVIGATION-005
+  method: Select every mode through host settings on providers with and without minimap data; inspect idle, drag
+    and release states.
+  expected_result: Each supported mode displays its configured controls; transient behavior is optional and capability
+    fallback is explicit.
+- acceptance_id: ACC-KUM-NAVIGATION-006
+  requirement_refs:
+  - REQ-KUM-NAVIGATION-006
+  method: Press without moving, drag from different grab offsets, release outside the pane and cancel; inspect document
+    bounds during expansion.
+  expected_result: Stationary press does not jump, pointer continuity and grab offset are preserved, document layout
+    stays stable, and release/cancellation restores navigation at the settled position.
 features:
 - feature_id: FEAT-KUM-NAVIGATION
   title: Large scrollbars and content minimaps
@@ -1808,6 +1914,8 @@ features:
   - REQ-KUM-NAVIGATION-002
   - REQ-KUM-NAVIGATION-003
   - REQ-KUM-NAVIGATION-004
+  - REQ-KUM-NAVIGATION-005
+  - REQ-KUM-NAVIGATION-006
   primitive_refs:
   - PRIM-KUM-NAVIGATION
 primitives:
@@ -1833,6 +1941,8 @@ gui_design:
   - ACC-KUM-NAVIGATION-002
   - ACC-KUM-NAVIGATION-003
   - ACC-KUM-NAVIGATION-004
+  - ACC-KUM-NAVIGATION-005
+  - ACC-KUM-NAVIGATION-006
 decisions:
 - decision_id: DEC-KUM-NAVIGATION
   anchor_refs:
@@ -3065,7 +3175,7 @@ The accepted direction is a portable Rust arrangement core with replaceable desk
 
 Compare egui_tiles for flexible grids, egui_dock for docking/tab integration, and a native adapter using winit with an appropriate renderer. Dockview is a web candidate and a reference for panel identities, groups and handoff recovery. Its commercial additions must be distinguished from its MIT core. GPUI and Dear ImGui provide architectural precedents rather than automatic dependencies.
 
-Library selection needs a small real sample of the affected boundary: eight panes, grouping, custom controls, touch, save/restore and the chosen rendering handoff. Native popouts require their own proof; an in-app floating egui window is not that proof.
+Library selection needs a small real sample of the affected boundary: variable counts and recursive window containment, grouping, custom controls, touch, save/restore and the chosen rendering handoff. Native popouts require their own proof; an in-app floating egui window is not that proof.
 
 Optional research proposals include scrolling workspaces inspired by Niri, a zoomed workspace overview, auto-hide edge trays, layout undo, saved named arrangements and snapping hysteresis. They are not accepted features or required gates in this revision. Preserve them in the research note for later operator decisions.
 ```

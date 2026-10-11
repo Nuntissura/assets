@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-002-master-spec-v1
-generation: 4
+generation: 5
 phase: done
 owner: model_maintainer
 changed_files:
@@ -23,4 +23,4 @@ proof:
 - kind: remote_publication
   observed: git ls-remote origin refs/heads/codex/handpick matched expanded-spec commit 7cf16269e086bc77b19cc222a6f90245e42dae85
 blockers: []
-next_action: Specification complete; next authorized implementation can create a bounded eight-pane prototype WP from the current topics
+next_action: Read the current corrected specification for recursive windows and host navigation modes; current work remains prep only

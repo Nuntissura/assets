@@ -18,15 +18,17 @@ The asset is initialized and specified; Rust packages and working GUI adapters h
 
 ## What the asset is meant to provide
 
-- A stock eight-pane workspace with resizing, docking, floating frames and supported native popouts.
-- Tabs, named groups and color labels, with usable overflow navigation.
-- Configurable surrounding bars and controls, comfortable scrollbars and host-fed minimaps.
+- Recursively nested windows and workspaces, with host-chosen counts, resizing, docking, floating frames and supported native popouts.
+- Any host-chosen number of tabs within each eligible window, named groups and color labels, with usable overflow navigation.
+- Configurable surrounding bars and controls, comfortable scrollbars and host-fed minimaps; the host selects scrollbar only, permanent minimap, both, or a minimap that appears while scrubbing.
 - Content slots for editors, browser views, tools, media and 2D/3D renderers.
 - Image/video backgrounds with visual settings and provider-aware resource controls.
 - Saved layouts, recovery, touch/pen/keyboard access and structured model commands.
 - Visibility and lifecycle signals for host resource management, including the future Servo browser.
 
 Kumihimo arranges the workspace. The host owns document reflow, scenes, browser pages and actual suspension/unloading. Saved tab records and live content instances have separate budgets. Toolkits, rendering paths and platform compatibility still need proof.
+
+The conceptual window/tab model has no fixed count or nesting ceiling. A window with 20 child windows and 30 tabs in each is an illustration, not a stock layout or maximum. Each child can itself contain another workspace. Practical resource policy is exposed to the host separately.
 
 Start with the [master spec](repo-governance/specification/current/spec-modules/master-spec.md), [roadmap](repo-governance/specification/current/spec-modules/roadmap.md), or [field research and optional ideas](repo-governance/docs/research/window-frame-field-research.md). Optional ideas include scrolling workspaces, an overview, edge trays and layout undo; they are not current requirements.
 

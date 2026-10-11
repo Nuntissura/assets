@@ -1,0 +1,39 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-004-spec-clarifications-v1
+title: Correct recursive window scope and host navigation modes
+scope:
+- Correct the README and current spec from an eight-pane premise to recursively nested windows and tabs with no fixed architectural count
+- Accept host-selected scrollbar, permanent minimap, combined and scrub-to-minimap presentation modes as planned behavior
+- Align affected roadmap, research notes and recovery navigation; preserve unrelated topics and archived history
+files:
+- README.md
+- repo-governance/specification/current/
+- repo-governance/specification/spec-archive/
+- repo-governance/docs/research/
+- repo-governance/work-packets/active/WP-KUM-004-spec-clarifications-v1/
+- repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-state.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/registry/
+dependencies:
+- WP-KUM-003-surface-riffs-v1
+spec_refs:
+- TOPIC-KUM-WORKSPACE
+- TOPIC-KUM-LAYOUT
+- TOPIC-KUM-TABS
+- TOPIC-KUM-NAVIGATION
+- TOPIC-KUM-CHOICES
+- TOPIC-KUM-ROADMAP
+requirements:
+- Preserve the operator example of 20 child windows with 30 tabs each as an illustration, never a preset or ceiling; permit further nesting
+- Keep configurable host runtime/resource policy distinct from the conceptually limitless window/tab model
+- Expose all four navigation modes to the host, including the confirmed continuous viewport-marker drag and release-to-hide mode
+- Prep only; no product code, dependency selection, builds or GUI implementation
+acceptance:
+- Current guidance has no stock eight-pane requirement; recursive ownership and variable tab counts are explicit
+- All four host-selectable navigation modes and their focused future acceptance scenarios exist in the spec
+- Prior spec bundle is preserved; unaffected requirements and topics remain unchanged; all product features stay planned
+proof:
+- python repo-governance/repo-scripts/sync.py --check
+- Inspect affected wording and verify unchanged product source and unrelated spec topics
+- git diff --check
+status_ref: repo-governance/work-packets/active/WP-KUM-004-spec-clarifications-v1/WP-KUM-004-spec-clarifications-v1-state.yaml

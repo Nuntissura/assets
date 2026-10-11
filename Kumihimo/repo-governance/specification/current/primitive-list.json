@@ -1,6 +1,6 @@
 {
   "kind": "derived_primitive_list",
-  "spec_revision": 2,
+  "spec_revision": 3,
   "primitives": [
     {
       "primitive_id": "PRIM-KUM-WORKSPACE",
@@ -14,8 +14,8 @@
     },
     {
       "primitive_id": "PRIM-KUM-LAYOUT",
-      "title": "Eight-pane layouts, alignment and resizing",
-      "contract": "Host-independent contract for eight-pane layouts, alignment and resizing; platform effects remain in adapters."
+      "title": "Nested windows, alignment and resizing",
+      "contract": "Recursive frame/workspace containment and arrangement with no fixed count; each workspace owns local geometry and child identities, while platform effects remain in adapters."
     },
     {
       "primitive_id": "PRIM-KUM-TABS",

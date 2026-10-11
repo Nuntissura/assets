@@ -104,7 +104,7 @@ These ideas increase the value of boundaries already being designed, but adoptio
 | Popout fails after source removal, losing a view | Prepare destination first; canonical handoff state and recovery reference | Block or interrupt a real popout and inspect retained views. |
 | Hidden tab keeps decoding or scripting | Requested versus confirmed lifecycle; host eligibility and budgets | Observe provider callbacks and measured workload. |
 | Unload destroys unsaved or protected work | Close/unload veto and host protection reasons | Attempt unload with dirty content, audio and a protected download. |
-| Tiny viewport crushes eight panes | Minimum sizes and disclosed overflow/fallback | Resize the actual GUI and reach every pane. |
+| Tiny viewport makes a dense nested layout unusable | Minimum sizes and disclosed overflow/fallback | Resize the actual GUI and reach every pane. |
 | Corrupt saved layout creates cycles or huge allocations | Validate and bound restoration; retain last valid state | Load malformed/oversized records and inspect preserved content. |
 | Custom or hidden bars trap keyboard/touch users | Accessible reveal, system control fallback and explicit focus routes | Operate the actual adapter without mouse dragging. |
 | GPU loss wipes arrangement, or browser resize changes neighbors | Independent layout identity and adapter-proven render recovery | Recreate a surface; resize one of two browser panes. |

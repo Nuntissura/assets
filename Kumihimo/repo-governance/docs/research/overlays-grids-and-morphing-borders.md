@@ -15,7 +15,7 @@ Operator concepts:
 - A child window can sit in the center over another window, while the uncovered parts of the underlying content remain usable. Other children can be placed beside the center child.
 - Child snapping uses a grid calculated from the parent's size. Parent geometry relates to the app or screen size. Subdivision counts are adjustable, with settings exposed to the host.
 - Explore morphing borders resembling liquid, sand, fire or smoke, including their effects on inner content and neighboring host content.
-- Grabbing the scrollbar reveals a minimap in place of the rail/thumb. Continue the same drag using the viewport rectangle over the miniature document; the map expands beside the main document. Release hides the map and restores the ordinary rail/thumb. The operator explicitly confirmed this interpretation.
+- In one host-selectable mode, grabbing the scrollbar reveals a minimap in place of the rail/thumb. Continue the same drag using the viewport rectangle over the miniature document; the map expands beside the main document. Release hides the map and restores the ordinary rail/thumb. The operator confirmed this interpretation and clarified that scrollbar only, permanent minimap and both together are alternative host settings.
 - Evaluate and iterate before deciding what to keep or discard; an idea's presence here creates no implementation commitment.
 
 </topic>
@@ -105,7 +105,9 @@ Provisional evaluation: explore brief decorative effects and optional theme hook
 
 ## A scrollbar that unfolds into a minimap
 
-Confirmed intended sequence:
+The host selects scrollbar only, always-visible minimap, both together, or the temporary mode below. This direction is now recorded in the master spec; no interaction has been implemented. Temporary mode is an option rather than the compulsory presentation.
+
+Confirmed intended sequence for temporary mode:
 
 1. Idle: show the normal rail and comfortably sized thumb.
 2. Grab: expand a minimap beside the document, replacing the rail/thumb presentation.
@@ -115,7 +117,7 @@ Confirmed intended sequence:
 
 The important proposed interaction rule is continuity: expansion should not jump to another document position, release the pointer or require a second grab. Preserve the initial grab offset as the visible thumb becomes a larger marker. A stable overview should grow sideways without rewrapping the main document during the drag.
 
-Proposed host settings: trigger mode, expanded width, side, minimum viewport-marker height, preview detail, release delay and always-visible preference. Touch can retain one contact and move the preview away from the finger; keyboard users need an equivalent navigation mode. Cancellation or lost pointer capture must settle the gesture and restore a usable navigation control.
+Proposed additional host settings: trigger mode, expanded width, side, minimum viewport-marker height, preview detail and release delay. Touch can retain one contact and move the preview away from the finger; keyboard users need an equivalent navigation mode. Cancellation or lost pointer capture must settle the gesture and restore a usable navigation control.
 
 Potential weaknesses: short files do not need an expanded map; enormous files make the proportional viewport marker tiny; unfolding over text can obscure it; dynamically changing documents can invalidate the drag mapping. Candidate mitigations are capability/length gating, minimum marker size with complete range mapping, a bounded side overlay, and a stable provider revision or anchored mapping for the duration of the drag.
 
@@ -139,6 +141,6 @@ Future evaluation scenarios: press at several points within the thumb; drag slow
 
 Suggested next discussion choices: which overlapping-frame use case feels useful; how children should respond when the parent changes size; whether decorative effects signal state or only theme; and whether the minimap replaces a reserved sidebar or temporarily overlays its edge.
 
-The current recommendation is to explore snapping and the transient minimap further, keep border effects optional, and postpone interactive content deformation. This recommendation has not been adopted into the master spec. No builds, installs, GUI implementation or long test runs are part of this prep work.
+Host-selected navigation modes are now accepted direction in the master spec, with the transient gesture as one option. The other recommendations remain exploratory: refine snapping, keep border effects optional, and postpone interactive content deformation. No builds, installs, GUI implementation or long test runs are part of this prep work.
 
 </topic>

@@ -4,6 +4,7 @@ project_id: KUMIHIMO
 source: WP contracts and state
 counts:
   done: 3
+  active: 1
 work_packets:
 - wp_id: WP-KUM-001-init-v1
   title: Initialize Kumihimo minimal workflow
@@ -17,8 +18,8 @@ work_packets:
   phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-state.yaml
-  next_action: Specification complete; next authorized implementation can create a bounded eight-pane prototype
-    WP from the current topics
+  next_action: Read the current corrected specification for recursive windows and host navigation modes; current
+    work remains prep only
   blockers: []
 - wp_id: WP-KUM-003-surface-riffs-v1
   title: Evaluate snapping, morphing borders and transient minimaps
@@ -27,4 +28,12 @@ work_packets:
   state_ref: repo-governance/work-packets/active/WP-KUM-003-surface-riffs-v1/WP-KUM-003-surface-riffs-v1-state.yaml
   next_action: Continue operator-led design discussion; no implementation authorized and no new concepts adopted
     into the master spec
+  blockers: []
+- wp_id: WP-KUM-004-spec-clarifications-v1
+  title: Correct recursive window scope and host navigation modes
+  phase: active
+  contract_ref: repo-governance/work-packets/active/WP-KUM-004-spec-clarifications-v1/WP-KUM-004-spec-clarifications-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-004-spec-clarifications-v1/WP-KUM-004-spec-clarifications-v1-state.yaml
+  next_action: Commit owned corrections, push codex/handpick and independently verify the exact remote revision
+    before marking done
   blockers: []

@@ -1,0 +1,48 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-004-spec-clarifications-v1
+generation: 2
+phase: active
+owner: model_maintainer
+changed_files:
+- README.md
+- repo-governance/docs/research/overlays-grids-and-morphing-borders.md
+- repo-governance/docs/research/window-frame-field-research.md
+- repo-governance/registry/ids.yaml
+- repo-governance/registry/work-packets.yaml
+- repo-governance/specification/current/INDEX.json
+- repo-governance/specification/current/primitive-feature-mix-matrix.json
+- repo-governance/specification/current/primitive-list.json
+- repo-governance/specification/current/spec-modules/master-spec.md
+- repo-governance/specification/current/spec-modules/roadmap.md
+- repo-governance/specification/current/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v2-r2-a31c2610c8cb/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v2-r2-a31c2610c8cb/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v2-r2-a31c2610c8cb/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v2-r2-a31c2610c8cb/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v2-r2-a31c2610c8cb/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v2-r2-a31c2610c8cb/specification.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-state.yaml
+- repo-governance/work-packets/active/WP-KUM-004-spec-clarifications-v1/WP-KUM-004-spec-clarifications-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-004-spec-clarifications-v1/WP-KUM-004-spec-clarifications-v1-state.yaml
+proof:
+- kind: spec_structure_and_projection_freshness
+  observed: 'python repo-governance/repo-scripts/sync.py --check passed from Kumihimo: 2 documents, 20 topics, 87
+    requirements, 18 planned features; no stale projections'
+- kind: canonical_archive_preservation
+  observed: All 6 files in v2-r2-a31c2610c8cb independently matched git show 2ef44829d0f4997b90d7136ef49b404359bd0dcb
+    for the prior current bundle byte-for-byte
+- kind: scope_preservation
+  observed: Independent comparison against 2ef44829d0f4997b90d7136ef49b404359bd0dcb confirmed 14 unrelated topics
+    and 81 existing requirements unchanged; 2 count requirements corrected, 4 requirements added
+- kind: operator_intent
+  observed: 'Inspected README, current spec, roadmap and affected research wording: no stock eight-pane direction;
+    recursive windows/tabs and illustrative 20/30 counts; four host-selected navigation modes'
+- kind: prep_only
+  observed: All 18 roadmap features remain planned with no implemented requirement refs; git diff for product and
+    tracked repo scripts is empty
+- kind: diff_check
+  observed: git diff --check -- Kumihimo passed
+blockers: []
+next_action: Commit owned corrections, push codex/handpick and independently verify the exact remote revision before
+  marking done

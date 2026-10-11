@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 2
+revision: 3
 title: Kumihimo roadmap
 updated_at: '2026-10-11'
 ---
@@ -27,7 +27,7 @@ content_blocks:
 
 All product features below remain planned. Completed repository initialization and specification work are separate from product implementation.
 
-The next useful prototype is the stock eight-pane workspace with simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
+A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 
 Browser resource management, media backgrounds and 2D/3D integrations follow their declared provider contracts. Servo integration starts with two independently resized views and measured lifecycle behavior before large saved-tab or site-compatibility claims.
 
@@ -36,6 +36,8 @@ Verification stays focused on the behavior a work packet changes. A real rendere
 ## Implemented
 
 No product features implemented yet.
+
+Current work remains preparation only. Navigation presentation is host-selectable: scrollbar, permanent minimap, both, or a temporary minimap during scrubbing.
 ```
 
 ```yaml
@@ -73,7 +75,7 @@ roadmap:
 - item_ref: FEAT-KUM-LAYOUT
   source_topic_refs:
   - TOPIC-KUM-LAYOUT
-  overview_summary: Eight-pane layouts, alignment and resizing
+  overview_summary: Nested windows, alignment and resizing
   implementation_status: planned
   implemented_requirement_refs: []
   remaining_requirement_refs:
@@ -82,6 +84,7 @@ roadmap:
   - REQ-KUM-LAYOUT-003
   - REQ-KUM-LAYOUT-004
   - REQ-KUM-LAYOUT-005
+  - REQ-KUM-LAYOUT-006
   implementation_source_revision: null
   verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
   matrix_entry_refs: []
@@ -97,6 +100,7 @@ roadmap:
   - REQ-KUM-TABS-003
   - REQ-KUM-TABS-004
   - REQ-KUM-TABS-005
+  - REQ-KUM-TABS-006
   implementation_source_revision: null
   verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
   matrix_entry_refs: []
@@ -197,6 +201,8 @@ roadmap:
   - REQ-KUM-NAVIGATION-002
   - REQ-KUM-NAVIGATION-003
   - REQ-KUM-NAVIGATION-004
+  - REQ-KUM-NAVIGATION-005
+  - REQ-KUM-NAVIGATION-006
   implementation_source_revision: null
   verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
   matrix_entry_refs: []

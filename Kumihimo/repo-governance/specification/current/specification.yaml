@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 2
-  revision: 2
+  version: 3
+  revision: 3
   status: accepted_direction_implementation_planned
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 2
-    digest: sha256:fe6b7972a30caf423928ffbba689539ef1e87b7a424b7e5aaea2bef4f28d7650
+    revision: 3
+    digest: sha256:629546ab0b4e27a7c14418a53dea838140245cba1bac44e8efe9f5778e57fc12
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -72,11 +72,13 @@ storage:
     - REQ-KUM-LAYOUT-003
     - REQ-KUM-LAYOUT-004
     - REQ-KUM-LAYOUT-005
+    - REQ-KUM-LAYOUT-006
     - ACC-KUM-LAYOUT-001
     - ACC-KUM-LAYOUT-002
     - ACC-KUM-LAYOUT-003
     - ACC-KUM-LAYOUT-004
     - ACC-KUM-LAYOUT-005
+    - ACC-KUM-LAYOUT-006
     - FEAT-KUM-LAYOUT
     - PRIM-KUM-LAYOUT
     - REL-KUM-LAYOUT
@@ -88,11 +90,13 @@ storage:
     - REQ-KUM-TABS-003
     - REQ-KUM-TABS-004
     - REQ-KUM-TABS-005
+    - REQ-KUM-TABS-006
     - ACC-KUM-TABS-001
     - ACC-KUM-TABS-002
     - ACC-KUM-TABS-003
     - ACC-KUM-TABS-004
     - ACC-KUM-TABS-005
+    - ACC-KUM-TABS-006
     - FEAT-KUM-TABS
     - PRIM-KUM-TABS
     - REL-KUM-TABS
@@ -191,10 +195,14 @@ storage:
     - REQ-KUM-NAVIGATION-002
     - REQ-KUM-NAVIGATION-003
     - REQ-KUM-NAVIGATION-004
+    - REQ-KUM-NAVIGATION-005
+    - REQ-KUM-NAVIGATION-006
     - ACC-KUM-NAVIGATION-001
     - ACC-KUM-NAVIGATION-002
     - ACC-KUM-NAVIGATION-003
     - ACC-KUM-NAVIGATION-004
+    - ACC-KUM-NAVIGATION-005
+    - ACC-KUM-NAVIGATION-006
     - FEAT-KUM-NAVIGATION
     - PRIM-KUM-NAVIGATION
     - REL-KUM-NAVIGATION
@@ -313,8 +321,8 @@ storage:
     - DEC-KUM-OPTIONAL-IDEAS
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
-    revision: 2
-    digest: sha256:7de9b0d76915114437857edfae0b5de9d74dffe1ba87818bef538e4886e29e89
+    revision: 3
+    digest: sha256:abb337217796851844b9eb3225265f73953fa8a2ac39fc1a8df387f0ff52036a
     semantic_entity_refs:
     - TOPIC-KUM-ROADMAP
   document_record_required_fields:
@@ -520,6 +528,17 @@ change_history:
   - TOPIC-KUM-MODEL
   - TOPIC-KUM-PLATFORMS
   - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
+- revision: 3
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v2-r2-a31c2610c8cb
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-LAYOUT
+  - TOPIC-KUM-NAVIGATION
+  - TOPIC-KUM-TABS
+  - TOPIC-KUM-WORKSPACE
   - TOPIC-KUM-ROADMAP
 design_status:
   accepted: Complete declared core behavior and ownership boundaries; all product features remain planned.
