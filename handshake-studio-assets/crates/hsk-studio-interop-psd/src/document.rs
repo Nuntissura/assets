@@ -60,6 +60,9 @@ pub struct PsdDocument {
     pub layer_section: LayerSection,
     /// `None` when the file ends before an image-data section.
     pub image_data: Option<ImageData>,
+    /// The 0 or 1 bytes after the layer section when too short to be an image-data section; kept
+    /// so an unmodified document re-emits byte-identically.
+    pub tail: Vec<u8>,
 }
 
 /// Whether the merged image can serve as an oracle for layer recomposition.
@@ -171,14 +174,16 @@ impl PsdDocument {
     }
 
     /// RGBA8 `(width, height, pixels)` of the merged image for use as a recomposition oracle.
-    /// `Ok(None)` when the file says the merged image is a placeholder (`hasRealMergedData` = 0),
-    /// when there is none, or when the colour mode or depth has no 8-bit conversion here.
+    /// `Ok(None)` unless resource 1057 says `hasRealMergedData` (a placeholder, or a file that does
+    /// not say, is never served as an oracle; callers wanting the pixels anyway use
+    /// [`PsdDocument::decode_merged`]), when there is none, or when the colour mode or depth has no
+    /// 8-bit conversion here.
     pub fn merged_oracle_rgba8(
         &self,
         limits: &Limits,
         cancel: &CancellationToken,
     ) -> Result<Option<(u32, u32, Vec<u8>)>> {
-        if self.merged_status(limits) == MergedStatus::Placeholder {
+        if self.merged_status(limits) != MergedStatus::Real {
             return Ok(None);
         }
         let Some(image) = self.decode_merged(limits, cancel)? else {
@@ -252,13 +257,13 @@ pub fn read_psd(bytes: &[u8], limits: &Limits, cancel: &CancellationToken) -> Re
     let section_len = r.length(psb, "layer_and_mask")?;
     let layer_section = read_layer_section(r.bytes(section_len, "layer_and_mask")?, &header, limits, cancel)?;
 
-    let image_data = if r.remaining() >= 2 {
+    let (image_data, tail) = if r.remaining() >= 2 {
         let compression = r.u16("image_data")?;
-        Some(ImageData { compression, data: r.rest().to_vec() })
+        (Some(ImageData { compression, data: r.rest().to_vec() }), Vec::new())
     } else {
-        None
+        (None, r.rest().to_vec())
     };
-    Ok(PsdDocument { header, color_mode_data, resources, layer_section, image_data })
+    Ok(PsdDocument { header, color_mode_data, resources, layer_section, image_data, tail })
 }
 
 fn read_layer_section(

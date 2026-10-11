@@ -8,6 +8,7 @@ use crate::error::{PsdError, Result};
 use crate::header::Header;
 use crate::layers::PsdLayer;
 use crate::limits::Limits;
+use crate::samples::{SixteenBitScale, sample_to_unit};
 
 /// One decoded channel plane: `height` rows of `row_bytes(width, depth)` bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +46,24 @@ impl Plane {
             }
             _ => None,
         }
+    }
+
+    /// Sample `index` (row-major, `y * width + x`) in document units, see
+    /// [`crate::samples::sample_to_unit`]. Integer depths 8 and 16 and 32-bit floats only.
+    pub fn unit_at(&self, index: usize, scale: SixteenBitScale) -> Option<f32> {
+        let raw = match self.depth {
+            8 => u32::from(*self.bytes.get(index)?),
+            16 => {
+                let b = self.bytes.get(index * 2..index * 2 + 2)?;
+                u32::from(u16::from_be_bytes([b[0], b[1]]))
+            }
+            32 => {
+                let b = self.bytes.get(index * 4..index * 4 + 4)?;
+                u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+            }
+            _ => return None,
+        };
+        Some(sample_to_unit(raw, self.depth, scale))
     }
 
     /// Samples as numbers in 0..=1 (8-bit /255, 16-bit /65535, 32-bit float as stored, 1-bit

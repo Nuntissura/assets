@@ -3,6 +3,7 @@
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_interop_psd::*;
+use hsk_studio_pigment::blend_math::StudioBlendMode;
 
 fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
     use std::{
@@ -379,12 +380,12 @@ fn layers_groups_resources_and_merged_decode() {
         let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["base", "</Layer group>", "bg", "fg", "zip", "Group \u{fc}"]);
         let bg = &layers[2];
-        assert_eq!((bg.blend_mode(), bg.opacity, bg.clipping), (Some(BlendMode::Multiply), 128, 0));
+        assert_eq!((bg.blend_mode(), bg.opacity, bg.clipping), (Some(StudioBlendMode::Multiply), 128, 0));
         assert!(bg.visible());
         let fg = &layers[3];
-        assert_eq!((fg.blend_mode(), fg.clipping), (Some(BlendMode::Screen), 1));
+        assert_eq!((fg.blend_mode(), fg.clipping), (Some(StudioBlendMode::Screen), 1));
         assert!(fg.hidden(), "flags bit 1 set means hidden");
-        assert_eq!(layers[5].blend_mode(), Some(BlendMode::PassThrough));
+        assert_eq!(layers[5].blend_mode(), Some(StudioBlendMode::PassThrough));
         assert_eq!(layers[5].group_role(), GroupRole::OpenFolder);
         assert_eq!(layers[5].group_blend_key(), Some(*b"pass"));
         assert_eq!(layers[1].group_role(), GroupRole::BoundingDivider);
@@ -709,8 +710,8 @@ fn proposal_edit_loop_roundtrip_and_observe() {
         let doc = read(&original);
         let source = SourceIdentity::of(&original);
         let budget = Budget { input_bytes: 8 << 20, payload_bytes: 4 << 20, ..Budget::default() };
-        let cfg = ProposalConfig { limits: &limits, budget, resolver: &Open };
-        let proposal = to_proposal(&doc, &source, &cfg, &mut Mint(0), &cancel).expect("proposal");
+        let cfg = ProposalConfig::new(&limits, budget, &Open);
+        let proposal = to_proposal(&doc, &source, &cfg, &mut Mint(0), None, &cancel).expect("proposal");
         let folio_doc = proposal.snapshot.document();
         let names: Vec<&str> = folio_doc.layers.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["Group \u{fc}", "zip", "fg", "bg", "base"], "dividers are structure, not layers");
@@ -724,6 +725,11 @@ fn proposal_edit_loop_roundtrip_and_observe() {
         assert_eq!(folio_doc.colour_mode, 2);
         assert_eq!(folio_doc.artboards.len(), 1);
         assert_eq!(folio_doc.graph.outputs.len(), 2);
+        assert_eq!(
+            [folio_doc.graph.outputs[0].operation_key.as_str(), folio_doc.graph.outputs[1].operation_key.as_str()],
+            ["source", "mix"],
+            "root outputs are bottom-most first, like group inputs"
+        );
         let into_group: Vec<&str> = folio_doc
             .graph
             .edges
@@ -741,9 +747,9 @@ fn proposal_edit_loop_roundtrip_and_observe() {
         assert_eq!((bg_look.opacity, bg_look.fill_opacity, bg_look.blend_mode, bg_look.clipped), (50.2, 100.0, 5, false));
         assert_eq!(bg_look.isolation, Isolation::Isolated);
         // every one of the 28 PSD keys has a Studio member, and no two keys share one
-        let studio: std::collections::BTreeSet<u16> = BlendMode::ALL.iter().map(|m| m.studio_mode() as u16).collect();
+        let studio: std::collections::BTreeSet<u16> = PSD_BLEND_KEYS.iter().map(|(_, m)| m.discriminant()).collect();
         assert_eq!(studio.len(), 28);
-        assert_eq!(BlendMode::Multiply.studio_mode() as u16, bg_look.blend_mode);
+        assert_eq!(StudioBlendMode::Multiply.discriminant(), bg_look.blend_mode);
         let fg_look = explicit("fg");
         assert_eq!((fg_look.blend_mode, fg_look.clipped, fg_look.fill_opacity, fg_look.opacity), (9, true, 50.2, 100.0));
         let group_look = explicit("Group \u{fc}");
@@ -858,6 +864,6 @@ fn proposal_edit_loop_roundtrip_and_observe() {
         assert_eq!(receipt.outcome, Outcome::Canceled);
         assert_eq!(sink.0.len(), 1);
         // a pre-cancelled proposal stops before any work
-        assert_eq!(to_proposal(&doc, &source, &cfg, &mut Mint(0), &stopped).err().map(PsdError::code), Some("psd_canceled"));
+        assert_eq!(to_proposal(&doc, &source, &cfg, &mut Mint(0), None, &stopped).err().map(PsdError::code), Some("psd_canceled"));
     });
 }

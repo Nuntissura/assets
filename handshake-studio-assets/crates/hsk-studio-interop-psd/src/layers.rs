@@ -3,7 +3,7 @@
 
 use hsk_studio_accord::CancellationToken;
 
-use crate::blend::BlendMode;
+use crate::blend::{StudioBlendMode, studio_blend_for_key};
 use crate::compression::{self, PlaneGeometry};
 use crate::error::{PsdError, Result};
 use crate::header::Header;
@@ -163,6 +163,37 @@ pub enum GroupRole {
     Unknown(u32),
 }
 
+/// Bytes of the values announced by a mask-parameters flags byte (user density 1, user feather 8,
+/// vector density 1, vector feather 8).
+fn mask_parameter_bytes(flags: u8) -> usize {
+    usize::from(flags & 1 != 0) + 8 * usize::from(flags & 2 != 0) + usize::from(flags & 4 != 0) + 8 * usize::from(flags & 8 != 0)
+}
+
+/// Offset of the real-mask fields (flags, background, rectangle: 18 bytes) when mask flags bit 4
+/// says a parameters block is present. The specification text puts the parameters first and the
+/// real-mask fields after them; files written by Photoshop are read by other implementations with
+/// the real-mask fields first (at 18) and the parameters at 36. Both layouts are checked against
+/// the record length (at most 3 padding bytes may follow); when both fit, the Photoshop order wins
+/// unless its fields are implausible (real background not 0 or 255, or undefined parameter flag
+/// bits) while the specification order reads soundly. UNVERIFIED against a Photoshop-authored file.
+fn real_offset_with_parameters(d: &[u8]) -> Option<usize> {
+    let block = |at: usize| d.get(at).map(|&pf| 1 + mask_parameter_bytes(pf));
+    let tail_ok = |end: usize| end <= d.len() && d.len() - end <= 3;
+    let spec = block(18).map(|n| 18 + n).filter(|&at| tail_ok(at + 18));
+    let observed = block(36).filter(|&n| tail_ok(36 + n)).map(|_| 18usize);
+    let background_ok = |at: usize| d.get(at + 1).is_some_and(|&bg| bg == 0 || bg == 255);
+    match (spec, observed) {
+        (Some(s), Some(o)) => {
+            let observed_plausible = background_ok(o) && d.get(36).is_some_and(|&pf| pf & 0xF0 == 0);
+            let spec_plausible = d.get(18).is_some_and(|&pf| pf & 0xF0 == 0) && background_ok(s);
+            Some(if observed_plausible || !spec_plausible { o } else { s })
+        }
+        (Some(s), None) => Some(s),
+        (None, Some(o)) => Some(o),
+        (None, None) => None,
+    }
+}
+
 /// Parsed view of the layer mask data (the raw bytes stay authoritative).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerMask {
@@ -172,6 +203,10 @@ pub struct LayerMask {
     pub real_flags: Option<u8>,
     pub real_default_color: Option<u8>,
     pub real_rect: Option<Rect>,
+    /// Offset of `flags` in the raw mask data.
+    pub flags_offset: usize,
+    /// Offset of `real_flags` in the raw mask data, when real-mask fields are present.
+    pub real_flags_offset: Option<usize>,
 }
 
 impl LayerMask {
@@ -184,13 +219,21 @@ impl LayerMask {
         let rect = Rect::read(&mut r, "mask").ok()?;
         let default_color = r.u8("mask").ok()?;
         let flags = r.u8("mask").ok()?;
-        // Real-mask fields follow only in the 36-byte form without a parameters byte.
-        let (real_flags, real_default_color, real_rect) = if raw.len() >= 36 && flags & 0x10 == 0 {
-            (r.u8("mask").ok(), r.u8("mask").ok(), Rect::read(&mut r, "mask").ok())
-        } else {
-            (None, None, None)
-        };
-        Some(Self { rect, default_color, flags, real_flags, real_default_color, real_rect })
+        let real_at = if flags & 0x10 == 0 { (raw.len() >= 36).then_some(18) } else { real_offset_with_parameters(raw) };
+        let real = real_at.and_then(|at| {
+            let mut r = Reader::new(raw.get(at..)?);
+            Some((r.u8("mask").ok()?, r.u8("mask").ok()?, Rect::read(&mut r, "mask").ok()?))
+        });
+        Some(Self {
+            rect,
+            default_color,
+            flags,
+            real_flags: real.map(|(f, _, _)| f),
+            real_default_color: real.map(|(_, c, _)| c),
+            real_rect: real.map(|(_, _, rect)| rect),
+            flags_offset: 17,
+            real_flags_offset: real.and(real_at),
+        })
     }
 }
 
@@ -272,8 +315,8 @@ impl PsdLayer {
     }
 
     /// `None` when the key is not one of the 28 known keys (a typed loss, never Normal).
-    pub fn blend_mode(&self) -> Option<BlendMode> {
-        BlendMode::from_key(self.blend_key)
+    pub fn blend_mode(&self) -> Option<StudioBlendMode> {
+        studio_blend_for_key(self.blend_key)
     }
 
     pub fn block(&self, key: &[u8; 4]) -> Option<&TaggedBlock> {

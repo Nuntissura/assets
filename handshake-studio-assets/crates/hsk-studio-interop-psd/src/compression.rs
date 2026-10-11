@@ -91,7 +91,8 @@ fn decode_rle(data: &[u8], geometry: PlaneGeometry, total: usize, cancel: &Cance
         return Err(PsdError::RleRowCounts);
     }
     let (counts, mut body) = data.split_at(table);
-    let mut out = Vec::with_capacity(total);
+    // PackBits expands at most 64:1, so the table's own size bounds the useful capacity.
+    let mut out = Vec::with_capacity(total.min(data.len().saturating_mul(64)));
     for (row, chunk) in counts.chunks_exact(count_width).enumerate() {
         if row % 256 == 0 {
             cancel.check()?;

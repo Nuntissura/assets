@@ -122,6 +122,7 @@ pub fn write_psd(doc: &PsdDocument, limits: &Limits) -> Result<Vec<u8>> {
         out.extend_from_slice(&image.compression.to_be_bytes());
         out.extend_from_slice(&image.data);
     }
+    out.extend_from_slice(&doc.tail);
     if out.len() > limits.max_input_bytes {
         return Err(PsdError::InputTooLarge);
     }

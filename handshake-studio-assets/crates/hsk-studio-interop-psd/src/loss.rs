@@ -2,7 +2,7 @@
 //! Codes are fixed strings; paths contain indices and sanitized four-character keys only,
 //! never layer names or other source text.
 
-use crate::blend::BlendMode;
+use crate::blend::{StudioBlendMode, studio_blend_for_key};
 use crate::document::{MergedStatus, PsdDocument};
 use crate::header::ColorMode;
 use crate::layers::{GroupRole, PsdLayer};
@@ -122,7 +122,11 @@ fn layer_entries(i: usize, layer: &PsdLayer, report: &mut LossReport) {
         // Never mapped to Normal: the key stays verbatim in the record.
         report.push(at("blend"), LossKind::Unsupported, "blend_mode_unknown");
     }
-    if layer.blend_mode() == Some(BlendMode::PassThrough) && layer.group_role() == GroupRole::None {
+    let folder = matches!(
+        layer.group_role(),
+        GroupRole::OpenFolder | GroupRole::ClosedFolder | GroupRole::BoundingDivider
+    );
+    if layer.blend_mode() == Some(StudioBlendMode::PassThrough) && !folder {
         // `pass` is a group property; on a leaf it has no Studio meaning and is not mapped to Normal.
         report.push(at("blend"), LossKind::Unsupported, "pass_through_on_leaf_layer");
     }
@@ -197,6 +201,9 @@ impl PsdDocument {
         if self.image_data.is_none() {
             report.push("image_data".into(), LossKind::Unsupported, "image_data_missing");
         }
+        if !self.tail.is_empty() {
+            report.push("file/tail".into(), LossKind::PreservedOpaque, "file_tail_preserved");
+        }
         for (i, layer) in self.layers().iter().enumerate() {
             layer_entries(i, layer, &mut report);
         }
@@ -219,6 +226,6 @@ impl PsdDocument {
 
     /// Blend modes present in layers whose keys are not among the 28 known ones.
     pub fn unknown_blend_keys(&self) -> Vec<[u8; 4]> {
-        self.layers().iter().filter(|l| BlendMode::from_key(l.blend_key).is_none()).map(|l| l.blend_key).collect()
+        self.layers().iter().filter(|l| studio_blend_for_key(l.blend_key).is_none()).map(|l| l.blend_key).collect()
     }
 }

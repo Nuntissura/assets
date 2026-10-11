@@ -1,176 +1,52 @@
-//! Blend mode keys exactly as stored in layer records. A key that is not in [`BlendMode::ALL`]
-//! is a typed loss: it must never be mapped to Normal. The four-byte key is always kept
-//! verbatim by the layer record.
+//! PSD blend-mode keys. The enumeration, its facts and the per-pixel maths belong to Pigment
+//! (`blend_math::StudioBlendMode`, single owner, CX-CAP-001); this module is only the PSD key
+//! vocabulary that maps a four-byte record key to that enumeration. The key bytes themselves are
+//! always kept verbatim by the layer record, so a key without a member (any key outside this
+//! table) is a typed loss and is never mapped to Normal.
 
-use hsk_studio_pigment::blend_math::StudioBlendMode;
+use hsk_studio_pigment::blend_math::StudioBlendMode as Mode;
+pub use hsk_studio_pigment::blend_math::StudioBlendMode;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BlendMode {
-    PassThrough,
-    Normal,
-    Dissolve,
-    Darken,
-    Multiply,
-    ColorBurn,
-    LinearBurn,
-    DarkerColor,
-    Lighten,
-    Screen,
-    ColorDodge,
-    LinearDodge,
-    LighterColor,
-    Overlay,
-    SoftLight,
-    HardLight,
-    VividLight,
-    LinearLight,
-    PinLight,
-    HardMix,
-    Difference,
-    Exclusion,
-    Subtract,
-    Divide,
-    Hue,
-    Saturation,
-    Color,
-    Luminosity,
+/// The 28 PSD layer blend keys (specification: Layer records, blend mode key) and their Studio
+/// members. `pass` is a group property: Pigment lists it as group-only.
+pub const PSD_BLEND_KEYS: [([u8; 4], StudioBlendMode); 28] = [
+    (*b"pass", Mode::PassThrough),
+    (*b"norm", Mode::Normal),
+    (*b"diss", Mode::Dissolve),
+    (*b"dark", Mode::Darken),
+    (*b"mul ", Mode::Multiply),
+    (*b"idiv", Mode::ColourBurn),
+    (*b"lbrn", Mode::LinearBurn),
+    (*b"dkCl", Mode::DarkerColour),
+    (*b"lite", Mode::Lighten),
+    (*b"scrn", Mode::Screen),
+    (*b"div ", Mode::ColourDodge),
+    (*b"lddg", Mode::LinearDodgeAdd),
+    (*b"lgCl", Mode::LighterColour),
+    (*b"over", Mode::Overlay),
+    (*b"sLit", Mode::SoftLight),
+    (*b"hLit", Mode::HardLight),
+    (*b"vLit", Mode::VividLight),
+    (*b"lLit", Mode::LinearLight),
+    (*b"pLit", Mode::PinLight),
+    (*b"hMix", Mode::HardMix),
+    (*b"diff", Mode::Difference),
+    (*b"smud", Mode::Exclusion),
+    (*b"fsub", Mode::Subtract),
+    (*b"fdiv", Mode::Divide),
+    (*b"hue ", Mode::Hue),
+    (*b"sat ", Mode::Saturation),
+    (*b"colr", Mode::Colour),
+    (*b"lum ", Mode::Luminosity),
+];
+
+/// The Studio member for a PSD key, `None` for a key outside the 28 known ones.
+pub fn studio_blend_for_key(key: [u8; 4]) -> Option<StudioBlendMode> {
+    PSD_BLEND_KEYS.iter().find(|(k, _)| *k == key).map(|(_, mode)| *mode)
 }
 
-impl BlendMode {
-    pub const ALL: [BlendMode; 28] = [
-        Self::PassThrough,
-        Self::Normal,
-        Self::Dissolve,
-        Self::Darken,
-        Self::Multiply,
-        Self::ColorBurn,
-        Self::LinearBurn,
-        Self::DarkerColor,
-        Self::Lighten,
-        Self::Screen,
-        Self::ColorDodge,
-        Self::LinearDodge,
-        Self::LighterColor,
-        Self::Overlay,
-        Self::SoftLight,
-        Self::HardLight,
-        Self::VividLight,
-        Self::LinearLight,
-        Self::PinLight,
-        Self::HardMix,
-        Self::Difference,
-        Self::Exclusion,
-        Self::Subtract,
-        Self::Divide,
-        Self::Hue,
-        Self::Saturation,
-        Self::Color,
-        Self::Luminosity,
-    ];
-
-    /// The four-byte key as stored in a layer record.
-    pub fn key(self) -> [u8; 4] {
-        *match self {
-            Self::PassThrough => b"pass",
-            Self::Normal => b"norm",
-            Self::Dissolve => b"diss",
-            Self::Darken => b"dark",
-            Self::Multiply => b"mul ",
-            Self::ColorBurn => b"idiv",
-            Self::LinearBurn => b"lbrn",
-            Self::DarkerColor => b"dkCl",
-            Self::Lighten => b"lite",
-            Self::Screen => b"scrn",
-            Self::ColorDodge => b"div ",
-            Self::LinearDodge => b"lddg",
-            Self::LighterColor => b"lgCl",
-            Self::Overlay => b"over",
-            Self::SoftLight => b"sLit",
-            Self::HardLight => b"hLit",
-            Self::VividLight => b"vLit",
-            Self::LinearLight => b"lLit",
-            Self::PinLight => b"pLit",
-            Self::HardMix => b"hMix",
-            Self::Difference => b"diff",
-            Self::Exclusion => b"smud",
-            Self::Subtract => b"fsub",
-            Self::Divide => b"fdiv",
-            Self::Hue => b"hue ",
-            Self::Saturation => b"sat ",
-            Self::Color => b"colr",
-            Self::Luminosity => b"lum ",
-        }
-    }
-
-    pub fn from_key(key: [u8; 4]) -> Option<Self> {
-        Self::ALL.into_iter().find(|mode| mode.key() == key)
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::PassThrough => "pass_through",
-            Self::Normal => "normal",
-            Self::Dissolve => "dissolve",
-            Self::Darken => "darken",
-            Self::Multiply => "multiply",
-            Self::ColorBurn => "color_burn",
-            Self::LinearBurn => "linear_burn",
-            Self::DarkerColor => "darker_color",
-            Self::Lighten => "lighten",
-            Self::Screen => "screen",
-            Self::ColorDodge => "color_dodge",
-            Self::LinearDodge => "linear_dodge",
-            Self::LighterColor => "lighter_color",
-            Self::Overlay => "overlay",
-            Self::SoftLight => "soft_light",
-            Self::HardLight => "hard_light",
-            Self::VividLight => "vivid_light",
-            Self::LinearLight => "linear_light",
-            Self::PinLight => "pin_light",
-            Self::HardMix => "hard_mix",
-            Self::Difference => "difference",
-            Self::Exclusion => "exclusion",
-            Self::Subtract => "subtract",
-            Self::Divide => "divide",
-            Self::Hue => "hue",
-            Self::Saturation => "saturation",
-            Self::Color => "color",
-            Self::Luminosity => "luminosity",
-        }
-    }
-
-    /// The Studio blend member for this PSD key. Pigment owns the enumeration, its facts and the
-    /// per-pixel math; this table is only the PSD key vocabulary.
-    pub fn studio_mode(self) -> StudioBlendMode {
-        match self {
-            Self::PassThrough => StudioBlendMode::PassThrough,
-            Self::Normal => StudioBlendMode::Normal,
-            Self::Dissolve => StudioBlendMode::Dissolve,
-            Self::Darken => StudioBlendMode::Darken,
-            Self::Multiply => StudioBlendMode::Multiply,
-            Self::ColorBurn => StudioBlendMode::ColourBurn,
-            Self::LinearBurn => StudioBlendMode::LinearBurn,
-            Self::DarkerColor => StudioBlendMode::DarkerColour,
-            Self::Lighten => StudioBlendMode::Lighten,
-            Self::Screen => StudioBlendMode::Screen,
-            Self::ColorDodge => StudioBlendMode::ColourDodge,
-            Self::LinearDodge => StudioBlendMode::LinearDodgeAdd,
-            Self::LighterColor => StudioBlendMode::LighterColour,
-            Self::Overlay => StudioBlendMode::Overlay,
-            Self::SoftLight => StudioBlendMode::SoftLight,
-            Self::HardLight => StudioBlendMode::HardLight,
-            Self::VividLight => StudioBlendMode::VividLight,
-            Self::LinearLight => StudioBlendMode::LinearLight,
-            Self::PinLight => StudioBlendMode::PinLight,
-            Self::HardMix => StudioBlendMode::HardMix,
-            Self::Difference => StudioBlendMode::Difference,
-            Self::Exclusion => StudioBlendMode::Exclusion,
-            Self::Subtract => StudioBlendMode::Subtract,
-            Self::Divide => StudioBlendMode::Divide,
-            Self::Hue => StudioBlendMode::Hue,
-            Self::Saturation => StudioBlendMode::Saturation,
-            Self::Color => StudioBlendMode::Colour,
-            Self::Luminosity => StudioBlendMode::Luminosity,
-        }
-    }
+/// The PSD key for a Studio member, `None` for members with no PSD layer key (`behind`, `clear`
+/// and the STU-RAS-039 members 31..=35).
+pub fn psd_key_for(mode: StudioBlendMode) -> Option<[u8; 4]> {
+    PSD_BLEND_KEYS.iter().find(|(_, m)| *m == mode).map(|(key, _)| *key)
 }

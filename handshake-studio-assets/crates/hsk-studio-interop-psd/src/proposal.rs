@@ -1,11 +1,16 @@
 //! Import proposal: maps a parsed [`PsdDocument`] to a Folio snapshot plus the data Folio does
-//! not hold (pixels as Pigment tiles, per-layer appearance, loss report, provenance). The result
+//! not hold (pixels as Pigment tiles, PSD-only layer extras, loss report, provenance). The result
 //! is a PROPOSAL; identity minting, publication of tiles and profile resolution stay with the
 //! host.
 //!
-//! Slice scope: 8-bit RGB or grayscale documents map pixels; every other mode or depth keeps the
-//! hierarchy and reports the raster layers as unmapped. Folio v1 has no layer opacity, blend,
-//! clipping or mask fields, so those travel in [`LayerAppearance`] and are reported once.
+//! Pixel scope: RGB and grayscale documents at 8, 16 and 32 bits map to linear-light `rgb_f32le`
+//! tiles at full precision (integer samples are converted in f64 and stored as f32; nothing is
+//! quantized to 8 bits). With a [`IccConverter`] and an embedded profile the converter accepts, RGB
+//! 8/16-bit pixels are converted through it into its working space; otherwise sRGB is assumed
+//! (8/16-bit) or the floats are taken as already linear (32-bit), and the loss report says so.
+//! CMYK and Lab documents keep their hierarchy and report raster layers as unmapped (no display
+//! conversion exists yet: dependency on lane SMB-PRISM-ENG-3). Opacity, fill opacity, blend mode,
+//! clipping, group isolation and the mask reference are written to the Folio layer.
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, Inspection, Resolver, Snapshot, inspect_bytes};
@@ -13,7 +18,8 @@ use hsk_studio_pigment::Grid;
 use hsk_studio_prism::{hash_hex, profile_hash};
 use serde_json::{Value, json};
 
-use crate::blend::BlendMode;
+use crate::blend::StudioBlendMode;
+use crate::convert::{IccConverter, refusal_code};
 use crate::document::{PsdDocument, TreeNode};
 use crate::error::{PsdError, Result};
 use crate::header::ColorMode;
@@ -21,11 +27,13 @@ use crate::layers::{GroupRole, PsdLayer};
 use crate::limits::Limits;
 use crate::loss::{LossKind, LossReport, key_text};
 use crate::resources::{RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED};
+use crate::samples::{SixteenBitScale, srgb_to_linear};
 
 /// Pigment tile edge in pixels (columns and rows are cells of a canvas-origin grid).
 pub const TILE_EDGE: u32 = 256;
 const TILE_FORMAT: &str = "rgb_f32le";
-const MASK_FORMAT: &str = "coverage_u8";
+pub(crate) const MASK_FORMAT_U8: &str = "coverage_u8";
+pub(crate) const MASK_FORMAT_U16: &str = "coverage_u16le";
 const MAX_EMBEDDED_OPAQUE_BYTES: usize = 65_536;
 
 const ADJUSTMENT_KEYS: [&[u8; 4]; 17] = [
@@ -43,7 +51,8 @@ pub trait IdMint {
     fn artboard_id(&mut self) -> String;
     /// `SLYR-...`
     fn layer_id(&mut self) -> String;
-    /// `SCPF-...`: the profile the tiles are expressed in (linear light, sRGB primaries).
+    /// `SCPF-...`: the profile the tiles are expressed in when no converter applies (linear
+    /// light, sRGB primaries).
     fn linear_working_profile_id(&mut self) -> String;
     /// Non-empty handle naming where the host will publish this tile's bytes.
     fn tile_manifest_id(&mut self, layer_id: &str, object_key: &str) -> String;
@@ -66,6 +75,14 @@ pub struct ProposalConfig<'a> {
     pub limits: &'a Limits,
     pub budget: Budget,
     pub resolver: &'a dyn Resolver,
+    /// Interpretation of 16-bit samples (UNVERIFIED which one Photoshop uses; default full range).
+    pub scale: SixteenBitScale,
+}
+
+impl<'a> ProposalConfig<'a> {
+    pub fn new(limits: &'a Limits, budget: Budget, resolver: &'a dyn Resolver) -> Self {
+        Self { limits, budget, resolver, scale: SixteenBitScale::default() }
+    }
 }
 
 /// One tile's pixels: a linear-light `rgb_f32le` colour plane and a separate straight `f32le`
@@ -84,13 +101,16 @@ pub struct TileBlob {
     pub content_sha256_hex: String,
 }
 
-/// One mask coverage tile: `coverage_u8`, one full grid cell, straight 0..=255.
+/// One mask coverage tile, one full grid cell: `coverage_u8` for 8-bit documents, otherwise
+/// `coverage_u16le` (16-bit samples, and 32-bit floats quantized to 16 bits).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MaskTileBlob {
     pub layer_id: String,
     pub object_key: String,
     pub column: i64,
     pub row: i64,
+    /// `coverage_u8` or `coverage_u16le`.
+    pub format: &'static str,
     pub coverage: Vec<u8>,
     /// Digest recorded in the Folio mask `TileRef`: SHA-256 over `coverage`.
     pub sha256_hex: String,
@@ -126,9 +146,13 @@ pub struct Provenance {
     pub psd_version: u16,
     pub width: u32,
     pub height: u32,
-    /// sRGB was assumed (no usable profile was applied); see the loss report.
+    pub depth: u16,
+    /// sRGB (or, at 32 bits, linear light) was assumed: no profile conversion was applied.
     pub assumed_profile: bool,
+    /// The embedded ICC profile was applied through the converter (tiles are in its working space).
+    pub icc_converted: bool,
     pub icc_sha256_hex: Option<String>,
+    pub sixteen_bit_scale: SixteenBitScale,
 }
 
 #[derive(Clone, Debug)]
@@ -144,7 +168,8 @@ pub struct ImportProposal {
 
 impl ImportProposal {
     /// Copies names and visibility from an edited snapshot back onto the matching PSD layers and
-    /// returns how many layers changed. Nothing else is touched.
+    /// returns how many layers changed. Nothing else is touched; see `export` for the full set of
+    /// layer properties.
     pub fn apply_to_document(&self, doc: &mut PsdDocument, edited: &Snapshot) -> usize {
         let Some(info) = doc.layer_section.layer_info.as_mut() else {
             return 0;
@@ -193,26 +218,27 @@ fn address(layer_id: &str, operation: &str, port: &str) -> Value {
     json!({"layer_id": layer_id, "operation_key": operation, "port_key": port})
 }
 
-/// `sRGB` encoded 8-bit value to linear light (IEC 61966-2-1).
-fn srgb_lut() -> [f32; 256] {
-    std::array::from_fn(|i| {
-        let v = i as f32 / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-    })
-}
-
-fn floor_div(a: i64, b: i64) -> i64 {
+pub(crate) fn floor_div(a: i64, b: i64) -> i64 {
     a.div_euclid(b)
 }
 
-struct Builder<'a, 'm> {
+/// Percent with one decimal (STU-RAS-006 precision) from a PSD 0..=255 byte; the inverse rounding
+/// returns the same byte.
+pub(crate) fn percent_of_byte(byte: u8) -> f64 {
+    (f64::from(byte) * 100.0 / 255.0 * 10.0).round() / 10.0
+}
+
+struct Builder<'a, 'm, 'c> {
     doc: &'a PsdDocument,
     cfg: &'a ProposalConfig<'a>,
     mint: &'m mut dyn IdMint,
+    converter: Option<&'c mut (dyn IccConverter + 'c)>,
     cancel: &'a CancellationToken,
     profile_id: String,
     pixels_mapped: bool,
-    lut: [f32; 256],
+    unmapped_reason: &'static str,
+    icc_active: bool,
+    icc_range_clamped: bool,
     layers: Vec<Value>,
     operations: Vec<Value>,
     edges: Vec<Value>,
@@ -224,7 +250,7 @@ struct Builder<'a, 'm> {
     tile_bytes: usize,
 }
 
-impl Builder<'_, '_> {
+impl Builder<'_, '_, '_> {
     fn note(&mut self, path: String, kind: LossKind, code: &'static str) {
         self.loss.entries.push(crate::loss::LossEntry { path, kind, code });
     }
@@ -249,14 +275,13 @@ impl Builder<'_, '_> {
     /// extras.
     fn appearance_json(layer: &PsdLayer, is_group: bool, mask: Option<Value>) -> Value {
         let (blend, isolation) = match (is_group, layer.blend_mode()) {
-            (true, Some(BlendMode::PassThrough)) => (1u16, "pass_through"),
-            (_, Some(mode)) => (mode.studio_mode() as u16, "isolated"),
+            (true, Some(StudioBlendMode::PassThrough)) => (1u16, "pass_through"),
+            (_, Some(mode)) => (mode.discriminant(), "isolated"),
             (_, None) => (2u16, "isolated"),
         };
-        let percent = |byte: u8| (f64::from(byte) * 100.0 / 255.0 * 10.0).round() / 10.0;
         let mut a = json!({
-            "opacity": percent(layer.opacity),
-            "fill_opacity": percent(layer.fill_opacity().unwrap_or(255)),
+            "opacity": percent_of_byte(layer.opacity),
+            "fill_opacity": percent_of_byte(layer.fill_opacity().unwrap_or(255)),
             "blend_mode": blend,
             "clipped": layer.clipping == 1,
             "isolation": isolation,
@@ -326,8 +351,11 @@ impl Builder<'_, '_> {
         let adjustment = layer.blocks.iter().find(|b| ADJUSTMENT_KEYS.contains(&&b.key));
         let fill = layer.blocks.iter().find(|b| FILL_KEYS.contains(&&b.key));
         if let Some(block) = adjustment.or(fill) {
-            let (kind, code) =
-                if adjustment.is_some() { ("psd_adjustment", "adjustment_layer_unsupported_payload") } else { ("psd_fill", "fill_layer_unsupported_payload") };
+            let (kind, code) = if adjustment.is_some() {
+                ("psd_adjustment", "adjustment_layer_unsupported_payload")
+            } else {
+                ("psd_fill", "fill_layer_unsupported_payload")
+            };
             let embedded = if block.data.len() <= MAX_EMBEDDED_OPAQUE_BYTES { block.data.clone() } else { Vec::new() };
             if embedded.is_empty() && !block.data.is_empty() {
                 self.note(format!("layer[{index}]"), LossKind::PreservedOpaque, "opaque_payload_not_embedded");
@@ -351,11 +379,11 @@ impl Builder<'_, '_> {
         // becomes an explicit unsupported payload instead of a silent Normal.
         let blend_problem = match layer.blend_mode() {
             None => Some("blend_mode_unknown"),
-            Some(BlendMode::PassThrough) => Some("pass_through_on_leaf_layer"),
+            Some(StudioBlendMode::PassThrough) => Some("pass_through_on_leaf_layer"),
             Some(_) => None,
         };
         if !self.pixels_mapped || blend_problem.is_some() {
-            let reason = blend_problem.unwrap_or("color_mode_or_depth_unmapped");
+            let reason = blend_problem.unwrap_or(self.unmapped_reason);
             self.layers.push(json!({
                 "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
                 "kind": "psd_raster_unmapped",
@@ -387,7 +415,8 @@ impl Builder<'_, '_> {
     /// Folio `StudioMask` for the layer's user mask (the real user mask when both a user and a
     /// vector mask exist): coverage tiles over the layer rectangle (the mask rectangle for a layer
     /// without pixels), `default_color` outside the mask rectangle. Flags: bit 1 disabled; bit 0
-    /// ("position relative to layer") is read as linked (UNVERIFIED against Photoshop).
+    /// ("position relative to layer") is read as linked (UNVERIFIED against Photoshop). 8-bit
+    /// documents use `coverage_u8`; 16-bit samples and 32-bit floats use `coverage_u16le`.
     fn mask_for(&mut self, index: usize, layer: &PsdLayer, layer_id: &str) -> Result<Option<Value>> {
         if !self.pixels_mapped {
             return Ok(None);
@@ -396,6 +425,8 @@ impl Builder<'_, '_> {
             return Ok(None);
         };
         let header = &self.doc.header;
+        let depth = header.depth;
+        let scale = self.cfg.scale;
         let real = layer.channels.iter().any(|c| c.id == -3) && mask.real_rect.is_some();
         let channel_id: i16 = if real { -3 } else { -2 };
         let (rect, default, flags) = if real {
@@ -416,6 +447,11 @@ impl Builder<'_, '_> {
             self.note(format!("layer[{index}]/mask"), LossKind::Unsupported, "mask_channel_missing");
             return Ok(None);
         };
+        let wide = depth != 8;
+        let format = if wide { MASK_FORMAT_U16 } else { MASK_FORMAT_U8 };
+        if depth == 32 {
+            self.note(format!("layer[{index}]/mask"), LossKind::Transformed, "mask_float_quantized_u16");
+        }
         let region = if layer.rect.area() > 0 { layer.rect } else { rect };
         let mut refs = Vec::new();
         if region.area() > 0 {
@@ -426,6 +462,8 @@ impl Builder<'_, '_> {
             let (mleft, mtop) = (i64::from(rect.left), i64::from(rect.top));
             let (mright, mbottom) = (i64::from(rect.right), i64::from(rect.bottom));
             let mwidth = rect.width() as usize;
+            let cell = (TILE_EDGE as usize) * (TILE_EDGE as usize);
+            let default16 = u16::from(default) * 257;
             for row in floor_div(top, edge)..=floor_div(bottom - 1, edge) {
                 for column in floor_div(left, edge)..=floor_div(right - 1, edge) {
                     self.cancel.check()?;
@@ -434,12 +472,28 @@ impl Builder<'_, '_> {
                     let x1 = (bounds.x + i64::from(bounds.width)).min(right);
                     let y0 = bounds.y.max(top);
                     let y1 = (bounds.y + i64::from(bounds.height)).min(bottom);
-                    let mut coverage = vec![0u8; (TILE_EDGE as usize) * (TILE_EDGE as usize)];
+                    let mut coverage = vec![0u8; if wide { cell * 2 } else { cell }];
                     for y in y0..y1 {
                         for x in x0..x1 {
                             let inside = x >= mleft && x < mright && y >= mtop && y < mbottom;
-                            let value = if inside { plane.bytes[(y - mtop) as usize * mwidth + (x - mleft) as usize] } else { default };
-                            coverage[(y - bounds.y) as usize * TILE_EDGE as usize + (x - bounds.x) as usize] = value;
+                            let dst = (y - bounds.y) as usize * TILE_EDGE as usize + (x - bounds.x) as usize;
+                            if wide {
+                                let value = if inside {
+                                    let unit = plane
+                                        .unit_at((y - mtop) as usize * mwidth + (x - mleft) as usize, scale)
+                                        .unwrap_or(0.0);
+                                    (f64::from(unit).clamp(0.0, 1.0) * 65535.0).round() as u16
+                                } else {
+                                    default16
+                                };
+                                coverage[dst * 2..dst * 2 + 2].copy_from_slice(&value.to_le_bytes());
+                            } else {
+                                coverage[dst] = if inside {
+                                    plane.bytes[(y - mtop) as usize * mwidth + (x - mleft) as usize]
+                                } else {
+                                    default
+                                };
+                            }
                         }
                     }
                     self.tile_bytes = self.tile_bytes.saturating_add(coverage.len());
@@ -451,7 +505,7 @@ impl Builder<'_, '_> {
                     refs.push(json!({
                         "object_key": object_key, "layer_id": layer_id, "column": column, "row": row,
                         "width": px(f64::from(TILE_EDGE)), "height": px(f64::from(TILE_EDGE)),
-                        "format": MASK_FORMAT, "colour_profile_id": self.profile_id,
+                        "format": format, "colour_profile_id": self.profile_id,
                         "schema_id": "hsk.studio.raster_tile@1",
                         "content_digest": {"algorithm": "sha256", "digest": digest},
                         "artifact_manifest_id": self.mint.tile_manifest_id(layer_id, &object_key),
@@ -461,6 +515,7 @@ impl Builder<'_, '_> {
                         object_key,
                         column,
                         row,
+                        format,
                         coverage,
                         sha256_hex: digest,
                     });
@@ -475,7 +530,10 @@ impl Builder<'_, '_> {
         if rect.area() == 0 || layer.pixel_data_irrelevant() {
             return Ok(Vec::new());
         }
-        let header = &self.doc.header;
+        let doc = self.doc;
+        let header = &doc.header;
+        let depth = header.depth;
+        let scale = self.cfg.scale;
         let colour_ids: &[i16] = if header.color_mode == ColorMode::Rgb { &[0, 1, 2] } else { &[0] };
         let mut planes = Vec::with_capacity(3);
         for &id in colour_ids {
@@ -493,6 +551,7 @@ impl Builder<'_, '_> {
         let edge = i64::from(TILE_EDGE);
         let (left, top) = (i64::from(rect.left), i64::from(rect.top));
         let (right, bottom) = (i64::from(rect.right), i64::from(rect.bottom));
+        let cell = (TILE_EDGE as usize) * (TILE_EDGE as usize);
         let mut refs = Vec::new();
         for row in floor_div(top, edge)..=floor_div(bottom - 1, edge) {
             for column in floor_div(left, edge)..=floor_div(right - 1, edge) {
@@ -502,29 +561,58 @@ impl Builder<'_, '_> {
                 let x1 = (bounds.x + i64::from(bounds.width)).min(right);
                 let y0 = bounds.y.max(top);
                 let y1 = (bounds.y + i64::from(bounds.height)).min(bottom);
-                let cell = (TILE_EDGE as usize) * (TILE_EDGE as usize);
-                let mut colour = vec![0u8; cell * 12];
-                let mut alpha_plane = vec![0u8; cell * 4];
-                let mut any_alpha = false;
+                let mut encoded: Vec<[f32; 3]> = Vec::new();
+                let mut alphas: Vec<f32> = Vec::new();
+                let mut destinations: Vec<usize> = Vec::new();
                 for y in y0..y1 {
                     for x in x0..x1 {
                         let src = (y - top) as usize * width + (x - left) as usize;
-                        let dst = (y - bounds.y) as usize * TILE_EDGE as usize + (x - bounds.x) as usize;
+                        let channel = |p: &crate::pixels::Plane| p.unit_at(src, scale).ok_or(PsdError::ChannelSize);
                         let rgb = match planes.as_slice() {
-                            [g] => [g.bytes[src]; 3],
-                            [r, g, b] => [r.bytes[src], g.bytes[src], b.bytes[src]],
+                            [g] => [channel(g)?; 3],
+                            [r, g, b] => [channel(r)?, channel(g)?, channel(b)?],
                             _ => return Err(PsdError::ChannelSize),
                         };
-                        for (k, v) in rgb.iter().enumerate() {
-                            colour[dst * 12 + k * 4..dst * 12 + k * 4 + 4].copy_from_slice(&self.lut[usize::from(*v)].to_le_bytes());
-                        }
-                        let a = alpha.as_ref().map_or(1.0, |p| f32::from(p.bytes[src]) / 255.0);
-                        any_alpha |= a > 0.0;
-                        alpha_plane[dst * 4..dst * 4 + 4].copy_from_slice(&a.to_le_bytes());
+                        encoded.push(rgb);
+                        let a = match &alpha {
+                            Some(p) => channel(p)?,
+                            None => 1.0,
+                        };
+                        alphas.push(a.clamp(0.0, 1.0));
+                        destinations.push((y - bounds.y) as usize * TILE_EDGE as usize + (x - bounds.x) as usize);
                     }
                 }
-                if !any_alpha {
+                if !alphas.iter().any(|&a| a > 0.0) {
                     continue;
+                }
+                let linear: Vec<[f32; 3]> = if self.icc_active {
+                    let mut ranged = encoded;
+                    for px in &mut ranged {
+                        for v in px.iter_mut() {
+                            if !(0.0..=1.0).contains(v) {
+                                self.icc_range_clamped = true;
+                                *v = v.clamp(0.0, 1.0);
+                            }
+                        }
+                    }
+                    let icc = doc.resources.icc_profile().unwrap_or_default();
+                    let converter = self.converter.as_deref_mut().ok_or(PsdError::Proposal("icc_converter_missing"))?;
+                    let result = converter.convert_rgb(icc, &ranged, self.cancel);
+                    result.map_err(|r| {
+                        if r.0 == "canceled" { PsdError::Canceled } else { PsdError::Proposal("icc_conversion_failed") }
+                    })?
+                } else if depth == 32 {
+                    encoded
+                } else {
+                    encoded.into_iter().map(|p| p.map(srgb_to_linear)).collect()
+                };
+                let mut colour = vec![0u8; cell * 12];
+                let mut alpha_plane = vec![0u8; cell * 4];
+                for ((dst, px), a) in destinations.iter().zip(&linear).zip(&alphas) {
+                    for (k, v) in px.iter().enumerate() {
+                        colour[dst * 12 + k * 4..dst * 12 + k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                    }
+                    alpha_plane[dst * 4..dst * 4 + 4].copy_from_slice(&a.to_le_bytes());
                 }
                 self.tile_bytes = self.tile_bytes.saturating_add(colour.len() + alpha_plane.len());
                 if self.tile_bytes > self.cfg.limits.max_decoded_bytes {
@@ -559,6 +647,64 @@ impl Builder<'_, '_> {
     }
 }
 
+/// How the document's pixels reach the tiles.
+struct Routing {
+    pixels_mapped: bool,
+    unmapped_reason: &'static str,
+    icc_active: bool,
+    /// (path, kind, code) entries decided before layers are walked.
+    notes: Vec<(&'static str, LossKind, &'static str)>,
+}
+
+/// Decides whether and how pixels map, consulting the converter about the embedded profile.
+fn route(
+    doc: &PsdDocument,
+    converter: Option<&mut (dyn IccConverter + '_)>,
+    cancel: &CancellationToken,
+) -> Result<Routing> {
+    let header = &doc.header;
+    let icc = doc.resources.icc_profile();
+    let mapped_mode = matches!(header.color_mode, ColorMode::Rgb | ColorMode::Grayscale)
+        && matches!(header.depth, 8 | 16 | 32);
+    let mut routing = Routing {
+        pixels_mapped: mapped_mode,
+        unmapped_reason: "color_mode_or_depth_unmapped",
+        icc_active: false,
+        notes: Vec::new(),
+    };
+    match header.color_mode {
+        ColorMode::Cmyk => {
+            routing.unmapped_reason = "cmyk_display_conversion_unavailable";
+            routing.notes.push(("document/color_mode", LossKind::Unsupported, "cmyk_display_conversion_unavailable"));
+            if icc.is_none() {
+                routing.notes.push(("document/profile", LossKind::Unsupported, "cmyk_profile_missing"));
+            }
+        }
+        ColorMode::Lab => {
+            routing.unmapped_reason = "lab_display_conversion_unavailable";
+            routing.notes.push(("document/color_mode", LossKind::Unsupported, "lab_display_conversion_unavailable"));
+        }
+        _ => {}
+    }
+    if let (Some(icc), Some(converter)) = (icc, converter) {
+        match converter.inspect(icc, cancel) {
+            Err(refusal) if refusal.0 == "canceled" => return Err(PsdError::Canceled),
+            Err(refusal) => {
+                let kind = if mapped_mode { LossKind::Transformed } else { LossKind::Unsupported };
+                routing.notes.push(("document/profile", kind, refusal_code(refusal)));
+            }
+            Ok(()) => {
+                if header.color_mode == ColorMode::Rgb && matches!(header.depth, 8 | 16) {
+                    routing.icc_active = true;
+                } else {
+                    routing.notes.push(("document/profile", LossKind::PreservedOpaque, "icc_profile_not_applied_for_mode"));
+                }
+            }
+        }
+    }
+    Ok(routing)
+}
+
 /// Maps `doc` to a proposal. The Folio snapshot is produced by Folio's own validator from the
 /// wire document, so identities, parents, cycles and ports are checked there, not here.
 pub fn to_proposal(
@@ -566,21 +712,28 @@ pub fn to_proposal(
     source: &SourceIdentity,
     cfg: &ProposalConfig<'_>,
     mint: &mut dyn IdMint,
+    mut converter: Option<&mut dyn IccConverter>,
     cancel: &CancellationToken,
 ) -> Result<ImportProposal> {
     cancel.check()?;
     let header = &doc.header;
     let tree = doc.tree(cfg.limits)?;
-    let pixels_mapped = header.depth == 8 && matches!(header.color_mode, ColorMode::Rgb | ColorMode::Grayscale);
-    let profile_id = mint.linear_working_profile_id();
+    let routing = route(doc, converter.as_deref_mut(), cancel)?;
+    let profile_id = match (routing.icc_active, converter.as_deref()) {
+        (true, Some(converter)) => converter.destination_profile_id(),
+        _ => mint.linear_working_profile_id(),
+    };
     let mut b = Builder {
         doc,
         cfg,
         mint,
+        converter,
         cancel,
         profile_id: profile_id.clone(),
-        pixels_mapped,
-        lut: srgb_lut(),
+        pixels_mapped: routing.pixels_mapped,
+        unmapped_reason: routing.unmapped_reason,
+        icc_active: routing.icc_active,
+        icc_range_clamped: false,
         layers: Vec::new(),
         operations: Vec::new(),
         edges: Vec::new(),
@@ -591,12 +744,37 @@ pub fn to_proposal(
         loss: doc.loss_report(cfg.limits),
         tile_bytes: 0,
     };
-    let outputs = b.walk(&tree, &Value::Null)?;
+    let converter_present = b.converter.is_some();
+    // Panel order is top-first; graph outputs follow the group convention (bottom-most first).
+    let mut outputs = b.walk(&tree, &Value::Null)?;
+    outputs.reverse();
 
     let icc = doc.resources.icc_profile();
-    let assumed_profile = pixels_mapped;
+    let pixels_mapped = routing.pixels_mapped;
+    let assumed_profile = pixels_mapped && !routing.icc_active;
+    for (path, kind, code) in &routing.notes {
+        b.note((*path).into(), *kind, code);
+    }
+    if routing.icc_active {
+        b.note("document/profile".into(), LossKind::Preserved, "icc_profile_applied_by_converter");
+        if b.icc_range_clamped {
+            b.note("document/profile".into(), LossKind::Transformed, "icc_input_range_clamped");
+        }
+        // The embedded profile was applied; the base report's "not applied" entry is stale.
+        b.loss.entries.retain(|e| e.code != "icc_profile_not_applied");
+    }
+    if assumed_profile {
+        let code = if header.depth == 32 { "float32_assumed_linear_light" } else { "profile_assumed_srgb" };
+        b.note("document/profile".into(), LossKind::Transformed, code);
+    }
     if pixels_mapped {
-        b.note("document/profile".into(), LossKind::Transformed, "profile_assumed_srgb");
+        if header.depth == 16 {
+            let code = match cfg.scale {
+                SixteenBitScale::Full65535 => "sixteen_bit_scale_assumed_65535",
+                SixteenBitScale::Photoshop32768 => "sixteen_bit_scale_assumed_32768",
+            };
+            b.note("document/depth".into(), LossKind::Transformed, code);
+        }
         if header.color_mode == ColorMode::Grayscale {
             b.note("document/color_mode".into(), LossKind::Transformed, "gray_replicated_to_rgb");
         }
@@ -605,7 +783,7 @@ pub fn to_proposal(
         b.note("document/profile".into(), LossKind::Preserved, "profile_untagged_by_author");
     }
     b.note("document/layer_extras".into(), LossKind::Preserved, "layer_extras_sidecar_only");
-    if doc.resources.find(RESOURCE_ICC_PROFILE).is_some() && !pixels_mapped {
+    if doc.resources.find(RESOURCE_ICC_PROFILE).is_some() && !pixels_mapped && !converter_present {
         b.note("document/profile".into(), LossKind::PreservedOpaque, "icc_profile_not_applied");
     }
 
@@ -652,8 +830,11 @@ pub fn to_proposal(
             psd_version: header.version,
             width: header.width,
             height: header.height,
+            depth: header.depth,
             assumed_profile,
+            icc_converted: routing.icc_active,
             icc_sha256_hex: icc.map(|bytes| hash_hex(&profile_hash(bytes))),
+            sixteen_bit_scale: cfg.scale,
         },
     })
 }
