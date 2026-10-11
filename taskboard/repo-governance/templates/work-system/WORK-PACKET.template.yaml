@@ -1,0 +1,186 @@
+schema_version: handshake.wp-contract.v11
+template_version: 16
+kind: work_packet
+
+instance_policy:
+  omit_empty_optional_fields: true
+  policy_lives_in_rule_refs_not_instance_fields: true
+  schema_ref: repo-governance/schemas/wp-contract.schema.yaml
+
+# owners of the former origin, context, scope_waiver_contract, contract_compilation, change_control, activation_binding policy,
+# implementation_feedback, current_state_pointer, worktree_topology and stock_workflow_binding blocks
+rule_refs: [CODEX-WORK-005, CODEX-MATRIX-001, CODEX-MATRIX-002, CODEX-DRIFT-003, CODEX-DRIFT-005, CODEX-REFINE-002, CODEX-MODE-MT-001, CODEX-STOCK-001,
+  BR-MATRIX-001, BR-MATRIX-002, BR-MATRIX-003, WF-OWN-001, WF-ACTIVATE-001, WF-LIFECYCLE-001, WF-ART-001, REPO-WORKTREE-004, REPO-WORKTREE-005, REPO-WORKTREE-006,
+  HT-WORK-ACTIONS-001.confirm_merge_containment, BR-BUILD-UNIT-001, BR-ARCH-GRAPH-001, BR-ARCH-GROWTH-001, WF-ARCH-001, WF-LANE-001, CODEX-UNIT-001,
+  CODEX-MODULE-LIFECYCLE-001, BR-MODULE-LIFECYCLE-001, BR-MODULE-LIFECYCLE-002, BR-MODULE-LIFECYCLE-003, BR-MODULE-LIFECYCLE-004, BR-MODULE-LIFECYCLE-005, BR-MODULE-LIFECYCLE-006, BR-MODULE-LIFECYCLE-007,
+  BR-CONTRACT-SYNC-001, BR-PILLAR-001, CODEX-RULE-SYNC-001, CODEX-PILLAR-001]
+
+identity:
+  wp_id: WP-000-example-v1
+  title: Example capability
+  version: 1
+  contract_revision: 1
+  lifecycle_profile: code-development-v1
+  activation_id: null # bound by WP-STATE.activation at activation; null until bound
+
+refinement_ref: # REFINEMENT-ENRICHMENT owns origin, planning transaction, reality check and spec sync
+  artifact_id: RE-WP-000-example-v1
+  revision: 4
+  digest: sha256:REPLACE_ME
+
+authority_snapshot: # sole owner of authority digests for this WP; MT and WP-STATE point here; resolved anchors live in REFINEMENT-ENRICHMENT.resolved_context
+  specification:
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+    roadmap_digest: sha256:REPLACE_ME
+  build_rules:
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+    applicable_rule_ids: []
+  build_matrix:
+    matrix_id: BM-PROJECT-001
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  product_topology:
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  governance_topology:
+    revision: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  solution_bindings:
+    version: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  solution_lock:
+    generation: REPLACE_ME
+    digest: sha256:REPLACE_ME
+  sdk_catalog:
+    digest: sha256:REPLACE_ME
+
+outcome:
+  problem: ""
+  operator_value: ""
+  expected_behavior: ""
+  completion_statement: ""
+
+reuse:
+  strategy: REPLACE_ME # allowed: reuse, compose, extend, fork, new, prototype
+  solution_refs: []
+  reason: ""
+  promotion_candidate: false
+  consumed_capability_refs: [] # spec primitive ids consumed through their owner module; from refinement reusable_solution_discovery
+  owner_module_refs: [] # controller-resolved from module_manifest.semantic_code.canonical_capability_refs
+  new_capability_refs: [] # capabilities this WP becomes canonical owner of; requires strategy new and an existing spec primitive_id
+
+scope:
+  included: []
+  excluded: []
+  assumptions: []
+  non_goals: []
+
+scope_waivers: [] # entries {waiver_id, granted_by, scope_paths, reason, granted_at, expires}; recorded by the controller from an operator grant
+
+dependencies:
+  wp_ids: []
+  external_systems: []
+  data_or_migration_preconditions: []
+
+architecture_binding:
+  boundary_change: none # allowed: none, split, merge, extract, new_module
+  module_lifecycle_refs: [] # bounded refs to module maintenance, release and adapter contracts; BR-MODULE-LIFECYCLE-001–006
+  touched_module_refs: [] # module_id list; each resolves to product/<zone>/<module_id>/module.yaml
+  created_module_refs: []
+  touched_build_unit_refs: [] # controller-derived from module_manifest.architecture.build_unit_ref
+  target_build_unit_graph_ref: null # required when boundary_change is not none; staged product_topology revision or spec architecture anchor
+
+# the three blocks below are hydrated from build-rule contract_fields (BR-CONTRACT-SYNC-001); each may be omitted only when its pillar row is not_applicable
+runtime_lanes: # BR-PAR-RUNTIME-001: product-internal parallel asynchronous lanes, designed in from the first WP
+  applicability: REPLACE_ME # allowed: change, verify_only, not_applicable
+  lanes: [] # entries {lane_id, purpose, ordering, cancellation, backpressure, isolation}
+  shared_resource_refs: []
+  concurrency_proof_refs: []
+
+gui_surface: # BR-GUI-DESIGN-001, BR-UI-VIS-001: model-navigable and headless surfaces
+  applicability: REPLACE_ME # allowed: change, verify_only, not_applicable, headless_project
+  surface_profile_refs: []
+  inspection_route_refs: [] # registered GUI navigation and inspection routes; CODEX-GUI-001
+  headless_route_refs: [] # registered headless routes for the same behaviour
+  expected_visual_evidence: [] # allowed values: screenshot, structured_state_snapshot, rendered_inspection
+
+auth_binding: # BR-IDENTITY-001, BR-SECURITY-001: user accounts and sub-profiles per account
+  applicability: REPLACE_ME # allowed: change, verify_only, not_applicable
+  account_bound_resource_refs: [] # resources, sessions, exports or views this WP creates or changes
+  subprofile_visibility: null # allowed: inherits, restricted, explicit
+  authorization_boundary_refs: []
+  default_deny_negative_proof_ref: null # check_id proving cross-account and cross-subprofile access is denied
+
+implementation_contract:
+  required_when: "proof_contract.risk_tier in [P2, P3]"
+  architecture_decisions: []
+  module_boundaries: []
+  public_interfaces: []
+  data_flows: []
+  concurrency_model: []
+  compatibility_constraints: []
+  migration_plan: []
+  rollout_plan: []
+  rollback_plan: []
+
+impact_assessment:
+  input_set_digest: sha256:REPLACE_ME
+  universe_digest: sha256:REPLACE_ME
+  universe_components: {matrix_revision: REPLACE_ME, spec_primitive_feature_mix_digest: sha256:REPLACE_ME, product_topology_revision: REPLACE_ME}
+  assessed_entry_ids: []
+  mandatory_pillar_entry_ids: [] # controller-filled from build_rulebook.build_matrix.pillars; one row per id is required
+  stored_rows: change_verify_only_and_unresolved_only_not_applicable_is_derived
+  rows: [] # entries {matrix_entry_id, entry_revision, disposition, reason, match_evidence_refs, affected_entity_refs, requirement_refs, acceptance_refs, mt_refs, proof_refs, activation_scope_reason}
+
+hskernelsdk:
+  condition: foundation_binding_resolved
+  ref: BIND-PROJECT-HSKERNELSDK
+
+requirements:
+  - requirement_id: WP-000-REQ-001
+    statement: ""
+    rationale: ""
+    source_refs: []
+    matrix_entry_refs: []
+    acceptance_refs: []
+
+acceptance_criteria: # activated criteria are the completion boundary; concerns alone do not expand them
+  - acceptance_id: WP-000-AC-001
+    requirement_refs: [WP-000-REQ-001]
+    matrix_entry_refs: []
+    given: ""
+    when: ""
+    then: ""
+    proof_refs: [WP-000-PROOF-001]
+
+microtask_graph:
+  rule_refs: [CODEX-MT-011, CODEX-MT-012, CODEX-MT-004, CODEX-OUT-003, WF-HEURISTIC-001, WF-LANE-001] # owners of the former microtask_graph.policy block
+  nodes:
+  - mt_id: WP-000-example-v1-MT-001
+    depends_on: []
+    lane: implementation
+    surface_profile_refs: [] # optional; gui-lane nodes name the affected surface profiles; WF-LANE-001
+
+proof_contract:
+  risk_tier: REPLACE_ME # allowed: P0, P1, P2, P3
+  rule_refs: [CODEX-VERIFY-001, CODEX-VERIFY-002, CODEX-OUT-002, CODEX-OUT-003, CODEX-VAL-007, CODEX-GIT-001, CODEX-REMEDIATE-001, CODEX-TEMP-002, WF-PROOF-001] # owners of the former proof_contract.policy block; results live in WP-STATE verdicts and receipts
+  checks: # named independent proof of the activated claims; no extra worker-selected completion checks
+    - proof_id: WP-000-PROOF-001
+      kind: REPLACE_ME # allowed: inspection, test, benchmark, runtime, independent_review
+      claim_refs: [WP-000-AC-001]
+      command_or_method: ""
+      expected: ""
+      timeout_seconds: REPLACE_ME
+      relevant_input_paths: [] # paths whose change invalidates this proof; CODEX-VAL-007
+      evidence_required: []
+      independent: false
+
+risks:
+  - risk_id: WP-000-RISK-001
+    scenario: ""
+    impact: ""
+    control: ""
+    acceptance_refs: []
+    mt_refs: []

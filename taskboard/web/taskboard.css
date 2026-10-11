@@ -1,0 +1,17 @@
+.taskboard { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.taskboard-header { display: flex; flex-wrap: wrap; align-items: end; gap: 1rem; }
+.taskboard-header > label { min-width: 10rem; }
+.taskboard-header form { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; }
+.taskboard label { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+.taskboard input, .taskboard select, .taskboard textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: .6rem; font: inherit; }
+.taskboard textarea { min-height: 5rem; resize: vertical; }
+.taskboard-create-task, .taskboard .task-card form { display: grid; gap: .75rem; padding: 1rem; }
+.taskboard-create-task > button, .taskboard .task-card form > button { justify-self: start; }
+.taskboard .task-card { min-width: 0; }
+.taskboard .task-card > p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.taskboard .task-card > strong { overflow-wrap: anywhere; }
+.taskboard .task-card > label { margin: .75rem 0; }
+@media (max-width: 600px) {
+  .taskboard-header > label, .taskboard-header form { width: 100%; }
+  .taskboard-header form > label { flex: 1; }
+}

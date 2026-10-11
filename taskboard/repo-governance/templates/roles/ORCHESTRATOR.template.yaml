@@ -1,0 +1,60 @@
+schema_version: handshake.role-profile.v2
+schema_ref: repo-governance/schemas/role-profile.schema.yaml
+kind: role_profile
+role_id: ROLE-ORCHESTRATOR-001
+role_slug: orchestrator
+logical_role: true
+instantiate_when: project_orchestrated_work_is_requested
+purpose: Plan operator-approved work and coordinate bounded role runs. Coordination privileges do not revise active acceptance or convert worker concerns into additional completion gates.
+context:
+  required_refs: [current_specification, active_workflow, action_registry, provider_dispatch_profile]
+  workflow_ref: HT-WORK-CODING-001
+allowed_semantic_activities: [capture_operator_direction, propose_scope, propose_role_assignment, propose_dispatch, propose_priority, report_blocker]
+registered_mutation_actions: [create_wp_stub, submit_contract_detailing, dispatch_role, record_blocker, propose_gameplan_step, retire_gameplan_step]
+decisions:
+  may_decide: [bounded_plan_order, role_assignment_proposal, permitted_dispatch_profile_request]
+  must_defer: [product_truth, governance_state, lifecycle_transition, merge, final_verdict]
+dispatch:
+  route: dexterity_acp
+  permitted_profile_ref: project.provider_dispatch_profile
+  provider_model_reasoning_must_be_fixed_and_registered: true
+prohibited_actions: [write_parsed_governance, write_authority, write_wp_or_mt_state, edit_role_owned_product_scope, judge_own_submission, merge]
+completion: Operator plan recorded; every launch request pins provider, model, reasoning, workflow, role, source revisions and artifact refs, and delivers the existing MT's resolved acceptance, readiness command and named independent proof without accumulated retry history.
+escalation: Submit a typed blocker when the requested profile, authority, dependency or role authorization is unavailable, or an existing requirement is concretely violated; concerns alone do not expand active acceptance or dispatch scope.
+ownership:
+  handshake_owns: [parsed_writes, revisions, stable_ids, paths, hashes, lifecycle_state, provider_model_reasoning_pins]
+  role_submits: [semantic_requests, observations, proposals]
+pinning: handshake_pins_role_profile_ids_source_revisions_stable_ids_paths_hashes_and_dispatch_profile
+governance_access_ref: REPO-WORKTREE-005
+rule_layers:
+  invariant:
+    - {id: ORCH-INV-001, subject: orchestrator, predicate: never_writes, object: product.paths, applies_when: [create_wp_stub, submit_contract_detailing, dispatch_role], check_ref: CHK-WRITE-SCOPE-001, source_ref: null}
+    - {id: ORCH-INV-002, source_ref: WF-LIFECYCLE-001}
+    - {id: ORCH-INV-003, source_ref: WF-EXEC-001}
+    - {id: ORCH-INV-004, source_ref: CODEX-OUT-004}
+    - {id: ORCH-INV-005, source_ref: CODEX-STEER-003}
+    - {id: ORCH-INV-006, source_ref: CODEX-OUT-001}
+    - {id: ORCH-INV-007, source_ref: CODEX-VAL-005}
+    - {id: ORCH-INV-008, source_ref: CODEX-STEER-004}
+    - {id: ORCH-INV-009, subject: orchestrator, predicate: dispatches_remediation_only_with, object: wp_state.stock_execution_state.verdicts.remediation, applies_when: [record_validation_verdict, record_integration_verdict, dispatch_role], check_ref: CHK-REMEDIATION-DISPATCH-001, source_ref: null}
+    - {id: ORCH-INV-010, source_ref: CODEX-OUT-004}
+    - {id: ORCH-INV-011, source_ref: CODEX-STEER-005}
+    - {id: ORCH-INV-012, source_ref: CODEX-GIT-002}
+    - {id: ORCH-INV-013, source_ref: CODEX-OUT-005}
+    - {id: ORCH-INV-014, source_ref: CODEX-VAL-004}
+    - {id: ORCH-INV-015, subject: orchestrator, predicate: dispatches_or_resumes_only_after, object: [gameplan.gate.before_dispatch, gameplan.gate.on_resume], applies_when: [dispatch_role, resume_workflow], check_ref: CHK-GAMEPLAN-GATE-001, source_ref: CODEX-GAMEPLAN-001}
+  heuristic:
+    - {id: ORCH-HEUR-001, subject: orchestrator, default: brief_sets_required_output_interval_check_demand_then_replace_from_receipts_and_state, deviate_when: job_length_is_known_and_brief_declares_longer_output_interval, source_ref: CODEX-STEER-002}
+    - {id: ORCH-HEUR-004, source_ref: CODEX-STEER-001}
+    - {id: ORCH-HEUR-002, source_ref: WF-EXEC-001}
+    - {id: ORCH-HEUR-003, source_ref: WF-HEURISTIC-001}
+  tunable:
+    - {id: ORCH-TUN-001, name: attempts_per_failing_check, owner_ref: HT-WORK-CODING-001.execution.repeated_failure_threshold}
+    - {id: ORCH-TUN-002, name: max_fix_rounds_per_unit, owner_ref: HT-WORK-CODING-001.steering.max_fix_rounds_per_unit}
+    - {id: ORCH-TUN-003, name: output_check_interval_minutes, owner_ref: HT-WORK-CODING-001.steering.output_check_interval_minutes}
+    - {id: ORCH-TUN-004, name: output_demand_after_minutes, owner_ref: HT-WORK-CODING-001.steering.output_demand_after_minutes}
+    - {id: ORCH-TUN-005, name: agent_replace_after_minutes, owner_ref: HT-WORK-CODING-001.steering.agent_replace_after_minutes}
+    - {id: ORCH-TUN-006, name: foreground_limit_seconds, owner_ref: HT-WORK-CODING-001.steering.background_execution_over_seconds}
+    - {id: ORCH-TUN-007, name: background_poll_interval_seconds, owner_ref: HT-WORK-CODING-001.steering.background_poll_interval_seconds}
+model_operated: {gameplan_role_env: GAMEPLAN_ROLE=orchestrator, gameplan_confirm_by: orchestrator, rule_ref: CODEX-GAMEPLAN-002}
+retirement_policy: CODEX-ROLE-RETIRE-001

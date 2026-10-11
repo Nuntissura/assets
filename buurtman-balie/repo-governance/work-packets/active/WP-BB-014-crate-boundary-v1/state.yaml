@@ -1,0 +1,81 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-014-crate-boundary-v1
+status: in_progress
+work_location: .
+sync_pending: false
+progress:
+- Inspected root Cargo workspace/core default member, crates/buurtman-balie-host-demo manifest, lockfile member,
+  core-only include list and README/harness BB_DEMO_BINARY path configuration; source separation implemented by
+  root.
+- 'Read devlead command outputs: Cargo metadata selects only root by default; core/demo package listings separate
+  inputs; fmt/workspace all-target all-feature Clippy passed. Native ARM64 and x64 all-feature tests each show 13
+  contracts,5 SQLite,10 worker passes with5 ignored Surreal tests; ignored tests are not live database proof.'
+- 'Read native ARM64 and x64 standalone output: API2 two linked records. x64 executes under ARM64 Windows emulation,
+  distinct from native x64 hardware. Earlier native batch tests/demo succeeded before a lint failure; later lint
+  passed.'
+- Fresh separated composition UI/manual and independent visual/current-source proof passed; seven-file optional
+  npm allowlist inspected. Prior core/demo package listings, fmt/lint and separately executed native ARM64/x64-emulated
+  core/demo evidence retained; native x64 hardware/macOS/Linux not claimed.
+blockers: []
+next_action: Root runs current GOV for closure mapping; synchronize completion only with applicable current proof.
+  WP015 subsequent presentation/manual changes require fresh affected proof before accepting new behavior.
+verification:
+- check_id: BB-CHECK-FMT
+  result: passed
+  command: cargo fmt --all --check
+  observed: Read devlead command exec-f5fd513b-3248-452d-a169-f8df93a15956, exit0 and no formatting errors.
+- check_id: BB-CHECK-LINT
+  result: passed
+  command: cargo clippy --workspace --locked --offline --all-targets --all-features -- -D warnings
+  observed: Read same command output; both core/host-demo checked and Finished dev profile; earlier lint failure
+    superseded.
+- check_id: BB-CHECK-PACKAGE
+  result: passed
+  command: cargo package -p buurtman-balie --list --allow-dirty --offline; cargo package -p buurtman-balie-host-demo
+    --list --allow-dirty --offline
+  observed: Read same output; core has Cargo/README/toolchain/src/tests only, demo generated Cargo files plus2 examples;
+    no web/Python/demo/private/governance inputs in core listing. Metadata output separately selects root default
+    member.
+- check_id: BB-CHECK-UI
+  result: passed
+  observed: .local/ui-proof/result.json read; current recorded fingerprints and successful cleanup; root command
+    exit0 and final independent evidence review. Temporary MemoryStore scope only.
+  command: python tooling/browser-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
+- check_id: BB-CHECK-PACKAGE
+  result: passed
+  observed: exec-8b01444e-3570-4d8c-a200-314ad508ee9f exit0 npm seven-file listing read; includes user-manual/manual-content,
+    no private/governance. Prior core/demo separation proof retained.
+  command: npm pack --dry-run --json --ignore-scripts
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: cargo test --locked --offline --all-features --lib --tests; cargo test --locked --offline --all-features
+    --lib --tests --target x86_64-pc-windows-msvc
+  observed: Previously independently read native13contract5SQLite10worker output and exec-58f2bd66 x64 equivalent
+    exit0; runtime scopes explicit in acceptance mapping.
+reported_proof:
+  source: Devlead chat command outputs independently read through read_thread on 2026-10-11.
+  host: rustc -vV output is aarch64-pc-windows-msvc1.98.1; x64 execution runs on this ARM64 Windows host.
+  x64_tests: exec-58f2bd66-c23b-4f5b-93e5-4a43199e8732 exit0; allfeatures13contracts5SQLite10worker passes,5Surreal
+    ignored.
+  x64_demo: exec-10c48714-a085-4cfb-970f-df33bf64d219 exit0; API2 two related records under WindowsARM64 emulation.
+  arm64: exec-5fdfa69b-b587-4eba-8d08-05a6ac1a8161 contains successful allfeatures13contracts5SQLite10worker and
+    standalone API2 output before subsequent lint failure; later fmt/lint command exit0.
+  worker_scope: Independent P2 uncertainty-counter fix reported; full WP010 performance acceptance remains unresolved.
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve unrelated uncommitted source/governance; no commits/remotes/deployment/publication/process
+    stops.
+acceptance_proof:
+- Root Cargo metadata/core source/default-member and package allowlist inspected; supported core has no presentation/demo
+  dependency or required assets; root API/canonical owner boundaries retained.
+- Separate host-demo explicit root dependency/examples and independent seven-file npm presentation package lists
+  inspected; private/governance excluded, unpublished.
+- Member-specific commands/portable BB_DEMO_BINARY/manual fingerprints inspected; fresh UI/manual desktop/mobile
+  proof exercises separated Rust MemoryStore composition and independent final-ui review.
+- Actual x86_64-pc-windows-msvc all-feature core tests and API2 two-record demo command outputs independently read;
+  execution is x64 under ARM64 Windows emulation, not native x64 hardware.
+- Native aarch64-pc-windows-msvc1.98.1 all-feature core/SQLite/worker tests and API2 demo outputs read; component
+  collab tests separately pass. Ignored Surreal unit entries not used as live DB proof.
+- Current root package/UI/source review covers selected boundary and both executed Windows targets; macOS/Linux
+  and production hosts/release pins remain untested/outstanding.

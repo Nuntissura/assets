@@ -1,0 +1,171 @@
+schema_version: handshake.schema.v1
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:handshake:schema:microtask:v5
+title: Handshake microtask contract
+description: Shape of repo-governance/work-packets/active/{wp_id}/microtasks/{mt_id}.yaml (HT-WORK-MT-001, handshake.microtask.v12).
+type: object
+additionalProperties: false
+required: [schema_version, template_version, kind, instance_policy, rule_refs, identity, parent, context_capsule, closure_unit, model_routing, execution, proof]
+properties:
+  schema_version: {const: handshake.microtask.v12}
+  template_version: {type: integer, minimum: 1}
+  kind: {const: microtask}
+  instance_policy: {$ref: '#/$defs/instance_policy'}
+  rule_refs: {$ref: '#/$defs/rule_ref_list'}
+  identity:
+    type: object
+    additionalProperties: false
+    required: [mt_id, wp_id, title, version, contract_revision]
+    properties:
+      mt_id: {$ref: '#/$defs/entity_id'}
+      wp_id: {$ref: '#/$defs/entity_id'}
+      title: {type: string}
+      version: {type: integer, minimum: 1}
+      contract_revision: {type: integer, minimum: 1}
+  parent:
+    type: object
+    additionalProperties: false
+    required: [wp_contract_revision, wp_contract_digest]
+    properties:
+      wp_contract_revision: {type: integer, minimum: 1}
+      wp_contract_digest: {$ref: '#/$defs/digest'}
+  context_capsule:
+    type: object
+    additionalProperties: false
+    required: [context_digest]
+    properties:
+      module_maintenance_refs: {$ref: '#/$defs/string_list'}
+      specification_anchor_refs: {$ref: '#/$defs/string_list'}
+      topology_refs: {$ref: '#/$defs/string_list'}
+      solution_binding_refs: {$ref: '#/$defs/string_list'}
+      primitive_feature_relation_refs: {$ref: '#/$defs/string_list'}
+      consumed_capability_refs: {$ref: '#/$defs/string_list'}
+      capability_owner_module_refs: {$ref: '#/$defs/module_id_list'}
+      affected_surface_profile_refs: {$ref: '#/$defs/string_list'}
+      matrix_obligation_refs: {$ref: '#/$defs/string_list'}
+      pillar_refs: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      runtime_lane_refs: {$ref: '#/$defs/string_list'}
+      inspection_route_refs: {$ref: '#/$defs/string_list'}
+      account_bound_resource_refs: {$ref: '#/$defs/string_list'}
+      sdk_operation_refs: {$ref: '#/$defs/string_list'}
+      sdk_resource_contract_refs: {$ref: '#/$defs/string_list'}
+      roadmap_item_refs: {$ref: '#/$defs/string_list'}
+      read_context: {$ref: '#/$defs/string_list'}
+      context_digest: {$ref: '#/$defs/digest'}
+  dependencies: {type: array, items: {$ref: '#/$defs/entity_id'}} # dependency_verdicts; dependency MT ids (overlaps execution.depends_on)
+  hskernelsdk:
+    type: object
+    additionalProperties: false
+    required: [condition, ref]
+    properties:
+      condition: {$ref: '#/$defs/nonempty_string'}
+      ref: {$ref: '#/$defs/nonempty_string'}
+  closure_unit:
+    type: object
+    additionalProperties: false
+    required: [outcome, requirement_refs, acceptance_refs]
+    properties:
+      outcome: {$ref: '#/$defs/nonempty_string'}
+      requirement_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/stable_id'}}
+      acceptance_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/stable_id'}}
+      materialized_acceptance: {$ref: '#/$defs/entry_list'}
+      spec_basis_refs: {$ref: '#/$defs/string_list'}
+      operator_decision_refs: {$ref: '#/$defs/string_list'}
+  model_routing:
+    type: object
+    additionalProperties: false
+    required: [model_tier]
+    properties:
+      model_tier: {$ref: '#/$defs/model_tier'}
+      tier_reason: {type: string}
+      escalate_to_tier_on_blocker: {$ref: '#/$defs/model_tier'}
+  attempt_budget: # CODEX-STEER-007: the workflow counter is the only attempt budget; no MT-local count
+    type: object
+    additionalProperties: false
+    required: [limit_ref]
+    properties:
+      limit_ref: {$ref: '#/$defs/rule_ref'}
+      rule_refs: {$ref: '#/$defs/rule_ref_list'}
+  execution:
+    type: object
+    additionalProperties: false
+    required: [lane, module_ref, allowed_write_paths]
+    properties:
+      lane: {$ref: '#/$defs/lane'}
+      module_ref: {$ref: '#/$defs/module_id'}
+      module_change_stage: {type: string, enum: [standalone_source, host_adoption]}
+      build_unit_ref: {$ref: '#/$defs/nullable_string'}
+      write_scope_source: {type: string, enum: [module_roots]}
+      may_create_canonical_capability: {type: boolean}
+      backend_mt_ref: {anyOf: [{$ref: '#/$defs/entity_id'}, {type: 'null'}]}
+      contract_dependency_kind: {anyOf: [{type: string, enum: [consumes_published_contract, depends_on_completion]}, {type: 'null'}]}
+      depends_on: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      allowed_write_paths: {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_string'}}
+      forbidden_write_paths: {$ref: '#/$defs/string_list'}
+      shared_resource_locks: {$ref: '#/$defs/string_list'}
+      inputs: {$ref: '#/$defs/entry_list'}
+      implementation_steps: {$ref: '#/$defs/entry_list'}
+      expected_outputs: {$ref: '#/$defs/entry_list'}
+      stop_conditions: {$ref: '#/$defs/entry_list'}
+    if:
+      properties:
+        lane: {const: gui}
+    then:
+      required: [backend_mt_ref]
+      properties:
+        backend_mt_ref: {$ref: '#/$defs/entity_id'}
+  proof:
+    type: object
+    additionalProperties: false
+    required: [checks]
+    properties:
+      rule_refs: {$ref: '#/$defs/rule_ref_list'}
+      parent_proof_refs: {type: array, items: {$ref: '#/$defs/stable_id'}}
+      checks: {type: array, minItems: 1, items: {$ref: '#/$defs/proof_check'}}
+      independent_review_required: {type: boolean}
+      relevant_input_paths: {$ref: '#/$defs/string_list'}
+      required_checks: {type: array, items: {$ref: '#/$defs/stable_id'}} # check_ids of checks; pass_requires_every_required_check_result_line_equals_pass_in_hashed_log
+      boundary_scope: {type: [string, object]} # CHK-REAL-BOUNDARY-PROOF-001: the real runtime boundary the proof executes
+anyOf:
+  - properties:
+      template_version: {maximum: 18}
+  - properties:
+      context_capsule:
+        required: [module_maintenance_refs]
+        properties:
+          module_maintenance_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_string'}}
+      execution:
+        required: [module_change_stage]
+$defs:
+  digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+  stable_id: {type: string, pattern: '^[A-Z][A-Z0-9-]+$'}
+  entity_id: {type: string, pattern: '^[A-Z][A-Za-z0-9._-]+$'}
+  module_id: {type: string, pattern: '^MOD-[A-Za-z0-9][A-Za-z0-9._-]*$'}
+  module_id_list: {type: array, items: {$ref: '#/$defs/module_id'}}
+  rule_ref: {type: string, pattern: '^[A-Z][A-Z0-9-]+(\.[A-Za-z0-9_]+)*$'}
+  rule_ref_list: {type: array, items: {$ref: '#/$defs/rule_ref'}}
+  nonempty_string: {type: string, minLength: 1}
+  nullable_string: {type: [string, 'null']}
+  string_list: {type: array, items: {type: string}}
+  entry_list: {type: array, items: {type: [string, object]}}
+  instance_policy:
+    type: object
+    additionalProperties: false
+    required: [omit_empty_optional_fields, policy_lives_in_rule_refs_not_instance_fields, schema_ref]
+    properties:
+      omit_empty_optional_fields: {type: boolean}
+      policy_lives_in_rule_refs_not_instance_fields: {type: boolean}
+      schema_ref: {const: repo-governance/schemas/microtask.schema.yaml}
+  model_tier: {type: string, enum: [small, medium, strong]}
+  lane: {type: string, enum: [implementation, gui, diagnostics, documentation, validation, migration, special_runs]}
+  proof_check:
+    type: object
+    additionalProperties: false
+    required: [check_id, claim_refs, command_or_method, expected, timeout_seconds]
+    properties:
+      check_id: {$ref: '#/$defs/stable_id'}
+      claim_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/stable_id'}}
+      command_or_method: {$ref: '#/$defs/nonempty_string'}
+      expected: {type: string}
+      timeout_seconds: {type: integer, minimum: 1}
+      evidence_required: {$ref: '#/$defs/string_list'}

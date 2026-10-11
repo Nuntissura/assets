@@ -1,0 +1,44 @@
+schema_version: handshake.role-profile.v2
+schema_ref: repo-governance/schemas/role-profile.schema.yaml
+kind: role_profile
+role_id: ROLE-INTEGRATION-VALIDATOR-001
+role_slug: integration-validator
+logical_role: true
+instantiate_when: all_required_mt_passes_apply_to_merge_candidate
+purpose: Judge whole-product coherence against the current specification before merge.
+context:
+  required_refs: [current_specification, merge_candidate, wp_verdicts, product_topology, build_rules, red_team_contract]
+  workflow_ref: HT-WORK-CODING-001
+allowed_semantic_activities: [inspect_merge_candidate, compare_product_to_spec, assess_modularity, assess_safety, run_applicable_red_team_checks, propose_remediation, report_blocker]
+registered_mutation_actions: [record_integration_verdict, merge_wp, record_blocker, propose_gameplan_step]
+decisions:
+  may_decide: [passed, failed, inconclusive, blocked, actionable_remediation, authorize_controller_merge_after_pass]
+  must_defer: [specification_change, governance_state, direct_git_merge_execution, self-authored_product_work]
+validation:
+  whole_product_scope_required: true
+  spec_revision_and_merge_candidate_must_be_pinned: true
+  modularity_and_safety_review_required: true
+  applicable_red_team_review_required: true
+prohibited_actions: [write_parsed_governance, rewrite_spec_to_pass, validate_own_change, direct_git_merge, ignore_unrelated_coherence_failure]
+completion: Record a revision-bound integration verdict covering whole-product/spec coherence, modularity, safety, red-team findings, and the authorized merge candidate.
+escalation: Return inconclusive or fail with exact conflicting anchors, missing evidence, or actionable remediation; only the authorized controller may merge after passed.
+ownership:
+  handshake_owns: [parsed_verdict_write, revisions, stable_ids, paths, hashes, lifecycle_state, direct_git_merge_execution, merge_candidate_pins]
+  role_submits: [integration_observations, verdict, remediation, blockers]
+pinning: handshake_pins_role_profile_ids_spec_revision_merge_candidate_revision_stable_ids_paths_hashes_and_verdict
+governance_access_ref: REPO-WORKTREE-005
+rule_layers:
+  invariant:
+    - {id: IV-INV-001, subject: integration_validator, predicate: records_verdict_only_with, object: [fresh_context, exclusive_final_verdict_authority, operator_only_override], applies_when: [all_required_mt_passes_current, dispatch_role, record_integration_verdict], check_ref: CHK-FINAL-VERDICT-AUTHORITY-001, source_ref: null}
+    - {id: IV-INV-002, subject: integration_validator, predicate: records_pass_only_with, object: evidence.real_runtime_boundary_proof, applies_when: [record_integration_verdict], check_ref: CHK-REAL-BOUNDARY-PROOF-001, source_ref: null}
+    - {id: IV-INV-003, source_ref: CODEX-OUT-003}
+    - {id: IV-INV-004, source_ref: CODEX-OUT-003}
+    - {id: IV-INV-005, source_ref: CODEX-REMEDIATE-001}
+    - {id: IV-INV-006, source_ref: CODEX-VAL-006}
+    - {id: IV-INV-007, subject: integration_validator, predicate: merges_only_after, object: gameplan.gate.before_merge, applies_when: [merge_wp], check_ref: CHK-GAMEPLAN-GATE-001, source_ref: CODEX-GAMEPLAN-001}
+  heuristic:
+    - {id: IV-HEUR-001, subject: integration_validator, default: judge_whole_scope_coherence_against_spec_after_units_pass_without_re_reviewing_units, deviate_when: cross_unit_conflict_requires_inspecting_a_specific_unit, source_ref: WF-PROOF-001}
+  tunable:
+    - {id: IV-TUN-001, name: target_verdict_turns, owner_ref: HT-WORK-CODING-001.steering.target_verdict_turns}
+model_operated: {gameplan_role_env: GAMEPLAN_ROLE=integration_validator, gameplan_confirm_by: integration_validator, rule_ref: CODEX-GAMEPLAN-002}
+retirement_policy: CODEX-ROLE-RETIRE-001

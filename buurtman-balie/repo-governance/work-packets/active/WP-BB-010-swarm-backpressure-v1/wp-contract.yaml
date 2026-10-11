@@ -1,0 +1,101 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-010-swarm-backpressure-v1
+kind: active
+title: Swarm data-race backpressure and response budgets
+version: 1
+spec_revision: 14
+requirement_refs:
+- BB-CONCURRENCY-001
+- BB-BACKPRESSURE-001
+- BB-PERFORMANCE-001
+scope:
+- Inspect canonical host queue/transport admission and define bounded concurrency, data recovery and measured response
+  budgets; CRDT draft semantics are separate work under WP-BB-012.
+- Implement configurable single-worker Store admission with shared bounded pending count/bytes, caller deadlines,
+  expiry, pressure diagnostics and uncertain-write reconciliation; Portal first, camera-store and supermarket retained.
+- Add worker::CommandWorker whole-command admission over supplied raw Store+Authorization; one Crm/persistent thread
+  reuses private queue engine. Preserve WorkerStore and public core service/CAS/replay; no Portal edits.
+dependencies: []
+acceptance:
+- Explicit host configuration bounds pending count, serialized submitted bytes, per-request payload and queue/caller
+  deadlines; one supplied Store has one in-flight worker shared across cloneable handles. Immediate overload rejection;
+  no unbounded per-request thread.
+- Full, oversized, closed and expired-before-dispatch CAS never executes. In-flight timeout remains Storage/uncertain
+  and holds running capacity until actual completion; identical Crm request reconciles persisted receipt without
+  new mutation.
+- Observable queued/in-flight/charged-byte/rejection/expiry/timeout state contains no private payloads; closed admission
+  drains only unexpired previously accepted work and never claims volatile admission is durable acknowledgement.
+- Focused competing-handle, budget, expiry, timeout-after-commit/replay and shutdown/error proof passes; preserve
+  service authorization/revision/receipt semantics and distinguish component proof from selected real SurrealDB
+  proof.
+- Select documented representative Portal workload and host numeric latency/resource budgets and measure them before
+  performance acceptance; keep camera-store/supermarket requirements visible. Configurable functional admission
+  does not certify a production SLA or cross-replica database admission.
+- CommandWorker complete Execute(Context,Request), Get, SearchFiltered and minimal read forwarding perform authorization
+  at actual dispatch; one worker owns one Crm over raw Store. Exact serialized Context/argument tuple bounded before
+  allocation/admission; existing WorkerStore API/behavior unchanged.
+- Actual simultaneous participating unique creates retain exact receipts without local load/CAS interleaving; stale
+  edit and external writer still Conflict without overwrite. Queued authorization revocation rejects before Store
+  access; no auto retry, no global/production host guarantee.
+- Count/bytes/queued expiry, timeout-aftercommit identical intent replay with capacity retained, panic/close, reads
+  and pressure pass focused tests. Preserve recoverable uncertain outcomes and redacted metadata.
+- P2 same selected100seed/2100mix1,4,16 provisional profile independently reconciles raw canonical MemoryStore snapshot
+  after drain, own-handle resources/config/outcomes/fault phases, source/binary hashes and nativeARM64/x64-emulation
+  execution. Compare to frozen P1 without changing historical measured profile or claiming production SLA.
+verification_checks:
+- BB-CHECK-RUST
+- BB-CHECK-FMT
+- BB-CHECK-LINT
+- BB-CHECK-PACKAGE
+- BB-CHECK-GOV
+implementation_boundary: Library-owned configurable single persistent worker; hosts own transport deadlines, async
+  invocation, authentication, durable accepted-intent records and aggregate cross-process budgets. Production workload/numeric
+  response budgets unresolved.
+diagnostic_measurement_gate:
+  authorization: Operator authorizes provisional Portal diagnostic numeric workload profile and measurements; production
+    SLA not selected.
+  before_run: P1 exact profile recorded in spec13 before code; implement only selected bounded release example/own-process
+    monitor and report actual default operation count/configuration, source hashes and observed outcomes. No production
+    SLA claim.
+  proof: Record actual latency/resource/admission/expiry/uncertain/reconciliation measurements and failures against
+    selected diagnostic limits; no fabricated samples or inferred production SLA.
+  acceptance_boundary: Production performance acceptance stays open until representative Portal host workload and
+    numeric latency/resource budgets selected; camera-store and supermarket retained.
+  selected_profile_ref: repo-governance/specification/current/specification.yaml#research_basis.swarm_admission.provisional_profile
+  selected_profile_id: BB-PORTAL-DIAGNOSTIC-P1
+  proof_requirements:
+  - 100-record seed and exact2100 operations/mix/concurrency independently reconcile output counters; no hidden
+    retries.
+  - Record own-process CPU/peak working set, per-kind latency/outcomes, submitted bytes/pressure and120second/512MiB
+    diagnostic bounds; identify unavailable metrics and failures, no proxy production verdict.
+  - Fault-injected delayed-store expiry and commit-response-loss identical-intent receipt replay reported separately;
+    preserve capacity/uncertainty semantics.
+  - Native ARM64 first and x64-emulated execution separately named when run; macOS/Linux not claimed.
+  command_profile_ref: repo-governance/specification/current/specification.yaml#research_basis.swarm_admission.command_provisional_profile
+  command_profile_id: BB-PORTAL-DIAGNOSTIC-P2
+relevant_files:
+- crates/buurtman-balie-host-demo/examples/portal_workload.rs
+- tooling/portal-workload.py
+- src/worker.rs
+- src/lib.rs
+- tests/worker.rs
+- tests/command-worker.rs
+- src/service.rs
+- README.md
+- docs/research/swarm-boundaries-v1.md
+command_admission_research_ref: repo-governance/specification/current/specification.yaml#research_basis.swarm_admission.command_admission
+ownership:
+  root:
+  - runner
+  - monitor
+  - README
+  - shared builds/tests
+  - WP010 state
+  reuse_agent:
+  - src/worker.rs
+  - tests/worker.rs
+  - new command-worker focused tests after authoritative promotion
+  coordinator:
+  - specification
+  - WP010 contract
+  - taskboard synchronization

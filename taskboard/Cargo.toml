@@ -1,0 +1,12 @@
+[package]
+name = "taskboard"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Portable taskboard domain contracts and mutation validation"
+include = ["Cargo.toml", "src/**", "web/**", "README.md", "LICENSE", "package.json"]
+
+
+[package.metadata.handshake]
+api_version = 1
+canonical_source = "../.assets/taskboard"

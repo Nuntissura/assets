@@ -1,0 +1,50 @@
+schema_version: handshake.taskboard-projection.v5
+kind: taskboard_projection
+projection:
+  projection_id: BOARD-TASKBOARD-v1-GEN-000001
+  board_id: BOARD-TASKBOARD-v1
+  project_id: TASKBOARD
+  generated_at: '2026-10-11T00:00:00Z'
+  generator_version: taskboard-alignment-v1
+  source_set_generation: 1
+  source_set_digest: sha256:3679f25b0c5cb9ec91c2b4d3972f777a009c07ceaa2f6a00fc09505c2469576a
+  complete_source_scan: true
+eligibility_contract:
+  evaluator: null
+  source: repo-governance/registry/work-packets.yaml
+  mode: planning
+  availability_is_advisory: true
+  executable_microtasks: false
+summary:
+  total_work_packets: 0
+  by_lane:
+    planning: 0
+    ready: 0
+    needs_rebase: 0
+    active: 0
+    blocked: 0
+    validation: 0
+    merge_pending: 0
+    completed: 0
+    archive: 0
+  ready_microtasks: 0
+  active_claims: 0
+  attention_required: 0
+work_packets: []
+stock_view_shape:
+  rule_id: BOARD-STOCK-SHAPE-001
+  generated_only_when_workflow_selected: true
+  canonical_source_ref: HT-WORK-STATE-001.stock_execution_state
+  fields:
+  - phase
+  - assigned_actors
+  - submitted_revision
+  - validated_revision
+  - last_useful_outcome
+  - observed_consumption
+  - reservations
+  - blocker
+  - permitted_next_actions
+  source_generation_visible: true
+  unknown_usage_visible: true
+  pending_actions_are_not_completed_results: true

@@ -1,0 +1,15 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-003-store-workflows-v1
+status: proposed
+work_location: .
+sync_pending: false
+progress: []
+blockers: []
+next_action: Discover first real store journey and stock/order/till owners; preserve connected navigation, useful
+  product details, tags/fuzzy search, configurable fields and later Pricebuddy.
+verification: []
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Initial code/governance uncommitted; no remotes, deployments or pushes.
+  originating_portal_state: ../../handshake-portal/repo-governance/work-packets/active/WP-ADMIN-001-users-feedback-v1/state.yaml

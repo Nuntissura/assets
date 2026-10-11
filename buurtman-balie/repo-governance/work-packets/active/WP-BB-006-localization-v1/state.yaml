@@ -1,0 +1,34 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-006-localization-v1
+status: in_progress
+work_location: .
+sync_pending: false
+progress:
+- Recovered pending synchronization from canonical in_progress state; board and roadmap already matched.
+- Inspected localization source, saved result and .local/independent-review/localization-current.md; exercised paths
+  supported, unconditional acceptance not yet proven.
+- Fresh result.json read; three languages,147 exact-money cases, unknown-error retranslation, in-flight retry/drafts,
+  unsupported selection and disposal passed; owned cleanup completed and recorded pre/post hashes identical.
+- Fresh en/fr/nl artifact and command exec-840c30a0-8629-48a5-a876-68b5d1a46215 exit0 inspected; unknown errors,
+  unsupported language, preserved drafts/requests, disposal and independent exact-money oracle cover earlier gaps.
+  147 cases are formatter cases, not persisted quotes.
+blockers: []
+next_action: Root runs current GOV for closure mapping; synchronize completion only with applicable current proof.
+  WP015 subsequent presentation/manual changes require fresh affected proof before accepting new behavior.
+verification:
+- check_id: BB-CHECK-UI
+  result: passed
+  observed: .local/localization-proof/result.json read; current recorded fingerprints and successful cleanup; root
+    command exit0 and final independent evidence review. Temporary MemoryStore scope only.
+  command: python tooling/localization-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve all uncommitted source/governance; no remote, deployment or publication authorized.
+acceptance_proof:
+- Fresh localization result/exec-840c30a0 exit0 exercises en/fr/nl changes without remount/lost controls, including
+  in-flight retries and localized statuses.
+- Unsupported initial/setter language fails; canonical classifications/IDs and Python-oracle exact base/discount/final
+  values preserved; 147 formatter boundary cases separately identified.
+- Actual desktop/mobile localized proof and source fingerprint/cleanup completed; earlier screenshots and root Codex
+  browser evidence retained, field/pricing contracts preserved.

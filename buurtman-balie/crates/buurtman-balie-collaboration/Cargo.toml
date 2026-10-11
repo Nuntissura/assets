@@ -1,0 +1,11 @@
+[package]
+name = "buurtman-balie-collaboration"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Optional bounded CRDT description drafts for host-owned CRM collaboration"
+publish = false
+include = ["/Cargo.toml", "/src/*.rs", "/tests/*.rs"]
+
+[dependencies]
+yrs = { version = "=0.28.0", features = ["sync"] }

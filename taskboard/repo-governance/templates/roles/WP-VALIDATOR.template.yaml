@@ -1,0 +1,55 @@
+schema_version: handshake.role-profile.v2
+schema_ref: repo-governance/schemas/role-profile.schema.yaml
+kind: role_profile
+role_id: ROLE-WP-VALIDATOR-001
+role_slug: wp-validator
+logical_role: true
+instantiate_when: one_or_more_mt_submissions_are_ready_for_validation
+purpose: Independently validate each submitted MT revision against its pinned contract and actual runtime behavior.
+context:
+  required_refs: [wp_contract, mt_contracts, exact_submission_revision, acceptance_matrix, validator_registry, runtime_evidence]
+  workflow_ref: HT-WORK-CODING-001
+allowed_semantic_activities: [inspect_submission, run_registered_batched_mt_validation, judge_acceptance_claims, propose_remediation, report_blocker]
+registered_mutation_actions: [start_validation_round, record_validation_verdict, record_blocker, propose_gameplan_step]
+decisions:
+  may_decide: [passed, failed, inconclusive, blocked, actionable_remediation] # blocked requires blocker.type; dependency -> blocked_on_mt_ref
+  must_defer: [specification_change, contract_rewrite, merge, self-authored_submission]
+validation:
+  exact_submission_revision_required: true
+  validator_identity_version_and_digest_required: true
+  runtime_verdict_required: true
+  per_mt_verdicts_may_share_one_compatible_build_and_execution: true
+  final_whole_product_judgment_belongs_to_integration_validator: true
+prohibited_actions: [write_parsed_governance, rewrite_submission, edit_acceptance_to_pass, validate_own_output, merge, hide_partial_failure]
+completion: Record a version-bound verdict naming the exact submission, checks, observed results, failed claims, and small-model-actionable remediation.
+escalation: Return inconclusive with the exact missing evidence, unavailable validator capability, or revision mismatch.
+ownership:
+  handshake_owns: [parsed_verdict_write, revisions, stable_ids, paths, hashes, lifecycle_state, validator_identity_version_and_digest_pins]
+  role_submits: [validator_observations, verdict, remediation, blockers]
+pinning: handshake_pins_role_profile_ids_submission_revision_validator_identity_version_digest_and_evidence_hashes
+governance_access_ref: REPO-WORKTREE-005
+rule_layers:
+  invariant:
+    - {id: WPV-INV-001, source_ref: WF-HEURISTIC-001}
+    - {id: WPV-INV-002, subject: wp_validator, predicate: records_pass_only_with, object: evidence.real_runtime_boundary_proof, applies_when: [validator_assigned, record_validation_verdict], check_ref: CHK-REAL-BOUNDARY-PROOF-001, source_ref: null}
+    - {id: WPV-INV-003, source_ref: CODEX-VAL-003}
+    - {id: WPV-INV-004, source_ref: CODEX-VAL-001}
+    - {id: WPV-INV-005, source_ref: CODEX-VAL-002}
+    - {id: WPV-INV-006, source_ref: CODEX-VAL-003}
+    - {id: WPV-INV-007, source_ref: CODEX-OUT-003}
+    - {id: WPV-INV-008, source_ref: CODEX-VAL-004}
+    - {id: WPV-INV-009, source_ref: CODEX-GIT-001}
+    - {id: WPV-INV-010, source_ref: CODEX-STEER-001}
+    - {id: WPV-INV-011, source_ref: CODEX-VAL-004}
+    - {id: WPV-INV-012, source_ref: CODEX-VAL-006}
+    - {id: WPV-INV-013, source_ref: CODEX-VAL-005}
+    - {id: WPV-INV-014, source_ref: CODEX-VAL-007}
+    - {id: WPV-INV-015, subject: wp_validator, predicate: starts_round_and_records_verdict_only_after, object: [gameplan.gate.before_round, gameplan.gate.before_verdict], applies_when: [start_validation_round, record_validation_verdict], check_ref: CHK-GAMEPLAN-GATE-001, source_ref: CODEX-GAMEPLAN-001}
+  heuristic:
+    - {id: WPV-HEUR-001, source_ref: WF-HEURISTIC-001}
+    - {id: WPV-HEUR-002, superseded_by: WPV-INV-011}
+    - {id: WPV-HEUR-003, source_ref: WF-RESOURCE-001}
+  tunable:
+    - {id: WPV-TUN-001, name: proof_reuse_across_sessions_or_commits_when_relevant_inputs_are_unchanged, owner_ref: HT-WORK-CODING-001.validation.evidence_reuse}
+model_operated: {gameplan_role_env: GAMEPLAN_ROLE=wp_validator, gameplan_confirm_by: wp_validator, rule_ref: CODEX-GAMEPLAN-002}
+retirement_policy: CODEX-ROLE-RETIRE-001

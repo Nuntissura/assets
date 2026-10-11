@@ -1,0 +1,62 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-014-crate-boundary-v1
+kind: active
+title: Independent core and host presentation crate boundary
+version: 1
+spec_revision: 8
+requirement_refs: [BB-BOUNDARY-001, BB-PLATFORM-001]
+scope:
+- Keep buurtman-balie package/src/public API at root; introduce Cargo workspace with separate
+  crates/buurtman-balie-host-demo member owning current standalone/json_bridge example composition.
+- Keep optional web/npm presentation independent for host-owned GUI in website admin panels and custom software/apps;
+  core package excludes GUI/web/Python demo/manual presentation and runtime dependencies.
+- Required first runtime proof is Windows x64 and ARM64 separately; macOS/Linux later, never inferred tested.
+dependencies: []
+relevant_files:
+- Cargo.toml
+- Cargo.lock
+- src/lib.rs
+- examples/json_bridge.rs
+- examples/standalone.rs
+- crates/buurtman-balie-host-demo/Cargo.toml
+- crates/buurtman-balie-host-demo/examples/json_bridge.rs
+- crates/buurtman-balie-host-demo/examples/standalone.rs
+- web/package.json
+- README.md
+- tooling/standalone.py
+- tooling/browser-proof.py
+- tooling/localization-proof.py
+- tooling/manual-proof.py
+- tooling/surreal-proof.py
+- tests/surreal.rs
+implementation:
+  core: Preserve root source exports, authorization/storage/pricing/replay and optional storage features; no gratuitous relocation.
+  composition: Separate member depends explicitly on root core, owns demo grants/bridge and forwards only needed features.
+  presentation: Optional web/npm group owns reusable GUI/manual presentation; host supplies actual GUI/navigation/auth/runtime.
+  path_adjustment: Current harness resolves root target/debug/examples/json_bridge; workspace shared target may retain
+    that path when building the explicit member example. Verify actual Cargo artifact; support explicit configured
+    binary root for alternate target/architecture directories. Do not assume a cross-target binary lives in default target/debug.
+  consumers: Replace root-owned example build/run instructions with explicit member selection; inspect tests/surreal.rs
+    and all proof producers for root-example assumptions before changing paths. Keep repository proof tooling outside core package.
+  proof_fingerprints: localization-proof.py hashes root examples and bridge binary; manual-proof.py hashes
+    examples/json_bridge.rs and asserts root example commands. Update relocated member/source fingerprints and
+    documented command assertions with composition changes; stale hashes/results cannot prove new inputs.
+  package: Independent allowlists for core/member/npm; no GUI/demo/private governance/backup/log/database artifacts in core.
+acceptance:
+- Independent host can consume the root core and supported features with no presentation/demo dependency or asset requirement;
+  preserve public crate identity/API and behavioral contracts without changing canonical host owners.
+- Separate host-demo workspace member owns examples and explicit core dependency; optional presentation remains separately
+  packaged. Actual package listings prove core exclusions and intended member/npm assets; packages remain unpublished.
+- Updated proof consumers/manuals use inspected member/artifact paths and portable binary configuration; actual desktop/mobile
+  demo proof exercises the separated composition. Existing valid proof is reused only for unchanged asserted inputs.
+- Record actual Windows x64 execution with architecture, toolchain, dependency/features, executed command and observed
+  core/adapter composition behavior. Compilation/package evidence alone cannot satisfy this item.
+- Record actual Windows ARM64 execution with architecture, toolchain, dependency/features, executed command and observed
+  core/adapter composition behavior. If unavailable keep this outstanding, with exact environment dependency; no generic crossplatform PASS.
+- Keep macOS/Linux later and untested unless actual separate evidence exists; root runs affected checks and independently
+  reviews package/runtime evidence before closure. No deployment/publication or inventory/checkout host implementation.
+verification_checks: [BB-CHECK-RUST, BB-CHECK-FMT, BB-CHECK-LINT, BB-CHECK-PACKAGE, BB-CHECK-UI, BB-CHECK-GOV]
+ownership:
+  product_writer: Root owns Cargo/README/lib/product relocation and coordinates shared outputs.
+  governance_writer: Specification-Coordinator owns contract/state/spec/taskboard.
+  proof: Root owns builds/browser/package and separately evidenced Windows x64/ARM64 runtime runs.

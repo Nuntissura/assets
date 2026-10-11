@@ -1,0 +1,21 @@
+{
+  "name": "buurtman-balie-web",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./field-editor": "./field-editor.js",
+    "./client-pricing": "./client-pricing.js",
+    "./styles.css": "./styles.css",
+    "./localization": "./localization.js",
+    "./user-manual": "./user-manual.js"
+  },
+  "files": [
+    "field-editor.js",
+    "client-pricing.js",
+    "styles.css",
+    "localization.js",
+    "user-manual.js",
+    "manual-content.js"
+  ]
+}

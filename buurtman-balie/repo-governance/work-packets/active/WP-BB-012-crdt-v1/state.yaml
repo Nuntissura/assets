@@ -1,0 +1,48 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-012-crdt-v1
+status: in_progress
+work_location: .
+sync_pending: false
+progress:
+- >-
+  Spec revision11 records root-selected exact opaque DraftUpdate/DraftCheckpoint first unit: checked UTF8 byte
+  splices, fresh accepted-checkpoint scratch Doc, no raw import/serde/custom parser and budgeted pending causal state.
+- Published Yrs decoder/DocStore Arc/pending-update source inspected; raw decoder safety premise remains retracted.
+  Required CRDT/race outcome preserved; corrected contract preceded implementation and the component proof below.
+- >-
+  Root reports collaboration source/tests and manifests implemented; Cargo.toml and exact src/lib.rs/tests/draft.rs
+  presence inspected. Independently read root native ARM64 and x64-emulated command outputs: five draft tests
+  pass on each target; convergence, atomic budgets/rejections, Unicode/fork ownership and simultaneous handles exercised.
+- >-
+  Read .local/independent-review/crdt-current.md bounded source PASS: opaque ingress, synchronized fresh scratch,
+  exact Yrs full pending encoding and atomic validation inspected; reviewer ran no tests. Separate pending-delete
+  checkpoint test and total memory/CPU ceiling not established; host lifecycle and replica uniqueness still host-owned.
+blockers:
+- Full acceptance awaits real-host durable collaboration owner/protocol, membership/retention/generation policy,
+  publication/restart/process proof and future selected interoperability. Bounded component proof does not close full WP.
+- Arbitrary binary ingress/rehydration and UTF16/Yjs interoperability remain unresolved; no custom parser authorized.
+next_action: Root records current governance consistency and continues remaining full durable-host acceptance;
+  retain native ARM64 versus x64 Windows emulation evidence and unresolved ingress/publication lifecycle.
+verification:
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: cargo test -p buurtman-balie-collaboration --locked --offline; cargo test -p buurtman-balie-collaboration --locked --offline --target x86_64-pc-windows-msvc
+  observed: Independently read exec-c53fba96-9412-4ace-bf5f-9ed182ec8cdd and exec-8df16072-72f0-4a51-8702-580fa07be955;
+    both exit0 with five draft tests passed. Component-only proof; x64 is ARM64 Windows emulation.
+- check_id: BB-CHECK-LINT
+  result: passed
+  command: cargo clippy --workspace --locked --offline --all-targets --all-features -- -D warnings
+  observed: Independently read exec-8dea3cd1-16c7-463e-abba-768ad577d1a4 exit0; includes collaboration crate.
+- check_id: BB-CHECK-FMT
+  result: passed
+  command: cargo fmt --all --check
+  observed: Same command exec-8dea3cd1-16c7-463e-abba-768ad577d1a4 exit0.
+- check_id: BB-CHECK-PACKAGE
+  result: passed
+  command: cargo package -p buurtman-balie-collaboration --list --allow-dirty --offline
+  observed: Independently read exec-f5393128-eecc-4a22-b6e8-5a82ac9032e1 exit0; generated Cargo files,
+    src/lib.rs and tests/draft.rs only; no governance/private/UI assets.
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve unrelated source/governance; no commits/remotes/deployment/publication/process stops.

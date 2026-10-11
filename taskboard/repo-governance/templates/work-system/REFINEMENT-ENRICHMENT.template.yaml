@@ -1,0 +1,116 @@
+schema_version: handshake.refinement-enrichment.v8
+template_version: 9
+kind: refinement_enrichment
+
+instance_policy:
+  omit_empty_optional_fields: true
+  policy_lives_in_rule_refs_not_instance_fields: true
+  schema_ref: repo-governance/schemas/refinement-enrichment.schema.yaml
+
+# owners of the former authority_inputs, matrix_resolution policy, spec_enrichment policy, resolved_context policy, freshness and stock_activation_refresh blocks
+rule_refs: [CODEX-REFINE-001, CODEX-REFINE-002, CODEX-WORK-003, CODEX-WORK-004, CODEX-WORK-005, CODEX-WORK-006, CODEX-MATRIX-001, CODEX-MATRIX-002, CODEX-DRIFT-005,
+  CODEX-SPEC-UPDATE-001, WF-SPEC-001, WF-ACTIVATE-001]
+
+identity:
+  artifact_id: RE-WP-000-example-v1
+  wp_id: WP-000-example-v1
+  revision: 4
+  planning_transaction_id: PTX-REPLACE_ME
+
+origin: # sole owner; WORK-PACKET points here through refinement_ref
+  kind: operator # allowed: operator, specification, mixed
+  operator_request_ids: []
+  operator_request_verbatim: ""
+  initiating_spec_anchors: []
+  parent_wp_ids: []
+
+applicability:
+  rule_id: REFINE-SCOPE-001 # scopes reality_check.research_refs, reality_check.red_team, reality_check.field_or_method_changes and spec_enrichment to planning, new_feature, activation and scope_change work
+  rule_refs: [CODEX-SCOPE-001, CODEX-REMEDIATE-001, WF-SCOPE-001, WF-REMEDIATE-001]
+
+refinement:
+  why_now: ''
+  base_spec_extraction:
+    excerpts:
+    - anchor_id: SPEC-REPLACE_ME
+      document_ref: SPEC-DOC-REPLACE-ME
+      topic: REPLACE_ME
+      statement: ''
+      dependency_reason: ''
+  reality_check:
+    checked_at: '2026-09-11'
+    current_behavior: ''
+    intended_behavior: ''
+    code_and_runtime_reality: []
+    affected_modules: []
+    affected_semantic_entities: []
+    shared_resource_and_surface_profile_refs: []
+    existing_feature_interactions: []
+    gui_design_spec_refs: []
+    sdk_operation_resource_hook_and_environment_refs: []
+    dependency_freshness: []
+    field_or_method_changes: []
+    reusable_solution_discovery:
+      searched_project_topology: false
+      searched_project_bindings: false
+      searched_handshake_library: false
+      searched_project_module_library: false
+      candidate_solution_refs: []
+      matched_capability_refs: []
+      owner_module_refs: []
+      selected_strategy: REPLACE_ME # allowed: reuse, compose, extend, fork, new, prototype
+      selected_solution_refs: []
+      decision_reason: ''
+    conflicts_and_gaps: []
+    assumptions: []
+    scope_edges: []
+    non_goals: []
+    acceptance_needs: []
+    preliminary_microtask_graph: []
+    failure_modes: []
+    maintenance_tradeoffs: []
+    red_team:
+      risks: []
+      plausible_failure_scenarios: []
+      minimum_controls: []
+    research_refs: [] # provenance stored in the project research folder; never product truth, enforcement or final decision
+
+matrix_resolution:
+  universe_digest: sha256:REPLACE_ME
+  assessed_entry_ids: []
+  match_evidence_refs: []
+  unresolved_detailing_inputs: []
+
+spec_enrichment:
+  disposition: REPLACE_ME # allowed: unchanged, update_required; unchanged requires origin.initiating_spec_anchors non-empty (check spec_carries_wp_requirements)
+  spec_is_sole_truth: research_prototypes_and_findings_become_truth_only_when_written_into_the_specification_by_this_enrichment
+  phase_validated: false
+  proposed_delta:
+    unchanged_constraints: []
+    migration_implications: []
+    research_proposal_refs: []
+  decision_refs: []
+  sync:
+    required: false
+    base_revision: REPLACE_ME
+    applied_revision: REPLACE_ME
+    applied_digest: sha256:REPLACE_ME
+    changed_anchors: []
+    sync_receipt: null
+    validated: false
+
+resolved_context:
+  anchors:
+  - anchor_id: SPEC-REPLACE_ME
+    document_ref: SPEC-DOC-REPLACE-ME
+    topic: REPLACE_ME
+    statement: ''
+    dependency_reason: ''
+  implementation_relevant_truth: []
+  constraints: []
+  topology_neighborhood: []
+  solution_binding_refs: []
+  primitive_feature_relation_refs: []
+  sdk_contract_refs: []
+  context_digest: sha256:REPLACE_ME
+  ready_for_wp_derivation: false

@@ -1,0 +1,70 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-015-field-selection-v1
+status: completed
+work_location: .
+sync_pending: false
+progress:
+- Accepted operator label-first existing dropdown/Create New requirements recorded in spec12 and active contract
+  before product edits; current manual-key form inspected.
+- Inspected field-usability-v1.md source comparison and exact root-selected NFKD/ASCII/fallback/whole-catalogue
+  suffix policy; spec research basis and contract/proof paths linked before implementation.
+- 'Opened field-picker-detail.jpg: cropped desktop1280 Create new field selector, friendly Lens mount name, optional
+  advanced key, type/scopes and Warranty length catalogue visible without clipping. Current source selected aria-labelled
+  native picker/read-only generated key inspected; root reports actual name-only Warranty creation and read-only
+  reuse, npm seven public files passed.'
+- Root reports implemented field dropdown/generated key/advanced override/refresh-draft recovery and EN/FR/NL manual;
+  actual CUA evidence opened. Npm seven-public-file exclusions and GOV15WPs36requirements reported passed. Earlier
+  focused field run6eb95169337e41468ac65c2a18f48764 passed assertions/cleanup/hashes before latest helper change
+  and is historical, not current acceptance.
+- Current field-selection result directly read as failed run670ebd8570dd4b70ac1bc19c3f307c94; current workflow result
+  directly read as passed. Root reports current focused field/baseline/manual/localization assertions reach cleanup
+  but fail bounded Windows browser exit verification. Failed run receipts preserved.
+- 'Screenshot attribution corrected: field-picker-detail.jpg is cropped desktop1280; mobile390 content-width375
+  is a separate root DOM measurement, with automated mobile images in historical field run6eb95169337e41468ac65c2a18f48764.
+  Root later canonical OS-handle reread of workflow-nmywetlr captured identities found absent or identity-replaced,
+  no matching owned live process; later exit does not retroactively pass bounded cleanup.'
+- 'Fresh current-helper five result artifacts directly read passed: focused field run9a91dc3f6e3046d2b5b2c74ada71ad7a,
+  baseline UI rundeb5b96c66284db883270f5202ee2a38, manual/localization/workflow. All report no page errors and matching
+  recorded pre/post hashes; manual/localization cleanup completed. Root reports each command exit0 after authorized
+  helper remediation; earlier failures retained as historical.'
+- Final independent final-ui-current wp015-fresh-acceptance six-criterion bounded PASS directly read; five current
+  proof artifacts/owned receipts/current sources and screenshots reviewed. Root authorized selected presentation
+  completion; prior failures historical, no universal process-ancestry or production host claim.
+blockers: []
+next_action: Selected WP015 presentation complete; root proceeds with separately authorized WP010 P1 diagnostic
+  measurements. Production host/release pins/full CRM remain outstanding.
+verification:
+- check_id: BB-CHECK-UI
+  result: passed
+  command: python tooling/field-selection-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
+  observed: Fresh .local/field-selection-proof/result.json run9a91dc3f6e3046d2b5b2c74ada71ad7a read passed; root
+    reports exit0; all focused assertions true, no page errors and identical pre/post hashes. Current baseline/manual/localization/workflow
+    results also read passed.
+- check_id: BB-CHECK-PACKAGE
+  result: passed
+  command: npm pack --dry-run --json
+  observed: 'Root corrected exact observed invocation in web workdir: seven public files/private exclusions; web/package.json
+    has no scripts. Independent source/package review bounded PASS read.'
+- check_id: BB-CHECK-GOV
+  result: passed
+  command: python tooling/check.py
+  observed: Root reports post-sync python tooling/check.py PASS15WPs36requirements and canonical reread confirms
+    completed/sync_pending false with six acceptance proofs. Structural consistency only.
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve unrelated uncommitted work; no commits/remotes/deployment/publication/process stops.
+acceptance_proof:
+- Fresh field-selection result existing_selection_zero_define_calls/read-only type/scopes/identity pass; canonical
+  cross-kind collision probe and isolated workspace remount preserve stable catalogue boundary.
+- Fresh focused Unicode combining/emoji-only/long/collision keys and confirmed server collision probes pass; exact
+  selected NFKD/ASCII suffix policy retained, draft survives Conflict and no silent overwrite.
+- Fresh valid/invalid advanced override and empty scopes/long-label no-dispatch probes pass; read-only identity/type/scopes
+  and canonical key display preserve public API.
+- Fresh uncertain exact receipt after label/locale/mode edits, earlier confirmation retaining newer draft, refresh
+  failure/recovery and disposal/workspace remount pass; all EN/FR/NL paths tested.
+- Focused field EN/FR/NL desktop/mobile and current baseline/localization/workflow results passed, no page errors,
+  recorded pre/post fingerprints equal; final independent opened-image review bounded PASS read.
+- Fresh nine-topic manual result and updated field workflow guidance passed; root reports npm seven-public-file
+  dry-run/private exclusions, final independent source/package review bounded PASS read; root reported GOV15WPs36requirements
+  passed before completion sync, post-sync check root-owned.

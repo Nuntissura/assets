@@ -1,0 +1,16 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-002-portal-adapter-v1
+kind: stub
+title: Portal business users, usage and feedback
+version: 1
+spec_revision: 1
+requirement_refs:
+- AF-REQ-001
+- AF-REQ-002
+- AF-REQ-003
+scope:
+- Resolve canonical metrics/report/image owners, authorization and immutable release pin before Portal wiring.
+dependencies: []
+acceptance:
+- Finalize scope and acceptance from accepted spec requirements before execution.
+verification_checks: []

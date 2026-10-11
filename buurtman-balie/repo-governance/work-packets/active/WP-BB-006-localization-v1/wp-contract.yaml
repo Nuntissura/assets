@@ -1,0 +1,21 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-006-localization-v1
+kind: active
+title: English French Dutch module localization
+version: 1
+spec_revision: 3
+requirement_refs:
+- BB-LOCALE-001
+scope:
+- Implement reusable module language toggles and localized field/pricing surfaces; hosts can expose selection later.
+dependencies: []
+acceptance:
+- Selecting en, fr or nl updates all module-owned field/pricing labels and status presentation without remounting
+  or losing pending user input.
+- Host configuration selects language; unsupported selection fails explicitly; canonical data/IDs and exact price
+  values remain unchanged.
+- Prove all three languages and desktop/mobile readability through affected browser proof; preserve field/pricing
+  contracts.
+verification_checks:
+- BB-CHECK-UI
+- BB-CHECK-GOV

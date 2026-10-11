@@ -1,0 +1,250 @@
+schema_version: handshake.schema.v1
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:handshake:schema:receipt:v5
+title: Handshake action receipt
+description: Shape of one receipt-stream entry (HT-WORK-RECEIPT-001, handshake.receipt.v9).
+type: object
+additionalProperties: false
+required: [schema_version, template_version, kind, instance_policy, rule_refs, receipt_scope, receipt_id, action_id, action_type, project_id, session_id, role_id, run_id, correlation_id, event_id, idempotency_key, actor_id, lane, event_type, observed_at, result]
+properties:
+  schema_version: {const: handshake.receipt.v9}
+  template_version: {type: integer, minimum: 1}
+  kind: {const: action_receipt}
+  instance_policy: {$ref: '#/$defs/instance_policy'}
+  rule_refs: {$ref: '#/$defs/rule_ref_list'}
+  receipt_scope: {type: string, enum: [project, wp, mt]}
+  receipt_id: {$ref: '#/$defs/entity_id'}
+  action_id: {$ref: '#/$defs/entity_id'}
+  action_type: {type: string, pattern: '^[a-z][a-z0-9_]*$'}
+  project_id: {$ref: '#/$defs/entity_id'}
+  session_id: {$ref: '#/$defs/nonempty_string'}
+  role_id: {$ref: '#/$defs/stable_id'}
+  run_id: {$ref: '#/$defs/nonempty_string'}
+  causation_id: {$ref: '#/$defs/nullable_string'}
+  correlation_id: {$ref: '#/$defs/nonempty_string'}
+  event_id: {$ref: '#/$defs/entity_id'}
+  idempotency_key: {$ref: '#/$defs/nonempty_string'}
+  wp_id: {anyOf: [{$ref: '#/$defs/entity_id'}, {type: 'null'}]}
+  mt_id: {anyOf: [{$ref: '#/$defs/entity_id'}, {type: 'null'}]}
+  actor_id: {$ref: '#/$defs/nonempty_string'}
+  claim_id: {$ref: '#/$defs/nullable_string'}
+  lane: {$ref: '#/$defs/nonempty_string'}
+  branch_ref: {$ref: '#/$defs/nullable_string'}
+  worktree_id: {$ref: '#/$defs/nullable_string'}
+  solution_refs: {$ref: '#/$defs/string_list'}
+  expected_state_generation: {type: [integer, 'null'], minimum: 0}
+  attempt: {type: [integer, 'null'], minimum: 1}
+  attempt_id: {$ref: '#/$defs/nullable_string'} # action_scoped_evidence_identity; an attempt_id of wp_state.microtasks[mt_id].attempts
+  event_type: {$ref: '#/$defs/event_type'} # CHK-HALF-WRITTEN-VERDICT pairs event_type with correlation_id across receipts
+  observed_at: {$ref: '#/$defs/iso_date_time'}
+  verdict: {anyOf: [{$ref: '#/$defs/verdict'}, {type: 'null'}]} # validator's verdict; an implementer reports semantic.final_status (CHK-FINAL-STATUS-001)
+  source_generation_refs: {$ref: '#/$defs/string_list'}
+  resulting_generation_refs: {$ref: '#/$defs/string_list'}
+  result:
+    type: object
+    additionalProperties: false
+    required: [status, settled]
+    properties:
+      status: {type: string, enum: [accepted, running, waiting, succeeded, failed, rejected, cancelled, partial, unknown]}
+      settled: {type: boolean}
+      operation_ref: {$ref: '#/$defs/nullable_string'}
+      settled_values: {type: [object, array, string, number, boolean, 'null']}
+      reason_code: {$ref: '#/$defs/nullable_string'}
+      recovery_action_refs: {$ref: '#/$defs/string_list'}
+  limits:
+    type: object
+    additionalProperties: false
+    properties:
+      max_free_text_chars: {type: integer, minimum: 1}
+      remediation_text_max_chars: {type: integer, minimum: 1}
+  mechanical:
+    type: object
+    additionalProperties: false
+    properties:
+      changed_paths: {$ref: '#/$defs/string_list'}
+      commands_run: {$ref: '#/$defs/entry_list'}
+      exit_codes: {type: array, items: {type: integer}}
+      artifact_hashes: {$ref: '#/$defs/entry_list'}
+      evidence_refs: {$ref: '#/$defs/string_list'}
+      proof_refs: {$ref: '#/$defs/string_list'}
+      topology_impacts: {$ref: '#/$defs/entry_list'}
+      solution_operations: {$ref: '#/$defs/entry_list'}
+      generation_envelope_refs: {$ref: '#/$defs/string_list'}
+      matrix_coverage_refs: {$ref: '#/$defs/string_list'}
+      sdk_operation_refs: {$ref: '#/$defs/string_list'}
+      sdk_verification_refs: {$ref: '#/$defs/string_list'}
+      contract_compilation_input_digest: {$ref: '#/$defs/nullable_digest'}
+      timing: {type: object}
+      compile_result: {$ref: '#/$defs/implementer_check_result'}
+      static_check_result: {$ref: '#/$defs/implementer_check_result'}
+      check_input_digest:
+        type: object
+        additionalProperties: false
+        properties:
+          before: {$ref: '#/$defs/nullable_digest'}
+          after: {$ref: '#/$defs/nullable_digest'}
+      test_run:
+        type: object
+        additionalProperties: false
+        properties:
+          executed_count: {type: [integer, 'null'], minimum: 0}
+          failed_count: {type: [integer, 'null'], minimum: 0}
+          filter: {$ref: '#/$defs/nullable_string'}
+          results_ref: {$ref: '#/$defs/nullable_string'}
+          candidate_commit: {$ref: '#/$defs/nullable_string'}
+          started_at: {$ref: '#/$defs/nullable_iso_date_time'}
+          completed_at: {$ref: '#/$defs/nullable_iso_date_time'}
+          failures:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [test_name, failure_kind, artifact_ref]
+              properties:
+                test_name: {$ref: '#/$defs/nonempty_string'}
+                mt_id: {$ref: '#/$defs/nullable_string'}
+                failure_kind: {type: string, enum: [product, infrastructure, flaky]}
+                failure_class: {$ref: '#/$defs/nullable_string'}
+                artifact_ref: {$ref: '#/$defs/nonempty_string'}
+      build_measurement:
+        type: object
+        additionalProperties: false
+        properties:
+          incremental_rebuild_seconds: {type: [number, 'null']}
+          recompiled_build_units: {type: [integer, 'null']}
+          relinked_test_binaries: {type: [integer, 'null']}
+          budget_breach: {type: [boolean, 'null']}
+      spawned_processes:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [pid, start_time, command_line, launched_by_actor_id]
+          properties:
+            pid: {type: integer, minimum: 0}
+            start_time: {$ref: '#/$defs/nonempty_string'}
+            command_line: {type: string}
+            launched_by_actor_id: {$ref: '#/$defs/nonempty_string'}
+            stopped_at: {$ref: '#/$defs/nullable_string'}
+      relevant_input_paths: {$ref: '#/$defs/string_list'}
+      relevant_input_digest: {$ref: '#/$defs/nullable_digest'}
+      host_placement:
+        type: object
+        additionalProperties: false
+        properties:
+          build_device_class: {$ref: '#/$defs/nullable_device_class'}
+          test_io_device_class: {$ref: '#/$defs/nullable_device_class'}
+          free_space_bytes: {type: [integer, 'null'], minimum: 0}
+      host_restart: {type: [boolean, 'null']}
+      git_ref_inventory:
+        type: object
+        additionalProperties: false
+        properties:
+          before: {$ref: '#/$defs/nullable_string'}
+          after: {$ref: '#/$defs/nullable_string'}
+      log_ref: {$ref: '#/$defs/nullable_string'}
+      evidence_hash: {$ref: '#/$defs/nullable_digest'}
+      infrastructure_fix: {type: boolean}
+      workflow_binding_ref: {$ref: '#/$defs/nullable_string'}
+      role_run_ref: {$ref: '#/$defs/nullable_string'}
+      submission_ref: {$ref: '#/$defs/nullable_string'}
+      validation_batch_ref: {$ref: '#/$defs/nullable_string'}
+      policy_version: {type: [integer, string, 'null']}
+      parent_attempt_ref: {$ref: '#/$defs/nullable_string'}
+      observed_usage: {type: [number, object, 'null']}
+      usage_visibility: {$ref: '#/$defs/nullable_string'}
+      elapsed_time: {type: [number, string, 'null']}
+      outcome_ref: {$ref: '#/$defs/nullable_string'}
+      review_context_id: {$ref: '#/$defs/nullable_string'} # independent_review, CHK-FINAL-VERDICT-AUTHORITY-001
+      preserved_paths: {$ref: '#/$defs/string_list'} # required_durable_evidence_preserved, required_recovery_preserved
+      merge_result: # actual_merge_result_and_target_containment
+        anyOf:
+          - type: object
+            additionalProperties: false
+            required: [status]
+            properties:
+              status: {type: string, enum: [merged, failed]}
+              candidate_commit: {$ref: '#/$defs/nullable_string'}
+              merged_commit: {$ref: '#/$defs/nullable_string'}
+              target_head_before: {$ref: '#/$defs/nullable_string'}
+              target_head_after: {$ref: '#/$defs/nullable_string'}
+          - {type: 'null'}
+  semantic:
+    type: object
+    additionalProperties: false
+    properties:
+      observations: {$ref: '#/$defs/entry_list'}
+      blockers: {$ref: '#/$defs/entry_list'}
+      residual_risks: {$ref: '#/$defs/entry_list'}
+      proposed_followups: {$ref: '#/$defs/entry_list'}
+      spec_basis: {$ref: '#/$defs/string_list'}
+      verdict: {anyOf: [{$ref: '#/$defs/verdict'}, {type: 'null'}]} # verdict_file_parses
+      final_status: {anyOf: [{type: string, enum: [ready_for_validation, blocked]}, {type: 'null'}]} # CHK-FINAL-STATUS-001
+      blocker: # typed_observation; a dependency block is verdict blocked with blocker.type
+        anyOf:
+          - type: object
+            additionalProperties: false
+            required: [type, evidence_refs, recovery_owner]
+            properties:
+              type: {type: string, pattern: '^[a-z][a-z0-9_]*$'}
+              evidence_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_string'}}
+              recovery_owner: {$ref: '#/$defs/nonempty_string'}
+              blocked_on_mt_ref: {anyOf: [{$ref: '#/$defs/entity_id'}, {type: 'null'}]}
+          - {type: 'null'}
+      impact_assessment: {type: [object, 'null']} # solution_impact_authorization
+      coverage_map: # required_acceptance_coverage: acceptance criterion id -> passing check ids in the hashed log
+        type: object
+        additionalProperties: {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_string'}}
+      gameplan_confirmations: # CHK-GAMEPLAN-GATE-001; entry shape of the gameplan confirmations sidecar
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [id]
+          properties:
+            id: {$ref: '#/$defs/stable_id'}
+            head: {$ref: '#/$defs/nullable_string'}
+            at: {$ref: '#/$defs/nullable_iso_date_time'}
+      operator_decision_refs:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [decision_id, question, ruling, recorded_at, spec_enrichment_required]
+          properties:
+            decision_id: {$ref: '#/$defs/entity_id'}
+            question: {type: string}
+            ruling: {type: string}
+            recorded_at: {$ref: '#/$defs/iso_date_time'}
+            spec_enrichment_required: {type: boolean}
+$defs:
+  digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+  nullable_digest: {anyOf: [{$ref: '#/$defs/digest'}, {type: 'null'}]}
+  stable_id: {type: string, pattern: '^[A-Z][A-Z0-9-]+$'}
+  entity_id: {type: string, pattern: '^[A-Z][A-Za-z0-9._-]+$'}
+  rule_ref: {type: string, pattern: '^[A-Z][A-Z0-9-]+(\.[A-Za-z0-9_]+)*$'}
+  rule_ref_list: {type: array, items: {$ref: '#/$defs/rule_ref'}}
+  nonempty_string: {type: string, minLength: 1}
+  nullable_string: {type: [string, 'null']}
+  string_list: {type: array, items: {type: string}}
+  entry_list: {type: array, items: {type: [string, object]}}
+  iso_date_time: {type: string, format: date-time, pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$'}
+  nullable_iso_date_time: {anyOf: [{$ref: '#/$defs/iso_date_time'}, {type: 'null'}]}
+  implementer_check_result: # CODEX-STEER-009; result null means the check was not run
+    type: object
+    additionalProperties: false
+    properties:
+      result: {type: [string, 'null'], enum: [pass, fail, null]}
+      command_ref: {$ref: '#/$defs/nullable_string'}
+      log_ref: {$ref: '#/$defs/nullable_string'}
+  instance_policy:
+    type: object
+    additionalProperties: false
+    required: [omit_empty_optional_fields, policy_lives_in_rule_refs_not_instance_fields, schema_ref]
+    properties:
+      omit_empty_optional_fields: {type: boolean}
+      policy_lives_in_rule_refs_not_instance_fields: {type: boolean}
+      schema_ref: {const: repo-governance/schemas/receipt.schema.yaml}
+  verdict: {type: string, enum: [passed, failed, inconclusive, blocked]}
+  event_type: {type: string, enum: [action_accepted, action_completed, action_failed, action_rejected, action_cancelled, mt_completed, mt_failed, proof_submitted, change_proposed, solution_change_proposed]}
+  nullable_device_class: {anyOf: [{type: string, enum: [fastest, standard, slow]}, {type: 'null'}]}

@@ -1,0 +1,368 @@
+schema_version: taskboard.module-maintenance.v1
+kind: module_maintenance_contract
+contract_id: TASKBOARD-MAINTENANCE-v1
+module_ref: module.yaml
+scope_root: .
+canonical_git_root: ..
+updated_at: '2026-10-11'
+contract_status: declared-with-unproven-guarantees
+contracts:
+  owner:
+    contract_id: TASKBOARD-OWNER-v1
+    requirement: Taskboard owns domain validation and task workflow presentation;
+      hosts own authorization, canonical persistence, quotas, logging and navigation.
+    source_refs:
+    - README.md
+    - src/lib.rs
+    - web/Taskboard.tsx
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+  dependency_closure:
+    contract_id: TASKBOARD-DEPENDENCY-CLOSURE-v1
+    requirement: Rust uses std only; web requires host React 19 and TypeScript/CSS
+      compilation. No standalone browser harness is present.
+    source_refs:
+    - Cargo.toml
+    - Cargo.lock
+    - package.json
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Standalone browser dependency/toolchain closure is not proven.
+  build_selector:
+    contract_id: TASKBOARD-BUILD-SELECTOR-v1
+    requirement: Cargo.toml is the own Rust library build unit. Host builds web/index.ts
+      with its React toolchain.
+    source_refs:
+    - Cargo.toml
+    - package.json
+    - web/index.ts
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - No local standalone web build selector exists.
+    contextual_commands:
+    - cwd: .
+      command: cargo check --lib
+      status: NOT_EXECUTED
+  test_selector:
+    contract_id: TASKBOARD-TEST-SELECTOR-v1
+    requirement: Run two inline Rust domain tests; use Portal focused/frontend selectors
+      only in that host under its current authority.
+    source_refs:
+    - src/lib.rs
+    - README.md
+    - ../../handshake-portal/tooling/check-config.json
+    - ../../handshake-portal/tooling/run_checks.py
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - No browser standalone test target; current host proofs were not executed in
+      alignment.
+    contextual_commands:
+    - cwd: .
+      command: cargo test --lib
+      status: NOT_EXECUTED
+    - cwd: ../../handshake-portal
+      command: tooling/check.ps1 -Profile focused -Wp WP-MVP-005-task-board-v1
+      status: NOT_EXECUTED
+    - cwd: ../../handshake-portal
+      command: tooling/check.ps1 -Profile frontend -Wp WP-MVP-005-task-board-v1
+      status: NOT_EXECUTED
+  artifact:
+    contract_id: TASKBOARD-ARTIFACT-v1
+    requirement: Artifacts are library source and host-consumed web exports; recorded
+      local crate is a candidate, not a registry release.
+    source_refs:
+    - Cargo.toml
+    - package.json
+    - web/index.ts
+    - ../../handshake-portal/tooling/check-config.json
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Artifact digest, canonical remote landing and reproducible release are not proven
+      in alignment.
+  public_contract:
+    contract_id: TASKBOARD-PUBLIC-CONTRACT-v1
+    requirement: Preserve Rust DEFAULT_BOARD/MAX_BOARDS/MAX_TASKS/Error/title/body/status/next_revision/board_projection
+      and React Taskboard/Task/Board/Request exports, props and HTTP semantics.
+    source_refs:
+    - src/lib.rs
+    - web/index.ts
+    - web/Taskboard.tsx
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+  domain_proof:
+    contract_id: TASKBOARD-DOMAIN-PROOF-v1
+    requirement: The two inline tests cover stale/exhausted revisions, invalid content
+      and legacy board projection. Source inspection is not a passing execution.
+    source_refs:
+    - src/lib.rs
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - 'NOT_EXECUTED: no new standalone behavioral proof.'
+  resources:
+    contract_id: TASKBOARD-RESOURCES-v1
+    requirement: Rust bounds title bytes via caller max, task body at 20000 bytes,
+      boards at 64 and tasks at 2000 constants. Browser serializes mutations with
+      mutation ref and fences stale replies; host enforces persisted quotas/admission.
+    source_refs:
+    - src/lib.rs
+    - web/Taskboard.tsx
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Host admission/backpressure and concurrency proof not executed; request timeout/queue
+      policies remain host-owned.
+  lifecycle:
+    contract_id: TASKBOARD-LIFECYCLE-v1
+    requirement: Scope/root/target changes reset visible state and invalidate stale
+      responses. Retain create ID/intent for retry. Component unmount fences replies;
+      no request cancellation/drain guarantee is implemented.
+    source_refs:
+    - web/Taskboard.tsx
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Host shutdown, durable retry retention and request cancellation are not standalone
+      guarantees.
+  manual:
+    contract_id: TASKBOARD-MANUAL-v1
+    requirement: Use existing manual for integration, validation, lost acknowledgments,
+      conflicts and downgrade recovery.
+    source_refs:
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+  model_tools:
+    contract_id: TASKBOARD-MODEL-TOOLS-v1
+    requirement: Use public source, manual, stable browser data-testid selectors and
+      host diagnostics; no standalone CLI or server is provided.
+    source_refs:
+    - README.md
+    - web/Taskboard.tsx
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+  inspection:
+    contract_id: TASKBOARD-INSPECTION-v1
+    requirement: Inspect exact source changes and scoped host UI; board counts describe
+      selected visible tasks and are not proof of full canonical backend state.
+    source_refs:
+    - web/Taskboard.tsx
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - No current browser rendering inspected during alignment.
+  diagnostics:
+    contract_id: TASKBOARD-DIAGNOSTICS-v1
+    requirement: Rust exposes typed Error messages; component exposes error alert,
+      busy state, retained-create status and reload action. Host owns canonical logs/traces/health.
+    source_refs:
+    - src/lib.rs
+    - web/Taskboard.tsx
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - No standalone diagnostic service or trace harness.
+  recovery:
+    contract_id: TASKBOARD-RECOVERY-v1
+    requirement: Retry retained create with same UUID/intent; reload after revision
+      conflict. Unsaved drafts are volatile. Host owns backups and canonical reconciliation.
+    source_refs:
+    - README.md
+    - web/Taskboard.tsx
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+  gui:
+    contract_id: TASKBOARD-GUI-v1
+    requirement: Taskboard props scope/root/request plus optional integration/targetTaskId;
+      controlled text/status/board inputs, accessible labels and stable selectors;
+      CSS handles widths and wraps text.
+    source_refs:
+    - web/Taskboard.tsx
+    - web/taskboard.css
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Standalone accessibility/responsive and real host browser execution remain NOT_EXECUTED.
+  version_policy:
+    contract_id: TASKBOARD-VERSION-POLICY-v1
+    requirement: Existing version is 0.1.0 and API metadata 1; revise source/artifact/host
+      pins together before adoption. Changes to public mutation semantics require
+      compatibility review.
+    source_refs:
+    - Cargo.toml
+    - package.json
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - No released deprecation schedule or compatibility matrix is established.
+  compatibility:
+    contract_id: TASKBOARD-COMPATIBILITY-v1
+    requirement: HTTP creates require client UUID and unchanged original intent; mutations
+      require expected_revision; missing legacy board/revision project as default/0.
+      Keep host/browser adapters in step.
+    source_refs:
+    - README.md
+    - web/Taskboard.tsx
+    - src/lib.rs
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Supported platform/toolchain/ABI matrix is not proven; accepted sharing support
+      is not claimed.
+  provenance:
+    contract_id: TASKBOARD-PROVENANCE-v1
+    requirement: Canonical configured origin is https://github.com/Nuntissura/assets.git;
+      Git root is .. and module subtree taskboard. Current files match recorded local
+      candidate commit 96c9b85b815bd7d03ba2e3de0d2e0eb563e0fd6f.
+    source_refs:
+    - Cargo.toml
+    - ../../handshake-portal/tooling/check-config.json
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Configured origin and local commit do not prove remote publication or host adoption.
+  publication_allowlist:
+    contract_id: TASKBOARD-PUBLICATION-ALLOWLIST-v1
+    requirement: Cargo include restricts package to manifests/public source/web/manual/license;
+      npm files exports web/manual/license. Preserve these paths and exclude governance.
+    source_refs:
+    - Cargo.toml
+    - package.json
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: PACKAGE_LIST_OBSERVED
+    unresolved_guarantees:
+    - Registry publication and reproducible release remain unproven; package list
+      is content proof only.
+    observed_package_files:
+    - .cargo_vcs_info.json
+    - Cargo.lock
+    - Cargo.toml
+    - Cargo.toml.orig
+    - LICENSE
+    - README.md
+    - package.json
+    - src/lib.rs
+    - web/Taskboard.tsx
+    - web/index.ts
+    - web/taskboard.css
+  private_data:
+    contract_id: TASKBOARD-PRIVATE-DATA-v1
+    requirement: Exclude credentials, operator state, governance, browser evidence,
+      .local, .git, build outputs and dependency caches from release packages.
+    source_refs:
+    - README.md
+    - Cargo.toml
+    - package.json
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+  mirror:
+    contract_id: TASKBOARD-MIRROR-v1
+    requirement: Portal source-pin validation compares eight public files against
+      immutable candidate commit, normalized for EOL and trailing LF. Any differing
+      source is a conflict; preserve source and report before host pin changes.
+    source_refs:
+    - ../../handshake-portal/tooling/check-config.json
+    - ../../handshake-portal/tooling/run_checks.py
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - No complete automated source/base/target digest mirror or conflict-recovery
+      controller is present.
+  adapter:
+    contract_id: TASKBOARD-ADAPTER-v1
+    requirement: Request<T> sends root-relative HTTP; Portal owns account/profile
+      authorization, storage and effects. Host embeds Taskboard and Rust validator
+      as pinned source with shared compatibility contract.
+    source_refs:
+    - README.md
+    - web/Taskboard.tsx
+    - ../../handshake-portal/product/portal-web/src/Board.tsx
+    - ../../handshake-portal/product/portal-data/src/taskboards.rs
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Host source-first remote adoption and adapter conformance not proven during
+      alignment.
+  host_conformance:
+    contract_id: TASKBOARD-HOST-CONFORMANCE-v1
+    requirement: Portal has focused owner/retry/revision/foreign-access boundary selectors
+      and frontend checks. References identify proof paths, never certify current
+      execution.
+    source_refs:
+    - ../../handshake-portal/tooling/check-config.json
+    - ../../handshake-portal/tooling/run_checks.py
+    - ../../handshake-portal/repo-governance/work-packets/active/WP-MVP-005-task-board-v1/wp-contract.yaml
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - 'NOT_EXECUTED: host integration and accepted sharing; unresolved original scope
+      stays preserved.'
+  standalone_host:
+    contract_id: TASKBOARD-STANDALONE-HOST-v1
+    requirement: Rust needs no services; web minimally requires React and typed request
+      adapter returning boards/tasks and mutations with UUID/revision semantics. Current
+      module lacks that independent browser harness.
+    source_refs:
+    - README.md
+    - package.json
+    - web/Taskboard.tsx
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Standalone browser host contract is specified but not implemented/proven.
+  portable_roots:
+    contract_id: TASKBOARD-PORTABLE-ROOTS-v1
+    requirement: Module scope is .; canonical Git root ..; public paths stay unchanged.
+      Relative imports and contextual host references avoid machine roots. Host/runtime
+      roots must remain configurable.
+    source_refs:
+    - Cargo.toml
+    - package.json
+    - web/index.ts
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Relocation runtime proof is NOT_EXECUTED.
+  upgrade:
+    contract_id: TASKBOARD-UPGRADE-v1
+    requirement: Update module source, compatible host/browser adapter and exact pins
+      together only under separately authorized adoption; current alignment changes
+      no public package path.
+    source_refs:
+    - README.md
+    - ../../handshake-portal/tooling/check-config.json
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+  migration:
+    contract_id: TASKBOARD-MIGRATION-v1
+    requirement: Legacy missing board IDs project to default without rewriting stored
+      tasks; host owns data migrations and canonical state. No standalone persisted
+      schema exists.
+    source_refs:
+    - src/lib.rs
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+  rollback:
+    contract_id: TASKBOARD-ROLLBACK-v1
+    requirement: Before old-host downgrade, stop writes under applicable process authorization,
+      back up canonical storage, reconcile new boards/tasks; old hosts do not preserve
+      grouping and no destructive auto-migration is allowed.
+    source_refs:
+    - README.md
+    inspection_status: SOURCE_INSPECTED
+    execution_status: NOT_EXECUTED
+    unresolved_guarantees:
+    - Rollback execution and recovery boundary proof NOT_EXECUTED.

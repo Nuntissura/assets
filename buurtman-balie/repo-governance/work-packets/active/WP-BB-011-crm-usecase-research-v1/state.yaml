@@ -1,0 +1,24 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-011-crm-usecase-research-v1
+status: in_progress
+work_location: .
+sync_pending: false
+progress:
+- Produced docs/research/crm-usecases-v1.md with current source-backed retail/supermarket, warehouse, HR, SaaS,
+  RSS/tag and photo-service matrix; canonical sources, units/windows/freshness, risks, controls, reuse and validation
+  included.
+- Opened actual ERPNext sales/stock, Odoo POS, HRMS attendance, chart package and analytics/telemetry docs; preserved
+  original Rust/host-owner boundaries.
+blockers: []
+next_action: Devlead reviews final research-lane edits and canonical metric-owner matrix, runs BB-CHECK-GOV and
+  records research acceptance; analytics implementation remains proposed.
+verification:
+- check_id: source-review
+  result: passed
+  command: Current web source opens and local source reads on 2026-10-11
+  observed: Actual source/imports/report/ledger/refund/attendance/event/metric/RSS/component boundaries inspected;
+    no analytics installed or real owner metrics acquired.
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve unrelated uncommitted source/governance; no remote/publication/deployment.

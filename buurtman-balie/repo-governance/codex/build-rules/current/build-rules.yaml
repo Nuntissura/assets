@@ -1,0 +1,52 @@
+schema_version: buurtman.build-rules.v1
+rules:
+- rule_id: BB-BUILD-001
+  requirement: Governance checker proves consistency, not product behavior. Actual acceptance proof remains required.
+- rule_id: BB-BUILD-002
+  requirement: Use focused tests, applicable static checks and real desktop/mobile browser proof for changed GUI
+    behavior; reuse unchanged valid results.
+- rule_id: BB-BUILD-003
+  requirement: Retain independent module maintenance, immutable host release pins, explicit embedding adapters,
+    private publication exclusions and recoverable rollback. Local unpublished source is not a release pin.
+- rule_id: BB-BUILD-004
+  requirement: Use gameplan preparation before costly commands; no unrelated governance ceremony or suite.
+checks:
+- check_id: BB-CHECK-GOV
+  command: python tooling/check.py
+  purpose: After spec/WP/state/taskboard changes; structural consistency only.
+- check_id: BB-CHECK-RUST
+  command: cargo test --locked --offline --all-features --lib --tests
+  purpose: Affected library/test contracts; avoids relinking live demo executables. Live DB acceptance requires
+    BB-CHECK-SURREAL separately.
+- check_id: BB-CHECK-FMT
+  command: cargo fmt --check
+  purpose: Changed Rust formatting.
+- check_id: BB-CHECK-LINT
+  command: cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+  purpose: Changed Rust diagnostics.
+- check_id: BB-CHECK-UI
+  command: python tooling/browser-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
+  purpose: Inspect supplied runtime arguments, then execute browser proof for changed GUI behavior.
+  configuration: Supply BB_BROWSER_RUNTIME (Python with Playwright) and BB_BROWSER_EXECUTABLE (Chromium executable)
+    as machine-local environment settings. Validate paths before running; never use --help as behavior proof.
+- check_id: BB-CHECK-PACKAGE
+  command: cargo package --list --allow-dirty --offline
+  purpose: Changed package contents; private exclusions.
+- check_id: BB-CHECK-SURREAL
+  command: python tooling/surreal-proof.py --executable $env:BB_SURREAL_EXECUTABLE
+  purpose: Real isolated disk-backed SurrealDB restart/CAS/replay and independent canonical reread; selected durable-core
+    acceptance.
+  configuration: Explicit existing SurrealDB executable path; private disposable database only. Never select production
+    endpoint/credentials.
+excluded_stock_checks:
+- refinement/enrichment
+- activation/worktrees
+- receipts/action admission
+- claim/lease/roles
+- parent-digest/verdict ceremony
+- topology/registry/template-wide validation
+product_test_review:
+  retained_tests: 13
+  new_product_tests: Optional SQLite disk/process tests and selected live SurrealDB proof
+  reason: Durable adapters require real restart/CAS/response-loss proof; optional SQLite cannot replace SurrealDB
+    acceptance.

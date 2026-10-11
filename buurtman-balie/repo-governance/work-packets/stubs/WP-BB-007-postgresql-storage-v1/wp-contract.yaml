@@ -1,0 +1,15 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-007-postgresql-storage-v1
+kind: stub
+title: PostgreSQL durable storage next
+version: 1
+spec_revision: 3
+requirement_refs:
+- BB-DURABLE-001
+scope:
+- After SurrealDB proof, inspect PostgreSQL host boundaries and select an adapter preserving Store semantics.
+dependencies:
+- WP-BB-001-durable-core-v1
+acceptance:
+- Finalize source-level reuse, host configuration and real transactional/restart/replay proof before execution.
+verification_checks: []

@@ -1,0 +1,71 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-001-durable-core-v1
+status: completed
+work_location: .
+sync_pending: false
+progress:
+- Source reuse compared in docs/research/durable-reuse-v1.md before core extension; original service and injected
+  Store/Authorization preserved. Optional Surreal host transport and SQLite reference keep host canonical owners.
+- 'Real SurrealDB 3.3.0 disk-backed proof passed: independent canonical reread, crash/restart/closed restore,
+  two-process create/update CAS with atomic receipts, uncertain committed-response replay, stale/auth/data rejection.
+  Fresh current-source evidence .local/surreal-proof-5632ac228b48277e/result.json; earlier
+  .local/surreal-proof-77dfd4a30174b2b1/result.json retained. Actual host integration/release pins remain separate.'
+- 'Original baseline: version 0.2.0/API2/schema2 and 13 contracts; earlier .local/ui-proof is historical.
+  Current Surreal durability proof is recorded above; production host compatibility/release pins remain unproved.'
+- User-selected Codex browser directly exercised temporary Rust service field creation, record assignment,
+  canonical field filtering and duplicate-key rejection; visible employee B2C classification with B2B base
+  and 10 percent discount produced 72 then 90 after product price update. Old quote cleared on save; selected
+  draft retained across products. Desktop 1280/mobile 390 views and EN/FR/NL manual rendered and inspected.
+  Screenshots .local/codex-browser-proof; earlier automated workflow teardown failure remains separate.
+- 'Initialized independent Git repository with hsrepotemplate pack40, stock integrity passed and idempotent second
+  plan. Applied operator lightweight model-owned governance: 20 spec requirements, 1 active WP, 4 stubs. Original
+  product source preserved; stock archived locally.'
+blockers: []
+acceptance_proof:
+- Source-level comparison in docs/research/durable-reuse-v1.md preceded extension; original core/injected ports
+  preserved with optional adapters and independently reviewed host boundaries.
+- Fresh current-source real SurrealDB proof .local/surreal-proof-5632ac228b48277e/result.json passed independent
+  canonical reload, restart/restore, process CAS and atomic receipt replay, auth/stale and uncertain commit recovery.
+- Current original Rust contracts and actual temporary desktop/mobile field/pricing proof passed with independent
+  .local/independent-review/final-ui-current.md review. Production host embedding is unselected and remains in stubs.
+next_action: Continue PostgreSQL WP007 through its executable contract; preserve production host adapters and
+  immutable release pins in separate stubs. Revalidate only later affected durable inputs.
+verification:
+- check_id: BB-CHECK-GOV
+  result: passed
+  command: python tooling/check.py
+  observed: Fresh expanded governance check passed14WPs/35requirements before completion synchronization;
+    rerun after pending synchronization. Structural consistency only.
+- check_id: BB-CHECK-PACKAGE
+  result: passed
+  command: cargo package --list --allow-dirty --offline
+  observed: Current core package lists17Cargo/README/toolchain/src/tests inputs; separate demo package5entries.
+    Independent crate-boundary review inspected both listings; no GUI/demo/Python/governance/private inputs in core.
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: cargo test --locked --offline --all-features --lib --tests
+  observed: Current native WindowsARM64 exit0;13contracts,5SQLite,10worker pass;5Surreal tests ignored and
+    independently exercised through the live proof below. Original API2/schema2 preserved.
+- check_id: BB-CHECK-LINT
+  result: passed
+  command: cargo clippy --workspace --locked --offline --all-targets --all-features -- -D warnings
+  observed: Exit0 including root, separate host-demo and collaboration crates; unchanged Rust inputs thereafter.
+- check_id: BB-CHECK-FMT
+  result: passed
+  command: cargo fmt --all --check
+  observed: Exit0; unchanged Rust inputs thereafter.
+- check_id: BB-CHECK-SURREAL
+  result: passed
+  command: python tooling/surreal-proof.py --executable $env:BB_SURREAL_EXECUTABLE
+  observed: Fresh current-source actual3.3.0 server proof exit0 in .local/surreal-proof-5632ac228b48277e;
+    canonical reread/crashrestart/closedrestore/processCAS/receipts/replay/auth/stale/corrupt/u64/rollback pass.
+- check_id: BB-CHECK-UI
+  result: passed
+  command: python tooling/browser-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
+  observed: Current field/filter/int64/classification/employeeprice desktop/mobile actualMemoryStore proof exit0,
+    matching fingerprints after ownedcleanup. Independent final-ui-current bounded review; no productionhost claim.
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Initial code/governance uncommitted; no remotes, deployments or pushes.
+  originating_portal_state: ../../handshake-portal/repo-governance/work-packets/active/WP-ADMIN-001-users-feedback-v1/state.yaml

@@ -1,0 +1,522 @@
+{
+  "schema": "cabinet.asset_contract@1",
+  "file_id": "CABINET-ASSET-001",
+  "status": "VALIDATED_STANDALONE",
+  "purpose": "Reusable hierarchy navigation and host-owned operations for database and filesystem trees",
+  "operator_scope": {
+    "destination": "Cabinet/",
+    "source_inspection": "WP-KERNEL-012 project_tree.rs and graph/folder_tree.rs at 00caeceafd6fc85c348e2bbb68408d92836e2a36",
+    "integration": "Later Handshake adapter; preserve active WP012 refactor and source files",
+    "unlink": "Cabinet requires no Notes, Forgejo or HandForge dependencies; application-wide Notes unlinking requires its own integration inventory"
+  },
+  "requirements": [
+    {
+      "id": "CAB-001",
+      "requirement": "Default Rust core has no GUI, database, network, filesystem or forge dependency"
+    },
+    {
+      "id": "CAB-002",
+      "requirement": "Optional native egui renderer exposes stable diagnostic and accessibility identities"
+    },
+    {
+      "id": "CAB-003",
+      "requirement": "Folder-plus toolbar icon has tooltip and accessible name; no visible add-folder text"
+    },
+    {
+      "id": "CAB-004",
+      "requirement": "Folder and leaf multi-entry drag intentions support inside, before, after and root destinations"
+    },
+    {
+      "id": "CAB-005",
+      "requirement": "Drop validation uses complete canonical hierarchy, capabilities and revisions; rejects cycles and stale context"
+    },
+    {
+      "id": "CAB-006",
+      "requirement": "Create and rename use inline editing with Enter commit and Escape cancellation"
+    },
+    {
+      "id": "CAB-007",
+      "requirement": "Keyboard navigation, range/toggle selection and reveal retain identity rather than row indexes"
+    },
+    {
+      "id": "CAB-008",
+      "requirement": "Refresh retains live expansion and selection; context changes clear private interaction and history state"
+    },
+    {
+      "id": "CAB-009",
+      "requirement": "Valid hierarchy is not truncated at five or twenty levels"
+    },
+    {
+      "id": "CAB-010",
+      "requirement": "Manual, name ascending/descending and created/modified sorting are explicit"
+    },
+    {
+      "id": "CAB-011",
+      "requirement": "Host acknowledgments own durable effects and compensation; failed writes retain canonical data"
+    },
+    {
+      "id": "CAB-012",
+      "requirement": "Filtering retains matching ancestor paths without claiming complete search of unloaded membership"
+    },
+    {
+      "id": "CAB-013",
+      "requirement": "Failed, unloaded and loading children remain distinct; lazy-load intentions reach host"
+    },
+    {
+      "id": "CAB-014",
+      "requirement": "Headless executable example, interface tests and rendered UI inspection support no-context operation"
+    },
+    {
+      "id": "CAB-015",
+      "requirement": "Peak is a standalone subcrate: hover name first, colored tags second; longer hover expands resizable content"
+    },
+    {
+      "id": "CAB-016",
+      "requirement": "Peak requests are independent of durable operations and fenced by scope, generation, context, resource, occurrence and entry revision"
+    },
+    {
+      "id": "CAB-017",
+      "requirement": "All text source languages can preview as bounded plain text; optional codecs supply common images and camera RAW without universal model claims"
+    },
+    {
+      "id": "CAB-018",
+      "requirement": "Ellipsis and right-click share host-owned duplicate, download, rename, move, parent, copy reference, properties, tags and color actions"
+    },
+    {
+      "id": "CAB-019",
+      "requirement": "Tags use stable resource membership identities; tag and occurrence colors support hue/saturation wheel plus validated RGB hex drafts"
+    },
+    {
+      "id": "CAB-020",
+      "requirement": "Persistent tree sort default and direct-folder overrides are distinct; changing default preserves explicit overrides"
+    },
+    {
+      "id": "CAB-021",
+      "requirement": "Size, type, creation and modification sorts expose both directions; missing metadata sorts last"
+    },
+    {
+      "id": "CAB-022",
+      "requirement": "Host can configure and persist all settings; optional serde supports save/reload and settings changes are emitted"
+    },
+    {
+      "id": "CAB-023",
+      "requirement": "Default single click opens after configured double-click interval; double click renames without first opening; alternate select/double-open mode available"
+    },
+    {
+      "id": "CAB-024",
+      "requirement": "Decoder workers and capabilities belong to host; unavailable HEIC/AVIF/JPEG-XL or camera compression is explicit"
+    },
+    {
+      "id": "CAB-025",
+      "requirement": "Persistent entry/children indexes and cached row projection prevent repeated full-tree work on unchanged frames"
+    },
+    {
+      "id": "CAB-026",
+      "requirement": "Only viewport rows and overscan construct native controls; selection lookup is constant time; width measurement is cached"
+    },
+    {
+      "id": "CAB-027",
+      "requirement": "Atomic revision-checked delta batches update canonical entries and preserve unaffected navigation"
+    },
+    {
+      "id": "CAB-028",
+      "requirement": "Paged child loading supports fenced continuation and retry; incomplete-tree moves require explicit host preflight and revalidation"
+    },
+    {
+      "id": "CAB-029",
+      "requirement": "Unloaded folder preferences survive partial snapshots; confirmed deletions remove obsolete preferences"
+    },
+    {
+      "id": "CAB-030",
+      "requirement": "Peak scheduling bounds queued/active requests and cached bytes; obsolete work retains active ownership until acknowledged completion or stop"
+    },
+    {
+      "id": "CAB-031",
+      "requirement": "Large-tree benchmarks measure 10k,100k,1m varied trees; diagnostics distinguish canonical loaded entries, projected rows and rendered viewport rows"
+    },
+    {
+      "id": "CAB-032",
+      "requirement": "Move destinations show full paths; pinned folders, breadcrumbs and quick path navigation use stable identities"
+    },
+    {
+      "id": "CAB-033",
+      "requirement": "Loaded-only filtering and host whole-workspace search are explicit and stale results are fenced"
+    },
+    {
+      "id": "CAB-034",
+      "requirement": "Visibility exclusions and host watcher exclusions are separate persisted settings; hiding does not claim watcher shutdown"
+    },
+    {
+      "id": "CAB-035",
+      "requirement": "Bulk operations expose host-owned progress and bounded recovery without assuming a failed or cancelled action has stopped"
+    },
+    {
+      "id": "CAB-036",
+      "requirement": "Independent dependency and code inspection rejects dead scaffolding, redundant constructions and unused public integration paths"
+    }
+  ],
+  "research_basis": {
+    "checked_at": "2026-10-11",
+    "sources": [
+      {
+        "url": "https://zed.dev/docs/project-panel",
+        "pattern": "Inline naming, keyboard selection, drag movement, undoable host operations"
+      },
+      {
+        "url": "https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/files/browser/views/explorerViewer.ts",
+        "pattern": "Separate drag target validation, feedback and durable drop execution"
+      },
+      {
+        "url": "https://github.com/jameskerr/react-arborist",
+        "pattern": "Controlled host mutations and canonical sibling ordering"
+      },
+      {
+        "url": "https://docs.rs/egui_ltreeview/latest/egui_ltreeview/doc/index.html",
+        "pattern": "Toolkit-native tree events, drop markers, keyboard and visible-row culling"
+      },
+      {
+        "url": "https://www.w3.org/WAI/ARIA/apg/patterns/treeview/",
+        "pattern": "Selection/focus distinction and tree keyboard conventions"
+      },
+      {
+        "url": "https://doc.rust-lang.org/cargo/reference/features.html",
+        "pattern": "Empty default feature set and additive optional GUI dependency"
+      },
+      {
+        "url": "https://www.w3.org/WAI/ARIA/apg/patterns/tooltip/",
+        "pattern": "Focusable interactive hover content uses nonmodal dialog semantics"
+      },
+      {
+        "url": "https://www.w3.org/WAI/WCAG21/Understanding/content-on-hover-or-focus",
+        "pattern": "Dismissible, hoverable, persistent content"
+      },
+      {
+        "url": "https://docs.rs/image/latest/image/codecs/",
+        "pattern": "Common raster codecs; HEIC and RAW need distinct providers"
+      },
+      {
+        "url": "https://docs.rs/image/latest/image/struct.Limits.html",
+        "pattern": "Dimension/allocation guards are not hard process memory isolation"
+      },
+      {
+        "url": "https://github.com/dnglab/dnglab",
+        "pattern": "Rust-native RAW decoding and embedded previews, model-specific support, unstable API"
+      },
+      {
+        "url": "https://docs.rs/rawler/latest/src/rawler/analyze.rs.html",
+        "pattern": "RawDevelop fallback is explicit; embedded preview first"
+      },
+      {
+        "url": "https://www.libraw.org/supported-cameras",
+        "pattern": "Broad model-specific RAW support; native adapter remains host extensibility option"
+      },
+      {
+        "url": "https://code.visualstudio.com/docs/configure/settings",
+        "pattern": "Defaults and explicit scoped overrides are distinct"
+      },
+      {
+        "url": "https://docs.rs/egui/0.33.3/egui/containers/scroll_area/struct.ScrollArea.html#method.show_rows",
+        "pattern": "Construct viewport range instead of every expanded row"
+      },
+      {
+        "url": "https://github.com/microsoft/vscode/wiki/File-Watcher-Issues",
+        "pattern": "Watcher resource limits and exclusions differ from display hiding"
+      },
+      {
+        "url": "https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html",
+        "pattern": "Started blocking decoders retain ownership until actual completion; abort is not stop proof"
+      }
+    ],
+    "local_reuse": [
+      "Handpick effect-free intention and generation-fence patterns",
+      "egui0.33.3 native drag transport",
+      "Host-owned context menu, theme and accessibility integration"
+    ],
+    "selected": "Dependency-free indexed mechanics with cached projections, optional egui viewport renderer, atomic versioned updates and host-owned loading/search/effects; Peak uses effect-free bounded scheduling and byte-budgeted caching",
+    "rejected": [
+      "Copying AppState/REST/Surreal coupling into asset",
+      "React or webview rendering in native Handshake",
+      "Display state as durable authority",
+      "Eager replacement during WP012 active consolidation"
+    ],
+    "candidate_limit": "egui_ltreeview not adopted wholesale because Cabinet requires host-neutral revisions, operation history and explicit accessible identities"
+  },
+  "risks": [
+    {
+      "id": "CAB-R01",
+      "risk": "Unloaded descendants permit an invalid move",
+      "control": "Reject moves unless hierarchy_complete; host rechecks full ancestry and permissions"
+    },
+    {
+      "id": "CAB-R02",
+      "risk": "Late delivery exposes old account or workspace contents",
+      "control": "Scope/generation/context fences and atomic snapshot admission"
+    },
+    {
+      "id": "CAB-R03",
+      "risk": "UI success precedes actual persistence",
+      "control": "Pending operation retains canonical content until host acknowledgment"
+    },
+    {
+      "id": "CAB-R04",
+      "risk": "New widget bypasses shared global selection/theme/menu owners",
+      "control": "Adapter composition; no app-specific services in core"
+    },
+    {
+      "id": "CAB-R05",
+      "risk": "Undo corrupts data changed by another actor",
+      "control": "Opaque host compensation tokens; host validates conflict and revocation at execution"
+    }
+  ],
+  "proof": {
+    "scaling_status": "PASS_STANDALONE",
+    "peak_status": "PASS_STANDALONE",
+    "checked_at": "2026-10-11",
+    "native": "cargo test --locked --workspace --all-features",
+    "results": {
+      "workspace_tests_passed": 105,
+      "cabinet_native_unit_tests": 8,
+      "cabinet_core_integration_tests": 24,
+      "peak_integration_tests": 27,
+      "scaling_integration_tests": 30,
+      "peak_unit_tests": 16,
+      "default_workspace_tests_passed": 76,
+      "image_codec_roundtrips": 13,
+      "examples": {
+        "headless": "PASS: in-memory host-confirmed move and undo",
+        "host_workflows": "PASS: paging/retry, move preflight/grant, search, recovery and partial preferences",
+        "settings_persistence": "PASS: actual JSON save/reload; folder override survives default change"
+      },
+      "format": "PASS",
+      "clippy": "PASS: default and all-feature libraries with dead_code and unused_imports denied",
+      "clippy_remaining": "Two existing nonfunctional UTF16 decoder style suggestions"
+    },
+    "visual": {
+      "renderer": "Actual egui tessellation software-rasterized at 900x600; no native window/GPU launched",
+      "inspected": [
+        "tree-preview.png",
+        "menu-preview.png",
+        "color-preview.png",
+        "peak-preview.png"
+      ],
+      "result": "PASS: root and independent inspector found tree, Download menu, wheel/hex/Apply and expanded Peak name/tags/text readable",
+      "fixture_guards": "Menu/color require expected controls; reveal scrolling settles before clicks"
+    },
+    "independent_review": {
+      "risk": "HIGH",
+      "verdict": "PASS_STANDALONE",
+      "dependency": "PASS: no new runtime dependencies or orphan public integration paths",
+      "diff_attack_surfaces": [
+        "Revision admission",
+        "Partial membership and preferences",
+        "Projection invalidation",
+        "Host/UI propagation",
+        "Worker ownership",
+        "Private context caches",
+        "Drag target geometry"
+      ],
+      "independent_checks": "Inspector-authored regressions executed by root; inspector directly read final proof log, benchmark JSONL and native renders",
+      "counterfactuals": [
+        "Cancelled worker ownership prevents premature concurrency reuse",
+        "Delta revision admission prevents stale mutations",
+        "Scope cache clearing prevents account A-B-A private replay"
+      ],
+      "boundary_probes": [
+        "Native paging",
+        "Workspace search",
+        "Preflight/authorized move",
+        "Far reveal",
+        "Scoped completion/cache",
+        "Runtime scheduler reconfiguration"
+      ],
+      "negative_paths": [
+        "Stale/invalid deltas",
+        "Malformed pages/output",
+        "Denied descendants",
+        "Invalid grants/settings",
+        "Stale previews",
+        "Failed bulk recovery"
+      ],
+      "resolved_findings": [
+        "GUI host-action propagation",
+        "Known files retaining folder settings",
+        "Stale successful-operation recovery",
+        "Offscreen move confirmation",
+        "Private preview cache switch",
+        "Drag geometry/focus scrolling",
+        "GUI helper in headless build"
+      ],
+      "residual_uncertainty": "Cold loaded-entry traversal and large canonical memory; production adapters/storage/worker isolation unproven"
+    },
+    "benchmark": {
+      "command": "cargo run --locked --release --features egui --example large_tree -- 10000 100000 1000000",
+      "records": 234,
+      "instrumentation": "Requested Rust heap/allocation calls, not RSS; 20 frames/case with 10 stationary and 10 scroll inputs",
+      "environment": {
+        "os": "Windows",
+        "architecture": "ARM64",
+        "rustc": "1.98.1",
+        "contention": "Concurrent external work and memory pressure observed; machine/source/feature-specific results"
+      },
+      "cases": [
+        {
+          "nodes": 10000,
+          "shape": "flat",
+          "max_depth": 0,
+          "frame_p95_ms": 0.0969,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 4.94,
+          "admission_ms": 5.752,
+          "cold_projection_ms": 2.167,
+          "one_label_delta_ms": 2.781,
+          "projection_after_delta_ms": 1.683,
+          "full_replacement_ms": 5.381
+        },
+        {
+          "nodes": 10000,
+          "shape": "wide",
+          "max_depth": 1,
+          "frame_p95_ms": 0.0647,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 4.96,
+          "admission_ms": 3.839,
+          "cold_projection_ms": 0.519,
+          "one_label_delta_ms": 2.851,
+          "projection_after_delta_ms": 1.393,
+          "full_replacement_ms": 5.762
+        },
+        {
+          "nodes": 10000,
+          "shape": "deep",
+          "max_depth": 128,
+          "frame_p95_ms": 0.0642,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 5.05,
+          "admission_ms": 3.801,
+          "cold_projection_ms": 0.628,
+          "one_label_delta_ms": 2.829,
+          "projection_after_delta_ms": 1.48,
+          "full_replacement_ms": 5.691
+        },
+        {
+          "nodes": 100000,
+          "shape": "flat",
+          "max_depth": 0,
+          "frame_p95_ms": 0.2115,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 43.42,
+          "admission_ms": 46.262,
+          "cold_projection_ms": 23.021,
+          "one_label_delta_ms": 58.483,
+          "projection_after_delta_ms": 33.224,
+          "full_replacement_ms": 115.495
+        },
+        {
+          "nodes": 100000,
+          "shape": "wide",
+          "max_depth": 1,
+          "frame_p95_ms": 0.0886,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 43.97,
+          "admission_ms": 93.802,
+          "cold_projection_ms": 12.912,
+          "one_label_delta_ms": 66.287,
+          "projection_after_delta_ms": 36.44,
+          "full_replacement_ms": 146.214
+        },
+        {
+          "nodes": 100000,
+          "shape": "deep",
+          "max_depth": 128,
+          "frame_p95_ms": 0.7318,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 44.22,
+          "admission_ms": 60.885,
+          "cold_projection_ms": 7.838,
+          "one_label_delta_ms": 59.698,
+          "projection_after_delta_ms": 31.832,
+          "full_replacement_ms": 131.664
+        },
+        {
+          "nodes": 1000000,
+          "shape": "flat",
+          "max_depth": 0,
+          "frame_p95_ms": 0.1012,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 482.3,
+          "admission_ms": 1507.814,
+          "cold_projection_ms": 541.6,
+          "one_label_delta_ms": 1842.18,
+          "projection_after_delta_ms": 865.007,
+          "full_replacement_ms": 2346.326
+        },
+        {
+          "nodes": 1000000,
+          "shape": "wide",
+          "max_depth": 1,
+          "frame_p95_ms": 0.2492,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 489.98,
+          "admission_ms": 1275.241,
+          "cold_projection_ms": 204.14,
+          "one_label_delta_ms": 1134.838,
+          "projection_after_delta_ms": 806.517,
+          "full_replacement_ms": 3565.864
+        },
+        {
+          "nodes": 1000000,
+          "shape": "deep",
+          "max_depth": 128,
+          "frame_p95_ms": 0.2304,
+          "mounted_rows_max": 13,
+          "changed_viewport_frames": 9,
+          "warm_shared_projection_1000_allocations": 0,
+          "observed_frame_heap_mib": 489.97,
+          "admission_ms": 1020.587,
+          "cold_projection_ms": 176.13,
+          "one_label_delta_ms": 857.426,
+          "projection_after_delta_ms": 344.638,
+          "full_replacement_ms": 1611.048
+        }
+      ]
+    },
+    "unproven": [
+      "Handshake, Notes and browser adapters",
+      "Production durable storage and authentication",
+      "Physical filesystem effects and watcher ownership",
+      "Actual camera RAW model/compression fixtures",
+      "Hard worker-process memory/deadline isolation",
+      "Other hardware, sorts, dense overrides or arbitrary-depth benchmark fixtures"
+    ],
+    "limits": "Cold projection/filtering and hierarchy validation traverse loaded entries; million-entry updates can take seconds. Prefer host paging; no universal capacity or Handshake acceptance claim.",
+    "product_input_sha256": {
+      "Cargo.lock": "877b5190d1692d1935f83a5fdb583dd57858d5fe38732403ccea9c809f6828f6",
+      "Cargo.toml": "e934a731fd8f0a2bc752d523a74a58a1a58a873b4edc9c9125aafe3d8699e3d1",
+      "Peak/Cargo.toml": "5e1920cc771ef2a23e63961e4745141979bfa063d018a3ad5be1d0c8229181f6",
+      "Peak/src/decode.rs": "25c969f8c3d3f1584c81a29d9601345e9717464c8a111c015b969388e5d1450f",
+      "Peak/src/egui_view.rs": "7be424673dff64d6fc328c9ebc1a280c9666f591bf889cefc3912d359e0b3671",
+      "Peak/src/lib.rs": "482eb225c18d9d92d822510a816cce3c1cb94401a4c233b5fd1fe7ccaae6f141",
+      "Peak/src/scheduler.rs": "46d653d5f1d9b4830711757024e7046bf5b247e41fb1bf65040575414cf7315f",
+      "src/contracts.rs": "f2cc6aec509dddaeb9f83c1da0d74ac36c6aceaa6337cce556959d250856d231",
+      "src/core.rs": "129fc9b2ed51ef75e20a1ddb1e29cd56bd6b9d47fd25c20215997dab6e830b5f",
+      "src/egui_view.rs": "99036dccd43ed076c16790ac72d4c38e9e771379d9c2892bbdb155016360a321",
+      "src/lib.rs": "56993d4591bade6529d0220e6132e7e5a3b30255fbcc9b0ef800b1b557c6ef49"
+    }
+  }
+}

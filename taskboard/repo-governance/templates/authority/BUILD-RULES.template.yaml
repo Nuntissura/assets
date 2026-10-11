@@ -1,0 +1,1791 @@
+schema_version: handshake.build-rules.v9
+
+kind: build_rulebook
+
+identity:
+  rulebook_id: RB-PROJECT-BUILD-v1
+  project_id: PROJECT-REPLACE-ME
+  version: 24
+  seed_version: handshake-universal-v9
+  status: draft
+
+
+authority:
+  canonical: true
+  serialization: json-compatible-yaml-1.2
+  duplicate_keys_allowed: false
+  manual_projection_edits_allowed: false
+  applies_to:
+    - human_contributors
+    - coding_agents
+    - automation
+    - continuous_integration
+
+precedence:
+  - operator_and_specification_authority
+  - security_privacy_and_data_integrity
+  - project_invariants_and_architecture
+  - applicable_build_rules
+  - work_packet_contract
+  - style_and_convenience
+
+enforcement:
+  hydration: Assess candidates during planning; bind deduplicated in-scope WP obligations and acceptance links only after completed
+    refinement/enrichment and spec synchronization during WP activation. Active bound requirements and proof define closure. A rule
+    does not imply a unique test or proof artifact; evidence labels name scope-selected methods, not mandatory new per-MT suites.
+    Reuse valid existing proof. Only an explicitly authorized scope change may bind additional required claims; a new blocking finding
+    must demonstrate a violation of a named existing bound requirement or acceptance claim, or that authorized scope change.
+  applicability_verdicts: [required, not_applicable]
+  obligation_verdicts: [pending, proved, blocked, waived]
+  not_applicable_requires_reason: true
+  waiver_requires_exception_record: true
+  wp_scope_selects_relevant_obligations_not_rule_overrides: true
+  rule_deviation_requires_valid_scoped_exception: true
+  closure_forbidden_verdicts: [pending, blocked]
+  proof_policy:
+    minimum_sufficient_proof: true
+    proof_effort_scales_with_risk_uncertainty_blast_radius_persistence_and_failure_cost: true
+    one_proof_may_satisfy_multiple_obligations: true
+    duplicate_proof_for_rule_count_forbidden: true
+    additional_reviews_tests_checks_or_validation_require_explicit_operator_instruction: true
+    meta_tests_require_explicit_operator_instruction_for_that_test_work: true
+    reuse_valid_proof_when_relevant_inputs_are_unchanged: true
+    risk_tiers: [P0, P1, P2, P3]
+  impact_policy:
+    assess_all_registered_surfaces: true
+    create_obligations_only_for_semantically_affected_surfaces: true
+    unaffected_surfaces_must_not_generate_synthetic_work: true
+    mechanically_infer_then_review_exceptions: true
+  work_type_scope:
+    rule_ref: BR-REMEDIATE-001
+    codex_refs: [CODEX-SCOPE-001, CODEX-REMEDIATE-001]
+    heavy_obligations_declare_work_types: true
+    heavy_obligations: [research, refinement, red_team, pushback, risk_or_roi_listing]
+    default_work_types: [planning, new_feature, activation, scope_change]
+    remediation_triggers_heavy_obligations: false
+  proof_must_pin: [rulebook_version, rulebook_digest, rule_ids, obligation_ids, source_revision, command_or_method, observed_result,
+    evidence_refs]
+  on_rule_change:
+    open_affected_wp_condition: ReassessmentRequired_then_scoped_refinement_and_renewed_activation_only_if_obligations_change
+    completed_wp_policy: retain_historical_snapshot
+    silent_rewrite_forbidden: true
+  contract_field_propagation:
+    rule_ref: BR-CONTRACT-SYNC-001
+    rule_record_optional_field: contract_fields # {wp: [dotted WP contract paths], mt: [dotted MT contract paths]}
+    rulebook_revision_with_changed_contract_fields: regenerates_wp_and_mt_templates_and_marks_open_work_for_reassessment
+    templates_are_generated_from_rulebook_contract_fields_plus_stock_shape: true
+    activation_refuses_when_a_required_contract_field_is_missing: true
+    check_ref: rule_contract_fields_present
+
+
+project_profile:
+  name: REPLACE_ME
+  purpose: REPLACE_ME
+  primary_languages: []
+  runtimes: []
+  supported_platforms: []
+  supported_architectures: []
+  entrypoints: []
+  canonical_specification: REPLACE_ME
+  product_topology: REPLACE_ME
+  governance_topology: REPLACE_ME
+  reusable_solution_bindings: repo-governance/reuse/bindings.yaml
+  reusable_solution_lock: repo-governance/reuse/lock.yaml
+  internal_manual_entrypoint: REPLACE_ME
+  visual_inspection_entrypoint: REPLACE_ME
+  diagnostics_entrypoint: REPLACE_ME
+  flight_recorder_entrypoint: REPLACE_ME
+  router_entrypoint: REPLACE_ME
+  kernel_sdk_binding_ref: BIND-PROJECT-HSKERNELSDK
+  external_watcher_entrypoint: REPLACE_ME
+  identity_and_profiles_entrypoint: REPLACE_ME
+  gui_design_spec_refs: []
+  gui_applicability: REPLACE_ME
+  host_profile_ref: .local/host-profile.yaml # REPOSITORY-STRUCTURE.machine_local_workspace; git-ignored
+  test_environment:
+    rule_ref: BR-TEST-ENV-001
+    runtime_roots: REPLACE_ME # per project, resolved through host_profile; never absolute in this payload
+    database_sync_mode: REPLACE_ME # allowed values are project-defined; the mode used by tests is declared, never assumed
+    default_check_timeout_seconds: REPLACE_ME
+    default_profile: # cheapest isolated setup; every test runs under it unless listed in opt_in_tests
+      storage: temporary_per_test # temp directory or in-memory store removed after the test
+      sync: non_durable # durable sync is opt-in; examples only: no fsync, SQLite synchronous=OFF
+      network: none # loopback only when the test owns both ends
+    opt_in_tests: [] # entries {test_id, needs: [durable_sync | real_disk | network], reason}; run only in the special_runs lane
+    default_per_test_timeout_seconds: REPLACE_ME # short fail-fast default set in test_entrypoint.config_files; example only: 30
+    slow_tests: [] # entries {test_id, timeout_seconds, reason}; a test needing longer than the default runs only in the special_runs lane
+    hang_procedure_ref: host_profile.hang_procedure # dump and stack walk before any restart or kill
+    isolation_from_production: REPLACE_ME # BR-SDK-ISOLATE-001
+    shared_state_isolation: per_test # tests sharing a database or directory isolate it per test or are listed in run_alone_tests
+    run_alone_tests: []
+    flaky_tests: [] # only listed tests get one recorded retry; CODEX-STEER-009
+    canary_check: REPLACE_ME # test_entrypoint itself, same command and config, on one test per test target or package, run before every full round
+    tools_manifest_ref: .local/tools.yaml # REPOSITORY-STRUCTURE.machine_local_workspace.tools_manifest
+  test_entrypoint:
+    rule_ref: BR-TEST-ENTRY-001
+    command: REPLACE_ME # the one checked-in command every proof run uses; example only: cargo nextest run --workspace
+    config_files: [] # entrypoint source plus every checked-in environment/config file it reads; examples only: scripts/run-tests.py, .config/nextest.toml, .cargo/config.toml [env]
+    location_ref: HT-REPO-STRUCTURE-001.product_workspace_entries
+    profiles: {default: REPLACE_ME, special_runs: REPLACE_ME} # runner profile names defined in config_files; example only: nextest profiles default and special
+  implementer_check:
+    rule_ref: BR-TEST-ENTRY-001
+    command: REPLACE_ME # the cheapest permitted implementer check between fixes, compile or static, never a test run; example only: cargo check -p <package>; CODEX-STEER-009, GP-STOCK-005
+    config_files: [] # version-controlled config the check reads; normally a subset of test_entrypoint.config_files
+    recorded_in: [receipt.mechanical.compile_result, receipt.mechanical.static_check_result] # with receipt.mechanical.check_input_digest; counts for the implementation_gates action check only when before == after
+  build_cache:
+    rule_ref: BR-TEST-ENTRY-001
+    tool: REPLACE_ME # compiler or build cache, or null when none; example only: sccache wired through RUSTC_WRAPPER in .cargo/config.toml
+    configured_in: test_entrypoint.config_files
+    cache_root_binding: host_profile.artifact_root # machine-local; never an absolute path in this payload
+  automation_runner: REPLACE_ME # CI or local runner that executes validation rounds through test_entrypoint; null when none; HT-WORK-CODING-001.validation.rounds_run_by
+  product_workspace:
+    rule_refs: [BR-BUILD-UNIT-001, REPO-PLACE-005]
+    manifest_file: REPLACE_ME # workspace manifest at product/; examples only: Cargo.toml with [workspace], package.json workspaces, pnpm-workspace.yaml, go.work
+    member_manifest_file: REPLACE_ME # per build unit package manifest; examples only: Cargo.toml, package.json, pyproject.toml
+    members_from: module_manifest.architecture.build_unit_ref
+  build_budgets:
+    rule_ref: BR-BUILD-UNIT-001
+    incremental_rebuild_budget_seconds: REPLACE_ME # single-module change, warm cache; breach triggers BR-ARCH-GROWTH-001 review
+    relinked_test_binaries_budget: REPLACE_ME # per single-module change
+    test_binaries_per_build_unit_budget: REPLACE_ME
+    measured_by: validator_warm_build_per_batch # CODEX-VAL-001; recorded in receipt.mechanical.build_measurement
+
+canonical_commands:
+  setup: REPLACE_ME
+  format_check: REPLACE_ME
+  build_debug: REPLACE_ME
+  build_release: REPLACE_ME
+  type_check: REPLACE_ME
+  lint: REPLACE_ME
+  unit_test: REPLACE_ME
+  integration_test: REPLACE_ME
+  concurrency_test: REPLACE_ME
+  gui_inspection: REPLACE_ME
+  full_test: REPLACE_ME
+  package: REPLACE_ME
+  package_verify: REPLACE_ME
+  governance_validate: REPLACE_ME
+
+rule_sets:
+- rule_set_id: BRS-CODEBASE-BLUEPRINT-001
+  name: codebase_blueprint
+  version: 10
+  status: draft
+  authority_owner: build_rulebook
+  digest: sha256:REPLACE_ME
+  source_provenance:
+  - archive/2026-09-13/design/codebase-blueprint/Codebase-blueprint.md
+  - archive/2026-09-13/design/codebase-blueprint/Codebase-blueprint-template.md
+  - archive/2026-09-13/design/codebase-blueprint/Reusable-solution-extraction.md
+  - archive/2026-09-13/research/HSKernelSDK-field-research.md
+  member_rule_ids:
+  - BR-CORE-STATE-001
+  - BR-CORE-EFFECT-001
+  - BR-CORE-BOUND-001
+  - BR-CORE-DET-001
+  - BR-ARCH-BOUNDARY-001
+  - BR-ARCH-ROUTER-001
+  - BR-REUSE-EXTRACT-001
+  - BR-PRODUCT-VERTICAL-001
+  - BR-UI-VIS-001
+  - BR-OBS-FLIGHT-001
+  - BR-OBS-DIAG-001
+  - BR-PAR-RUNTIME-001
+  - BR-ERROR-001
+  - BR-TEST-001
+  - BR-DOC-001
+  - BR-EXCEPTION-001
+  - BR-ARCH-ZONES-001
+  - BR-ARCH-FOUNDATION-001
+  - BR-ARCH-CAPABILITY-001
+  - BR-ARCH-BRIDGE-001
+  - BR-ARCH-EXTENSION-001
+  - BR-ARCH-GRAPH-001
+  - BR-ARCH-MODULE-001
+  - BR-OBS-SURVIVAL-001
+  - BR-OBS-WATCHER-001
+  - BR-OBS-GUI-001
+  - BR-ARCH-GROWTH-001
+  - BR-BUILD-UNIT-001
+  - BR-PROOF-SCOPE-001
+  - BR-TEST-PIN-001
+  - BR-TEST-ENV-001
+  - BR-TEST-ENTRY-001
+  - BR-REMEDIATE-001
+  - BR-ERROR-002
+  - BR-SDK-BASE-001
+  - BR-SDK-CATALOG-001
+  - BR-SDK-CATALOG-002
+  - BR-SDK-OP-001
+  - BR-SDK-RESULT-001
+  - BR-SDK-DATA-001
+  - BR-SDK-DATA-002
+  - BR-SDK-DATA-003
+  - BR-SDK-DELEGATE-001
+  - BR-SDK-HOOK-001
+  - BR-SDK-HOOK-002
+  - BR-SDK-HOOK-003
+  - BR-SDK-HOOK-004
+  - BR-SDK-LIFECYCLE-001
+  - BR-SDK-ISOLATE-001
+  - BR-SDK-MODEL-001
+  - BR-MATRIX-001
+  - BR-MATRIX-002
+  - BR-MATRIX-003
+  - BR-GUI-DESIGN-001
+  - BR-SEMANTIC-MODULE-001
+  - BR-DATA-DISCOVERY-001
+  - BR-SPEC-SELF-001
+  - BR-SPEC-FORMAT-001
+  - BR-WORK-ACTIVATION-001
+  - BR-SPEC-ROADMAP-001
+  - BR-SPEC-ROADMAP-002
+  - BR-SPEC-ROADMAP-003
+  - BR-SPEC-ROADMAP-004
+  - BR-CONTRACT-SYNC-001
+  - BR-PILLAR-001
+  hydration_policy: resolve_members_from_this_rulebook_only
+  standalone_authority_forbidden: true
+- rule_set_id: BRS-REUSABLE-SOLUTIONS-001
+  name: reusable_solutions
+  version: 1
+  status: draft
+  authority_owner: build_rulebook
+  digest: sha256:REPLACE_ME
+  source_provenance: [descriptions/Reusable-Solutions-Description.md, archive/2026-09-13/design/codebase-blueprint/Reusable-solution-extraction.md]
+  member_rule_ids: [BR-REUSE-DISCOVER-001, BR-REUSE-LINEAGE-001, BR-REUSE-EXTRACT-001, BR-REUSE-PROMOTE-001, BR-REUSE-UPGRADE-001]
+  hydration_policy: resolve_members_from_this_rulebook_only
+  standalone_authority_forbidden: true
+
+
+build_matrix:
+  matrix_id: BM-PROJECT-001
+  revision: 3
+  owner: effective_build_rulebook
+  controller: handshake
+  rule_refs: [BR-MATRIX-001, BR-MATRIX-002, BR-MATRIX-003]
+  purpose: Assess cross-feature impacts during planning; bind stable IDs to only the activated WP scope and its assigned MTs after refinement/enrichment.
+  entry_contract:
+    required_fields: [entry_id, revision, status, title, rule_refs, requirement_refs, selector]
+    optional_fields: [operator_request_verbatim, rationale, semantic_entity_refs, module_refs, solution_binding_refs, legacy_impact_key,
+      supersedes, roadmap_item_refs, implementation_baseline_requirement_refs, contract_fields]
+    statuses: [active, retired]
+    id_allocator: handshake_registry
+    selector_kinds: [always, rule_applicability, registered_semantic_query]
+    selector_refs_must_resolve: true
+    free_text_is_not_executable_selector: true
+    rule_applicability_requires_registered_predicate_or_validated_semantic_detail: true
+    new_product_meaning_requires_spec_enrichment: true
+    rule_applicability_resolution: Assess every referenced rule; select any applicable obligations; unresolved referenced applicability
+      keeps the row unresolved; not_applicable requires all referenced rules to be proven inapplicable.
+  pillars:
+    rule_ref: BR-PILLAR-001
+    definition: A pillar is a mandatory matrix entry that every WP assesses and whose rules declare contract_fields, so the concern
+      is designed in from the first WP and never an afterthought.
+    mandatory_entry_ids: [BM-BASE-RUNTIME-CONCURRENCY-001, BM-BASE-GUI-UX-001, BM-BASE-AGENT-VISUAL-INTERFACE-001, BM-BASE-GUI-DESIGN-001,
+      BM-BASE-ACCOUNTS-AND-SUBPROFILES-001, BM-BASE-COMPARTMENTALISATION-001, BM-BASE-COMPONENT-MECHANICS-001, BM-BASE-INTERNAL-MANUAL-001,
+      BM-BASE-INTERNAL-DIAGNOSTICS-001, BM-BASE-FLIGHT-RECORDER-001, BM-BASE-SECURITY-AND-PRIVACY-001]
+    every_wp_assesses_every_mandatory_pillar: true
+    adding_a_pillar_is_a_matrix_entry_change_never_an_ad_hoc_contract_field: true
+    stub_check_ref: mandatory_pillar_rows_present
+  assessment_policy:
+    every_active_entry_considered: true
+    existing_feature_universe: current_specification_primitive_feature_relations_and_product_topology
+    candidate_selection: declared_dependencies_reverse_dependencies_shared_resources_and_registered_semantic_relations
+    source_import_graph_alone_is_insufficient: true
+    coverage_records_universe_digest_and_exclusions: true
+    stored_rows: change_verify_only_and_unresolved_only
+    not_applicable_rows_derived_from_universe_digest_and_excluded_entry_ids_never_stored: true
+    coverage_record: [universe_digest, assessed_entry_ids, excluded_entry_ids]
+    missing_metadata_or_ambiguous_semantics: unresolved
+    dispositions: [change, verify_only, not_applicable, unresolved, outside_activated_scope]
+    model_details_cannot_erase_mechanical_matches: true
+    nonapplicability_requires_supported_reason: true
+    closure_requires_no_unresolved_rows: false
+    one_proof_can_cover_multiple_rows: true
+    provenance_only_refresh_uses_new_controller_revision_without_duplicate_implementation_or_proof: true
+    no_all_pairs_paperwork_required: true
+    all_entries_checked_at: [stub_creation, activation, rebase, scope_change]
+    unchanged_inputs_reuse_prior_valid_resolution: true
+    activation_and_closure_require_no_unresolved_scope_relevant_rows: true
+    scope_uncertainty_requires_resolution_not_assumed_exclusion: true
+    unrelated_future_features_are_recorded_as_out_of_scope_not_synthetic_work: true
+    planning_assessment_is_non_executable: true
+  change_policy:
+    new_or_changed_entry_invalidates_open_work_assessment: true
+    reassess_before_next_claim_activation_or_closure: true
+    needs_rebase_only_when_obligations_change: true
+    no_silent_active_contract_rewrite: true
+    completed_contracts_keep_snapshot: true
+    retired_entry_history_retained: true
+    changed_obligations_bind_only_after_refinement_enrichment_and_renewed_activation: true
+    bulk_injection_into_open_wp_mt_forbidden: true
+    unavailable_required_dependency: explicit_dependency_blocker_or_separately_activated_work_not_implicit_scope_expansion
+  entries:
+  - entry_id: BM-BASE-GUI-UX-001
+    revision: 1
+    status: active
+    title: gui_ux
+    legacy_impact_key: gui_ux
+    rule_refs: [BR-UI-ADAPT-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-UI-ADAPT-001]
+  - entry_id: BM-BASE-INTERNAL-MANUAL-001
+    revision: 1
+    status: active
+    title: internal_manual
+    legacy_impact_key: internal_manual
+    rule_refs: [BR-MANUAL-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-MANUAL-001]
+  - entry_id: BM-BASE-AGENT-VISUAL-INTERFACE-001
+    revision: 1
+    status: active
+    title: agent_visual_interface
+    legacy_impact_key: agent_visual_interface
+    rule_refs: [BR-UI-VIS-001, BR-OBS-GUI-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-UI-VIS-001, BR-OBS-GUI-001]
+  - entry_id: BM-BASE-ACCOUNTS-AND-SUBPROFILES-001
+    revision: 1
+    status: active
+    title: accounts_and_subprofiles
+    legacy_impact_key: accounts_and_subprofiles
+    rule_refs: [BR-IDENTITY-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-IDENTITY-001]
+  - entry_id: BM-BASE-FLIGHT-RECORDER-001
+    revision: 1
+    status: active
+    title: flight_recorder
+    legacy_impact_key: flight_recorder
+    rule_refs: [BR-OBS-FLIGHT-001, BR-OBS-SURVIVAL-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-OBS-FLIGHT-001, BR-OBS-SURVIVAL-001]
+  - entry_id: BM-BASE-INTERNAL-DIAGNOSTICS-001
+    revision: 1
+    status: active
+    title: internal_diagnostics
+    legacy_impact_key: internal_diagnostics
+    rule_refs: [BR-OBS-DIAG-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-OBS-DIAG-001]
+  - entry_id: BM-BASE-DEVELOPMENT-PARALLELISM-001
+    revision: 1
+    status: active
+    title: development_parallelism
+    legacy_impact_key: development_parallelism
+    rule_refs: [BR-PAR-DEV-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-PAR-DEV-001]
+  - entry_id: BM-BASE-RUNTIME-CONCURRENCY-001
+    revision: 1
+    status: active
+    title: runtime_concurrency
+    legacy_impact_key: runtime_concurrency
+    rule_refs: [BR-PAR-RUNTIME-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-PAR-RUNTIME-001]
+  - entry_id: BM-BASE-MODULE-REPLACEABILITY-001
+    revision: 1
+    status: active
+    title: module_replaceability
+    legacy_impact_key: module_replaceability
+    rule_refs: [BR-ARCH-MODULE-001, BR-REUSE-EXTRACT-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-ARCH-MODULE-001, BR-REUSE-EXTRACT-001]
+  - entry_id: BM-BASE-ROUTING-AND-INTEROPERABILITY-001
+    revision: 1
+    status: active
+    title: routing_and_interoperability
+    legacy_impact_key: routing_and_interoperability
+    rule_refs: [BR-ARCH-ROUTER-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-ARCH-ROUTER-001]
+  - entry_id: BM-BASE-DATA-SAFETY-AND-RECOVERY-001
+    revision: 1
+    status: active
+    title: data_safety_and_recovery
+    legacy_impact_key: data_safety_and_recovery
+    rule_refs: [BR-DATA-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-DATA-001]
+  - entry_id: BM-BASE-PACKAGING-UPDATE-ROLLBACK-001
+    revision: 1
+    status: active
+    title: packaging_update_rollback
+    legacy_impact_key: packaging_update_rollback
+    rule_refs: [BR-INSTALL-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-INSTALL-001]
+  - entry_id: BM-BASE-SECURITY-AND-PRIVACY-001
+    revision: 1
+    status: active
+    title: security_and_privacy
+    legacy_impact_key: security_and_privacy
+    rule_refs: [BR-SECURITY-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-SECURITY-001]
+  - entry_id: BM-BASE-PERFORMANCE-AND-RESOURCES-001
+    revision: 1
+    status: active
+    title: performance_and_resources
+    legacy_impact_key: performance_and_resources
+    rule_refs: [BR-PERF-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-PERF-001]
+  - entry_id: BM-BASE-HSKERNELSDK-001
+    revision: 1
+    status: active
+    title: HSKernelSDK shared execution
+    rule_refs:
+    - BR-SDK-BASE-001
+    - BR-SDK-CATALOG-001
+    - BR-SDK-CATALOG-002
+    - BR-SDK-OP-001
+    - BR-SDK-RESULT-001
+    - BR-SDK-DATA-001
+    - BR-SDK-DATA-002
+    - BR-SDK-DATA-003
+    - BR-SDK-DELEGATE-001
+    - BR-SDK-HOOK-001
+    - BR-SDK-HOOK-002
+    - BR-SDK-HOOK-003
+    - BR-SDK-HOOK-004
+    - BR-SDK-LIFECYCLE-001
+    - BR-SDK-ISOLATE-001
+    - BR-SDK-MODEL-001
+    - BR-ARCH-ROUTER-001
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs:
+      - BR-SDK-BASE-001
+      - BR-SDK-CATALOG-001
+      - BR-SDK-CATALOG-002
+      - BR-SDK-OP-001
+      - BR-SDK-RESULT-001
+      - BR-SDK-DATA-001
+      - BR-SDK-DATA-002
+      - BR-SDK-DATA-003
+      - BR-SDK-DELEGATE-001
+      - BR-SDK-HOOK-001
+      - BR-SDK-HOOK-002
+      - BR-SDK-HOOK-003
+      - BR-SDK-HOOK-004
+      - BR-SDK-LIFECYCLE-001
+      - BR-SDK-ISOLATE-001
+      - BR-SDK-MODEL-001
+      - BR-ARCH-ROUTER-001
+  - entry_id: BM-BASE-GUI-DESIGN-001
+    revision: 1
+    status: active
+    title: Project GUI design and reusable elements
+    rule_refs: [BR-GUI-DESIGN-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-GUI-DESIGN-001]
+  - entry_id: BM-BASE-SEMANTIC-MODULES-001
+    revision: 1
+    status: active
+    title: Semantic code and shared resource surfaces
+    rule_refs: [BR-SEMANTIC-MODULE-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-SEMANTIC-MODULE-001]
+  - entry_id: BM-BASE-FILE-DISCOVERY-001
+    revision: 1
+    status: active
+    title: Managed file tags notes and search
+    rule_refs: [BR-DATA-DISCOVERY-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-DATA-DISCOVERY-001]
+  - entry_id: BM-BASE-COMPARTMENTALISATION-001
+    revision: 1
+    status: active
+    title: Compartmentalised build units
+    rule_refs: [BR-BUILD-UNIT-001, BR-ARCH-GRAPH-001, BR-ARCH-MODULE-001, BR-ARCH-GROWTH-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-BUILD-UNIT-001, BR-ARCH-GRAPH-001, BR-ARCH-MODULE-001, BR-ARCH-GROWTH-001]
+  - entry_id: BM-BASE-COMPONENT-MECHANICS-001
+    revision: 1
+    status: active
+    title: Canonical component mechanics
+    rule_refs: [BR-SEMANTIC-MODULE-001, BR-REUSE-DISCOVER-001, BR-REUSE-LINEAGE-001]
+    requirement_refs: []
+    selector:
+      kind: rule_applicability
+      refs: [BR-SEMANTIC-MODULE-001, BR-REUSE-DISCOVER-001, BR-REUSE-LINEAGE-001]
+  binding_policy:
+    after_refinement_enrichment: true
+    at_wp_activation_only: true
+    selected_scope: accepted_wp_outcome_and_affected_existing_behavior
+    missing_capability_is_not_authority_to_build_future_feature: true
+    shared_templates_define_shape_not_all_future_project_obligations: true
+    instantiated_wp_mt_enforcement_is_scope_bound: true
+    roadmap_source: current_specification.roadmap
+    planned_item_is_not_existing_capability: true
+    implemented_items_require_matrix_coverage: true
+    implemented_baseline_reconciled_on_verified_completion: true
+    implemented_baseline_obligations_bound_only_when_relevant_at_activation: true
+
+
+dependency_policy:
+  rule_ref: BR-ARCH-GRAPH-001
+  scope: source_imports_between_distinct_product_modules
+  default: deny
+  allowed_target_zones:
+    kernel: [kernel, contracts]
+    contracts: [contracts]
+    capabilities: [kernel, contracts]
+    adapters: [kernel, contracts]
+    extensions: [kernel, contracts]
+    shells: [kernel, contracts, capabilities, adapters, extensions, internal_diagnostics]
+    internal_diagnostics: [kernel, contracts]
+    external_watcher: [contracts]
+  capability_to_capability_imports: only_down_the_composition_layer_matrix_when_stock_architecture_selected_otherwise_through_contracts # HT-TOPOLOGY-PRODUCT-001.coding_architecture.allowed_layer_dependencies
+  allowed_edges_still_require_declared_public_contracts: true
+  shells_import_implementations_for_composition_only: true
+  runtime_registration_does_not_create_reverse_source_imports: true
+  watcher_contracts_must_not_require_live_target_sdk: true
+  third_party_dependencies_use_module_contract_and_solution_lock: true
+  module_internal_calls_do_not_create_cross_module_edges: true
+  physical_paths_owner: repository_structure
+  actual_module_edges_owner: product_topology
+
+rules:
+- rule_id: BR-CORE-AUTH-001
+  category: authority
+  severity: must
+  applies_when: wp_planning_activation_rebase_or_scope_change
+  requirement: Read and resolve the current specification, topology, rulebook, WP, refinement-enrichment, MT contract, state, and pinned
+    reusable-solution bindings before implementation; derived files never override their named source. A claimed MT under remediation
+    or batch execution reads its contract and context capsule per CODEX-START-001 and CODEX-START-006; the full authority read applies
+    to planning and activation.
+  evidence: authority_snapshot_with_digests
+  legacy_sources: [BR-GOV-001..014, BR-PROJECT-001..003, BR-CMD-001..005, RID-BASE-CBP-030]
+- rule_id: BR-SPEC-FIRST-001
+  category: specification_authority
+  severity: must
+  applies_when: operator_direction_research_or_refinement_changes_product_meaning_behavior_architecture_or_constraints
+  requirement: Accepted product-direction changes must be applied to the canonical specification before a WP or MT is derived or rebased;
+    refinement, WP contracts, MTs, receipts, chats, and reusable-solution bindings cannot supersede specification truth.
+  evidence: validated_spec_sync_receipt_and_wp_authority_snapshot
+  legacy_sources: [operator_2026-09-11_refinement_clarification]
+- rule_id: BR-REFINE-FRESH-001
+  category: refinement_and_freshness
+  severity: must
+  applies_when: wp_is_planned_rebased_or_activated
+  requirement: Extract only the relevant specification context, reality-check dependencies, field methods, comparable projects, project
+    reality, and reusable solutions, apply any accepted spec enrichment, then re-extract the resolved context from the current specification;
+    activation rechecks only invalidated freshness surfaces; broader review requires explicit Operator instruction.
+  evidence: refinement_enrichment_artifact_with_resolved_context_digest
+  legacy_sources: [operator_2026-09-11_refinement_clarification]
+- rule_id: BR-CORE-TRUTH-001
+  category: verification
+  severity: must
+  applies_when: always
+  requirement: Never present assumptions, expected output, unexecuted commands, partial checks, or plausibility as verified fact; failures
+    and remaining uncertainty stay visible. State verification scope and assumptions; do not claim formal proof or universal detection
+    of bugs/nontermination without the corresponding method and evidence.
+  evidence: proof_receipt_with_actual_observation
+  legacy_sources: [BR-VERIFY-001..010, BR-COMPLETE-001..006]
+- rule_id: BR-CORE-INV-001
+  category: invariants_and_contracts
+  severity: must
+  applies_when: stateful_concurrent_persistent_security_sensitive_or_public_behavior
+  requirement: Identify affected invariants and boundary contracts; define inputs, rejections, preconditions, outputs, postconditions,
+    side effects, failures, ownership, ordering, and concurrency, then enforce them at the strongest practical layer.
+  evidence: invariant_contract_links_and_negative_tests
+  legacy_sources: [BR-INV-001..013, BR-CONTRACT-001..008]
+- rule_id: BR-CORE-STATE-001
+  category: state
+  severity: must
+  applies_when: mutable_or_derived_state_exists
+  requirement: Give each fact one authoritative owner. Mark caches, indexes, views, projections and generated files as derived, with
+    explicit rebuilding, reconciliation, conflict behavior and allowed state transitions. Module-backed topology nodes resolve module
+    facts from module manifests, never editable duplicates; topology owns the relations; machine navigation views are generated.
+    Canonical operation state owns execution progress; the flight recorder observes linked transitions and never redefines that state or
+    target commit truth. A resumed model reads canonical state, never its conversation summary, as authority.
+  evidence: state_owner_map_transition_tests_and_rebuild_proof
+  legacy_sources: [BR-STATE-001..010, RID-BASE-CBP-020, RID-BASE-CBP-024]
+- rule_id: BR-CORE-EFFECT-001
+  category: effects
+  severity: must
+  applies_when: transformation_decision_or_external_effect_code_changes
+  requirement: Keep decision logic deterministic; isolate time, randomness, configuration, filesystem, network, database, process, and
+    service effects behind explicit injected boundaries without hidden mutable globals.
+  evidence: direct_core_tests_and_effect_boundary_tests
+  legacy_sources: [BR-EFFECT-001..010]
+- rule_id: BR-CORE-BOUND-001
+  category: bounded_resources
+  severity: must
+  applies_when: queues_buffers_caches_logs_retries_workers_requests_recursion_context_or_artifacts_can_grow
+  requirement: Define capacity, concurrency, overload, backpressure, timeout, cancellation, retry, ownership, cleanup, and observability;
+    unbounded growth requires proof and explicit approval. HSKernelSDK admission accounts for queued/running reservations as well as
+    completed consumption, including fan-out, context, streams, connection pools and applicable provider usage; delayed external billing
+    is not a precise real-time ceiling. Reserve capacity for cancellation, health, and recovery, and expose estimated versus enforceable
+    limits under operator-selected policy.
+  evidence: configured_limits_overload_tests_and_resource_metrics
+  legacy_sources: [BR-BOUND-001..010, BR-TERM-001..010, BR-LIMIT-001..004]
+- rule_id: BR-CORE-REPLAY-001
+  category: replay_and_idempotency
+  severity: must
+  applies_when: operation_can_retry_replay_resume_duplicate_or_cross_process_boundary
+  requirement: Use stable operation identity with idempotent or deduplicated behavior; distinguish never-started, pre-commit failure,
+    committed-response-lost, partial commit and unknown outcomes. Keep logical operation identity distinct from attempt identity, reject
+    reuse with different intent, declare deduplication retention, and reconcile uncertain effects before retrying. Re-querying a
+    nondeterministic model is a new attempt, not replay of a recorded result. Cancellation intent is distinct from observed termination
+    and cannot undo a committed effect.
+  evidence: duplicate_retry_resume_and_lost_response_tests
+  legacy_sources: [BR-IDEMP-001..007]
+- rule_id: BR-CORE-ATOMIC-001
+  category: atomicity
+  severity: must
+  applies_when: logical_operation_mutates_one_or_more_persistent_or_external_systems
+  requirement: Make the domain transaction atomic required_if every mutated system joins one supported transaction, else define valid
+    intermediate states, detection, compensation, recovery, restart, consistency and idempotent continuation without assuming external
+    effects roll back. Declare each connector commit boundary. Coordinate state and mandatory event publication through a supported
+    atomic transaction, outbox or explicit recovery protocol. Queued acceptance is not commit; infer no universal exactly-once guarantee
+    across arbitrary connectors.
+  evidence: fault_injection_partial_commit_and_recovery_tests
+  legacy_sources: [BR-ATOMIC-001..008]
+- rule_id: BR-CORE-DET-001
+  category: determinism_and_dependencies
+  severity: must
+  applies_when: build_test_generation_dependency_or_reusable_solution_binding_changes
+  requirement: Pin declared inputs, dependencies, and reusable-solution bindings; verify capabilities before use, isolate unavoidable
+    nondeterminism, identify generated artifacts and commands, and prevent user paths, hidden tools, uncontrolled network, time, randomness,
+    or machine state from changing results silently.
+  evidence: clean_checkout_reproduction_dependency_audit_solution_lock_and_seeded_tests
+  legacy_sources: [BR-DET-001..010, BR-DEP-001..008, BR-GEN-001..003, RID-BASE-CBP-027, RID-BASE-CBP-030]
+- rule_id: BR-ARCH-BOUNDARY-001
+  category: architecture_and_replaceability
+  severity: must
+  applies_when: module_component_provider_or_dependency_boundary_changes
+  requirement: Define ownership, public contracts, allowed dependency direction, forbidden reach-through, lifecycle hooks, adapters and
+    contract tests so modules/providers are replaceable without contaminating callers; use process containers only when runtime
+    isolation justifies them.
+  evidence: topology_diff_contract_tests_and_replacement_test
+  legacy_sources: [BR-ARCH-001..005, RID-BASE-CBP-011]
+- rule_id: BR-ARCH-ROUTER-001
+  category: routing_and_interoperability
+  severity: must
+  applies_when: modules_tools_agents_messages_or_data_flows_interconnect
+  requirement: Route all product capability use, operator/model tool calls, primitives, jobs, child operations, inter-module calls,
+    and resource reads/writes through HSKernelSDK public contracts. Registered handlers may use internal functions, but external effects
+    and cross-owner access use injected SDK boundaries. No UI, extension, script, or connector may establish a parallel execution path.
+    Define message identity, routing keys, ordering, idempotency, priority, backpressure, cancellation, retry, dead letters, persistence,
+    authorization, and observability before selecting transport. The external watcher observation path specified by BR-OBS-WATCHER-001
+    is independent of target dispatch; it does not authorize bypassing business-operation controls.
+  evidence: routing_contract_concurrency_failure_and_swap_tests
+  legacy_sources: [BR-CONTRACT-001..008, BR-BOUND-001..010, BR-IDEMP-001..007]
+- rule_id: BR-REUSE-DISCOVER-001
+  category: reusable_solutions
+  severity: must
+  applies_when: stabilized_work_creates_or_reimplements_a_primitive_component_pattern_workflow_module_recipe_schema_or_other_reusable_semantic_solution
+  requirement: Before creating a stabilized duplicate, search the current project topology, current solution bindings, and Handshake
+    solution library for semantic matches; prototype and exploratory work may defer this reconciliation until stabilization.
+  evidence: refinement_reuse_discovery_and_selected_strategy
+  legacy_sources: [operator_2026-09-11_reuse_library]
+- rule_id: BR-REUSE-LINEAGE-001
+  category: reusable_solutions
+  severity: must
+  applies_when: reusable_solution_is_bound_composed_extended_forked_or_copied_into_stable_work
+  requirement: Record stable solution identity, exact version, digest, relationship, profile (required_if the solution declares profiles
+    else omitted), topology targets, and fork or supersession lineage; implicit latest and silent copy-and-modify without lineage are
+    forbidden.
+  evidence: solution_binding_lock_and_topology_lineage
+  legacy_sources: [operator_2026-09-11_reuse_library]
+- rule_id: BR-REUSE-EXTRACT-001
+  category: architecture_and_reuse
+  severity: must
+  applies_when: stable_module_or_authored_system_boundary_changes
+  requirement: Keep stable modules and authored systems extractable through explicit public contracts, declared dependencies, one state
+    owner, visible external effects, and topology semantics so extraction does not require reconstructing undocumented surrounding state;
+    extractability does not require promotion.
+  evidence: module_manifest_topology_boundary_and_effect_inspection
+  legacy_sources: [operator_2026-09-11_codebase_extraction]
+- rule_id: BR-REUSE-PROMOTE-001
+  category: reusable_solutions
+  severity: must
+  applies_when: promotion_to_handshake_solution_library_is_requested
+  requirement: Promote only demonstrated reusable value with a stable public contract, removed or declared project-specific assumptions,
+    explicit dependencies and lineage, and sufficient existing or new proof; theoretical reuse alone does not justify abstraction or
+    promotion.
+  evidence: reusable_solution_candidate_and_promotion_receipt
+  legacy_sources: [operator_2026-09-11_reuse_library]
+- rule_id: BR-REUSE-UPGRADE-001
+  category: reusable_solutions
+  severity: must
+  applies_when: a_newer_reusable_solution_version_exists_or_binding_changes
+  requirement: Treat solution upgrades as explicit migrations; never silently move a project to a newer library version, and preserve
+    the prior binding and semantic lineage for rollback and explanation.
+  evidence: binding_diff_migration_proof_and_updated_solution_lock
+  legacy_sources: [operator_2026-09-11_reuse_library]
+- rule_id: BR-PRODUCT-VERTICAL-001
+  category: vertical_slice
+  severity: must
+  applies_when: wp_changes_operator_visible_behavior
+  requirement: Assess the complete product slice, but update and prove only semantically affected surfaces. A user-visible change must
+    remain coherent across its affected behavior, GUI or headless surface, manual, model-visible operation, diagnostics, flight recorder,
+    and boundary proof; unaffected surfaces must be marked `verify_only` or `not_applicable` with no synthetic implementation work.
+  evidence: wp_impact_assessment_and_minimum_affected_vertical_proof
+  legacy_sources: [BR-DOC-001..008, BR-TEST-001..014, BR-COMPLETE-001..006]
+- rule_id: BR-UI-ADAPT-001
+  category: gui_ux_and_restyling
+  severity: must
+  applies_when: wp_changes_gui_visual_output_or_shared_ui_solution
+  requirement: For affected GUI or visual surfaces, use shared design tokens, components, layout primitives, responsive constraints,
+    stable state models, and data-driven styling so restyling, density changes, localization, accessibility, and display scaling do
+    not require feature rewrites; do not generate GUI obligations for unrelated WPs.
+  evidence: affected_ui_contract_or_rendered_surface_proof
+  legacy_sources: [operator_build_rules_notes_restyling_and_scaling]
+- rule_id: BR-UI-VIS-001
+  category: visual_model_operation
+  severity: must
+  applies_when: wp_changes_gui_visual_output_or_model_visible_interaction
+  requirement: Affected model-visible GUI surfaces expose stable element IDs, structured state, deterministic navigation and steering,
+    screenshots or snapshots, failure reproduction and real rendered-surface inspection, so a no-context model operates and judges the
+    GUI without fragile guessing; reuse unchanged inspection infrastructure instead of rebuilding it. Headless surfaces expose the same
+    navigation and inspection routes, so a model operates the product without a rendered window.
+  evidence: affected_visual_navigation_and_reobservation_proof
+  contract_fields: {wp: [gui_surface.inspection_route_refs, gui_surface.headless_route_refs], mt: []}
+  legacy_sources: [BR-TEST-001..014, BR-COMPLETE-003]
+- rule_id: BR-MANUAL-001
+  category: internal_manual
+  severity: must
+  applies_when: operator_or_model_facing_behavior_command_primitive_route_or_failure_recovery_path_changes
+  requirement: Update only the affected built-in manual sections needed to keep purpose, startup, inputs, outputs, navigation, commands,
+    primitives, failures, recovery, diagnostics, and visual-tool usage truthful; internal implementation changes with no documented
+    behavior impact do not require manual churn.
+  evidence: affected_manual_claims_resolve_to_current_surfaces
+  contract_fields: {wp: [impact_assessment.rows], mt: []}
+  legacy_sources: [BR-DOC-001..008]
+- rule_id: BR-OBS-FLIGHT-001
+  category: flight_recorder
+  severity: must
+  applies_when: observable_business_action_state_transition_or_tool_operation_changes
+  requirement: For a changed observable action or state transition, preserve the required bounded, ordered, attributable events with
+    stable run, actor, account, WP, MT, action, resource, correlation and causation identity; add or change recorder events only where
+    the affected behavior requires them. HSKernelSDK emits common invocation events automatically, including child operations,
+    decisions, attempts, declared commit outcomes and observation coverage; record unsupported provider-internal visibility explicitly.
+    Essential operation state is durable independently of trace sampling. Bound and redact evidence; leak no credentials or unauthorized
+    payloads.
+  evidence: affected_event_attribution_and_reconstruction_proof
+  contract_fields: {wp: [impact_assessment.rows], mt: []}
+  legacy_sources: [BR-OBS-001..010]
+- rule_id: BR-OBS-DIAG-001
+  category: internal_diagnostics
+  severity: must
+  applies_when: runtime_behavior_or_failure_mode_changes_diagnostics_require_observation
+  requirement: Preserve or extend only the diagnostic surfaces needed to observe the changed runtime behavior or failure mode, using
+    the project's structured health, errors, queues, races, resources, traces, screenshots, reproduction, and recovery vocabulary as
+    applicable; unchanged diagnostic dimensions reuse existing proof and do not generate new instrumentation work.
+  evidence: affected_diagnostic_surface_and_failure_observation_proof
+  contract_fields: {wp: [impact_assessment.rows], mt: []}
+  legacy_sources: [BR-OBS-001..010, BR-ERROR-001..010, RID-BASE-CBP-001]
+- rule_id: BR-PAR-DEV-001
+  category: parallel_development
+  severity: must
+  applies_when: multiple_models_or_worktrees_can_work_concurrently
+  requirement: Use stable actor, lane, claim, worktree, attempt, and receipt IDs; isolate write scopes and artifacts; define leases,
+    heartbeats, stale-result rejection, merge ownership, recovery, and no cross-owner deletion.
+  evidence: concurrent_claim_conflict_stale_generation_and_recovery_tests
+  legacy_sources: [BR-STATE-001..010, BR-ATOMIC-001..008]
+- rule_id: BR-MT-CONTEXT-001
+  category: model_context_and_delegation
+  severity: must
+  applies_when: wp_uses_microtasks
+  requirement: Compile each MT as a fresh-context closure unit containing only its required resolved spec anchors, topology neighborhood,
+    reusable-solution bindings, files, dependencies, write scope, acceptance claims, and proof; checks such as format, build, test,
+    benchmark, or diff review are steps or proof and must not become MTs by themselves.
+  evidence: mt_context_digest_scope_and_graph_review
+  legacy_sources: [operator_2026-09-11_microtask_context]
+- rule_id: BR-PAR-RUNTIME-001
+  category: runtime_concurrency
+  severity: must
+  applies_when: runtime_can_execute_overlapping_work
+  requirement: Define bounded concurrency, ownership, ordering, isolation, fairness, backpressure, cancellation, idempotency, retries,
+    stale-result fences, failure containment and observability independently of development-lane rules; enforce them through HSKernelSDK
+    at resource-owner scope without globally serializing unrelated work. Fence a stale worker at its write target; single-threaded
+    dispatch does not prevent stale reads across awaits. One declared retry owner controls amplification across nested adapters. Design
+    every product for multiple parallel asynchronous lanes from its first WP; a WP adding runtime behaviour names its lanes, their
+    ordering, cancellation and backpressure, and never defers concurrency to a later addition.
+  evidence: scheduling_race_duplicate_cancel_overload_and_failure_isolation_tests
+  contract_fields: {wp: [runtime_lanes], mt: []}
+  legacy_sources: [BR-BOUND-001..010, BR-TERM-001..010, BR-IDEMP-001..007]
+- rule_id: BR-QUIET-001
+  category: nonintrusive_operation
+  severity: must
+  applies_when: automated_agent_background_test_or_diagnostic_work_runs
+  requirement: Do not pop foreground windows, steal focus, hijack keyboard or pointer input, interrupt operator processes, or leave
+    orphan workers and terminals; unavoidable foreground work requires a declared controlled path.
+  evidence: background_operation_focus_input_and_process_cleanup_test
+  legacy_sources: [BR-TERM-001..010, BR-CHANGE-012]
+- rule_id: BR-IDENTITY-001
+  category: accounts_profiles_and_privacy
+  severity: must
+  applies_when: product_manages_users_resources_projects_sessions_or_personalization
+  requirement: Provide stable accounts with isolated subprofiles; bind every resource, derivative, cache, index, log, trace, export,
+    session, and delegation to authoritative ownership and visibility; enforce default deny, non-widening derivation, revocation, recovery,
+    and negative cross-account proof. Every WP that touches a resource, session, export or view names the account binding and sub-profile
+    visibility of that resource; default deny is proved negatively.
+  evidence: ownership_lineage_subprofile_isolation_revocation_and_cross_scope_tests
+  contract_fields: {wp: [auth_binding], mt: []}
+  legacy_sources: [BR-SEC-001..012, BR-STATE-001..010]
+- rule_id: BR-DATA-001
+  category: persistence_and_recovery
+  severity: must
+  applies_when: persistent_state_schema_file_format_import_export_or_database_changes
+  requirement: Define canonical store ownership, schema version, forward and rollback migration, transaction boundaries, backup and
+    recovery, restart behavior, import/export provenance, destructive-action scope, and compatibility without assuming atomic deployment.
+    The owning module controls schema evolution; cross-owner transactions require an explicit coordinator or workflow contract.
+  evidence: fresh_install_upgrade_rollback_restart_restore_and_portability_tests
+  legacy_sources: [BR-COMPAT-001..010, BR-ATOMIC-001..008, RID-BASE-CBP-021]
+- rule_id: BR-PERF-001
+  category: performance_and_scaling
+  severity: must
+  applies_when: wp_touches_runtime_or_gui_hot_path_data_volume_or_parallelism
+  requirement: Identify only the performance/resource budgets and scenario dimensions materially affected by the change; preserve interaction-path
+    nonblocking and bounded-work invariants, and benchmark cold, warm, load, race, render, startup, or concurrency scenarios only where
+    they can falsify a changed or at-risk claim.
+  evidence: affected_budget_or_hot_path_measurement_with_regression_thresholds
+  legacy_sources: [BR-BOUND-001..010, BR-LIMIT-001..004, BR-TEST-001..014]
+- rule_id: BR-SECURITY-001
+  category: security
+  severity: must
+  applies_when: untrusted_input_identity_authorization_secret_command_query_path_or_external_boundary_changes
+  requirement: Validate at trust boundaries, enforce server-side or authoritative-boundary authorization and least privilege, construct
+    commands and queries safely, protect secrets, preserve privacy in logs, and never weaken controls to pass tests.
+  evidence: threat_boundary_review_negative_authorization_and_injection_tests
+  contract_fields: {wp: [auth_binding.authorization_boundary_refs], mt: []}
+  legacy_sources: [BR-SEC-001..012]
+- rule_id: BR-ERROR-001
+  category: errors_and_recovery
+  severity: must
+  applies_when: failure_is_possible
+  requirement: Preserve causal context without leaking secrets; distinguish domain/internal and transient/permanent failures; make
+    fallbacks explicit and observable; preserve original failures through cleanup; never convert failure silently into success.
+    HSKernelSDK returns structured failure class, affected operation/resource, supported recovery route and honest retryability.
+    Fallback providers must preserve required scope and guarantees; errors must not suggest bypassing policy.
+  evidence: failure_path_fallback_causality_and_redaction_tests
+  legacy_sources: [BR-ERROR-001..010]
+- rule_id: BR-ERROR-002
+  category: errors_and_recovery
+  severity: must
+  applies_when: a_write_read_or_operation_can_be_denied_dropped_or_ignored_by_policy
+  requirement: Deny-by-default behavior must be observable. A denied, dropped or ignored write is surfaced as an explicit denial with
+    its cause; silently accepting and discarding an operation is forbidden because it turns one defect into many test rounds.
+  evidence: explicit_denial_surface_and_silent_drop_negative_test
+  legacy_sources: [handshake_2026-09-23_silent_deny_finding]
+- rule_id: BR-REMEDIATE-001
+  category: remediation_scope
+  severity: must
+  same_as: CODEX-REMEDIATE-001 # BR-only delta below
+  applies_when: mt_or_wp_failure_is_recorded_with_a_remediation_proposal
+  requirement: Apply CODEX-REMEDIATE-001. Submit only the existing proof for the recorded failure/fix to the next shared batch run;
+    run no broad suite. The remediation proposal cannot authorize additional reviews, tests, checks or validation.
+  evidence: remediation_commit_and_scoped_proof_result
+  legacy_sources: [handshake_2026-09-23_remediation_scope_finding]
+- rule_id: BR-HOST-001
+  category: host_resources
+  severity: must
+  applies_when: builds_or_tests_run_on_a_host_with_more_than_one_storage_device_class
+  requirement: Classify the host's storage devices in the machine-local host profile. Link-heavy build steps run on the fastest device;
+    slow devices receive check-only builds. The stock template states the pattern and never embeds a device inventory. Classification
+    is recorded in .local/host-profile.yaml, the git-ignored machine-local workspace; a build receipt names the device class used and the host
+    restart evidence source.
+  evidence: host_profile_binding_and_build_placement_receipt
+  legacy_sources: [handshake_2026-09-23_link_time_finding]
+- rule_id: BR-HOST-002
+  category: host_resources
+  severity: must
+  applies_when: tests_run_while_link_steps_are_active
+  requirement: Keep test runtime I/O on a different device from active links. Run at most one heavy build per device and evaluate
+    busy checks per device, never host-wide.
+  evidence: device_assignment_and_per_device_busy_check_receipt
+  legacy_sources: [handshake_2026-09-23_shared_disk_finding]
+- rule_id: BR-HOST-003
+  category: host_resources
+  severity: must
+  applies_when: a_disk_capacity_limit_is_enforced
+  requirement: Measure disk capacity by free space. Summing file sizes over-counts hardlinked artifacts and raises false capacity alarms.
+  evidence: free_space_measurement_in_capacity_receipt
+  legacy_sources: [handshake_2026-09-23_hardlink_size_finding]
+- rule_id: BR-COMPAT-001
+  category: compatibility
+  severity: must
+  applies_when: public_api_cli_schema_protocol_file_format_configuration_or_persistent_behavior_changes
+  requirement: Declare compatibility policy, identify breaking changes before completion, define deprecation and migration behavior,
+    and automate consequential backward or forward compatibility proof.
+  evidence: compatibility_matrix_and_migration_tests
+  legacy_sources: [BR-COMPAT-001..010, BR-PROJECT-COMPAT-001..003]
+- rule_id: BR-CHANGE-001
+  category: change_discipline
+  severity: must
+  applies_when: implementation_changes
+  requirement: Inspect authority, implementation, callers, tests, configuration, and documentation in proportion to the change; make
+    the smallest coherent change, preserve unrelated behavior, avoid speculative refactors, review the diff, and reconcile only affected
+    artifacts.
+  evidence: inspection_refs_diff_review_and_changed_input_validation_map
+  legacy_sources: [BR-CHANGE-001..018]
+- rule_id: BR-WORK-ECONOMY-001
+  category: governance_economy
+  severity: must
+  applies_when: planning_implementation_validation_or_documentation_creates_supporting_artifacts
+  requirement: Do not create a governance artifact, abstraction, helper, wrapper, validator, test, document, microtask, or indirection
+    unless it materially improves correctness, reuse, recovery, comprehension, deterministic proof, or independently executable context;
+    material value alone does not authorize more tests, helpers or closure conditions beyond the active bound scope. Handshake collects
+    mechanically knowable facts instead of requiring models to restate them.
+  evidence: wp_and_mt_structure_review_with_generated_receipt_fields
+  legacy_sources: [operator_2026-09-11_proof_economy, RID-BASE-CBP-025]
+- rule_id: BR-TEST-001
+  category: testing_and_proof
+  severity: must
+  applies_when: implementation_changes
+  requirement: Select only the behavior, invariant, negative-path, concurrency, integration, GUI, packaging, and production-boundary
+    proof dimensions needed for the active bound required claims; use the smallest declared checks capable of falsifying those claims.
+    Rule evidence labels do not require every named method or a new suite; reuse scope-valid evidence. Additional blocking findings
+    must demonstrate a named bound claim violation or an explicitly authorized scope change. Additional reviews, tests, checks or
+    validation require explicit Operator instruction for that additional proof work; missing coverage, a discovered defect or a
+    model-authored diagnosis or remediation proposal does not authorize it. Never weaken or retry-away failures,
+    and distinguish passed, failed, skipped, stale, and unexecuted checks.
+  evidence: minimum_applicable_proof_receipts_and_independent_review_when_required
+  legacy_sources: [BR-TEST-001..014, BR-COMPLETE-001..006]
+- rule_id: BR-PROOF-DEDUP-001
+  category: testing_and_proof
+  severity: must
+  applies_when: two_or_more_rules_require_the_same_observable_claim_or_existing_evidence_already_covers_the_claim
+  requirement: Reuse one valid proof across every requirement, acceptance criterion, and rule obligation it actually demonstrates; do
+    not create duplicate tests merely because multiple rules reference the same behavior.
+  evidence: proof_to_claim_coverage_map
+  legacy_sources: [operator_2026-09-11_proof_economy]
+- rule_id: BR-PROOF-NOMETA-001
+  category: testing_and_proof
+  severity: must
+  applies_when: proposed_test_exists_only_to_prove_another_test_validator_or_receipt_mechanism
+  requirement: Do not create tests whose sole purpose is proving another test, check, validator, receipt, or test runner works unless
+    the Operator explicitly instructs that test work. An instruction to change or repair the infrastructure alone, a discovered defect,
+    or a model-authored diagnosis or remediation proposal does not authorize additional tests or new closure conditions.
+  evidence: proof_plan_review
+  legacy_sources: [operator_2026-09-11_proof_economy]
+- rule_id: BR-PROOF-REUSE-001
+  category: testing_and_proof
+  severity: must
+  applies_when: prior_proof_exists_for_an_unchanged_claim
+  requirement: Reuse prior proof only when its relevant source, dependency, configuration, authority, reusable-solution binding, and
+    asserted-behavior inputs are unchanged; otherwise rerun only the invalidated proof surface.
+  evidence: proof_input_digest_comparison
+  legacy_sources: [operator_2026-09-11_proof_economy]
+- rule_id: BR-PORTABLE-001
+  category: portability
+  severity: must
+  applies_when: paths_builds_runtime_state_tools_or_external_roots_change
+  requirement: Use repo-root discovery, relative paths, configuration indirection, and documented external prerequisites; isolate unavoidable
+    machine-local paths and prove move-to-folder and move-to-disk behavior.
+  evidence: relocated_checkout_build_test_and_runtime_smoke
+  legacy_sources: [BR-DET-001..010, BR-CMD-001..005]
+- rule_id: BR-INSTALL-001
+  category: packaging_and_installer
+  severity: must
+  applies_when: wp_changes_installation_packaging_or_update_flow
+  requirement: For affected installation, packaging, or update behavior, provide always-on logs, truthful progress/current-step status,
+    bounded cancellation/cleanup, integrity, rollback/recovery, and installed-artifact verification; consolidate huge small-file dependency
+    trees into fewer extraction units where technically appropriate, but do not create packaging obligations for unrelated WPs.
+  evidence: affected_install_or_update_flow_proof
+  legacy_sources: [operator_build_rules_notes_installer, BR-DET-001..010, BR-ATOMIC-001..008]
+- rule_id: BR-DOC-001
+  category: documentation_and_generated_files
+  severity: must
+  applies_when: behavior_commands_contracts_invariants_or_generated_surfaces_change
+  requirement: Keep affected current behavior, APIs, commands, invariants, generation sources, regeneration commands and manual-edit
+    policy truthful; unaffected documents require no churn. Label roadmap content, keep examples valid, and never let generated
+    projections become authority. Derive navigation and change views from manifests, code/build metadata, topology and diffs, with
+    freshness and exact source references; create no parallel manual module dossier.
+  evidence: affected_documentation_or_generation_consistency_checks
+  legacy_sources: [BR-DOC-001..008, BR-GEN-001..003, RID-BASE-CBP-024, RID-BASE-CBP-027]
+- rule_id: BR-EXCEPTION-001
+  category: exceptions
+  severity: must
+  applies_when: rule_deviation_is_requested
+  requirement: Record a narrowly scoped exception with stable ID, affected rule, reason, risk, mitigation, owner, review or expiry,
+    and proof impact; recurring exceptions trigger rule review.
+  evidence: validated_exception_record
+  legacy_sources: [BR-EXC-001..007, BR-MAINT-005, RID-BASE-CBP-028]
+- rule_id: BR-CLOSURE-001
+  category: completion
+  severity: must
+  applies_when: mt_or_wp_completion_is_claimed
+  requirement: Completion requires requirement-to-acceptance-to-proof coverage for every active bound required claim, actual runtime or
+    boundary evidence where bound, bound diagnostics/manual/GUI/packaging obligations, independent review only when selected, and
+    containment of the approved closure revision in the target branch. New findings block closure only when observed evidence
+    demonstrates a named bound claim violation or the Operator explicitly authorizes a scope change through the existing contract path.
+  evidence: closure_receipt_validation_verdict_and_merge_containment_proof
+  legacy_sources: [BR-COMPLETE-001..006, BR-TEST-001..014]
+- rule_id: BR-CLOSURE-ECONOMY-001
+  category: completion
+  severity: must
+  applies_when: required_behavior_and_proof_are_satisfied
+  requirement: Stop when the active contract and required claims have sufficient valid proof; do not expand tests, refactor unrelated
+    code, add abstractions, generate extra paperwork, or create follow-up infrastructure. A concrete observed violation of a named bound
+    required claim invalidates its proof; an explicitly authorized scope change uses the existing contract-change path. Other risks and
+    findings do not reopen finished scope or become new closure conditions.
+  evidence: closure_review_with_no_uncovered_required_claims
+  legacy_sources: [operator_2026-09-11_proof_economy]
+- rule_id: BR-ARCH-ZONES-001
+  category: architecture
+  severity: must
+  applies_when: product_modules_are_created_or_reorganized
+  requirement: Keep the existing kernel, contracts, capabilities, adapters, extensions, shells, internal_diagnostics, and external_watcher
+    zone meanings stable. Record the selected profile and absent or not-applicable zones with reasons; materialize only real content.
+    Physical paths belong to repository structure, module facts to module manifests, and cross-entity relations to topology.
+  evidence: module_manifest_structure_and_topology_reconciliation
+  legacy_sources: [RID-BASE-CBP-005, RID-BASE-CBP-006, RID-BASE-CBP-007]
+- rule_id: BR-ARCH-FOUNDATION-001
+  category: architecture
+  severity: must
+  applies_when: project_is_created_or_kernel_contract_or_shell_boundary_changes
+  requirement: Use HSKernelSDK as the reusable program foundation of every application, tool and project. Through technology-neutral
+    public contracts it owns shared invocation, identity, operation lifecycle, routing, data-access coordination, hooks, execution
+    controls and diagnostic integration. Database, filesystem, network, flight-recorder, ACP, local/cloud model routing including
+    Dexterity, VM, MCP and other provider mechanisms attach through declared adapters. Product meaning, capability-owned state, GUI
+    frameworks, concrete vendor policy and adapter implementations stay outside kernel internals. Contracts hold no concrete
+    implementations; shells hold only composition, startup, shutdown and wiring; reusable product behavior stays in capabilities.
+  evidence: affected_boundary_and_dependency_inspection
+  legacy_sources: [RID-BASE-CBP-008, RID-BASE-CBP-009, RID-BASE-CBP-014]
+- rule_id: BR-ARCH-CAPABILITY-001
+  category: architecture
+  severity: must
+  applies_when: capability_or_gui_boundary_changes
+  requirement: Keep cohesive behavior, commands, queries, owned state, presentation state, user intents, capability-specific views,
+    assets, migrations, tests and diagnostic hooks with their capability. Front end and back end are runtime-host assignments, never
+    separate owners of product behavior. GUI shells own application chrome and composition; toolkit, renderer, device and vendor
+    mechanisms use declared adapter boundaries. State flows toward views; user intent returns through the capability contract. No GUI
+    framework pattern is prescribed.
+  evidence: capability_locality_contract_and_affected_journey_proof
+  legacy_sources: [RID-BASE-CBP-010, RID-BASE-CBP-011, RID-BASE-CBP-022, RID-BASE-CBP-023]
+- rule_id: BR-ARCH-BRIDGE-001
+  category: architecture
+  severity: must
+  applies_when: bridge_boundary_is_created_or_changed
+  requirement: Reserve bridges for process, language, ABI, IPC, network-protocol, document-format, or similarly expensive compatibility
+    boundaries. Declare endpoint ownership, schema/version, serialization, compatibility, trust, timeout, cancellation, retry, backpressure,
+    resource limits, partial failure, recovery, diagnostic correlation, and applicable contract/failure proof.
+  evidence: bridge_contract_and_changed_boundary_proof
+  legacy_sources: [RID-BASE-CBP-012]
+- rule_id: BR-ARCH-EXTENSION-001
+  category: architecture
+  severity: must
+  applies_when: extension_or_extension_host_changes
+  requirement: Load extensions through versioned public SDK contracts (HSKernelSDK) and a controlled host owning discovery,
+    compatibility, activation, attribution, capabilities/permissions, bounded resources, lifecycle, failure containment, unloading and
+    restart. Import no private product implementation. Select process isolation from runtime and trust needs, not by default for every
+    bundled extension. Extension-owned tools and child invocations register and execute through the same caller-scoped catalog and
+    lifecycle as bundled capabilities.
+  evidence: extension_contract_host_lifecycle_and_containment_proof
+  legacy_sources: [RID-BASE-CBP-013]
+- rule_id: BR-ARCH-GRAPH-001
+  category: architecture
+  severity: must
+  applies_when: module_dependency_or_state_boundary_changes
+  requirement: Declare dependencies and reconcile them mechanically with code/build metadata and dependency_policy. Reject cycles,
+    private reach-through, kernel imports of concrete higher-zone implementations, contracts-to-implementation edges,
+    capability-to-concrete-adapter edges and undeclared cross-capability state access. Collaborate through HSKernelSDK public contracts;
+    runtime registration permits no reverse source imports. Service locators, mutable globals, shared tables, event buses and generic
+    utilities must not hide forbidden dependencies; a shared module requires a narrow purpose, owner, public API and declared consumers.
+  evidence: nonempty_architecture_scope_and_dependency_violation_proof
+  legacy_sources: [RID-BASE-CBP-015, RID-BASE-CBP-016, RID-BASE-CBP-017, RID-BASE-CBP-020]
+- rule_id: BR-ARCH-MODULE-001
+  category: architecture
+  severity: must
+  applies_when: meaningful_module_is_created_moved_split_merged_or_extracted
+  requirement: Record in each meaningful module's existing manifest a stable project-qualified identity, explicit public and internal
+    surfaces, declared dependencies, state ownership, external effects, runtime hosts, diagnostics and proof entrypoints. Preserve
+    identity while meaning remains; record derivation or supersession when it changes. Keep module-owned tests and optional
+    assets/fixtures/migrations local; require no empty facets or literal api/internal folders when language visibility provides the
+    boundary.
+  evidence: module_identity_manifest_and_boundary_reconciliation
+  legacy_sources: [RID-BASE-CBP-018, RID-BASE-CBP-019, RID-BASE-CBP-031]
+- rule_id: BR-OBS-SURVIVAL-001
+  category: diagnostic_survival
+  severity: must
+  applies_when: project_owns_a_runnable_process
+  requirement: Provide local internal diagnostics and an always-on bounded flight recorder whose recent evidence survives target crash
+    or freeze through committed storage or an external collector. Define memory, disk, retention, event-rate and loss accounting;
+    correlate monotonic/wall time, build, session, process, module and event identity. Diagnostics work without a remote vendor or GUI.
+    Libraries and hosted extensions provide compatible instrumentation; the runnable host owns supervision.
+  evidence: controlled_crash_and_hang_with_readable_bounded_prefailure_evidence
+  legacy_sources: [RID-BASE-CBP-001, RID-BASE-CBP-002]
+- rule_id: BR-OBS-WATCHER-001
+  category: diagnostic_survival
+  severity: must
+  applies_when: project_owns_a_runnable_process
+  requirement: Run an external watcher in a separate process and failure domain with minimal dependencies. It monitors exit, heartbeat,
+    declared hang scopes, resources, restart loops and event-loop responsiveness (required_if the target runs an event loop else
+    omitted). Without target cooperation it preserves evidence in finalized atomic, versioned, checksummed bundles of recent recorder
+    data, available dump/task snapshots, process/health/resource state, build/module/extension identities and available GUI evidence,
+    and reports missing or lost evidence. It observes the target SDK, recorder, hooks, workers and adapters only through independently
+    available heartbeats and committed evidence, never calling the failed target SDK, sharing its event loop or waiting for its locks;
+    this observation is the explicit exception to target SDK routing. Recovery is bounded and observable; repeated failure enters
+    declared safe mode; any configured recovery authority stays separate, bounded and auditable. Watcher health requires no infinite
+    watcher chain.
+  evidence: separate_process_crash_hang_restart_loop_and_bundle_proof
+  legacy_sources: [RID-BASE-CBP-003]
+- rule_id: BR-OBS-GUI-001
+  category: visual_diagnostics
+  severity: must
+  applies_when: gui_diagnostic_contract_is_created_or_materially_changed
+  requirement: Structured diagnostics expose current screen/workspace/panel/route/selection, focus/accessibility, stable controls and
+    commands, layout bounds/clipping/overlap/visibility/paint state, input/navigation history, frame stalls and renderer health.
+    Correlate visual snapshots and reproduction identifiers with the recorder; on freeze retain the last committed GUI evidence. A
+    visual verdict still requires inspecting the rendered artifact. Reuse unchanged infrastructure and proof.
+  evidence: affected_gui_query_rendered_inspection_and_freeze_correlation_proof
+  legacy_sources: [RID-BASE-CBP-004]
+- rule_id: BR-ARCH-GROWTH-001
+  category: architecture
+  severity: must
+  applies_when: module_boundary_pressure_is_observed
+  requirement: Open a boundary review on public API growth, fan-in/out, change coupling, independently scaling state/runtime needs, test
+    or containment pressure, incompatible lifecycles, repeated exceptions, or an observed incremental rebuild or relinked test-binary
+    count above the project profile build budgets. A trigger forces no split, except that a budget breach opens a BR-BUILD-UNIT-001
+    build-unit review before the next activation touching that module. Record split, merge or no-change decisions on existing decision
+    and topology surfaces; preserve contracts, identity lineage and affected journey behavior.
+  evidence: bounded_boundary_decision_and_changed_contract_proof
+  legacy_sources: [RID-BASE-CBP-026, handshake_2026-09-23_single_crate_rebuild_finding]
+- rule_id: BR-MODULE-LIFECYCLE-001
+  category: architecture
+  severity: must
+  applies_when: module_or_asset_is_created_or_materially_modified
+  requirement: As a mandatory baseline for every future project, give every module and reusable asset an accountable owner and independently selectable source, dependency, build, test and artifact closure in its existing manifest. Provide a standalone library, executable or asset harness with public contract proof, manual, model tools, inspection, diagnostics and recovery routes; no full host build is required for a module-only patch unless its declared dependency closure requires it.
+  evidence: standalone_closure_and_affected_release_host_boundary_proof
+  contract_fields: {wp: [architecture_binding.module_lifecycle_refs], mt: [context_capsule.module_maintenance_refs]}
+- rule_id: BR-MODULE-LIFECYCLE-002
+  category: architecture
+  severity: must
+  applies_when: module_or_asset_is_public_contract_or_resource_behavior_changes
+  requirement: Declare errors, concurrency and queue bounds, admission, backpressure, overflow, cancellation, drain, shutdown and recovery through public contracts. Reusable GUI/control assets declare inputs, events, styling, accessibility and headless inspection contracts; compose them without copying private implementation.
+  evidence: standalone_closure_and_affected_release_host_boundary_proof
+  contract_fields: {wp: [architecture_binding.module_lifecycle_refs], mt: [context_capsule.module_maintenance_refs]}
+- rule_id: BR-MODULE-LIFECYCLE-003
+  category: architecture
+  severity: must
+  applies_when: module_or_asset_is_released_or_consumed
+  requirement: Publish immutable versioned artifacts with canonical source revision, build inputs, toolchain and artifact digests, dependency closure, public API versioning, compatibility and deprecation policy. Consume exact pinned releases through existing bindings and lock; a version label alone never proves compatibility.
+  evidence: standalone_closure_and_affected_release_host_boundary_proof
+  contract_fields: {wp: [architecture_binding.module_lifecycle_refs], mt: [context_capsule.module_maintenance_refs]}
+- rule_id: BR-MODULE-LIFECYCLE-004
+  category: architecture
+  severity: must
+  applies_when: module_or_asset_is_embedded_in_a_host
+  requirement: Use an exact versioned embedding adapter declaring host and module responsibilities, required/provided services, capability and authorization mapping, data ownership, lifecycle, scheduling and conformance proof. Keep host-specific storage, telemetry and UI policies in the host adaptation; infer no network service, deployment or available runtime from a template declaration.
+  evidence: standalone_closure_and_affected_release_host_boundary_proof
+  contract_fields: {wp: [architecture_binding.module_lifecycle_refs], mt: [context_capsule.module_maintenance_refs]}
+- rule_id: BR-MODULE-LIFECYCLE-005
+  category: architecture
+  severity: must
+  applies_when: module_or_asset_is_published_upgraded_or_moved
+  requirement: Separate private state, credentials and machine-local configuration from publishable source/assets with an explicit publication allowlist and exclusion contract. Declare portable roots and state owners, upgrade prerequisites, migration versions and rollback reversibility, in-flight settlement and recovery boundary; prove standalone and affected host compatibility before integration.
+  evidence: standalone_closure_and_affected_release_host_boundary_proof
+  contract_fields: {wp: [architecture_binding.module_lifecycle_refs], mt: [context_capsule.module_maintenance_refs]}
+- rule_id: BR-MODULE-LIFECYCLE-006
+  category: architecture
+  severity: must
+  applies_when: module_or_asset_is_published_or_mirrored
+  requirement: Publish and mirror from one canonical source with provenance and base/source/target digests checked at planning and commit. Reject concurrent drift, preserve customized destinations and provide recoverable publication; do not silently overwrite edits or substitute an installed copy for its source owner.
+  evidence: standalone_closure_and_affected_release_host_boundary_proof
+  contract_fields: {wp: [architecture_binding.module_lifecycle_refs], mt: [context_capsule.module_maintenance_refs]}
+- rule_id: BR-MODULE-LIFECYCLE-007
+  category: architecture
+  severity: must
+  applies_when: module_or_asset_changes_or_host_adopts_a_revision
+  requirement: Land every module or reusable asset change first in its declared canonical module GitHub repository through a standalone_source MT. Independently re-read the canonical remote revision and verify the source contract proof before a distinct host_adoption MT changes a host. The adoption MT consumes an explicit immutable source revision and artifact/dependency pins through existing bindings, declares the exact embedding adapter, and proves compatibility and integration. A local commit, copied source, test fixture or self-authored receipt never substitutes for canonical GitHub landing. Preserve host-specific law in the host adaptation; do not implement standalone module changes inside the host first.
+  evidence: canonical_remote_revision_and_standalone_proof_then_pinned_host_compatibility_and_integration_proof
+  contract_fields: {wp: [architecture_binding.module_lifecycle_refs], mt: [execution.module_change_stage, context_capsule.module_maintenance_refs, execution.depends_on]}
+- rule_id: BR-BUILD-UNIT-001
+  category: architecture
+  severity: must
+  applies_when: stock_coding_architecture_is_selected_or_project_profile_declares_build_budgets
+  requirement: Compilation units follow module boundaries. Each module is exactly one package, declared as its build unit in its
+    manifest, of build_unit_kind own or leaf_data_only; no package groups several modules. Data-only contracts (schemas, checksums,
+    generated types) are leaf packages depending on nothing, so their change rebuilds nothing above. A change confined to one module
+    must not recompile the whole product. Batch builds by selecting many packages or the whole workspace in one runner invocation over
+    the shared workspace target, never by merging packages. Each package keeps one consolidated test entrypoint aggregating its own
+    tests/ folder so test-binary links stay within the project profile budget; add no shared test folder. Packages are members of the
+    workspace manifest declared by project_profile.product_workspace, never one product-wide package. The project profile and solution
+    bindings select the language's package mechanism.
+  # example only: cargo test -p a -p b, or cargo test --workspace, over one shared target directory
+  evidence: build_unit_graph_incremental_rebuild_measurement_and_test_binary_count
+  contract_fields: {wp: [architecture_binding], mt: [execution.module_ref, execution.build_unit_ref]}
+  legacy_sources: [handshake_2026-09-23_single_crate_rebuild_finding]
+- rule_id: BR-PROOF-SCOPE-001
+  category: testing_and_proof
+  severity: must
+  applies_when: required_validator_selects_modules_sources_or_contracts
+  requirement: Report the actual selected scope and reject a required selector that matches zero intended targets. Reuse validator-infrastructure
+    proof unless its implementation, selector, configuration, or relevant asserted behavior changes; this requirement does not create
+    a new meta-test for every consuming WP.
+  evidence: selected_scope_and_existing_or_changed_selector_proof
+  legacy_sources: [RID-BASE-CBP-029]
+- rule_id: BR-TEST-PIN-001
+  category: testing_and_proof
+  severity: must
+  applies_when: a_check_compares_generated_values_with_pinned_values
+  requirement: A check that compares generated values with pinned values reports every mismatching value in one run; revealing later
+    groups only after earlier groups match is a defect of the check. Re-pin runs are check-only builds on the fastest device class.
+  evidence: single_run_complete_mismatch_report
+  legacy_sources: [handshake_2026-09-23_multi_round_pin_finding]
+- rule_id: BR-TEST-ENV-001
+  category: testing_and_proof
+  severity: must
+  applies_when: project_runs_builds_or_tests
+  requirement: Declare the test environment contract in the project profile and host profile before any proof counts as a result. It
+    names runtime roots, the database sync mode tests run under, default check and per-test timeouts, the hang procedure (dump and stack
+    walk before any kill), isolation from production, shared-state isolation between tests, the flaky list, the canary check and the
+    tools manifest. Tests default to test_environment.default_profile (temporary storage, non-durable sync, no network). List tests
+    needing durable sync, a real disk or the network in opt_in_tests, and tests needing longer than the short default per-test timeout
+    in slow_tests; both run only in the special_runs lane, never in a batch round. An unlisted test exceeding the default per-test
+    timeout fails. A check run outside the declared environment is a defect, not a result. Diagnose a hang by the declared procedure
+    before any rebuild.
+  evidence: declared_test_environment_and_hang_procedure_receipt
+  legacy_sources: [handshake_2026-09-23_wal_flush_and_index_builder_finding, handshake_2026-09-24_slow_durable_default_tests_finding]
+- rule_id: BR-TEST-ENTRY-001
+  category: testing_and_proof
+  severity: must
+  applies_when: project_runs_builds_or_tests
+  requirement: Run every proof through project_profile.test_entrypoint, the one checked-in test entrypoint; the unit_test,
+    integration_test, concurrency_test and full_test canonical commands are forms of it. Its environment variables, flags, per-test
+    timeouts, runner profiles and build-cache wiring live only in its declared version-controlled config_files at the location
+    REPOSITORY-STRUCTURE declares. config_files lists the entrypoint source and every checked-in environment/config file it reads;
+    test_environment remains declared in this rulebook. Infrastructure recovery is confined to that entrypoint source, its listed
+    configuration and the declared test_environment. Runtime settings outside listed files are not the declared test environment;
+    runtime setting changes are committed to their listed files.
+    CODEX-STEER-010 and CODEX-STEER-011 own what models may run and stop. canary_check is this entrypoint on a one-test-per-package
+    sample. Every test harness checks its required environment at startup and fails with a clear message. For a full round, the entrypoint
+    executes its existing canary sample first, then applies the before_round gameplan gate (CHK-GAMEPLAN-GATE-001, CODEX-GAMEPLAN-001)
+    to the full run and refuses that run when it fails. The canary sample neither invokes another canary nor requires its own result
+    before it can run; no additional gate or runner is introduced. Implementer checks between fixes use
+    project_profile.implementer_check (CODEX-STEER-009).
+  evidence: entrypoint_command_in_round_receipts_and_config_file_digest
+  legacy_sources: [handshake_2026-09-24_relayed_test_settings_finding]
+- rule_id: BR-IDENTITY-LINEAGE-001
+  category: identity_and_provenance
+  severity: must
+  applies_when: governed_entities_are_created_derived_or_revised
+  requirement: Use typed project-qualified stable identities with independent revisions. A derived entity receives its own ID and exact
+    source ID/revision or snapshot references. Never reuse one identity for different meanings or encode mutable owner/status/location
+    into identity. Preserve split/merge/supersession history; reject collisions, ambiguous aliases, unresolved required references and
+    unpinned authority. Product outputs stay attributable to their exact work contract, affected modules and evidence.
+  evidence: identity_reference_and_output_lineage_reconciliation
+  legacy_sources: [RID-BASE-CBP-031, RID-BASE-CBP-032]
+- rule_id: BR-SDK-BASE-001
+  category: hskernelsdk
+  severity: must
+  applies_when: always
+  requirement: Select HSKernelSDK through an exact reusable-solution binding for every project, including prototypes; resolve language/runtime/profile
+    and dependencies at assembly rather than prescribing them in universal law. Project extensions preserve the baseline contracts,
+    and unsupported required guarantees block readiness rather than becoming silent no-ops. Hostless libraries declare host-provided
+    services and use a conforming test host.
+  evidence: exact_foundation_binding_profile_and_host_conformance
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-CATALOG-001
+  category: hskernelsdk
+  severity: must
+  applies_when: module_exposes_a_callable_operation
+  requirement: Declare each callable operation once in its module manifest, with stable identity/version, purpose, input/output and
+    error schema references, resource scope, side effects, authority, examples, and explicit support for preview, cancellation, streaming,
+    retry and recovery; reference existing contracts instead of copying their definitions.
+  evidence: module_operation_contract_resolution
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-CATALOG-002
+  category: hskernelsdk
+  severity: must
+  applies_when: operator_or_model_discovers_or_composes_operations
+  requirement: Generate caller-aware searchable discovery, model tool definitions, operator views and programmatic bindings from module
+    declarations; load summaries then selected schemas, invalidate projections on declaration changes, and keep every composed child
+    effect attributable through HSKernelSDK. Tool content is data, never elevated instruction authority.
+  evidence: fresh_caller_discovery_and_composition_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-OP-001
+  category: hskernelsdk
+  severity: must
+  applies_when: operation_is_accepted_for_execution
+  requirement: Expose an operation handle with authoritative lifecycle state for accepted, running, waiting, retrying,
+    cancellation-requested, cancelled, completed, failed, partial and unknown outcomes, each required_if the operation can reach it else
+    declared unreachable. Declare durable checkpoints, result retention, expiry and resumability; persistent or external effects retain
+    recovery identity across worker/model sessions. Explicitly nonresumable work must not be reported as resumable.
+  evidence: session_replacement_crash_and_status_reconciliation
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-RESULT-001
+  category: hskernelsdk
+  severity: must
+  applies_when: operation_returns_status_data_or_artifacts
+  requirement: Return structured status and authorized data/artifact references with provenance, revisions and the actual verification
+    boundary; distinguish acceptance, execution, target commit and independently observed outcome. For external changes expose a target-specific
+    canonical verification route or explicit unobservability; neither model text nor a successful dispatch receipt alone proves the
+    effect.
+  evidence: independent_target_state_reconciliation
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-DATA-001
+  category: hskernelsdk
+  severity: must
+  applies_when: operation_reads_caches_or_mutates_resources
+  requirement: Expose canonical resource identity, schema/revision or snapshot, scope, units where meaningful, source freshness and
+    derived-view status; declare stale-read/write conflict behavior and validate live preconditions at the state owner before committing.
+    A preview identifies checked conditions and revisions without promising unchecked conditions will pass.
+  evidence: stale_read_preview_and_conflicting_commit_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-DATA-002
+  category: hskernelsdk
+  severity: must
+  applies_when: operation_returns_or_acts_on_a_set
+  requirement: Identify selection scope, snapshot or live-selection semantics, pagination, truncation and known coverage; unknown totals
+    remain unknown. Execute all-items requests against the declared canonical selection rather than the rendered or returned page. Scoped
+    result handles enforce current authorization and expiry without leaking unauthorized counts.
+  evidence: multi_page_concurrent_change_complete_selection_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-DATA-003
+  category: hskernelsdk
+  severity: must
+  applies_when: operation_streams_or_resumes_incremental_data
+  requirement: Declare ordering, event versus arrival time, watermark or completeness assumptions, late-event behavior, resumption cursor
+    and duplicate policy; propagate stream cancellation and backpressure through the selected connector.
+  evidence: late_event_reconnect_duplicate_and_cancel_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-DELEGATE-001
+  category: hskernelsdk
+  severity: must
+  applies_when: operation_crosses_actor_session_process_or_provider_boundary
+  requirement: Propagate initiating and effective identities, scoped delegation and applicable policy through every child operation;
+    revalidate authority after waits and at execution/commit. Enforce scope using credentials, resource handles and the selected process/VM/network
+    boundary; correlation IDs are not permissions. Reject scope widening and treat tool-supplied instructions as untrusted content without
+    inventing new operator approval gates.
+  evidence: revocation_wrong_account_scope_widening_and_bypass_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-HOOK-001
+  category: hskernelsdk
+  severity: must
+  applies_when: hook_is_registered_or_invoked
+  requirement: Declare observer, validator or transformer authority, ordering, timeout, failure behavior, reentrancy and cleanup; establish
+    trust and execution containment before loading executable hooks. An observer cannot mutate requests or enlarge scope.
+  evidence: hook_privilege_order_timeout_and_load_boundary_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-HOOK-002
+  category: hskernelsdk
+  severity: must
+  applies_when: hook_transforms_an_invocation
+  requirement: Record the effective transformed request and revalidate its arguments, target, authority and admission requirements before
+    effects.
+  evidence: transformed_request_revalidation_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-HOOK-003
+  category: hskernelsdk
+  severity: must
+  applies_when: hook_fails_after_target_commit
+  requirement: Preserve the committed operation outcome and represent hook failure as separately recoverable work; never convert a post-commit
+    notification failure into permission to repeat the mutation.
+  evidence: post_commit_hook_failure_without_duplicate_effect
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-HOOK-004
+  category: hskernelsdk
+  severity: must
+  applies_when: recorder_or_diagnostic_hook_runs
+  requirement: Prevent recursive instrumentation using a declared bounded low-level evidence path; expose loss or unavailable evidence
+    without deadlocking invocation or fabricating successful mandatory checks.
+  evidence: recursive_hook_full_buffer_and_recorder_failure_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-LIFECYCLE-001
+  category: hskernelsdk
+  severity: must
+  applies_when: connection_module_or_provider_is_activated_replaced_or_removed
+  requirement: Manage discovery, capability negotiation, dependency ordering, health, readiness, bounded pooling, draining, cancellation
+    and shutdown through HSKernelSDK. Keep running operations pinned to their contract/implementation version or migrate them explicitly;
+    incompatible upgrades fail before activation and rollback limitations remain visible.
+  evidence: connection_lifecycle_and_inflight_upgrade_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-ISOLATE-001
+  category: hskernelsdk
+  severity: must
+  applies_when: model_or_operator_experiments_tests_or_previews_effectful_work
+  requirement: Bind every effectful integration to an explicit isolated, simulated, staged or live environment; verify that test credentials,
+    databases, files, network and external tools cannot silently resolve to production. Promotion or merge uses the existing authorized
+    change path with compatibility, live-condition checks and stated rollback limits.
+  evidence: test_boundary_escape_and_controlled_promotion_proof
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-SDK-MODEL-001
+  category: hskernelsdk
+  severity: must
+  applies_when: sdk_discovery_operation_contract_or_model_operating_path_changes
+  requirement: Evaluate fresh-context model tool selection, argument repair, recovery, scope/completeness handling and outcome claims
+    using realistic tasks and deterministic target-state checks; pin relevant model, prompt, contract and source versions. Test multiple
+    providers when claiming provider independence; model judges alone cannot prove critical state or authority outcomes, and unchanged
+    applicable proof is reused.
+  evidence: versioned_model_use_evaluation_and_independent_outcome_checks
+  legacy_sources: [operator_2026-09-13_hskernelsdk_approval]
+- rule_id: BR-MATRIX-001
+  category: build_matrix_and_modular_growth
+  severity: must
+  applies_when: wp_stub_is_created_or_wp_is_activated_rebased_or_its_scope_changes
+  requirement: Handshake must assess every active build-matrix entry against current spec, module/operation declarations, topology,
+    solution lock and requested change, including existing-feature interactions. Planning results are non-executable candidates; binding
+    occurs only after refinement/enrichment at scoped WP activation. Preserve the assessed universe as a universe digest plus excluded
+    entry ids, not as stored not_applicable rows; missing information relevant to scope remains unresolved, and unrelated future features
+    do not create implementation obligations.
+  evidence: matrix_universe_coverage_and_new_entry_after_stub_proof
+  legacy_sources: [operator_2026-09-13_build_matrix_and_modular_expansion]
+- rule_id: BR-MATRIX-002
+  category: build_matrix_and_modular_growth
+  severity: must
+  applies_when: build_matrix_entry_is_added_changed_or_retired
+  requirement: Handshake must allocate stable matrix-entry IDs and revisions, retain operator intent/source references and historical
+    entries. Changed entries trigger assessment, not bulk enforcement injection. Changed obligations require completed refinement/enrichment
+    and renewed activation of the affected bounded contract; preserve unaffected proof and completed snapshots.
+  evidence: matrix_revision_invalidation_and_history_proof
+  legacy_sources: [operator_2026-09-13_build_matrix_and_modular_expansion]
+- rule_id: BR-MATRIX-003
+  category: build_matrix_and_modular_growth
+  severity: must
+  applies_when: wp_or_mt_contract_is_compiled
+  requirement: Handshake must mechanically generate IDs, structure, references, digests and proposed detailing during planning, then
+    bind only activation-selected matrix, HSKernelSDK, requirement/acceptance and MT obligations after completed refinement/enrichment
+    and spec synchronization. Models supply semantic text through typed inputs and must not repair controller-owned files. Reject stale
+    inputs and incomplete scope-relevant coverage before executable contract release.
+  evidence: deterministic_compilation_partial_failure_and_idempotent_reapply_proof
+  legacy_sources: [operator_2026-09-13_build_matrix_and_modular_expansion]
+- rule_id: BR-CONTRACT-SYNC-001
+  category: build_matrix_and_modular_growth
+  severity: must
+  applies_when: build_rule_is_added_changed_or_retired
+  requirement: A rule that requires information from a work contract declares it in contract_fields. A rulebook revision that adds,
+    changes or removes contract_fields regenerates the WP and MT templates from the rulebook and marks open work for reassessment;
+    activation refuses a contract missing a required field. Models submit the field values; the template shape is never edited by hand.
+  evidence: regenerated_templates_and_reassessment_receipt
+  legacy_sources: [operator_2026-09-23_rules_enforced_by_wp_contract]
+- rule_id: BR-PILLAR-001
+  category: build_matrix_and_modular_growth
+  severity: must
+  applies_when: wp_stub_is_created_or_wp_is_activated
+  requirement: Every mandatory pillar entry is assessed on every WP with an explicit disposition and the contract fields its rules
+    declare. A recurring concern enters governance as a pillar entry, never as an ad hoc field or prose rule.
+  evidence: pillar_rows_and_hydrated_contract_fields
+  legacy_sources: [operator_2026-09-23_stable_pillars]
+- rule_id: BR-GUI-DESIGN-001
+  category: build_matrix_and_modular_growth
+  severity: must
+  applies_when: project_is_created_or_gui_design_changes
+  requirement: Record each project GUI design in its current specification and link its anchors from the effective build rules. Record
+    no-GUI applicability explicitly for headless projects. Reusable GUI elements, themes and backend behavior use module contracts and
+    exact solution bindings so designs can be replaced or refactored without duplicating state; universal rules do not prescribe one
+    visual appearance.
+  evidence: project_gui_design_binding_and_replacement_proof
+  contract_fields: {wp: [gui_surface.applicability, gui_surface.surface_profile_refs], mt: [execution.backend_mt_ref]}
+  legacy_sources: [operator_2026-09-13_build_matrix_and_modular_expansion]
+- rule_id: BR-SEMANTIC-MODULE-001
+  category: build_matrix_and_modular_growth
+  severity: must
+  applies_when: feature_primitive_module_or_presentation_surface_changes
+  requirement: Trace stable specification feature/primitive identities through module declarations and topology to implementation
+    symbols, public contracts and exposed operations. Shared resource identity and backend state stay independent of presentation
+    context; surfaces may expose different authorized subsets of the same SDK operations. Before adding a module, inspect current
+    verified semantic entity, resource and operation matches; by default reuse the same-purpose backend across surface profiles. A
+    separate module requires a real distinct purpose recorded in its existing module_id, semantic_role and purpose fields with source
+    lineage preserved; cosmetic renaming is no distinction. Semantic links expose only their verified coverage; ambiguous overlap
+    requires review, never an assumed no-match. Generate the project GUI/backend module library from local modules and exact
+    reusable-solution bindings, never a second editable inventory.
+  evidence: shared_resource_multiple_surface_profiles_and_refactor_lineage_proof
+  contract_fields: {wp: [reuse.consumed_capability_refs, reuse.new_capability_refs], mt: [context_capsule.consumed_capability_refs, execution.may_create_canonical_capability]}
+  legacy_sources: [operator_2026-09-13_build_matrix_and_modular_expansion]
+- rule_id: BR-DATA-DISCOVERY-001
+  category: build_matrix_and_modular_growth
+  severity: must
+  applies_when: project_managed_file_is_ingested_created_or_its_indexable_metadata_changes
+  requirement: Give every project-managed file, including new file types and embedded design-module outputs, tags, notes and vector,
+    fuzzy and semantic search through the selected metadata/search capability. Preserve original bytes and authoritative identity.
+    Define extractor support, searchable metadata, visibility, reindexing and failure state explicitly; an unsupported format or missing
+    index is never successful ingestion. Handshake binds this role to Loom through its project specification and solution bindings;
+    other projects select their implementation.
+  evidence: new_format_metadata_search_and_failed_extraction_proof
+  legacy_sources: [operator_2026-09-13_build_matrix_and_modular_expansion]
+- rule_id: BR-SPEC-SELF-001
+  category: specification_authority_and_activation
+  severity: must
+  applies_when: specification_or_work_contract_is_authored_or_activated
+  requirement: Specification documents must contain all product truth and final product decisions needed to interpret their requirements;
+    no authoritative sidecars or outside content dependencies are permitted. Research and suggestions live in the project research folder
+    and carry no product truth, enforcement or final decisions. Adopted meaning must be written completely into the spec; optional provenance
+    and downstream links do not import authority.
+  evidence: self_contained_topic_parse_and_activation_scope_proof
+  legacy_sources: [operator_2026-09-13_self_contained_spec_and_activation_scope]
+- rule_id: BR-SPEC-FORMAT-001
+  category: specification_authority_and_activation
+  severity: must
+  applies_when: specification_or_work_contract_is_authored_or_activated
+  requirement: Every specification topic must have a machine-readable header and inline fenced prose, code examples and structured content.
+    Preserve stable semantic IDs where present; stable IDs are recommended throughout and required for requirements bound into activated
+    WP/MT contracts. Fencing does not demote specification authority.
+  evidence: self_contained_topic_parse_and_activation_scope_proof
+  legacy_sources: [operator_2026-09-13_self_contained_spec_and_activation_scope]
+- rule_id: BR-WORK-ACTIVATION-001
+  category: specification_authority_and_activation
+  severity: must
+  applies_when: specification_or_work_contract_is_authored_or_activated
+  requirement: Only completed refinement/enrichment and WP activation may bind current specification IDs, build rules and matrix obligations
+    into executable WP/MT scope. Accepted future product requirements are not authorization to implement them in unrelated work. Required
+    unavailable dependencies must be surfaced explicitly; never silently enlarge scope or inject future enforcement across all packets.
+  evidence: self_contained_topic_parse_and_activation_scope_proof
+  legacy_sources: [operator_2026-09-13_self_contained_spec_and_activation_scope]
+- rule_id: BR-SPEC-ROADMAP-001
+  category: specification_authority_and_activation
+  severity: must
+  applies_when: spec_item_is_added_changed_or_implementation_is_verified
+  requirement: Maintain a roadmap document inside the specification covering all product items by their existing semantic IDs and explicit
+    implementation status. Handshake must record verified completed scope, retain partial/unimplemented scope, and reconcile implemented
+    items with ongoing build-rule/matrix coverage. Later WP/MT activation consumes only relevant baseline obligations; planned features
+    and completed-item promotion do not silently widen existing contracts.
+  evidence: partial_completion_roadmap_matrix_sync_and_next_activation_proof
+  legacy_sources: [operator_2026-09-13_internal_spec_roadmap]
+- rule_id: BR-SPEC-ROADMAP-002
+  category: specification_authority_and_activation
+  severity: must
+  applies_when: spec_roadmap_is_created_or_updated
+  requirement: The internal roadmap must read as a concise product overview; each entry must reference the defining specification topics
+    and summarize them without duplicating behavioral authority.
+  evidence: roadmap_overview_topic_reference_proof
+  legacy_sources: [operator_2026-09-13_roadmap_product_overview_and_implemented_section]
+- rule_id: BR-SPEC-ROADMAP-003
+  category: specification_authority_and_activation
+  severity: must
+  applies_when: spec_roadmap_is_created_or_updated
+  requirement: The roadmap must place fully verified implemented items in an Implemented section by moving the existing entry; partial
+    items remain in the unfinished overview, and accepted expansion reopens the same entry until remaining scope is verified.
+  evidence: roadmap_section_membership_and_partial_scope_proof
+  legacy_sources: [operator_2026-09-13_roadmap_product_overview_and_implemented_section]
+- rule_id: BR-SPEC-ROADMAP-004
+  category: specification_authority_and_activation
+  severity: must
+  applies_when: spec_roadmap_is_created_or_updated
+  requirement: Each roadmap item must retain one stable anchor based on its existing semantic ID, independent of section, heading, status
+    and position; moves between sections must preserve links and must not duplicate the item.
+  evidence: roadmap_anchor_stability_and_uniqueness_proof
+  legacy_sources: [operator_2026-09-13_roadmap_product_overview_and_implemented_section]
+
+
+rulebook_maintenance:
+  stable_rule_ids_required: true
+  id_reuse_for_different_meaning_forbidden: true
+  editorial_change_may_keep_id: true
+  material_semantic_change_requires_new_rule_or_major_revision: true
+  retired_rules_retained: true
+  projects_record_seed_version: true
+  seed_updates_merge_with_project_rules: true
+  legacy_sources: [BR-ID-001..006, BR-MAINT-001..005]
+
+legacy_migrations:
+  - source_ids: [BR-TASK-001..004]
+    destination: work_packet_contract_and_state_lifecycle
+    preservation: Task overlays remain explicitly scoped, expiring, noncanonical, and promotable when recurring; the WP contract now owns them instead of the durable rulebook.
+
+project_extensions: []
+exceptions: []
+retired_rules: []
+version_log:
+- version: 1
+  date: '2026-08-30'
+  change: Initial condensed universal template derived from the prose-heavy build-rules draft, inspected project rulebooks, the WP contract,
+    and taskboard ownership model.
+- version: 2
+  date: '2026-09-11'
+  change: Added spec-first refinement semantics, reusable-solution discovery and extraction, fresh-context MT discipline, proof deduplication,
+    minimum-sufficient-proof policy, mechanical bookkeeping, affected-surface-only obligations, and explicit anti-ceremony closure rules.
+- version: 3
+  date: '2026-09-13'
+  change: Reconciled the 32 blueprint candidate IDs, diagnostic-survival intent, ownership boundaries and unresolved design choices;
+    archived source notes are provenance only. No runtime readiness claimed.
+- version: 4
+  date: '2026-09-13'
+  change: Operator-approved HSKernelSDK replaces the minimal-kernel definition; shared runtime guarantees, public SDK dependency matrix,
+    independent watcher, exact baseline reuse, model discovery and conformance scenarios. Template law only; no SDK runtime readiness
+    claimed.
+- version: 5
+  date: '2026-09-13'
+  change: Added the operator build matrix within the rulebook; preserve all prior WP impact dimensions, project GUI design, semantic
+    module reuse, file discovery and mechanically compiled WP/MT coverage.
+- version: 6
+  date: '2026-09-13'
+  change: Self-contained authoritative spec with machine topic headers and fenced content; planning candidates are not enforcement;
+    scoped WP/MT binding occurs after refinement/enrichment at activation. Internal spec roadmap records verified implementation status
+    and promotes relevant completed behavior into subsequent activation baselines.
+- version: 7
+  date: '2026-09-14'
+  change: Clarified scope selection versus rule exceptions and same-purpose shared-module reuse through verified semantic links.
+- version: 10
+  date: '2026-09-23'
+  change: Added remediation scope, work-type scoping of heavy obligations, observable denial, host-resource and build-unit rules with
+    project build budgets from the Handshake build session; template versions 8 and 9 carried stock-workflow bindings without a log entry;
+    also BR-TEST-PIN-001 and the scoped BR-CORE-AUTH-001; matrix stores only change, verify_only and unresolved rows; rule contract_fields,
+    template propagation and the pillar registry.
+- version: 17
+  date: '2026-09-24'
+  change: Pack 23. One checked-in test entrypoint and config (BR-TEST-ENTRY-001); cheapest isolated default test profile with opt-in
+    and slow-test lists run in special_runs; build cache and automation runner in the project profile; one package per module with
+    grouped library build units removed; capability imports follow the composition-layer matrix.
+- version: 18
+  date: '2026-09-24'
+  change: Pack 26. The test entrypoint runs the gameplan before_round gate first (BR-TEST-ENTRY-001, CODEX-GAMEPLAN-001).
+- version: 19
+  date: '2026-09-25'
+  change: Pack 27. project_profile.implementer_check names the cheapest permitted compile or static implementer check (BR-TEST-ENTRY-001, CODEX-STEER-009).
+- version: 20
+  date: '2026-09-25'
+  change: Pack 30. BR-REMEDIATE-001 references CODEX-REMEDIATE-001 with its BR-only delta; BR-CORE-EFFECT-001 is must; hedges
+    replaced by required_if conditions; longest rules rewritten tersely with every obligation kept.
+- version: 21
+  date: '2026-10-06'
+  change: Bound closure and additional blocking findings to active required claims or authorized scope changes; clarified scope-selected
+    evidence and meta-proof exceptions, removed risk-driven scope expansion, and placed the existing canary before the full-round gate.
+- version: 22
+  date: '2026-10-06'
+  change: Additional reviews, tests, checks and validation require explicit Operator instruction; defects and model-authored remediation
+    cannot authorize them. Remediation fixes only the recorded blocker or failure cause and uses only its existing scoped proof.
+
+
+design_resolution:
+  status: draft_template_reconciliation_not_runtime_proof
+  source_archive: archive/2026-09-13
+  candidate_mapping_location: rules[].legacy_sources
+  historical_candidates_are_not_additional_active_rule_ids: true
+  resolved_items:
+  - decision_id: CBP-QST-001
+    status: resolved
+    direction: Every project uses the reusable HSKernelSDK foundation with standard zone meanings and bounded implementation profiles;
+      optional integrations materialize only when used.
+    rule_refs: [BR-ARCH-ZONES-001, BR-ARCH-FOUNDATION-001, BR-SDK-BASE-001]
+    candidate_refs: [RID-BASE-CBP-005, RID-BASE-CBP-006, RID-BASE-CBP-018]
+    implementation_proof: Pending confirmation of profile compatibility and language-native module mappings with library, CLI, service,
+      GUI, extension, and integrated-suite fixtures in at least two materially different language ecosystems; resolving the design does
+      not claim they passed.
+  - decision_id: CBP-QST-002
+    status: resolved
+    direction: Public HSKernelSDK contracts are the common route; concrete adapters are injected by shells. dependency_policy is the
+      complete default-deny source-import zone matrix. Historical direct extension-to-capability imports are superseded.
+    rule_refs: [BR-ARCH-FOUNDATION-001, BR-ARCH-ROUTER-001, BR-ARCH-GRAPH-001, BR-ARCH-EXTENSION-001]
+    candidate_refs: [RID-BASE-CBP-013, RID-BASE-CBP-015]
+  - decision_id: HSKERNELSDK-DEC-001
+    status: approved
+    date: '2026-09-13'
+    direction: HSKernelSDK is the shared program backbone specified in build rules and assembled from reusable modules; the external
+      watcher has an independent observation path.
+    authority_basis: Operator approved the final research and requested template updates.
+    research_ref: archive/2026-09-13/research/HSKernelSDK-field-research.md
+    implementation_selection: Language, dependencies, provider mechanisms and physical deployment remain exact project bindings; no
+      runtime implementation is implied.
+  - decision_id: BR-DESIGN-GUI-001
+    status: resolved
+    direction: Every project records its own GUI design in specification anchors linked from build rules; modular GUI elements and backend
+      behavior are selected from the project library and reusable-solution bindings. No universal appearance is imposed.
+    rule_refs: [BR-GUI-DESIGN-001, BR-SEMANTIC-MODULE-001, BR-UI-ADAPT-001]
+    source_ref: archive/2026-09-13/design/gui/GUI-Handbook.md
+    implementation_selection: Each GUI project defines buttons, windows, scrollbars and themes; headless projects record no-GUI applicability.
+  open_items:
+  - decision_id: CBP-QST-003
+    status: template_represented_runtime_unproved
+    direction: Internal diagnostics, recorder survival, external watcher, runtime-host assignments, and capability-owned GUI.
+    remaining: Prove crash/hang/freeze/extension-failure/restart-loop behavior and profile applicability; platform-specific capture
+      mechanisms remain project selections.
+    candidate_refs: [RID-BASE-CBP-001, RID-BASE-CBP-002, RID-BASE-CBP-003, RID-BASE-CBP-004, RID-BASE-CBP-022, RID-BASE-CBP-023]
+  - decision_id: CBP-QST-004
+    status: resolved
+    resolved_by: [CODEX-PROVIDER-001, CODEX-PROVIDER-002, CODEX-PROVIDER-003, CODEX-PROVIDER-004]
+  - decision_id: BR-DESIGN-NAV-001
+    status: pending_validation
+    remaining: Verify fresh-human/model expansion-point discovery and useful generated change/module views; define non-noisy boundary-pressure
+      thresholds using real projects.
+    source_refs: [CBP-ROI-001, CBP-ROI-002, CBP-ROI-003, CBP-ROI-004]
+    rule_refs: [BR-ARCH-GROWTH-001, BR-DOC-001]
+  historical_alternatives:
+    source_ref: archive/2026-09-13/design/codebase-blueprint/Codebase-blueprint.md
+    retained: [Direction A, Direction B, Direction C]
+    disposition: historical alternatives; do not reinstate automatically
+  runtime_release_proof:
+  - Cross-language/profile fixtures must prove real boundaries and meaningful nonempty scope; not only file existence.
+  - Negative cases cover cycles, private imports, unowned state, manifest drift, identity collisions, stale references, and unauthorized
+    governance-output ingestion.
+  - Runnable fixtures cover crash, hang, GUI freeze (required_if project_profile.gui_applicability declares a GUI else omitted), extension
+    failure, loss accounting, and bounded recovery.
+  - Hydration fixtures cover tiny, mature, locally modified, older-version, and conflicting projects; prove protected project-owned
+    files, zero-semantic-diff reapply, rollback, and source explanation.
+  - Fresh humans/models locate expansion points and applicable proof from generated navigation; supported provider entries load the
+    correct authority.
+  - SDK fixtures cover lost responses after commit, conflicting revisions, stale-worker fencing, full-set operations beyond pagination,
+    revoked access, transformed hook arguments, post-commit hook failures, recursive instrumentation, and independent observation of
+    a frozen SDK.
+  - Connector fixtures expose unsupported commit/cancel/replay guarantees and invisible provider-internal calls; unknown outcomes cannot
+    pass as success.
+  - Runtime fixtures cover concurrent admission reservations, retry storms, isolated test effects, in-flight module upgrades and replacement
+    model sessions with canonical operation handles.
+  - Model-use evaluations cover discovery, argument repair, scoped data, and false completion claims using independent canonical outcomes.
+  - Matrix fixtures add an operator entry after stub creation and verify activation includes its ID and new obligations; unknown metadata
+    must not become not_applicable.
+  - Compilation fixtures reject missing matrix rows, stale SDK bindings and partial writes; identical valid inputs reproduce contract
+    semantics without duplicate IDs or unnecessary proof.
+  - Shared-image fixtures reuse one backend/resource in recent-images and library surfaces with different operation subsets; new GUI
+    and file-format features extend applicable visual-debug and metadata/search coverage.
+  - These are release claims for the relevant infrastructure, not recurring tests imposed on unrelated WPs.
+  - An accepted future specification requirement remains product truth; its matrix entry supplies applicability links without adding
+    obligations to an unrelated active WP/MT; unknown scope-relevant applicability blocks activation rather than expanding scope.
+  - A standalone spec bundle retains complete meaning without research, sidecars or generated indexes; every topic header and fenced
+    block maps deterministically to IDs.
+  - Stub and preliminary MT artifacts cannot authorize execution; scope-changing rebases require renewed activation after completed
+    refinement/enrichment.
+  - Roadmap fixtures cover planned, partial and verified complete scope; implemented-item matrix coverage reaches the next relevant
+    activation without injecting future features or silently rewriting active contracts.
+  historical_rule_qualifiers: Earlier source-only candidates and proof examples remain provenance; current rules and explicit resolved/open
+    items define what is carried forward. Archive text cannot silently add obligations.
+
+stock_workflow_bindings:
+  rule_id: BR-STOCK-001
+  when_selected: HT-WORK-CODING-001
+  engineering_policy_refs: [WF-PROOF-001, WF-ART-001, WF-EXEC-001, WF-ARCH-001, WF-REMEDIATE-001, WF-OUT-001, WF-STEER-001]
+  resource_policy_ref: BR-CORE-BOUND-001
+  host_profile_rule_refs: [BR-HOST-001, BR-HOST-002, BR-HOST-003]
+  remediation_rule_ref: BR-REMEDIATE-001
+  replay_policy_ref: BR-CORE-REPLAY-001
+  generated_obligations: only_scope_relevant_acceptance_and_existing_code_or_runtime_boundaries
+  new_per_mt_build_or_documentation_checklists: forbidden
+  canonical_architecture: module_manifests_and_actual_symbols_dependency_metadata_and_public_contracts
+  semantic_duplicate_uncertainty: independent_review_not_false_claim_of_automatic_semantic_detection
+  ordinary_consumers_cannot_fork_canonical_components: true

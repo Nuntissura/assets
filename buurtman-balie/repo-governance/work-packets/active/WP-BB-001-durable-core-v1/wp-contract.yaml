@@ -1,0 +1,35 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-001-durable-core-v1
+kind: active
+title: Durable reusable CRM core
+version: 1
+spec_revision: 3
+requirement_refs:
+- AF-CRM-REQ-001
+- AF-CRM-REQ-002
+- AF-CRM-REQ-010
+- AF-CRM-REQ-011
+- AF-CRM-REQ-012
+- AF-CRM-REQ-013
+- AF-CRM-REQ-014
+- BB-DURABLE-001
+- BB-REUSE-001
+scope:
+- Reassess reuse against actual source and embedding boundaries before extending the core.
+- Implement and verify SurrealDB durable authorized storage first; preserve standalone field/pricing behavior.
+dependencies: []
+acceptance:
+- Record current library/upstream source comparison, selected reuse boundaries, rejected options and risks before
+  core extension.
+- Independently reload SurrealDB committed snapshots after restart; prove authorization, atomic replay/CAS across
+  competing writers, stale-write rejection and uncertain-commit recovery at the real database boundary.
+- Preserve standalone field/pricing contracts; prove affected host boundary when selected.
+verification_checks:
+- BB-CHECK-RUST
+- BB-CHECK-LINT
+- BB-CHECK-FMT
+- BB-CHECK-PACKAGE
+- BB-CHECK-GOV
+- BB-CHECK-SURREAL
+implementation_boundary: SurrealDB is selected durable host storage; PostgreSQL follows in its own WP. Preserve
+  optional SQLite adapter and MemoryStore/temporary harness. No host release/deployment selected.

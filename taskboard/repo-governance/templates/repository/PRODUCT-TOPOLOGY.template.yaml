@@ -1,0 +1,166 @@
+schema_version: handshake.product-topology.v5
+
+kind: product_topology
+
+identity:
+  topology_id: PRODUCT-TOPOLOGY-PROJECT-v1
+  project_id: PROJECT-REPLACE-ME
+  revision: 3
+
+ownership:
+  controller: topology_controller
+  canonical_instantiated_graph: true
+  generated_views_are_non_authoritative: true
+  manual_projection_edits_allowed: false
+  module_facts_source: referenced_module_manifest
+  canonical_for:
+    - graph_node_identity
+    - cross_entity_relations
+    - non_module_semantic_entities
+  module_fact_copies: read_through_projection_only
+
+relation_vocabulary:
+  structural:
+    - depends_on
+    - implements
+    - hosted_by
+    - owns_state
+  semantic:
+    - instantiates
+    - uses
+    - composes
+    - extends
+    - forked_from
+    - supersedes
+    - operates_on
+    - exposes_command
+    - produces
+    - consumes
+
+derived_views:
+  project_module_library:
+    rule_ref: BR-SEMANTIC-MODULE-001
+    sources: [module_manifests, exact_solution_bindings, topology_relations]
+    includes: [project_local_modules, bound_library_modules, gui_elements, backend_modules, surface_profiles]
+    generated: true
+    manual_edits_allowed: false
+    source_revisions_and_digests_required: true
+    queries: [semantic_entity, resource, operation, surface, consumers, dependencies, reverse_dependencies, replacement_candidates]
+    missing_or_stale_source_is_explicit: true
+  build_matrix_impact_candidates:
+    owner: wp_contract_compiler
+    source: current_specification_module_facts_and_topology
+    source_imports_are_only_one_relation_kind: true
+
+nodes: []
+
+edges: []
+
+node_contract:
+  required_identity_fields:
+    - node_id
+    - node_kind
+  optional_link_fields:
+    - module_manifest_ref
+    - module_id
+    - semantic_role
+    - composition_layer
+    - repository_path
+    - specification_refs
+    - solution_binding_refs
+    - public_contract_refs
+    - owned_state_refs
+    - external_effects
+    - runtime_host_refs
+    - diagnostic_refs
+  module_backed_node_policy:
+    required:
+      - module_id
+      - module_manifest_ref
+    module_manifest_must_resolve: true
+    semantic_role_and_module_facts_resolve_from_manifest: true
+    composition_layer_and_canonical_capability_refs_resolve_from_manifest: true
+    editable_duplicate_module_facts_forbidden: true
+    repository_path_is_derived_from_manifest_location: true
+  non_module_node_policy:
+    semantic_role_required: true
+    reference_existing_owner_when_available: true
+
+edge_contract:
+  stable_edge_id_required: true
+  source_and_target_must_resolve: true
+  relation_must_use_registered_vocabulary: true
+  source_code_dependency_edges_must_agree_with_architecture_validation: true
+  semantic_edges_do_not_imply_source_code_dependency: true
+  module_fact_edges_are_derived_from_manifest: true
+  canonical_edges_cannot_override_module_manifest: true
+
+coding_architecture:
+  applies_when: stock_coding_architecture_selected
+  policy_ref: HT-WORK-CODING-001
+  composition_layers: [primitive, control, composite, feature_module, application]
+  layer_term: code_composition_layer_distinct_from_specification_primitive_identity # a layer primitive is code; a spec primitive is a TECHNICAL-SPECIFICATION primitive_id
+  layer_definitions: # by ownership; MODULE.architecture carries the enforceable fields (HT-REPO-MODULE-001.validation.coding_architecture_contract.layer_field_rules)
+    primitive:
+      owns: exactly_one_behaviour_or_interaction_mechanic # examples: scroll model, focus, selection, overlay, text input, job queue, retry policy
+      exposes: [configuration, extension_points]
+      never_exposes: [layout, styling, presentation]
+      product_state: none_beyond_its_mechanic
+    control:
+      owns: one_presentation_of_one_or_more_primitives
+    composite:
+      owns: reusable_unit_composed_of_controls
+      product_workflow: none
+    feature_module:
+      owns: one_product_capability_or_workflow
+      composes: [composite, control, primitive]
+      adapters: through_contracts_only
+    application:
+      owns: shells_only_composition_wiring_and_entrypoints
+  allowed_layer_dependencies: # source dependency matrix checked by action check build_unit_boundary; data-only leaf units may be used by any layer
+    primitive: [contracts, kernel]
+    control: [primitive, contracts, kernel]
+    composite: [control, primitive, contracts, kernel]
+    feature_module: [composite, control, primitive, contracts, kernel]
+    application: [feature_module, composite, control, primitive, contracts, kernel, shell_foundation_zones_per_build_rulebook_dependency_policy_shells]
+  lower_layers_never_depend_on_higher: true
+  primitive_to_primitive_dependency: through_contracts_only
+  profile_selects_applicable_layers: true
+  headless_profiles_may_mark_controls_and_composites_not_applicable: true
+  source_dependency_direction: higher_layers_may_depend_on_lower_layers_only
+  canonical_capability_owner_source: module_manifest.semantic_code.canonical_capability_refs
+  consumers_use_public_contracts_or_declared_extension_points: true
+  generated_catalogs_only: true
+  composition_layer_to_zone_mapping:
+    rule_ref: WF-ARCH-001
+    status: stock_default_project_may_override_through_explicit_layer_mapping
+    zone_source: HT-REPO-STRUCTURE-001.product_zones
+    layers:
+      primitive: {zones: [product/capabilities/], data_only_leaf_modules: product/contracts/}
+      control: {zones: [product/capabilities/]}
+      composite: {zones: [product/capabilities/]}
+      feature_module: {zones: [product/capabilities/]}
+      application: {zones: [product/shells/gui/, product/shells/service/, product/shells/worker/, product/shells/cli/]}
+    layer_exempt_foundation_zones: [product/kernel/, product/contracts/, product/adapters/, product/extensions/, product/internal_diagnostics/, product/external_watcher/]
+    basis: capability zone keeps behavior, state, views and tests with their capability (BR-ARCH-CAPABILITY-001); each layer module is its own package in its zone (BR-BUILD-UNIT-001); shells own application chrome and composition; foundation zones sit outside the composition layers
+  build_unit_graph:
+    rule_ref: BR-BUILD-UNIT-001
+    derived_from: module_manifest.architecture.build_unit_ref
+    build_unit_edges_must_agree_with_source_dependency_edges: true
+    one_package_per_module: true
+    data_only_leaf_units_depend_on_nothing: true
+    data_only_leaf_units_may_be_depended_on_by_any_layer: true
+    single_module_change_rebuild_set_is_computable_from_this_graph: true
+
+validation:
+  duplicate_node_ids_forbidden: true
+  duplicate_edge_ids_forbidden: true
+  unresolved_required_refs_forbidden: true
+  forbidden_dependency_edges_fail_closed: true
+  module_manifest_and_topology_drift_forbidden: true
+  reusable_solution_edges_must_resolve_exact_project_bindings: true
+  lower_to_higher_source_dependency_edges_forbidden_when_stock_architecture_selected: true
+  edges_outside_allowed_layer_dependencies_fail_closed: true # build_unit_boundary
+  one_active_module_owner_per_canonical_capability_ref: true
+  canonical_capability_ownership_requires_declaration_and_implementation_verification: true
+  semantic_similarity_is_not_automatic_duplicate_detection: true

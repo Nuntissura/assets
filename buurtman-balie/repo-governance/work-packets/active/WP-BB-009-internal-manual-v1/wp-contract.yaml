@@ -1,0 +1,20 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-009-internal-manual-v1
+kind: active
+title: Internal CRM user manual
+version: 1
+spec_revision: 4
+requirement_refs:
+- BB-MANUAL-001
+scope:
+- Implement a reusable shipped CRM internal manual for no-context agents and models; coordinate exports with localization
+  module.
+dependencies: []
+acceptance:
+- Expose complete purpose/startup/embed/navigation/input/output/diagnostics/recovery/swarm/language guidance from
+  the module.
+- Verify packaged manual visibility and actual documented API/commands against current source; preserve private
+  governance exclusions.
+verification_checks:
+- BB-CHECK-PACKAGE
+- BB-CHECK-GOV

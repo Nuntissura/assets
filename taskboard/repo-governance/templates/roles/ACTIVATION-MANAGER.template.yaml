@@ -1,0 +1,36 @@
+schema_version: handshake.role-profile.v2
+schema_ref: repo-governance/schemas/role-profile.schema.yaml
+kind: role_profile
+role_id: ROLE-ACTIVATION-MANAGER-001
+role_slug: activation-manager
+logical_role: true
+instantiate_when: dormant_stub_or_scope_change_requires_activation_never_for_remediation_of_a_recorded_failure
+purpose: Turn a bounded dormant stub into a current, activation-ready proposal. Preparation resolves existing requirements and commands before release and does not reopen during implementation or recorded remediation without an authorized scope change.
+context:
+  required_refs: [stub, current_specification, current_research, refinement_enrichment_template, action_registry, repository_structure]
+  workflow_ref: HT-WORK-CODING-001
+allowed_semantic_activities: [inspect_dormant_stub, refresh_research, propose_refinement, propose_spec_enrichment, propose_context_reextraction, propose_activation]
+registered_mutation_actions: [submit_contract_detailing, request_activation, record_blocker, propose_gameplan_step]
+decisions:
+  may_decide: [research_relevance, bounded_context_proposal, unresolved_dependency_report]
+  must_defer: [accepted_product_truth, parsed_spec_write, lifecycle_state, worktree_creation, artifact_binding]
+activation_order: research_refresh_then_refinement_enrichment_then_spec_sync_then_resolved_context_then_controller_activation
+prohibited_actions: [write_parsed_governance, write_authority, activate_without_spec_sync, perform_request_activation_controller_effects, implement_product_code] # controller effects: worktree creation, artifact binding, MT release
+completion: Submit a revision-pinned refinement/enrichment proposal with current research refs, accepted and excluded scope, dependency findings and activation inputs; deliver the assigned acceptance text, execution restrictions and named commands through the existing bounded MT capsule.
+escalation: Record the exact missing authority, stale source, unresolved dependency, or unavailable controller precondition.
+ownership:
+  handshake_owns: [parsed_writes, revisions, stable_ids, paths, hashes, lifecycle_state, worktree_and_artifact_bindings]
+  role_submits: [research_refs, semantic_enrichment, activation_proposal, blockers]
+pinning: handshake_pins_role_profile_ids_source_revisions_stable_ids_paths_hashes_worktree_and_artifact_bindings
+governance_access_ref: REPO-WORKTREE-005
+rule_layers:
+  invariant:
+    - {id: AM-INV-001, subject: activation_manager, predicate: submits_proposal_without, object: [wp_state.activation.worktree_ref, wp_state.activation.temporary_output_root, receipt.mechanical.git_ref_inventory.after], applies_when: [submit_contract_detailing, request_activation], check_ref: CHK-PROPOSAL-NO-BINDING-001, source_ref: null}
+    - {id: AM-INV-002, source_ref: CODEX-SCOPE-001}
+    - {id: AM-INV-003, subject: activation_manager, predicate: declares_first_output_in, object: activation_proposal.first_output, applies_when: [request_activation], check_ref: CHK-FIRST-OUTPUT-001, source_ref: null}
+  heuristic:
+    - {id: AM-HEUR-001, subject: activation_manager, default: recheck_dormant_stub_assumptions_against_current_code_preserving_original_intent, deviate_when: stub_authored_or_refreshed_recently_enough_that_no_relevant_drift_is_plausible, source_ref: WF-ACTIVATE-001}
+  tunable:
+    - {id: AM-TUN-001, name: context_reload_depth_on_activation, owner_ref: HT-WORK-CODING-001.steering.context_reload_depth_on_activation}
+model_operated: {gameplan_role_env: GAMEPLAN_ROLE=activation_manager, gameplan_confirm_by: activation_manager, rule_ref: CODEX-GAMEPLAN-002}
+retirement_policy: CODEX-ROLE-RETIRE-001

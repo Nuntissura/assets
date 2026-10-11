@@ -1,0 +1,400 @@
+schema_version: handshake.template-pack.v7
+
+kind: template_pack
+
+identity:
+  pack_id: HANDSHAKE-PROJECT-BASE-v1
+  version: 40
+  status: draft
+
+
+payload_contract:
+  marker_version: 1
+  format: yaml
+  exactly_one_payload_per_note: true
+  duplicate_keys_allowed: false
+  unresolved_placeholders_forbidden_for_selected_materialization: true
+  on_demand_templates_may_retain_declared_placeholders_until_selected: true
+  prose_outside_payload_is_authoritative: false
+  universal_modularity_baseline:
+    rule_refs: [BR-MODULE-LIFECYCLE-001, BR-MODULE-LIFECYCLE-002, BR-MODULE-LIFECYCLE-003, BR-MODULE-LIFECYCLE-004, BR-MODULE-LIFECYCLE-005, BR-MODULE-LIFECYCLE-006, BR-MODULE-LIFECYCLE-007, CODEX-MODULE-LIFECYCLE-001]
+    mandatory_for_every_future_project: true
+    executor_independent: true
+    existing_pinned_projects_require_explicit_reassessment_and_adoption: true
+    legacy_gaps_must_be_reported_not_certified: true
+    adoption_uses_existing_workflow: true
+  dependency_meaning: Template/schema inputs; dependencies on per-WP/MT shapes do not require creating a WP/MT during project
+    bootstrap.
+
+
+hydration_order:
+- HT-REPO-STRUCTURE-001
+- HT-SPEC-TECHNICAL-001
+- HT-AUTH-BUILD-RULES-001
+- HT-REUSE-BINDINGS-001
+- HT-REUSE-LOCK-001
+- HT-REPO-MODULE-001
+- HT-TOPOLOGY-PRODUCT-001
+- HT-WORK-ACTIONS-001
+- HT-WORK-RECEIPT-001
+- HT-AUTH-CODEX-001
+- HT-WORK-REFINE-001
+- HT-WORK-WP-001
+- HT-WORK-MT-001
+- HT-WORK-STATE-001
+- HT-WORK-GAMEPLAN-001
+- HT-SCHEMA-REFINE-001
+- HT-SCHEMA-WP-001
+- HT-SCHEMA-MT-001
+- HT-SCHEMA-STATE-001
+- HT-SCHEMA-RECEIPT-001
+- HT-SCHEMA-GAMEPLAN-001
+- HT-WORK-TASKBOARD-CONFIG-001
+- HT-WORK-TASKBOARD-PROJECTION-001
+
+
+- HT-ROLE-ACTIVATION-MANAGER-001
+- HT-ROLE-BUILDER-001
+- HT-ROLE-CODER-001
+- HT-ROLE-INTEGRATION-VALIDATOR-001
+- HT-ROLE-ORCHESTRATOR-001
+- HT-ROLE-WP-VALIDATOR-001
+- HT-SCHEMA-ROLE-001
+- HT-WORK-CODING-001
+
+
+templates:
+- template_id: HT-REPO-STRUCTURE-001
+  template_version: 15
+  path: repository/REPOSITORY-STRUCTURE.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: []
+- template_id: HT-SPEC-TECHNICAL-001
+  template_version: 6
+  path: specification/TECHNICAL-SPECIFICATION.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-REPO-STRUCTURE-001]
+- template_id: HT-AUTH-BUILD-RULES-001
+  template_version: 24
+  path: authority/BUILD-RULES.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-SPEC-TECHNICAL-001]
+- template_id: HT-REUSE-BINDINGS-001
+  template_version: 4
+  path: reuse/SOLUTION-BINDINGS.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-SPEC-TECHNICAL-001, HT-AUTH-BUILD-RULES-001]
+- template_id: HT-REUSE-LOCK-001
+  template_version: 3
+  path: reuse/SOLUTION-LOCK.template.md
+  status: generated-shape
+  materialization: bootstrap
+  depends_on: [HT-REUSE-BINDINGS-001]
+- template_id: HT-REUSE-SOLUTION-001
+  template_version: 3
+  path: reuse/REUSABLE-SOLUTION.template.md
+  status: on-demand
+  materialization: promotion_candidate_only
+  depends_on: [HT-AUTH-BUILD-RULES-001, HT-REUSE-BINDINGS-001]
+- template_id: HT-REPO-MODULE-001
+  template_version: 10
+  path: repository/MODULE.template.md
+  status: draft
+  materialization: per_module
+  depends_on: [HT-REPO-STRUCTURE-001, HT-SPEC-TECHNICAL-001, HT-AUTH-BUILD-RULES-001, HT-REUSE-LOCK-001]
+- template_id: HT-TOPOLOGY-PRODUCT-001
+  template_version: 7
+  path: repository/PRODUCT-TOPOLOGY.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-REPO-STRUCTURE-001, HT-SPEC-TECHNICAL-001, HT-AUTH-BUILD-RULES-001, HT-REUSE-LOCK-001, HT-REPO-MODULE-001]
+- template_id: HT-WORK-ACTIONS-001
+  template_version: 25
+  path: work-system/ACTION-REGISTRY.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-REPO-STRUCTURE-001, HT-REUSE-BINDINGS-001]
+- template_id: HT-AUTH-CODEX-001
+  template_version: 29
+  path: authority/CODEX.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-AUTH-BUILD-RULES-001, HT-REUSE-LOCK-001, HT-TOPOLOGY-PRODUCT-001, HT-WORK-ACTIONS-001]
+- template_id: HT-WORK-REFINE-001
+  template_version: 9
+  path: work-system/REFINEMENT-ENRICHMENT.template.md
+  status: draft
+  materialization: per_wp
+  depends_on: [HT-SPEC-TECHNICAL-001, HT-AUTH-BUILD-RULES-001, HT-REUSE-LOCK-001, HT-TOPOLOGY-PRODUCT-001]
+- template_id: HT-WORK-WP-001
+  template_version: 16
+  path: work-system/WORK-PACKET.template.md
+  status: draft
+  materialization: per_wp
+  depends_on: [HT-WORK-REFINE-001, HT-AUTH-BUILD-RULES-001, HT-REUSE-LOCK-001, HT-TOPOLOGY-PRODUCT-001]
+- template_id: HT-WORK-MT-001
+  template_version: 20
+  path: work-system/MICROTASK.template.md
+  status: draft
+  materialization: per_mt
+  depends_on: [HT-WORK-WP-001]
+- template_id: HT-WORK-STATE-001
+  template_version: 12
+  path: work-system/WP-STATE.template.md
+  status: draft
+  materialization: per_wp
+  depends_on: [HT-WORK-WP-001, HT-WORK-MT-001]
+- template_id: HT-WORK-GAMEPLAN-001
+  template_version: 4
+  path: work-system/GAMEPLAN.template.md
+  status: draft
+  materialization: per_wp
+  lazy_variant: {materialization: per_mt, created_on: first_propose_gameplan_step_naming_the_mt, path_ref: HT-REPO-STRUCTURE-001.work_packet_anatomy}
+  depends_on: [HT-WORK-WP-001, HT-WORK-STATE-001, HT-AUTH-CODEX-001, HT-WORK-ACTIONS-001]
+- template_id: HT-WORK-RECEIPT-001
+  template_version: 14
+  path: work-system/RECEIPT.template.md
+  status: draft
+  materialization: per_action
+  depends_on: [HT-REPO-STRUCTURE-001, HT-WORK-ACTIONS-001]
+- template_id: HT-WORK-TASKBOARD-CONFIG-001
+  template_version: 6
+  path: work-system/TASKBOARD-CONFIG.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-WORK-WP-001, HT-WORK-STATE-001, HT-REUSE-LOCK-001, HT-TOPOLOGY-PRODUCT-001]
+- template_id: HT-WORK-TASKBOARD-PROJECTION-001
+  template_version: 6
+  path: work-system/TASKBOARD-PROJECTION.template.md
+  status: generated-shape
+  materialization: generated
+  depends_on: [HT-WORK-TASKBOARD-CONFIG-001, HT-WORK-STATE-001, HT-WORK-RECEIPT-001]
+
+
+- template_id: HT-ROLE-ACTIVATION-MANAGER-001
+  template_version: 7
+  path: roles/ACTIVATION-MANAGER.template.md
+  status: draft
+  materialization: on_workflow_selection
+  depends_on: [HT-AUTH-CODEX-001, HT-WORK-ACTIONS-001]
+- template_id: HT-ROLE-BUILDER-001
+  template_version: 8
+  path: roles/BUILDER.template.md
+  status: draft
+  materialization: on_workflow_selection
+  depends_on: [HT-AUTH-CODEX-001, HT-WORK-ACTIONS-001]
+- template_id: HT-ROLE-CODER-001
+  template_version: 9
+  path: roles/CODER.template.md
+  status: draft
+  materialization: on_workflow_selection
+  depends_on: [HT-AUTH-CODEX-001, HT-WORK-ACTIONS-001]
+- template_id: HT-ROLE-INTEGRATION-VALIDATOR-001
+  template_version: 6
+  path: roles/INTEGRATION-VALIDATOR.template.md
+  status: draft
+  materialization: on_workflow_selection
+  depends_on: [HT-AUTH-CODEX-001, HT-WORK-ACTIONS-001]
+- template_id: HT-ROLE-ORCHESTRATOR-001
+  template_version: 7
+  path: roles/ORCHESTRATOR.template.md
+  status: draft
+  materialization: on_workflow_selection
+  depends_on: [HT-AUTH-CODEX-001, HT-WORK-ACTIONS-001]
+- template_id: HT-ROLE-WP-VALIDATOR-001
+  template_version: 6
+  path: roles/WP-VALIDATOR.template.md
+  status: draft
+  materialization: on_workflow_selection
+  depends_on: [HT-AUTH-CODEX-001, HT-WORK-ACTIONS-001]
+- template_id: HT-WORK-CODING-001
+  template_version: 17
+  path: work-system/CODING-WORKFLOW.template.md
+  status: draft
+  materialization: on_workflow_selection
+  depends_on: [HT-ROLE-ACTIVATION-MANAGER-001, HT-ROLE-BUILDER-001, HT-ROLE-CODER-001, HT-ROLE-INTEGRATION-VALIDATOR-001, HT-ROLE-ORCHESTRATOR-001, HT-ROLE-WP-VALIDATOR-001, HT-WORK-STATE-001, HT-WORK-WP-001, HT-WORK-MT-001, HT-REPO-MODULE-001, HT-AUTH-BUILD-RULES-001, HT-WORK-GAMEPLAN-001]
+- template_id: HT-SCHEMA-REFINE-001
+  template_version: 3
+  path: schemas/REFINEMENT-SCHEMA.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-WORK-REFINE-001]
+- template_id: HT-SCHEMA-WP-001
+  template_version: 6
+  path: schemas/WP-CONTRACT-SCHEMA.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-WORK-WP-001]
+- template_id: HT-SCHEMA-MT-001
+  template_version: 9
+  path: schemas/MICROTASK-SCHEMA.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-WORK-MT-001]
+- template_id: HT-SCHEMA-STATE-001
+  template_version: 5
+  path: schemas/WP-STATE-SCHEMA.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-WORK-STATE-001]
+- template_id: HT-SCHEMA-RECEIPT-001
+  template_version: 7
+  path: schemas/RECEIPT-SCHEMA.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-WORK-RECEIPT-001]
+- template_id: HT-SCHEMA-GAMEPLAN-001
+  template_version: 3
+  path: schemas/GAMEPLAN-SCHEMA.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-WORK-GAMEPLAN-001]
+- template_id: HT-SCHEMA-ROLE-001
+  template_version: 3
+  path: schemas/ROLE-PROFILE-SCHEMA.template.md
+  status: draft
+  materialization: bootstrap
+  depends_on: [HT-ROLE-ACTIVATION-MANAGER-001, HT-ROLE-BUILDER-001, HT-ROLE-CODER-001, HT-ROLE-INTEGRATION-VALIDATOR-001, HT-ROLE-ORCHESTRATOR-001, HT-ROLE-WP-VALIDATOR-001]
+
+
+execution_readiness:
+  rule_id: HT-PACK-MODE-001
+  contract_ref: HT-AUTH-CODEX-001.execution_modes
+  scope: all_selected_template_controller_actor_and_compiler_requirements
+  handshake_managed: All release_gates remain required before claiming released Handshake hydration or runtime operation.
+  model_operated: The authorized model may install stock obligations and operate the same repository lifecycles under the CODEX model coordinator protocol before Handshake release; validate each action against its actual required inputs.
+  model_operation_gates:
+  - current_selected_payloads_parse_and_manifest_versions_match
+  - stock_obligations_and_unresolved_inactive_bindings_are_distinguished
+  - accepted_specification_is_valid_and_self_contained
+  - required_directories_and_split_codex_routing_exist
+  - source_target_preconditions_and_preserved_bytes_validate
+  - repeated_initialization_has_zero_change
+  - action_relevant_authority_dependencies_claims_and_proof_resolve
+  - actual_outcomes_and_producers_are_reported_truthfully
+  no_runtime_readiness_inference: true
+  stock_workflow_default: handshake_managed_when_explicitly_selected
+  compatibility_mode: model_operated_only_by_explicit_project_selection
+  current_helper_default: planning_without_claiming_managed_release
+
+release_gates:
+- all_markdown_valid
+- all_links_resolve
+- every_marker_pair_is_unique
+- every_yaml_payload_parses
+- every_template_id_is_unique
+- every_selected_template_version_matches_manifest
+- kernel_sdk_foundation_binding_and_profile_resolve
+- callable_catalog_matches_current_module_declarations
+- sdk_source_imports_match_build_rule_dependency_policy
+- watcher_observation_is_independent_of_target_dispatch
+- every_manifest_path_resolves
+- dependency_graph_is_acyclic
+- every_required_placeholder_is_declared
+- every_selected_placeholder_is_resolved
+- product_module_manifests_resolve
+- product_topology_semantic_and_dependency_refs_resolve
+- technical_specification_status_is_ready
+- extraction_round_trip_is_semantically_equal
+- current_schema_versions_have_final_schemas
+- build_rule_design_resolution_release_claims_pass
+- build_matrix_entry_universe_and_wp_mt_coverage_resolve
+- wp_and_mt_templates_match_rulebook_contract_fields
+- claimed_mt_required_read_set_within_budget
+- test_environment_contract_and_tools_manifest_resolve
+- single_checked_in_test_entrypoint_and_config_files_resolve
+- module_layer_fields_and_layer_dependency_matrix_hold
+- sdk_contract_refs_in_wp_mt_match_pinned_resolution
+- contract_compilation_rejects_partial_stale_or_model_owned_mechanical_fields
+- spec_bundle_documents_indexes_and_primitive_feature_relations_resolve
+- spec_topics_and_fenced_inline_content_parse_without_sidecar_or_external_truth
+- research_cannot_supply_product_truth_enforcement_or_final_decisions
+- stub_candidates_cannot_authorize_wp_mt_execution
+- activation_binds_only_refined_enriched_in_scope_obligations
+- future_feature_entries_do_not_expand_unrelated_wp_mt_scope
+- internal_spec_roadmap_status_and_implemented_matrix_coverage_match_verified_scope
+- action_specific_context_and_shared_eligibility_agree
+- receipt_scope_and_settlement_match_actual_action
+- preactivation_projection_contains_no_executable_mts
+- semantic_code_reuse_and_distinct_purpose_lineage_resolve
+- solution_dependency_closure_and_promotion_source_proof_match
+- spec_core_format_example_and_reference_ownership_validate
+- transaction_preview_is_effect_free_and_commit_rechecks_inputs
+- required_base_directories_and_single_template_input_location_match_structure
+- complete_prior_spec_snapshot_precedes_current_update_and_version_advance
+- activation_workspace_and_terminal_cleanup_match_wp_ownership
+- selected_stock_workflow_roles_transitions_and_capability_bindings_resolve
+- selected_managed_workflow_versioned_review_dispatch_and_merge_are_runtime_proven
+- every_selected_artifact_validates_against_its_schema
+- every_active_wp_has_a_gameplan_and_costly_actions_pass_its_gate
+- failed_verdict_remediation_distinct_resubmission_proof_invalidation_and_result_freshness_checks_hold
+
+
+source_selection:
+  rule_id: HT-PACK-SOURCE-001
+  selected_template_root: templates/
+  manifest_members_only: true
+  discovery_scan_excludes:
+    - archive/
+    - descriptions/
+  descriptions_are_non_authoritative: true
+  archive_is_provenance_only: true
+  archive_reading_required_for_normal_operation: false
+  provenance_references_do_not_add_hydration_dependencies: true
+
+transaction_preview:
+  rule_id: HT-PACK-PREVIEW-001
+  operations: [project_hydration, pipeline_upgrade, wp_activation]
+  owner: execution_mode_selected_hydration_or_activation_actor
+  eligibility_source: action_registry.admission.evaluator
+  source_fields: [template_versions, generator_id, generator_version, schema_versions, source_generations, protected_local_changes]
+  change_fields: [changed_spec_topics, affected_contracts, selected_matrix_entry_refs, excluded_future_scope, retained_proof_refs,
+    unresolved_inputs]
+  sources: Current template pack, repository hydration policy, accepted spec, generated candidate contracts and existing proof
+    inputs.
+  effects_allowed: false
+  unsupported_preview_behavior: report_unsupported_without_running_live_action
+  unchecked_conditions_are_explicit: true
+  commit_revalidates_live_generations_and_action_preconditions: true
+  does_not_create_an_additional_approval_gate: true
+  generated_preview_is_not_new_authority: true
+  upgrade_behavior: Pin the template/compiler/schema input set for each generation; resume pinned work compatibly or explicitly
+    migrate through existing staged hydration and scoped activation, preserving valid proof.
+
+representative_validation_scenario:
+  rule_id: HT-PACK-EXAMPLE-001
+  role: test_scenario_only_never_materialized_as_project_scope
+  spec_format_example_ref: HT-SPEC-TECHNICAL-001.format_example
+  setup: One canonical image backend with recent-images and library surface profiles; different permitted operations use existing
+    semantic_code links and the same resource owner.
+  cases:
+  - planned_wp_exposes_no_executable_mts
+  - first_claim_needs_no_prior_claim
+  - project_action_receipt_needs_no_wp_or_mt
+  - scope_change_requires_renewed_activation
+  - unrelated_future_feature_is_not_assigned
+  - same_purpose_module_reuses_existing_backend
+  - distinct_purpose_module_has_clear_name_and_semantic_lineage
+  - partial_completion_keeps_remaining_scope_visible
+  - implemented_and_retired_roadmap_moves_preserve_anchors
+  - interrupted_roadmap_matrix_sync_resumes_without_duplicate_effects
+  - concurrent_claims_cannot_share_conflicting_write_scope
+  - source_change_invalidates_only_affected_proof
+  - promotion_candidate_cannot_mix_source_revisions
+  - preview_has_no_external_effect_and_commit_rechecks_inputs
+  - required_empty_base_directories_exist_without_activating_future_work
+  - wp_and_mt_templates_exist_once_outside_hydration_state
+  - spec_update_preserves_complete_old_bundle_before_any_current_mutation
+  - planned_stub_has_no_worktree_and_activation_follows_completed_refinement
+  - parallel_wp_outputs_and_cleanup_cannot_touch_another_wp
+  - failed_cleanup_preserves_evidence_and_remains_nonterminal
+  - identical_resubmission_after_failed_verdict_is_rejected_and_new_diagnosis_admits_it
+  - candidate_diff_on_relevant_inputs_re_validates_a_passed_mt
+  - infrastructure_only_round_produces_no_failed_verdict
+  - stale_round_results_produce_no_verdict
+  reuse: Use the same small fixture across existing relevant release checks; do not create one new task or proof artifact
+    per case.

@@ -1,0 +1,14 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-004-photo-service-v1
+kind: stub
+title: Photo-service embedding
+version: 1
+spec_revision: 1
+requirement_refs:
+- AF-CRM-REQ-003
+scope:
+- Inspect photo-service lifecycle and website stack before adapter selection.
+dependencies: []
+acceptance:
+- Finalize scope and acceptance from accepted spec requirements before execution.
+verification_checks: []

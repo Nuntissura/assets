@@ -1,0 +1,282 @@
+schema_version: buurtman.team-coordination.v1
+coordination_id: BB-TEAM-COORDINATION-v1
+updated_at: '2026-10-11'
+workflow_ref: repo-governance/codex/workflows/repository-workflows.md
+devlead:
+  chat_id: 01a12ab0-4366-7802-a67a-5fe06cf9ed92
+  title: Continue Buurtman Balie development
+  owns:
+  - WP-BB-001-durable-core-v1
+  - shared-builds
+  - browser-proofs
+  - package-checks
+  - governance-checks
+  - README.md
+  - Cargo.toml
+  wp010_promotion: Root only, after coding evidence defines configurable bounded admission contract.
+boundaries:
+  one_writer_per_file: true
+  preserve_unrelated_uncommitted_work: true
+  forbidden_actions:
+  - commits
+  - remotes
+  - deployment
+  - publication
+  - process-stops
+  proof_policy: Read existing artifacts; devlead owns all shared runs and independent acceptance review.
+  knowledge_location: Project files only; no provider-local memory.
+  status_policy: Canonical WP state first; preserve status until declared acceptance independently reviewed.
+assignments:
+- chat_id: 01a12ab8-56bd-7e02-bcd2-84891bb013aa
+  title: Specification-Coordinator
+  owns:
+  - repo-governance/specification/current/specification.yaml
+  - repo-governance/taskboard/taskboard.yaml
+  - WP-BB-006-localization-v1 contract/state
+  - WP-BB-008-compliance-research-v1 contract/state
+  - WP-BB-009-internal-manual-v1 contract/state
+  - WP-BB-011-crm-usecase-research-v1 contract/state
+  - WP-BB-012-crdt-v1 contract/state
+  - WP-BB-013-operator-workflow-validation-v1 contract/state
+  - WP-BB-014-crate-boundary-v1 contract/state
+  - repo-governance/codex/workflows/repository-workflows.md
+  - repo-governance/docs/team-coordination.yaml
+  evidence_needed: Devlead-reviewed current acceptance evidence and BB-CHECK-GOV before completion recording.
+- chat_id: 01a12ab7-2594-7942-9c0f-dea5aeb0676c
+  title: English-French-Dutch-Localization
+  owns:
+  - .local/independent-review/localization-current.md
+  evidence_needed: Unknown-error retranslation, independent expected discount/final values and current-source provenance.
+- chat_id: 01a12ab6-e70b-77d1-ad63-b94bea9e49de
+  title: Internal-User-Manual-Coder
+  owns:
+  - web/user-manual.js
+  - tooling/manual-proof.py
+  evidence_needed: Fresh visual/API and package proof after localized transport guidance edits.
+- chat_id: 01a12ab6-b2dd-74e1-b692-12a655ff0e67
+  title: Rust-Coding-and-Integration
+  owns:
+  - docs/research/swarm-boundaries-v1.md
+  evidence_needed: Portal owner/admission/queue/in-flight/payload/deadline/recovery contract; numeric budgets remain
+    unresolved.
+- chat_id: 01a12ab6-827d-7853-b377-fd2ff55528e4
+  title: Diagnostics-Failures-and-Blockers
+  owns:
+  - .local/independent-review/durable-current.md
+  evidence_needed: Live disk-backed SurrealDB proof with independent receipt revision/outcome assertions and canonical
+    reread.
+- chat_id: 01a12ab8-a7d8-7473-babc-b64a4c4a708e
+  title: CRM-Usecase-and-Analytics-Research
+  owns:
+  - docs/research/crm-usecases-v1.md
+  evidence_needed: Final row-specific reuse/source/freshness coverage, photo-service evidence and devlead acceptance
+    review.
+- chat_id: 01a12ab7-9d64-7711-989c-174334af478c
+  title: EU-US-Belgium-Compliance-Research
+  owns:
+  - repo-governance/docs/research/compliance-v1.md
+  evidence_needed: Final official-source applicability/host-owner matrix and devlead research acceptance review.
+- chat_id: 01a12ab6-4039-7980-a44c-d104cb27f1bd
+  title: Dependencies-and-Upstream-Reuse
+  owns:
+  - docs/research/postgresql-reuse-v1.md
+  evidence_needed: Host selections, exact dependency closure and real PostgreSQL proof after selected SurrealDB
+    predecessor.
+recovery:
+  active_gameplan: .local/gameplan/crm-module.yaml
+  preparation_observed: GP-026 resume and GP-014 through GP-028 active before-round prerequisites read; no costly
+    commands run here.
+  synchronization:
+  - wp_id: WP-BB-006-localization-v1
+    canonical_status: in_progress
+    observed: State/board/roadmap agreed; cleared sync_pending without status change.
+  - wp_id: WP-BB-008-compliance-research-v1
+    canonical_status: in_progress
+    observed: State/board/roadmap agreed; cleared sync_pending without status change.
+  wp010:
+    selected_first_host: Portal
+    retained_scope:
+    - camera-store
+    - photo-service-website
+    - supermarket
+    numeric_budgets: unresolved
+    contract_state_owner: devlead
+    status: in_progress
+    contract_ref: repo-governance/work-packets/active/WP-BB-010-swarm-backpressure-v1/wp-contract.yaml
+    state_ref: repo-governance/work-packets/active/WP-BB-010-swarm-backpressure-v1/state.yaml
+    promotion_recovery: Root moved active contract/state with sync_pending; coordinator synchronized board/roadmap
+      from canonical in_progress state and cleared pending flag. State ownership returns to root.
+    previous_stub_ref: .local/wp010-stub-before-promotion
+    spec_predecessor:
+      status: recorded
+      spec_revision: 6
+      research_basis_key: swarm_admission
+      research_ref: docs/research/swarm-boundaries-v1.md
+      selected_unit: Configurable shared synchronous Store worker; one in-flight lane; bounded queue/payload/deadlines;
+        immediate overload rejection; expired queued work never executes; in-flight timeout uncertain Storage; identical
+        receipt reconciliation and pressure counters; async hosts use blocking executor.
+      next_action: Root owns worker implementation, state and proof; coordinator completed only promotion synchronization.
+      proof_boundary: Functional implementation selected; numeric workload/resource/SLA and production host proof
+        unresolved.
+    diagnostic_gate: Spec12/contract authorizes selected provisional Portal numeric profile and baseline measurements;
+      no production SLA acceptance. Camera-store/supermarket retained.
+  operator_correction:
+    spec_revision: 7
+    requirement_refs:
+    - BB-CRDT-001
+    - BB-CONCURRENCY-001
+    - BB-WORKFLOW-001
+    meaning: Explicit CRDT use AND data-race tests supersede prior no-specific-CRDT wording. Camera-store replaces
+      photo-store wording; separate photo-service website and supermarket retained.
+    root_owned_followup: WP010 contract still says without prescribing CRDTs and contract/state still say photo-store;
+      root reconciles affected wording to revision 7 without implicit CAS/money/stock replacement or worker scope
+      expansion.
+    preserved: Original host stubs, prior research, exact money, canonical host stock, CAS/replay and unresolved
+      performance budgets.
+  wp012:
+    owner: Specification-Coordinator
+    status: in_progress
+    contract_ref: repo-governance/work-packets/active/WP-BB-012-crdt-v1/wp-contract.yaml
+    state_ref: repo-governance/work-packets/active/WP-BB-012-crdt-v1/state.yaml
+    previous_stub_ref: .local/wp012-stub-before-promotion
+    selected_component: Rust-only yrs=0.28.0 description draft at crates/buurtman-balie-collaboration; opaque private-byte
+      DraftUpdate/DraftCheckpoint from crate-local APIs only, checked UTF8 byte splice, checkpoint clone/fork to
+      fresh Doc; budgeted pending causal state and has_missing_updates inspection. No raw import/serde decode/custom
+      parser/Doc.clone isolation/core GUI/schema2 feature.
+    root_ownership: Manifests/lock/builds; collaboration source/tests implemented and diagnostics review assigned
+      by root.
+    evidence_needed: Root-selected completed reuse findings captured in spec11/exact contract ready; require typed
+      domain/budget no-mutation, duplicate/reorder convergence and actual race tests on both Windows targets. Raw
+      binary durable ingress/rehydration, real-host durability/retention/publish/interoperability remain outstanding.
+    execution_gate: Corrected spec11 component implemented; five tests passed native ARM64 and x64 Windows emulation,
+      independently read command outputs. Diagnostics bounded source PASS inspected; arbitrary decoder safety premise
+      remains retracted. Raw ingress/rehydration/UTF16 interop outstanding and no custom parser authorized.
+    inspected_proof:
+      native: exec-c53fba96-9412-4ace-bf5f-9ed182ec8cdd exit0, five draft tests.
+      x64_emulated: exec-8df16072-72f0-4a51-8702-580fa07be955 exit0, five draft tests.
+      static: exec-8dea3cd1-16c7-463e-abba-768ad577d1a4 exit0, workspace Clippy and fmt including collaboration.
+      package: exec-f5393128-eecc-4a22-b6e8-5a82ac9032e1 exit0, generated Cargo files and src/lib.rs/tests/draft.rs
+        only.
+      independent_review: .local/independent-review/crdt-current.md bounded source PASS inspected; no reviewer runtime
+        runs, no total memory/CPU ceiling, isolated pending-delete checkpoint test absent, full host lifecycle outstanding.
+  wp013:
+    owner: Specification-Coordinator
+    status: in_progress
+    contract_ref: repo-governance/work-packets/active/WP-BB-013-operator-workflow-validation-v1/wp-contract.yaml
+    state_ref: repo-governance/work-packets/active/WP-BB-013-operator-workflow-validation-v1/state.yaml
+    assignment_owner: Root appoints dedicated workflow subagent and its bounded evidence-file ownership.
+    evidence_needed: Camera-store/supermarket/web-SaaS scenario matrix, actual desktop/mobile screenshots and UI/backend
+      observations, canonical/demo boundaries, reproduced gaps/remediations and coordinator spec/WP-stub follow-ons.
+  wp015:
+    status: in_progress
+    contract_ref: repo-governance/work-packets/active/WP-BB-015-field-selection-v1/wp-contract.yaml
+    requirement_ref: BB-FIELD-UX-001
+    spec_revision: 12
+    gate: Root records current research comparison and concrete ASCII key/Unicode/collision policy before product
+      edits.
+    scope: Label-first existing canonical dropdown/Create New, read-only existing definitions, generated key and
+      advanced override, EN/FR/NL and actual desktop/mobile proof; public core unchanged.
+evidence_review:
+  packaging_boundary:
+    spec_revision: 8
+    wp_id: WP-BB-014-crate-boundary-v1
+    contract_ref: repo-governance/work-packets/active/WP-BB-014-crate-boundary-v1/wp-contract.yaml
+    state_ref: repo-governance/work-packets/active/WP-BB-014-crate-boundary-v1/state.yaml
+    selected: Root buurtman-balie core retained; separate crates/buurtman-balie-host-demo owns example composition;
+      optional web/npm presentation distinct. Host provides GUI for website admin AND custom apps.
+    product_owner: Root owns manifests/README/lib/relocation and proof-consumer path changes.
+    governance_owner: Specification-Coordinator
+    proof_needed: Independent package/dependency separation, changed example/harness/fingerprint proof and separately
+      observed Windows x64 AND ARM64 execution; unavailable architecture proof outstanding, macOS/Linux later.
+    source_observed: Root workspace/core default member, separate demo manifest, lockfile member, core-only include
+      list and portable BB_DEMO_BINARY README/harness configuration inspected after root edits.
+    runtime_report:
+      source: Devlead message on 2026-10-11; coordinator has not independently reviewed execution output.
+      x64: Default-feature 13 contract plus10 worker passes and API2 standalone two-record run reported under Windows
+        ARM64 x64 emulation; distinct from native x64 hardware proof.
+      arm64: Native all-feature tests/demo output read;13contracts5SQLite10worker passed,5Surreal ignored; later
+        workspace fmt/lint passed. Current UI/independent source review remains pending.
+      worker: Independent P2 uncertainty-counter fix and10 tests reported; no full WP010 numeric-budget acceptance.
+    inspected_proof:
+      source: Devlead command outputs read through read_thread, 2026-10-11.
+      package_static: exec-f5fd513b-3248-452d-a169-f8df93a15956 exit0; root-only package assets, demo examples,
+        fmt and workspace all-target all-feature Clippy inspected. Metadata separately shows only core default member.
+      x64_allfeatures: exec-58f2bd66-c23b-4f5b-93e5-4a43199e8732 exit0;13contracts5SQLite10worker passed, 5Surreal
+        ignored. Runtime remains ARM64 Windows emulation, not native x64 hardware.
+  operator_workflows:
+    refs:
+    - docs/research/operator-workflows-v1.md
+    - .local/operator-workflows/result.json
+    - web/app.js
+    - web/client-pricing.js
+    observed: Report/results/source inspected; WF-001 dirty-switch draft loss, WF-002 stale price quote and WF-003
+      pre-dispatch validation presented as uncertain reconciliation recorded in spec workflow_findings.
+    scope: Existing-behavior remediation; no inventory/checkout implementation authorization.
+    client_conflict: Independent gui-current.md P2 and current client-pricing.js canonical Customer reread inspected;
+      recorded under existing WF-003 recovery scope. Fresh r1/cache-r2/backend-r3 retained-draft and failed-reread
+      regression proof pending; no new WP or broader host scope introduced.
+    codex_browser:
+      source: Devlead live interaction report on 2026-10-11; actual Codex in-app browser, temporary demo14177 localhost50135.
+      interactions_reported: Camera/Milk dirty-switch draft retained; negative price locally corrective; EUR72 quote
+        invalidated after saved B2B100 and explicit recalculation returned90; mobile390x844 width375 below390.
+      screenshots_opened:
+      - .local/codex-browser-proof/quote.jpg
+      - .local/codex-browser-proof/mobile.jpg
+      - .local/codex-browser-proof/quote-detail.jpg
+      - .local/codex-browser-proof/manual-nl.jpg
+      observed_here: Both final-state images show retained Camera description and employee B2B100 less10%=EUR90;
+        desktop columns and mobile stacked controls visible. Screenshots do not independently prove action sequence.
+      final_desktop: Opened .local/codex-browser-proof/desktop-final.jpg; Brand Orion field assignment, selected
+        field filter with one Camera match and duplicate-key correction visibly present. Root reports actual interactions;
+        temporary demo/filtered UI result is not full canonical host inventory proof.
+    proof_limit: Earlier script workflow assertions reported green but browser-close exit1; latest root run reached
+      all assertions and completed owned browser cleanup, then comparison failed from before request-count variable
+      shadowing fingerprint dictionary. Source-drift premise retracted; root diagnosed int.keys error and current
+      source_before captures fingerprints independently from request counts. Fresh complete run pending; no automated
+      PASS recorded. Actual in-app UI proof is separate; no production host/canonical persistence proof from temporary
+      demo.
+  localization:
+    refs:
+    - .local/localization-proof/result.json
+    - .local/independent-review/localization-current.md
+    observed: Fresh saved PASS read;147 exact-money cases, three languages, unknown-error/in-flight retry/disposal
+      and cleanup passed with identical recorded pre/post hashes. Prior gaps are pending final independent re-review.
+    verdict: closure_pending_devlead_review
+  manual:
+    refs:
+    - .local/manual-proof/result.json
+    - web/user-manual.js
+    - tooling/manual-proof.py
+    - web/package.json
+    observed: Fresh saved PASS read; nine topics, three languages, offline/keyboard/drafts/disposal/provisioning
+      and desktop/mobile checks passed; cleanup completed and recorded pre/post fingerprints identical. Final independent
+      source/API/package acceptance pending.
+    browser_report: Devlead rendered EN and FR in actual Codex browser with host-GUI/crate-boundary paths, whole-batch
+      table provision COMMIT and commands; Dutch now rendered/read through root DOM. Coordinator opened manual-nl.jpg;
+      full-page scaling limits independent detailed text inspection. All three languages reported rendered.
+    verdict: final_current_guidance_acceptance_pending
+  research:
+    refs:
+    - repo-governance/docs/research/compliance-v1.md
+    - docs/research/crm-usecases-v1.md
+    observed: Documents inspected; research lanes own current external verification. Follow-on controls/analytics
+      remain proposed.
+    verdict: final_lane_handoff_and_devlead_review_pending
+  rust:
+    source: Devlead message in this coordinator chat, 2026-10-11.
+    reported: All-feature Rust proof has 13 contract and 5 SQLite passes; 5 Surreal tests ignored.
+    independently_reviewed_here: false
+    limitation: Ignored Surreal tests do not establish live SurrealDB proof.
+  governance:
+    check_id: BB-CHECK-GOV
+    status: not_run_by_coordinator
+    owner: devlead
+    latest_root_report: After YAML fixes root reports structural PASS with14 WPs and35 requirements; subsequent
+      WF-003 finding detail/state edits require affected consistency recheck. No runtime proof follows from GOV.
+handoff:
+  result: Spec12/WP015 active contract and board created before code; WP010 provisional measurement gate authorized.
+    WP001 canonical completed/sync_pending state read, board and roadmap synchronized completed.
+  next_action: Root clears own WP001 sync_pending and runs current GOV; root completes field research before writers
+    start. UI WPs006/009/013/014 await current GOV before closure synchronization; changes from WP015 invalidate
+    affected future proof inputs only.
+  taskboard_change: Added active WP015 in_progress; synchronized WP001 completed only; remaining statuses preserved.

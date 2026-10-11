@@ -1,0 +1,433 @@
+schema_version: handshake.coding-workflow.v1
+kind: stock_workflow
+identity: {workflow_id: code-development-v1, version: 17, status: draft}
+selection:
+  rule_id: WF-SELECT-001
+  availability: every_handshake_project
+  non_gating_hint_for: [coding, web_development] # advisory only; never gates selection
+  selected_by: operator_project_configuration
+  allowed_execution_modes: [handshake_managed, model_operated] # HT-AUTH-CODEX-001.execution_modes.modes; active = project_installation.execution_mode
+  automatic_selection_for_other_project_types: false
+  customization: versioned_project_overlay_preserving_operator_approved_constraints
+  existing_runs: retain_pinned_workflow_or_explicitly_migrate_without_losing_work
+  runtime_release_required: true
+roles:
+  orchestrator: HT-ROLE-ORCHESTRATOR-001
+  activation_manager: HT-ROLE-ACTIVATION-MANAGER-001
+  coder: HT-ROLE-CODER-001
+  wp_validator: HT-ROLE-WP-VALIDATOR-001
+  integration_validator: HT-ROLE-INTEGRATION-VALIDATOR-001
+  builder: HT-ROLE-BUILDER-001 # explicitly selected coder + activation_manager + orchestrator capabilities; validators stay independent
+  builder_selection: explicit_project_configuration_only_never_implicit
+  instances: demand_driven_logical_roles_not_five_permanent_sessions
+ownership:
+  rule_id: WF-OWN-001
+  semantic_actors: operator_and_assigned_models
+  authority_state_and_document_writer: handshake_controller
+  model_writes: assigned_product_paths_only
+  managed_documents: [specification, codex, build_rules, role_profiles, wp_contracts, mt_contracts, state, topology, registries, receipts, projections]
+  enforcement: controller_capabilities_and_filesystem_sandbox_covering_shell_and_child_processes
+  semantic_input: proposed_meaning_decisions_findings_and_verdicts
+  derived_by_handshake: [ids, revisions, timestamps, actor_identity, hashes, paths, transitions, receipts]
+  malformed_request: reject_before_mutation_with_field_diagnostic_and_existing_target_context
+  outage: retain_pending_operation_identity_and_expose_registered_recovery_never_direct_file_fallback
+  projection_failure: retain_committed_truth_and_last_valid_view_mark_view_stale_repair_in_handshake
+specification:
+  rule_id: WF-SPEC-001
+  product_truth: self_contained_current_specification
+  planning: operator_and_orchestrator_iterate_idea_stub_and_proposed_microtasks
+  accepted_meaning: controller_commits_spec_enrichment_before_final_executable_contracts
+  research: provenance_only_no_sidecar_requirements_or_final_decisions
+  preservation: complete_prior_spec_snapshot_and_stable_anchors
+  active_work: pin_contract_and_spec_revisions_reassess_only_affected_scope_no_silent_rewrite
+activation:
+  rule_id: WF-ACTIVATE-001
+  executor: activation_manager_via_controller
+  trigger: operator_selects_stub_for_activation_not_periodic_bulk_research
+  refresh: current_code_dependencies_and_current_external_field_research_for_selected_scope
+  dormant_stub: preserve_original_intent_refresh_stale_assumptions_and_methods_before_release
+  sequence: [refinement, accepted_spec_enrichment, resolved_context, final_wp_mt_contracts, workspace_and_artifact_binding, gameplan_seed, activation_commit] # gameplan_seed: WF-GAMEPLAN-001
+  no_executable_mt_or_worktree_from_stub_alone: true
+  research_blocker: exact_missing_source_or_decision_without_inventing_current_findings
+lifecycle:
+  rule_id: WF-LIFECYCLE-001
+  owner: handshake_controller
+  phases: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending, completed, cancelled, superseded]
+  mt_phases: [ready, in_progress, ready_for_validation, validating, needs_remediation, passed, blocked_on_dependency, needs_managed_resource_proof, needs_new_approach]
+  blocked_on_dependency: failure_caused_only_by_a_known_recorded_open_dependency_not_a_fail_and_not_chased
+  needs_new_approach: rounds_without_output_reached_steering.run_accounting.rounds_without_output_limit_no_round_admitted_until_new_cause_diagnosis # CODEX-STEER-007, CODEX-STEER-008
+  needs_managed_resource_proof: waiting_on_resource_policy.max_concurrent_builds_per_physical_disk_or_alternate_grant_slot
+  timeout_is_check_result_not_mt_phase: true
+  status_must_equal_recorded_verdict_freetext_status_rejected: true
+  transitions:
+    - {action: create_wp_stub, from: absent, to: stub_drafting, guard: authorized_planning_request}
+    - {action: submit_contract_detailing, from: [stub_drafting, planning_transaction, planned], to: planning_transaction, guard: non_executable_planning_inputs_preserved}
+    - {event: planning_transaction_committed, from: planning_transaction, to: planned, guard: typed_detailing_staged_non_executable_no_binding} # CHK-PROPOSAL-NO-BINDING-001
+    - {action: request_activation, from: planned, to: activating, guard: scoped_refinement_and_enrichment_requested}
+    - {event: activation_committed, from: activating, to: active, guard: current_spec_contracts_workspace_artifacts_bound}
+    - {action: claim_mt, entity: mt, from: ready, to: in_progress, guard: active_parent_dependencies_and_disjoint_claim}
+    - {action: request_validation, entity: mt, from: [in_progress, needs_remediation], to: ready_for_validation, guard: immutable_submission_and_required_implementation_evidence}
+    - {event: validator_assigned, entity: mt, from: ready_for_validation, to: validating, guard: independent_validator_and_exact_submission, emitted_by: start_validation_round}
+    - {event: managed_resource_unavailable, entity: mt, from: ready_for_validation, to: needs_managed_resource_proof, guard: resource_reservation_unavailable_at_start_validation_round, emitted_by: controller_separate_from_the_rejected_action} # resource_reservation
+    - {event: managed_resource_granted, entity: mt, from: needs_managed_resource_proof, to: ready_for_validation, guard: resource_reservation_holds_build_slot_or_alternate_grant}
+    - {action: record_validation_verdict, entity: mt, from: validating, to: passed, guard: passed_and_required_runtime_coverage_matches_submission}
+    - {action: record_validation_verdict, entity: mt, from: validating, to: needs_remediation, guard: failed_with_actionable_revision_bound_findings}
+    - {action: record_validation_verdict, entity: mt, from: validating, to: validating, guard: inconclusive_retains_submission_and_exact_blocker}
+    - {action: record_validation_verdict, entity: mt, from: validating, to: blocked_on_dependency, guard: blocked_with_blocker_type_dependency_and_open_blocked_on_mt_ref}
+    - {action: claim_mt, entity: mt, from: needs_remediation, to: in_progress, guard: same_or_fresh_valid_lease_disjoint_claim_and_payload_names_the_recorded_failed_verdict_id} # CHK-REMEDIATION-DISPATCH-001
+    - {event: rounds_without_output_limit_reached, entity: mt, from: [in_progress, needs_remediation, ready_for_validation, validating], to: needs_new_approach, guard: recorded_rounds_without_output_equals_run_accounting_limit}
+    - {action: claim_mt, entity: mt, from: needs_new_approach, to: in_progress, guard: recorded_diagnosis_names_cause_distinct_from_every_prior_diagnosis_on_the_mt}
+    - {event: failed_verdicts_same_cause_limit_reached, entity: mt, from: needs_remediation, to: needs_new_approach, guard: consecutive_failed_verdicts_on_one_failure_class_equal_run_accounting_failed_verdicts_same_cause_limit_without_a_new_diagnosis_ref} # CHK-NEW-APPROACH-001
+    - {event: proof_invalidated, entity: mt, from: passed, to: ready_for_validation, guard: candidate_diff_intersects_recorded_relevant_input_paths, emitted_by: start_validation_round} # evaluated at round freeze; validation.round_freeze_reassessment; CHK-PROOF-INVALIDATED-001; CODEX-VAL-007
+    - {event: all_required_mt_passes_current, from: active, to: validating, guard: all_verdicts_apply_to_final_candidate}
+    - {action: record_integration_verdict, from: validating, to: active, guard: failed_with_owned_remediation_routes}
+    - {action: record_integration_verdict, from: validating, to: validating, guard: inconclusive_retains_candidate_and_exact_blocker}
+    - {action: record_integration_verdict, from: validating, to: validating, guard: blocked_with_blocker_type_retains_candidate}
+    - {action: record_integration_verdict, from: validating, to: merge_pending, guard: passed_against_pinned_spec_and_exact_candidate}
+    - {action: merge_wp, from: merge_pending, to: merge_pending, guard: reviewed_candidate_and_target_head_preconditions_hold}
+    - {action: confirm_merge_containment, from: merge_pending, to: completed, guard: actual_merge_containment_and_required_settlement}
+  inconclusive_verdict: retain_unaccepted_submission_and_explicit_blocker_never_infer_pass
+  verdict_decisions: [passed, failed, inconclusive, blocked] # blocked requires blocker.type; MT: only type dependency has a transition
+  pause: execution_control_state_not_product_completion
+submission:
+  rule_id: WF-SUBMIT-001
+  controller_allocates: [submission_id, submission_revision, immutable_source_ref, source_digest]
+  pins: [wp_contract_revision, mt_contract_revision, spec_revision, workflow_version, validator_role_version, evidence_refs]
+  stale_verdict: retain_historical_result_without_advancing_newer_submission
+  remediation_fields: [failed_acceptance_refs, failed_check_refs, artifact_refs, expected, observed, affected_code_refs, repair_direction, confirming_proof_refs] # typed object on the failed verdict; CHK-REMEDIATION-SHAPE-001
+  remediation_writing: HT-WORK-GAMEPLAN-001.writing # expected, observed and repair_direction are one line of at most remediation_text_max_chars; no other free text
+  remediation_text_max_chars: 120 # owner for HT-WORK-RECEIPT-001.limits.remediation_text_max_chars
+  remediation_detail: enough_for_fresh_small_model_without_inventing_unverified_root_cause
+  resubmission_after_failed_verdict: changed_path_intersecting_affected_code_refs_or_changed_relevant_input_digest_or_a_new_diagnosis_ref_else_rejected_missing_diagnosis # CHK-DISTINCT-RESUBMISSION-001
+  new_attempt: increments_submission_revision_after_changed_product_inputs
+  counters: contract_revision_submission_revision_and_execution_attempt_are_distinct
+validation:
+  rule_id: WF-PROOF-001
+  mt_is_not_build_boundary: true
+  implementation: repair_established_defects_then_validate_stable_related_batch
+  during_repair: focused_run_only_when_result_selects_next_edit
+  batch: compatible_inputs_targets_environment_and_isolation
+  evidence_reuse: verified_independent_execution_with_unchanged_relevant_inputs_and_asserted_behavior
+  independence: implementer_cannot_accept_own_work_or_relabel_its_execution_as_independent
+  single_run_multiple_mt_verdicts: true
+  compilation: reuse_compatible_artifacts_and_never_duplicate_build_already_supplied_by_required_test
+  broad_proof: required_scope_at_stable_batch_or_final_boundary_when_evidence_missing_or_invalid
+  final_review: whole_product_coherence_spec_coverage_module_fences_plugins_and_applicable_safety_red_team
+  final_review_does_not_require_every_unchanged_test_rerun: true
+  integration: pin_candidate_and_target_head_revalidate_affected_inputs_after_conflict_or_target_change
+  check_result_vocabulary: [pass, fail, timeout, blocked]
+  failure_kinds: [product, infrastructure, flaky] # receipt test_run.failures[].failure_kind; only product failures become MT remediation; infrastructure goes to an environment fix
+  run_all_tests_no_fail_fast: true # every test in the round runs; a per-test timeout is that test's result (CODEX-VAL-002)
+  run_through: build_rulebook.project_profile.test_entrypoint # BR-TEST-ENTRY-001, CODEX-STEER-010; action check CHK-TEST-ENTRYPOINT-001
+  rounds_run_by: build_rulebook.project_profile.automation_runner_where_declared_never_by_hand # null runner: the validator runs the entrypoint
+  timeout_owner: runner_config_per_test_timeouts_and_profiles # CODEX-STEER-011; no outer wrapper stops a run before the runner budget
+  outer_timeout_margin_seconds: 300 # tunable; any outer tool limit is the runner's longest declared budget plus this margin
+  force_stopped_run_is_not_a_result: true
+  per_mt_verdict_from_shared_batch_run_recorded_immediately: true
+  implementer_runs_no_tests_between_fixes_compile_or_static_check_only: true
+  implementer_check_ref: build_rulebook.project_profile.implementer_check # the cheapest permitted compile or static check; result in receipt.mechanical.compile_result or static_check_result with check_input_digest; action check implementation_gates; CODEX-STEER-009
+  full_suite_only_at_wp_boundary: true # round_kinds.wp_boundary
+  validator_prebuilds_all_queued_test_targets_at_pushed_commit_in_parallel_with_implementation: true
+  warm_validator_build_target_per_wp_reexported_to_same_path: true
+  build_measurement_per_batch: [incremental_rebuild_seconds, recompiled_build_units, relinked_test_binaries] # BR-BUILD-UNIT-001; recorded in receipt.mechanical.build_measurement
+  build_budget_breach: record_boundary_review_trigger_not_a_fail # architecture.build_units.boundary_review
+  test_scope: only_tests_named_by_queued_mt_proof
+  zero_matching_tests_is_defect_not_result: true # BR-PROOF-SCOPE-001
+  blocked_on_dependency_is_not_rerun: true
+  new_failure_location_triggers_static_sweep_of_same_cause_within_bound_required_claim_before_next_run: true
+  git_worktree_and_branch_inventory_compared_before_and_after_each_run: true # CODEX-GIT-001
+  verdict_recording_checks: [verdict_file_parses, status_equals_verdict, validator_differs_from_claimer, evidence_hash_matches_log, CHK-REMEDIATION-SHAPE-001, CHK-VERDICT-FAILURE-KIND-001, CHK-RESULTS-FRESH-001]
+  failed_verdict_requires_product_failure: true # an infrastructure-only or flaky-only result records an infrastructure entry, no verdict, MT phase unchanged; CHK-VERDICT-FAILURE-KIND-001; CODEX-VAL-004
+  results_freshness: test_run_candidate_commit_equals_the_frozen_batch_candidate_and_completed_at_gte_started_at_gte_validation_batches.started_at_except_reused_proof_under_CODEX-VAL-007 # stale or missing -> infrastructure, no verdict; CHK-RESULTS-FRESH-001
+  validation_queue_max_mts: 5 # tunable, 3-5
+  round_trigger: validation_queue_max_mts_ready_or_round_max_wait_elapsed_never_wait_for_all # CODEX-VAL-006
+  round_max_wait_minutes: 120 # tunable
+  batch_scope: build_unit # MTs sharing a build unit share a round; one round builds all its packages in one runner invocation over the shared workspace target (BR-BUILD-UNIT-001); validation_queue_max_mts caps the round
+  round_gate: test_entrypoint_runs_existing_canary_then_gameplan_before_round_before_full_run # WF-GAMEPLAN-001, BR-TEST-ENTRY-001; canary acquisition never requires its own prior result
+  canary_before_round: test_entrypoint_same_command_and_config_on_one_test_per_package_failure_is_infrastructure_no_round_no_mt_verdicts # BR-TEST-ENV-001, BR-TEST-ENTRY-001; a missing env var, path or service is caught here once, never as per-test failures in the round
+  round_refused_while_canary_check_unset_or_placeholder: true # CODEX-VAL-006; action check canary_check_declared
+  broken_round_build: rebuild_candidate_without_the_offending_mt_commits_that_mt_fails_the_rest_continue # CODEX-VAL-006
+  result_extraction: structured_test_output_mapped_to_mts_by_script_models_read_the_failure_list_only # receipt.mechanical.test_run
+  structured_results_location: wp_evidence_test_runs # REPOSITORY-STRUCTURE.work_packet_anatomy evidence/test-runs/; receipt.mechanical.test_run.results_ref
+  special_runs: performance_stress_durability_opt_in_slow_and_red_proof_checks_run_in_the_special_runs_lane_on_an_idle_host_after_the_batch # BR-TEST-ENV-001 test_environment.opt_in_tests and slow_tests; round_kinds.special_runs
+  round_kinds: # start_validation_round.round_kind; owner wp_validator; gate before_round; recorded in wp_state.stock_execution_state.validation_batches[batch_id==<batch_id>].round_kind + receipt.mechanical.test_run
+    batch: queued_mt_named_tests
+    special_runs: after_batch_on_idle_host_opt_in_and_slow_tests_only
+    wp_boundary: full_suite_on_final_candidate_reusing_valid_proof_under_CODEX-VAL-007_after_all_required_mt_passes_current_before_record_integration_verdict # WP-scope verdict input
+  queue_order: mts_with_exact_test_names_first_then_by_dependency_depth
+  validation_round_candidate: one_frozen_pushed_commit_per_round_later_pushes_queue # CODEX-VAL-006
+  pass_requires_every_required_check_result_line_equals_pass_in_hashed_log: true
+  verdict_record: wp_state.stock_execution_state.verdicts_entry_plus_receipt_event_no_separate_file
+  verdict_recording_order: [append_action_accepted_with_verdict_payload_and_idempotency_key, write_wp_state_once, append_action_completed] # CODEX-VAL-008
+  half_written_verdict: action_accepted_without_action_completed_complete_under_same_idempotency_key_never_new_version
+  reuse_check: git_diff_between_proof_commit_and_candidate_intersect_relevant_input_paths_is_empty # CODEX-VAL-007
+  round_freeze_reassessment: true # enqueue every invalidated passed MT; select at most validation_queue_max_mts per round; pending invalidations block integration, not the next bounded round; CODEX-VAL-007
+  failure_class: shared_cause_not_shared_symptom_one_remediation_per_cause_others_blocked_on_dependency_unowned_failure_attributed_by_narrowing_over_round_mt_commits # CODEX-VAL-004
+  pin_measure_checks_report_every_mismatching_value_in_one_run: true # BR-TEST-PIN-001
+  stray_git_refs_from_a_run: offending_test_named_isolated_or_excluded_with_reason_and_ref_removed_by_native_git
+  commit: explicit_paths_only_for_every_commit_never_bare_commit # CODEX-GIT-003
+remediation:
+  rule_id: WF-REMEDIATE-001
+  codex_ref: CODEX-REMEDIATE-001
+  specification: recorded_blocker_or_failure_cause_only_remediation_proposal_cannot_expand_scope_or_authorize_additional_proof
+  flow: [read_failure, inspect_named_code, fix, commit_and_push, submit_existing_failure_fix_proof_to_next_batch_run, record_result]
+  verification: existing_proof_scoped_to_that_failure_or_fix_only
+  not_triggered: {ref: WF-SCOPE-001.heavy_gates, plus: [spec_enrichment, broad_suite]}
+  wider_investigation_requires_explicit_operator_instruction: true
+  activation_manager_not_instantiated: true
+rule_scope:
+  rule_id: WF-SCOPE-001
+  codex_ref: CODEX-SCOPE-001
+  heavy_gates: [research, refinement, red_team, pushback, risk_or_roi_listing]
+  apply_to: [planning, new_feature, activation, scope_change]
+  not_triggered_by: [remediation, verdict_recording, batch_validation]
+  unscoped_heavy_rule_default: planning_and_new_feature_only
+  global_behavioural_rules_unscoped: template_scope_governs_remediation_verdict_recording_and_batch_validation # CODEX-SCOPE-002
+output_contract:
+  rule_id: WF-OUT-001
+  codex_refs: [CODEX-OUT-001, CODEX-OUT-002, CODEX-OUT-003, CODEX-OUT-004]
+  progress: pushed_product_commits_and_mt_status_or_verdict_changes_only
+  report_without_those: no_direct_progress
+  commit_and_push: per_mt_as_soon_as_code_compiles
+  proof_and_verdict_name: pushed_commit
+  dispatch_states: [produced_commit_or_verdict, deadline]
+  plan_postponing_commits_or_verdicts: rejected
+  handoffs_and_plans: input_not_authority
+  handoff_self_contradiction: goal_decides_then_fix_the_handoff
+  status_answer: passed_over_total_verdicts_this_session_pushed_commits_this_session_top_blocker_with_mt_id # CODEX-OUT-005
+steering:
+  rule_id: WF-STEER-001
+  codex_refs: [CODEX-STEER-001, CODEX-STEER-002, CODEX-STEER-003, CODEX-STEER-004, CODEX-STEER-007, CODEX-STEER-008, CODEX-STEER-009, CODEX-STEER-010, CODEX-STEER-011]
+  background_execution_over_seconds: 120 # tunable
+  background_poll_interval_seconds: 60 # tunable
+  required_output_interval_minutes: 25 # tunable, default range 20-30
+  output_check_interval_minutes: 10 # tunable
+  output_demand_after_minutes: 20 # tunable
+  agent_replace_after_minutes: 30 # tunable
+  replacement_resumes_from: canonical_receipts_and_wp_state
+  liveness_tick_is_not_progress: true
+  retry_budget_applies_to_steering_role: true
+  steering_round_without_commit_or_verdict: counts_as_attempt_and_forces_changed_approach
+  after_stopping_any_agent_or_job: inspect_process_tree_and_terminate_orphans
+  lease: until_verdict_recorded_or_claim_released_no_heartbeat
+  process_identity: pid_plus_start_time_plus_command_line_recorded_at_launch # CODEX-STEER-005
+  stop_only_processes_this_actor_launched_with_matching_identity: true
+  busy_check_source: observed_processes_on_device_matched_to_recorded_launch_identity
+  running_receipt_before_any_command_over_foreground_limit: true # CODEX-STEER-006
+  max_fix_rounds_per_unit: 3 # tunable; single owner for ORCH-TUN-002, BUILD-TUN-003; run_accounting.counter_precedence
+  context_reload_depth_on_activation: changes_since_the_last_activation # tunable; single owner for AM-TUN-001, BUILD-TUN-001
+  target_verdict_turns: 2 # tunable; owner for IV-TUN-001
+  post_diagnosis_runs: {probe: 1, confirm: 1} # after the written diagnosis, then blocked
+  run_accounting: # CODEX-STEER-007, CODEX-STEER-008, CODEX-STEER-009
+    round: one_test_build_or_diagnostic_run_on_an_mt
+    round_outcomes: [fix_commit_pushed, verdict_recorded, blocker_recorded] # exactly one per round
+    round_without_outcome: wasted_round
+    counter: wp_state.microtasks.rounds_without_output
+    counter_increments_on: wasted_round
+    counter_resets_on: [new_pushed_commit, new_verdict]
+    rounds_without_output_limit: 2 # tunable; same default as execution.repeated_failure_threshold; owner for HT-WORK-MT-001.attempt_budget.limit_ref; wasted-round counter; counter_precedence
+    at_limit: mt_to_needs_new_approach_no_round_admitted
+    failed_verdicts_same_cause_limit: 2 # tunable; consecutive failed verdicts on one MT sharing a failure_class without a new diagnosis_ref between them
+    at_same_cause_limit: mt_to_needs_new_approach_no_round_admitted # transition failed_verdicts_same_cause_limit_reached; CHK-NEW-APPROACH-001
+    counter_precedence: # evaluated after each round or verdict in this order; first counter at its limit acts; all values recorded or derived, never self-assessed
+      - {counter: steering.max_fix_rounds_per_unit, counts: failed_verdicts_on_mt_any_cause, recorded_in: 'derived: wp_state.stock_execution_state.verdicts[mt_id==<mt_id>] decision failed', at_limit: record_blocker_type_fix_budget_exhausted_then_escalate_operator_claim_mt_rejected, check_ref: CHK-FIX-BUDGET-001}
+      - {counter: failed_verdicts_same_cause_limit, counts: consecutive_failed_verdicts_one_failure_class_without_new_diagnosis_ref, recorded_in: 'derived: wp_state.stock_execution_state.verdicts[*] + receipt.mechanical.test_run.failures[*].failure_class', at_limit: needs_new_approach, check_ref: CHK-NEW-APPROACH-001}
+      - {counter: rounds_without_output_limit, counts: wasted_round, recorded_in: 'wp_state.microtasks[mt_id].rounds_without_output', at_limit: needs_new_approach, check_ref: CHK-NEW-APPROACH-001}
+      - {counter: repeated_infrastructure_cause.occurrences_limit, counts: infrastructure_failure_class_occurrences, recorded_in: 'derived: receipt.mechanical.test_run.failures[*]', at_limit: no_round_until_environment_commit, check_ref: CHK-REPEATED-INFRA-001}
+      - {counter: execution.repeated_failure_threshold, counts: same_blocker_outside_one_mt_run_accounting, recorded_in: 'derived: wp_state.blockers same type and cause', at_limit: change_approach_or_escalate}
+    diagnosis_writer: record_blocker # the only writer of wp_state.stock_execution_state.diagnoses and microtasks[mt_id].diagnosis_refs; CHK-DIAGNOSIS-SHAPE-001
+    diagnosis_fields: [diagnosis_id, mt_id, cause, evidence_refs, distinct_from] # cause one line of at most 120 chars in HT-WORK-GAMEPLAN-001.writing style
+    diagnosis_derivation: diagnosis_refs_lists_the_mt_diagnoses_ids_in_recording_order # CHK-NEW-APPROACH-001 reads diagnosis_refs; recording a diagnosis does not require a gameplan step
+    leave_needs_new_approach: recorded_diagnosis_with_cause_distinct_from_every_prior_diagnosis_then_post_diagnosis_runs_then_blocked_and_escalated
+    reworded_cause_is_same_cause: true
+    preparation_instruction_correction: WF-GAMEPLAN-001.learning_loop # CODEX-STEER-007, CODEX-STEER-008; only an existing faulty instruction is replaced or retired
+    repeated_infrastructure_cause: # CODEX-STEER-007; action check CHK-REPEATED-INFRA-001
+      key: receipt.mechanical.test_run.failures[].failure_class
+      failure_kind: infrastructure
+      occurrences_limit: 2 # tunable
+      at_limit: no_round_on_affected_mts_until_a_pushed_commit_changes_the_test_entrypoint_config_files_or_test_environment
+      released_by: environment_commit_never_a_diagnosis_or_another_round
+      fix_owner_roles: [builder, orchestrator] # CODEX-STEER-007
+      fix_write_scope: fix_environment # build_rulebook.project_profile.test_entrypoint.config_files plus project_profile.test_environment; the submission receipt sets mechanical.infrastructure_fix true and CHK-WRITE-SCOPE-001 accepts those paths
+    counter_is_recorded_never_self_assessed: true
+    allowed_runs: mt_named_proof_commands_only_when_required_proof_is_missing_or_relevant_inputs_changed
+    implementer_allowed_runs: compile_or_static_check_only
+    forbidden_without_explicit_operator_instruction_for_additional_proof_work: [rerun_on_unchanged_relevant_inputs, extra_diagnostics, hang_checks, duplicate_confirmations, newly_authored_tests_or_check_scripts, extra_reviews, extra_validation] # uncovered claims, defects, model-authored diagnoses and remediation proposals are not authorization
+    flaky_retry_exception: one_recorded_retry_for_tests_on_build_rulebook.project_profile.test_environment.flaky_tests
+    run_selecting_no_fix_verdict_or_blocker_is_not_repeated: true
+gameplan:
+  rule_id: WF-GAMEPLAN-001
+  codex_ref: CODEX-GAMEPLAN-001
+  template_ref: HT-WORK-GAMEPLAN-001
+  owns: preparation_checks_only # no status, acceptance, verdict, proof, rule text or copied facts
+  created_by: controller_at_activation_seeded_with_stock_steps
+  mt_variant: created_on_first_propose_gameplan_step_naming_the_mt_inherits_via_parent
+  step_actions: [propose_gameplan_step, retire_gameplan_step]
+  roles: [orchestrator, builder, coder, wp_validator, integration_validator, activation_manager, any]
+  moments: [on_resume, before_dispatch, before_submit, before_round, before_verdict, before_merge, any]
+  gate_moments: {resume_workflow: on_resume, dispatch_role: before_dispatch, request_validation: before_submit, start_validation_round: before_round,
+    record_validation_verdict: before_verdict, merge_wp: before_merge} # plus gameplan.expensive_actions
+  gate_check_ref: CHK-GAMEPLAN-GATE-001
+  evaluated_steps: active_steps_of_the_wp_gameplan_and_target_mt_gameplans_for_actor_role_or_any_at_the_moment_or_any
+  rejection: failing_step_ids_in_failed_conditions_without_partial_state_change
+  confirm_answer: gated_action_receipt_semantic_gameplan_confirmations
+  cmd_checks: read_only_never_build_test_delete_or_mutate
+  learning_loop:
+    triggers: [existing_preparation_instruction_is_incorrect_duplicate_or_obsolete]
+    requires: correct_replace_or_retire_the_affected_step_under_its_existing_applicable_obligation
+  failure_log: existing_wp_state_and_receipts # failure or diagnosis alone never requires another gameplan step
+  step_text_max_chars: 120 # do, source, decisions[].text
+  decisions_max: 5
+  retired_steps: kept_ids_never_reused_excluded_from_execution_context
+decisions:
+  rule_id: WF-DECIDE-001
+  codex_ref: CODEX-DECIDE-001
+  product_questions: resolve_from_current_specification_by_read_only_read
+  record_as: spec_basis_on_mt_and_receipt
+  escalate_only_when: specification_silent_or_contradictory
+  spec_silent: record_operator_decision_refs_on_mt_and_receipt_and_continue_enrichment_queued_not_blocking # CODEX-DECIDE-002
+heuristics:
+  rule_id: WF-HEURISTIC-001
+  batch_then_shared_validation: implement_ready_batch_then_one_shared_validation_focused_checks_only_when_deciding_next_edit # CODER-HEUR-001, BUILD-HEUR-001, WPV-HEUR-001
+  context_reuse: fresh_context_per_mt_from_current_materialized_acceptance_named_commands_and_relevant_state # CODEX-MT-011
+  deviate_when_batch_tasks_share_bounded_context: explicit_compatible_batch_may_share_context_without_accumulating_retry_history # shared build caches and validation do not require shared conversation
+  shared_batch_run: one_run_covers_compatible_units_one_verdict_per_unit_recorded_immediately_shared_proof_names_one_owning_unit_plus_covers_list
+  deviate_when_inputs_incompatible: run_separately
+  failure_handling: classify_and_group_remediation_by_failure_class_one_recorded_retry_only_for_tests_on_the_declared_flaky_list # CODEX-STEER-009
+  evidence_authority: implementer_evidence_is_triage_validator_executed_evidence_is_proof
+  job_limit_checks: governed_by_declared_job_limits_never_an_agent_output_tick
+  tooling: non_interactive_tools_only # invariant
+resource_policy:
+  rule_id: WF-RESOURCE-001
+  max_concurrent_builds_per_physical_disk: 1 # tunable
+  alternate_build_output_grant:
+    enabled: false
+    path: null
+    size_cap: null
+    build_target_only: true
+    cleaned_at_wp_close: true
+  runtime_temp_and_evidence_stay_under_main_artifact_root: true
+  chunked_build_run_delete_when_budget_insufficient: true
+  round_outputs: build_only_the_round_test_targets_and_clean_round_outputs_after_verdicts_are_recorded # BR-HOST-003
+  round_disk_budget: host_profile_value # tunable; measured by free space per BR-HOST-003
+  host_profile:
+    rule_id: WF-RESOURCE-002
+    rule_refs: [BR-HOST-001, BR-HOST-002, BR-HOST-003]
+    binding: machine_local_host_profile # values live in local configuration, never in this stock payload
+    device_classes: [fastest, standard, slow]
+    link_heavy_steps_on: fastest_device
+    slow_device_builds: check_only
+    test_runtime_io_device_differs_from_active_link_device: true
+    heavy_builds_per_device: 1
+    busy_check_scope: per_device_never_host_wide
+    disk_cap_measure: free_space_never_summed_file_sizes
+    owner_file: .local/host-profile.yaml # REPOSITORY-STRUCTURE.machine_local_workspace; never version controlled
+    restart_evidence_source: REPLACE_ME # per host; Windows System log event ids 1074 6008 41 1001, Linux journalctl -b -1
+    crash_attribution_requires_host_restart_check: true
+artifacts:
+  rule_id: WF-ART-001
+  source: repository_structure.temporary_output_policy
+  worktree_topology_ref: REPOSITORY-STRUCTURE.worktree_policy
+  activation: bind_one_operator_configured_root_and_derive_wp_children_once
+  placement: outside_product_source_and_governance_with_optional_external_root
+  mt_children: logs_or_disposable_attempt_outputs_when_needed_not_mandatory_cold_build_targets
+  build_cache: compatible_wp_batch_cache_with_exclusive_mutable_owner
+  reject: [unresolved_root, unintended_fallback_root, path_escape, overlapping_mutable_owner]
+  cleanup: retain_required_durable_evidence_and_recovery_then_clean_inactive_owned_wp_output
+  live_targets_and_other_wp_data: never_disposable
+  cleanup_failure: separate_settlement_blocker_not_loss_of_product_pass
+execution:
+  rule_id: WF-EXEC-001
+  authority_reads: relevant_sections_once_per_revision_and_scope
+  read_set_budget_kb: 50 # tunable; sum of the files a claimed-MT coder must read before its first edit per CODEX-START-001
+  read_set_measured_by: pack_release_gate_claimed_mt_required_read_set_within_budget
+  healthy_tick: controller_timer_observes_jobs_even_when_model_or_tool_is_waiting
+  unchanged_tick: no_model_wakeup_or_diagnostic_sweep
+  liveness_is_not_outcome_progress: true
+  progress: accepted_behavior_or_evidenced_blocker_removal_not_tests_reports_or_mt_count_alone
+  repeated_failure_threshold: 2 # steering.run_accounting.counter_precedence
+  threshold_scope: same_blocker_across_agents_sessions_builds_tests_and_diagnostics
+  threshold_action: change_approach_with_distinct_evidence_based_hypothesis_or_escalate
+  no_justified_next_action: stop_new_dispatch_preserve_work_and_request_operator_decision
+  healthy_long_job: honor_declared_job_limit_and_progress_expectation_not_silence_timeout
+  agent_output_contract_ref: steering # job limits govern jobs; the output contract governs the agent driving them
+  limits_source: effective_build_rulebook.BR-CORE-BOUND-001
+  required_project_policy: [aggregate_usage_allowance, attempt_limit, job_time_limits, no_progress_window, concurrency_limit, recovery_reserve]
+  meter: queued_and_running_reservations_plus_observed_consumption_across_all_roles_and_policy_optimization
+  unknown_usage: explicit_unknown_never_zero_or_precise_billing_claim
+  allow_model_to_raise_own_limits: false
+  exhaustion: stop_new_dispatch_preserve_state_and_continue_only_reserved_observation_recovery_or_operator_authorized_work
+  no_model_written_status_or_cost_reports_beyond_the_output_contract_status_answer: true
+dexterity:
+  rule_id: WF-DISPATCH-001
+  launcher: handshake_dexterity
+  provider_catalog_owner: operator_configured_handshake_registry
+  allowed_profile_fields: [profile_id, provider_id, model_id, reasoning, locality, capabilities, resource_limits]
+  local_models_supported_by_contract: true
+  request: orchestrator_selects_registered_profile_id_not_arbitrary_executable_or_model_string
+  controller_checks: [role_permission, current_availability, capability_fit, allowed_tuple, aggregate_reservation, write_scope, artifact_binding]
+  no_hidden_fallback_or_budget_escalation: true
+  unavailable_profile: return_exact_blocker_and_permitted_alternatives
+architecture:
+  rule_id: WF-ARCH-001
+  profile: layered_canonical_components
+  composition_layers: [primitive, control, composite, feature_module, application]
+  applicability: ui_composition_default_with_explicit_project_layer_mapping_for_headless_or_other_domains
+  default_layer_mapping_ref: HT-TOPOLOGY-PRODUCT-001.coding_architecture.composition_layer_to_zone_mapping
+  canonical_identity_source: specification_primitive_and_capability_ids
+  one_active_implementation_owner_per_capability: true
+  consumer_relationships: [configure, instantiate, compose, extend]
+  extend_requires_declared_extension_contract: true
+  consumer_forks_allowed: false
+  project_divergence: explicit_spec_and_workflow_change_never_cosmetic_renaming_or_silent_duplicate
+  package_per_component_required: false # a component instance is not a package; every module is one package per BR-BUILD-UNIT-001
+  build_units:
+    rule_ref: BR-BUILD-UNIT-001
+    every_module: own_package # build_unit_kind own or leaf_data_only; no package groups several modules
+    data_only_contracts: leaf_build_units_nothing_below_depends_on
+    single_module_change_must_not_rebuild_whole_product: true
+    batching: many_packages_in_one_runner_invocation_over_the_shared_workspace_target # example only: cargo test -p a -p b, cargo test --workspace
+    test_entrypoints: one_consolidated_test_entrypoint_per_package_within_project_budget
+    budgets_source: effective_build_rulebook.project_profile.build_budgets
+    breach_action: boundary_review_under_BR-ARCH-GROWTH-001_before_next_activation_touching_the_module
+    boundary_review: # BR-ARCH-GROWTH-001
+      opened_by: record_blocker # blocker.type build_budget_breach + module_ref; evidence receipt.mechanical.build_measurement; wp_validator after the measuring round
+      recorded_in: wp_state.blockers
+      decided_by: [request_activation, rebase_wp] # next WP touching the module records split|merge|no_change; commit check build_budget_review_settled
+      closed_by: controller_marks_blocker_resolved_at_that_commit
+  cross_project_upgrades: explicit_pinned_binding_migration_not_automatic_propagation
+  owner_refs: [HT-REPO-MODULE-001, HT-TOPOLOGY-PRODUCT-001, HT-REUSE-BINDINGS-001]
+surface_lanes:
+  rule_id: WF-LANE-001
+  applies_when: wp_impact_assessment_row_disposition_change_on_gui_matrix_entries # BM-BASE-GUI-UX-001, BM-BASE-AGENT-VISUAL-INTERFACE-001, BM-BASE-GUI-DESIGN-001
+  required_lanes: [implementation, gui]
+  gui_mt_required_refs: [backend_mt_ref, affected_surface_profile_refs, gui_design_spec_refs]
+  gui_mt_consumes: backend_public_contract_only
+  parallel_when: disjoint_allowed_write_paths_and_backend_public_contract_is_published_or_pinned
+  headless_project: no_gui_lane_generated # CODEX-HYDRATE-006, project_profile.gui_applicability
+  activation_check_ref: gui_lane_coverage
+improvement:
+  rule_id: WF-IMPROVE-001
+  availability: all_project_workflows_with_domain_specific_outcomes
+  historical_capture: controller_collects_existing_actions_attempt_dependencies_inputs_cost_and_observed_outcomes
+  active_optimization: opt_in_not_universal_background_work
+  method: replay_candidate_scheduling_retry_batching_and_stopping_policies_over_recorded_attempt_graphs
+  model_weights_changed: false
+  sequence: [current_policy_baseline, bounded_candidate_replay, held_out_history_comparison, bounded_live_trial, promote_or_retain, rollback_if_regression]
+  unknown_branches_or_changed_models: unsupported_counterfactual_requires_new_bounded_observation
+  replay_claim: historical_score_only_not_future_success_or_product_acceptance
+  objective: accepted_quality_subject_to_required_acceptance_then_observed_cost_and_latency
+  no_reward_for: [paperwork, raw_mt_count, weakened_tests, self_awarded_success]
+  creative_outcomes: operator_feedback_or_project_rubric_not_universal_quality_score
+  policy_limits: operator_reserved_allocation_including_policy_development_calls
+  immutable_boundaries: [spec_truth, acceptance_requirements, role_permissions, privacy_boundaries, spending_authority]
+  promotion: registered_controller_action_with_policy_version_and_verified_live_outcomes
+  rollback: restore_prior_policy_for_future_dispatch_without_erasing_completed_work
+  provenance: Dream-RSI-inspired_adaptation_not_claimed_reproduction_or_released_integration
+operator_view:
+  rule_id: WF-VIEW-001
+  source: same_canonical_state_actions_and_observations_as_model_clients
+  fields: [phase, assigned_actors, submitted_revision, validated_revision, last_useful_outcome, observed_consumption, reservations, blocker, permitted_next_actions]
+  controls: [pause_workflow, resume_workflow, cancel_workflow]
+  status_distinctions: requested_accepted_running_settled_and_unknown
+  stale_view: visible_generation_and_refresh_failure_never_authority_overwrite

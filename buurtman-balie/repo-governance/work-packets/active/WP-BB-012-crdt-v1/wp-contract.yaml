@@ -1,0 +1,94 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-012-crdt-v1
+kind: active
+title: CRDT description draft and data-race proof
+version: 1
+spec_revision: 11
+requirement_refs: [BB-CRDT-001, BB-CONCURRENCY-001]
+scope:
+- Preserve explicit operator requirement to use CRDT AND data-race tests; select current Rust-compatible
+  implementation and exact mergeable domain with canonical ownership before promotion.
+- Implement selected optional Rust-only yrs=0.28.0 plain-text Record.description candidate draft in separate
+  crates/buurtman-balie-collaboration, with host IDs/config and opaque crate-local update/checkpoint provenance;
+  root-selected published-source findings define this exact first-unit contract. No auto GUI/schema2 changes.
+dependencies: []
+acceptance:
+- Before execution compare current primary-source implementations, dependencies, maintenance and existing
+  workspace/CAS/replay boundaries; record selected/rejected approach and risks/controls in specification research_basis.
+- Define mergeable fields/operations, replica/actor identity, authorization, convergence, conflicts/deletion,
+  replay/persistence/migration, bounded state and recovery ownership; no automatic CAS/money/stock replacement.
+- Define and run convergence and actual concurrent data-race proofs for selected implementation after promotion;
+  duplicates/reordering/partitions/reconnect and rejected unauthorized operations retain selected invariants.
+- First component creates local text drafts, performs checked UTF8 byte-offset/range splice and produces opaque DraftUpdate/DraftCheckpoint
+  from crate-local APIs only. Private fields/bytes, no raw imports, From-bytes, serde deserialization or mutable Yrs
+  escape hatch; clone/fork only from owned typed checkpoints. Validate host IDs, explicit text/state/update budgets
+  and Unicode boundaries. Invalid config/splice must not alter live state.
+- Apply only typed provenanced updates/checkpoints on temporary document and swap after domain/text/budget validation;
+  scratch must be a fresh Doc reconstructed solely from accepted opaque checkpoint; Doc.clone shares state and
+  cannot supply isolation. Wrong-domain/over-budget typed input leaves text/checkpoint/update behavior unchanged;
+  no arbitrary malformed binary safety claim.
+- Duplicate/reordered delivery and concurrent inserts/deletes across distinct replicas converge after complete delivery;
+  owned checkpoint clone/fork, accented text/combining/emoji boundaries and actual barrier-start simultaneous writers/readers pass
+  without panic/deadlock/lost accepted edits. Serial fixtures alone are not race proof.
+- Reordered crate-generated updates may be causally pending before full delivery; preserve pending structs/delete sets
+  in bounded full encoded-state checkpoints and expose has_missing_updates. Test pending arrival, byte-budget rejection
+  without mutation and convergence after all dependencies arrive; do not claim missing updates resolved early.
+- Root runs exact dependency/static/package and actual component convergence/race tests on Windows ARM64 AND x64;
+  record native versus emulated scope. Component remains optional and separate; no core feature or GUI dependency.
+- Before full-WP closure select real host collaboration owner/protocol and prove authorized durable admission, independent
+  canonical reread, restart/response-loss recovery and multi-process races. Component success is not durable sync proof.
+- Before full-WP closure define/prove host membership/unique replica allocation, generation/deletion/restore, compaction,
+  offline retention and bounded causal-state lifecycle; revoked grants and stale generations cannot resurrect retired content.
+- Before full-WP closure prove explicit host Crm::Update publish CAS and identical-operation receipt reconciliation,
+  including competing publish and lost-response restart; prices/stock/classification/tiers remain authoritative and unchanged.
+- Before full-WP closure select/prove resource-bounded or host-isolated arbitrary binary ingress and durable rehydration;
+  malformed/truncated/oversized/nested/length-amplifying/unknown-root input cannot violate selected memory/stack/runtime
+  boundaries or mutate live/durable state. Raw ingress is unresolved; do not write a custom Yrs parser.
+verification_checks: [BB-CHECK-RUST, BB-CHECK-FMT, BB-CHECK-LINT, BB-CHECK-PACKAGE, BB-CHECK-GOV]
+implementation:
+  crate_path: crates/buurtman-balie-collaboration
+  dependency_pin: yrs=0.28.0
+  core_boundary: No mandatory root-core feature/dependency; explicit core dependency only if publication conversion needs it.
+  merge_domain: Host-owned candidate Record.description draft; one allowed plain-text root per workspace/record/generation.
+  config: Host supplies IDs and mandatory typed update/checkpoint, text and resulting state byte budgets;
+    no production defaults/SLA or decoder allocation/depth ceiling inferred from encoded caps or postvalidation.
+  ingress: DraftUpdate/DraftCheckpoint private bytes produced solely by crate local text operations/checkpoint APIs;
+    callers cannot construct/deserialize/import arbitrary raw updates. Binary persistence reload/interoperability deferred.
+  offsets: Rust first unit uses byte offsets/lengths, checked arithmetic and UTF8 string boundaries; UTF16/browser mapping
+    is retained future interoperability scope, not an implemented first-unit claim.
+  atomicity: Validate candidate provenanced typed checkpoint/update/local splice on temporary document, then swap under synchronized
+    document ownership; fresh Doc reconstructed solely from opaque accepted checkpoint, never Doc.clone;
+    no transaction crosses network await and no reentrant callback mutation.
+  pending_state: Full checkpoint encoded state includes pending updates/delete sets, checked against mandatory state
+    byte budget; has_missing_updates is observable. Incomplete delivery is pending, not converged/durable acknowledgment.
+  persistence: First component is volatile; host owns authorization, membership, replica IDs, durable collaboration
+    persistence/retention and acknowledgment. Draft success never means CRM publish or durable accepted state.
+  publication: Explicit host Crm::Update with current full record/revision and identical receipt request; no automatic field/money/stock merge.
+  interoperability: Rust-only first unit has no Yjs acceptance prerequisite; preserve exact-pin Rust/Yjs bidirectional,
+    UTF16 and persisted-reload interoperability as outstanding future selected-host work, not a passed claim.
+relevant_files:
+- docs/research/crdt-selection-v1.md
+- Cargo.toml
+- Cargo.lock
+- crates/buurtman-balie-collaboration/Cargo.toml
+- crates/buurtman-balie-collaboration/src/lib.rs
+- crates/buurtman-balie-collaboration/tests/draft.rs
+- src/contracts.rs
+- src/service.rs
+outstanding_acceptance:
+- Resource-safe arbitrary binary ingress/rehydration or selected host-isolated decoder; malformed/depth/allocation/range proof
+- Real-host durable collaboration persistence/acknowledgment, canonical reread, restart/replay and process races
+- Membership/authorization, unique replica allocation, causal-state bounds, generation/retention/compaction/restore policy
+- Explicit host publication CAS/receipt races/restart while preserving unrelated CRM fields and host ownership
+- Future exact-pin Rust/Yjs interoperability; not required for first Rust-only component and not claimed implemented
+ownership:
+  manifests_lock_builds: Root
+  new_crate_source_tests: Root assigns reuse agent bounded ownership after contract ready; no other product writes.
+  contract_state_spec_taskboard: Specification-Coordinator
+proof_boundary: Component closure may be reported independently, but whole WP remains in_progress until full retained
+  acceptance is proven. Host integration, durability, retention and optional interop must remain visibly outstanding.
+execution_gate: Corrected exact contract ready for root source/test assignment following root-selected completed
+  reuse-source findings. No raw import/serde ingress/custom parser authorized; full-WP closure remains gated.
+retracted_premise: Earlier bytecap plus temporary-document postvalidation did not prove decoder memory/stack bounds;
+  raw-binary first-unit acceptance is invalid. Published Any::decode recursive values and count-based reservations
+  require separate resource control. Opaque provenance is the candidate boundary, not a completed decoder proof.

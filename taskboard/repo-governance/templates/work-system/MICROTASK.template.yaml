@@ -1,0 +1,97 @@
+schema_version: handshake.microtask.v12
+template_version: 20
+kind: microtask
+
+instance_policy:
+  omit_empty_optional_fields: true
+  policy_lives_in_rule_refs_not_instance_fields: true
+  schema_ref: repo-governance/schemas/microtask.schema.yaml
+
+# owners of the former compilation, execution policy, handoff, current_state and stock_execution_binding blocks
+rule_refs: [CODEX-MT-001, CODEX-MT-002, CODEX-MT-003, CODEX-MT-004, CODEX-MT-010, CODEX-MT-011, CODEX-MATRIX-002, CODEX-TEMP-001, CODEX-STEER-001,
+  CODEX-OUT-002, CODEX-GIT-001, CODEX-GIT-003, CODEX-MUTATE-011, CODEX-STOCK-001, CODEX-MODE-MT-001, WF-OWN-001, WF-SUBMIT-001, WF-ART-001, CODEX-UNIT-001, WF-LANE-001,
+  CODEX-MODULE-LIFECYCLE-001, BR-MODULE-LIFECYCLE-001, BR-MODULE-LIFECYCLE-002, BR-MODULE-LIFECYCLE-003, BR-MODULE-LIFECYCLE-004, BR-MODULE-LIFECYCLE-005, BR-MODULE-LIFECYCLE-006, BR-MODULE-LIFECYCLE-007,
+  BR-CONTRACT-SYNC-001, CODEX-PILLAR-001]
+
+identity:
+  mt_id: WP-000-example-v1-MT-001
+  wp_id: WP-000-example-v1
+  title: ""
+  version: 1
+  contract_revision: 1
+
+parent: # the only pin in this contract; every other authority digest resolves through the parent's authority_snapshot
+  wp_contract_revision: 1
+  wp_contract_digest: sha256:REPLACE_ME
+
+context_capsule:
+  module_maintenance_refs: [] # resolved slice of parent architecture_binding.module_lifecycle_refs; commands belong in execution/proof
+  specification_anchor_refs: []
+  topology_refs: []
+  solution_binding_refs: []
+  primitive_feature_relation_refs: []
+  consumed_capability_refs: []
+  capability_owner_module_refs: []
+  affected_surface_profile_refs: []
+  matrix_obligation_refs: []
+  pillar_refs: [] # matrix entry ids of the WP pillar rows this slice implements
+  runtime_lane_refs: [] # lane_ids from wp_contract.runtime_lanes this MT implements or touches
+  inspection_route_refs: [] # subset of wp_contract.gui_surface routes this MT must use for proof
+  account_bound_resource_refs: [] # subset of wp_contract.auth_binding resources this MT touches
+  sdk_operation_refs: []
+  sdk_resource_contract_refs: []
+  roadmap_item_refs: []
+  read_context: [] # bounded resolved excerpts and execution restrictions needed by this MT; no accumulated review or retry history
+  context_digest: sha256:REPLACE_ME
+
+hskernelsdk:
+  condition: foundation_binding_resolved
+  ref: BIND-PROJECT-HSKERNELSDK
+
+closure_unit:
+  outcome: ""
+  requirement_refs: []
+  acceptance_refs: []
+  materialized_acceptance: [] # assigned requirement/acceptance text resolved from the pinned parent; no parent/specification reread to reconstruct completion
+  spec_basis_refs: [] # CODEX-DECIDE-001: product questions answered from the specification, recorded here, escalated only when the spec is silent or contradictory
+  operator_decision_refs: [] # CODEX-DECIDE-002: operator rulings where the spec was silent; enrichment queued, not blocking
+
+model_routing:
+  model_tier: REPLACE_ME # allowed: small, medium, strong
+  tier_reason: ""
+  escalate_to_tier_on_blocker: strong
+
+attempt_budget: # no MT-local count; counters and precedence: HT-WORK-CODING-001 steering.run_accounting.counter_precedence
+  limit_ref: HT-WORK-CODING-001.steering.run_accounting.rounds_without_output_limit
+  rule_refs: [CODEX-REMEDIATE-001, BR-REMEDIATE-001, CODEX-STEER-003, CODEX-STEER-007, WF-EXEC-001, WF-REMEDIATE-001]
+
+execution:
+  lane: implementation # allowed: implementation, gui, diagnostics, documentation, validation, migration, special_runs
+  module_ref: MOD-REPLACE_ME # exactly one owning module
+  module_change_stage: standalone_source # allowed: standalone_source, host_adoption; separate MTs, source predecessor before adoption
+  build_unit_ref: null # derived from module_ref manifest
+  write_scope_source: module_roots # allowed_write_paths within module.boundaries.internal_roots plus public_surfaces unless a wp scope_waiver names the path
+  may_create_canonical_capability: false
+  backend_mt_ref: null # required when lane is gui
+  contract_dependency_kind: null # allowed: consumes_published_contract, depends_on_completion
+  depends_on: []
+  allowed_write_paths: []
+  forbidden_write_paths: []
+  shared_resource_locks: []
+  inputs: [] # includes the resolved project_profile.implementer_check compile/static readiness command
+  implementation_steps: []
+  expected_outputs: []
+  stop_conditions: []
+
+proof:
+  rule_refs: [CODEX-MT-004, CODEX-OUT-003, CODEX-VAL-002, CODEX-VAL-003, CODEX-VAL-007, CODEX-TEMP-002, WF-PROOF-001] # owners of the former proof policy lines; results live in WP-STATE verdicts and receipts
+  parent_proof_refs: []
+  checks: # resolves contracted commands for independent validation; implementer runs only the existing readiness command
+    - check_id: WP-000-MT-001-CHECK-001
+      claim_refs: []
+      command_or_method: ""
+      expected: ""
+      timeout_seconds: REPLACE_ME
+      evidence_required: []
+  independent_review_required: false
+  relevant_input_paths: [] # paths whose change invalidates this MT's proof; required at request_validation; a later round candidate whose diff intersects them re-validates a passed MT (proof_invalidated); CODEX-VAL-007

@@ -1,0 +1,1227 @@
+schema_version: buurtman.spec.v1
+specification_id: SPEC-buurtman-balie-v1
+revision: 14
+product_name: Buurtman Balie
+owner: model_operated
+purpose: Build an independently reusable CRM product for multiple operator projects; Portal admin is its first embedding,
+  not the definition or limit of the CRM's purpose.
+requirements:
+- requirement_id: BB-BOUNDARY-001
+  statement: Module GUI is provided by the host; keep GUI/presentation in a separate crate group from the independently
+    reusable Rust module. Hosts embed CRM into website admin backend panels AND custom software/apps. Retain root
+    buurtman-balie/core source API; separate host/demo integration composition and optional web/npm presentation.
+    Core package excludes GUI/web/Python demo/manual presentation and their runtime dependencies; host identity,
+    stock, checkout, orders, usage and image ownership does not shift into CRM.
+  status: accepted
+- requirement_id: BB-PLATFORM-001
+  statement: Required first runtime targets are Windows x64 AND ARM64; macOS/Linux come later. Require separate
+    actual Windows x64 and ARM64 execution evidence; compile/cross-compile/package proof cannot substitute for runtime
+    proof. Unavailable runtime evidence stays outstanding; do not claim macOS/Linux tested or generic crossplatform
+    proof.
+  status: accepted
+- requirement_id: AF-CRM-REQ-001
+  statement: The shared CRM must have independently maintained source, public contracts, standalone operation/proof,
+    pinned releases and explicit host adapters. Its core must not depend on Portal accounts, usage tables, routes,
+    private content or deployment paths; Portal-specific administration belongs in the Portal adapter.
+  status: accepted
+- requirement_id: AF-CRM-REQ-002
+  statement: Each business workspace owns its authorized customer and relationship records. Reusing the same module
+    across Portal, the photo service and the store does not share their databases, contacts, credentials or permissions.
+    Any future cross-business sharing must be explicit and authorized, not inferred from the same operator or email
+    address.
+  status: accepted
+- requirement_id: AF-CRM-REQ-003
+  statement: Preserve all three host goals and the fuller CRM direction while implementing the first accepted workflow.
+    Discover photo-service and store requirements before finalizing host-specific adapters or claiming compatibility.
+  status: accepted
+- requirement_id: AF-CRM-REQ-004
+  statement: Preserve customer, order, product and availability context across linked record navigation; users must
+    not retrace unrelated module hierarchies to inspect a related record. Specify return navigation and retained
+    selection before implementation.
+  status: accepted
+- requirement_id: AF-CRM-REQ-005
+  statement: Retain product tags and fuzzy product search as requested store workflow needs; define matching, identifiers,
+    ranking and stock/variant scope against actual product data before implementation.
+  status: accepted
+- requirement_id: AF-CRM-REQ-006
+  statement: Retain access to useful product information during til/kassa use, including provider, descriptions,
+    website information and images beyond price and stock. Define authorized customer-visible versus staff-only
+    fields; preserve the active sale while inspecting product information.
+  status: accepted
+- requirement_id: AF-CRM-REQ-007
+  statement: Retain configurable fields for distributors, clients and products and product/website editing as discovery
+    scope. Define field ownership, types, validation and publication behavior before choosing shared-core or host
+    responsibilities.
+  status: accepted
+- requirement_id: AF-CRM-REQ-008
+  statement: Carry forward sales feedback, product/inventory management, order tracking, customer-to-order links
+    and product availability as explicit store needs. Clarify sales feedback and canonical owners before finalizing
+    retail contracts.
+  status: accepted
+- requirement_id: AF-CRM-REQ-009
+  statement: Retain a later connection to something like Pricebuddy as an unresolved integration goal; inspect the
+    intended service and public contracts before selecting an adapter.
+  status: accepted
+- requirement_id: AF-CRM-REQ-010
+  statement: Build CRM source in ../.assets/buurtman-balie with cohesive public contracts, behavior, adapter, reusable
+    presentation and standalone proof surfaces.
+  status: accepted
+- requirement_id: AF-CRM-REQ-011
+  statement: Provide a product field editor; creating a typed field adds it to the canonical reusable field catalogue.
+    Use that catalogue for product field inputs and typed search filters rather than independent UI lists.
+  status: accepted
+- requirement_id: AF-CRM-REQ-012
+  statement: Require exactly B2C or B2B classification on every Customer creation/update; keep this fixed mandatory
+    option visible in client records and assignment selectors.
+  status: accepted
+- requirement_id: AF-CRM-REQ-013
+  statement: Provide reusable additional pricing tiers separate from classification; select B2C, B2B or named custom
+    base pricing and a configured extra percentage discount, including employee B2B-plus-discount pricing.
+  status: accepted
+- requirement_id: AF-CRM-REQ-014
+  statement: Provide product B2C/B2B/named-custom prices with explicit currency, decimal scale and tax basis. Preview
+    the assigned client price with base, discount, final amount and revisions; reject missing bases and preserve
+    exact amounts.
+  status: accepted
+- requirement_id: AF-REQ-001
+  statement: Create a durable report/feedback record with reporter account/profile UUID, DDMMYY display date, unambiguous
+    timestamp/timezone, captured screen/module and authorized screenshot reference. Present screenshot preview before
+    explicit submission; cancellation must not create a report. Use safe no-space labels such as DDMMYY-user-screen
+    with collision-safe report IDs.
+  status: accepted
+  owner: Portal host adapter
+- requirement_id: AF-REQ-002
+  statement: Expose operator-only user and per-user usage views with declared metric units, windows, freshness and
+    canonical owners; never equate loaded rows with full user or usage totals.
+  status: accepted
+  owner: Portal host adapter
+- requirement_id: AF-REQ-003
+  statement: Provide an operator-only bug report panel with reporter, date, screen, screenshot and bounded triage
+    status. Enforce report and screenshot authorization server-side; redact secrets and never expose other users'
+    reports to ordinary customers.
+  status: accepted
+  owner: Portal host adapter
+- requirement_id: BB-GROWTH-001
+  statement: Overview, user/customer directory, customer detail with account/profile linkage, declared usage, interaction
+    history, internal business notes and screenshot bug/support cases. Preserve all original AF acceptance.
+  status: proposed
+  source: Proposed; user/usage/bug-report requirements already requested, additional CRM detail requires accepted
+    contract scope.
+- requirement_id: BB-GROWTH-002
+  statement: Contacts/companies, lead lifecycle, opportunities/pipelines, follow-ups, tasks and reusable saved views.
+  status: proposed
+  source: Proposed fuller-CRM direction, retained for sequencing; reuse Taskboard/Handpick contracts when available.
+- requirement_id: BB-GROWTH-003
+  statement: Explicitly selected email/calendar integrations, workflow automation, reporting and import/export.
+  status: proposed
+  source: Proposed growth scope; provider bindings, authorization and acceptance must be defined before implementation.
+- requirement_id: BB-DURABLE-001
+  statement: Support SurrealDB first for durable host integration, preserving workspace isolation, coherent snapshots,
+    revision CAS, atomic replay receipts and recoverable uncertain commits. PostgreSQL support follows; hosts retain
+    their canonical database ownership. Optional SQLite remains a reference/proof adapter and does not satisfy selected
+    SurrealDB acceptance.
+  status: accepted
+- requirement_id: BB-REUSE-001
+  statement: Before extending the durable core, reassess current reusable libraries/components and upstream implementations
+    against actual source and embedding boundaries. Preserve working original CRM code; compare selective reuse
+    rather than assuming a full CRM rewrite.
+  status: accepted
+- requirement_id: BB-LOCALE-001
+  statement: Provide module language toggles for English (en), French (fr) and Dutch (nl) that hosts can expose
+    later. Apply the selected language consistently to reusable CRM controls, labels and status/error presentation;
+    preserve canonical identifiers, values, B2C/B2B classification and exact money contracts across language changes.
+    Locale selection does not select tax jurisdiction or translate operator-authored record data.
+  status: accepted
+- requirement_id: BB-COMPLIANCE-001
+  statement: Maintain an EU-US-Belgium compliance research team for taxes/VAT and other applicable rules. Record
+    current official sources, applicability, unresolved host/transaction scope and evidence-backed implementation
+    candidates before changing fiscal behavior. Mandatory B2C/B2B classification is not proof of VAT exemption;
+    language is not jurisdiction. Host tax, checkout and invoice owners remain canonical; research alone does not
+    certify compliance or authorize an unspecified tax engine.
+  status: accepted
+- requirement_id: BB-MANUAL-001
+  statement: Provide a CRM INTERNAL user manual for future agents/models with no prior context. Include purpose,
+    startup, integration/navigation, supported inputs/outputs, language toggles, source ownership, diagnostics,
+    failure/recovery and bounded swarm operation. Ship it through a reusable module surface rather than relying
+    on repository chat history.
+  status: accepted
+- requirement_id: BB-CONCURRENCY-001
+  statement: 'Assume concurrent agent-swarm use. Mitigate data races through authoritative workspace/revision fencing,
+    atomic replay and safe host integration; explicitly test data races. The current operator correction also requires
+    CRDT use under BB-CRDT-001; prior no-specific-CRDT wording is superseded. Select additive worker::CommandWorker
+    whole-command admission under WP010: one supplied raw Store and Authorization owned by one Crm on one persistent
+    thread, complete Execute/Get/SearchFiltered and minimally forwarded reads, authorization evaluated at dispatch.
+    Preserve WorkerStore API and core service/CAS/replay; participating local load/CAS interleaving removed only.
+    External processes and stale record intents still conflict; no global budget or production Portal integration
+    inferred.'
+  status: accepted
+- requirement_id: BB-CRDT-001
+  statement: Use CRDT AND data-race tests as explicitly requested by the operator. Research and select the CRDT
+    implementation, exact mergeable scope/owner, convergence semantics and race proof before executable implementation.
+    Do not automatically replace authoritative CAS/replay, exact money or host stock ownership with a merge model.
+    First executable unit is optional Rust-only Yrs0.28.0 description draft in a separate collaboration crate; host-owned
+    persistence/retention, actual durable host sync, publication and interoperability goals remain outstanding.
+    Restrict first component ingress to opaque crate-generated DraftUpdate/DraftCheckpoint provenance; arbitrary
+    binary decoder safety is unresolved and cannot be inferred from byte caps or temporary-document postvalidation.
+  status: accepted
+- requirement_id: BB-WORKFLOW-001
+  statement: A dedicated subagent runs realistic employee/operator workflows for camera-store, supermarket and web-SaaS,
+    including inventory, new items and labeling, to catch missing functionality, bad workflows and UI problems using
+    actual screenshots and UI/backend observations. Distinguish temporary/demo data from canonical host owners;
+    record scenario coverage, concrete gaps/remediations and specification/stub follow-ons without implying host
+    compatibility or authorizing unselected feature implementation. Preserve the separate photo-service website
+    scope.
+  status: accepted
+- requirement_id: BB-BACKPRESSURE-001
+  statement: 'Require bounded database backpressure and data mitigation for overloaded/failing database boundaries:
+    cap pending/in-flight work and payloads, expose actionable pressure/failure state and preserve recoverable writes
+    without silent loss or uncontrolled retries. Portal is the first selected WP010 workload/host; preserve camera-store,
+    separate photo-service website and supermarket scope. Numeric workload, admission, deadline and response budgets
+    remain unresolved.'
+  status: accepted
+- requirement_id: BB-PERFORMANCE-001
+  statement: Rust remains mandatory for the CRM core. Provide fast responses under the documented supported workload;
+    measure latency and resource pressure against a host-selected numeric budget before claiming performance. No
+    numeric latency target is inferred from this request. Operator authorizes a selected provisional Portal diagnostic
+    numeric workload/profile and measurements before production SLA selection; report profile, environment, limits
+    and observed values explicitly as provisional diagnostics. Production performance acceptance still requires
+    representative host workload and selected latency/resource budgets; camera-store and supermarket remain in scope.
+  status: accepted
+- requirement_id: BB-RESEARCH-001
+  statement: Research broader CRM uses and reusable improvements across web SaaS, stores, warehouses, employee management/HR
+    and supermarkets. Include charts/day-to-day store sales overviews, SaaS resource usage and feature/module usage,
+    Portal RSS website usage/popularity and tag behavior/used tags. Preserve canonical metric/data owners and evidence
+    before analytics implementation.
+  status: accepted
+- requirement_id: BB-ANALYTICS-001
+  statement: 'Candidate connected CRM analytics: daily store sales charts, warehouse availability/movement context,
+    SaaS resource and feature/module usage, RSS website popularity and tag behavior, employee workflows. Define
+    canonical sources, metric units/windows/freshness, privacy/authorization and real host adapters before implementation;
+    demo CRM records do not establish business metrics.'
+  status: proposed
+- requirement_id: BB-COMPLIANCE-002
+  statement: 'Proposed evidence-backed follow-on controls: host-owned effective-dated fiscal decisions and invoice
+    links/status; receipt-aware privacy retention/replay/restoration; channel-specific communication suppression;
+    separate HR/analytics access projections. Concrete owner facts, transaction/jurisdiction applicability and production-boundary
+    acceptance must be selected before implementation.'
+  status: proposed
+- requirement_id: BB-FIELD-UX-001
+  statement: 'Make reusable fields easy for nontechnical users: label-first dropdown of existing canonical fields
+    plus Create New. Existing selection shows read-only definition without duplicate creation or retyping. New label
+    generates a valid ASCII canonical key with explicit Unicode/collision handling; optional advanced key override
+    preserves host API. Preserve field catalogue types/scopes and canonical ownership; English/French/Dutch localization,
+    disposal, in-flight drafts and actual desktop/mobile browser proof required.'
+  status: accepted
+constraints:
+- Independently reusable Rust core; injected authorization and storage; business workspace isolation.
+- Host identities, stock, checkout, orders, usage and images retain canonical owners.
+- No live host compatibility, durable persistence, release pin, migration or upstream CRM parity claimed.
+operator_requests:
+- Module GUI is provided by host; keep GUI/presentation separate crate group from independently reusable Rust module.
+  Hosts embed CRM into website admin backend panels AND custom software/apps. Required first runtime targets Windows
+  x64 and ARM64; macOS/Linux later; do not claim those tested or imply generic crossplatform proof.
+- ok lets start with the admin page; i have no clue what it should be. i was thinking of a fully fledged CRM, perhaps
+  we can look at active opensource projects and rewrite it into rust for portal. making sure the CRM is also a module
+  so a new folder in assets too? not sure how to go about it
+- Operator business only initially
+- i have been wanting to build a crm for a long time, because i can use it in many projects, both for portal, as
+  for my photo service website, as for the a physical store i work in (we use tilroy currently instore, and that
+  is a horrible experience)
+- make sure the crm is also built in assets and modules. i think for products a field editor is required, creating
+  a field adds that field to a reusable field list (this can also be used as filter for search)
+- 'so there also need to be an b2c and b2b infrastructure, assigned clients need b2c or b2b status this is a fixed
+  mandatory option and must show, i also want to have extra status that uses these two options but with different
+  pricings/discounts: so products have a b2b, b2c or custum pricing. for example as employe i get b2b pricing +
+  extra discounts closer todistributor pricing'
+- All current operator apps use SurrealDB or PostgreSQL; SurrealDB first, PostgreSQL next.
+- Create dependency, failure/blocker diagnostics, EU-US-Belgium compliance and specification coordination teams
+  under a devlead orchestrator.
+- Provide English, French and Dutch localization toggles in the module for later host exposure.
+- Keep specification topics up to date and split when needed; consult hsrepotemplate only for specification formatting,
+  not ceremony or repository workflow. Persist repository workflow documentation linked from Codex for future sessions.
+- Coding team with user-manual coder; CRM INTERNAL manual for future no-context models/agents.
+- 'crkt clarification: data race mitigation, not CRDT; agent swarm usage assumed; mandatory database backpressure/data
+  mitigation; fast responses; Rust mandatory.'
+- Research charts/day-to-day store sales, web SaaS resource and feature/module usage, Portal RSS website usage/popularity
+  and tags; web SaaS, stores, warehouses, employee management HR, supermarkets.
+- Operator clarified WP010 first workload/host is Portal, preserving photo-store and supermarket scope. Numeric
+  budgets remain unresolved.
+- 'Current operator correction: explicitly wants CRDT used AND data-race tests (supersedes prior no-specific-CRDT
+  request); camera store replaces photo-store wording; preserve separate photo-service website original scope and
+  supermarket.'
+- Dedicated subagent runs realistic employee/operator workflows camera-store/supermarket/web-SaaS (inventory/new
+  items/labeling etc), catches missing functionality, bad workflows/UI, actual screenshots; distinguish temporary/demo/canonical
+  host owners.
+operator_reports:
+- nothing is connected, so many windows that edit only one surface of a product or client, no sale feedback, product/inventory
+  management, order tracking, client coupling to order and product availability are all in connected through different
+  screen, but to go from one screen to the other i have to go through different module hierarchies, no tags on products,
+  no fuzzy search for products
+- in til/kassa mode, i can add items and show it to the client, but if i select a product there is only price and
+  stock in the product screen, no info on the product even though in a whole different module called admin there
+  are all the fields for that product like provider, what product info and images are displayed on the website,
+  and all usefull stuf
+- i also want to connect it to something like pricebuddy later
+- the admin page is more like a distributor/product/editor where we can change product info. it is also a page editor
+  of some type so we can add fields to distributors, clients, product.
+- the thing is it can do a lot but is very dissonant
+research_basis:
+  crdt_selection:
+    inspected_at: '2026-10-11'
+    document_ref: docs/research/crdt-selection-v1.md
+    source_review: Reuse lane inspected primary library manifests/APIs and local boundaries; coordinator inspected
+      its complete research and current Store/core/presentation ownership. No library build or interoperability
+      verdict here.
+    sources:
+    - https://github.com/y-crdt/y-crdt/blob/v0.28.0/yrs/Cargo.toml
+    - https://github.com/y-crdt/y-crdt/blob/main/yrs/src/lib.rs
+    - https://github.com/y-crdt/y-crdt/releases
+    - https://github.com/automerge/automerge/blob/main/rust/automerge/src/lib.rs
+    - https://github.com/automerge/automerge/blob/main/rust/automerge/Cargo.toml
+    - https://github.com/rust-crdt/rust-crdt/blob/master/src/orswot.rs
+    - https://docs.yjs.dev/api/document-updates
+    local_sources:
+    - src/contracts.rs
+    - src/service.rs
+    - src/surreal.rs
+    - web/package.json
+    selected: Optional Rust-only collaboration crate at crates/buurtman-balie-collaboration using yrs exactly0.28.0
+      for one host-owned Record.description candidate draft. No core feature dependency, GUI or schema2 changes;
+      explicit dependency on core only if publication conversion needs it. First component does not require Yjs
+      interop.
+    protocol:
+    - Host supplies workspace/record/generation/unique replica IDs and mandatory byte/text budget config without
+      production defaults/SLA.
+    - First unit creates local text state with checked UTF8 byte-offset/range splices, opaque private-byte DraftUpdate
+      export and opaque DraftCheckpoint clone/fork from crate-local APIs only; no raw-byte import, serde decode
+      or exposed mutable Yrs document.
+    - Apply only provenanced typed updates/checkpoints to temporary state; validate document domain/text/budgets
+      before swap. Wrong-domain/over-budget typed inputs leave live state unchanged. Arbitrary malformed binary
+      safety is not claimed.
+    - Scratch is a fresh Yrs Doc reconstructed only from accepted opaque checkpoint; Doc.clone shares store and
+      is forbidden for isolation.
+    - Reordered trusted updates may remain causally pending; preserve them within full encoded-state/checkpoint
+      budget, expose has_missing_updates and prove convergence only after all required updates arrive. Never drop
+      pending updates as successful sync.
+    - Duplicate/reordered update delivery converges; actual simultaneous writers/readers require race tests independently
+      of serial convergence fixtures. Stable implementation tested on both first Windows runtime targets.
+    - Host owns authorization, membership, unique replica allocation, durable collaboration persistence/retention
+      and accepted-intent recovery. In-memory success is not durable acknowledgment or real-host synchronized proof.
+    - Explicit publication remains host Crm::Update with CAS and identical receipt operation; draft never automatically
+      merges prices, stock, classification, tiers, receipts or other scalar business ownership.
+    rejected:
+    - Bytecap plus temporary-document postvalidation presented as decoder memory/stack safety
+    - Custom Yrs binary parser or raw import/serde deserialization into first-unit opaque tokens
+    - Generic Map CRDT for authoritative scalar business decisions or automatic schema2/core GUI changes
+    - Mandatory core CRDT feature/runtime and mandatory Yjs interoperability in first Rust-only component
+    - Automerge wider document/MSRV change for first plain-text draft or ORSWOT set semantics for text
+    risks_and_controls:
+    - Replica ID reuse can corrupt causal identity; host allocates unique live replicas and defines restore/generation
+      lifecycle.
+    - Inspected published Yrs Any::decode recurses nested values and reserves decoded counts; byte limits and postvalidation
+      do not supply decoder depth/allocation limits. Restrict reachable first-unit ingress to crate-owned plain-text
+      provenance; raw durable ingress needs separately selected resource isolation/bounded decoder proof.
+    - UTF8 partial-character/overflow splice ranges violate plain text; validate byte boundaries/ranges and test
+      Unicode/typed domain rejection.
+    - Convergence does not prove safe concurrent memory access; actual bounded simultaneous reads/writes and no
+      panic/deadlock proof.
+    - Volatile draft and persisted CRM update have distinct outcomes; host retains original publish intent and separate
+      durable collaboration owner.
+    validation: Root selected exact opaque provenance contract after reuse-source findings; implementation assignment
+      may proceed. Require deterministic duplicate/reorder/concurrent-edit convergence after complete delivery,
+      pending-causal-state inspection/budgets, fresh-scratch isolation, Unicode byte splice/checkpoint fork, typed
+      oversize/wrong-domain no-mutation and public no-raw-ingress proof plus barrier-start race tests on Windows
+      ARM64 and x64 with native/emulated scope explicit. Root owns dependency/static/package/build proof; real-host
+      durable sync, publication races/restart/retention and optional future Yjs interoperability remain outstanding
+      acceptance.
+    decoder_inspection: Root reports completed reuse-source findings; coordinator inspected published yrs0.28.0
+      src/any.rs Any::decode and src/update.rs Update::decode recursion/count reservations without component resource
+      ceiling; src/doc.rs Doc Clone and src/store.rs DocStore Arc show shared clone; src/transaction.rs encode_state_as_update_v1
+      includes pending data and has_missing_updates exposes pending structs/delete sets. No custom parser/raw import
+      authorized.
+    retained_interoperability: UTF16/browser, raw binary persistent reload and exact-pin Yjs proof remain future
+      outstanding work; Rust-only UTF8 byte-offset component does not claim those paths.
+  crate_boundary:
+    inspected_at: '2026-10-11'
+    sources:
+    - https://doc.rust-lang.org/cargo/reference/workspaces.html
+    - https://doc.rust-lang.org/cargo/reference/manifest.html#the-exclude-and-include-fields
+    - https://doc.rust-lang.org/rustc/platform-support.html
+    local_sources:
+    - Cargo.toml
+    - src/lib.rs
+    - web/package.json
+    - examples/json_bridge.rs
+    - examples/standalone.rs
+    - tooling/standalone.py
+    - tooling/browser-proof.py
+    observed: Root is one Rust package including web/examples/Python presentation tooling; web is already a distinct
+      private npm package. Harness discovers default target/debug/examples/json_bridge from repository root.
+    patterns: Cargo workspace members share lock/build output; package include/exclude is relative to package root.
+      Rust target support documentation is toolchain scope, not this product's execution proof.
+    selected: Preserve root buurtman-balie package and Rust API/source; separate host/demo integration member at
+      crates/buurtman-balie-host-demo with the existing examples, explicitly consuming root core. Keep web/npm optional
+      presentation separate; remove presentation/demo packaging inputs and dependencies from core package.
+    rejected: Gratuitous relocation/renaming of core, GUI dependency in core, implicit production host composition,
+      or treating target compilation as runtime acceptance.
+    risks_and_controls:
+    - Harness example lookup can break after separation; retain example names and discover actual Cargo output/configured
+      binary path.
+    - Private/development assets can leak through package globs; verify core and demo/presentation contents independently.
+    - Host-demo dependency must explicitly forward needed core features without making GUI/runtime mandatory in
+      core.
+    validation: Independent core consumption/package exclusions, explicit host-demo composition and desktop/mobile
+      proof, affected Rust/static checks and actual separate Windows x64/ARM64 execution. macOS/Linux deferred.
+    proof_status: No new package/build/runtime checks performed by coordinator; architecture-specific execution
+      outstanding.
+  swarm_admission:
+    inspected_at: '2026-10-11'
+    document_ref: docs/research/swarm-boundaries-v1.md
+    source_review: Coding lane inspected current primary sources and Portal boundaries; coordinator read the recorded
+      research and current synchronous Store contract. No runtime or host compatibility verdict.
+    sources:
+    - https://docs.rs/tokio/latest/tokio/sync/mpsc/fn.channel.html
+    - https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html
+    - https://docs.rs/tower/latest/src/tower/buffer/service.rs.html
+    - https://docs.rs/tower/latest/src/tower/limit/concurrency/layer.rs.html
+    - https://docs.rs/tower/latest/tower/load_shed/index.html
+    - https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/
+    local_sources:
+    - src/contracts.rs
+    - src/service.rs
+    - src/surreal.rs
+    - tooling/standalone.py
+    patterns:
+    - Bounded shared admission includes pending count/bytes and running work; finite message capacity alone does
+      not bound upstream waiter allocations.
+    - Started blocking calls cannot be forcibly cancelled; retain running capacity until actual completion.
+    - Timeout can follow committed effects; preserve identical-operation receipt reconciliation and one retry owner.
+    selected: First executable unit is a configurable shared synchronous Store worker with one in-flight lane, cloneable
+      handles sharing a bounded pending queue, explicit payload and queue/caller-deadline config, immediate overload
+      rejection and pressure counters. Async hosts invoke through their blocking executor.
+    functional_controls:
+    - One persistent worker owns one supplied Store; no new worker per request or mandatory Tokio/Tower core dependency.
+    - Validate explicit host config; declare submitted-byte accounting separately from total memory and encoded
+      prior-plus-next transport/response budgets. Bound sizing before allocating oversized encoded copies.
+    - Full/oversized/closed admission rejects before Store invocation; expired queued commands never execute.
+    - Serialize dispatch/expiry decisions; in-flight caller timeout returns Storage with uncertain outcome and retains
+      worker capacity until completion. Identical Context/Request/operation receipt reconciles writes.
+    - No automatic retries, silent receipt pruning or durable acknowledgment of volatile queue admission.
+    - Expose bounded redacted pending/running/rejected/expired/completed/uncertain pressure counters; document admission
+      closure/drain and finite underlying transport timeouts without forced cancellation guarantees.
+    - Store admission supplies no actor/grant revalidation at dispatch; existing Crm authorization and host fences
+      retain ownership. Local shared limits do not prove cross-process/database-wide admission.
+    retained_host_scope:
+    - Portal-first
+    - camera-store
+    - photo-service-website
+    - supermarket
+    rejected:
+    - Unbounded spawn_blocking or one thread per call
+    - Per-handle limits presented as shared service or database-wide limits
+    - Releasing running capacity on caller timeout or claiming timeout rolls back a write
+    - Automatic CRDT replacement of authoritative CAS/money/stock, mandatory async framework or implicit production
+      Portal wiring
+    risks_and_controls:
+    - Hung synchronous transport monopolizes the lane; host supplies finite transport timeouts and observes pressure.
+    - Caller timeout races dispatch; atomically classify never-started versus uncertain-dispatched and reconcile
+      receipts.
+    - Submitted payload cap does not bound wire/response amplification; host enforces separate encoded/response
+      budgets.
+    - Volatile queue cannot survive process loss; caller/host retains original recoverable operation intent.
+    validation: Deterministic gated Store tests for shared count/byte saturation, rejected/expired commands never
+      reaching Store, timeout-after-dispatch with capacity retained, exact receipt replay and changed-intent rejection,
+      error propagation and closure/drain. Devlead owns focused Rust/static/package/governance proof; selected live
+      SurrealDB proof remains independent. Production Portal wiring and cross-process admission require separate
+      proof.
+    performance_status: P1 provisional Portal diagnostic numeric profile selected before implementation/run; actual
+      measurements pending. Production representative workload/latency/resource budgets/SLA remain unresolved.
+    provisional_profile:
+      profile_id: BB-PORTAL-DIAGNOSTIC-P1
+      status: selected_provisional_not_production
+      backend: Actual Crm plus shared WorkerStore wrapping temporary MemoryStore; not canonical Portal production
+        data.
+      seed:
+        records: 100
+        organizations: 10
+        customers_b2c_b2b: 40
+        support_cases: 25
+        interactions: 25
+        description_ascii_bytes: 256
+        tags: true
+        record_links: 50
+        opaque_portal_account_refs: 10
+        ownership: Opaque refs only; host identity/usage/stock/order owners preserved.
+      phases:
+        caller_concurrency:
+        - 1
+        - 4
+        - 16
+        operations_per_caller: 100
+        operations_total: 2100
+        mix_percent:
+          fuzzy_tag_search: 60
+          crm_load: 30
+          create_interaction_unique_ids: 10
+        search_page_size: 25
+        retries: None hidden; exact-intent replay is explicit fault-phase action only.
+      worker_limits:
+        pending: 16
+        max_submitted_request_bytes: 1048576
+        outstanding_bytes: 8388608
+        queued_deadline_ms: 250
+        caller_deadline_ms: 1000
+      service_limits:
+        snapshot_bytes: 16777216
+        operation_count: Existing default; record actual value in output.
+      diagnostic_bounds:
+        run_limit_seconds: 120
+        observed_process_peak_working_set_ceiling_bytes: 536870912
+        scope: Sampled process observation limit, not WorkerStore total-memory guarantee or production SLA.
+        latency_sla: null
+      metrics:
+      - Per-kind success/conflict/capacity/storage/other counts
+      - Per-kind latency p50/p95/p99/max
+      - Wall throughput
+      - Submitted bytes
+      - Sampled worker pressure
+      - Own-process CPU/peak working set
+      fault_phases:
+        store_delay_ms: 250
+        queued_deadline_ms: 50
+        caller_deadline_ms: 100
+        cases:
+        - Deterministic queue expiry
+        - Commit response loss then identical-intent receipt replay
+        classification: Fault-injected outcomes separate from natural baseline performance.
+      platforms:
+        first: Native Windows ARM64
+        additional: Windows x64 under ARM64 emulation if available; explicitly label execution
+        untested:
+        - macOS
+        - Linux
+      artifacts:
+        rust_example: crates/buurtman-balie-host-demo/examples/portal_workload.rs
+        monitor: tooling/portal-workload.py
+        output_root: .local/portal-workload
+        mode: Rust release example; monitor own process only; before/after source hashes and bounded cleanup required.
+      acceptance_boundary: Provisional diagnostic evidence only; production Portal representative workload/SLA and
+        camera-store/supermarket/photo-service integration remain outstanding.
+      os_measurement_basis:
+        sources_checked:
+        - https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters
+        - https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes
+        local_source_checked: Installed Python subprocess.Popen._execute_child assigns self._handle = Handle(hp),
+          inspected through inspect.getsource.
+        process_identity: Use exact owned Popen process handle, not PID-only reacquisition.
+        memory: 'GetProcessMemoryInfo PeakWorkingSetSize: process-lifetime physical working-set peak in bytes; not
+          heap size, WorkerStore charged bytes, total application memory or production RAM guarantee.'
+        cpu: GetProcessTimes user+kernel cumulative CPU in100ns units, summed process threads; not wall time.
+        final_read: Runner emits stdout result then awaits stdin release handshake, keeping process alive for final
+          canonical OS handle read before release/cleanup.
+        monitor: Sample10ms; retain selected120second/512MiB diagnostic limits; measurement errors fail closed.
+          Validate actual profile/counters and source/binary hashes before/after.
+        acceptance_boundary: Diagnostic measurement only; no production RAM/SLA claim.
+    command_admission:
+      research_ref: docs/research/swarm-boundaries-v1.md
+      source_inspected:
+      - src/worker.rs
+      - src/service.rs
+      root_assessment: Root/reuse agent reports actual Portal and current primary-source assessment; existing source-backed
+        bounded queue/shared admission patterns reused without Tokio/Tower/new runtime dependency.
+      diagnosis: Store-level worker serializes individual Load/CAS, allowing separate participating commands to
+        interleave between them. Complete Crm command is the selected local admission boundary; external writers
+        and stale record revision remain authoritative conflicts.
+      selected: Public worker::CommandWorker owns one Crm<S,A> over raw supplied Store in persistent worker; reuse
+        existing private queue/accounting/deadline engine, forward complete operations/read API as minimal, authorize
+        only at actual dispatch.
+      accounting: Bounded writer counts exact serialized Context/argument tuple before admission; queued expiry
+        no mutation; retain charged running work until completion after caller timeout; panic/close/metadata pressure
+        semantics preserved.
+      non_goals:
+      - No automatic retries
+      - No new runtime dependency
+      - No Portal code edits or production adapter/auth mapping
+      - No cross-process/global admission or overwrite/stale-intent avoidance
+      proof: Unique concurrent creates/exact receipts; external writer/stale edit Conflict without overwrite; queued
+        revoked auth without Store access; count/byte expiry; timeout-aftercommit identical replay; panic/close
+        and read methods; actual P2 canonical reread after drain and independent review.
+    command_provisional_profile:
+      profile_id: BB-PORTAL-DIAGNOSTIC-P2
+      status: selected_provisional_not_production
+      backend: Actual Crm owned by CommandWorker over supplied raw temporary MemoryStore; comparison to frozen P1
+        Store-level admission, not production Portal.
+      seed:
+        records: 100
+        organizations: 10
+        customers_b2c_b2b: 40
+        support_cases: 25
+        interactions: 25
+        description_ascii_bytes: 256
+        tags: true
+        record_links: 50
+        opaque_portal_account_refs: 10
+        ownership: Opaque refs only; host identity/usage/stock/order owners preserved.
+      phases:
+        caller_concurrency:
+        - 1
+        - 4
+        - 16
+        operations_per_caller: 100
+        operations_total: 2100
+        mix_percent:
+          fuzzy_tag_search: 60
+          crm_load: 30
+          create_interaction_unique_ids: 10
+        search_page_size: 25
+        retries: None hidden; exact-intent replay is explicit fault-phase action only.
+      worker_limits:
+        pending: 16
+        max_submitted_request_bytes: 1048576
+        outstanding_bytes: 8388608
+        queued_deadline_ms: 250
+        caller_deadline_ms: 1000
+      service_limits:
+        snapshot_bytes: 16777216
+        operation_count: Existing default; record actual value in output.
+      diagnostic_bounds:
+        run_limit_seconds: 120
+        observed_process_peak_working_set_ceiling_bytes: 536870912
+        scope: Sampled process observation limit, not WorkerStore total-memory guarantee or production SLA.
+        latency_sla: null
+      metrics:
+      - Per-kind success/conflict/capacity/storage/other counts
+      - Per-kind latency p50/p95/p99/max
+      - Wall throughput
+      - Submitted bytes
+      - Sampled worker pressure
+      - Own-process CPU/peak working set
+      fault_phases:
+        store_delay_ms: 250
+        queued_deadline_ms: 50
+        caller_deadline_ms: 100
+        cases:
+        - Deterministic queue expiry
+        - Commit response loss then identical-intent receipt replay
+        classification: Fault-injected outcomes separate from natural baseline performance.
+      platforms:
+        first: Native Windows ARM64
+        additional: Windows x64 under ARM64 emulation if available; explicitly label execution
+        untested:
+        - macOS
+        - Linux
+      artifacts:
+        rust_example: crates/buurtman-balie-host-demo/examples/portal_workload.rs
+        monitor: tooling/portal-workload.py
+        output_root: .local/portal-workload
+        mode: Rust release example; monitor own process only; before/after source hashes and bounded cleanup required.
+      acceptance_boundary: Provisional diagnostic evidence only; production Portal representative workload/SLA and
+        camera-store/supermarket/photo-service integration remain outstanding.
+      os_measurement_basis:
+        sources_checked:
+        - https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters
+        - https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes
+        local_source_checked: Installed Python subprocess.Popen._execute_child assigns self._handle = Handle(hp),
+          inspected through inspect.getsource.
+        process_identity: Use exact owned Popen process handle, not PID-only reacquisition.
+        memory: 'GetProcessMemoryInfo PeakWorkingSetSize: process-lifetime physical working-set peak in bytes; not
+          heap size, WorkerStore charged bytes, total application memory or production RAM guarantee.'
+        cpu: GetProcessTimes user+kernel cumulative CPU in100ns units, summed process threads; not wall time.
+        final_read: Runner emits stdout result then awaits stdin release handshake, keeping process alive for final
+          canonical OS handle read before release/cleanup.
+        monitor: Sample10ms; retain selected120second/512MiB diagnostic limits; measurement errors fail closed.
+          Validate actual profile/counters and source/binary hashes before/after.
+        acceptance_boundary: Diagnostic measurement only; no production RAM/SLA claim.
+      canonical_proof: After drain diagnostic shared raw Store independently rereads canonical MemoryStore snapshot;
+        reconcile exact counts/receipts/outcomes without worker-derived summary alone.
+      comparison: Same100seed/2100mix1,4,16/120seconds/512MiB/config/faults/own-handle monitor as historical P1;
+        separate new source/binary hashes and actual nativeARM64/x64emulated runs; no hidden retries.
+  fields:
+  - https://github.com/twentyhq/twenty/blob/main/packages/twenty-server/src/engine/metadata-modules/field-metadata/field-metadata.entity.ts
+  pricing:
+    sources:
+    - https://docs.medusajs.com/user-guide/price-lists
+    - https://github.com/medusajs/medusa/blob/develop/packages/modules/pricing/src/models/price-list.ts
+    pattern: Customer-group pricing is separate from reusable price lists/rules. Inspected docs and source model;
+      original implementation, no code copied.
+    selected: Typed classification plus independent immutable tier catalogue and product price books; scoped revision-bound
+      quote calculation.
+    rejected: Overloading flexible fields with mandatory classification; float currency arithmetic; silent price
+      fallback; implicit stacked discounts.
+    risks_and_controls:
+    - Missing base rejects explicitly; exact decimal minor units and half-up discount rounding prevent float drift.
+    - Changed pricing needs a new immutable tier key and explicit reassignment; quote revisions expose stale previews.
+    - Schema 1 rejected by API 2; explicit existing-client classification and recoverable backups required before
+      migration. No production migration performed.
+    validation: 13 Rust contract tests, browser employee pricing and mandatory status visibility, desktop/mobile
+      visual inspection, formatting/clippy/package checks.
+  prior_research: []
+  upstream_candidates:
+  - project: Twenty
+    sources:
+    - https://github.com/twentyhq/twenty
+    - https://github.com/twentyhq/twenty/releases
+    - https://raw.githubusercontent.com/twentyhq/twenty/main/LICENSE
+    observed_activity: Release list shows twenty/v2.45.0 released October 5; inspected October 11, 2026.
+    stack: TypeScript/NestJS, React, PostgreSQL, Redis and BullMQ.
+    useful_reference: Configurable objects, views, relations, record pages and workflows; closest inspected frontend
+      stack to Portal.
+    reuse_constraints: Repository license identifies mostly AGPLv3, designated commercial files and selected MIT
+      packages including twenty-ui. Resolve exact component/source license and revision before reuse; no source
+      copied or translated in this research.
+    fit: Product/interaction reference; wholesale backend port would also replace its metadata, persistence, jobs
+      and authorization architecture.
+  - project: Frappe CRM
+    sources:
+    - https://github.com/frappe/crm
+    - https://github.com/frappe/crm/releases
+    - https://raw.githubusercontent.com/frappe/crm/develop/crm/fcrm/doctype/crm_lead/crm_lead.json
+    observed_activity: Release list shows v1.87.0 and September/October releases/assets; inspected October 11, 2026.
+    stack: Python/Frappe and Vue frontend; repository identifies AGPL-3.0.
+    useful_reference: Lead/contact/sales data and role-based record workflows; inspected lead schema includes fields
+      and permissions.
+    fit: Workflow/schema reference; Frappe framework behavior is not an independently embeddable Rust core.
+  - project: EspoCRM
+    sources:
+    - https://github.com/espocrm/espocrm/releases
+    - https://www.espocrm.com/download/
+    - https://github.com/espocrm/espocrm/blob/master/composer.json
+    - https://raw.githubusercontent.com/espocrm/espocrm/master/application/Espo/Modules/Crm/Resources/metadata/entityDefs/Case.json
+    observed_activity: Official download lists 10.0.9 on September 29, 2026; releases inspected October 11.
+    stack: PHP REST backend and JavaScript SPA; composer identifies AGPL-3.0-or-later.
+    useful_reference: Customer support cases alongside CRM; inspected Case metadata has relations, indexed status/assignee
+      and optimistic concurrency.
+    fit: Strong candidate for support-case requirements; porting metadata alone would not reproduce its service/permission
+      guarantees.
+  - project: 900CRM
+    sources:
+    - https://github.com/900Labs/900CRM
+    - https://raw.githubusercontent.com/900Labs/900CRM/main/crates/crm-core/src/lib.rs
+    - https://raw.githubusercontent.com/900Labs/900CRM/main/crates/crm-core/Cargo.toml
+    - https://raw.githubusercontent.com/900Labs/900CRM/main/LICENSE
+    observed_status: README reports source v0.9.0 and no published 1.0 installer. Release/commit activity could
+      not be independently established from the attempted commits page; no production readiness verdict is claimed.
+    stack: Rust core with direct rusqlite dependency, Tauri desktop and Svelte; Apache-2.0 license file inspected.
+    useful_reference: Existing Tauri-independent Rust services/domain/audit/import-export structure and contacts/deals/activities.
+    fit: Candidate for selective Rust reuse, pending deeper service/storage/permission/tests audit; SQLite coupling
+      and desktop assumptions require adapters or refactoring before Portal use. No multi-user SaaS isolation inferred.
+  durable_storage:
+    inspected_at: '2026-10-11'
+    sources:
+    - https://github.com/900Labs/900CRM/blob/main/crates/crm-core/src/storage/db.rs
+    - https://github.com/900Labs/900CRM/blob/main/crates/crm-core/src/storage/mod.rs
+    - https://github.com/twentyhq/twenty/blob/main/packages/twenty-server/src/engine/metadata-modules/field-metadata/field-metadata.entity.ts
+    - https://github.com/frappe/crm/blob/develop/crm/fcrm/doctype/crm_lead/crm_lead.json
+    - https://github.com/espocrm/espocrm/blob/master/application/Espo/Modules/Crm/Resources/metadata/entityDefs/Case.json
+    - https://github.com/medusajs/medusa/blob/develop/packages/modules/pricing/src/models/price-list.ts
+    - https://docs.rs/rusqlite/0.40.2/rusqlite/struct.Transaction.html
+    - https://docs.rs/redb/latest/redb/
+    - https://www.sqlite.org/lang_transaction.html
+    comparison:
+    - 900CRM services reach into SQLite Connection and use its entity schema/migrations; selective service adoption
+      would replace our Store, snapshot, workspace and replay boundaries. Reuse SQLite/rusqlite rather than copy
+      CRM services.
+    - Twenty field metadata imports TypeORM and workspace migration/permission entities. Frappe lead metadata depends
+      on DocType/role framework behavior; Espo Case metadata depends on its entity/link services. These are workflow
+      references rather than drop-in Rust embedding components.
+    - Medusa price-list model imports framework utils and price-list rules/prices. Preserve original exact pricing
+      implementation and reusable browser adapters.
+    - redb offers Rust-native ACID storage but introduces a different KV/file contract. SQLite permits independent
+      SQL canonical rereads and fits inspected CRM persistence patterns.
+    selected: Opt-in bundled rusqlite 0.40.2 Store adapter; existing core and browser components unchanged. One
+      schema-2 JSON snapshot per workspace, immediate transaction for CAS and capacity, FULL synchronous local-file
+      commits. Host grants stay in Crm.
+    rejected:
+    - Wholesale upstream translation or framework adoption
+    - Custom file locking/rename database
+    - Default mandatory SQLite dependency
+    - WAL with naive live database copying
+    risks_and_controls:
+    - 'Single-writer contention: bounded busy timeout; stale revision returns Conflict; no automatic intent-changing
+      retries.'
+    - Snapshots have bounded serialized size/workspace count; reject unsupported database/snapshot versions and
+      mismatched revision metadata.
+    - 'Database contains private records/receipts: host controls file ACLs, backups and local filesystem; exclude
+      database sidecars from packages.'
+    - 'Unknown commit result: retry identical request after restart; receipts commit in same snapshot. Offline closed-database
+      copies only for backup/restore; rollback loses later commits.'
+    validation: Disk reopen plus independent SQL snapshot reread; two-process competing CAS; process exit before
+      commit; post-commit response loss/replay; authorization and pricing/fields/revisions; malformed/schema/capacity
+      errors; affected fmt/clippy/package/governance checks.
+    selection_status: Previous SQLite assessment preserved as optional adapter reference; selected host acceptance
+      is now SurrealDB, then PostgreSQL. New source-level reassessment pending dependency team findings.
+  compliance:
+    inspected_at: '2026-10-11'
+    sources:
+    - https://financien.belgium.be/nl/node/12036
+    - https://europa.eu/youreurope/business/finance-and-tax/vat/cross-border-vat/index_en.htm
+    - https://efacture.belgium.be/fr/FAQ/questions-generales-b2b
+    - https://efacture.belgium.be/fr/article/pour-qui-la-facturation-electronique-deviendra-t-elle-obligatoire
+    - https://www.edpb.europa.eu/sme/find-practical-info/faq_en
+    - https://www.edpb.europa.eu/topics/key-gdpr-concepts/data-subject-rights_en
+    - https://www.irs.gov/faqs/small-business-self-employed-other-business/starting-or-ending-a-business
+    - https://www.cdtfa.ca.gov/industry/MPFAct.htm
+    - https://www.ftc.gov/business-guidance/resources/can-spam-act-compliance-guide-business
+    observed_by: Dedicated compliance review recorded in repo-governance/docs/research/compliance-v1.md; specification
+      coordinator inspected the document, not the external sources.
+    selected: Research applicability and host boundaries before proposing executable rules; preserve exact money
+      and declared tax basis. No automatic VAT exemption from classification.
+    risks_and_controls:
+    - 'Jurisdiction/category/date affect tax treatment: require transaction evidence and explicit host tax owner.'
+    - 'US state requirements differ: state-specific applicability is unresolved; do not generalize California to
+      all states.'
+    - 'Invoice/privacy/marketing obligations span host systems: map canonical owners and data flows before implementation.'
+    validation: Dedicated source review plus applicability matrix; no blanket compliance verdict.
+    document_ref: repo-governance/docs/research/compliance-v1.md
+    review_status: Independent current-source review recorded in document, inspected by spec coordinator; unresolved
+      business applicability remains explicit. Candidate fiscal/privacy/communications controls remain proposed,
+      not implemented compliance.
+  surrealdb_embedding:
+    inspected_at: '2026-10-11'
+    sources:
+    - https://raw.githubusercontent.com/900Labs/900CRM/main/crates/crm-core/src/storage/db.rs
+    - https://raw.githubusercontent.com/medusajs/medusa/develop/packages/modules/pricing/src/models/price-list.ts
+    - https://surrealdb.com/docs/reference/rust/methods/query
+    - https://surrealdb.com/docs/learn/querying/concepts-and-guides/transactions
+    local_sources:
+    - ../../handshake-portal product Database port and portal-core RPC query/encode implementation inspected by
+      dependency team
+    - src/contracts.rs Store/snapshot/authorization boundary
+    comparison:
+    - 900CRM directly exposes SQLite Connection and app-data migrations; adoption replaces existing Store/workspace/replay
+      boundaries.
+    - Medusa pricing model imports framework model utilities and price/rule relations; preserve original exact pricing
+      and browser components.
+    - Official Rust SDK uses asynchronous query bindings; host-injected synchronous transport preserves current
+      Store without making full SDK mandatory.
+    - SurrealDB snapshot isolation provides write-write conflict detection; do not rely on serializable predicate
+      guarantees.
+    selected: Optional surreal feature with host-injected SurrealQuery transport; one schema-2 workspace snapshot
+      and replay receipts atomically stored in fixed workspace row. Host owns connection/authentication.
+    rejected:
+    - Whole CRM rewrite or upstream framework adoption
+    - Mandatory full SurrealDB SDK/network configuration in core
+    - Using SQLite proof as selected host durability acceptance
+    risks_and_controls:
+    - Check every statement error; known stale/write conflicts map Conflict, unknown outcomes map Storage and reconcile
+      identical operations.
+    - Compare prior canonical payload in transaction alongside revision; preserve decimal-u64 metadata.
+    - Host bounds encoded requests/responses and snapshot budget against real configured transport limit; service
+      default size does not prove transport support.
+    - Host owns authenticated database permissions, TLS, bounded timeouts and configuration; raw transport is privileged
+      infrastructure.
+    validation: Real SurrealDB disk-backed canonical reread, independent competing writers, restart, lost response/replay,
+      malformed/schema/capacity rejection; affected Rust/static/package/governance checks. Host adoption/release
+      pins remain unproved.
+  crm_usecases:
+    inspected_at: '2026-10-11'
+    document_ref: docs/research/crm-usecases-v1.md
+    sources:
+    - https://raw.githubusercontent.com/frappe/erpnext/develop/erpnext/selling/report/sales_analytics/sales_analytics.py
+    - https://raw.githubusercontent.com/frappe/erpnext/develop/erpnext/stock/report/stock_balance/stock_balance.py
+    - https://raw.githubusercontent.com/odoo/odoo/19.0/addons/point_of_sale/models/pos_order.py
+    - https://raw.githubusercontent.com/frappe/hrms/develop/hrms/hr/doctype/attendance/attendance.py
+    - https://github.com/PostHog/posthog.com/blob/master/contents/docs/data/events.mdx
+    - https://posthog.com/docs/api
+    - https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
+    - https://www.rssboard.org/rss-specification
+    - https://matomo.org/faq/reports/how-to-build-campaign-tracking-urls/
+    - https://raw.githubusercontent.com/frappe/charts/master/package.json
+    - https://raw.githubusercontent.com/vega/vega-lite/main/package.json
+    - https://raw.githubusercontent.com/twentyhq/twenty/main/packages/twenty-ui/package.json
+    - https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html
+    selected: Narrow owner-backed projections, explicit metric envelopes and connected drill-through; preserve Rust
+      core, current browser modules and canonical host owners. Research only; candidate analytics remain proposed.
+    rejected:
+    - Full ERP/HR/POS framework adoption inside Rust CRM
+    - Treating CRM/demo counts as sales/resource/engagement metrics
+    - Appending high-volume telemetry to bounded CRM workspace snapshots
+    - Prescribing Tokio solely from data-race requirements; prior no-specific-CRDT assessment superseded by BB-CRDT-001
+    risks_and_controls:
+    - Sales state/refunds/timezone and source completeness explicit; reconcile full canonical ledgers.
+    - HR/profile/tag privacy requires owner-specific projections beyond current workspace-wide read.
+    - Bounded queues/payloads/deadlines and recoverable uncertain writes; host numeric latency/workload budgets
+      unresolved.
+    validation: Canonical source reconciliation, forbidden-role reads, replay/dedup/late corrections, overload and
+      desktop/mobile drill-through when an actual adapter is selected.
+  localization:
+    inspected_at: '2026-10-11'
+    sources:
+    - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat
+    - https://www.w3.org/International/questions/qa-html-language-declarations
+    selected: Host-scoped dependency-free dictionary and in-place bindings; language scopes independent; Intl parts/BigInt
+      preserve exact decimal values.
+    rejected:
+    - Framework remount on language switch
+    - Float money conversion
+    - Language-selected fiscal jurisdiction
+    validation: 'Observed .local/localization-proof/result.json: en/fr/nl, retained drafts/in-flight DOM, identical
+      operation replay, exact BigInt values, no page errors; desktop/mobile screenshots inspected by localization
+      team. MemoryStore proof is temporary, not host persistence.'
+  field_usability:
+    research_ref: docs/research/field-usability-v1.md
+    sources_checked:
+    - Frappe CustomField source
+    - Twenty canonical metadata field selector source
+    - MDN native select/label/String.normalize
+    selected: Native label-first existing canonical selector plus impossible-key Create New sentinel; read-only
+      existing definition; no upstream UI dependencies or core/schema changes.
+    automatic_key: Trim label; NFKD; strip Unicode Marks; lowercase ASCII; non-ASCII/alphanumeric runs to hyphens;
+      trim edges; base capped120 ASCII bytes with field fallback; whole authorized catalogue first-free base/base-2...
+      suffix with total<=128. Preserve Unicode friendly label.
+    override: Optional explicit key retains host validation; no automatic canonical mutation or identity substitution.
+      Backend Conflict corrective with retained draft; unknown outcome retries identical operation/definition.
+    boundary: Full listFields catalogue, not rendered/filter subset; catalogue failure not empty success; host ownership/workspace
+      remount preserved.
+    proof: Root runs fresh field-selection/UI/localization/manual/workflow desktop/mobile; Unicode/collision/override/scopes/delayed
+      retry/disposal coverage and current fingerprints.
+workflow_findings:
+  report_ref: docs/research/operator-workflows-v1.md
+  result_ref: .local/operator-workflows/result.json
+  evidence_boundary: Workflow agent ran temporary Rust MemoryStore UI/backend scenarios; coordinator inspected report,
+    exact result and source. Run cleanup exit 1 is not a green shared UI verdict; no host inventory/checkout proof.
+  remediation:
+  - finding_id: WF-001
+    scenario_id: dirty-switch
+    current_behavior: Selecting Milk replaces unsaved Camera description silently.
+    source_refs:
+    - web/app.js
+    required_remediation: Protect dirty drafts before record selection/New product; validate cancel/continue/save
+      and failure paths.
+    status: recorded_existing_behavior_remediation
+  - finding_id: WF-002
+    scenario_id: stale-quote
+    current_behavior: Employee EUR72 preview remains after Camera B2B base changes to100; refreshed price would
+      be EUR90.
+    source_refs:
+    - web/app.js
+    - web/client-pricing.js
+    required_remediation: Invalidate or visibly mark quote freshness against client/product/tier revisions; test
+      relevant and unrelated updates.
+    status: recorded_existing_behavior_remediation
+  - finding_id: WF-003
+    scenario_id: invalid-price
+    current_behavior: Locally rejected negative price is presented as unconfirmed save with retry-to-reconcile instruction.
+    source_refs:
+    - web/app.js
+    required_remediation: Separate local pre-dispatch correction from post-dispatch uncertain recovery; retain conflict/response-loss
+      handling.
+    status: recorded_existing_behavior_remediation
+    conflict_recovery_finding:
+      review_ref: .local/independent-review/gui-current.md
+      observed_failure: Client Conflict marks cached revision stale but reselection reused the unchanged client
+        cache; no client search control exists, so backend r2 versus cached r1 can loop while claiming reload.
+      source_refs:
+      - web/client-pricing.js
+      - tooling/workflow-proof.py
+      remediation_observed: Current source rereads Customer list after confirmed Conflict, retains form controls,
+        replaces selected revision only after successful fresh read and requests review before another save. Failed
+        reread preserves needsReload; next save retries read without dispatching a stale write.
+      proof_required: Actual competing client writer r1/cache versus r2/backend then retained-draft save at r3;
+        failed reread must not claim reload or dispatch stale mutation. Fresh runtime proof pending.
+  scope_boundary: Existing behavior fixes only; no authorization for host inventory/checkout implementation. Root
+    assigns product writers/proof.
+roadmap:
+- wp_id: WP-BB-001-durable-core-v1
+  status: completed
+  requirement_refs:
+  - AF-CRM-REQ-001
+  - AF-CRM-REQ-002
+  - AF-CRM-REQ-010
+  - AF-CRM-REQ-011
+  - AF-CRM-REQ-012
+  - AF-CRM-REQ-013
+  - AF-CRM-REQ-014
+  - BB-DURABLE-001
+  - BB-REUSE-001
+  verification_summary: Root canonical selected durable-core completion read; fresh current-source Surreal disk/restart/restore/CAS/receipts/replay
+    proof and required checks passed. Host adapters/release pins/full CRM remain outstanding. Root clears own sync_pending
+    then current GOV.
+- wp_id: WP-BB-002-portal-adapter-v1
+  status: proposed
+  requirement_refs:
+  - AF-REQ-001
+  - AF-REQ-002
+  - AF-REQ-003
+  verification_summary: Unimplemented discovery/proposed scope.
+- wp_id: WP-BB-003-store-workflows-v1
+  status: proposed
+  requirement_refs:
+  - AF-CRM-REQ-004
+  - AF-CRM-REQ-005
+  - AF-CRM-REQ-006
+  - AF-CRM-REQ-007
+  - AF-CRM-REQ-008
+  - AF-CRM-REQ-009
+  verification_summary: Unimplemented discovery/proposed scope.
+- wp_id: WP-BB-004-photo-service-v1
+  status: proposed
+  requirement_refs:
+  - AF-CRM-REQ-003
+  verification_summary: Unimplemented discovery/proposed scope.
+- wp_id: WP-BB-005-crm-growth-v1
+  status: proposed
+  requirement_refs:
+  - BB-GROWTH-001
+  - BB-GROWTH-002
+  - BB-GROWTH-003
+  verification_summary: Unimplemented discovery/proposed scope.
+- wp_id: WP-BB-006-localization-v1
+  status: in_progress
+  requirement_refs:
+  - BB-LOCALE-001
+  verification_summary: Existing localization result and independent review inspected; unknown-error and exact discount/final
+    assertions plus current-input provenance require devlead review. Status retained.
+- wp_id: WP-BB-007-postgresql-storage-v1
+  status: planned
+  requirement_refs:
+  - BB-DURABLE-001
+  verification_summary: Accepted sequencing; adapter execution not finalized.
+- wp_id: WP-BB-008-compliance-research-v1
+  status: in_progress
+  requirement_refs:
+  - BB-COMPLIANCE-001
+  verification_summary: Official-source research and host applicability gaps recorded; current research review and
+    BB-CHECK-GOV acceptance recording remain with devlead. No implemented compliance verdict.
+- wp_id: WP-BB-009-internal-manual-v1
+  status: in_progress
+  requirement_refs:
+  - BB-MANUAL-001
+  verification_summary: Shipped manual source updated after saved proof; fresh visual/API/package proof and independent
+    review remain required. Status retained.
+- wp_id: WP-BB-010-swarm-backpressure-v1
+  status: in_progress
+  requirement_refs:
+  - BB-CONCURRENCY-001
+  - BB-BACKPRESSURE-001
+  - BB-PERFORMANCE-001
+  verification_summary: 'Selected spec13 P1 provisional diagnostic complete: exact2100 mixed operations each on
+    native Windows ARM64 and Windows x64 under ARM64 emulation, temporary MemoryStore only. Functional shared worker
+    evidence recorded; independent review reconciled all18 raw latency/outcome groups, canonical/configuration/pressure/fault
+    expiry/exact-intent replay and owned-resource/cleanup/hash evidence. Production representative Portal workload,
+    host numeric latency/resource budgets and actual host integration remain outstanding; camera-store/supermarket/photo-service
+    retained. No production SLA or native x64 hardware claim.'
+- wp_id: WP-BB-011-crm-usecase-research-v1
+  status: in_progress
+  requirement_refs:
+  - BB-RESEARCH-001
+  verification_summary: Source-backed research matrix produced; governance check and final acceptance recording
+    pending; analytics unimplemented.
+- wp_id: WP-BB-012-crdt-v1
+  status: in_progress
+  requirement_refs:
+  - BB-CRDT-001
+  - BB-CONCURRENCY-001
+  verification_summary: Raw-binary executable acceptance retracted; corrected first unit restricted to opaque crate-local
+    DraftUpdate/DraftCheckpoint, UTF8 byte splices, fresh scratch and budgeted pending state; ready for root assignment.
+    CRDT convergence/races and raw durable ingress/rehydration/real-host/retention/publish/interoperability remain
+    required/outstanding.
+- wp_id: WP-BB-013-operator-workflow-validation-v1
+  status: in_progress
+  requirement_refs:
+  - BB-WORKFLOW-001
+  verification_summary: Accepted dedicated-subagent workflow validation; scenario matrix, actual UI/backend observations,
+    screenshots and remediation/spec/stub capture pending. No implicit feature implementation or host compatibility.
+- wp_id: WP-BB-014-crate-boundary-v1
+  status: in_progress
+  requirement_refs:
+  - BB-BOUNDARY-001
+  - BB-PLATFORM-001
+  verification_summary: Core/default-member and separate host-demo boundary observed; package/fmt/lint outputs reviewed.
+    Native ARM64 and x64-emulated all-feature tests/demo outputs inspected; ignored Surreal tests not live proof.
+    UI/independent source acceptance pending, native x64 hardware evidence absent; macOS/Linux later.
+- wp_id: WP-BB-015-field-selection-v1
+  status: completed
+  requirement_refs:
+  - BB-FIELD-UX-001
+  - AF-CRM-REQ-011
+  verification_summary: Selected field presentation completed with six-criterion independent bounded PASS; five
+    fresh temporary backend browser proofs and current seven-file package proof. Prior cleanup failures historical;
+    no production host/universal ancestry/full CRM claim.
+host_intent:
+- host: Handshake Portal
+  requested_use: Operator business customer/user management, per-user usage and bug/feedback handling.
+- host: Operator photo-service website
+  requested_use: CRM use for the photo-service business; exact client, service and communication workflows require
+    discovery.
+- host: Physical store where the operator works
+  clarified_context: Camera store; separate from the operator photo-service website.
+  requested_use: Connected customer/product/order/availability workflows; product tags and fuzzy search; useful
+    product details at the till; configurable distributor/client/product fields; later Pricebuddy-like connection.
+  evidence_boundary: Operator-reported workflow needs captured in store_workflow_discovery; actual Tilroy integration
+    and data surfaces remain uninspected. No checkout/payment replacement or migration selected.
+topics:
+- topic_id: BB-TOPIC-BOUNDARY
+  title: Core, host presentation and first runtime platforms
+  requirement_refs:
+  - BB-BOUNDARY-001
+  - BB-PLATFORM-001
+- topic_id: BB-TOPIC-CORE
+  title: Independent embedding, ownership and durability
+  requirement_refs:
+  - AF-CRM-REQ-001
+  - AF-CRM-REQ-002
+  - AF-CRM-REQ-003
+  - AF-CRM-REQ-010
+  - BB-DURABLE-001
+  - BB-REUSE-001
+- topic_id: BB-TOPIC-RETAIL
+  title: Connected retail discovery
+  requirement_refs:
+  - AF-CRM-REQ-004
+  - AF-CRM-REQ-005
+  - AF-CRM-REQ-006
+  - AF-CRM-REQ-007
+  - AF-CRM-REQ-008
+  - AF-CRM-REQ-009
+- topic_id: BB-TOPIC-FIELDS
+  title: Reusable field catalogue
+  requirement_refs:
+  - AF-CRM-REQ-011
+  - BB-FIELD-UX-001
+- topic_id: BB-TOPIC-PRICING
+  title: Client classification and pricing
+  requirement_refs:
+  - AF-CRM-REQ-012
+  - AF-CRM-REQ-013
+  - AF-CRM-REQ-014
+- topic_id: BB-TOPIC-PORTAL
+  title: Portal administration and feedback
+  requirement_refs:
+  - AF-REQ-001
+  - AF-REQ-002
+  - AF-REQ-003
+- topic_id: BB-TOPIC-GROWTH
+  title: Broader CRM direction
+  requirement_refs:
+  - BB-GROWTH-001
+  - BB-GROWTH-002
+  - BB-GROWTH-003
+- topic_id: BB-TOPIC-LOCALIZATION
+  title: Module language toggles
+  requirement_refs:
+  - BB-LOCALE-001
+- topic_id: BB-TOPIC-COMPLIANCE
+  title: Evidence and applicability for fiscal and other rules
+  requirement_refs:
+  - BB-COMPLIANCE-001
+  - BB-COMPLIANCE-002
+- topic_id: BB-TOPIC-MANUAL
+  title: Internal user manual and no-context operation
+  requirement_refs:
+  - BB-MANUAL-001
+- topic_id: BB-TOPIC-SWARM
+  title: Rust swarm safety, pressure and performance
+  requirement_refs:
+  - BB-CONCURRENCY-001
+  - BB-BACKPRESSURE-001
+  - BB-PERFORMANCE-001
+- topic_id: BB-TOPIC-USECASES
+  title: Cross-sector CRM and canonical analytics research
+  requirement_refs:
+  - BB-RESEARCH-001
+  - BB-ANALYTICS-001
+- topic_id: BB-TOPIC-CRDT
+  title: CRDT selection, merge ownership and race proof
+  requirement_refs:
+  - BB-CRDT-001
+  - BB-CONCURRENCY-001
+- topic_id: BB-TOPIC-WORKFLOW
+  title: Realistic operator workflow validation
+  requirement_refs:
+  - BB-WORKFLOW-001
+topic_format:
+  encoding: existing self-contained buurtman.spec.v1 YAML
+  declaration_owner: requirements; topics hold stable navigation references, not duplicate statements
+  formatting_reference: hsrepotemplate TECHNICAL-SPECIFICATION.template.md topic_ownership, stable_semantic_ids
+    and reference_resolution
+  policy: Preserve requirement IDs on topic moves/splits; allocate new topic IDs when independent scope needs selection.
+    Preserve prior product detail and research. Template Markdown document encoding and stock workflow are not introduced.
+change_history:
+- revision: 14
+  changed_requirement_refs:
+  - BB-CONCURRENCY-001
+  - BB-BACKPRESSURE-001
+  - BB-PERFORMANCE-001
+  reason: Operator continues competing-write work; additive whole-command CommandWorker chosen before code with
+    dispatch-time authorization and exact argument-byte admission; separate P2 comparison profile preserves frozen
+    P1 and production host/SLA gaps.
+- revision: 13
+  changed_requirement_refs:
+  - BB-PERFORMANCE-001
+  - BB-BACKPRESSURE-001
+  reason: Root selects exact authorized P1 provisional Portal measurement profile, bounded resources/metrics/fault
+    phases and actual Windows runtime scopes before code; no production SLA acceptance.
+- revision: 12
+  changed_requirement_refs:
+  - BB-FIELD-UX-001
+  - BB-PERFORMANCE-001
+  reason: Operator requests existing-field dropdown/Create New with label-first canonical key generation and advanced
+    override; authorizes provisional Portal diagnostic numeric measurements without production SLA acceptance.
+- revision: 11
+  changed_requirement_refs:
+  - BB-CRDT-001
+  reason: Completed reuse-source findings select opaque Rust-only UTF8-byte text operations, fresh checkpoint-derived
+    Doc scratch and explicit budgeted pending-causal state; no Doc.clone isolation or arbitrary decoder entry. Root
+    may assign component implementation; retain raw persistence/import/UTF16 interoperability and full durable-host
+    acceptance.
+- revision: 10
+  changed_requirement_refs:
+  - BB-CRDT-001
+  reason: Decoder resource evidence invalidates raw-binary first-unit safety premise; bytecap/scratch postvalidation
+    do not bound decoder memory/stack. Restrict candidate to opaque crate-local update/checkpoint provenance and
+    hold execution for reachable-path review; preserve required CRDT outcome and all raw durable/interoperability
+    acceptance.
+- revision: 9
+  changed_requirement_refs:
+  - BB-CRDT-001
+  reason: Selected researched optional Yrs0.28.0 Rust-only description draft and separate collaboration crate; executable
+    component does not require initial Yjs interop. Preserve all unresolved durable host/retention/publish and interoperability
+    acceptance, with actual convergence/race proof on both Windows targets required.
+- revision: 8
+  changed_requirement_refs:
+  - BB-BOUNDARY-001
+  - BB-PLATFORM-001
+  reason: Operator requires host-owned GUI separated from reusable root Rust core, website admin AND custom app
+    embedding, and actual Windows x64/ARM64 runtime proof first; macOS/Linux later. Existing WF001-WF003 remediation
+    captured; no inventory/checkout implementation or host ownership shift authorized.
+- revision: 7
+  changed_requirement_refs:
+  - BB-CONCURRENCY-001
+  - BB-CRDT-001
+  - BB-WORKFLOW-001
+  - BB-BACKPRESSURE-001
+  reason: Current operator correction requires CRDT AND data-race tests; camera-store replaces photo-store wording
+    while separate photo-service website/supermarket remain. Dedicated workflow validation accepted; prior research
+    and original host stubs retained. CRDT selection remains unresolved; authoritative CAS/money/stock not replaced.
+- revision: 6
+  changed_requirement_refs:
+  - BB-CONCURRENCY-001
+  - BB-BACKPRESSURE-001
+  - BB-PERFORMANCE-001
+  reason: Devlead selected researched one-lane bounded Store worker as first functional executable unit; numeric
+    workload/SLA acceptance and production host adoption remain unresolved. Root owns WP010 promotion.
+- revision: 5
+  changed_requirement_refs:
+  - BB-BACKPRESSURE-001
+  reason: Operator selected Portal as first WP010 workload/host while preserving photo-store and supermarket scope;
+    numeric budgets remain unresolved. Root retains WP010 promotion ownership.
+- revision: 3
+  changed_requirement_refs:
+  - BB-DURABLE-001
+  - BB-REUSE-001
+  - BB-LOCALE-001
+  - BB-COMPLIANCE-001
+  reason: Operator selected database sequencing, teams, language toggles and persistent lightweight team workflow;
+    prior host/growth scope retained.
+- revision: 4
+  changed_requirement_refs:
+  - BB-MANUAL-001
+  - BB-CONCURRENCY-001
+  - BB-BACKPRESSURE-001
+  - BB-PERFORMANCE-001
+  - BB-RESEARCH-001
+  - BB-ANALYTICS-001
+  - BB-COMPLIANCE-002
+  reason: Operator requested internal manual, Rust swarm safety/backpressure/fast responses and broad source-backed
+    use-case research; clarified data-race intent without CRDT prescription.

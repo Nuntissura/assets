@@ -1,0 +1,93 @@
+schema_version: buurtman.taskboard.v1
+board_id: BOARD-buurtman-balie-v1
+work_packets:
+- wp_id: WP-BB-001-durable-core-v1
+  title: Durable reusable CRM core
+  kind: active
+  status: completed
+  contract_ref: repo-governance/work-packets/active/WP-BB-001-durable-core-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-001-durable-core-v1/state.yaml
+- wp_id: WP-BB-002-portal-adapter-v1
+  title: Portal business users, usage and feedback
+  kind: stub
+  status: proposed
+  contract_ref: repo-governance/work-packets/stubs/WP-BB-002-portal-adapter-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/stubs/WP-BB-002-portal-adapter-v1/state.yaml
+- wp_id: WP-BB-003-store-workflows-v1
+  title: Connected retail workflows
+  kind: stub
+  status: proposed
+  contract_ref: repo-governance/work-packets/stubs/WP-BB-003-store-workflows-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/stubs/WP-BB-003-store-workflows-v1/state.yaml
+- wp_id: WP-BB-004-photo-service-v1
+  title: Photo-service embedding
+  kind: stub
+  status: proposed
+  contract_ref: repo-governance/work-packets/stubs/WP-BB-004-photo-service-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/stubs/WP-BB-004-photo-service-v1/state.yaml
+- wp_id: WP-BB-005-crm-growth-v1
+  title: Fuller relationship and communications CRM
+  kind: stub
+  status: proposed
+  contract_ref: repo-governance/work-packets/stubs/WP-BB-005-crm-growth-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/stubs/WP-BB-005-crm-growth-v1/state.yaml
+- wp_id: WP-BB-006-localization-v1
+  title: English French Dutch module localization
+  kind: active
+  status: in_progress
+  contract_ref: repo-governance/work-packets/active/WP-BB-006-localization-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-006-localization-v1/state.yaml
+- wp_id: WP-BB-007-postgresql-storage-v1
+  title: PostgreSQL durable storage next
+  kind: stub
+  status: planned
+  contract_ref: repo-governance/work-packets/stubs/WP-BB-007-postgresql-storage-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/stubs/WP-BB-007-postgresql-storage-v1/state.yaml
+- wp_id: WP-BB-008-compliance-research-v1
+  title: EU US Belgium compliance evidence
+  kind: active
+  status: in_progress
+  contract_ref: repo-governance/work-packets/active/WP-BB-008-compliance-research-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-008-compliance-research-v1/state.yaml
+- wp_id: WP-BB-009-internal-manual-v1
+  title: Internal CRM user manual
+  kind: active
+  status: in_progress
+  contract_ref: repo-governance/work-packets/active/WP-BB-009-internal-manual-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-009-internal-manual-v1/state.yaml
+- wp_id: WP-BB-010-swarm-backpressure-v1
+  title: Swarm data-race backpressure and response budgets
+  kind: active
+  status: in_progress
+  contract_ref: repo-governance/work-packets/active/WP-BB-010-swarm-backpressure-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-010-swarm-backpressure-v1/state.yaml
+- wp_id: WP-BB-011-crm-usecase-research-v1
+  title: Cross-sector CRM use-case research
+  kind: active
+  status: in_progress
+  contract_ref: repo-governance/work-packets/active/WP-BB-011-crm-usecase-research-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-011-crm-usecase-research-v1/state.yaml
+- wp_id: WP-BB-012-crdt-v1
+  title: CRDT description draft and data-race proof
+  kind: active
+  status: in_progress
+  contract_ref: repo-governance/work-packets/active/WP-BB-012-crdt-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-012-crdt-v1/state.yaml
+- wp_id: WP-BB-013-operator-workflow-validation-v1
+  title: Realistic employee and operator workflow validation
+  kind: active
+  status: in_progress
+  contract_ref: repo-governance/work-packets/active/WP-BB-013-operator-workflow-validation-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-013-operator-workflow-validation-v1/state.yaml
+- wp_id: WP-BB-014-crate-boundary-v1
+  title: Independent core and host presentation crate boundary
+  kind: active
+  status: in_progress
+  contract_ref: repo-governance/work-packets/active/WP-BB-014-crate-boundary-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-014-crate-boundary-v1/state.yaml
+- wp_id: WP-BB-015-field-selection-v1
+  title: Nontechnical reusable field selection
+  kind: active
+  status: completed
+  contract_ref: repo-governance/work-packets/active/WP-BB-015-field-selection-v1/wp-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-BB-015-field-selection-v1/state.yaml

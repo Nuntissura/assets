@@ -1,0 +1,37 @@
+---
+file_id: BB-RESEARCH-FIELD-USABILITY-v1
+file_kind: research-basis
+updated_at: 2026-10-11
+---
+
+<topic id="scope-and-source-comparison" wp="WP-BB-015-field-selection-v1" status="researched">
+
+Read accepted BB-FIELD-UX-001/spec12 and active WP015 before writing. Inspected `web/field-editor.js`, `web/localization.js`, `web/app.js`, `src/contracts.rs` and field definition/record validation in `src/service.rs`. Current editor requires technical key and label, creates definitions and lists canonical definitions; product inputs/search already derive from authorized adapter.listFields. Catalogue keys are workspace-wide; definitions are immutable in practice: DefineField accepts identical existing definition but conflicts with differing label/type/scopes. A new dropdown must reuse a definition without dispatching DefineField. Record applicability and typed filters remain governed by existing catalogue; choosing a definition is not implicit assignment/publication.
+
+[Frappe CustomField source](https://github.com/frappe/frappe/blob/develop/frappe/custom/doctype/custom_field/custom_field.py) derives missing fieldname from label, replaces spaces, retains alphanumerics/underscore, prefixes custom_, lowercases and checks metadata conflicts. Pattern reuse: friendly label separated from technical identity and server collision validation. Its Python isalpha retains Unicode, whereas this core identifier accepts only ASCII letters/digits and -_.:, max128 bytes. Do not copy the normalization or schema migration implementation.
+
+[Twenty field selector source](https://github.com/twentyhq/twenty/blob/main/packages/twenty-front/src/modules/object-record/advanced-filter/components/AdvancedFilterFieldSelectMenu.tsx) obtains metadata, searches labels, renders labels keyed by stable metadata IDs and selects existing metadata. [Catalogue selector](https://github.com/twentyhq/twenty/blob/main/packages/twenty-front/src/modules/object-metadata/states/availableFieldMetadataItemsForFilterFamilySelector.ts) derives readable/filterable fields from the relevant object and workspace. Reuse the canonical identity/label/type-aware selection pattern. Its React/Jotai/Lingui/custom dropdown dependencies are unnecessary in this original vanilla browser module; no upstream UI code adopted. Selection UI visibility is not full inventory proof.
+
+[Native select](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/select) supports stable option values and associated visible labels; [label guidance](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/label) supplies implicit or explicit control association. Select a native single-choice select with existing label/type options plus Create New sentinel; give sentinel an impossible core key value. Existing selection displays read-only label/type/scopes and canonical key. New mode shows friendly Field name, type/scopes, generated identity preview and optional Advanced key override. Keep buttons outside the select; use details/summary for advanced controls. No custom combobox keyboard/focus framework is required.
+
+</topic>
+
+<topic id="selected-key-and-retry-policy" wp="WP-BB-015-field-selection-v1" status="selected">
+
+Root-selected automatic policy: trim label; [NFKD normalize](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize); remove Unicode Mark characters; lowercase ASCII letters; replace runs outside ASCII letters/digits with hyphens; strip edge hyphens; truncate base to120 ASCII bytes and strip trailing hyphen; fallback field when conversion yields no ASCII. Thus accented letters decompose where supported, combining marks disappear, emoji/non-Latin-only labels use field. This is deterministic identity generation, not comprehensive transliteration. Preserve original friendly Unicode label. Keys remain independent of selected UI language; labels are operator data, not translated dictionary keys.
+
+Resolve collisions against the complete authorized listFields result via a Set of canonical keys, never product-filtered options or rendered rows. Select first free base, base-2, base-3, etc.; trim base further if needed so suffix plus base never exceeds128 bytes. Existing base does not imply safe identical-definition reuse for a new intent. Display resulting key before submission. Unicode labels collapsing to the same base get distinct explicit suffixes; refresh races remain possible. Backend Conflict is corrective: retain draft and explain reuse or choose a different identity. No silent overwrite or automatic identity substitution after dispatch.
+
+Advanced explicit override preserves public key validation: nonempty <=128 ASCII bytes using letters/digits/-_.:. Do not transliterate, lowercase or suffix an explicitly overridden key. Validate separately from label/type/nonempty scopes; known existing overridden key must be corrected rather than treated as creation. Label max128 scalar characters differs from DOM maxlength128 UTF16 units; preserve existing stricter DOM bound or deliberately validate core scalar rule without claiming equivalence.
+
+On dispatch capture an immutable definition copy, signature and operationId. Until confirmed, retry this exact snapshot even if visible form edits, catalogue refresh or language change would generate a different key. A changed visible draft remains unsent and must survive the earlier response; never reset it on prior success. If confirmation succeeds but refresh fails, distinguish confirmed write from catalogue refresh failure. If confirmation is uncertain, retain old pending intent for receipt reconciliation. In-flight editor controls may stay editable only with this snapshot/draft separation; disposal ignores late replies and unsubscribes localization. Refresh preserves current new-mode drafts and selected stable keys. Host workspace changes require remount/adapter ownership, not carrying previous catalogue/request into a new workspace.
+
+</topic>
+
+<topic id="validation-and-remaining-boundaries" wp="WP-BB-015-field-selection-v1" status="planned-proof">
+
+Root owns implementation and actual desktop/mobile browser proof. Exercise existing selection with zero defineField calls; canonical type/scopes/read-only identity; new accented/combining/emoji-only labels, truncation and collisions; explicit valid/invalid overrides; empty scopes; refreshed catalogue collision; backend confirmed Conflict versus uncertain Storage; edited form + locale switch during delayed dispatch; identical retry operation/definition; confirmed write followed by refresh failure; disposal and workspace remount. Check EN/FR/NL visible/accessibility names, keyboard selection, advanced disclosure, status clarity and no mobile clipping. Product field inputs and typed filters must still derive from same catalogue.
+
+Native selection and automatic key generation reuse current adapter/catalogue/receipt/localization surfaces, avoiding core/schema changes. Catalogue-load failure must remain visible and must not be treated as an empty authoritative catalogue. New dynamic option/status text needs explicit localization rendering because bindLocalization records initial text nodes and attributes; rebuilding controls can lose bindings/drafts. Generated keys/override identity are data and must not change on language switch. Actual host authorization, stock, orders and publication retain owners. This document is source-based selection, not GUI/runtime proof; no product/build/browser actions occurred in this research lane.
+
+</topic>

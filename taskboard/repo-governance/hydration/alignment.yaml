@@ -1,0 +1,246 @@
+schema_version: taskboard.owner-template-adoption.v1
+kind: owner_template_adoption
+alignment_id: ALIGN-TASKBOARD-v1
+updated_at: '2026-10-11'
+scope:
+  project_id: TASKBOARD
+  module_root: .
+  canonical_git_root: ..
+  canonical_repository: https://github.com/Nuntissura/assets.git
+  sibling_projects_in_scope: false
+selection:
+  method: HSRepoTemplate Mode B
+  operation_mode: planning
+  repository_bootstrapped: false
+  stock_coding_workflow_selected: false
+  product_execution_activated: false
+template_inputs:
+  pack_id: HANDSHAKE-PROJECT-BASE-v1
+  version: 40
+  payload_sha256: cc8f866fc9d43e8c26650a8ec98c6452f39e39b77c613b4b1252a77e0dc4f151
+  members:
+  - template_id: HT-REPO-STRUCTURE-001
+    template_version: 15
+    payload_sha256: 1f83569e0066aa2a02100a291a10f93e580eeb7acf403ada91ad0f1f05ece61f
+  - template_id: HT-SPEC-TECHNICAL-001
+    template_version: 6
+    payload_sha256: 6b44458ed34ae6d968dc537292861075c742e3d6bac214c419246630bfb44120
+  - template_id: HT-AUTH-BUILD-RULES-001
+    template_version: 24
+    payload_sha256: 892b1be06673b47c42942d116d0a9402ea9c7c2b1265ba1607bc4473beafd1be
+  - template_id: HT-REUSE-BINDINGS-001
+    template_version: 4
+    payload_sha256: b041cedd1888452047ec720e545c1e6dd965f2e91963f69b6ad29c2c8eb532f5
+  - template_id: HT-REUSE-LOCK-001
+    template_version: 3
+    payload_sha256: 1e7fd6a8ced00eaa63a9040c99160b479bc447e47f7520a73159acdf223abaac
+  - template_id: HT-REUSE-SOLUTION-001
+    template_version: 3
+    payload_sha256: 04c083054823e8b4a62b0a7f18d0970b3c1126dbb3133efab944717437344c0d
+  - template_id: HT-REPO-MODULE-001
+    template_version: 10
+    payload_sha256: 1d70d9549f77415e9b2b1c4a5af40a072228b58451c60f250204c118d20cecc6
+  - template_id: HT-TOPOLOGY-PRODUCT-001
+    template_version: 7
+    payload_sha256: 48da456d3a00304598d3e9fd1189d9d00ee16ec94015eee0f3065ddd7d5ef832
+  - template_id: HT-WORK-ACTIONS-001
+    template_version: 25
+    payload_sha256: 9b11da2f6a308821d0346c1b849510f46b1ef684cc8609c168dc657f67168c2f
+  - template_id: HT-AUTH-CODEX-001
+    template_version: 29
+    payload_sha256: d02b8f8147062c03a22fc6c2c82665a6a4d8ee4acc9fb8b969b69d97c7655793
+  - template_id: HT-WORK-REFINE-001
+    template_version: 9
+    payload_sha256: 817d18e16b9bdda8d439bda914e2124143bc37ba57beffe58e33ae795ea08ca5
+  - template_id: HT-WORK-WP-001
+    template_version: 16
+    payload_sha256: ea45ab0151c5096880de3582da079db7d67345c6e1cb4797f62424fd341f13a3
+  - template_id: HT-WORK-MT-001
+    template_version: 20
+    payload_sha256: f062c9f19129bbb696b5cb5d6901ffd54987a1cfbf189b9f92243676c05dcc24
+  - template_id: HT-WORK-STATE-001
+    template_version: 12
+    payload_sha256: 5e44c053d337853cac2ae6186f8479f7f9f570adff3038ba4563a4dba30ada4b
+  - template_id: HT-WORK-GAMEPLAN-001
+    template_version: 4
+    payload_sha256: e1cb90afd245e074449ce136add4dea32c9d90298f543e39eae5e71460c93128
+  - template_id: HT-WORK-RECEIPT-001
+    template_version: 14
+    payload_sha256: 4135387dc0debc818ff036c08ba5407230395414f6e26fd1680d3015e98a0e83
+  - template_id: HT-WORK-TASKBOARD-CONFIG-001
+    template_version: 6
+    payload_sha256: a77da3c8d57c2a2437714d63b0ee098de21cf5b22ecd8196cd7b6632b553ff43
+  - template_id: HT-WORK-TASKBOARD-PROJECTION-001
+    template_version: 6
+    payload_sha256: 8b149c66e45b56413fbd615212b485d90996a039b0dcd030ce0c0be654a9999a
+  - template_id: HT-ROLE-ACTIVATION-MANAGER-001
+    template_version: 7
+    payload_sha256: 4b8292b7c490ba089da2e8334a6da55afffde51f3ffda39102b88d29b0c7fa75
+  - template_id: HT-ROLE-BUILDER-001
+    template_version: 8
+    payload_sha256: 83cddd44ebd9ab1f590f1727b9947934bd82f1fe1b1ce38160d634fb0ed60074
+  - template_id: HT-ROLE-CODER-001
+    template_version: 9
+    payload_sha256: efeb2752e36a6f1c255bf7d35f3c93c4a7c27f1bdd437b3dfc12d63983488205
+  - template_id: HT-ROLE-INTEGRATION-VALIDATOR-001
+    template_version: 6
+    payload_sha256: 355e3a086075630af302612940ed64ef573ea7176aa8a73391055298eb3d8ed6
+  - template_id: HT-ROLE-ORCHESTRATOR-001
+    template_version: 7
+    payload_sha256: d252022ec8491313119885cffba570820d311a5da0b679752d830ed6ca7cffa4
+  - template_id: HT-ROLE-WP-VALIDATOR-001
+    template_version: 6
+    payload_sha256: f9c30da16d2a34c13373206ebb7ea07447b14397fa20507e8d87a82314f42785
+  - template_id: HT-WORK-CODING-001
+    template_version: 17
+    payload_sha256: 4064827e013a6a75b048ede49cc40d1cdd30493f5311076956d66bed65f3f6e1
+  - template_id: HT-SCHEMA-REFINE-001
+    template_version: 3
+    payload_sha256: 77c95bbb25f537ffeb07ac0062bde176959c56295da7f891b1daf3dd1ce50656
+  - template_id: HT-SCHEMA-WP-001
+    template_version: 6
+    payload_sha256: d6f5086c39b6fe8da6f99b0eaa9dd1f0364de7b495fe932c22e08fd97934596b
+  - template_id: HT-SCHEMA-MT-001
+    template_version: 9
+    payload_sha256: f1996237a7ad79f3b5055339938e01cc8e0e9ce3f51969e1ecebe1ddbe204506
+  - template_id: HT-SCHEMA-STATE-001
+    template_version: 5
+    payload_sha256: 7fe3a046bef3b48cec1089d30ebc402e5b46867bd31ff82dcc5170b3c8d6d9c1
+  - template_id: HT-SCHEMA-RECEIPT-001
+    template_version: 7
+    payload_sha256: 385f1ce7fbad08146da6d8198f027863f177bd48514bf445572d1e8f83a19b42
+  - template_id: HT-SCHEMA-GAMEPLAN-001
+    template_version: 3
+    payload_sha256: e44b9967e703f495316c8af6e953ea79853fe31f377ad0acb960325439f4a339
+  - template_id: HT-SCHEMA-ROLE-001
+    template_version: 3
+    payload_sha256: 8eec1507d156c566490a2fd7a0342ea5b79d29a3015ba640620e6b887ebbc146
+  release_gates:
+  - all_markdown_valid
+  - all_links_resolve
+  - every_marker_pair_is_unique
+  - every_yaml_payload_parses
+  - every_template_id_is_unique
+  - every_selected_template_version_matches_manifest
+  - kernel_sdk_foundation_binding_and_profile_resolve
+  - callable_catalog_matches_current_module_declarations
+  - sdk_source_imports_match_build_rule_dependency_policy
+  - watcher_observation_is_independent_of_target_dispatch
+  - every_manifest_path_resolves
+  - dependency_graph_is_acyclic
+  - every_required_placeholder_is_declared
+  - every_selected_placeholder_is_resolved
+  - product_module_manifests_resolve
+  - product_topology_semantic_and_dependency_refs_resolve
+  - technical_specification_status_is_ready
+  - extraction_round_trip_is_semantically_equal
+  - current_schema_versions_have_final_schemas
+  - build_rule_design_resolution_release_claims_pass
+  - build_matrix_entry_universe_and_wp_mt_coverage_resolve
+  - wp_and_mt_templates_match_rulebook_contract_fields
+  - claimed_mt_required_read_set_within_budget
+  - test_environment_contract_and_tools_manifest_resolve
+  - single_checked_in_test_entrypoint_and_config_files_resolve
+  - module_layer_fields_and_layer_dependency_matrix_hold
+  - sdk_contract_refs_in_wp_mt_match_pinned_resolution
+  - contract_compilation_rejects_partial_stale_or_model_owned_mechanical_fields
+  - spec_bundle_documents_indexes_and_primitive_feature_relations_resolve
+  - spec_topics_and_fenced_inline_content_parse_without_sidecar_or_external_truth
+  - research_cannot_supply_product_truth_enforcement_or_final_decisions
+  - stub_candidates_cannot_authorize_wp_mt_execution
+  - activation_binds_only_refined_enriched_in_scope_obligations
+  - future_feature_entries_do_not_expand_unrelated_wp_mt_scope
+  - internal_spec_roadmap_status_and_implemented_matrix_coverage_match_verified_scope
+  - action_specific_context_and_shared_eligibility_agree
+  - receipt_scope_and_settlement_match_actual_action
+  - preactivation_projection_contains_no_executable_mts
+  - semantic_code_reuse_and_distinct_purpose_lineage_resolve
+  - solution_dependency_closure_and_promotion_source_proof_match
+  - spec_core_format_example_and_reference_ownership_validate
+  - transaction_preview_is_effect_free_and_commit_rechecks_inputs
+  - required_base_directories_and_single_template_input_location_match_structure
+  - complete_prior_spec_snapshot_precedes_current_update_and_version_advance
+  - activation_workspace_and_terminal_cleanup_match_wp_ownership
+  - selected_stock_workflow_roles_transitions_and_capability_bindings_resolve
+  - selected_managed_workflow_versioned_review_dispatch_and_merge_are_runtime_proven
+  - every_selected_artifact_validates_against_its_schema
+  - every_active_wp_has_a_gameplan_and_costly_actions_pass_its_gate
+  - failed_verdict_remediation_distinct_resubmission_proof_invalidation_and_result_freshness_checks_hold
+template_role: Pinned exact source payloads; not active runtime authority or resolved
+  controller contracts
+preserved_input_hashes:
+  Cargo.toml: sha256:c10551b1d3762d151842e46a0537d6c33206911375a7c7079f14d75458d13cd4
+  Cargo.lock: sha256:cae0fc65602277145e939422c67126199c8ac490137b17e4d586370067a7ad83
+  package.json: sha256:384e55cc7274c5b62316ec776e7a856466ceef3825c4587ab86b50ba4b65c3d7
+  LICENSE: sha256:698cb63e8c93eaf257e3ac81c5fd608a684ba5d8fb9ce55f627540254d2a620a
+  README.md: sha256:8ff75e2811829fa3b97e7d29fa23c38f6b4a34cec8c23727cf20ffdc1c093ef3
+  src/lib.rs: sha256:a0983b97f02307e21f51ae717edb6c4239e0d4cd143449d6673f0470a1ee5c82
+  web/index.ts: sha256:ae9263e8b562560b715e6ce9a9bd332d860800d3dffe84d923ef214f10017459
+  web/Taskboard.tsx: sha256:dd095322fcac3061ef077cc06135d773d92c96c1852851633204b3feb0e00230
+  web/taskboard.css: sha256:deee3bfa7181082699d6954f027443aa7bcc24b53b605ae697236e2900abed11
+layout:
+  product_package_root: .
+  governance_root: repo-governance/
+  preserved_paths:
+  - Cargo.toml
+  - Cargo.lock
+  - package.json
+  - LICENSE
+  - README.md
+  - src/lib.rs
+  - web/index.ts
+  - web/Taskboard.tsx
+  - web/taskboard.css
+  relocations: []
+  basis: Operator selected taskboard only as one project under shared asset modules;
+    host source pin requires current paths
+adoption_limits:
+- id: GAP-TASKBOARD-REPO-LAYOUT
+  state: operator_scoped_exception
+  detail: No product/ workspace migration inside the existing package; .assets repository
+    remains unchanged
+- id: GAP-TASKBOARD-CONTROLLER
+  state: not_selected
+  detail: No Handshake controller, activation, worktrees or model-operated repository
+    bootstrap claimed
+- id: GAP-TASKBOARD-SDK
+  state: not_selected
+  detail: Existing std-only library and React host contracts retained; no HSKernelSDK
+    version or dependency fabricated
+- id: GAP-TASKBOARD-GUI-PROOF
+  state: not_proven
+  detail: No standalone browser harness exists; host-specific GUI and integration
+    proof must be executed in the consuming project
+- id: GAP-TASKBOARD-RELEASE
+  state: not_proven
+  detail: Local candidate provenance is recorded by the host; no fresh canonical GitHub
+    revision read or registry publication proved
+proof_policy:
+  structural_checks_do_not_prove_runtime: true
+  existing_source_is_not_acceptance_proof: true
+  published_source_requires_independent_canonical_read: true
+updates:
+- event_id: ALIGN-TASKBOARD-UPDATE-001
+  actor: model_alignment_executor
+  action: reconcile_specification_controller_selection
+  archive_ref: repo-governance/specification/spec-archive/SPEC-TASKBOARD-v1/v1-r1-645398f98913
+  archive_file_hashes:
+    specification.yaml: 01686168a9cfe739bd45994c6adb66e8f53bfbce055a8c194b33aac4218584f4
+    spec-modules/roadmap.md: e02f0819c25ec4ce1f517affe1539c76fff34e943d50d627f0d5db9f68276310
+    spec-modules/taskboard-contract.md: 7f0a00829ff9702950dd2a7bc4ff135e43710e63e9dd44dd878fa0e02982b22b
+  archive_bundle_sha256: 645398f9891314b19e268b1adb7593a0cfbb8ee2bce7c1231b75cf5c87c2e20a
+  result: complete_prior_bundle_hash_verified
+  observed_at: '2026-10-11'
+  not_a_handshake_controller_receipt: true
+- event_id: ALIGN-TASKBOARD-UPDATE-002
+  actor: model_alignment_executor
+  action: reconcile_specification_update_actor
+  archive_ref: repo-governance/specification/spec-archive/SPEC-TASKBOARD-v1/v2-r2-040cf1f79a76
+  archive_file_hashes:
+    specification.yaml: aba6325ddf2e4614b545143adba094af0d2266ed8b9b012150462ce347f7a477
+    spec-modules/roadmap.md: e02f0819c25ec4ce1f517affe1539c76fff34e943d50d627f0d5db9f68276310
+    spec-modules/taskboard-contract.md: 7f0a00829ff9702950dd2a7bc4ff135e43710e63e9dd44dd878fa0e02982b22b
+  archive_bundle_sha256: 040cf1f79a76c191cda398ba317e9a6d308e2a1ee27c59488c85f9745a29adb9
+  result: complete_prior_bundle_hash_verified
+  observed_at: '2026-10-11'
+  not_a_handshake_controller_receipt: true

@@ -1,0 +1,57 @@
+schema_version: taskboard.build-profile.v1
+rulebook_id: BUILD-TASKBOARD-v1
+revision: 1
+template_owner: HT-AUTH-BUILD-RULES-001
+stock_rulebook_materialized: false
+project_profile:
+  kind: hosted_library
+  module_manifest: module.yaml
+  rust_manifest: Cargo.toml
+  browser_manifest: package.json
+  browser_entry: web/index.ts
+  rust_dependencies: std only
+  browser_peer: React ^19.0.0 supplied by host
+  standalone_server: false
+checks:
+- check_id: CHECK-TASKBOARD-ALIGNMENT
+  command:
+  - python
+  - -B
+  - repo-governance/repo-scripts/check-alignment.py
+  scope: governance structure; not runtime
+- check_id: CHECK-TASKBOARD-DOMAIN
+  command:
+  - cargo
+  - test
+  - --offline
+  - --manifest-path
+  - Cargo.toml
+  - --lib
+  scope: existing two Rust domain tests
+  preparation_gate: gameplan before_round
+  run_when: Rust inputs change or fresh runtime proof requested
+- check_id: CHECK-TASKBOARD-PACKAGING
+  command:
+  - cargo
+  - package
+  - --allow-dirty
+  - --list
+  - --manifest-path
+  - Cargo.toml
+  scope: package inclusion; no build
+  run_when: package inclusion inputs change
+- check_id: CHECK-TASKBOARD-HOST
+  command: null
+  scope: consumer owns build, HTTP boundary and GUI proof
+  run_when: consumer contract or browser source changes
+  resolve_from: consumer current authority and source pins
+rules:
+- rule_id: TASKBOARD-BUILD-001
+  rule: Retain the existing Cargo include and npm files allowlists; exclude governance,
+    secrets, local state and caches from publication.
+- rule_id: TASKBOARD-BUILD-002
+  rule: A hosted library uses host diagnostics and supervision; do not add an independent
+    watcher or service.
+- rule_id: TASKBOARD-BUILD-003
+  rule: Keep test/build output in configured ignored local output; no shared workspace
+    or test entrypoint is selected for sibling projects.

@@ -1,0 +1,16 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-005-crm-growth-v1
+kind: stub
+title: Fuller relationship and communications CRM
+version: 1
+spec_revision: 1
+requirement_refs:
+- BB-GROWTH-001
+- BB-GROWTH-002
+- BB-GROWTH-003
+scope:
+- Keep proposed growth visible; accept bounded pipeline/follow-up/communications scope before implementation.
+dependencies: []
+acceptance:
+- Finalize scope and acceptance from accepted spec requirements before execution.
+verification_checks: []

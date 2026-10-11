@@ -1,0 +1,518 @@
+schema_version: handshake.action-registry.v10
+kind: action_registry
+execution_mode_contract_ref: HT-AUTH-CODEX-001.execution_modes
+
+identity:
+  registry_id: ACTIONS-PROJECT-v1
+  project_id: PROJECT-REPLACE-ME
+  version: 25
+  status: draft
+  schema_ref: repo-governance/schemas/action-registry.schema.yaml
+
+
+ownership:
+  controller: handshake
+  direct_state_mutation_forbidden: true
+  every_accepted_action_requires_receipt: true
+  duplicate_idempotency_returns_original_result: true
+  same_key_with_different_action_inputs_rejected: true
+  receipt_schema: handshake.receipt.v9
+
+required_envelope_fields:
+  - action_id
+  - action_type
+  - idempotency_key
+  - actor_id
+  - session_id
+  - expected_generation
+  - target_ids
+  - reason
+  - evidence_refs
+
+admission:
+  rule_id: ACTION-ELIGIBILITY-001
+  evaluator: handshake.action_eligibility
+  consumers: [controller, taskboard, gui, model_clients]
+  sources: [this_registry, bound_transition_registry, role_authorization, current_target_state]
+  action_context_flags_override_class_defaults: true
+  always_check: [actor_authorization, target_identity, expected_generation, valid_action_schema, idempotency_identity]
+  state_dependent_actions_require_registered_transition: true
+  class_name_alone_does_not_require_claimed_mt: true
+  product_writes_require_active_binding: true
+  mt_execution_requires_valid_owned_claim: true
+  conditional_checks_owner: actions.admission_checks_and_commit_checks
+  wp_temporary_outputs_settled_ref: wp_temporary_outputs_settled
+  admission_checks_allow_start_and_commit_checks_gate_published_outcomes: true
+  pending_commit_checks_do_not_block_work_needed_to_satisfy_them: true
+  execution_release_is_ineligible_until_all_commit_checks_pass: true
+  rejection_reasons_are_vocabulary_not_unconditional_gates: true
+  available_result_fields: [eligible, action_type, target_ids, observed_generation, failed_conditions, permitted_next_action_types]
+  permitted_next_actions_must_pass_same_evaluator: true
+  client_availability_is_advisory_and_never_authorization: true
+  recheck_authorization_generation_conditions_and_lease_at_commit: true
+  stale_product_inputs_do_not_block_authorized_recovery_or_management_by_themselves: true
+  expired_worker_lease_never_authorizes_worker_mutation: true
+  recovery_uses_registered_controller_authority_and_existing_recovery_protocol: true
+  lease_duration: until_verdict_recorded_or_claim_released
+  process_stop_requires_recorded_launch_identity: true
+  rejection_reasons_ref: rejection_policy.reject_without_partial_state_change
+
+checks:
+  module_source_first_adoption: {inputs: [mt.execution.module_change_stage, mt.execution.depends_on, module_manifest.maintenance.source.canonical_repository_url, wp_contract.architecture_binding.module_lifecycle_refs, solution_bindings, solution_lock], predicate: host_adoption_has_distinct_passed_standalone_source_predecessor_independently_verified_at_canonical_GitHub_revision_and_exact_revision_artifact_adapter_pins_before_host_writes, fails_with: missing_required_proof, owner: controller, rule_ref: BR-MODULE-LIFECYCLE-007}
+  CHK-MODULE-LIFECYCLE-001: {inputs: [module_manifest.maintenance, HT-REPO-MODULE-001.validation.maintenance_contract], predicate: declared_maintenance_contract_has_resolved_nonempty_required_fields_and_valid_kind_and_adapter_pair, fails_with: schema_invalid, owner: controller, rule_ref: BR-MODULE-LIFECYCLE-001}
+  module_lifecycle_binding: {inputs: [wp_contract.architecture_binding.module_lifecycle_refs, mt.context_capsule.module_maintenance_refs, module_manifest.maintenance], predicate: applicable_module_contracts_resolve_and_mt_slice_is_from_parent_with_task_specific_commands_and_proof_and_exact_consumed_release_pins, fails_with: missing_required_proof, owner: controller, rule_ref: CODEX-MODULE-LIFECYCLE-001}
+  planning_input_consistency: {inputs: [refinement.refinement.reality_check.scope_edges, refinement.refinement.reality_check.research_refs, wp_contract.scope.included], predicate: stub_scope_and_research_refs_are_present_and_mutually_consistent, fails_with: invalid_model_detailing_fields, owner: controller}
+  authorized_matrix_proposal: {inputs: [action.actor_id, action.reason, refinement.origin.operator_request_ids], predicate: actor_holds_project_configuration_authority_and_operator_intent_is_recorded, fails_with: unauthorized, owner: controller}
+  selector_integrity: {inputs: [refinement.matrix_resolution.match_evidence_refs, refinement.matrix_resolution.assessed_entry_ids], predicate: every_source_and_selector_ref_resolves_to_an_existing_stable_id, fails_with: incomplete_or_unresolved_scope_relevant_matrix_coverage, owner: controller}
+  accepted_spec_delta_and_selector_integrity: {inputs: [refinement.spec_enrichment.disposition, refinement.spec_enrichment.sync.validated, refinement.matrix_resolution.assessed_entry_ids, wp_state.generation], predicate: product_meaning_change_is_accepted_through_enrichment_and_selectors_still_resolve_at_commit, fails_with: unvalidated_spec_enrichment, owner: controller}
+  matrix_identity_and_retained_history: {inputs: ['workflow.build_matrix.entries[entry_id].entry_id', 'workflow.build_matrix.entries[entry_id].lineage'], predicate: entry_exists_and_lineage_and_completed_snapshots_are_retained_not_deleted, fails_with: unknown_target, owner: controller}
+  existing_wp_identity: {inputs: [wp_state.wp_id, wp_state.phase], predicate: target_wp_id_resolves_to_a_recorded_wp_state, fails_with: unknown_target, owner: controller}
+  typed_proposal_only: {inputs: [action.semantic_payload, wp_state.activation.bindings], predicate: payload_stages_non_executable_typed_detailing_and_binds_no_enforcement_or_mt_release, fails_with: invalid_model_detailing_fields, owner: controller}
+  nonterminal_phase: {inputs: [wp_state.phase], predicate: wp_phase_is_in_the_action_allowed_wp_phases, fails_with: invalid_transition, owner: controller}
+  activation_transition: {inputs: [wp_state.phase, action.expected_generation, wp_state.generation], predicate: registered_activation_transition_exists_from_current_phase_at_expected_generation, fails_with: invalid_transition, owner: controller}
+  completed_refinement_enrichment: {inputs: [refinement.resolved_context.ready_for_wp_derivation, refinement.spec_enrichment.phase_validated, refinement.refinement.reality_check.red_team.minimum_controls], predicate: refinement_red_team_and_enrichment_are_recorded_complete_for_the_activation_scope, fails_with: unvalidated_spec_enrichment, owner: controller}
+  validated_spec_sync: {inputs: [refinement.spec_enrichment.disposition, refinement.spec_enrichment.sync.validated, refinement.spec_enrichment.sync.applied_revision, wp_contract.authority_snapshot.specification.revision], predicate: wp_contract_pins_the_enriched_spec_revision_and_no_unsynced_spec_delta_remains, fails_with: unvalidated_spec_enrichment, owner: controller}
+  scope_relevant_matrix_sdk_freshness: {inputs: [wp_contract.impact_assessment.assessed_entry_ids, wp_contract.authority_snapshot.build_matrix.revision, wp_contract.authority_snapshot.sdk_catalog.digest, workflow.build_matrix.revision, sdk_catalog.digest], predicate: bound_matrix_and_sdk_contracts_match_their_current_revisions_for_the_activation_scope, fails_with: stale_matrix_or_sdk_contract_inputs, owner: controller}
+  dependency_readiness: {inputs: [wp_contract.dependencies, wp_state.blockers], predicate: every_necessary_dependency_is_available_or_recorded_as_a_surfaced_blocker, fails_with: unresolved_dependency, owner: controller}
+  governed_worktree_ready: {inputs: [wp_state.activation.worktree_ref, git.worktree_list, git.branch_list], predicate: wp_worktree_exists_in_git_inventory_under_repository_structure_worktree_policy, fails_with: unreconciled_git_state, owner: controller}
+  wp_temporary_output_binding_ready: {inputs: [wp_state.activation.temporary_output_root, host_profile.artifact_root, host_profile.alternate_build_output_grant], predicate: temporary_output_root_resolves_from_the_canonical_main_root_without_fallback_or_path_escape, fails_with: resource_unavailable, owner: controller}
+  registered_rebase_transition: {inputs: [wp_state.phase, wp_state.freshness.stale_surfaces], predicate: registered_rebase_transition_exists_from_current_phase_with_changed_inputs_or_scope_proposal_named, fails_with: invalid_transition, owner: controller}
+  bounded_staged_revision: {inputs: [wp_state.freshness.stale_surfaces, wp_contract.identity.contract_revision, wp_state.activation.bindings], predicate: staged_revision_is_bounded_and_prior_contract_and_active_enforcement_remain_unchanged, fails_with: out_of_scope, owner: controller}
+  active_binding: {inputs: [wp_state.phase, wp_state.activation.bindings, wp_state.activation.worktree_ref], predicate: wp_phase_is_active_or_later_with_committed_activation_bindings, fails_with: invalid_transition, owner: controller}
+  solution_impact_authorization: {inputs: [wp_contract.authority_snapshot.solution_bindings, action.evidence_refs, receipt.semantic.impact_assessment], predicate: solution_binding_change_names_a_pinned_solution_version_digest_and_recorded_impact_assessment, fails_with: unresolved_solution_binding, owner: controller}
+  proven_candidate: {inputs: [wp_state.stock_execution_state.verdicts, receipt.mechanical.evidence_hash], predicate: candidate_source_scope_has_recorded_pass_verdicts_with_matching_evidence_hashes, fails_with: missing_required_proof, owner: controller}
+  current_scope_inputs: {inputs: [mt.parent.wp_contract_revision, wp_contract.identity.contract_revision, mt.parent.wp_contract_digest, wp_contract.authority_snapshot.specification.revision], predicate: mt_parent_pin_matches_the_current_activated_contract_and_its_snapshot_spec_revision, fails_with: stale_generation, owner: controller}
+  dependency_verdicts: {inputs: [mt.dependencies, 'wp_state.microtasks[dep_id].phase', 'wp_state.stock_execution_state.verdicts[mt_id==<dep_id>].submission_revision'], predicate: every_dependency_mt_is_passed_with_verdicts_naming_its_submitted_revision, fails_with: unresolved_dependency, owner: controller}
+  conflict_free_write_scope: {inputs: [mt.execution.allowed_write_paths, 'wp_state.microtasks[*].claim_ref', 'wp_state.microtasks[*].allowed_write_paths'], predicate: requested_write_paths_are_disjoint_from_every_other_live_claim, fails_with: out_of_scope, owner: controller}
+  claim_transition: {inputs: ['wp_state.microtasks[mt_id].phase', 'wp_state.microtasks[mt_id].claim_ref'], predicate: mt_phase_is_ready_needs_remediation_or_needs_new_approach_and_no_other_live_claim_exists, fails_with: invalid_transition, owner: controller}
+  action_scoped_evidence_identity: {inputs: [receipt.action_id, receipt.attempt_id, 'wp_state.microtasks[mt_id].attempts'], predicate: receipt_names_an_existing_action_and_attempt_of_the_target_mt, fails_with: schema_invalid, owner: controller}
+  observation_not_authority_mutation: {inputs: [receipt.semantic, receipt.mechanical], predicate: receipt_payload_contains_observations_only_and_no_phase_verdict_or_contract_field, fails_with: schema_invalid, owner: controller}
+  owned_unexpired_lease: {inputs: ['wp_state.microtasks[mt_id].claim_ref', 'wp_state.microtasks[mt_id].lease.actor_id', 'wp_state.microtasks[mt_id].lease.status', action.actor_id], predicate: claim_lease_is_owned_by_the_acting_actor_and_not_released_or_verdict_settled, fails_with: expired_lease, owner: controller}
+  recoverable_release_state: {inputs: [receipt.mechanical.changed_paths, git.status, git.pushed_commit_ref], predicate: preserved_work_is_committed_or_recorded_recoverable_before_the_claim_ends, fails_with: unsettled_effects, owner: controller}
+  typed_observation: {inputs: [receipt.semantic.blocker.type, receipt.semantic.blocker.evidence_refs, receipt.semantic.blocker.recovery_owner], predicate: blocker_has_a_registered_type_evidence_refs_and_a_recovery_owner, fails_with: schema_invalid, owner: controller}
+  implementation_gates: {inputs: [receipt.mechanical.compile_result, receipt.mechanical.static_check_result, receipt.mechanical.check_input_digest, build_rulebook.project_profile.implementer_check], predicate: a_compile_or_static_check_result_is_pass_with_command_ref_and_log_ref_its_command_is_the_declared_implementer_check_and_check_input_digest_before_equals_after, fails_with: missing_required_proof, owner: controller, rule_ref: CODEX-STEER-009}
+  pushed_commit_ref: {inputs: [action.target_ids.submission_commit, git.remote_refs, git.branch_list], predicate: submission_commit_is_contained_in_an_existing_declared_pushed_branch, fails_with: unreconciled_git_state, owner: controller}
+  relevant_input_paths_recorded: {inputs: [receipt.mechanical.relevant_input_paths, 'wp_state.stock_execution_state.submissions[*].relevant_input_paths', 'mt.proof.checks[*].command_or_method'], predicate: the_submission_receipt_and_the_submission_entry_record_non_empty_relevant_input_paths_for_proof_reuse_and_invalidation, fails_with: missing_required_proof, owner: controller, rule_ref: CODEX-VAL-007}
+  exact_submission_and_validator_authority: {inputs: ['wp_state.stock_execution_state.verdicts[*].submission_id', 'wp_state.stock_execution_state.verdicts[*].submission_revision', 'wp_state.stock_execution_state.submissions[*].submission_id', 'wp_state.stock_execution_state.submissions[*].source_digest', receipt.mechanical.submission_ref, receipt.role_id, action.actor_id, workflow.roles.wp_validator], predicate: the_verdict_names_an_existing_submission_entry_at_its_revision_with_a_resolved_source_digest_its_receipt_names_the_same_submission_and_the_recording_actor_holds_wp_validator_authority, fails_with: wrong_actor, owner: controller}
+  verdict_file_parses: {inputs: [receipt.semantic.verdict, 'wp_state.stock_execution_state.verdicts[mt_id==<mt_id>]'], predicate: verdict_payload_parses_against_the_verdict_record_shape, fails_with: schema_invalid, owner: controller}
+  status_equals_verdict: {same_as: CHK-STATUS-EQUALS-VERDICT}
+  validator_differs_from_claimer: {inputs: ['wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].validator_actor_id', 'wp_state.microtasks[mt_id].lease.actor_id'], predicate: verdict_actor_is_not_the_claiming_actor, fails_with: wrong_actor, owner: controller}
+  evidence_hash_matches_log: {inputs: [receipt.mechanical.evidence_hash, receipt.mechanical.log_ref], predicate: every_completed_verdict_receipt_names_a_log_ref_and_evidence_hash_and_the_recomputed_sha256_of_the_log_file_equals_the_recorded_hash, fails_with: evidence_mismatch, owner: controller, rule_ref: CODEX-VAL-005}
+  pass_requires_every_required_check_result_line_equals_pass_in_hashed_log: {inputs: ['wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].decision', mt.proof.required_checks, receipt.mechanical.log_ref], predicate: passed_decision_has_every_required_check_result_line_reading_pass_in_the_hashed_log, fails_with: evidence_mismatch, owner: controller}
+  blocked_decision_requires_blocked_on_mt_ref: {inputs: ['wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].decision', 'wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].blocker.type', 'wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].blocked_on_mt_ref', 'wp_state.microtasks[dep_id].phase'], predicate: blocked_decision_carries_blocker_type_and_type_dependency_names_an_open_mt_id_that_owns_the_causing_fix, fails_with: unresolved_dependency, owner: controller}
+  approved_closure_revision: {inputs: [wp_state.stock_execution_state.integration_verdict.candidate_commit, wp_state.stock_execution_state.integration_verdict.decision], predicate: closure_revision_equals_the_candidate_with_a_recorded_passed_integration_verdict, fails_with: missing_required_proof, owner: controller}
+  target_branch_containment: {inputs: [git.target_branch_head, git.merge_base, wp_state.stock_execution_state.integration_verdict.candidate_commit], predicate: target_branch_history_contains_the_approved_closure_revision, fails_with: unreconciled_git_state, owner: controller}
+  required_durable_evidence_preserved: {inputs: [wp_state.workspace_settlement.required_evidence_refs, receipt.mechanical.preserved_paths], predicate: every_required_durable_evidence_ref_resolves_to_a_preserved_path, fails_with: unsettled_effects, owner: controller}
+  wp_temporary_outputs_settled: {inputs: [wp_state.workspace_settlement.status, wp_state.workspace_settlement.cleanup_result, wp_state.activation.temporary_output_root], predicate: settlement_confirms_evidence_preserved_and_wp_temporary_cleanup_completed_or_not_applicable_for_unprovisioned_planning_work, fails_with: unsettled_effects, owner: controller}
+  stray_git_refs_settled: {inputs: [receipt.mechanical.git_ref_inventory.before, receipt.mechanical.git_ref_inventory.after, git.worktree_list, git.branch_list], predicate: git_inventory_after_equals_inventory_before_or_every_stray_ref_is_recorded_and_removed, fails_with: unreconciled_git_state, owner: controller}
+  registered_cancel_transition: {inputs: [wp_state.phase], predicate: registered_cancel_transition_exists_from_current_phase, fails_with: invalid_transition, owner: controller}
+  claims_and_effects_settled: {inputs: ['wp_state.microtasks[*].claim_ref', wp_state.pending_recovery, receipt.mechanical.spawned_processes], predicate: no_live_claim_running_operation_or_unresolved_effect_remains_unrecorded, fails_with: unsettled_effects, owner: controller}
+  registered_supersede_transition: {inputs: [wp_state.phase], predicate: registered_supersede_transition_exists_from_current_phase, fails_with: invalid_transition, owner: controller}
+  replacement_identity: {inputs: [action.target_ids.replacement_wp_id, wp_state.wp_id], predicate: replacement_wp_or_version_resolves_and_differs_from_the_superseded_wp, fails_with: unknown_target, owner: controller}
+  selected_workflow: {inputs: [workflow.workflow_id, workflow.status], predicate: project_has_one_selected_workflow_with_a_pinned_version, fails_with: unknown_target, owner: controller}
+  actor_authorization: {inputs: [action.actor_id, action.session_id, workflow.roles, wp_state.lanes], predicate: actor_holds_a_recorded_role_permitted_to_submit_this_action_type, fails_with: unauthorized, owner: controller}
+  allowed_dispatch_profile: {inputs: [action.semantic_payload.profile_id, workflow.dexterity.allowed_profiles, workflow.roles], predicate: requested_profile_id_is_registered_and_permitted_for_the_target_role, fails_with: unauthorized, owner: controller}
+  resource_reservation: {inputs: [host_profile.devices, wp_state.reservations, workflow.resource_policy.max_concurrent_builds_per_physical_disk], predicate: aggregate_reservation_fits_within_declared_limits_and_the_target_device_is_not_busy, fails_with: resource_unavailable, owner: controller}
+  applicable_workspace_binding: {inputs: [wp_state.activation.worktree_ref, wp_state.activation.temporary_output_root, mt.execution.allowed_write_paths], predicate: dispatched_role_receives_a_bound_worktree_and_write_scope_when_its_actions_require_them, fails_with: out_of_scope, owner: controller}
+  integration_validator_authority: {inputs: [action.actor_id, workflow.roles.integration_validator, wp_state.lanes], predicate: actor_is_the_assigned_integration_validator_for_this_wp, fails_with: wrong_actor, owner: controller}
+  exact_submission_generation: {inputs: [wp_state.stock_execution_state.integration_candidate.commit, action.target_ids.candidate_commit, action.expected_generation, wp_state.generation], predicate: verdict_names_the_exact_pinned_candidate_at_the_expected_generation, fails_with: stale_generation, owner: controller}
+  independent_review: {inputs: [action.actor_id, 'wp_state.microtasks[*].lease.actor_id', receipt.mechanical.review_context_id], predicate: reviewing_actor_authored_no_submission_under_review_and_used_a_fresh_context, fails_with: wrong_actor, owner: controller}
+  all_required_mt_passes_apply: {inputs: ['wp_contract.microtask_graph.nodes[*].mt_id', 'wp_state.stock_execution_state.verdicts[*].submission_revision', wp_state.stock_execution_state.integration_candidate.commit], predicate: every_required_mt_has_a_pass_verdict_applying_to_the_final_candidate, fails_with: missing_required_proof, owner: controller}
+  current_candidate_and_spec: {inputs: [wp_state.stock_execution_state.integration_candidate.commit, git.remote_refs, wp_contract.authority_snapshot.specification.revision, refinement.spec_enrichment.sync.applied_revision], predicate: candidate_is_the_current_pushed_head_and_spec_pins_are_unchanged, fails_with: stale_generation, owner: controller}
+  required_acceptance_coverage: {inputs: [wp_contract.acceptance_criteria, receipt.mechanical.log_ref, receipt.semantic.coverage_map], predicate: every_wp_acceptance_criterion_maps_to_a_passing_check_in_the_hashed_log, fails_with: missing_required_proof, owner: controller}
+  integration_pass: {inputs: [wp_state.stock_execution_state.integration_verdict.decision, wp_state.stock_execution_state.integration_verdict.candidate_commit], predicate: recorded_integration_verdict_is_passed_for_the_merge_candidate, fails_with: missing_required_proof, owner: controller}
+  expected_target_head: {inputs: [git.target_branch_head, wp_state.stock_execution_state.integration_verdict.target_head], predicate: live_target_branch_head_equals_the_reviewed_target_head, fails_with: stale_generation, owner: controller}
+  preserved_work: {inputs: [git.worktree_list, git.status, 'wp_state.microtasks[*].claim_ref'], predicate: no_uncommitted_or_unrecorded_work_would_be_lost_by_the_merge, fails_with: unsettled_effects, owner: controller}
+  actual_merge_result_and_target_containment: {inputs: [receipt.mechanical.merge_result, git.target_branch_head, git.merge_base], predicate: recorded_merge_result_and_live_target_history_both_contain_the_candidate, fails_with: unreconciled_git_state, owner: controller}
+  operator_or_delegated_control_authority: {inputs: [action.actor_id, workflow.control_delegations], predicate: actor_is_the_operator_or_holds_a_recorded_control_delegation, fails_with: unauthorized, owner: controller}
+  existing_workflow: {inputs: [workflow.workflow_id, workflow.run_id], predicate: target_workflow_run_resolves_to_a_recorded_run, fails_with: unknown_target, owner: controller}
+  owned_process_tree_inspected_no_orphans: {inputs: [receipt.mechanical.spawned_processes, host_profile.observed_processes], predicate: every_process_launched_by_stopped_jobs_is_inspected_and_no_orphan_remains, fails_with: orphaned_process, owner: controller}
+  reconciled_operations: {inputs: [wp_state.pending_recovery, receipt.mechanical.spawned_processes, wp_state.generation], predicate: current_effects_and_versions_are_reconciled_before_resume, fails_with: unsettled_effects, owner: controller}
+  owned_operations_settled: {inputs: [receipt.mechanical.spawned_processes, wp_state.reservations, 'wp_state.microtasks[*].claim_ref'], predicate: every_owned_operation_is_settled_or_recorded_as_pending_recovery, fails_with: unsettled_effects, owner: controller}
+  required_recovery_preserved: {inputs: [wp_state.pending_recovery, receipt.mechanical.preserved_paths], predicate: work_and_evidence_needed_for_recovery_are_preserved_before_cancellation, fails_with: unsettled_effects, owner: controller}
+  policy_optimization_enabled: {inputs: [workflow.improvement.active_optimization], predicate: project_has_opted_into_active_policy_optimization, fails_with: unauthorized, owner: controller}
+  reserved_policy_budget: {inputs: [workflow.improvement.policy_limits, wp_state.reservations], predicate: policy_work_fits_within_the_operator_reserved_allocation, fails_with: resource_unavailable, owner: controller}
+  immutable_authority_boundaries: {inputs: [action.semantic_payload.policy, workflow.improvement.immutable_boundaries], predicate: candidate_policy_changes_none_of_the_immutable_boundaries, fails_with: out_of_scope, owner: controller}
+  authorized_policy_trial: {inputs: [action.actor_id, 'workflow.improvement.replay_results[policy_id]'], predicate: actor_may_trial_policies_and_the_candidate_has_a_replay_screen_result, fails_with: unauthorized, owner: controller}
+  held_out_history_comparison: {inputs: ['workflow.improvement.replay_results[policy_id].held_out_comparison'], predicate: candidate_has_a_recorded_held_out_history_comparison_against_the_current_policy, fails_with: missing_required_proof, owner: controller}
+  policy_promotion_authority: {inputs: [action.actor_id, workflow.improvement.promotion_authority], predicate: actor_holds_recorded_policy_promotion_authority, fails_with: unauthorized, owner: controller}
+  verified_live_trial: {inputs: ['workflow.improvement.trial_results[policy_id]', receipt.mechanical.evidence_hash], predicate: live_trial_outcomes_are_recorded_with_matching_evidence_hashes, fails_with: missing_required_proof, owner: controller}
+  policy_rollback_authority: {inputs: [action.actor_id, workflow.improvement.promotion_authority], predicate: actor_holds_recorded_policy_rollback_authority, fails_with: unauthorized, owner: controller}
+  prior_policy_identity: {inputs: [action.target_ids.policy_version, workflow.improvement.policy_versions], predicate: target_policy_version_resolves_to_a_prior_recorded_version, fails_with: unknown_target, owner: controller}
+  CHK-WRITE-SCOPE-001: {inputs: [receipt.mechanical.changed_paths, receipt.actor_id, mt.execution.allowed_write_paths, mt.execution.forbidden_write_paths, 'wp_state.lanes[actor_id].allowed_writes', receipt.mechanical.infrastructure_fix, build_rulebook.project_profile.test_entrypoint.config_files, build_rulebook.project_profile.test_environment], predicate: "each changed_path: (infrastructure_fix && path in test_entrypoint.config_files | test_environment) || (path in allowed_write_paths && path not in forbidden_write_paths && (lanes[actor_id].allowed_writes absent || path in lanes[actor_id].allowed_writes))", fails_with: out_of_scope, owner: controller, rule_ref: CODEX-STEER-007}
+  CHK-FINAL-STATUS-001: {inputs: [receipt.role_id, receipt.semantic.final_status, receipt.verdict], predicate: "implementer role (coder|builder) receipt: semantic.final_status in [ready_for_validation, blocked, null] && verdict == null (top-level verdict is the validator's)", fails_with: schema_invalid, owner: controller}
+  CHK-REMEDIATION-DISPATCH-001: {inputs: ['wp_state.microtasks[mt_id].phase', 'wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].verdict_id', 'wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].remediation', action.semantic_payload.dispatch_brief, action.semantic_payload.remediation_ref], predicate: a_remediation_dispatch_or_a_claim_from_needs_remediation_names_the_recorded_failed_verdict_id_whose_remediation_carries_every_remediation_field, fails_with: missing_required_proof, owner: controller, rule_ref: CODEX-REMEDIATE-001}
+  CHK-PROPOSAL-NO-BINDING-001: {inputs: [action.semantic_payload, wp_state.activation.worktree_ref, wp_state.activation.temporary_output_root, receipt.mechanical.git_ref_inventory.after], predicate: proposal_payload_binds_no_worktree_or_output_root_and_creates_no_git_ref, fails_with: out_of_scope, owner: controller}
+  CHK-FIRST-OUTPUT-001: {inputs: [action.semantic_payload.first_output], predicate: activation_proposal_declares_a_first_output_commit_or_verdict, fails_with: invalid_model_detailing_fields, owner: controller}
+  CHK-INDEPENDENT-VERDICT-001: {inputs: [action.actor_id, 'wp_state.microtasks[mt_id].lease.actor_id', 'wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].validator_actor_id'], predicate: verdict_recording_actor_is_not_the_implementing_or_builder_actor, fails_with: wrong_actor, owner: controller}
+  CHK-BUILDER-SELECTION-001: {inputs: [workflow.roles.builder_selection, action.semantic_payload.profile_id], predicate: builder_role_dispatches_only_under_explicit_project_configuration, fails_with: unauthorized, owner: controller}
+  CHK-NEW-APPROACH-001: {inputs: ['wp_state.microtasks[mt_id].phase', 'wp_state.microtasks[mt_id].rounds_without_output', 'wp_state.microtasks[mt_id].diagnosis_refs', 'wp_state.stock_execution_state.diagnoses[*]', 'wp_state.stock_execution_state.verdicts[*].decision', 'wp_state.stock_execution_state.submissions[*].diagnosis_ref', 'receipt.mechanical.test_run.failures[*].failure_class', workflow.steering.run_accounting.rounds_without_output_limit, workflow.steering.run_accounting.failed_verdicts_same_cause_limit], predicate: "(rounds_without_output < rounds_without_output_limit && consecutive_failed_same_failure_class < failed_verdicts_same_cause_limit) || (phase == needs_new_approach && exit only via diagnosis_ref with cause distinct from every prior mt diagnosis)", fails_with: missing_diagnosis, owner: controller} # CODEX-STEER-007, CODEX-STEER-008; reads diagnosis_refs only, never gameplan step sources; a diagnosis alone never requires a preparation step
+  CHK-RETRY-DIAGNOSIS-001: {status: retired, superseded_by: CHK-NEW-APPROACH-001, inputs: ['wp_state.microtasks[mt_id].rounds_without_output'], predicate: retired_in_pack_27_rounds_without_output_is_the_only_attempt_counter_and_blocker_attempts_no_longer_exists, fails_with: missing_diagnosis, owner: controller} # id kept, never reused
+  CHK-REAL-BOUNDARY-PROOF-001: {inputs: [receipt.mechanical.log_ref, receipt.mechanical.evidence_hash, mt.proof.boundary_scope], predicate: pass_verdict_cites_executed_real_runtime_boundary_proof_not_mocked_or_self_reported_evidence, fails_with: missing_required_proof, owner: controller}
+  CHK-NO-PARALLEL-CAPABILITY-001: {inputs: [receipt.mechanical.changed_paths, mt.execution.module_ref, mt.execution.may_create_canonical_capability, product_topology.canonical_capability_owners], predicate: changed_paths_declare_no_second_implementation_of_a_capability_owned_by_another_active_module, fails_with: out_of_scope, owner: controller} # canonical; alias no_parallel_capability_implementation
+  CHK-MT-WRITE-SCOPE-MODULE-001: {inputs: [mt.execution.module_ref, mt.execution.allowed_write_paths, module_manifest.boundaries, wp_contract.scope_waivers], predicate: allowed_write_paths_are_inside_module_roots_or_a_recorded_scope_waiver, fails_with: out_of_scope, owner: controller} # canonical; alias mt_write_scope_within_module
+  CHK-FINAL-VERDICT-AUTHORITY-001: {inputs: [action.actor_id, workflow.roles.integration_validator, receipt.mechanical.review_context_id, action.semantic_payload.override_ref], predicate: integration_verdict_comes_from_the_assigned_validator_in_a_fresh_context_with_operator_only_override, fails_with: wrong_actor, owner: controller}
+  CHK-STATUS-EQUALS-VERDICT: {inputs: ['wp_state.microtasks[mt_id].phase', 'wp_state.microtasks[mt_id].invalidated_by_commit', 'wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].decision'], predicate: mt_phase_equals_the_phase_implied_by_the_recorded_verdict_decision_or_a_passed_mt_re_entered_ready_for_validation_with_invalidated_by_commit_set, fails_with: schema_invalid, owner: controller} # canonical; alias status_equals_verdict
+  CHK-PARENT-DIGEST: {inputs: [mt.parent.wp_contract_digest, wp_state.contract.contract_digest, mt.parent.wp_contract_revision], predicate: mt_parent_digest_equals_the_current_wp_contract_digest, fails_with: stale_generation, owner: controller}
+  CHK-STATE-CONTRACT: {inputs: [wp_state.microtasks, 'wp_contract.microtask_graph.nodes[*]', wp_state.phase], predicate: wp_state_mt_set_and_phases_are_consistent_with_the_activated_contract_and_lifecycle_vocabulary, fails_with: schema_invalid, owner: controller}
+  CHK-HALF-WRITTEN-VERDICT: {inputs: [receipt.action_type, receipt.event_type, receipt.correlation_id], predicate: "each receipt action_type == record_validation_verdict && event_type == action_accepted -> a later receipt with event_type == action_completed and the same correlation_id", fails_with: unsettled_effects, owner: controller} # receipts are the event stream
+  CHK-ZERO-TEST-RUN: {inputs: [receipt.mechanical.test_run.executed_count, 'mt.proof.checks[*].command_or_method', receipt.mechanical.test_run.filter], predicate: executed_test_count_is_greater_than_zero_and_filter_matches_named_tests, fails_with: missing_required_proof, owner: controller}
+  build_unit_boundary: {inputs: [wp_contract.architecture_binding, 'module_manifest.architecture', product_topology.coding_architecture.build_unit_graph, product_topology.coding_architecture.allowed_layer_dependencies, build_rulebook.dependency_policy], predicate: every_touched_or_created_module_resolves_and_no_proposed_edge_violates_dependency_policy_the_composition_layer_dependency_matrix_or_build_unit_graph, fails_with: out_of_scope, owner: controller}
+  CHK-MODULE-BUILD-UNIT-001: {inputs: ['module_manifest.architecture', HT-REPO-MODULE-001.validation.coding_architecture_contract], predicate: module_is_one_package_of_build_unit_kind_own_or_leaf_data_only_with_build_unit_ref_set_and_its_composition_layer_field_rules_hold, fails_with: out_of_scope, owner: controller, rule_ref: BR-BUILD-UNIT-001}
+  build_budget_review_settled: {inputs: [wp_contract.architecture_binding.touched_module_refs, receipt.mechanical.build_measurement.budget_breach, wp_state.blockers], predicate: no_touched_module_has_an_open_budget_breach_boundary_review, fails_with: unresolved_dependency, owner: controller} # boundary review: HT-WORK-CODING-001.architecture.build_units.boundary_review
+  mt_write_scope_within_module: {same_as: CHK-MT-WRITE-SCOPE-MODULE-001}
+  capability_owners_resolve: {inputs: [wp_contract.reuse.consumed_capability_refs, wp_contract.reuse.new_capability_refs, product_topology.canonical_capability_owners, specification.primitives], predicate: every_consumed_capability_has_one_active_owner_module_and_every_new_capability_has_a_spec_primitive_id_and_no_existing_owner, fails_with: unresolved_solution_binding, owner: controller}
+  no_parallel_capability_implementation: {same_as: CHK-NO-PARALLEL-CAPABILITY-001}
+  gui_lane_coverage: {inputs: ['wp_contract.impact_assessment.rows[*]', 'wp_contract.microtask_graph.nodes[*].lane', mt.execution.backend_mt_ref, build_rulebook.project_profile.gui_applicability], predicate: every_change_row_on_a_gui_matrix_entry_has_a_gui_lane_mt_naming_its_backend_mt_with_disjoint_write_paths_or_gui_applicability_is_none, fails_with: incomplete_or_unresolved_scope_relevant_matrix_coverage, owner: controller}
+  spec_carries_wp_requirements: {inputs: ['wp_contract.requirements[*].source_refs', refinement.origin.initiating_spec_anchors, refinement.spec_enrichment.disposition, specification.requirements, specification.roadmap], predicate: every_wp_requirement_source_ref_resolves_to_a_current_spec_requirement_or_anchor_id_with_a_roadmap_item_and_disposition_unchanged_requires_nonempty_initiating_spec_anchors, fails_with: unvalidated_spec_enrichment, owner: controller}
+  spec_enrichment_disposition_recorded: {inputs: [refinement.spec_enrichment.disposition, refinement.spec_enrichment.sync.required], predicate: disposition_is_recorded_and_update_required_implies_sync_required, fails_with: invalid_model_detailing_fields, owner: controller}
+  matrix_universe_coverage: {inputs: [wp_contract.impact_assessment.universe_digest, wp_contract.impact_assessment.universe_components, 'wp_contract.impact_assessment.rows[*].disposition', build_rulebook.build_matrix.entries, specification.derived_indexes.primitive_feature_mix_matrix, product_topology.revision], predicate: universe_digest_equals_digest_of_current_active_entries_plus_spec_primitive_feature_relations_plus_topology_revision_and_no_row_is_unresolved, fails_with: incomplete_or_unresolved_scope_relevant_matrix_coverage, owner: controller}
+  rule_contract_fields_present: {inputs: ['build_rulebook.rules[*].contract_fields', 'wp_contract.impact_assessment.rows[*]', wp_contract, 'mt[*]'], predicate: for_every_applicable_rule_with_contract_fields_every_declared_wp_and_mt_field_is_present_and_non_placeholder, fails_with: incomplete_or_unresolved_scope_relevant_matrix_coverage, owner: controller}
+  canary_check_declared: {inputs: [build_rulebook.project_profile.test_environment.canary_check], predicate: canary_check_is_set_and_not_the_REPLACE_ME_placeholder, fails_with: resource_unavailable, owner: controller, rule_ref: CODEX-VAL-006}
+  mandatory_pillar_rows_present: {inputs: [build_rulebook.build_matrix.pillars.mandatory_entry_ids, 'wp_contract.impact_assessment.rows[*].matrix_entry_id'], predicate: every_mandatory_pillar_entry_has_a_row_with_a_disposition, fails_with: incomplete_or_unresolved_scope_relevant_matrix_coverage, owner: controller}
+  CHK-TEST-ENTRYPOINT-001: {inputs: [receipt.mechanical.commands_run, receipt.mechanical.test_run, build_rulebook.project_profile.test_entrypoint.command], predicate: every_command_of_a_validation_round_is_the_declared_checked_in_test_entrypoint_without_added_env_vars_or_wrappers, fails_with: missing_required_proof, owner: controller, rule_ref: BR-TEST-ENTRY-001}
+  CHK-REPEATED-INFRA-001: {inputs: ['receipt.mechanical.test_run.failures[*].failure_class', 'receipt.mechanical.test_run.failures[*].failure_kind', receipt.mechanical.changed_paths, build_rulebook.project_profile.test_entrypoint, build_rulebook.project_profile.test_environment, workflow.steering.run_accounting.repeated_infrastructure_cause.occurrences_limit], predicate: "infrastructure failure_class count >= occurrences_limit -> next round requires intervening fix to the declared entrypoint, its config or declared test environment; failure alone does not require a gameplan step", fails_with: unresolved_dependency, owner: controller, rule_ref: CODEX-STEER-007}
+  CHK-GAMEPLAN-SHAPE-001: {inputs: [action.semantic_payload.step, 'gameplan.steps[*]', gameplan.parent, gameplan.refs, gameplan.decisions], predicate: "step ids unique, never reused across parent chain; do, source, decisions[].text one line <= 120 chars; source present; decisions <= 5; refs resolve; no absolute machine path; cmd checks non-mutating", fails_with: invalid_model_detailing_fields, owner: controller, rule_ref: CODEX-GAMEPLAN-001}
+  CHK-GAMEPLAN-GATE-001: {inputs: ['gameplan.steps[*]', 'mt_gameplans[target_mt_ids].steps[*]', gameplan.expensive_actions, workflow.gameplan.gate_moments, action.actor_id, action.action_type, receipt.semantic.gameplan_confirmations], predicate: every_active_applicable_preparation_step_for_the_actor_and_moment_passes_or_reuses_a_valid_confirmation_under_unchanged_relevant_inputs_and_before_round_is_evaluated_after_canary_acquisition, fails_with: gameplan_gate_failed, owner: controller, rule_ref: CODEX-GAMEPLAN-001}
+  gameplan_retirement_authority: {inputs: [action.actor_id, workflow.roles, action.semantic_payload.step_id, action.semantic_payload.reason], predicate: actor_holds_orchestrator_builder_or_operator_authority_and_reason_names_the_replacing_step_or_the_cause_that_no_longer_applies, fails_with: unauthorized, owner: controller, rule_ref: CODEX-GAMEPLAN-001}
+  CHK-REMEDIATION-SHAPE-001: {inputs: ['wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].decision', 'wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].remediation', wp_state.stock_execution_state.remediation_fields, mt.closure_unit.acceptance_refs, receipt.limits.remediation_text_max_chars], predicate: "decision == failed -> remediation typed; every remediation_field non-empty; failed_acceptance_refs in mt acceptance_refs; expected, observed, repair_direction one line <= remediation_text_max_chars", fails_with: invalid_model_detailing_fields, owner: controller, rule_ref: CODEX-REMEDIATE-001}
+  CHK-DIAGNOSIS-SHAPE-001: {inputs: [action.semantic_payload.diagnosis, 'wp_state.stock_execution_state.diagnoses[*]', 'wp_state.microtasks[mt_id].diagnosis_refs'], predicate: "diagnosis has diagnosis_id, mt_id, evidence_refs, cause one line <= text limit, distinct_from == every earlier mt diagnosis id; diagnosis_refs == mt diagnosis ids in recording order", fails_with: missing_diagnosis, owner: controller, rule_ref: CODEX-STEER-008}
+  CHK-DISTINCT-RESUBMISSION-001: {inputs: ['wp_state.stock_execution_state.submissions[*]', 'wp_state.stock_execution_state.verdicts[*].decision', 'wp_state.stock_execution_state.verdicts[*].remediation.affected_code_refs', receipt.mechanical.submission_ref, receipt.mechanical.changed_paths, 'wp_state.microtasks[mt_id].diagnosis_refs'], predicate: "submission after failed verdict -> changed_paths & remediation.affected_code_refs != empty || relevant_input_digest changed || diagnosis_ref cited by no earlier submission", fails_with: missing_diagnosis, owner: controller, rule_ref: CODEX-REMEDIATE-001}
+  CHK-PROOF-INVALIDATED-001: {inputs: [action.target_ids.candidate_commit, git.diff_paths, 'wp_state.microtasks[*].phase', 'wp_state.microtasks[*].invalidated_by_commit', 'wp_state.stock_execution_state.submissions[*].relevant_input_paths', 'mt.proof.relevant_input_paths'], predicate: "at round freeze: passed mt && relevant_input_paths & candidate diff != empty -> listed for re-validation, phase ready_for_validation, invalidated_by_commit == candidate", fails_with: stale_generation, owner: controller, rule_ref: CODEX-VAL-007}
+  CHK-VERDICT-FAILURE-KIND-001: {inputs: ['wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].decision', 'receipt.mechanical.test_run.failures[*].mt_id', 'receipt.mechanical.test_run.failures[*].failure_kind'], predicate: "decision == failed -> round test_run has >= 1 failure with mt_id == mt && failure_kind == product; infrastructure|flaky only -> infrastructure entry, no verdict, mt phase unchanged", fails_with: evidence_mismatch, owner: controller, rule_ref: CODEX-VAL-004}
+  CHK-RESULTS-FRESH-001: {inputs: [receipt.mechanical.validation_batch_ref, receipt.mechanical.test_run.candidate_commit, receipt.mechanical.test_run.started_at, receipt.mechanical.test_run.completed_at, 'wp_state.stock_execution_state.validation_batches[batch_id==<receipt.mechanical.validation_batch_ref>].candidate_commit', 'wp_state.stock_execution_state.validation_batches[batch_id==<receipt.mechanical.validation_batch_ref>].started_at'], predicate: "(test_run.candidate_commit == batch.candidate_commit && batch.started_at <= test_run.started_at <= test_run.completed_at) || reused proof under CODEX-VAL-007 naming proof_commit_ref + batch_commit_ref; else stale -> infrastructure, no verdict", fails_with: evidence_mismatch, owner: controller, rule_ref: CODEX-VAL-006}
+  CHK-FIX-BUDGET-001: {inputs: ['wp_state.stock_execution_state.verdicts[mt_id==<mt_id>].decision', 'wp_state.blockers[type==fix_budget_exhausted]', 'wp_state.microtasks[mt_id].claim_ref', 'wp_state.microtasks[mt_id].phase', workflow.steering.max_fix_rounds_per_unit], predicate: "failed verdicts on mt (any cause) < max_fix_rounds_per_unit || (blockers[type==fix_budget_exhausted && mt_id==<mt_id>] recorded && (its operator_decision_refs non-empty || mt unclaimed: claim_ref null && phase not in [in_progress, ready_for_validation, validating, passed]))", fails_with: unresolved_dependency, owner: controller, rule_ref: CODEX-STEER-007} # HT-WORK-CODING-001.steering.run_accounting.counter_precedence
+
+check_registry_policy:
+  rule_ref: CODEX-LAYER-001
+  every_admission_and_commit_check_name_must_resolve_here: true
+  every_role_check_ref_must_resolve_here: true
+  unresolved_check_is_a_tracked_controller_defect: true
+  implemented_today_by: skill/scripts/validate_artifacts.py
+  implemented_check_ids: [CHK-STATUS-EQUALS-VERDICT, CHK-PARENT-DIGEST, CHK-STATE-CONTRACT, CHK-INDEPENDENT-VERDICT-001, CHK-HALF-WRITTEN-VERDICT, CHK-FINAL-STATUS-001, CHK-WRITE-SCOPE-001, CHK-ZERO-TEST-RUN, CHK-NEW-APPROACH-001, CHK-TEST-ENTRYPOINT-001, CHK-REPEATED-INFRA-001, CHK-MODULE-BUILD-UNIT-001, CHK-MODULE-LIFECYCLE-001, CHK-GAMEPLAN-SHAPE-001,
+    implementation_gates, relevant_input_paths_recorded, exact_submission_and_validator_authority, evidence_hash_matches_log, CHK-REMEDIATION-SHAPE-001, CHK-DIAGNOSIS-SHAPE-001, CHK-DISTINCT-RESUBMISSION-001, CHK-PROOF-INVALIDATED-001, CHK-VERDICT-FAILURE-KIND-001, CHK-RESULTS-FRESH-001, CHK-FIX-BUDGET-001]
+  array_match_notation: "list[field==<value>] selects the entries of an array whose field equals value; verdicts[mt_id==<mt_id>] resolves mt_id through the verdict's submission_id in stock_execution_state.submissions" # verdicts, validation_batches and blockers are arrays; microtasks and lanes are keyed
+  alias_policy: an_entry_holding_only_same_as_is_an_alias_of_its_target_and_carries_no_definition_of_its_own # status_equals_verdict, no_parallel_capability_implementation, mt_write_scope_within_module
+  retired_policy: a_retired_check_keeps_its_id_names_its_successor_and_is_selected_by_no_action # CHK-RETRY-DIAGNOSIS-001
+  conditional_commit_check_keys: [pass_only_checks, checks_for_fail_or_inconclusive] # decision-selected commit checks; a check listed there is wired
+
+intent_routes:
+  rule_id: ACTION-SCOPE-ROUTE-001
+  scope_change: [submit_contract_detailing, rebase_wp, request_activation]
+  new_work: [create_wp_stub, submit_contract_detailing, request_activation]
+  idea_to_spec: [create_wp_stub, submit_contract_detailing, request_activation]
+  scope_change_stages_proposal_without_widening_active_contract: true
+  accepted_product_meaning_changes_require_spec_enrichment: true
+  new_obligations_release_only_after_renewed_activation: true
+  spec_is_sole_truth: research_prototypes_and_refinement_findings_enter_truth_only_through_spec_enrichment_before_activation
+
+actions:
+  create_wp_stub:
+    action_class: create_wp_stub
+    effect: 'Create a non-executable planning stub: record scope and research references, extract relevant spec, perform available refinement/enrichment,
+      assess candidate matrix/SDK impacts and stage proposed WP/MT detailing. Do not create a WP worktree or bind enforcement or release executable work.'
+    requires_active_wp: false
+    requires_claimed_mt: false
+    allowed_wp_phases: [absent]
+    admission_checks: [planning_input_consistency]
+    commit_checks: [spec_enrichment_disposition_recorded, mandatory_pillar_rows_present, CHK-PROPOSAL-NO-BINDING-001]
+  upsert_build_matrix_entry:
+    action_class: project_configuration
+    effect: Allocate or preserve the entry ID, validate operator intent and source/selector references, apply accepted product-meaning
+      changes through spec enrichment, update the existing rulebook matrix revision, and enqueue reassessment of open work in one recoverable
+      generation-checked transaction.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    admission_checks: [authorized_matrix_proposal, selector_integrity]
+    commit_checks: [accepted_spec_delta_and_selector_integrity]
+  retire_build_matrix_entry:
+    action_class: project_configuration
+    effect: Retire the identified matrix entry without deleting lineage or historical obligations; reassess open work and preserve completed
+      snapshots.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    admission_checks: [matrix_identity_and_retained_history]
+  submit_contract_detailing:
+    action_class: project_configuration
+    effect: Validate semantic detailing and stage non-executable candidate structure and references. Return field diagnostics for invalid
+      input. Binding enforcement, releasing MTs and widening scope require the separate scoped activation transaction after refinement/enrichment.
+    requires_active_wp: false
+    requires_existing_wp_identity: true
+    requires_claimed_mt: false
+    admission_checks: [existing_wp_identity, typed_proposal_only]
+    commit_checks: [CHK-PROPOSAL-NO-BINDING-001]
+  set_priority:
+    action_class: project_configuration
+    effect: Update priority authority and controller-owned sequence.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    requires_existing_wp_identity: true
+    allowed_wp_phases: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending]
+    admission_checks: [existing_wp_identity, nonterminal_phase]
+  request_activation:
+    action_class: project_configuration
+    effect: Complete refinement/enrichment and spec synchronization, assess the current matrix against the accepted WP outcome and affected
+      existing behavior, then bind selected stable spec/rule/matrix IDs and SDK contracts into validated executable WP/MT contracts.
+      Record excluded future scope; surface unavailable necessary dependencies; never silently add future features. Release work only
+      after this activation commits. Only after completed refinement/enrichment and validated spec synchronization, create or verify
+      the WP-specific worktree using repository_structure.worktree_policy, resolve repository_structure.temporary_output_policy from
+      the canonical main root, and pin the verified bindings in WP activation and state before executable MT release. An interrupted
+      activation retains the same owned workspace identity and remains non-executable until recovery completes.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    requires_existing_wp_identity: true
+    admission_checks: [existing_wp_identity, activation_transition, CHK-FIRST-OUTPUT-001]
+    commit_checks: [completed_refinement_enrichment, validated_spec_sync, scope_relevant_matrix_sdk_freshness, dependency_readiness, governed_worktree_ready, wp_temporary_output_binding_ready, build_unit_boundary, CHK-MODULE-BUILD-UNIT-001, CHK-MODULE-LIFECYCLE-001, build_budget_review_settled, CHK-MT-WRITE-SCOPE-MODULE-001, capability_owners_resolve, gui_lane_coverage, spec_carries_wp_requirements, matrix_universe_coverage, rule_contract_fields_present, module_lifecycle_binding, mandatory_pillar_rows_present]
+  rebase_wp:
+    action_class: project_configuration
+    effect: Assess relevant changed spec/rule/matrix/SDK/dependency inputs or a proposed scope change and stage an accepted bounded revision through refinement/enrichment.
+      Changed obligations require renewed WP activation; rebase alone cannot release new enforcement or expand scope.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    requires_existing_wp_identity: true
+    allowed_wp_phases: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending]
+    admission_checks: [existing_wp_identity, registered_rebase_transition]
+    commit_checks: [bounded_staged_revision, build_unit_boundary, CHK-MODULE-BUILD-UNIT-001, CHK-MODULE-LIFECYCLE-001, build_budget_review_settled, matrix_universe_coverage, rule_contract_fields_present]
+  bind_solution:
+    action_class: wp_execution
+    effect: Add or change an exact project binding to a reusable solution with stable ID, version, digest, relationship, and topology
+      targets.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    admission_checks: [active_binding, solution_impact_authorization]
+  fork_solution:
+    action_class: wp_execution
+    effect: Create explicit project lineage from a pinned reusable solution before divergent implementation proceeds.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    admission_checks: [active_binding, solution_impact_authorization]
+  propose_solution_promotion:
+    action_class: wp_execution
+    effect: Materialize an on-demand reusable-solution candidate from proven project work without publishing it automatically.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    admission_checks: [active_binding, proven_candidate]
+  upgrade_solution_binding:
+    action_class: wp_execution
+    effect: Explicitly migrate a project binding to a newer pinned solution version after impact and proof checks.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    admission_checks: [active_binding, solution_impact_authorization]
+  claim_mt:
+    action_class: wp_execution
+    effect: Create a bounded lease only for an MT assigned to the committed activated parent contract, after dependency and conflict
+      checks.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    creates_claim_instead_of_requiring_existing_claim: true
+    admission_checks: [active_binding, current_scope_inputs, module_source_first_adoption, dependency_verdicts, conflict_free_write_scope, claim_transition, CHK-MT-WRITE-SCOPE-MODULE-001, CHK-NEW-APPROACH-001, CHK-FIX-BUDGET-001, CHK-REMEDIATION-DISPATCH-001] # CHK-REMEDIATION-DISPATCH-001 applies when the MT phase is needs_remediation: the claim payload names the recorded failed verdict id
+  submit_receipt:
+    action_class: wp_execution
+    effect: Validate and append tool-collected mechanical evidence plus model-supplied semantic observations for an attempt.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    stale_attempt_observations_may_append_without_advancing_current_execution: true
+    admission_checks: [action_scoped_evidence_identity, observation_not_authority_mutation]
+  release_claim:
+    action_class: wp_execution
+    effect: End a claim in a valid recoverable state.
+    requires_active_wp: true
+    requires_claimed_mt: true
+    admission_checks: [owned_unexpired_lease, recoverable_release_state]
+  record_blocker:
+    action_class: project_configuration
+    roles: [orchestrator, activation_manager, coder, builder, wp_validator, integration_validator]
+    effect: Add a typed blocker with evidence and recovery ownership, or a typed diagnosis {diagnosis_id, cause, evidence_refs, distinct_from} for one MT. This action is the only writer
+      of wp_state.stock_execution_state.diagnoses and of microtasks[mt_id].diagnosis_refs, which lists that MT's diagnosis ids in recording order; a diagnosis does not require a gameplan step (CODEX-STEER-008).
+    requires_active_wp: false
+    requires_claimed_mt: false
+    requires_existing_wp_identity: true
+    allowed_wp_phases: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending]
+    admission_checks: [existing_wp_identity, typed_observation, CHK-DIAGNOSIS-SHAPE-001]
+  request_validation:
+    action_class: wp_execution
+    effect: Enter closure validation after implementation gates pass. The submission names a pushed commit; uncommitted work is not a submission.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    admission_checks: [active_binding, implementation_gates, pushed_commit_ref, relevant_input_paths_recorded, CHK-DISTINCT-RESUBMISSION-001, CHK-NO-PARALLEL-CAPABILITY-001, CHK-NEW-APPROACH-001, CHK-REPEATED-INFRA-001, CHK-GAMEPLAN-GATE-001]
+  start_validation_round:
+    action_class: wp_execution
+    roles: [wp_validator]
+    effect: Freeze the pushed candidate commit (later pushes queue), emit proof_invalidated for affected passed MTs, enqueue them and select a bounded ready set.
+      Run the existing canary through the test entrypoint before evaluating before_round; its acquisition does not require a prior canary result.
+      After the canary and before_round pass, open validation_batches entry {batch_id, round_kind, candidate_commit, started_at, mt_ids} and emit validator_assigned for the selected set.
+      Canary failure records infrastructure and opens no round. round_kind in HT-WORK-CODING-001.validation.round_kinds.
+      Pending invalidated MTs remain queued until later bounded rounds; integration requires their current proof.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    allowed_wp_phases: [active, validating]
+    gate_moment: before_round
+    admission_checks: [active_binding, canary_check_declared, resource_reservation, CHK-REPEATED-INFRA-001] # resource_reservation rejection -> controller event managed_resource_unavailable
+    commit_checks: [CHK-GAMEPLAN-GATE-001, CHK-PROOF-INVALIDATED-001, CHK-TEST-ENTRYPOINT-001] # before_round after canary acquisition, before the full run
+  record_validation_verdict:
+    action_class: wp_execution
+    effect: Record validator evidence for one exact MT submission and set the MT phase from the decision. Verdicts are recorded per MT as soon as
+      the shared batch run finishes, never held until the batch completes. Merge requires a WP-scope verdict (round_kinds.wp_boundary), every
+      required MT passed and a passed integration verdict; an MT verdict alone never authorizes merge or marks a roadmap item implemented.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    admission_checks: [active_binding, exact_submission_and_validator_authority, canary_check_declared, CHK-TEST-ENTRYPOINT-001, CHK-REPEATED-INFRA-001, CHK-GAMEPLAN-GATE-001] # before_verdict; before_round gated by start_validation_round
+    commit_checks: [verdict_file_parses, CHK-STATUS-EQUALS-VERDICT, validator_differs_from_claimer, evidence_hash_matches_log, pass_requires_every_required_check_result_line_equals_pass_in_hashed_log, blocked_decision_requires_blocked_on_mt_ref, CHK-REMEDIATION-SHAPE-001, CHK-VERDICT-FAILURE-KIND-001, CHK-RESULTS-FRESH-001]
+    pass_only_checks: [CHK-REAL-BOUNDARY-PROOF-001]
+    decision_values: [passed, failed, inconclusive, blocked] # blocked requires blocker.type; dependency -> blocked_on_mt_ref + MT blocked_on_dependency
+    verdict_record: wp_state.stock_execution_state.verdicts_plus_receipt_event
+    recording_order_ref: CODEX-VAL-008
+  confirm_merge_containment:
+    action_class: wp_execution
+    effect: Prove the approved closure revision is contained in the target branch. After verified completion of the declared implementation
+      scope, synchronize the in-spec roadmap and ongoing build-rule/matrix coverage; preserve partial scope and expose pending sync
+      after interruption. Preserve required durable proof, then clean only this WP temporary outputs through the
+      repository temporary-output policy; keep terminal settlement pending while cleanup is blocked, without changing the product verdict.
+    requires_active_wp: true
+    requires_claimed_mt: false
+    admission_checks: [active_binding, approved_closure_revision, target_branch_containment]
+    commit_checks: [required_durable_evidence_preserved, wp_temporary_outputs_settled, stray_git_refs_settled]
+  cancel_wp:
+    action_class: project_configuration
+    effect: Request scoped cancellation using the existing cancellation/recovery protocol. A running operation remains nonterminal until required cleanup, claim disposition and unresolved effects are settled; record pending recovery truthfully. Cancellation does not retract accepted specification truth.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    requires_existing_wp_identity: true
+    allowed_wp_phases: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending]
+    admission_checks: [existing_wp_identity, registered_cancel_transition]
+    commit_checks: [required_durable_evidence_preserved, wp_temporary_outputs_settled, claims_and_effects_settled]
+  supersede_wp:
+    action_class: project_configuration
+    effect: Link a replacement WP or version; settle running claims, required cleanup and unresolved effects before terminal supersession and archival. Preserve historical contracts and evidence.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    requires_existing_wp_identity: true
+    allowed_wp_phases: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending]
+    admission_checks: [existing_wp_identity, registered_supersede_transition, replacement_identity]
+    commit_checks: [required_durable_evidence_preserved, wp_temporary_outputs_settled, claims_and_effects_settled]
+  propose_gameplan_step:
+    action_class: project_configuration
+    effect: Correct the preparation projection of an existing applicable obligation, replacing duplicate or faulty steps and retiring obsolete steps.
+      A missing step may project that obligation but cannot add acceptance or proof requirements. Failures and diagnoses alone do not require a step.
+      The model supplies role, at, do, check, source and optional replaces_step_id; the controller uses the existing file and receipt path.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    requires_existing_wp_identity: true
+    allowed_wp_phases: [activating, active, validating, merge_pending]
+    admission_checks: [existing_wp_identity, nonterminal_phase, actor_authorization, CHK-GAMEPLAN-SHAPE-001]
+  retire_gameplan_step:
+    action_class: project_configuration
+    effect: Mark one step retired with a reason in the receipt; the step stays in the file and its id is never reused.
+    requires_active_wp: false
+    requires_claimed_mt: false
+    requires_existing_wp_identity: true
+    allowed_wp_phases: [activating, active, validating, merge_pending]
+    admission_checks: [existing_wp_identity, nonterminal_phase, actor_authorization, gameplan_retirement_authority]
+
+
+  dispatch_role:
+    action_class: project_configuration
+    roles: [orchestrator, builder] # builder requires the existing explicit project selection
+    effect: Reserve aggregate resources and launch a pinned permitted role/profile through Dexterity with scoped capabilities.
+    admission_checks: [selected_workflow, actor_authorization, allowed_dispatch_profile, resource_reservation, applicable_workspace_binding, CHK-BUILDER-SELECTION-001, CHK-GAMEPLAN-GATE-001] # CHK-BUILDER-SELECTION-001 applies when the dispatched role is builder
+  record_integration_verdict:
+    action_class: wp_execution
+    effect: Settle the independent whole-product verdict for the exact merge candidate; failed routes actionable remediation, passed permits merge_pending only,
+      blocked retains the candidate with its blocker.
+    admission_checks: [active_binding, integration_validator_authority, exact_submission_generation, independent_review, CHK-FINAL-VERDICT-AUTHORITY-001]
+    commit_checks: [actor_authorization, exact_submission_generation, independent_review]
+    checks_for_fail_or_inconclusive: [actor_authorization, exact_submission_generation]
+    pass_only_checks: [all_required_mt_passes_apply, current_candidate_and_spec, required_acceptance_coverage, CHK-REAL-BOUNDARY-PROOF-001]
+    decision_values: [passed, failed, inconclusive, blocked]
+  merge_wp:
+    action_class: wp_execution
+    effect: Controller performs the Integration Validator-authorized merge for the reviewed candidate and expected target head, then records actual containment.
+    admission_checks: [integration_validator_authority, integration_pass, expected_target_head, preserved_work, CHK-GAMEPLAN-GATE-001]
+    commit_checks: [actual_merge_result_and_target_containment]
+    unknown_result: reconcile_git_refs_before_retry_never_repeat_blindly
+  pause_workflow:
+    action_class: project_configuration
+    effect: Stop new dispatch, request owned-job suspension only where supported, retain work and distinguish requested pause from observed job state.
+    admission_checks: [operator_or_delegated_control_authority, existing_workflow]
+    commit_checks: [owned_process_tree_inspected_no_orphans]
+  resume_workflow:
+    action_class: project_configuration
+    effect: Reconcile current effects and versions before resuming within authorized resource limits.
+    admission_checks: [operator_or_delegated_control_authority, existing_workflow, reconciled_operations, CHK-GAMEPLAN-GATE-001]
+  cancel_workflow:
+    action_class: project_configuration
+    effect: Stop dispatch and cancel only authorized owned operations; preserve work/evidence and settle WP cancellation without treating requests as termination.
+    admission_checks: [operator_or_delegated_control_authority, existing_workflow]
+    commit_checks: [owned_operations_settled, required_recovery_preserved, owned_process_tree_inspected_no_orphans]
+  propose_workflow_policy:
+    action_class: project_configuration
+    effect: Store a bounded candidate policy separately from active authority for replay evaluation.
+    admission_checks: [policy_optimization_enabled, reserved_policy_budget, immutable_authority_boundaries]
+  trial_workflow_policy:
+    action_class: project_configuration
+    effect: Trial a replay-screened policy under explicit live resource limits with current-policy comparison.
+    admission_checks: [authorized_policy_trial, held_out_history_comparison, reserved_policy_budget]
+  promote_workflow_policy:
+    action_class: project_configuration
+    effect: Pin a policy for future eligible dispatch only after verified live outcomes and unchanged protected authority.
+    admission_checks: [policy_promotion_authority, verified_live_trial, immutable_authority_boundaries]
+  rollback_workflow_policy:
+    action_class: project_configuration
+    effect: Restore a prior policy version for future dispatch, preserve existing operation identity and completed work.
+    admission_checks: [policy_rollback_authority, prior_policy_identity]
+
+rejection_policy:
+  applicability: evaluate_only_checks_selected_for_the_action_and_its_registered_transition
+  reject_without_partial_state_change:
+  - unauthorized
+  - stale_generation
+  - invalid_transition
+  - wrong_actor
+  - expired_lease
+  - schema_invalid
+  - out_of_scope
+  - unresolved_solution_binding
+  - unvalidated_spec_enrichment
+  - incomplete_or_unresolved_scope_relevant_matrix_coverage
+  - stale_matrix_or_sdk_contract_inputs
+  - invalid_model_detailing_fields
+  - unknown_target
+  - missing_required_proof
+  - evidence_mismatch
+  - unresolved_dependency
+  - unsettled_effects
+  - unreconciled_git_state
+  - resource_unavailable
+  - orphaned_process
+  - missing_diagnosis
+  - gameplan_gate_failed
+
+managed_stock_admission:
+  rule_id: ACTION-STOCK-001
+  workflow_ref: HT-WORK-CODING-001
+  applies_only_when_selected: true
+  transition_registry: HT-WORK-CODING-001.lifecycle
+  roles: selected_workflow.roles
+  registered_request_validation_target: exact_mt_submission
+  registered_validation_verdict_role: wp_validator
+  request_validation_override: compile_immutable_mt_submission_then_enter_ready_for_validation_not_whole_wp_closure
+  record_validation_verdict_override: settle_exact_mt_revision_only_never_authorize_merge_without_integration_verdict
+  integration_verdict_commit_checks: pass_only_checks_apply_only_to_passed_failed_inconclusive_and_blocked_remain_recordable
+  integration_verdict_role: integration_validator
+  no_requirement_for_claim_on_project_or_planning_actions: true
+  consumer_fork_solution: rejected_under_selected_canonical_profile
+  model_input_fields: [action_type, returned_target_handles, semantic_payload, supplied_evidence_handles]
+  client_adapter_derives: [action_id, idempotency_key, actor_id, session_id, expected_generation, target_ids]
+  controller_derives: [new_entity_ids, revisions, hashes, timestamps, paths, state_transitions, receipts]
+  target_generation: retained_from_context_and_rejected_if_stale_never_silently_rebased
+  semantic_payload: meaning_findings_or_verdict_not_full_controller_file
+  observation_fields: collector_owned_model_claims_are_unverified_until_observed
+  role_activities_that_do_not_mutate_state: queries_or_proposals_not_new_authority
+  commit: explicit_paths_only_for_every_commit # CODEX-GIT-003
+  destructive_git_actions_require_approved_explicit_action_list: true # CODEX-GIT-002
+  validation_queue_max_mts_ref: HT-WORK-CODING-001.validation.validation_queue_max_mts
+  remediation_actions: [claim_mt, request_validation] # CODEX-REMEDIATE-001; no refinement, rebase or activation action is triggered by a recorded failure
+  claim_from_needs_remediation_names: recorded_failed_verdict_id # CHK-REMEDIATION-DISPATCH-001
+  round_freeze_reassessment: CHK-PROOF-INVALIDATED-001 # HT-WORK-CODING-001.validation.round_freeze_reassessment; a passed MT whose relevant_input_paths the candidate diff touches re-enters ready_for_validation
+  environment_fix: {roles: [builder, orchestrator], write_scope: fix_environment, receipt_flag: receipt.mechanical.infrastructure_fix} # CODEX-STEER-007; CHK-WRITE-SCOPE-001 accepts test_entrypoint.config_files and the build-rules test_environment for that receipt
+  dispatch_role_brief_must_state: [produced_commit_or_verdict, deadline, required_output_interval] # CODEX-OUT-004, CODEX-STEER-002

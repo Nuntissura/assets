@@ -1,0 +1,59 @@
+schema_version: handshake.role-profile.v2
+schema_ref: repo-governance/schemas/role-profile.schema.yaml
+kind: role_profile
+role_id: ROLE-CODER-001
+role_slug: coder
+logical_role: true
+instantiate_when: eligible_activated_mt_assignment_exists
+purpose: Implement the assigned product change inside the activated scope. Code concepts apply where needed by stated requirements and do not create acceptance or test gates.
+context:
+  required_refs: [activated_wp, eligible_mt_assignment, resolved_context, allowed_write_paths, proof_contract]
+  workflow_ref: HT-WORK-CODING-001
+allowed_semantic_activities: [implement_product_change, run_compile_or_static_readiness, report_blocker, propose_remediation]
+registered_mutation_actions: [claim_mt, request_validation, record_blocker, propose_gameplan_step]
+decisions:
+  may_decide: [implementation_detail_within_scope, semantic_observation, residual_risk, remediation_proposal]
+  must_defer: [product_truth, governance_state, acceptance_verdict, wp_pass, merge]
+prohibited_actions: [write_parsed_governance, write_authority, edit_contract_or_state_directly, modify_other_lanes, self_assign_scope, declare_pass, validate_own_submission, merge]
+completion: Run the existing project_profile.implementer_check compile/static readiness command, publish the scoped MT commit and submit its named proof to independent validation; Handshake captures immutable source, changed paths, commands, exits and evidence hashes.
+escalation: Record a typed blocker for an evidenced violation of an existing requirement or execution precondition. Concerns do not expand active acceptance, proof or write scope; authorized changes use the existing scope-change route.
+ownership:
+  handshake_owns: [claim_and_lease, parsed_writes, revisions, stable_ids, paths, hashes, lifecycle_state]
+  role_submits: [product_changes, semantic_observations, evidence, blockers]
+pinning: handshake_pins_role_profile_ids_source_revisions_stable_ids_paths_hashes_claims_and_allowed_write_paths
+governance_access_ref: REPO-WORKTREE-005
+rule_layers:
+  invariant:
+    - {id: CODER-INV-001, subject: coder, predicate: writes_only_within, object: mt.execution.allowed_write_paths, applies_when: [claim_mt, request_validation], check_ref: CHK-WRITE-SCOPE-001, source_ref: null}
+    - {id: CODER-INV-002, subject: coder, predicate: submits_final_status_in, object: [ready_for_validation, blocked], applies_when: [request_validation, record_blocker], check_ref: CHK-FINAL-STATUS-001, source_ref: null}
+    - {id: CODER-INV-003, source_ref: WF-PROOF-001}
+    - {id: CODER-INV-004, source_ref: BR-QUIET-001}
+    - {id: CODER-INV-005, source_ref: CODEX-OUT-002}
+    - {id: CODER-INV-006, source_ref: CODEX-MT-004}
+    - {id: CODER-INV-007, source_ref: CODEX-REMEDIATE-001}
+    - {id: CODER-INV-008, source_ref: CODEX-STEER-001}
+    - {id: CODER-INV-009, source_ref: CODEX-GIT-001}
+    - {id: CODER-INV-010, source_ref: CODEX-DECIDE-001}
+    - {id: CODER-INV-011, source_ref: CODEX-GIT-003}
+    - {id: CODER-INV-012, source_ref: CODEX-STEER-006}
+    - {id: CODER-INV-013, source_ref: CODEX-DECIDE-002}
+    - {id: CODER-INV-014, subject: coder, predicate: does_not_reimplement, object: capabilities_owned_by_another_module, applies_when: [request_validation], check_ref: CHK-NO-PARALLEL-CAPABILITY-001, source_ref: null}
+    - {id: CODER-INV-015, subject: coder, predicate: writes_only_within, object: mt.execution.module_ref.declared_roots, applies_when: [claim_mt, request_validation], check_ref: CHK-MT-WRITE-SCOPE-MODULE-001, source_ref: null}
+    - {id: CODER-INV-016, subject: coder, predicate: submits_only_after, object: gameplan.gate.before_submit, applies_when: [request_validation], check_ref: CHK-GAMEPLAN-GATE-001, source_ref: CODEX-GAMEPLAN-001}
+  heuristic:
+    - {id: CODER-HEUR-001, source_ref: WF-HEURISTIC-001}
+    - {id: CODER-HEUR-002, subject: coder, default: submit_failing_assertion_attempt_deltas_and_root_cause_hypothesis_before_repeat_retry, deviate_when: never, source_ref: null}
+    - {id: CODER-HEUR-003, subject: coder, default: smallest_runtime_proven_solution_reusing_existing_code_and_dependencies, deviate_when: existing_code_or_dependency_cannot_meet_a_stated_acceptance_criterion, source_ref: null}
+code_rules: # Scope-applicable design considerations; applicability follows the stated requirements, without independent gates.
+  code-rule-0001: idempotency
+  code-rule-0002: ontology
+  code-rule-0003: commutativity
+  code-rule-0004: monotonicity
+  code-rule-0005: associativity
+  code-rule-0006: determinism
+  code-rule-0007: composability
+  code-rule-0008: modularity
+  code-rule-0009: coupling
+  code-rule-0010: invariance
+model_operated: {gameplan_role_env: GAMEPLAN_ROLE=coder, gameplan_confirm_by: coder, rule_ref: CODEX-GAMEPLAN-002}
+retirement_policy: CODEX-ROLE-RETIRE-001

@@ -1,0 +1,93 @@
+schema_version: handshake.receipt.v9
+template_version: 14
+kind: action_receipt
+
+instance_policy:
+  omit_empty_optional_fields: true
+  policy_lives_in_rule_refs_not_instance_fields: true
+  schema_ref: repo-governance/schemas/receipt.schema.yaml
+
+# owners of the former scope_contract, output_routing, policy and stock_observations blocks
+rule_refs: [CODEX-MUTATE-011, CODEX-OUT-001, CODEX-OUT-002, CODEX-VAL-004, CODEX-VAL-005, CODEX-VAL-006, CODEX-VAL-007, CODEX-VAL-008, CODEX-STEER-005, CODEX-STEER-006, CODEX-STEER-007, CODEX-STEER-009, CODEX-GIT-001,
+  CODEX-DECIDE-001, CODEX-DECIDE-002, CODEX-SCOPE-002, CODEX-SDK-003, CODEX-SDK-004, WF-OWN-001, WF-SUBMIT-001, HT-WORK-ACTIONS-001.ownership,
+  HT-REPO-STRUCTURE-001.work_packet_anatomy, HT-REPO-STRUCTURE-001.receipt_stream_policy]
+
+receipt_scope: project # allowed: project, wp, mt
+receipt_id: RCP-REPLACE_ME
+action_id: ACT-REPLACE_ME
+action_type: REPLACE_ME
+project_id: PROJECT-REPLACE-ME
+session_id: REPLACE_ME
+role_id: REPLACE_ME
+run_id: REPLACE_ME
+causation_id: null
+correlation_id: REPLACE_ME
+event_id: EVT-REPLACE_ME
+idempotency_key: REPLACE_ME
+wp_id: null
+mt_id: null
+actor_id: REPLACE_ME
+claim_id: null
+lane: REPLACE_ME # declared project or execution lane; does not imply WP/MT context
+branch_ref: null
+worktree_id: null # kind per HT-REPO-STRUCTURE-001.worktree_policy
+solution_refs: []
+expected_state_generation: null # WP-state compatibility field; resource generations are recorded below
+attempt: null
+event_type: REPLACE_ME # allowed: action_accepted, action_completed, action_failed, action_rejected, action_cancelled, mt_completed, mt_failed, proof_submitted, change_proposed, solution_change_proposed
+observed_at: REPLACE_ME
+verdict: null # validator receipts only: passed, failed, inconclusive, blocked; implementer receipts keep null (CHK-FINAL-STATUS-001)
+source_generation_refs: []
+resulting_generation_refs: []
+
+result:
+  status: accepted # allowed: accepted, running, waiting, succeeded, failed, rejected, cancelled, partial, unknown
+  settled: false
+  operation_ref: null
+  settled_values: null
+  reason_code: null
+  recovery_action_refs: []
+
+limits:
+  max_free_text_chars: 2000 # tunable default; applies to every semantic.* free-text entry; semantic free text stays capped, no new free-text field is added by the closure loop
+  remediation_text_max_chars: 120 # verdict remediation expected, observed, repair_direction and diagnosis cause follow HT-WORK-GAMEPLAN-001.writing; CHK-REMEDIATION-SHAPE-001, CHK-DIAGNOSIS-SHAPE-001
+
+mechanical: # stock-workflow actions may add collector-owned optional keys here (Phase C schema): workflow_binding_ref, role_run_ref, submission_ref, validation_batch_ref, policy_version, parent_attempt_ref, observed_usage, usage_visibility, elapsed_time, outcome_ref
+  changed_paths: []
+  commands_run: []
+  exit_codes: []
+  artifact_hashes: []
+  evidence_refs: []
+  proof_refs: []
+  topology_impacts: []
+  solution_operations: []
+  generation_envelope_refs: []
+  matrix_coverage_refs: []
+  sdk_operation_refs: []
+  sdk_verification_refs: []
+  contract_compilation_input_digest: null
+  timing: {}
+  compile_result: {result: null, command_ref: null, log_ref: null} # collector-owned; result pass|fail|null; command_ref is build_rulebook.project_profile.implementer_check.command as run; counts for the implementation_gates check only when check_input_digest.before == after (CODEX-STEER-009)
+  static_check_result: {result: null, command_ref: null, log_ref: null} # same shape and rule as compile_result
+  check_input_digest: {before: null, after: null} # digest of the relevant input paths at implementer-check start and end; a differing pair voids compile_result and static_check_result for implementation_gates
+  test_run: {executed_count: null, failed_count: null, filter: null, results_ref: null, candidate_commit: null, started_at: null, completed_at: null, failures: []} # collector-owned from structured runner output; results_ref is the WP-relative file under evidence/test-runs/ (REPOSITORY-STRUCTURE.work_packet_anatomy); candidate_commit is the round's frozen candidate and started_at/completed_at bound the run (CHK-RESULTS-FRESH-001, CODEX-VAL-006); failures entries {test_name, mt_id, failure_kind, failure_class, artifact_ref}; mt_id null means unowned; failure_kind product|infrastructure|flaky; failure_class is the shared cause id; artifact_ref is the exact log, junit or screenshot ref (CODEX-VAL-004, CODEX-STEER-007)
+  log_ref: null # WP-relative path of the hashed round log a verdict cites; CODEX-VAL-005; action check evidence_hash_matches_log
+  evidence_hash: null # sha256 digest of the log_ref file bytes, recomputed at verdict recording
+  infrastructure_fix: false # true on an environment-fix submission under the fix_environment scope (CODEX-STEER-007); CHK-WRITE-SCOPE-001 then also accepts project_profile.test_entrypoint.config_files and the build-rules file
+  build_measurement: {incremental_rebuild_seconds: null, recompiled_build_units: null, relinked_test_binaries: null, budget_breach: null} # BR-BUILD-UNIT-001; collector-owned, null when not a build action
+  spawned_processes: [] # entries {pid, start_time, command_line, launched_by_actor_id, stopped_at}; CODEX-STEER-005
+  relevant_input_paths: [] # required on proof_submitted; CODEX-VAL-007
+  relevant_input_digest: null
+  host_placement: {build_device_class: null, test_io_device_class: null, free_space_bytes: null}
+  host_restart: null # true|false with event ref on recovery receipts
+  git_ref_inventory: {before: null, after: null} # digests of git worktree list and branch list
+
+semantic:
+  final_status: null # implementer receipts: ready_for_validation|blocked (CHK-FINAL-STATUS-001)
+  observations: []
+  blockers: []
+  residual_risks: []
+  proposed_followups: []
+  spec_basis: [] # CODEX-DECIDE-001: specification anchors that answered a product question during this action
+  operator_decision_refs: [] # entries {decision_id, question, ruling, recorded_at, spec_enrichment_required}; CODEX-DECIDE-002
+

@@ -1,0 +1,59 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-010-swarm-backpressure-v1
+status: in_progress
+work_location: .
+sync_pending: false
+progress:
+- Implemented src/worker.rs with shared configurable count/byte admission, expiry, running timeout uncertainty,
+  close/drain and payload-free pressure. Ten focused tests passed on Windows ARM64 and x64 emulation.
+- Independent review found missing uncertain-write diagnostics for Storage/panic; fixed once-only accounting and
+  added error/panic/timeout assertions. No production latency or aggregate host admission claim.
+- Inspected actual Portal async query/request/error boundaries and current official bounded-admission patterns;
+  spec revision 6 selects explicit configurable functional worker without inferring production SLA.
+- Implemented selected spec13 P1 release example and Windows own-handle resource monitor. Native ARM64 and x64 under
+  ARM64 emulation each measured exact2100 attempts; source/binary hashes unchanged, cleanup exit0.
+- Native ARM64 peak working set38993920bytes CPU1.265625seconds; x64 emulated31436800bytes CPU1.84375seconds. Natural
+  creates85success/125conflict and49success/161conflict respectively; all search/read success, no hidden retries.
+- Independent exact-artifact review recomputed all18 latency/outcome groups and reconciled seed/canonical counters,
+  pressure/configuration, zero expired CAS dispatch and exactly-once committed response-loss replay. Bounded P1
+  PASS.
+blockers:
+- Production performance acceptance awaits representative Portal workload and host-selected numeric latency/resource
+  budgets; camera-store and supermarket remain retained.
+next_action: Select representative production Portal host workload and numeric latency/resource budgets; evaluate
+  measured competing-write conflicts at the host integration boundary. P1 diagnostic complete; retain camera-store,
+  supermarket and photo-service integration work. No production SLA or native x64 hardware verdict.
+verification:
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: python tooling/portal-workload.py --executable target/release/examples/portal_workload.exe
+  observed: Native ARM64 P1 result .local/portal-workload/runs/f1643ab019ce45b188f0a60a6005c91f/result.json; actual2100
+    operations, canonical/fault/configuration reconciliation passed, own-process limits observed and cleanup exit0.
+    Independent raw-artifact review PASS; temporary MemoryStore diagnostic only.
+- check_id: BB-CHECK-RUST
+  result: passed
+  command: python tooling/portal-workload.py --executable target/x86_64-pc-windows-msvc/release/examples/portal_workload.exe
+  observed: x64 under ARM64 Windows emulation P1 result .local/portal-workload/runs/2c451888270440a099dc59f0ff8ae6b2/result.json;
+    same exact profile reconciliation and cleanup exit0. Independent raw-artifact review PASS; no native x64 hardware
+    claim.
+- check_id: BB-CHECK-FMT
+  result: passed
+  command: cargo fmt --check
+  observed: Exit0 after formatting new example; core sources unchanged.
+- check_id: BB-CHECK-LINT
+  result: passed
+  command: cargo clippy --locked --offline -p buurtman-balie-host-demo --example portal_workload --release -- -D
+    warnings
+  observed: Focused new example and dependencies exit0; both architecture release builds exit0.
+- check_id: BB-CHECK-PACKAGE
+  result: passed
+  command: cargo package -p buurtman-balie-host-demo --list --allow-dirty --offline
+  observed: Exit0 six manifest/lock/example files only; no governance/private backups or monitor artifacts.
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve unrelated uncommitted source/governance; no remote/publication/deployment.
+diagnostic_governance_check:
+  command: python tooling/check.py
+  result: passed
+  observed: After synchronization exit0;15WPs36requirements0MTs, structural consistency only.

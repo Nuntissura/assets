@@ -1,0 +1,13 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-007-postgresql-storage-v1
+status: planned
+work_location: .
+sync_pending: false
+progress: []
+blockers: []
+next_action: After SurrealDB proof, inspect PostgreSQL host boundaries and select an adapter preserving Store semantics.
+verification: []
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve all uncommitted source/governance; no remote, deployment or publication authorized.

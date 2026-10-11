@@ -1,0 +1,9 @@
+.local/
+.gameplan-active
+target/
+__pycache__/
+*.pyc
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*

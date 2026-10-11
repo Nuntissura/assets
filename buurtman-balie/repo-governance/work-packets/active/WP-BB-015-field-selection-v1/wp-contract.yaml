@@ -1,0 +1,71 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-015-field-selection-v1
+kind: active
+title: Nontechnical reusable field selection
+version: 1
+spec_revision: 12
+requirement_refs:
+- BB-FIELD-UX-001
+- AF-CRM-REQ-011
+scope:
+- Presentation-only label-first existing-field dropdown and Create New; public Rust catalogue/API unchanged.
+- New label generates canonical ASCII key; optional advanced override; existing definition read-only; all three
+  locales.
+dependencies: []
+relevant_files:
+- web/field-editor.js
+- web/localization.js
+- web/manual-content.js
+- web/user-manual.js
+- tooling/browser-proof.py
+- tooling/localization-proof.py
+- tooling/manual-proof.py
+- tooling/workflow-proof.py
+- src/contracts.rs
+- tooling/field-selection-proof.py
+- docs/research/field-usability-v1.md
+acceptance:
+- Existing dropdown uses current authorized canonical field catalogue and stable field key; selected definition
+  displays label/type/scopes read-only, no duplicate defineField dispatch or retyping. Refresh and workspace boundaries
+  never reinterpret loaded subset as full host inventory.
+- Create New is label-first, generates valid ASCII canonical key with deterministic documented handling of Unicode/empty-after-conversion/length/collisions.
+  No silent overwrite or existing-key reuse for new intent; confirmed server collision is corrective and retains
+  draft. Root selects concrete generation algorithm from research before code.
+- Advanced key override preserves public key validation and host API; key preview/override and explicit validation
+  make resulting canonical identity visible. Record applicability/type selection retained.
+- EN/FR/NL update labels/statuses without losing new label/key/override/type/scopes or replacing pending logical
+  request. Dispose unsubscribes and ignores late replies; uncertain retry retains identical operation ID and definition.
+- Actual desktop/mobile browser evidence exercises reuse/new/Unicode/collision/override/scopes, in-flight draft
+  and failure paths; no overlap or horizontal clipping. Fresh source fingerprints and owned cleanup complete; independent
+  review and applicable checks pass.
+- Update shipped manual for actual new workflow and retain package/private exclusions. No host stock/checkout or
+  core/schema change.
+verification_checks:
+- BB-CHECK-UI
+- BB-CHECK-PACKAGE
+- BB-CHECK-GOV
+research_gate: Satisfied by inspected root-selected source comparison and policy in field-usability-v1.md; implementation
+  may proceed under assigned writer boundaries. Runtime acceptance remains unproven.
+ownership:
+  product: Root assigns bounded writers for presentation/localization/manual/proofs; one writer per file.
+  governance: Specification-Coordinator owns spec/contract/state/taskboard.
+  proof: Root owns shared runs and acceptance.
+  assigned_writers:
+    reuse_agent:
+    - web/field-editor.js
+    root:
+    - web/localization.js
+    - shared-runs
+    - Codex-browser
+    operator_agent:
+    - tooling/browser-proof.py
+    - tooling/field-selection-proof.py
+    localization_chat:
+    - tooling/localization-proof.py
+    manual_chat:
+    - web/manual-content.js
+    - tooling/manual-proof.py
+research_basis_ref: docs/research/field-usability-v1.md
+selected_policy: Trim label; NFKD; strip Unicode Marks; lowercase ASCII; non-ASCII/alphanumeric runs to hyphens;
+  trim edges; base capped120 ASCII bytes with field fallback; whole authorized catalogue first-free base/base-2...
+  suffix with total<=128. Preserve Unicode friendly label.

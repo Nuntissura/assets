@@ -1,0 +1,49 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-013-operator-workflow-validation-v1
+status: in_progress
+work_location: .
+sync_pending: false
+progress:
+- Inspected docs/research/operator-workflows-v1.md and exact .local/operator-workflows/result.json; workflow agent
+  recorded temporary Rust MemoryStore scenarios and WF-001/WF-002/WF-003 defects. No production host proof.
+- Opened .local/codex-browser-proof/quote.jpg and mobile.jpg; desktop/mobile final state shows retained Camera description
+  and employee B2B100 less10%=EUR90 quote. Screenshots prove displayed final state only.
+- 'Root reports actual Codex in-app browser interactions against temporary demo14177 on localhost50135: dirty Camera/Milk
+  switching retained draft, negative price produced local corrective validation, stale EUR72 quote invalidated after
+  saved base100 and explicit recalculation yielded90; mobile390x844 content width375.'
+- Opened manual-nl.jpg and quote-detail.jpg; Dutch manual is visibly expanded and quote detail explicitly displays
+  employee B2B base100 minus10%=EUR90. Root reports Dutch DOM guidance read; all three manual languages rendered.
+- 'Opened desktop-final.jpg: retained draft, Brand Orion assignment, selected Brand filter with one Camera match,
+  duplicate-key corrective message and EUR90 quote visibly present. Root reports actual field interactions; screenshot
+  is final displayed state, not full canonical backend inventory.'
+- Inspected independent GUI P2 client stale-cache Conflict loop and current canonical Customer reread remediation;
+  existing WF-003 recovery scope now records exact r1/r2/r3 and failed-reread regression requirements. Fresh proof
+  pending.
+- Fresh workflow result passed; final-ui-current independent review accepts current fingerprints, screenshot and
+  owned-cleanup boundary. Three-context matrix records supported/missing owners; WF001-003 and client conflict remediation
+  proven within temporary backend. Existing Portal/retail/growth stubs retain unimplemented related navigation/stock/checkout
+  scope.
+blockers: []
+next_action: Root runs current GOV for closure mapping; synchronize completion only with applicable current proof.
+  WP015 subsequent presentation/manual changes require fresh affected proof before accepting new behavior.
+verification:
+- check_id: BB-CHECK-UI
+  result: passed
+  observed: .local/workflow-proof/result.json read; current recorded fingerprints and successful cleanup; root command
+    exit0 and final independent evidence review. Temporary MemoryStore scope only.
+  command: python tooling/workflow-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve unrelated source/governance; no commits/remotes/deployment/publication/process stops.
+acceptance_proof:
+- docs/research/operator-workflows-v1.md inspected three-context actor/entity/owner/precondition matrix distinguishes
+  executed temporary CRM records and unavailable real-host inventory/orders/usage.
+- Actual app desktop/mobile screenshot and backend scenarios inspected; fresh workflow result covers drafts/navigation/prices/replays/conflicts/error/late
+  responses, with owned cleanup and unchanged inputs.
+- WF001-005 exact reproductions/expected-observed/impact/remediation/validation captured in report; WF001-003 plus
+  client conflict fixed and fresh regression inspected; host-only scenarios explicitly unproven.
+- Specification workflow findings and Portal/retail/growth stubs preserve gaps/accepted versus proposed scope; no
+  implicit inventory/checkout/host integration implementation.
+- Devlead actual CUA interactions plus fresh UI/workflow exit0 and independent final-ui-current bounded PASS inspected;
+  completion covers validation/gaps, not production host workflows.

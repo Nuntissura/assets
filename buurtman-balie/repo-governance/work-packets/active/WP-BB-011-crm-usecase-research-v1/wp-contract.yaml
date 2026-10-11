@@ -1,0 +1,19 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-011-crm-usecase-research-v1
+kind: active
+title: Cross-sector CRM use-case research
+version: 1
+spec_revision: 4
+requirement_refs:
+- BB-RESEARCH-001
+scope:
+- Research real mature upstream code/docs for web SaaS, retail/supermarkets, warehouse and HR workflows; record
+  narrow reusable boundaries and metric owners.
+dependencies: []
+acceptance:
+- Produce a current source-backed use-case matrix with canonical metric sources, units/windows/freshness, reuse
+  patterns, risks, controls and affected validation.
+- Keep analytics implementation proposed until canonical host sources and adapters are inspected and selected; preserve
+  all original host/growth stubs.
+verification_checks:
+- BB-CHECK-GOV

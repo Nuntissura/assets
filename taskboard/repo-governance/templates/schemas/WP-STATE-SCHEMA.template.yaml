@@ -1,0 +1,332 @@
+schema_version: handshake.schema.v1
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:handshake:schema:wp-state:v4
+title: Handshake work-packet state
+description: Shape of repo-governance/work-packets/active/{wp_id}/state.yaml (HT-WORK-STATE-001, handshake.wp-state.v9).
+type: object
+additionalProperties: false
+required: [schema_version, template_version, kind, instance_policy, rule_refs, wp_id, generation, phase, conditions, microtasks, updated_at]
+anyOf: # REPO-INIT-007, CODEX-FLOW-002: a stub_drafting WP has no derived contract yet; every later phase pins one
+  - {required: [contract]}
+  - {properties: {phase: {const: stub_drafting}}}
+properties:
+  schema_version: {const: handshake.wp-state.v9}
+  template_version: {type: integer, minimum: 1}
+  kind: {const: work_packet_state}
+  instance_policy: {$ref: '#/$defs/instance_policy'}
+  rule_refs: {$ref: '#/$defs/rule_ref_list'}
+  wp_id: {$ref: '#/$defs/entity_id'}
+  generation: {type: integer, minimum: 0}
+  contract:
+    type: object
+    additionalProperties: false
+    required: [contract_revision, contract_digest]
+    properties:
+      contract_revision: {type: integer, minimum: 1}
+      contract_digest: {$ref: '#/$defs/digest'}
+  freshness:
+    type: object
+    additionalProperties: false
+    properties:
+      stale_surfaces:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [surface, pinned_digest, current_digest]
+          properties:
+            surface: {$ref: '#/$defs/nonempty_string'}
+            pinned_digest: {$ref: '#/$defs/digest'}
+            current_digest: {$ref: '#/$defs/digest'}
+  phase: {$ref: '#/$defs/wp_phase'}
+  conditions:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [type, status, reason_code, observed_at]
+      properties:
+        type: {$ref: '#/$defs/nonempty_string'}
+        status: {$ref: '#/$defs/nonempty_string'}
+        reason_code: {$ref: '#/$defs/nonempty_string'}
+        observed_at: {$ref: '#/$defs/iso_date_time'}
+  active_claims: {type: array, items: {type: object}}
+  microtasks:
+    type: object
+    additionalProperties: {$ref: '#/$defs/microtask_state'}
+  blockers: {type: array, items: {type: [string, object]}}
+  lanes: # keyed by actor_id; actor_authorization, integration_validator_authority, CHK-WRITE-SCOPE-001
+    type: object
+    additionalProperties: {$ref: '#/$defs/lane_assignment'}
+  reservations: {type: array, items: {$ref: '#/$defs/reservation'}} # resource_reservation, owned_operations_settled
+  pending_recovery: {type: array, items: {$ref: '#/$defs/pending_recovery'}} # claims_and_effects_settled, reconciled_operations
+  last_event_id: {$ref: '#/$defs/nullable_string'}
+  updated_at: {$ref: '#/$defs/iso_date_time'}
+  activation:
+    type: object
+    additionalProperties: false
+    properties:
+      activation_id: {$ref: '#/$defs/nullable_string'}
+      bound_spec_requirement_refs: {$ref: '#/$defs/string_list'}
+      bound_matrix_entry_refs: {$ref: '#/$defs/string_list'}
+      excluded_future_feature_refs: {$ref: '#/$defs/string_list'}
+      implemented_baseline_requirement_refs: {$ref: '#/$defs/string_list'}
+      roadmap_item_refs: {$ref: '#/$defs/string_list'}
+      bound_scope_digest: {$ref: '#/$defs/nullable_digest'}
+      worktree_ref: {$ref: '#/$defs/nullable_string'}
+      temporary_output_root: {$ref: '#/$defs/nullable_string'}
+      workspace_verified: {type: boolean}
+      bindings: {$ref: '#/$defs/entry_list'} # committed activation bindings; typed_proposal_only, active_binding
+  workspace_settlement:
+    type: object
+    additionalProperties: false
+    required: [temporary_cleanup_status]
+    properties:
+      temporary_cleanup_status: {$ref: '#/$defs/cleanup_status'}
+      durable_evidence_refs: {$ref: '#/$defs/string_list'}
+      cleanup_receipt_ref: {$ref: '#/$defs/nullable_string'}
+      blocked_reason: {$ref: '#/$defs/nullable_string'}
+      status: {$ref: '#/$defs/cleanup_status'} # wp_temporary_outputs_settled
+      cleanup_result: {anyOf: [{type: string, enum: [completed, not_applicable, failed]}, {type: 'null'}]}
+      required_evidence_refs: {$ref: '#/$defs/string_list'} # required_durable_evidence_preserved
+  implementation_feedback:
+    type: object
+    additionalProperties: false
+    properties:
+      completed_spec_requirement_refs: {$ref: '#/$defs/string_list'}
+      partially_completed_item_refs: {$ref: '#/$defs/string_list'}
+      source_revision: {$ref: '#/$defs/nullable_revision'}
+      verification_summary: {type: string}
+      sync_status: {$ref: '#/$defs/nonempty_string'}
+      spec_roadmap_revision: {$ref: '#/$defs/nullable_revision'}
+      build_matrix_revision: {$ref: '#/$defs/nullable_revision'}
+      receipt_refs: {$ref: '#/$defs/string_list'}
+  stock_execution_state:
+    type: object
+    additionalProperties: false
+    properties:
+      workflow_binding_ref: {$ref: '#/$defs/nullable_string'}
+      execution_control: {$ref: '#/$defs/nonempty_string'}
+      dispatch_reservations: {type: array, items: {type: object}}
+      role_runs: {type: array, items: {type: object}}
+      submissions: {type: array, items: {$ref: '#/$defs/submission'}}
+      submission_fields: {$ref: '#/$defs/string_list'}
+      verdicts: {type: array, items: {$ref: '#/$defs/verdict'}}
+      verdict_fields: {$ref: '#/$defs/string_list'}
+      remediation_fields: {$ref: '#/$defs/string_list'}
+      half_written_verdict_detection: {const: action_accepted_without_action_completed}
+      validation_batches: {type: array, items: {$ref: '#/$defs/validation_batch'}}
+      diagnoses: {type: array, items: {$ref: '#/$defs/diagnosis'}}
+      merge_candidate: {$ref: '#/$defs/nullable_string'}
+      integration_verdict: {anyOf: [{$ref: '#/$defs/integration_verdict'}, {type: string}, {type: 'null'}]}
+      integration_candidate: # exact_submission_generation, all_required_mt_passes_apply, current_candidate_and_spec
+        anyOf:
+          - type: object
+            additionalProperties: false
+            required: [commit]
+            properties:
+              commit: {$ref: '#/$defs/nonempty_string'}
+              generation: {type: integer, minimum: 0}
+          - {type: 'null'}
+      expected_target_head: {$ref: '#/$defs/nullable_string'}
+      merge_operation_ref: {$ref: '#/$defs/nullable_string'}
+      observed_consumption:
+        type: object
+        additionalProperties: false
+        properties:
+          usage: {type: [number, object, 'null']}
+          usage_status: {$ref: '#/$defs/nonempty_string'}
+          build_time: {type: [number, object, 'null']}
+          tool_invocations: {type: [integer, 'null']}
+      last_useful_outcome_ref: {$ref: '#/$defs/nullable_string'}
+      policy_version: {$ref: '#/$defs/nullable_revision'}
+      policy_trial_ref: {$ref: '#/$defs/nullable_string'}
+      prior_policy_ref: {$ref: '#/$defs/nullable_string'}
+      optimization_history_refs: {$ref: '#/$defs/string_list'}
+$defs:
+  digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+  nullable_digest: {anyOf: [{$ref: '#/$defs/digest'}, {type: 'null'}]}
+  stable_id: {type: string, pattern: '^[A-Z][A-Z0-9-]+$'}
+  entity_id: {type: string, pattern: '^[A-Z][A-Za-z0-9._-]+$'}
+  rule_ref: {type: string, pattern: '^[A-Z][A-Z0-9-]+(\.[A-Za-z0-9_]+)*$'}
+  rule_ref_list: {type: array, items: {$ref: '#/$defs/rule_ref'}}
+  nonempty_string: {type: string, minLength: 1}
+  nullable_string: {type: [string, 'null']}
+  string_list: {type: array, items: {type: string}}
+  entry_list: {type: array, items: {type: [string, object]}}
+  short_line: {type: string, minLength: 1, maxLength: 120, pattern: '^[^\r\n]+$'} # HT-WORK-GAMEPLAN-001.writing; HT-WORK-RECEIPT-001.limits.remediation_text_max_chars
+  nonempty_string_list: {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_string'}}
+  iso_date_time: {type: string, format: date-time, pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$'}
+  revision:
+    oneOf:
+      - {type: integer, minimum: 0}
+      - {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$', not: {const: REPLACE_ME}}
+  nullable_revision: {anyOf: [{$ref: '#/$defs/revision'}, {type: 'null'}]}
+  instance_policy:
+    type: object
+    additionalProperties: false
+    required: [omit_empty_optional_fields, policy_lives_in_rule_refs_not_instance_fields, schema_ref]
+    properties:
+      omit_empty_optional_fields: {type: boolean}
+      policy_lives_in_rule_refs_not_instance_fields: {type: boolean}
+      schema_ref: {const: repo-governance/schemas/wp-state.schema.yaml}
+  wp_phase: {type: string, enum: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending, completed, cancelled, superseded]}
+  mt_phase: {type: string, enum: [ready, in_progress, ready_for_validation, validating, needs_remediation, passed, blocked_on_dependency, needs_managed_resource_proof, needs_new_approach]}
+  verdict_decision: {type: string, enum: [passed, failed, inconclusive, blocked]}
+  cleanup_status: {type: string, enum: [not_started, running, blocked, completed, not_applicable]}
+  lane_assignment:
+    type: object
+    additionalProperties: false
+    required: [role_id]
+    properties:
+      role_id: {$ref: '#/$defs/nonempty_string'}
+      lane: {$ref: '#/$defs/nullable_string'}
+      session_id: {$ref: '#/$defs/nullable_string'}
+      allowed_writes: {$ref: '#/$defs/string_list'}
+  reservation:
+    type: object
+    additionalProperties: false
+    required: [reservation_id, status]
+    properties:
+      reservation_id: {$ref: '#/$defs/entity_id'}
+      actor_id: {$ref: '#/$defs/nullable_string'}
+      device_ref: {$ref: '#/$defs/nullable_string'}
+      resource_kind: {$ref: '#/$defs/nullable_string'}
+      status: {type: string, enum: [queued, running, released]}
+  pending_recovery:
+    type: object
+    additionalProperties: false
+    required: [operation_ref]
+    properties:
+      operation_ref: {$ref: '#/$defs/nonempty_string'}
+      actor_id: {$ref: '#/$defs/nullable_string'}
+      reason: {$ref: '#/$defs/nullable_string'}
+      evidence_refs: {$ref: '#/$defs/string_list'}
+  lease: # held until the verdict is recorded or the claim is released; no heartbeat
+    type: object
+    additionalProperties: false
+    required: [actor_id, status]
+    properties:
+      actor_id: {$ref: '#/$defs/nonempty_string'}
+      status: {type: string, enum: [held, released, verdict_settled]}
+      generation: {type: integer, minimum: 0}
+      acquired_at: {anyOf: [{$ref: '#/$defs/iso_date_time'}, {type: 'null'}]}
+  attempt:
+    type: object
+    additionalProperties: false
+    required: [attempt_id]
+    properties:
+      attempt_id: {$ref: '#/$defs/nonempty_string'}
+      action_id: {$ref: '#/$defs/nullable_string'}
+      claim_ref: {$ref: '#/$defs/nullable_string'}
+      started_at: {anyOf: [{$ref: '#/$defs/iso_date_time'}, {type: 'null'}]}
+  integration_verdict:
+    type: object
+    additionalProperties: false
+    required: [decision, candidate_commit]
+    properties:
+      verdict_id: {$ref: '#/$defs/nullable_string'}
+      decision: {$ref: '#/$defs/verdict_decision'}
+      candidate_commit: {$ref: '#/$defs/nonempty_string'}
+      target_head: {$ref: '#/$defs/nullable_string'}
+      validator_actor_id: {$ref: '#/$defs/nullable_string'}
+      evidence_refs: {$ref: '#/$defs/string_list'}
+      receipt_event_ref: {$ref: '#/$defs/nullable_string'}
+  microtask_state:
+    type: object
+    additionalProperties: false
+    required: [phase]
+    properties:
+      phase: {$ref: '#/$defs/mt_phase'}
+      claim_ref: {$ref: '#/$defs/nullable_string'}
+      last_submission_ref: {$ref: '#/$defs/nullable_string'}
+      last_verdict_ref: {$ref: '#/$defs/nullable_string'}
+      rounds_without_output: {type: integer, minimum: 0}
+      diagnosis_refs: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      invalidated_by_commit: {$ref: '#/$defs/nullable_string'}
+      lease: {anyOf: [{$ref: '#/$defs/lease'}, {type: 'null'}]} # owned_unexpired_lease, validator_differs_from_claimer
+      attempts: {type: array, items: {$ref: '#/$defs/attempt'}} # action_scoped_evidence_identity
+      allowed_write_paths: {$ref: '#/$defs/string_list'} # conflict_free_write_scope
+  submission:
+    type: object
+    additionalProperties: false
+    required: [submission_id, submission_revision, mt_id, mt_contract_revision, immutable_source_ref, source_digest, submitted_by]
+    properties:
+      submission_id: {$ref: '#/$defs/entity_id'}
+      submission_revision: {type: integer, minimum: 1}
+      mt_id: {$ref: '#/$defs/entity_id'}
+      mt_contract_revision: {type: integer, minimum: 1}
+      immutable_source_ref: {$ref: '#/$defs/nonempty_string'}
+      source_digest: {$ref: '#/$defs/digest'}
+      evidence_refs: {$ref: '#/$defs/string_list'}
+      submitted_by: {$ref: '#/$defs/nonempty_string'}
+      relevant_input_paths: {$ref: '#/$defs/string_list'}
+      relevant_input_digest: {$ref: '#/$defs/nullable_digest'}
+      diagnosis_ref: {anyOf: [{$ref: '#/$defs/entity_id'}, {type: 'null'}]}
+  remediation: # CODEX-REMEDIATE-001; the recorded failure and this object are the whole remediation specification
+    type: object
+    additionalProperties: false
+    required: [failed_acceptance_refs, failed_check_refs, artifact_refs, expected, observed, affected_code_refs, repair_direction, confirming_proof_refs]
+    properties:
+      failed_acceptance_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/stable_id'}}
+      failed_check_refs: {$ref: '#/$defs/nonempty_string_list'}
+      artifact_refs: {$ref: '#/$defs/nonempty_string_list'}
+      expected: {$ref: '#/$defs/short_line'}
+      observed: {$ref: '#/$defs/short_line'}
+      affected_code_refs: {$ref: '#/$defs/nonempty_string_list'}
+      repair_direction: {$ref: '#/$defs/short_line'}
+      confirming_proof_refs: {$ref: '#/$defs/nonempty_string_list'}
+  validation_batch: # CODEX-VAL-006; one frozen candidate per round
+    type: object
+    additionalProperties: false
+    required: [batch_id, candidate_commit, started_at]
+    properties:
+      batch_id: {$ref: '#/$defs/entity_id'}
+      candidate_commit: {$ref: '#/$defs/nonempty_string'}
+      started_at: {$ref: '#/$defs/iso_date_time'}
+      completed_at: {anyOf: [{$ref: '#/$defs/iso_date_time'}, {type: 'null'}]}
+      mt_ids: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      round_kind: {enum: [batch, special_runs, wp_boundary]} # HT-WORK-CODING-001 validation.round_kinds
+      results_ref: {$ref: '#/$defs/nullable_string'}
+  diagnosis: # CODEX-STEER-008; written only by record_blocker
+    type: object
+    additionalProperties: false
+    required: [diagnosis_id, mt_id, cause, evidence_refs, distinct_from, receipt_event_ref]
+    properties:
+      diagnosis_id: {$ref: '#/$defs/entity_id'}
+      mt_id: {$ref: '#/$defs/entity_id'}
+      cause: {$ref: '#/$defs/short_line'}
+      evidence_refs: {$ref: '#/$defs/nonempty_string_list'}
+      distinct_from: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      receipt_event_ref: {$ref: '#/$defs/nonempty_string'}
+  verdict:
+    type: object
+    additionalProperties: false
+    required: [verdict_id, submission_id, submission_revision, validator_actor_id, validator_role_version, decision, receipt_event_ref]
+    anyOf: # remediation is required and typed when the decision is failed (CHK-REMEDIATION-SHAPE-001)
+      - {properties: {decision: {not: {const: failed}}}}
+      - {required: [remediation], properties: {remediation: {$ref: '#/$defs/remediation'}}}
+    properties:
+      verdict_id: {$ref: '#/$defs/entity_id'}
+      submission_id: {$ref: '#/$defs/entity_id'}
+      submission_revision: {type: integer, minimum: 1}
+      validator_actor_id: {$ref: '#/$defs/nonempty_string'}
+      validator_role_version: {$ref: '#/$defs/revision'}
+      decision: {$ref: '#/$defs/verdict_decision'}
+      acceptance_refs: {type: array, items: {$ref: '#/$defs/stable_id'}}
+      evidence_refs: {$ref: '#/$defs/string_list'}
+      remediation: {anyOf: [{$ref: '#/$defs/remediation'}, {type: 'null'}]}
+      blocked_on_mt_ref: {anyOf: [{$ref: '#/$defs/entity_id'}, {type: 'null'}]}
+      blocker: # decision blocked; type dependency requires blocked_on_mt_ref
+        anyOf:
+          - {type: 'null'}
+          - type: object
+            additionalProperties: false
+            required: [type]
+            properties:
+              type: {type: string, pattern: '^[a-z][a-z0-9_]*$'}
+              evidence_refs: {$ref: '#/$defs/string_list'}
+              recovery_owner: {$ref: '#/$defs/nullable_string'}
+      batch_commit_ref: {$ref: '#/$defs/nullable_string'}
+      proof_commit_ref: {$ref: '#/$defs/nullable_string'}
+      receipt_event_ref: {$ref: '#/$defs/nonempty_string'}

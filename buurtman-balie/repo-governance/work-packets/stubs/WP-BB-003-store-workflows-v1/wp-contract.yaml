@@ -1,0 +1,20 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-003-store-workflows-v1
+kind: stub
+title: Connected retail workflows
+version: 1
+spec_revision: 1
+requirement_refs:
+- AF-CRM-REQ-004
+- AF-CRM-REQ-005
+- AF-CRM-REQ-006
+- AF-CRM-REQ-007
+- AF-CRM-REQ-008
+- AF-CRM-REQ-009
+scope:
+- Discover first real store journey and stock/order/till owners; preserve connected navigation, useful product details,
+  tags/fuzzy search, configurable fields and later Pricebuddy.
+dependencies: []
+acceptance:
+- Finalize scope and acceptance from accepted spec requirements before execution.
+verification_checks: []

@@ -1,0 +1,61 @@
+schema_version: taskboard.scoped-authority.v1
+authority_id: AUTH-TASKBOARD-v1
+revision: 1
+scope: .
+rules:
+- rule_id: TASKBOARD-SCOPE-001
+  requirement: Apply this authority only to taskboard; .assets is the shared Git root
+    and sibling asset projects are outside this scope.
+- rule_id: TASKBOARD-PRESERVE-001
+  requirement: Preserve public package paths and existing rules, requirements, code,
+    configuration, data and unresolved work; reconcile accepted changes through the
+    specification before changing behavior.
+- rule_id: TASKBOARD-AUTH-001
+  requirement: Read this source, the current specification, module.yaml, maintenance
+    contracts and alignment limits before work; pinned templates are source inputs
+    and do not establish controller readiness.
+- rule_id: TASKBOARD-SOT-001
+  requirement: Product meaning lives in the self-contained specification; module facts
+    live in module.yaml; cross-entity relations live in topology/product.yaml; governance
+    stays outside product packages.
+- rule_id: TASKBOARD-SPEC-001
+  requirement: Before changing current specification bytes, preserve and hash-verify
+    its complete previous bundle using the pinned specification archive protocol;
+    increment version/revision and refresh affected hashes and indexes.
+- rule_id: TASKBOARD-WORK-001
+  requirement: Preserve new intent in a non-executable work-packet stub, refine against
+    current specification and facts, research new behavior and record red-team controls
+    before deriving bounded WP/MT contracts; no stub authorizes implementation.
+- rule_id: TASKBOARD-ACTIVATE-001
+  requirement: Planning is the selected mode. Require explicit mode selection and
+    resolved activation dependencies before executable WP/MT contracts; do not invent
+    controller commands, claims, verdicts, worktrees or receipts.
+- rule_id: TASKBOARD-PROOF-001
+  requirement: Run the declared structural check after governance changes; run only
+    proof affected by changed product inputs. Structural pass does not prove runtime
+    behavior, host integration or publication.
+- rule_id: TASKBOARD-HOST-001
+  requirement: Hosts own authentication, authorization, persistence, quotas, logging
+    and navigation. Inspect each consuming host authority and exact source/artifact
+    pins before changing its adapter or declaring compatibility.
+- rule_id: TASKBOARD-PORTABLE-001
+  requirement: Resolve package paths relative to this module and Git paths from the
+    shared canonical root; isolate machine paths, credentials, caches and runtime
+    output in ignored local configuration. A moved project must remain operable with
+    configured tools.
+- rule_id: TASKBOARD-GIT-001
+  requirement: Do not initialize a nested Git repository or alter sibling projects
+    as part of module alignment; no commit, push, branch, worktree, deployment or
+    process interruption is implied by alignment.
+- rule_id: TASKBOARD-QUIET-001
+  requirement: Run model and diagnostic work quietly and boundedly; never steal focus.
+    Use stable data-testid controls and the consuming host visual diagnostics for
+    GUI verification.
+- rule_id: TASKBOARD-STATE-001
+  requirement: Keep taskboard work registry, WP state, MT state and generated board
+    views synchronized only from actual canonical results; imported host work is context
+    and never a local completion verdict.
+- rule_id: TASKBOARD-MODULE-001
+  requirement: Resolve maintenance, standalone, host adapter, release and evolution
+    contracts from module.yaml before adoption or publication; report missing proof
+    explicitly rather than certifying legacy compliance.

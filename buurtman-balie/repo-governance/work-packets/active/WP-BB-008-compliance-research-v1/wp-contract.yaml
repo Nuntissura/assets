@@ -1,0 +1,19 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-008-compliance-research-v1
+kind: active
+title: EU US Belgium compliance evidence
+version: 1
+spec_revision: 3
+requirement_refs:
+- BB-COMPLIANCE-001
+scope:
+- Research current official EU/US/Belgium tax/VAT, invoicing, privacy and applicable CRM rules; map evidence to
+  canonical host owners.
+dependencies: []
+acceptance:
+- Record official sources with jurisdiction, applicability/date, unresolved host/transaction inputs and evidence-backed
+  candidates.
+- Distinguish fiscal research from implemented or certified compliance; add accepted future implementation only
+  after scope is concrete.
+verification_checks:
+- BB-CHECK-GOV

@@ -1,0 +1,7 @@
+schema_version: taskboard.work-registry.v1
+registry_id: REGISTRY-TASKBOARD-WORK-v1
+generation: 1
+scope: .
+entries: []
+policy: No existing local WP/MT authority was found; imported consumer work does not
+  become local work

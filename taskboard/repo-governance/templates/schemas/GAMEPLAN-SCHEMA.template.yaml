@@ -1,0 +1,154 @@
+schema_version: handshake.schema.v1
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:handshake:schema:gameplan:v1
+title: Handshake gameplan
+description: Shape of repo-governance/work-packets/active/{wp_id}/gameplan.yaml and gameplans/{mt_id}.yaml (HT-WORK-GAMEPLAN-001, handshake.gameplan.v1).
+type: object
+additionalProperties: false
+required: [schema_version, template_version, kind, instance_policy, rule_refs, writing, precedence, scope, assignment, parent, steps]
+anyOf: # CODEX-GAMEPLAN-001: an MT gameplan inherits from its WP gameplan
+  - {properties: {scope: {enum: [wp, batch, session]}}}
+  - {properties: {parent: {$ref: '#/$defs/nonempty_line'}}}
+properties:
+  schema_version: {const: handshake.gameplan.v1}
+  template_version: {type: integer, minimum: 1}
+  kind: {const: gameplan}
+  instance_policy: {$ref: '#/$defs/instance_policy'}
+  rule_refs: {$ref: '#/$defs/rule_ref_list'}
+  writing: {const: 'no prose; terse fragments; determinism > grammar; verb object [op value]'}
+  precedence: {const: 'on conflict CODEX, role profile, WP contract, WP-STATE, MT win; correct the step'}
+  scope: {type: string, enum: [wp, mt, batch, session]}
+  assignment: {$ref: '#/$defs/entity_id'}
+  parent: {anyOf: [{$ref: '#/$defs/nonempty_line'}, {type: 'null'}]}
+  generation: {type: integer, minimum: 0}
+  confirm_binding: {$ref: '#/$defs/confirm_binding'} # optional: repo whose HEAD confirmations bind to; default the gameplan's repo
+  read_first: {type: array, items: {$ref: '#/$defs/nonempty_line'}}
+  decisions:
+    type: array
+    maxItems: 5
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, text, source]
+      properties:
+        id: {$ref: '#/$defs/stable_id'}
+        text: {$ref: '#/$defs/short_line'}
+        source: {$ref: '#/$defs/short_line'}
+  refs:
+    type: object
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      required: [from, key]
+      properties:
+        from: {$ref: '#/$defs/nonempty_line'}
+        key: {$ref: '#/$defs/nonempty_line'}
+  expensive_actions:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [at]
+      oneOf:
+        - {required: [action]}
+        - {required: [command_ref]}
+        - {required: [command_pattern]}
+      properties:
+        action: {$ref: '#/$defs/token'}
+        command_ref: {$ref: '#/$defs/token'}
+        command_pattern: {$ref: '#/$defs/nonempty_line'}
+        at: {$ref: '#/$defs/moment'}
+  steps:
+    type: array
+    items: {$ref: '#/$defs/step'}
+$defs:
+  stable_id: {type: string, pattern: '^[A-Z][A-Z0-9-]+$'}
+  entity_id: {type: string, pattern: '^[A-Z][A-Za-z0-9._-]+$'}
+  rule_ref: {type: string, pattern: '^[A-Z][A-Z0-9-]+(\.[A-Za-z0-9_]+)*$'}
+  rule_ref_list: {type: array, items: {$ref: '#/$defs/rule_ref'}}
+  token: {type: string, pattern: '^[a-z][a-z0-9_]*$'}
+  nonempty_line: {type: string, minLength: 1, pattern: '^[^\r\n]+$'}
+  short_line: {type: string, minLength: 1, maxLength: 120, pattern: '^[^\r\n]+$'}
+  role: {type: string, enum: [orchestrator, builder, coder, wp_validator, integration_validator, activation_manager, any]}
+  moment: {type: string, enum: [on_resume, before_dispatch, before_submit, before_round, before_verdict, before_merge, any]}
+  instance_policy:
+    type: object
+    additionalProperties: false
+    required: [omit_empty_optional_fields, policy_lives_in_rule_refs_not_instance_fields, schema_ref]
+    properties:
+      omit_empty_optional_fields: {type: boolean}
+      policy_lives_in_rule_refs_not_instance_fields: {type: boolean}
+      schema_ref: {const: repo-governance/schemas/gameplan.schema.yaml}
+  confirm_binding:
+    type: object
+    additionalProperties: false
+    oneOf:
+      - {required: [ref]}
+      - {required: [repo]}
+    properties:
+      ref: {$ref: '#/$defs/token'}
+      repo: {$ref: '#/$defs/nonempty_line'}
+  git_check:
+    type: object
+    additionalProperties: false
+    required: [type]
+    anyOf:
+      - {required: [head_equals_remote]}
+      - {required: [clean]}
+      - {required: [branch]}
+      - {required: [branch_ref]}
+    properties:
+      type: {const: git}
+      head_equals_remote: {type: boolean}
+      clean: {type: boolean}
+      branch: {$ref: '#/$defs/nonempty_line'}
+      branch_ref: {$ref: '#/$defs/token'}
+      paths_ref: {$ref: '#/$defs/token'}
+      include_untracked: {type: boolean} # optional, default true
+      repo: {$ref: '#/$defs/nonempty_line'} # optional: other worktree, relative to the gameplan's repo root
+      repo_ref: {$ref: '#/$defs/token'} # optional: refs name resolving to that worktree
+  file_check:
+    type: object
+    additionalProperties: false
+    required: [type]
+    allOf:
+      - {oneOf: [{required: [path]}, {required: [path_ref]}]}
+      - {anyOf: [{required: [exists]}, {required: [contains]}, {required: [not_contains]}]}
+    properties:
+      type: {const: file}
+      path: {$ref: '#/$defs/nonempty_line'}
+      path_ref: {$ref: '#/$defs/token'}
+      exists: {type: boolean}
+      contains: {$ref: '#/$defs/nonempty_line'}
+      not_contains: {$ref: '#/$defs/nonempty_line'}
+  cmd_check: # read-only; never builds, tests, deletes or mutates (CHK-GAMEPLAN-SHAPE-001 rejects obvious mutating commands)
+    type: object
+    additionalProperties: false
+    required: [type, argv]
+    anyOf:
+      - {required: [expect_exit]}
+      - {required: [expect_output]}
+    properties:
+      type: {const: cmd}
+      argv: {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_line'}}
+      expect_exit: {type: integer}
+      expect_output: {$ref: '#/$defs/nonempty_line'}
+      timeout_seconds: {type: integer, minimum: 1}
+  confirm_check: # answered in the gated action receipt
+    type: object
+    additionalProperties: false
+    required: [type]
+    properties:
+      type: {const: confirm}
+  step:
+    type: object
+    additionalProperties: false
+    required: [id, role, at, do, check, source, state]
+    properties:
+      id: {$ref: '#/$defs/stable_id'}
+      role: {$ref: '#/$defs/role'}
+      at: {$ref: '#/$defs/moment'}
+      do: {$ref: '#/$defs/short_line'}
+      check: {oneOf: [{$ref: '#/$defs/git_check'}, {$ref: '#/$defs/file_check'}, {$ref: '#/$defs/cmd_check'}, {$ref: '#/$defs/confirm_check'}]}
+      source: {$ref: '#/$defs/short_line'}
+      state: {type: string, enum: [active, retired]}

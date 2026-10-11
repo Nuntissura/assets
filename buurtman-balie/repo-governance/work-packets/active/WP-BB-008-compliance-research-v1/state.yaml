@@ -1,0 +1,17 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-008-compliance-research-v1
+status: in_progress
+work_location: .
+sync_pending: false
+progress:
+- Recovered pending synchronization from canonical in_progress state; board and roadmap already matched.
+- Inspected official-source research document and unresolved host applicability; fiscal/privacy/communication
+  controls remain proposed. External source verification belongs to the research lane.
+blockers: []
+next_action: Devlead reviews the final compliance research and host-owner applicability mapping and runs BB-CHECK-GOV;
+  record research acceptance without an implemented-compliance verdict.
+verification: []
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve all uncommitted source/governance; no remote, deployment or publication authorized.

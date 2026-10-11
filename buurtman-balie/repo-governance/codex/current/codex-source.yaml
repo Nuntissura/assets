@@ -1,0 +1,52 @@
+schema_version: buurtman.codex.v1
+project_id: buurtman-balie
+mode: model_operated
+governance_owner: model
+workflow_reference: repo-governance/codex/workflows/repository-workflows.md
+bootstrap_origin:
+  skill: hsrepotemplate
+  pack_version: 40
+  stock_integrity: passed
+  second_application_writes: 0
+  profile: operator-requested lightweight override
+rules:
+- rule_id: BB-GOV-001
+  requirement: The model owns governance maintenance; the operator controls scope and acceptance. Handshake automation
+    is not installed or impersonated.
+- rule_id: BB-GOV-002
+  requirement: Read Codex, build rules, specification, taskboard and relevant WP/state before edits; inspect source
+    and Git state on resume.
+- rule_id: BB-GOV-003
+  requirement: Record new ideas in the specification first, preserving wording and accepted/proposed status; then
+    derive WP or WP-stub and taskboard row. Proposed ideas do not authorize implementation.
+- rule_id: BB-GOV-004
+  requirement: Specification owns product meaning; WPs reference requirement IDs and spec revision. Reassess only
+    affected scope/proof after spec changes; preserve history.
+- rule_id: BB-GOV-005
+  requirement: Use active WPs for executable work and WP-stubs for unresolved work; optional MTs live with their
+    WP. Do not create empty MT scaffolding.
+- rule_id: BB-GOV-006
+  requirement: Each WP has one state with status, work location, actual progress, blockers, next action and recovery/proof
+    context. Synchronize taskboard and affected spec roadmap.
+- rule_id: BB-GOV-007
+  requirement: Before a multi-file status update set state sync_pending=true; update board and spec roadmap, then
+    clear it. On interruption recover from state before new work; do not claim completion with pending synchronization.
+- rule_id: BB-GOV-008
+  requirement: Use superseded plus superseded_by and reason for newer replacement; cancelled plus reason for abandonment
+    without replacement. Keep prior contracts/state/scope in archive; never reuse IDs.
+- rule_id: BB-GOV-009
+  requirement: Complete WP/MT only when declared acceptance and applicable engineering checks pass with observed
+    evidence; partial scope or unavailable proof cannot close full scope.
+- rule_id: BB-GOV-010
+  requirement: No refinement, enrichment, activation, claims/leases, action registry, receipts, role registrations,
+    separate verdicts, digest manifests or topology ceremony. Stock files in .local are inactive backup.
+- rule_id: BB-GOV-011
+  requirement: Run only checks affected by a change or required for declared acceptance; reuse valid unchanged proof.
+    Do not impose full template or host suites on local module work.
+- rule_id: BB-GOV-012
+  requirement: Keep paths portable, private/local data ignored and governance excluded from publication; preserve
+    unrelated edits. No remotes, deployment, commit or push as initialization side effects.
+- rule_id: BB-GOV-013
+  requirement: On resume follow the linked repository workflow reference for bounded devlead, dependency, diagnostics,
+    compliance and specification-team coordination; assign file ownership before overlapping writes and preserve
+    current lightweight authority. Team names require no role registration or ceremony.

@@ -1,0 +1,87 @@
+schema_version: handshake.reusable-solution.v3
+kind: reusable_solution_candidate
+
+identity:
+  solution_id: HS-REPLACE-ME
+  solution_kind: REPLACE_ME
+  version: 1
+  revision: 1
+  status: candidate
+
+source_snapshot:
+  source_set_digest: sha256:REPLACE_ME
+  captured_refs: []
+
+ownership:
+  controller: reuse_controller
+  source_snapshot_is_immutable: true
+  captured_ref_required_fields: [entity_ref, digest]
+  versioned_sources_require_revision: true
+  implementation_facts_generated_from: source_snapshot
+  semantics_generated_from: pinned_source_specification_refs
+  generalization_proposals_owned_by: project_research_folder
+  generalization_proposals_are_reference_only: true
+  semantic_differences_require_source_and_acceptance_refs: true
+  project_spec_and_module_authority_unchanged_by_candidate: true
+  promotion_conditions_derived_from_matching_validated_evidence: true
+
+semantics:
+  purpose: REPLACE_ME
+  semantic_entity: REPLACE_ME
+  states: []
+  commands: []
+  invariants: []
+  supported_profiles: []
+
+reproducibility:
+  mode: REPLACE_ME # allowed: exact, procedural, semantic
+  required_input_refs: []
+  generation_envelope_refs: []
+  known_nondeterminism_sources: []
+
+implementation:
+  originating_project_id: PROJECT-REPLACE-ME
+  module_refs: []
+  topology_refs: []
+  artifact_refs: []
+  declared_dependencies: []
+  owned_state: []
+  external_effects: []
+
+lineage:
+  originated_from_solution_ref: null
+  relationship: REPLACE_ME # allowed: new, instantiate, compose, extend, fork
+  supersedes: []
+  source_spec_refs: []
+  research_proposal_refs: []
+  source_wp_refs: []
+  source_receipt_refs: []
+
+proof:
+  acceptance_refs: []
+  evidence_refs: []
+  verified_profiles: []
+
+promotion:
+  demonstrated_reuse_value: REPLACE_ME
+  project_specific_assumptions_removed: false
+  public_contract_stable: false
+  public_contract_digest: sha256:REPLACE_ME
+  compatibility_classification: REPLACE_ME # allowed: compatible, additive, breaking, migration_required
+  migration_ref: null
+  dependency_boundary_reviewed: false
+  proof_complete: false
+
+validation:
+  every_source_ref_resolves_to_captured_identity_and_digest: true
+  artifact_and_dependency_closure_match_source_snapshot: true
+  captured_facts_cannot_be_independently_edited: true
+  proof_subject_and_inputs_match_candidate_snapshot_and_claims: true
+  mixed_source_snapshots_block_promotion: true
+  accepted_semantic_changes_recorded_in_owning_spec_before_promotion_or_binding: true
+  source_changes_require_explicit_retain_pinned_snapshot_or_refresh: true
+  refresh_creates_new_candidate_revision_and_invalidates_affected_proof: true
+  unchanged_claims_reuse_matching_valid_proof: true
+  promotion_release_pins_public_contract_digest_and_compatibility_classification: true
+  migration_ref_required_when_compatibility_requires_migration: true
+  promoted_solution_does_not_automatically_upgrade_existing_project_bindings: true

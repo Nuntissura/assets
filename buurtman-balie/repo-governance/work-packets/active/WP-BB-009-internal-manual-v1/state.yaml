@@ -1,0 +1,44 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-009-internal-manual-v1
+status: in_progress
+work_location: .
+sync_pending: false
+progress:
+- Implemented bundled offline mountUserManual and nine source-verified topics in English, French and Dutch; shared
+  localization and additive standalone help.
+- Root reports actual Codex browser EN/FR/NL manual render and DOM guidance inspection; coordinator opened .local/codex-browser-proof/manual-nl.jpg
+  showing expanded Dutch manual. Detailed guidance correctness remains root DOM/source evidence; full-page screenshot
+  scaling does not establish independent text readability here.
+- Fresh manual result read; nine topics/three languages, offline/keyboard/draft retention, instance disposal, desktop/mobile
+  and localized provisioning all passed; cleanup completed and pre/post fingerprints identical.
+- Fresh manual command exec-b0df88c9-8adf-4c7d-b0af-2b27a079bb12 exit0 and final-ui-current bounded visual/source
+  review inspected. Npm exec-8b01444e-3570-4d8c-a200-314ad508ee9f exit0 includes manual modules among seven public
+  files; private/governance excluded.
+blockers: []
+next_action: Root runs current GOV for closure mapping; synchronize completion only with applicable current proof.
+  WP015 subsequent presentation/manual changes require fresh affected proof before accepting new behavior.
+verification:
+- check_id: BB-CHECK-UI
+  result: passed
+  observed: .local/manual-proof/result.json read; current recorded fingerprints and successful cleanup; root command
+    exit0 and final independent evidence review. Temporary MemoryStore scope only.
+  command: python tooling/manual-proof.py --runtime $env:BB_BROWSER_RUNTIME --browser $env:BB_BROWSER_EXECUTABLE
+- check_id: BB-CHECK-PACKAGE
+  result: passed
+  observed: exec-8b01444e-3570-4d8c-a200-314ad508ee9f exit0 npm seven-file listing read; includes user-manual/manual-content,
+    no private/governance. Prior core/demo separation proof retained.
+  command: npm pack --dry-run --json --ignore-scripts
+proof_context:
+  prior_result_ref: .local/manual-proof/result.json
+  current_input_validity: Fresh replacement proof has identical before/after fingerprints and completed cleanup;
+    independent current-source/package acceptance remains pending.
+  handoff_ref: tooling/manual-proof.py
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Preserve unrelated uncommitted source/governance; no remote/publication/deployment.
+acceptance_proof:
+- Fresh nine-topic three-language manual result and inspected shipped content cover purpose/startup/embed/navigation/inputs/outputs/diagnostics/recovery/swarm/languages,
+  offline keyboard and disposal.
+- Npm exec-8b01444e seven-file list includes manual modules; fresh manual command checks source/API/member paths/provisioning,
+  independent final-ui review opens desktop/FR/NL mobile; governance/private excluded.

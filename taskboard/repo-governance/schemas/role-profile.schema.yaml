@@ -1,0 +1,166 @@
+schema_version: handshake.schema.v1
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:handshake:schema:role-profile:v1
+title: Handshake role profile
+description: Shape of repo-governance/codex/current/roles/{role_slug}.yaml (HT-ROLE-*-001, handshake.role-profile.v2).
+type: object
+additionalProperties: false
+required: [schema_version, schema_ref, kind, role_id, role_slug, logical_role, instantiate_when, purpose, context, allowed_semantic_activities, registered_mutation_actions, decisions, prohibited_actions, completion, escalation, ownership, pinning, governance_access_ref, rule_layers, retirement_policy]
+properties:
+  schema_version: {const: handshake.role-profile.v2}
+  schema_ref: {const: repo-governance/schemas/role-profile.schema.yaml}
+  kind: {const: role_profile}
+  role_id: {$ref: '#/$defs/stable_id'}
+  role_slug: {type: string, pattern: '^[a-z][a-z0-9-]*$'}
+  logical_role: {type: boolean}
+  instantiate_when: {$ref: '#/$defs/nonempty_string'}
+  code_rules:
+    description: All written code must follow the listed concepts.
+    type: object
+    propertyNames: {pattern: '^code-rule-[0-9]{4}$'}
+    additionalProperties: {$ref: '#/$defs/nonempty_string'}
+  purpose: {$ref: '#/$defs/nonempty_string'}
+  context:
+    type: object
+    additionalProperties: false
+    required: [required_refs, workflow_ref]
+    properties:
+      required_refs: {$ref: '#/$defs/token_list'}
+      workflow_ref: {$ref: '#/$defs/rule_ref'}
+  allowed_semantic_activities: {$ref: '#/$defs/token_list'}
+  registered_mutation_actions: {$ref: '#/$defs/token_list'}
+  decisions:
+    type: object
+    additionalProperties: false
+    required: [may_decide, must_defer]
+    properties:
+      may_decide: {$ref: '#/$defs/token_list'}
+      must_defer: {$ref: '#/$defs/token_list'}
+  dispatch:
+    type: object
+    additionalProperties: false
+    required: [route, permitted_profile_ref, provider_model_reasoning_must_be_fixed_and_registered]
+    properties:
+      route: {$ref: '#/$defs/nonempty_string'}
+      permitted_profile_ref: {$ref: '#/$defs/nonempty_string'}
+      provider_model_reasoning_must_be_fixed_and_registered: {type: boolean}
+  validation:
+    type: object
+    additionalProperties: {type: boolean}
+  substitution:
+    type: object
+    additionalProperties: false
+    required: [rule_id, substitutes_for, documented_explicit_substitute, silent_merge, larger_projects]
+    properties:
+      rule_id: {$ref: '#/$defs/stable_id'}
+      substitutes_for: {$ref: '#/$defs/token_list'}
+      documented_explicit_substitute: {type: boolean}
+      silent_merge: {type: boolean}
+      larger_projects: {$ref: '#/$defs/nonempty_string'}
+  readiness_gate:
+    type: object
+    additionalProperties: false
+    required: [rule_id]
+    properties:
+      rule_id: {$ref: '#/$defs/stable_id'}
+      compile_or_static_check_of_changed_behaviour_only: {type: boolean}
+      affected_tests_check: {$ref: '#/$defs/nonempty_string'}
+      broad_suite: {$ref: '#/$defs/nonempty_string'}
+  activation_order: {$ref: '#/$defs/nonempty_string'}
+  independent_validator_required: {type: boolean}
+  prohibited_actions: {$ref: '#/$defs/token_list'}
+  completion: {$ref: '#/$defs/nonempty_string'}
+  escalation: {$ref: '#/$defs/nonempty_string'}
+  ownership:
+    type: object
+    additionalProperties: false
+    required: [handshake_owns, role_submits]
+    properties:
+      handshake_owns: {$ref: '#/$defs/token_list'}
+      role_submits: {$ref: '#/$defs/token_list'}
+  pinning: {$ref: '#/$defs/nonempty_string'}
+  governance_access_ref: {$ref: '#/$defs/rule_ref'}
+  rule_layers:
+    type: object
+    additionalProperties: false
+    required: [invariant]
+    properties:
+      invariant: {type: array, minItems: 1, items: {$ref: '#/$defs/invariant_entry'}}
+      heuristic: {type: array, items: {$ref: '#/$defs/heuristic_entry'}}
+      tunable: {type: array, items: {$ref: '#/$defs/tunable_entry'}}
+  retirement_policy: {$ref: '#/$defs/nonempty_string'}
+  model_operated: # CODEX-GAMEPLAN-002
+    type: object
+    additionalProperties: false
+    required: [gameplan_role_env, gameplan_confirm_by, rule_ref]
+    properties:
+      gameplan_role_env: {type: string, pattern: '^GAMEPLAN_ROLE=[a-z_]+$'}
+      gameplan_confirm_by: {enum: [orchestrator, builder, coder, wp_validator, integration_validator, activation_manager]}
+      rule_ref: {$ref: '#/$defs/rule_ref'}
+$defs:
+  stable_id: {type: string, pattern: '^[A-Z][A-Z0-9-]+$'}
+  rule_ref: {type: string, pattern: '^[A-Z][A-Z0-9-]+(\.[A-Za-z0-9_]+)*$'}
+  nullable_rule_ref: {anyOf: [{$ref: '#/$defs/rule_ref'}, {type: 'null'}]}
+  nonempty_string: {type: string, minLength: 1}
+  token_list: {type: array, items: {$ref: '#/$defs/nonempty_string'}}
+  object_ref: {anyOf: [{$ref: '#/$defs/nonempty_string'}, {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_string'}}]}
+  source_ref_entry:
+    type: object
+    additionalProperties: false
+    required: [id, source_ref]
+    properties:
+      id: {$ref: '#/$defs/stable_id'}
+      source_ref: {$ref: '#/$defs/rule_ref'}
+  superseded_entry:
+    type: object
+    additionalProperties: false
+    required: [id, superseded_by]
+    properties:
+      id: {$ref: '#/$defs/stable_id'}
+      superseded_by: {$ref: '#/$defs/stable_id'}
+  invariant_full_entry:
+    type: object
+    additionalProperties: false
+    required: [id, subject, predicate, object, applies_when, check_ref, source_ref]
+    properties:
+      id: {$ref: '#/$defs/stable_id'}
+      subject: {$ref: '#/$defs/nonempty_string'}
+      predicate: {$ref: '#/$defs/nonempty_string'}
+      object: {$ref: '#/$defs/object_ref'}
+      applies_when: {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_string'}}
+      check_ref: {$ref: '#/$defs/stable_id'}
+      source_ref: {$ref: '#/$defs/nullable_rule_ref'}
+  heuristic_full_entry:
+    type: object
+    additionalProperties: false
+    required: [id, subject, default, deviate_when, source_ref]
+    properties:
+      id: {$ref: '#/$defs/stable_id'}
+      subject: {$ref: '#/$defs/nonempty_string'}
+      default: {$ref: '#/$defs/nonempty_string'}
+      deviate_when: {$ref: '#/$defs/nonempty_string'}
+      source_ref: {$ref: '#/$defs/nullable_rule_ref'}
+  tunable_full_entry:
+    type: object
+    additionalProperties: false
+    required: [id, name, owner_ref]
+    properties:
+      id: {$ref: '#/$defs/stable_id'}
+      name: {$ref: '#/$defs/nonempty_string'}
+      owner_ref: {$ref: '#/$defs/nullable_rule_ref'}
+      default: {type: [string, number, boolean]}
+  invariant_entry:
+    oneOf:
+      - {$ref: '#/$defs/source_ref_entry'}
+      - {$ref: '#/$defs/superseded_entry'}
+      - {$ref: '#/$defs/invariant_full_entry'}
+  heuristic_entry:
+    oneOf:
+      - {$ref: '#/$defs/source_ref_entry'}
+      - {$ref: '#/$defs/superseded_entry'}
+      - {$ref: '#/$defs/heuristic_full_entry'}
+  tunable_entry:
+    oneOf:
+      - {$ref: '#/$defs/source_ref_entry'}
+      - {$ref: '#/$defs/superseded_entry'}
+      - {$ref: '#/$defs/tunable_full_entry'}

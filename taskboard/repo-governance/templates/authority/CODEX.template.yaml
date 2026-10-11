@@ -1,0 +1,1097 @@
+schema_version: handshake.codex-source.v10
+kind: codex_source
+
+identity:
+  codex_source_id: CODEX-PROJECT-v1
+  project_id: PROJECT-REPLACE-ME
+  version: 29
+  revision: 22
+  status: draft
+
+
+execution_modes:
+  default: handshake_managed
+  selected_mode_field: project_installation.execution_mode
+  applies_to: all_manifest_selected_templates
+  domain_ownership_unchanged: true
+  modes:
+    handshake_managed:
+      bookkeeping_actor: registered_handshake_controller
+      provider_entry_mode: installed_global_authority_declared_mode
+      controller_schema_compiler_and_release_gates_required: true
+      direct_machine_owned_writes_forbidden: true
+    model_operated:
+      bookkeeping_actor: authorized_model_coordinator_using_verified_filesystem_and_git_helpers
+      provider_entry_mode: identical_thin_routing_entrypoints
+      provider_mode_authority: Operator-requested split CODEX folder with shared model-operated routes; this named model-profile exception does not alter handshake_managed mirror policy.
+      root_entrypoints: [CODEX.md, AGENTS.md, CLAUDE.md]
+      entrypoint_target: repo-governance/codex/CODEX.md
+      project_protocol_path: repo-governance/codex/protocols/project/repository-operation.md
+      shared_protocol_path: repo-governance/codex/protocols/shared/model-operation.md
+      source_of_protocol_content: execution_modes_and_repository_workflows
+      role_authorization:
+        source: explicit_operator_request_and_recorded_coordinator_assignment
+        coordinator_actions: all_action_registry_actions_except_independent_review_of_own_submission_record_integration_verdict_and_merge_wp
+        worker_actions: [claim_mt, submit_receipt, release_claim, record_blocker, request_validation, propose_gameplan_step]
+        worker_condition: Coordinator serializes governance publication; worker performs only assigned owned product scope and may not write another claim or lane.
+        reviewer_actions: [record_validation_verdict, record_integration_verdict, merge_wp, record_blocker]
+        independent_review_condition: Reviewer must not be the author when the activated contract requires independence.
+        integration_review_condition: record_integration_verdict and merge_wp only by the recorded integration_validator reviewer in fresh context (IV-INV-001 exclusive_final_verdict_authority); coordinator never records them.
+        lane_binding: Record actual actor/session/role and disjoint allowed writes in canonical WP state before work; one serialized coordinator lane publishes governance.
+        undeclared_action_or_authority: block_and_report_exact_missing_authorization
+      transition_registry:
+        owner: this_model_operated_profile
+        conditions_owner: selected_action_registry
+        transitions:
+        - {action: create_wp_stub, from: absent, to: stub_drafting}
+        - {action: submit_contract_detailing, from: [stub_drafting, planning_transaction, planned], via: planning_transaction, to: planned, executable: false}
+        - {action: request_activation, from: [planned, activating], via: activating, to: active, publish_after: all_action_commit_checks}
+        - {action: rebase_wp, from: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending], to: planned, executable: false, preserve_prior_contract: true}
+        - {action: claim_mt, wp_phase: active, claim_from: unclaimed, claim_to: owned_unexpired_lease}
+        - {action: release_claim, claim_from: owned_unexpired_lease, claim_to: released_recoverable}
+        - {action: request_validation, from: active, to: validating, requires: all_required_mt_passes_current}
+        - {action: record_integration_verdict, from: validating, passed_to: merge_pending, failed_to: active, inconclusive_to: validating, blocked_to: validating, requires: all_required_mt_passes_apply_and_exact_candidate}
+        - {action: merge_wp, from: merge_pending, to: merge_pending, requires: integration_pass_and_expected_target_head}
+        - {action: confirm_merge_containment, from: merge_pending, to: completed, publish_after: actual_target_branch_containment_and_all_commit_checks}
+        - {action: cancel_wp, from: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending], to: cancelled, publish_after: all_action_commit_checks}
+        - {action: supersede_wp, from: [stub_drafting, planning_transaction, planned, activating, active, validating, merge_pending], to: superseded, publish_after: all_action_commit_checks}
+        phase_preserving_actions: [upsert_build_matrix_entry, retire_build_matrix_entry, set_priority, bind_solution, fork_solution, propose_solution_promotion, upgrade_solution_binding, submit_receipt, record_blocker, propose_gameplan_step, retire_gameplan_step, start_validation_round, dispatch_role, pause_workflow, resume_workflow, cancel_workflow, propose_workflow_policy, trial_workflow_policy, promote_workflow_policy, rollback_workflow_policy]
+        verdict_scope: record_validation_verdict is MT-scope only (microtask_transitions) and changes only that MT phase; WP validating -> merge_pending only by record_integration_verdict passed after all_required_mt_passes_apply on the same candidate; WP-scope record_validation_verdict is an undefined_transition.
+        undefined_transition: block_instead_of_inventing_success
+      microtask_transitions:
+        rule_id: CODEX-MODE-MT-001
+        state_owner: wp_state.microtasks
+        action_target_selector: Existing action target_ids identifies one MT and its activated parent; absence of an MT selects WP transitions. Reject ambiguous target context.
+        activation_initial_phase: ready
+        parent_phase_during_mt_execution: active
+        phase_vocabulary_owner: HT-WORK-CODING-001.lifecycle.mt_phases
+        transitions:
+        - {action: claim_mt, from: ready, to: in_progress, requires: eligible_unclaimed_mt_and_valid_owned_lease}
+        - {action: claim_mt, from: needs_remediation, to: in_progress, requires: same_or_fresh_valid_lease_and_payload_names_recorded_failed_verdict_id}
+        - {action: claim_mt, from: needs_new_approach, to: in_progress, requires: recorded_diagnosis_cause_distinct_from_every_prior_diagnosis_on_mt}
+        - {action: request_validation, from: in_progress, to: ready_for_validation, requires: implementation_proof_and_exact_immutable_submission}
+        - {event: validator_assigned, from: ready_for_validation, to: validating, requires: independent_validator_and_exact_submission}
+        - {action: record_validation_verdict, from: validating, passed_to: passed, failed_to: needs_remediation, requires: exact_submission_acceptance_and_required_reviewer_authority}
+        - {action: record_validation_verdict, from: validating, inconclusive_to: validating, requires: retained_submission_and_exact_blocker}
+        - {action: record_validation_verdict, from: validating, blocked_to: blocked_on_dependency, requires: blocker_type_dependency_and_blocked_on_mt_ref_names_open_mt}
+        - {event: rounds_without_output_limit_reached, from: [in_progress, needs_remediation, ready_for_validation, validating], to: needs_new_approach, requires: recorded_rounds_without_output_equals_limit}
+        - {event: failed_verdicts_same_cause_limit_reached, from: needs_remediation, to: needs_new_approach, requires: failed_verdicts_same_cause_limit_without_new_diagnosis_ref}
+        - {event: proof_invalidated, from: passed, to: ready_for_validation, requires: candidate_diff_intersects_recorded_relevant_input_paths_at_round_freeze}
+        - {action: release_claim, from: in_progress, to: ready, requires: preserved_recoverable_work}
+        non_phase_actions: [submit_receipt, record_blocker, propose_gameplan_step]
+        event_emitter: coordinator_from_recorded_state_and_round_receipts
+        transition_mirror: HT-WORK-CODING-001.lifecycle.transitions
+        completed_dependency_eligibility: An MT is an eligible dependency only in phase passed, and only when every required acceptance and independent verdict names the same submitted revision; receipt append alone never advances an MT to passed.
+        claim_settlement: Coordinator settles the submitted claim before publishing passed or needs_remediation; an MT in needs_remediation requires claim_mt with the same or a fresh valid lease before renewed edits.
+        no_independent_review_selected: Coordinator may evaluate recorded proof through record_validation_verdict when the activated MT contract does not require an independent reviewer; do not invent an independent verdict.
+        does_not_advance_parent_phase_or_authorize_merge: true
+      mechanical_adapter_fields:
+        controller_and_collector: Model coordinator with actual helper identity replaces Handshake controller/collector actors in action, WP, MT, receipt, state and taskboard templates.
+        evaluator: Coordinator evaluates the same declared action predicates and this profile's transitions against fresh canonical files; no unavailable handshake.action_eligibility endpoint is asserted.
+        write_prohibitions: Direct-state and manual-contract prohibitions restrict workers and unsupervised edits; coordinator may write these artifacts through the preserving generation-checked model protocol.
+        final_compiler_schemas: Final Handshake runtime schema/compiler release remains a Handshake gate; model governance checks actual action fields against the supplied selected template shapes, required fields and references without claiming those final schemas exist.
+        commands: Use inspected actual filesystem or Git helpers and record their exact invocations; unavailable controller command IDs stay inactive and are never invented.
+      operating_protocol:
+        coordinator: Serialize canonical governance writes; assign stable actor/session/action identities; verify source hashes and generations before publication; commit governance files by explicit path only.
+        coordinator_verdict_gate: Before recording any verdict run skill/scripts/validate_artifacts.py --schemas repo-governance/schemas --wp-dir <wp_dir> (at round freeze add --candidate-diff <file> --candidate-commit <sha>); exit != 0 blocks recording; then apply CODEX-VAL-005.
+        round_ownership: wp_validator reviewer freezes the pushed candidate commit, runs the canary and the round (CODEX-VAL-006); coordinator writes wp_state.stock_execution_state.validation_batches and microtasks.*.rounds_without_output from the round receipt (CODEX-STEER-007).
+        resume: Before any effect coordinator reconciles wp_state.pending_recovery and receipt.mechanical.spawned_processes against the live process inventory (CODEX-STEER-005, CODEX-FLOW-008).
+        gameplan: CODEX-GAMEPLAN-002.
+        worker: Claim only eligible activated MT scope; preserve claims and evidence; write only its owned worktree and allowed paths.
+        reviewer: Inspect the submitted immutable source and evidence independently when the active contract requires a verdict.
+        concurrency: Disjoint workers may run in parallel; if exclusive claims or reliable generation rechecks are unavailable, serialize conflicting work.
+        receipts: Record only observed commands, exit codes, hashes, timestamps, identities and settled outcomes; identify the model/helper producer truthfully.
+        transactions: Preview without side effects; preserve before-images; recheck source and target generations before write; verify results; retain interrupted state for recovery.
+        lease: A claim lease lasts until the MT's verdict is recorded or the claim is released; liveness comes from the dispatch process, never from heartbeats.
+      unresolved_project_bindings: Explicitly list unresolved template fields as inactive bindings; stock rules remain obligations, but resolve every action-relevant binding before execution.
+      bootstrap_readiness: Repository structure, installed source and rules, accepted spec, routing and model lifecycle guidance validate; this does not assert Handshake release or product runtime readiness.
+      lifecycle_admission: Use the selected action registry conditions and existing WP/MT phase semantics; coordinator verifies applicable conditions against canonical files before each mutation and again before publishing outcomes.
+      runtime_prerequisites: SDK, exact reuse resolution, product catalog and final runtime schemas are required only by the scoped action that depends on them; missing required product dependencies block that scope.
+  interpretation_rules:
+  - rule_id: CODEX-MODE-001
+    requirement: Record the execution mode explicitly. Retain all concern ownership, scope, preservation, stable identity, freshness, evidence and lifecycle requirements in both modes.
+  - rule_id: CODEX-MODE-002
+    requirement: In model_operated mode only, controller/compiler actor exclusivity, controller transport, controller-only write prohibitions and automatic compiler release admission are implemented by the model coordinator protocol; this is not permission to relax any action prerequisite, product requirement or proof condition.
+  - rule_id: CODEX-MODE-003
+    requirement: In handshake_managed mode retain all existing controller, evaluator, schema, compiler and provider-mirror gates unchanged. A controller outage never silently switches mode; mode migration requires an explicit recorded operator instruction and preserved state.
+  - rule_id: CODEX-MODE-004
+    requirement: In model_operated mode generate identical root CODEX.md, AGENTS.md and CLAUDE.md routing to the folder CODEX; keep actual execution instructions, build rules and workflows at their separate codex-folder owners. Reject stale routing and divergent authoritative copies.
+  - rule_id: CODEX-MODE-005
+    requirement: Never fabricate controller, SDK, compilation, schema-release, action or success receipts. Record actual model/helper execution and evidence; installing a draft stock payload or a repository guide does not release Handshake or prove any product capability.
+  - rule_id: CODEX-MODE-006
+    requirement: Preserve unresolved stock values as declared inactive project bindings and resolve those needed by the selected scoped action from inspected authority before using them; do not replace missing product behavior, exact dependency resolution, acceptance proof or schema requirements with model narration.
+
+repository_workflows:
+  output_path: repo-governance/codex/workflows/repository-workflows.md
+  authority_source: repo-governance/codex/current/codex-source.yaml
+  steps:
+  - workflow_id: CODEX-FLOW-001
+    title: Initialize or upgrade the repository
+    required_reads: [repository_structure, accepted_specification, template_pack, execution_modes]
+    actions:
+    - Inspect existing authority, files, Git state, ownership and installed template versions; preserve product code and local data.
+    - Plan the exact directory and file changes; create required base containers even when empty; stage manifest-selected stock templates once.
+    - Install accepted specification, stock build obligations, canonical CODEX source, folder CODEX, workflow/protocol projections and identical model-mode root routers; record unresolved inactive bindings explicitly.
+    - Apply only after source and target preconditions still agree; verify preservation and require a zero-change repeat.
+    proof: Verified source/target hashes, actual directory inventory, routing and template-pin checks, spec validation and repeat-plan result; no inferred Handshake release.
+  - workflow_id: CODEX-FLOW-002
+    title: Create a non-executable work-packet stub
+    required_reads: [current_specification, action_registry.actions.create_wp_stub, work_packet_template]
+    actions:
+    - Preserve the operator request, intended scope and unresolved work; allocate a stable WP identity and non-executable planning state at the declared WP location.
+    - Reference the relevant accepted specification and candidate obligations; create no worktree or executable MT during stub creation.
+    - Record the spec enrichment disposition on the stub; an operator idea with no initiating spec anchor requires update_required and a spec enrichment before activation.
+    proof: Canonical stub/state reread has planning status, source revision and preserved requested scope with no executable activation or worktree.
+  - workflow_id: CODEX-FLOW-003
+    title: Refine, archive and enrich the specification
+    required_reads: [refinement_enrichment_template, specification.update_protocol, repository_structure.specification_archive]
+    actions:
+    - Extract the WP area, inspect project reality and current research, identify reuse, risks, minimum controls and bounded acceptance.
+    - Before every accepted spec change, archive and verify the complete previous current bundle; advance its version and revision and preserve self-contained accepted meaning.
+    - Adopt accepted findings into the current spec, then rebuild the final bounded resolved context from that exact revision; retain other research separately.
+    proof: Complete archived bundle matches its prior source hashes; current spec validates and final refinement context references the enriched revision.
+  - workflow_id: CODEX-FLOW-004
+    title: Activate scoped work and provision its worktree
+    required_reads: [action_registry.actions.request_activation, current_refinement, work_packet_template, repository_structure.worktree_policy]
+    actions:
+    - Verify completed refinement/enrichment, current spec synchronization, bounded matrix assessment and required dependencies; retain excluded future scope.
+    - Bind stable spec/rule/matrix IDs and applicable resolved SDK contracts into versioned WP and MT contracts; unresolved required values block activation.
+    - Resolve an actual Git base commit before worktree creation. An unborn repository needs an operator-authorized initial commit; absent that authorization or commit, record the exact blocker and keep activation non-executable. Never invent a base ref.
+    - Only now create or verify the owned Git worktree beneath the canonical main-root worktrees/WP-ID path and temporary output binding; record exact branch, worktree and generation.
+    - Create the WP gameplan from the HT-WORK-GAMEPLAN-001 stock steps with this WP's references (CODEX-GAMEPLAN-001).
+    - Publish active status and release executable MTs only after all activation commit checks pass.
+    proof: Canonical contracts/state and Git worktree list agree on identity, scope, source revision and actual workspace; no required activation condition remains pending.
+  - workflow_id: CODEX-FLOW-005
+    title: Claim, execute and review a microtask
+    required_reads: [action_registry.actions.claim_mt, active_wp_contract, microtask_context, current_wp_state]
+    actions:
+    - Verify eligible unclaimed MT, dependencies, role, lane and nonconflicting write scope; record the actual owned claim and lease before edits.
+    - Execute only the claimed scope in its verified worktree, preserving maintained source and routing disposable output through the WP temporary binding.
+    - Before each costly action pass the gameplan gate for the acting role and moment (CODEX-GAMEPLAN-001); a failing step blocks that action.
+    - Run the declared implementer compile or static check, inspect the resulting diff and publish the immutable submission; the validator runs only its bound proof commands, reusing valid unchanged evidence. Repair recorded failures before extending the batch.
+    - Publish MT completion only after its required verdict and acceptance conditions hold; never use an unreviewed submission as a validated dependency.
+    proof: Claim and scope match canonical state, commands and artifacts prove acceptance, and any required independent verdict names the exact submitted generation.
+  - workflow_id: CODEX-FLOW-006
+    title: Project the taskboard from canonical work
+    required_reads: [taskboard_config, wp_state, work_packet_contracts, receipts]
+    actions:
+    - Derive scheduling and display rows from canonical WP/MT contracts, lifecycle state and observed evidence; preserve source generations.
+    - Keep planned stubs non-executable and partial or blocked scope visible; never edit a projected row as an independent status source.
+    proof: Projection reconciles against the complete canonical set and generation; visible UI rows or counts do not replace backend state.
+  - workflow_id: CODEX-FLOW-007
+    title: Complete, cancel or supersede a work packet
+    required_reads: [work_packet_closure_contract, current_wp_state, repository_structure.temporary_output_policy]
+    actions:
+    - Verify required product outcomes and review verdicts; synchronize verified MT/WP, roadmap and implemented matrix coverage without dropping unresolved work.
+    - Preserve durable evidence and recovery records before settling owned operations and claims; clean only the verified owned WP temporary root after containment and active-use checks.
+    - Remove a worktree only through native Git after clean-state and preservation checks; retain unresolved cleanup as a blocker and archive superseded contracts with history.
+    - Keep validated work merge_pending until its approved revision is actually contained in the authorized target branch; no merge is authorized merely by a readiness check. Publish terminal status only after required settlement checks pass; retain separately identified nonblocking debt without erasing valid product proof.
+    proof: Canonical state, durable evidence, target-branch containment where required and actual owned cleanup outcome agree; no terminal success is inferred from a product PASS alone.
+  - workflow_id: CODEX-FLOW-008
+    title: Resume interrupted work or migrate execution mode
+    required_reads: [current_installation, canonical_wp_state, preserved_receipts, current_git_worktrees, live_process_inventory, host_restart_evidence]
+    actions:
+    - Read canonical source generations, claims, exact worktrees and incomplete transactions before retrying; do not rely on conversational memory.
+    - Reuse still-valid proof and original action identities; reconcile uncertain outcomes before further effects, preserving conflicting changes.
+    - Read the host restart evidence named by the host profile before attributing a stopped job to a crash; record host_restart true or false with its event reference in the recovery receipt; a host restart triggers resume, never remediation.
+    - Terminate unowned processes writing beneath the WP temporary root before retrying.
+    - Pass the on_resume gameplan steps (CODEX-GAMEPLAN-001) before any further effect.
+    - Complete any half-written verdict per CODEX-VAL-008 before recording new verdicts.
+    - Migrate template layout or execution mode only through an explicit preserving plan that names changed authority, unresolved inputs and affected active work; Handshake mode additionally requires its real release gates.
+    proof: Fresh canonical reread confirms the recovered outcome and compatible pinned inputs; migration never invents a controller receipt or silently changes active acceptance.
+
+compilation:
+  output_path: repo-governance/codex/CODEX.md
+  provider_entry_mode: semantic_mirror
+  generator_id: handshake-codex-compiler
+  generator_version: REPLACE_ME
+  manual_output_edits_allowed: false
+  stale_output_blocks_product_execution: true
+  repair_admission: registered_action_specific_authority_and_generation_checks
+
+authority_domains:
+  global_behavior: installed_global_authority_bundle
+  project_execution_source: repo-governance/codex/current/codex-source.yaml
+  runtime_instructions: repo-governance/codex/CODEX.md
+  product_truth: repo-governance/specification/current/
+  engineering_rules: repo-governance/codex/build-rules/current/
+  build_matrix: effective_build_rulebook.build_matrix
+  project_module_library: generated_view_of_module_manifests_bindings_and_topology
+  reusable_solution_bindings: repo-governance/reuse/bindings.yaml
+  reusable_solution_lock: repo-governance/reuse/lock.yaml
+  physical_layout: repository_structure_template
+  instantiated_graph:
+    - repo-governance/topology/governance.yaml
+    - repo-governance/topology/product.yaml
+    - repo-governance/topology/links.yaml
+  bounded_work:
+    - active_refinement_enrichment_resolved_context
+    - active_wp_contract
+    - active_microtask_contract
+  lifecycle_state: per_wp_state_yaml
+  preparation_checks: per_wp_gameplan_yaml
+  product_operation_state: selected_hskernelsdk_operation_state_owner
+  product_callable_facts: module_manifests
+  product_callable_views: generated_hskernelsdk_catalog
+  evidence:
+    - append_only_receipts
+    - evidence_manifests
+  scheduling_views: generated_taskboard_projections
+
+conflict_resolution:
+  cross_domain: canonical_domain_owner
+  same_domain: current_pointer_then_schema_version_revision_and_digest
+  ambiguous_current_candidates: block_mutation
+  scoped_exception_must_name:
+    - authority_id
+    - affected_rule_ids
+    - scope
+    - effective_period
+    - supersession_reason
+
+mutation_classes:
+  - project_bootstrap
+  - create_wp_stub
+  - governance_repair
+  - project_configuration
+  - wp_execution
+
+hydration_bindings:
+  codex_contract:
+    schema_id: "{{codex_schema_id}}"
+    schema_version: "{{codex_schema_version}}"
+    artifact_id: "{{codex_artifact_id}}"
+    artifact_revision: "{{codex_artifact_revision}}"
+    project_id: "{{project_id}}"
+    project_name: "{{project_name}}"
+    contract_version: "{{codex_contract_version}}"
+    generated_at: "{{generated_at}}"
+    generator_id: "{{generator_id}}"
+    generator_version: "{{generator_version}}"
+    source_set_digest: "{{source_set_digest}}"
+    canonical_source_path: "repo-governance/codex/current/{{codex_source_record}}"
+    current_pointer_path: "repo-governance/codex/current/{{codex_current_pointer}}"
+    ownership_mode: "generated-runtime-authority"
+    regeneration_command_id: "{{codex_regeneration_command_id}}"
+    manual_edit_policy: "forbidden"
+    global_authority_id: "{{global_authority_id}}"
+    global_authority_version: "{{global_authority_version}}"
+    global_authority_digest: "{{global_authority_digest}}"
+    specification_path: "repo-governance/specification/current/{{specification_entry}}"
+    build_rulebook_path: "repo-governance/codex/build-rules/current/{{rulebook_entry}}"
+    build_rulebook_version: "{{build_rulebook_version}}"
+    build_rulebook_digest: "{{build_rulebook_digest}}"
+    reusable_solution_bindings_path: "repo-governance/reuse/bindings.yaml"
+    reusable_solution_bindings_digest: "{{reusable_solution_bindings_digest}}"
+    reusable_solution_lock_path: "repo-governance/reuse/lock.yaml"
+    reusable_solution_lock_digest: "{{reusable_solution_lock_digest}}"
+    governance_topology_path: "repo-governance/topology/governance.yaml"
+    governance_topology_digest: "{{governance_topology_digest}}"
+    product_topology_path: "repo-governance/topology/product.yaml"
+    product_topology_digest: "{{product_topology_digest}}"
+    topology_links_path: "repo-governance/topology/links.yaml"
+    topology_links_digest: "{{topology_links_digest}}"
+    id_registry_path: "repo-governance/registry/ids.yaml"
+    role_protocol_registry_path: "{{role_protocol_registry_path}}"
+    authorization_policy_path: "{{authorization_policy_path}}"
+    workflow_lane_registry_path: "{{workflow_lane_registry_path}}"
+    action_registry_path: "{{action_registry_path}}"
+    transition_registry_path: "{{transition_registry_path}}"
+    precedence_record_path: "{{precedence_record_path}}"
+    validation_commands_path: "repo-governance/validation/commands.yaml"
+    validation_checks_path: "repo-governance/validation/checks.yaml"
+    wp_contract_schema_path: "repo-governance/schemas/wp-contract.schema.yaml"
+    microtask_schema_path: "repo-governance/schemas/microtask.schema.yaml"
+    state_schema_path: "repo-governance/schemas/wp-state.schema.yaml"
+    action_schema_path: "{{action_schema_path}}"
+    receipt_schema_path: "repo-governance/schemas/receipt.schema.yaml"
+    role_profile_schema_path: "repo-governance/schemas/role-profile.schema.yaml"
+    refinement_schema_path: "repo-governance/schemas/refinement-enrichment.schema.yaml"
+    gameplan_schema_path: "repo-governance/schemas/gameplan.schema.yaml"
+    context_envelope_schema_path: "{{context_envelope_schema_path}}"
+    controller_command_id: "{{controller_command_id}}"
+    controller_endpoint_id: "{{controller_endpoint_id}}"
+    taskboard_config_path: "repo-governance/taskboard/taskboard-config.yaml"
+    taskboard_projection_path: "repo-governance/taskboard/taskboard.yaml"
+    internal_manual_path: "docs/internal-manual/index.md"
+    enabled_capability_profile_ids: []
+
+product_operation_routing:
+  foundation_binding_source: repo-governance/reuse/bindings.yaml
+  foundation_binding_selector: foundation.binding_ref
+  entrypoint_source: effective_build_rulebook.project_profile.router_entrypoint
+  catalog_source: module_manifests.invocation.operations
+  watcher_entrypoint_source: effective_build_rulebook.project_profile.external_watcher_entrypoint
+  runtime_rules_owner: effective_build_rulebook
+  governance_actions_source: action_registry
+  governance_action_registry_is_not_product_tool_inventory: true
+
+rules:
+- rule_id: CODEX-MODULE-LIFECYCLE-001
+  section: module_maintenance
+  requirement: Modularity is mandatory for every future project under both mechanical Handshake and the faithful transitional model executor. Resolve module-owned maintenance and release contracts before standalone patching or pinned host integration. Bind applicable BR-MODULE-LIFECYCLE-001 through 007 into future WP/MT activations; preserve existing active pins until an authorized contract revision. Older-project adoption must inventory and report missing modularity contracts and proof against the canonical stock baseline; legacy readability never certifies compliance and adoption uses the existing refinement, activation and migration workflow. Resolve task-specific commands, inputs, outputs, acceptance and proof into the existing MT fields, never generic policy boilerplate. Use separate standalone_source and host_adoption MTs. Before host writes, independently verify the source MT landed in the canonical module GitHub repository and bind its immutable revision; host compatibility and integration proof belongs to the adoption MT. Shape checks do not prove standalone operation, release compatibility or host conformance; report unavailable guarantees and do not infer a web service or released controller.
+- rule_id: CODEX-AUTH-001
+  section: authority_model
+  requirement: Read and obey the canonical owner for each fact; do not copy mutable project facts into generated protocol prose.
+- rule_id: CODEX-AUTH-002
+  section: authority_model
+  requirement: 'Overlap resolves by domain owner: accepted product behavior and direction -> specification; engineering
+    obligations -> build rules; exact selected reusable implementations -> reusable-solution bindings; module facts and boundaries
+    -> module manifests; instantiated graph and semantic relations -> topology, without editable copies of module facts; bounded
+    execution scope -> WP and MT contracts; permissions and transitions -> role and action registries; lifecycle -> `state.yaml`;
+    observations -> receipts and evidence; generated projections own no independent facts.'
+- rule_id: CODEX-AUTH-003
+  section: authority_model
+  requirement: A newer operator-approved exception or supersession overrides only the exact rule, domain, scope, and period it names.
+    It cannot convert evidence into product truth, a projection into state, a reusable-solution version into product truth, or a task
+    contract into permanent project law.
+- rule_id: CODEX-AUTH-004
+  section: authority_model
+  requirement: Within one authority domain, the current pointer plus matching schema, artifact version, revision, and digest wins. Ambiguous
+    or divergent current candidates block mutation.
+- rule_id: CODEX-AUTH-005
+  section: authority_model
+  requirement: Treat generated projections, dashboards, indexes, caches, summaries, locks that are explicitly generated, and Markdown
+    views as rebuildable unless their registry explicitly declares otherwise.
+- rule_id: CODEX-AUTH-006
+  section: authority_model
+  requirement: Resolve execution paths through the registered project-path and machine-local-binding surfaces; reject an unresolved
+    path instead of guessing or bypassing the registry.
+- rule_id: CODEX-AUTH-007
+  section: authority_model
+  requirement: Do not infer project names, paths, commands, modules, validators, branches, worktrees, databases, runtimes, reusable-solution
+    versions, or product behavior from this template.
+- rule_id: CODEX-ROLE-RETIRE-001
+  section: authority_model
+  requirement: 'Applies to every role profile retirement_policy: superseded or retired rule-layer entries are non-authoritative;
+    current shared rules always outrank them.'
+- rule_id: CODEX-SPEC-001
+  section: specification_first
+  requirement: The current specification is the sole product truth. A change to product meaning, behavior, architecture direction
+    or accepted constraints from an operator decision or refinement finding is applied and validated in the specification before
+    the affected WP or MT is derived, rebased or executed. Research, prototypes, refinement findings and operator ideas become
+    truth only when spec enrichment writes them into the specification. A WP stub records the idea and its enrichment disposition;
+    activation is refused until every requirement it binds resolves to a current specification ID.
+- rule_id: CODEX-SPEC-UPDATE-001
+  section: specification_first
+  requirement: Apply specification.update_protocol for every accepted specification change, including verified status synchronization;
+    copy and verify the complete prior current spec snapshot before advancing the bundle version/revision and publishing the replacement.
+    Preserve current self-contained product meaning; archived snapshots and historical links never supply missing current requirements.
+- rule_id: CODEX-REFINE-001
+  section: specification_first
+  requirement: The per-WP refinement/enrichment artifact is a bounded extraction and reality check, not competing product truth. It
+    exists to prevent models from searching the full specification and to check current dependencies, methods, comparable projects,
+    project reality, and reusable solutions.
+- rule_id: CODEX-REFINE-002
+  section: specification_first
+  requirement: If refinement changes accepted direction, complete specification enrichment first, then re-extract the final resolved
+    context from that current specification revision. WP and MT compilation use the resolved-context digest; stale pre-enrichment excerpts
+    cannot authorize execution.
+- rule_id: CODEX-HYDRATE-001
+  section: hydration_contract
+  requirement: Generation fails when a required placeholder remains unresolved.
+- rule_id: CODEX-HYDRATE-002
+  section: hydration_contract
+  requirement: Generation fails when a required authority path, stable ID, version, digest, reusable-solution binding, command, validator,
+    topology node, or topology edge cannot be resolved.
+- rule_id: CODEX-HYDRATE-003
+  section: hydration_contract
+  requirement: The generated file is runtime authority only when its canonical source, current pointer, generator, schemas, source-set
+    components, versions, and digests validate exactly.
+- rule_id: CODEX-HYDRATE-004
+  section: hydration_contract
+  requirement: Direct hand edits to the generated CODEX projection are forbidden; authorized project-specific changes enter the current
+    structured Codex source and regenerate the folder-owned CODEX file through the selected execution mode. This does not prohibit
+    editing canonical source or require a template-pack upgrade for ordinary project maintenance.
+- rule_id: CODEX-HYDRATE-005
+  section: hydration_contract
+  requirement: Regenerate `repo-governance/codex/CODEX.md` when its structured source, schema, provider-entry mode, action protocol, role protocol, bound
+    paths, reusable-solution routing, or compilation shape changes. A build-rule text change updates the pinned digest and affected
+    candidate assessments without copying rule prose into `CODEX.md`; changed executable obligations require refinement/enrichment and renewed activation.
+- rule_id: CODEX-HYDRATE-006
+  section: hydration_contract
+  requirement: Capability-profile IDs are emitted as a typed YAML sequence. Capability-gated sections are included only when their registered
+    profile is enabled; headless projects contain no unresolved GUI placeholder or dormant GUI block.
+- rule_id: CODEX-HYDRATE-007
+  section: hydration_contract
+  requirement: Provider entry files are generated according to the installed global authority's declared entry mode. Pointer-only adapters
+    are forbidden while the active global authority requires semantic mirrors.
+- rule_id: CODEX-HYDRATE-008
+  section: hydration_contract
+  requirement: The generated CODEX pins authority sources that change the execution protocol only; specification revisions are resolved
+    through the current pointer at read time and never invalidate CODEX or the provider routers.
+- rule_id: CODEX-START-001
+  section: required_startup_protocol
+  requirement: 'Before selecting mutating work read: installed global authority bundle, root `CODEX.md`, current specification
+    entry, effective build rulebook, reusable-solution bindings and lock, governance topology, product topology, topology links.
+    Exception, wp_execution on a claimed MT: required reads are only the root CODEX.md router, repo-governance/codex/CODEX.md, the
+    active role profile and the MT contract with its context capsule; any other source only on a declared dependency or discovered
+    blocker (CODEX-START-006).'
+- rule_id: CODEX-START-002
+  section: required_startup_protocol
+  requirement: Resolve the active actor, session, role protocol, workflow lane, allowed action types, authorization policy, transition
+    registry, controller route, and source generation before any mutation.
+- rule_id: CODEX-START-003
+  section: required_startup_protocol
+  requirement: Classify the requested mutation as `project_bootstrap`, `create_wp_stub`, `governance_repair`, `project_configuration`,
+    or `wp_execution`; resolve the exact action through the registry-owned eligibility evaluator. Its per-action prerequisites govern admission;
+    a class label does not add prerequisites absent from that action. Controller, board, GUI and model explanations use that same evaluation.
+- rule_id: CODEX-START-004
+  section: required_startup_protocol
+  requirement: Resolve the exact action and its required WP, MT, state, claim, branch, worktree, authority and evidence context from canonical
+    owners. `claim_mt` requires an active WP and an eligible unclaimed MT, not an existing claim. Product execution in a microtask-enabled WP
+    requires its activated parent contract and valid claimed MT lease; lifecycle management uses its own declared prerequisites.
+- rule_id: CODEX-START-005
+  section: required_startup_protocol
+  requirement: Verify that all applicable WP and MT IDs, versions, digests, dependency state, claim owner, lease, write scope, branch,
+    worktree, role, lane, reusable-solution bindings, and rule assessments agree across canonical sources.
+- rule_id: CODEX-START-006
+  section: required_startup_protocol
+  requirement: Read the MT context capsule or WP resolved context first; expand to additional specification anchors or topology only
+    when an explicit dependency or discovered blocker requires it.
+- rule_id: CODEX-START-007
+  section: required_startup_protocol
+  requirement: Use commands, actions, transitions, validators, and solution bindings from their registries; do not reconstruct them
+    from memory, prose examples, copied code, or another project.
+- rule_id: CODEX-START-008
+  section: required_startup_protocol
+  requirement: Stop when the selected action's required authority or inputs are missing, stale, contradictory, malformed,
+    unresolved or bound to the wrong context. Relevant domain staleness blocks activation and product execution; stale state is
+    resolvable only by an explicitly registered repair or management action under its own admission contract. Authentication,
+    authorization, target identity and expected-generation checks stay mandatory; commit rechecks the registry-owned eligibility
+    result.
+- rule_id: CODEX-START-009
+  section: required_startup_protocol
+  requirement: Report the exact conflicting artifacts and fields to Handshake; do not repair machine-owned governance files directly.
+- rule_id: CODEX-WORK-001
+  section: work_authorization
+  requirement: Use the exact registered action prerequisites and identifiers rather than imposing class-wide claims. Product implementation
+    requires one active WP and, when microtasks are enabled, one valid claimed MT. A first claim, activation, cancellation, priority change,
+    supersession or repair follows its own registry predicates and must not invent a WP, MT or claim to satisfy an unrelated default.
+- rule_id: CODEX-WORK-002
+  section: work_authorization
+  requirement: Read-only inspection may occur before WP creation, but it may not mutate product code, authority, governance state, generated
+    projections, reusable-solution bindings, or durable evidence.
+- rule_id: CODEX-WORK-003
+  section: work_authorization
+  requirement: An operator request that changes product meaning, modules, features, behavior, architecture direction, or accepted constraints
+    enters the WP planning transaction before implementation; any accepted product-direction delta is synchronized to the specification
+    before the WP contract is finalized.
+- rule_id: CODEX-WORK-004
+  section: work_authorization
+  requirement: Stub creation uses the registered planning-transaction action. It records operator approval or another accepted authority
+    reference, the base specification revision, refinement reality check, specification enrichment result, resolved context, compare-and-swap
+    expectation, typed PREPARED/COMMITTED/ABORTED state, conflict outcome, and recovery route; its schemas own transaction details.
+- rule_id: CODEX-WORK-005
+  section: work_authorization
+  requirement: Activation validates completed refinement/enrichment and spec synchronization, reuses valid unchanged evidence,
+    assesses the current matrix against bounded scope and binds exact authority IDs. Only after those pass, create or verify the
+    WP-specific governed worktree via repository_structure.worktree_policy and pin worktree and temporary-output bindings in the
+    activation contract and state; neither a stub nor refinement creates the worktree. Release executable MTs only after
+    activation and workspace checks commit. Scope-changing rebases require renewed activation.
+- rule_id: CODEX-WORK-006
+  section: work_authorization
+  requirement: Refinement/enrichment records bounded reality checks and the spec-sync transaction. Research and suggestions remain in
+    the project research folder without product truth, enforcement or final decisions; adopted meaning and final decisions must be complete
+    in the self-contained spec.
+- rule_id: CODEX-WORK-007
+  section: work_authorization
+  requirement: Do not implement from an unactivated stub, generated board row, chat summary, stale refinement, stale solution lock,
+    or unclaimed MT.
+- rule_id: CODEX-WORK-008
+  section: work_authorization
+  requirement: Work only inside the active action's scope, allowed writes, dependencies, and declared lane; route newly discovered work
+    through the existing scope-change route `submit_contract_detailing` -> `rebase_wp` -> `request_activation`, or `create_wp_stub` for separate
+    work. Detailing and rebase stage proposed bounded scope; only validated activation releases the changed execution authority.
+- rule_id: CODEX-WORK-009
+  section: work_authorization
+  requirement: Routing-decisive information belongs in registered typed action, transition, claim, solution-binding, handoff, and receipt
+    fields. Prose, notes, chat summaries, and filenames are non-authoritative routing context.
+- rule_id: CODEX-REUSE-001
+  section: reusable_solutions
+  requirement: Before creating a stabilized primitive, component, pattern, workflow, module, recipe, schema, or other reusable semantic
+    solution, use the refinement discovery result to resolve project and Handshake-library candidates. Prototype work may defer reconciliation
+    until stabilization.
+- rule_id: CODEX-REUSE-002
+  section: reusable_solutions
+  requirement: When an existing solution is selected, use its exact project binding and lock; do not silently copy, reimplement, or
+    upgrade it. Declare `instantiate`, `compose`, `extend`, or `fork` according to the actual relationship.
+- rule_id: CODEX-REUSE-003
+  section: reusable_solutions
+  requirement: If no existing solution fits, create project-local work first. Promotion to the global library requires the registered
+    promotion action and a proven on-demand candidate; do not create a reusable framework merely because reuse is theoretically possible.
+- rule_id: CODEX-REUSE-004
+  section: reusable_solutions
+  requirement: A newer library solution is an available migration, not current project truth. Upgrade only through the registered binding-upgrade
+    action with explicit impact, lineage, and proof.
+- rule_id: CODEX-CAP-001
+  section: reusable_solutions
+  requirement: Before adding any component, find the mechanic it is a presentation of, such as scroll, selection, popup or focus,
+    at the lowest layer that owns it; consume, configure or extend that owner. A WP names the spec primitives it consumes and their
+    owning modules, and any capability it becomes canonical owner of; no MT implements a capability owned by another active module.
+    A new mechanic is allowed only when no owner exists and it gets a spec primitive id.
+- rule_id: CODEX-MUTATE-001
+  section: mutation_and_receipt_protocol
+  requirement: Handshake is the mechanical bookkeeper for WP and MT state, taskboard projections, reusable-solution bindings and locks,
+    registries, claims, leases, transitions, append-only receipts, and generated governance views.
+- rule_id: CODEX-MUTATE-002
+  section: mutation_and_receipt_protocol
+  requirement: Models and tools submit typed actions, patches, observations, artifacts, hashes, commands, exit codes, solution proposals,
+    and verdict inputs; they do not hand-edit machine-owned state or projections.
+- rule_id: CODEX-MUTATE-003
+  section: mutation_and_receipt_protocol
+  requirement: Every accepted action returns a receipt with stable action, actor, project, session, role, lane, run, source-generation,
+    causation, correlation, timestamp, and result identities. WP, MT, branch, worktree, claim, and solution identities are required
+    only for action classes whose schema declares that context.
+- rule_id: CODEX-MUTATE-004
+  section: mutation_and_receipt_protocol
+  requirement: An intent must never report `applied` while changing nothing. If the active surface cannot satisfy it, reject with a
+    message naming the concrete way forward.
+- rule_id: CODEX-MUTATE-005
+  section: mutation_and_receipt_protocol
+  requirement: A receipt must describe state after its own command, never before it.
+- rule_id: CODEX-MUTATE-006
+  section: mutation_and_receipt_protocol
+  requirement: A receipt must not report a value the app has not finished computing. Asynchronous results are either withheld with an
+    explicit settled flag, or omitted.
+- rule_id: CODEX-MUTATE-007
+  section: mutation_and_receipt_protocol
+  requirement: Values used as proof are structured receipt fields, not sentences inside a note.
+- rule_id: CODEX-MUTATE-008
+  section: mutation_and_receipt_protocol
+  requirement: Reject stale-generation, expired-lease, wrong-worktree, stale-solution-lock, out-of-scope, duplicate-unsafe, or schema-invalid
+    mutations without partial state change.
+- rule_id: CODEX-MUTATE-009
+  section: mutation_and_receipt_protocol
+  requirement: If the Handshake controller is unavailable, mutation fails closed. Use only the registered bootstrap, recovery, or durable
+    action-queue command; never fall back to direct YAML, JSONL, registry, projection, solution-binding, claim, lease, or receipt edits.
+- rule_id: CODEX-MUTATE-010
+  section: mutation_and_receipt_protocol
+  requirement: Replayed queued actions retain their original identity and expected source generation; the controller either applies
+    them exactly once or returns a typed conflict or duplicate receipt.
+- rule_id: CODEX-MUTATE-011
+  section: mutation_and_receipt_protocol
+  requirement: Handshake and tools collect mechanically knowable facts such as changed paths, commands, exit codes, hashes, timing,
+    topology impacts, and exact solution operations. Models report semantic observations, blockers, residual risks, and proposals instead
+    of restating those facts as paperwork.
+- rule_id: CODEX-MT-001
+  section: microtask_execution_and_parallel_lanes
+  requirement: A claimed MT is the smallest status-bearing implementation closure unit; follow its exact inputs, allowed writes, dependencies,
+    expected behavior, acceptance criteria, proof steps, and status-update requirements.
+- rule_id: CODEX-MT-002
+  section: microtask_execution_and_parallel_lanes
+  requirement: Before editing, load the MT context capsule containing its resolved specification anchors, topology refs, solution bindings,
+    commands, validators, and build-rule obligations; use current canonical state and the applicable recorded failure for resumption,
+    not cumulative retry conversations, obsolete diagnoses or superseded instructions. Do not load the full project merely because it is available.
+- rule_id: CODEX-MT-003
+  section: microtask_execution_and_parallel_lanes
+  requirement: Apply the MT's resolved obligations without silently expanding its contract or write scope; route any required expansion
+    through the scope-change route defined by the action registry and CODEX-WORK-008; do not infer an undeclared action name.
+- rule_id: CODEX-MT-004
+  section: microtask_execution_and_parallel_lanes
+  requirement: After implementation, run only a compile or static check, review the resulting diff, create the immutable MT commit
+    as soon as the code compiles and publish it to the WP branch, then submit the MT's named proof commands as inputs to the shared
+    batch validation run. The implementer does not execute the batch proof; independent review runs it when the contract selects it.
+- rule_id: CODEX-MT-005
+  section: microtask_execution_and_parallel_lanes
+  requirement: After submitting an immutable MT commit, another disjoint and unblocked MT in the declared session batch may proceed
+    while review is pending.
+- rule_id: CODEX-MT-006
+  section: microtask_execution_and_parallel_lanes
+  requirement: A submitted MT may not be modified, marked complete, integrated, merged, or used as a validated dependency before its
+    required verdict exists.
+- rule_id: CODEX-MT-007
+  section: microtask_execution_and_parallel_lanes
+  requirement: A recorded validator failure with its remediation proposal is the complete input for the next repair; apply CODEX-REMEDIATE-001,
+    commit the fix and resubmit it into the next shared batch run. Do not rerun the suite per MT and do not hold other ready MTs for it.
+- rule_id: CODEX-MT-008
+  section: microtask_execution_and_parallel_lanes
+  requirement: Dependency edges, overlapping files or state, exclusive resources, merge ownership, or a stricter WP gate override parallel
+    continuation.
+- rule_id: CODEX-MT-009
+  section: microtask_execution_and_parallel_lanes
+  requirement: Every parallel action uses the registered claim, lease, lane, generation, cancellation, recovery, and receipt protocol
+    resolved for the MT.
+- rule_id: CODEX-MT-010
+  section: microtask_execution_and_parallel_lanes
+  requirement: Do not modify another lane's branch, worktree, claim, lease, commit, state, or evidence.
+- rule_id: CODEX-MT-011
+  section: microtask_execution_and_parallel_lanes
+  requirement: Launch each MT in a fresh model context by default; Handshake compiles the smallest sufficient context capsule from pinned
+    sources. An explicitly declared compatible bounded batch may share an implementer context or a separate reviewer context within
+    the existing read-set budget; replace the context at the batch boundary or when it no longer fits. Resume from canonical current
+    state and the applicable failure, never accumulated retry history; shared context does not extend scope or retry budgets.
+- rule_id: CODEX-MT-012
+  section: microtask_execution_and_parallel_lanes
+  requirement: Do not create MTs whose only outcome is formatting, building, testing, benchmarking, inspecting a diff, or recording
+    a receipt. Those are execution or proof steps unless the checking infrastructure itself is the product change.
+- rule_id: CODEX-TEMP-001
+  section: microtask_execution_and_parallel_lanes
+  requirement: Resolve disposable Cargo build/test output, scratch tests, builds and scripts through the activated WP binding and
+    repository_structure.temporary_output_policy. Use the canonical main-root WP area, isolate conflicting MT attempts beneath it,
+    and never substitute a shared global target or change global tool configuration. Preserve maintained product tests and durable proof
+    in their existing owners; temporary storage does not authorize extra product scope.
+- rule_id: CODEX-TEMP-002
+  section: validation_and_closure
+  requirement: 'Before terminal WP completion, cancellation or supersession: preserve and verify required durable evidence; settle
+    owned operations and claims; then clean only that WP temporary area via the registered controller under repository workspace
+    cleanup rules; retain unresolved work for recovery; record the actual settlement in WP state and the existing action receipt.
+    A product passed verdict never asserts cleanup success; cleanup failure never erases valid product proof.'
+- rule_id: CODEX-CACHE-001
+  section: active_session_cache_stability
+  requirement: 'Active governed role session: its cached system prompt is immutable; never rebuild or mutate it. Governance
+    mutations land in durable storage; the next session or restart reads them via the normal startup path. Mid-conversation
+    governance context MUST use the registered fenced `governance-context` envelope with source and trust attributes and a "not
+    user input" disclaimer. Startup-time memory injection is permitted (it precedes the session cache). A repair path that
+    invalidates an active cached prefix MUST be explicit, operator-visible and gated by an opt-in `--now`-style flag; default
+    command behavior defers invalidation.'
+- rule_id: CODEX-VERIFY-001
+  section: validation_and_closure
+  requirement: Execute only the acceptance claims and proof commands bound to the active MT and WP from their pinned rule assessments
+    and validation registry; use their minimum sufficient risk-proportional proof and do not invent a proof tier. Speculative risks,
+    optional improvements and additional confidence do not expand closure. A concrete missing requirement follows the existing
+    scope-change route before it can become an executable obligation. Additional reviews, tests, checks or validation require explicit
+    Operator instruction for that additional proof work; an uncovered claim, discovered defect, model-authored diagnosis or remediation
+    proposal is not authorization.
+- rule_id: CODEX-VERIFY-002
+  section: validation_and_closure
+  requirement: Reuse valid proof when its recorded relevant source, dependency, configuration, authority, solution-binding and asserted-behavior
+    inputs are unchanged under the existing evidence contract. Rerun only missing or invalidated proof, or proof for which the active
+    acceptance explicitly requires a fresh run; a different HEAD alone does not invalidate evidence or authorize a rerun.
+- rule_id: CODEX-VERIFY-003
+  section: validation_and_closure
+  requirement: The registered adversarial self-review applies to planning, new-feature and activation work only. Before handoff on that
+    work, run only the adversarial self-review and targeted forbidden-pattern checks required by the active obligations; raw token hits
+    are not verdicts without contextual inspection. Remediation runs only the MT's named compile or static check and no adversarial self-review.
+- rule_id: CODEX-VERIFY-004
+  section: validation_and_closure
+  requirement: Submit evidence in the typed shape required by each resolved acceptance row; CODEX does not redefine the row schema or
+    universalize optional closure fields.
+- rule_id: CODEX-VERIFY-005
+  section: validation_and_closure
+  requirement: Independent review inspects the exact immutable source and evidence generation named by the submission only when the
+    active contract requires independent review.
+- rule_id: CODEX-VERIFY-006
+  section: validation_and_closure
+  requirement: PASS is forbidden while any required resolved obligation is pending, failed, blocked, stale, unproved, or supported only
+    by narrative assertion.
+- rule_id: CODEX-VERIFY-007
+  section: validation_and_closure
+  requirement: Failed or partial proof records the actual result and registered remediation route; it never becomes PASS through wording,
+    status editing, or reduced acceptance scope.
+- rule_id: CODEX-VERIFY-008
+  section: validation_and_closure
+  requirement: Product-outcome blockers prevent technical closure. Projection, dossier, or bookkeeping drift that does not prove a product-boundary
+    failure becomes separately owned settlement debt and cannot erase an independently proven product outcome.
+- rule_id: CODEX-VERIFY-009
+  section: validation_and_closure
+  requirement: Handshake completes the WP transition only after the resolved closure contract passes and records remaining non-blocking
+    settlement debt as explicit linked work.
+- rule_id: CODEX-VERIFY-010
+  section: validation_and_closure
+  requirement: One valid observation or check may prove multiple requirements, acceptance criteria, and build-rule obligations. Never
+    create duplicate checks merely because multiple rules reference the same observable behavior.
+- rule_id: CODEX-VERIFY-011
+  section: validation_and_closure
+  requirement: Do not create tests of tests, validators, receipts, or test runners unless the Operator explicitly instructs that test
+    work; an instruction to change or repair the infrastructure alone does not authorize additional tests. Once every bound required
+    claim has sufficient valid proof, stop; speculative
+    risks, optional improvements and additional confidence cannot add closure checks, reviews, refactors, abstractions or paperwork.
+- rule_id: CODEX-GUI-001
+  section: gui_and_model_operation_profile
+  requirement: Resolve GUI obligations, reusable UI solution bindings, structured interaction routes, visual-inspection commands, fixtures,
+    evidence kinds, and background-operation constraints from the pinned rulebook, topology, WP, MT, and validation registries before
+    interaction.
+- rule_id: CODEX-GUI-002
+  section: gui_and_model_operation_profile
+  requirement: Use only the registered GUI interaction and inspection routes permitted by those obligations; do not substitute unregistered
+    foreground control, input capture, screenshots, or external-window behavior.
+- rule_id: CODEX-GUI-003
+  section: gui_and_model_operation_profile
+  requirement: Submit the registered structured-state and rendered-surface evidence after each required observation or interaction step.
+- rule_id: CODEX-GUI-004
+  section: gui_and_model_operation_profile
+  requirement: If a required GUI state cannot be reached or inspected through registered routes, report the missing capability as a
+    `record_blocker` or the existing scope-change route; do not add product tooling outside the active WP or silently weaken the proof.
+- rule_id: CODEX-MATRIX-001
+  section: mechanical_contract_compilation
+  requirement: Use Handshake to assess matrix/SDK candidates during planning. Supply semantic detailing; only completed refinement/enrichment
+    and WP activation bind selected spec, rule and matrix IDs into executable WP/MT contracts. Never hand-assemble controller-owned
+    files or treat stub candidates as enforcement.
+- rule_id: CODEX-MATRIX-002
+  section: mechanical_contract_compilation
+  requirement: Execute only obligations bound to the activated WP and assigned MT. New entries trigger scope-relevance assessment; changed
+    obligations bind only after refinement/enrichment and renewed activation. Accepted future features and unavailable dependencies
+    never authorize silent scope expansion or bulk packet updates.
+- rule_id: CODEX-MATRIX-003
+  section: mechanical_contract_compilation
+  requirement: Discover reusable GUI and backend modules via the generated project library; resolve shared semantic entities and
+    surface-specific SDK operations before adding or refactoring a view. Accepted GUI design and primitive/feature relationships
+    enter the specification via enrichment, never parallel prose or module inventories. Apply BR-SEMANTIC-MODULE-001 to verified
+    semantic matches; shared same-purpose backend reuse is the default; a separate module requires a recorded distinct purpose,
+    not a new name.
+- rule_id: CODEX-LAYER-001
+  section: mechanical_contract_compilation
+  requirement: 'Every invariant-class rule in role profiles and work-system templates (e.g. status equals recorded verdict, check
+    result within its allowed values, attempt count within its bound, writes inside the assigned write scope) has a matching
+    controller check that rejects a violating submission before mutation. Missing check: enforce the invariant as a heuristic
+    until the check exists and track the gap as a controller defect, never as template text. Missing automation does not authorize
+    new check scripts or additional closure criteria during unrelated work; execute only the active contract''s bound obligations.'
+- rule_id: CODEX-UNIT-001
+  section: mechanical_contract_compilation
+  requirement: Every WP names touched and created module IDs and a boundary_change; activation derives build units from module manifests
+    and rejects dependency_policy or build-unit-graph violations and unsettled budget-breach reviews; every MT binds exactly one module
+    and its write scope derives from that module's declared roots.
+- rule_id: CODEX-LANE-001
+  section: mechanical_contract_compilation
+  requirement: A WP whose impact assessment marks change on a GUI matrix entry carries a gui-lane MT naming its backend MT and the shared
+    surface profile; the GUI MT consumes only the backend's published public contract and runs in parallel when write paths are disjoint.
+    Headless projects generate no GUI lane.
+- rule_id: CODEX-RULE-SYNC-001
+  section: mechanical_contract_compilation
+  requirement: Every build rule is enforced through the WP contract. When the rulebook changes contract_fields, regenerate the WP and
+    MT templates from the rulebook and reassess open work; a project extends the stock rulebook and templates, never edits template
+    shapes by hand. Models hand Handshake values, proofs and findings; Handshake constructs and manages the documents.
+- rule_id: CODEX-PILLAR-001
+  section: mechanical_contract_compilation
+  requirement: Mandatory pillars are matrix entries every WP assesses. Activation refuses a WP that lacks a pillar row or a pillar's
+    declared contract fields. Runtime lanes, GUI surface, auth binding, compartmentalisation and component mechanics are designed in
+    from the first WP.
+- rule_id: CODEX-SDK-001
+  section: hskernelsdk_operation
+  requirement: Resolve HSKernelSDK from the current exact foundation binding and router entrypoint; discover the relevant operation
+    and load its current schema, examples and support declarations from the generated module catalog before use. Do not infer commands
+    or duplicate the catalog in CODEX.
+- rule_id: CODEX-SDK-002
+  section: hskernelsdk_operation
+  requirement: Invoke product operations and programmatic child calls through the selected HSKernelSDK route within the existing action
+    scope. Handshake governance mutations retain their registered action/controller semantics; the product catalog does not grant governance
+    authority.
+- rule_id: CODEX-SDK-003
+  section: hskernelsdk_operation
+  requirement: After interruption or uncertain results, inspect the existing operation handle and follow its declared status/recovery
+    contract before retrying. A new session reads canonical operation state and authorized artifact handles instead of relying on conversation
+    memory.
+- rule_id: CODEX-SDK-004
+  section: hskernelsdk_operation
+  requirement: Use the operation resource, selection, revision and environment contracts for reads and writes; report incomplete or
+    unobservable outcomes explicitly. Retrieve the declared independent verification result before asserting an external effect completed.
+- rule_id: CODEX-SDK-005
+  section: hskernelsdk_operation
+  requirement: If target HSKernelSDK is unresponsive, use the independently registered watcher observation route. Missing SDK capabilities
+    are reported through the existing blocker or scoped change path; do not bypass dispatch, broaden credentials, invent approvals or
+    redefine policy as a repair.
+- rule_id: CODEX-OPERATE-001
+  section: manual_diagnostics_and_flight_recorder
+  requirement: Read the registered built-in internal-manual path before using an unfamiliar product surface, command, primitive, diagnostic,
+    recorder, or recovery workflow.
+- rule_id: CODEX-OPERATE-002
+  section: manual_diagnostics_and_flight_recorder
+  requirement: Execute only the manual, model-operation, diagnostics, flight-recorder, and recovery obligations resolved into the active
+    WP and MT; their build rules and evidence contracts remain canonical.
+- rule_id: CODEX-OPERATE-003
+  section: manual_diagnostics_and_flight_recorder
+  requirement: When an operating path or required evidence surface is missing, use `record_blocker` or the existing scope-change route instead
+    of inventing a command, editing the manual as a substitute for product behavior, or weakening acceptance.
+- rule_id: CODEX-DRIFT-001
+  section: drift_deviations_and_exceptions
+  requirement: Assume any authority surface may lag current canonical state; when evidence shows mismatch, report the exact conflict
+    instead of forcing the repository to match a clearly stale rule.
+- rule_id: CODEX-DRIFT-002
+  section: drift_deviations_and_exceptions
+  requirement: Generated KNOWN_DEVIATIONS projects operator-approved gaps and supersession records from their canonical owners; it cannot
+    override product truth. Product-meaning changes must be complete in the spec first. An engineering exception names the exact canonical
+    rule and scope it supersedes.
+- rule_id: CODEX-DRIFT-003
+  section: drift_deviations_and_exceptions
+  requirement: Deviations and waivers require stable IDs, authority, scope, reason, owner, creation time, expiry or review condition,
+    affected WPs and rules, and compensating controls.
+- rule_id: CODEX-DRIFT-004
+  section: drift_deviations_and_exceptions
+  requirement: A deviation does not silently change the specification, build rules, topology, reusable-solution bindings, WP contract,
+    MT contract, acceptance criteria, or proof result.
+- rule_id: CODEX-DRIFT-005
+  section: drift_deviations_and_exceptions
+  requirement: Change authority through its governed revision workflow and preserve superseded revisions. Reassess affected work; changed
+    executable obligations bind only after refinement/enrichment and scoped activation, never by bulk injection into open WP/MT contracts.
+- rule_id: CODEX-PRESERVE-001
+  section: drift_deviations_and_exceptions
+  requirement: During repository alignment or template upgrades, reconcile template changes with existing project rules, requirements,
+    code, configuration, data and unresolved work without silently discarding them.
+- rule_id: CODEX-PRESERVE-002
+  section: drift_deviations_and_exceptions
+  requirement: Carry still-applicable project rules and requirements into active canonical authority after alignment or upgrade;
+    retaining them only in an archive does not preserve their authority.
+- rule_id: CODEX-PRESERVE-003
+  section: drift_deviations_and_exceptions
+  requirement: Allow authorized changes to current canonical project files through the selected execution mode and normal project
+    workflow; an existing file or older template version alone does not require bootstrap or a template-pack upgrade.
+- rule_id: CODEX-PRESERVE-004
+  section: drift_deviations_and_exceptions
+  requirement: Keep canonical sources and generated projections consistent through the declared authoring and generation workflow.
+- rule_id: CODEX-PRESERVE-005
+  section: drift_deviations_and_exceptions
+  requirement: Preserve historical snapshots under the applicable versioning and archive contracts without treating current project
+    files as immutable; ordinary revisions retain the affected-work assessment and activation boundaries in CODEX-DRIFT-005.
+- rule_id: CODEX-BIND-001
+  section: project_bindings
+  requirement: Project bindings specialize this protocol without rewriting its reusable rules.
+- rule_id: CODEX-BIND-002
+  section: project_bindings
+  requirement: Product-specific behavior belongs in the specification; engineering obligations belong in build rules; exact reusable-solution
+    selections belong in solution bindings; module manifests own module facts and state ownership, while topology owns instantiated semantic
+    relations and edges and resolves module facts from their manifest owner.
+- rule_id: CODEX-BIND-003
+  section: project_bindings
+  requirement: Commands are referenced by stable registry ID and resolved to exact current invocations at runtime.
+- rule_id: CODEX-BIND-004
+  section: project_bindings
+  requirement: Capability profiles select rulebook, topology, command, validator, action-registry, and reusable-solution records by
+    stable ID; disabling a profile cannot erase historical obligations or completed-work provenance.
+- rule_id: CODEX-PROVIDER-001
+  section: provider_entry_points
+  requirement: Handshake reads `provider_entry_mode` from the pinned global authority bundle and generates `AGENTS.md` and `CLAUDE.md`
+    from the same validated folder-owned `repo-governance/codex/CODEX.md` generation.
+- rule_id: CODEX-PROVIDER-002
+  section: provider_entry_points
+  requirement: While the installed global authority requires rule-for-rule mirrors, both provider files are generated semantic mirrors
+    with identical rule IDs and meaning; only the minimum provider-name and filename anchors may differ.
+- rule_id: CODEX-PROVIDER-003
+  section: provider_entry_points
+  requirement: 'Pointer-only adapters: forbidden unless the installed global authority explicitly permits pointer mode and defines
+    discovery, fallback and stale-target behavior.'
+- rule_id: CODEX-PROVIDER-004
+  section: provider_entry_points
+  requirement: Provider files are generated artifacts, never independent project authority; drift between them or root `CODEX.md` invalidates
+    the provider-entry generation and blocks mutation until regenerated.
+- rule_id: CODEX-SPEC-SELF-001
+  section: specification_authority
+  requirement: Read specification topics as product truth, including accepted future behavior, while executing only activation-bound
+    scope. Topic headers are machine-readable and content is fenced. Research, suggestions, sidecars and outside content cannot supply
+    missing product truth; optional provenance and downstream references do not import authority.
+- rule_id: CODEX-CAUSE-001
+  section: failure_causality
+  requirement: When progress fails, identify the smallest blocker; trace why it blocks to underlying causes. State where verified understanding ends.
+- rule_id: CODEX-CAUSE-002
+  section: failure_causality
+  requirement: Never substitute activity, symptoms or a workaround for a root-cause explanation.
+- rule_id: CODEX-CAUSE-003
+  section: failure_causality
+  requirement: Within authorized scope, each next action must address an evidenced cause or resolve a causal unknown; fix the smallest blocker directly.
+- rule_id: CODEX-CAUSE-004
+  section: failure_causality
+  requirement: Test the smallest fix and affected component/module. Keep tests, evals, checks, builds and documentation proportional; broaden only for required proof.
+- rule_id: CODEX-CONCISE-001
+  section: concision
+  requirement: Minimize bloat in reasoning traces and replies; sacrifice grammar, never meaning or required detail. Creative writing
+    retains needed length, voice, richness and theme.
+- rule_id: CODEX-OUT-001
+  section: output_first_execution
+  requirement: Progress is only pushed product commits and MT status or verdict changes. A progress report lists those references or
+    states no direct progress. Activity, analysis, test runs, reports and governance edits are not progress.
+- rule_id: CODEX-OUT-002
+  section: output_first_execution
+  requirement: Implementers commit and push per MT as soon as the code compiles. Every proof and every verdict names a pushed commit;
+    uncommitted work is not a submission.
+- rule_id: CODEX-OUT-003
+  section: output_first_execution
+  requirement: Validate per batch of ready MTs in one shared run built from each MT's named proof commands; record one verdict per MT
+    from that run as soon as it finishes, never held until the batch is complete. Full suites run only at the WP boundary.
+- rule_id: CODEX-OUT-004
+  section: output_first_execution
+  requirement: Handoffs and agent plans are input, not authority. Every dispatch states the commit or verdict it produces and by when;
+    a plan that postpones commits or verdicts is rejected. Where a handoff contradicts itself the goal decides and the contradiction
+    is corrected in the handoff.
+- rule_id: CODEX-OUT-005
+  section: output_first_execution
+  requirement: A status answer is derived from wp_state and receipts and contains only passed MTs over total, verdicts recorded this
+    session, pushed commits this session, and the top blocker with its MT id; no narrative or process detail.
+- rule_id: CODEX-REMEDIATE-001
+  section: remediation_scope
+  requirement: 'Remediation pass: fix only the recorded blocker or cause of failure; the remediation proposal describes that repair
+    and cannot expand its scope or authorize additional proof work. Flow: read the failure -> inspect the code it names -> fix ->
+    commit and push -> submit only the existing proof for that failure/fix to the next batch run -> record the result.
+    Verification scope: that failure/fix only. Not triggered by remediation: research,
+    refinement, spec enrichment, red team, pushback, risk or ROI listing. Repeated failure does not authorize wider repair or
+    proof scope; additional investigation requires explicit Operator instruction.'
+- rule_id: CODEX-SCOPE-001
+  section: remediation_scope
+  requirement: Every heavyweight rule, including research, pushback, red team and refinement, declares the work types it applies to.
+    An unscoped heavy rule defaults to planning and new-feature work and never applies to remediation, verdict recording or batch
+    validation.
+- rule_id: CODEX-SCOPE-002
+  section: remediation_scope
+  requirement: When an installed global behavioural rule for research, pushback, red team or risk and ROI listing is unscoped,
+    CODEX-SCOPE-001 governs remediation, verdict recording and batch validation; the receipt names the scoped-out global rule IDs.
+- rule_id: CODEX-STEER-001
+  section: agent_steering
+  requirement: Any command expected to exceed two minutes runs in the background with polling at least every sixty seconds. A long
+    foreground wait is a brief defect, not an agent defect.
+- rule_id: CODEX-STEER-002
+  section: agent_steering
+  requirement: Every agent brief sets a required output per twenty to thirty minutes. The steering role checks output every ten
+    minutes, demands it after twenty and replaces the agent after thirty with a fresh agent that resumes from the canonical ledger
+    of receipts and state. A liveness tick is separate and never counts as progress.
+- rule_id: CODEX-STEER-003
+  section: agent_steering
+  requirement: The two-attempt rule applies to the steering role. A steering round that produces no commit and no verdict counts as
+    an attempt and forces a changed approach or escalation.
+- rule_id: CODEX-STEER-004
+  section: agent_steering
+  requirement: After stopping any agent, task or job, inspect its process tree and terminate orphaned children. Orphans are the
+    stopper's responsibility; BR-QUIET-001 owns the product-side obligation.
+- rule_id: CODEX-STEER-005
+  section: agent_steering
+  requirement: A process is identified by PID plus start time plus command line, recorded at launch in the receipt's spawned_processes.
+    Stop only processes whose recorded identity matches and that this actor launched; a bare PID is never an identity. Busy checks read
+    the observed processes on the device matched to their recorded launch identity, never the reservation ledger alone.
+- rule_id: CODEX-STEER-006
+  section: agent_steering
+  requirement: Every command over the foreground limit appends a running receipt before launch naming the command, the pushed commit,
+    the build target path, the expected outputs and next_action_on_completion; completion appends the linked settlement event.
+- rule_id: CODEX-STEER-007
+  section: agent_steering
+  requirement: 'Round = one test, build or diagnostic run on an MT; it ends in exactly one outcome: pushed fix commit, recorded
+    verdict or recorded blocker; none = wasted round. wp_state microtasks.<mt>.rounds_without_output: +1 per wasted round; reset
+    only on a new pushed commit or new verdict; recorded, never self-assessed. At the workflow limit: MT -> needs_new_approach; no
+    further round admitted. Same failure_class with failure_kind infrastructure in two rounds: the environment is the defect; no
+    round on affected MTs until a pushed commit changes the checked-in test entrypoint, its config files or the declared test
+    environment (BR-TEST-ENTRY-001, BR-TEST-ENV-001); that commit is the fix, never another round. Failed or wasted rounds do not
+    require new gameplan steps; correct a demonstrated faulty instruction by replacement or retirement under existing applicable
+    obligations (CODEX-GAMEPLAN-001). Environment fix: builder or
+    orchestrator, write scope fix_environment = project_profile.test_entrypoint.config_files + project_profile.test_environment
+    only; submission receipt flagged infrastructure_fix.'
+- rule_id: CODEX-STEER-008
+  section: agent_steering
+  requirement: needs_new_approach exits only via a recorded diagnosis whose cause differs from every earlier diagnosis on the MT;
+    a reworded cause is the same cause. After it the workflow's post_diagnosis_runs budget applies; exhausted -> MT blocked and
+    escalated. A repeated infrastructure cause (CODEX-STEER-007) is released only by its environment commit, never by a diagnosis.
+    A diagnosis is written only by record_blocker into wp_state.stock_execution_state.diagnoses; the MT's diagnosis_refs derive
+    from that record. A diagnosis does not require a new gameplan step or alter bound acceptance; resume from the applicable
+    recorded failure and diagnosis without loading cumulative retry history.
+- rule_id: CODEX-STEER-009
+  section: agent_steering
+  requirement: 'Only the MT''s named proof commands run, once per unchanged set of relevant inputs; reuse valid evidence under
+    CODEX-VERIFY-002 and CODEX-VAL-007. A different HEAD alone does not authorize reruns. Implementers run only
+    project_profile.implementer_check (definition and recording: BR-TEST-ENTRY-001; gate condition: ACTION-REGISTRY
+    implementation_gates). Without explicit Operator instruction for the additional proof work, do not add reruns on unchanged relevant
+    inputs, extra diagnostics, hang checks, duplicate confirmations, newly authored tests or check scripts, reviews or validations.
+    A discovered defect, model-authored diagnosis or remediation proposal is not that authorization. A run whose result selects no fix, verdict or
+    blocker is not repeated. Only automatic retry: one recorded retry of a test on the project''s declared flaky list.'
+- rule_id: CODEX-STEER-010
+  section: agent_steering
+  requirement: 'Proof-run entrypoint and settings: BR-TEST-ENTRY-001. Models never add environment variables, flags beyond the
+    MT''s named test selection, or wrapper scripts at run time. A setting stated in a handoff, chat, brief or agent claim is never
+    authority; a needed setting change is a commit to the checked-in config.'
+- rule_id: CODEX-STEER-011
+  section: agent_steering
+  requirement: Timeouts live in the runner config as per-test timeouts and runner profiles. No outer wrapper, tool call or agent timeout
+    may stop a run before the runner's own budget expires; an outer limit a tool imposes is set above that budget by the workflow's
+    validation.outer_timeout_margin_seconds, and a run stopped early is not a result.
+- rule_id: CODEX-GAMEPLAN-001
+  section: preparation_checks
+  requirement: 'One gameplan per active WP (HT-WORK-GAMEPLAN-001); MT variants inherit via parent. It owns preparation checks
+    only: rule ids and references, never rule text, copied facts, status, acceptance, verdicts or proof. The controller creates it
+    at activation, evaluates CHK-GAMEPLAN-GATE-001 before every action in HT-WORK-CODING-001.gameplan.gate_moments and rejects
+    with the failing step ids. Models change steps only via propose_gameplan_step and retire_gameplan_step to replace or retire
+    demonstrated faulty instructions using existing applicable obligations. Failed or wasted runs, diagnoses and speculative risks
+    do not require new steps or authorize additional gates, tests or reviews. On conflict CODEX, the role profile, the WP contract,
+    WP-STATE and the MT win; the step is corrected.'
+- rule_id: CODEX-GAMEPLAN-002
+  section: preparation_checks
+  requirement: 'model_operated: one gameplan per WP, shared by all agents; MT gameplans inherit via parent. Each agent sets env
+    GAMEPLAN_ROLE=<its role> before gated commands; the hook then evaluates only that role''s steps plus role any; unset evaluates
+    all roles (fail-closed). Role-scoped confirm steps are confirmed with `gameplan confirm --by <role> --id <ids>`; a
+    confirmation''s by equals the step role. Every write carries the gameplan generation; a generation conflict = re-read and
+    retry, never overwrite. The retry guard is shared per gameplan. handshake_managed: the controller supplies actor_id and
+    expected_generation (CODEX-GAMEPLAN-001).'
+- rule_id: CODEX-VAL-001
+  section: validation_mechanics
+  requirement: The validator's first job is to build every test target its MT queue needs at the pushed commit, in parallel with
+    implementation. Keep one warm validator build target per WP and re-export into the same path.
+- rule_id: CODEX-VAL-002
+  section: validation_mechanics
+  requirement: Check that each test filter matches real test names before running; a run that executes zero tests is a defect, not a
+    result, per BR-PROOF-SCOPE-001. Every test and build carries a timeout from the checked-in runner config (CODEX-STEER-011) and expiry
+    records TIMEOUT. A round runs every
+    test without stopping at the first failure, and a script maps the structured results to MTs.
+- rule_id: CODEX-VAL-003
+  section: validation_mechanics
+  requirement: Run only the tests named by the queued MTs' proof. A failure caused by an already-assigned open fix is recorded as
+    verdict blocked with blocker.type dependency and blocked_on_mt_ref naming that MT, and is not rerun.
+- rule_id: CODEX-VAL-004
+  section: validation_mechanics
+  requirement: 'Failure class = shared cause (code path, resource or policy), never shared symptom. Fix round fails in a new
+    location: statically inspect the same cause within the affected bound required claim before the next test round; this does
+    not authorize wider acceptance or additional proof obligations. >1 MT fails in one batch run: classify failures
+    by cause before any remediation dispatch; one remediation per cause, listing covered MT ids; each other covered MT gets
+    verdict blocked, blocker.type dependency, blocked_on_mt_ref = that remediation. Deny-by-default behavior observable per
+    BR-ERROR-002; a silently dropped write is a hidden defect class. failure_kind per failure: product | infrastructure | flaky;
+    only product failures become MT remediation. Failing test owned by no MT: attribute by narrowing over the round''s MT commits.
+    failed verdict requires >= 1 product failure attributed to the MT; infrastructure-only or flaky-only result: infrastructure
+    entry, no verdict, MT phase unchanged.'
+- rule_id: CODEX-VAL-005
+  section: validation_mechanics
+  requirement: 'Before recording, the recording actor verifies every verdict: record parses; status equals verdict; completer
+    differs from claimer; evidence hash matches the log; a passed verdict additionally requires every required check''s result
+    line in the hashed log to read pass. Governance commits name explicit paths only. Verdict record = the MT''s entry in
+    wp_state.stock_execution_state.verdicts plus its receipt event; no separate verdict file exists.'
+- rule_id: CODEX-VAL-006
+  section: validation_mechanics
+  requirement: 'Round start freezes one pushed candidate commit; later commits queue for the next round and never restart a
+    running build. Batch: at most the workflow''s validation_queue_max_mts MTs, ordered by exactness of named proof. On the
+    workflow''s round trigger, acquire or reuse valid canary proof on the frozen candidate through the checked-in test entrypoint,
+    same command and config, one test per package; canary acquisition never requires its own passing result. Evaluate the full
+    before_round gameplan gate only after that canary settles as pass, then open the round. A canary failure (missing env var, path,
+    service) is recorded once as failure_kind infrastructure, never as
+    per-test failures of the full round. Refuse the round while project_profile.test_environment.canary_check is unset or
+    REPLACE_ME. Round build breaks: rebuild the candidate without the offending MT''s commits; that MT fails.'
+- rule_id: CODEX-VAL-007
+  section: validation_mechanics
+  requirement: Cross-commit proof reuse requires the original proof's recorded relevant_input_paths and is valid only when the git
+    diff from the proof commit to the candidate commit touches none of them; the reusing verdict names proof_commit_ref and
+    batch_commit_ref and is exempt from round freshness (CHK-RESULTS-FRESH-001). At round freeze every passed MT whose recorded
+    relevant_input_paths intersect the candidate diff re-enters ready_for_validation (proof_invalidated). Preserve the complete
+    invalidated set in the canonical ready queue and validate bounded subsets across rounds; pending affected MTs block final
+    integration, not admission of the first bounded round. A new candidate alone does not requeue unchanged valid proof.
+- rule_id: CODEX-VAL-008
+  section: validation_mechanics
+  requirement: 'Verdict recording order is: append action_accepted with the verdict payload and idempotency key, write wp_state once,
+    append action_completed. An action_accepted verdict event without a matching action_completed is a half-written verdict; on resume
+    rerun the recording checks and complete it under the same idempotency key, never as a new verdict version.'
+- rule_id: CODEX-DECIDE-001
+  section: decisions_and_safety
+  requirement: Resolve product questions from the current specification through a read-only read and record the answer as spec_basis
+    on the MT and its receipt. Escalate to the operator only when the specification is silent or contradictory.
+- rule_id: CODEX-DECIDE-002
+  section: decisions_and_safety
+  requirement: When the specification is silent, record the Operator's ruling as operator_decision_refs on the MT and its receipt with
+    question, ruling and recorded_at, and continue; the specification enrichment is queued and never blocks the remediation row.
+- rule_id: CODEX-GIT-001
+  section: decisions_and_safety
+  requirement: No agent, test or tool creates a new worktree or branch, directly or indirectly. Compare the Git worktree and branch
+    inventory before and after every run; a new entry is a defect of that run. The run's verdict names the offending test; that test is
+    isolated in a throwaway repository fixture or excluded from the queue with the reason recorded, and the stray ref is removed by native
+    Git after the preservation check.
+- rule_id: CODEX-GIT-002
+  section: decisions_and_safety
+  requirement: A broad operator request never authorizes a destructive Git action. List the exact target actions with their refs and
+    paths, obtain approval of that list, and execute only that list. reset --hard, clean, branch deletion, history rewrite and force-push
+    are destructive.
+- rule_id: CODEX-GIT-003
+  section: decisions_and_safety
+  requirement: Every commit names explicit paths or a controller-built snapshot object; a bare commit over previously staged content is
+    forbidden. A push targets an existing declared branch. A clean tree is reported as clean, never committed.
+
+stock_workflows:
+  rule_id: CODEX-STOCK-001
+  available_templates: [HT-WORK-CODING-001]
+  selection: explicit_project_workflow_binding
+  managed_stock_mode: handshake_managed
+  model_operated: explicit_compatibility_selection_only_not_controller_outage_fallback
+  unresolved_managed_runtime: planning_only_or_explicit_compatibility_workflow_never_fabricated_controller
+  precedence: selected_workflow_specializes_role_and_cadence_within_operator_approved_authority
+  role_context: generated_relevant_shared_rules_plus_selected_role_never_all_protocols
+  state_write_boundary: controller_capabilities_and_filesystem_permissions_include_shell_tools
+  derived_state: controller_collects_ids_revisions_paths_hashes_timings_and_receipts
+  inputs: models_submit_proposed_semantics_and_judgments_never_complete_governance_file_replacements

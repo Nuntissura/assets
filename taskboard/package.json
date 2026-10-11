@@ -1,0 +1,9 @@
+{
+  "name": "taskboard-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./web/index.ts",
+  "files": ["web", "README.md", "LICENSE"],
+  "peerDependencies": { "react": "^19.0.0" }
+}

@@ -1,0 +1,41 @@
+schema_version: taskboard.governance-topology.v1
+topology_id: GOVERNANCE-TOPOLOGY-TASKBOARD-v1
+nodes:
+- node_id: GOV-TASKBOARD-AUTH
+  path: repo-governance/codex/current/codex-source.yaml
+  kind: authority
+- node_id: GOV-TASKBOARD-SPEC
+  path: repo-governance/specification/current/specification.yaml
+  kind: specification
+- node_id: GOV-TASKBOARD-BUILD
+  path: repo-governance/codex/build-rules/current/build-rules.yaml
+  kind: build_profile
+- node_id: GOV-TASKBOARD-WORK
+  path: repo-governance/registry/work-packets.yaml
+  kind: work_registry
+- node_id: GOV-TASKBOARD-MAINTENANCE
+  path: repo-governance/modules/taskboard-maintenance.yaml
+  kind: maintenance_contract
+- node_id: GOV-TASKBOARD-CHECK
+  path: repo-governance/repo-scripts/check-alignment.py
+  kind: structural_check
+- node_id: GOV-TASKBOARD-PRODUCT
+  path: repo-governance/topology/product.yaml
+  kind: product_topology
+links:
+- edge_id: GOV-EDGE-AUTH-PRODUCT
+  source: GOV-TASKBOARD-AUTH
+  target: NODE-TASKBOARD-MODULE
+  relation: governs
+- edge_id: GOV-EDGE-SPEC-PRODUCT
+  source: GOV-TASKBOARD-SPEC
+  target: NODE-TASKBOARD-MODULE
+  relation: specifies
+- edge_id: GOV-EDGE-MAINTENANCE-PRODUCT
+  source: GOV-TASKBOARD-MAINTENANCE
+  target: NODE-TASKBOARD-MODULE
+  relation: contracts
+- edge_id: GOV-EDGE-CHECK-PRODUCT
+  source: GOV-TASKBOARD-CHECK
+  target: NODE-TASKBOARD-MODULE
+  relation: validates_structure

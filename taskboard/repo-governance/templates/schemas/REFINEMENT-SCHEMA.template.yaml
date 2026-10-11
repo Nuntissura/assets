@@ -1,0 +1,186 @@
+schema_version: handshake.schema.v1
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:handshake:schema:refinement-enrichment:v3
+title: Handshake refinement-enrichment artifact
+description: Shape of repo-governance/work-packets/active/{wp_id}/refinement-enrichment.yaml (HT-WORK-REFINE-001, handshake.refinement-enrichment.v8).
+type: object
+additionalProperties: false
+required: [schema_version, template_version, kind, instance_policy, rule_refs, identity, origin, refinement, spec_enrichment, resolved_context]
+properties:
+  schema_version: {const: handshake.refinement-enrichment.v8}
+  template_version: {type: integer, minimum: 1}
+  kind: {const: refinement_enrichment}
+  instance_policy: {$ref: '#/$defs/instance_policy'}
+  rule_refs: {$ref: '#/$defs/rule_ref_list'}
+  identity:
+    type: object
+    additionalProperties: false
+    required: [artifact_id, wp_id, revision, planning_transaction_id]
+    properties:
+      artifact_id: {$ref: '#/$defs/entity_id'}
+      wp_id: {$ref: '#/$defs/entity_id'}
+      revision: {type: integer, minimum: 1}
+      planning_transaction_id: {$ref: '#/$defs/entity_id'}
+  origin:
+    type: object
+    additionalProperties: false
+    required: [kind]
+    properties:
+      kind: {type: string, enum: [operator, specification, mixed]}
+      operator_request_ids: {$ref: '#/$defs/string_list'}
+      operator_request_verbatim: {type: string}
+      initiating_spec_anchors: {$ref: '#/$defs/string_list'}
+      parent_wp_ids: {type: array, items: {$ref: '#/$defs/entity_id'}}
+  applicability:
+    type: object
+    additionalProperties: false
+    required: [rule_id]
+    properties:
+      rule_id: {$ref: '#/$defs/stable_id'}
+      rule_refs: {$ref: '#/$defs/rule_ref_list'}
+  refinement:
+    type: object
+    additionalProperties: false
+    required: [why_now, base_spec_extraction, reality_check]
+    properties:
+      why_now: {type: string}
+      base_spec_extraction:
+        type: object
+        additionalProperties: false
+        required: [excerpts]
+        properties:
+          excerpts: {type: array, minItems: 1, items: {$ref: '#/$defs/anchor'}}
+      reality_check:
+        type: object
+        additionalProperties: false
+        required: [checked_at, current_behavior, intended_behavior, reusable_solution_discovery]
+        properties:
+          checked_at: {$ref: '#/$defs/iso_date'}
+          current_behavior: {type: string}
+          intended_behavior: {type: string}
+          code_and_runtime_reality: {$ref: '#/$defs/entry_list'}
+          affected_modules: {$ref: '#/$defs/string_list'}
+          affected_semantic_entities: {$ref: '#/$defs/string_list'}
+          shared_resource_and_surface_profile_refs: {$ref: '#/$defs/string_list'}
+          existing_feature_interactions: {$ref: '#/$defs/entry_list'}
+          gui_design_spec_refs: {$ref: '#/$defs/string_list'}
+          sdk_operation_resource_hook_and_environment_refs: {$ref: '#/$defs/string_list'}
+          dependency_freshness: {$ref: '#/$defs/entry_list'}
+          field_or_method_changes: {$ref: '#/$defs/entry_list'}
+          reusable_solution_discovery:
+            type: object
+            additionalProperties: false
+            required: [searched_project_topology, searched_project_bindings, searched_handshake_library, searched_project_module_library, selected_strategy]
+            properties:
+              searched_project_topology: {type: boolean}
+              searched_project_bindings: {type: boolean}
+              searched_handshake_library: {type: boolean}
+              searched_project_module_library: {type: boolean}
+              candidate_solution_refs: {$ref: '#/$defs/string_list'}
+              matched_capability_refs: {$ref: '#/$defs/string_list'}
+              owner_module_refs: {$ref: '#/$defs/module_id_list'}
+              selected_strategy: {type: string, enum: [reuse, compose, extend, fork, new, prototype]}
+              selected_solution_refs: {$ref: '#/$defs/string_list'}
+              decision_reason: {type: string}
+          conflicts_and_gaps: {$ref: '#/$defs/entry_list'}
+          assumptions: {$ref: '#/$defs/entry_list'}
+          scope_edges: {$ref: '#/$defs/entry_list'}
+          non_goals: {$ref: '#/$defs/entry_list'}
+          acceptance_needs: {$ref: '#/$defs/entry_list'}
+          preliminary_microtask_graph: {$ref: '#/$defs/entry_list'}
+          failure_modes: {$ref: '#/$defs/entry_list'}
+          maintenance_tradeoffs: {$ref: '#/$defs/entry_list'}
+          red_team:
+            type: object
+            additionalProperties: false
+            required: [risks, plausible_failure_scenarios, minimum_controls]
+            properties:
+              risks: {$ref: '#/$defs/entry_list'}
+              plausible_failure_scenarios: {$ref: '#/$defs/entry_list'}
+              minimum_controls: {$ref: '#/$defs/entry_list'}
+          research_refs: {$ref: '#/$defs/string_list'}
+  matrix_resolution:
+    type: object
+    additionalProperties: false
+    properties:
+      universe_digest: {$ref: '#/$defs/digest'}
+      assessed_entry_ids: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      match_evidence_refs: {$ref: '#/$defs/string_list'}
+      unresolved_detailing_inputs: {$ref: '#/$defs/entry_list'}
+  spec_enrichment:
+    type: object
+    additionalProperties: false
+    required: [disposition, spec_is_sole_truth, phase_validated]
+    properties:
+      disposition: {type: string, enum: [unchanged, update_required]}
+      spec_is_sole_truth: {const: research_prototypes_and_findings_become_truth_only_when_written_into_the_specification_by_this_enrichment}
+      phase_validated: {type: boolean}
+      proposed_delta:
+        type: object
+        additionalProperties: false
+        properties:
+          unchanged_constraints: {$ref: '#/$defs/entry_list'}
+          migration_implications: {$ref: '#/$defs/entry_list'}
+          research_proposal_refs: {$ref: '#/$defs/string_list'}
+      decision_refs: {$ref: '#/$defs/string_list'}
+      sync:
+        type: object
+        additionalProperties: false
+        required: [required, validated]
+        properties:
+          required: {type: boolean}
+          base_revision: {$ref: '#/$defs/revision'}
+          applied_revision: {$ref: '#/$defs/revision'}
+          applied_digest: {$ref: '#/$defs/digest'}
+          changed_anchors: {$ref: '#/$defs/string_list'}
+          sync_receipt: {$ref: '#/$defs/nullable_string'}
+          validated: {type: boolean}
+  resolved_context:
+    type: object
+    additionalProperties: false
+    required: [anchors, context_digest, ready_for_wp_derivation]
+    properties:
+      anchors: {type: array, minItems: 1, items: {$ref: '#/$defs/anchor'}}
+      implementation_relevant_truth: {$ref: '#/$defs/entry_list'}
+      constraints: {$ref: '#/$defs/entry_list'}
+      topology_neighborhood: {$ref: '#/$defs/entry_list'}
+      solution_binding_refs: {$ref: '#/$defs/string_list'}
+      primitive_feature_relation_refs: {$ref: '#/$defs/string_list'}
+      sdk_contract_refs: {$ref: '#/$defs/string_list'}
+      context_digest: {$ref: '#/$defs/digest'}
+      ready_for_wp_derivation: {type: boolean}
+$defs:
+  digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+  stable_id: {type: string, pattern: '^[A-Z][A-Z0-9-]+$'}
+  entity_id: {type: string, pattern: '^[A-Z][A-Za-z0-9._-]+$'}
+  module_id: {type: string, pattern: '^MOD-[A-Za-z0-9][A-Za-z0-9._-]*$'}
+  module_id_list: {type: array, items: {$ref: '#/$defs/module_id'}}
+  rule_ref: {type: string, pattern: '^[A-Z][A-Z0-9-]+(\.[A-Za-z0-9_]+)*$'}
+  rule_ref_list: {type: array, items: {$ref: '#/$defs/rule_ref'}}
+  nonempty_string: {type: string, minLength: 1}
+  nullable_string: {type: [string, 'null']}
+  string_list: {type: array, items: {type: string}}
+  entry_list: {type: array, items: {type: [string, object]}}
+  iso_date: {type: string, format: date, pattern: '^\d{4}-\d{2}-\d{2}$'}
+  revision:
+    oneOf:
+      - {type: integer, minimum: 0}
+      - {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$', not: {const: REPLACE_ME}}
+  instance_policy:
+    type: object
+    additionalProperties: false
+    required: [omit_empty_optional_fields, policy_lives_in_rule_refs_not_instance_fields, schema_ref]
+    properties:
+      omit_empty_optional_fields: {type: boolean}
+      policy_lives_in_rule_refs_not_instance_fields: {type: boolean}
+      schema_ref: {const: repo-governance/schemas/refinement-enrichment.schema.yaml}
+  anchor:
+    type: object
+    additionalProperties: false
+    required: [anchor_id, document_ref, topic, statement]
+    properties:
+      anchor_id: {$ref: '#/$defs/entity_id'}
+      document_ref: {$ref: '#/$defs/entity_id'}
+      topic: {$ref: '#/$defs/nonempty_string'}
+      statement: {type: string}
+      dependency_reason: {type: string}

@@ -1,0 +1,86 @@
+schema_version: handshake.wp-state.v9
+template_version: 12
+kind: work_packet_state
+
+instance_policy:
+  omit_empty_optional_fields: true
+  policy_lives_in_rule_refs_not_instance_fields: true
+  schema_ref: repo-governance/schemas/wp-state.schema.yaml
+
+# owners of the former observed, activation policy, workspace_settlement policy, implementation_feedback policy and stock_execution_state policy lines
+rule_refs: [CODEX-MODE-MT-001, CODEX-WORK-005, CODEX-DRIFT-005, CODEX-VAL-004, CODEX-VAL-005, CODEX-VAL-006, CODEX-VAL-007, CODEX-VAL-008, CODEX-TEMP-002, CODEX-OUT-005, CODEX-STOCK-001, CODEX-STEER-007, CODEX-STEER-008, CODEX-REMEDIATE-001,
+  WF-LIFECYCLE-001, WF-ACTIVATE-001, WF-SUBMIT-001, WF-PROOF-001, WF-ART-001, WF-VIEW-001, REPO-WORKTREE-002, REPO-TEMP-003, HT-WORK-ACTIONS-001.confirm_merge_containment]
+
+wp_id: WP-000-example-v1
+generation: 1
+
+contract:
+  contract_revision: 1
+  contract_digest: sha256:REPLACE_ME
+
+freshness:
+  stale_surfaces: [] # entries {surface, pinned_digest, current_digest}; computed by the controller against WORK-PACKET.authority_snapshot and refinement_ref
+
+phase: stub_drafting
+conditions:
+  - type: Ready
+    status: "false"
+    reason_code: planning_incomplete
+    observed_at: "2026-09-11T00:00:00Z"
+active_claims: []
+microtasks: {} # per mt_id: {phase, claim_ref, last_submission_ref, last_verdict_ref, rounds_without_output, diagnosis_refs, invalidated_by_commit}; phase values from HT-WORK-CODING-001.lifecycle.mt_phases; rounds_without_output per counter_precedence (HT-WORK-CODING-001 steering.run_accounting); diagnosis_refs lists stock_execution_state.diagnoses ids of this MT in recording order, written only by record_blocker (CODEX-STEER-008, CHK-DIAGNOSIS-SHAPE-001); invalidated_by_commit is the round candidate whose diff intersected the MT's relevant_input_paths (proof_invalidated, CODEX-VAL-007, CHK-PROOF-INVALIDATED-001)
+blockers: []
+last_event_id: null
+updated_at: "2026-09-11T00:00:00Z"
+
+activation:
+  activation_id: null
+  bound_spec_requirement_refs: []
+  bound_matrix_entry_refs: []
+  excluded_future_feature_refs: []
+  implemented_baseline_requirement_refs: []
+  roadmap_item_refs: []
+  bound_scope_digest: null
+  worktree_ref: null
+  temporary_output_root: null
+  workspace_verified: false
+
+workspace_settlement:
+  temporary_cleanup_status: not_started # allowed: not_started, running, blocked, completed, not_applicable
+  durable_evidence_refs: []
+  cleanup_receipt_ref: null
+  blocked_reason: null
+
+implementation_feedback:
+  completed_spec_requirement_refs: []
+  partially_completed_item_refs: []
+  source_revision: null
+  verification_summary: ''
+  sync_status: not_started
+  spec_roadmap_revision: null
+  build_matrix_revision: null
+  receipt_refs: []
+
+stock_execution_state:
+  workflow_binding_ref: null
+  execution_control: running
+  dispatch_reservations: []
+  role_runs: []
+  submissions: []
+  submission_fields: [submission_id, submission_revision, mt_id, mt_contract_revision, immutable_source_ref, source_digest, evidence_refs, submitted_by, relevant_input_paths, relevant_input_digest, diagnosis_ref] # diagnosis_ref: the diagnoses id a resubmission after a failed verdict cites when its relevant inputs are unchanged (CHK-DISTINCT-RESUBMISSION-001)
+  verdicts: []
+  verdict_fields: [verdict_id, submission_id, submission_revision, validator_actor_id, validator_role_version, decision, acceptance_refs, evidence_refs, remediation, blocked_on_mt_ref, batch_commit_ref, proof_commit_ref, receipt_event_ref]
+  remediation_fields: [failed_acceptance_refs, failed_check_refs, artifact_refs, expected, observed, affected_code_refs, repair_direction, confirming_proof_refs] # typed object required when decision is failed; expected, observed and repair_direction are one line of at most 120 chars in HT-WORK-GAMEPLAN-001.writing style (CHK-REMEDIATION-SHAPE-001, CODEX-REMEDIATE-001); a failed decision also needs a product failure_kind for the MT in the round test_run (CHK-VERDICT-FAILURE-KIND-001)
+  half_written_verdict_detection: action_accepted_without_action_completed
+  validation_batches: [] # entries {batch_id, candidate_commit, started_at, completed_at, mt_ids, results_ref}; started_at is the round start every test_run must postdate (CHK-RESULTS-FRESH-001, CODEX-VAL-006)
+  diagnoses: [] # entries {diagnosis_id, mt_id, cause, evidence_refs, distinct_from, receipt_event_ref}; written only by record_blocker; cause is one line of at most 120 chars; distinct_from lists every earlier diagnosis id on the MT (CODEX-STEER-008, CHK-DIAGNOSIS-SHAPE-001)
+  merge_candidate: null
+  integration_verdict: null
+  expected_target_head: null
+  merge_operation_ref: null
+  observed_consumption: {usage: null, usage_status: unknown, build_time: null, tool_invocations: null}
+  last_useful_outcome_ref: null
+  policy_version: null
+  policy_trial_ref: null
+  prior_policy_ref: null
+  optimization_history_refs: []

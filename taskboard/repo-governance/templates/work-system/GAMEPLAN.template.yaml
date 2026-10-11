@@ -1,0 +1,54 @@
+schema_version: handshake.gameplan.v1
+template_version: 4
+kind: gameplan
+
+instance_policy:
+  omit_empty_optional_fields: true
+  policy_lives_in_rule_refs_not_instance_fields: true
+  schema_ref: repo-governance/schemas/gameplan.schema.yaml
+
+# owners of creation, gate evaluation and step correction; this file owns preparation only
+rule_refs: [CODEX-GAMEPLAN-001, CODEX-GAMEPLAN-002, WF-GAMEPLAN-001, CODEX-STEER-007, CODEX-STEER-008, BR-TEST-ENTRY-001, HT-WORK-ACTIONS-001.propose_gameplan_step,
+  HT-WORK-ACTIONS-001.retire_gameplan_step]
+
+writing: "no prose; terse fragments; determinism > grammar; verb object [op value]" # applies to steps[].do, steps[].source, decisions[].text
+precedence: "on conflict CODEX, role profile, WP contract, WP-STATE, MT win; correct the step"
+
+scope: wp # wp | mt | batch | session
+assignment: WP-000-example-v1
+parent: null # mt scope: repo-governance/work-packets/active/{{wp_id}}/gameplan.yaml; parent steps apply, parent ids are never reused
+generation: 1 # every write carries it; conflict -> re-read + retry, never overwrite; retry guard shared per gameplan (CODEX-GAMEPLAN-002)
+# sharing (CODEX-GAMEPLAN-002): one file per WP for all roles; MT gameplans via parent; gate evaluates actor role + any;
+# confirmations carry by = step role; model_operated: env GAMEPLAN_ROLE=<role>, `gameplan confirm --by <role> --id <ids>`
+
+read_first: [repo-governance/work-packets/active/WP-000-example-v1/state.yaml] # MT supplies resolved acceptance and commands; unchanged authority is not reread on resume
+
+decisions: [] # max 5 WP decisions not yet in CODEX; entries {id, text <= 120 chars, source: where the operator decision is recorded}
+
+refs: # resolved from the owner at gate time, never copied; used as {ref:name} in do, argv or *_ref fields
+  test_entrypoint_command: {from: repo-governance/codex/build-rules/current/build-rules.yaml, key: project_profile.test_entrypoint.command}
+  test_entrypoint_config_files: {from: repo-governance/codex/build-rules/current/build-rules.yaml, key: project_profile.test_entrypoint.config_files}
+  implementer_check_command: {from: repo-governance/codex/build-rules/current/build-rules.yaml, key: project_profile.implementer_check.command}
+  canary_check: {from: repo-governance/codex/build-rules/current/build-rules.yaml, key: project_profile.test_environment.canary_check}
+  validation_queue_max_mts: {from: repo-governance/codex/current/workflows/code-development-v1.yaml, key: validation.validation_queue_max_mts}
+  round_disk_budget: {from: repo-governance/codex/current/workflows/code-development-v1.yaml, key: resource_policy.round_disk_budget}
+  wp_worktree: {from: repo-governance/work-packets/active/WP-000-example-v1/state.yaml, key: activation.worktree_ref}
+
+expensive_actions: [] # additions to HT-WORK-CODING-001.gameplan.gate_moments; entries {action | command_ref | command_pattern, at}
+
+# stock steps seeded at activation; ids GP-STOCK-*; later steps get controller-allocated ids; retired steps stay, ids never reused
+steps:
+- {id: GP-STOCK-001, role: any, at: on_resume, do: "read current MT state + relevant pending receipts; finish half-written verdict", check: {type: confirm}, source: "CODEX-FLOW-008; CODEX-VAL-008", state: active}
+- {id: GP-STOCK-002, role: orchestrator, at: before_dispatch, do: "brief names output commit|verdict + deadline", check: {type: confirm}, source: CODEX-OUT-004, state: active}
+- {id: GP-STOCK-003, role: orchestrator, at: before_dispatch, do: "confirm target device idle; heavy builds == 0", check: {type: confirm}, source: "WF-RESOURCE-001; CODEX-STEER-005", state: active}
+- {id: GP-STOCK-004, role: any, at: before_submit, do: "verify HEAD == remote(branch); tree clean", check: {type: git, head_equals_remote: true, clean: true}, source: CODEX-OUT-002, state: active}
+- {id: GP-STOCK-005, role: any, at: before_submit, do: "confirm since last verdict: {ref:implementer_check_command} only; test runs == 0", check: {type: confirm}, source: "CODEX-STEER-009; BR-TEST-ENTRY-001", state: active}
+- {id: GP-STOCK-006, role: wp_validator, at: before_round, do: "freeze candidate = pushed HEAD; later pushes -> next round", check: {type: git, head_equals_remote: true, clean: true}, source: CODEX-VAL-006, state: active}
+- {id: GP-STOCK-007, role: wp_validator, at: before_round, do: "confirm ready set complete; queued MTs <= {ref:validation_queue_max_mts}", check: {type: confirm}, source: "CODEX-VAL-006; WF-PROOF-001", state: active}
+- {id: GP-STOCK-008, role: wp_validator, at: before_round, do: "confirm canary pass on candidate; same entrypoint + config", check: {type: confirm}, source: "CODEX-VAL-006; BR-TEST-ENTRY-001", state: active}
+- {id: GP-STOCK-009, role: wp_validator, at: before_round, do: "verify entrypoint config unchanged since canary", check: {type: git, clean: true, paths_ref: test_entrypoint_config_files}, source: CODEX-STEER-010, state: active}
+- {id: GP-STOCK-010, role: wp_validator, at: before_round, do: "forbid added env vars, flags, wrappers, outer timeout on round command", check: {type: confirm}, source: "CODEX-STEER-010; CODEX-STEER-011", state: active}
+- {id: GP-STOCK-011, role: wp_validator, at: before_round, do: "verify free disk(build device) >= {ref:round_disk_budget}", check: {type: confirm}, source: "BR-HOST-003; WF-RESOURCE-001", state: active}
+- {id: GP-STOCK-012, role: wp_validator, at: before_round, do: "confirm implementer test|build processes on WP target == 0", check: {type: confirm}, source: "CODEX-STEER-009; CODEX-STEER-005", state: active}
+- {id: GP-STOCK-013, role: wp_validator, at: before_verdict, do: "confirm verdicts from this round run; reruns on unchanged commit == 0", check: {type: confirm}, source: "CODEX-OUT-003; CODEX-STEER-009", state: active}
+- {id: GP-STOCK-014, role: integration_validator, at: before_merge, do: "verify tree clean; HEAD == remote(candidate branch)", check: {type: git, head_equals_remote: true, clean: true}, source: "CODEX-FLOW-007; CODEX-GIT-003", state: active}

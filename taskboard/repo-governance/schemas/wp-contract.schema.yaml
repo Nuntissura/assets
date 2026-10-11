@@ -1,0 +1,376 @@
+schema_version: handshake.schema.v1
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:handshake:schema:wp-contract:v3
+title: Handshake work-packet contract
+description: Shape of repo-governance/work-packets/active/{wp_id}/wp-contract.yaml (HT-WORK-WP-001, handshake.wp-contract.v11).
+type: object
+additionalProperties: false
+required: [schema_version, template_version, kind, instance_policy, rule_refs, identity, refinement_ref, authority_snapshot, outcome, reuse, scope, requirements, acceptance_criteria, microtask_graph, proof_contract]
+properties:
+  schema_version: {const: handshake.wp-contract.v11}
+  template_version: {type: integer, minimum: 1}
+  kind: {const: work_packet}
+  instance_policy: {$ref: '#/$defs/instance_policy'}
+  rule_refs: {$ref: '#/$defs/rule_ref_list'}
+  identity:
+    type: object
+    additionalProperties: false
+    required: [wp_id, title, version, contract_revision, lifecycle_profile]
+    properties:
+      wp_id: {$ref: '#/$defs/entity_id'}
+      title: {$ref: '#/$defs/nonempty_string'}
+      version: {type: integer, minimum: 1}
+      contract_revision: {type: integer, minimum: 1}
+      lifecycle_profile: {$ref: '#/$defs/nonempty_string'}
+      activation_id: {$ref: '#/$defs/nullable_string'}
+  refinement_ref:
+    type: object
+    additionalProperties: false
+    required: [artifact_id, revision, digest]
+    properties:
+      artifact_id: {$ref: '#/$defs/entity_id'}
+      revision: {type: integer, minimum: 1}
+      digest: {$ref: '#/$defs/digest'}
+  authority_snapshot:
+    type: object
+    additionalProperties: false
+    required: [specification, build_rules, build_matrix, product_topology, governance_topology, solution_bindings, solution_lock, sdk_catalog]
+    properties:
+      specification:
+        type: object
+        additionalProperties: false
+        required: [revision, digest, roadmap_digest]
+        properties:
+          revision: {$ref: '#/$defs/revision'}
+          digest: {$ref: '#/$defs/digest'}
+          roadmap_digest: {$ref: '#/$defs/digest'}
+      build_rules:
+        type: object
+        additionalProperties: false
+        required: [revision, digest, applicable_rule_ids]
+        properties:
+          revision: {$ref: '#/$defs/revision'}
+          digest: {$ref: '#/$defs/digest'}
+          applicable_rule_ids: {$ref: '#/$defs/rule_ref_list'}
+      build_matrix:
+        type: object
+        additionalProperties: false
+        required: [matrix_id, revision, digest]
+        properties:
+          matrix_id: {$ref: '#/$defs/stable_id'}
+          revision: {$ref: '#/$defs/revision'}
+          digest: {$ref: '#/$defs/digest'}
+      product_topology: {$ref: '#/$defs/revision_digest'}
+      governance_topology: {$ref: '#/$defs/revision_digest'}
+      solution_bindings:
+        type: object
+        additionalProperties: false
+        required: [version, digest]
+        properties:
+          version: {$ref: '#/$defs/revision'}
+          digest: {$ref: '#/$defs/digest'}
+      solution_lock:
+        type: object
+        additionalProperties: false
+        required: [generation, digest]
+        properties:
+          generation: {$ref: '#/$defs/revision'}
+          digest: {$ref: '#/$defs/digest'}
+      sdk_catalog:
+        type: object
+        additionalProperties: false
+        required: [digest]
+        properties:
+          digest: {$ref: '#/$defs/digest'}
+  outcome:
+    type: object
+    additionalProperties: false
+    required: [problem, operator_value, expected_behavior, completion_statement]
+    properties:
+      problem: {type: string}
+      operator_value: {type: string}
+      expected_behavior: {type: string}
+      completion_statement: {type: string}
+  reuse:
+    type: object
+    additionalProperties: false
+    required: [strategy]
+    properties:
+      strategy: {$ref: '#/$defs/reuse_strategy'}
+      solution_refs: {$ref: '#/$defs/string_list'}
+      reason: {type: string}
+      promotion_candidate: {type: boolean}
+      consumed_capability_refs: {$ref: '#/$defs/string_list'}
+      owner_module_refs: {$ref: '#/$defs/module_id_list'}
+      new_capability_refs: {$ref: '#/$defs/string_list'}
+  scope:
+    type: object
+    additionalProperties: false
+    required: [included]
+    properties:
+      included: {$ref: '#/$defs/string_list'}
+      excluded: {$ref: '#/$defs/string_list'}
+      assumptions: {$ref: '#/$defs/string_list'}
+      non_goals: {$ref: '#/$defs/string_list'}
+  scope_waivers:
+    type: array
+    items: {$ref: '#/$defs/scope_waiver'}
+  dependencies:
+    type: object
+    additionalProperties: false
+    properties:
+      wp_ids: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      external_systems: {$ref: '#/$defs/string_list'}
+      data_or_migration_preconditions: {$ref: '#/$defs/string_list'}
+  architecture_binding:
+    type: object
+    additionalProperties: false
+    required: [boundary_change]
+    properties:
+      boundary_change: {type: string, enum: [none, split, merge, extract, new_module]}
+      module_lifecycle_refs: {$ref: '#/$defs/string_list'}
+      touched_module_refs: {$ref: '#/$defs/module_id_list'}
+      created_module_refs: {$ref: '#/$defs/module_id_list'}
+      touched_build_unit_refs: {$ref: '#/$defs/string_list'}
+      target_build_unit_graph_ref: {$ref: '#/$defs/nullable_string'}
+    if:
+      properties:
+        boundary_change: {not: {const: none}}
+    then:
+      required: [target_build_unit_graph_ref]
+      properties:
+        target_build_unit_graph_ref: {$ref: '#/$defs/nonempty_string'}
+  runtime_lanes:
+    type: object
+    additionalProperties: false
+    required: [applicability]
+    properties:
+      applicability: {$ref: '#/$defs/pillar_applicability'}
+      lanes: {type: array, items: {$ref: '#/$defs/runtime_lane'}}
+      shared_resource_refs: {$ref: '#/$defs/string_list'}
+      concurrency_proof_refs: {type: array, items: {$ref: '#/$defs/stable_id'}}
+  gui_surface:
+    type: object
+    additionalProperties: false
+    required: [applicability]
+    properties:
+      applicability: {type: string, enum: [change, verify_only, not_applicable, headless_project]}
+      surface_profile_refs: {$ref: '#/$defs/string_list'}
+      inspection_route_refs: {$ref: '#/$defs/string_list'}
+      headless_route_refs: {$ref: '#/$defs/string_list'}
+      expected_visual_evidence: {type: array, items: {type: string, enum: [screenshot, structured_state_snapshot, rendered_inspection]}}
+  auth_binding:
+    type: object
+    additionalProperties: false
+    required: [applicability]
+    properties:
+      applicability: {$ref: '#/$defs/pillar_applicability'}
+      account_bound_resource_refs: {$ref: '#/$defs/string_list'}
+      subprofile_visibility: {anyOf: [{type: string, enum: [inherits, restricted, explicit]}, {type: 'null'}]}
+      authorization_boundary_refs: {$ref: '#/$defs/string_list'}
+      default_deny_negative_proof_ref: {anyOf: [{$ref: '#/$defs/stable_id'}, {type: 'null'}]}
+  implementation_contract:
+    type: object
+    additionalProperties: false
+    properties:
+      required_when: {type: string}
+      architecture_decisions: {$ref: '#/$defs/entry_list'}
+      module_boundaries: {$ref: '#/$defs/entry_list'}
+      public_interfaces: {$ref: '#/$defs/entry_list'}
+      data_flows: {$ref: '#/$defs/entry_list'}
+      concurrency_model: {$ref: '#/$defs/entry_list'}
+      compatibility_constraints: {$ref: '#/$defs/entry_list'}
+      migration_plan: {$ref: '#/$defs/entry_list'}
+      rollout_plan: {$ref: '#/$defs/entry_list'}
+      rollback_plan: {$ref: '#/$defs/entry_list'}
+  impact_assessment:
+    type: object
+    additionalProperties: false
+    required: [input_set_digest, universe_digest, universe_components, assessed_entry_ids]
+    properties:
+      input_set_digest: {$ref: '#/$defs/digest'}
+      universe_digest: {$ref: '#/$defs/digest'}
+      universe_components:
+        type: object
+        additionalProperties: false
+        required: [matrix_revision, spec_primitive_feature_mix_digest, product_topology_revision]
+        properties:
+          matrix_revision: {$ref: '#/$defs/revision'}
+          spec_primitive_feature_mix_digest: {$ref: '#/$defs/digest'}
+          product_topology_revision: {$ref: '#/$defs/revision'}
+      assessed_entry_ids: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      mandatory_pillar_entry_ids: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      stored_rows: {type: string}
+      rows: {type: array, items: {$ref: '#/$defs/impact_row'}}
+  hskernelsdk:
+    type: object
+    additionalProperties: false
+    required: [condition, ref]
+    properties:
+      condition: {$ref: '#/$defs/nonempty_string'}
+      ref: {$ref: '#/$defs/nonempty_string'}
+  requirements:
+    type: array
+    minItems: 1
+    items: {$ref: '#/$defs/requirement'}
+  acceptance_criteria:
+    type: array
+    minItems: 1
+    items: {$ref: '#/$defs/acceptance_criterion'}
+  microtask_graph:
+    type: object
+    additionalProperties: false
+    required: [nodes]
+    properties:
+      rule_refs: {$ref: '#/$defs/rule_ref_list'}
+      nodes: {type: array, minItems: 1, items: {$ref: '#/$defs/microtask_node'}}
+  proof_contract:
+    type: object
+    additionalProperties: false
+    required: [risk_tier, checks]
+    properties:
+      risk_tier: {type: string, enum: [P0, P1, P2, P3]}
+      rule_refs: {$ref: '#/$defs/rule_ref_list'}
+      checks: {type: array, minItems: 1, items: {$ref: '#/$defs/proof_check'}}
+  risks:
+    type: array
+    items: {$ref: '#/$defs/risk'}
+anyOf:
+  - properties:
+      template_version: {maximum: 14}
+  - required: [architecture_binding]
+    properties:
+      architecture_binding:
+        required: [module_lifecycle_refs]
+        properties:
+          module_lifecycle_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/nonempty_string'}}
+$defs:
+  digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+  stable_id: {type: string, pattern: '^[A-Z][A-Z0-9-]+$'}
+  entity_id: {type: string, pattern: '^[A-Z][A-Za-z0-9._-]+$'}
+  module_id: {type: string, pattern: '^MOD-[A-Za-z0-9][A-Za-z0-9._-]*$'}
+  module_id_list: {type: array, items: {$ref: '#/$defs/module_id'}}
+  rule_ref: {type: string, pattern: '^[A-Z][A-Z0-9-]+(\.[A-Za-z0-9_]+)*$'}
+  rule_ref_list: {type: array, items: {$ref: '#/$defs/rule_ref'}}
+  nonempty_string: {type: string, minLength: 1}
+  nullable_string: {type: [string, 'null']}
+  string_list: {type: array, items: {type: string}}
+  entry_list: {type: array, items: {type: [string, object]}}
+  iso_date_time: {type: string, format: date-time, pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$'}
+  revision:
+    oneOf:
+      - {type: integer, minimum: 0}
+      - {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$', not: {const: REPLACE_ME}}
+  revision_digest:
+    type: object
+    additionalProperties: false
+    required: [revision, digest]
+    properties:
+      revision: {$ref: '#/$defs/revision'}
+      digest: {$ref: '#/$defs/digest'}
+  instance_policy:
+    type: object
+    additionalProperties: false
+    required: [omit_empty_optional_fields, policy_lives_in_rule_refs_not_instance_fields, schema_ref]
+    properties:
+      omit_empty_optional_fields: {type: boolean}
+      policy_lives_in_rule_refs_not_instance_fields: {type: boolean}
+      schema_ref: {const: repo-governance/schemas/wp-contract.schema.yaml}
+  reuse_strategy: {type: string, enum: [reuse, compose, extend, fork, new, prototype]}
+  lane: {type: string, enum: [implementation, gui, diagnostics, documentation, validation, migration, special_runs]}
+  pillar_applicability: {type: string, enum: [change, verify_only, not_applicable]}
+  runtime_lane:
+    type: object
+    additionalProperties: false
+    required: [lane_id, purpose]
+    properties:
+      lane_id: {$ref: '#/$defs/nonempty_string'}
+      purpose: {$ref: '#/$defs/nonempty_string'}
+      ordering: {type: string}
+      cancellation: {type: string}
+      backpressure: {type: string}
+      isolation: {type: string}
+  scope_waiver:
+    type: object
+    additionalProperties: false
+    required: [waiver_id, granted_by, scope_paths, reason, granted_at]
+    properties:
+      waiver_id: {$ref: '#/$defs/entity_id'}
+      granted_by: {$ref: '#/$defs/nonempty_string'}
+      scope_paths: {type: array, minItems: 1, items: {type: string}}
+      reason: {type: string}
+      granted_at: {$ref: '#/$defs/iso_date_time'}
+      expires: {anyOf: [{$ref: '#/$defs/iso_date_time'}, {type: 'null'}]}
+  impact_row:
+    type: object
+    additionalProperties: false
+    required: [matrix_entry_id, entry_revision, disposition, reason]
+    properties:
+      matrix_entry_id: {$ref: '#/$defs/entity_id'}
+      entry_revision: {$ref: '#/$defs/revision'}
+      disposition: {type: string, enum: [change, verify_only, not_applicable, unresolved, outside_activated_scope]}
+      reason: {type: string}
+      match_evidence_refs: {$ref: '#/$defs/string_list'}
+      affected_entity_refs: {$ref: '#/$defs/string_list'}
+      requirement_refs: {type: array, items: {$ref: '#/$defs/stable_id'}}
+      acceptance_refs: {type: array, items: {$ref: '#/$defs/stable_id'}}
+      mt_refs: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      proof_refs: {type: array, items: {$ref: '#/$defs/stable_id'}}
+      activation_scope_reason: {type: string}
+  requirement:
+    type: object
+    additionalProperties: false
+    required: [requirement_id, statement]
+    properties:
+      requirement_id: {$ref: '#/$defs/stable_id'}
+      statement: {$ref: '#/$defs/nonempty_string'}
+      rationale: {type: string}
+      source_refs: {$ref: '#/$defs/string_list'}
+      matrix_entry_refs: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      acceptance_refs: {type: array, items: {$ref: '#/$defs/stable_id'}}
+  acceptance_criterion:
+    type: object
+    additionalProperties: false
+    required: [acceptance_id, requirement_refs, given, when, then, proof_refs]
+    properties:
+      acceptance_id: {$ref: '#/$defs/stable_id'}
+      requirement_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/stable_id'}}
+      matrix_entry_refs: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      given: {type: string}
+      when: {type: string}
+      then: {type: string}
+      proof_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/stable_id'}}
+  microtask_node:
+    type: object
+    additionalProperties: false
+    required: [mt_id, depends_on, lane]
+    properties:
+      mt_id: {$ref: '#/$defs/entity_id'}
+      depends_on: {type: array, items: {$ref: '#/$defs/entity_id'}}
+      lane: {$ref: '#/$defs/lane'}
+      surface_profile_refs: {$ref: '#/$defs/string_list'}
+  proof_check:
+    type: object
+    additionalProperties: false
+    required: [proof_id, kind, claim_refs, command_or_method, expected, timeout_seconds]
+    properties:
+      proof_id: {$ref: '#/$defs/stable_id'}
+      kind: {type: string, enum: [inspection, test, benchmark, runtime, independent_review]}
+      claim_refs: {type: array, minItems: 1, items: {$ref: '#/$defs/stable_id'}}
+      command_or_method: {$ref: '#/$defs/nonempty_string'}
+      expected: {type: string}
+      timeout_seconds: {type: integer, minimum: 1}
+      relevant_input_paths: {$ref: '#/$defs/string_list'}
+      evidence_required: {$ref: '#/$defs/string_list'}
+      independent: {type: boolean}
+  risk:
+    type: object
+    additionalProperties: false
+    required: [risk_id, scenario, impact, control]
+    properties:
+      risk_id: {$ref: '#/$defs/stable_id'}
+      scenario: {type: string}
+      impact: {type: string}
+      control: {type: string}
+      acceptance_refs: {type: array, items: {$ref: '#/$defs/stable_id'}}
+      mt_refs: {type: array, items: {$ref: '#/$defs/entity_id'}}

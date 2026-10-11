@@ -1,0 +1,44 @@
+schema_version: buurtman.wp.v1
+wp_id: WP-BB-013-operator-workflow-validation-v1
+kind: active
+title: Realistic employee and operator workflow validation
+version: 1
+spec_revision: 7
+requirement_refs: [BB-WORKFLOW-001]
+scope:
+- Dedicated root-appointed subagent evaluates camera-store, supermarket and web-SaaS employee/operator scenarios,
+  including inventory context, new items, labeling/tagging, related navigation and client/pricing/support workflows.
+- Produce scenario matrix and evidence-backed missing functionality, workflow/UI defects and practical remediation;
+  coordinator captures follow-ons spec first, then WP/stub. Preserve separate photo-service website and original hosts.
+dependencies: []
+relevant_files:
+- web/index.html
+- web/app.js
+- web/field-editor.js
+- web/client-pricing.js
+- web/user-manual.js
+- tooling/standalone.py
+- tooling/browser-proof.py
+- examples/json_bridge.rs
+- src/contracts.rs
+- src/service.rs
+- docs/research/crm-usecases-v1.md
+- README.md
+acceptance:
+- Record a scenario matrix for all three selected contexts with actor/task/preconditions, exact entity/owner,
+  expected steps/outcome, supported versus missing/blocked functionality and explicit temporary/demo/canonical status.
+- Exercise supported workflows in the actual app with desktop/mobile screenshots and backend observations linked
+  to each scenario; verify input retention, navigation, readable controls, visible important state and failure paths.
+  Record precise unavailable host dependencies rather than substitute demo records for inventory/sales/usage proof.
+- For each observed missing feature or workflow/UI defect record exact reproduction, artifact, expected versus observed
+  behavior, impact, practical remediation and validation needed; keep uninspected scenarios explicitly unproven.
+- Capture resulting product gaps in specification with accepted/proposed status and corresponding WP/stub references
+  through coordinator ownership; research/validation authorizes no implicit feature implementation or host compatibility.
+- Devlead independently reviews matrix, screenshots and UI/backend evidence and runs affected shared proof;
+  completion means validated coverage and documented gaps, not all host workflows implemented.
+verification_checks: [BB-CHECK-UI, BB-CHECK-GOV]
+ownership:
+  assignment: Root appoints dedicated workflow subagent and assigns its evidence files before overlapping writes.
+  shared_runs: Root owns builds and shared browser outputs; coordinate bounded workflow interaction/evidence runs.
+  governance: Coordinator owns this contract/state and spec/taskboard follow-on capture.
+  data: Canonical inventory, checkout, orders, identities, usage and image owners remain in hosts; no production mutations selected.

@@ -1,0 +1,15 @@
+schema_version: buurtman.wp-state.v1
+wp_id: WP-BB-002-portal-adapter-v1
+status: proposed
+work_location: .
+sync_pending: false
+progress: []
+blockers: []
+next_action: Resolve canonical metrics/report/image owners, authorization and immutable release pin before Portal
+  wiring.
+verification: []
+recovery:
+  branch: codex/buurtman-balie
+  commit: null
+  uncommitted_work: Initial code/governance uncommitted; no remotes, deployments or pushes.
+  originating_portal_state: ../../handshake-portal/repo-governance/work-packets/active/WP-ADMIN-001-users-feedback-v1/state.yaml

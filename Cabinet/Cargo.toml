@@ -1,0 +1,49 @@
+[package]
+name = "cabinet"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Portable hierarchy navigation and host-owned tree operations"
+
+[features]
+default = []
+egui = ["dep:egui", "cabinet-peak/egui"]
+serde = ["dep:serde", "cabinet-peak/serde"]
+preview-images = ["cabinet-peak/images"]
+preview-raw = ["cabinet-peak/raw"]
+
+[dependencies]
+egui = { version = "=0.33.3", optional = true, features = ["accesskit"] }
+cabinet-peak = { version = "0.1.0", path = "Peak" }
+serde = { version = "1", optional = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[workspace]
+members = ["Peak"]
+
+[[example]]
+name = "headless"
+
+[[example]]
+name = "render_preview"
+required-features = ["egui"]
+
+[[example]]
+name = "settings_persistence"
+required-features = ["serde"]
+
+[[example]]
+name = "large_tree"
+
+[[example]]
+name = "host_workflows"
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
