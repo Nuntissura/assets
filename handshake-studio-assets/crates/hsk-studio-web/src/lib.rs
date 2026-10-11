@@ -3,9 +3,11 @@
 #![forbid(unsafe_code)]
 
 mod assets;
+mod carriers;
 mod charref;
 mod css;
 mod cssurl;
+mod datauri;
 mod dom;
 mod entity;
 mod entity_table;
@@ -17,7 +19,8 @@ pub mod responsive;
 pub mod source_dom_patch;
 
 pub use assets::{
-    AssetDecision, AssetOutcome, AssetPort, AssetRef, AssetSource, DenyReason, collect_assets,
+    AssetDecision, AssetOutcome, AssetPort, AssetRef, AssetSource, DenyReason, MAX_DATA_NESTING,
+    collect_assets,
 };
 pub use css::{Declaration, RuleRefusal};
 pub use dom::{

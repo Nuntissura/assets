@@ -25,21 +25,28 @@
 //! matching closer ends a block):
 //! - every `<url-token>` is a URL (CSS Values 4 4.5); every `<bad-url-token>` is reported `Bad` (a browser loads nothing,
 //!   the gate denies it);
-//! - a `<string-token>` is a URL when the nearest enclosing function is `url()` or `src()` (CSS Values 4 4.5: `url(
-//!   <string> <url-modifier>* )`, `src( <string> <url-modifier>* )`), `image-set()` or its parse-time alias
-//!   `-webkit-image-set()` (CSS Images 4 2.4 "Each <string> inside image-set() represents a <url>", Appendix A),
-//!   `image()` (CSS Images 4 2.5 "A <string> used in image() represents a <url>") or `cross-fade()` /
-//!   `-webkit-cross-fade()` (no string in its grammar, reported conservatively), and when it directly follows `@import`
-//!   (whitespace between); a `<bad-string-token>` there is reported `Bad`;
-//! - inside such a function any function outside a fixed list of value functions (gradients, colours, math, `type()`,
-//!   URL modifiers, the URL functions themselves) is reported `Computed`: `var()`, `attr()`, `env()`, `if()`,
-//!   `inherit()`, custom `--*()` functions and every unknown name can produce a URL string at computed-value time (CSS
-//!   Values 4 4.5 `src(var(--foo))`, CSS Values 5 arbitrary substitution functions), which the source does not show;
+//! - a `<string-token>` is a URL when the nearest enclosing function is one of `carriers::URL_FUNCTIONS` (the carrier
+//!   inventory's CSS function row): `url()` or `src()` (CSS Values 4 4.5: `url( <string> <url-modifier>* )`, `src(
+//!   <string> <url-modifier>* )`), `image-set()` or its parse-time alias `-webkit-image-set()` (CSS Images 4 2.4 "Each
+//!   <string> inside image-set() represents a <url>", Appendix A), `image()` (CSS Images 4 2.5 "A <string> used in image()
+//!   represents a <url>"), `filter()` / `-webkit-filter()` (Filter Effects 1 12 `filter( [ <image> | <string> ], ...)`)
+//!   or `cross-fade()` / `-webkit-cross-fade()` (no string in its grammar, reported conservatively), and when it directly
+//!   follows `@import` (whitespace between); a `<bad-string-token>` there is reported `Bad`;
+//! - the URL of `@import` (string, url token, or the string of a `url()`/`src()` right after it) is marked `import`: a
+//!   style sheet (`datauri` reads a `data:` payload there as CSS);
+//! - the URL right after `@namespace` (after an optional prefix ident) names a namespace and is never fetched (CSS
+//!   Namespaces 3): not reported (R11-P2; test `namespace_urls_are_not_references`);
+//! - inside a URL function any function outside a fixed list of value functions (gradients incl. Gecko's `-moz-`
+//!   gradients, the filter functions, colours, math, `type()`, URL modifiers, the URL functions themselves) is reported
+//!   `Computed`: `var()`, `attr()`, `env()`, `if()`, `inherit()`, custom `--*()` functions and every unknown name can
+//!   produce a URL string at computed-value time (CSS Values 4 4.5 `src(var(--foo))`, CSS Values 5 arbitrary
+//!   substitution functions), which the source does not show;
 //! - an empty URL is skipped: it resolves to an invalid resource and loads nothing (CSS Values 4 4.5.2).
 //!
 //! The reported value is the decoded text; the span is the source bytes holding it (escapes included).
 #![deny(clippy::arithmetic_side_effects)]
 
+use crate::carriers::URL_FUNCTIONS;
 use std::collections::BTreeSet;
 use std::ops::Range;
 
@@ -660,32 +667,18 @@ pub(crate) struct CssRef {
     /// The decoded reference (`Computed`: the function as written).
     pub value: String,
     pub kind: RefKind,
+    /// The URL of an `@import` (a style sheet: `datauri` reads a `data:` payload there as CSS).
+    pub import: bool,
 }
 
 /// Blocks and functions open at once before the scan refuses (the caller reports `LimitExceeded(Depth)`).
 pub(crate) const MAX_NESTING: usize = 1024;
 
-/// Functions whose string arguments are URLs (see the module docs for the specification of each).
-const URL_FUNCTIONS: &[&str] = &[
-    "url",
-    "src",
-    "image-set",
-    "-webkit-image-set",
-    "image",
-    "cross-fade",
-    "-webkit-cross-fade",
-];
-
-/// Value functions that may appear inside a URL-taking function without computing a URL string: the URL functions, the
-/// `image-set()` `type()`, URL modifiers, `element()`, gradients, colours and math. Anything else is `Computed`.
+/// Value functions that may appear inside a URL-taking function without computing a URL string: the URL functions
+/// (`carriers::URL_FUNCTIONS`), the `image-set()` `type()`, URL modifiers, `element()`, gradients (incl. Gecko's `-moz-`
+/// gradients, R11-P3), the filter functions of `filter()`, colours (CSS Color 4/5/HDR) and math. Anything else is
+/// `Computed`.
 const VALUE_FUNCTIONS: &[&str] = &[
-    "url",
-    "src",
-    "image-set",
-    "-webkit-image-set",
-    "image",
-    "cross-fade",
-    "-webkit-cross-fade",
     "type",
     "cross-origin",
     "integrity",
@@ -703,9 +696,23 @@ const VALUE_FUNCTIONS: &[&str] = &[
     "-webkit-repeating-linear-gradient",
     "-webkit-repeating-radial-gradient",
     "-webkit-gradient",
+    "-moz-linear-gradient",
+    "-moz-radial-gradient",
+    "-moz-repeating-linear-gradient",
+    "-moz-repeating-radial-gradient",
     "color-stop",
     "from",
     "to",
+    "blur",
+    "brightness",
+    "contrast",
+    "drop-shadow",
+    "grayscale",
+    "hue-rotate",
+    "invert",
+    "opacity",
+    "saturate",
+    "sepia",
     "rgb",
     "rgba",
     "hsl",
@@ -720,6 +727,7 @@ const VALUE_FUNCTIONS: &[&str] = &[
     "light-dark",
     "contrast-color",
     "device-cmyk",
+    "alpha",
     "calc",
     "-webkit-calc",
     "min",
@@ -744,6 +752,10 @@ const VALUE_FUNCTIONS: &[&str] = &[
     "exp",
 ];
 
+fn url_function(lower: &str) -> bool {
+    URL_FUNCTIONS.contains(&lower)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Class {
     /// `(`, `[` or `{` block.
@@ -754,11 +766,25 @@ enum Class {
     Other,
 }
 
+/// What the tokens right after an at-keyword are.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Prelude {
+    None,
+    /// After `@import`: its URL is a style sheet.
+    Import,
+    /// After `@namespace` (and, in `NamespaceName`, its prefix): the URL names a namespace and is never fetched (CSS
+    /// Namespaces 3; R11-P2).
+    Namespace,
+    NamespaceName,
+}
+
 struct Frame {
     close: Kind,
     class: Class,
     /// Index in the output of the `Computed` reference this function opened.
     computed: Option<usize>,
+    /// The URL function opened right after `@import` (`Import`) or `@namespace` (`Namespace`/`NamespaceName`).
+    prelude: Prelude,
 }
 
 /// The references one reading (`tokens` over `css`) holds, at most `limit`; `Err(span)` when blocks nest deeper than
@@ -768,21 +794,21 @@ fn scan(mut tokens: Tokenizer<'_>, css: &str, limit: usize) -> Result<Vec<CssRef
     let mut frames: Vec<Frame> = Vec::new();
     let mut url_functions = 0usize;
     let mut computed_open = false;
-    let mut after_import = false;
-    // A string is a URL when the nearest enclosing function is a URL function.
-    let string_is_url = |frames: &[Frame]| {
+    let mut prelude = Prelude::None;
+    // The nearest enclosing function (blocks skipped): a string is a URL when it is a URL function.
+    let nearest = |frames: &[Frame]| -> Option<(Class, Prelude)> {
         frames
             .iter()
             .rev()
             .find(|f| f.class != Class::Block)
-            .is_some_and(|f| f.class == Class::Url)
+            .map(|f| (f.class, f.prelude))
     };
     while out.len() < limit {
         let Some(token) = tokens.next_token() else {
             break;
         };
-        let import = std::mem::replace(&mut after_import, false);
-        let open = |frames: &mut Vec<Frame>, close: Kind, class: Class, computed| {
+        let here = std::mem::replace(&mut prelude, Prelude::None);
+        let open = |frames: &mut Vec<Frame>, close: Kind, class: Class, computed, prelude| {
             if frames.len() >= MAX_NESTING {
                 return Err(token.span.clone());
             }
@@ -790,18 +816,35 @@ fn scan(mut tokens: Tokenizer<'_>, css: &str, limit: usize) -> Result<Vec<CssRef
                 close,
                 class,
                 computed,
+                prelude,
             });
             Ok(())
         };
         match token.kind {
-            Kind::Whitespace => after_import = import,
-            Kind::AtKeyword(ref name) => after_import = name.eq_ignore_ascii_case("import"),
+            Kind::Whitespace => prelude = here,
+            Kind::AtKeyword(ref name) => {
+                prelude = if name.eq_ignore_ascii_case("import") {
+                    Prelude::Import
+                } else if name.eq_ignore_ascii_case("namespace") {
+                    Prelude::Namespace
+                } else {
+                    Prelude::None
+                }
+            }
+            // `@namespace prefix url(...)`: the prefix is one ident.
+            Kind::Ident(_) if here == Prelude::Namespace => prelude = Prelude::NamespaceName,
+            Kind::Url { .. }
+            | Kind::BadUrl { .. }
+            | Kind::String { .. }
+            | Kind::BadString { .. }
+                if matches!(here, Prelude::Namespace | Prelude::NamespaceName) => {}
             Kind::Url { value, inner, .. } => {
                 if !value.is_empty() {
                     out.push(CssRef {
                         span: inner,
                         value,
                         kind: RefKind::Url,
+                        import: here == Prelude::Import,
                     });
                 }
             }
@@ -809,49 +852,97 @@ fn scan(mut tokens: Tokenizer<'_>, css: &str, limit: usize) -> Result<Vec<CssRef
                 span: inner,
                 value: partial,
                 kind: RefKind::Bad,
+                import: here == Prelude::Import,
             }),
             Kind::String { value, inner, .. } => {
-                if (import || string_is_url(&frames)) && !value.is_empty() {
+                let enclosing = nearest(&frames);
+                let in_url = enclosing.is_some_and(|(class, _)| class == Class::Url);
+                let skipped = enclosing.is_some_and(|(class, p)| {
+                    class == Class::Url && matches!(p, Prelude::Namespace | Prelude::NamespaceName)
+                });
+                let import = here == Prelude::Import
+                    || enclosing
+                        .is_some_and(|(class, p)| class == Class::Url && p == Prelude::Import);
+                if (here == Prelude::Import || in_url) && !skipped && !value.is_empty() {
                     out.push(CssRef {
                         span: inner,
                         value,
                         kind: RefKind::Url,
+                        import,
                     });
                 }
             }
             Kind::BadString { partial, inner } => {
-                if import || string_is_url(&frames) {
+                let enclosing = nearest(&frames);
+                let in_url = enclosing.is_some_and(|(class, _)| class == Class::Url);
+                let skipped = enclosing.is_some_and(|(class, p)| {
+                    class == Class::Url && matches!(p, Prelude::Namespace | Prelude::NamespaceName)
+                });
+                if (here == Prelude::Import || in_url) && !skipped {
                     out.push(CssRef {
                         span: inner,
                         value: partial,
                         kind: RefKind::Bad,
+                        import: here == Prelude::Import
+                            || enclosing.is_some_and(|(class, p)| {
+                                class == Class::Url && p == Prelude::Import
+                            }),
                     });
                 }
             }
             Kind::Function(ref name) => {
                 let lower = name.to_ascii_lowercase();
+                let is_url = url_function(&lower);
                 let mut computed = None;
-                if url_functions > 0 && !computed_open && !VALUE_FUNCTIONS.contains(&lower.as_str())
+                if url_functions > 0
+                    && !computed_open
+                    && !is_url
+                    && !VALUE_FUNCTIONS.contains(&lower.as_str())
                 {
                     out.push(CssRef {
                         span: token.span.start..css.len(),
                         value: String::new(),
                         kind: RefKind::Computed,
+                        import: false,
                     });
                     computed = Some(out.len().saturating_sub(1));
                     computed_open = true;
                 }
-                let class = if URL_FUNCTIONS.contains(&lower.as_str()) {
+                let class = if is_url {
                     url_functions = url_functions.saturating_add(1);
                     Class::Url
                 } else {
                     Class::Other
                 };
-                open(&mut frames, Kind::CloseParen, class, computed)?;
+                // Only `url()`/`src()` can be the URL of `@import` or `@namespace`.
+                let marked = if matches!(lower.as_str(), "url" | "src") {
+                    here
+                } else {
+                    Prelude::None
+                };
+                open(&mut frames, Kind::CloseParen, class, computed, marked)?;
             }
-            Kind::OpenParen => open(&mut frames, Kind::CloseParen, Class::Block, None)?,
-            Kind::OpenSquare => open(&mut frames, Kind::CloseSquare, Class::Block, None)?,
-            Kind::OpenCurly => open(&mut frames, Kind::CloseCurly, Class::Block, None)?,
+            Kind::OpenParen => open(
+                &mut frames,
+                Kind::CloseParen,
+                Class::Block,
+                None,
+                Prelude::None,
+            )?,
+            Kind::OpenSquare => open(
+                &mut frames,
+                Kind::CloseSquare,
+                Class::Block,
+                None,
+                Prelude::None,
+            )?,
+            Kind::OpenCurly => open(
+                &mut frames,
+                Kind::CloseCurly,
+                Class::Block,
+                None,
+                Prelude::None,
+            )?,
             ref closer @ (Kind::CloseParen | Kind::CloseSquare | Kind::CloseCurly) => {
                 // 5.4: only the closer that matches the innermost block ends it; any other is a preserved token.
                 if frames.last().is_some_and(|f| f.close == *closer)
@@ -879,9 +970,9 @@ fn scan(mut tokens: Tokenizer<'_>, css: &str, limit: usize) -> Result<Vec<CssRef
     Ok(out)
 }
 
-/// References found in `css` (at most `limit`), in source order: url tokens, bad-url tokens, URL strings of `url()`,
-/// `src()`, `image-set()`, `-webkit-image-set()`, `image()`, `cross-fade()` and `@import`, and computed URLs (see the
-/// module docs). Readings scanned, union reported: the specification text; the engines' non-ASCII reading when `css` holds
+/// References found in `css` (at most `limit`), in source order: url tokens, bad-url tokens, URL strings of the
+/// `carriers::URL_FUNCTIONS` and `@import`, and computed URLs (see the module docs); the URL of `@namespace` is not a
+/// reference. Readings scanned, union reported: the specification text; the engines' non-ASCII reading when `css` holds
 /// a code point the two disagree on; Gecko's bad-url reading when `css` holds a backslash (the only code point whose
 /// consumption before the remnants changes them). `Err(span)`: blocks nest deeper than `MAX_NESTING`.
 pub(crate) fn css_references(css: &str, limit: usize) -> Result<Vec<CssRef>, Range<usize>> {
@@ -897,8 +988,9 @@ pub(crate) fn css_references(css: &str, limit: usize) -> Result<Vec<CssRef>, Ran
         others.push(Tokenizer::new(css, NonAscii::Engines, false).gecko_bad_url());
     }
     if !others.is_empty() {
-        let key = |r: &CssRef| (r.span.start, r.span.end, r.kind, r.value.clone());
-        let mut seen: BTreeSet<(usize, usize, RefKind, String)> = out.iter().map(key).collect();
+        type Key = (usize, usize, RefKind, String, bool);
+        let key = |r: &CssRef| (r.span.start, r.span.end, r.kind, r.value.clone(), r.import);
+        let mut seen: BTreeSet<Key> = out.iter().map(key).collect();
         for reading in others {
             for r in scan(reading, css, limit)? {
                 if seen.insert(key(&r)) {

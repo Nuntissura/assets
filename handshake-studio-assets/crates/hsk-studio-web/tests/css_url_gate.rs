@@ -387,3 +387,339 @@ fn css_nesting_beyond_the_limit_is_refused_typed() {
         assert_eq!(seen, [(EVIL.to_owned(), EXTERNAL.to_owned())]);
     });
 }
+
+// ----- R11 (lead decision 2026-10-11T16:55:12Z): SVG animation values, every CSS property as a target, data: payloads --
+
+/// Answers every relative reference `Unavailable` and records it; scans with `limits`.
+fn scan_with(src: &str, limits: &Limits) -> Result<Seen, String> {
+    let doc = parse(src, 0, limits, &CancellationToken::default())
+        .unwrap_or_else(|e| panic!("{src:?} parses: {}", e.code()));
+    let port = Port {
+        calls: Mutex::new(Vec::new()),
+    };
+    let found = collect_assets(&doc, &port, &CancellationToken::default())
+        .map_err(|e| e.code().to_owned())?;
+    let seen = found
+        .iter()
+        .map(|a| (a.reference.clone(), format!("{:?}", a.outcome)))
+        .collect();
+    Ok((seen, port.calls.into_inner().unwrap()))
+}
+
+/// `EVIL` is reported denied and never offered to the port.
+fn assert_evil(src: &str) {
+    let (seen, calls) = scan(src).unwrap();
+    assert!(
+        seen.contains(&(EVIL.to_owned(), EXTERNAL.to_owned())),
+        "{src:?}: {EVIL} not reported; seen {seen:?}"
+    );
+    assert!(!calls.iter().any(|c| c == EVIL), "{src:?}: port asked");
+}
+
+fn animation(element: &str, target: &str, attr: &str, value: &str) -> String {
+    format!(
+        "<svg><path d=\"M0 0L9 9\"><{element} attributeName=\"{}\" dur=\"1s\" {attr}=\"{}\"/></path></svg>",
+        attr_text(target),
+        attr_text(value)
+    )
+}
+
+/// R11-F1: browsers split a SMIL `values` list on every `;` before each piece is parsed as a CSS value (Blink
+/// `SVGAnimationElement::ParseValues`, Gecko `SMILParserUtils::ParseValues`), so a comment, string or bad url opened in one
+/// piece ends at the `;` and the next piece's URL loads. `to`/`from`/`by` are one value.
+#[test]
+fn r11_f1_animation_values_are_split_like_the_engines() {
+    bounded_case("r11_f1_animation_values_are_split_like_the_engines", || {
+        for element in ["animate", "animateMotion", "animateTransform", "set"] {
+            for target in [
+                "fill",
+                "mask",
+                "stroke",
+                "filter",
+                "clip-path",
+                "marker-start",
+                "cursor",
+                "FILL",
+                " mask ",
+            ] {
+                for value in [
+                    // comment decoy (the pre-review payload)
+                    format!("none /*;url({EVIL})"),
+                    // bad url and unterminated string decoys
+                    format!("url(a b;url({EVIL})"),
+                    format!("none \"x;url({EVIL})"),
+                    format!("url('a;url({EVIL})"),
+                    // escaped function name in the later piece
+                    format!("none /*;\\75 rl({EVIL})"),
+                    format!("none /*;u\\72l({EVIL})"),
+                    // case and whitespace around the pieces
+                    format!("none /* ;\n URL(  {EVIL}  ) ;"),
+                    format!("none/*;\turl({EVIL})"),
+                ] {
+                    assert_evil(&animation(element, target, "values", &value));
+                }
+            }
+        }
+        // The browser's piece is `url(a`: "a" is reported, not "a;b".
+        let (seen, calls) = scan(&animation("animate", "mask", "values", "url(a;b)")).unwrap();
+        assert_eq!(seen, [("a".to_owned(), "Unavailable".to_owned())]);
+        assert_eq!(calls, ["a"]);
+        // A relative URL in a later piece reaches the port.
+        let (_, calls) = scan(&animation(
+            "animate",
+            "mask",
+            "values",
+            "none /*;url(private/m.png)",
+        ))
+        .unwrap();
+        assert_eq!(calls, ["private/m.png"]);
+        // to/from/by are one CSS value: the comment runs to the end of it, as in the engines.
+        for attr in ["to", "from", "by"] {
+            let (seen, _) = scan(&animation(
+                "animate",
+                "mask",
+                attr,
+                &format!("none /*;url({EVIL})"),
+            ))
+            .unwrap();
+            assert!(seen.is_empty(), "{attr}: {seen:?}");
+            assert_evil(&animation("animate", "mask", attr, &format!("url({EVIL})")));
+        }
+    });
+}
+
+/// R11-F2: an animation of any CSS property in the carrier inventory reads its values as CSS (SVG Animations L2 2.6 matches
+/// CSS properties first; Gecko animates the `marker` shorthand), including shorthands and image properties.
+#[test]
+fn r11_f2_every_css_property_is_an_animation_target() {
+    bounded_case("r11_f2_every_css_property_is_an_animation_target", || {
+        for target in [
+            "marker",
+            "MARKER",
+            " marker ",
+            "mask-image",
+            "-webkit-mask",
+            "background-image",
+            "list-style",
+            "border-image",
+            "content",
+            "offset-path",
+            "style",
+        ] {
+            for (attr, value) in [
+                ("to", format!("url({EVIL})")),
+                ("from", format!("URL( '{EVIL}' )")),
+                ("by", format!("\\75 rl({EVIL})")),
+                ("values", format!("none /*;url({EVIL})")),
+            ] {
+                for element in ["set", "animate"] {
+                    assert_evil(&animation(element, target, attr, &value));
+                }
+            }
+        }
+        // The pre-review payload: a relative marker document reaches the port, an external one is denied.
+        let (seen, calls) = scan(&animation(
+            "set",
+            "marker",
+            "to",
+            "url(private/markers.svg#m)",
+        ))
+        .unwrap();
+        assert_eq!(
+            seen,
+            [("private/markers.svg#m".to_owned(), "Unavailable".to_owned())]
+        );
+        assert_eq!(calls, ["private/markers.svg#m"]);
+        assert_evil(&animation("set", "marker", "to", &format!("url({EVIL})")));
+        // A target that is neither a URL attribute nor a CSS property of the inventory reads nothing.
+        let (seen, _) = scan(&animation("set", "width", "to", &format!("url({EVIL})"))).unwrap();
+        assert!(seen.is_empty(), "{seen:?}");
+    });
+}
+
+fn b64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().fold(0u32, |n, b| (n << 8) | u32::from(*b)) << (8 * (3 - chunk.len()));
+        for i in 0..=chunk.len() {
+            out.push(char::from(A[((n >> (18 - 6 * i)) & 63) as usize]));
+        }
+        for _ in chunk.len()..3 {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// R11-P1 (not accepted by the lead): a `data:` style sheet's own references load, so its payload is decoded (percent,
+/// base64, charset) and scanned, recursively; a relative reference inside resolves against the `data:` URL and loads
+/// nothing (denied, never offered to the port).
+#[test]
+fn data_css_payloads_are_scanned_recursively() {
+    bounded_case("data_css_payloads_are_scanned_recursively", || {
+        let import = format!("@import '{EVIL}';");
+        let utf16le: Vec<u8> = import.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut utf16be_bom = vec![0xfe, 0xff];
+        utf16be_bom.extend(import.encode_utf16().flat_map(u16::to_be_bytes));
+        for src in [
+            format!("<style>@import url(\"data:text/css,@import%20'{EVIL}';\");</style>"),
+            format!(
+                "<link rel=\"stylesheet\" href=\"data:text/css,{}\">",
+                attr_text(&import)
+            ),
+            format!(
+                "<style>@import \"data:text/css;base64,{}\";</style>",
+                b64(import.as_bytes())
+            ),
+            // escapes: CSS escape in the scheme, percent-escaped @import, character references in the attribute
+            format!("<style>@import \"d\\61ta:text/css,%40import '{EVIL}';\";</style>"),
+            format!("<link href=\"da&#10;ta:text/css,@im&#9;port '{EVIL}';\">"),
+            // comment and string decoys inside the payload
+            format!(
+                "<style>@import 'data:text/css,/*x*/a{{b: \"/*\"}}@import \"{EVIL}\";';</style>"
+            ),
+            // case and whitespace
+            format!("<link href=\" DATA:TEXT/CSS ;Charset=UTF-8 ,@IMPORT URL( {EVIL} );\">"),
+            // a style sheet carrier reads plain text and untyped payloads as CSS (quirks mode)
+            format!("<style>@import \"data:text/plain,{import}\";</style>"),
+            format!("<style>@import \"data:,{import}\";</style>"),
+            // text/css is scanned in every carrier: image, CSS value, presentation attribute
+            format!("<img src=\"data:text/css,a{{b:url({EVIL})}}\">"),
+            format!(
+                "<div style=\"background:url(&quot;data:text/css,{}&quot;)\"></div>",
+                attr_text(&import)
+            ),
+            format!(
+                "<svg><rect fill=\"url(&quot;data:text/css,{}&quot;)\"/></svg>",
+                attr_text(&import)
+            ),
+            // nested data: payloads
+            format!(
+                "<style>@import 'data:text/css,@import \"data:text/css,@import url({EVIL});\";';</style>"
+            ),
+            // UTF-16 by charset parameter and by BOM
+            format!(
+                "<style>@import 'data:text/css;charset=utf-16le;base64,{}';</style>",
+                b64(&utf16le)
+            ),
+            format!(
+                "<style>@import 'data:text/css;base64,{}';</style>",
+                b64(&utf16be_bom)
+            ),
+        ] {
+            assert_evil(&src);
+        }
+        // A relative reference inside a data: payload is denied and never reaches the port.
+        let (seen, calls) =
+            scan("<style>@import 'data:text/css,@import \"x.css\";';</style>").unwrap();
+        assert!(
+            seen.contains(&("x.css".to_owned(), NOT_GRANTED.to_owned())),
+            "{seen:?}"
+        );
+        assert!(calls.is_empty(), "{calls:?}");
+        // A payload in an encoding the crate does not decode is denied instead of being read wrongly.
+        let url = format!("data:text/css;charset=shift_jis,{import}");
+        let (seen, _) = scan(&format!("<style>@import \"{url}\";</style>")).unwrap();
+        assert_eq!(seen, [(url, "Denied(InlineDocument)".to_owned())]);
+        // A failed base64 payload loads nothing in a browser; the gate denies it.
+        let (seen, _) = scan("<style>@import 'data:text/css;base64,QG=';</style>").unwrap();
+        assert_eq!(
+            seen,
+            [(
+                "data:text/css;base64,QG=".to_owned(),
+                "Denied(InlineDocument)".to_owned()
+            )]
+        );
+    });
+}
+
+/// R11-P1: a `data:` URL a browser loads as a document, SVG resource document, script or text track (HTML, XML incl. SVG,
+/// scripts, unknown or sniffed types) cannot be scanned here and is denied; an image carrier decodes it as an image (SVG
+/// in secure mode) and keeps it inline.
+#[test]
+fn data_documents_are_denied_outside_image_carriers() {
+    bounded_case("data_documents_are_denied_outside_image_carriers", || {
+        let payloads = [
+            format!("data:text/html,<img src={EVIL}>"),
+            format!(
+                "DATA:Text/HTML;BASE64,{}",
+                b64(format!("<img src={EVIL}>").as_bytes())
+            ),
+            format!("data:application/xhtml+xml,<img src='{EVIL}'/>"),
+            format!("data:image/svg+xml,<svg><image href='{EVIL}'/></svg>"),
+            "data:unknown/unknown,<html>".to_owned(),
+            "data:text/javascript,fetch(1)".to_owned(),
+        ];
+        for url in &payloads {
+            let a = attr_text(url);
+            for src in [
+                format!("<iframe src=\"{a}\"></iframe>"),
+                format!("<object data=\"{a}\"></object>"),
+                format!("<embed src=\"{a}\">"),
+                format!("<a href=\"{a}\"></a>"),
+                format!("<svg><use href=\"{a}\"/></svg>"),
+                format!("<link href=\"{a}\">"),
+                format!("<div style=\"mask:url(&quot;{a}&quot;)\"></div>"),
+                format!("<video src=\"{a}\"></video>"),
+            ] {
+                let (seen, _) = scan(&src).unwrap();
+                assert!(
+                    seen.contains(&(url.clone(), "Denied(InlineDocument)".to_owned())),
+                    "{src:?}: {seen:?}"
+                );
+            }
+            for src in [
+                format!("<img src=\"{a}\">"),
+                format!("<svg><image href=\"{a}\"/></svg>"),
+                format!("<video poster=\"{a}\"></video>"),
+            ] {
+                let (seen, _) = scan(&src).unwrap();
+                assert_eq!(seen, [(url.clone(), "Inline".to_owned())], "{src:?}");
+            }
+        }
+        // Scripts execute any type Fetch does not block for scripts; inert types stay inline in documents.
+        let (seen, _) = scan("<script src=\"data:text/plain,fetch(1)\"></script>").unwrap();
+        assert_eq!(seen[0].1, "Denied(InlineDocument)");
+        let (seen, _) = scan(
+            "<iframe src=\"data:image/png;base64,AAAA\"></iframe><iframe src=\"data:,hi\"></iframe>",
+        )
+        .unwrap();
+        assert!(seen.iter().all(|s| s.1 == "Inline"), "{seen:?}");
+    });
+}
+
+/// V4-01/02: nested `data:` payloads are bounded in depth (`MAX_DATA_NESTING` = 8) and in the aggregate encoded size of every
+/// scanned payload at every depth (`Limits::max_bytes`), both checked before decoding and refused typed.
+#[test]
+fn data_payloads_beyond_the_bounds_are_refused_typed() {
+    bounded_case("data_payloads_beyond_the_bounds_are_refused_typed", || {
+        let nested = |levels: usize| {
+            let mut css = format!("@import '{EVIL}';");
+            for _ in 0..levels {
+                css = format!("@import 'data:text/css;base64,{}';", b64(css.as_bytes()));
+            }
+            format!("<style>{css}</style>")
+        };
+        assert_evil(&nested(8));
+        assert_eq!(scan(&nested(9)).err().as_deref(), Some("limit_depth"));
+        assert_eq!(scan(&nested(30)).err().as_deref(), Some("limit_depth"));
+        // Aggregate: three nested payloads (about 1000, 760 and 560 encoded bytes) under a 2048-byte budget.
+        let mut css = format!("@import '{EVIL}';/*{}*/", "x".repeat(400));
+        for _ in 0..3 {
+            css = format!("@import 'data:text/css;base64,{}';", b64(css.as_bytes()));
+        }
+        let src = format!("<style>{css}</style>");
+        let small = Limits {
+            max_bytes: 2048,
+            ..Limits::default()
+        };
+        assert!(src.len() <= small.max_bytes, "{}", src.len());
+        assert_eq!(
+            scan_with(&src, &small).err().as_deref(),
+            Some("limit_bytes")
+        );
+        let (seen, _) = scan_with(&src, &Limits::default()).unwrap();
+        assert!(seen.contains(&(EVIL.to_owned(), EXTERNAL.to_owned())));
+    });
+}

@@ -7,6 +7,11 @@
 //! `more_url_attributes_and_foreign_content_are_scanned`, `ambiguous_relative_paths_never_reach_the_port`, and the R6
 //! regressions listed in `DESCRIPTOR` assets.proof).
 //!
+//! Where references come from: the carrier inventory (`carriers::CARRIERS`, one row per carrier with its specification
+//! source and fixture); the scan dispatches through it (`carriers::attribute_path`, `carriers::animation_target`), so
+//! every attribute, animation value, element text and CSS token the inventory lists is read by its row's path
+//! (`carriers::tests::every_row_has_a_path_and_a_fixture`).
+//!
 //! Values are read the way a browser reads them before they are classified. The document comes from `dom::parse`,
 //! whose tokenizer states and tree-construction context follow the HTML parser (or refuse the document typed), so
 //! every `style` is RAWTEXT exactly where a browser makes it RAWTEXT. The texts the gate interprets are the texts the
@@ -15,12 +20,17 @@
 //! differential check `style-sheet-text`): attribute values are decoded with input-stream preprocessing, the
 //! attribute-value U+0000 rule and the exact attribute-value character-reference rules (`charref`, complete WHATWG
 //! table); style text is `WebDoc::sheet` (HTML: the RAWTEXT body preprocessed; foreign: text nodes and CDATA sections
-//! under the foreign-content rules, preprocessed, concatenated); style text is then tokenized per CSS Syntax Level 3
-//! (`cssurl`). Raw spans only locate a reference (the whole value or content span when decoding moved offsets).
+//! under the foreign-content rules, preprocessed, concatenated); an animation `values` list is split on every `;` before
+//! each piece is read (the engines' `ParseValues`); style text is then tokenized per CSS Syntax Level 3 (`cssurl`); a
+//! `data:` URL is read by the Fetch data: URL processor (`datauri`) and, where its payload is CSS, scanned recursively.
+//! Raw spans only locate a reference (the whole value or content span when decoding moved offsets; the outermost
+//! `data:` URL for a reference inside its payload).
 #![deny(clippy::arithmetic_side_effects)]
 
+use crate::carriers::{self, ANIMATION_ELEMENTS, Load, Path};
 use crate::charref::{Context, decode};
 use crate::cssurl::{RefKind, css_references};
+use crate::datauri::{self, DataUrl, Decision};
 use crate::dom::{NodeId, NodeKind, WebDoc};
 use crate::error::{LimitKind, WebError};
 use hsk_studio_accord::CancellationToken;
@@ -50,12 +60,18 @@ pub enum DenyReason {
     FileScheme,
     /// `javascript:` and `vbscript:`.
     ScriptScheme,
-    /// Port answered `Denied`, the reference carries control characters, or it is a bad-url token.
+    /// Port answered `Denied`, the reference carries control characters, it is a bad-url token, or it is a relative
+    /// reference inside a `data:` payload (it resolves against the `data:` URL, which cannot be a base: a browser loads
+    /// nothing, and the port is never asked).
     NotGranted,
-    /// The document has a `<base href>` (any value, any position): it re-targets every relative reference, so none is
-    /// offered to the port. The base itself is reported with this reason unless it is already denied for its scheme.
+    /// The document has a `<base href>` (any value, any position) or an `xml:base` attribute: it re-targets relative
+    /// references, so none is offered to the port. The base itself is reported with this reason unless it is already
+    /// denied for its scheme.
     BaseHref,
-    /// `<iframe srcdoc>`: an inline document whose own references are not scanned.
+    /// An inline document or payload whose own references are not scanned: `<iframe srcdoc>`, `<script
+    /// type=speculationrules>`, and a `data:` URL whose payload a browser would load as a document, script, text track,
+    /// playlist or other resource that loads further URLs in that carrier (HTML, XML incl. SVG outside image carriers,
+    /// scripts, JSON, unknown or sniffed types, or a CSS payload in an encoding this crate does not decode).
     InlineDocument,
     /// A relative path with a backslash or a percent-encoded dot, slash or backslash: browsers and file-system ports
     /// disagree on what it means.
@@ -87,7 +103,8 @@ pub enum AssetOutcome {
     },
     Unavailable,
     Denied(DenyReason),
-    /// `data:` URI: carried in the source itself, nothing to resolve.
+    /// `data:` URI carried in the source itself, nothing to resolve: a payload that loads nothing further in its carrier,
+    /// or a CSS payload whose own references follow it in the result (`AssetRef::data_depth` one higher).
     Inline,
     /// `#fragment`: same document.
     SameDocument,
@@ -99,6 +116,8 @@ pub enum AssetSource {
     Attribute(String),
     InlineStyle,
     StyleBody,
+    /// The text of a `<script type=speculationrules>` (URLs a browser prefetches or prerenders).
+    ScriptBody,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,65 +126,17 @@ pub struct AssetRef {
     pub source: AssetSource,
     /// Decoded reference text as the port saw it (or would have).
     pub reference: String,
-    /// Bytes in the source holding the reference (the whole value when decoding changed offsets).
+    /// Bytes in the source holding the reference (the whole value when decoding changed offsets; the outermost `data:`
+    /// URL for a reference found inside a `data:` payload).
     pub span: Range<usize>,
     pub outcome: AssetOutcome,
+    /// How many `data:` payloads the reference is inside: 0 = in the document itself.
+    pub data_depth: u32,
 }
 
-/// How an attribute value carries references.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// One URL (spaces around it are ignored).
-    Url,
-    /// `<base href>`: re-targets relative references.
-    Base,
-    /// ASCII-whitespace separated URLs (`ping`, `archive`).
-    UrlList,
-    /// Image candidate strings (`srcset`, `imagesrcset`).
-    Srcset,
-    /// CSS text (`style`, SVG presentation attributes): `url(...)` tokens.
-    Css,
-    /// `<meta http-equiv=refresh content="N; url=...">`.
-    Refresh,
-    /// `;`-separated URLs (SVG animation `values` of an animated `href`).
-    UrlValues,
-    /// Inline HTML document (`srcdoc`).
-    InlineDoc,
-}
-
-/// URL-bearing attributes (WHATWG HTML attributes index and obsolete features, SVG 2 presentation attributes).
-fn attr_kind(tag: &str, name: &str) -> Option<Kind> {
-    Some(match (tag, name) {
-        // `href` and `xlink:href` on every element: html `a area link`, svg `a image use script feImage ...`.
-        (_, "href" | "xlink:href") => Kind::Url,
-        // `image` is rewritten to `img` by the HTML parser.
-        (
-            "img" | "image" | "source" | "video" | "audio" | "iframe" | "frame" | "embed" | "track"
-            | "input" | "script",
-            "src",
-        ) => Kind::Url,
-        ("video", "poster") => Kind::Url,
-        ("object", "data" | "codebase" | "classid") => Kind::Url,
-        ("object", "archive") => Kind::UrlList,
-        ("form", "action") => Kind::Url,
-        ("button" | "input", "formaction") => Kind::Url,
-        ("blockquote" | "del" | "ins" | "q", "cite") => Kind::Url,
-        ("a" | "area", "ping") => Kind::UrlList,
-        ("img" | "source", "srcset") | ("link", "imagesrcset") => Kind::Srcset,
-        ("body" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th", "background") => {
-            Kind::Url
-        }
-        ("iframe" | "img", "longdesc") | ("img", "lowsrc") | ("html", "manifest") => Kind::Url,
-        ("iframe", "srcdoc") => Kind::InlineDoc,
-        (_, "style") => Kind::Css,
-        (
-            _,
-            "fill" | "stroke" | "clip-path" | "cursor" | "filter" | "mask" | "marker-start"
-            | "marker-mid" | "marker-end",
-        ) => Kind::Css,
-        _ => return None,
-    })
-}
+/// `data:` payloads nested deeper than this refuse the scan `LimitExceeded(Depth)` (test
+/// `data_payloads_beyond_the_bounds_are_refused_typed`).
+pub const MAX_DATA_NESTING: u32 = 8;
 
 /// Classify without any I/O. `None` = relative: the port decides.
 fn classify(reference: &str) -> Option<AssetOutcome> {
@@ -354,22 +325,47 @@ fn refresh_url(s: &str) -> Option<Range<usize>> {
     (start <= end).then_some(start..end)
 }
 
-fn has_base_href(doc: &WebDoc, cancel: &CancellationToken) -> Result<bool, WebError> {
+/// The document has a base URL carrier (`carriers` rows with `Path::Base`: `<base href>`, `xml:base`) anywhere.
+fn has_base(doc: &WebDoc, cancel: &CancellationToken) -> Result<bool, WebError> {
     for id in 0..doc.len() {
         if id & 0x3ff == 0 {
             cancel.check()?;
         }
-        let is_element = doc.node(id).is_some_and(|n| n.kind == NodeKind::Element);
-        if is_element
-            && doc
-                .tag_name(id)
-                .is_some_and(|t| t.eq_ignore_ascii_case("base"))
-            && doc.attribute(id, "href").is_some()
-        {
+        let Some(node) = doc.node(id).filter(|n| n.kind == NodeKind::Element) else {
+            continue;
+        };
+        let tag = doc.local_name(id).unwrap_or_default();
+        if node.attrs.iter().any(|a| {
+            matches!(
+                carriers::attribute_path(&tag, &doc.attr_local_name(a)),
+                Some((Path::Base, _))
+            )
+        }) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// The `;`-separated pieces of an animation `values` list (Blink `SVGAnimationElement::ParseValues`: split on every `;`,
+/// each piece stripped of HTML whitespace; Gecko `SMILParserUtils::ParseValues` strips SVG whitespace, which differs only
+/// in U+000C, CSS whitespace and a C0 control the URL parser strips; empty pieces dropped): (offset in `text`, piece).
+fn value_pieces(text: &str) -> Vec<(usize, &str)> {
+    let html_space = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}');
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    for part in text.split(';') {
+        let start = from;
+        from = from.saturating_add(part.len()).saturating_add(1);
+        let lead = part
+            .len()
+            .saturating_sub(part.trim_start_matches(html_space).len());
+        let item = part.trim_matches(html_space);
+        if !item.is_empty() {
+            out.push((start.saturating_add(lead), item));
+        }
+    }
+    out
 }
 
 struct Collector<'a> {
@@ -377,15 +373,18 @@ struct Collector<'a> {
     port: &'a dyn AssetPort,
     base_blocks: bool,
     limit: usize,
+    /// Encoded bytes of `data:` payloads that may still be scanned (aggregate bound, `Limits::max_bytes`).
+    data_budget: usize,
     out: Vec<AssetRef>,
 }
 
 impl Collector<'_> {
-    fn decide(&self, reference: &str, bad: bool) -> AssetOutcome {
+    /// `nested`: the reference is inside a `data:` payload.
+    fn decide(&self, reference: &str, bad: bool, nested: bool) -> AssetOutcome {
         if let Some(done) = classify(reference) {
             return done;
         }
-        if bad || reference.chars().any(char::is_control) {
+        if bad || nested || reference.chars().any(char::is_control) {
             return AssetOutcome::Denied(DenyReason::NotGranted);
         }
         if self.base_blocks {
@@ -404,10 +403,11 @@ impl Collector<'_> {
     fn push(
         &mut self,
         node: NodeId,
-        source: AssetSource,
+        source: &AssetSource,
         reference: String,
         span: Range<usize>,
         outcome: AssetOutcome,
+        data_depth: u32,
     ) -> Result<(), WebError> {
         if self.out.len() >= self.limit {
             return Err(WebError::LimitExceeded {
@@ -417,35 +417,117 @@ impl Collector<'_> {
         }
         self.out.push(AssetRef {
             node,
-            source,
+            source: source.clone(),
             reference,
             span,
             outcome,
+            data_depth,
         });
         Ok(())
     }
 
+    /// One reference read from a carrier whose load context is `load`, `depth` `data:` payloads deep.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one reference: where it is, what it is, how it is loaded"
+    )]
     fn reference(
         &mut self,
         node: NodeId,
-        source: AssetSource,
+        source: &AssetSource,
         reference: &str,
         bad: bool,
         span: Range<usize>,
+        load: Load,
+        depth: u32,
     ) -> Result<(), WebError> {
-        let outcome = self.decide(reference, bad);
-        self.push(node, source, reference.to_owned(), span, outcome)
+        let outcome = self.decide(reference, bad, depth > 0);
+        if outcome == AssetOutcome::Inline
+            && let Some(url) = datauri::parse(reference)
+        {
+            match datauri::decide(load, &url) {
+                Decision::Inline => {}
+                Decision::Deny => {
+                    return self.push(
+                        node,
+                        source,
+                        reference.to_owned(),
+                        span,
+                        AssetOutcome::Denied(DenyReason::InlineDocument),
+                        depth,
+                    );
+                }
+                Decision::ScanCss => {
+                    return self.data_css(node, source, reference, &url, span, depth);
+                }
+            }
+        }
+        self.push(node, source, reference.to_owned(), span, outcome, depth)
+    }
+
+    /// A `data:` payload read as CSS: bounded by nesting (`MAX_DATA_NESTING`) and by the aggregate encoded size of every
+    /// scanned payload (`Limits::max_bytes`), both checked before anything is decoded and refused typed; a payload the
+    /// crate cannot decode (failed base64, an encoding it does not implement) is denied.
+    fn data_css(
+        &mut self,
+        node: NodeId,
+        source: &AssetSource,
+        reference: &str,
+        url: &DataUrl<'_>,
+        span: Range<usize>,
+        depth: u32,
+    ) -> Result<(), WebError> {
+        let inner = depth.saturating_add(1);
+        if inner > MAX_DATA_NESTING {
+            return Err(WebError::LimitExceeded {
+                limit: LimitKind::Depth,
+                span,
+            });
+        }
+        let cost = url.encoded_len();
+        if cost > self.data_budget {
+            return Err(WebError::LimitExceeded {
+                limit: LimitKind::Bytes,
+                span,
+            });
+        }
+        self.data_budget = self.data_budget.saturating_sub(cost);
+        let text = url
+            .body()
+            .and_then(|bytes| datauri::css_text(&bytes, url.charset.as_deref()));
+        let Some(text) = text else {
+            return self.push(
+                node,
+                source,
+                reference.to_owned(),
+                span,
+                AssetOutcome::Denied(DenyReason::InlineDocument),
+                depth,
+            );
+        };
+        self.push(
+            node,
+            source,
+            reference.to_owned(),
+            span.clone(),
+            AssetOutcome::Inline,
+            depth,
+        )?;
+        self.css(node, source, &text, &|_| span.clone(), inner)
     }
 
     /// References in CSS `css` (the text a browser's CSS parser reads); `locate` maps a range of `css` to the source bytes
-    /// it came from (location only). Blocks nested deeper than `cssurl::MAX_NESTING` refuse the scan typed
-    /// (`LimitExceeded(Depth)`), so no reference inside them goes unseen.
+    /// it came from (location only). The `@import` URL is a style sheet, every other URL a CSS value (the most
+    /// restrictive CSS load context, `Load::Resource`). Blocks nested deeper than `cssurl::MAX_NESTING` refuse the scan
+    /// typed (`LimitExceeded(Depth)`; test `css_nesting_beyond_the_limit_is_refused_typed`), so no reference inside them
+    /// goes unseen.
     fn css(
         &mut self,
         node: NodeId,
         source: &AssetSource,
         css: &str,
         locate: &dyn Fn(&Range<usize>) -> Range<usize>,
+        depth: u32,
     ) -> Result<(), WebError> {
         let room = self.limit.saturating_sub(self.out.len()).saturating_add(1);
         let found = css_references(css, room).map_err(|span| WebError::LimitExceeded {
@@ -453,31 +535,39 @@ impl Collector<'_> {
             span: locate(&span),
         })?;
         for r in found {
+            let load = if r.import {
+                Load::Stylesheet
+            } else {
+                Load::Resource
+            };
             match r.kind {
                 RefKind::Url => {
-                    self.reference(node, source.clone(), &r.value, false, locate(&r.span))?
+                    self.reference(node, source, &r.value, false, locate(&r.span), load, depth)?
                 }
                 RefKind::Bad => {
-                    self.reference(node, source.clone(), &r.value, true, locate(&r.span))?
+                    self.reference(node, source, &r.value, true, locate(&r.span), load, depth)?
                 }
                 RefKind::Computed => self.push(
                     node,
-                    source.clone(),
+                    source,
                     r.value,
                     locate(&r.span),
                     AssetOutcome::Denied(DenyReason::ComputedUrl),
+                    depth,
                 )?,
             }
         }
         Ok(())
     }
 
+    /// An attribute read by `route`: its path and load context from the carrier inventory, and for
+    /// `Path::AnimationValue(s)` how the animation target reads values.
     fn attribute(
         &mut self,
         node: NodeId,
-        kind: Kind,
         name: &str,
         value_span: Range<usize>,
+        route: Route,
     ) -> Result<(), WebError> {
         let raw = self.doc.slice(&value_span);
         let decoded = decode(raw, Context::Attribute);
@@ -495,62 +585,77 @@ impl Collector<'_> {
                 value_span.clone()
             }
         };
-        match kind {
-            Kind::Url => {
+        let Route { path, load, target } = route;
+        match (path, target) {
+            (Path::Url, _) | (Path::AnimationValue, Some(Path::Url)) => {
                 if !text.trim().is_empty() {
-                    self.reference(node, source, text, false, value_span.clone())?;
+                    self.reference(node, &source, text, false, value_span.clone(), load, 0)?;
                 }
             }
-            Kind::Base => {
+            (Path::Base, _) => {
                 if !text.trim().is_empty() {
                     let outcome = match classify(text) {
                         Some(AssetOutcome::Denied(reason)) => AssetOutcome::Denied(reason),
                         _ => AssetOutcome::Denied(DenyReason::BaseHref),
                     };
-                    self.push(node, source, text.to_owned(), value_span.clone(), outcome)?;
-                }
-            }
-            Kind::UrlValues => {
-                let mut from = 0usize;
-                for part in text.split(';') {
-                    let start = from;
-                    from = from.saturating_add(part.len()).saturating_add(1);
-                    let lead = part.len().saturating_sub(part.trim_start().len());
-                    let item = part.trim();
-                    if !item.is_empty() {
-                        let r = start.saturating_add(lead)
-                            ..start.saturating_add(lead).saturating_add(item.len());
-                        self.reference(node, source.clone(), item, false, sub(&r))?;
-                    }
-                }
-            }
-            Kind::UrlList => {
-                for r in tokens(text) {
-                    self.reference(node, source.clone(), &text[r.clone()], false, sub(&r))?;
-                }
-            }
-            Kind::Srcset => {
-                for r in srcset_urls(text) {
-                    self.reference(node, source.clone(), &text[r.clone()], false, sub(&r))?;
-                }
-            }
-            Kind::Refresh => {
-                if let Some(r) = refresh_url(text).filter(|r| !text[r.clone()].trim().is_empty()) {
-                    self.reference(node, source, &text[r.clone()], false, sub(&r))?;
-                }
-            }
-            Kind::Css => self.css(node, &source, text, &sub)?,
-            Kind::InlineDoc => {
-                if !text.trim().is_empty() {
                     self.push(
                         node,
-                        source,
+                        &source,
                         text.to_owned(),
                         value_span.clone(),
-                        AssetOutcome::Denied(DenyReason::InlineDocument),
+                        outcome,
+                        0,
                     )?;
                 }
             }
+            (Path::AnimationValues, Some(Path::Url)) => {
+                for (at, item) in value_pieces(text) {
+                    let r = at..at.saturating_add(item.len());
+                    self.reference(node, &source, item, false, sub(&r), load, 0)?;
+                }
+            }
+            // R11-F1: each piece of a values list is a separate CSS value for the browser (a comment, string or bad url
+            // opened in one piece ends at the `;`).
+            (Path::AnimationValues, Some(Path::Css)) => {
+                for (at, item) in value_pieces(text) {
+                    let piece = |r: &Range<usize>| {
+                        sub(&(at.saturating_add(r.start)..at.saturating_add(r.end)))
+                    };
+                    self.css(node, &source, item, &piece, 0)?;
+                }
+            }
+            (Path::Css, _) | (Path::AnimationValue, Some(Path::Css)) => {
+                self.css(node, &source, text, &sub, 0)?
+            }
+            (Path::UrlList, _) => {
+                for r in tokens(text) {
+                    self.reference(node, &source, &text[r.clone()], false, sub(&r), load, 0)?;
+                }
+            }
+            (Path::Srcset, _) => {
+                for r in srcset_urls(text) {
+                    self.reference(node, &source, &text[r.clone()], false, sub(&r), load, 0)?;
+                }
+            }
+            (Path::Refresh, _) => {
+                if let Some(r) = refresh_url(text).filter(|r| !text[r.clone()].trim().is_empty()) {
+                    self.reference(node, &source, &text[r.clone()], false, sub(&r), load, 0)?;
+                }
+            }
+            (Path::InlineDoc, _) => {
+                if !text.trim().is_empty() {
+                    self.push(
+                        node,
+                        &source,
+                        text.to_owned(),
+                        value_span.clone(),
+                        AssetOutcome::Denied(DenyReason::InlineDocument),
+                        0,
+                    )?;
+                }
+            }
+            // No animation target, nothing loaded, or a CSS-only path (never an attribute row).
+            _ => {}
         }
         Ok(())
     }
@@ -567,37 +672,87 @@ impl Collector<'_> {
         if sheet.text.is_empty() {
             return Ok(());
         }
-        self.css(id, &AssetSource::StyleBody, &sheet.text, &|r| sheet.span(r))
+        self.css(
+            id,
+            &AssetSource::StyleBody,
+            &sheet.text,
+            &|r| sheet.span(r),
+            0,
+        )
+    }
+
+    /// `<script type=speculationrules>` (HTML 7.6): its JSON lists URLs a browser prefetches or prerenders; the rules are
+    /// not parsed here, so the whole text is denied as an inline document.
+    fn speculation_rules(&mut self, id: NodeId) -> Result<(), WebError> {
+        let is_rules = self
+            .doc
+            .attribute(id, "type")
+            .and_then(|a| self.doc.attr_value(a))
+            .is_some_and(|t| {
+                t.trim_matches(|c: char| c.is_ascii_whitespace())
+                    .eq_ignore_ascii_case("speculationrules")
+            });
+        if !is_rules {
+            return Ok(());
+        }
+        let Some(node) = self.doc.node(id) else {
+            return Ok(());
+        };
+        // The script's child text: the script-data body of an HTML script (preprocessed, no references), the text nodes
+        // and CDATA sections of a foreign one.
+        let text: String = node
+            .children
+            .iter()
+            .filter_map(|&c| {
+                self.doc
+                    .raw_text_data(c)
+                    .map(|d| d.text)
+                    .or_else(|| self.doc.text_value(c))
+            })
+            .collect();
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        let span = node.content_span().unwrap_or_else(|| node.span.clone());
+        self.push(
+            id,
+            &AssetSource::ScriptBody,
+            text,
+            span,
+            AssetOutcome::Denied(DenyReason::InlineDocument),
+            0,
+        )
     }
 }
 
-/// The URL kind an SVG animation element (`set`, `animate`) writes into its target attribute (`attributeName`).
-fn animated_kind(doc: &WebDoc, id: NodeId) -> Option<Kind> {
-    let target = doc
-        .attribute(id, "attributename")
-        .and_then(|a| doc.attr_value(a))?
-        .trim()
-        .to_ascii_lowercase();
-    if target == "src" {
-        return Some(Kind::Url);
-    }
-    match attr_kind("", &target)? {
-        Kind::Url => Some(Kind::Url),
-        Kind::Css => Some(Kind::Css),
-        _ => None,
-    }
+/// How one attribute is read.
+#[derive(Clone, Copy)]
+struct Route {
+    path: Path,
+    load: Load,
+    /// For `Path::AnimationValue(s)`: how the animation's target reads values.
+    target: Option<Path>,
 }
 
-/// Every asset-bearing reference in the document, in document order, with the decision for each: URL attributes
-/// (`href`/`xlink:href` on any element, `src` on `img image source video audio iframe frame embed track input
-/// script`, `poster`, `object data/codebase/classid/archive`, `form action`, `formaction`, `cite`, `ping`,
-/// `srcset`/`imagesrcset` candidates, obsolete `background longdesc lowsrc manifest`, `<meta http-equiv=refresh>`
-/// URL), `<base href>`, `iframe srcdoc` (reported denied), and in CSS text (`style` attributes, SVG presentation attributes
-/// `fill stroke clip-path cursor filter mask marker-*`, `to from by values` of SVG `set`/`animate` whose `attributeName` is
-/// `href`, `xlink:href`, `src` or one of those presentation attributes, and `<style>` contents) every URL a browser loads:
-/// url tokens, the strings of `url()`, `src()`, `image-set()`, `-webkit-image-set()`, `image()`, `cross-fade()` and
-/// `@import`, bad-url tokens (denied) and computed URLs (`Denied(ComputedUrl)`), read by the CSS Syntax 3 tokenizer in
-/// `cssurl` (tests: `tests/css_url_gate.rs`). `data:` payloads and `srcdoc` contents are not scanned.
+/// Every asset-bearing reference in the document, in document order, with the decision for each. The carriers are the
+/// rows of the carrier inventory (`carriers::CARRIERS`, each with its specification source and a fixture proving its
+/// path: `carriers::tests::every_row_has_a_path_and_a_fixture`): URL attributes (`href`/`xlink:href` on any element,
+/// `src` on `img image source video audio iframe frame embed track input script`, `poster`, `object
+/// data/codebase/classid/archive`, `form action`, `formaction`, `cite`, `ping`, `attributionsrc`,
+/// `srcset`/`imagesrcset` candidates, obsolete `background longdesc lowsrc manifest profile`, `<meta
+/// http-equiv=refresh>` URL), `<base href>` and `xml:base`, `iframe srcdoc` and `<script type=speculationrules>`
+/// (reported denied), CSS text (`style` attributes, SVG presentation attributes `fill stroke clip-path cursor filter mask
+/// marker-*`, `<style>` contents), and the `to from by values` of SVG `set animate animateMotion animateTransform
+/// animateColor` whose `attributeName` is `href`, `xlink:href`, `src` or any CSS property of the inventory (incl. the
+/// `marker` shorthand; `values` split on every `;` like the engines: tests `r11_f1_animation_values_are_split_like_the_engines`,
+/// `r11_f2_every_css_property_is_an_animation_target`). In CSS text every URL a browser loads: url tokens, the strings
+/// of the inventory's URL functions and `@import`, bad-url tokens (denied) and computed URLs (`Denied(ComputedUrl)`),
+/// read by the CSS Syntax 3 tokenizer in `cssurl` (tests: `tests/css_url_gate.rs`); `@namespace` URLs are not loaded and
+/// not reported. A `data:` URL is decided by its type and the carrier's load context (`datauri`): CSS payloads (and, in
+/// style sheet carriers, every type a browser may read as CSS) are scanned recursively, at most `MAX_DATA_NESTING` deep
+/// and `Limits::max_bytes` encoded bytes in total (refused typed beyond either); payloads that load further URLs as
+/// documents, scripts, tracks or playlists are `Denied(InlineDocument)`; the rest are `Inline` (tests: `data_*` in
+/// `tests/css_url_gate.rs`). `srcdoc` and speculation rules contents and script text are not scanned.
 pub fn collect_assets(
     doc: &WebDoc,
     port: &dyn AssetPort,
@@ -606,8 +761,9 @@ pub fn collect_assets(
     let mut c = Collector {
         doc,
         port,
-        base_blocks: has_base_href(doc, cancel)?,
+        base_blocks: has_base(doc, cancel)?,
         limit: doc.limits().max_nodes,
+        data_budget: doc.limits().max_bytes,
         out: Vec::new(),
     };
     for id in 0..doc.len() {
@@ -626,36 +782,42 @@ pub fn collect_assets(
                 .attribute(id, "http-equiv")
                 .and_then(|a| doc.attr_value(a))
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"));
-        // SVG animation of an href (or of a url()-bearing presentation attribute) loads the values it animates to.
-        let animated = if matches!(tag.as_str(), "set" | "animate") {
-            animated_kind(doc, id)
+        // An SVG animation writes from/to/by/values into the attribute or property named by attributeName.
+        let target = if ANIMATION_ELEMENTS.contains(&tag.as_str()) {
+            doc.attribute(id, "attributename")
+                .and_then(|a| doc.attr_value(a))
+                .and_then(|t| carriers::animation_target(&t.trim().to_ascii_lowercase()))
         } else {
             None
         };
         for attr in &node.attrs {
-            let name = doc.attr_name(attr).to_ascii_lowercase();
-            let kind = if tag == "base" && name == "href" {
-                Some(Kind::Base)
-            } else if refresh && name == "content" {
-                Some(Kind::Refresh)
-            } else if let Some(kind) =
-                animated.filter(|_| matches!(name.as_str(), "to" | "from" | "by" | "values"))
-            {
-                Some(if kind == Kind::Url && name == "values" {
-                    Kind::UrlValues
-                } else {
-                    kind
-                })
-            } else {
-                attr_kind(&tag, &name)
+            let name = doc.attr_local_name(attr);
+            let route = match carriers::animation_path(&tag, &name) {
+                Some(path) => target.map(|t| Route {
+                    path,
+                    load: Load::Resource,
+                    target: Some(t),
+                }),
+                None => match carriers::attribute_path(&tag, &name) {
+                    Some((Path::Refresh, _)) if !refresh => None,
+                    Some((path, load)) => Some(Route {
+                        path,
+                        load,
+                        target: None,
+                    }),
+                    None => None,
+                },
             };
-            let (Some(kind), Some(value_span)) = (kind, attr.value_span.clone()) else {
+            let (Some(route), Some(value_span)) = (route, attr.value_span.clone()) else {
                 continue;
             };
-            c.attribute(id, kind, &name, value_span)?;
+            c.attribute(id, &name, value_span, route)?;
         }
         if tag == "style" {
             c.style_children(id)?;
+        }
+        if tag == "script" {
+            c.speculation_rules(id)?;
         }
     }
     Ok(c.out)
