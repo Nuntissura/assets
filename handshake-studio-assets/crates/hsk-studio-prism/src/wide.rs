@@ -146,6 +146,14 @@ pub enum WideError {
     EngineFailure,
     NonfiniteOutput,
     DeliveryFailed,
+    /// Band index outside the job layout (`WideJob`).
+    BandIndex,
+    /// The band was already converted (or attempted) once; every band converts exactly once.
+    BandClaimed,
+    /// Input or output length differs from the band's declared pixel count times the channel count.
+    BandLength,
+    /// `finish` found a band that was never converted.
+    JobIncomplete,
 }
 impl WideError {
     pub const fn code(self) -> &'static str {
@@ -177,9 +185,13 @@ impl WideError {
             Self::EngineFailure => "engine_failure",
             Self::NonfiniteOutput => "nonfinite_output",
             Self::DeliveryFailed => "delivery_failed",
+            Self::BandIndex => "band_index",
+            Self::BandClaimed => "band_claimed",
+            Self::BandLength => "band_length",
+            Self::JobIncomplete => "job_incomplete",
         }
     }
-    fn outcome(self) -> Outcome {
+    pub(crate) fn outcome(self) -> Outcome {
         match self {
             Self::Canceled => Outcome::Canceled,
             Self::UnsupportedVersion
@@ -509,14 +521,14 @@ pub(crate) struct Plan {
     pub(crate) absolute: AbsoluteReport,
 }
 impl Plan {
-    fn clip_method(&self) -> ClipMethod {
+    pub(crate) fn clip_method(&self) -> ClipMethod {
         match self.dest {
             FromPcs::Table { .. } => ClipMethod::Unavailable,
             FromPcs::Matrix { .. } | FromPcs::Gray(_) => ClipMethod::LinearDevice,
         }
     }
     /// Count the linear destination values of one pixel outside 0..1.
-    fn scan_clip(lin: [f64; 3], channels: usize, report: &mut ClipReport) {
+    pub(crate) fn scan_clip(lin: [f64; 3], channels: usize, report: &mut ClipReport) {
         // Values within 1e-3 of 0 or 1 are rounding noise (16.16 colorants), not clipping.
         const EPS: f64 = 1e-3;
         let mut any = false;
@@ -535,7 +547,7 @@ impl Plan {
         report.pixels_clipped = report.pixels_clipped.saturating_add(u64::from(any));
     }
     /// Convert one pixel into `out`; returns the linear destination values when clip detection applies.
-    fn pixel(&self, px: &[f32], lab: bool, out: &mut [f32]) -> Option<[f64; 3]> {
+    pub(crate) fn pixel(&self, px: &[f32], lab: bool, out: &mut [f32]) -> Option<[f64; 3]> {
         if let Some(f) = &self.fused {
             let lin = f.linear(px);
             f.encode(lin, out);
@@ -677,6 +689,14 @@ struct Entry {
     destination_desc: WideProfileDescriptor,
 }
 
+/// The fields of a request that select a plan.
+struct PlanKey<'a> {
+    source: WideSource<'a>,
+    destination: ProfileInput<'a>,
+    intent: Intent,
+    black_point_compensation: bool,
+}
+
 /// One cache per caller context, like `Prism`: no globals, no eviction, no disk cache.
 pub struct WideEngine {
     actor: ActorContext,
@@ -685,7 +705,7 @@ pub struct WideEngine {
     stats: WideCacheStats,
     fusion: bool,
 }
-struct ForwardSink<'a>(&'a mut dyn SinkPort);
+pub(crate) struct ForwardSink<'a>(pub(crate) &'a mut dyn SinkPort);
 impl SinkPort for ForwardSink<'_> {
     fn try_send(
         &mut self,
@@ -695,11 +715,11 @@ impl SinkPort for ForwardSink<'_> {
         self.0.try_send(class, bytes)
     }
 }
-fn canceled(token: &CancellationToken) -> Result<(), WideError> {
+pub(crate) fn canceled(token: &CancellationToken) -> Result<(), WideError> {
     token.check().map_err(|_| WideError::Canceled)
 }
 
-type Planned = (
+pub(crate) type Planned = (
     Arc<Plan>,
     Option<WideProfileDescriptor>,
     WideProfileDescriptor,
@@ -760,18 +780,19 @@ impl WideEngine {
     pub(crate) const fn entry_bytes(entries: usize) -> usize {
         entries.saturating_mul(std::mem::size_of::<Entry>())
     }
-    /// Whether `r` would be served by a cached plan (same key as `plan`; identity is re-proved there).
-    pub(crate) fn is_cached(&self, r: &WideTransformRequest<'_>) -> bool {
-        let source_hash = match r.source {
+    /// Whether the key would be served by a cached plan (same key as `plan_parts`; identity is re-proved there).
+    pub(crate) fn is_cached_parts(&self, source: WideSource<'_>, destination: ProfileInput<'_>, intent: Intent, bpc: bool) -> bool {
+        let source_hash = match source {
             WideSource::Profile(p) => Some(p.expected_sha256),
             WideSource::Lab => None,
         };
         self.cache.iter().any(|e| {
-            e.source == source_hash
-                && e.destination == r.destination.expected_sha256
-                && e.intent == r.intent
-                && e.bpc == r.black_point_compensation
+            e.source == source_hash && e.destination == destination.expected_sha256 && e.intent == intent && e.bpc == bpc
         })
+    }
+    /// Count one refused or failed operation (`WideCacheStats::rejected`).
+    pub(crate) fn note_rejected(&mut self) {
+        self.stats.rejected = self.stats.rejected.saturating_add(1);
     }
     pub(crate) fn cache_is_full(&self) -> bool {
         self.cache.len() >= self.capacity
@@ -784,6 +805,19 @@ impl WideEngine {
         r: &WideTransformRequest<'_>,
         cancel: &CancellationToken,
     ) -> Result<Planned, WideError> {
+        self.plan_parts(r.source, r.destination, r.intent, r.black_point_compensation, cancel)
+    }
+    /// The plan for (source, destination, intent, BPC): a cached plan (identity and hash re-proved, nothing
+    /// parsed) or a newly built and cached one.
+    pub(crate) fn plan_parts(
+        &mut self,
+        source: WideSource<'_>,
+        destination: ProfileInput<'_>,
+        intent: Intent,
+        black_point_compensation: bool,
+        cancel: &CancellationToken,
+    ) -> Result<Planned, WideError> {
+        let r = PlanKey { source, destination, intent, black_point_compensation };
         let source_hash = match r.source {
             WideSource::Profile(p) => Some(p.expected_sha256),
             WideSource::Lab => None,
@@ -1036,4 +1070,4 @@ impl crate::Prism {
 
 /// Same descriptor for models, the human manual and Argus adapters; describes the wide path only
 /// (`DESCRIPTOR` keeps describing the legacy matrix-only path).
-pub const WIDE_DESCRIPTOR: &str = r##"{"module":"STUDIO-MODULE-PRISM","path":"wide","descriptor_version":1,"api":"WideEngine::new(actor, cache_entries); inspect_profile(ProfileInput, &CancellationToken) -> WideProfileDescriptor; transform(&WideTransformRequest, &CancellationToken, &mut dyn SinkPort) -> WideTransformResult | WideFailure. Prism::inspect_wide_profile is the same admission. Legacy Prism, ColorEngine and AdmittedPrism are unchanged","inputs":{"source":"WideSource::Profile(ProfileInput) with interleaved device pixels (Gray 1, RGB 3, CMYK 4 channels, 0..1, CMYK 1.0 = full ink) or WideSource::Lab (PCS Lab D50, L 0..100, a/b -128..128, 3 channels, no profile)","destination":"ProfileInput; Gray, RGB or CMYK device","intent":"relative_colorimetric | perceptual | saturation | absolute_colorimetric","black_point_compensation":"independent boolean; ignored for absolute colorimetric","pixels_per_request":2097152,"profile_bytes":2097152},"profiles":{"families":"ICC v2/v4 RGB matrix/TRC (para or curv), Gray kTRC, mAB/mBA multi-dimensional, mft1/mft2 legacy tables; XYZ or Lab PCS; classes scnr, mntr, prtr, spac","refused":"typed: version other than 2 or 4, link/abst/nmcl classes, device spaces other than Gray/RGB/CMYK, PCS other than XYZ/Lab, D2B/B2D multi-process tags, tags of unsupported type, CMYK without tables, missing intent table, absolute without wtpt, singular matrix, malformed framing","intent_tables":"ICC.1:2022 8.10.2 precedence: the intent's table (perceptual A2B0/B2A0, relative and absolute A2B1/B2A1, saturation A2B2/B2A2), else table 0 (A2B0/B2A0), else matrix/TRC; MissingIntentTable only when none exists; WideProfileDescriptor.device_to_pcs/pcs_to_device show which tables exist"},"model":{"stages":"Prism-evaluated source stage (device -> PCS XYZ/D50, f64, unclamped), Prism PCS stage, Prism-evaluated destination stage; moxcms 0.9.1 only parses (no moxcms transform, so its own black-point scaling does not run: tests/wide_bpc.rs engine_builtin_black_scaling_is_suppressed_never_doubled); curves: curv identity/gamma/table (linear interpolation), para types 0-4; mft1/mft2 matrix + input tables + CLUT + output tables; mAB A/CLUT/M/matrix+offset/B, mBA reverse; table curves and CLUT inputs clamp to 0..1, parametric curves unbounded (HDR PCS above 1 kept); destination matrix/Gray curves inverted exactly and extended sign-preserving outside 0..1","admitted_route":"AdmittedWideEngine::new(actor, cache_entries, ProviderAdmission) wraps a WideEngine and charges the caller's ledger before every allocation: provider lease (actor, cache vectors), per plan miss a plan lease kept with the cached plan plus a transient parse/build lease (bounds from the ICC tag table: parse 2x, plan 8x stored bytes, BPC 4 extra stages), per request a transient digest/frame lease and an output lease carried by AdmittedWideTransform; denial before any parse; try_clear_cache/try_retire check retirement; AdmittedWideError Admission|Refused|Wide; x86_64-windows-msvc only like AdmittedPrism","fusion":"matrix/TRC and Gray pairs: one affine 3x3 (destination inverse matrix x PCS map x source matrix) between the curves, identity curves skipped; WideEngine::set_matrix_fusion(false) keeps the staged path","interpolation":"CLUT: 1 input linear, 2 bilinear, 3 tetrahedral (trilinear for the PCS -> device table of a Lab-PCS profile, as LittleCMS 2), 4 linear in the first input over 3D tetrahedral; exact f64 weights, no re-baked grid","bpc":"ISO 18619 per bpc.rs: source/destination black L* (darkest vertex, CMYK B2A local black, round-trip ramp for table destinations), XYZ' = scale*XYZ + (1-scale)*D50 with scale=(1-Yd)/(1-Ys); one application; receipt names the rule and whether moxcms's own scaling was suppressed","absolute":"PCS XYZ scaled by wtpt_src / wtpt_dst (Lab source = D50); BPC ignored","clip":"matrix/TRC destinations: linear values outside 0..1 counted exactly (tolerance 0.001), output left unclamped; table destinations: method unavailable, stated in the receipt","cache":"plans keyed by (source sha256, destination sha256, intent, bpc flag) within one engine; a hit re-proves id, size and sha256 and parses nothing (WideCacheStats.parses); capacity 1..8","determinism":"f64 from IEEE basic operations only (own ln/exp/pow, no libm, no fused multiply-add); receipt carries engine name/version (WIDE_ENGINE_NAME/WIDE_ENGINE_VERSION) and build (simd=false, fma_contraction=false, interpolation, weights=exact_f64) and output_sha256 over the f32 bits"},"output":"interleaved destination device values as f32 (unclamped for matrix/TRC destinations) plus WideReceipt (source/destination ids and hashes, kinds, spaces, engine build, bpc, absolute, clip, cache_hit, revision, correlation_id, pixel_count, output_sha256) and the Observe delivery receipt","recovery":"unsupported_*: choose a supported profile; missing_intent_table: the profile has neither the intent's table, table 0 nor matrix/TRC tags, choose another profile; missing_media_white: use another intent or a profile with wtpt; channel_count/channel_range/nonfinite_channel: fix the pixel buffer; pixel_limit: split into requests of at most 2097152 pixels; cache_full: clear_cache or use a larger engine; revision_mismatch/context_mismatch: reload; canceled: nothing was produced; delivery_failed: reconcile through the sink owner before retry","privacy":"profile bytes, pixels and ids never enter telemetry; the Observe frame carries only the outcome","not_in_scope":["OCIO","device-link and named-colour profiles","D2B/B2D multi-process elements","gamut check for table destinations","ink limit and black preservation","Lab as a device profile","caller memory-ledger admission of the wide path (bounded by profile size, pixel limit and cache capacity)"],"manual_route":"same descriptor","argus_route":"same descriptor plus WideReceipt, cache_stats and diagnostic_state"}"##;
+pub const WIDE_DESCRIPTOR: &str = r##"{"module":"STUDIO-MODULE-PRISM","path":"wide","descriptor_version":1,"api":"WideEngine::new(actor, cache_entries); inspect_profile(ProfileInput, &CancellationToken) -> WideProfileDescriptor; transform(&WideTransformRequest, &CancellationToken, &mut dyn SinkPort) -> WideTransformResult | WideFailure. Prism::inspect_wide_profile is the same admission. Legacy Prism, ColorEngine and AdmittedPrism are unchanged","inputs":{"source":"WideSource::Profile(ProfileInput) with interleaved device pixels (Gray 1, RGB 3, CMYK 4 channels, 0..1, CMYK 1.0 = full ink) or WideSource::Lab (PCS Lab D50, L 0..100, a/b -128..128, 3 channels, no profile)","destination":"ProfileInput; Gray, RGB or CMYK device","intent":"relative_colorimetric | perceptual | saturation | absolute_colorimetric","black_point_compensation":"independent boolean; ignored for absolute colorimetric","pixels_per_request":2097152,"profile_bytes":2097152},"profiles":{"families":"ICC v2/v4 RGB matrix/TRC (para or curv), Gray kTRC, mAB/mBA multi-dimensional, mft1/mft2 legacy tables; XYZ or Lab PCS; classes scnr, mntr, prtr, spac","refused":"typed: version other than 2 or 4, link/abst/nmcl classes, device spaces other than Gray/RGB/CMYK, PCS other than XYZ/Lab, D2B/B2D multi-process tags, tags of unsupported type, CMYK without tables, missing intent table, absolute without wtpt, singular matrix, malformed framing","intent_tables":"ICC.1:2022 8.10.2 precedence: the intent's table (perceptual A2B0/B2A0, relative and absolute A2B1/B2A1, saturation A2B2/B2A2), else table 0 (A2B0/B2A0), else matrix/TRC; MissingIntentTable only when none exists; WideProfileDescriptor.device_to_pcs/pcs_to_device show which tables exist"},"model":{"stages":"Prism-evaluated source stage (device -> PCS XYZ/D50, f64, unclamped), Prism PCS stage, Prism-evaluated destination stage; moxcms 0.9.1 only parses (no moxcms transform, so its own black-point scaling does not run: tests/wide_bpc.rs engine_builtin_black_scaling_is_suppressed_never_doubled); curves: curv identity/gamma/table (linear interpolation), para types 0-4; mft1/mft2 matrix + input tables + CLUT + output tables; mAB A/CLUT/M/matrix+offset/B, mBA reverse; table curves and CLUT inputs clamp to 0..1, parametric curves unbounded (HDR PCS above 1 kept); destination matrix/Gray curves inverted exactly and extended sign-preserving outside 0..1","admitted_route":"AdmittedWideEngine::new(actor, cache_entries, ProviderAdmission) wraps a WideEngine and charges the caller's ledger before every allocation: provider lease (actor, cache vectors), per plan miss a plan lease kept with the cached plan plus a transient parse/build lease (bounds from the ICC tag table: parse 2x, plan 8x stored bytes, BPC 4 extra stages), per request a transient digest/frame lease and an output lease carried by AdmittedWideTransform; denial before any parse; try_clear_cache/try_retire check retirement; AdmittedWideError Admission|Refused|Wide; x86_64-windows-msvc only like AdmittedPrism","job_route":"thread-shared jobs (SMB-PRISM-ENG-7): WideEngine::prepare_job(&WideJobRequest, &CancellationToken) -> WideJob (Send + Sync; borrows the engine until finish) or AdmittedWideEngine::prepare_job -> AdmittedWideJob; layout WideBands::Uniform{pixels, band_pixels} or WideBands::Sizes(&[usize]) (1..=2097152 pixels per band, 1..=65536 bands); convert_band(band, &input, &mut output, &CancellationToken) or convert_band_in_place from any thread, each band at most once (band_index, band_length, band_claimed refusals), into caller buffers with no allocation; output bit-identical to transform for every thread count, each band digest equal to a serial request of that band (tests/wide_job.rs); finish(&CancellationToken, &mut dyn SinkPort) merges band records in band order, delivers one observation, reports the lowest failed or unconverted band (job_incomplete), receipt output_sha256 = SHA-256 over band digests in band order; admitted route charges work lease (band table, Observe frame, request strings), receipt lease (ids) and on a miss plan + build leases before the job exists, nothing during bands (same ledger trace for every thread count)","fusion":"matrix/TRC and Gray pairs: one affine 3x3 (destination inverse matrix x PCS map x source matrix) between the curves, identity curves skipped; WideEngine::set_matrix_fusion(false) keeps the staged path","interpolation":"CLUT: 1 input linear, 2 bilinear, 3 tetrahedral (trilinear for the PCS -> device table of a Lab-PCS profile, as LittleCMS 2), 4 linear in the first input over 3D tetrahedral; exact f64 weights, no re-baked grid","bpc":"ISO 18619 per bpc.rs: source/destination black L* (darkest vertex, CMYK B2A local black, round-trip ramp for table destinations), XYZ' = scale*XYZ + (1-scale)*D50 with scale=(1-Yd)/(1-Ys); one application; receipt names the rule and whether moxcms's own scaling was suppressed","absolute":"PCS XYZ scaled by wtpt_src / wtpt_dst (Lab source = D50); BPC ignored","clip":"matrix/TRC destinations: linear values outside 0..1 counted exactly (tolerance 0.001), output left unclamped; table destinations: method unavailable, stated in the receipt","cache":"plans keyed by (source sha256, destination sha256, intent, bpc flag) within one engine; a hit re-proves id, size and sha256 and parses nothing (WideCacheStats.parses); capacity 1..8","determinism":"f64 from IEEE basic operations only (own ln/exp/pow, no libm, no fused multiply-add); receipt carries engine name/version (WIDE_ENGINE_NAME/WIDE_ENGINE_VERSION) and build (simd=false, fma_contraction=false, interpolation, weights=exact_f64) and output_sha256 over the f32 bits"},"output":"interleaved destination device values as f32 (unclamped for matrix/TRC destinations) plus WideReceipt (source/destination ids and hashes, kinds, spaces, engine build, bpc, absolute, clip, cache_hit, revision, correlation_id, pixel_count, output_sha256) and the Observe delivery receipt","recovery":"unsupported_*: choose a supported profile; missing_intent_table: the profile has neither the intent's table, table 0 nor matrix/TRC tags, choose another profile; missing_media_white: use another intent or a profile with wtpt; channel_count/channel_range/nonfinite_channel: fix the pixel buffer; pixel_limit: split into requests of at most 2097152 pixels; cache_full: clear_cache or use a larger engine; revision_mismatch/context_mismatch: reload; canceled: nothing was produced; delivery_failed: reconcile through the sink owner before retry","privacy":"profile bytes, pixels and ids never enter telemetry; the Observe frame carries only the outcome","not_in_scope":["OCIO","device-link and named-colour profiles","D2B/B2D multi-process elements","gamut check for table destinations","ink limit and black preservation","Lab as a device profile","caller memory-ledger admission of the wide path (bounded by profile size, pixel limit and cache capacity)"],"manual_route":"same descriptor","argus_route":"same descriptor plus WideReceipt, cache_stats and diagnostic_state"}"##;

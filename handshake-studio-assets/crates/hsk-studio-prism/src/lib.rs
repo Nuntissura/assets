@@ -15,6 +15,8 @@ mod icc_eval;
 mod wide;
 mod wide_admitted;
 pub use wide_admitted::*;
+mod wide_job;
+pub use wide_job::*;
 mod wide_plan;
 pub use wide::*;
 

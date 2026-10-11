@@ -27,8 +27,9 @@
 use crate::admitted::{actor_bytes, add, reserve, reserve_without_cancellation, supported_target};
 use crate::wide::{CHUNK_PIXELS, MAX_WIDE_PIXELS, frame, verify};
 use crate::{
-    Error, ProfileInput, ProviderAdmission, ProviderReservation, WideCacheStats, WideEngine, WideError, WideFailure,
-    WideProfileDescriptor, WideSource, WideTransformRequest, WideTransformResult,
+    Error, Intent, ProfileInput, ProviderAdmission, ProviderReservation, WideBandReport, WideCacheStats, WideEngine,
+    WideError, WideFailure, WideJob, WideJobRequest, WideJobResult, WideProfileDescriptor, WideSource,
+    WideTransformRequest, WideTransformResult,
 };
 use hsk_studio_accord::{ActorContext, CancellationToken};
 use hsk_studio_observe::SinkPort;
@@ -185,6 +186,92 @@ impl<A: ProviderAdmission> AdmittedWideEngine<A> {
         self.engine.inspect_profile(input, t).map_err(wide_refusal)
     }
 
+    /// Transient build bytes and kept plan bytes of a cache miss (`None`, `None` for a hit), from the ICC tag
+    /// tables before anything is parsed; a full cache is refused here.
+    fn miss_charges(
+        &self,
+        source: WideSource<'_>,
+        destination: ProfileInput<'_>,
+        intent: Intent,
+        bpc: bool,
+    ) -> Result<(Option<u64>, Option<u64>), AdmittedWideError> {
+        if self.engine.is_cached_parts(source, destination, intent, bpc) {
+            return Ok((None, None));
+        }
+        if self.engine.cache_is_full() {
+            return Err(wide_refusal(WideError::CacheFull));
+        }
+        let mut stored = stored_tag_bytes(destination)?;
+        if let WideSource::Profile(p) = source {
+            stored = add(stored, stored_tag_bytes(p)?)?;
+        }
+        let plan = add(mul(stored, PLAN_FACTOR)?, mul(PLAN_FIXED, 2)?)?;
+        let build = add(
+            add(mul(stored, PARSE_FACTOR)?, mul(PARSE_FIXED, 2)?)?,
+            if bpc { add(mul(plan, BPC_STAGES)?, BPC_RAMP_BYTES)? } else { 0 },
+        )?;
+        Ok((Some(build), Some(plan)))
+    }
+
+    /// `WideEngine::prepare_job` with every allocation the job causes charged first, all before the job exists:
+    /// a work lease (band table, request strings, Observe frame; released by `finish` or drop), a receipt lease
+    /// (profile ids of the descriptors and the receipt; travels with the finished result) and, on a cache miss,
+    /// the plan lease (kept with the cached plan) and a transient build lease. Band conversion allocates nothing
+    /// and charges nothing, so the ledger trace is the same for every thread count. Refusals before the engine ran
+    /// (layout, revision, framing, capacity, plan errors) are `Refused` and deliver nothing; `finish` delivers.
+    pub fn prepare_job(
+        &mut self,
+        r: &WideJobRequest<'_>,
+        t: &CancellationToken,
+    ) -> Result<AdmittedWideJob<'_, A::Reservation>, AdmittedWideError> {
+        t.check().map_err(|_| Error::Canceled)?;
+        if r.actor != self.engine.actor() {
+            return Err(Error::ContextMismatch.into());
+        }
+        if r.revision != r.expected_revision {
+            return Err(wide_refusal(WideError::RevisionMismatch));
+        }
+        let (bands, _) = r.bands.layout().map_err(wide_refusal)?;
+        let ids = add(
+            r.destination.profile_id.as_str().len() as u64,
+            match r.source {
+                WideSource::Profile(p) => p.profile_id.as_str().len() as u64,
+                WideSource::Lab => 0,
+            },
+        )?;
+        let receipt = mul(ids, 4)?;
+        let work = add(
+            mul(bands as u64, WideJob::slot_bytes() as u64)?,
+            add(
+                hsk_studio_observe::MAX_FRAME_BYTES as u64,
+                add(actor_bytes(self.engine.actor()), r.resource_id.as_str().len() as u64)?,
+            )?,
+        )?;
+        let (build, plan) = self.miss_charges(r.source, r.destination, r.intent, r.black_point_compensation)?;
+        let work_lease = reserve(&self.admission, work, t)?;
+        let receipt_lease = reserve(&self.admission, receipt, t)?;
+        let plan_lease = match plan {
+            Some(bytes) => Some(reserve(&self.admission, bytes, t)?),
+            None => None,
+        };
+        let _build_lease = match build {
+            Some(bytes) => Some(reserve(&self.admission, bytes, t)?),
+            None => None,
+        };
+        // `WideEngine::prepare_job` has no fallible step after the plan is cached: a refusal caches nothing.
+        let job = self.engine.prepare_job(r, t).map_err(wide_refusal)?;
+        if !job.cache_hit()
+            && let Some(lease) = plan_lease
+        {
+            self.plan_leases.push(lease);
+        }
+        Ok(AdmittedWideJob {
+            job,
+            work_lease,
+            receipt_lease,
+        })
+    }
+
     /// `WideEngine::transform` with every allocation it causes charged first (see the module docs).
     pub fn transform(
         &mut self,
@@ -223,24 +310,7 @@ impl<A: ProviderAdmission> AdmittedWideEngine<A> {
                 add(actor_bytes(self.engine.actor()), r.resource_id.as_str().len() as u64)?,
             )?,
         )?;
-        let miss = !self.engine.is_cached(r);
-        let (build, plan) = if miss {
-            if self.engine.cache_is_full() {
-                return Err(wide_refusal(WideError::CacheFull));
-            }
-            let mut stored = stored_tag_bytes(r.destination)?;
-            if let WideSource::Profile(p) = r.source {
-                stored = add(stored, stored_tag_bytes(p)?)?;
-            }
-            let plan = add(mul(stored, PLAN_FACTOR)?, mul(PLAN_FIXED, 2)?)?;
-            let build = add(
-                add(mul(stored, PARSE_FACTOR)?, mul(PARSE_FIXED, 2)?)?,
-                if r.black_point_compensation { add(mul(plan, BPC_STAGES)?, BPC_RAMP_BYTES)? } else { 0 },
-            )?;
-            (Some(build), Some(plan))
-        } else {
-            (None, None)
-        };
+        let (build, plan) = self.miss_charges(r.source, r.destination, r.intent, r.black_point_compensation)?;
         let _request_lease = reserve(&self.admission, request, t)?;
         let output_lease = reserve(&self.admission, output, t)?;
         let plan_lease = match plan {
@@ -264,5 +334,75 @@ impl<A: ProviderAdmission> AdmittedWideEngine<A> {
             result,
             lease: output_lease,
         })
+    }
+}
+
+/// A prepared wide job whose allocations are charged to the caller's ledger (see `prepare_job`). `Send + Sync`:
+/// share it by reference with worker threads; band calls neither allocate nor charge.
+pub struct AdmittedWideJob<'e, R: ProviderReservation> {
+    // Field order matters: the job's allocations drop before the leases that account for them.
+    job: WideJob<'e>,
+    work_lease: R,
+    receipt_lease: R,
+}
+impl<'e, R: ProviderReservation> AdmittedWideJob<'e, R> {
+    /// Layout and channel queries (`bands`, `band_pixels`, `input_channels`, ...).
+    pub fn job(&self) -> &WideJob<'e> {
+        &self.job
+    }
+    /// Bytes held by the job's own leases (work + receipt; plan leases stay with the engine).
+    pub fn reserved_bytes(&self) -> u64 {
+        self.work_lease.reserved_bytes().saturating_add(self.receipt_lease.reserved_bytes())
+    }
+    /// `WideJob::convert_band`.
+    pub fn convert_band(
+        &self,
+        band: usize,
+        pixels: &[f32],
+        out: &mut [f32],
+        t: &CancellationToken,
+    ) -> Result<WideBandReport, WideError> {
+        self.job.convert_band(band, pixels, out, t)
+    }
+    /// `WideJob::convert_band_in_place`.
+    pub fn convert_band_in_place(
+        &self,
+        band: usize,
+        buffer: &mut [f32],
+        t: &CancellationToken,
+    ) -> Result<WideBandReport, WideError> {
+        self.job.convert_band_in_place(band, buffer, t)
+    }
+    /// `WideJob::finish`; the work lease is released, the receipt lease travels with the result.
+    pub fn finish(
+        self,
+        t: &CancellationToken,
+        sink: &mut dyn SinkPort,
+    ) -> Result<AdmittedWideJobResult<R>, AdmittedWideError> {
+        let Self {
+            job,
+            work_lease,
+            receipt_lease,
+        } = self;
+        let result = job.finish(t, sink);
+        drop(work_lease);
+        Ok(AdmittedWideJobResult {
+            result: result.map_err(AdmittedWideError::Wide)?,
+            lease: receipt_lease,
+        })
+    }
+}
+
+/// A finished job whose receipt allocations stay charged for as long as it lives.
+pub struct AdmittedWideJobResult<R: ProviderReservation> {
+    result: WideJobResult,
+    lease: R,
+}
+impl<R: ProviderReservation> AdmittedWideJobResult<R> {
+    pub fn result(&self) -> &WideJobResult {
+        &self.result
+    }
+    pub fn reserved_bytes(&self) -> u64 {
+        self.lease.reserved_bytes()
     }
 }
