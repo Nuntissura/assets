@@ -18,8 +18,12 @@
 //!   direct-eval identity check (`ctx->eval_obj`) can no longer match. The context still carries the
 //!   Eval intrinsic because compiling ANY source needs it: a separate trusted compile realm is NOT
 //!   built (no safe wrapper API), so completeness is NOT_PROVEN.
-//! * 06 (partial): contexts carry only base objects + Eval: no Date, Proxy, Promise, JSON, RegExp,
+//! * 06 (partial): contexts carry only base objects + Eval + Promise: no Date, Proxy, JSON, RegExp,
 //!   typed arrays, loader, console or libc APIs; `Math.random` throws; user source is strict mode.
+//!   The Promise intrinsic is present ONLY because async function syntax in a context without it
+//!   leaks a GC object and trips QuickJS `assert(list_empty(&rt->gc_obj_list))` at runtime free
+//!   (found by probe: `async function f(){}` aborts the process in debug builds). The global
+//!   `Promise` binding is deleted and pending jobs are never executed, so promises are inert.
 //! * 07: a fresh Runtime and context per run, dropped on the worker thread that created them.
 //! * 10: results leave the realm only through a trusted extractor that uses captured intrinsics and
 //!   own-data-property descriptors, so getters, proxies and user coercion never run.
@@ -87,6 +91,7 @@ const BOOTSTRAP: &str = r#"(function (g) {
   }
   deny(g, "Function", "Function");
   deny(g, "eval", "eval");
+  delete g.Promise;
   deny(Math, "random", "Math.random");
   function extract(v, max) {
     if (typeof v === "number") { return v; }
@@ -268,7 +273,10 @@ fn run_worker(input: Input<'_>) -> RunReport {
                 || clock.now_ns() > deadline_ns
         })));
     }
-    let Ok(context) = Context::builder().with::<intrinsic::Eval>().build(&runtime) else {
+    let Ok(context) = Context::builder()
+        .with::<intrinsic::Eval>()
+        .with::<intrinsic::Promise>()
+        .build(&runtime) else {
         return internal_report();
     };
     let mut end = context.with(|ctx| session(ctx, &input, &shared));
