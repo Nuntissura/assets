@@ -2520,9 +2520,13 @@ fn stray_streams_and_hidden_payloads_are_not_kept_text() {
     assert!(out.proof.hits.is_empty() && out.proof.kept_text_collisions.iter().any(|c| c.object == 20), "{:?}", out.proof);
 
     // Class 2 (finding 4): an image XObject whose codec input is a zlib stream of the removed string.
+    // R13-adapted (R13-F6): an image only LISTED by the kept page two is a source of the flattened page
+    // one that no kept page draws, so it leaves the file; page two draws it, so the proof still reads it
+    // (subject unchanged: the codec input is decoded and scanned, the stream is not raster).
     let hidden = miniz_oxide::deflate::compress_to_vec_zlib(b"hidden SECRET-ALPHA payload", 6);
     for codec in ["JBIG2Decode", "CCITTFaxDecode", "DCTDecode", "JPXDecode"] {
-        let out = run(&raster_doc(&format!("/Filter /{codec}"), &hidden, &page));
+        let out = run(&raster_doc2(&format!("/Filter /{codec}"), &hidden, TEXT_IN_REGION, "q 10 0 0 10 300 300 cm /Im1 Do Q
+BT /F1 12 Tf 72 400 Td (Public) Tj ET"));
         assert!(
             out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 8, .. })),
             "{codec}: {:?}",
@@ -2896,8 +2900,21 @@ fn listed_but_undrawn_forms_are_not_kept_text() {
     };
     let form = |body: &str, res: &str| stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> {res} >>"), body.as_bytes());
     let secret = "BT /F1 12 Tf 300 300 Td (SECRET-ALPHA) Tj ET";
-    // Listed under the page resources, never drawn.
+    // R13-adapted (R13-F6): listed under the resources the split gives BOTH pages, never drawn: a source
+    // of the flattened page one that no kept page draws, so it leaves the file.
     let out = r7_run(&doc(&page, "/Fm9 20 0 R", vec![(20, form(secret, ""))]));
+    assert!(independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-ALPHA").is_none()), "an undrawn source of the flattened page survives");
+    // Listed only by the kept page two, never drawn: payload, not kept text (the N7 subject).
+    let two = build(
+        &{
+            let mut objs = with_page_two(base_objs(TEXT_IN_REGION.as_bytes(), "<< /Title (T) >>"), "BT /F1 12 Tf 72 400 Td (Public) Tj ET", "/Font << /F1 6 0 R >> /XObject << /Fm9 20 0 R >>");
+            objs.push((20, form(secret, "")));
+            objs
+        },
+        "/Info 7 0 R",
+        b"",
+    );
+    let out = r7_run(&two);
     assert!(!out.is_proven(), "an undrawn form is payload, not kept text");
     assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 20, .. })), "{:?}", out.proof);
     assert!(out.proof.kept_text_collisions.iter().all(|c| c.object != 20));
