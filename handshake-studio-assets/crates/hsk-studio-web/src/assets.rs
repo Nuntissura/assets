@@ -482,8 +482,12 @@ pub fn collect_assets(doc: &WebDoc, port: &dyn AssetPort, cancel: &CancellationT
             continue;
         }
         let tag = doc.tag_name(id).unwrap_or("").to_ascii_lowercase();
+        // The keyword is compared after the same character-reference decoding a browser applies (`&#114efresh`).
         let refresh = tag == "meta"
-            && doc.attribute(id, "http-equiv").and_then(|a| doc.attr_value(a)).is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"));
+            && doc
+                .attribute(id, "http-equiv")
+                .and_then(|a| a.value_span.as_ref())
+                .is_some_and(|s| decode_value(doc.slice(s)).text.trim().eq_ignore_ascii_case("refresh"));
         for attr in &node.attrs {
             let name = doc.attr_name(attr).to_ascii_lowercase();
             let kind = if tag == "base" && name == "href" {

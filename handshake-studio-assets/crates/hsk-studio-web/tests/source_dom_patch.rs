@@ -793,7 +793,7 @@ fn more_url_attributes_and_foreign_content_are_scanned() {
 <object data="http://e.invalid/o"></object>
 <link rel=preload as=image imagesrcset="https://e.invalid/h.png 1x">
 <iframe srcdoc="&lt;img src=//e.invalid/z&gt;"></iframe>
-<meta http-equiv="Refresh" content="5; URL = 'http://e.invalid/r'">
+<meta http-equiv="&#82efresh" content="5; URL = 'http://e.invalid/r'">
 <svg width="1" height="1"><image href="http://e.invalid/s1.png"/><use xlink:href="//e.invalid/s2.svg#a"/><a XLINK:HREF="https://e.invalid/s3"><rect fill="url(http://e.invalid/s4#p)" stroke="url(#local)" filter="u\72l(//e.invalid/s5)"/></a><style>@import url(//e.invalid/s6.css); .a{fill:url(logo.png)}</style><style><![CDATA[.b{fill:url(http://e.invalid/s7)}]]></style></svg>"#;
         let (seen, calls) = scan(html);
         assert_eq!(
