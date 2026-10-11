@@ -233,7 +233,7 @@ fn profile_transform_admitted() {
             }
         }
         assert!(moved, "conversion must be non-identity");
-        assert_eq!(sink.0.len(), 1, "one terminal observation per Prism request");
+        assert_eq!(sink.0.len(), 1, "one terminal observation per Prism job");
 
         // Exposure is applied AFTER conversion: +1 EV doubles the converted values exactly.
         let mut bright = recipe(&srgb, &p3);
@@ -363,11 +363,12 @@ fn wide_requests_are_chunk_invariant_and_report_plan_cache_and_clip() {
         let (src, dst) = (IccProfile { binding: &p3, icc: P3 }, IccProfile { binding: &srgb, icc: SRGB });
         let mut sink = Collect::default();
 
-        // One request for the 256-pixel tile: the plan is built once (both profiles parsed once).
+        // One band for the 256-pixel tile: the plan is built once (both profiles parsed once).
         let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
         let (receipt, tiles) = run_tiled(&plane, &recipe, &mut converter, 16);
         let reference = tiles[0].colour.clone();
         let stats = receipt.profile_stats;
+        let first_clip = stats.clip;
         assert_eq!((receipt.profile_route, receipt.profile_calls), ("prism_admitted_wide", 1));
         assert_eq!((stats.plan_hits, stats.plan_misses, stats.plan_parses), (0, 1, 2));
 
@@ -384,8 +385,8 @@ fn wide_requests_are_chunk_invariant_and_report_plan_cache_and_clip() {
         assert_eq!(stats.clip.pixels_clipped, pixels);
         assert!(pixels > 0 && values.iter().any(|v| *v < 0.0) && stats.clip.max_overshoot > 0.0);
 
-        // Same engine, 7-pixel requests: bit-identical output, 37 requests, every one a plan hit
-        // that parses nothing; one terminal observation per request.
+        // Same engine, 7-pixel bands: bit-identical output, 37 bands (36 of 7 and one of 4) in ONE
+        // job, which is one plan hit that parses nothing and one terminal observation.
         let before = sink.0.len();
         let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink)
             .with_chunk_pixels(7)
@@ -393,51 +394,16 @@ fn wide_requests_are_chunk_invariant_and_report_plan_cache_and_clip() {
         let (receipt, tiles) = run_tiled(&plane, &recipe, &mut converter, 16);
         let stats = receipt.profile_stats;
         assert_eq!(tiles[0].colour, reference);
-        assert_eq!((receipt.profile_calls, stats.plan_hits, stats.plan_misses, stats.plan_parses), (37, 37, 0, 0));
-        assert_eq!(sink.0.len() - before, 37);
+        assert_eq!((receipt.profile_calls, stats.plan_hits, stats.plan_misses, stats.plan_parses), (37, 1, 0, 0));
+        assert_eq!(stats.clip, first_clip, "the merged clip report does not depend on the band cut");
+        assert_eq!(sink.0.len() - before, 1);
 
-        // Four 64-pixel tiles: four requests on the cached plan.
+        // Four 64-pixel tiles: four bands of one job on the cached plan.
         let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
         let (receipt, tiles) = run_tiled(&plane, &recipe, &mut converter, 8);
-        assert_eq!((tiles.len(), receipt.profile_calls, receipt.profile_stats.plan_hits, receipt.profile_stats.plan_parses), (4, 4, 4, 0));
+        assert_eq!((tiles.len(), receipt.profile_calls, receipt.profile_stats.plan_hits, receipt.profile_stats.plan_parses), (4, 4, 1, 0));
 
-        // A converter that returns a different pixel count is a typed refusal, never an index panic
-        // or silently uncovered pixels (R3 PLAUSIBLE); no tile is delivered.
-        struct Resizing<'a>(&'a ProfileBinding, &'a ProfileBinding, isize);
-        impl ProfileConverter for Resizing<'_> {
-            fn source(&self) -> &ProfileBinding { self.0 }
-            fn destination(&self) -> &ProfileBinding { self.1 }
-            fn inspect(&mut self, _: &CancellationToken) -> Result<(), DevelopError> { Ok(()) }
-            fn convert(&mut self, pixels: &[[f32; 3]], _: &CancellationToken) -> Result<Vec<[f32; 3]>, DevelopError> {
-                let mut out = pixels.to_vec();
-                if self.2 < 0 { out.pop(); } else { out.push([0.0; 3]); }
-                Ok(out)
-            }
-            fn calls(&self) -> u32 { 0 }
-        }
-        for delta in [-1isize, 1] {
-            let mut tiles = Vec::new();
-            let result = develop_with(
-                &DevelopRequest {
-                    plane: &plane,
-                    recipe: &recipe,
-                    recipe_revision: 1,
-                    expected_source_revision: 1,
-                    grid: Grid { origin_x: 0, origin_y: 0, tile_width: 16, tile_height: 16 },
-                    output_origin: (0, 0),
-                    execution_hint: ExecutionHint::Auto,
-                },
-                Some(&mut Resizing(&p3, &srgb, delta)),
-                &CancellationToken::default(),
-                &mut |t| {
-                    tiles.push(t);
-                    Ok(())
-                },
-            );
-            assert_eq!((result.err(), tiles.len()), (Some(DevelopError::InvalidLength), 0), "delta {delta}");
-        }
-
-        // The request cap is bounded by the wide engine's own limit.
+        // The band cap is bounded by the wide engine's own limit.
         for bad in [0, hsk_studio_prism::MAX_WIDE_PIXELS + 1] {
             let converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
             assert_eq!(converter.with_chunk_pixels(bad).err(), Some(DevelopError::InvalidLimits));
@@ -488,8 +454,9 @@ fn short_admission_budget_is_refused_before_any_work() {
         receipt.unwrap();
         assert_eq!(tiles[0].colour, reference[0].colour);
 
-        // One byte short of the peak: denied while taking the last lease of the first request,
-        // before the plan is built (no parse, no plan, no observation, no tile).
+        // One byte short of the peak: denied while taking the last lease of the job at prepare,
+        // before the plan is built and before any tile is computed (no parse, no plan, no
+        // observation, no tile).
         let ledger = Admission(Arc::new(Ledger::default()));
         let (prism, mut wide) = engines(&ledger);
         let provider = ledger.0.live.load(Ordering::SeqCst);
@@ -521,5 +488,246 @@ fn short_admission_budget_is_refused_before_any_work() {
             DevelopError::Prism("admission_denied").outcome(),
             hsk_studio_observe::Outcome::Failure(hsk_studio_observe::FailureCode::Unavailable)
         );
+    });
+}
+
+/// The job contract as develop's port exposes it: layout refusals before anything is charged, and
+/// the band errors of a misused job keep Prism's stable codes (`band_index`, `band_length`,
+/// `band_claimed`, `job_incomplete`); an unfinished job releases every lease and delivers nothing.
+#[test]
+fn job_contract_violations_keep_their_prism_codes() {
+    bounded_case("job_contract", || {
+        let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();
+        let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+        let ledger = Admission(Arc::new(Ledger::default()));
+        let srgb = binding("SCPF-019abcde-0000-7000-8000-000000000001", SRGB);
+        let p3 = binding("SCPF-019abcde-0000-7000-8000-000000000002", P3);
+        let cancel = CancellationToken::default();
+        let context = PrismContext { actor: &actor, resource_id: &resource, correlation_id: 5, revision: 7 };
+        let prism = AdmittedPrism::new(&actor, 1, ledger.clone()).unwrap();
+        let mut wide = AdmittedWideEngine::new(&actor, 8, ledger.clone()).unwrap();
+        let mut sink = Collect::default();
+        {
+            let mut converter = PrismConverter::new(
+                &prism,
+                &mut wide,
+                IccProfile { binding: &p3, icc: P3 },
+                IccProfile { binding: &srgb, icc: SRGB },
+                context,
+                &mut sink,
+            );
+            converter.inspect(&cancel).unwrap();
+            let limits = converter.band_limits();
+            assert_eq!((limits.band_pixels, limits.max_bands), (WIDE_CHUNK_PIXELS, hsk_studio_prism::MAX_WIDE_JOB_BANDS));
+
+            // Layout refusals: empty, an empty band, a band above the wide limit, too many bands.
+            let too_many = vec![1usize; hsk_studio_prism::MAX_WIDE_JOB_BANDS + 1];
+            for (bands, code) in [
+                (&[][..], "channel_count"),
+                (&[3, 0][..], "channel_count"),
+                (&[hsk_studio_prism::MAX_WIDE_PIXELS + 1][..], "pixel_limit"),
+                (&too_many[..], "pixel_limit"),
+            ] {
+                assert_eq!(converter.prepare(bands, &cancel).err(), Some(DevelopError::Prism(code)), "{bands:?}");
+            }
+            let canceled = CancellationToken::default();
+            canceled.cancel();
+            assert_eq!(converter.prepare(&[4], &canceled).err(), Some(DevelopError::Canceled));
+            assert_eq!(converter.calls(), 0);
+
+            // A band outside the layout, with the wrong length, converted twice, never converted.
+            let job = converter.prepare(&[4, 4], &cancel).unwrap();
+            let mut rgb = [[0.25f32; 3]; 4];
+            assert_eq!(job.convert_band(2, &mut rgb, &cancel).err(), Some(DevelopError::Prism("band_index")));
+            assert_eq!(job.convert_band(0, &mut rgb[..3], &cancel).err(), Some(DevelopError::Prism("band_length")));
+            job.convert_band(0, &mut rgb, &cancel).unwrap();
+            let mut again = [[0.25f32; 3]; 4];
+            assert_eq!(job.convert_band(0, &mut again, &cancel).err(), Some(DevelopError::Prism("band_claimed")));
+            assert_eq!(again, [[0.25f32; 3]; 4], "a refused band is left untouched");
+            assert_eq!(job.finish(&cancel).err(), Some(DevelopError::Prism("job_incomplete")));
+            assert_eq!(converter.calls(), 0, "an unfinished job counts no band");
+
+            // Prism's range refusal is the band's error; a cancelled token stops the band.
+            let job = converter.prepare(&[1, 1], &cancel).unwrap();
+            assert_eq!(job.convert_band(0, &mut [[1.5, 0.0, 0.0]], &cancel).err(), Some(DevelopError::Prism("channel_range")));
+            assert_eq!(job.convert_band(1, &mut [[0.5; 3]], &canceled).err(), Some(DevelopError::Canceled));
+            drop(job);
+            assert_eq!(converter.calls(), 0);
+
+            // A complete job counts its bands and merges the clip report.
+            let job = converter.prepare(&[2, 1], &cancel).unwrap();
+            job.convert_band(0, &mut [[0.0, 1.0, 0.0], [0.5, 0.5, 0.5]], &cancel).unwrap();
+            job.convert_band(1, &mut [[0.0, 1.0, 0.0]], &cancel).unwrap();
+            job.finish(&cancel).unwrap();
+            assert_eq!(converter.calls(), 2, "calls counts bands, not pixels");
+            assert_eq!(converter.stats().clip.method, ClipMethod::LinearDevice);
+        }
+        // Every job lease is gone, whichever way its job ended; the plan stays accounted.
+        assert_eq!(
+            ledger.0.live.load(Ordering::SeqCst),
+            prism.provider_reserved_bytes() + wide.provider_reserved_bytes() + wide.plan_reserved_bytes()
+        );
+        assert!(wide.plan_reserved_bytes() > 0);
+    });
+}
+
+/// More bands than one job holds: the frame is converted by several jobs on the cached plan, with
+/// the same bytes and the same merged clip report as the default cut.
+#[test]
+fn a_frame_beyond_one_job_is_converted_by_several_jobs() {
+    bounded_case("several_jobs", || {
+        let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();
+        let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+        let ledger = Admission(Arc::new(Ledger::default()));
+        let prism = AdmittedPrism::new(&actor, 1, ledger.clone()).unwrap();
+        let mut wide = AdmittedWideEngine::new(&actor, 8, ledger.clone()).unwrap();
+        let srgb = binding("SCPF-019abcde-0000-7000-8000-000000000001", SRGB);
+        let p3 = binding("SCPF-019abcde-0000-7000-8000-000000000002", P3);
+        let recipe = recipe(&p3, &srgb);
+        let context = PrismContext { actor: &actor, resource_id: &resource, correlation_id: 5, revision: 7 };
+        let (src, dst) = (IccProfile { binding: &p3, icc: P3 }, IccProfile { binding: &srgb, icc: SRGB });
+        // 300 x 300 samples (90,000 pixels) under the LARGE limits.
+        let samples: Vec<u16> = (0..90_000u64)
+            .map(|i| ((i.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) % 65) as u16)
+            .collect();
+        let plane = CfaPlane::with_limits(
+            PlaneInit {
+                width: 300,
+                height: 300,
+                stride_bytes: 600,
+                sensor_origin: (0, 0),
+                cfa: Cfa { pattern: CfaPattern::Bayer(Bayer::Rggb), phase_x: 0, phase_y: 0 },
+                black: [0; 3],
+                white: [64; 3],
+                source_revision: 1,
+                bytes: samples.iter().flat_map(|s| s.to_le_bytes()).collect(),
+            },
+            Limits::LARGE,
+        )
+        .unwrap();
+        let mut sink = Collect::default();
+        let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
+        let (whole, reference) = run_tiled(&plane, &recipe, &mut converter, 16);
+        assert_eq!((whole.profile_calls, whole.profile_stats.plan_misses, whole.profile_stats.plan_hits), (361, 1, 0));
+        assert_eq!(sink.0.len(), 1, "one job, one terminal observation");
+
+        // One pixel per band: 90,000 bands, more than the 65,536 one job takes => two jobs.
+        let before = sink.0.len();
+        let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink)
+            .with_chunk_pixels(1)
+            .unwrap();
+        let (receipt, tiles) = run_tiled(&plane, &recipe, &mut converter, 16);
+        let stats = receipt.profile_stats;
+        assert_eq!(receipt.profile_calls, 90_000);
+        assert_eq!((stats.plan_hits, stats.plan_misses, stats.plan_parses), (2, 0, 0), "two jobs on the cached plan");
+        assert_eq!(sink.0.len() - before, 2, "one terminal observation per job");
+        assert_eq!(stats.clip, whole.profile_stats.clip);
+        assert!(tiles.iter().zip(&reference).all(|(a, b)| a.colour == b.colour), "same bytes");
+    });
+}
+
+/// Independent oracle for the job route: convert every tile's working pixels with the serial
+/// `AdmittedWideEngine::transform` (one request per tile, the route this slice replaced) and require
+/// bit-identical tiles and the same summed clip report from the job route on every thread count.
+#[test]
+fn job_conversion_equals_the_serial_wide_transform_for_every_thread_count() {
+    bounded_case("job_vs_serial", || {
+        let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();
+        let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+        let ledger = Admission(Arc::new(Ledger::default()));
+        let prism = AdmittedPrism::new(&actor, 1, ledger.clone()).unwrap();
+        let mut wide = AdmittedWideEngine::new(&actor, 8, ledger.clone()).unwrap();
+        let srgb = binding("SCPF-019abcde-0000-7000-8000-000000000001", SRGB);
+        let p3 = binding("SCPF-019abcde-0000-7000-8000-000000000002", P3);
+        let cancel = CancellationToken::default();
+        let context = PrismContext { actor: &actor, resource_id: &resource, correlation_id: 5, revision: 7 };
+        let (src, dst) = (IccProfile { binding: &p3, icc: P3 }, IccProfile { binding: &srgb, icc: SRGB });
+        // 128 x 96 samples, 32-pixel tiles: 12 full tiles of 1024 pixels.
+        let samples: Vec<u16> = (0..128 * 96u64)
+            .map(|i| ((i.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) % 65) as u16)
+            .collect();
+        let plane = CfaPlane::new(PlaneInit {
+            width: 128,
+            height: 96,
+            stride_bytes: 256,
+            sensor_origin: (0, 0),
+            cfa: Cfa { pattern: CfaPattern::Bayer(Bayer::Rggb), phase_x: 0, phase_y: 0 },
+            black: [0; 3],
+            white: [64; 3],
+            source_revision: 1,
+            bytes: samples.iter().flat_map(|s| s.to_le_bytes()).collect(),
+        })
+        .unwrap();
+        fn request<'a>(plane: &'a CfaPlane, recipe: &'a DevelopRecipe) -> DevelopRequest<'a> {
+            DevelopRequest {
+                plane,
+                recipe,
+                recipe_revision: 1,
+                expected_source_revision: 1,
+                grid: Grid { origin_x: 0, origin_y: 0, tile_width: 32, tile_height: 32 },
+                output_origin: (0, 0),
+                execution_hint: ExecutionHint::Auto,
+            }
+        }
+
+        // Working-profile pixels per tile (no converter: working == output).
+        let mut working = Vec::new();
+        develop_with_threads(&request(&plane, &recipe(&p3, &p3)), None, Threads::single(), &cancel, &mut |t| {
+            working.push(floats(&t));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(working.len(), 12);
+
+        // Serial oracle: one wide transform per tile, in tile order.
+        let mut sink = Collect::default();
+        let mut expected = Vec::new();
+        let mut clipped = 0u64;
+        for pixels in &working {
+            let transform = hsk_studio_prism::WideTransformRequest {
+                source: hsk_studio_prism::WideSource::Profile(hsk_studio_prism::ProfileInput {
+                    profile_id: &p3.profile_id,
+                    bytes: P3,
+                    expected_sha256: p3.sha256,
+                }),
+                destination: hsk_studio_prism::ProfileInput {
+                    profile_id: &srgb.profile_id,
+                    bytes: SRGB,
+                    expected_sha256: srgb.sha256,
+                },
+                pixels,
+                intent: hsk_studio_prism::Intent::RelativeColorimetric,
+                black_point_compensation: false,
+                revision: 7,
+                expected_revision: 7,
+                correlation_id: 5,
+                resource_id: &resource,
+                actor: &actor,
+            };
+            let done = wide.transform(&transform, &cancel, &mut sink).unwrap();
+            clipped += done.result().receipt.clip.pixels_clipped;
+            expected.push(done.result().pixels.iter().map(|v| v.to_bits()).collect::<Vec<u32>>());
+        }
+        assert!(clipped > 0, "the fixture leaves the sRGB gamut");
+
+        for threads in [1, 2, 4, 8, 16, 32] {
+            let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
+            let mut tiles = Vec::new();
+            let receipt = develop_with_threads(
+                &request(&plane, &recipe(&p3, &srgb)),
+                Some(&mut converter),
+                Threads::new(threads).unwrap(),
+                &cancel,
+                &mut |t| {
+                    tiles.push(floats(&t).iter().map(|v| v.to_bits()).collect::<Vec<u32>>());
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(tiles, expected, "{threads} threads: tiles equal the serial transform bit for bit");
+            assert_eq!(receipt.profile_stats.clip.pixels_clipped, clipped, "{threads} threads: clip report");
+            assert_eq!((receipt.profile_calls, receipt.profile_stats.plan_misses), (12, 0), "{threads} threads");
+            assert_eq!(receipt.profile_stats.plan_hits, 1, "{threads} threads: one job, one plan resolution");
+        }
     });
 }

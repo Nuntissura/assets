@@ -4,7 +4,8 @@ use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_develop::*;
 use hsk_studio_pigment::Grid;
 use sha2::{Digest, Sha256};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::ThreadId;
 
 const BLACK: [u16; 3] = [64, 80, 96];
@@ -186,15 +187,24 @@ fn output_is_identical_for_every_thread_count() {
     }
 }
 
-/// Stands in for the Prism converter: records how it is driven, applies a fixed mapping.
+/// Stands in for the Prism converter: records how its job is prepared and driven, applies a fixed
+/// mapping in place.
 struct Recorder {
     source: ProfileBinding,
     destination: ProfileBinding,
     caller: ThreadId,
+    limits: BandLimits,
+    /// Bands converted by finished jobs.
     calls: u32,
-    off_thread: bool,
-    firsts: Vec<([f32; 3], usize)>,
-    cancel_on_call: Option<(u32, CancellationToken)>,
+    /// Band layout of every `prepare`, in order.
+    layouts: Vec<Vec<usize>>,
+    /// (band within its job, pixels, converting thread) of every band call, over all jobs.
+    log: Mutex<Vec<(usize, usize, ThreadId)>>,
+    /// First pixel of each band before conversion, in call order.
+    firsts: Mutex<Vec<[f32; 3]>>,
+    /// Cancel the token when this many bands (over all jobs) have been converted.
+    cancel_on_band: Option<(u32, CancellationToken)>,
+    converted: AtomicU32,
 }
 
 impl Recorder {
@@ -203,11 +213,54 @@ impl Recorder {
             source: recipe.working_profile.clone(),
             destination: recipe.output_profile.clone(),
             caller: std::thread::current().id(),
+            limits: BandLimits::default(),
             calls: 0,
-            off_thread: false,
-            firsts: Vec::new(),
-            cancel_on_call: None,
+            layouts: Vec::new(),
+            log: Mutex::new(Vec::new()),
+            firsts: Mutex::new(Vec::new()),
+            cancel_on_band: None,
+            converted: AtomicU32::new(0),
         }
+    }
+
+    fn off_thread(&self) -> bool {
+        self.log.lock().unwrap().iter().any(|(_, _, id)| *id != self.caller)
+    }
+}
+
+struct RecorderJob<'a> {
+    sizes: Vec<usize>,
+    claimed: Vec<AtomicBool>,
+    log: &'a Mutex<Vec<(usize, usize, ThreadId)>>,
+    firsts: &'a Mutex<Vec<[f32; 3]>>,
+    cancel_on_band: &'a Option<(u32, CancellationToken)>,
+    converted: &'a AtomicU32,
+    calls: &'a mut u32,
+}
+
+impl ConversionJob for RecorderJob<'_> {
+    fn convert_band(&self, band: usize, rgb: &mut [[f32; 3]], _cancel: &CancellationToken) -> Result<(), DevelopError> {
+        assert_eq!(rgb.len(), self.sizes[band], "band {band} holds exactly its declared pixels");
+        assert!(!self.claimed[band].swap(true, Ordering::SeqCst), "band {band} converted twice");
+        self.log.lock().unwrap().push((band, rgb.len(), std::thread::current().id()));
+        self.firsts.lock().unwrap().push(rgb[0]);
+        let done = self.converted.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some((n, token)) = self.cancel_on_band
+            && done == *n
+        {
+            token.cancel();
+        }
+        for p in rgb.iter_mut() {
+            *p = [p[0] * 0.5, p[1] * 0.5 + 0.125, p[2]];
+        }
+        Ok(())
+    }
+    fn finish(self: Box<Self>, _cancel: &CancellationToken) -> Result<(), DevelopError> {
+        if self.claimed.iter().any(|c| !c.load(Ordering::SeqCst)) {
+            return Err(DevelopError::Prism("job_incomplete"));
+        }
+        *self.calls += self.sizes.len() as u32;
+        Ok(())
     }
 }
 
@@ -221,16 +274,26 @@ impl ProfileConverter for Recorder {
     fn inspect(&mut self, _cancel: &CancellationToken) -> Result<(), DevelopError> {
         Ok(())
     }
-    fn convert(&mut self, pixels: &[[f32; 3]], _cancel: &CancellationToken) -> Result<Vec<[f32; 3]>, DevelopError> {
-        self.off_thread |= std::thread::current().id() != self.caller;
-        self.calls += 1;
-        self.firsts.push((pixels[0], pixels.len()));
-        if let Some((n, token)) = &self.cancel_on_call
-            && self.calls == *n
-        {
-            token.cancel();
-        }
-        Ok(pixels.iter().map(|p| [p[0] * 0.5, p[1] * 0.5 + 0.125, p[2]]).collect())
+    fn band_limits(&self) -> BandLimits {
+        self.limits
+    }
+    fn prepare<'a>(
+        &'a mut self,
+        bands: &[usize],
+        _cancel: &CancellationToken,
+    ) -> Result<Box<dyn ConversionJob + 'a>, DevelopError> {
+        assert!(!bands.is_empty() && bands.len() <= self.limits.max_bands, "layout within the converter's limits");
+        assert!(bands.iter().all(|n| (1..=self.limits.band_pixels).contains(n)), "bands within the converter's limits");
+        self.layouts.push(bands.to_vec());
+        Ok(Box::new(RecorderJob {
+            sizes: bands.to_vec(),
+            claimed: bands.iter().map(|_| AtomicBool::new(false)).collect(),
+            log: &self.log,
+            firsts: &self.firsts,
+            cancel_on_band: &self.cancel_on_band,
+            converted: &self.converted,
+            calls: &mut self.calls,
+        }))
     }
     fn calls(&self) -> u32 {
         self.calls
@@ -238,7 +301,7 @@ impl ProfileConverter for Recorder {
 }
 
 #[test]
-fn converter_is_driven_in_tile_order_on_the_calling_thread() {
+fn converter_bands_run_once_each_on_the_tile_workers() {
     let plane = noisy(CfaPattern::Bayer(Bayer::Grbg), 150, 130, (2, 1), (1, 0));
     let mut recipe = curve_recipe();
     recipe.output_profile = profile(2);
@@ -246,15 +309,57 @@ fn converter_is_driven_in_tile_order_on_the_calling_thread() {
     for threads in [1, 2, 3, 8, 16] {
         let mut recorder = Recorder::new(&recipe);
         let (digest, receipt) = run_digest(&plane, &recipe, 16, Some(&mut recorder), threads).unwrap();
-        assert!(!recorder.off_thread, "converter ran off the calling thread with {threads} threads");
+        if threads == 1 {
+            assert!(!recorder.off_thread(), "one thread converts on the calling thread");
+        }
         assert_eq!(receipt.profile_route, "prism_admitted_wide");
+        // One job for the whole frame, one band per tile, every band converted exactly once.
+        assert_eq!(recorder.layouts.len(), 1, "{threads} threads: one prepare for the frame");
+        assert_eq!(recorder.layouts[0].len() as u32, receipt.tiles);
         assert_eq!(receipt.profile_calls, receipt.tiles);
         assert_eq!(recorder.calls, receipt.tiles);
-        let observed = (digest, receipt, recorder.firsts);
+        let mut bands: Vec<usize> = recorder.log.lock().unwrap().iter().map(|(band, ..)| *band).collect();
+        assert_eq!(bands.len() as u32, receipt.tiles);
+        bands.sort_unstable();
+        assert!(bands.iter().copied().eq(0..receipt.tiles as usize), "{threads} threads: bands 0..n once each");
+        let workers: std::collections::HashSet<_> = recorder.log.lock().unwrap().iter().map(|(.., id)| *id).collect();
+        assert!(workers.len() <= threads, "{threads} threads used {} threads", workers.len());
+        // The band inputs do not depend on the schedule: compare them as a set, tile by tile.
+        let mut firsts: Vec<[u32; 3]> = recorder.firsts.lock().unwrap().iter().map(|p| p.map(f32::to_bits)).collect();
+        firsts.sort_unstable();
+        let observed = (digest, receipt, recorder.layouts.clone(), firsts);
         match &reference {
             None => reference = Some(observed),
             Some(first) => assert_eq!(&observed, first, "{threads} threads differ from 1 thread"),
         }
+    }
+}
+
+/// Tiles above the converter's band size are cut into bands and a layout above its band count is
+/// split over several jobs; the pixels do not change.
+#[test]
+fn oversized_tiles_and_long_layouts_split_into_bands_and_jobs() {
+    let plane = noisy(CfaPattern::Bayer(Bayer::Rggb), 150, 130, (0, 0), (0, 0));
+    let mut recipe = curve_recipe();
+    recipe.output_profile = profile(2);
+    for threads in [1, 2, 8] {
+        let mut whole = Recorder::new(&recipe);
+        let (reference, whole_receipt) = run_digest(&plane, &recipe, 16, Some(&mut whole), threads).unwrap();
+        assert_eq!(whole.layouts.len(), 1);
+
+        // 16x16 tiles of 256 pixels in bands of at most 100 (100 + 100 + 56), 40 bands per job.
+        let mut cut = Recorder::new(&recipe);
+        cut.limits = BandLimits { band_pixels: 100, max_bands: 40 };
+        let (digest, receipt) = run_digest(&plane, &recipe, 16, Some(&mut cut), threads).unwrap();
+        assert_eq!(digest, reference, "{threads} threads: the cut changes no pixel");
+        assert!(cut.layouts.len() > 1, "{threads} threads: {} jobs", cut.layouts.len());
+        let total_bands: usize = cut.layouts.iter().map(Vec::len).sum();
+        assert!(cut.layouts.iter().all(|layout| layout.len() <= 40));
+        assert!(cut.layouts.iter().flatten().all(|n| *n <= 100));
+        assert_eq!(cut.layouts.iter().flatten().sum::<usize>() as u64, receipt.pixels);
+        assert_eq!(receipt.pixels, whole_receipt.pixels);
+        assert_eq!((receipt.profile_calls as usize, cut.calls as usize), (total_bands, total_bands));
+        assert_eq!(cut.log.lock().unwrap().len(), total_bands);
     }
 }
 
@@ -299,7 +404,6 @@ fn lowest_failing_tile_decides_the_error_for_every_thread_count() {
                 let mut recorder = Recorder::new(&with_converter);
                 let batched = run_digest(&plane, &with_converter, 32, Some(&mut recorder), threads).err();
                 assert_eq!(batched, Some(expected), "converter path, top_high {top_high}, {threads} threads");
-                assert!(!recorder.off_thread);
             }
         }
     }
@@ -352,12 +456,12 @@ fn cancellation_returns_canceled_and_no_partial_output() {
         });
         assert_eq!((result.err(), delivered), (Some(DevelopError::Canceled), 0), "in-flight cancel, {threads} threads");
 
-        // Cancelled from inside the converter on its third call: Canceled, nothing delivered.
+        // Cancelled from inside the converter on its third band: Canceled, nothing delivered.
         let mut converting = recipe.clone();
         converting.output_profile = profile(2);
         let cancel = CancellationToken::default();
         let mut recorder = Recorder::new(&converting);
-        recorder.cancel_on_call = Some((3, cancel.clone()));
+        recorder.cancel_on_band = Some((3, cancel.clone()));
         let mut delivered = 0u32;
         let result = develop_with_threads(&request(&plane, &converting, 24), Some(&mut recorder), t, &cancel, &mut |_| {
             delivered += 1;

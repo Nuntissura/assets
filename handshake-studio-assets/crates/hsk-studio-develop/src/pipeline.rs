@@ -1,7 +1,7 @@
 //! Decoded-CFA source plane, normalisation, bilinear reflect demosaic and the develop stages
 //! (STU-CON-043..045). Scalar oracle only: written products, no FMA, checked arithmetic.
 use crate::DevelopError;
-use crate::convert::{ConversionStats, ProfileConverter};
+use crate::convert::{BandLimits, ConversionStats, ProfileConverter, pixel_limit};
 use crate::par::{Threads, band_rows, for_each_band, run_indexed};
 use crate::recipe::{
     DEMOSAIC_ALGORITHM, DevelopRecipe, ENGINE_VERSION, MATH_TOKEN, PROCESS_VERSION,
@@ -592,11 +592,13 @@ pub struct DevelopReceipt {
     pub route: &'static str,
     /// "identity_uninspected" (no converter, profiles equal), "identity_inspected" (converter
     /// inspected both, equal) or "prism_admitted_wide" (both profiles inspected through the
-    /// admitted Prism route, pixels converted by Prism's wide engine).
+    /// admitted Prism route, pixels converted by a Prism admitted wide job).
     pub profile_route: &'static str,
-    /// Number of converter requests (wide Prism transforms of at most `WIDE_CHUNK_PIXELS`).
+    /// Number of bands the converter converted (one per tile; a tile above the converter's
+    /// `BandLimits::band_pixels` is several).
     pub profile_calls: u32,
-    /// Plan-cache use and destination clip report of the converter (default when none ran).
+    /// Plan-cache use (one hit or miss per converter job) and destination clip report of the
+    /// converter (default when none ran).
     pub profile_stats: ConversionStats,
     pub limits: &'static str,
     pub source_bounds: (u32, u32, u32, u32),
@@ -715,9 +717,6 @@ fn checked_i64(value: i128) -> Result<i64, DevelopError> {
     i64::try_from(value).map_err(|_| DevelopError::Overflow)
 }
 
-/// Tiles of stage A held at once on the converter route, per worker thread.
-const BATCH_TILES_PER_THREAD: usize = 4;
-
 /// One grid tile's bounds and the part of it inside the mapped crop.
 #[derive(Clone, Copy)]
 struct TileGeometry {
@@ -729,6 +728,55 @@ impl TileGeometry {
     fn pixels(&self) -> usize {
         self.developed.width as usize * self.developed.height as usize
     }
+}
+
+/// One converter job: a window of consecutive tiles, each cut into bands of at most
+/// `BandLimits::band_pixels` pixels (one band per tile unless a tile is larger).
+struct BandWindow {
+    /// Indices of the tiles the window covers.
+    tiles: std::ops::Range<usize>,
+    /// Pixels of every band of the window, in band order.
+    bands: Vec<usize>,
+    /// Index in `bands` of each covered tile's first band.
+    first_band: Vec<usize>,
+}
+
+/// The window that starts at tile `start`: tiles are added while the job stays within
+/// `limits.max_bands` (at least one tile). A single tile that alone needs more bands than that is
+/// Prism's typed `pixel_limit` refusal, raised before the band list is built.
+fn band_window(
+    geometries: &[TileGeometry],
+    start: usize,
+    limits: BandLimits,
+) -> Result<BandWindow, DevelopError> {
+    let band_pixels = limits.band_pixels.max(1);
+    let max_bands = limits.max_bands.max(1);
+    let mut bands = Vec::new();
+    let mut first_band = Vec::new();
+    let mut end = start;
+    while let Some(geometry) = geometries.get(end) {
+        let pixels = geometry.pixels();
+        let count = pixels.div_ceil(band_pixels);
+        if count > max_bands {
+            return Err(pixel_limit());
+        }
+        if end > start && bands.len().saturating_add(count) > max_bands {
+            break;
+        }
+        first_band.push(bands.len());
+        let mut left = pixels;
+        while left > 0 {
+            let band = left.min(band_pixels);
+            bands.push(band);
+            left -= band;
+        }
+        end += 1;
+    }
+    Ok(BandWindow {
+        tiles: start..end,
+        bands,
+        first_band,
+    })
 }
 
 /// Everything a tile job reads; all of it is immutable, so workers share it freely.
@@ -840,10 +888,11 @@ pub fn develop(
     develop_with_threads(request, None, Threads::auto(), cancel, sink)
 }
 
-/// [`develop`] with an optional working -> output profile converter (admitted inspection, wide Prism transform).
-/// A recipe whose working and output profiles differ requires a converter whose bindings match
-/// the recipe exactly; with a converter, both profiles are inspected (admitted, linear-light)
-/// before any pixel is computed, and identical profiles skip the transform only after that.
+/// [`develop`] with an optional working -> output profile converter (admitted inspection, Prism
+/// admitted wide job). A recipe whose working and output profiles differ requires a converter whose
+/// bindings match the recipe exactly; with a converter, both profiles are inspected (admitted,
+/// linear-light) before any pixel is computed, and identical profiles skip the transform only
+/// after that.
 pub fn develop_with(
     request: &DevelopRequest<'_>,
     converter: Option<&mut dyn ProfileConverter>,
@@ -857,11 +906,12 @@ pub fn develop_with(
 /// and refusals are identical for every thread count (including `Threads::single()`, which spawns
 /// nothing); proven by `tests/develop_parallel.rs` (`output_is_identical_for_every_thread_count`,
 /// `lowest_failing_tile_decides_the_error_for_every_thread_count`). Tiles are independent, so
-/// workers take tiles from a shared counter. The converter is a single stateful port, driven from
-/// the calling thread in tile order (`converter_is_driven_in_tile_order_on_the_calling_thread`),
-/// with stage A of a batch of tiles computed in parallel before it and stage C after it.
-/// Cancellation is checked between tiles (`cancellation_returns_canceled_and_no_partial_output`);
-/// when several tiles fail, the lowest tile's error is returned, as in a serial run.
+/// workers take tiles from a shared counter. A converter prepares one thread-shared job per
+/// window of tiles (all tiles unless the converter's `BandLimits::max_bands` is exceeded) before
+/// any tile is computed; each worker converts its own tile's bands between stage A and stage C
+/// (`converter_bands_run_once_each_on_the_tile_workers`). Cancellation is checked between tiles
+/// and inside bands (`cancellation_returns_canceled_and_no_partial_output`); when several tiles
+/// fail, the lowest tile's error is returned, as in a serial run.
 pub fn develop_with_threads(
     request: &DevelopRequest<'_>,
     mut converter: Option<&mut dyn ProfileConverter>,
@@ -960,48 +1010,46 @@ pub fn develop_with_threads(
             job.stage_a(&geometry, working)?;
             job.stage_c(&geometry, working)
         })?,
+        // Conversion: each tile is one job on a worker (stage A, the converter's bands in place on
+        // the worker's scratch, stage C). The converter job is `Sync` and shared by all workers;
+        // the lowest failing tile decides the error exactly as in a serial run, and a geometry
+        // failure is held back until every tile before it succeeded.
         Some(convert) => {
-            let mut tiles = Vec::with_capacity(tile_total);
-            let batch = threads.get().saturating_mul(BATCH_TILES_PER_THREAD).max(1);
-            let mut start = 0usize;
-            while start < tile_total {
-                let end = tile_total.min(start + batch);
-                // Stage A of the batch in parallel. A tile's own failure is held back as its value,
-                // so it is reported only when that tile is reached in order (as in a serial run).
-                let staged = run_indexed(end - start, threads, cancel, Vec::new, |working, offset| {
-                    Ok(job.geometry(start + offset).and_then(|geometry| {
-                        job.stage_a(&geometry, working)?;
-                        Ok((geometry, std::mem::take(working)))
-                    }))
-                })?;
-                // The converter is driven here, serially, in tile order.
-                let mut ready = Vec::with_capacity(staged.len());
-                let mut stopped = None;
-                for item in staged {
-                    let converted = item.and_then(|(geometry, working)| {
-                        cancel.check()?;
-                        let pixels = convert.convert(&working, cancel)?;
-                        if pixels.len() != geometry.pixels() {
-                            return Err(DevelopError::InvalidLength);
-                        }
-                        Ok((geometry, pixels))
-                    });
-                    match converted {
-                        Ok(pair) => ready.push(pair),
-                        Err(error) => {
-                            stopped = Some(error);
-                            break;
-                        }
+            let limits = convert.band_limits();
+            let band_pixels = limits.band_pixels.max(1);
+            let mut geometries = Vec::new();
+            let mut geometry_failure = None;
+            for index in 0..tile_total {
+                match job.geometry(index) {
+                    Ok(geometry) => geometries.push(geometry),
+                    Err(error) => {
+                        geometry_failure = Some(error);
+                        break;
                     }
                 }
-                // Stage C of every tile before a stopped one: their failures come first in order.
-                tiles.extend(run_indexed(ready.len(), threads, cancel, || (), |(), index| {
-                    job.stage_c(&ready[index].0, &ready[index].1)
-                })?);
-                if let Some(error) = stopped {
-                    return Err(error);
-                }
-                start = end;
+            }
+            let mut tiles = Vec::with_capacity(geometries.len());
+            let mut start = 0usize;
+            while start < geometries.len() {
+                let window = band_window(&geometries, start, limits)?;
+                // Everything the conversion needs is charged and allocated here, before any pixel.
+                let converting = convert.prepare(&window.bands, cancel)?;
+                let converted = run_indexed(window.tiles.len(), threads, cancel, Vec::new, |working, offset| {
+                    let geometry = &geometries[window.tiles.start + offset];
+                    job.stage_a(geometry, working)?;
+                    let first = window.first_band[offset];
+                    for (k, band) in working.chunks_mut(band_pixels).enumerate() {
+                        converting.convert_band(first + k, band, cancel)?;
+                    }
+                    job.stage_c(geometry, working)
+                })?;
+                // An aborted run (error or cancellation above) drops the job unfinished.
+                converting.finish(cancel)?;
+                tiles.extend(converted);
+                start = window.tiles.end;
+            }
+            if let Some(error) = geometry_failure {
+                return Err(error);
             }
             tiles
         }
