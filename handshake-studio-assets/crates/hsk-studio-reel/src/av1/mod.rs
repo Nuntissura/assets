@@ -12,6 +12,12 @@
 //! flag always comes from the sequence header. Refused with typed errors: `av1C` version/profile this
 //! build does not define (`Unsupported`), reserved bit depths, malformed streams (`Corrupt`), frames
 //! beyond the limits (`LimitExceeded`), content-encoded Matroska tracks (`Unsupported`).
+//!
+//! TRUSTED INPUT ONLY. rav1d 1.1.0 still contains `unwrap`/index panics reachable from corrupted
+//! bitstreams (observed: `decode.rs:4997` `Option::unwrap()` on a byte-mutated fixture). rav1d exposes the
+//! decoder as `extern "C"` functions, and a panic inside one aborts the whole process (it cannot be caught
+//! with `catch_unwind`). Until decode runs in an isolated worker process (planned subprocess isolation,
+//! `hsk-studio-reel-native`), do not feed this decoder bytes from an untrusted source.
 mod ffi;
 
 use crate::error::{ReelError, check_cancel};
