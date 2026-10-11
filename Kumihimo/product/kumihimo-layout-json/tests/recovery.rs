@@ -312,6 +312,9 @@ fn explicit_float_repair_and_host_admission_are_atomic() {
     let (mut c, w, f, _) = populated();
     let mut context = GeometryContext::new(Rect::new(0., 0., 800., 600.).unwrap());
     context.allow_floating = true;
+    context
+        .allowed_docks
+        .push(DockLocation::Append { workspace: w });
     run(
         &mut c,
         Command::SetGeometryContext {
@@ -416,6 +419,9 @@ fn nested_group_closed_tool_float_and_max_projection_roundtrip() {
     .unwrap();
     let mut context = GeometryContext::new(Rect::new(0., 0., 1000., 800.).unwrap());
     context.allow_floating = true;
+    context
+        .allowed_docks
+        .push(DockLocation::Append { workspace: w });
     context.frame_weights.insert(f, Scalar::new(3.).unwrap());
     run(
         &mut c,

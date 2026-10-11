@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-generation: 10
+generation: 11
 phase: active
 owner: coder_02
 changed_files:
@@ -100,6 +100,12 @@ proof:
     keys. Only layout_contracts.rs corrected to identical paired command keys plus explicit original-scope assertions
     and detached identity normalization; next-ID and own-Core atomicity unchanged. Later suites pending.
   product_content_hash: 85ebf91298e9467a2fcbea286f4a815042bd7d7d856611a46fe4fdd6569130e9
+- kind: three_setup_remediations
+  source_revision: 6aa9b73c77fce8f4a8853d429dff7058d883b26f
+  observed: Batched49 tests:46green/3RED in new fixture setup. Solver extent1001x510 exceeds initial1000wide; premaxviewport1100
+    added with explicit extent assertion, latermax100/minima500 unchanged. Two JSONfloats require explicit allowedAppend
+    return; hostpolicy supplied in fixtures. Only2testfiles changed; production unchanged; runtime pending.
+  product_content_hash: 30d4c577181407c3d8bef8d5e1fd88b97ad1e4790bd0a805385cca182b9d39c8
 blockers: []
-next_action: Publish layout-test corrective candidate; focused layout gate, pending no-fail-fast workspace batch
+next_action: Publish2test corrective candidate; focused layout-recovery/JSON-recovery gates then final workspace
   and examples

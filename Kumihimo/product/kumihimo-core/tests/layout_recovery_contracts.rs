@@ -20,8 +20,12 @@ fn envelope(core: &Core, command: Command) -> Envelope {
     }
 }
 fn apply(core: &mut Core, command: Command) -> Change {
+    let diagnostic = format!("{command:?}");
     let envelope = envelope(core, command);
-    core.execute(envelope).outcome.result.unwrap()
+    core.execute(envelope)
+        .outcome
+        .result
+        .unwrap_or_else(|error| panic!("{error:?} applying {diagnostic}"))
 }
 fn reject(core: &mut Core, command: Command) -> Error {
     let before = core.snapshot().clone();
@@ -509,7 +513,7 @@ fn projected_tools_hide_sibling_and_cell_constraints_and_guard_all_movement_rout
             plan: grid,
         },
     );
-    context(&mut core, w, GeometryContext::new(rect(1000.0, 1000.0)));
+    context(&mut core, w, GeometryContext::new(rect(1100.0, 1000.0)));
     let root = ToolPlacement::Edge {
         anchor: ToolAnchor::Workspace(w),
         edge: Edge::Top,
@@ -559,6 +563,10 @@ fn projected_tools_hide_sibling_and_cell_constraints_and_guard_all_movement_rout
         };
         ids.push(id);
     }
+    assert_eq!(
+        core.snapshot().geometry(w).unwrap().required_extent,
+        size(1001.0, 510.0)
+    );
     apply(&mut core, Command::Maximize { frame: a });
     context(&mut core, w, GeometryContext::new(rect(100.0, 100.0)));
     let g = core.snapshot().geometry(w).unwrap();
