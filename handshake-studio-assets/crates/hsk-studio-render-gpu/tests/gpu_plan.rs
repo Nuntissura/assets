@@ -2975,9 +2975,10 @@ fn ext_blend_if_parity() {
         "Blend-If must change the output, changed {differing} texels"
     );
 
-    // (b) Blend-If on a clipped layer of a clipping run, a layer sourced from an isolated group,
-    // and a layer inside that group. (The BASE of a run is refused: pigment's clip rule does not
-    // define where its ranges apply; see fx_admission_and_refusals_run_without_adapter.)
+    // (b) Blend-If on an unclipped layer after a clipping run, a layer sourced from an isolated
+    // group, and a layer inside that group. The clip base and the clipped layer of the run carry
+    // none: pigment defines no Blend-If on either, admission refuses it (checked below, and in
+    // fx_admission_and_refusals_run_without_adapter).
     let ge = rect(0, 0, 26, 20);
     let t_a = OwnedTile::random(26, 20, 101);
     let t_b = OwnedTile::random(26, 20, 102);
@@ -3008,15 +3009,13 @@ fn ext_blend_if_parity() {
                 ..layer(2, StudioBlendMode::Overlay, 0.8, 1.0)
             },
             layer(4, StudioBlendMode::Normal, 0.6, 1.0), // isolated group as the source
+            layer(2, StudioBlendMode::Overlay, 0.8, 1.0), // unclipped, the former clipped layer's source
         ],
     );
     let root = plan.root;
+    let blue = entry(BlendChannel::Blue, IDENTITY_RANGE, [0.0, 0.0, 0.6, 0.95]);
     let ext = PlanExtensions::from_layers(vec![
-        LayerExtension::new(root, 2).with_blend_if(vec![entry(
-            BlendChannel::Blue,
-            IDENTITY_RANGE,
-            [0.0, 0.0, 0.6, 0.95],
-        )]),
+        LayerExtension::new(root, 4).with_blend_if(vec![blue]),
         LayerExtension::new(root, 3).with_blend_if(vec![entry(
             BlendChannel::Green,
             [0.2, 0.5, 1.0, 1.0],
@@ -3041,6 +3040,33 @@ fn ext_blend_if_parity() {
         "Blend-If group/clip parity {err:e}"
     );
     assert_eq!(backend.resident_bytes(), 0);
+
+    // (c) Refusal: the same ranges on the clip base (root layer 1) and on the clipped layer (root
+    // layer 2) are refused by shared admission with pigment's keys, before any upload or sink call.
+    // Non-vacuity: the unclipped layer 4 above carried the identical entry in (b) and rendered.
+    for (layer_index, key) in [(1, "blend_if_clip_base"), (2, "blend_if_clipped_layer")] {
+        let refused = PlanExtensions::from_layers(vec![
+            LayerExtension::new(root, layer_index).with_blend_if(vec![blue]),
+        ]);
+        let mut sink = Image::new(ge);
+        assert_eq!(
+            run_ext(
+                backend,
+                &plan,
+                &refused,
+                &request(32, Exactness::Approximate),
+                &gsources,
+                &mut sink
+            ),
+            Err(BackendError::Unsupported {
+                operator: key,
+                exactness: Exactness::Unsupported
+            }),
+            "layer {layer_index}"
+        );
+        assert_eq!(sink.accepted, 0, "layer {layer_index}: sink untouched");
+        assert_eq!(backend.resident_bytes(), 0);
+    }
 }
 
 /// One adjustment case on the 17^3 colour lattice.
@@ -3414,6 +3440,15 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
             backend.extension_exactness(ExtOperator::Knockout(depth)),
             Exactness::Unsupported
         );
+    }
+    // Blend-If on a clip base or a clipped layer has no definition: Unsupported in pigment and here
+    for (op, key) in [
+        (ExtOperator::BlendIfClipBase, "blend_if_clip_base"),
+        (ExtOperator::BlendIfClippedLayer, "blend_if_clipped_layer"),
+    ] {
+        assert_eq!(op.key(), key);
+        assert_eq!(op.intrinsic(), Exactness::Unsupported);
+        assert_eq!(backend.extension_exactness(op), Exactness::Unsupported);
     }
     // effects are implemented (fx_* tests); their class is pigment's (Approximate)
     for kind in EffectKind::ALL {
@@ -4779,8 +4814,10 @@ fn fx_admission_and_refusals_run_without_adapter() {
         Err(BackendError::BudgetExceeded { limit: 100, .. })
     ));
 
-    // Blend-If on the base of a clipping run is refused (pigment's clip rule does not define it);
-    // the same entry on the clipped layer is admitted and only the missing device remains
+    // Blend-If on the base of a clipping run and on a clipped layer is refused by shared admission
+    // (no public source defines either; pigment's keys), before any adapter use; the same entry on
+    // an unclipped layer, and identity ranges on either role, are admitted and only the missing
+    // device remains
     let clip_plan = plan_of(
         72,
         extent,
@@ -4807,29 +4844,41 @@ fn fx_admission_and_refusals_run_without_adapter() {
         LayerExtension::new(clip_plan.root, 1).with_blend_if(entry.clone()),
     ]);
     let on_clipped = PlanExtensions::from_layers(vec![
-        LayerExtension::new(clip_plan.root, 2).with_blend_if(entry),
+        LayerExtension::new(clip_plan.root, 2).with_blend_if(entry.clone()),
+    ]);
+    let on_unclipped = PlanExtensions::from_layers(vec![
+        LayerExtension::new(clip_plan.root, 0).with_blend_if(entry),
+    ]);
+    let identity_on_roles = PlanExtensions::from_layers(vec![
+        LayerExtension::new(clip_plan.root, 1)
+            .with_blend_if(vec![BlendRangeEntry::identity(BlendChannel::Gray)]),
+        LayerExtension::new(clip_plan.root, 2)
+            .with_blend_if(vec![BlendRangeEntry::identity(BlendChannel::Red)]),
     ]);
     let approx72 = request(72, Exactness::Approximate);
-    assert!(matches!(
-        run_ext(
-            &backend, &clip_plan, &on_base, &approx72, &sources, &mut sink
-        ),
-        Err(BackendError::Unsupported {
-            operator: "blend_if_clip_base",
-            ..
-        })
-    ));
-    assert_eq!(
-        run_ext(
-            &backend,
-            &clip_plan,
-            &on_clipped,
-            &approx72,
-            &sources,
-            &mut sink
-        ),
-        Err(BackendError::Unavailable("no_adapter"))
-    );
+    for (ext, key) in [
+        (&on_base, "blend_if_clip_base"),
+        (&on_clipped, "blend_if_clipped_layer"),
+    ] {
+        assert_eq!(
+            run_ext(&backend, &clip_plan, ext, &approx72, &sources, &mut sink),
+            Err(BackendError::Unsupported {
+                operator: key,
+                exactness: Exactness::Unsupported
+            }),
+            "{key}"
+        );
+    }
+    for (ext, what) in [
+        (&on_unclipped, "unclipped layer"),
+        (&identity_on_roles, "identity ranges on both roles"),
+    ] {
+        assert_eq!(
+            run_ext(&backend, &clip_plan, ext, &approx72, &sources, &mut sink),
+            Err(BackendError::Unavailable("no_adapter")),
+            "{what}: admitted, only the missing device remains"
+        );
+    }
     // nothing above touched the sink or the residency ledger
     assert_eq!(sink.accepted, 0);
     assert_eq!(backend.resident_bytes(), 0);

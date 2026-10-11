@@ -43,8 +43,8 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::effect_math::EffectKind;
 use hsk_studio_pigment::render_plan::{
-    AlphaConvention, BackendError, BackendIdentity, ColourTag, DeviceClass, Exactness,
-    ExactnessLedger, ExecuteRequest, ExtOperator, Knockout, MaskFormat, NoVector, Operator,
+    AlphaConvention, BackendError, BackendIdentity, ClipRole, ColourTag, DeviceClass, Exactness,
+    ExactnessLedger, ExecuteRequest, ExtOperator, Group, Knockout, MaskFormat, NoVector, Operator,
     PlanExtensions, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan, RenderReceipt,
     SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink, admit,
     admit_extended,
@@ -202,6 +202,17 @@ fn unsupported(operator: &'static str) -> GpuError {
         operator,
         exactness: Exactness::Unsupported,
     })
+}
+/// The refusal key of a non-identity Blend-If on `group.layers[index]` when its clip role has none
+/// defined: the base of a clipping run or a clipped layer. Roles are pigment's
+/// (`Group::clip_role`) and keys are pigment's (`ExtOperator::key`), so this backend and shared
+/// admission cannot disagree. `None` for an unclipped layer (or an index outside the group).
+fn blend_if_clip_refusal(group: &Group, index: usize) -> Option<&'static str> {
+    match group.clip_role(index)? {
+        ClipRole::Base => Some(ExtOperator::BlendIfClipBase.key()),
+        ClipRole::Clipped => Some(ExtOperator::BlendIfClippedLayer.key()),
+        ClipRole::Unclipped => None,
+    }
 }
 fn mismatch(key: SourceKey) -> GpuError {
     GpuError::Backend(BackendError::SourceMismatch(key))
@@ -583,19 +594,17 @@ fn prepare<'a>(
                     if blend_if.is_some() && fx.is_some() {
                         return Err(unsupported("effects_with_blend_if"));
                     }
-                    // Blend-If on the base of a clipping run: pigment's `BaseAlpha` rule lists the
-                    // base's mode, opacity and fill for the run composite and the mask for the run
-                    // unit, and does not say where the base's Blend-If ranges apply (at the final
-                    // composite, or while the unit is formed), so it is refused instead of guessed
-                    // (test fx_admission_and_refusals_run_without_adapter).
-                    let is_clip_base = !clipped
-                        && g.layers
-                            .get(layer_index.saturating_add(1))
-                            .is_some_and(|next| {
-                                next.mask.as_ref().is_some_and(|m| m.is_clip_to_base())
-                            });
-                    if blend_if.is_some() && is_clip_base {
-                        return Err(unsupported("blend_if_clip_base"));
+                    // Blend-If on the base of a clipping run or on a clipped layer: no public source
+                    // defines it, so pigment refuses it for every backend in `admit_extended`
+                    // (`BlendIfClipBase`, `BlendIfClippedLayer`) before this point. Kept as defence
+                    // in depth under the same keys (the roles and keys are pigment's, unit test
+                    // `clip_role_blend_if_refusal_uses_pigments_roles_and_keys`; the public refusal
+                    // is tested by fx_admission_and_refusals_run_without_adapter and
+                    // ext_blend_if_parity).
+                    if blend_if.is_some()
+                        && let Some(key) = blend_if_clip_refusal(g, layer_index)
+                    {
+                        return Err(unsupported(key));
                     }
                     has_ext |= blend_if.is_some() || adjust.is_some();
                     // The layer's bounds grow by its effect margin; the margin of the node is the
@@ -1080,7 +1089,9 @@ impl RenderBackend<NoVector> for GpuBackend {
     /// the reported class never exceeds pigment's (CX-CAP-001; test
     /// ext_refusals_and_capabilities_run_without_adapter). The adjustment kinds are those with a
     /// shader body (`gpu_adjust_supported`), the effect kinds are the six of pigment's waves 1 and
-    /// 2; knockout is not implemented.
+    /// 2; knockout is not implemented, and Blend-If on a clip base or a clipped layer
+    /// (`BlendIfClipBase`, `BlendIfClippedLayer`) is Unsupported because no definition exists (test
+    /// ext_refusals_and_capabilities_run_without_adapter).
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
         let supported = match operator {
             ExtOperator::AdjustmentLayer
@@ -2252,4 +2263,54 @@ fn run(
         cy = cy.checked_add(side_h).ok_or_else(overflow)?;
     }
     Ok(chunks)
+}
+
+/// Defence in depth for Blend-If on a clip role: `admit_extended` refuses it first, so `prepare`
+/// cannot be reached with one through the public API; the roles and keys it uses are tested here.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hsk_studio_pigment::render_plan::{Layer, MaskInput};
+
+    fn plain(input: u32) -> Layer {
+        Layer {
+            input: PlanNodeId(input),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            mask: None,
+        }
+    }
+    fn clipped(input: u32) -> Layer {
+        Layer {
+            mask: Some(MaskInput::clip_to_base()),
+            ..plain(input)
+        }
+    }
+
+    #[test]
+    fn clip_role_blend_if_refusal_uses_pigments_roles_and_keys() {
+        // [unclipped, base, clipped, clipped, unclipped]; index 5 is outside the group.
+        let group = Group {
+            isolated: true,
+            layers: vec![plain(0), plain(1), clipped(2), clipped(3), plain(4)],
+        };
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5].map(|i| blend_if_clip_refusal(&group, i)),
+            [
+                None,
+                Some("blend_if_clip_base"),
+                Some("blend_if_clipped_layer"),
+                Some("blend_if_clipped_layer"),
+                None,
+                None
+            ]
+        );
+        // The keys are pigment's operator keys, not a local spelling.
+        assert_eq!(ExtOperator::BlendIfClipBase.key(), "blend_if_clip_base");
+        assert_eq!(
+            ExtOperator::BlendIfClippedLayer.key(),
+            "blend_if_clipped_layer"
+        );
+    }
 }
