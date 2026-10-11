@@ -1,6 +1,11 @@
 //! Command-line surface as a pure function: arguments in, (exit code, stdout text) out. The
 //! example binary only forwards process arguments and prints the result, so every command is
 //! testable without spawning a process, opening a window or touching the environment.
+//!
+//! Two refusals keep a green exit honest (tests: `verify_checks_something_and_save_never_clobbers_the_input`
+//! in `tests/harness_headless.rs`): `verify` with no expectation is a usage error (exit 2), and
+//! `edit --save OUT` where OUT is the input PACKAGE is a usage error unless `--overwrite` is given.
+#![deny(clippy::arithmetic_side_effects)]
 
 use crate::harness::{Harness, HarnessError, References, Selection, default_actor};
 use crate::manual::{manual_json, manual_text};
@@ -27,6 +32,7 @@ struct Parsed {
     layer: Option<String>,
     expect_revision: Option<u64>,
     save: Option<PathBuf>,
+    overwrite: bool,
     cancel: bool,
     json: bool,
     edits: Vec<EditOp>,
@@ -47,12 +53,11 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
     let mut i = 0;
     let take = |i: &mut usize, what: &str| -> Result<String, String> {
         let v = args.get(*i).ok_or_else(|| format!("missing {what}"))?;
-        *i += 1;
+        *i = i.saturating_add(1);
         Ok(v.clone())
     };
-    while i < args.len() {
-        let arg = args[i].clone();
-        i += 1;
+    while let Some(arg) = args.get(i).cloned() {
+        i = i.saturating_add(1);
         match arg.as_str() {
             "--provider" => p.providers.push(take(&mut i, "provider id")?),
             "--references" => {
@@ -68,6 +73,7 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
                     Some(take(&mut i, "revision")?.parse::<u64>().map_err(|_| "revision must be an unsigned integer".to_string())?)
             }
             "--save" => p.save = Some(PathBuf::from(take(&mut i, "output path")?)),
+            "--overwrite" => p.overwrite = true,
             "--cancel" => p.cancel = true,
             "--json" => p.json = true,
             "--rename" => {
@@ -168,7 +174,27 @@ fn help(parsed: &Parsed) -> CliOutput {
     })
 }
 
+/// Whether two paths name the same file (resolved when both exist, literal comparison otherwise).
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 fn execute(command: &str, harness: &Harness, parsed: &Parsed, package: &Path) -> CliOutput {
+    // A verify that checks nothing would report a pass for nothing: refuse it before opening.
+    if command == "verify" && parsed.expect_revision.is_none() && parsed.expect_names.is_empty() && parsed.expect_visible.is_empty() {
+        return usage("verify needs at least one of --expect-revision, --expect-name, --expect-visible (a verify that checks nothing is refused)");
+    }
+    // The input package is replaced in place only on explicit request.
+    if let Some(save) = &parsed.save
+        && command == "edit"
+        && !parsed.overwrite
+        && same_file(save, package)
+    {
+        return usage("--save names the input PACKAGE; pass --overwrite to replace it in place, or save to another path");
+    }
     let cancel = CancellationToken::default();
     if parsed.cancel {
         cancel.cancel();

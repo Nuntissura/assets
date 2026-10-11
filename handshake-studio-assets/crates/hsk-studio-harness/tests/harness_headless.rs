@@ -40,11 +40,12 @@ fn layer<'a>(summary: &'a Value, id: &str) -> &'a Value {
 struct Scratch(PathBuf);
 
 impl Scratch {
-    fn new() -> Self {
+    /// One directory per test (`label`), so tests running in parallel never share or remove it.
+    fn new(label: &str) -> Self {
         let base = std::env::temp_dir();
         let text = base.to_string_lossy().to_ascii_uppercase();
         assert!(!(cfg!(windows) && text.starts_with("C:")), "TMP is on C: ({}); run through studio-env.sh", base.display());
-        let dir = base.join(format!("hsk-harness-test-{}", std::process::id()));
+        let dir = base.join(format!("hsk-harness-test-{}-{label}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }
@@ -199,7 +200,7 @@ fn refusals_are_typed_and_nothing_is_committed() {
 
 #[test]
 fn files_are_saved_atomically_and_failed_edits_keep_the_last_good_file() {
-    let scratch = Scratch::new();
+    let scratch = Scratch::new("atomic-save");
     let out = scratch.0.join("edited.handshake");
     let out_s = out.to_str().unwrap();
     let src = fixture_path();
@@ -219,11 +220,94 @@ fn files_are_saved_atomically_and_failed_edits_keep_the_last_good_file() {
     assert!(exit == 1 && op(&v, "verify")["error"] == "verify_mismatch" && op(&v, "verify")["detail"]["expectations"][0]["ok"] == false);
 
     // A refused edit (stale revision) targeting the same destination leaves the last-good file byte-identical.
-    let (exit, r) = cli_json(&["edit", out_s, "--provider", "chronicle.patch", "--expect-revision", "3", "--rename", L1, "never", "--save", out_s]);
+    // (The destination is the input itself here, so the in-place replace is requested explicitly.)
+    let (exit, r) = cli_json(&["edit", out_s, "--provider", "chronicle.patch", "--expect-revision", "3", "--rename", L1, "never", "--save", out_s, "--overwrite"]);
     assert!(exit == 1 && op(&r, "rename")["error"] == "stale_revision");
     assert!(r["ops"].as_array().unwrap().iter().all(|o| o["op"] != "save"), "no save after a refused edit");
     assert_eq!(std::fs::read(&out).unwrap(), good);
     // Only the files this test created exist in the scratch directory (no temp leftovers from the atomic save).
     let names: Vec<_> = std::fs::read_dir(&scratch.0).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(names, ["edited.handshake"]);
+}
+
+// ----- review R5 regressions -------------------------------------------------------------------
+
+#[test]
+fn verify_checks_something_and_save_never_clobbers_the_input() {
+    let path = fixture_path();
+    let p = path.to_str().unwrap();
+
+    // `verify` with nothing to check is a usage error, not a pass (it used to exit 0 / "pass").
+    let (exit, r) = cli_json(&["verify", p]);
+    assert_eq!(exit, 2, "{r}");
+    assert!(r["ok"] == false && r["error"] == "usage" && r["verdict"] != "pass", "{r}");
+    assert_eq!(cli_json(&["verify", p, "--references", "trust_all"]).0, 2, "selection flags are not expectations");
+    // With an expectation it checks it: a true one passes, a false one fails.
+    let (exit, r) = cli_json(&["verify", p, "--expect-revision", "9"]);
+    assert!(exit == 0 && r["verdict"] == "pass" && op(&r, "verify")["detail"]["revision_match"] == true, "{r}");
+    let (exit, r) = cli_json(&["verify", p, "--expect-name", L1, "renamed-by-session"]);
+    assert!(exit == 0 && op(&r, "verify")["detail"]["expectations"][0]["ok"] == true, "{r}");
+    let (exit, r) = cli_json(&["verify", p, "--expect-revision", "3"]);
+    assert!(exit == 1 && r["verdict"] == "fail" && op(&r, "verify")["error"] == "verify_mismatch", "{r}");
+
+    // Library level: nothing to check is refused with its own frame; an edit committed earlier
+    // in the run counts as something to check.
+    let h = harness(&["chronicle.patch"]);
+    let cancel = CancellationToken::default();
+    let mut run = h.run(default_actor(), &cancel);
+    assert!(run.open_bytes(FIXTURE));
+    assert!(!run.verify_live(None, Vec::new()));
+    assert!(run.rename(L1, "renamed", None));
+    assert!(run.verify_live(None, Vec::new()));
+    let report = run.finish("test");
+    let verifies: Vec<&Value> = report["ops"].as_array().unwrap().iter().filter(|o| o["op"] == "verify").collect();
+    assert!(verifies[0]["error"] == "nothing_to_check" && verifies[0]["observe"]["frames"] == 1, "{report}");
+    assert!(verifies[1]["ok"] == true && verifies[1]["detail"]["expectations"].as_array().unwrap().len() == 1, "{report}");
+    assert_eq!(report["verdict"], "fail", "a refused verify keeps the run from passing");
+
+    // `edit --save` never replaces its own input unless asked to (any spelling of the same file).
+    let scratch = Scratch::new("save-guard");
+    let copy = scratch.0.join("copy.handshake");
+    std::fs::copy(&path, &copy).unwrap();
+    let before = std::fs::read(&copy).unwrap();
+    let copy_s = copy.to_str().unwrap();
+    let alias = scratch.0.join(".").join("copy.handshake");
+    let alias_s = alias.to_str().unwrap();
+    for save in [copy_s, alias_s] {
+        let (exit, r) = cli_json(&["edit", copy_s, "--provider", "chronicle.patch", "--rename", L1, "clobber", "--save", save]);
+        assert!(exit == 2 && r["error"] == "usage", "{r}");
+        assert_eq!(std::fs::read(&copy).unwrap(), before, "the input is untouched");
+    }
+    let (exit, r) = cli_json(&["edit", copy_s, "--provider", "chronicle.patch", "--rename", L1, "replaced", "--save", copy_s, "--overwrite"]);
+    assert_eq!(exit, 0, "{r}");
+    assert_ne!(std::fs::read(&copy).unwrap(), before, "--overwrite replaces the input");
+}
+
+#[test]
+fn an_empty_run_is_nothing_checked_not_a_pass() {
+    let h = harness(&[]);
+    let cancel = CancellationToken::default();
+    let report = h.run(default_actor(), &cancel).finish("test");
+    assert!(report["ok"] == false && report["verdict"] == "nothing_checked" && report["ops"].as_array().unwrap().is_empty(), "{report}");
+    // One successful operation is evidence; the same report then passes.
+    let mut run = h.run(default_actor(), &cancel);
+    assert!(run.open_bytes(FIXTURE));
+    let report = run.finish("test");
+    assert!(report["ok"] == true && report["verdict"] == "pass", "{report}");
+}
+
+#[test]
+fn quiet_sources_use_no_process_network_or_environment_api() {
+    let sources = [
+        ("cli.rs", include_str!("../src/cli.rs")),
+        ("harness.rs", include_str!("../src/harness.rs")),
+        ("lib.rs", include_str!("../src/lib.rs")),
+        ("manual.rs", include_str!("../src/manual.rs")),
+        ("panel.rs", include_str!("../src/panel.rs")),
+    ];
+    for (name, text) in sources {
+        for token in ["std::process", "Command::new", "std::net", "TcpStream", "UdpSocket", "std::env", "env::var"] {
+            assert!(!text.contains(token), "{name} mentions `{token}`");
+        }
+    }
 }

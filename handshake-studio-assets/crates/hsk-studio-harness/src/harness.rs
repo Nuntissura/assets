@@ -3,6 +3,12 @@
 //! panel, save, reopen, verify), records one JSON record per operation, and makes sure every
 //! operation produced exactly one Observe terminal frame (session operations through the session's
 //! own report, harness-owned operations through a harness-emitted frame).
+//!
+//! A report never passes without evidence: `finish` is `pass` only when at least one operation ran
+//! and every operation succeeded (no operations is `nothing_checked`), and `verify_live` refuses a
+//! verify with nothing to check. Tests: `verify_checks_something_and_save_never_clobbers_the_input`
+//! and `an_empty_run_is_nothing_checked_not_a_pass` in `tests/harness_headless.rs`.
+#![deny(clippy::arithmetic_side_effects)]
 
 use crate::panel::{self, PanelValues, Route};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
@@ -22,7 +28,7 @@ pub const SCHEMA: &str = "hsk.studio.harness@1";
 /// usable; nothing is registered by default.
 pub const AVAILABLE_PROVIDERS: &[&str] = &[CHRONICLE_PROVIDER_ID];
 
-/// Capabilities the harness cannot prove today (reported in every run, never silently Pass).
+/// Capabilities the harness cannot prove today (listed in every report's `not_proven`).
 pub const NOT_PROVEN: &[&str] = &[
     "visual_render_proof (no RenderPort; render engines are not dependencies of the harness)",
     "appearance_commit (chronicle has no appearance property; appearance controls are read-only projections)",
@@ -35,7 +41,7 @@ pub enum References {
     /// Nothing is available (folio `Unresolved`): the honest default.
     #[default]
     Unresolved,
-    /// Every reference is reported available. A development stand-in, never evidence.
+    /// Every reference is reported available. A development stand-in, not evidence.
     TrustAll,
 }
 
@@ -270,7 +276,7 @@ pub struct Run<'a> {
 
 impl Run<'_> {
     fn op_no(&self) -> u64 {
-        self.ops.len() as u64 + 1
+        u64::try_from(self.ops.len()).unwrap_or(u64::MAX).saturating_add(1)
     }
 
     fn ports(&self) -> SessionPorts {
@@ -286,7 +292,7 @@ impl Run<'_> {
             None => json!({"frames":frames,"status":"unaddressed"}),
         };
         let ok = result.is_ok();
-        let mut record = json!({"op":op,"n":self.ops.len() + 1,"ok":ok,"revision":revision,"observe":observe});
+        let mut record = json!({"op":op,"n":self.op_no(),"ok":ok,"revision":revision,"observe":observe});
         match result {
             Ok(detail) => record["detail"] = detail,
             Err(code) => record["error"] = json!(code),
@@ -614,7 +620,10 @@ impl Run<'_> {
         ok
     }
 
-    /// Verifies the working session against caller expectations (no reopen).
+    /// Verifies the working session against caller expectations (no reopen). A verify that has
+    /// nothing to check (no revision, no caller expectation, no edit committed earlier in this
+    /// run) is refused as `nothing_to_check`, not reported as a pass (test
+    /// `verify_checks_something_and_save_never_clobbers_the_input`).
     pub fn verify_live(&mut self, revision: Option<u64>, expectations: Vec<(String, &'static str, Value)>) -> bool {
         let before = self.frames.count();
         for (layer_id, field, expected) in expectations {
@@ -623,6 +632,9 @@ impl Run<'_> {
         let Some(live) = self.session.as_ref() else {
             return self.push("verify", before, Err("not_open"), None, None);
         };
+        if revision.is_none() && self.expectations.is_empty() {
+            return self.own_op("verify", before, Err("nothing_to_check"));
+        }
         let revision_ok = revision.is_none_or(|r| r == live.document_revision());
         let checks = self.check_expectations(live);
         let all = revision_ok && checks.iter().all(|c| c["ok"] == true);
@@ -647,16 +659,26 @@ impl Run<'_> {
             .collect()
     }
 
-    /// Finishes the run: the machine-readable report. `ok` only when every operation succeeded.
+    /// Finishes the run: the machine-readable report. `ok` only when at least one operation ran
+    /// and every operation succeeded; a run that performed no operation is `nothing_checked`
+    /// (`ok` false), not a pass (test `an_empty_run_is_nothing_checked_not_a_pass`).
     pub fn finish(self, command: &str) -> Value {
-        let ok = self.ops.iter().all(|o| o["ok"] == true);
+        let ran = !self.ops.is_empty();
+        let ok = ran && self.ops.iter().all(|o| o["ok"] == true);
         let frames = self.frames.count();
         let per_op_one_frame = self.ops.iter().all(|o| o["observe"]["frames"] == 1 || o["observe"]["status"] == "unaddressed");
+        let verdict = if !ran {
+            "nothing_checked"
+        } else if ok {
+            "pass"
+        } else {
+            "fail"
+        };
         json!({
             "schema": SCHEMA,
             "command": command,
             "ok": ok,
-            "verdict": if ok { "pass" } else { "fail" },
+            "verdict": verdict,
             "selection": {"providers": self.harness.selection.providers, "references": self.harness.selection.references.name()},
             "ops": self.ops,
             "observe": {"frames_total": frames, "one_frame_per_operation": per_op_one_frame},
@@ -666,7 +688,8 @@ impl Run<'_> {
 }
 
 /// Builds the chronicle `Patch` JSON for one property edit. The address and revision come from the
-/// session's own revision vector, so the patch always quotes what the session holds.
+/// session's own revision vector, so the patch quotes what the session holds (exercised by every
+/// edit in `open_edit_save_reopen_verify_end_to_end`).
 fn patch_json(session: &Session, actor: &ActorContext, layer_id: &str, prop: Prop, new: &PropValue, n: u64) -> Result<Vec<u8>, &'static str> {
     let layer = session.snapshot().document().layers.iter().find(|l| l.layer_id == layer_id).ok_or("unknown_layer")?;
     let (property, current) = match prop {
