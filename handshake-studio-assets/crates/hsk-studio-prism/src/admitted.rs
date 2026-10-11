@@ -42,7 +42,7 @@ pub struct ProfileAllocation {
     pub parser_bytes: u64,
     pub descriptor_bytes: u64,
 }
-fn supported_target() -> Result<(), Error> {
+pub(crate) fn supported_target() -> Result<(), Error> {
     if !cfg!(all(
         target_arch = "x86_64",
         target_os = "windows",
@@ -53,7 +53,7 @@ fn supported_target() -> Result<(), Error> {
     }
     Ok(())
 }
-fn add(a: u64, b: u64) -> Result<u64, Error> {
+pub(crate) fn add(a: u64, b: u64) -> Result<u64, Error> {
     a.checked_add(b).ok_or(Error::InvalidBudget)
 }
 fn bytes_for<T>(n: usize) -> Result<u64, Error> {
@@ -196,7 +196,7 @@ pub fn analytical_executor_bytes() -> Result<u64, Error> {
         .size() as u64;
     add(arc, bytes_for::<ParametricCurve>(2)?)
 }
-fn actor_bytes(a: &ActorContext) -> u64 {
+pub(crate) fn actor_bytes(a: &ActorContext) -> u64 {
     [
         a.account_id(),
         a.principal_id(),
@@ -209,7 +209,7 @@ fn actor_bytes(a: &ActorContext) -> u64 {
     .map(|s| s.len() as u64)
     .sum()
 }
-fn reserve<A: ProviderAdmission>(
+pub(crate) fn reserve<A: ProviderAdmission>(
     admission: &A,
     bytes: u64,
     t: &CancellationToken,
@@ -221,7 +221,7 @@ fn reserve<A: ProviderAdmission>(
 }
 // Construction has no caller cancellation token; creating a default token here
 // would allocate an unadmitted Arc even when admission rejects the constructor.
-fn reserve_without_cancellation<A: ProviderAdmission>(
+pub(crate) fn reserve_without_cancellation<A: ProviderAdmission>(
     admission: &A,
     bytes: u64,
 ) -> Result<A::Reservation, Error> {
