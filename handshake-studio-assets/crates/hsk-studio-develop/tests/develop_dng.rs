@@ -963,6 +963,38 @@ mod tracking {
     static ALLOCATOR: Tracking = Tracking;
 }
 
+/// Overwrite the inline value of a single-value LONG/SHORT entry in the raw IFD at `raw_at`.
+fn patch_long(bytes: &[u8], raw_at: usize, tag: u16, value: u32) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    let at = entry_at(&out, raw_at, tag);
+    out[at + 8..at + 12].copy_from_slice(&value.to_le_bytes());
+    out
+}
+
+fn entry_at(bytes: &[u8], raw_at: usize, tag: u16) -> usize {
+    let n = u16::from_le_bytes([bytes[raw_at], bytes[raw_at + 1]]) as usize;
+    (0..n)
+        .map(|i| raw_at + 2 + 12 * i)
+        .find(|at| u16::from_le_bytes([bytes[*at], bytes[*at + 1]]) == tag)
+        .unwrap_or_else(|| panic!("tag {tag} not found"))
+}
+
+/// Replace a single-value LONG entry by an array of `entries` copies of its value, appended to the
+/// end of the file (the file grows by 4 bytes per entry).
+fn patch_array(bytes: &[u8], raw_at: usize, tag: u16, entries: usize) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    let at = entry_at(&out, raw_at, tag);
+    assert_eq!(u16::from_le_bytes([out[at + 2], out[at + 3]]), 4, "LONG entry expected");
+    let value = [out[at + 8], out[at + 9], out[at + 10], out[at + 11]];
+    let start = out.len();
+    for _ in 0..entries {
+        out.extend_from_slice(&value);
+    }
+    out[at + 4..at + 8].copy_from_slice(&(entries as u32).to_le_bytes());
+    out[at + 8..at + 12].copy_from_slice(&(start as u32).to_le_bytes());
+    out
+}
+
 /// Review R5 (CONFIRMED, group A): a tiny lossless-JPEG DNG whose tile and image dimensions declare
 /// a 2^28-sample frame used to force the 512 MiB frame allocation (the block-size check only covered
 /// uncompressed data). The declared frame must now be refused against the payload before allocating.
@@ -970,25 +1002,11 @@ mod tracking {
 fn dng_lossless_jpeg_declared_frame_cannot_outgrow_the_payload() {
     bounded_case("dng_lossless_jpeg_declared_frame_cannot_outgrow_the_payload", || {
         let tiled = build(&Spec { tiles: Some((4, 4)), compression: 7, ..base() });
-        let patch = |bytes: &[u8], tag: u16, value: u32| -> Vec<u8> {
-            let mut out = bytes.to_vec();
-            let n = u16::from_le_bytes([out[tiled.raw_at], out[tiled.raw_at + 1]]) as usize;
-            let mut patched = false;
-            for i in 0..n {
-                let at = tiled.raw_at + 2 + 12 * i;
-                if u16::from_le_bytes([out[at], out[at + 1]]) == tag {
-                    out[at + 8..at + 12].copy_from_slice(&value.to_le_bytes());
-                    patched = true;
-                }
-            }
-            assert!(patched, "tag {tag} not found");
-            out
-        };
         // ImageWidth, ImageLength, TileWidth, TileLength all 16384: one 16384 x 16384 block (the
         // pixel cap is exactly 2^28), whose single stream is the original 16-sample one.
         let mut hostile = tiled.bytes.clone();
         for tag in [256, 257, 322, 323] {
-            hostile = patch(&hostile, tag, 16_384);
+            hostile = patch_long(&hostile, tiled.raw_at, tag, 16_384);
         }
         assert!(hostile.len() < 4096, "the hostile file must stay tiny ({} bytes)", hostile.len());
         // The tracker itself works: a 2 MiB request is seen.
@@ -998,13 +1016,90 @@ fn dng_lossless_jpeg_declared_frame_cannot_outgrow_the_payload() {
         tracking::arm();
         let result = decode_container(&hostile);
         let largest = tracking::disarm();
-        assert_eq!(result.err(), Some(DevelopError::InvalidDimensions));
         assert!(
             largest < 1 << 20,
             "decoding a {}-byte file requested a {largest}-byte allocation",
             hostile.len()
         );
+        assert_eq!(result.err(), Some(DevelopError::InvalidDimensions));
         // The honest file with the same layout still decodes.
         assert!(decode_container(&tiled.bytes).is_ok());
+    });
+}
+
+/// V4-02 `dims_u32_max`: every dimension field at u32::MAX (alone and together), in both
+/// compressions, is a typed refusal with no large allocation.
+#[test]
+fn dng_dims_u32_max_is_a_typed_refusal_without_allocation() {
+    bounded_case("dng_dims_u32_max", || {
+        for compression in [1u16, 7] {
+            let tiled = build(&Spec { tiles: Some((4, 4)), compression, ..base() });
+            for (tags, want) in [
+                (&[256u16][..], DevelopError::InvalidDimensions),
+                (&[257], DevelopError::InvalidDimensions),
+                (&[256, 257], DevelopError::InvalidDimensions),
+                (&[322], DevelopError::InvalidContainer),
+                (&[323], DevelopError::InvalidContainer),
+                (&[322, 323], DevelopError::InvalidContainer),
+                (&[256, 257, 322, 323], DevelopError::InvalidDimensions),
+            ] {
+                let mut hostile = tiled.bytes.clone();
+                for tag in tags {
+                    hostile = patch_long(&hostile, tiled.raw_at, *tag, u32::MAX);
+                }
+                tracking::arm();
+                let result = decode_container(&hostile);
+                let largest = tracking::disarm();
+                assert_eq!(result.err(), Some(want), "compression {compression}, tags {tags:?}");
+                assert!(largest < 1 << 20, "compression {compression}, tags {tags:?}: {largest}-byte allocation");
+            }
+        }
+    });
+}
+
+/// V4-02 `aggregate_over_budget`: individually valid declarations whose aggregate the payload
+/// cannot support, in both compressions, are refused before the frame allocation.
+#[test]
+fn dng_aggregate_over_budget_is_refused_before_allocating() {
+    bounded_case("dng_aggregate_over_budget", || {
+        // Over the pixel cap by one row of tiles: 16385 x 16384 > 2^28.
+        let tiled = build(&Spec { tiles: Some((4, 4)), ..base() });
+        let over_cap = patch_long(&patch_long(&tiled.bytes, tiled.raw_at, 256, 16_385), tiled.raw_at, 257, 16_384);
+        assert_eq!(decode_container(&over_cap).err(), Some(DevelopError::InvalidDimensions));
+
+        // Uncompressed: 4096 tile entries (256 x 256, 128 KiB each) all pointing at ONE real tile
+        // declare a 16384 x 16384 frame (512 MiB) from a file of about 130 KiB. Every block is
+        // inside the file, so only the aggregate check stops the allocation (the old code decoded it).
+        let one = build(&Spec {
+            width: 256,
+            height: 256,
+            samples: vec![0; 256 * 256],
+            tiles: Some((256, 256)),
+            ..base()
+        });
+        let mut bomb = patch_long(&patch_long(&one.bytes, one.raw_at, 256, 16_384), one.raw_at, 257, 16_384);
+        bomb = patch_array(&bomb, one.raw_at, 324, 64 * 64);
+        bomb = patch_array(&bomb, one.raw_at, 325, 64 * 64);
+        assert!(bomb.len() < 200_000, "the file stays small ({} bytes)", bomb.len());
+        tracking::arm();
+        let result = decode_container(&bomb);
+        let largest = tracking::disarm();
+        assert_eq!(result.err(), Some(DevelopError::InvalidDimensions));
+        assert!(largest < 4 << 20, "uncompressed aggregate bomb requested a {largest}-byte allocation");
+        // The honest 256 x 256 file decodes.
+        assert!(decode_container(&one.bytes).is_ok());
+
+        // Lossless JPEG: 4096 tile entries (256 x 256) over one 4 x 4 stream: the summed byte
+        // counts alone are far below one bit per declared sample.
+        let lj = build(&Spec { tiles: Some((4, 4)), compression: 7, ..base() });
+        let mut bomb = patch_long(&patch_long(&lj.bytes, lj.raw_at, 256, 16_384), lj.raw_at, 257, 16_384);
+        bomb = patch_long(&patch_long(&bomb, lj.raw_at, 322, 256), lj.raw_at, 323, 256);
+        bomb = patch_array(&bomb, lj.raw_at, 324, 64 * 64);
+        bomb = patch_array(&bomb, lj.raw_at, 325, 64 * 64);
+        tracking::arm();
+        let result = decode_container(&bomb);
+        let largest = tracking::disarm();
+        assert_eq!(result.err(), Some(DevelopError::InvalidDimensions));
+        assert!(largest < 4 << 20, "lossless JPEG aggregate bomb requested a {largest}-byte allocation");
     });
 }

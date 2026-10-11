@@ -6,6 +6,9 @@
 //! Pattern anchor: the DNG CFAPattern is anchored at the stored raw image origin (TIFF/EP). An
 //! ActiveArea whose origin is not a multiple of the pattern period is refused rather than guessed
 //! (UNVERIFIED which anchor Adobe applies there).
+// V4-01: this module decodes untrusted bytes; every integer operation is checked, saturating or
+// bounded by an explicit validation above it.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::DevelopError;
 use crate::color::{self, CameraSolution, DngColor, Mat3};
 use crate::ljpeg;
@@ -299,7 +302,7 @@ fn layout(tiff: &Tiff<'_>, l: &Lookup<'_>, width: u32, height: u32) -> Result<La
             || block_h == 0
             || block_w > MAX_BLOCK_DIM
             || block_h > MAX_BLOCK_DIM
-            || u64::from(block_w) * u64::from(block_h) > MAX_DNG_PIXELS
+            || u64::from(block_w).saturating_mul(u64::from(block_h)) > MAX_DNG_PIXELS
         {
             return Err(DevelopError::InvalidContainer);
         }
@@ -330,7 +333,7 @@ fn layout(tiff: &Tiff<'_>, l: &Lookup<'_>, width: u32, height: u32) -> Result<La
             tiled: false,
         }
     };
-    let blocks = layout.across as usize * layout.down as usize;
+    let blocks = (layout.across as usize).saturating_mul(layout.down as usize);
     if blocks > MAX_BLOCKS || layout.offsets.len() != blocks || layout.counts.len() != blocks {
         return Err(DevelopError::InvalidContainer);
     }
@@ -383,7 +386,8 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
 
     let width = first_u32(&tiff, req(tag::WIDTH)?)?;
     let height = first_u32(&tiff, req(tag::HEIGHT)?)?;
-    if width == 0 || height == 0 || width > 65_535 || height > 65_535 || u64::from(width) * u64::from(height) > MAX_DNG_PIXELS {
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if width == 0 || height == 0 || width > 65_535 || height > 65_535 || pixels > MAX_DNG_PIXELS {
         return Err(DevelopError::InvalidDimensions);
     }
     if let Some(e) = l.get(tag::SAMPLES_PER_PIXEL)
@@ -421,12 +425,20 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     // lossless-JPEG stream per block (components interleave along the block row).
     let layout = layout(&tiff, &l, width, height)?;
     let bytes_per_sample = u64::from(bits.div_ceil(8));
+    // Rows in block row `block_row` (the last strip may be short; tiles are always full height).
     let block_height = |block_row: u32| {
         if layout.tiled {
             layout.block_h
         } else {
-            layout.block_h.min(height - block_row * layout.block_h)
+            layout.block_h.min(height.saturating_sub(block_row.saturating_mul(layout.block_h)))
         }
+    };
+    let block_index = |block_row: u32, block_col: u32| -> Result<usize, DevelopError> {
+        block_row
+            .checked_mul(layout.across)
+            .and_then(|v| v.checked_add(block_col))
+            .map(|v| v as usize)
+            .ok_or(DevelopError::InvalidContainer)
     };
     // Checked payload size of one uncompressed block (hostile tile sizes must not wrap).
     let uncompressed_len = |block_row: u32| -> Result<u64, DevelopError> {
@@ -439,44 +451,56 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
     // force a large allocation.
     for block_row in 0..layout.down {
         for block_col in 0..layout.across {
-            let index = (block_row * layout.across + block_col) as usize;
+            let index = block_index(block_row, block_col)?;
             let stream = tiff.region(u64::from(layout.offsets[index]), u64::from(layout.counts[index]))?;
             if !lossless_jpeg && (stream.len() as u64) < uncompressed_len(block_row)? {
                 return Err(DevelopError::InvalidContainer);
             }
         }
     }
-    // Lossless JPEG spends at least one bit per sample, so the declared frame must fit in eight
-    // times the payload actually present (capped by the file length, so blocks that all point at
-    // the same bytes add nothing). Without this a ~300-byte file declaring a 2^28-sample frame
-    // forces the 512 MiB allocation below before any stream is decoded (review R5).
-    if lossless_jpeg {
-        let payload = layout
-            .counts
-            .iter()
-            .map(|count| u64::from(*count))
-            .fold(0u64, u64::saturating_add)
-            .min(bytes.len() as u64);
-        if u64::from(width) * u64::from(height) > payload.saturating_mul(8) {
-            return Err(DevelopError::InvalidDimensions);
-        }
+    // The declared frame must be supported by the payload actually present, in every compression
+    // (review R5: a ~300-byte lossless-JPEG file declaring a 2^28-sample frame forced a 512 MiB
+    // allocation). Lossless JPEG spends at least one bit per sample, uncompressed data exactly
+    // `bytes_per_sample`; the payload is the sum of the block byte counts capped by the file
+    // length, so blocks that all point at the same bytes add nothing.
+    let payload = layout
+        .counts
+        .iter()
+        .map(|count| u64::from(*count))
+        .fold(0u64, u64::saturating_add)
+        .min(bytes.len() as u64);
+    let needed = if lossless_jpeg {
+        pixels.div_ceil(8)
+    } else {
+        pixels.saturating_mul(bytes_per_sample)
+    };
+    if needed > payload {
+        return Err(DevelopError::InvalidDimensions);
     }
-    let mut samples = vec![0u16; width as usize * height as usize];
+    let mut samples = vec![0u16; usize::try_from(pixels).map_err(|_| DevelopError::InvalidDimensions)?];
     for block_row in 0..layout.down {
         for block_col in 0..layout.across {
-            let index = (block_row * layout.across + block_col) as usize;
+            let index = block_index(block_row, block_col)?;
             let block_h = block_height(block_row);
             let block_w = layout.block_w as usize;
             let decoded: Vec<u16>;
             let uncompressed: &[u8];
             if lossless_jpeg {
                 let stream = tiff.region(u64::from(layout.offsets[index]), u64::from(layout.counts[index]))?;
-                let image = ljpeg::decode(stream, block_w * block_h as usize)?;
-                if image.width as usize * image.components != block_w || image.height != block_h {
+                let max_samples = block_w
+                    .checked_mul(block_h as usize)
+                    .ok_or(DevelopError::InvalidDimensions)?;
+                let image = ljpeg::decode(stream, max_samples)?;
+                if (image.width as usize).checked_mul(image.components) != Some(block_w) || image.height != block_h {
                     return Err(DevelopError::InvalidContainer);
                 }
                 // A decoded value above the stream's own precision means a corrupt stream.
-                let ceiling = u32::from(u16::MAX) >> (16 - u32::from(image.precision));
+                let shift = 16u32
+                    .checked_sub(u32::from(image.precision))
+                    .ok_or(DevelopError::InvalidContainer)?;
+                let ceiling = u32::from(u16::MAX)
+                    .checked_shr(shift)
+                    .ok_or(DevelopError::InvalidContainer)?;
                 if image.samples.iter().any(|v| u32::from(*v) > ceiling) {
                     return Err(DevelopError::InvalidContainer);
                 }
@@ -490,28 +514,41 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
                 decoded = Vec::new();
                 uncompressed = tiff.region(u64::from(layout.offsets[index]), expected)?;
             }
-            let x0 = block_col * layout.block_w;
-            let y0 = block_row * layout.block_h;
+            let x0 = block_col.saturating_mul(layout.block_w);
+            let y0 = block_row.saturating_mul(layout.block_h);
+            // Columns of this block that fall inside the frame (edge blocks are padded).
+            let cols = layout.block_w.min(width.saturating_sub(x0)) as usize;
             for by in 0..block_h {
-                let y = y0 + by;
+                let y = y0.saturating_add(by);
                 if y >= height {
                     break;
                 }
-                for bx in 0..layout.block_w {
-                    let x = x0 + bx;
-                    if x >= width {
-                        break;
+                let row_at = (by as usize).checked_mul(block_w).ok_or(DevelopError::Overflow)?;
+                let dst = (y as usize)
+                    .checked_mul(width as usize)
+                    .and_then(|v| v.checked_add(x0 as usize))
+                    .ok_or(DevelopError::Overflow)?;
+                let out = dst
+                    .checked_add(cols)
+                    .and_then(|end| samples.get_mut(dst..end))
+                    .ok_or(DevelopError::InvalidContainer)?;
+                if lossless_jpeg {
+                    let src = row_at
+                        .checked_add(cols)
+                        .and_then(|end| decoded.get(row_at..end))
+                        .ok_or(DevelopError::InvalidContainer)?;
+                    out.copy_from_slice(src);
+                } else {
+                    let bps = bytes_per_sample as usize;
+                    let start = row_at.checked_mul(bps).ok_or(DevelopError::Overflow)?;
+                    let src = cols
+                        .checked_mul(bps)
+                        .and_then(|len| start.checked_add(len))
+                        .and_then(|end| uncompressed.get(start..end))
+                        .ok_or(DevelopError::InvalidContainer)?;
+                    for (slot, sample) in out.iter_mut().zip(src.chunks_exact(bps)) {
+                        *slot = read_sample(sample, bits, tiff.is_big_endian());
                     }
-                    let at = by as usize * block_w + bx as usize;
-                    samples[y as usize * width as usize + x as usize] = if lossless_jpeg {
-                        decoded[at]
-                    } else {
-                        let o = at * bytes_per_sample as usize;
-                        let sample = uncompressed
-                            .get(o..o + bytes_per_sample as usize)
-                            .ok_or(DevelopError::InvalidContainer)?;
-                        read_sample(sample, bits, tiff.is_big_endian())
-                    };
                 }
             }
         }
@@ -539,12 +576,15 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         Some(e) => tiff.f64s(e)?,
         None => vec![0.0],
     };
-    if black_level.len() != black_repeat.0 as usize * black_repeat.1 as usize {
+    if black_level.len() != (black_repeat.0 as usize).saturating_mul(black_repeat.1 as usize) {
         return Err(DevelopError::InvalidContainer);
     }
     let white_level = match l.get(tag::WHITE_LEVEL) {
         Some(e) => first_u32(&tiff, e)?,
-        None if !linearized => (1u32 << bits) - 1,
+        None if !linearized => 1u32
+            .checked_shl(u32::from(bits))
+            .and_then(|v| v.checked_sub(1))
+            .ok_or(DevelopError::InvalidContainer)?,
         None => return Err(DevelopError::InvalidContainer),
     };
     if white_level == 0 || white_level > u32::from(u16::MAX) {
@@ -579,7 +619,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         CfaPattern::Bayer(_) => 2,
         CfaPattern::XTrans => 6,
     };
-    if active_area.top % period != 0 || active_area.left % period != 0 {
+    if !active_area.top.is_multiple_of(period) || !active_area.left.is_multiple_of(period) {
         return Err(DevelopError::UnsupportedActiveArea);
     }
 
@@ -598,8 +638,8 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             }
         }
     };
-    let black_delta_h = delta(tag::BLACK_LEVEL_DELTA_H, active_area.right - active_area.left)?;
-    let black_delta_v = delta(tag::BLACK_LEVEL_DELTA_V, active_area.bottom - active_area.top)?;
+    let black_delta_h = delta(tag::BLACK_LEVEL_DELTA_H, active_area.right.saturating_sub(active_area.left))?;
+    let black_delta_v = delta(tag::BLACK_LEVEL_DELTA_V, active_area.bottom.saturating_sub(active_area.top))?;
 
     let default_crop = match (l.get(tag::DEFAULT_CROP_ORIGIN), l.get(tag::DEFAULT_CROP_SIZE)) {
         (Some(o), Some(s)) => {
@@ -614,15 +654,15 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
                         whole(*sh).ok_or(DevelopError::UnsupportedContainer)?,
                     );
                     let window = PlaneWindow {
-                        x: active_area.left + ox,
-                        y: active_area.top + oy,
+                        x: active_area.left.saturating_add(ox),
+                        y: active_area.top.saturating_add(oy),
                         width: sw,
                         height: sh,
                     };
                     if sw == 0
                         || sh == 0
-                        || window.x + sw > active_area.right
-                        || window.y + sh > active_area.bottom
+                        || window.x.saturating_add(sw) > active_area.right
+                        || window.y.saturating_add(sh) > active_area.bottom
                     {
                         return Err(DevelopError::InvalidDimensions);
                     }
@@ -686,7 +726,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
 impl DngRaw {
     /// Raw sample after the optional linearization table (before black subtraction).
     pub fn sample(&self, x: u32, y: u32) -> u16 {
-        self.samples[y as usize * self.width as usize + x as usize]
+        self.samples[(y as usize).saturating_mul(self.width as usize).saturating_add(x as usize)]
     }
 
     fn channel_at(&self, x: u32, y: u32) -> u8 {
@@ -698,13 +738,16 @@ impl DngRaw {
 
     fn black_at(&self, x: u32, y: u32) -> f64 {
         let (rr, rc) = self.black_repeat;
-        let row = (y - self.active_area.top) % rr;
-        let col = (x - self.active_area.left) % rc;
-        let mut black = self.black_level[(row * rc + col) as usize];
-        if let Some(d) = self.black_delta_h.get((x - self.active_area.left) as usize) {
+        // Callers pass sites inside the active area and the repeat dims are 1..=16 (validated at decode).
+        let dy = y.saturating_sub(self.active_area.top);
+        let dx = x.saturating_sub(self.active_area.left);
+        let row = dy.checked_rem(rr).unwrap_or(0);
+        let col = dx.checked_rem(rc).unwrap_or(0);
+        let mut black = self.black_level[row.saturating_mul(rc).saturating_add(col) as usize];
+        if let Some(d) = self.black_delta_h.get(dx as usize) {
             black += d;
         }
-        if let Some(d) = self.black_delta_v.get((y - self.active_area.top) as usize) {
+        if let Some(d) = self.black_delta_v.get(dy as usize) {
             black += d;
         }
         black
@@ -715,8 +758,8 @@ impl DngRaw {
         self.default_crop.unwrap_or(PlaneWindow {
             x: self.active_area.left,
             y: self.active_area.top,
-            width: self.active_area.right - self.active_area.left,
-            height: self.active_area.bottom - self.active_area.top,
+            width: self.active_area.right.saturating_sub(self.active_area.left),
+            height: self.active_area.bottom.saturating_sub(self.active_area.top),
         })
     }
 
@@ -734,17 +777,21 @@ impl DngRaw {
             || window.height == 0
             || window.x < a.left
             || window.y < a.top
-            || u64::from(window.x) + u64::from(window.width) > u64::from(a.right)
-            || u64::from(window.y) + u64::from(window.height) > u64::from(a.bottom)
+            || u64::from(window.x).saturating_add(u64::from(window.width)) > u64::from(a.right)
+            || u64::from(window.y).saturating_add(u64::from(window.height)) > u64::from(a.bottom)
         {
             return Err(DevelopError::InvalidDimensions);
         }
         let mut report = WindowReport::default();
         let mut channel_black: [Option<i64>; 3] = [None; 3];
         let white = self.white_level as i64;
-        let mut bytes = Vec::with_capacity(window.width as usize * window.height as usize * 2);
-        for y in window.y..window.y + window.height {
-            for x in window.x..window.x + window.width {
+        let mut bytes = Vec::with_capacity(
+            (window.width as usize)
+                .saturating_mul(window.height as usize)
+                .saturating_mul(2),
+        );
+        for y in window.y..window.y.saturating_add(window.height) {
+            for x in window.x..window.x.saturating_add(window.width) {
                 let ch = usize::from(self.channel_at(x, y));
                 let site_black = self.black_at(x, y);
                 let rounded = site_black.round();
@@ -769,7 +816,7 @@ impl DngRaw {
                     match policy {
                         RangePolicy::Refuse => return Err(DevelopError::SampleOutOfRange),
                         RangePolicy::ClampReported => {
-                            report.clamped_below += 1;
+                            report.clamped_below = report.clamped_below.saturating_add(1);
                             value = channel;
                         }
                     }
@@ -777,7 +824,7 @@ impl DngRaw {
                     match policy {
                         RangePolicy::Refuse => return Err(DevelopError::SampleOutOfRange),
                         RangePolicy::ClampReported => {
-                            report.clamped_above += 1;
+                            report.clamped_above = report.clamped_above.saturating_add(1);
                             value = white;
                         }
                     }
@@ -795,7 +842,7 @@ impl DngRaw {
             PlaneInit {
                 width: window.width,
                 height: window.height,
-                stride_bytes: window.width * 2,
+                stride_bytes: window.width.saturating_mul(2),
                 sensor_origin: (i64::from(window.x), i64::from(window.y)),
                 cfa: Cfa {
                     pattern: self.cfa_pattern,

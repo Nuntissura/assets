@@ -1,7 +1,10 @@
-//! Bounded scoped-thread helpers (std only, safe code). The thread count never changes a result:
-//! every job is a pure function of its index, outputs land at fixed positions, and when jobs fail
-//! the LOWEST failing index decides the error (not the first thread to fail). A cancelled run
-//! returns `Canceled` and no partial output; cancellation is checked between jobs.
+//! Bounded scoped-thread helpers (std only, safe code). Design: every job is a pure function of
+//! its index, outputs land at fixed positions, and when jobs fail the LOWEST failing index decides
+//! the error (not the first thread to fail). A cancelled run returns `Canceled` and no partial
+//! output; cancellation is checked between jobs. Evidence that the thread count does not change a
+//! result: `tests/develop_parallel.rs` (`output_is_identical_for_every_thread_count`,
+//! `lowest_failing_tile_decides_the_error_for_every_thread_count`,
+//! `cancellation_returns_canceled_and_no_partial_output`) and the `develop-bench` digests.
 use crate::DevelopError;
 use hsk_studio_accord::CancellationToken;
 use std::num::NonZeroUsize;

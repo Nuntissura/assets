@@ -337,7 +337,8 @@ fn reflect(coordinate: i64, extent: usize) -> usize {
 /// branch-free inner loop (the refusal is accumulated and raised after the row). The compiler may
 /// vectorise it with plain IEEE binary64 division and binary32 conversion, which are correctly
 /// rounded per lane, so the result is bit-identical to the scalar definition (no `unsafe`, no
-/// arch intrinsics, no FMA; pinned by the byte-identity digests). This is not an execution route.
+/// arch intrinsics, no FMA; pinned by `tests/develop_digest.rs`
+/// `scalar_output_is_byte_identical_to_the_pre_rewrite_oracle`). This is not an execution route.
 fn normalize(
     plane: &CfaPlane,
     threads: Threads,
@@ -854,10 +855,13 @@ pub fn develop_with(
 
 /// [`develop_with`] on an explicit number of worker threads. Determinism contract: tiles, receipt
 /// and refusals are identical for every thread count (including `Threads::single()`, which spawns
-/// nothing). Tiles are independent, so workers take tiles from a shared counter; the converter is
-/// a single stateful port and is always driven from the calling thread in tile order, with stage A
-/// of a batch of tiles computed in parallel before it and stage C after it. Cancellation is checked
-/// between tiles; when several tiles fail, the lowest tile's error is returned, as in a serial run.
+/// nothing); proven by `tests/develop_parallel.rs` (`output_is_identical_for_every_thread_count`,
+/// `lowest_failing_tile_decides_the_error_for_every_thread_count`). Tiles are independent, so
+/// workers take tiles from a shared counter. The converter is a single stateful port, driven from
+/// the calling thread in tile order (`converter_is_driven_in_tile_order_on_the_calling_thread`),
+/// with stage A of a batch of tiles computed in parallel before it and stage C after it.
+/// Cancellation is checked between tiles (`cancellation_returns_canceled_and_no_partial_output`);
+/// when several tiles fail, the lowest tile's error is returned, as in a serial run.
 pub fn develop_with_threads(
     request: &DevelopRequest<'_>,
     mut converter: Option<&mut dyn ProfileConverter>,
