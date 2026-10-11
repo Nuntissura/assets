@@ -11,28 +11,34 @@ use crate::{
         GrantPort, GrantToken, IdempotencyKey, JobPort, JobScope, Lookup, MonotonicClock,
     },
     registry::{ProposalRequest, ProviderRegistry},
+    source::{Handle, LazyAssets, SourceBox, load_parts},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_chronicle::{
     self as chronicle, Inverse, RevisionEntry, RevisionUpdate, SourceResult,
 };
 use hsk_studio_folio::{
-    self as folio, ContentDigest, NodeKind, NodeRef, Payload, Resolver, Snapshot, StudioDocument,
-    Unresolved,
+    self as folio, NodeKind, NodeRef, Payload, Resolver, Snapshot, StudioDocument, Unresolved,
 };
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_package::{
-    AssetError, AssetSource, Codec, Extras, Limits, LossNote, Manifest, Opened, PackageError,
-    PackageReader, PreviewImage, Quarantined, WriteOptions, WriteReceipt, read_package,
-    save_atomic, sha256_hex_of, write_package_with,
+    Codec, Extras, Limits, LossNote, Manifest, PackageError, PackageReader, PreviewImage,
+    PreviewRef, Quarantined, WriteOptions, WriteReceipt, read_package, save_atomic, sha256_hex_of,
+    write_package_with,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::{Cursor, Read, Seek},
+    io::Cursor,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
 };
+
+/// Most preview images a host may supply at once.
+pub const MAX_SUPPLIED_PREVIEWS: usize = 16;
 
 /// Bounds for every operation: package container limits, chronicle (which carries folio) budgets
 /// and the idempotency table. Cancellation is the accord `CancellationToken` passed to each call.
@@ -168,22 +174,6 @@ impl SessionPorts {
     }
 }
 
-/// Asset bytes verified at open, granted again at save (the package never owns a second CAS).
-struct HeldAssets(BTreeMap<String, Vec<u8>>);
-
-impl AssetSource for HeldAssets {
-    fn read(&self, digest: &ContentDigest, max: u64) -> Result<Vec<u8>, AssetError> {
-        if digest.algorithm != "sha256" {
-            return Err(AssetError::Absent);
-        }
-        match self.0.get(&digest.digest) {
-            None => Err(AssetError::Absent),
-            Some(bytes) if bytes.len() as u64 > max => Err(AssetError::TooLarge),
-            Some(bytes) => Ok(bytes.clone()),
-        }
-    }
-}
-
 /// Result of a committed (or no-change) submit.
 #[derive(Clone, Debug)]
 pub struct Applied {
@@ -216,11 +206,20 @@ pub struct SaveReceipt {
     pub bytes_written: u64,
     /// Unknown package entries re-emitted verbatim.
     pub quarantined_preserved: usize,
-    /// Preview entries rewritten (only while the document is still the revision they describe).
+    /// Preview entries written (only previews that describe the revision being written).
     pub previews_preserved: usize,
-    /// Preview entries not rewritten: the document was edited since open, or the preview could
-    /// not be read within bounds.
+    /// Preview images held or declared but not written: they described another revision, were
+    /// replaced by host-supplied ones, or could not be read within bounds.
     pub previews_dropped: usize,
+    pub report: ReportStatus,
+}
+
+/// Outcome of [`Session::set_previews`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewReceipt {
+    pub revision: u64,
+    pub accepted: usize,
+    pub bytes: u64,
     pub report: ReportStatus,
 }
 
@@ -304,12 +303,18 @@ pub struct Session {
     resource: DomainId,
     snapshot: Snapshot,
     revisions: Vec<RevisionEntry>,
-    assets: HeldAssets,
+    /// The package the session was opened from (or last saved to), read on demand: asset and
+    /// preview bodies are never held between operations.
+    source: Mutex<PackageReader<Handle>>,
+    source_bytes: Arc<AtomicU64>,
     quarantined: Vec<Quarantined>,
     loss: Vec<LossNote>,
-    previews: Vec<PreviewImage>,
-    previews_skipped: usize,
-    opened_revision: u64,
+    /// Previews declared by `source` (bodies stay in the source until written).
+    preview_refs: Vec<PreviewRef>,
+    /// The document revision the previews in `source` describe.
+    preview_revision: u64,
+    /// Host-supplied previews and the revision they were rendered for.
+    supplied_previews: Option<(u64, Vec<PreviewImage>)>,
     asset_codec: Codec,
     origin: Option<PathBuf>,
     saved_revision: Option<u64>,
@@ -420,35 +425,9 @@ fn inherited_codec(manifest: &Manifest) -> Codec {
     codec
 }
 
-/// Reads every declared preview within bounds. A preview that cannot be read is skipped (and
-/// counted), never a reason to refuse the document; only cancellation aborts.
-fn load_previews<R: Read + Seek>(
-    reader: &mut PackageReader<R>,
-    budget: u64,
-    cancel: &CancellationToken,
-) -> Result<(Vec<PreviewImage>, usize), SessionError> {
-    let mut loaded = Vec::new();
-    let (mut skipped, mut total) = (0usize, 0u64);
-    for declared in reader.previews() {
-        let size = declared.info.byte_len();
-        if total.saturating_add(size) > budget {
-            skipped += 1;
-            continue;
-        }
-        match reader.read_preview(&declared.name, cancel) {
-            Ok(image) => {
-                total += size;
-                loaded.push(image);
-            }
-            Err(PackageError::Canceled) => return Err(SessionError::Canceled),
-            Err(_) => skipped += 1,
-        }
-    }
-    Ok((loaded, skipped))
-}
-
 impl Session {
-    /// Opens a package file. The file is read as a bounded stream under `config.budgets`.
+    /// Opens a package file. The file stays open as the lazy source: its structure and every
+    /// entry checksum are verified in bounded chunks, but asset and preview bodies are not kept.
     pub fn open_path(
         path: &Path,
         config: SessionConfig,
@@ -456,7 +435,13 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<Session, Failed> {
         match File::open(path) {
-            Ok(file) => Self::open_stream(file, Some(path.to_path_buf()), config, ports, cancel),
+            Ok(file) => Self::open_stream(
+                Box::new(file),
+                Some(path.to_path_buf()),
+                config,
+                ports,
+                cancel,
+            ),
             Err(error) => Err(Failed {
                 error: SessionError::Io(error.kind()),
                 report: ReportStatus::Unaddressed,
@@ -465,17 +450,24 @@ impl Session {
     }
 
     /// Opens a package held in memory (no origin path, so `save_to` is the only way to save).
+    /// The session keeps its own copy of `bytes` until a save replaces the source.
     pub fn open_bytes(
         bytes: &[u8],
         config: SessionConfig,
         ports: SessionPorts,
         cancel: &CancellationToken,
     ) -> Result<Session, Failed> {
-        Self::open_stream(Cursor::new(bytes), None, config, ports, cancel)
+        Self::open_stream(
+            Box::new(Cursor::new(bytes.to_vec())),
+            None,
+            config,
+            ports,
+            cancel,
+        )
     }
 
-    fn open_stream<R: Read + Seek>(
-        source: R,
+    fn open_stream(
+        source: SourceBox,
         origin: Option<PathBuf>,
         config: SessionConfig,
         mut ports: SessionPorts,
@@ -488,32 +480,36 @@ impl Session {
         if !config.budgets.valid() {
             return Err(unaddressed(SessionError::InvalidBudget));
         }
-        let mut reader = PackageReader::open(source, &config.budgets.limits, cancel)
+        let source_bytes = Arc::new(AtomicU64::new(0));
+        let (for_reader, mut raw) = Handle::pair(source, Arc::clone(&source_bytes));
+        let reader = PackageReader::open(for_reader, &config.budgets.limits, cancel)
             .map_err(|e| unaddressed(SessionError::from_package(e)))?;
         let manifest_revision = reader.manifest().revision;
         let resource = DomainId::parse(&reader.manifest().document_id).ok();
         let inherited = inherited_codec(reader.manifest());
         let correlation = 1;
-        let result = load_previews(&mut reader, config.budgets.limits.max_entry_bytes, cancel)
-            .and_then(|(previews, skipped)| {
-                reader
-                    .into_opened(config.budgets.folio(), &*ports.resolver, cancel)
-                    .map_err(SessionError::from_package)
-                    .and_then(Self::from_opened)
-                    .map(|mut parts| {
-                        parts.previews = previews;
-                        parts.previews_skipped = skipped;
-                        parts
-                    })
-            });
+        let result = load_parts(
+            reader.manifest(),
+            reader.entries(),
+            &mut raw,
+            &config.budgets.limits,
+            config.budgets.folio(),
+            &*ports.resolver,
+            cancel,
+        )
+        .and_then(|parts| {
+            let resource = DomainId::parse(&parts.snapshot.document().document_id)
+                .map_err(|_| SessionError::ReadOnlyDocument)?;
+            Ok((resource, parts))
+        });
         match result {
-            Ok(parts) => {
+            Ok((resource, parts)) => {
                 let revision = parts.snapshot.document().revision;
                 let report = emit_report(
                     &mut *ports.sink,
                     correlation,
                     revision,
-                    Some(&parts.resource),
+                    Some(&resource),
                     &config.actor,
                     Outcome::Success,
                 );
@@ -521,15 +517,16 @@ impl Session {
                     asset_codec: config.asset_codec.unwrap_or(inherited),
                     config,
                     ports,
-                    resource: parts.resource,
+                    resource,
+                    revisions: seed_revisions(parts.snapshot.document()),
                     snapshot: parts.snapshot,
-                    revisions: parts.revisions,
-                    assets: parts.assets,
+                    preview_refs: reader.previews(),
+                    source: Mutex::new(reader),
+                    source_bytes,
                     quarantined: parts.quarantined,
                     loss: parts.loss,
-                    previews: parts.previews,
-                    previews_skipped: parts.previews_skipped,
-                    opened_revision: revision,
+                    preview_revision: revision,
+                    supplied_previews: None,
                     origin,
                     saved_revision: Some(revision),
                     receipts: BTreeMap::new(),
@@ -550,32 +547,6 @@ impl Session {
                 Err(Failed { error, report })
             }
         }
-    }
-
-    fn from_opened(opened: Opened) -> Result<OpenedParts, SessionError> {
-        let Opened {
-            inspection,
-            assets,
-            quarantined,
-            loss,
-            ..
-        } = opened;
-        let snapshot = match inspection {
-            folio::Inspection::Editable(snapshot) => snapshot,
-            folio::Inspection::ReadOnly(_) => return Err(SessionError::ReadOnlyDocument),
-        };
-        let resource = DomainId::parse(&snapshot.document().document_id)
-            .map_err(|_| SessionError::ReadOnlyDocument)?;
-        Ok(OpenedParts {
-            revisions: seed_revisions(snapshot.document()),
-            resource,
-            snapshot,
-            assets: HeldAssets(assets),
-            quarantined,
-            loss,
-            previews: Vec::new(),
-            previews_skipped: 0,
-        })
     }
 
     // ----- submit ------------------------------------------------------------------------
@@ -1124,22 +1095,43 @@ impl Session {
         self.settle(result, |receipt, report| receipt.report = report)
     }
 
-    /// Serializes the current revision. Previews are rewritten only while the document is still
-    /// the revision they were made for; after an edit they would describe the wrong content.
+    /// Serializes the current revision. Asset bodies (and source previews) are pulled from the
+    /// source package one at a time while the writer needs them; only previews that describe
+    /// the revision being written are included: host-supplied ones for this revision replace the
+    /// source's, anything rendered for another revision is dropped and counted.
     fn build_package(&self, cancel: &CancellationToken) -> Result<Built, SessionError> {
-        let fresh = self.snapshot.document().revision == self.opened_revision;
-        let (previews, dropped): (&[PreviewImage], usize) = if fresh {
-            (&self.previews, self.previews_skipped)
+        let revision = self.snapshot.document().revision;
+        let mut images: Vec<PreviewImage> = Vec::new();
+        let mut dropped = 0usize;
+        let mut replaced = false;
+        if let Some((rendered_for, supplied)) = &self.supplied_previews {
+            if *rendered_for == revision {
+                images.extend(supplied.iter().cloned());
+                replaced = true;
+            } else {
+                dropped += supplied.len();
+            }
+        }
+        if replaced || self.preview_revision != revision {
+            dropped += self.preview_refs.len();
         } else {
-            (&[], self.previews.len() + self.previews_skipped)
-        };
+            let mut reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
+            for declared in &self.preview_refs {
+                match reader.read_preview(&declared.name, cancel) {
+                    Ok(image) => images.push(image),
+                    Err(PackageError::Canceled) => return Err(SessionError::Canceled),
+                    Err(_) => dropped += 1,
+                }
+            }
+        }
+        let assets = LazyAssets::new(&self.source, cancel);
         let mut bytes = Vec::new();
-        let receipt = write_package_with(
+        let written = write_package_with(
             &self.snapshot,
-            &self.assets,
+            &assets,
             &Extras {
                 quarantined: &self.quarantined,
-                previews,
+                previews: &images,
             },
             &WriteOptions {
                 asset_codec: self.asset_codec,
@@ -1148,13 +1140,94 @@ impl Session {
             &self.config.budgets.limits,
             cancel,
             &mut bytes,
-        )
-        .map_err(SessionError::from_package)?;
+        );
+        let receipt = match written {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // The writer only knows "asset absent"; the source knows why.
+                let cause = if matches!(error, PackageError::Asset(_)) {
+                    assets.take_failure().unwrap_or(error)
+                } else {
+                    error
+                };
+                return Err(SessionError::from_package(cause));
+            }
+        };
         Ok(Built {
             bytes,
             receipt,
-            previews_written: previews.len(),
+            previews_written: images.len(),
             previews_dropped: dropped,
+        })
+    }
+
+    /// Supplies fresh preview images rendered by the host for `rendered_for_revision`, which must
+    /// be the current document revision. They replace the previews in the source package the
+    /// next time the session saves or exports at that revision; if the document is edited
+    /// first they no longer describe it and are dropped (and counted) instead of written.
+    pub fn set_previews(
+        &mut self,
+        rendered_for_revision: u64,
+        images: Vec<PreviewImage>,
+        cancel: &CancellationToken,
+    ) -> Result<PreviewReceipt, Failed> {
+        let result = self.set_previews_inner(rendered_for_revision, images, cancel);
+        self.settle(result, |receipt, report| receipt.report = report)
+    }
+
+    fn set_previews_inner(
+        &mut self,
+        rendered_for: u64,
+        images: Vec<PreviewImage>,
+        cancel: &CancellationToken,
+    ) -> Result<PreviewReceipt, SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        self.check_grant(Action::Save)?;
+        let current = self.snapshot.document().revision;
+        if rendered_for != current {
+            return Err(SessionError::StaleRevision {
+                expected: rendered_for,
+                current,
+            });
+        }
+        let limits = self.config.budgets.limits;
+        if images.len() > MAX_SUPPLIED_PREVIEWS {
+            return Err(SessionError::Package(PackageError::TooManyEntries));
+        }
+        let mismatch = || SessionError::Package(PackageError::PreviewMismatch);
+        let dimension_ok = |d: u32| (1..=limits.max_preview_dimension).contains(&d);
+        let (mut seen, mut total) = (BTreeSet::new(), 0u64);
+        for image in &images {
+            cancel.check().map_err(|_| SessionError::Canceled)?;
+            let info = &image.info;
+            if !dimension_ok(info.width) || !dimension_ok(info.height) {
+                return Err(mismatch());
+            }
+            let expected = info.byte_len();
+            let color_ok = (1..=64).contains(&info.color.len())
+                && info
+                    .color
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
+            if expected > limits.max_preview_bytes
+                || image.pixels.len() as u64 != expected
+                || !color_ok
+                || !seen.insert(sha256_hex_of(&image.pixels))
+            {
+                return Err(mismatch());
+            }
+            total += expected;
+            if total > limits.max_entry_bytes {
+                return Err(SessionError::Package(PackageError::TotalTooLarge));
+            }
+        }
+        let accepted = images.len();
+        self.supplied_previews = Some((current, images));
+        Ok(PreviewReceipt {
+            revision: current,
+            accepted,
+            bytes: total,
+            report: ReportStatus::Unaddressed,
         })
     }
 
@@ -1172,13 +1245,23 @@ impl Session {
         let landed = File::open(path)
             .map_err(|e| SessionError::Io(e.kind()))
             .and_then(|file| {
-                PackageReader::open(file, &limits, cancel).map_err(SessionError::from_package)
+                let handle = Handle::single(Box::new(file), Arc::clone(&self.source_bytes));
+                PackageReader::open(handle, &limits, cancel).map_err(SessionError::from_package)
             })?;
         if landed.manifest().revision != revision
             || landed.manifest().document_id != self.snapshot.document().document_id
         {
             return Err(SessionError::VerifyMismatch);
         }
+        // The file just written is the source from now on (and the old one is released); the
+        // previews it holds describe exactly this revision.
+        self.preview_refs = landed.previews();
+        self.preview_revision = revision;
+        self.supplied_previews = None;
+        *self
+            .source
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner) = landed;
         self.saved_revision = Some(revision);
         self.origin = Some(path.to_path_buf());
         Ok(SaveReceipt {
@@ -1337,15 +1420,23 @@ impl Session {
     pub fn providers_mut(&mut self) -> &mut ProviderRegistry {
         &mut self.ports.providers
     }
-}
 
-struct OpenedParts {
-    resource: DomainId,
-    snapshot: Snapshot,
-    revisions: Vec<RevisionEntry>,
-    assets: HeldAssets,
-    quarantined: Vec<Quarantined>,
-    loss: Vec<LossNote>,
-    previews: Vec<PreviewImage>,
-    previews_skipped: usize,
+    /// Total bytes read from the package source so far (open verification, on-demand asset and
+    /// preview reads, post-save verification). An edit reads none.
+    pub fn source_bytes_read(&self) -> u64 {
+        self.source_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Bytes the session itself keeps resident: the document, preserved unknown entries and
+    /// host-supplied previews. Asset and source preview bodies are never part of it.
+    pub fn resident_bytes(&self) -> u64 {
+        let quarantined: usize = self.quarantined.iter().map(|q| q.bytes.len()).sum();
+        let supplied: usize = self
+            .supplied_previews
+            .iter()
+            .flat_map(|(_, images)| images)
+            .map(|image| image.pixels.len())
+            .sum();
+        (self.snapshot.encoded_bytes().len() + quarantined + supplied) as u64
+    }
 }
