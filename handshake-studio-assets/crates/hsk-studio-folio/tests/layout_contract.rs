@@ -186,6 +186,7 @@ fn pages_frames_and_threads_round_trip_and_old_documents_are_unchanged() {
             );
             assert_eq!(t.next_text_frame(&l3), None);
             let located = doc.locate_page("p2").expect("page p2");
+            assert_eq!(located.spread_index, 0);
             assert_eq!(
                 (located.page_index, located.spread.page_spread_id.as_str()),
                 (1, identity("SPGS", 1).as_str())

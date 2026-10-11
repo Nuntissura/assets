@@ -47,8 +47,10 @@ pub enum PageSide {
     SingleSided,
 }
 
-/// Four lengths in `pt`. Page margins (STU-LAY-113: on a facing-pages document `left` / `right` mean
-/// inside / outside) and frame `inset_spacing` (STU-LAY-118: the four-value form `[top, left, bottom,
+/// Four lengths in `pt`. Page margins (STU-LAY-113: "on a facing-pages document `left` / `right` mean
+/// inside / outside"; the document `facing_pages` flag is not stored, so whether a page's `left` is
+/// the physical left margin is UNVERIFIED for `single_sided` pages and is the consumer's reading of
+/// `PageSide`) and frame `inset_spacing` (STU-LAY-118: the four-value form `[top, left, bottom,
 /// right]`; a scalar spelling is stored as four equal values).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -199,6 +201,8 @@ impl TextThread {
 /// Where a page sits in the document.
 #[derive(Clone, Copy, Debug)]
 pub struct PageLocation<'a> {
+    /// Position of the spread within `StudioDocument::page_spreads`.
+    pub spread_index: usize,
     pub spread: &'a StudioPageSpread,
     /// Position of the page within `spread.pages` (left to right).
     pub page_index: usize,
@@ -215,14 +219,18 @@ fn story_of(l: &StudioLayer) -> Option<&str> {
 impl StudioDocument {
     /// The page with this key and its spread.
     pub fn locate_page(&self, page_id: &str) -> Option<PageLocation<'_>> {
-        self.page_spreads.iter().find_map(|spread| {
-            let page_index = spread.pages.iter().position(|p| p.page_id == page_id)?;
-            Some(PageLocation {
-                spread,
-                page_index,
-                page: &spread.pages[page_index],
+        self.page_spreads
+            .iter()
+            .enumerate()
+            .find_map(|(spread_index, spread)| {
+                let page_index = spread.pages.iter().position(|p| p.page_id == page_id)?;
+                Some(PageLocation {
+                    spread_index,
+                    spread,
+                    page_index,
+                    page: &spread.pages[page_index],
+                })
             })
-        })
     }
     /// Every thread chain, ordered by the document position of its first frame. Safe on a document
     /// that has not been validated: a link that does not resolve or repeats ends the walk.
