@@ -56,6 +56,7 @@ pub struct BlockReceipt {
     channels: usize,
     labels: [u16; MAX_CHANNELS],
     peak: [f32; MAX_CHANNELS],
+    rms: [f32; MAX_CHANNELS],
 }
 
 impl BlockReceipt {
@@ -80,15 +81,14 @@ impl BlockReceipt {
             channels,
             labels: [0; MAX_CHANNELS],
             peak: [0.0; MAX_CHANNELS],
+            rms: [0.0; MAX_CHANNELS],
         };
         receipt.labels[..channels].copy_from_slice(out.layout().labels());
-        for (slot, samples) in receipt.peak[..channels]
-            .iter_mut()
-            .zip(out.backing().chunks(out.capacity()))
-        {
-            *slot = samples[..frames]
-                .iter()
-                .fold(0.0_f32, |peak, s| peak.max(s.abs()));
+        for (ch, samples) in out.backing().chunks(out.capacity()).enumerate().take(channels) {
+            let samples = &samples[..frames];
+            receipt.peak[ch] = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+            let energy: f64 = samples.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
+            receipt.rms[ch] = (energy / frames.max(1) as f64).sqrt() as f32;
         }
         receipt
     }
@@ -99,6 +99,10 @@ impl BlockReceipt {
     /// Per-channel absolute peak of the published output.
     pub fn peak(&self) -> &[f32] {
         &self.peak[..self.channels]
+    }
+    /// Per-channel root-mean-square of the published output (accumulated in f64).
+    pub fn rms(&self) -> &[f32] {
+        &self.rms[..self.channels]
     }
     pub fn start_ticks(&self) -> Result<Ticks, ScoreError> {
         sample_to_ticks(self.start_sample, self.sample_rate_hz)
