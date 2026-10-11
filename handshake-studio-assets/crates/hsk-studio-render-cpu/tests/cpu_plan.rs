@@ -1820,6 +1820,34 @@ fn clip_to_base_hidden_base_lowering_shape_and_refusals() {
             close(sink.pixel(x as i64, 0), w);
         }
 
+        // The same run inside a pass-through parent group lands on the running backdrop: same bytes.
+        let nested: RenderPlan = plan(
+            extent,
+            vec![
+                solid(extent, [0.5, 0.5, 0.5, 1.0]),
+                solid(rect(1, 0, 2, 1), [0.0, 1.0, 0.0, 1.0]),
+                solid(extent, [1.0, 0.0, 0.0, 1.0]),
+                group(
+                    false,
+                    vec![
+                        layer(1, StudioBlendMode::Normal, 0.5),
+                        clipped(2, StudioBlendMode::Normal, 1.0),
+                    ],
+                ),
+                group(
+                    true,
+                    vec![
+                        layer(0, StudioBlendMode::Normal, 1.0),
+                        layer(3, StudioBlendMode::PassThrough, 1.0),
+                    ],
+                ),
+            ],
+            4,
+        );
+        let through = render(&nested, 3, &Sources::default());
+        assert_eq!(through.colour, sink.colour);
+        assert_eq!(through.alpha, sink.alpha);
+
         // A pass-through group has no isolated content to take a base alpha from: typed refusal,
         // before the first sink call, nothing charged.
         let pass_through: RenderPlan = plan(
