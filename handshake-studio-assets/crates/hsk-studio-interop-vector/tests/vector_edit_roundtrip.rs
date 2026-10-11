@@ -338,5 +338,22 @@ fn folio_vector_layer_validates() {
                 PathElement::Close,
             ]
         );
+
+        // Hierarchical export keeps group structure, names, visibility and element opacity.
+        let styled = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><g id="logo" opacity="0.5"><rect id="box" width="10" height="10" display="none"/><circle cx="20" cy="20" r="5"/></g></svg>"#;
+        let a = import(styled).unwrap();
+        let text = export_proposal(&a, &ExportOptions::default()).unwrap();
+        assert!(text.contains("<g id=\"logo\" opacity=\"0.5\">"), "{text}");
+        assert!(text.contains("id=\"box\"") && text.contains("display=\"none\""), "{text}");
+        let b = import(&text).unwrap();
+        let (da, db) = (a.snapshot.document(), b.snapshot.document());
+        assert_eq!(da.layers.len(), db.layers.len());
+        for (x, y) in da.layers.iter().zip(&db.layers) {
+            assert_eq!(
+                (&x.name, &x.kind, x.visible, &x.appearance),
+                (&y.name, &y.kind, y.visible, &y.appearance)
+            );
+        }
+        assert_same_geometry(&a.paths, &b.paths);
     });
 }

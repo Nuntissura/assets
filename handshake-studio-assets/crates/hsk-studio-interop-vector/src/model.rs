@@ -204,3 +204,6 @@ impl Default for ExportOptions {
         }
     }
 }
+
+/// Coordinates and handle components beyond this magnitude are refused (exact in binary64).
+pub(crate) const COORDINATE_LIMIT: f64 = 1.0e9;

@@ -17,3 +17,7 @@ svgtypes = { version = "=0.16.1", default-features = false, features = ["std"] }
 
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "interop-vector-consumer"
+path = "examples/interop-vector-consumer.rs"
