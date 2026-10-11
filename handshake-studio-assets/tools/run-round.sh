@@ -14,22 +14,33 @@
 # Units (each its own result; all run; a unit's build failure skips only that unit's test run):
 #   default    union over the selection, default features: one build (nextest --no-run) + one run (--no-fail-fast);
 #              files at the results root (build.*, run.*, list.txt, canary-filter.txt, junit.xml) as before.
+#              Per-test timeouts: .config/nextest.toml slow-timeout (CX-EXEC-005).
 #   features   per selected crate and feature set declared in .config/round-features.toml: -p CRATE --features SET,
-#              own build + run under features/CRATE+F1+F2/. A set naming a feature the candidate lacks is recorded
-#              feature_absent (not run, no exit impact).
+#              own build + run under features/CRATE+F1+F2/. A set naming a feature (or crate) the candidate lacks is
+#              recorded feature_absent (crate_absent) and fails the round with exit 74 (declared unit absent).
 #   doctest    `cargo test --doc` per selected crate with a doctested lib target, default features and every
-#              declared set (the per-test runner skips doctests): doctest/CRATE[+F1...].{stdout,stderr}.txt.
-# Results: round.json (identity, env, every unit with exits and passed/failed/skipped counts, per-crate counts),
-#   tests.json (every reported test: unit, crate, binary, name, status, seconds; passing names included),
+#              declared set (the per-test runner does not run doctests): doctest/CRATE[+F1...].{stdout,stderr}.txt.
+#              Per-test timeout: doctests run serially (--test-threads=1), so libtest prints "test NAME ... " when a
+#              test starts; a watchdog kills the unit's process tree when one test stays unfinished longer than
+#              [doctest] per-test-timeout-s (.config/round-features.toml), appends TIMEOUT to that line, reports the
+#              unit's doctests without a verdict NOT_RUN, and the unit's run exit is 124. Compiling the crate before
+#              its first doctest is not covered.
+# Results: round.json (identity, env, every unit with exits and passed/failed/skipped/timed_out/not_run counts, per-crate
+#   counts), tests.json (every reported test: unit, crate, binary, name, status, seconds; passing names included),
 #   junit.xml per nextest unit (passing tests' output stored, skipped tests listed: .config/nextest.toml),
-#   metadata.json (cargo metadata --no-deps), units.tsv, step0.*.txt, nextest-store.toml.
+#   metadata.json (cargo metadata --no-deps), units.tsv, step0.*.txt, nextest-store.toml. Once the results dir
+#   exists, round.json is always written: on refusal, step 0 drift, interruption or aggregation failure it is a
+#   minimal record with "complete": false, the exit code and the reason (raw files kept).
 # Env: sets CARGO_TARGET_DIR, TMP/TEMP/TMPDIR (<target-dir>/../tmp), CARGO_PROFILE_{DEV,TEST}_DEBUG,
 #   CARGO_TERM_COLOR; unsets every HSK_* variable. Nothing else is required from the caller (python 3.11+).
-# Exit: 2 refused, 75 step 0 drift (infrastructure), 70 results aggregation failed (raw files kept), else the
-#   first failing unit build's exit code (default unit first), else the first failing test run's exit code, else 0.
+# Exit: 2 refused, 75 step 0 drift (infrastructure), 70 results aggregation failed, else the first failing unit
+#   build's exit code (default unit first), else the first failing test run's exit code (124 = doctest per-test
+#   timeout), else 74 when a declared feature-matrix unit is absent at the candidate, else 0.
 set -euo pipefail
 
-die() { echo "run-round: $*" >&2; exit 2; }
+reason=""
+die() { reason="refused: $*"; echo "run-round: $*" >&2; exit 2; }
+jstr() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\r'/}; s=${s//$'\t'/\\t}; printf '"%s"' "$s"; }
 # Absolute, normalized, no filesystem side effects (mixed C:/ form on Windows Git Bash).
 abspath() { local p; p=$(realpath -m -- "$1"); command -v cygpath >/dev/null && p=$(cygpath -m "$p"); printf '%s' "$p"; }
 under() { case "$1/" in "$2"/*) return 0;; *) return 1;; esac; }
@@ -90,6 +101,24 @@ else
   locked=()
 fi
 mkdir -p "$target" "$results"
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# From here on round.json is always written: the aggregator writes the full record; any other exit leaves a
+# minimal record (complete=false, exit, reason) so a stalled or refused run is never silent.
+finish() {
+  local rc=$?
+  [ -e "$results/round.json" ] && return
+  {
+    printf '{\n "schema": "hsk.studio.round-run@2",\n "complete": false,\n "exit": %s,\n "reason": %s,\n' "$rc" "$(jstr "${reason:-exit $rc}")"
+    printf ' "mode": %s,\n "selection": %s,\n' "$(jstr "$([ $dev -eq 1 ] && echo dev || echo export)")" "$(jstr "$([ $all -eq 1 ] && echo --all || echo "${crates[*]}")")"
+    printf ' "sha": %s,\n "tree": %s,\n "identity_file": %s,\n' "$(jstr "$identity_sha")" "$(jstr "$identity_tree")" "$(jstr "$identity")"
+    printf ' "started_at": %s,\n "ended_at": %s,\n' "$(jstr "$started")" "$(jstr "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+    printf ' "units_file": "units.tsv",\n "target_dir": %s\n}\n' "$(jstr "$target")"
+  } >"$results/round.json"
+  echo "run-round: incomplete (exit $rc: ${reason:-exit $rc}) -> $results/round.json" >&2
+}
+trap finish EXIT
+trap 'reason="interrupted"; exit 130' INT TERM HUP
 
 # Environment: only what this script sets.
 unset_vars=$(compgen -e | grep '^HSK_' || true)
@@ -106,11 +135,13 @@ cd "$root"
 if [ $dev -eq 0 ]; then
   # Step 0: committed lock and registry metadata must already match the committed manifests (read-only).
   if ! cargo metadata --locked --offline --format-version 1 >/dev/null 2>"$results/step0.lock.txt"; then
-    echo "run-round: infrastructure: Cargo.lock not in sync with the candidate manifests (step0.lock.txt); needs a steward sync commit" >&2
+    reason="step0: Cargo.lock not in sync with the candidate manifests (step0.lock.txt); needs a steward sync commit"
+    echo "run-round: infrastructure: $reason" >&2
     exit 75
   fi
   if ! "$py" -X utf8 -I tools/registry-sync.py . >"$results/step0.registry.txt" 2>&1; then
-    echo "run-round: infrastructure: registry metadata/probe approvals drift (step0.registry.txt); needs a steward sync commit" >&2
+    reason="step0: registry metadata/probe approvals drift (step0.registry.txt); needs a steward sync commit"
+    echo "run-round: infrastructure: $reason" >&2
     exit 75
   fi
   # Cargo hashes path packages relative to the workspace root, so a shared target dir can treat an export
@@ -119,7 +150,7 @@ if [ $dev -eq 0 ]; then
   find "$root" -type f -print0 | xargs -0 touch
 fi
 
-# Plan: selection, feature matrix units and doctest units from the candidate's own manifests (read-only).
+# Plan: selection, feature matrix units, doctest units and the doctest per-test budget (read-only).
 cargo metadata --no-deps --offline --format-version 1 ${locked[@]+"${locked[@]}"} >"$results/metadata.json" 2>"$results/metadata.stderr.txt" \
   || die "cargo metadata --no-deps failed (metadata.stderr.txt)"
 plan="$results/units.plan.tsv"
@@ -136,17 +167,21 @@ unknown = [c for c in asked if c not in members]
 if unknown:
     sys.exit("run-round: not workspace members: " + " ".join(unknown))
 selected = sorted(members) if sel_all else list(dict.fromkeys(asked))
+if not matrix_path.exists():
+    sys.exit("run-round: .config/round-features.toml missing")
+doc = tomllib.loads(matrix_path.read_text(encoding="utf-8"))
+if doc.get("schema") != "hsk.studio.round-features@2":
+    sys.exit("run-round: round-features.toml schema must be hsk.studio.round-features@2")
+budget = doc.get("doctest", {}).get("per-test-timeout-s")
+if not (isinstance(budget, int) and not isinstance(budget, bool) and 1 <= budget <= 3600):
+    sys.exit("run-round: round-features.toml [doctest] per-test-timeout-s must be an integer 1..3600")
 matrix = {}
-if matrix_path.exists():
-    doc = tomllib.loads(matrix_path.read_text(encoding="utf-8"))
-    if doc.get("schema") != "hsk.studio.round-features@1":
-        sys.exit("run-round: round-features.toml schema must be hsk.studio.round-features@1")
-    for crate, sets in doc.get("crates", {}).items():
-        ok = isinstance(sets, list) and all(
-            isinstance(s, list) and s and all(isinstance(f, str) and f and "," not in f for f in s) for s in sets)
-        if not ok:
-            sys.exit(f"run-round: round-features.toml {crate}: expected a list of non-empty feature-name lists")
-        matrix[crate] = [sorted(set(s)) for s in sets]
+for crate, sets in doc.get("crates", {}).items():
+    ok = isinstance(sets, list) and all(
+        isinstance(s, list) and s and all(isinstance(f, str) and f and "," not in f for f in s) for s in sets)
+    if not ok:
+        sys.exit(f"run-round: round-features.toml {crate}: expected a list of non-empty feature-name lists")
+    matrix[crate] = [sorted(set(s)) for s in sets]
 LIB = {"lib", "rlib", "dylib", "proc-macro"}
 feature_units, doc_units = [], []
 for crate in sorted(c for c in matrix if c not in members):
@@ -161,6 +196,7 @@ for crate in selected:
         if s:
             feature_units.append(("features", crate, ",".join(s), status))
         doc_units.append(("doctest", crate, ",".join(s), status if status != "run" or has_doc else "no_doctest_lib"))
+print(f"config\tdoctest-per-test-timeout-s\t{budget}\t-")
 for kind, crate, feats, status in feature_units + doc_units:
     print(f"{kind}\t{crate}\t{feats or '-'}\t{status}")
 PY
@@ -200,9 +236,55 @@ nextest_unit() {
   fi
   return 0
 }
+# kill_tree PID: the background job and every process it started (Windows: taskkill /T; else its children).
+kill_tree() {
+  if [ -r "/proc/$1/winpid" ] && command -v taskkill >/dev/null; then
+    taskkill //F //T //PID "$(cat "/proc/$1/winpid")" >/dev/null 2>&1
+  else
+    pkill -KILL -P "$1" 2>/dev/null; kill -KILL "$1" 2>/dev/null
+  fi
+  return 0
+}
+# doctest_unit OUT ERR CARGO_ARGS... -> D_EXIT, D_TIMEOUT (name of the test killed at the budget, or "")
+# Serial libtest writes "test NAME ... " (no newline) when NAME starts and its verdict when it ends. A line left
+# unfinished for doctest_budget seconds is that test's timeout: the unit's process tree is killed, TIMEOUT is
+# appended to the line, and every listed doctest of the unit without a verdict is reported NOT_RUN (from
+# `-- --list`, which does not execute doctests). No rerun with --skip: rustdoc splits test args on whitespace,
+# so full doctest names ("path - item (line N)") cannot be passed as skip or exact filters.
+doctest_unit() {
+  local out=$1 err=$2 pid last pend="" since=0 now t; shift 2
+  D_TIMEOUT=""
+  cargo test --doc "$@" -- --test-threads=1 >"$out" 2>"$err" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    last=""
+    [ -s "$out" ] && [ -n "$(tail -c1 "$out")" ] && last=$(tail -n1 "$out")
+    case "$last" in
+      "test "*" ... ")
+        now=$(date +%s)
+        if [ "$last" != "$pend" ]; then pend=$last since=$now
+        elif [ $((now - since)) -ge "$doctest_budget" ]; then
+          D_TIMEOUT=${last#test }; D_TIMEOUT=${D_TIMEOUT% ... }
+          kill_tree "$pid"; break
+        fi ;;
+      *) pend="" ;;
+    esac
+  done
+  wait "$pid"; D_EXIT=$?
+  if [ -n "$D_TIMEOUT" ]; then
+    printf 'TIMEOUT (per-test budget %ss exceeded; process tree killed by run-round)\n' "$doctest_budget" >>"$out"
+    cargo test --doc "$@" -- --list >"$out.list" 2>>"$err"
+    sed -n 's/^\(.*\): test$/\1/p' "$out.list" | while IFS= read -r t; do
+      grep -qF "test $t " "$out" || printf 'test %s ... NOT_RUN (unit stopped at a per-test timeout)\n' "$t" >>"$out"
+    done
+    D_EXIT=124
+  fi
+  return 0
+}
 
 if [ $all -eq 1 ]; then sel=(--workspace); else sel=(); for c in "${crates[@]}"; do sel+=(-p "$c"); done; fi
-started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+doctest_budget=$(awk -F'\t' '$1 == "config" && $2 == "doctest-per-test-timeout-s" { print $3 }' "$plan")
 set +e
 nextest_unit "$results" - "${sel[@]}"
 rec default nextest '*' - run "$U_BUILD" "$U_RUN" .
@@ -210,6 +292,7 @@ default_filter=$U_FILTER
 mkdir -p "$results/features" "$results/doctest"
 while IFS=$'\t' read -r kind crate feats status; do
   status=${status%$'\r'}
+  [ "$kind" = config ] && continue
   name=$crate; [ "$feats" != - ] && name="$crate+${feats//,/+}"
   if [ "$status" != run ]; then
     k=doctest; [ "$kind" = features ] && k=nextest
@@ -219,21 +302,26 @@ while IFS=$'\t' read -r kind crate feats status; do
     rec "features:$name" nextest "$crate" "$feats" run "$U_BUILD" "$U_RUN" "features/$name"
   else
     fa=(); [ "$feats" != - ] && fa=(--features "$feats")
-    cargo test --doc ${locked[@]+"${locked[@]}"} -p "$crate" ${fa[@]+"${fa[@]}"} >"$results/doctest/$name.stdout.txt" 2>"$results/doctest/$name.stderr.txt"
-    e=$?
+    doctest_unit "$results/doctest/$name.stdout.txt" "$results/doctest/$name.stderr.txt" \
+      ${locked[@]+"${locked[@]}"} -p "$crate" ${fa[@]+"${fa[@]}"}
     # A library that does not compile is a build failure; anything else is the doctest run's verdict.
-    if [ $e -ne 0 ] && grep -q '^error: could not compile' "$results/doctest/$name.stderr.txt"; then b=$e r=-; else b=0 r=$e; fi
+    if [ $D_EXIT -ne 0 ] && [ -z "$D_TIMEOUT" ] && grep -q '^error: could not compile' "$results/doctest/$name.stderr.txt"; then
+      b=$D_EXIT r=-
+    else
+      b=0 r=$D_EXIT
+    fi
     rec "doctest:$name" doctest "$crate" "$feats" run "$b" "$r" "doctest/$name"
   fi
 done <"$plan"
 ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-first_build=0 first_run=0
+first_build=0 first_run=0 absent=0
 while IFS=$'\t' read -r _ _ _ _ status b r _; do
+  case "$status" in feature_absent:*|crate_absent) absent=1 ;; esac
   [ "$status" = run ] || continue
   [ "$b" != - ] && [ "$b" != 0 ] && [ $first_build -eq 0 ] && first_build=$b
   [ "$r" != - ] && [ "$r" != 0 ] && [ $first_run -eq 0 ] && first_run=$r
 done <"$units"
-code=$first_build; [ "$code" -eq 0 ] && code=$first_run
+code=$first_build; [ "$code" -eq 0 ] && code=$first_run; [ "$code" -eq 0 ] && [ $absent -eq 1 ] && code=74
 set -e
 
 export RR_MODE=$([ $dev -eq 1 ] && echo dev || echo export) RR_PROFILE=$profile
@@ -241,13 +329,14 @@ export RR_SELECTION=$([ $all -eq 1 ] && echo --all || echo "${crates[*]}") RR_SH
 export RR_IDENTITY=$identity RR_OWNER_DIR=$owner_dir RR_MANIFEST=$manifest RR_DIRTY=$dirty RR_STARTED=$started RR_ENDED=$ended
 export RR_LOCK_SHA=$(sha256sum Cargo.lock | cut -c1-64) RR_FILTER=$default_filter RR_EXIT=$code RR_TARGET=$target
 export RR_RUSTC=$(rustc -V 2>/dev/null) RR_CARGO=$(cargo -V 2>/dev/null) RR_NEXTEST=$(cargo nextest --version 2>/dev/null | head -n1)
-export RR_UNSET=$(echo $unset_vars) RR_WRAPPER=${RUSTC_WRAPPER:-}
+export RR_UNSET=$(echo $unset_vars) RR_WRAPPER=${RUSTC_WRAPPER:-} RR_DOCTEST_BUDGET=$doctest_budget
 if ! "$py" -X utf8 -I - "$results" "$root/.config/round-features.toml" <<'PY'; then
 import hashlib, json, os, pathlib, re, sys
 import xml.etree.ElementTree as ET
 
 res, matrix = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 E = os.environ
+STATUSES = ("passed", "failed", "skipped", "timed_out", "not_run")
 def num(x):
     return None if x == "-" else int(x)
 def summary(d):
@@ -270,16 +359,16 @@ def junit(path, unit, feats):
                         "binary": binary, "name": case.get("name", ""), "status": status,
                         "seconds": float(case.get("time") or 0)})
     return out
-DOC = re.compile(r"^test (.+) \.\.\. (ok|FAILED|ignored)\b")
+DOC = re.compile(r"^test (.+?) +\.\.\. (ok|FAILED|ignored|TIMEOUT|NOT_RUN)\b")
+DOC_STATUS = {"ok": "passed", "FAILED": "failed", "ignored": "skipped", "TIMEOUT": "timed_out", "NOT_RUN": "not_run"}
 def doctests(path, unit, crate, feats):
     out = []
     if path.exists():
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             m = DOC.match(line)
             if m:
-                status = {"ok": "passed", "FAILED": "failed", "ignored": "skipped"}[m.group(2)]
                 out.append({"unit": unit, "kind": "doctest", "crate": crate, "features": feats, "binary": "doctest",
-                            "name": m.group(1), "status": status, "seconds": None})
+                            "name": m.group(1), "status": DOC_STATUS[m.group(2)], "seconds": None})
     return out
 
 units, tests = [], []
@@ -295,19 +384,20 @@ for line in (res / "units.tsv").read_text(encoding="utf-8").splitlines():
         u["summary"] = summary(ud)
     elif status == "run" and kind == "doctest":
         got = doctests(res / f"{d}.stdout.txt", unit, crate, feats)
-    for k in ("passed", "failed", "skipped"):
+    for k in STATUSES:
         u[k] = sum(t["status"] == k for t in got)
     units.append(u)
     tests += got
 per_crate = {}
 for t in tests:
     if t["unit"] == "default":
-        c = per_crate.setdefault(t["crate"], {"passed": 0, "failed": 0, "skipped": 0})
+        c = per_crate.setdefault(t["crate"], {k: 0 for k in STATUSES})
         c[t["status"]] += 1
 default = units[0]
 mx = matrix.read_bytes() if matrix.exists() else b""
+absent = [u["unit"] + " (" + u["status"] + ")" for u in units if u["status"].startswith(("feature_absent", "crate_absent"))]
 round_json = {
-    "schema": "hsk.studio.round-run@2",
+    "schema": "hsk.studio.round-run@2", "complete": True,
     "mode": E["RR_MODE"], "profile": E["RR_PROFILE"], "selection": E["RR_SELECTION"],
     "sha": E["RR_SHA"], "tree": E["RR_TREE"], "identity_file": E["RR_IDENTITY"],
     "export_owner_dir": E["RR_OWNER_DIR"], "export_manifest_sha256": E["RR_MANIFEST"],
@@ -315,7 +405,10 @@ round_json = {
     "started_at": E["RR_STARTED"], "ended_at": E["RR_ENDED"],
     "build_exit": default["build_exit"], "run_exit": default["run_exit"], "summary": default.get("summary", ""),
     "canary_filter": E["RR_FILTER"], "exit": int(E["RR_EXIT"]),
+    "absent_units": absent,
+    "timed_out_tests": [t["unit"] + ": " + t["name"] for t in tests if t["status"] == "timed_out"],
     "feature_matrix": {"file": ".config/round-features.toml", "sha256": hashlib.sha256(mx).hexdigest() if mx else None},
+    "doctest_per_test_timeout_s": int(E["RR_DOCTEST_BUDGET"]),
     "units": units, "per_crate_default": dict(sorted(per_crate.items())),
     "tests_file": "tests.json", "tests_reported": len(tests),
     "tools": {"rustc": E["RR_RUSTC"], "cargo": E["RR_CARGO"], "nextest": E["RR_NEXTEST"]},
@@ -327,10 +420,11 @@ round_json = {
                                            indent=1) + "\n", encoding="utf-8", newline="\n")
 (res / "round.json").write_text(json.dumps(round_json, indent=1) + "\n", encoding="utf-8", newline="\n")
 for u in units:
-    print("  %-48s %-16s build=%s run=%s pass=%d fail=%d skip=%d" % (u["unit"], u["status"], u["build_exit"],
-          u["run_exit"], u["passed"], u["failed"], u["skipped"]))
+    print("  %-48s %-24s build=%s run=%s pass=%d fail=%d skip=%d timeout=%d not_run=%d" % (u["unit"], u["status"],
+          u["build_exit"], u["run_exit"], u["passed"], u["failed"], u["skipped"], u["timed_out"], u["not_run"]))
 PY
-  echo "run-round: results aggregation failed (raw files kept in $results)" >&2
+  reason="results aggregation failed (raw files kept)"
+  echo "run-round: $reason" >&2
   exit 70
 fi
 echo "run-round: exit=$code -> $results/round.json"

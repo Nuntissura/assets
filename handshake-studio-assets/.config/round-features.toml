@@ -1,10 +1,16 @@
-# Round feature matrix for tools/run-round.sh (workspace steward owned; builders request entries via the lead).
-# Every selected crate runs default features in the union unit; each set below adds one (crate, features) unit with
-# its own build, test run and doctests (results features/CRATE+F1+F2/ and doctest/CRATE+F1+F2.*).
-# A set naming a feature the candidate's manifest lacks is recorded feature_absent (not run, no exit impact).
-schema = "hsk.studio.round-features@1"
+# Round configuration for tools/run-round.sh (workspace steward owned; builders request entries via the lead).
+# [crates]: every selected crate runs default features in the union unit; each set below adds one (crate, features)
+# unit with its own build, test run and doctests (results features/CRATE+F1+F2/ and doctest/CRATE+F1+F2.*).
+# A set naming a feature (or crate) the candidate lacks is recorded feature_absent (crate_absent) and the round
+# exits 74 (declared unit absent at the candidate).
+# [doctest]: per-test budget for doctests (the per-test runner does not run them; nextest.toml covers the rest).
+schema = "hsk.studio.round-features@2"
+
+[doctest]
+per-test-timeout-s = 120
 
 [crates]
 hsk-studio-type = [["harfrust"]]
 hsk-studio-motion-js = [["quickjs"]]
 hsk-studio-reel = [["av1"]]
+hsk-studio-reel-native = [["av1"]]
