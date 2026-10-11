@@ -13,7 +13,8 @@
 //! instances (loss entry `effect_single_and_multi_slots_merged`; whether Photoshop duplicates the
 //! first multi entry into the single slot is UNVERIFIED, D5). An effect this module cannot map
 //! (gradient or pattern content, an unmapped blend mode, an unknown enumeration, a value outside
-//! the Folio range) is skipped with a typed loss entry, never defaulted; the block bytes stay in
+//! the Folio range) is skipped with a typed loss entry and not defaulted (test
+//! `lfx2_stack_merges_single_and_multi_slots_in_source_order`); the block bytes stay in
 //! the document. Blend-mode ids are quoted from ag-psd; the enumeration ids `bvlS`, `bvlD`, `bvlT`,
 //! `GlwT`, `glwS`, `Styl`, `PntT` and the bool keys `layerConceals`, `Invr`, `overprint`,
 //! `showInDialog` are UNVERIFIED spellings: a file that spells them differently leaves the effect

@@ -575,13 +575,14 @@ fn hostile_descriptor_and_adjustment_sizes_are_typed_refusals() {
         // a hue record one byte short, a levels block that claims 29 records but holds fewer
         let reason_of = |key: &[u8; 4], data: &[u8]| -> Vec<&'static str> {
             let (_, p) = proposal(&adjustment_doc(key, data));
-            assert_eq!(first_layer(&p).kind, "psd_adjustment");
+            assert_eq!(first_layer(&p).kind, "psd_adjustment", "{} with {} bytes", String::from_utf8_lossy(key), data.len());
             codes(&p, &format!("layer[0]/tagged/{}", String::from_utf8_lossy(key)))
         };
         assert!(reason_of(b"curv", &curv(4, u32::MAX, &[])).contains(&"curves_count_limit"));
         assert!(reason_of(b"curv", &curv(1, u32::MAX, &[&[(0, 0), (255, 255)]])).contains(&"curves_truncated"));
         assert!(reason_of(b"hue2", &[0, 2, 0, 0, 0]).contains(&"hue_saturation_truncated"));
-        assert!(reason_of(b"levl", &levl(&[])[..289]).contains(&"levels_truncated"));
+        // (a layer-level block is padded to a multiple of 4 inside its length, so cut on a multiple of 4)
+        assert!(reason_of(b"levl", &levl(&[])[..280]).contains(&"levels_truncated"));
         assert!(reason_of(b"expA", &[0, 1, 0, 0]).contains(&"exposure_truncated"));
         let mut nan = be16(1);
         for v in [f32::NAN, 0.0, 1.0] {

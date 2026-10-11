@@ -69,12 +69,16 @@ pub const DESCRIPTOR: &str = concat!(
     "\"capabilities\":[\"layer_records_groups_resources\",\"byte_exact_rewrite\",\"typed_loss_report\",",
     "\"folio_proposal_hierarchy_appearance_masks\",\"pigment_tiles_8_16_32_bit_full_precision\",\"embedded_icc_rgb_via_converter_when_accepted\",",
     "\"observe_terminal_frame\",\"export_edited_folio_layer_properties_preserving_original_bytes\",",
-    "\"cmyk_embedded_icc_display_conversion_8_16_bit\",\"lab_pcs_native_display_conversion_8_16_bit\",\"gray_ktrc_icc_display_conversion_8_16_bit\"],",
+    "\"cmyk_embedded_icc_display_conversion_8_16_bit\",\"lab_pcs_native_display_conversion_8_16_bit\",\"gray_ktrc_icc_display_conversion_8_16_bit\",",
+    "\"raster_records_adjustments_levels_curves_hue_saturation_brightness_contrast_exposure_invert_threshold_posterize\",",
+    "\"raster_records_blend_if_mask_density_feather_knockout_blend_toggles\",\"raster_records_lfx2_effect_stack_not_rendered\"],",
+    "\"raster_records\":\"ImportProposal::raster_records (folio StudioRasterRecords) validated by validate_raster_records; records only, nothing applied or rendered; unreadable or out-of-range record keeps the layer a typed unsupported layer; IdMint::effect_stack_id defaults to None (effects preserved and reported)\",",
     "\"display_conversion\":\"projection_only_original_channels_byte_preserved;wide_prism_path_for_rgb_gray_cmyk_lab;intent_perceptual_assumed_unless_configured;bpc_on_assumed_unless_configured_and_sent_to_prism_for_every_source_kind;legacy_rgb_converter_records_intent_and_bpc_not_applied;unclamped_output_clamped_with_counts_and_loss_entry;cmyk_without_embedded_profile_is_typed_loss_cmyk_profile_missing_no_default_profile\",",
     "\"blend\":\"psd_key_table_to_pigment_StudioBlendMode;unknown_key_typed_loss_never_normal;pass_is_group_flag\",",
     "\"unknown_bytes\":\"preserved_byte_exact\",",
     "\"oracle\":\"merged_image_only_when_hasRealMergedData\",",
-    "\"pending\":[\"photoshop_authored_oracle_fixtures\",\"cmyk_inverted_storage_and_lab_16_bit_encoding_verification\",\"rgb_lut_profiles_via_wide_path_untested\",",
+    "\"pending\":[\"photoshop_authored_oracle_fixtures\",\"adjustment_layer_graph_ordering_owned_by_composite\",",
+    "\"effect_gradient_pattern_contents_and_bevel_texture\",\"adjustment_record_export_after_edit\",\"cmyk_inverted_storage_and_lab_16_bit_encoding_verification\",\"rgb_lut_profiles_via_wide_path_untested\",",
     "\"vector_mask_and_layer_effect_rendering\",\"text_smart_object_editing\",\"mask_density_feather\",",
     "\"sixteen_bit_scale_and_float32_transfer_verification\"]}"
 );
