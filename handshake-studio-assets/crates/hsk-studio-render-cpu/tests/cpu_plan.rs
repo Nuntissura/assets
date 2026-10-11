@@ -1914,14 +1914,27 @@ fn pass_through_fill_opacity_is_refused_typed_never_ignored() {
             let renderer = Renderer::with_threads(1, threads).unwrap();
             // Control: fill 1 is the plain pass-through, red over the transparent root backdrop.
             let mut sink = Collect::new(extent);
-            run(&renderer, &pass(1.0), Exactness::Approximate, &none, &mut sink).unwrap();
+            run(
+                &renderer,
+                &pass(1.0),
+                Exactness::Approximate,
+                &none,
+                &mut sink,
+            )
+            .unwrap();
             assert_eq!(sink.pixel(1, 1), [1.0, 0.0, 0.0, 1.0], "{threads} threads");
             // fill < 1: refused even at the most permissive floor; nothing reaches the sink.
             for fill in [0.5_f32, 0.0] {
                 let mut sink = Collect::new(extent);
                 assert_eq!(
-                    run(&renderer, &pass(fill), Exactness::Approximate, &none, &mut sink)
-                        .unwrap_err(),
+                    run(
+                        &renderer,
+                        &pass(fill),
+                        Exactness::Approximate,
+                        &none,
+                        &mut sink
+                    )
+                    .unwrap_err(),
                     BackendError::Unsupported {
                         operator: "group_pass_through_fill_opacity",
                         exactness: Exactness::Unsupported,
@@ -1945,7 +1958,14 @@ fn pass_through_fill_opacity_is_refused_typed_never_ignored() {
             2,
         );
         let mut sink = Collect::new(extent);
-        run(&Renderer::new(2).unwrap(), &filled, Exactness::Approximate, &none, &mut sink).unwrap();
+        run(
+            &Renderer::new(2).unwrap(),
+            &filled,
+            Exactness::Approximate,
+            &none,
+            &mut sink,
+        )
+        .unwrap();
     });
 }
 
@@ -2001,7 +2021,11 @@ fn panicking_sink_is_a_typed_error_and_never_hangs_any_thread_count() {
                     "{threads} threads, panic at {panic_at}"
                 );
                 assert_eq!(error.code(), "backend_unavailable");
-                assert_eq!(sink.calls, panic_at + 1, "delivery stops at the panicking call");
+                assert_eq!(
+                    sink.calls,
+                    panic_at + 1,
+                    "delivery stops at the panicking call"
+                );
                 assert_eq!(renderer.live_scratch_bytes(), 0, "scratch released");
             }
             // The renderer is not poisoned: the next run completes with a receipt.

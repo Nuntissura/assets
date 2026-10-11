@@ -13,17 +13,30 @@
 //! source alpha multiplied by the base alpha, then `G`'s alpha is held at the base alpha; `G` is
 //! composited onto the running backdrop with the BASE layer's mode, opacity and fill. The base
 //! alpha is `G`'s own alpha (it never changes during the run), so a clipped layer needs no plane.
+//!
+//! Envelope operators (`RenderBackend::execute_extended`: adjustment layers, Blend-If, mask density
+//! and feather) live in the `extended` submodule and call pigment's maths; a plan without an
+//! envelope takes the unchanged v1 path.
+//!
+//! Workflow v4 V4-01: this module and `px` deny unchecked integer arithmetic; plan-derived sizes
+//! and coordinates go through the checked helpers of `crate::px`.
+#![deny(clippy::arithmetic_side_effects)]
+mod extended;
+
 use crate::coverage::PreparedPath;
+use crate::px::{add_u, area, end, index_in, intersect, mul_u, offset, overflow, to_i64, union};
 use crate::vector::VectorSource;
+use extended::{ExtPrep, Fx, LayerFx, blend_weight, coverage_error};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_nib::PathLimits;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, composite_over};
+use hsk_studio_pigment::coverage_math::mask_coverage;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, Applicability, BackendError, BackendIdentity, DeviceClass, Exactness,
-    ExecuteRequest, Layer, MaskFormat, MaskInput, Operator, PlanNode, PlanSources, RenderBackend,
-    RenderPlan, RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
-    TileSink, admit,
+    ExactnessLedger, ExecuteRequest, ExtOperator, Layer, MaskFormat, MaskInput, Operator,
+    PlanExtensions, PlanNode, PlanSources, RenderBackend, RenderPlan, RenderReceipt, SampleFormat,
+    SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink, admit, admit_extended,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -166,18 +179,70 @@ struct MaskView<'a> {
     bytes: &'a [u8],
     stride: usize,
     inverted: bool,
+    /// `MaskInput.density`; below 1 only on the envelope path (`ExtPrep::allow_density`).
+    density: f32,
 }
 impl MaskView<'_> {
-    fn coverage(&self, x: i64, y: i64) -> f32 {
-        let row = (y - self.bounds.y) as usize * self.stride;
-        let c = if self.wide {
-            let at = row + (x - self.bounds.x) as usize * 2;
-            (f64::from(u16::from_le_bytes([self.bytes[at], self.bytes[at + 1]])) / 65535.0) as f32
+    /// Stored coverage at plan pixel `(x, y)` (before invert and density); a pixel outside the
+    /// plane is a typed `Overflow` (prepare checked that every pixel a layer touches is inside).
+    fn raw(&self, x: i64, y: i64) -> Result<f32, RenderError> {
+        let row = offset(y, self.bounds.y)?
+            .checked_mul(self.stride)
+            .ok_or_else(overflow)?;
+        let column = offset(x, self.bounds.x)?;
+        if self.wide {
+            let at = column
+                .checked_mul(2)
+                .and_then(|c| row.checked_add(c))
+                .ok_or_else(overflow)?;
+            let end = at.checked_add(2).ok_or_else(overflow)?;
+            let Some(&[lo, hi]) = self.bytes.get(at..end) else {
+                return Err(overflow());
+            };
+            Ok((f64::from(u16::from_le_bytes([lo, hi])) / 65535.0) as f32)
         } else {
-            (f64::from(self.bytes[row + (x - self.bounds.x) as usize]) / 255.0) as f32
-        };
-        if self.inverted { 1.0 - c } else { c }
+            let at = row.checked_add(column).ok_or_else(overflow)?;
+            let byte = *self.bytes.get(at).ok_or_else(overflow)?;
+            Ok((f64::from(byte) / 255.0) as f32)
+        }
     }
+    /// [`MaskView::raw`] with the pixel clamped into the plane (feather taps clamp at the border).
+    fn raw_clamped(&self, x: i64, y: i64) -> Result<f32, RenderError> {
+        let (x1, y1) = end(self.bounds)?;
+        self.raw(
+            x.max(self.bounds.x).min(x1.saturating_sub(1)),
+            y.max(self.bounds.y).min(y1.saturating_sub(1)),
+        )
+    }
+    /// Effective coverage from stored (possibly feathered) coverage `raw`: invert, then density.
+    /// At density 1 this is the v1 inversion (bytes of every v1 plan stay identical); below 1 it is
+    /// `coverage_math::mask_coverage`, pigment's single owner of the density formula.
+    fn effective(&self, raw: f32) -> Result<f32, RenderError> {
+        if self.density == 1.0 {
+            Ok(if self.inverted { 1.0 - raw } else { raw })
+        } else {
+            mask_coverage(raw, self.inverted, self.density).map_err(coverage_error)
+        }
+    }
+}
+
+/// Mask coverage of `layer` at `(x, y)`: 1 without a mask; `plane` is the feathered chunk plane
+/// (indexed by `at`) when the layer has a feather, else the stored plane is read directly.
+fn mask_value(
+    layer: &PLayer<'_>,
+    plane: Option<&[f32]>,
+    x: i64,
+    y: i64,
+    at: usize,
+) -> Result<f32, RenderError> {
+    let Some(mask) = layer.mask else {
+        return Ok(1.0);
+    };
+    let raw = match plane {
+        Some(plane) => *plane.get(at).ok_or_else(overflow)?,
+        None => mask.raw(x, y)?,
+    };
+    mask.effective(raw)
 }
 
 struct PLayer<'a> {
@@ -189,6 +254,8 @@ struct PLayer<'a> {
     mask: Option<MaskView<'a>>,
     /// Clip-to-base layer: its coverage is the alpha of the run's base (no plane, `mask` is None).
     clipped: bool,
+    /// Envelope state (adjustment layer, Blend-If, feather); default on a v1 layer.
+    fx: LayerFx,
 }
 fn is_clipped(layer: &Layer) -> bool {
     layer.mask.as_ref().is_some_and(MaskInput::is_clip_to_base)
@@ -219,31 +286,10 @@ struct Prepared<'a> {
     root: usize,
     reachable: u64,
     seed: u64,
+    /// Envelope tables (adjustments, Blend-If sets, feather kernels); empty on the v1 path.
+    ext: ExtPrep,
 }
 
-fn end(rect: Rect) -> Result<(i64, i64), RenderError> {
-    rect.end()
-        .map_err(|_| RenderError::Backend(BackendError::Overflow))
-}
-fn intersect(a: Rect, b: Rect) -> Result<Option<Rect>, RenderError> {
-    a.intersect(b)
-        .map_err(|_| RenderError::Backend(BackendError::Overflow))
-}
-fn union(a: Option<Rect>, b: Option<Rect>) -> Result<Option<Rect>, RenderError> {
-    let (Some(a), Some(b)) = (a, b) else {
-        return Ok(a.or(b));
-    };
-    let (ax1, ay1) = end(a)?;
-    let (bx1, by1) = end(b)?;
-    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
-    let overflow = |_| RenderError::Backend(BackendError::Overflow);
-    Ok(Some(Rect {
-        x,
-        y,
-        width: u32::try_from(ax1.max(bx1) - x).map_err(overflow)?,
-        height: u32::try_from(ay1.max(by1) - y).map_err(overflow)?,
-    }))
-}
 fn unit_rgb(rgba: [f32; 4]) -> Result<(), RenderError> {
     if rgba
         .iter()
@@ -262,25 +308,40 @@ fn plane_ok(
     height: u32,
     bpp: u64,
 ) -> Result<(), SourceFault> {
-    let row = u64::from(width) * bpp;
+    let Some(row) = u64::from(width).checked_mul(bpp) else {
+        return Err(SourceFault::MalformedStride);
+    };
     let size = stride.checked_mul(u64::from(height));
     if stride < row || !stride.is_multiple_of(4) || u64::try_from(bytes.len()).ok() != size {
         return Err(SourceFault::MalformedStride);
     }
     Ok(())
 }
-fn f32_at(bytes: &[u8], at: usize) -> f32 {
-    f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+fn f32_at(bytes: &[u8], at: usize) -> Result<f32, RenderError> {
+    let end = at.checked_add(4).ok_or_else(overflow)?;
+    let Some(&[a, b, c, d]) = bytes.get(at..end) else {
+        return Err(overflow());
+    };
+    Ok(f32::from_le_bytes([a, b, c, d]))
 }
-fn tile_pixel(p: &TilePlanes<'_>, x: u32, y: u32) -> [f32; 4] {
-    let c = y as usize * p.colour_stride_bytes as usize + x as usize * 12;
-    let a = y as usize * p.alpha_stride_bytes as usize + x as usize * 4;
-    [
-        f32_at(p.colour, c),
-        f32_at(p.colour, c + 4),
-        f32_at(p.colour, c + 8),
-        f32_at(p.alpha, a),
-    ]
+/// Straight RGBA of tile pixel `(column, row)`.
+fn tile_pixel(p: &TilePlanes<'_>, column: usize, row: usize) -> Result<[f32; 4], RenderError> {
+    let at = |stride: u64, bytes_per_pixel: usize| -> Result<usize, RenderError> {
+        mul_u(row, crate::px::to_usize(stride)?)
+            .and_then(|r| add_u(r, mul_u(column, bytes_per_pixel)?))
+    };
+    let c = at(p.colour_stride_bytes, 12)?;
+    let a = at(p.alpha_stride_bytes, 4)?;
+    Ok([
+        f32_at(p.colour, c)?,
+        f32_at(p.colour, add_u(c, 4)?)?,
+        f32_at(p.colour, add_u(c, 8)?)?,
+        f32_at(p.alpha, a)?,
+    ])
+}
+/// Straight RGBA at plan pixel `(x, y)` of a tile placed at `rect`.
+fn tile_at(p: &TilePlanes<'_>, rect: Rect, x: i64, y: i64) -> Result<[f32; 4], RenderError> {
+    tile_pixel(p, offset(x, rect.x)?, offset(y, rect.y)?)
 }
 
 /// Shape, plane hashes and values of a resolved tile against the plan's declaration.
@@ -321,7 +382,7 @@ fn verify_tile(
     let mut out_of_unit = false;
     for y in 0..planes.height {
         for x in 0..planes.width {
-            let [r, g, b, a] = tile_pixel(planes, x, y);
+            let [r, g, b, a] = tile_pixel(planes, x as usize, y as usize)?;
             if ![r, g, b, a].iter().all(|v| v.is_finite()) {
                 return Err(source(key, SourceFault::Nonfinite));
             }
@@ -340,6 +401,7 @@ fn verify_tile(
 fn prepare<'a, V: VectorSource>(
     plan: &RenderPlan<V>,
     sources: &'a dyn PlanSources,
+    ext: ExtPrep,
 ) -> Result<Prepared<'a>, RenderError> {
     let target = plan.target;
     if target.alpha != AlphaConvention::Straight {
@@ -420,7 +482,8 @@ fn prepare<'a, V: VectorSource>(
                     let child = &plan.nodes[input];
                     let pass_through = l.mode == StudioBlendMode::PassThrough;
                     let clipped = is_clipped(l);
-                    let starts_run = !clipped && g.layers.get(li + 1).is_some_and(is_clipped);
+                    let starts_run =
+                        !clipped && g.layers.get(li.saturating_add(1)).is_some_and(is_clipped);
                     // A pass-through group has no isolated content to take a base alpha from.
                     // Pigment validation refuses it first (`ClipBasePassThrough`); kept so
                     // `prepare` stays safe on its own.
@@ -456,7 +519,9 @@ fn prepare<'a, V: VectorSource>(
                         // Canonical clip-to-base encoding (pigment validated): no plane to resolve.
                         Some(_) if clipped => None,
                         Some(m) => {
-                            if m.density != 1.0 {
+                            // Density below 1 is an envelope operator: the v1 path refuses it (and
+                            // pigment's `admit` already did), the envelope path evaluates it.
+                            if m.density != 1.0 && !ext.allow_density {
                                 return Err(unsupported("mask_density"));
                             }
                             if pass_through {
@@ -501,11 +566,12 @@ fn prepare<'a, V: VectorSource>(
                                 bytes: plane.bytes,
                                 stride: plane.stride_bytes as usize,
                                 inverted: m.inverted,
+                                density: m.density,
                             })
                         }
                     };
                     let child_need = match child_isolated {
-                        Some(true) => 1 + need[input],
+                        Some(true) => need[input].saturating_add(1),
                         _ => need[input],
                     };
                     if clipped {
@@ -513,7 +579,7 @@ fn prepare<'a, V: VectorSource>(
                         run_need = Some(run_need.map_or(child_need, |r| r.max(child_need)));
                     } else {
                         if let Some(r) = run_need.take() {
-                            group_need = group_need.max(1 + r);
+                            group_need = group_need.max(r.saturating_add(1));
                         }
                         group_bounds = union(group_bounds, bounds[input])?;
                         if starts_run {
@@ -528,10 +594,11 @@ fn prepare<'a, V: VectorSource>(
                         opacity: l.opacity * l.fill_opacity,
                         mask,
                         clipped,
+                        fx: ext.layer(i, li),
                     });
                 }
                 if let Some(r) = run_need {
-                    group_need = group_need.max(1 + r);
+                    group_need = group_need.max(r.saturating_add(1));
                 }
                 (
                     PNode::Group {
@@ -554,6 +621,7 @@ fn prepare<'a, V: VectorSource>(
         root,
         reachable: reach.iter().filter(|r| **r).count() as u64,
         seed: plan.revision,
+        ext,
     })
 }
 
@@ -572,24 +640,25 @@ impl Eval<'_, '_> {
         chunk: Rect,
         dst: &mut [[f32; 4]],
         spare: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
     ) -> Result<(), RenderError> {
         let PNode::Group { layers, .. } = &self.prepared.nodes[idx] else {
             return Err(unsupported("plan_shape"));
         };
-        let mut at = 0;
-        while at < layers.len() {
-            let base = &layers[at];
+        let mut rest: &[PLayer<'_>] = layers;
+        while let Some((base, tail)) = rest.split_first() {
             // Pigment validation guarantees a clipped layer follows an unclipped one.
             if base.clipped {
                 return Err(unsupported("plan_shape"));
             }
-            let clipped = layers[at + 1..].iter().take_while(|l| l.clipped).count();
-            if clipped == 0 {
-                self.layer(base, chunk, dst, spare)?;
+            let clipped = tail.iter().take_while(|l| l.clipped).count();
+            let (run, next) = tail.split_at(clipped);
+            if run.is_empty() {
+                self.layer(base, chunk, dst, spare, fx)?;
             } else {
-                self.clip_run(base, &layers[at + 1..=at + clipped], chunk, dst, spare)?;
+                self.clip_run(base, run, chunk, dst, spare, fx)?;
             }
-            at += 1 + clipped;
+            rest = next;
         }
         Ok(())
     }
@@ -603,6 +672,7 @@ impl Eval<'_, '_> {
         chunk: Rect,
         dst: &mut [[f32; 4]],
         spare: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
     ) -> Result<(), RenderError> {
         // Outside the base nothing of the run is visible.
         let Some(region) = self.prepared.bounds[base.input]
@@ -612,26 +682,33 @@ impl Eval<'_, '_> {
         else {
             return Ok(());
         };
-        let count = chunk.width as usize * chunk.height as usize;
+        let count = area(chunk)?;
         let (buffer, deeper) = spare
             .split_first_mut()
             .ok_or(BackendError::Unavailable("group_scratch"))?;
         let run = &mut buffer[..count];
         run.fill([0.0; 4]);
-        self.clip_base(base, region, chunk, run, deeper)?;
+        self.clip_base(base, region, chunk, run, deeper, fx)?;
         for layer in clipped {
-            self.clip_layer(layer, chunk, run, deeper)?;
+            self.clip_layer(layer, chunk, run, deeper, fx)?;
         }
-        // The base's own mask is already in `G`; opacity, fill and mode are the base layer's.
+        // The base's own mask is already in `G`; opacity, fill and mode are the base layer's, and so
+        // is its Blend-If (`G` is the source, the running backdrop the underlying layer).
         let group = PLayer {
             input: base.input,
             mode: base.mode,
             opacity: base.opacity,
             mask: None,
             clipped: false,
+            fx: LayerFx {
+                blend_if: base.fx.blend_if,
+                ..LayerFx::default()
+            },
         };
         let result: &[[f32; 4]] = run;
-        self.composite(&group, region, chunk, dst, |_, _, at| (result[at], 1.0))
+        self.composite(&group, region, chunk, dst, fx, |_, _, at| {
+            Ok((*result.get(at).ok_or_else(overflow)?, 1.0))
+        })
     }
 
     /// `G` := base content with the base's own mask (alpha scaled), without opacity, fill or mode.
@@ -642,23 +719,27 @@ impl Eval<'_, '_> {
         chunk: Rect,
         run: &mut [[f32; 4]],
         deeper: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
     ) -> Result<(), RenderError> {
         match &self.prepared.nodes[base.input] {
             PNode::Group { isolated: true, .. } => {
-                self.group(base.input, chunk, run, deeper)?;
-                seal_base(base, region, chunk, run, |_, _, current| (current, 1.0));
+                self.group(base.input, chunk, run, deeper, fx)?;
+                self.seal_base(base, region, chunk, run, fx, |_, _, current| {
+                    Ok((current, 1.0))
+                })?;
             }
-            PNode::Tile { planes, rect } => seal_base(base, region, chunk, run, |x, y, _| {
-                (
-                    tile_pixel(planes, (x - rect.x) as u32, (y - rect.y) as u32),
-                    1.0,
-                )
-            }),
-            PNode::Solid { rgba } => seal_base(base, region, chunk, run, |_, _, _| (*rgba, 1.0)),
+            PNode::Tile { planes, rect } => {
+                self.seal_base(base, region, chunk, run, fx, |x, y, _| {
+                    Ok((tile_at(planes, *rect, x, y)?, 1.0))
+                })?;
+            }
+            PNode::Solid { rgba } => {
+                self.seal_base(base, region, chunk, run, fx, |_, _, _| Ok((*rgba, 1.0)))?;
+            }
             PNode::Vector { path, rgba } => {
-                seal_base(base, region, chunk, run, |x, y, _| {
-                    (*rgba, path.coverage(x, y))
-                });
+                self.seal_base(base, region, chunk, run, fx, |x, y, _| {
+                    Ok((*rgba, path.coverage(x, y)))
+                })?;
             }
             // A pass-through base is refused by `prepare`.
             PNode::Group {
@@ -676,6 +757,7 @@ impl Eval<'_, '_> {
         chunk: Rect,
         run: &mut [[f32; 4]],
         spare: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
     ) -> Result<(), RenderError> {
         let Some(region) = self.prepared.bounds[layer.input]
             .map(|b| intersect(b, chunk))
@@ -684,32 +766,35 @@ impl Eval<'_, '_> {
         else {
             return Ok(());
         };
+        // An adjustment layer inside a run adjusts `G` only, so it never reaches beyond its base.
+        if layer.fx.adjustment.is_some() {
+            return self.adjust(layer, region, chunk, run, fx);
+        }
         match &self.prepared.nodes[layer.input] {
             PNode::Group { isolated: true, .. } => {
-                let count = chunk.width as usize * chunk.height as usize;
+                let count = area(chunk)?;
                 let (buffer, deeper) = spare
                     .split_first_mut()
                     .ok_or(BackendError::Unavailable("group_scratch"))?;
                 let buffer = &mut buffer[..count];
                 buffer.fill([0.0; 4]);
-                self.group(layer.input, chunk, buffer, deeper)?;
+                self.group(layer.input, chunk, buffer, deeper, fx)?;
                 let result: &[[f32; 4]] = buffer;
-                self.composite_clipped(layer, region, chunk, run, |_, _, at| (result[at], 1.0))
+                self.composite_clipped(layer, region, chunk, run, |_, _, at| {
+                    Ok((*result.get(at).ok_or_else(overflow)?, 1.0))
+                })
             }
             PNode::Tile { planes, rect } => {
                 self.composite_clipped(layer, region, chunk, run, |x, y, _| {
-                    (
-                        tile_pixel(planes, (x - rect.x) as u32, (y - rect.y) as u32),
-                        1.0,
-                    )
+                    Ok((tile_at(planes, *rect, x, y)?, 1.0))
                 })
             }
             PNode::Solid { rgba } => {
-                self.composite_clipped(layer, region, chunk, run, |_, _, _| (*rgba, 1.0))
+                self.composite_clipped(layer, region, chunk, run, |_, _, _| Ok((*rgba, 1.0)))
             }
             PNode::Vector { path, rgba } => {
                 self.composite_clipped(layer, region, chunk, run, |x, y, _| {
-                    (*rgba, path.coverage(x, y))
+                    Ok((*rgba, path.coverage(x, y)))
                 })
             }
             // Pass-through clipped layers are refused by pigment validation, non-isolated
@@ -729,20 +814,25 @@ impl Eval<'_, '_> {
         region: Rect,
         chunk: Rect,
         run: &mut [[f32; 4]],
-        mut source: impl FnMut(i64, i64, usize) -> ([f32; 4], f32),
+        mut source: impl FnMut(i64, i64, usize) -> Result<([f32; 4], f32), RenderError>,
     ) -> Result<(), RenderError> {
-        let width = chunk.width as usize;
-        for y in region.y..region.y + i64::from(region.height) {
-            for x in region.x..region.x + i64::from(region.width) {
-                let at = (y - chunk.y) as usize * width + (x - chunk.x) as usize;
-                let b = run[at];
+        let blend_if = self.blend_set(layer);
+        let (x1, y1) = end(region)?;
+        for y in region.y..y1 {
+            for x in region.x..x1 {
+                let at = index_in(chunk, x, y)?;
+                let b = *run.get(at).ok_or_else(overflow)?;
                 let base_alpha = b[3];
                 if base_alpha <= 0.0 {
                     continue;
                 }
-                let (rgba, coverage) = source(x, y, at);
+                let (rgba, coverage) = source(x, y, at)?;
                 let opacity = layer.opacity * coverage;
-                let source_alpha = rgba[3] * base_alpha;
+                let mut source_alpha = rgba[3] * base_alpha;
+                if !blend_if.is_empty() {
+                    source_alpha *=
+                        blend_weight(blend_if, [rgba[0], rgba[1], rgba[2]], [b[0], b[1], b[2]])?;
+                }
                 if opacity <= 0.0 || source_alpha <= 0.0 {
                     continue;
                 }
@@ -758,7 +848,8 @@ impl Eval<'_, '_> {
                     },
                 )
                 .map_err(blend_error)?;
-                run[at] = [out.rgb[0], out.rgb[1], out.rgb[2], base_alpha];
+                *run.get_mut(at).ok_or_else(overflow)? =
+                    [out.rgb[0], out.rgb[1], out.rgb[2], base_alpha];
             }
         }
         Ok(())
@@ -770,6 +861,7 @@ impl Eval<'_, '_> {
         chunk: Rect,
         dst: &mut [[f32; 4]],
         spare: &mut [Vec<[f32; 4]>],
+        fx: &mut Fx,
     ) -> Result<(), RenderError> {
         let Some(region) = self.prepared.bounds[layer.input]
             .map(|b| intersect(b, chunk))
@@ -778,64 +870,86 @@ impl Eval<'_, '_> {
         else {
             return Ok(());
         };
+        // An adjustment layer applies `f(backdrop)` to the running buffer (its input is only the
+        // placeholder rect that bounds it).
+        if layer.fx.adjustment.is_some() {
+            return self.adjust(layer, region, chunk, dst, fx);
+        }
         match &self.prepared.nodes[layer.input] {
             PNode::Group {
                 isolated: false, ..
-            } => self.group(layer.input, chunk, dst, spare),
+            } => self.group(layer.input, chunk, dst, spare, fx),
             PNode::Group { isolated: true, .. } => {
-                let count = chunk.width as usize * chunk.height as usize;
+                let count = area(chunk)?;
                 let (buffer, deeper) = spare
                     .split_first_mut()
                     .ok_or(BackendError::Unavailable("group_scratch"))?;
                 let buffer = &mut buffer[..count];
                 buffer.fill([0.0; 4]);
-                self.group(layer.input, chunk, buffer, deeper)?;
+                self.group(layer.input, chunk, buffer, deeper, fx)?;
                 let result: &[[f32; 4]] = buffer;
-                self.composite(layer, region, chunk, dst, |_, _, at| (result[at], 1.0))
+                self.composite(layer, region, chunk, dst, fx, |_, _, at| {
+                    Ok((*result.get(at).ok_or_else(overflow)?, 1.0))
+                })
             }
-            PNode::Tile { planes, rect } => self.composite(layer, region, chunk, dst, |x, y, _| {
-                (
-                    tile_pixel(planes, (x - rect.x) as u32, (y - rect.y) as u32),
-                    1.0,
-                )
-            }),
+            PNode::Tile { planes, rect } => {
+                self.composite(layer, region, chunk, dst, fx, |x, y, _| {
+                    Ok((tile_at(planes, *rect, x, y)?, 1.0))
+                })
+            }
             PNode::Solid { rgba } => {
-                self.composite(layer, region, chunk, dst, |_, _, _| (*rgba, 1.0))
+                self.composite(layer, region, chunk, dst, fx, |_, _, _| Ok((*rgba, 1.0)))
             }
-            PNode::Vector { path, rgba } => self.composite(layer, region, chunk, dst, |x, y, _| {
-                (*rgba, path.coverage(x, y))
-            }),
+            PNode::Vector { path, rgba } => {
+                self.composite(layer, region, chunk, dst, fx, |x, y, _| {
+                    Ok((*rgba, path.coverage(x, y)))
+                })
+            }
             PNode::Unused => Err(unsupported("plan_shape")),
         }
     }
 
-    /// Blend `source(x, y, index) = (straight RGBA, coverage)` into `dst` over `region`.
+    /// Blend `source(x, y, index) = (straight RGBA, coverage)` into `dst` over `region`. The layer's
+    /// mask (feathered over the chunk first when it has a feather, then invert and density) scales
+    /// the opacity; its Blend-If weight scales the source alpha.
     fn composite(
         &self,
         layer: &PLayer<'_>,
         region: Rect,
         chunk: Rect,
         dst: &mut [[f32; 4]],
-        mut source: impl FnMut(i64, i64, usize) -> ([f32; 4], f32),
+        fx: &mut Fx,
+        mut source: impl FnMut(i64, i64, usize) -> Result<([f32; 4], f32), RenderError>,
     ) -> Result<(), RenderError> {
-        let width = chunk.width as usize;
-        for y in region.y..region.y + i64::from(region.height) {
-            for x in region.x..region.x + i64::from(region.width) {
-                let at = (y - chunk.y) as usize * width + (x - chunk.x) as usize;
-                let mask = layer.mask.map_or(1.0, |m| m.coverage(x, y));
+        let blend_if = self.blend_set(layer);
+        let feathered = self.feather(layer, region, chunk, fx)?;
+        let plane = feathered.then_some(fx.plane.as_slice());
+        let (x1, y1) = end(region)?;
+        for y in region.y..y1 {
+            for x in region.x..x1 {
+                let at = index_in(chunk, x, y)?;
+                let mask = mask_value(layer, plane, x, y, at)?;
                 if mask <= 0.0 {
                     continue;
                 }
-                let (rgba, coverage) = source(x, y, at);
+                let (rgba, coverage) = source(x, y, at)?;
                 let opacity = layer.opacity * coverage * mask;
                 if opacity <= 0.0 || rgba[3] <= 0.0 {
                     continue;
                 }
-                let b = dst[at];
+                let b = *dst.get(at).ok_or_else(overflow)?;
+                let mut source_alpha = rgba[3];
+                if !blend_if.is_empty() {
+                    source_alpha *=
+                        blend_weight(blend_if, [rgba[0], rgba[1], rgba[2]], [b[0], b[1], b[2]])?;
+                    if source_alpha <= 0.0 {
+                        continue;
+                    }
+                }
                 let out = composite_over(
                     layer.mode,
                     Rgba::new([b[0], b[1], b[2]], b[3]),
-                    Rgba::new([rgba[0], rgba[1], rgba[2]], rgba[3]),
+                    Rgba::new([rgba[0], rgba[1], rgba[2]], source_alpha),
                     opacity,
                     PixelSite {
                         x,
@@ -845,54 +959,88 @@ impl Eval<'_, '_> {
                 )
                 .map_err(blend_error)?;
                 // Alpha can round 1 ulp above 1; keep the working buffer inside the blend domain.
-                dst[at] = [out.rgb[0], out.rgb[1], out.rgb[2], out.a.min(1.0)];
+                *dst.get_mut(at).ok_or_else(overflow)? =
+                    [out.rgb[0], out.rgb[1], out.rgb[2], out.a.min(1.0)];
+            }
+        }
+        Ok(())
+    }
+
+    /// Write the clip base into `run` over `region`: `source(x, y, current)` gives the straight RGBA
+    /// and coverage (`current` is what `run` already holds, for an isolated-group base); the base's
+    /// own mask scales the alpha. Fully transparent pixels are stored as `[0; 4]`.
+    fn seal_base(
+        &self,
+        base: &PLayer<'_>,
+        region: Rect,
+        chunk: Rect,
+        run: &mut [[f32; 4]],
+        fx: &mut Fx,
+        source: impl Fn(i64, i64, [f32; 4]) -> Result<([f32; 4], f32), RenderError>,
+    ) -> Result<(), RenderError> {
+        let feathered = self.feather(base, region, chunk, fx)?;
+        let plane = feathered.then_some(fx.plane.as_slice());
+        let (x1, y1) = end(region)?;
+        for y in region.y..y1 {
+            for x in region.x..x1 {
+                let at = index_in(chunk, x, y)?;
+                let mask = mask_value(base, plane, x, y, at)?;
+                let current = *run.get(at).ok_or_else(overflow)?;
+                let (rgba, coverage) = source(x, y, current)?;
+                let alpha = rgba[3] * coverage * mask;
+                *run.get_mut(at).ok_or_else(overflow)? = if alpha > 0.0 {
+                    [rgba[0], rgba[1], rgba[2], alpha]
+                } else {
+                    [0.0; 4]
+                };
             }
         }
         Ok(())
     }
 }
 
-/// Write the clip base into `run` over `region`: `source(x, y, current)` gives the straight RGBA
-/// and coverage (`current` is what `run` already holds, for an isolated-group base); the base's
-/// own mask scales the alpha. Fully transparent pixels are stored as `[0; 4]`.
-fn seal_base(
-    base: &PLayer<'_>,
-    region: Rect,
-    chunk: Rect,
-    run: &mut [[f32; 4]],
-    source: impl Fn(i64, i64, [f32; 4]) -> ([f32; 4], f32),
-) {
-    let width = chunk.width as usize;
-    for y in region.y..region.y + i64::from(region.height) {
-        for x in region.x..region.x + i64::from(region.width) {
-            let at = (y - chunk.y) as usize * width + (x - chunk.x) as usize;
-            let mask = base.mask.map_or(1.0, |m| m.coverage(x, y));
-            let (rgba, coverage) = source(x, y, run[at]);
-            let alpha = rgba[3] * coverage * mask;
-            run[at] = if alpha > 0.0 {
-                [rgba[0], rgba[1], rgba[2], alpha]
-            } else {
-                [0.0; 4]
-            };
+/// Sizes of one worker's scratch: chunk pixels, levels of isolated-group nesting, and the feather
+/// scratch (coverage plane and horizontal-pass buffer, in samples; zero without a feathered layer).
+#[derive(Clone, Copy)]
+struct ScratchShape {
+    pixels: usize,
+    depth: usize,
+    fx_plane: usize,
+    fx_tmp: usize,
+}
+impl ScratchShape {
+    /// v1 shape: no feather scratch.
+    #[cfg(test)]
+    const fn plain(pixels: usize, depth: usize) -> Self {
+        Self {
+            pixels,
+            depth,
+            fx_plane: 0,
+            fx_tmp: 0,
         }
     }
 }
 
 /// Per-worker buffers for one chunk: working RGBA, one buffer per level of isolated-group nesting,
-/// and the two output planes.
+/// the feather scratch and the two output planes.
 struct Scratch {
     work: Vec<[f32; 4]>,
     spare: Vec<Vec<[f32; 4]>>,
+    fx: Fx,
     colour: Vec<u8>,
     alpha: Vec<u8>,
 }
 impl Scratch {
-    fn new(pixels: usize, depth: usize) -> Self {
+    fn new(shape: ScratchShape) -> Self {
+        let pixels = shape.pixels;
+        // Capacity hints only; the scratch charge bounds `pixels` long before this.
+        let bytes = |per_pixel: usize| pixels.checked_mul(per_pixel).unwrap_or(0);
         Self {
             work: vec![[0.0; 4]; pixels],
-            spare: (0..depth).map(|_| vec![[0.0; 4]; pixels]).collect(),
-            colour: Vec::with_capacity(pixels * 12),
-            alpha: Vec::with_capacity(pixels * 4),
+            spare: (0..shape.depth).map(|_| vec![[0.0; 4]; pixels]).collect(),
+            fx: Fx::new(shape.fx_plane, shape.fx_tmp),
+            colour: Vec::with_capacity(bytes(12)),
+            alpha: Vec::with_capacity(bytes(4)),
         }
     }
 }
@@ -908,31 +1056,46 @@ struct Geometry {
 impl Geometry {
     fn new(extent: Rect, side: u32) -> Result<Self, RenderError> {
         let side = i64::from(side);
-        let columns = usize::try_from((i64::from(extent.width) + side - 1) / side)
-            .map_err(|_| BackendError::Overflow)?;
-        let rows = usize::try_from((i64::from(extent.height) + side - 1) / side)
-            .map_err(|_| BackendError::Overflow)?;
+        let count = |length: u32| -> Result<usize, RenderError> {
+            // ceil(length / side)
+            i64::from(length)
+                .checked_add(side)
+                .and_then(|n| n.checked_sub(1))
+                .and_then(|n| n.checked_div(side))
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(overflow)
+        };
+        let (columns, rows) = (count(extent.width)?, count(extent.height)?);
         Ok(Self {
             extent,
             side,
             columns,
-            total: columns.checked_mul(rows).ok_or(BackendError::Overflow)?,
+            total: mul_u(columns, rows)?,
         })
     }
-    fn rect(&self, index: usize) -> Rect {
-        let (column, row) = ((index % self.columns) as i64, (index / self.columns) as i64);
-        let (x, y) = (
-            self.extent.x + column * self.side,
-            self.extent.y + row * self.side,
-        );
-        let right = self.extent.x + i64::from(self.extent.width);
-        let bottom = self.extent.y + i64::from(self.extent.height);
-        Rect {
+    fn rect(&self, index: usize) -> Result<Rect, RenderError> {
+        let column = index.checked_rem(self.columns).ok_or_else(overflow)?;
+        let row = index.checked_div(self.columns).ok_or_else(overflow)?;
+        let origin = |start: i64, step: usize| -> Result<i64, RenderError> {
+            to_i64(step)?
+                .checked_mul(self.side)
+                .and_then(|n| start.checked_add(n))
+                .ok_or_else(overflow)
+        };
+        let (x, y) = (origin(self.extent.x, column)?, origin(self.extent.y, row)?);
+        let (right, bottom) = end(self.extent)?;
+        let span = |far: i64, near: i64| -> Result<u32, RenderError> {
+            far.checked_sub(near)
+                .map(|n| n.min(self.side))
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(overflow)
+        };
+        Ok(Rect {
             x,
             y,
-            width: self.side.min(right - x) as u32,
-            height: self.side.min(bottom - y) as u32,
-        }
+            width: span(right, x)?,
+            height: span(bottom, y)?,
+        })
     }
 }
 
@@ -943,15 +1106,20 @@ fn compute_chunk(
     scratch: &mut Scratch,
 ) -> Result<(), RenderError> {
     let prepared = eval.prepared;
-    let count = rect.width as usize * rect.height as usize;
-    scratch.work[..count].fill([0.0; 4]);
+    let count = area(rect)?;
+    let work = scratch
+        .work
+        .get_mut(..count)
+        .ok_or_else(|| unsupported("chunk_scratch"))?;
+    work.fill([0.0; 4]);
     if matches!(prepared.nodes[prepared.root], PNode::Group { .. }) {
         // The root backdrop is transparent, so isolated and not are the same here.
         eval.group(
             prepared.root,
             rect,
-            &mut scratch.work[..count],
+            work,
             &mut scratch.spare,
+            &mut scratch.fx,
         )?;
     } else {
         // A leaf root is one Normal, opacity-1 layer over transparent black.
@@ -961,13 +1129,9 @@ fn compute_chunk(
             opacity: 1.0,
             mask: None,
             clipped: false,
+            fx: LayerFx::default(),
         };
-        eval.layer(
-            &root_layer,
-            rect,
-            &mut scratch.work[..count],
-            &mut scratch.spare,
-        )?;
+        eval.layer(&root_layer, rect, work, &mut scratch.spare, &mut scratch.fx)?;
     }
     scratch.colour.clear();
     scratch.alpha.clear();
@@ -1086,8 +1250,15 @@ impl Renderer {
     /// also holds up to `2 * workers` finished chunks (`16` bytes per pixel) awaiting in-order
     /// delivery.
     pub fn scratch_bytes(pixels: u64, depth: u64, workers: u64) -> Option<u64> {
-        let per_worker = SCRATCH_BYTES_PER_PIXEL + GROUP_SCRATCH_BYTES_PER_PIXEL * depth;
-        let in_flight = if workers > 1 { 2 * workers * 16 } else { 0 };
+        let per_worker = GROUP_SCRATCH_BYTES_PER_PIXEL
+            .checked_mul(depth)?
+            .checked_add(SCRATCH_BYTES_PER_PIXEL)?;
+        // `2 * workers` finished chunks of 16 bytes per pixel.
+        let in_flight = if workers > 1 {
+            workers.checked_mul(32)?
+        } else {
+            0
+        };
         pixels.checked_mul(workers.checked_mul(per_worker)?.checked_add(in_flight)?)
     }
 
@@ -1099,7 +1270,10 @@ impl Renderer {
             }
             .into());
         }
-        let live = self.live.fetch_add(bytes, Ordering::AcqRel) + bytes;
+        let live = self
+            .live
+            .fetch_add(bytes, Ordering::AcqRel)
+            .saturating_add(bytes);
         self.peak.fetch_max(live, Ordering::AcqRel);
         Ok(ScratchLease { owner: self, bytes })
     }
@@ -1119,32 +1293,106 @@ impl Renderer {
         sink: &mut dyn TileSink,
     ) -> Result<RenderReceipt, RenderError> {
         let ledger = admit::<V>(plan, self, request, cancel)?;
-        let prepared = prepare(plan, sources)?;
-        let digest = plan
-            .digest()
-            .map_err(|_| BackendError::Unavailable("plan_digest"))?;
+        self.run(
+            plan,
+            ExtPrep::default(),
+            ledger,
+            &|| plan.digest(),
+            request,
+            sources,
+            cancel,
+            sink,
+        )
+    }
+
+    /// [`Renderer::execute_detailed`] for a plan with its envelope: adjustment layers, Blend-If,
+    /// mask feather and mask density (`tests/cpu_extended.rs`). Order: `admit_extended` (shared
+    /// admission; knockout and unsupported adjustments are refused before any work), envelope
+    /// preparation (resident state charged to `max_working_bytes` as a running aggregate), source
+    /// verification, then the same chunked loop. An empty envelope is the plain v1 plan and takes
+    /// the unchanged v1 path, except that a coverage mask with `density < 1` (no v1 operator) goes
+    /// through the envelope admission, which admits it as `mask_density`.
+    pub fn execute_extended_detailed<V: VectorSource + Serialize + Send + Sync>(
+        &self,
+        plan: &RenderPlan<V>,
+        extensions: &PlanExtensions,
+        request: &ExecuteRequest,
+        sources: &dyn PlanSources,
+        cancel: &CancellationToken,
+        sink: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, RenderError> {
+        if extensions.is_empty() && !plan.has_mask_density() {
+            return self.execute_detailed(plan, request, sources, cancel, sink);
+        }
+        let ledger = admit_extended::<V, Self>(plan, extensions, self, request, cancel)?;
+        let ext = ExtPrep::build(extensions, request.max_working_bytes)?;
+        self.run(
+            plan,
+            ext,
+            ledger,
+            &|| extensions.digest_with(plan),
+            request,
+            sources,
+            cancel,
+            sink,
+        )
+    }
+
+    /// Prepared-plan execution shared by the v1 and the envelope path (admission already done).
+    #[allow(clippy::too_many_arguments)]
+    fn run<V: VectorSource>(
+        &self,
+        plan: &RenderPlan<V>,
+        ext: ExtPrep,
+        ledger: ExactnessLedger,
+        digest: &dyn Fn() -> Result<[u8; 32], hsk_studio_pigment::Error>,
+        request: &ExecuteRequest,
+        sources: &dyn PlanSources,
+        cancel: &CancellationToken,
+        sink: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, RenderError> {
+        let prepared = prepare(plan, sources, ext)?;
+        let digest = digest().map_err(|_| BackendError::Unavailable("plan_digest"))?;
 
         let extent = plan.target.extent;
         end(extent)?;
         let geometry = Geometry::new(extent, self.chunk)?;
         let workers = self.threads.min(geometry.total);
-        let max_pixels =
-            u64::from(self.chunk.min(extent.width)) * u64::from(self.chunk.min(extent.height));
+        let (side_x, side_y) = (self.chunk.min(extent.width), self.chunk.min(extent.height));
+        let max_pixels = u64::from(side_x)
+            .checked_mul(u64::from(side_y))
+            .ok_or_else(overflow)?;
         let depth = prepared.need[prepared.root];
-        let scratch_bytes = Self::scratch_bytes(max_pixels, depth as u64, workers as u64)
+        let base = Self::scratch_bytes(max_pixels, depth as u64, workers as u64)
+            .ok_or(BackendError::Overflow)?;
+        // Envelope charge: the resident tables once, the feather scratch (chunk plane plus the
+        // horizontal pass with its `feather_support` margin rows) per worker. Zero on the v1 path.
+        let (columns, rows) = (side_len(side_x)?, side_len(side_y)?);
+        let (fx_plane, fx_tmp) = prepared.ext.feather_dims(columns, rows)?;
+        let scratch_bytes = prepared
+            .ext
+            .feather_scratch_bytes(columns, rows)?
+            .checked_mul(workers as u64)
+            .and_then(|fx| fx.checked_add(prepared.ext.resident_bytes))
+            .and_then(|fx| fx.checked_add(base))
             .ok_or(BackendError::Overflow)?;
         let _lease = self.reserve(scratch_bytes, request.max_working_bytes)?;
         let eval = Eval {
             prepared: &prepared,
         };
         let compute = |rect: Rect, scratch: &mut Scratch| compute_chunk(&eval, rect, scratch);
-        let pixels = max_pixels as usize;
+        let shape = ScratchShape {
+            pixels: max_pixels as usize,
+            depth,
+            fx_plane,
+            fx_tmp,
+        };
 
         let chunks = if workers == 1 {
-            let mut scratch = Scratch::new(pixels, depth);
+            let mut scratch = Scratch::new(shape);
             for index in 0..geometry.total {
                 between_chunks(cancel, request.deadline)?;
-                let rect = geometry.rect(index);
+                let rect = geometry.rect(index)?;
                 caught("worker_panic", || compute(rect, &mut scratch))?;
                 deliver(sink, rect, &scratch.colour, &scratch.alpha)?;
             }
@@ -1154,8 +1402,7 @@ impl Renderer {
                 &compute,
                 geometry,
                 workers,
-                pixels,
-                depth,
+                shape,
                 request.deadline,
                 cancel,
                 sink,
@@ -1175,6 +1422,11 @@ impl Renderer {
     }
 }
 
+/// A chunk side (at most `MAX_CHUNK_SIDE`) as a sample count.
+fn side_len(side: u32) -> Result<usize, RenderError> {
+    usize::try_from(side).map_err(|_| overflow())
+}
+
 /// Workers claim chunk indices in increasing order and may run at most `2 * workers` chunks ahead
 /// of delivery; the calling thread reorders results and is the only one that touches `sink`, so the
 /// sink sees row-major chunks exactly as in the single-threaded run. A panicking worker is reported
@@ -1185,13 +1437,14 @@ fn run_parallel(
     compute: &ChunkFn<'_>,
     geometry: Geometry,
     workers: usize,
-    pixels: usize,
-    depth: usize,
+    shape: ScratchShape,
     deadline: Option<Instant>,
     cancel: &CancellationToken,
     sink: &mut dyn TileSink,
 ) -> Result<u64, RenderError> {
-    let window = 2 * workers;
+    let window = workers.saturating_mul(2);
+    // Capacity hints only; the scratch charge bounds `shape.pixels` long before this.
+    let hint = |per_pixel: usize| shape.pixels.checked_mul(per_pixel).unwrap_or(0);
     let next = AtomicUsize::new(0);
     let abort = AtomicBool::new(false);
     let gate = (Mutex::new(0_usize), Condvar::new());
@@ -1202,7 +1455,7 @@ fn run_parallel(
             let (next, abort, gate) = (&next, &abort, &gate);
             scope.spawn(move || {
                 let crashed = catch_unwind(AssertUnwindSafe(|| {
-                    let mut scratch = Scratch::new(pixels, depth);
+                    let mut scratch = Scratch::new(shape);
                     loop {
                         let index = next.fetch_add(1, Ordering::AcqRel);
                         if index >= geometry.total || abort.load(Ordering::Acquire) {
@@ -1213,7 +1466,9 @@ fn run_parallel(
                             let (delivered, wake) = gate;
                             let mut guard =
                                 delivered.lock().unwrap_or_else(PoisonError::into_inner);
-                            while index >= *guard + window && !abort.load(Ordering::Acquire) {
+                            while index >= guard.saturating_add(window)
+                                && !abort.load(Ordering::Acquire)
+                            {
                                 guard = wake
                                     .wait_timeout(guard, Duration::from_millis(20))
                                     .unwrap_or_else(PoisonError::into_inner)
@@ -1225,18 +1480,15 @@ fn run_parallel(
                         }
                         let outcome = between_chunks(cancel, deadline)
                             .map_err(RenderError::from)
-                            .and_then(|()| compute(geometry.rect(index), &mut scratch));
+                            .and_then(|()| compute(geometry.rect(index)?, &mut scratch));
                         let message = match outcome {
                             Ok(()) => Message::Chunk(
                                 index,
                                 std::mem::replace(
                                     &mut scratch.colour,
-                                    Vec::with_capacity(pixels * 12),
+                                    Vec::with_capacity(hint(12)),
                                 ),
-                                std::mem::replace(
-                                    &mut scratch.alpha,
-                                    Vec::with_capacity(pixels * 4),
-                                ),
+                                std::mem::replace(&mut scratch.alpha, Vec::with_capacity(hint(4))),
                             ),
                             Err(error) => Message::Failed(error),
                         };
@@ -1276,12 +1528,14 @@ fn run_parallel(
                         if let Err(error) = between_chunks(cancel, deadline) {
                             break 'deliver Err(error.into());
                         }
-                        if let Err(error) =
-                            deliver(sink, geometry.rect(delivered), &colour, &alpha)
-                        {
+                        let rect = match geometry.rect(delivered) {
+                            Ok(rect) => rect,
+                            Err(error) => break 'deliver Err(error),
+                        };
+                        if let Err(error) = deliver(sink, rect, &colour, &alpha) {
                             break 'deliver Err(error);
                         }
-                        delivered += 1;
+                        delivered = delivered.saturating_add(1);
                         *gate.0.lock().unwrap_or_else(PoisonError::into_inner) = delivered;
                         gate.1.notify_all();
                     }
@@ -1333,6 +1587,32 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
     }
     fn supports_clip_to_base(&self) -> bool {
         true
+    }
+    /// The envelope operators implement pigment's formulas verbatim (`adjust_math`,
+    /// `coverage_math`), so this backend adds no loss of its own: the receipt class is pigment's
+    /// intrinsic one (Approximate). Knockout and any operator this build does not know are
+    /// Unsupported (typed refusal at admission).
+    fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
+        match operator {
+            ExtOperator::AdjustmentLayer
+            | ExtOperator::Adjustment(_)
+            | ExtOperator::BlendIf
+            | ExtOperator::MaskDensity
+            | ExtOperator::MaskFeather => Exactness::Exact,
+            _ => Exactness::Unsupported,
+        }
+    }
+    fn execute_extended(
+        &self,
+        plan: &RenderPlan<V>,
+        extensions: &PlanExtensions,
+        request: &ExecuteRequest,
+        sources: &dyn PlanSources,
+        cancel: &CancellationToken,
+        sink: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, BackendError> {
+        self.execute_extended_detailed(plan, extensions, request, sources, cancel, sink)
+            .map_err(BackendError::from)
     }
     fn execute(
         &self,
@@ -1391,8 +1671,7 @@ mod tests {
                     &compute,
                     geometry,
                     workers,
-                    1,
-                    0,
+                    ScratchShape::plain(1, 0),
                     None,
                     &CancellationToken::default(),
                     &mut sink,
@@ -1406,7 +1685,9 @@ mod tests {
             };
             assert_eq!(
                 outcome,
-                Err(RenderError::Backend(BackendError::Unavailable("worker_panic"))),
+                Err(RenderError::Backend(BackendError::Unavailable(
+                    "worker_panic"
+                ))),
                 "{workers} workers"
             );
             // Chunk 3 never completed, so only the in-order prefix 0..3 can have been delivered.
