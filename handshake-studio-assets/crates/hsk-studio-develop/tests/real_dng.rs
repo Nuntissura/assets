@@ -1,6 +1,7 @@
 //! Real-camera DNG validation against published CC0 samples (raw.pixls.us). `#[ignore]`d: the
 //! samples are test DATA fetched on demand into the oracle corpus (never committed, never executed);
-//! run with `cargo test -p hsk-studio-develop --test real_dng -- --ignored --nocapture`.
+//! run with `cargo nextest run -p hsk-studio-develop --test real_dng --run-ignored ignored-only --no-capture`
+//! (the workspace runs tests through that runner for the per-test timeouts of `.config/nextest.toml`).
 //!
 //! Corpus dir: `$STUDIO_DNG_CORPUS`, else `<Worktrees>/Handshake_Artifacts/WP-KERNEL-STUDIO/oracle-corpus/dng`
 //! (relative to this crate). Files and checksums: see `real_dng/fetch-corpus.sh` and the table below.

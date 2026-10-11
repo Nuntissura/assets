@@ -1,5 +1,6 @@
 //! DNG container decode (own reader written from the public Adobe DNG specification): TIFF IFD
-//! walk, CFA raw IFD selection, strip/tile layout, uncompressed 8/16-bit samples, optional
+//! walk, CFA raw IFD selection, strip/tile layout, uncompressed 8/16-bit samples or lossless JPEG
+//! (compression 7, via `ljpeg`; any other compression is `UnsupportedCompression`), optional
 //! LinearizationTable, black/white levels, active area, colour tags. The decoded frame stays
 //! immutable; `cfa_plane` cuts a bounded window into the STU-CON-043 plane type.
 //!

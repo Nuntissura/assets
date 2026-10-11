@@ -1,5 +1,6 @@
 //! Decoded-CFA source plane, normalisation, bilinear reflect demosaic and the develop stages
-//! (STU-CON-043..045). Scalar oracle only: written products, no FMA, checked arithmetic.
+//! (STU-CON-043..045). Scalar oracle only: written products, no FMA, checked arithmetic (stage A
+//! skips its per-product refusals only where `stage_a_is_total` shows they cannot fire).
 use crate::DevelopError;
 use crate::convert::{BandLimits, ConversionStats, ProfileConverter, pixel_limit};
 use crate::par::{Threads, band_rows, for_each_band, run_indexed};
@@ -909,9 +910,12 @@ pub fn develop_with(
 /// workers take tiles from a shared counter. A converter prepares one thread-shared job per
 /// window of tiles (all tiles unless the converter's `BandLimits::max_bands` is exceeded) before
 /// any tile is computed; each worker converts its own tile's bands between stage A and stage C
-/// (`converter_bands_run_once_each_on_the_tile_workers`). Cancellation is checked between tiles
-/// and inside bands (`cancellation_returns_canceled_and_no_partial_output`); when several tiles
-/// fail, the lowest tile's error is returned, as in a serial run.
+/// (`converter_bands_run_once_each_on_the_tile_workers`). Cancellation is checked between
+/// normalisation row bands and between tiles, and the token is passed to every converter band
+/// (`cancellation_returns_canceled_and_no_partial_output` covers the first two and a cancel raised
+/// from inside a stand-in converter band; with Prism the band itself checks the token per 64-pixel
+/// chunk, see `convert.rs`); when several tiles fail, the lowest tile's error is returned, as in a
+/// serial run.
 pub fn develop_with_threads(
     request: &DevelopRequest<'_>,
     mut converter: Option<&mut dyn ProfileConverter>,

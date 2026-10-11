@@ -15,10 +15,47 @@
 //! Accounting (STU-CON-044 "accounted lifetime"): the admitted wide engine charges the caller's
 //! ledger in full when the job is prepared, BEFORE any allocation it causes (provider lease at
 //! construction; work, receipt, plan and transient build leases at `prepare`) and band conversion
-//! neither allocates nor charges. A denial surfaces as `DevelopError::Prism("admission_denied")`
+//! neither allocates nor charges (Prism: `tests/wide_chunks.rs`
+//! `chunk_accounting_is_bounded_deterministic_and_allocation_free` counts no heap allocation inside
+//! a band, `tests/wide_job.rs` `admitted_job_charges_everything_before_the_bands_for_every_thread_count`
+//! shows no charge during bands). A denial surfaces as `DevelopError::Prism("admission_denied")`
 //! before any parse or conversion work (`tests/develop_profile.rs`:
-//! `short_admission_budget_is_refused_before_any_work`). The 64-pixel chunk size of the spec text is
-//! still not used (a band is one develop tile, split only above [`BandLimits::band_pixels`]).
+//! `short_admission_budget_is_refused_before_any_work`).
+//!
+//! Chunks (STU-CON-044 "bounded chunks of at most 64 pixels"; the reading here is provisional: the
+//! Operator may require the literal one or enrich the spec). The 64-pixel chunking is Prism's
+//! (test names below checked against Prism 3312f72): every band passed to `convert_band_in_place`
+//! runs inside Prism in chunks of at most `hsk_studio_prism::ADMITTED_CHUNK_PIXELS` (64) pixels,
+//! each chunk starting with a cancellation check (in Prism's code it ends with a finite-output
+//! check and a digest update), and Prism records them (`WideBandReport::chunks`, merged over the
+//! job in `WideReceipt::chunks`). Prism's `tests/wide_chunks.rs`
+//! `chunk_accounting_is_bounded_deterministic_and_allocation_free` asserts the chunk account (chunk
+//! counts and the 64-pixel bound per band and per job) with bands of 1 to 2049 pixels, output bits
+//! equal to one whole-frame request however the pixels are cut into bands, and no allocation inside
+//! a band (the in-place entry point included for the RGB case). Cancellation is Prism's too:
+//! `a_canceled_token_stops_a_band_before_its_first_chunk` (tests/wide_chunks.rs, both entry
+//! points) and, in src/wide_job/tests.rs, `a_band_canceled_at_a_chunk_edge_leaves_exactly_the_chunks_before_it`
+//! and `an_in_place_band_canceled_mid_band_is_partly_overwritten` (a token tripped at an exact chunk
+//! edge leaves a whole number of converted chunks; an in-place band is converted prefix plus
+//! untouched rest).
+//!
+//! A develop band is NOT 64 pixels: it is one whole develop tile, split only above
+//! [`BandLimits::band_pixels`] (default 262144), and develop makes one band call per tile, not one
+//! admitted call per 64 pixels (the literal reading, not adopted; Prism prices it in its ignored
+//! bench `bench_literal_64_pixel_admitted_calls_against_internal_chunks`). The ledger is charged
+//! once at prepare, not per chunk.
+//!
+//! What develop itself sees of the chunks: nothing. `convert_band` drops the band report and
+//! `finish` reads only the merged clip report, so `DevelopReceipt` carries no chunk count. Develop's
+//! tests run bands through the chunked code (in
+//! `job_conversion_equals_the_serial_wide_transform_for_every_thread_count` a 32 x 32 tile is a
+//! 1024-pixel band = 16 Prism chunks; the serial `AdmittedWideEngine::transform` oracle is chunked
+//! too, so that test shows the two routes agree, not a chunk count) and an already cancelled token
+//! stops a real Prism band (`job_contract_violations_keep_their_prism_codes`). No develop test
+//! cancels between the chunks of a real Prism band: `cancellation_returns_canceled_and_no_partial_output`
+//! drives a stand-in converter. A band canceled mid-band leaves develop's per-tile scratch partly
+//! converted; the run then ends `Canceled` and delivers no tile (code path, not covered by a
+//! develop test with a real Prism band).
 //!
 //! One terminal Prism observation is delivered per finished job (not per tile). A run that ends in
 //! an error or a cancellation drops its job without finishing it: no observation, every lease
@@ -34,7 +71,9 @@ use hsk_studio_prism::{
 };
 
 /// Default pixels per band: a develop tile is one band unless it is larger than this. Hard limit:
-/// `hsk_studio_prism::MAX_WIDE_PIXELS` (2,097,152).
+/// `hsk_studio_prism::MAX_WIDE_PIXELS` (2,097,152). Despite the name this is a develop BAND, not
+/// the STU-CON-044 chunk: Prism cuts every band into chunks of at most
+/// `hsk_studio_prism::ADMITTED_CHUNK_PIXELS` (64) pixels itself (module docs above).
 pub const WIDE_CHUNK_PIXELS: usize = 1 << 18;
 
 /// What a converter did since it was created: plan-cache use (a job resolves its plan once, so a
