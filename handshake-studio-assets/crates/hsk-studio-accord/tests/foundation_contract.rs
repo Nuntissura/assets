@@ -98,6 +98,25 @@ fn checked_tick_overflow() {
 }
 
 #[test]
+fn tick_subtraction_ordering_and_hash() {
+    bounded_case("tick_subtraction_ordering_and_hash", move || {
+        let (a, b) = (Ticks::new(1000), Ticks::new(400));
+        assert_eq!(a.checked_sub(b), Ok(Ticks::new(600)));
+        assert_eq!(a.checked_sub(a), Ok(Ticks::new(0)));
+        assert_eq!(b.checked_sub(a), Err(ValidationError::TickOverflow));
+        assert_eq!(b.saturating_sub(a), Ticks::new(0));
+        assert_eq!(a.saturating_sub(b), Ticks::new(600));
+        assert_eq!(a.checked_sub(b).and_then(|d| d.checked_add(b)), Ok(a));
+        assert!(b < a && a > b && a.max(b) == a);
+        let mut sorted = vec![a, Ticks::new(0), b];
+        sorted.sort();
+        assert_eq!(sorted, [Ticks::new(0), b, a]);
+        let set: std::collections::HashSet<Ticks> = [a, b, a].into_iter().collect();
+        assert_eq!(set.len(), 2);
+    });
+}
+
+#[test]
 fn unknown_version_and_required_field() {
     bounded_case("unknown_version_and_required_field", move || {
         assert_eq!(

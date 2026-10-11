@@ -356,7 +356,7 @@ impl Length {
         Self::new(value, target)
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Ticks(u64);
 impl Ticks {
     pub const fn new(value: u64) -> Self {
@@ -376,6 +376,17 @@ impl Ticks {
             .checked_add(other.0)
             .map(Self)
             .ok_or(ValidationError::TickOverflow)
+    }
+    /// Underflow (`other > self`) is `TickOverflow`, like `checked_add` overflow.
+    pub fn checked_sub(self, other: Self) -> Result<Self> {
+        self.0
+            .checked_sub(other.0)
+            .map(Self)
+            .ok_or(ValidationError::TickOverflow)
+    }
+    /// Clamps at zero instead of failing.
+    pub const fn saturating_sub(self, other: Self) -> Self {
+        Self(self.0.saturating_sub(other.0))
     }
     pub fn checked_frames(frames: u64, rate: FrameRate) -> Result<Self> {
         frames
