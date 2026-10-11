@@ -27,12 +27,17 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{Budget, Inspection, Resolver, Snapshot, inspect_bytes};
+use hsk_studio_folio::{
+    ADJUSTMENT_SCHEMA, Budget, Inspection, Resolution, Resolver, Snapshot, StudioAdjustment, StudioRasterLayerRecord,
+    StudioRasterRecords, inspect_bytes, validate_raster_records,
+};
 use hsk_studio_pigment::Grid;
 use hsk_studio_prism::{hash_hex, profile_hash};
 use serde_json::{Value, json};
 
+use crate::adjust;
 use crate::blend::StudioBlendMode;
+use crate::effects;
 use crate::convert::{
     ClipSummary, IccConverter, IccRefusal, ProfileDevice, ProfileFacts, RenderingIntent, WIDE_UNAVAILABLE, WideConvertRequest,
     WideConvertSource, refusal_code,
@@ -82,6 +87,11 @@ pub trait IdMint {
     fn linear_working_profile_id(&mut self) -> String;
     /// Non-empty handle naming where the host will publish this tile's bytes.
     fn tile_manifest_id(&mut self, layer_id: &str, object_key: &str) -> String;
+    /// `SEFX-...` of the effect stack of `layer_id`. `None` (the default) means the host mints no
+    /// effect stacks: the layer's `lfx2` is then preserved and reported, not recorded.
+    fn effect_stack_id(&mut self, _layer_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Identity of the source bytes the document was parsed from.
@@ -240,6 +250,10 @@ pub struct ImportProposal {
     pub layer_map: Vec<LayerMapEntry>,
     pub loss: LossReport,
     pub provenance: Provenance,
+    /// Adjustment records, mask density/feather, Blend-If, knockout and effect stacks of the
+    /// document (empty when the file has none or the host's resolver binds no adjustment
+    /// primitive). It passes `validate_raster_records` against `snapshot` when non-empty.
+    pub raster_records: StudioRasterRecords,
 }
 
 impl ImportProposal {
@@ -403,9 +417,143 @@ struct Builder<'a, 'm, 'c> {
     map: Vec<LayerMapEntry>,
     loss: LossReport,
     tile_bytes: usize,
+    /// Raster records collected per layer (adjustment, mask parameters, Blend-If, effects).
+    records: Vec<StudioRasterLayerRecord>,
+}
+
+/// Flags of the mask whose coverage is mapped: the real user mask's when one exists.
+fn selected_mask_flags(layer: &PsdLayer, mask: &crate::layers::LayerMask) -> u8 {
+    let real = layer.channels.iter().any(|c| c.id == -3) && mask.real_rect.is_some();
+    if real { mask.real_flags.unwrap_or(mask.flags) } else { mask.flags }
 }
 
 impl Builder<'_, '_, '_> {
+    fn notes(&mut self, path: &str, notes: Vec<adjust::Note>) {
+        for (kind, code) in notes {
+            self.note(path.to_owned(), kind, code);
+        }
+    }
+
+    /// Collects the raster records of one mapped layer: its adjustment (already mapped), mask
+    /// density/feather/invert, Blend-If ranges with the knockout and blend toggles, and (for raster
+    /// and group layers) its effect stack. Every source block stays in the document; what a record
+    /// does not hold is reported through the notes of the mapping.
+    fn collect_records(
+        &mut self,
+        index: usize,
+        layer: &PsdLayer,
+        layer_id: &str,
+        has_appearance_mask: bool,
+        adjustment: Option<StudioAdjustment>,
+        allow_effects: bool,
+    ) {
+        let mut record = StudioRasterLayerRecord::new(layer_id);
+        record.adjustment = adjustment;
+        if let Some(mask) = layer.mask() {
+            let path = format!("layer[{index}]/mask");
+            let params_present = mask.flags & 0x10 != 0;
+            let mut mapped = false;
+            if has_appearance_mask {
+                match adjust::mask_parameters(layer, &mask, selected_mask_flags(layer, &mask)) {
+                    Ok(Some(m)) => {
+                        mapped = true;
+                        self.notes(&path, m.notes);
+                        record.mask = Some(m.value);
+                    }
+                    Ok(None) => mapped = !params_present,
+                    Err(reason) => self.note(path.clone(), LossKind::Unsupported, reason),
+                }
+            }
+            if params_present && !mapped {
+                self.note(path, LossKind::PreservedOpaque, "mask_density_feather_not_stored");
+            }
+        }
+        match adjust::advanced_blending(layer) {
+            Ok(Some(m)) => {
+                let path = format!("layer[{index}]/blend_ranges");
+                // Blend-If ranges are recorded now; an unmapped tail has its own entry below.
+                self.loss.entries.retain(|e| !(e.path == path && e.code == "blend_if_not_applied"));
+                self.notes(&format!("layer[{index}]/blend"), m.notes);
+                record.advanced_blending = Some(m.value);
+            }
+            Ok(None) => {}
+            Err(reason) => self.note(format!("layer[{index}]/blend_ranges"), LossKind::Unsupported, reason),
+        }
+        if allow_effects {
+            let path = format!("layer[{index}]/tagged/lfx2");
+            let limits = self.cfg.limits;
+            let mint = &mut *self.mint;
+            match effects::effect_stack(layer, || mint.effect_stack_id(layer_id), limits) {
+                Some(Ok(m)) => {
+                    self.notes(&path, m.notes);
+                    self.note(path, LossKind::Preserved, "effects_mapped_to_record_not_rendered");
+                    record.effects = Some(m.value);
+                }
+                Some(Err(reason)) => self.note(path, LossKind::Unsupported, reason),
+                None => {}
+            }
+        }
+        if record.adjustment.is_some()
+            || record.mask.is_some()
+            || record.advanced_blending.is_some()
+            || record.effects.is_some()
+        {
+            self.records.push(record);
+        }
+    }
+
+    /// Maps an adjustment layer whose block this crate parses to an `adjustment` layer with a
+    /// `PrimitiveReference` payload and its record. Returns `false` (nothing pushed) when the layer
+    /// stays a typed unsupported layer: unmapped key, unreadable record, unknown or `pass` blend key,
+    /// unmapped pixels, or a host resolver that binds no adjustment primitive.
+    fn mapped_adjustment_layer(
+        &mut self,
+        index: usize,
+        layer: &PsdLayer,
+        block: &crate::layers::TaggedBlock,
+        id: &str,
+        parent: &Value,
+    ) -> Result<bool> {
+        if !self.pixels_mapped || matches!(layer.blend_mode(), None | Some(StudioBlendMode::PassThrough)) {
+            return Ok(false);
+        }
+        let path = format!("layer[{index}]/tagged/{}", key_text(block.key));
+        let Some(result) = adjust::adjustment(layer, block, self.doc.header.color_mode, self.cfg.limits) else {
+            return Ok(false);
+        };
+        let mapped = match result {
+            Ok(mapped) => mapped,
+            Err(reason) => {
+                self.note(path, LossKind::Unsupported, reason);
+                return Ok(false);
+            }
+        };
+        let resolver = self.cfg.resolver;
+        if !(resolver.primitive_layer_binding("adjustment", ADJUSTMENT_SCHEMA)
+            && resolver.primitive(ADJUSTMENT_SCHEMA, id) == Resolution::Available)
+        {
+            self.note(path, LossKind::Unsupported, "adjustment_primitive_unresolved");
+            return Ok(false);
+        }
+        let mask = self.mask_for(index, layer, id)?;
+        let has_mask = mask.is_some();
+        let mask_default = layer.mask().map(|m| m.default_color);
+        let appearance = Self::appearance_json(layer, false, mask);
+        self.layers.push(json!({
+            "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
+            "kind": "adjustment",
+            "payload": {"payload_kind": "primitive_reference", "schema_id": ADJUSTMENT_SCHEMA, "object_id": id},
+            "visible": layer.visible(), "appearance": appearance,
+        }));
+        self.record(id, index, layer, mask_default);
+        // The record holds the mapped values; the block stays byte-exact in the document.
+        self.loss.entries.retain(|e| !(e.path == path && e.code == "adjustment_layer_not_applied"));
+        self.note(path.clone(), LossKind::Preserved, "adjustment_mapped_to_record");
+        self.notes(&path, mapped.notes);
+        self.collect_records(index, layer, id, has_mask, Some(mapped.value), false);
+        Ok(true)
+    }
+
     fn note(&mut self, path: String, kind: LossKind, code: &'static str) {
         self.loss.entries.push(crate::loss::LossEntry { path, kind, code });
     }
@@ -467,6 +615,7 @@ impl Builder<'_, '_, '_> {
         let layer = &doc.layers()[folder];
         let id = self.mint.layer_id();
         let mask = self.mask_for(folder, layer, &id)?;
+        let has_mask = mask.is_some();
         let mask_default = layer.mask().map(|m| m.default_color);
         let appearance = Self::appearance_json(layer, true, mask);
         self.layers.push(json!({
@@ -475,6 +624,7 @@ impl Builder<'_, '_, '_> {
             "appearance": appearance,
         }));
         self.record(&id, folder, layer, mask_default);
+        self.collect_records(folder, layer, &id, has_mask, None, true);
         let inner_parent = json!({"node_kind": "layer", "node_id": id});
         let child_outputs = self.walk(children, &inner_parent)?;
         self.operations.push(json!({
@@ -502,6 +652,11 @@ impl Builder<'_, '_, '_> {
         let id = self.mint.layer_id();
         let adjustment = layer.blocks.iter().find(|b| ADJUSTMENT_KEYS.contains(&&b.key));
         let fill = layer.blocks.iter().find(|b| FILL_KEYS.contains(&&b.key));
+        if let Some(block) = adjustment
+            && self.mapped_adjustment_layer(index, layer, block, &id, parent)?
+        {
+            return Ok(None);
+        }
         if let Some(block) = adjustment.or(fill) {
             let (kind, code) = if adjustment.is_some() {
                 ("psd_adjustment", "adjustment_layer_unsupported_payload")
@@ -549,6 +704,7 @@ impl Builder<'_, '_, '_> {
         }
         let tiles = self.tiles_for(index, layer, &id)?;
         let mask = self.mask_for(index, layer, &id)?;
+        let has_mask = mask.is_some();
         let mask_default = layer.mask().map(|m| m.default_color);
         let appearance = Self::appearance_json(layer, false, mask);
         self.layers.push(json!({
@@ -561,6 +717,7 @@ impl Builder<'_, '_, '_> {
             "inputs": [], "outputs": [port("out", "one", "source")],
         }));
         self.record(&id, index, layer, mask_default);
+        self.collect_records(index, layer, &id, has_mask, None, true);
         Ok(Some(address(&id, "source", "out")))
     }
 
@@ -590,9 +747,7 @@ impl Builder<'_, '_, '_> {
         } else {
             (mask.rect, mask.default_color, mask.flags)
         };
-        if flags & 0x10 != 0 {
-            self.note(format!("layer[{index}]/mask"), LossKind::PreservedOpaque, "mask_density_feather_not_stored");
-        }
+        // Density, feather and invert (flags bit 4 and 2) are recorded by `collect_records`.
         let enabled = flags & 0x02 == 0;
         let linked = flags & 0x01 != 0;
         let Some(plane) = layer.decode_channel(channel_id, header, self.cfg.limits, self.cancel)? else {
@@ -1182,6 +1337,7 @@ pub fn to_proposal(
         map: Vec::new(),
         loss: doc.loss_report(cfg.limits),
         tile_bytes: 0,
+        records: Vec::new(),
     };
     let converter_present = b.converter.is_some();
     // Panel order is top-first; graph outputs follow the group convention (bottom-most first).
@@ -1317,6 +1473,14 @@ pub fn to_proposal(
         Err(d) if d.code == hsk_studio_folio::Code::Canceled => return Err(PsdError::Canceled),
         Err(_) => return Err(PsdError::Proposal("folio_rejected")),
     };
+    let mut raster_records = StudioRasterRecords::new(document_id);
+    raster_records.layers = std::mem::take(&mut b.records);
+    if !raster_records.layers.is_empty() {
+        // The parsers pre-check the Folio ranges; a rejection here is a mapping defect, not input.
+        validate_raster_records(&raster_records, snapshot.document(), cfg.budget, cancel, cfg.resolver).map_err(|d| {
+            if d.code == hsk_studio_folio::Code::Canceled { PsdError::Canceled } else { PsdError::Proposal("raster_records_rejected") }
+        })?;
+    }
     Ok(ImportProposal {
         snapshot,
         tiles: b.tiles,
@@ -1337,5 +1501,6 @@ pub fn to_proposal(
             sixteen_bit_scale: cfg.scale,
             display,
         },
+        raster_records,
     })
 }

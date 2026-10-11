@@ -6,10 +6,13 @@
 //! of the importer is a proposal, not a second authority.
 #![forbid(unsafe_code)]
 
+mod adjust;
 mod blend;
 mod compression;
 mod convert;
+mod descriptor;
 mod document;
+mod effects;
 mod error;
 mod export;
 mod header;
