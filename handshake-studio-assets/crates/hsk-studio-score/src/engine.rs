@@ -20,6 +20,10 @@ pub trait Processor {
     fn required_sample_rate_hz(&self) -> Option<u32> {
         None
     }
+    /// Largest block the processor can take without allocating (chains own scratch buffers).
+    fn max_frames(&self) -> Option<usize> {
+        None
+    }
     fn process(
         &mut self,
         input: &InputBlock<'_>,
@@ -211,7 +215,7 @@ impl Engine {
         if !proc.accepts(&spec.layout, out.layout()) {
             return Err(ScoreError::ChannelMismatch);
         }
-        if spec.frames > out.capacity() {
+        if spec.frames > out.capacity() || proc.max_frames().is_some_and(|max| spec.frames > max) {
             return Err(ScoreError::CapacityExceeded);
         }
         let end_sample = spec.end_sample()?;

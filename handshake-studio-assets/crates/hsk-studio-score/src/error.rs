@@ -29,6 +29,8 @@ pub enum ScoreError {
     ResourceMismatch,
     /// The resampling backend rejected construction or processing.
     ResampleFailed,
+    /// Blocks that must be summed disagree on sample rate, start sample or frame count.
+    TimelineMismatch,
 }
 
 impl ScoreError {
@@ -48,6 +50,7 @@ impl ScoreError {
             Self::OutOfRange => "out_of_range",
             Self::ResourceMismatch => "resource_mismatch",
             Self::ResampleFailed => "resample_failed",
+            Self::TimelineMismatch => "timeline_mismatch",
         }
     }
 }
