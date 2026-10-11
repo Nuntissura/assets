@@ -3,7 +3,7 @@
 //!
 //! This crate carries its own parser written from the public Adobe Photoshop File Format
 //! Specification. It copies no code from other PSD readers and uses no Adobe runtime. Output
-//! of the importer is a proposal, never a second authority.
+//! of the importer is a proposal, not a second authority.
 #![forbid(unsafe_code)]
 
 mod blend;
@@ -67,11 +67,11 @@ pub const DESCRIPTOR: &str = concat!(
     "\"folio_proposal_hierarchy_appearance_masks\",\"pigment_tiles_8_16_32_bit_full_precision\",\"embedded_icc_rgb_via_converter_when_accepted\",",
     "\"observe_terminal_frame\",\"export_edited_folio_layer_properties_preserving_original_bytes\",",
     "\"cmyk_embedded_icc_display_conversion_8_16_bit\",\"lab_pcs_native_display_conversion_8_16_bit\",\"gray_ktrc_icc_display_conversion_8_16_bit\"],",
-    "\"display_conversion\":\"projection_only_original_channels_byte_preserved;wide_prism_path;intent_perceptual_assumed_unless_configured;bpc_on_assumed_unless_configured;unclamped_output_clamped_with_counts_and_loss_entry;cmyk_without_embedded_profile_is_typed_loss_cmyk_profile_missing_no_default_profile\",",
+    "\"display_conversion\":\"projection_only_original_channels_byte_preserved;wide_prism_path_for_rgb_gray_cmyk_lab;intent_perceptual_assumed_unless_configured;bpc_on_assumed_unless_configured_and_sent_to_prism_for_every_source_kind;legacy_rgb_converter_records_intent_and_bpc_not_applied;unclamped_output_clamped_with_counts_and_loss_entry;cmyk_without_embedded_profile_is_typed_loss_cmyk_profile_missing_no_default_profile\",",
     "\"blend\":\"psd_key_table_to_pigment_StudioBlendMode;unknown_key_typed_loss_never_normal;pass_is_group_flag\",",
     "\"unknown_bytes\":\"preserved_byte_exact\",",
     "\"oracle\":\"merged_image_only_when_hasRealMergedData\",",
-    "\"pending\":[\"photoshop_authored_oracle_fixtures\",\"cmyk_inverted_storage_and_lab_16_bit_encoding_verification\",\"rgb_v2_and_lut_profiles_via_wide_path\",",
+    "\"pending\":[\"photoshop_authored_oracle_fixtures\",\"cmyk_inverted_storage_and_lab_16_bit_encoding_verification\",\"rgb_lut_profiles_via_wide_path_untested\",",
     "\"vector_mask_and_layer_effect_rendering\",\"text_smart_object_editing\",\"mask_density_feather\",",
     "\"sixteen_bit_scale_and_float32_transfer_verification\"]}"
 );

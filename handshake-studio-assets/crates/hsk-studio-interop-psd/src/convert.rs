@@ -1,10 +1,17 @@
-//! Display conversion of embedded ICC profiles through Prism. The importer only asks two kinds of
-//! thing of a converter: the three-channel RGB path (`inspect` / `convert_rgb`, legacy Prism:
-//! ICC v4 matrix profiles up to 64 KiB) and the wide n-channel path (`inspect_wide` /
-//! `convert_wide`, `WideEngine`: Gray, RGB and CMYK device profiles of ICC v2/v4 as matrix, `kTRC`,
-//! `mAB`, `mft1/mft2`, up to 2 MiB, plus a profile-free Lab PCS source). A refusal is a typed loss,
-//! never a silent fallback; nothing here works around a Prism limit, and no default CMYK profile is
-//! ever invented.
+//! Display conversion of embedded ICC profiles through Prism. The importer asks two kinds of
+//! thing of a converter. The wide n-channel path (`inspect_wide` / `convert_wide`, `WideEngine`:
+//! Gray, RGB and CMYK device profiles of ICC v2/v4 as matrix, `kTRC`, `mAB`, `mft1/mft2`, up to
+//! 2 MiB, plus a profile-free Lab PCS source) carries the configured rendering intent and black
+//! point compensation to Prism; the importer uses it for every embedded profile when the converter
+//! has it. The three-channel legacy path (`inspect` / `convert_rgb`, legacy Prism: ICC v4 matrix
+//! profiles up to 64 KiB, relative colorimetric, no black point compensation) serves only
+//! converters without a wide path, and the importer then records that the intent and compensation
+//! were not applied (`rendering_intent_not_applied_legacy_rgb`,
+//! `black_point_compensation_not_applied_legacy_rgb`; test
+//! `rgb_intent_and_black_point_compensation_reach_prism_or_are_recorded`). A refusal is a typed
+//! loss, not a silent fallback (test `embedded_profiles_go_through_prism_and_refusals_are_typed_losses`);
+//! nothing here works around a Prism limit, and no default CMYK profile is invented (test
+//! `cmyk_without_a_usable_profile_is_a_typed_unmapped_layer_never_defaulted`).
 //!
 //! Wide output is the converter's working RGB (linear light) and is UNCLAMPED: out-of-gamut values
 //! lie below 0 or above 1. Clamping is the caller's job and is recorded (see `proposal`).

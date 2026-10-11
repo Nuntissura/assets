@@ -154,3 +154,78 @@ fn descriptor_is_valid_json_and_does_not_list_shipped_work_as_pending() {
         assert_eq!(d["limits"]["max_layers"], 8192);
     });
 }
+
+// ---- R5 review (carried PLAUSIBLE items) -------------------------------------------------------
+
+/// A `luni` block the reader cannot take (over `max_name_units`) leaves the Pascal name as the display
+/// name. That is a typed loss, the block survives a rewrite byte for byte, and a readable `luni` is silent.
+#[test]
+fn unreadable_unicode_layer_name_is_a_typed_loss() {
+    bounded_case("unreadable_unicode_layer_name_is_a_typed_loss", || {
+        let limits = Limits::default();
+        let layer_with = |luni: &str| {
+            let mut l = TLayer::new("pascal", [0, 0, 1, 1]);
+            l.channels = vec![(0, 0, vec![1]), (1, 0, vec![2]), (2, 0, vec![3])];
+            l.blocks = vec![layer_block(b"luni", &unicode(luni), false)];
+            let info = layer_info(&[l], false, false);
+            minimal(layer_section(&info, &[], false), Some((0, vec![1, 2, 3]))).bytes()
+        };
+        let too_long = layer_with(&"u".repeat(limits.max_name_units + 1));
+        let doc = read(&too_long);
+        assert_eq!(doc.layers()[0].name, "pascal", "the Pascal name stands in");
+        assert!(doc
+            .loss_report(&limits)
+            .entries
+            .iter()
+            .any(|e| e.path == "layer[0]/name" && e.code == "layer_name_unicode_unreadable" && e.kind == LossKind::Transformed));
+        assert_eq!(write_psd(&doc, &limits).unwrap(), too_long, "the unreadable block is preserved");
+
+        let fine = read(&layer_with("readable"));
+        assert_eq!(fine.layers()[0].name, "readable");
+        assert!(!fine.loss_report(&limits).has_code("layer_name_unicode_unreadable"));
+    });
+}
+
+/// The 28 PSD blend keys against a literal copy of the specification's key list (Adobe Photoshop File
+/// Format, layer record blend mode key; verified list in research/adobe-behavior.md), written separately
+/// from `PSD_BLEND_KEYS` so a wrong row there cannot pass by agreeing with itself.
+#[test]
+fn psd_blend_key_rows_match_the_specification_literally() {
+    bounded_case("psd_blend_key_rows_match_the_specification_literally", || {
+        let rows: [(&[u8; 4], Pigment); 28] = [
+            (b"pass", Pigment::PassThrough),
+            (b"norm", Pigment::Normal),
+            (b"diss", Pigment::Dissolve),
+            (b"dark", Pigment::Darken),
+            (b"mul ", Pigment::Multiply),
+            (b"idiv", Pigment::ColourBurn),
+            (b"lbrn", Pigment::LinearBurn),
+            (b"dkCl", Pigment::DarkerColour),
+            (b"lite", Pigment::Lighten),
+            (b"scrn", Pigment::Screen),
+            (b"div ", Pigment::ColourDodge),
+            (b"lddg", Pigment::LinearDodgeAdd),
+            (b"lgCl", Pigment::LighterColour),
+            (b"over", Pigment::Overlay),
+            (b"sLit", Pigment::SoftLight),
+            (b"hLit", Pigment::HardLight),
+            (b"vLit", Pigment::VividLight),
+            (b"lLit", Pigment::LinearLight),
+            (b"pLit", Pigment::PinLight),
+            (b"hMix", Pigment::HardMix),
+            (b"diff", Pigment::Difference),
+            (b"smud", Pigment::Exclusion),
+            (b"fsub", Pigment::Subtract),
+            (b"fdiv", Pigment::Divide),
+            (b"hue ", Pigment::Hue),
+            (b"sat ", Pigment::Saturation),
+            (b"colr", Pigment::Colour),
+            (b"lum ", Pigment::Luminosity),
+        ];
+        for (key, want) in rows {
+            assert_eq!(studio_blend_for_key(*key), Some(want), "{}", key_text(*key));
+            assert_eq!(psd_key_for(want), Some(*key), "{}", key_text(*key));
+        }
+        assert_eq!(PSD_BLEND_KEYS.len(), rows.len());
+    });
+}

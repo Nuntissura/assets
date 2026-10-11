@@ -320,13 +320,14 @@ enum WideKind {
     Cmyk,
     Lab,
     Gray,
+    Rgb,
 }
 
 impl WideKind {
     fn channels(self) -> usize {
         match self {
             Self::Cmyk => 4,
-            Self::Lab => 3,
+            Self::Lab | Self::Rgb => 3,
             Self::Gray => 1,
         }
     }
@@ -336,6 +337,7 @@ impl WideKind {
             Self::Cmyk => "cmyk",
             Self::Lab => "lab",
             Self::Gray => "gray",
+            Self::Rgb => "rgb",
         }
     }
 }
@@ -372,6 +374,10 @@ struct Builder<'a, 'm, 'c> {
     wide: Option<WideRoute>,
     stats: DisplayStats,
     icc_range_clamped: bool,
+    /// A NaN or infinite sample was replaced by 0 (typed loss `non_finite_samples_zeroed`).
+    non_finite_samples: bool,
+    /// An alpha sample outside `0..=1` was clamped (typed loss `alpha_range_clamped`).
+    alpha_clamped: bool,
     layers: Vec<Value>,
     operations: Vec<Value>,
     edges: Vec<Value>,
@@ -683,6 +689,11 @@ impl Builder<'_, '_, '_> {
                     }
                 }
                 WideKind::Gray => input.push(limit(p[0], 0.0, 1.0)),
+                WideKind::Rgb => {
+                    for &v in &p[..3] {
+                        input.push(limit(v, 0.0, 1.0));
+                    }
+                }
                 WideKind::Lab => {
                     input.push(limit((f64::from(p[0]) * 100.0) as f32, 0.0, 100.0));
                     for &unit in &p[1..3] {
@@ -795,13 +806,31 @@ impl Builder<'_, '_, '_> {
                         let channel = |p: &Plane| p.unit_at(src, scale).ok_or(PsdError::ChannelSize);
                         let mut samples = [0.0f32; 4];
                         for (slot, plane) in samples.iter_mut().zip(&planes) {
-                            *slot = channel(plane)?;
+                            let v = channel(plane)?;
+                            // Only 32-bit float samples can be NaN or infinite; a non-finite value
+                            // never enters a tile (it would poison every blend downstream).
+                            *slot = if v.is_finite() {
+                                v
+                            } else {
+                                self.non_finite_samples = true;
+                                0.0
+                            };
                         }
                         raw.push(samples);
                         let a = match &alpha {
                             Some(p) => channel(p)?,
                             None => 1.0,
                         };
+                        let a = if a.is_finite() {
+                            a
+                        } else {
+                            self.non_finite_samples = true;
+                            0.0
+                        };
+                        if !(0.0..=1.0).contains(&a) {
+                            // Alpha above 1.0 (the 32768 scale, float alpha) or below 0.0 is clamped.
+                            self.alpha_clamped = true;
+                        }
                         alphas.push(a.clamp(0.0, 1.0));
                         destinations.push((y - bounds.y) as usize * TILE_EDGE as usize + (x - bounds.x) as usize);
                     }
@@ -896,8 +925,6 @@ struct Routing {
     wide: Option<WideRoute>,
     intent_assumed: bool,
     bpc_assumed: bool,
-    /// Black point compensation was configured or assumed on (before any per-source skip).
-    bpc_requested: bool,
     /// (path, kind, code) entries decided before layers are walked.
     notes: Vec<(&'static str, LossKind, &'static str)>,
 }
@@ -950,15 +977,13 @@ fn route(
         wide: None,
         intent_assumed,
         bpc_assumed,
-        bpc_requested: bpc,
         notes: Vec::new(),
     };
-    // A gray `kTRC` source has black Y = 0 by definition and the destination is a matrix profile
-    // (black 0), so black point compensation is the identity for gray (ISO 18619 scale = 1). It is
-    // not sent: Prism's gray `kTRC` black detection (hsk-studio-prism wide path, BPC on) reads a
-    // garbage source black for some gammas (measured: L* -3613 at gamma 2.0) and would distort the
-    // image. The skip is recorded (`black_point_compensation_skipped_gray`).
-    let wide_route = |kind: WideKind| Some(WideRoute { kind, intent, bpc: bpc && kind != WideKind::Gray });
+    // The black point compensation flag goes to Prism unchanged for every source kind, gray
+    // included. A gray profile's black is NOT zero by definition (a `kTRC` table or parametric
+    // curve can have TRC(0) > 0), so the flag is never dropped on that premise; Prism measures the
+    // source black from the profile itself (ISO 18619) and is the identity when it is zero.
+    let wide_route = |kind: WideKind| Some(WideRoute { kind, intent, bpc });
     let mut wide_attempted = false;
     match mode {
         ColorMode::Cmyk if wide_depth => {
@@ -1022,14 +1047,22 @@ fn route(
             routing.unmapped_reason = "lab_display_conversion_unavailable";
             routing.notes.push(("document/color_mode", LossKind::Unsupported, "lab_display_conversion_unavailable"));
         }
-        ColorMode::Grayscale if wide_depth && wide_capable && icc.is_some() => {
+        // Gray and RGB with an embedded profile take the wide path, so the configured (or assumed)
+        // rendering intent and black point compensation reach Prism; the legacy three-channel path
+        // below cannot carry either.
+        ColorMode::Grayscale | ColorMode::Rgb if wide_depth && wide_capable && icc.is_some() => {
             wide_attempted = true;
             let icc = icc.unwrap_or_default();
+            let (device, kind) = if mode == ColorMode::Rgb {
+                (ProfileDevice::Rgb, WideKind::Rgb)
+            } else {
+                (ProfileDevice::Gray, WideKind::Gray)
+            };
             match wide_device(converter.as_deref_mut(), icc, cancel)? {
-                Ok(facts) if facts.device == ProfileDevice::Gray && facts.supports(intent) => {
-                    routing.wide = wide_route(WideKind::Gray);
+                Ok(facts) if facts.device == device && facts.supports(intent) => {
+                    routing.wide = wide_route(kind);
                 }
-                Ok(facts) if facts.device == ProfileDevice::Gray => routing.notes.push((
+                Ok(facts) if facts.device == device => routing.notes.push((
                     "document/rendering_intent",
                     LossKind::Transformed,
                     "icc_refused_missing_intent_table",
@@ -1053,6 +1086,22 @@ fn route(
             Ok(()) => {
                 if mode == ColorMode::Rgb && wide_depth {
                     routing.icc_active = true;
+                    // The legacy converter is relative colorimetric without black point
+                    // compensation, whatever was configured or assumed: say so.
+                    if intent != RenderingIntent::RelativeColorimetric {
+                        routing.notes.push((
+                            "document/rendering_intent",
+                            LossKind::Transformed,
+                            "rendering_intent_not_applied_legacy_rgb",
+                        ));
+                    }
+                    if bpc {
+                        routing.notes.push((
+                            "document/black_point_compensation",
+                            LossKind::Transformed,
+                            "black_point_compensation_not_applied_legacy_rgb",
+                        ));
+                    }
                 } else {
                     routing.notes.push(("document/profile", LossKind::PreservedOpaque, "icc_profile_not_applied_for_mode"));
                 }
@@ -1093,6 +1142,8 @@ pub fn to_proposal(
         wide: routing.wide,
         stats: DisplayStats::default(),
         icc_range_clamped: false,
+        non_finite_samples: false,
+        alpha_clamped: false,
         layers: Vec::new(),
         operations: Vec::new(),
         edges: Vec::new(),
@@ -1114,6 +1165,12 @@ pub fn to_proposal(
     for (path, kind, code) in &routing.notes {
         b.note((*path).into(), *kind, code);
     }
+    if b.non_finite_samples {
+        b.note("document/pixels".into(), LossKind::Transformed, "non_finite_samples_zeroed");
+    }
+    if b.alpha_clamped {
+        b.note("document/pixels".into(), LossKind::Transformed, "alpha_range_clamped");
+    }
     if routing.icc_active {
         b.note("document/profile".into(), LossKind::Preserved, "icc_profile_applied_by_converter");
         if b.icc_range_clamped {
@@ -1131,7 +1188,7 @@ pub fn to_proposal(
             WideKind::Lab => {
                 b.note("document/color_mode".into(), LossKind::Transformed, "lab_channels_assumed_icc_encoding");
             }
-            WideKind::Gray => {}
+            WideKind::Gray | WideKind::Rgb => {}
         }
         if wide.kind != WideKind::Lab {
             b.note("document/profile".into(), LossKind::Preserved, "icc_profile_applied_by_converter");
@@ -1145,13 +1202,6 @@ pub fn to_proposal(
                 "document/black_point_compensation".into(),
                 LossKind::Transformed,
                 "black_point_compensation_assumed_on",
-            );
-        }
-        if wide.kind == WideKind::Gray && routing.bpc_requested {
-            b.note(
-                "document/black_point_compensation".into(),
-                LossKind::PreservedOpaque,
-                "black_point_compensation_skipped_gray",
             );
         }
         if b.stats.input_range_clamped {

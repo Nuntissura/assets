@@ -264,10 +264,14 @@ fn embedded_profiles_go_through_prism_and_refusals_are_typed_losses() {
         assert!(p.loss.has_code("icc_profile_not_applied") && p.loss.has_code("profile_assumed_srgb") && !p.provenance.icc_converted);
         expect_assumed(&p);
 
-        // refused (over Prism's 64 KiB cap): assumed sRGB plus the refusal code
+        // refused (70 000 bytes that are no ICC profile; RGB now goes through the wide path, whose cap is
+        // 2 MiB, so the refusal is the framing check, not the legacy 64 KiB cap): assumed sRGB plus the refusal code
         let (p, _) = with_prism(&rgb(Some(&vec![7u8; 70_000])));
-        assert!(p.loss.has_code("icc_refused_profile_limit") && p.provenance.assumed_profile && !p.provenance.icc_converted);
+        assert!(p.loss.has_code("icc_refused_malformed_profile") && p.provenance.assumed_profile && !p.provenance.icc_converted);
         expect_assumed(&p);
+        // over the wide path's 2 MiB cap: the size refusal itself is typed
+        let (p, _) = with_prism(&rgb(Some(&vec![7u8; (2 << 20) + 1])));
+        assert!(p.loss.has_code("icc_refused_profile_limit") && p.provenance.assumed_profile && !p.provenance.icc_converted);
 
         // CMYK: a profile the wide path refuses (here malformed) or no profile at all leaves the
         // layers unmapped with a typed reason; no default CMYK profile is invented
@@ -775,5 +779,237 @@ fn edits_that_change_the_picture_mark_the_stored_composite_stale_and_name_edits_
         let (same, report) = export_psd(&bare_doc, &bare_p, &bare_p.snapshot, &opts).unwrap();
         assert_eq!(same, bare);
         assert!(report.loss.entries.is_empty());
+    });
+}
+
+// ---- R5 review regressions (SMB-INTEROP-PSD-WIDE CONFIRMED + class sweep + carried PLAUSIBLE) ---------
+
+/// A gray profile's black is not zero by definition: a `kTRC` table can lift it (TRC(0) = v0 > 0). Then
+/// ISO 18619 maps the source black onto the destination black (sRGB-linear, 0). Oracle, derived on paper:
+/// TRC(g) = v0 + (1 - v0) g, so with compensation Y' = (Y - v0) / (1 - v0) = g on the neutral axis, and
+/// without it Y = v0 + (1 - v0) g. The old importer dropped the flag for every gray profile (no loss entry
+/// about the lifted black, output = the uncompensated values).
+#[test]
+fn gray_black_point_compensation_is_applied_when_the_profile_black_is_not_zero() {
+    bounded_case("gray_black_point_compensation_is_applied_when_the_profile_black_is_not_zero", || {
+        let v0 = 6554.0 / 65535.0;
+        let g8 = [0u8, 64, 200, 255];
+        let unit = |raw: u8| f64::from(raw) / 255.0;
+        let doc_of = |profile: &[u8]| flat_doc(1, 1, 8, (4, 1), resource(1039, "", profile), vec![(0, g8.to_vec())], g8.to_vec());
+        let lifted = doc_of(&icc::gray_profile_table(&[6554, 65535]));
+
+        // configured on: the lifted black lands on the destination black, the neutral axis is preserved
+        let (_, on) = prism_import(&lifted, SixteenBitScale::default(), RELATIVE, Some(true));
+        for (i, raw) in g8.iter().enumerate() {
+            assert_tile_matches(&on.tiles[0], i, [unit(*raw); 3], 3e-3, "lifted gray, BPC on");
+        }
+        let d = on.provenance.display.as_ref().expect("display record");
+        assert_eq!((d.source_space, d.black_point_compensation, d.black_point_compensation_assumed), ("gray", true, false));
+        assert!(!on.loss.has_code("black_point_compensation_skipped_gray"), "the flag is not dropped for gray");
+        assert!(!on.loss.has_code("black_point_compensation_assumed_on"), "it was configured, not assumed");
+
+        // configured off: the uncompensated closed form, so the compensation above is measurable
+        let (_, off) = prism_import(&lifted, SixteenBitScale::default(), RELATIVE, Some(false));
+        for (i, raw) in g8.iter().enumerate() {
+            assert_tile_matches(&off.tiles[0], i, [v0 + (1.0 - v0) * unit(*raw); 3], 3e-3, "lifted gray, BPC off");
+        }
+        assert!(f64::from(f32_at(&off.tiles[0].colour, 0)) > 0.09, "black stays lifted without compensation");
+        assert!(!off.provenance.display.as_ref().unwrap().black_point_compensation);
+
+        // default: assumed on, recorded, and the same pixels as configured on
+        let (_, assumed) = prism_import(&lifted, SixteenBitScale::default(), RELATIVE, None);
+        assert_eq!(assumed.tiles[0].colour, on.tiles[0].colour);
+        assert!(assumed.loss.has_code("black_point_compensation_assumed_on"));
+        assert!(assumed.provenance.display.as_ref().unwrap().black_point_compensation_assumed);
+
+        // zero black (gamma 2 curve, TRC(0) = 0): compensation is the identity, pixels unchanged by the flag
+        let zero = doc_of(&icc::gray_profile(2.0));
+        let (_, zero_on) = prism_import(&zero, SixteenBitScale::default(), RELATIVE, Some(true));
+        let (_, zero_off) = prism_import(&zero, SixteenBitScale::default(), RELATIVE, Some(false));
+        assert_eq!(zero_on.tiles[0].colour, zero_off.tiles[0].colour);
+        for (i, raw) in g8.iter().enumerate() {
+            assert_tile_matches(&zero_on.tiles[0], i, [unit(*raw).powi(2); 3], 3e-3, "zero-black gray");
+        }
+    });
+}
+
+/// Same failure class (a colour-management step silently skipped) on the RGB path: the legacy converter is
+/// relative colorimetric without black point compensation, so RGB with an embedded profile now takes the
+/// wide path and the configured (or assumed) intent and compensation reach Prism. A converter without a wide
+/// path says in the loss report that neither was applied.
+#[test]
+fn rgb_intent_and_black_point_compensation_reach_prism_or_are_recorded() {
+    bounded_case("rgb_intent_and_black_point_compensation_reach_prism_or_are_recorded", || {
+        let (r, g, b) = ([64u8, 10], [128u8, 200], [255u8, 30]);
+        let rgb_doc = |profile: &[u8]| {
+            let merged = [r.to_vec(), g.to_vec(), b.to_vec()].concat();
+            flat_doc(3, 3, 8, (2, 1), resource(1039, "", profile), vec![(0, r.to_vec()), (1, g.to_vec()), (2, b.to_vec())], merged)
+        };
+        let unit = |raw: u8| f64::from(raw) / 255.0;
+
+        // an ICC v2 gamma-2 matrix profile (the legacy path refused v2 profiles): converted by the wide path
+        let gamma2 = rgb_doc(&icc::rgb_profile(0x0210_0000, &icc::curv(2.0)));
+        let (_, p) = prism_import(&gamma2, SixteenBitScale::default(), RELATIVE, Some(false));
+        for (i, (rv, gv, bv)) in [(r[0], g[0], b[0]), (r[1], g[1], b[1])].into_iter().enumerate() {
+            assert_tile_matches(&p.tiles[0], i, [unit(rv).powi(2), unit(gv).powi(2), unit(bv).powi(2)], 3e-3, "rgb v2 gamma 2");
+        }
+        let d = p.provenance.display.as_ref().expect("display record");
+        assert_eq!(d.source_space, "rgb");
+        assert!(p.provenance.icc_converted && !p.provenance.assumed_profile && p.loss.has_code("icc_profile_applied_by_converter"));
+
+        // an explicit non-default intent is the one Prism was asked for, not silently replaced
+        let (_, sat) = prism_import(&gamma2, SixteenBitScale::default(), Some(RenderingIntent::Saturation), Some(false));
+        let d = sat.provenance.display.as_ref().unwrap();
+        assert_eq!((d.intent, d.intent_assumed), (RenderingIntent::Saturation, false));
+
+        // lifted RGB black (TRC(0) = v0): same paper oracle as gray on the neutral axis
+        let v0 = 6554.0 / 65535.0;
+        let grey = [0u8, 64, 200, 255];
+        let neutral = |profile: &[u8]| {
+            flat_doc(3, 3, 8, (4, 1), resource(1039, "", profile), (0..3i16).map(|c| (c, grey.to_vec())).collect(), grey.repeat(3))
+        };
+        let lifted = neutral(&icc::rgb_profile(0x0210_0000, &icc::curv_table(&[6554, 65535])));
+        let (_, on) = prism_import(&lifted, SixteenBitScale::default(), RELATIVE, Some(true));
+        let (_, off) = prism_import(&lifted, SixteenBitScale::default(), RELATIVE, Some(false));
+        for (i, raw) in grey.iter().enumerate() {
+            assert_tile_matches(&on.tiles[0], i, [unit(*raw); 3], 3e-3, "lifted rgb, BPC on");
+            assert_tile_matches(&off.tiles[0], i, [v0 + (1.0 - v0) * unit(*raw); 3], 3e-3, "lifted rgb, BPC off");
+        }
+        let (_, assumed) = prism_import(&lifted, SixteenBitScale::default(), None, None);
+        assert!(assumed.loss.has_code("black_point_compensation_assumed_on") && assumed.loss.has_code("rendering_intent_assumed_perceptual"));
+
+        // a converter with only the legacy path: relative colorimetric, no compensation, and the report says so
+        struct LegacyIdentity;
+        impl IccConverter for LegacyIdentity {
+            fn destination_profile_id(&self) -> String {
+                "SCPF-019abcde-0000-7000-8000-0000000000aa".into()
+            }
+            fn inspect(&mut self, _: &[u8], _: &CancellationToken) -> std::result::Result<(), IccRefusal> {
+                Ok(())
+            }
+            fn convert_rgb(&mut self, _: &[u8], pixels: &[[f32; 3]], _: &CancellationToken) -> std::result::Result<Vec<[f32; 3]>, IccRefusal> {
+                Ok(pixels.to_vec())
+            }
+        }
+        let limits = Limits::default();
+        let bytes = rgb_doc(SRGB_V4);
+        let doc = read(&bytes);
+        let mut cfg = ProposalConfig::new(&limits, budget(), &Open);
+        let legacy = |cfg: &ProposalConfig<'_>| {
+            to_proposal(&doc, &SourceIdentity::of(&bytes), cfg, &mut Mint(0), Some(&mut LegacyIdentity), &CancellationToken::default()).unwrap()
+        };
+        let defaults = legacy(&cfg);
+        assert!(defaults.loss.has_code("rendering_intent_not_applied_legacy_rgb") && defaults.loss.has_code("black_point_compensation_not_applied_legacy_rgb"));
+        assert!(defaults.provenance.icc_converted, "the legacy path still converted");
+        cfg.rendering_intent = RELATIVE;
+        cfg.black_point_compensation = Some(false);
+        let honoured = legacy(&cfg);
+        assert!(!honoured.loss.has_code("rendering_intent_not_applied_legacy_rgb") && !honoured.loss.has_code("black_point_compensation_not_applied_legacy_rgb"));
+    });
+}
+
+/// R5 carried PLAUSIBLE items on the export path. `apply_edits` is all-or-nothing (a later layer's error
+/// leaves the caller's document untouched); colour under alpha 0 in a cell that never had a tile survives a
+/// pixel export (only a cell the caller removed is erased); non-finite tile values are a typed error; an
+/// alpha outside 0..=1 is clamped with a typed loss; a rename longer than the name limit is reported.
+#[test]
+fn apply_edits_is_all_or_nothing_and_export_keeps_untiled_cells() {
+    bounded_case("apply_edits_is_all_or_nothing_and_export_keeps_untiled_cells", || {
+        let limits = Limits::default();
+        let cancel = CancellationToken::default();
+
+        // -- all-or-nothing: layer 0 renames fine, layer 3 then fails on a malformed tile blob
+        let bytes = export_fixture();
+        let (doc, p) = proposal_of(&bytes, SixteenBitScale::default(), None);
+        let renamed = edited_snapshot(&p, |l| {
+            if l.name == "base" {
+                l.name = "Base2".into();
+            }
+        });
+        let inner_id = layer_named(p.snapshot.document(), "inner").layer_id.clone();
+        let mut damaged = p.tiles.clone();
+        damaged.iter_mut().filter(|t| t.layer_id == inner_id).for_each(|t| t.colour.truncate(4));
+        let mut target = doc.clone();
+        let before = write_psd(&target, &limits).unwrap();
+        let failed = apply_edits(&mut target, &p, &renamed, &ExportOptions { limits: &limits, tiles: Some(&damaged) });
+        assert_eq!(failed.unwrap_err(), PsdError::Encode("tile_blob_size"));
+        assert_eq!(target.layers()[0].name, "base", "the rename of the earlier layer was not left half-applied");
+        assert_eq!(write_psd(&target, &limits).unwrap(), before);
+        let applied = apply_edits(&mut target, &p, &renamed, &ExportOptions { limits: &limits, tiles: Some(&p.tiles) }).unwrap();
+        assert!(applied.was_applied("name") && target.layers()[0].name == "Base2");
+
+        // -- non-finite tile values are refused, an out-of-range alpha is clamped and reported
+        let base_id = layer_named(p.snapshot.document(), "base").layer_id.clone();
+        let mut nan = p.tiles.clone();
+        nan.iter_mut().filter(|t| t.layer_id == base_id).for_each(|t| t.colour[0..4].copy_from_slice(&f32::NAN.to_le_bytes()));
+        let result = export_psd(&doc, &p, &p.snapshot, &ExportOptions { limits: &limits, tiles: Some(&nan) });
+        assert_eq!(result.unwrap_err(), PsdError::Encode("non_finite_sample"));
+        let mut bright = p.tiles.clone();
+        bright.iter_mut().filter(|t| t.layer_id == base_id).for_each(|t| t.alpha[0..4].copy_from_slice(&2.0f32.to_le_bytes()));
+        let (_, report) = export_psd(&doc, &p, &p.snapshot, &ExportOptions { limits: &limits, tiles: Some(&bright) }).unwrap();
+        assert!(report.was_applied("pixels") && report.loss.has_code("alpha_range_clamped"));
+
+        // -- a rename past the name limit is truncated by the writer and says so
+        let long = "n".repeat(limits.max_name_units + 76);
+        let long_name = edited_snapshot(&p, |l| {
+            if l.name == "base" {
+                l.name.clone_from(&long);
+            }
+        });
+        let (out, report) = export_psd(&doc, &p, &long_name, &ExportOptions { limits: &limits, tiles: None }).unwrap();
+        assert!(report.loss.entries.iter().any(|e| e.code == "layer_name_truncated" && e.path == "layer[0]/name"));
+        assert_eq!(read(&out).layers()[0].name.encode_utf16().count(), limits.max_name_units);
+
+        // -- untiled cells: a 512x1 layer whose right cell is fully transparent but carries colour
+        let colour = |left: &dyn Fn(usize) -> u8, right: u8| -> Vec<u8> { (0..512).map(|x| if x < 256 { left(x) } else { right }).collect() };
+        let (r, g, b) = (colour(&|x| 10 + (x % 100) as u8, 77), colour(&|x| 20 + (x % 90) as u8, 88), colour(&|x| 30 + (x % 80) as u8, 99));
+        let alpha = colour(&|_| 255, 0);
+        let merged = [r.clone(), g.clone(), b.clone()].concat();
+        let wide = flat_doc(3, 3, 8, (512, 1), Vec::new(), vec![(0, r.clone()), (1, g.clone()), (2, b.clone()), (-1, alpha.clone())], merged);
+        let (wide_doc, wp) = proposal_of(&wide, SixteenBitScale::default(), None);
+        assert_eq!(wp.tiles.len(), 1, "only the left cell has a tile; the transparent right cell has none");
+        let plane = |d: &PsdDocument, id: i16| d.layers()[0].decode_channel(id, &d.header, &limits, &cancel).unwrap().unwrap().bytes;
+        let mut edited = wp.tiles.clone();
+        edited[0].colour[0..4].copy_from_slice(&0.5f32.to_le_bytes());
+        let (out, report) = export_psd(&wide_doc, &wp, &wp.snapshot, &ExportOptions { limits: &limits, tiles: Some(&edited) }).unwrap();
+        assert!(report.was_applied("pixels"));
+        let back = read(&out);
+        let (nr, ng, nb, na) = (plane(&back, 0), plane(&back, 1), plane(&back, 2), plane(&back, -1));
+        assert_eq!(nr[0], unit_to_sample(linear_to_srgb(0.5), 8, SixteenBitScale::default()) as u8, "the edit landed");
+        assert_eq!(&nr[1..], &r[1..], "untouched left pixels keep their bytes");
+        assert_eq!((&nr[256..], &ng[256..], &nb[256..], &na[256..]), (&r[256..], &g[256..], &b[256..], &alpha[256..]), "colour under alpha 0 survives");
+        // removing the tile is an explicit erase of that cell only; the untiled cell still keeps its samples
+        let (out, _) = export_psd(&wide_doc, &wp, &wp.snapshot, &ExportOptions { limits: &limits, tiles: Some(&[]) }).unwrap();
+        let back = read(&out);
+        let (nr, na) = (plane(&back, 0), plane(&back, -1));
+        assert!(nr[..256].iter().all(|&v| v == 0) && na[..256].iter().all(|&v| v == 0), "the removed cell is transparent black");
+        assert_eq!((&nr[256..], &na[256..]), (&r[256..], &alpha[256..]));
+    });
+}
+
+/// R5 carried PLAUSIBLE items on import: a NaN or infinite float sample never enters a tile (zeroed, typed
+/// loss), and an alpha outside 0..=1 (float alpha, or 16-bit alpha above 1.0 on the 32768 scale) is clamped
+/// with a typed loss instead of silently.
+#[test]
+fn non_finite_and_out_of_range_samples_are_typed_losses_on_import() {
+    bounded_case("non_finite_and_out_of_range_samples_are_typed_losses_on_import", || {
+        let (r, g, b) = ([f32::NAN, 0.5], [f32::INFINITY, 0.5], [0.25f32, 0.5]);
+        let a = [f32::NEG_INFINITY, 2.0];
+        let merged = [bef32(&r), bef32(&g), bef32(&b)].concat();
+        let bytes = flat_doc(3, 3, 32, (2, 1), Vec::new(), vec![(0, bef32(&r)), (1, bef32(&g)), (2, bef32(&b)), (-1, bef32(&a))], merged);
+        let (_, p) = proposal_of(&bytes, SixteenBitScale::default(), None);
+        let tile = &p.tiles[0];
+        assert_eq!([f32_at(&tile.colour, 0), f32_at(&tile.colour, 1), f32_at(&tile.colour, 2)], [0.0, 0.0, 0.25], "non-finite colour becomes 0, finite stays");
+        assert_eq!([f32_at(&tile.alpha, 0), f32_at(&tile.alpha, 1)], [0.0, 1.0], "non-finite alpha is transparent, 2.0 clamps to 1");
+        assert!(p.loss.has_code("non_finite_samples_zeroed") && p.loss.has_code("alpha_range_clamped"));
+        assert!(tile.colour.chunks_exact(4).all(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).is_finite()));
+
+        // 16-bit on the 32768 scale: raw 65535 alpha is 1.99997 and is clamped, reported
+        let plane = be16s(&[0x4000, 0xFFFF]);
+        let bytes = flat_doc(3, 3, 16, (2, 1), Vec::new(), vec![(0, plane.clone()), (1, plane.clone()), (2, plane.clone()), (-1, plane.clone())], plane.repeat(3));
+        let (_, scaled) = proposal_of(&bytes, SixteenBitScale::Photoshop32768, None);
+        assert!(scaled.loss.has_code("alpha_range_clamped") && !scaled.loss.has_code("non_finite_samples_zeroed"));
+        let (_, full) = proposal_of(&bytes, SixteenBitScale::Full65535, None);
+        assert!(!full.loss.has_code("alpha_range_clamped"), "nothing leaves 0..=1 on the full scale");
     });
 }

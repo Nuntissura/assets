@@ -116,6 +116,41 @@ pub fn cmyk_profile(tables: &[&[u8; 4]]) -> Vec<u8> {
 pub fn gray_profile(gamma: f64) -> Vec<u8> {
     assemble(0x0210_0000, b"mntr", b"GRAY", b"XYZ ", &[xyz_tag(D50), curv(gamma)], &[(b"wtpt", 0), (b"kTRC", 1)])
 }
+/// `curv` with a sampled table (linear interpolation between the entries, each `v / 65535`).
+pub fn curv_table(entries: &[u16]) -> Vec<u8> {
+    let mut t = b"curv\0\0\0\0".to_vec();
+    t.extend_from_slice(&be32(entries.len() as u32));
+    for e in entries {
+        t.extend_from_slice(&e.to_be_bytes());
+    }
+    t
+}
+/// ICC v2 gray profile whose `kTRC` is a sampled table, so `TRC(0) = entries[0] / 65535` can be non-zero:
+/// a gray profile's black is not zero by definition.
+pub fn gray_profile_table(entries: &[u16]) -> Vec<u8> {
+    assemble(0x0210_0000, b"mntr", b"GRAY", b"XYZ ", &[xyz_tag(D50), curv_table(entries)], &[(b"wtpt", 0), (b"kTRC", 1)])
+}
+/// ICC RGB matrix/TRC profile with the sRGB primaries adapted to D50 and one `trc` blob (any `curv`) on
+/// all three channels. `version` is the header word (`0x0210_0000` for v2.1, `0x0430_0000` for v4.3).
+pub fn rgb_profile(version: u32, trc: &[u8]) -> Vec<u8> {
+    let blobs = vec![
+        xyz_tag(D50),
+        xyz_tag([0.4360747, 0.2225045, 0.0139322]),
+        xyz_tag([0.3850649, 0.7168786, 0.0971045]),
+        xyz_tag([0.1430804, 0.0606169, 0.7141733]),
+        trc.to_vec(),
+        trc.to_vec(),
+        trc.to_vec(),
+    ];
+    assemble(
+        version,
+        b"mntr",
+        b"RGB ",
+        b"XYZ ",
+        &blobs,
+        &[(b"wtpt", 0), (b"rXYZ", 1), (b"gXYZ", 2), (b"bXYZ", 3), (b"rTRC", 4), (b"gTRC", 5), (b"bTRC", 6)],
+    )
+}
 
 /// Y of a neutral with CIELAB lightness `l`.
 pub fn y_of_l(l: f64) -> f64 {

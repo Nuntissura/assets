@@ -7,7 +7,8 @@ use crate::document::{MergedStatus, PsdDocument};
 use crate::header::ColorMode;
 use crate::layers::{GroupRole, PsdLayer};
 use crate::limits::Limits;
-use crate::resources::{RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED, RESOURCE_VERSION_INFO};
+use crate::reader::Reader;
+use crate::resources::{RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED, RESOURCE_VERSION_INFO, read_unicode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LossKind {
@@ -116,7 +117,7 @@ fn classify(key: [u8; 4]) -> KeyClass {
     }
 }
 
-fn layer_entries(i: usize, layer: &PsdLayer, report: &mut LossReport) {
+fn layer_entries(i: usize, layer: &PsdLayer, limits: &Limits, report: &mut LossReport) {
     let at = |tail: &str| format!("layer[{i}]/{tail}");
     if layer.blend_mode().is_none() {
         // Never mapped to Normal: the key stays verbatim in the record.
@@ -147,6 +148,13 @@ fn layer_entries(i: usize, layer: &PsdLayer, report: &mut LossReport) {
     }
     if layer.block(&crate::layers::KEY_UNICODE_NAME).is_none() && layer.name_pascal.iter().any(|&b| b >= 0x80) {
         report.push(at("name"), LossKind::Transformed, "layer_name_codepage_assumed");
+    }
+    // A `luni` block the reader cannot take (over `max_name_units`, truncated) leaves the Pascal
+    // (Latin-1) name as the display name; the block itself stays byte-exact.
+    if let Some(block) = layer.block(&crate::layers::KEY_UNICODE_NAME)
+        && read_unicode(&mut Reader::new(&block.data), limits.max_name_units).is_err()
+    {
+        report.push(at("name"), LossKind::Transformed, "layer_name_unicode_unreadable");
     }
     if layer.channels.iter().any(|c| c.compression > 3) {
         report.push(at("channels"), LossKind::Unsupported, "channel_compression_unknown");
@@ -205,7 +213,7 @@ impl PsdDocument {
             report.push("file/tail".into(), LossKind::PreservedOpaque, "file_tail_preserved");
         }
         for (i, layer) in self.layers().iter().enumerate() {
-            layer_entries(i, layer, &mut report);
+            layer_entries(i, layer, limits, &mut report);
         }
         let section = &self.layer_section;
         if section.global_mask.as_ref().is_some_and(|m| !m.is_empty()) {
