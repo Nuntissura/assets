@@ -14,6 +14,13 @@
 //! Threads: a reader thread owns stdin and exits the process when the host closes it (parent gone while
 //! a decode is running), the decode loop runs on a thread with its own sized native stack, so decoding
 //! never depends on the executable's 1 MiB main-thread stack.
+//!
+//! Built only with the `av1-worker` feature (the only feature that links rav1d). Fault injection for the
+//! supervision tests exists only with `test-faults`; a product worker never reads the fault environment
+//! variable (`tests/worker_fault_env.rs`).
+#![deny(clippy::arithmetic_side_effects)]
+#[cfg(feature = "test-faults")]
+use crate::test_fault::WorkerTestFault;
 use crate::wire::{self, OpenRequest, Request, WireFrame};
 use hsk_studio_reel::av1::{Av1Decoder, DECODER_ID, DecodedFrame, decoder_version};
 use hsk_studio_reel::{Limits, ReelError};
@@ -21,7 +28,6 @@ use std::{
     io::{self, Write},
     sync::mpsc,
     thread,
-    time::Duration,
 };
 
 /// Exit code of a worker whose panic hook fired (an abort that was converted to a prompt exit).
@@ -29,50 +35,49 @@ pub const PANIC_EXIT_CODE: i32 = 70;
 /// Native stack of the decode thread (virtual reservation; pages are committed on use).
 const DECODE_STACK_BYTES: usize = 32 << 20;
 /// How long an injected hang lasts before the worker leaves by itself (the host normally kills it first).
-const HANG_LIMIT: Duration = Duration::from_secs(30);
+#[cfg(feature = "test-faults")]
+const HANG_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Test-only fault injection. The host never sets it in production; a worker reads it from the
-/// environment variable `HSK_REEL_NATIVE_AV1_WORKER_TEST_FAULT` that only `Av1WorkerOptions` can set
-/// for the child it spawns.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WorkerTestFault {
-    #[default]
-    None,
-    /// First PACKET: sleep (no reply) so the host deadline or cancel has to kill the worker.
-    HangOnPacket,
-    /// First PACKET: exit with code 86 (a worker that dies mid-request).
-    ExitOnPacket,
-    /// OPEN: exit with code 86.
-    ExitOnOpen,
-    /// First PACKET: answer with a FRAME far above any declared-dimension cap.
-    OversizeFrame,
-    /// First PACKET: answer with a frame of unknown kind.
-    GarbageReply,
+/// Fault this worker injects into its first request (`test-faults` only).
+#[cfg(feature = "test-faults")]
+struct Faults {
+    fault: WorkerTestFault,
+    fired: bool,
 }
 
-impl WorkerTestFault {
-    pub const ENV: &'static str = "HSK_REEL_NATIVE_AV1_WORKER_TEST_FAULT";
-
-    pub(crate) const fn env_value(self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::HangOnPacket => Some("hang_on_packet"),
-            Self::ExitOnPacket => Some("exit_on_packet"),
-            Self::ExitOnOpen => Some("exit_on_open"),
-            Self::OversizeFrame => Some("oversize_frame"),
-            Self::GarbageReply => Some("garbage_reply"),
+#[cfg(feature = "test-faults")]
+impl Faults {
+    fn from_env() -> Self {
+        Self {
+            fault: WorkerTestFault::from_env(),
+            fired: false,
         }
     }
 
-    fn from_env() -> Self {
-        match std::env::var(Self::ENV).as_deref() {
-            Ok("hang_on_packet") => Self::HangOnPacket,
-            Ok("exit_on_packet") => Self::ExitOnPacket,
-            Ok("exit_on_open") => Self::ExitOnOpen,
-            Ok("oversize_frame") => Self::OversizeFrame,
-            Ok("garbage_reply") => Self::GarbageReply,
-            _ => Self::None,
+    fn exit_on_open(&self) {
+        if self.fault == WorkerTestFault::ExitOnOpen {
+            std::process::exit(86);
+        }
+    }
+
+    /// Injects the fault on the first PACKET. Returns `Some(alive)` when the fault replaced the
+    /// normal answer, `None` when the packet must be decoded normally.
+    fn on_packet(&mut self, out: &mut impl Write, id: u64) -> Option<bool> {
+        if self.fired || self.fault == WorkerTestFault::None {
+            return None;
+        }
+        self.fired = true;
+        match self.fault {
+            WorkerTestFault::HangOnPacket => {
+                thread::sleep(HANG_LIMIT);
+                std::process::exit(3);
+            }
+            WorkerTestFault::ExitOnPacket => std::process::exit(86),
+            WorkerTestFault::OversizeFrame => {
+                Some(reply(out, &wire::encode_oversize_frame(id, 2 << 20)))
+            }
+            WorkerTestFault::GarbageReply => Some(reply(out, &wire::encode_garbage())),
+            WorkerTestFault::None | WorkerTestFault::ExitOnOpen => None,
         }
     }
 }
@@ -103,7 +108,7 @@ fn flush_batch(out: &mut impl Write, id: u64, decoder: &mut Av1Decoder) -> bool 
         if wire::write_frame(out, &encoded).is_err() {
             return false;
         }
-        count += 1;
+        count = count.saturating_add(1);
     }
     wire::write_frame(out, &wire::encode_batch_end(id, count)).is_ok()
 }
@@ -112,14 +117,15 @@ fn reply(out: &mut impl Write, payload: &[u8]) -> bool {
     wire::write_frame(out, payload).is_ok()
 }
 
-fn serve(requests: &mpsc::Receiver<Vec<u8>>, fault: WorkerTestFault) -> i32 {
+fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
+    #[cfg(feature = "test-faults")]
+    let mut faults = Faults::from_env();
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if !reply(&mut out, &wire::encode_hello(DECODER_ID, decoder_version())) {
         return 1;
     }
     let mut decoder: Option<Av1Decoder> = None;
-    let mut faulted = false;
     while let Ok(frame) = requests.recv() {
         let Ok(request) = wire::decode_request(&frame) else {
             return 2;
@@ -128,9 +134,8 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>, fault: WorkerTestFault) -> i32 {
             Request::Open(id, open) => {
                 // A new OPEN always replaces whatever decoder a cancelled segment left behind.
                 decoder = None;
-                if fault == WorkerTestFault::ExitOnOpen {
-                    std::process::exit(86);
-                }
+                #[cfg(feature = "test-faults")]
+                faults.exit_on_open();
                 match open_decoder(&open) {
                     Ok(opened) => {
                         decoder = Some(opened);
@@ -140,28 +145,13 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>, fault: WorkerTestFault) -> i32 {
                 }
             }
             Request::Packet(id, tag, bytes) => {
-                if !faulted && fault != WorkerTestFault::None {
-                    faulted = true;
-                    match fault {
-                        WorkerTestFault::HangOnPacket => {
-                            thread::sleep(HANG_LIMIT);
-                            std::process::exit(3);
+                #[cfg(feature = "test-faults")]
+                {
+                    if let Some(alive) = faults.on_packet(&mut out, id) {
+                        if !alive {
+                            return 1;
                         }
-                        WorkerTestFault::ExitOnPacket => std::process::exit(86),
-                        WorkerTestFault::OversizeFrame => {
-                            let junk = wire::encode_oversize_frame(id, 2 << 20);
-                            if !reply(&mut out, &junk) {
-                                return 1;
-                            }
-                            continue;
-                        }
-                        WorkerTestFault::GarbageReply => {
-                            if !reply(&mut out, &wire::encode_garbage()) {
-                                return 1;
-                            }
-                            continue;
-                        }
-                        _ => {}
+                        continue;
                     }
                 }
                 match decoder.as_mut() {
@@ -209,7 +199,6 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>, fault: WorkerTestFault) -> i32 {
 /// Entry point of the `reel-native-av1-worker` binary; returns the process exit code. Reads request
 /// frames from stdin, writes reply frames to stdout, and exits 0 when stdin closes.
 pub fn worker_main() -> i32 {
-    let fault = WorkerTestFault::from_env();
     // A decoder panic would abort the process through the platform crash reporter; leave at once instead.
     std::panic::set_hook(Box::new(|_| std::process::exit(PANIC_EXIT_CODE)));
     let (requests_tx, requests_rx) = mpsc::channel::<Vec<u8>>();
@@ -237,7 +226,7 @@ pub fn worker_main() -> i32 {
     thread::Builder::new()
         .name("av1-worker-decode".to_owned())
         .stack_size(DECODE_STACK_BYTES)
-        .spawn(move || serve(&requests_rx, fault))
+        .spawn(move || serve(&requests_rx))
         .ok()
         .and_then(|handle| handle.join().ok())
         .unwrap_or(1)

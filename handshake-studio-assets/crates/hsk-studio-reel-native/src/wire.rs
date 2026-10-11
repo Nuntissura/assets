@@ -5,8 +5,11 @@
 //! Payload: `u8 kind, u16 protocol version, u64 request id` + body. The worker speaks first with HELLO
 //! (protocol version + decoder identity). One request is answered by zero or more FRAME replies and
 //! exactly one terminal reply (OPENED, BATCH_END or ERROR), every reply echoing the request id, so a
-//! stale or mismatched frame is a protocol fault. All decoding is bounds-checked: a malformed frame never
-//! panics and never allocates beyond the bytes present in the frame.
+//! stale or mismatched frame is a protocol fault. All decoding is bounds-checked and all size arithmetic
+//! is checked: a malformed frame (including one declaring u32::MAX dimensions, test
+//! `frame_dims_u32_max_is_malformed`) is `Malformed`, and nothing is allocated beyond the bytes present.
+//! Worker-side encoders are compiled only for the worker (`av1-worker`) and the unit tests.
+#![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_reel::{ChromaFormat, ColorInfo, ColorOrigin, ColorTag, ReelError, VideoFormat};
 use std::io::{self, Read, Write};
 
@@ -88,7 +91,7 @@ pub(crate) fn read_frame(reader: &mut impl Read, cap: usize) -> Res<Vec<u8>> {
 
 pub(crate) fn write_frame(writer: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     let length = u32::try_from(payload.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
-    let mut frame = Vec::with_capacity(4 + payload.len());
+    let mut frame = Vec::with_capacity(payload.len().saturating_add(4));
     frame.extend_from_slice(&length.to_le_bytes());
     frame.extend_from_slice(payload);
     writer.write_all(&frame)?;
@@ -129,6 +132,7 @@ impl Out {
         self.u32(u32::try_from(value.len()).unwrap_or(u32::MAX));
         self.0.extend_from_slice(value);
     }
+    #[cfg(any(test, feature = "av1-worker"))]
     fn text(&mut self, value: &str) {
         self.bytes(value.as_bytes());
     }
@@ -178,6 +182,7 @@ impl<'a> In<'a> {
     fn text(&mut self) -> Res<String> {
         String::from_utf8(self.bytes()?.to_vec()).map_err(|_| WireError::Malformed)
     }
+    #[cfg(any(test, feature = "av1-worker"))]
     fn rest(&mut self) -> &'a [u8] {
         let rest = &self.buf[self.pos..];
         self.pos = self.buf.len();
@@ -201,6 +206,7 @@ pub(crate) struct Hello {
     pub decoder_version: String,
 }
 
+#[cfg(any(test, feature = "av1-worker"))]
 pub(crate) fn encode_hello(decoder_id: &str, decoder_version: &str) -> Vec<u8> {
     let mut out = Out::header(KIND_HELLO, 0);
     out.text(decoder_id);
@@ -236,6 +242,7 @@ pub(crate) struct OpenRequest {
     pub config: Vec<u8>,
 }
 
+#[cfg(any(test, feature = "av1-worker"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Request {
     Open(u64, OpenRequest),
@@ -284,6 +291,7 @@ pub(crate) fn encode_finish(id: u64) -> Vec<u8> {
     Out::header(KIND_FINISH, id).0
 }
 
+#[cfg(any(test, feature = "av1-worker"))]
 pub(crate) fn decode_request(frame: &[u8]) -> Res<Request> {
     let kind = *frame.first().ok_or(WireError::Malformed)?;
     match kind {
@@ -352,19 +360,26 @@ pub(crate) enum Reply {
     Error(ReelError),
 }
 
+#[cfg(any(test, feature = "av1-worker"))]
 pub(crate) fn encode_opened(id: u64) -> Vec<u8> {
     Out::header(KIND_OPENED, id).0
 }
 
+#[cfg(any(test, feature = "av1-worker"))]
 pub(crate) fn encode_batch_end(id: u64, frames: u32) -> Vec<u8> {
     let mut out = Out::header(KIND_BATCH_END, id);
     out.u32(frames);
     out.0
 }
 
+#[cfg(any(test, feature = "av1-worker"))]
 pub(crate) fn encode_frame(id: u64, frame: &WireFrame) -> Vec<u8> {
-    let planes_len: usize = frame.planes.iter().map(Vec::len).sum();
-    let mut out = Out(Vec::with_capacity(96 + planes_len));
+    let planes_len = frame
+        .planes
+        .iter()
+        .map(Vec::len)
+        .fold(0_usize, usize::saturating_add);
+    let mut out = Out(Vec::with_capacity(planes_len.saturating_add(96)));
     out.0.extend_from_slice(&Out::header(KIND_FRAME, id).0);
     out.u64(frame.tag);
     let format = &frame.format;
@@ -394,6 +409,7 @@ pub(crate) fn encode_frame(id: u64, frame: &WireFrame) -> Vec<u8> {
     out.0
 }
 
+#[cfg(any(test, feature = "av1-worker"))]
 pub(crate) fn encode_error(id: u64, error: &ReelError) -> Vec<u8> {
     let (class, what) = match error {
         ReelError::Corrupt { what } => (1_u8, *what),
@@ -409,13 +425,15 @@ pub(crate) fn encode_error(id: u64, error: &ReelError) -> Vec<u8> {
 }
 
 /// A frame of `kind` FRAME that claims `filler` bytes of body: the worker's oversize test fault.
+#[cfg(all(feature = "av1-worker", feature = "test-faults"))]
 pub(crate) fn encode_oversize_frame(id: u64, filler: usize) -> Vec<u8> {
     let mut out = Out::header(KIND_FRAME, id);
-    out.0.resize(out.0.len() + filler, 0);
+    out.0.resize(out.0.len().saturating_add(filler), 0);
     out.0
 }
 
 /// A frame of an unknown kind: the worker's protocol-garbage test fault.
+#[cfg(all(feature = "av1-worker", feature = "test-faults"))]
 pub(crate) fn encode_garbage() -> Vec<u8> {
     vec![0xEE, 1, 2, 3]
 }
@@ -510,8 +528,12 @@ fn decode_frame(reader: &mut In<'_>) -> Res<WireFrame> {
     let bytes_per_sample = format.bytes_per_sample() as u64;
     let mut planes = Vec::with_capacity(count);
     for (w, h) in dims {
-        // Each plane is exactly width * height samples: any other length is a lying worker.
-        let expected = u64::from(w) * u64::from(h) * bytes_per_sample;
+        // Each plane is exactly width * height samples: any other length is a lying worker. Dimensions
+        // whose byte size does not fit u64 are a lying worker too (never an overflow).
+        let expected = u64::from(w)
+            .checked_mul(u64::from(h))
+            .and_then(|samples| samples.checked_mul(bytes_per_sample))
+            .ok_or(WireError::Malformed)?;
         let plane = reader.bytes()?;
         if plane.len() as u64 != expected {
             return Err(WireError::Malformed);
@@ -674,5 +696,40 @@ mod tests {
             })
         );
         assert!(is_terminal(&encode_batch_end(1, 0)) && !is_terminal(&encoded));
+    }
+
+    /// R5: a lying worker FRAME declaring u32::MAX x u32::MAX at 10 or 12 bit is a few dozen bytes, so it
+    /// passes the reply cap; its declared plane size must be Malformed, never an arithmetic overflow.
+    #[test]
+    fn frame_dims_u32_max_is_malformed() {
+        for (bit_depth, chroma) in [
+            (10, ChromaFormat::Yuv420),
+            (12, ChromaFormat::Yuv444),
+            (10, ChromaFormat::Mono),
+            (8, ChromaFormat::Yuv444),
+        ] {
+            let mut lying = sample_frame();
+            lying.format.width = u32::MAX;
+            lying.format.height = u32::MAX;
+            lying.format.bit_depth = bit_depth;
+            lying.format.chroma = chroma;
+            lying.planes = vec![Vec::new(); lying.format.plane_dims().len()];
+            let encoded = encode_frame(3, &lying);
+            assert!(encoded.len() < 128, "{}", encoded.len());
+            assert_eq!(
+                decode_reply(&encoded, 3),
+                Err(WireError::Malformed),
+                "{bit_depth} {chroma:?}"
+            );
+        }
+        // Aggregate over budget: a frame whose declared length exceeds the reply cap is refused by the
+        // framing before any byte of it is read or allocated.
+        let big = encode_frame(3, &sample_frame());
+        let mut piped = Vec::new();
+        write_frame(&mut piped, &big).unwrap();
+        assert_eq!(
+            read_frame(&mut piped.as_slice(), big.len().saturating_sub(1)),
+            Err(WireError::TooLarge)
+        );
     }
 }

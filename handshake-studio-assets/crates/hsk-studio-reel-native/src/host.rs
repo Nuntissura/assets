@@ -26,19 +26,29 @@
 //! empty environment (no inherited secrets), a null stderr, piped stdin/stdout and, on Windows,
 //! `CREATE_NO_WINDOW`, so they never show a console window or take foreground focus.
 //!
+//! Decoder identity: this host does not link the decoder (reel without its `av1` feature). It accepts a
+//! worker only if its HELLO names the expected decoder id and protocol version, and it learns the
+//! decoder version from the first HELLO; every later worker of the pool must report the same version
+//! (`worker_version_mismatch` otherwise). Until the first HELLO the version reads `unknown`.
+//!
+//! Declared sizes come from the container (hostile input): their byte arithmetic is checked and an
+//! overflow is `LimitExceeded av1-declared-dimensions` before any worker starts (test
+//! `hostile_declared_dims_u32_max_are_refused_before_any_spawn`).
+//!
 //! NOT_PROVEN: an operating-system memory/CPU cap for the worker (Windows Job Object) needs `unsafe`
 //! FFI, which this crate forbids; the declared-dimension decoder limit, the output cap and the
 //! wall-clock kill are the enforced bounds.
+#![deny(clippy::arithmetic_side_effects)]
+#[cfg(feature = "test-faults")]
+use crate::test_fault::WorkerTestFault;
 use crate::wire::{self, OpenRequest, Reply, WireError, WireFrame};
-use crate::worker::WorkerTestFault;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_reel::av1::{self, Av1Config, DECODER_ID, decoder_version, parse_av1c};
 use hsk_studio_reel::{
-    ChunkSink, CodecDescriptor, DecodedPicture, DecoderFault, DecoderIdentity,
+    Av1Config, ChunkSink, CodecDescriptor, DecodedPicture, DecoderFault, DecoderIdentity,
     ExternalVideoDecoder, ISOBMFF_PROVIDER_ID, IsobmffProvider, Limits, MATROSKA_PROVIDER_ID,
     MatroskaProvider, MediaProvider, OutputMode, PictureSink, ReadSeek, ReelError, SegmentReceipt,
     SegmentRequest, StreamLayout, VideoCodec, VideoDecodeError, VideoDecodeSession, VideoRoute,
-    VideoStreamSpec, detect_type,
+    VideoStreamSpec, av1_descriptor, detect_type, parse_av1c,
 };
 use std::{
     collections::VecDeque,
@@ -46,7 +56,7 @@ use std::{
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
@@ -62,6 +72,18 @@ pub const WORKER_PROGRAM: &str = "reel-native-av1-worker";
 const WAIT_SLICE: Duration = Duration::from_millis(5);
 /// How long a worker that closed its stdout gets to exit by itself (to read its true exit code).
 const EXIT_PATIENCE: Duration = Duration::from_millis(500);
+/// Cap for a wait the platform clock cannot represent (`Instant` overflow).
+const LONGEST_WAIT: Duration = Duration::from_secs(86_400);
+/// Largest packet a request frame can carry (frame cap minus header room).
+const MAX_PACKET_BYTES: usize = wire::MAX_REQUEST_FRAME - 64;
+/// Decoder the `reel-native-av1-worker` of this package hosts (reel's rav1d decoder, reel
+/// `av1::DECODER_ID`). The host checks it in HELLO; it does not link the decoder.
+const WORKER_DECODER_ID: &str = "rav1d";
+/// Decoder version reported before any worker of the pool completed HELLO.
+const DECODER_VERSION_UNKNOWN: &str = "unknown";
+/// Bounds for a decoder version string a worker may report, and for the distinct versions interned.
+const MAX_VERSION_BYTES: usize = 64;
+const MAX_INTERNED_VERSIONS: usize = 8;
 
 /// Win32 `CREATE_NO_WINDOW` process creation flag (0x08000000, Process Creation Flags, Win32 docs).
 #[cfg(windows)]
@@ -84,7 +106,8 @@ pub struct Av1WorkerOptions {
     pub batch_deadline: Duration,
     /// Time a whole segment may take.
     pub segment_deadline: Duration,
-    #[doc(hidden)]
+    /// Fault the spawned workers inject (`test-faults` feature only; product builds have no field).
+    #[cfg(feature = "test-faults")]
     pub test_fault: WorkerTestFault,
 }
 
@@ -98,6 +121,7 @@ impl Default for Av1WorkerOptions {
             spawn_timeout: Duration::from_secs(10),
             batch_deadline: Duration::from_secs(30),
             segment_deadline: Duration::from_secs(300),
+            #[cfg(feature = "test-faults")]
             test_fault: WorkerTestFault::None,
         }
     }
@@ -274,6 +298,37 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// `now + wait` without overflow: a wait the clock cannot represent is capped at `LONGEST_WAIT`.
+fn deadline_after(wait: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(wait)
+        .or_else(|| now.checked_add(LONGEST_WAIT))
+        .unwrap_or(now)
+}
+
+/// A decoder version a worker reported, as a `&'static str` for receipts. Only short printable ASCII
+/// is accepted, and at most `MAX_INTERNED_VERSIONS` distinct strings are ever kept per process (each
+/// kept once), so a worker cannot grow host memory through HELLO.
+fn intern_version(version: &str) -> Option<&'static str> {
+    static VERSIONS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    if version.is_empty()
+        || version.len() > MAX_VERSION_BYTES
+        || !version.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return None;
+    }
+    let mut known = lock(&VERSIONS);
+    if let Some(found) = known.iter().find(|known| **known == version) {
+        return Some(found);
+    }
+    if known.len() >= MAX_INTERNED_VERSIONS {
+        return None;
+    }
+    let kept: &'static str = Box::leak(version.to_owned().into_boxed_str());
+    known.push(kept);
+    Some(kept)
+}
+
 struct Job {
     frame: Vec<u8>,
     cap: usize,
@@ -335,7 +390,7 @@ impl Session {
     /// process is provably gone and, if it exited by itself, its exit code.
     fn terminate(&mut self, patience: Duration) -> (bool, Option<i32>) {
         self.usable = false;
-        let until = Instant::now() + patience;
+        let until = deadline_after(patience);
         loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => return (true, status.code()),
@@ -450,7 +505,10 @@ struct Pool {
     spawn_timeout: Duration,
     batch_deadline: Duration,
     segment_deadline: Duration,
+    #[cfg(feature = "test-faults")]
     fault_env: Option<&'static str>,
+    /// Decoder version learned from the first HELLO of this pool.
+    decoder_version: OnceLock<&'static str>,
     live: Arc<AtomicUsize>,
     idle: Mutex<Vec<Session>>,
     spawn_log: Mutex<VecDeque<Instant>>,
@@ -461,6 +519,27 @@ struct Pool {
 impl Pool {
     fn next_id(&self) -> u64 {
         self.request_ids.fetch_add(1, Ordering::AcqRel)
+    }
+
+    fn identity(&self) -> DecoderIdentity {
+        DecoderIdentity {
+            id: WORKER_DECODER_ID,
+            version: self
+                .decoder_version
+                .get()
+                .copied()
+                .unwrap_or(DECODER_VERSION_UNKNOWN),
+        }
+    }
+
+    /// Accepts a HELLO naming this protocol version and the expected decoder; the first accepted
+    /// version is pinned for the pool and every later worker must report the same one.
+    fn accept_hello(&self, hello: &wire::Hello) -> bool {
+        if hello.protocol != wire::PROTOCOL_VERSION || hello.decoder_id != WORKER_DECODER_ID {
+            return false;
+        }
+        intern_version(&hello.decoder_version)
+            .is_some_and(|version| *self.decoder_version.get_or_init(|| version) == version)
     }
 
     fn admit_spawn(&self) -> Result<(), Av1WorkerFault> {
@@ -497,8 +576,11 @@ impl Pool {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .env_clear();
-        if let Some(value) = self.fault_env {
-            command.env(WorkerTestFault::ENV, value);
+        #[cfg(feature = "test-faults")]
+        {
+            if let Some(value) = self.fault_env {
+                command.env(WorkerTestFault::ENV, value);
+            }
         }
         quiet(&mut command);
         let mut child = command.spawn().map_err(|_| spawn_failed())?;
@@ -526,13 +608,7 @@ impl Pool {
         }
         match session.frames.recv_timeout(self.spawn_timeout) {
             Ok(Ok(hello)) => match wire::decode_hello(&hello) {
-                Ok(hello)
-                    if hello.protocol == wire::PROTOCOL_VERSION
-                        && hello.decoder_id == DECODER_ID
-                        && hello.decoder_version == decoder_version() =>
-                {
-                    Ok(session)
-                }
+                Ok(hello) if self.accept_hello(&hello) => Ok(session),
                 Ok(_) => {
                     session.terminate(Duration::ZERO);
                     Err(Av1WorkerFault::VersionMismatch)
@@ -623,7 +699,7 @@ impl Pool {
             cap,
             want,
         } = call;
-        let wall = (Instant::now() + self.batch_deadline).min(clock.segment_wall);
+        let wall = deadline_after(self.batch_deadline).min(clock.segment_wall);
         if session.jobs.send(Job { frame, cap }).is_err() {
             return Err(self.fail(session, Failure::Closed));
         }
@@ -646,7 +722,7 @@ impl Pool {
             };
             match wire::decode_reply(&bytes, id) {
                 Ok(Reply::Frame(picture)) => {
-                    frames += 1;
+                    frames = frames.saturating_add(1);
                     if frames > wire::MAX_FRAMES_PER_BATCH {
                         return Err(self.fail(session, Failure::Protocol));
                     }
@@ -846,7 +922,9 @@ impl WorkerAv1Provider {
                 spawn_timeout: options.spawn_timeout,
                 batch_deadline: options.batch_deadline,
                 segment_deadline: options.segment_deadline,
+                #[cfg(feature = "test-faults")]
                 fault_env: options.test_fault.env_value(),
+                decoder_version: OnceLock::new(),
                 live: Arc::new(AtomicUsize::new(0)),
                 idle: Mutex::new(Vec::new()),
                 spawn_log: Mutex::new(VecDeque::new()),
@@ -939,15 +1017,17 @@ impl WorkerAv1Provider {
     ) -> Result<WorkerSession, VideoDecodeError> {
         check_cancel(cancel)?;
         let pool = &self.pool;
-        // The route validated the record already; the declared size caps below need its fields.
+        // The route validated the record already; the declared size caps below need its fields. Both
+        // caps come from container-declared (hostile) sizes and are checked before any worker starts.
         let parsed = if spec.config.is_empty() {
             None
         } else {
             Some(parse_av1c(spec.config)?)
         };
-        let frame_cap = declared_frame_cap(parsed.as_ref(), spec.width, spec.height, &spec.limits);
+        let frame_cap =
+            declared_frame_cap(parsed.as_ref(), spec.width, spec.height, &spec.limits)?;
         let open = OpenRequest {
-            max_chunk_bytes: u64::try_from(decoder_budget(spec.width, spec.height, &spec.limits))
+            max_chunk_bytes: u64::try_from(decoder_budget(spec.width, spec.height, &spec.limits)?)
                 .unwrap_or(u64::MAX),
             color: spec.color,
             config: spec.config.to_vec(),
@@ -955,12 +1035,9 @@ impl WorkerAv1Provider {
         let mut worker = WorkerSession {
             pool: Arc::clone(pool),
             session: None,
-            segment_wall: Instant::now() + pool.segment_deadline,
-            reply_cap: frame_cap + wire::REPLY_SLACK,
-            max_packet_bytes: spec
-                .limits
-                .max_chunk_bytes
-                .min(wire::MAX_REQUEST_FRAME - 64),
+            segment_wall: deadline_after(pool.segment_deadline),
+            reply_cap: frame_cap.saturating_add(wire::REPLY_SLACK),
+            max_packet_bytes: spec.limits.max_chunk_bytes.min(MAX_PACKET_BYTES),
             faults,
         };
         match pool.checkout() {
@@ -990,11 +1067,9 @@ impl WorkerAv1Provider {
 }
 
 impl ExternalVideoDecoder for WorkerAv1Provider {
+    /// Decoder id checked in HELLO; version learned from the first worker HELLO (`unknown` before).
     fn identity(&self) -> DecoderIdentity {
-        DecoderIdentity {
-            id: DECODER_ID,
-            version: decoder_version(),
-        }
+        self.pool.identity()
     }
 
     fn supports(&self, codec: VideoCodec) -> bool {
@@ -1036,55 +1111,79 @@ fn read_head(src: &mut dyn ReadSeek) -> Result<Vec<u8>, ReelError> {
         if n == 0 {
             break;
         }
-        filled += n;
+        filled = filled.saturating_add(n);
     }
     src.seek(SeekFrom::Start(0))?;
     Ok(head[..filled].to_vec())
 }
 
+/// Declared dimensions whose byte size does not fit u64 (hostile container values).
+fn declared_too_large() -> ReelError {
+    ReelError::LimitExceeded {
+        what: "av1-declared-dimensions",
+    }
+}
+
 /// Largest packed picture the declared dimensions allow (container track size, `av1C` chroma and bit
 /// depth; worst case 4:4:4 16-bit when the record is absent), never above the caller's chunk limit.
+/// Declared sizes are hostile input: an overflowing size is `LimitExceeded av1-declared-dimensions`.
 fn declared_frame_cap(
     config: Option<&Av1Config>,
     width: u32,
     height: u32,
     limits: &Limits,
-) -> usize {
+) -> Result<usize, ReelError> {
     if width == 0 || height == 0 {
-        return limits.max_chunk_bytes;
+        return Ok(limits.max_chunk_bytes);
     }
     let (w, h) = (u64::from(width), u64::from(height));
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-    let samples = match config {
-        Some(c) if c.monochrome => w * h,
-        Some(c) if c.subsampling_x && c.subsampling_y => w * h + 2 * cw * ch,
-        Some(c) if c.subsampling_x => w * h + 2 * cw * h,
-        _ => 3 * w * h,
+    let luma = w.checked_mul(h);
+    // Two chroma planes of `plane` samples each, on top of the luma plane.
+    let with_chroma = |plane: Option<u64>| {
+        plane
+            .and_then(|plane| plane.checked_mul(2))
+            .and_then(|chroma| luma?.checked_add(chroma))
     };
-    let bytes_per_sample = match config {
+    let samples = match config {
+        Some(c) if c.monochrome => luma,
+        Some(c) if c.subsampling_x && c.subsampling_y => with_chroma(cw.checked_mul(ch)),
+        Some(c) if c.subsampling_x => with_chroma(cw.checked_mul(h)),
+        _ => luma.and_then(|luma| luma.checked_mul(3)),
+    };
+    let bytes_per_sample: u64 = match config {
         Some(c) if !c.high_bitdepth => 1,
         _ => 2,
     };
-    usize::try_from(samples * bytes_per_sample)
+    let bytes = samples
+        .and_then(|samples| samples.checked_mul(bytes_per_sample))
+        .ok_or_else(declared_too_large)?;
+    Ok(usize::try_from(bytes)
         .unwrap_or(usize::MAX)
-        .min(limits.max_chunk_bytes)
+        .min(limits.max_chunk_bytes))
 }
 
 /// The decoder-side picture bound sent to the worker: rav1d's pixel limit is this divided by six (the
 /// worst packed bytes per pixel), so a stream that declares more pixels than its container is refused
-/// by the decoder before it allocates the picture.
-fn decoder_budget(width: u32, height: u32, limits: &Limits) -> usize {
+/// by the decoder before it allocates the picture. Overflow is `LimitExceeded` as above.
+fn decoder_budget(width: u32, height: u32, limits: &Limits) -> Result<usize, ReelError> {
     if width == 0 || height == 0 {
-        return limits.max_chunk_bytes;
+        return Ok(limits.max_chunk_bytes);
     }
-    usize::try_from(u64::from(width) * u64::from(height) * 6)
+    let bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(6))
+        .ok_or_else(declared_too_large)?;
+    Ok(usize::try_from(bytes)
         .unwrap_or(usize::MAX)
-        .min(limits.max_chunk_bytes)
+        .min(limits.max_chunk_bytes))
 }
 
 impl MediaProvider for WorkerAv1Provider {
+    /// Reel's AV1 capability descriptor with the decoder version learned from HELLO (`unknown` before
+    /// the first worker started).
     fn descriptor(&self) -> CodecDescriptor {
-        av1::descriptor()
+        av1_descriptor(self.pool.identity().version, true)
     }
 
     fn probe(

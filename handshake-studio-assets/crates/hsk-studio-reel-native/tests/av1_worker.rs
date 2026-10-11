@@ -1,5 +1,5 @@
-#![cfg(feature = "av1")]
-//! AV1 worker-process isolation contract (run with `--features av1`; cargo builds the
+#![cfg(all(feature = "av1-worker", feature = "test-faults"))]
+//! AV1 worker-process isolation contract (run with `--features av1-worker,test-faults`; cargo builds the
 //! `reel-native-av1-worker` binary for this test).
 //!
 //! Fixture: reel's `av1-16x16-3f.{mp4,mkv}` (16x16 4:2:0 8-bit, 3 frames). The oracle is libdav1d's
@@ -470,6 +470,47 @@ fn supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn() {
             .unwrap_err();
         assert_eq!(error, Av1Error::Reel(ReelError::Canceled));
         assert_eq!(stuck.stats().spawned, 1);
+    });
+}
+
+/// R5 (SMB-REEL-NATIVE-AV1-WORKER overflow): a container may declare PixelWidth = PixelHeight =
+/// 0xFFFFFFFF. The declared-size caps must refuse it as a typed limit before any worker starts, never
+/// overflow (a panic in this host process would defeat the isolation).
+#[test]
+fn hostile_declared_dims_u32_max_are_refused_before_any_spawn() {
+    bounded_case("hostile_declared_dims_u32_max", || {
+        let worker = provider(Av1WorkerOptions::default());
+        // av1C records: 4:2:0 8-bit (profile 0, subsampling x+y), 4:4:4 10-bit (profile 1, high
+        // bit depth) and no record at all (worst case 4:4:4 16-bit).
+        let yuv420: &[u8] = &[0x81, 0x00, 0x0C, 0x00];
+        let yuv444_10: &[u8] = &[0x81, 0x20, 0x40, 0x00];
+        for (config, width, height) in [
+            (yuv420, u32::MAX, u32::MAX),
+            (yuv444_10, u32::MAX, u32::MAX),
+            (&[][..], u32::MAX, u32::MAX),
+        ] {
+            let spec = VideoStreamSpec {
+                codec: VideoCodec::Av1,
+                container: MATROSKA_PROVIDER_ID,
+                config,
+                color: ColorTag::Untagged,
+                width,
+                height,
+                limits: Limits::default(),
+            };
+            let opened = ExternalVideoDecoder::open(&worker, &spec, &CancellationToken::default());
+            let error = match opened {
+                Ok(_) => panic!("{width}x{height} {config:?}: opened"),
+                Err(error) => error.into_reel(),
+            };
+            assert_eq!(
+                error.code(),
+                "MEDIA_LIMIT_EXCEEDED",
+                "{width}x{height} {config:?}: {error:?}"
+            );
+        }
+        let stats = worker.stats();
+        assert_eq!((stats.spawned, stats.alive), (0, 0), "{stats:?}");
     });
 }
 

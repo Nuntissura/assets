@@ -1,4 +1,4 @@
-//! AV1 decoder worker process of `hsk-studio-reel-native` (built only with the `av1` feature).
+//! AV1 decoder worker process of `hsk-studio-reel-native` (built only with the `av1-worker` feature).
 //! Spawned and supervised by `WorkerAv1Provider`; speaks the length-prefixed protocol on
 //! stdin/stdout and exits when stdin closes. It has no command-line interface.
 fn main() {
