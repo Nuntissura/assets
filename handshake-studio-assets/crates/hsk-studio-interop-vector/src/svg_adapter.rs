@@ -483,6 +483,9 @@ pub fn import_svg(
         let par = plain_attr(root, "preserveAspectRatio")
             .and_then(|v| svgtypes::AspectRatio::from_str(v).ok())
             .unwrap_or_default();
+        if par.slice && par.align != svgtypes::Align::None {
+            imp.note(root_loc, LossKind::Approximated, "slice_viewport_not_clipped");
+        }
         let (sx, sy) = (vw / vb.w, vh / vb.h);
         let view = if par.align == svgtypes::Align::None {
             Affine::scale(sx, sy).then(Affine::translate(-vb.x, -vb.y))
