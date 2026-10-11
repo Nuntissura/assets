@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-002-master-spec-v1
-generation: 3
-phase: active
+generation: 4
+phase: done
 owner: model_maintainer
 changed_files:
 - README.md
@@ -20,5 +20,7 @@ proof:
   observed: Actual prose and all requirements reviewed against requested topics; optional ideas remain proposals; all product features planned
 - kind: focused_checks
   observed: YAML/prose framing, local links, equal provider routers, owned paths and source projections passed; no runtime proof claimed
+- kind: remote_publication
+  observed: git ls-remote origin refs/heads/codex/handpick matched expanded-spec commit 7cf16269e086bc77b19cc222a6f90245e42dae85
 blockers: []
-next_action: Commit and push researched expansion; independently verify remote revision before marking this WP done
+next_action: Specification complete; next authorized implementation can create a bounded eight-pane prototype WP from the current topics

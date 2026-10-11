@@ -10,9 +10,9 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-002-master-spec-v1
   title: Expand researched master specification
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-002-master-spec-v1/WP-KUM-002-master-spec-v1-state.yaml
-  next_action: Commit and push researched expansion; independently verify remote revision before marking this WP
-    done
+  next_action: Specification complete; next authorized implementation can create a bounded eight-pane prototype
+    WP from the current topics
   blockers: []
