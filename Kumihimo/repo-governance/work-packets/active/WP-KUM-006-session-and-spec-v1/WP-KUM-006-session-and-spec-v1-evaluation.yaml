@@ -4,7 +4,13 @@ wp_id: WP-KUM-006-session-and-spec-v1
 evaluator: ROLE-KUM-EVALUATION
 phase: prepublication_review_complete
 verdict: PASS_PREPUBLICATION
-publication_verdict: PENDING_INDEPENDENT_REMOTE_READ
+publication_verdict:
+  verdict: PASS
+  command: git ls-remote origin refs/heads/codex/handpick
+  expected_revision: c78de3ae9b58cd467225583dee9d63f0ad8961a2
+  observed_revision: c78de3ae9b58cd467225583dee9d63f0ad8961a2
+  containment: Independently opened WP-006 state, WP-007 contract and specification revision 5 from that exact Git commit.
+  effect: Supersedes prepublication pending-publication statements below; coding admission still belongs to the dev lead and requires refreshed dependency readiness.
 baseline_revision: 822ea9af3816a76720f153a62bf82692555ae47c
 scope: Specification, session workflow, session-start and bounded implementation packets; no product runtime claim
 risk_tier: HIGH

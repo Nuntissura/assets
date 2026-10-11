@@ -1,0 +1,3 @@
+[workspace]
+members = ["kumihimo-core"]
+resolver = "2"

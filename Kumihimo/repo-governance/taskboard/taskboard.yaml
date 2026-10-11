@@ -3,9 +3,9 @@ kind: derived_taskboard
 project_id: KUMIHIMO
 source: WP contracts and state
 counts:
-  done: 5
+  done: 6
   active: 1
-  planned: 8
+  planned: 7
 work_packets:
 - wp_id: WP-KUM-001-init-v1
   title: Initialize Kumihimo minimal workflow
@@ -48,19 +48,18 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-006-session-and-spec-v1
   title: Start the team session and publish the agreed specification and implementation packets
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-006-session-and-spec-v1/WP-KUM-006-session-and-spec-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-006-session-and-spec-v1/WP-KUM-006-session-and-spec-v1-state.yaml
-  next_action: Commit and push preparation candidate; independently verify remote, settle WP006 and admit WP007
+  next_action: WP006 complete; WP007 admitted after dependency report reconciles publication
   blockers: []
 - wp_id: WP-KUM-007-core-model-v1
   title: Implement the portable workspace identity and containment core
-  phase: planned
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-state.yaml
-  next_action: Dependency/eval preparation, then dev-lead coding admission
-  blockers:
-  - Await predecessor publication and dependency readiness
+  next_action: Publish candidate with phase active; lead runs admitted serial focused proof
+  blockers: []
 - wp_id: WP-KUM-008-layout-and-tool-docking-v1
   title: Implement geometry and scoped docking
   phase: planned

@@ -10,7 +10,7 @@ updated_at: '2026-10-11'
 
 A reusable Rust window/frame asset for desktop and web apps: grids, tabs, grouped tabs, docking, popouts and configurable surrounding controls. Hosts provide the actual editors, browsers, media and graphics.
 
-The asset is initialized and specified; Rust packages and working GUI adapters have not been implemented. The researched spec covers 18 planned feature areas with explicit host ownership and focused acceptance scenarios.
+The first Rust ownership core is written and awaiting compile, test and example proof. It manages nested frames, ordered views, groups and host resource references. Working GUI adapters remain planned. The researched spec covers 18 feature areas with explicit host ownership and focused acceptance scenarios.
 
 </topic>
 
@@ -72,7 +72,7 @@ python repo-governance/repo-scripts/sync.py
 python repo-governance/repo-scripts/sync.py --check
 ```
 
-Session-start reads live Git, canonical packet state and session coordination. Sync rebuilds CODEX, taskboard, registry and spec navigation projections; `sync.py --check` checks source structure and freshness without writing. Neither proves GUI or Rust runtime behavior. There are no product startup/build commands yet.
+Session-start reads live Git, canonical packet state and session coordination. Sync rebuilds CODEX, taskboard, registry and spec navigation projections; `sync.py --check` checks source structure and freshness without writing. Neither proves GUI or Rust runtime behavior. The [product manual](product/README.md) provides the core build commands, API, console example and recovery boundaries.
 
 </topic>
 

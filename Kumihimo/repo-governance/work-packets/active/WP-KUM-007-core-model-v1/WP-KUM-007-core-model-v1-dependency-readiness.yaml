@@ -5,17 +5,28 @@ role_id: ROLE-KUM-DEPENDENCIES
 updated_at: '2026-10-11'
 scope: Dependency and local toolchain readiness for the portable core model only.
 verdict: ready_for_zero_runtime_external_dependencies
-predecessor_publication_gate:
+coding_admission:
   owner: dev_lead
-  status: pending
+  status: ready_for_core_implementation
   predecessor_wp: WP-KUM-006-session-and-spec-v1
   expected_remote: origin/codex/handpick
-  observed_remote_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-  observed_predecessor_state: not_present_at_observed_remote_revision
+  expected_remote_revision: c78de3ae9b58cd467225583dee9d63f0ad8961a2
+  observed_git_root_kind: shared_assets_repository
+  observed_kumihimo_git_prefix: Kumihimo/
+  observed_remote_revision: c78de3ae9b58cd467225583dee9d63f0ad8961a2
+  expected_observed_revision_match: true
+  observed_spec_revision: 5
+  observed_predecessor_state:
+    current_workspace_phase: done
+    remote_blob_phase_at_observed_revision: active
+    remote_state_note: The published state blob is the pre-publication snapshot; the current workspace state records the remote-publication proof and WP006 completion.
   evidence:
-  - git ls-remote origin refs/heads/codex/handpick returned 822ea9af3816a76720f153a62bf82692555ae47c
-  - git cat-file could not find the WP-KUM-006 state file in origin/codex/handpick
-  note: This publication gate is separate from the dependency verdict; dev lead independently controls coding admission and build-lane serialization.
+  - git rev-parse --show-toplevel observed the shared assets Git root; Kumihimo paths are prefixed by Kumihimo/.
+  - git ls-remote origin refs/heads/codex/handpick returned c78de3ae9b58cd467225583dee9d63f0ad8961a2.
+  - git show at that exact remote revision read the WP006 contract and the WP007 contract from their canonical Kumihimo/ paths.
+  - git show at that exact remote revision read master-spec.md with revision 5.
+  - The current workspace WP006 state is phase done and records the same remote-publication hash; the remote state blob remains phase active as noted above.
+  - Product coding and Cargo execution remain subject to dev-lead dispatch and build-lane ownership.
 dependency_decision:
   package: product/kumihimo-core
   runtime_external_dependencies: []
@@ -67,6 +78,10 @@ sources_checked:
     observed: Taffy keeps its node tree behind the optional taffy_tree feature, which enables slotmap; geometry algorithms can remain separately selected.
   - url: https://doc.rust-lang.org/std/collections/struct.BTreeMap.html
     observed: BTreeMap is a standard-library ordered map with ordered iteration.
+  - url: https://doc.rust-lang.org/std/collections/struct.VecDeque.html
+    observed: VecDeque is a standard-library growable ring buffer with front/back queue operations, suitable for a fixed-length receipt window.
+  - url: https://doc.rust-lang.org/std/primitive.u64.html
+    observed: Integer checked arithmetic APIs support explicit ID and operation-sequence exhaustion handling.
   - url: https://doc.rust-lang.org/cargo/reference/features.html
     observed: Cargo unifies dependency features across users; feature selection is therefore not a hard isolation boundary for core dependencies.
 local_environment:
@@ -79,6 +94,24 @@ local_environment:
   - x86_64-pc-windows-msvc
   - x86_64-unknown-linux-musl
   wasm32_unknown_unknown: not_installed
+  package_graph:
+    workspace_manifest: product/Cargo.toml
+    workspace_members:
+    - kumihimo-core
+    resolver: '2'
+    core_manifest: product/kumihimo-core/Cargo.toml
+    edition: '2021'
+    rust_version: '1.91'
+    runtime_dependencies: []
+    target_specific_dependency_sections: none_observed
+    lockfile_external_packages: []
+    normal_graph_query:
+      command: cargo tree --manifest-path product/Cargo.toml --package kumihimo-core --edges normal --locked --offline
+      result: passed
+      observed_graph:
+      - kumihimo-core v0.1.0
+      interpretation: The resolved normal-dependency graph contains only the local core package; the manifest has no target-specific dependency table, so this graph is target-independent.
+      build_performed: false
   cargo_registry_cache:
     package_source_directories_observed: 2605
     cached_package_archives_observed: 3011
@@ -87,13 +120,14 @@ local_environment:
     - egui_tiles-0.14.1
     limitation: Cache presence does not prove the correctness or freshness of a candidate dependency graph or reusable target artifacts.
   project_build_state:
-    product_manifest: absent; product/ currently contains only README.md
-    rust_check_command: unset in active build rules
-    rust_test_command: unset in active build rules
+    product_manifest: present; product/Cargo.toml and product/kumihimo-core/Cargo.toml
+    rust_check_command: cargo check --manifest-path product/Cargo.toml --all-targets --locked --offline -j 2
+    rust_test_command: cargo test --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core -j 2
     session_target_directory: .local/cargo-target, not yet present
+    cargo_target_config: absent; session target path is not configured in a local .cargo/config.toml
     cargo_home_and_target_environment_overrides: none observed
     build_or_test_run: false
-  readiness_implication: The installed Rust toolchains and Windows x64 target are sufficient to begin the packet's planned host-side proof after its manifest is created; this report does not claim compiled behavior. Web/WASM target proof is unavailable locally and is outside WP-KUM-007 acceptance.
+  readiness_implication: The active rustc 1.91.1 meets the package's declared Rust 1.91 floor, the Windows x64 host target is installed, and the locked offline normal-dependency graph contains no external runtime packages. This is graph and manifest evidence, not compiled behavior. Web/WASM target proof is unavailable locally and is outside WP-KUM-007 acceptance.
 risks_and_controls:
   - risk: A failed move or rejected mutation partially changes records, entity IDs, or generation.
     control: Validate target existence, membership, cycle, sharing, index, admission, generation, and allocation capacity before committing any mutation; test that rejection leaves those model fields unchanged. Operation bookkeeping may record the rejection.
@@ -109,5 +143,5 @@ focused_proof_plan:
 - Cover deterministic operation replay: identical complete retained envelope returns the recorded outcome, changed envelope conflicts, stale generation is explicit, no-op preserves generation, and an expired operation sequence is rejected by the retained high-water mark.
 - Exercise the illustrative 20 frames by 30 tabs and additional nesting as functional proof only; do not describe it as a performance benchmark or architectural limit.
 not_run:
-- No Cargo build, test, example, dependency resolution, install, or target download was run.
+- No Cargo build, test, example, install, or target download was run; the only Cargo command was the recorded locked offline dependency-graph query.
 - No runtime, WASM, ARM64 execution, or performance result is claimed.

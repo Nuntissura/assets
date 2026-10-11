@@ -37,12 +37,51 @@ observations:
     kumihimo_cargo_build_started: false
     reason: WP-KUM-006 is publishing the implementation plan; product manifest is absent and no build was dispatched.
     sccache_configured_for_cargo: false
+  candidate_readiness:
+    verified_at_utc: '2026-10-11T21:09:25Z'
+    dependency_verdict: ready_for_zero_runtime_external_dependencies
+    predecessor_publication_gate: dev_lead clarified the historical pending metadata; WP-KUM-007 is active and coder admitted
+    product_manifest: present at product/Cargo.toml; workspace contains product/kumihimo-core
+    core_manifest: inspected; no external dependencies declared
+    candidate_files: core source, contract tests, and example are present under product/kumihimo-core
+    formatting: coder reports the installed alternate rustfmt passed; compile and runtime proof remain pending
+    build_lane_at_snapshot: idle with owner null; dev lead still controls admission
+    admission_snapshot_taken: true
+    admission_snapshot_id: SNAP-KUM-2026-10-11T210925Z
+    build_started: false
+  toolchain_verification:
+    verified_at_utc: '2026-10-11T21:11:28Z'
+    sccache:
+      executable: '%USERPROFILE%/.cargo/bin/sccache.exe'
+      version: 0.18.0
+      verified: true
+    active_stable_toolchain: stable-x86_64-pc-windows-msvc
+    stable_cargo:
+      executable: '%USERPROFILE%/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe'
+      version: 1.91.1
+      shim_verified: true
+    stable_rustc:
+      executable: '%USERPROFILE%/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/rustc.exe'
+      version: 1.91.1
+      shim_verified: true
+    alternate_direct_toolchain:
+      toolchain: 1.97.1-x86_64-pc-windows-msvc
+      cargo_executable: '%USERPROFILE%/.rustup/toolchains/1.97.1-x86_64-pc-windows-msvc/bin/cargo.exe'
+      cargo_version: 1.97.1
+      rustc_executable: '%USERPROFILE%/.rustup/toolchains/1.97.1-x86_64-pc-windows-msvc/bin/rustc.exe'
+      rustc_version: 1.97.1
+      rustfmt_executable: '%USERPROFILE%/.rustup/toolchains/1.97.1-x86_64-pc-windows-msvc/bin/rustfmt.exe'
+      rustfmt_version: 1.9.0-stable
+    stable_rustfmt_shim: unavailable; rustfmt component is not installed for stable
+    compile_shim_conclusion: cargo +stable and rustc +stable resolve and run successfully; direct compile paths are not needed. Keep Cargo and rustc on one selected toolchain. Use the verified direct 1.97.1 formatter or that toolchain's explicit rustfmt for formatting.
 recommendation:
   ownership: Keep one admitted owner and at most one active Cargo command for Kumihimo; keep all Kumihimo Cargo runs serialized as current.yaml requires.
   target_directory: Use .local/cargo-target relative to the Kumihimo project root, as current.yaml.target_path_anchor specifies; set CARGO_TARGET_DIR in dev-lead commands and keep the same path across builds.
   shared_pc_contention: If another Rust compile or test run is active and resource contention is material, defer the Cargo run, recheck process and available-memory snapshots, and continue non-build work. Never stop another project's process.
   sccache: Dev-lead commands will set RUSTC_WRAPPER=sccache process-locally. Reuse the available sccache installation and cache; never stop an unowned server or delete the cache as a coordination mechanism.
-  initial_jobs: Start the first admitted Cargo command with -j 2. The snapshot showed 32 logical processors, 69.5 GiB free memory, 3,079.1 GiB free on D:, 1% CPU load, and no matching Cargo, rustc, sccache, rustup, nextest, or linker processes. This is a conservative starting cap, not a measured optimum; observe peak resource use before increasing it.
+  incremental_compilation: Set CARGO_INCREMENTAL=0 process-locally for the std-only core while using sccache. sccache's Rust support rejects incremental rustc invocations, so disabling incremental compilation makes eligible invocations cacheable. The tradeoff is loss of rustc's per-crate incremental reuse for changed crates; stable target reuse can retain unchanged Cargo artifacts, but it does not restore that incremental state. sccache only caches eligible invocations with matching inputs and flags, and some crate/linker invocations are unsupported, so no speedup is promised.
+  initial_jobs: 'Resource snapshot supports one serial -j 2 Cargo run: 32 logical processors, 68.9 GiB free memory, 3,079.1 GiB free on D:, 35% CPU load, and no matching Cargo, rustc, sccache, rustup, nextest, or linker processes. This is a conservative starting cap, not a measured optimum; observe peak resource use before increasing it.'
+  lane_admission: Resource gate is clear for one serial -j 2 run; no Rust build contention was observed. At the snapshot, current.yaml assigned the lane to the dev lead in candidate_publication phase, so this report does not authorize starting a command before the dev lead dispatches the lane.
   proof_boundary: These are environment observations and recommendations only; no Kumihimo compile or runtime behavior has been proven.
   build_lane_configuration: Process-local CARGO_TARGET_DIR and RUSTC_WRAPPER settings are planned for dev-lead commands; no build was run to verify their runtime effect.
 resource_snapshots:
@@ -52,7 +91,35 @@ resource_snapshots:
     logical_processors: 32
     free_memory_gib: 69.5
     total_memory_gib: 127.9
-    target_volume: D:
+    target_volume: 'D:'
+    free_disk_gib: 3079.1
+    total_disk_gib: 14902.0
+    matching_build_processes: []
+    process_filter: cargo, cargo-nextest, rustc, rustup, sccache, link, lld-link, rust-lld, clang, cl
+    limitations: CPU load is a single instantaneous WMI sample; no sustained load or build peak was measured.
+  - snapshot_id: SNAP-KUM-2026-10-11T210925Z
+    observed_at_utc: '2026-10-11T21:09:25Z'
+    purpose: Candidate-ready Cargo lane admission snapshot
+    cpu_load_percent: 17
+    cpu_sample_count: 1
+    logical_processors: 32
+    free_memory_gib: 69.5
+    total_memory_gib: 127.9
+    target_volume: 'D:'
+    free_disk_gib: 3079.1
+    total_disk_gib: 14902.0
+    matching_build_processes: []
+    process_filter: cargo, cargo-nextest, rustc, rustup, sccache, link, lld-link, rust-lld, clang, cl
+    limitations: CPU load is a single instantaneous WMI sample; no sustained load or build peak was measured.
+  - snapshot_id: SNAP-KUM-2026-10-11T211128Z
+    observed_at_utc: '2026-10-11T21:11:28Z'
+    purpose: Frozen WP-KUM-007 candidate lane admission
+    cpu_load_percent: 35
+    cpu_sample_count: 1
+    logical_processors: 32
+    free_memory_gib: 68.9
+    total_memory_gib: 127.9
+    target_volume: 'D:'
     free_disk_gib: 3079.1
     total_disk_gib: 14902.0
     matching_build_processes: []
@@ -68,3 +135,15 @@ research_sources:
   - title: Mozilla sccache, Local Cache
     url: https://github.com/mozilla/sccache/blob/main/docs/Local.md
     relevance: Documents the Windows default local cache, default size, and single-local-server constraint.
+  - title: Cargo Book, build.incremental
+    url: https://doc.rust-lang.org/cargo/reference/config.html#buildincremental
+    relevance: Confirms CARGO_INCREMENTAL=0 overrides Cargo profile/config settings and disables incremental compilation.
+  - title: Rustc Book, incremental codegen option
+    url: https://doc.rust-lang.org/rustc/codegen-options/index.html#incremental
+    relevance: Describes rustc incremental state reuse and its effect on recompilation.
+  - title: Mozilla sccache, Rust support
+    url: https://github.com/mozilla/sccache/blob/main/docs/Rust.md
+    relevance: States incremental rustc compilation must be disabled for Rust caching and lists unsupported linker and emission cases.
+  - title: Mozilla sccache, README caveats
+    url: https://github.com/mozilla/sccache
+    relevance: Confirms incremental Rust crates are not cached and documents cache-key caveats.

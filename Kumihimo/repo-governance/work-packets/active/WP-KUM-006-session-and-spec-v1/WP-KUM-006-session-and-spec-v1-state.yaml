@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-006-session-and-spec-v1
-generation: 2
-phase: active
+generation: 3
+phase: done
 owner: dev_lead
 changed_files:
 - README.md
@@ -67,5 +67,8 @@ proof:
   observed: WP007 dependency verdict ready_for_zero_runtime_external_dependencies; coding still waits for publication
 - kind: heartbeat
   observed: App automation kumihimo-dev-lead-tick ACTIVE with 15-minute thread schedule
+- kind: remote_publication
+  observed: Independent git ls-remote matched c78de3ae9b58cd467225583dee9d63f0ad8961a2; current spec and WP007 predecessor
+    are present in that commit
 blockers: []
-next_action: Commit and push preparation candidate; independently verify remote, settle WP006 and admit WP007
+next_action: WP006 complete; WP007 admitted after dependency report reconciles publication

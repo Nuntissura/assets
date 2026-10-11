@@ -1,6 +1,26 @@
 kind: product_topology
-implementation_status: not_started
+implementation_status: core_candidate_pending_runtime_proof
 nodes:
 - id: KUM-PRODUCT
   path: product/
-  status: planned
+  status: candidate
+- id: KUM-CORE
+  manifest_ref: product/kumihimo-core/Cargo.toml
+  entrypoint: product/kumihimo-core/src/lib.rs
+  responsibility: Canonical flat ownership records, commands, admission and bounded replay
+  modules:
+  - product/kumihimo-core/src/ids.rs
+  - product/kumihimo-core/src/model.rs
+  - product/kumihimo-core/src/command.rs
+  - product/kumihimo-core/src/core.rs
+  - product/kumihimo-core/src/mutation.rs
+  integration_boundary: Host-owned provider/resource references; no rendering or engine effects
+- id: KUM-CORE-CONTRACTS
+  path: product/kumihimo-core/tests/contracts.rs
+  responsibility: Public consumer ownership, admission and replay assertions
+- id: KUM-CORE-EXAMPLE
+  path: product/kumihimo-core/examples/workspace.rs
+  responsibility: Quiet console consumer example
+- id: KUM-PRODUCT-MANUAL
+  path: product/README.md
+  responsibility: No-context API use, diagnostics and recovery

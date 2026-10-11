@@ -1,0 +1,9 @@
+[package]
+name = "kumihimo-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+description = "Portable in-memory Kumihimo workspace ownership and command core"
+publish = false
+
+[dependencies]

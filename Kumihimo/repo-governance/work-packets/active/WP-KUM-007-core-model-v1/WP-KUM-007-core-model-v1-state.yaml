@@ -1,10 +1,34 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-007-core-model-v1
-generation: 1
-phase: planned
+generation: 3
+phase: active
 owner: coder_01
-changed_files: []
-proof: []
-blockers:
-- Await predecessor publication and dependency readiness
-next_action: Dependency/eval preparation, then dev-lead coding admission
+changed_files:
+- product/Cargo.lock
+- product/Cargo.toml
+- product/kumihimo-core/Cargo.toml
+- product/kumihimo-core/examples/workspace.rs
+- product/kumihimo-core/src/command.rs
+- product/kumihimo-core/src/core.rs
+- product/kumihimo-core/src/ids.rs
+- product/kumihimo-core/src/lib.rs
+- product/kumihimo-core/src/model.rs
+- product/kumihimo-core/src/mutation.rs
+- product/kumihimo-core/tests/contracts.rs
+- product/README.md
+- README.md
+- repo-governance/codex/build-rules/current/build-rules.yaml
+- repo-governance/topology/product.yaml
+- repo-governance/topology/links.yaml
+- repo-governance/sessions/current.yaml
+proof:
+- kind: published_predecessor
+  observed: c78de3ae9b58cd467225583dee9d63f0ad8961a2 independently matches remote; WP006 specification/contract
+    published
+- kind: dependencies
+  observed: Dependency report admits std-only core; retained monotonic operation sequence contract resolves bounded
+    replay risk
+- kind: source_review
+  observed: EVAL-KUM-007-v1 inspected candidate; no blocking scoped source finding; runtime proof pending
+blockers: []
+next_action: Publish candidate with phase active; lead runs admitted serial focused proof

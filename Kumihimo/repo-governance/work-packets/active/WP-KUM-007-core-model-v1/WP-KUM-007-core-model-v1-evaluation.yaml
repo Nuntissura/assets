@@ -2,8 +2,8 @@ schema_version: kumihimo.wp-evaluation.v1
 evaluation_id: EVAL-KUM-007-v1
 wp_id: WP-KUM-007-core-model-v1
 evaluator: ROLE-KUM-EVALUATION
-phase: acceptance_plan
-verdict: NOT_IMPLEMENTED_NOT_EVALUATED
+phase: concrete_source_review_complete
+verdict: PENDING_RUNTIME_PROOF
 scope: Portable in-memory core only; coder owns product tests and serial Cargo proof
 acceptance_scenarios:
   - case_id: EVAL-KUM-007-001
@@ -12,7 +12,7 @@ acceptance_scenarios:
     expected: Exactly one placement parent changes; descendant workspace/frame/view/resource/group identities and local order survive. Each frame has at most one owned child workspace.
   - case_id: EVAL-KUM-007-002
     refs: [REQ-KUM-LAYOUT-006, REQ-KUM-MODEL-001]
-    method: Reject self/descendant cycles, absent targets, duplicate requested identity and invalid insertion indexes; compare the complete canonical model and the next successful identity allocation with a control sequence.
+    method: Reject self/descendant cycles, absent targets, a second child-workspace attachment to the same owner frame and invalid insertion indexes; compare the complete canonical model and the next successful generated identity allocation with a control sequence.
     expected: Records, order, ownership, generation and identity allocation are unchanged; structured errors identify the cause and relevant target. Bounded outcome-ledger bookkeeping is evaluated separately from model atomicity.
   - case_id: EVAL-KUM-007-003
     refs: [REQ-KUM-LAYOUT-006]
@@ -24,8 +24,8 @@ acceptance_scenarios:
     expected: Example counts are neither preset nor ceiling; flat records and iterative traversal do not bind conceptual depth to recursive ownership or call-stack traversal. Functional proof makes no throughput, GUI or engine-resource claim.
   - case_id: EVAL-KUM-007-005
     refs: [REQ-KUM-LAYOUT-001]
-    method: Exercise each implemented admission budget at limit-minus-one, limit and limit-plus-one; lower policy below existing usage, attempt new admission and move an existing item.
-    expected: Configured policy is disclosed; rejected admission deletes no existing records and consumes no identity. The manual specifies whether counts and depth apply globally or locally, and whether movement changes the relevant usage.
+    method: Inspect finite aggregate defaults and explicit Limits::unbounded() opt-in; exercise small configured budgets at limit-minus-one, limit and limit-plus-one; lower policy below existing usage, attempt new admission and move an existing item.
+    expected: Aggregate default admission is finite and configurable; depth and per-frame limits may remain None. Explicit unrestricted opt-in is honest about host input responsibilities and does not claim a byte/memory ceiling. Rejected admission deletes no existing records and consumes no identity; the manual specifies budget scope and movement accounting.
   - case_id: EVAL-KUM-007-006
     refs: [REQ-KUM-BOUNDARIES-002, REQ-KUM-BOUNDARIES-003]
     method: Request two views of one resource with sharing allowed and denied; move supported views independently and inspect provider/resource references.
@@ -47,7 +47,41 @@ risks_controls:
   - Partial detach before validation loses a subtree; full pre/post-state comparison and control identity allocation detect it.
   - Frame-owned workspaces confused with split nodes or resource sharing; inspect canonical parent relations and distinct typed records.
   - Replay retention or validation ordering hides repeated effects; small-ledger public command sequences expose the declared boundary.
+DIFF_ATTACK_SURFACES:
+  - Partial detach or entity allocation before failed admission/cycle/index validation.
+  - Subtree depth checks that measure only the moved root; recursive ownership or traversal imposing stack depth.
+  - Public snapshot mutation bypassing canonical invariants; frame/group/resource ownership conflation.
+  - Retained replay checked after generation, expired sequence admitted again, or receipt bookkeeping confused with model mutation.
+INDEPENDENT_CHECKS_RUN:
+  - Inspected every mutation arm against validation/commit boundaries; allocation/generation capacity is checked before writes, and public snapshot access is immutable.
+  - Compared lowered-limit recovery clauses in the manual with actual CreateFrame/MoveFrame/MoveView/SetLimits paths; deeper moves measure subtree height, while same-depth/shallower recovery matches the declared policy.
+  - Inspected all public fields, module visibility, minimal workspace/package manifests and lockfile; no mandatory external runtime dependency, restore setter, GUI/native/GPU/Servo type or hidden external effect is present.
+  - Independently opened refreshed dependency readiness and published WP-006 artifacts; core coding admission predecessors are recorded, with publication independently read at c78de3ae9b58cd467225583dee9d63f0ad8961a2.
+COUNTERFACTUAL_CHECKS:
+  - If mutation.rs MoveFrame wrote source membership before ancestry/index/depth/next_generation validation, rejection would lose or reorder a subtree; actual writes follow these checks.
+  - If core.rs execute checked expected_generation before retained complete-envelope lookup, replay after another successful mutation would incorrectly reject; actual lookup precedes that check.
+  - If model.rs derived an unrestricted Default again, ordinary Core construction would implicitly bypass aggregate admission; the explicit finite Default and unbounded opt-in are inspected.
+BOUNDARY_PROBES:
+  - Inspected public consumer contracts.rs against exported commands/snapshot rather than private storage; pre/post snapshots and next generated ID against a control expose rejection side effects. Runtime execution pending.
+  - Compared complete retained Envelope equality with actor/operation/generation/command definitions and public replay assertions; original outcome generation is intentionally distinct from current snapshot generation.
+NEGATIVE_PATH_CHECKS:
+  - Opened cycle/missing/duplicate-child/invalid-index/sharing/stale/budget rejection assertions and private counter-exhaustion assertions; these preserve full model snapshots and test allocation where accessible. Execution pending.
+  - Opened zero/changed-envelope/evicted/capacity-zero/final-sequence assertions; they target explicit denial rather than successful re-execution. Execution pending.
 INDEPENDENT_FINDINGS: []
+resolved_findings:
+  - Initial all-None Limits::default() replaced by max_records=16_384; explicit Limits::unbounded() and host-owned byte/input responsibilities documented.
+conclusions:
+  source_alignment: No blocking scoped contract gap found in the concrete source/public assertions/manual read.
+  compile_tests_example: Not yet observed; source and unexecuted assertions do not prove runtime acceptance.
+  platform: No ARM64 execution, WASM, GUI, native popout or performance claim accepted.
+  final_decision: Pending direct runtime proof from the serial Cargo owner; evaluator has run no Cargo.
+candidate_binding:
+  product_file_count: 12
+  product_manifest_sha256: 4cbeb27c039c2402d962fed8c52e8a6fa533848eafa1b48ec105e384bb838e0f
+  algorithm: SHA256 of newline-joined sorted product-path:SHA256(file-bytes) entries, with product-relative-to-project path names and no trailing newline.
+  observed_public_test_functions: 9
+  observed_private_exhaustion_tests: 1
 RESIDUAL_UNCERTAINTY:
-  - Product source and runtime proof do not yet exist; plan is not an implementation verdict.
-next_action: Inspect coder handoff and exact product candidate after published predecessor and dependency admission.
+  - Compile, behavioral test and example proof remain pending; this source review is not a PASS.
+  - Snapshot/ledger cloning and host-provided string sizes are not memory ceilings; no throughput or worst-case benchmark is claimed.
+next_action: Inspect direct check/test/example output and bind it to the exact unchanged product candidate; reuse green unaffected proof without independent Cargo duplication.

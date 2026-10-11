@@ -7,7 +7,7 @@ edges:
 - id: KUM-LINK-WP-PRODUCT
   from: KUM-GOV-WP
   to: KUM-PRODUCT
-  relation: bounds_future_implementation
+  relation: bounds_implementation
 - id: KUM-LINK-SYNC-BOARD
   from: KUM-GOV-SYNC
   to: KUM-GOV-BOARD
@@ -16,3 +16,23 @@ edges:
   from: KUM-GOV-SESSION-START
   to: KUM-GOV-SESSION
   relation: reads_and_exposes_recovery
+- id: KUM-LINK-WP007-CORE
+  from: WP-KUM-007-core-model-v1
+  to: KUM-CORE
+  relation: implements
+- id: KUM-LINK-CORE-CONTRACTS
+  from: KUM-CORE-CONTRACTS
+  to: KUM-CORE
+  relation: validates
+- id: KUM-LINK-EVAL007-CONTRACTS
+  from: EVAL-KUM-007-v1
+  to: KUM-CORE-CONTRACTS
+  relation: evaluates
+- id: KUM-LINK-EXAMPLE-CORE
+  from: KUM-CORE-EXAMPLE
+  to: KUM-CORE
+  relation: consumes
+- id: KUM-LINK-MANUAL-CORE
+  from: KUM-PRODUCT-MANUAL
+  to: KUM-CORE
+  relation: explains_operation
