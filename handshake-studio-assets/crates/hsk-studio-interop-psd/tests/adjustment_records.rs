@@ -613,3 +613,284 @@ fn hostile_descriptor_and_adjustment_sizes_are_typed_refusals() {
         }
     });
 }
+
+// ---- R7 review B: a hostile descriptor number is a per-layer typed loss, never an import failure ----
+
+fn text_item(s: &str) -> Vec<u8> {
+    let units: Vec<u16> = s.encode_utf16().collect();
+    let mut v = be32(units.len() as u32);
+    for unit in units {
+        v.extend(be16(unit));
+    }
+    tagged(b"TEXT", v)
+}
+/// A `DrSh` effect whose `key` item is replaced by (or, if absent, gets) `value`.
+fn shadow_with(key: &str, value: Vec<u8>) -> Vec<u8> {
+    let mut items: Vec<(&str, Vec<u8>)> = vec![
+        ("enab", v_bool(true)),
+        ("Md  ", v_enum("BlnM", "Mltp")),
+        ("Opct", v_untf(b"#Prc", 75.0)),
+        ("Clr ", v_objc("RGBC", vec![("Rd  ", v_doub(255.0)), ("Grn ", v_doub(0.0)), ("Bl  ", v_doub(51.0))])),
+        ("uglg", v_bool(true)),
+        ("lagl", v_untf(b"#Ang", 120.0)),
+        ("Dstn", v_untf(b"#Pxl", 1.0)),
+        ("Ckmt", v_untf(b"#Prc", 10.0)),
+        ("blur", v_untf(b"#Pxl", 4.0)),
+        ("Nose", v_untf(b"#Prc", 0.0)),
+        ("AntA", v_bool(false)),
+    ];
+    match items.iter_mut().find(|(k, _)| *k == key) {
+        Some(item) => item.1 = value,
+        None => items.push((key, value)),
+    }
+    v_objc("DrSh", items)
+}
+fn rgb_colour(red: f64, green: f64, blue: f64) -> Vec<u8> {
+    v_objc("RGBC", vec![("Rd  ", v_doub(red)), ("Grn ", v_doub(green)), ("Bl  ", v_doub(blue))])
+}
+fn contour_with(second_input: f64) -> Vec<u8> {
+    let point = |h: f64, v: f64| v_objc("CrPt", vec![("Hrzn", v_doub(h)), ("Vrtc", v_doub(v))]);
+    v_objc("ShpC", vec![("Nm  ", text_item("Linear")), ("Crv ", v_list(vec![point(0.0, 0.0), point(second_input, 255.0)]))])
+}
+/// A document of `layers` (file order), 1x1 RGB 8-bit.
+fn doc_with_layers(layers: Vec<TLayer>) -> Vec<u8> {
+    let info = layer_info(&layers, false, false);
+    Doc {
+        version: 1,
+        channels: 3,
+        height: 1,
+        width: 1,
+        depth: 8,
+        mode: 3,
+        color_mode_data: Vec::new(),
+        resources: Vec::new(),
+        layer_section: layer_section(&info, &[], false),
+        image: Some((0, vec![1, 2, 3])),
+    }
+    .bytes()
+}
+fn brit_bytes(brightness: i16, contrast: i16) -> Vec<u8> {
+    let mut v = brightness.to_be_bytes().to_vec();
+    v.extend(contrast.to_be_bytes());
+    v.extend([0, 0, 0, 0]);
+    v
+}
+/// An adjustment layer holding a valid legacy `brit` record (a fallback that must never be used) and a
+/// `CgEd` descriptor with the given `Brgh` / `Cntr` items.
+fn cged_doc(brightness: Vec<u8>, contrast: Vec<u8>) -> Vec<u8> {
+    let mut cged = be32(16);
+    cged.extend(ds_object("null", vec![("Vrsn", v_long(1)), ("Brgh", brightness), ("Cntr", contrast), ("useLegacy", v_bool(false))]));
+    let mut l = adjustment_layer(b"brit", &brit_bytes(10, 20));
+    l.blocks.push(layer_block(b"CgEd", &cged, false));
+    doc_with(l)
+}
+fn hue_record(colorize: bool, colorization: [i16; 3], master: [i16; 3], band_two: [i16; 3]) -> Vec<u8> {
+    let mut v = be16(2);
+    v.extend([u8::from(colorize), 0]);
+    for x in colorization.into_iter().chain(master) {
+        v.extend(x.to_be_bytes());
+    }
+    for band in 0..6 {
+        for x in [315i16, 345, 15, 45] {
+            v.extend(x.to_be_bytes());
+        }
+        for x in if band == 2 { band_two } else { [0, 0, 0] } {
+            v.extend(x.to_be_bytes());
+        }
+    }
+    assert_eq!(v.len(), 100);
+    v
+}
+fn exposure_record(exposure: f32, offset: f32, gamma: f32) -> Vec<u8> {
+    let mut v = be16(1);
+    for x in [exposure, offset, gamma] {
+        v.extend(x.to_bits().to_be_bytes());
+    }
+    v
+}
+/// The import SUCCEEDS (`proposal` unwraps `to_proposal`), the adjustment layer stays a typed
+/// unsupported layer carrying `reason` at `path`, and no raster record was produced.
+fn assert_adjustment_refused(bytes: &[u8], key: &str, reason: &'static str, what: &str) {
+    let (_, p) = proposal(bytes);
+    let path = format!("layer[0]/tagged/{key}");
+    assert_eq!(first_layer(&p).kind, "psd_adjustment", "{what}");
+    assert!(codes(&p, &path).contains(&reason), "{what}: {reason} not in {:?}", codes(&p, &path));
+    assert!(p.loss.has_code("adjustment_layer_not_applied") && p.raster_records.layers.is_empty(), "{what}");
+}
+
+/// A numeric item of a descriptor (`doub` / `UntF` hold any bit pattern: NaN and the infinities) or an
+/// out-of-range number refuses THAT adjustment or effect with a fixed reason and a typed loss entry; the
+/// import itself always succeeds, the record set validates, valid siblings still map, and the source
+/// bytes stay exact. The `CgEd` brightness/contrast case is the R7 review B finding: it used to reach
+/// Folio as `BrightnessContrast { brightness: NaN }` and fail the WHOLE import (`raster_records_rejected`).
+#[test]
+fn non_finite_descriptor_numbers_are_typed_losses_not_import_failures() {
+    bounded_case("non_finite_descriptor_numbers_are_typed_losses_not_import_failures", || {
+        // positive controls: in-range values map, the bounds themselves (+-150) are inside
+        for (b, c, bf, cf) in [(40, -10, 40.0, -10.0), (150, -150, 150.0, -150.0), (-150, 150, -150.0, 150.0)] {
+            let (_, p) = proposal(&cged_doc(v_long(b), v_long(c)));
+            assert!(matches!(
+                p.raster_records.layers[0].adjustment,
+                Some(StudioAdjustment::BrightnessContrast { brightness, contrast, use_legacy: false }) if brightness == bf && contrast == cf
+            ));
+            assert_valid(&p);
+        }
+
+        // CgEd Brgh / Cntr: NaN (also with a payload), +inf, -inf as `doub` and `UntF`, out of the +-150 range
+        // as `doub`, `UntF` and `long`. The valid `brit` fallback must not be used (no silent substitution).
+        let payload_nan = f64::from_bits(0x7ff8_dead_beef_0001);
+        let hostile: Vec<(&str, Vec<u8>)> = vec![
+            ("doub NaN", v_doub(f64::NAN)),
+            ("doub NaN payload", v_doub(payload_nan)),
+            ("doub +inf", v_doub(f64::INFINITY)),
+            ("doub -inf", v_doub(f64::NEG_INFINITY)),
+            ("UntF NaN", v_untf(b"#Nne", f64::NAN)),
+            ("UntF +inf", v_untf(b"#Nne", f64::INFINITY)),
+            ("UntF -inf", v_untf(b"#Nne", f64::NEG_INFINITY)),
+            ("doub 150.5", v_doub(150.5)),
+            ("doub -150.5", v_doub(-150.5)),
+            ("doub f64::MAX", v_doub(f64::MAX)),
+            ("long 1000", v_long(1000)),
+            ("long -1000", v_long(-1000)),
+            ("long i32::MIN", v_long(i32::MIN)),
+        ];
+        for (what, value) in &hostile {
+            assert_adjustment_refused(&cged_doc(value.clone(), v_long(0)), "brit", "brightness_contrast_range", &format!("Brgh {what}"));
+            assert_adjustment_refused(&cged_doc(v_long(0), value.clone()), "brit", "brightness_contrast_range", &format!("Cntr {what}"));
+        }
+        // the legacy i16 record is held to the same range
+        for (b, c) in [(151i16, 0i16), (0, -151), (i16::MIN, 0), (0, i16::MAX)] {
+            assert_adjustment_refused(&adjustment_doc(b"brit", &brit_bytes(b, c)), "brit", "brightness_contrast_range", &format!("brit {b} {c}"));
+        }
+
+        // exposure (f32 bit patterns): every slot NaN / +inf / -inf, and a gamma that is not > 0
+        for (slot, name) in ["exposure", "offset", "gamma"].into_iter().enumerate() {
+            for x in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut values = [0.0f32, 0.0, 1.0];
+                values[slot] = x;
+                let record = exposure_record(values[0], values[1], values[2]);
+                assert_adjustment_refused(&adjustment_doc(b"expA", &record), "expA", "exposure_range", &format!("expA {name} {x}"));
+            }
+        }
+        for gamma in [0.0f32, -1.0] {
+            assert_adjustment_refused(&adjustment_doc(b"expA", &exposure_record(0.0, 0.0, gamma)), "expA", "exposure_range", &format!("expA gamma {gamma}"));
+        }
+
+        // hue/saturation (i16 fields): out of the hue, saturation and lightness ranges, colorize saturation below 0
+        for (what, record) in [
+            ("master hue 181", hue_record(false, [0; 3], [181, 0, 0], [0; 3])),
+            ("master saturation 101", hue_record(false, [0; 3], [0, 101, 0], [0; 3])),
+            ("master saturation -101", hue_record(false, [0; 3], [0, -101, 0], [0; 3])),
+            ("master lightness -101", hue_record(false, [0; 3], [0, 0, -101], [0; 3])),
+            ("colorize saturation -1", hue_record(true, [0, -1, 0], [0; 3], [0; 3])),
+            ("colorization hue -181", hue_record(false, [-181, 0, 0], [0; 3], [0; 3])),
+            ("band saturation 200", hue_record(false, [0; 3], [0; 3], [0, 200, 0])),
+            ("band lightness i16::MIN", hue_record(false, [0; 3], [0; 3], [0, 0, i16::MIN])),
+        ] {
+            assert_adjustment_refused(&adjustment_doc(b"hue2", &record), "hue2", "hue_saturation_range", what);
+        }
+
+        // levels: gamma outside 0.10..9.99 (stored x100) and an output past 255
+        for (what, row) in [("gamma 9", [0u16, 255, 0, 255, 9]), ("gamma 1000", [0, 255, 0, 255, 1000]), ("output white 256", [0, 255, 0, 256, 100])] {
+            assert_adjustment_refused(&adjustment_doc(b"levl", &levl(&[row])), "levl", "levels_record_invalid", what);
+        }
+
+        // lfx2: one bad effect value skips THAT effect (typed loss), the next effect still maps; the stack validates
+        let effect_cases: Vec<(&str, &str, Vec<u8>, &str)> = vec![
+            ("opacity NaN", "Opct", v_untf(b"#Prc", f64::NAN), "effect_value_invalid"),
+            ("opacity 101", "Opct", v_untf(b"#Prc", 101.0), "effect_value_invalid"),
+            ("distance +inf", "Dstn", v_untf(b"#Pxl", f64::INFINITY), "effect_value_invalid"),
+            ("distance -1", "Dstn", v_untf(b"#Pxl", -1.0), "effect_value_invalid"),
+            ("size -inf", "blur", v_untf(b"#Pxl", f64::NEG_INFINITY), "effect_value_invalid"),
+            ("spread NaN", "Ckmt", v_untf(b"#Prc", f64::NAN), "effect_value_invalid"),
+            ("noise +inf", "Nose", v_untf(b"#Prc", f64::INFINITY), "effect_value_invalid"),
+            ("angle NaN", "lagl", v_untf(b"#Ang", f64::NAN), "effect_value_invalid"),
+            ("angle 181", "lagl", v_untf(b"#Ang", 181.0), "effect_value_invalid"),
+            ("colour red NaN", "Clr ", rgb_colour(f64::NAN, 0.0, 0.0), "effect_colour_range"),
+            ("colour green -inf", "Clr ", rgb_colour(0.0, f64::NEG_INFINITY, 0.0), "effect_colour_range"),
+            ("colour blue 256", "Clr ", rgb_colour(0.0, 0.0, 256.0), "effect_colour_range"),
+        ];
+        for (what, key, value, reason) in effect_cases {
+            let data = lfx2(vec![("DrSh", shadow_with(key, value)), ("DrSh", shadow(7.0))]);
+            let (p, c) = lfx2_codes(&data);
+            assert!(c.contains(&reason), "{what}: {c:?}");
+            let stack = p.raster_records.layers[0].effects.as_ref().unwrap_or_else(|| panic!("{what}: the valid effect still maps"));
+            assert_eq!(stack.effects.len(), 1, "{what}");
+            assert!(matches!(&stack.effects[0].params, StudioEffectKind::DropShadow { distance, .. } if *distance == 7.0), "{what}");
+            assert_valid(&p);
+        }
+        // a hostile contour point drops the contour (typed loss) and keeps the effect; a good one is kept
+        let (p, c) = lfx2_codes(&lfx2(vec![("DrSh", shadow_with("TrnS", contour_with(255.0)))]));
+        assert!(!c.contains(&"effect_contour_unmapped") && p.raster_records.layers[0].effects.as_ref().is_some_and(|s| s.effects[0].contour.is_some()), "{c:?}");
+        assert_valid(&p);
+        for (what, x) in [("NaN", f64::NAN), ("+inf", f64::INFINITY), ("-inf", f64::NEG_INFINITY), ("256", 256.0)] {
+            let (p, c) = lfx2_codes(&lfx2(vec![("DrSh", shadow_with("TrnS", contour_with(x)))]));
+            assert!(c.contains(&"effect_contour_unmapped"), "contour {what}: {c:?}");
+            let stack = p.raster_records.layers[0].effects.as_ref().expect("the effect maps without its contour");
+            assert!(stack.effects.len() == 1 && stack.effects[0].contour.is_none(), "contour {what}");
+            assert_valid(&p);
+        }
+        // the stack scale: NaN, +inf, 0 and negative refuse the stack, not the import
+        for scale in [f64::NAN, f64::INFINITY, 0.0, -5.0] {
+            let (p, c) = lfx2_codes(&lfx2(vec![("Scl ", v_untf(b"#Prc", scale)), ("DrSh", shadow(1.0))]));
+            assert!(c.contains(&"effect_scale_invalid"), "scale {scale}: {c:?}");
+            assert!(p.raster_records.layers.is_empty(), "scale {scale}");
+        }
+
+        // one document: a hostile CgEd layer next to a good layer with effects. The import succeeds, the bad
+        // layer is a typed unsupported layer, the good layer keeps its record, and every block stays exact.
+        let mut cged = be32(16);
+        cged.extend(ds_object("null", vec![("Vrsn", v_long(1)), ("Brgh", v_doub(f64::NAN)), ("Cntr", v_doub(f64::INFINITY))]));
+        let mut bad = adjustment_layer(b"brit", &brit_bytes(0, 0));
+        bad.blocks.push(layer_block(b"CgEd", &cged, false));
+        let good = raster(vec![layer_block(b"lfx2", &lfx2(vec![("DrSh", shadow(3.0))]), false)]);
+        let bytes = doc_with_layers(vec![bad, good]);
+        let (doc, p) = proposal(&bytes);
+        let layers = &p.snapshot.document().layers;
+        let bad_layer = layers.iter().find(|l| l.name == "adj").expect("hostile adjustment layer");
+        let good_layer = layers.iter().find(|l| l.name == "px").expect("good raster layer");
+        assert_eq!(bad_layer.kind, "psd_adjustment");
+        assert!(codes(&p, "layer[0]/tagged/brit").contains(&"brightness_contrast_range"));
+        let stack = p.raster_records.layer(&good_layer.layer_id).and_then(|r| r.effects.as_ref()).expect("the good layer keeps its effect record");
+        assert_eq!(stack.effects.len(), 1);
+        assert_valid(&p);
+        assert_eq!(write_psd(&doc, &Limits::default()).unwrap(), bytes, "the hostile block stays byte-exact");
+    });
+}
+
+/// A channel table that names one channel id twice, with a non-default Blend-If range on both entries,
+/// would give Folio two ranges for one channel; Folio refuses that and the whole import used to fail
+/// (`raster_records_rejected`). Now the blend-ranges record is a typed loss on the layer and the import
+/// succeeds; a repeated id whose second range is the default adds nothing and is not refused.
+#[test]
+fn duplicate_channel_ids_in_blend_ranges_are_a_typed_loss_not_an_import_failure() {
+    bounded_case("duplicate_channel_ids_in_blend_ranges_are_a_typed_loss_not_an_import_failure", || {
+        const FULL: [u8; 4] = [0, 0, 255, 255];
+        const NARROW: [u8; 4] = [10, 20, 200, 210];
+        let ranges = |pairs: [[u8; 4]; 3]| -> Vec<u8> {
+            let mut v = [FULL, FULL].concat();
+            for source in pairs {
+                v.extend(source);
+                v.extend(FULL);
+            }
+            v
+        };
+        let layer_with = |ids: [i16; 3], ranges: Vec<u8>| {
+            let mut l = raster(Vec::new());
+            l.channels = ids.iter().map(|id| (*id, 0, vec![10])).collect();
+            l.ranges = ranges;
+            doc_with(l)
+        };
+        // ids 0, 0, 2 with the first two ranges narrowed: refused, typed, import succeeds
+        let (_, p) = proposal(&layer_with([0, 0, 2], ranges([NARROW, NARROW, FULL])));
+        assert!(codes(&p, "layer[0]/blend_ranges").contains(&"blend_ranges_duplicate_channel"));
+        assert!(p.raster_records.layers.iter().all(|r| r.advanced_blending.is_none()));
+        assert_valid(&p);
+        // the same ids with only the first narrowed: nothing collides, the range maps
+        let (_, p) = proposal(&layer_with([0, 0, 2], ranges([NARROW, FULL, FULL])));
+        assert!(!p.loss.has_code("blend_ranges_duplicate_channel"));
+        let blending = p.raster_records.layers[0].advanced_blending.as_ref().expect("the red range maps");
+        assert_eq!(blending.blend_ranges.len(), 1);
+        assert_valid(&p);
+    });
+}

@@ -4,9 +4,12 @@
 //!
 //! These are RECORDS only: nothing here applies an adjustment. Every parser takes hostile bytes:
 //! counts are bounded before any loop, every read is bounds-checked, integer arithmetic is denied
-//! (workflow V4-01) and a value outside the documented range refuses the whole record with a fixed
-//! reason code, so the caller keeps the layer as a typed unsupported layer and the source bytes
-//! stay untouched in the document. Photoshop display parity of the mapped values is NOT_PROVEN
+//! (workflow V4-01) and a value outside the documented range, NaN and infinities included, refuses the
+//! whole record with a fixed reason code, so the caller keeps the layer as a typed unsupported layer and
+//! the source bytes stay untouched in the document (proof: `tests/adjustment_records.rs`
+//! `non_finite_descriptor_numbers_are_typed_losses_not_import_failures`, which feeds NaN, +inf, -inf and
+//! out-of-range numbers to brightness/contrast, exposure, levels, hue/saturation and `lfx2` effects and
+//! asserts the import still succeeds). Photoshop display parity of the mapped values is NOT_PROVEN
 //! until the D5 oracle exists; the format facts below cite their source:
 //!
 //! - Adobe Photoshop File Formats Specification, "Adjustment layer" keys `levl`, `curv`, `hue2`,
@@ -266,6 +269,18 @@ fn hue_saturation(data: &[u8]) -> std::result::Result<Mapped<StudioAdjustment>, 
     Ok(Mapped { value: StudioAdjustment::HueSaturation { master, colorize, colorization, bands }, notes })
 }
 
+/// `brightness` and `contrast` bounds of STU-RAS-151: hard `unknown`, soft -150..150 `derived` from the
+/// shipped control width. Folio's validator only requires finite values (hard bound unknown); the
+/// importer holds the soft range so a value no control produces is a typed loss on the layer, never a
+/// record (R7 review B; Photoshop's own stored range is UNVERIFIED, D5).
+const BRIGHTNESS_CONTRAST_RANGE: std::ops::RangeInclusive<f64> = -150.0..=150.0;
+
+/// A decoded brightness or contrast value inside [`BRIGHTNESS_CONTRAST_RANGE`]; `None` (not a finite
+/// number) and out-of-range values are the same fixed refusal.
+fn brightness_contrast_value(value: Option<f64>) -> std::result::Result<f64, Reason> {
+    value.filter(|v| BRIGHTNESS_CONTRAST_RANGE.contains(v)).ok_or("brightness_contrast_range")
+}
+
 fn brightness_contrast(
     data: &[u8],
     layer: &PsdLayer,
@@ -277,8 +292,12 @@ fn brightness_contrast(
     if let Some(block) = layer.block(b"CgEd") {
         match descriptor::parse_versioned(&block.data, &[16], limits) {
             Ok(object) => {
-                let number = |key: &str| object.get(key).and_then(descriptor::Value::number);
-                if let (Some(brightness), Some(contrast)) = (number("Brgh"), number("Cntr")) {
+                // A numeric item is always a candidate, whatever its value: a non-finite or out-of-range
+                // number refuses the adjustment below (typed loss) and never falls back to `brit`.
+                let item = |key: &str| object.get(key).filter(|v| v.is_number());
+                if let (Some(brightness), Some(contrast)) = (item("Brgh"), item("Cntr")) {
+                    let brightness = brightness_contrast_value(brightness.finite_number())?;
+                    let contrast = brightness_contrast_value(contrast.finite_number())?;
                     let use_legacy = object.get("useLegacy").and_then(descriptor::Value::boolean);
                     if use_legacy.is_none() {
                         notes.push((LossKind::Transformed, "brightness_contrast_legacy_assumed"));
@@ -294,17 +313,10 @@ fn brightness_contrast(
         }
     }
     let mut r = Reader::new(data);
-    let brightness = truncated(r.i16("brit"), R)?;
-    let contrast = truncated(r.i16("brit"), R)?;
+    let brightness = brightness_contrast_value(Some(f64::from(truncated(r.i16("brit"), R)?)))?;
+    let contrast = brightness_contrast_value(Some(f64::from(truncated(r.i16("brit"), R)?)))?;
     notes.push((LossKind::Transformed, "brightness_contrast_legacy_assumed"));
-    Ok(Mapped {
-        value: StudioAdjustment::BrightnessContrast {
-            brightness: f64::from(brightness),
-            contrast: f64::from(contrast),
-            use_legacy: true,
-        },
-        notes,
-    })
+    Ok(Mapped { value: StudioAdjustment::BrightnessContrast { brightness, contrast, use_legacy: true }, notes })
 }
 
 fn exposure(data: &[u8]) -> std::result::Result<Mapped<StudioAdjustment>, Reason> {
@@ -400,6 +412,11 @@ pub(crate) fn advanced_blending(layer: &PsdLayer) -> std::result::Result<Option<
             };
             match channel {
                 Some(channel) if (*source, *destination) != (FULL_RANGE, FULL_RANGE) => {
+                    // A channel table that names one channel twice would give Folio two ranges for it,
+                    // which Folio refuses (and the whole import with it): refuse the record here.
+                    if blend_ranges.iter().any(|r| r.channel == channel) {
+                        return Err("blend_ranges_duplicate_channel");
+                    }
                     blend_ranges.push(blend_range(channel, *source, *destination)?);
                 }
                 Some(_) => {}

@@ -98,7 +98,7 @@ fn percent(o: &Object, key: &str, default: f64) -> Result<f64, Reason> {
     match o.get(key) {
         None => Ok(default),
         Some(v) if has_percent_unit(v) => {
-            v.number().filter(|n| n.is_finite() && (0.0..=100.0).contains(n)).ok_or("effect_value_invalid")
+            v.finite_number().filter(|n| (0.0..=100.0).contains(n)).ok_or("effect_value_invalid")
         }
         Some(_) => Err("effect_unit_unexpected"),
     }
@@ -108,7 +108,7 @@ fn percent(o: &Object, key: &str, default: f64) -> Result<f64, Reason> {
 fn percent_unbounded(o: &Object, key: &str, default: f64) -> Result<f64, Reason> {
     match o.get(key) {
         None => Ok(default),
-        Some(v) if has_percent_unit(v) => v.number().filter(|n| n.is_finite()).ok_or("effect_value_invalid"),
+        Some(v) if has_percent_unit(v) => v.finite_number().ok_or("effect_value_invalid"),
         Some(_) => Err("effect_unit_unexpected"),
     }
 }
@@ -116,7 +116,7 @@ fn percent_unbounded(o: &Object, key: &str, default: f64) -> Result<f64, Reason>
 fn pixels(o: &Object, key: &str, default: f64) -> Result<f64, Reason> {
     match o.get(key) {
         None => Ok(default),
-        Some(v) if v.unit() == Some(*b"#Pxl") => v.number().filter(|n| n.is_finite() && *n >= 0.0).ok_or("effect_value_invalid"),
+        Some(v) if v.unit() == Some(*b"#Pxl") => v.finite_number().filter(|n| *n >= 0.0).ok_or("effect_value_invalid"),
         Some(_) => Err("effect_unit_unexpected"),
     }
 }
@@ -126,7 +126,7 @@ fn angle(o: &Object, key: &str, default: f64, lo: f64, hi: f64) -> Result<f64, R
     match o.get(key) {
         None => Ok(default),
         Some(v) if v.unit() == Some(*b"#Ang") => {
-            v.number().filter(|n| n.is_finite() && (lo..=hi).contains(n)).ok_or("effect_value_invalid")
+            v.finite_number().filter(|n| (lo..=hi).contains(n)).ok_or("effect_value_invalid")
         }
         Some(_) => Err("effect_unit_unexpected"),
     }
@@ -159,8 +159,11 @@ fn colour(o: &Object, key: &str) -> Result<Option<StudioColor>, Reason> {
     };
     let c = value.object().ok_or("effect_colour_model_unmapped")?;
     let channel = |name: &str| -> Result<f64, Reason> {
-        let v = c.get(name).and_then(Value::number).ok_or("effect_colour_model_unmapped")?;
-        if v.is_finite() && (0.0..=255.0).contains(&v) { Ok(v / 255.0) } else { Err("effect_colour_range") }
+        let item = c.get(name).filter(|v| v.is_number()).ok_or("effect_colour_model_unmapped")?;
+        match item.finite_number() {
+            Some(v) if (0.0..=255.0).contains(&v) => Ok(v / 255.0),
+            _ => Err("effect_colour_range"),
+        }
     };
     Ok(Some(StudioColor { r: channel("Rd  ")?, g: channel("Grn ")?, b: channel("Bl  ")?, colour_profile_id: ProfileBinding::Unassigned(()) }))
 }
@@ -181,11 +184,11 @@ fn contour(o: &Object, key: &str) -> Result<Option<StudioContour>, Reason> {
     let mut points: Vec<StudioContourPoint> = Vec::with_capacity(list.len());
     for item in list {
         let p = item.object().ok_or("effect_contour_unmapped")?;
-        let (input, output) = (p.get("Hrzn").and_then(Value::number), p.get("Vrtc").and_then(Value::number));
+        let (input, output) = (p.get("Hrzn").and_then(Value::finite_number), p.get("Vrtc").and_then(Value::finite_number));
         let (Some(input), Some(output)) = (input, output) else {
             return Err("effect_contour_unmapped");
         };
-        let in_range = |v: f64| v.is_finite() && (0.0..=255.0).contains(&v);
+        let in_range = |v: f64| (0.0..=255.0).contains(&v);
         if !in_range(input) || !in_range(output) || points.last().is_some_and(|last| last.input >= input) {
             return Err("effect_contour_unmapped");
         }
@@ -345,7 +348,7 @@ fn map_stack(data: &[u8], stack_id: impl FnOnce() -> Option<String>, limits: &Li
     let enabled = flag(&root, "masterFXSwitch", true)?;
     let scale = match root.get("Scl ") {
         None => 100.0,
-        Some(v) if has_percent_unit(v) => v.number().filter(|n| n.is_finite() && *n > 0.0).ok_or("effect_scale_invalid")?,
+        Some(v) if has_percent_unit(v) => v.finite_number().filter(|n| *n > 0.0).ok_or("effect_scale_invalid")?,
         Some(_) => return Err("effect_scale_invalid"),
     };
     let mut effects: Vec<StudioEffect> = Vec::new();

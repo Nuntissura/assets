@@ -53,14 +53,28 @@ impl Object {
 }
 
 impl Value {
-    /// Any numeric scalar as `f64` (double, unit float, long, large integer).
-    pub(crate) fn number(&self) -> Option<f64> {
+    /// Any numeric scalar (double, unit float, long, large integer) with its raw value. A `doub` or
+    /// `UntF` item holds any 64-bit pattern, NaN and the infinities included, so this is private: every
+    /// consumer goes through [`Value::finite_number`] (R7 review B, class "descriptor number reaches Folio
+    /// validation unchecked"; test `non_finite_descriptor_numbers_are_typed_losses_not_import_failures`).
+    fn raw_number(&self) -> Option<f64> {
         match self {
             Self::Double(v) | Self::Unit(_, v) => Some(*v),
             Self::Integer(v) => Some(f64::from(*v)),
             Self::Large(v) => Some(*v as f64),
             _ => None,
         }
+    }
+
+    /// A numeric scalar as `f64`, only when it is finite; NaN and the infinities give `None`.
+    pub(crate) fn finite_number(&self) -> Option<f64> {
+        self.raw_number().filter(|n| n.is_finite())
+    }
+
+    /// Whether the item is a numeric scalar of any value (NaN and the infinities included): lets a
+    /// caller tell an item that is present but not a usable number from an absent or non-numeric one.
+    pub(crate) fn is_number(&self) -> bool {
+        self.raw_number().is_some()
     }
 
     pub(crate) fn boolean(&self) -> Option<bool> {

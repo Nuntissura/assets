@@ -1671,7 +1671,8 @@ pub fn to_proposal(
     let mut raster_records = StudioRasterRecords::new(document_id);
     raster_records.layers = std::mem::take(&mut b.records);
     if !raster_records.layers.is_empty() {
-        // The parsers pre-check the Folio ranges; a rejection here is a mapping defect, not input.
+        // The parsers pre-check the Folio ranges; a rejection here is a mapping defect, not input
+        // (tests/adjustment_records.rs `non_finite_descriptor_numbers_are_typed_losses_not_import_failures`).
         validate_raster_records(&raster_records, snapshot.document(), cfg.budget, cancel, cfg.resolver).map_err(|d| {
             if d.code == hsk_studio_folio::Code::Canceled { PsdError::Canceled } else { PsdError::Proposal("raster_records_rejected") }
         })?;
