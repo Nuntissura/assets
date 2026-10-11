@@ -136,6 +136,8 @@ struct Spec {
     dng_version: Option<[u8; 4]>,
     backward: [u8; 4],
     lin_table: Option<Vec<u16>>,
+    extra: Vec<(u16, u32)>,
+    baseline: Option<f64>,
     lj: (usize, u8, u8, u32, usize),
 }
 
@@ -172,6 +174,8 @@ fn base() -> Spec {
         dng_version: Some([1, 4, 0, 0]),
         backward: [1, 1, 0, 0],
         lin_table: None,
+        extra: vec![],
+        baseline: None,
         lj: (2, 1, 16, 0, 0),
     }
 }
@@ -238,6 +242,9 @@ fn build(s: &Spec) -> Built {
                 t0.push(enc.short(50778 + i as u16, &[*c]));
             }
         }
+        if let Some(b) = s.baseline {
+            t0.push(enc.srational(50730, &[b], 10_000));
+        }
         if let Some(n) = s.neutral {
             t0.push(enc.rational(50728, &n, 10_000_000));
         }
@@ -273,6 +280,9 @@ fn build(s: &Spec) -> Built {
         }
         if let Some((o, z)) = s.crop {
             t1.extend([enc.short(50719, &o), enc.short(50720, &z)]);
+        }
+        for (tag, value) in &s.extra {
+            t1.push(enc.long(*tag, &[*value]));
         }
         if let Some(table) = &s.lin_table {
             t1.push(enc.short(50712, table));
@@ -310,7 +320,7 @@ fn profile() -> ProfileBinding {
 
 fn develop_pixels(raw: &DngRaw, window: PlaneWindow, tile: u32) -> Vec<DevelopedTile> {
     let (plane, _) = raw.cfa_plane(window, RangePolicy::Refuse, 7, Limits::SPEC_V1).unwrap();
-    let (recipe, _) = raw.recipe(&color::xyz_d50_to_linear_srgb().unwrap(), profile()).unwrap();
+    let (recipe, _) = raw.recipe(&color::xyz_d50_to_linear_srgb().unwrap(), profile(), BaselineExposure::Ignore).unwrap();
     let mut tiles = Vec::new();
     develop(
         &DevelopRequest {
@@ -367,6 +377,22 @@ fn dng_uncompressed_end_to_end() {
         // big-endian container decodes to the same frame.
         let be = decode_container(&build(&Spec { be: true, ..base() }).bytes).unwrap();
         assert!((0..4).all(|y| (0..4).all(|x| be.sample(x, y) == raw.sample(x, y))));
+        // contiguous image helper == tile output; nothing unapplied in the plain file.
+        assert!(raw.unapplied.is_empty() && raw.require_complete().is_ok());
+        let (plane, _) = raw.cfa_plane(window, RangePolicy::Refuse, 7, Limits::SPEC_V1).unwrap();
+        let (recipe, _) = raw.recipe(&color::xyz_d50_to_linear_srgb().unwrap(), profile(), BaselineExposure::Ignore).unwrap();
+        let (image, receipt) = develop_to_image(&plane, &recipe, 1, &CancellationToken::default()).unwrap();
+        assert_eq!((image.width, image.height, image.rgb.len(), receipt.tiles), (4, 4, 48, 1));
+        let at = (4 + 1) * 3; // pixel (1,1)
+        close([image.rgb[at], image.rgb[at + 1], image.rgb[at + 2]], [0.3125, 0.34375, 0.625], 2e-5);
+        // BaselineExposure is carried only on request; unapplied features are reported, not dropped.
+        let flagged = Spec { baseline: Some(0.5), extra: vec![(51009, 0), (274, 6)], ..base() };
+        let flagged = decode_container(&build(&flagged).bytes).unwrap();
+        assert_eq!(flagged.unapplied, vec!["opcode_list_2", "orientation"]);
+        assert_eq!(flagged.require_complete().err(), Some(DevelopError::UnsupportedContribution("opcode_list_2")));
+        let xyz2rgb = color::xyz_d50_to_linear_srgb().unwrap();
+        assert_eq!(flagged.recipe(&xyz2rgb, profile(), BaselineExposure::Apply).unwrap().0.exposure_stops, 0.5);
+        assert_eq!(flagged.recipe(&xyz2rgb, profile(), BaselineExposure::Ignore).unwrap().0.exposure_stops, 0.0);
     });
 }
 
@@ -439,7 +465,7 @@ fn dng_colour_solution_paths() {
         // equal to the neutral maps to the same white as neutral (1,1,1) does for (1,1,1).
         let warm = Spec { neutral: Some([0.5, 1.0, 0.8]), ..base() };
         let raw = decode_container(&build(&warm).bytes).unwrap();
-        let (recipe, sol) = raw.recipe(&color::xyz_d50_to_linear_srgb().unwrap(), profile()).unwrap();
+        let (recipe, sol) = raw.recipe(&color::xyz_d50_to_linear_srgb().unwrap(), profile(), BaselineExposure::Ignore).unwrap();
         assert_eq!(recipe.as_shot_neutral, [0.5, 1.0, 0.8]);
         let gain = hsk_studio_develop::recipe::as_shot_gain([0.5, 1.0, 0.8]).unwrap();
         let balanced = [0.5 * gain[0], 1.0 * gain[1], 0.8 * gain[2]];

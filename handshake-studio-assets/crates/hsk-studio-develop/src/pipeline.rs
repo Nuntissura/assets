@@ -611,3 +611,62 @@ pub fn develop(
         pixels: u64::from(crop_w) * u64::from(crop_h),
     })
 }
+
+/// Contiguous linear-light RGB result (3 x f32 per pixel, row-major) for tools and viewers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DevelopedImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgb: Vec<f32>,
+}
+
+/// Convenience over [`develop`]: whole crop into one image at output origin (0, 0), tiled at the
+/// plane limits' tile edge. Same atomic/refusal behaviour; the receipt is returned unchanged.
+pub fn develop_to_image(
+    plane: &CfaPlane,
+    recipe: &DevelopRecipe,
+    recipe_revision: u64,
+    cancel: &CancellationToken,
+) -> Result<(DevelopedImage, DevelopReceipt), DevelopError> {
+    let edge = plane.limits.max_tile_edge;
+    let mut tiles = Vec::new();
+    let receipt = develop(
+        &DevelopRequest {
+            plane,
+            recipe,
+            recipe_revision,
+            expected_source_revision: plane.source_revision,
+            grid: Grid {
+                origin_x: 0,
+                origin_y: 0,
+                tile_width: edge,
+                tile_height: edge,
+            },
+            output_origin: (0, 0),
+            execution_hint: ExecutionHint::Auto,
+        },
+        cancel,
+        &mut |tile| {
+            tiles.push(tile);
+            Ok(())
+        },
+    )?;
+    let (width, height) = (receipt.output.width, receipt.output.height);
+    let mut rgb = vec![0.0f32; width as usize * height as usize * 3];
+    for tile in &tiles {
+        let d = tile.developed;
+        for y in 0..d.height {
+            for x in 0..d.width {
+                let tx = (d.x - tile.bounds.x) as usize + x as usize;
+                let ty = (d.y - tile.bounds.y) as usize + y as usize;
+                let from = (ty * edge as usize + tx) * 12;
+                let to = ((d.y as usize + y as usize) * width as usize + d.x as usize + x as usize) * 3;
+                for c in 0..3 {
+                    let b = &tile.colour[from + c * 4..from + c * 4 + 4];
+                    rgb[to + c] = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                }
+            }
+        }
+    }
+    Ok((DevelopedImage { width, height, rgb }, receipt))
+}

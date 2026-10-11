@@ -44,6 +44,16 @@ mod tag {
     pub const BLACK_LEVEL_REPEAT_DIM: u16 = 50713;
     pub const BLACK_LEVEL: u16 = 50714;
     pub const WHITE_LEVEL: u16 = 50717;
+    pub const ORIENTATION: u16 = 274;
+    pub const DEFAULT_SCALE: u16 = 50718;
+    pub const OPCODE_LIST_1: u16 = 51008;
+    pub const OPCODE_LIST_2: u16 = 51009;
+    pub const OPCODE_LIST_3: u16 = 51022;
+    pub const DEFAULT_USER_CROP: u16 = 51125;
+    pub const PROFILE_HUE_SAT_MAP_DATA_1: u16 = 50938;
+    pub const PROFILE_HUE_SAT_MAP_DATA_2: u16 = 50939;
+    pub const PROFILE_LOOK_TABLE_DATA: u16 = 50982;
+    pub const MASKED_AREAS: u16 = 50830;
     pub const DEFAULT_CROP_ORIGIN: u16 = 50719;
     pub const DEFAULT_CROP_SIZE: u16 = 50720;
     pub const COLOR_MATRIX_1: u16 = 50721;
@@ -116,7 +126,18 @@ pub struct DngRaw {
     pub unique_camera_model: Option<String>,
     /// SHA-256 of the complete container bytes.
     pub container_sha256: [u8; 32],
+    /// Features present in the file that this reader does not apply (never silently dropped):
+    /// OpcodeList1-3, DefaultScale, DefaultUserCrop, ProfileHueSatMap/LookTable, MaskedAreas,
+    /// non-identity Orientation. See [`DngRaw::require_complete`].
+    pub unapplied: Vec<&'static str>,
     samples: Vec<u16>,
+}
+
+/// Whether BaselineExposure (EV, camera-vendor rendering offset) is carried into the recipe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaselineExposure {
+    Ignore,
+    Apply,
 }
 
 fn first_u32(tiff: &Tiff<'_>, e: &Entry) -> Result<u32, DevelopError> {
@@ -537,6 +558,29 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         Some(e) => Some(tiff.ascii(e)?),
         None => None,
     };
+    let mut unapplied: Vec<&'static str> = [
+        (tag::OPCODE_LIST_1, "opcode_list_1"),
+        (tag::OPCODE_LIST_2, "opcode_list_2"),
+        (tag::OPCODE_LIST_3, "opcode_list_3"),
+        (tag::DEFAULT_USER_CROP, "default_user_crop"),
+        (tag::PROFILE_HUE_SAT_MAP_DATA_1, "profile_hue_sat_map_1"),
+        (tag::PROFILE_HUE_SAT_MAP_DATA_2, "profile_hue_sat_map_2"),
+        (tag::PROFILE_LOOK_TABLE_DATA, "profile_look_table"),
+        (tag::MASKED_AREAS, "masked_areas"),
+    ]
+    .into_iter()
+    .filter_map(|(t, name)| l.get(t).map(|_| name))
+    .collect();
+    if let Some(e) = l.get(tag::DEFAULT_SCALE)
+        && tiff.f64s(e)? != [1.0, 1.0]
+    {
+        unapplied.push("default_scale");
+    }
+    if let Some(e) = l.get(tag::ORIENTATION)
+        && first_u32(&tiff, e)? != 1
+    {
+        unapplied.push("orientation");
+    }
     Ok(DngRaw {
         width,
         height,
@@ -550,6 +594,7 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
         linearized,
         color,
         unique_camera_model,
+        unapplied,
         container_sha256: Sha256::digest(bytes).into(),
         samples,
     })
@@ -676,11 +721,13 @@ impl DngRaw {
     /// Native 1.0 recipe from the DNG colour tags: as-shot neutral + `xyz_d50_to_profile *
     /// camera_to_xyz_d50 * inverse(gain)` so the recipe's own as-shot gain stage is not applied
     /// twice. `xyz_d50_to_profile` must be the inverse of the working profile's colorant matrix
-    /// (see `color::xyz_d50_to_linear_srgb`). BaselineExposure stays in `color`; it is not applied.
+    /// (see `color::xyz_d50_to_linear_srgb`). BaselineExposure is applied as the recipe exposure
+    /// only when `baseline` says so; either way it stays readable in `color`.
     pub fn recipe(
         &self,
         xyz_d50_to_profile: &Mat3,
         profile: ProfileBinding,
+        baseline: BaselineExposure,
     ) -> Result<(DevelopRecipe, CameraSolution), DevelopError> {
         let solution = self.solve_colour()?;
         let gain = as_shot_gain(solution.neutral)?;
@@ -689,6 +736,18 @@ impl DngRaw {
             &to_profile,
             &color::diag([1.0 / gain[0], 1.0 / gain[1], 1.0 / gain[2]]),
         );
-        Ok((DevelopRecipe::native(solution.neutral, matrix, profile), solution))
+        let mut recipe = DevelopRecipe::native(solution.neutral, matrix, profile);
+        if baseline == BaselineExposure::Apply {
+            recipe.exposure_stops = self.color.baseline_exposure;
+        }
+        Ok((recipe, solution))
+    }
+
+    /// Strict gate: refuse when the file carries features this reader does not apply.
+    pub fn require_complete(&self) -> Result<(), DevelopError> {
+        match self.unapplied.first() {
+            Some(name) => Err(DevelopError::UnsupportedContribution(name)),
+            None => Ok(()),
+        }
     }
 }

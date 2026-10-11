@@ -19,10 +19,11 @@ use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, SinkPort};
 
 pub use color::{CameraSolution, DngColor};
 pub use curves::{Curve, PreparedCurve};
-pub use dng::{ActiveArea, DngRaw, PlaneWindow, RangePolicy, WindowReport};
+pub use dng::{ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
 pub use pipeline::{
     Bayer, Cfa, CfaPattern, CfaPlane, DevelopReceipt, DevelopRequest, DevelopedTile,
-    ExecutionHint, Limits, PlaneInit, SinkError, demosaic_normalized, develop,
+    DevelopedImage, ExecutionHint, Limits, PlaneInit, SinkError, demosaic_normalized, develop,
+    develop_to_image,
 };
 pub use recipe::{
     DEMOSAIC_ALGORITHM, DevelopRecipe, ENGINE_VERSION, Enables, MATH_TOKEN, NormalizedCrop,
