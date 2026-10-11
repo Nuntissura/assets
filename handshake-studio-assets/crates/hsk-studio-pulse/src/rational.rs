@@ -1,7 +1,7 @@
 //! Rational values at the interchange boundary only (STU-VID-012: rational time is never a
 //! stored authority). Conversions into ticks carry an explicit rounding policy and a loss flag.
 use crate::error::{PulseError, Result};
-use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
+use hsk_studio_accord::{Rounding as TickRounding, TICKS_PER_SECOND, Ticks, Timescale};
 use hsk_studio_folio::Speed;
 
 pub(crate) fn gcd(mut a: u64, mut b: u64) -> u64 {
@@ -91,7 +91,20 @@ pub struct RationalConversion {
     pub exact: bool,
 }
 
-/// `numerator/denominator` seconds to ticks under an explicit rounding policy.
+impl Rounding {
+    /// Accord's rounding mode; `Exact` converts like `Floor` and the caller refuses when the
+    /// conversion is not `exact` (Accord has no refusing mode).
+    pub(crate) fn accord(self) -> TickRounding {
+        match self {
+            Self::Exact | Self::Floor => TickRounding::Floor,
+            Self::Ceil => TickRounding::Ceil,
+            Self::NearestHalfUp => TickRounding::NearestHalfUp,
+        }
+    }
+}
+
+/// `numerator/denominator` seconds to ticks under an explicit rounding policy (Accord owns the
+/// arithmetic: `numerator` units of a `denominator`-units-per-second [`Timescale`]).
 pub fn ticks_from_rational_seconds(
     numerator: u64,
     denominator: u64,
@@ -100,19 +113,14 @@ pub fn ticks_from_rational_seconds(
     if denominator == 0 {
         return Err(PulseError::InvalidInput);
     }
-    let scaled = u128::from(numerator) * u128::from(TICKS_PER_SECOND);
-    let den = u128::from(denominator);
-    let (quotient, remainder) = (scaled / den, scaled % den);
-    let exact = remainder == 0;
-    let rounded = match rounding {
-        Rounding::Exact if !exact => return Err(PulseError::Inexact),
-        Rounding::Exact | Rounding::Floor => quotient,
-        Rounding::Ceil => quotient + u128::from(!exact),
-        Rounding::NearestHalfUp => quotient + u128::from(remainder * 2 >= den),
-    };
+    let converted =
+        Timescale::rational(denominator, 1)?.ticks_from_units(numerator, rounding.accord())?;
+    if rounding == Rounding::Exact && !converted.exact {
+        return Err(PulseError::Inexact);
+    }
     Ok(RationalConversion {
-        ticks: Ticks::new(u64::try_from(rounded).map_err(|_| PulseError::Overflow)?),
-        exact,
+        ticks: converted.value,
+        exact: converted.exact,
     })
 }
 

@@ -1,8 +1,8 @@
 //! Tick/frame conversion and timecode LABEL functions (STU-VID-012, 012a, 012c, 013, 013a).
 //! Stored time is always integer ticks; drop-frame only changes how a frame number is labelled.
 use crate::error::{PulseError, Result};
-use crate::rational::{Rounding, gcd};
-use hsk_studio_accord::{FrameRate, FrameRateNormalization, TICKS_PER_SECOND, Ticks};
+use crate::rational::Rounding;
+use hsk_studio_accord::{FrameRate, FrameRateNormalization, Ticks, Timescale};
 use hsk_studio_folio::SequenceFrameRate;
 
 /// Normalizes a ticks/frame import value (legacy 10594594594/8475675675 map to the 1001-ratio
@@ -30,35 +30,26 @@ pub fn ticks_to_frames_floor(ticks: Ticks, rate: FrameRate) -> u64 {
 }
 
 /// Frames per second as a reduced fraction, e.g. 29.97 -> (30000, 1001), 25 -> (25, 1).
+/// Accord owns the conversion ([`FrameRate::fps_fraction`]).
 pub fn fps_fraction(rate: FrameRate) -> (u64, u64) {
-    let g = gcd(TICKS_PER_SECOND, rate.ticks_per_frame());
-    (TICKS_PER_SECOND / g, rate.ticks_per_frame() / g)
+    rate.fps_fraction()
 }
 
 /// Frames per second of a Folio sequence's stored `frame_rate` as a reduced fraction. Folio stores
-/// only ticks/frame; the conversion lives here. A value that is not a canonical STU-VID-013 table
-/// rate (including legacy spellings Folio refuses to validate) is `UnsupportedFrameRate`.
+/// only ticks/frame; the Accord conversion is applied here. A value that is not a canonical
+/// STU-VID-013 table rate (including legacy spellings Folio refuses to validate) is
+/// `UnsupportedFrameRate`.
 pub fn fps_fraction_of(rate: &SequenceFrameRate) -> Result<(u64, u64)> {
     rate.accord()
-        .map(fps_fraction)
+        .map(FrameRate::fps_fraction)
         .ok_or(PulseError::UnsupportedFrameRate)
 }
 
 /// Interchange entry: exact `num/den` frames per second to a table rate. Rates whose ticks per
-/// frame are not exact integers, or not in the STU-VID-013 table, are refused.
+/// frame are not exact integers, or not in the STU-VID-013 table, are refused
+/// (accord's [`FrameRate::from_fps`]).
 pub fn frame_rate_from_fps(num: u64, den: u64) -> Result<FrameRate> {
-    if num == 0 || den == 0 {
-        return Err(PulseError::UnsupportedFrameRate);
-    }
-    let scaled = u128::from(TICKS_PER_SECOND) * u128::from(den);
-    if !scaled.is_multiple_of(u128::from(num)) {
-        return Err(PulseError::UnsupportedFrameRate);
-    }
-    let ticks_per_frame =
-        u64::try_from(scaled / u128::from(num)).map_err(|_| PulseError::UnsupportedFrameRate)?;
-    let (rate, normalization) = timebase_from_import(ticks_per_frame)?;
-    debug_assert!(!normalization.changed);
-    Ok(rate)
+    Ok(FrameRate::from_fps(num, den)?)
 }
 
 /// Audio sample position to ticks; exact for every rate that divides 254016000000.
@@ -85,11 +76,10 @@ pub fn samples_floor(ticks: Ticks, sample_rate_hz: u32) -> Result<u64> {
 }
 
 fn ticks_per_sample(sample_rate_hz: u32) -> Result<u64> {
-    let hz = u64::from(sample_rate_hz);
-    if hz == 0 || !TICKS_PER_SECOND.is_multiple_of(hz) {
-        return Err(PulseError::UnsupportedSampleRate);
-    }
-    Ok(TICKS_PER_SECOND / hz)
+    Timescale::new(sample_rate_hz)
+        .ok()
+        .and_then(Timescale::exact_ticks_per_unit)
+        .ok_or(PulseError::UnsupportedSampleRate)
 }
 
 /// (nominal frames per second, NTSC 1001-ratio rate). `None` = no integer timecode base
@@ -242,15 +232,12 @@ pub fn timecode_to_ticks(tc: Timecode, rate: FrameRate, drop_frame: bool) -> Res
 
 /// Ticks of the frame boundary selected by `rounding` (`Exact` refuses sub-frame values).
 pub fn snap_to_frame(ticks: Ticks, rate: FrameRate, rounding: Rounding) -> Result<Ticks> {
-    let tpf = rate.ticks_per_frame();
-    let (frames, rem) = (ticks.value() / tpf, ticks.value() % tpf);
-    let frames = match rounding {
-        Rounding::Exact if rem != 0 => return Err(PulseError::NotFrameAligned),
-        Rounding::Exact | Rounding::Floor => frames,
-        Rounding::Ceil => frames + u64::from(rem != 0),
-        Rounding::NearestHalfUp => frames + u64::from(u128::from(rem) * 2 >= u128::from(tpf)),
-    };
-    frames_to_ticks(frames, rate)
+    let (num, den) = rate.fps_fraction();
+    let frames = Timescale::rational(num, den)?.units_from_ticks(ticks, rounding.accord())?;
+    if rounding == Rounding::Exact && !frames.exact {
+        return Err(PulseError::NotFrameAligned);
+    }
+    frames_to_ticks(frames.value, rate)
 }
 
 /// Parses typed timecode `H..:MM:SS:FF` (non-drop) or `H..:MM:SS;FF` (drop-frame). Field ranges
