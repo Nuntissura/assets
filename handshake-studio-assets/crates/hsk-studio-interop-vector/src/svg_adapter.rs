@@ -368,30 +368,63 @@ impl Resolver for LocalResolver<'_> {
     }
 }
 
-enum DoctypeScan {
-    None,
-    ExternalIdOnly,
+/// What the XML prolog holds. A DOCTYPE can only be in the prolog: a `<!DOCTYPE` inside a
+/// comment, a processing instruction, CDATA or text is not one and must neither enable nor
+/// disable anything.
+enum Prolog {
+    NoDoctype,
+    /// A DOCTYPE without internal subset (the classic Illustrator one): its byte range.
+    ExternalIdOnly(std::ops::Range<usize>),
+    /// A DOCTYPE with an internal subset (entity declarations), or one that never ends.
     InternalSubset,
 }
 
-/// Finds the first DOCTYPE declaration and tells whether it has an internal subset (`[` outside
-/// quotes before the closing `>`). A conservative text scan: roxmltree itself never resolves
-/// external identifiers, so only the internal subset (entity declarations) needs refusing.
-fn scan_doctype(text: &str) -> DoctypeScan {
-    let Some(at) = text.find("<!DOCTYPE") else {
-        return DoctypeScan::None;
-    };
-    let mut quote = 0u8;
-    for &b in &text.as_bytes()[at + 9..] {
-        match (quote, b) {
-            (0, b'"' | b'\'') => quote = b,
-            (q, c) if q != 0 && q == c => quote = 0,
-            (0, b'[') => return DoctypeScan::InternalSubset,
-            (0, b'>') => return DoctypeScan::ExternalIdOnly,
-            _ => {}
+fn find_from(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    hay.get(from..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| from + p)
+}
+
+/// Walks the prolog as the XML grammar does (`Misc*` = whitespace, comments and processing
+/// instructions, which includes the XML declaration, then at most one DOCTYPE) and classifies the
+/// DOCTYPE found there. The DOCTYPE is quote-aware: an internal subset is a `[` outside quotes
+/// before the closing `>`. A prolog this walk cannot read reports no DOCTYPE; the parser, which
+/// never processes a DTD (`allow_dtd` is always false), then refuses or rejects the text itself.
+fn scan_prolog(text: &str) -> Prolog {
+    let b = text.as_bytes();
+    let mut at = 0;
+    loop {
+        while b.get(at).is_some_and(|c| matches!(c, b' ' | b'\t' | b'\r' | b'\n')) {
+            at += 1;
+        }
+        let rest = &b[at..];
+        if rest.starts_with(b"<?") {
+            match find_from(b, at + 2, b"?>") {
+                Some(end) => at = end + 2,
+                None => return Prolog::NoDoctype,
+            }
+        } else if rest.starts_with(b"<!--") {
+            match find_from(b, at + 4, b"-->") {
+                Some(end) => at = end + 3,
+                None => return Prolog::NoDoctype,
+            }
+        } else if rest.starts_with(b"<!DOCTYPE") {
+            let mut quote = 0u8;
+            for (i, &c) in b.iter().enumerate().skip(at + 9) {
+                match (quote, c) {
+                    (0, b'"' | b'\'') => quote = c,
+                    (q, c) if q != 0 && q == c => quote = 0,
+                    (0, b'[') => return Prolog::InternalSubset,
+                    (0, b'>') => return Prolog::ExternalIdOnly(at..i + 1),
+                    _ => {}
+                }
+            }
+            return Prolog::InternalSubset;
+        } else {
+            return Prolog::NoDoctype;
         }
     }
-    DoctypeScan::InternalSubset
 }
 
 struct Importer<'a, 'd> {
@@ -447,20 +480,30 @@ pub fn import_svg(
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let text = std::str::from_utf8(bytes).map_err(|_| VectorError::NotSvg)?;
     let mut loss = Vec::new();
-    let allow_dtd = match scan_doctype(text) {
-        DoctypeScan::None => false,
-        DoctypeScan::ExternalIdOnly => {
+    // DTD processing is never enabled: a DOCTYPE with an internal subset is refused, and a
+    // DOCTYPE with an external id only is blanked out (same byte length) before parsing, so the
+    // parser sees no DOCTYPE and no entity declaration can ever be expanded.
+    let blanked;
+    let text = match scan_prolog(text) {
+        Prolog::NoDoctype => text,
+        Prolog::ExternalIdOnly(range) => {
             loss.push(LossEntry {
                 path: "/".into(),
                 kind: LossKind::ExternalDenied,
                 code: "doctype_external_id_ignored",
             });
-            true
+            blanked = format!(
+                "{}{}{}",
+                &text[..range.start],
+                " ".repeat(range.len()),
+                &text[range.end..]
+            );
+            blanked.as_str()
         }
-        DoctypeScan::InternalSubset => return Err(VectorError::EntityDenied),
+        Prolog::InternalSubset => return Err(VectorError::EntityDenied),
     };
     let options = ParsingOptions {
-        allow_dtd,
+        allow_dtd: false,
         nodes_limit: policy.limits.max_nodes,
         entity_resolver: None,
     };

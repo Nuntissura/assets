@@ -402,3 +402,107 @@ fn folio_vector_layer_validates() {
         assert_same_geometry(&a.paths, &b.paths);
     });
 }
+
+/// R5 finding (security): the DOCTYPE is classified in the XML prolog only. A `<!DOCTYPE` inside a
+/// comment or processing instruction used to be taken for the real one, which turned DTD parsing
+/// on and let the real internal subset expand its entities despite the EntityDenied policy.
+#[test]
+fn doctype_decoy_cannot_enable_entity_expansion() {
+    bounded_case("doctype_decoy_cannot_enable_entity_expansion", || {
+        let svg_ns = "http://www.w3.org/2000/svg";
+        // The entity's replacement text is markup: if it were expanded, a rect would appear.
+        let subset = r#"<!DOCTYPE svg [<!ENTITY e "<rect width='5' height='5'/>">]>"#;
+        for prolog in [
+            // Commented decoy with an external-id shape ahead of the real internal subset.
+            "<?xml version=\"1.0\"?><!-- <!DOCTYPE svg> -->",
+            // Processing-instruction decoy.
+            "<?pi <!DOCTYPE svg> ?>",
+            // Several decoys, whitespace between prolog items.
+            "<!-- <!DOCTYPE a> -->\n  <?x y?> <!-- \"'[ -->\n",
+        ] {
+            let doc = format!("{prolog}{subset}<svg xmlns=\"{svg_ns}\">&e;</svg>");
+            assert_eq!(import(&doc).unwrap_err(), VectorError::EntityDenied, "{doc}");
+        }
+
+        // Mentions of DOCTYPE outside the prolog are not DOCTYPEs: no false refusal, no DTD report.
+        let benign = format!(
+            "<svg xmlns=\"{svg_ns}\"><!-- <!DOCTYPE x [ --><desc><![CDATA[<!DOCTYPE y [<!ENTITY z \"q\">]>]]></desc><rect width=\"5\" height=\"5\"/></svg>"
+        );
+        let p = import(&benign).unwrap();
+        assert_eq!(p.paths.len(), 1);
+        assert!(!p.has_loss_code("doctype_external_id_ignored"));
+
+        // A decoy ahead of the legacy external-id DOCTYPE no longer reads as an internal subset.
+        let legacy = format!(
+            "<!-- <!DOCTYPE a [ --><!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://example.invalid/svg11.dtd\"><svg xmlns=\"{svg_ns}\"><rect width=\"5\" height=\"5\"/></svg>"
+        );
+        let p = import(&legacy).unwrap();
+        assert_eq!(p.paths.len(), 1);
+        assert!(p.has_loss_code("doctype_external_id_ignored"));
+
+        // With only an external id the parser still never expands a reference.
+        let undeclared = format!(
+            "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://example.invalid/svg11.dtd\"><svg xmlns=\"{svg_ns}\">&e;</svg>"
+        );
+        assert_eq!(import(&undeclared).unwrap_err(), VectorError::MalformedXml);
+    });
+}
+
+/// R5 finding (silent loss): a Folio colour with an Assigned profile is written as plain sRGB hex,
+/// which changes it; the export must say so, once per use, and surface Folio's resolution issue.
+#[test]
+fn assigned_colour_profile_export_is_a_typed_loss() {
+    bounded_case("assigned_colour_profile_export_is_a_typed_loss", || {
+        let assign = |p: &mut VectorProposal| {
+            let profile = || ProfileBinding::Assigned("SCPF-00000009-0000-7000-8000-000000000001".into());
+            for style in &mut p.design.paint_styles {
+                for row in &mut style.rows {
+                    let paint = match row {
+                        StudioAppearanceRow::Fill { paint, .. }
+                        | StudioAppearanceRow::Stroke { paint, .. } => paint,
+                    };
+                    match paint {
+                        StudioPaint::Solid { colour } => colour.colour_profile_id = profile(),
+                        StudioPaint::Gradient { gradient } => {
+                            for s in &mut gradient.stops {
+                                s.colour.colour_profile_id = profile();
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        let count = |loss: &[LossEntry], code: &str| loss.iter().filter(|l| l.code == code).count();
+        let opts = ExportOptions::default();
+
+        // Solid fill and solid stroke: the unassigned export is clean, the assigned one is not.
+        let solid_svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="10" height="10" fill="#336699" stroke="#ff0000"/></svg>"##;
+        let mut p = import(solid_svg).unwrap();
+        let clean = export_proposal_with_loss(&p, &opts).unwrap();
+        assert!(clean.loss.iter().all(|l| !l.code.starts_with("colour_profile")), "{:?}", clean.loss);
+        assign(&mut p);
+        let out = export_proposal_with_loss(&p, &opts).unwrap();
+        assert!(out.text.contains("fill=\"#336699\""), "channels are written unchanged: {}", out.text);
+        // Fill and stroke are two paints of one element: two losses; one style, one Folio issue.
+        assert_eq!(count(&out.loss, "colour_profile_not_converted"), 2, "{:?}", out.loss);
+        assert_eq!(count(&out.loss, "colour_profile_unresolved"), 1, "{:?}", out.loss);
+        assert!(
+            out.loss
+                .iter()
+                .filter(|l| l.code.starts_with("colour_profile"))
+                .all(|l| l.kind == LossKind::Unsupported)
+        );
+        // The flat export reports the same.
+        let flat = export_svg_with_loss(&p.paths, &p.design, &opts).unwrap();
+        assert_eq!(count(&flat.loss, "colour_profile_not_converted"), 2, "{:?}", flat.loss);
+
+        // Gradient stops: reported for every element that uses the gradient, also when the
+        // definition is shared and written once.
+        let grad_svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="20" y2="0"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient></defs><rect width="10" height="10" fill="url(#g)"/><rect x="10" width="10" height="10" fill="url(#g)"/></svg>"##;
+        let mut g = import(grad_svg).unwrap();
+        assign(&mut g);
+        let out = export_proposal_with_loss(&g, &opts).unwrap();
+        assert_eq!(out.text.matches("<linearGradient").count(), 1, "shared definition: {}", out.text);
+        assert_eq!(count(&out.loss, "colour_profile_not_converted"), 2, "{:?}", out.loss);
+    });
+}

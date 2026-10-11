@@ -8,10 +8,10 @@ use crate::model::*;
 use hsk_studio_accord::{CancellationToken, Length as AccordLength, Unit};
 use hsk_studio_folio::{
     BLEND_NORMAL, Budget, GeometryUnit, GradientInterpolation, GradientSpread,
-    Length as FolioLength, Parent, Payload, StrokeAlign, StrokeCap, StrokeJoin,
-    StudioAppearanceRow, StudioColor, StudioDesignRecords, StudioGradient, StudioGradientGeometry,
-    StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioStrokeStyle, Unresolved,
-    validate_paint_style,
+    Length as FolioLength, Parent, Payload, ProfileBinding, Resolution, StrokeAlign, StrokeCap,
+    StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords, StudioGradient,
+    StudioGradientGeometry, StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioStrokeStyle,
+    Unresolved, validate_paint_style,
 };
 use hsk_studio_nib::Winding;
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,8 +30,28 @@ fn channel(v: f64) -> (u8, bool) {
     )
 }
 
+/// Reports a colour whose profile binding is `Assigned`. SVG paint is sRGB and this export has no
+/// way to obtain the profile (Folio's `Resolver::profile` answers availability only, no bytes),
+/// so it cannot convert through Prism: the channels are written unchanged as sRGB and that is a
+/// typed loss, never a silent conversion.
+fn note_profile(assigned: bool, label: &str, loss: &mut Vec<LossEntry>) {
+    if assigned {
+        note(
+            loss,
+            label,
+            LossKind::Unsupported,
+            "colour_profile_not_converted",
+        );
+    }
+}
+
+fn is_assigned(c: &StudioColor) -> bool {
+    matches!(c.colour_profile_id, ProfileBinding::Assigned(_))
+}
+
 /// `#rrggbb` of a Folio colour (SVG colours are 8-bit sRGB); a value off the 8-bit grid is
-/// quantized and reported. The colour-profile binding is not interpreted.
+/// quantized and reported. The colour-profile binding is not interpreted here: the paint writer
+/// reports an assigned profile once per paint (`note_profile`).
 fn hex(c: &StudioColor, label: &str, loss: &mut Vec<LossEntry>) -> String {
     let ((r, rx), (g, gx), (b, bx)) = (channel(c.r), channel(c.g), channel(c.b));
     if !(rx && gx && bx) {
@@ -167,8 +187,17 @@ impl Defs {
     /// Paint attribute value of one paint (the row opacity is a separate attribute).
     fn paint(&mut self, paint: &StudioPaint, label: &str, loss: &mut Vec<LossEntry>) -> String {
         match paint {
-            StudioPaint::Solid { colour } => hex(colour, label, loss),
+            StudioPaint::Solid { colour } => {
+                note_profile(is_assigned(colour), label, loss);
+                hex(colour, label, loss)
+            }
             StudioPaint::Gradient { gradient } => {
+                // Per use, also when the definition is shared with an earlier element.
+                note_profile(
+                    gradient.stops.iter().any(|s| is_assigned(&s.colour)),
+                    label,
+                    loss,
+                );
                 if gradient.stops.iter().any(|s| s.midpoint.is_some()) {
                     note(
                         loss,
@@ -443,13 +472,25 @@ impl<'a> Writer<'a> {
             return Ok(None);
         };
         if self.checked.insert(style.style_id.as_str()) {
-            validate_paint_style(
+            let issues = validate_paint_style(
                 style,
                 Budget::default(),
                 &CancellationToken::default(),
                 &Unresolved,
             )
             .map_err(|d| VectorError::Folio(d.code))?;
+            // Folio's resolution issues (an assigned colour profile this export cannot resolve)
+            // are losses of this export, one per distinct profile of the style.
+            for issue in issues {
+                let code = match issue.disposition {
+                    Resolution::Available => continue,
+                    Resolution::Absent => "colour_profile_unresolved",
+                    Resolution::HashMismatch => "colour_profile_hash_mismatch",
+                    Resolution::Unauthorized => "colour_profile_unauthorized",
+                    Resolution::Unsupported => "colour_profile_unsupported",
+                };
+                note(&mut self.loss, label, LossKind::Unsupported, code);
+            }
         }
         Ok(Some(style))
     }
