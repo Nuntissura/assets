@@ -3551,6 +3551,10 @@ fn removed_runs_join_across_show_operators() {
     let out = r7_run(&pdf);
     assert!(!out.is_proven() && out.proof.hits.iter().any(|h| h.location == PayloadLocation::StringObject { object: 41 }), "{:?}", out.proof.hits);
     assert_eq!((out.reports[0].text_strings_removed, out.reports[0].removed_text.last()), (2, Some(&b"SECRET-ALPHA".to_vec())));
+    // The same pieces in two text objects (one BT per piece, as some producers write words).
+    let split_bt = "BT /F2 12 Tf 72 700 Td (SECRE) Tj ET BT /F2 12 Tf 132 700 Td (T-ALPHA) Tj ET\nBT /F2 12 Tf 72 300 Td (Public) Tj ET";
+    let out = r7_run(&r8_doc(split_bt, "", "/Outlines 40 0 R", r9_outline()));
+    assert!(!out.is_proven() && out.proof.hits.iter().any(|h| h.location == PayloadLocation::StringObject { object: 41 }), "two text objects: {:?}", out.proof.hits);
     let mut doc = open(&pdf);
     let with = redact_and_save_with(&mut doc, &[R7_REGION], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
     assert!(with.is_proven() && !leaks(&with.bytes, "secret-alpha"), "{:?}", with.not_proven_reasons());

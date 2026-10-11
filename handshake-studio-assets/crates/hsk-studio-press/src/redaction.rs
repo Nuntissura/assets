@@ -74,9 +74,10 @@ pub struct RedactionReport {
     /// Removed string operands (elements of a `TJ` counted one by one).
     pub text_strings_removed: u32,
     /// The removed string operands, and for every run of two or more consecutive removed strings of
-    /// one text object (`BT`..`ET`, across `Tj`, `TJ`, `'` and `"` operators and the elements of a
-    /// `TJ`, ended by a kept non-empty string) that run joined: what a viewer draws as one run (R8 F2,
-    /// R9-F3; tests `kerned_tj_runs_are_read_whole`, `removed_runs_join_across_show_operators`).
+    /// one content stream in drawing order (across `Tj`, `TJ`, `'` and `"` operators, the elements of a
+    /// `TJ` and text objects; ended by a kept non-empty string, a `Do` and the end of the content) that
+    /// run joined: what a viewer may draw as one run (R8 F2, R9-F3; tests `kerned_tj_runs_are_read_whole`,
+    /// `removed_runs_join_across_show_operators`).
     pub removed_text: Vec<Vec<u8>>,
     /// `removed_text[i]` as its font draws it: its simple font's encoding reading when that is complete
     /// and tells more than the bytes, else its `/ToUnicode` reading (`None`: the bytes are the text, or
@@ -187,7 +188,7 @@ struct FontInfo {
     enc: Option<Rc<SimpleEncoding>>,
 }
 
-/// Consecutive removed strings of one text object (R9-F3): their bytes, and per piece its reading
+/// Consecutive removed strings of one content stream (R9-F3): their bytes, and per piece its reading
 /// (`None`: the bytes are the text) and whether that reading is complete.
 #[derive(Default)]
 struct Run {
@@ -217,7 +218,7 @@ struct Interp<'a> {
     removed: Vec<Vec<u8>>,
     /// Removed string operands (`removed` also holds joined runs).
     strings_removed: u32,
-    /// The current run of consecutive removed strings of the text object.
+    /// The current run of consecutive removed strings of the content stream.
     run: Run,
     /// `removed[i]` read through its font's `/ToUnicode`.
     removed_unicode: Vec<Option<String>>,
@@ -482,8 +483,8 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// Ends the run of consecutive removed strings of the text object (at `BT`, `ET`, `Do`, a kept
-    /// non-empty string and the end of the content): two or more are also recorded joined, the text a
+    /// Ends the run of consecutive removed strings of the content stream (at `Do`, a kept non-empty
+    /// string and the end of the content): two or more are also recorded joined, the text a
     /// viewer draws as one run, so pieces shorter than a distinctive needle (kerned `TJ` elements, one
     /// `Tj` per syllable or glyph) are searched as the word they form, and its readability is judged on
     /// the whole run (R8 F2, R9-F3; tests `kerned_tj_runs_are_read_whole`, `removed_runs_join_across_show_operators`,
@@ -705,11 +706,9 @@ impl<'a> Interp<'a> {
                 b"cm" => self.g.ctm = mul(&matrix(op)?, &self.g.ctm),
                 b"w" => self.g.lw = num(op, 0)?,
                 b"BT" => {
-                    self.flush_run();
                     self.tm = IDENT;
                     self.tlm = IDENT;
                 }
-                b"ET" => self.flush_run(),
                 b"Tf" => {
                     let name = op.operands.first().and_then(Object::as_name).ok_or(PressError::Malformed("content_operands"))?;
                     self.g.fs = num(op, 1)?;
@@ -780,7 +779,7 @@ impl<'a> Interp<'a> {
                     };
                     let mut new_items: Vec<Object> = Vec::with_capacity(items.len());
                     let mut any = false;
-                    // Adjacent removed elements extend the text object's run (flush_run).
+                    // Adjacent removed elements extend the content stream's run (flush_run).
                     for item in items {
                         match item {
                             Object::Str(s) => {
