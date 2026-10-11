@@ -591,15 +591,42 @@ fn to_f32_checked(value: f64) -> Result<f32, DevelopError> {
     Ok(rounded)
 }
 
+/// True when no stage-A product can overflow or round to zero from nonzero operands, so the
+/// per-product refusals of [`mul_checked`] cannot fire. Demosaiced samples are 0 or a finite f32
+/// of magnitude 2^-149..3.4e38; with every gain and coefficient zero or within 1e-100..1e100 the
+/// gain products stay within 1.4e-145..3.4e138 and the matrix products within 1.4e-245..3.4e238,
+/// far inside binary64 (a zero operand gives an exact zero, which is permitted).
+fn stage_a_is_total(prepared: &PreparedRecipe) -> bool {
+    prepared
+        .gain
+        .iter()
+        .chain(prepared.matrix.iter())
+        .all(|v| *v == 0.0 || (1e-100..=1e100).contains(&v.abs()))
+}
+
 /// Stage A: demosaiced sample -> as-shot gain -> calibration matrix -> working-profile RGB (f32).
+/// `total` is [`stage_a_is_total`]; the f32 rounding of each row keeps its overflow/underflow refusal.
 #[inline]
-fn working_pixel(prepared: &PreparedRecipe, demosaiced: [f32; 3]) -> Result<[f32; 3], DevelopError> {
+fn working_pixel(
+    prepared: &PreparedRecipe,
+    total: bool,
+    demosaiced: [f32; 3],
+) -> Result<[f32; 3], DevelopError> {
+    let m = &prepared.matrix;
+    let mut working = [0.0f32; 3];
+    if total {
+        let balanced: [f64; 3] = std::array::from_fn(|i| prepared.gain[i] * f64::from(demosaiced[i]));
+        for row in 0..3 {
+            let sum = ((m[row * 3] * balanced[0]) + (m[row * 3 + 1] * balanced[1]))
+                + (m[row * 3 + 2] * balanced[2]);
+            working[row] = to_f32_checked(sum)?;
+        }
+        return Ok(working);
+    }
     let mut balanced = [0.0f64; 3];
     for i in 0..3 {
         balanced[i] = mul_checked(prepared.gain[i], f64::from(demosaiced[i]))?;
     }
-    let m = &prepared.matrix;
-    let mut working = [0.0f32; 3];
     for row in 0..3 {
         let p0 = mul_checked(m[row * 3], balanced[0])?;
         let p1 = mul_checked(m[row * 3 + 1], balanced[1])?;
@@ -726,6 +753,7 @@ pub fn develop_with(
 
     let norm = normalize(plane, cancel)?;
     let demosaic = Demosaic::new(plane, &norm);
+    let stage_a_total = stage_a_is_total(&prepared);
     let identity_finish =
         prepared.exposure_gain == 1.0 && prepared.curves.iter().all(Option::is_none);
     let tile_width = grid.tile_width as usize;
@@ -753,7 +781,7 @@ pub fn develop_with(
             let source_y = y0 as usize + (developed.y - oy) as usize;
             for sy in source_y..source_y + developed_h {
                 for sx in source_x..source_x + developed_w {
-                    working.push(working_pixel(&prepared, demosaic.pixel(sx, sy)?)?);
+                    working.push(working_pixel(&prepared, stage_a_total, demosaic.pixel(sx, sy)?)?);
                 }
             }
             if prepared.profile_transform

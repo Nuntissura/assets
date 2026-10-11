@@ -109,8 +109,9 @@ impl PreparedCurve {
         }
         // `xs` is strictly ascending (a non-finite or repeated slope refuses at prepare), so the
         // first control point at or above `v` decides both cases: an exact control-point input
-        // returns its authored y, otherwise the segment is the one just below it.
-        let upper = self.xs.partition_point(|x| *x < v);
+        // returns its authored y, otherwise the segment is the one just below it. Counting the
+        // points below `v` (at most 32) equals that index and carries no data-dependent branch.
+        let upper = self.xs.iter().map(|x| usize::from(*x < v)).sum::<usize>();
         if self.xs.get(upper) == Some(&v) {
             return Ok(self.ys[upper]);
         }

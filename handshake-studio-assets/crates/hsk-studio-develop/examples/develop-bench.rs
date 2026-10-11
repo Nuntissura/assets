@@ -1,8 +1,41 @@
 //! Timing probe for the scalar oracle on a synthetic 24 MP RGGB plane (no assertions, no I/O).
 //! Run with `--release`; prints one line per stage in milliseconds. `--width W --height H` override.
-use hsk_studio_accord::{CancellationToken, DomainId};
+//! The last stage converts Display P3 -> sRGB (CC0 linear test profiles) through the wide Prism route.
+use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_develop::*;
+use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
+use hsk_studio_pigment::Grid;
+use hsk_studio_prism::{AdmittedPrism, ProviderAdmission, ProviderReservation, WideEngine, profile_hash};
 use std::{env, time::Instant};
+
+const SRGB: &[u8] = include_bytes!("../tests/profiles/sRGB-admitted-linear-v4.icc");
+const P3: &[u8] = include_bytes!("../tests/profiles/DisplayP3-admitted-linear-v4.icc");
+
+/// Unbudgeted admission for the timing probe: reservations are recorded nowhere.
+#[derive(Clone)]
+struct Unmetered;
+struct NoLease(u64);
+impl ProviderReservation for NoLease {
+    fn reserved_bytes(&self) -> u64 {
+        self.0
+    }
+}
+impl ProviderAdmission for Unmetered {
+    type Reservation = NoLease;
+    fn synchronous_retirement(&self) -> bool {
+        true
+    }
+    fn reserve(&self, bytes: u64) -> Result<NoLease, hsk_studio_prism::Error> {
+        Ok(NoLease(bytes))
+    }
+}
+struct CountingSink(u64);
+impl SinkPort for CountingSink {
+    fn try_send(&mut self, _class: DeliveryClass, _bytes: &[u8]) -> Result<(), DeliveryError> {
+        self.0 += 1;
+        Ok(())
+    }
+}
 
 fn arg(args: &[String], flag: &str, default: u32) -> u32 {
     args.iter()
@@ -87,5 +120,61 @@ fn main() {
     match develop_to_image(&plane, &recipe, 2, &cancel) {
         Ok((_, receipt)) => println!("develop_curve_ms={} pixels={}", t.elapsed().as_millis(), receipt.pixels),
         Err(e) => println!("develop_curve_refused={e} after_ms={} (curve inputs outside 0..1 refuse, never clip)", t.elapsed().as_millis()),
+    }
+
+    // Profile run: identity colour keeps working RGB inside 0..1 (Prism refuses outside); no curves.
+    let (srgb, p3) = (
+        ProfileBinding { profile_id: DomainId::parse("SCPF-019abcde-0000-7000-8000-000000000001").unwrap(), sha256: profile_hash(SRGB) },
+        ProfileBinding { profile_id: DomainId::parse("SCPF-019abcde-0000-7000-8000-000000000002").unwrap(), sha256: profile_hash(P3) },
+    );
+    let mut recipe = DevelopRecipe::native([1.0; 3], [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], p3.clone());
+    recipe.output_profile = srgb.clone();
+    let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();
+    let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+    let prism = AdmittedPrism::new(&actor, 1, Unmetered).unwrap();
+    let mut wide = WideEngine::new(actor.clone(), 8).unwrap();
+    let mut sink = CountingSink(0);
+    let mut converter = PrismConverter::new(
+        &prism,
+        &mut wide,
+        IccProfile { binding: &p3, icc: P3 },
+        IccProfile { binding: &srgb, icc: SRGB },
+        PrismContext { actor: &actor, resource_id: &resource, correlation_id: 1, revision: 1 },
+        &mut sink,
+    );
+    let t = Instant::now();
+    let mut delivered = 0u32;
+    let result = develop_with(
+        &DevelopRequest {
+            plane: &plane,
+            recipe: &recipe,
+            recipe_revision: 3,
+            expected_source_revision: 1,
+            grid: Grid { origin_x: 0, origin_y: 0, tile_width: 256, tile_height: 256 },
+            output_origin: (0, 0),
+            execution_hint: ExecutionHint::Auto,
+        },
+        Some(&mut converter),
+        &cancel,
+        &mut |_| {
+            delivered += 1;
+            Ok(())
+        },
+    );
+    match result {
+        Ok(receipt) => {
+            let ms = t.elapsed().as_millis();
+            println!(
+                "develop_profile_p3_to_srgb_ms={ms} mpix_per_s={:.1} route={} calls={} plan_hits={} plan_misses={} plan_parses={} clip_pixels={} tiles={delivered}",
+                (receipt.pixels as f64 / 1.0e6) / (ms.max(1) as f64 / 1000.0),
+                receipt.profile_route,
+                receipt.profile_calls,
+                receipt.profile_stats.plan_hits,
+                receipt.profile_stats.plan_misses,
+                receipt.profile_stats.plan_parses,
+                receipt.profile_stats.clip.pixels_clipped,
+            );
+        }
+        Err(e) => println!("develop_profile_refused={e} after_ms={}", t.elapsed().as_millis()),
     }
 }
