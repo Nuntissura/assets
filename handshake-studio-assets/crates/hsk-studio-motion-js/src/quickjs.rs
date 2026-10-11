@@ -4,9 +4,9 @@
 //!
 //! Isolation: the production path runs every evaluation in a separate `motion-js-worker` process
 //! (`quickjs_worker`), because hostile source can abort the host (an `async` function in a context
-//! without the Promise intrinsic trips a QuickJS GC assert). The in-process engine below stays
-//! available ONLY behind the explicit `QuickJsOptions::unsafe_in_process` option, for tests and for
-//! the worker's own realm code.
+//! without the Promise intrinsic trips a QuickJS GC assert). The realm code below runs inside that
+//! worker; hosting it in the caller's process (`QuickJsOptions::unsafe_in_process`) and the worker
+//! fault injection (`WorkerTestFault`) exist only with the non-default `test-faults` feature.
 //!
 //! Controls enforced by the realm code (adoption review EXPR-PROVIDER-xx):
 //! * 02: explicit nonzero heap limit applied BEFORE any context/parse/eval, accepted value read back
@@ -38,13 +38,21 @@
 //!   prototype accessors and user coercion never run. Thrown values are described by a second
 //!   trusted function with the same discipline: error kind comes from the identity of captured
 //!   intrinsic prototypes, never from user-writable names; the stack text comes from the captured
-//!   native `Error.prototype.stack` getter. Engine signals (our interrupt handler, the rquickjs
-//!   error type) decide interrupts and engine failures; a user-thrown "InternalError" is plain data.
+//!   native `Error.prototype.stack` getter.
+//!
+//! Classification (STUDIO-R5, `diagnostics/motion-js-classify.md`): budget classes come only from
+//! host-side state a script cannot set: our interrupt handler (`Tripped`: Fuel, Cancel, Deadline) and
+//! the rquickjs error type (`Error::Allocation` -> Memory). No message, name or shape read from the
+//! realm selects a class. QuickJS-NG reports its stack limit and heap limit as ordinary catchable
+//! `RangeError`/`InternalError` objects that a script can construct byte for byte, so those are
+//! `Thrown { Other }` like any thrown error (the limit still stops the script; test
+//! `quickjs_forged_budget_messages_are_thrown_not_budget`).
 //!
 //! Host reads use deterministic miss/replay: the script runs in a fresh realm against an
 //! evaluation-local cache; the first uncached `hostRead` records a miss, the run is discarded, the
 //! host performs that single read on the caller thread (shared Fuel, quotas), and the script is
 //! replayed. Every distinct (path, tick) is charged once per evaluation.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::{
     clock::Clock,
     engine::{
@@ -67,8 +75,9 @@ use std::{
     path::PathBuf,
     rc::Rc,
     sync::Arc,
-    thread,
 };
+#[cfg(feature = "test-faults")]
+use std::thread;
 
 /// rquickjs maps any stack limit above this to 0 (= unlimited); configuration must reject it.
 pub const WRAPPER_STACK_LIMIT: usize = 1 << 24;
@@ -78,11 +87,6 @@ pub(crate) const THREAD_STACK_HEADROOM: usize = 1 << 20;
 const MAX_REPLAYS: usize = 4096;
 const FILENAME: &str = "expr";
 pub(crate) const ENGINE_VERSION: &str = "quickjs-ng 0.16.2, rquickjs 0.14.0";
-
-/// Describe-result flag bits (see `BOOTSTRAP`).
-const FLAG_STACK_OVERFLOW: u32 = 1;
-const FLAG_OUT_OF_MEMORY: u32 = 2;
-const FLAG_UNAVAILABLE: u32 = 4;
 
 /// Trusted bootstrap: closes the dynamic-compile entry points, removes ambient randomness and
 /// returns `[extract, describe]` (kept by Rust, unreachable from user code). Everything captured here
@@ -97,7 +101,6 @@ const BOOTSTRAP: &str = r#"(function (g) {
   var TypeErr = TypeError;
   var MARK = "motionjs-unavailable:";
   var uncurry = Function.prototype.bind.bind(Function.prototype.call);
-  var indexOf = uncurry(String.prototype.indexOf);
   var slice = uncurry(String.prototype.slice);
   var stackDesc = gopd(Error.prototype, "stack");
   var stackOf = stackDesc !== undefined && typeof stackDesc.get === "function" ? uncurry(stackDesc.get) : null;
@@ -144,12 +147,6 @@ const BOOTSTRAP: &str = r#"(function (g) {
     }
     return out;
   }
-  function ownData(obj, key) {
-    var d = gopd(obj, key);
-    if (d === undefined) { return undefined; }
-    var v = gopd(d, "value");
-    return v === undefined ? undefined : v.value;
-  }
   function kindOf(e) {
     var p = getProto(e);
     for (var n = 0; n < 64 && p !== null; n++) {
@@ -160,16 +157,10 @@ const BOOTSTRAP: &str = r#"(function (g) {
     }
     return 0;
   }
+  // Kind and stack text only: messages are user data and never select a class (STUDIO-R5).
   function describe(e) {
-    if (typeof e !== "object" || e === null) { return [0, 0, ""]; }
+    if (typeof e !== "object" || e === null) { return [0, ""]; }
     var kind = kindOf(e);
-    var flags = 0;
-    var message = ownData(e, "message");
-    if (typeof message === "string") {
-      if (indexOf(message, "Maximum call stack") >= 0) { flags |= 1; }
-      if (indexOf(message, "out of memory") >= 0) { flags |= 2; }
-      if (indexOf(message, MARK) === 0) { flags |= 4; }
-    }
     var stack = "";
     if (stackOf !== null && kind !== 0) {
       try {
@@ -177,7 +168,7 @@ const BOOTSTRAP: &str = r#"(function (g) {
         if (typeof s === "string") { stack = slice(s, 0, 1024); }
       } catch (x) {}
     }
-    return [kind, flags, stack];
+    return [kind, stack];
   }
   return [extract, describe];
 })(globalThis)"#;
@@ -217,10 +208,11 @@ pub struct LimitReadback {
     pub stack_applied: usize,
 }
 
-/// Test-only fault injection read by the worker process from the environment variable named in
-/// `ENV`. The host never sets it in production; it reproduces failure classes that the hardened
-/// engine no longer triggers by itself.
-#[doc(hidden)]
+/// Fault injection for this crate's isolation tests, read by the worker process from the environment
+/// variable named in `ENV`; it reproduces failure classes the hardened engine no longer triggers by
+/// itself. Compiled only with the non-default `test-faults` feature (V4-04): a product worker never
+/// reads the variable (`tests/worker_fault_env.rs`).
+#[cfg(feature = "test-faults")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WorkerTestFault {
     #[default]
@@ -236,6 +228,7 @@ pub enum WorkerTestFault {
     DeafInterrupt,
 }
 
+#[cfg(feature = "test-faults")]
 impl WorkerTestFault {
     pub(crate) const ENV: &'static str = "HSK_MOTION_JS_WORKER_TEST_FAULT";
 
@@ -279,9 +272,9 @@ pub(crate) fn validate_limits(
     Ok((memory_bytes, stack_bytes))
 }
 
-/// In-process engine: runs the realm on a sized thread inside the host process. Hostile source can
-/// abort the host (see module docs), so it is crate-private and reachable only through
-/// `QuickJsOptions::unsafe_in_process`.
+/// Realm limits: the worker uses them for `verify_limits`; with `test-faults` the same type is also
+/// the in-process engine (realm on a sized thread inside the caller's process; hostile source can
+/// abort that process, see module docs), reachable only through `QuickJsOptions::unsafe_in_process`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct QuickJsEngine {
     memory_bytes: usize,
@@ -289,6 +282,7 @@ pub(crate) struct QuickJsEngine {
 }
 
 impl QuickJsEngine {
+    #[cfg(feature = "test-faults")]
     pub(crate) fn new(quotas: &Quotas) -> Result<Self, QuickJsConfigError> {
         let (memory_bytes, stack_bytes) =
             validate_limits(quotas.memory_bytes(), quotas.stack_bytes())?;
@@ -366,7 +360,21 @@ pub(crate) struct Input<'a> {
     pub(crate) deadline_ns: u64,
     pub(crate) cache: &'a HashMap<ReadKey, Vec<f64>>,
     pub(crate) utc: Option<i64>,
+    #[cfg(feature = "test-faults")]
     pub(crate) fault: WorkerTestFault,
+}
+
+impl Input<'_> {
+    /// Test fault: the realm installs no interrupt handler (`test-faults` only).
+    #[cfg(feature = "test-faults")]
+    fn deaf_interrupt(&self) -> bool {
+        self.fault == WorkerTestFault::DeafInterrupt
+    }
+
+    #[cfg(not(feature = "test-faults"))]
+    fn deaf_interrupt(&self) -> bool {
+        false
+    }
 }
 
 /// Why our own interrupt handler stopped the script: an engine signal, never script text.
@@ -412,6 +420,7 @@ pub(crate) fn internal_report() -> RunReport {
 
 /// Test-fault body: the unmitigated slice-2 context. QuickJS aborts the process when the runtime
 /// is freed with the leaked async function object still alive.
+#[cfg(feature = "test-faults")]
 fn reproduce_unmitigated_async(input: &Input<'_>) -> RunReport {
     let Ok(runtime) = Runtime::new() else {
         return internal_report();
@@ -436,8 +445,11 @@ fn reproduce_unmitigated_async(input: &Input<'_>) -> RunReport {
 
 /// One realm: fresh Runtime + context, one script run, everything released before returning.
 pub(crate) fn run_realm(input: Input<'_>) -> RunReport {
-    if input.fault == WorkerTestFault::AsyncAbort && input.source.contains("async") {
-        return reproduce_unmitigated_async(&input);
+    #[cfg(feature = "test-faults")]
+    {
+        if input.fault == WorkerTestFault::AsyncAbort && input.source.contains("async") {
+            return reproduce_unmitigated_async(&input);
+        }
     }
     let shared = Rc::new(Shared {
         polls: Cell::new(0),
@@ -452,7 +464,7 @@ pub(crate) fn run_realm(input: Input<'_>) -> RunReport {
     if apply_limits(&runtime, input.memory_bytes, input.stack_bytes).is_err() {
         return internal_report();
     }
-    if input.fault != WorkerTestFault::DeafInterrupt {
+    if !input.deaf_interrupt() {
         let shared = Rc::clone(&shared);
         let (cancel, clock) = (input.cancel.clone(), Arc::clone(&input.clock));
         let (allowance, deadline_ns) = (input.allowance, input.deadline_ns);
@@ -625,7 +637,7 @@ fn convert(value: Value<'_>) -> RunEnd {
 
 fn span_of(stack: &str) -> Option<SourceSpan> {
     let marker = format!("{FILENAME}:");
-    let rest = &stack[stack.find(&marker)? + marker.len()..];
+    let rest = stack.get(stack.find(&marker)?.checked_add(marker.len())?..)?;
     let digits: String = rest
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == ':')
@@ -636,9 +648,11 @@ fn span_of(stack: &str) -> Option<SourceSpan> {
     Some(SourceSpan { line, column })
 }
 
-/// Engine signals first (our interrupt handler, the rquickjs error type), then the trusted
-/// describer. No script text decides an interrupt or an adapter failure, and no property of a
-/// thrown value is read through user-reachable code.
+/// Budget classes from host-side state only (our interrupt handler, the rquickjs error type), then
+/// the trusted describer for the kind of a thrown value (Parse / ReferenceMissing / other). No text a
+/// script can write selects a class, and no property of a thrown value is read through
+/// user-reachable code. A catchable QuickJS stack- or heap-limit error is indistinguishable from a
+/// user throw (diagnostics/motion-js-classify.md) and is therefore `Thrown { Other }`.
 fn classify<'js>(
     ctx: &Ctx<'js>,
     shared: &Rc<Shared>,
@@ -666,9 +680,8 @@ fn classify<'js>(
         return other(None);
     };
     let kind = described.get::<u32>(0).unwrap_or(0);
-    let flags = described.get::<u32>(1).unwrap_or(0);
     let span = described
-        .get::<String>(2)
+        .get::<String>(1)
         .ok()
         .and_then(|stack| span_of(&stack));
     match kind {
@@ -677,9 +690,6 @@ fn classify<'js>(
             kind: ThrownKind::Reference,
             span,
         },
-        3 if flags & FLAG_STACK_OVERFLOW != 0 => EngineFailure::Budget(BudgetKind::Stack),
-        4 if flags & FLAG_UNAVAILABLE != 0 => EngineFailure::Unsupported(span),
-        5 if flags & FLAG_OUT_OF_MEMORY != 0 => EngineFailure::Budget(BudgetKind::Memory),
         _ => other(span),
     }
 }
@@ -729,6 +739,7 @@ pub(crate) fn drive(
             deadline_ns: job.deadline_ns.saturating_add(granted_ns),
             cache: &cache,
             utc,
+            #[cfg(feature = "test-faults")]
             fault: WorkerTestFault::None,
         };
         let report = match run_once(input) {
@@ -759,9 +770,10 @@ pub(crate) fn drive(
     Err(EngineFailure::Budget(BudgetKind::HostReads))
 }
 
+#[cfg(feature = "test-faults")]
 impl QuickJsEngine {
     fn run_in_process(&self, input: Input<'_>) -> RunOutcome {
-        let stack = self.stack_bytes + THREAD_STACK_HEADROOM;
+        let stack = self.stack_bytes.saturating_add(THREAD_STACK_HEADROOM);
         let report = thread::scope(|scope| {
             let spawned = thread::Builder::new()
                 .name("motion-js-quickjs".to_owned())
@@ -782,6 +794,7 @@ impl QuickJsEngine {
     }
 }
 
+#[cfg(feature = "test-faults")]
 impl Engine for QuickJsEngine {
     fn identity(&self) -> EngineIdentity {
         EngineIdentity {
@@ -808,19 +821,21 @@ impl Engine for QuickJsEngine {
     }
 }
 
-/// How the QuickJS backend is hosted. The default is worker-process isolation.
+/// How the QuickJS backend is hosted: always worker-process isolation in product builds.
 #[derive(Clone, Debug, Default)]
 pub struct QuickJsOptions {
-    /// TEST-ONLY escape hatch: run QuickJS inside the host process. Hostile source can abort the
-    /// host process and no wall-clock deadline can stop a non-cooperative script. Never set in
-    /// production.
+    /// TEST-ONLY escape hatch (`test-faults` feature): run QuickJS inside the caller's process.
+    /// Hostile source can abort that process and no wall-clock deadline can stop a non-cooperative
+    /// script.
+    #[cfg(feature = "test-faults")]
     pub unsafe_in_process: bool,
-    /// Worker-process settings (ignored when `unsafe_in_process` is set).
+    /// Worker-process settings.
     pub worker: WorkerConfig,
 }
 
 impl QuickJsOptions {
-    /// Explicit opt-in to the in-process engine (tests only).
+    /// Explicit opt-in to the in-process engine (`test-faults` feature, tests only).
+    #[cfg(feature = "test-faults")]
     pub fn unsafe_in_process() -> Self {
         Self {
             unsafe_in_process: true,
@@ -836,19 +851,23 @@ impl QuickJsOptions {
 }
 
 enum Backend {
+    #[cfg(feature = "test-faults")]
     InProcess(QuickJsEngine),
     Worker(Box<WorkerEngine>),
 }
 
-/// The QuickJS `Engine` adapter handed to `MotionJsProvider`: worker-process isolated unless
-/// `QuickJsOptions::unsafe_in_process` was requested.
+/// The QuickJS `Engine` adapter handed to `MotionJsProvider`: worker-process isolated (with
+/// `test-faults`, in-process when `QuickJsOptions::unsafe_in_process` was requested).
 pub struct QuickJsBackend(Backend);
 
 impl QuickJsBackend {
     /// Fail-closed configuration from validated `Quotas`.
     pub fn new(quotas: &Quotas, options: QuickJsOptions) -> Result<Self, QuickJsConfigError> {
-        if options.unsafe_in_process {
-            return Ok(Self(Backend::InProcess(QuickJsEngine::new(quotas)?)));
+        #[cfg(feature = "test-faults")]
+        {
+            if options.unsafe_in_process {
+                return Ok(Self(Backend::InProcess(QuickJsEngine::new(quotas)?)));
+            }
         }
         Ok(Self(Backend::Worker(Box::new(WorkerEngine::new(
             quotas,
@@ -863,15 +882,17 @@ impl QuickJsBackend {
     /// Process counters of the worker pool (`None` for the in-process engine).
     pub fn worker_stats(&self) -> Option<WorkerStats> {
         match &self.0 {
+            #[cfg(feature = "test-faults")]
             Backend::InProcess(_) => None,
             Backend::Worker(worker) => Some(worker.stats()),
         }
     }
 
-    /// Applies the configured limits to a throw-away runtime (inside the worker process when
-    /// isolated) and reads the heap limit back.
+    /// Applies the configured limits to a throw-away runtime inside the worker process and reads
+    /// the heap limit back.
     pub fn verify_limits(&self) -> Result<LimitReadback, EngineFailure> {
         match &self.0 {
+            #[cfg(feature = "test-faults")]
             Backend::InProcess(engine) => engine.verify_limits(),
             Backend::Worker(worker) => worker.verify_limits(),
         }
@@ -889,6 +910,7 @@ impl std::fmt::Debug for QuickJsBackend {
 impl Engine for QuickJsBackend {
     fn identity(&self) -> EngineIdentity {
         match &self.0 {
+            #[cfg(feature = "test-faults")]
             Backend::InProcess(engine) => engine.identity(),
             Backend::Worker(worker) => worker.identity(),
         }
@@ -896,6 +918,7 @@ impl Engine for QuickJsBackend {
 
     fn run(&self, job: &EvalJob<'_>, host: &mut dyn HostBridge) -> EngineRun {
         match &self.0 {
+            #[cfg(feature = "test-faults")]
             Backend::InProcess(engine) => engine.run(job, host),
             Backend::Worker(worker) => worker.run(job, host),
         }

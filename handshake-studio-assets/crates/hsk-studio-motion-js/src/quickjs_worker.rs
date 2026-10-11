@@ -26,6 +26,7 @@
 //! FFI, which this crate forbids; the heap limit inside the engine and the wall-clock kill are the
 //! enforced bounds. A worker abort may also trigger the platform crash reporter UI; suppressing it
 //! (`SetErrorMode`) needs the same FFI and is likewise NOT_PROVEN here.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::{
     clock::SystemClock,
     engine::{
@@ -35,11 +36,12 @@ use crate::{
     limits::{OUTPUT_NODES_CEILING, Quotas},
     quickjs::{
         ENGINE_VERSION, Input, LimitReadback, QuickJsConfigError, QuickJsEngine, RunOutcome,
-        RunReport, THREAD_STACK_HEADROOM, WorkerTestFault, drive, internal_report, run_realm,
-        validate_limits,
+        RunReport, THREAD_STACK_HEADROOM, drive, internal_report, run_realm, validate_limits,
     },
     quickjs_wire as wire,
 };
+#[cfg(feature = "test-faults")]
+use crate::quickjs::WorkerTestFault;
 use hsk_studio_accord::CancellationToken;
 use std::{
     collections::VecDeque,
@@ -63,6 +65,16 @@ const WAIT_SLICE: Duration = Duration::from_millis(5);
 const WATCHDOG_GRACE: Duration = Duration::from_secs(2);
 /// How long a worker that closed its stdout gets to exit naturally (to read its true exit code).
 const EXIT_PATIENCE: Duration = Duration::from_millis(500);
+/// Cap for a wait the platform clock cannot represent (`Instant` overflow).
+const LONGEST_WAIT: Duration = Duration::from_secs(86_400);
+
+/// `now + wait` without overflow: a wait the clock cannot represent is capped at `LONGEST_WAIT`.
+fn deadline_after(wait: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(wait)
+        .or_else(|| now.checked_add(LONGEST_WAIT))
+        .unwrap_or(now)
+}
 
 /// Win32 `CREATE_NO_WINDOW` process creation flag (0x08000000, Process Creation Flags, Win32 docs).
 #[cfg(windows)]
@@ -82,7 +94,8 @@ pub struct WorkerConfig {
     /// Added to the evaluation deadline before the host kills the worker, so a cooperative
     /// in-engine deadline normally answers first.
     pub kill_grace: Duration,
-    #[doc(hidden)]
+    /// Fault the spawned workers inject (`test-faults` feature only; product builds have no field).
+    #[cfg(feature = "test-faults")]
     pub test_fault: WorkerTestFault,
 }
 
@@ -94,6 +107,7 @@ impl Default for WorkerConfig {
             spawn_window: Duration::from_secs(10),
             spawn_timeout: Duration::from_secs(10),
             kill_grace: Duration::from_millis(250),
+            #[cfg(feature = "test-faults")]
             test_fault: WorkerTestFault::None,
         }
     }
@@ -186,7 +200,7 @@ impl Session {
     /// Reaps the child, killing it if it is still running after `patience`. Returns whether the
     /// process is provably gone and, if it exited by itself, its exit code.
     fn terminate(&mut self, patience: Duration) -> (bool, Option<i32>) {
-        let until = Instant::now() + patience;
+        let until = deadline_after(patience);
         loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => return (true, status.code()),
@@ -262,6 +276,7 @@ pub(crate) struct WorkerEngine {
     spawn_window: Duration,
     spawn_timeout: Duration,
     kill_grace: Duration,
+    #[cfg(feature = "test-faults")]
     fault_env: Option<&'static str>,
     max_idle: usize,
     idle: Mutex<Vec<Session>>,
@@ -295,6 +310,7 @@ impl WorkerEngine {
             spawn_window: config.spawn_window,
             spawn_timeout: config.spawn_timeout,
             kill_grace: config.kill_grace,
+            #[cfg(feature = "test-faults")]
             fault_env: config.test_fault.env_value(),
             max_idle: usize::try_from(quotas.max_concurrent_realms())
                 .unwrap_or(1)
@@ -350,8 +366,11 @@ impl WorkerEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .env_clear();
-        if let Some(value) = self.fault_env {
-            command.env(WorkerTestFault::ENV, value);
+        #[cfg(feature = "test-faults")]
+        {
+            if let Some(value) = self.fault_env {
+                command.env(WorkerTestFault::ENV, value);
+            }
         }
         quiet(&mut command);
         let mut child = command.spawn().map_err(|_| spawn_failed())?;
@@ -470,7 +489,7 @@ impl WorkerEngine {
             self.checkin(session);
             return failed(EngineFailure::Budget(BudgetKind::Memory), true);
         }
-        let wall = Instant::now() + Duration::from_nanos(remaining_ns) + self.kill_grace;
+        let wall = deadline_after(Duration::from_nanos(remaining_ns).saturating_add(self.kill_grace));
         let reply = self.exchange(
             &mut session,
             frame,
@@ -503,7 +522,7 @@ impl WorkerEngine {
             u64::try_from(self.memory_bytes).unwrap_or(u64::MAX),
             u64::try_from(self.stack_bytes).unwrap_or(u64::MAX),
         );
-        let wall = Instant::now() + self.spawn_timeout;
+        let wall = deadline_after(self.spawn_timeout);
         let bytes = self
             .exchange(
                 &mut session,
@@ -559,20 +578,33 @@ impl WorkerEngine {
 // Worker process side.
 // ---------------------------------------------------------------------------------------------
 
-fn evaluate(request: wire::EvalRequest, fault: WorkerTestFault) -> Option<RunReport> {
+/// Fault this worker injects, read once from its environment (`test-faults` feature only: a product
+/// worker has no such read, `tests/worker_fault_env.rs`).
+#[cfg(feature = "test-faults")]
+fn injected_fault() -> WorkerTestFault {
+    static FAULT: std::sync::OnceLock<WorkerTestFault> = std::sync::OnceLock::new();
+    *FAULT.get_or_init(WorkerTestFault::from_env)
+}
+
+fn evaluate(request: wire::EvalRequest) -> Option<RunReport> {
     let Ok((memory_bytes, stack_bytes)) =
         validate_limits(request.memory_bytes, request.stack_bytes)
     else {
         return Some(internal_report());
     };
-    if fault == WorkerTestFault::ExitMidRequest && request.source.contains("exit_now") {
-        std::process::exit(86);
+    #[cfg(feature = "test-faults")]
+    {
+        if injected_fault() == WorkerTestFault::ExitMidRequest
+            && request.source.contains("exit_now")
+        {
+            std::process::exit(86);
+        }
     }
     let remaining = Duration::from_nanos(request.remaining_ns);
     let (done, result) = mpsc::channel();
     let spawned = thread::Builder::new()
         .name("motion-js-quickjs".to_owned())
-        .stack_size(stack_bytes + THREAD_STACK_HEADROOM)
+        .stack_size(stack_bytes.saturating_add(THREAD_STACK_HEADROOM))
         .spawn(move || {
             let input = Input {
                 source: &request.source,
@@ -588,7 +620,8 @@ fn evaluate(request: wire::EvalRequest, fault: WorkerTestFault) -> Option<RunRep
                 deadline_ns: request.remaining_ns,
                 cache: &request.cache,
                 utc: request.utc,
-                fault,
+                #[cfg(feature = "test-faults")]
+                fault: injected_fault(),
             };
             let _ = done.send(run_realm(input));
         });
@@ -611,7 +644,6 @@ fn verify(memory: u64, stack: u64) -> Result<LimitReadback, ()> {
 /// Entry point of the `motion-js-worker` binary; returns the process exit code. Reads request
 /// frames from stdin, writes reply frames to stdout, and exits 0 when stdin closes.
 pub fn worker_main() -> i32 {
-    let fault = WorkerTestFault::from_env();
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let stdout = io::stdout();
@@ -626,7 +658,7 @@ pub fn worker_main() -> i32 {
             Err(_) => return 2,
         };
         let reply = match wire::decode_request(&frame) {
-            Ok(wire::Request::Eval(id, request)) => match evaluate(request, fault) {
+            Ok(wire::Request::Eval(id, request)) => match evaluate(request) {
                 Some(report) => wire::encode_report(id, &report),
                 None => return 4,
             },

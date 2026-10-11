@@ -1,8 +1,9 @@
 #![cfg(feature = "quickjs")]
 //! QuickJS backend contract (run with `--features quickjs`). Numeric expectations are hand-computed
 //! (e.g. sum 0..49999 = 1_249_975_000); policy expectations come from the adoption review controls.
-//! The suite runs against the explicit `unsafe_in_process` engine by default; set
-//! `HSK_MOTION_JS_TEST_BACKEND=worker` to run the identical assertions against the worker process.
+//! Without `test-faults` (product build) the suite runs against the worker process; with `test-faults`
+//! it runs against the explicit `unsafe_in_process` engine unless `HSK_MOTION_JS_TEST_BACKEND=worker`
+//! selects the worker. The assertions are identical for both backends.
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_motion::*;
 use hsk_studio_motion_js::*;
@@ -47,11 +48,13 @@ impl HostRead for Host {
 type P = MotionJsProvider<QuickJsBackend>;
 
 fn options() -> QuickJsOptions {
-    if std::env::var("HSK_MOTION_JS_TEST_BACKEND").as_deref() == Ok("worker") {
-        QuickJsOptions::default().with_worker_program(env!("CARGO_BIN_EXE_motion-js-worker"))
-    } else {
-        QuickJsOptions::unsafe_in_process()
+    #[cfg(feature = "test-faults")]
+    {
+        if std::env::var("HSK_MOTION_JS_TEST_BACKEND").as_deref() != Ok("worker") {
+            return QuickJsOptions::unsafe_in_process();
+        }
     }
+    QuickJsOptions::default().with_worker_program(env!("CARGO_BIN_EXE_motion-js-worker"))
 }
 
 fn backend(spec: QuotaSpec) -> Result<QuickJsBackend, QuickJsConfigError> {
@@ -177,18 +180,21 @@ fn quickjs_limits_interrupt_and_fuel() {
         let (first, second) = (used(()), used(()));
         assert!(first >= 1 && first == second, "{first} {second}");
 
-        // Heap limit (4 MiB) and stack limit (512 KiB) are denied, not crashed, even from a caller
-        // thread whose own stack is far smaller (the engine runs on its own sized worker stack).
-        assert_eq!(code(eval(&provider, "'x'.repeat(100000000).length", 1)).0, ExprErrorCode::Budget);
-        assert_eq!(provider.stats().denied(BudgetKind::Memory), 1);
+        // Heap limit (4 MiB) and stack limit (512 KiB) stop the script with a typed rejection, not a
+        // crash or a poison, even from a caller thread whose own stack is far smaller (the engine runs
+        // on its own sized stack). QuickJS reports both limits as catchable errors a script can forge,
+        // so they are thrown errors (Unsupported), never counted budget denials (STUDIO-R5).
+        assert_eq!(code(eval(&provider, "'x'.repeat(100000000).length", 1)).0, ExprErrorCode::Unsupported);
+        assert_eq!(provider.stats().denied(BudgetKind::Memory), 0);
         let small = thread::Builder::new().stack_size(128 << 10).spawn({
             let provider = provider_with(QuotaSpec::default());
             move || {
                 let denied = eval(&provider, "function f() { return f() + 1 } f()", 1);
-                (code(denied).0, provider.stats().denied(BudgetKind::Stack))
+                (code(denied).0, provider.stats().denied(BudgetKind::Stack), provider.is_poisoned())
             }
         });
-        assert_eq!(small.unwrap().join().unwrap(), (ExprErrorCode::Budget, 1));
+        assert_eq!(small.unwrap().join().unwrap(), (ExprErrorCode::Unsupported, 0, false));
+        assert!(!provider.is_poisoned());
 
         // Host-read quota (2): the third distinct read is denied.
         let mut fuel = Fuel::new(10);
@@ -334,6 +340,35 @@ fn quickjs_user_getters_cannot_run_unmetered() {
     });
 }
 
+/// R5 (SMB-MOTION-JS FAIL_V2, diagnostics/motion-js-classify.md): a script must not be able to report
+/// itself as a stack or memory budget denial. QuickJS limit errors are catchable objects identical to
+/// user-constructed ones, so no realm-visible text or shape may select a budget class.
+#[test]
+fn quickjs_forged_budget_messages_are_thrown_not_budget() {
+    bounded_case("quickjs_forged_budget_messages_are_thrown_not_budget", || {
+        let provider = provider_with(QuotaSpec::default());
+        for source in [
+            // stack
+            "throw new RangeError('Maximum call stack size exceeded')",
+            "var e = new RangeError('x'); e.message = 'Maximum call stack size exceeded'; throw e",
+            "throw Object.create(RangeError.prototype, { message: { value: 'Maximum call stack size exceeded' } })",
+            "try { null.x } catch (e) { Object.setPrototypeOf(e, RangeError.prototype); e.message = 'Maximum call stack size exceeded'; throw e }",
+            // memory
+            "throw new InternalError('out of memory')",
+            "var e = new InternalError('x'); e.message = 'out of memory'; throw e",
+            "throw Object.create(InternalError.prototype, { message: { value: 'out of memory' } })",
+            // the denial marker of the bootstrap throwers
+            "throw new TypeError('motionjs-unavailable: eval')",
+        ] {
+            assert_eq!(code(eval(&provider, source, 1)).0, ExprErrorCode::Unsupported, "{source}");
+        }
+        let stats = provider.stats();
+        assert_eq!((stats.denied(BudgetKind::Stack), stats.denied(BudgetKind::Memory)), (0, 0), "{stats:?}");
+        assert!(!provider.is_poisoned());
+        assert_eq!(eval(&provider, "1+2", 1), Ok(vec![3.0]));
+    });
+}
+
 #[test]
 fn quickjs_user_error_names_cannot_poison_provider() {
     bounded_case("quickjs_user_error_names_cannot_poison_provider", || {
@@ -349,9 +384,10 @@ fn quickjs_user_error_names_cannot_poison_provider() {
             assert!(!provider.is_poisoned(), "poisoned by {source}");
         }
         assert_eq!(eval(&provider, "1+2", 1), Ok(vec![3.0]));
-        // A genuine engine failure keeps its engine-signal classification.
+        // A genuine heap-limit hit is a thrown error like the forged ones above (no realm-visible signal
+        // tells them apart), and it never poisons the provider either.
         let tight = provider_with(QuotaSpec { memory_bytes: 4 << 20, ..QuotaSpec::default() });
-        assert_eq!(code(eval(&tight, "'x'.repeat(100000000).length", 1)).0, ExprErrorCode::Budget);
+        assert_eq!(code(eval(&tight, "'x'.repeat(100000000).length", 1)).0, ExprErrorCode::Unsupported);
         assert!(!tight.is_poisoned());
         let report = provider.retire();
         assert!(report.is_clean(), "{report:?}");

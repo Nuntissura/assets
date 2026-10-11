@@ -2,7 +2,7 @@
 //! With `--features quickjs`: `--engine quickjs` evaluates real JavaScript in the isolated
 //! `motion-js-worker` process (must sit next to this executable or one directory above it);
 //! `--engine quickjs-unsafe-in-process` is the test-only in-process engine (hostile source can abort
-//! this process).
+//! this process); it exists only with `--features quickjs,test-faults`, otherwise `engine_unavailable`.
 //! `motion-js-consumer --eval "num:3" [--engine scripted|quickjs|quickjs-unsafe-in-process] [--fuel N] [--dimension N]`
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_motion::{EvalTick, ExprRequest, ExpressionProvider, Fuel, HostRead, NoHost};
@@ -59,9 +59,13 @@ fn run() -> Result<(), String> {
     match engine {
         "scripted" => evaluate(ScriptedEngine::new(), quotas, &source, fuel, dimension),
         #[cfg(feature = "quickjs")]
-        "quickjs" | "quickjs-unsafe-in-process" => {
-            let options = if engine == "quickjs" { QuickJsOptions::default() } else { QuickJsOptions::unsafe_in_process() };
-            let engine = QuickJsBackend::new(&quotas, options).map_err(|error| error.code().to_owned())?;
+        "quickjs" => {
+            let engine = QuickJsBackend::new(&quotas, QuickJsOptions::default()).map_err(|error| error.code().to_owned())?;
+            evaluate(engine, quotas, &source, fuel, dimension);
+        }
+        #[cfg(all(feature = "quickjs", feature = "test-faults"))]
+        "quickjs-unsafe-in-process" => {
+            let engine = QuickJsBackend::new(&quotas, QuickJsOptions::unsafe_in_process()).map_err(|error| error.code().to_owned())?;
             evaluate(engine, quotas, &source, fuel, dimension);
         }
         _ => return Err("engine_unavailable".into()),

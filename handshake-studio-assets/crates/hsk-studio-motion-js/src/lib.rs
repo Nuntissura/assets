@@ -26,8 +26,10 @@ pub use provider::{MotionJsProvider, PROFILE_ID, ProviderStats, RetireReport, re
 #[cfg(feature = "quickjs")]
 pub use quickjs::{
     LimitReadback, QuickJsBackend, QuickJsConfigError, QuickJsOptions, WRAPPER_STACK_LIMIT,
-    WorkerTestFault,
 };
+/// Worker fault injection for this crate's isolation tests (non-default `test-faults` feature only).
+#[cfg(all(feature = "quickjs", feature = "test-faults"))]
+pub use quickjs::WorkerTestFault;
 #[cfg(feature = "quickjs")]
 pub use quickjs_worker::{WORKER_PROGRAM, WorkerConfig, WorkerStats, worker_main};
 pub use scripted::ScriptedEngine;

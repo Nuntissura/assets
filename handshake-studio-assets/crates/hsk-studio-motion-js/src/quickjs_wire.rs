@@ -6,6 +6,7 @@
 //! HELLO frame (version + engine identity); every reply echoes the id of its request, so a stale or
 //! mismatched frame is a protocol fault. All decoding is bounds-checked; a malformed frame never
 //! panics and never allocates beyond the bytes actually present in the frame.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::{
     engine::{BudgetKind, EngineFailure, JsValue, ThrownKind},
     quickjs::{ENGINE_VERSION, Input, LimitReadback, Pending, ReadKey, RunEnd, RunReport},
@@ -60,7 +61,7 @@ pub(crate) fn read_frame(reader: &mut impl Read, cap: usize) -> Result<Vec<u8>, 
 
 pub(crate) fn write_frame(writer: &mut impl Write, payload: &[u8]) -> io::Result<()> {
     let length = u32::try_from(payload.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
-    let mut frame = Vec::with_capacity(4 + payload.len());
+    let mut frame = Vec::with_capacity(payload.len().saturating_add(4));
     frame.extend_from_slice(&length.to_le_bytes());
     frame.extend_from_slice(payload);
     writer.write_all(&frame)?;
@@ -178,7 +179,7 @@ impl<'a> In<'a> {
         let count = usize::try_from(self.u32()?).map_err(|_| WireError::Malformed)?;
         if count
             .checked_mul(each.max(1))
-            .is_none_or(|bytes| bytes > self.buf.len() - self.pos)
+            .is_none_or(|bytes| bytes > self.buf.len().saturating_sub(self.pos))
         {
             return Err(WireError::Malformed);
         }
@@ -556,10 +557,9 @@ pub(crate) fn response_cap(input: &Input<'_>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        clock::ManualClock,
-        quickjs::{Input, WorkerTestFault},
-    };
+    #[cfg(feature = "test-faults")]
+    use crate::quickjs::WorkerTestFault;
+    use crate::{clock::ManualClock, quickjs::Input};
     use hsk_studio_accord::CancellationToken;
     use std::sync::Arc;
 
@@ -600,6 +600,7 @@ mod tests {
             deadline_ns: 5,
             cache: &cache,
             utc: Some(1001),
+            #[cfg(feature = "test-faults")]
             fault: WorkerTestFault::None,
         };
         let Ok(Request::Eval(id, got)) = decode_request(&encode_eval(42, &input, 250_000_000))
