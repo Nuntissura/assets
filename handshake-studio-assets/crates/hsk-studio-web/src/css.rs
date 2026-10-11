@@ -1,6 +1,8 @@
-//! Bounded CSS helpers for the subset the web module understands: `url(...)`/`@import` references, a flat
-//! rule scanner with `@media` contexts, simple selectors and declaration lists. Nothing here evaluates
-//! layout or the full cascade; whatever falls outside the subset is reported, never guessed.
+//! Bounded CSS helpers for the subset the web module understands: a flat rule scanner with `@media`
+//! contexts, simple selectors and declaration lists (URL references live in `cssurl`). Nothing here
+//! evaluates layout or the full cascade; whatever falls outside the subset is reported, not guessed.
+
+#![deny(clippy::arithmetic_side_effects)]
 
 use crate::dom::{Limits, find};
 use crate::error::{LimitKind, MalformedKind, WebError};
@@ -18,76 +20,23 @@ fn is_ident_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
 }
 
+/// Index arithmetic that cannot overflow (all indices are bounded by the source length).
+fn add(a: usize, b: usize) -> usize {
+    a.saturating_add(b)
+}
+
 /// End index (exclusive) of the string literal starting at `b[i]`; `None` when unterminated.
 fn skip_string(b: &[u8], i: usize) -> Option<usize> {
     let q = b[i];
-    let mut j = i + 1;
+    let mut j = add(i, 1);
     loop {
         match b.get(j) {
             None | Some(b'\n') => return None,
-            Some(b'\\') => j += 2,
-            Some(&c) if c == q => return Some(j + 1),
-            Some(_) => j += 1,
+            Some(b'\\') => j = add(j, 2),
+            Some(&c) if c == q => return Some(add(j, 1)),
+            Some(_) => j = add(j, 1),
         }
     }
-}
-
-/// Ranges of reference text in `url(...)` and `@import "..."` (comments and unrelated strings skipped).
-pub(crate) fn css_references(css: &str, limit: usize) -> Vec<Range<usize>> {
-    let b = css.as_bytes();
-    let len = b.len();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < len && out.len() < limit {
-        match b[i] {
-            b'/' if b.get(i + 1) == Some(&b'*') => match find(&b[i + 2..], b"*/") {
-                Some(off) => i += 2 + off + 2,
-                None => break,
-            },
-            b'"' | b'\'' => i = skip_string(b, i).unwrap_or(len),
-            b'@' if b.len() >= i + 7 && b[i + 1..i + 7].eq_ignore_ascii_case(b"import") => {
-                let mut j = i + 7;
-                while j < len && b[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j < len
-                    && matches!(b[j], b'"' | b'\'')
-                    && let Some(end) = skip_string(b, j)
-                {
-                    out.push(j + 1..end - 1);
-                    i = end;
-                } else {
-                    i += 7;
-                }
-            }
-            b'u' | b'U' if b.len() >= i + 4 && b[i..i + 4].eq_ignore_ascii_case(b"url(") && (i == 0 || !is_ident_byte(b[i - 1])) => {
-                let mut j = i + 4;
-                while j < len && b[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j < len && matches!(b[j], b'"' | b'\'') {
-                    match skip_string(b, j) {
-                        Some(end) => {
-                            out.push(j + 1..end - 1);
-                            i = end;
-                        }
-                        None => break,
-                    }
-                } else {
-                    let mut k = j;
-                    while k < len && b[k] != b')' && !b[k].is_ascii_whitespace() {
-                        k += 1;
-                    }
-                    if k > j {
-                        out.push(j..k);
-                    }
-                    i = k.max(i + 4);
-                }
-            }
-            _ => i += 1,
-        }
-    }
-    out
 }
 
 pub(crate) struct MediaCtx {
@@ -134,24 +83,24 @@ fn prelude_end(b: &[u8], from: usize, base: usize) -> Result<(usize, u8), WebErr
     let (mut j, mut parens) = (from, 0usize);
     while j < len {
         match b[j] {
-            b'/' if b.get(j + 1) == Some(&b'*') => match find(&b[j + 2..], b"*/") {
-                Some(off) => j += 2 + off + 2,
-                None => return Err(css_error(base + j..base + len)),
+            b'/' if b.get(add(j, 1)) == Some(&b'*') => match find(&b[add(j, 2)..], b"*/") {
+                Some(off) => j = add(add(j, 2), add(off, 2)),
+                None => return Err(css_error(add(base, j)..add(base, len))),
             },
-            b'"' | b'\'' => j = skip_string(b, j).ok_or_else(|| css_error(base + j..base + len))?,
+            b'"' | b'\'' => j = skip_string(b, j).ok_or_else(|| css_error(add(base, j)..add(base, len)))?,
             b'(' => {
-                parens += 1;
-                j += 1;
+                parens = add(parens, 1);
+                j = add(j, 1);
             }
             b')' => {
                 parens = parens.saturating_sub(1);
-                j += 1;
+                j = add(j, 1);
             }
             c @ (b'{' | b';' | b'}') if parens == 0 => return Ok((j, c)),
-            _ => j += 1,
+            _ => j = add(j, 1),
         }
     }
-    Err(css_error(base + from..base + len))
+    Err(css_error(add(base, from)..add(base, len)))
 }
 
 /// End (exclusive) of the block opened at `b[open]`, and whether it contains a nested block.
@@ -160,33 +109,34 @@ fn block_end(b: &[u8], open: usize, base: usize) -> Result<(usize, bool), WebErr
     let (mut j, mut depth, mut nested) = (open, 0usize, false);
     while j < len {
         match b[j] {
-            b'/' if b.get(j + 1) == Some(&b'*') => match find(&b[j + 2..], b"*/") {
-                Some(off) => j += 2 + off + 2,
-                None => return Err(css_error(base + j..base + len)),
+            b'/' if b.get(add(j, 1)) == Some(&b'*') => match find(&b[add(j, 2)..], b"*/") {
+                Some(off) => j = add(add(j, 2), add(off, 2)),
+                None => return Err(css_error(add(base, j)..add(base, len))),
             },
-            b'"' | b'\'' => j = skip_string(b, j).ok_or_else(|| css_error(base + j..base + len))?,
+            b'"' | b'\'' => j = skip_string(b, j).ok_or_else(|| css_error(add(base, j)..add(base, len)))?,
             b'{' => {
-                depth += 1;
+                depth = add(depth, 1);
                 nested |= depth > 1;
-                j += 1;
+                j = add(j, 1);
             }
             b'}' => {
-                depth -= 1;
-                j += 1;
+                depth = depth.saturating_sub(1);
+                j = add(j, 1);
                 if depth == 0 {
                     return Ok((j, nested));
                 }
             }
-            _ => j += 1,
+            _ => j = add(j, 1),
         }
     }
-    Err(css_error(base + open..base + len))
+    Err(css_error(add(base, open)..add(base, len)))
 }
 
 fn trimmed(css: &str, range: Range<usize>) -> Range<usize> {
     let raw = &css[range.clone()];
-    let lead = raw.len() - raw.trim_start().len();
-    range.start + lead..range.start + lead + raw.trim().len()
+    let lead = raw.len().saturating_sub(raw.trim_start().len());
+    let start = add(range.start, lead);
+    start..add(start, raw.trim().len())
 }
 
 /// Scan one stylesheet body into `out` (flat rules with their `@media` context chain). Spans are document
@@ -205,10 +155,10 @@ pub(crate) fn parse_stylesheet(
     loop {
         while i < len {
             if b[i].is_ascii_whitespace() {
-                i += 1;
-            } else if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
-                let off = find(&b[i + 2..], b"*/").ok_or_else(|| css_error(base + i..base + len))?;
-                i += 2 + off + 2;
+                i = add(i, 1);
+            } else if b[i] == b'/' && b.get(add(i, 1)) == Some(&b'*') {
+                let off = find(&b[add(i, 2)..], b"*/").ok_or_else(|| css_error(add(base, i)..add(base, len)))?;
+                i = add(add(i, 2), add(off, 2));
             } else {
                 break;
             }
@@ -220,41 +170,45 @@ pub(crate) fn parse_stylesheet(
         if ticks & 0xff == 0 {
             cancel.check()?;
         }
-        if out.rules.len() + out.media.len() >= limits.max_rules {
-            return Err(WebError::LimitExceeded { limit: LimitKind::Rules, span: base + i..base + i + 1 });
+        if add(out.rules.len(), out.media.len()) >= limits.max_rules {
+            return Err(WebError::LimitExceeded { limit: LimitKind::Rules, span: add(base, i)..add(base, add(i, 1)) });
         }
         match b[i] {
             b'}' => {
                 if stack.pop().is_none() {
-                    return Err(css_error(base + i..base + i + 1));
+                    return Err(css_error(add(base, i)..add(base, add(i, 1))));
                 }
-                i += 1;
+                i = add(i, 1);
             }
             b'@' => {
-                let mut name_end = i + 1;
+                let mut name_end = add(i, 1);
                 while name_end < len && is_ident_byte(b[name_end]) {
-                    name_end += 1;
+                    name_end = add(name_end, 1);
                 }
-                let name = css[i + 1..name_end].to_ascii_lowercase();
+                let name = css[add(i, 1)..name_end].to_ascii_lowercase();
                 let (end, term) = prelude_end(b, name_end, base)?;
                 if name == "media" && term == b'{' {
                     if stack.len() >= MAX_MEDIA_NESTING {
-                        return Err(WebError::LimitExceeded { limit: LimitKind::Depth, span: base + i..base + end });
+                        return Err(WebError::LimitExceeded { limit: LimitKind::Depth, span: add(base, i)..add(base, end) });
                     }
                     let q = trimmed(css, name_end..end);
-                    let breakpoints = parse_media_query(&css[q.clone()]).map_err(|e| e.shift(base + q.start));
-                    out.media.push(MediaCtx { query_span: base + q.start..base + q.end, breakpoints, parent: stack.last().copied() });
-                    stack.push(out.media.len() - 1);
-                    i = end + 1;
+                    let breakpoints = parse_media_query(&css[q.clone()]).map_err(|e| e.shift(add(base, q.start)));
+                    out.media.push(MediaCtx {
+                        query_span: add(base, q.start)..add(base, q.end),
+                        breakpoints,
+                        parent: stack.last().copied(),
+                    });
+                    stack.push(out.media.len().saturating_sub(1));
+                    i = add(end, 1);
                 } else if term == b'{' {
                     let (after, _) = block_end(b, end, base)?;
-                    out.unsupported.push((base + i..base + after, RuleRefusal::AtRule));
+                    out.unsupported.push((add(base, i)..add(base, after), RuleRefusal::AtRule));
                     i = after;
                 } else if term == b';' {
-                    out.unsupported.push((base + i..base + end + 1, RuleRefusal::AtRule));
-                    i = end + 1;
+                    out.unsupported.push((add(base, i)..add(base, add(end, 1)), RuleRefusal::AtRule));
+                    i = add(end, 1);
                 } else {
-                    out.unsupported.push((base + i..base + end, RuleRefusal::AtRule));
+                    out.unsupported.push((add(base, i)..add(base, end), RuleRefusal::AtRule));
                     i = end;
                 }
             }
@@ -265,22 +219,22 @@ pub(crate) fn parse_stylesheet(
                     b'{' => {
                         let (after, nested) = block_end(b, end, base)?;
                         if nested {
-                            out.unsupported.push((base + sel.start..base + after, RuleRefusal::NestedBlock));
+                            out.unsupported.push((add(base, sel.start)..add(base, after), RuleRefusal::NestedBlock));
                         } else {
                             out.rules.push(RawRule {
-                                selector_span: base + sel.start..base + sel.end,
-                                decl_span: base + end + 1..base + after - 1,
+                                selector_span: add(base, sel.start)..add(base, sel.end),
+                                decl_span: add(base, add(end, 1))..add(base, after.saturating_sub(1)),
                                 media: stack.last().copied(),
                             });
                         }
                         i = after;
                     }
                     b';' => {
-                        out.unsupported.push((base + sel.start..base + end + 1, RuleRefusal::Selector));
-                        i = end + 1;
+                        out.unsupported.push((add(base, sel.start)..add(base, add(end, 1)), RuleRefusal::Selector));
+                        i = add(end, 1);
                     }
                     _ => {
-                        out.unsupported.push((base + sel.start..base + end, RuleRefusal::Selector));
+                        out.unsupported.push((add(base, sel.start)..add(base, end), RuleRefusal::Selector));
                         i = end;
                     }
                 }
@@ -288,7 +242,7 @@ pub(crate) fn parse_stylesheet(
         }
     }
     if !stack.is_empty() {
-        return Err(css_error(base + len..base + len));
+        return Err(css_error(add(base, len)..add(base, len)));
     }
     Ok(())
 }
@@ -302,7 +256,11 @@ pub(crate) struct Compound {
 }
 impl Compound {
     pub fn specificity(&self) -> u32 {
-        self.ids.len() as u32 * 100 + self.classes.len() as u32 * 10 + u32::from(self.tag.is_some())
+        let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        count(self.ids.len())
+            .saturating_mul(100)
+            .saturating_add(count(self.classes.len()).saturating_mul(10))
+            .saturating_add(u32::from(self.tag.is_some()))
     }
     pub fn matches(&self, e: &ElemInfo) -> bool {
         self.tag.as_ref().is_none_or(|t| *t == e.tag)
@@ -323,9 +281,9 @@ fn ident(s: &str, from: usize) -> Option<usize> {
     if !(first.is_ascii_alphabetic() || first == b'_' || first == b'-') {
         return None;
     }
-    let mut j = from + 1;
+    let mut j = add(from, 1);
     while j < b.len() && is_ident_byte(b[j]) {
-        j += 1;
+        j = add(j, 1);
     }
     Some(j)
 }
@@ -349,10 +307,11 @@ pub(crate) fn parse_selectors(text: &str) -> Option<Vec<Compound>> {
         }
         while i < part.len() {
             let kind = part.as_bytes()[i];
-            let end = ident(part, i + 1)?;
+            let name_start = add(i, 1);
+            let end = ident(part, name_start)?;
             match kind {
-                b'.' => c.classes.push(part[i + 1..end].to_owned()),
-                b'#' => c.ids.push(part[i + 1..end].to_owned()),
+                b'.' => c.classes.push(part[name_start..end].to_owned()),
+                b'#' => c.ids.push(part[name_start..end].to_owned()),
                 _ => return None,
             }
             i = end;
@@ -384,7 +343,7 @@ pub(crate) fn parse_declarations(text: &str) -> Vec<Declaration> {
         let mut important = false;
         let lower = value.to_ascii_lowercase();
         if let Some(pos) = lower.rfind("!important")
-            && lower[pos + 10..].trim().is_empty()
+            && lower[add(pos, 10)..].trim().is_empty()
         {
             value.truncate(pos);
             value = value.trim_end().to_owned();
@@ -397,11 +356,11 @@ pub(crate) fn parse_declarations(text: &str) -> Vec<Declaration> {
             (Some(q), c) if c == q => quote = None,
             (Some(_), _) => {}
             (None, b'"' | b'\'') => quote = Some(c),
-            (None, b'(') => parens += 1,
+            (None, b'(') => parens = add(parens, 1),
             (None, b')') => parens = parens.saturating_sub(1),
             (None, b';') if parens == 0 => {
                 push(&text[start..i]);
-                start = i + 1;
+                start = add(i, 1);
             }
             _ => {}
         }

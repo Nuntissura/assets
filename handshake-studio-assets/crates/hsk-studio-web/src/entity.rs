@@ -4,6 +4,8 @@
 //! numeric references that are NUL, a surrogate or above U+10FFFF decode to U+FFFD as HTML specifies;
 //! a well-formed named reference outside the common set is left verbatim and reported in `unresolved`.
 
+#![deny(clippy::arithmetic_side_effects)]
+
 use std::ops::Range;
 
 pub struct Decoded {
@@ -14,7 +16,7 @@ pub struct Decoded {
 
 const MAX_REF_LEN: usize = 32;
 
-fn named(name: &str) -> Option<char> {
+pub(crate) fn named(name: &str) -> Option<char> {
     Some(match name {
         "amp" | "AMP" => '&',
         "lt" | "LT" => '<',
@@ -90,14 +92,16 @@ pub fn decode_entities(input: &str) -> Decoded {
     let mut last = 0;
     let mut i = 0;
     while let Some(off) = bytes[i..].iter().position(|&c| c == b'&') {
-        let amp = i + off;
-        let window_end = (amp + 1 + MAX_REF_LEN).min(bytes.len());
-        let Some(semi) = bytes[amp + 1..window_end].iter().position(|&c| c == b';') else {
-            i = amp + 1;
+        let amp = i.saturating_add(off);
+        let body_start = amp.saturating_add(1);
+        let window_end = body_start.saturating_add(MAX_REF_LEN).min(bytes.len());
+        let Some(semi) = bytes[body_start..window_end].iter().position(|&c| c == b';') else {
+            i = body_start;
             continue;
         };
-        let body = &input[amp + 1..amp + 1 + semi];
-        let end = amp + 1 + semi + 1;
+        let body_end = body_start.saturating_add(semi);
+        let body = &input[body_start..body_end];
+        let end = body_end.saturating_add(1);
         let decoded = match body.strip_prefix('#') {
             Some(n) => numeric(n),
             None => named(body),
@@ -111,7 +115,7 @@ pub fn decode_entities(input: &str) -> Decoded {
             None if looks_like_reference(body) => unresolved.push(amp..end),
             None => {}
         }
-        i = if decoded.is_some() { end } else { amp + 1 };
+        i = if decoded.is_some() { end } else { body_start };
     }
     text.push_str(&input[last..]);
     Decoded { text, unresolved }

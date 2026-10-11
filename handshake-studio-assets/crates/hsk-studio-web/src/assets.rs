@@ -1,12 +1,21 @@
-//! Granted asset resolution. The crate never fetches, opens or resolves anything itself: every reference
-//! found in the source is classified, and only relative references reach the caller's `AssetPort`, which
-//! alone decides what is granted. External, protocol-relative, `file:`, script and other scheme URLs are
-//! typed `Denied` without the port being consulted.
+//! Granted asset resolution. The crate does not fetch, open or resolve anything itself: every reference found
+//! in the source is classified, and only relative references reach the caller's `AssetPort`, which alone decides
+//! what is granted. External, protocol-relative, `file:`, script and other scheme URLs are typed `Denied`
+//! without the port being consulted (tests: `external_asset_denial_cancel_stale` plus the R5 regressions
+//! `css_escapes_cannot_hide_external_urls`, `css_decoys_case_and_whitespace_follow_the_tokenizer`,
+//! `character_references_cannot_hide_schemes`, `base_href_re_targets_every_relative_reference`,
+//! `more_url_attributes_and_foreign_content_are_scanned`, `ambiguous_relative_paths_never_reach_the_port`).
+//!
+//! Values are decoded the way a browser reads them before they are classified: HTML character references
+//! (`charref`) for attribute values and foreign-content text, then CSS escapes (`cssurl`, CSS Syntax Level 3
+//! tokenization) for style text. A value that still holds a reference this crate cannot decode is
+//! `Denied(UndecodableReference)`.
+#![deny(clippy::arithmetic_side_effects)]
 
-use crate::css::css_references;
-use crate::dom::{ContentModel, NodeId, NodeKind, WebDoc};
-use crate::entity::decode_entities;
-use crate::error::WebError;
+use crate::charref::decode_value;
+use crate::cssurl::css_references;
+use crate::dom::{NodeId, NodeKind, WebDoc};
+use crate::error::{LimitKind, WebError};
 use hsk_studio_accord::CancellationToken;
 use std::ops::Range;
 
@@ -17,7 +26,10 @@ pub enum AssetDecision {
     Unavailable,
 }
 
-/// Caller-owned grant lookup for relative references. Must not block, fetch or have side effects.
+/// Caller-owned grant lookup for relative references. Must not block, fetch or have side effects. A reference
+/// that climbs out with plain `..` segments is the port's containment decision: the document location is not
+/// known here (backslashes and percent-encoded dots/slashes are refused before the port, see
+/// `DenyReason::AmbiguousPath`).
 pub trait AssetPort: Send + Sync {
     fn resolve(&self, reference: &str) -> AssetDecision;
 }
@@ -31,8 +43,18 @@ pub enum DenyReason {
     FileScheme,
     /// `javascript:` and `vbscript:`.
     ScriptScheme,
-    /// Port answered `Denied`, or the reference carries control characters.
+    /// Port answered `Denied`, the reference carries control characters, or it is a bad-url token.
     NotGranted,
+    /// The document has a `<base href>` (any value, any position): it re-targets every relative reference, so none is
+    /// offered to the port. The base itself is reported with this reason unless it is already denied for its scheme.
+    BaseHref,
+    /// `<iframe srcdoc>`: an inline document whose own references are not scanned.
+    InlineDocument,
+    /// A relative path with a backslash or a percent-encoded dot, slash or backslash: browsers and file-system ports
+    /// disagree on what it means.
+    AmbiguousPath,
+    /// A well-formed `&name;` character reference this crate cannot decode, so the value cannot be classified.
+    UndecodableReference,
 }
 impl DenyReason {
     pub const fn code(self) -> &'static str {
@@ -42,6 +64,10 @@ impl DenyReason {
             Self::FileScheme => "file_scheme",
             Self::ScriptScheme => "script_scheme",
             Self::NotGranted => "not_granted",
+            Self::BaseHref => "base_href",
+            Self::InlineDocument => "inline_document",
+            Self::AmbiguousPath => "ambiguous_path",
+            Self::UndecodableReference => "undecodable_reference",
         }
     }
 }
@@ -71,29 +97,53 @@ pub struct AssetRef {
     pub source: AssetSource,
     /// Decoded reference text as the port saw it (or would have).
     pub reference: String,
-    /// Bytes in the source holding the reference (the whole value when entity decoding changed offsets).
+    /// Bytes in the source holding the reference (the whole value when decoding changed offsets).
     pub span: Range<usize>,
     pub outcome: AssetOutcome,
 }
 
-const URL_ATTRIBUTES: &[(&str, &str)] = &[
-    ("img", "src"),
-    ("link", "href"),
-    ("script", "src"),
-    ("source", "src"),
-    ("video", "src"),
-    ("video", "poster"),
-    ("audio", "src"),
-    ("iframe", "src"),
-    ("a", "href"),
-    ("area", "href"),
-    ("use", "href"),
-    ("use", "xlink:href"),
-    ("embed", "src"),
-    ("object", "data"),
-    ("track", "src"),
-    ("input", "src"),
-];
+/// How an attribute value carries references.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// One URL (spaces around it are ignored).
+    Url,
+    /// `<base href>`: re-targets relative references.
+    Base,
+    /// ASCII-whitespace separated URLs (`ping`, `archive`).
+    UrlList,
+    /// Image candidate strings (`srcset`, `imagesrcset`).
+    Srcset,
+    /// CSS text (`style`, SVG presentation attributes): `url(...)` tokens.
+    Css,
+    /// `<meta http-equiv=refresh content="N; url=...">`.
+    Refresh,
+    /// Inline HTML document (`srcdoc`).
+    InlineDoc,
+}
+
+/// URL-bearing attributes (WHATWG HTML attributes index and obsolete features, SVG 2 presentation attributes).
+fn attr_kind(tag: &str, name: &str) -> Option<Kind> {
+    Some(match (tag, name) {
+        // `href` and `xlink:href` on every element: html `a area link`, svg `a image use script feImage ...`.
+        (_, "href" | "xlink:href") => Kind::Url,
+        // `image` is rewritten to `img` by the HTML parser.
+        ("img" | "image" | "source" | "video" | "audio" | "iframe" | "frame" | "embed" | "track" | "input" | "script", "src") => Kind::Url,
+        ("video", "poster") => Kind::Url,
+        ("object", "data" | "codebase" | "classid") => Kind::Url,
+        ("object", "archive") => Kind::UrlList,
+        ("form", "action") => Kind::Url,
+        ("button" | "input", "formaction") => Kind::Url,
+        ("blockquote" | "del" | "ins" | "q", "cite") => Kind::Url,
+        ("a" | "area", "ping") => Kind::UrlList,
+        ("img" | "source", "srcset") | ("link", "imagesrcset") => Kind::Srcset,
+        ("body" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th", "background") => Kind::Url,
+        ("iframe" | "img", "longdesc") | ("img", "lowsrc") | ("html", "manifest") => Kind::Url,
+        ("iframe", "srcdoc") => Kind::InlineDoc,
+        (_, "style") => Kind::Css,
+        (_, "fill" | "stroke" | "clip-path" | "cursor" | "filter" | "mask" | "marker-start" | "marker-mid" | "marker-end") => Kind::Css,
+        _ => return None,
+    })
+}
 
 /// Classify without any I/O. `None` = relative: the port decides.
 fn classify(reference: &str) -> Option<AssetOutcome> {
@@ -131,27 +181,298 @@ fn classify(reference: &str) -> Option<AssetOutcome> {
     None
 }
 
-fn decide(reference: &str, port: &dyn AssetPort) -> AssetOutcome {
-    if let Some(done) = classify(reference) {
-        return done;
+/// A relative path (before `?`/`#`) that a browser and a file-system port may read differently.
+fn ambiguous_path(reference: &str) -> bool {
+    let path = reference.split(['?', '#']).next().unwrap_or(reference);
+    path.contains('\\')
+        || path
+            .as_bytes()
+            .windows(3)
+            .any(|w| w[0] == b'%' && matches!((w[1], w[2]), (b'2', b'e' | b'E' | b'f' | b'F') | (b'5', b'c' | b'C')))
+}
+
+/// Ranges of ASCII-whitespace separated tokens.
+fn tokens(s: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, b) in s.bytes().enumerate() {
+        match (b.is_ascii_whitespace(), start) {
+            (true, Some(st)) => {
+                out.push(st..i);
+                start = None;
+            }
+            (false, None) => start = Some(i),
+            _ => {}
+        }
     }
-    if reference.chars().any(|c| c.is_control()) {
-        return AssetOutcome::Denied(DenyReason::NotGranted);
+    if let Some(st) = start {
+        out.push(st..s.len());
     }
-    match port.resolve(reference) {
-        AssetDecision::Granted { id } => AssetOutcome::Granted { id },
-        AssetDecision::Denied => AssetOutcome::Denied(DenyReason::NotGranted),
-        AssetDecision::Unavailable => AssetOutcome::Unavailable,
+    out
+}
+
+/// URL ranges of the image candidate strings of a `srcset` value (HTML "parse a srcset attribute": URL = run of
+/// non-whitespace, trailing commas stripped, descriptors end at a comma outside parentheses). Candidates with
+/// invalid descriptors are still reported: a browser that drops them loads nothing, reporting more is safe.
+fn srcset_urls(s: &str) -> Vec<Range<usize>> {
+    let b = s.as_bytes();
+    let len = b.len();
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        while pos < len && (b[pos].is_ascii_whitespace() || b[pos] == b',') {
+            pos = pos.saturating_add(1);
+        }
+        if pos >= len {
+            break;
+        }
+        let start = pos;
+        while pos < len && !b[pos].is_ascii_whitespace() {
+            pos = pos.saturating_add(1);
+        }
+        let mut end = pos;
+        if b[end.saturating_sub(1)] == b',' {
+            while end > start && b[end.saturating_sub(1)] == b',' {
+                end = end.saturating_sub(1);
+            }
+        } else {
+            let mut in_parens = false;
+            while pos < len {
+                let c = b[pos];
+                pos = pos.saturating_add(1);
+                match c {
+                    b'(' => in_parens = true,
+                    b')' => in_parens = false,
+                    b',' if !in_parens => break,
+                    _ => {}
+                }
+            }
+        }
+        if end > start {
+            out.push(start..end);
+        }
+    }
+    out
+}
+
+/// URL range of a `<meta http-equiv=refresh>` content value (HTML "shared declarative refresh steps").
+fn refresh_url(s: &str) -> Option<Range<usize>> {
+    let b = s.as_bytes();
+    let len = b.len();
+    let skip_ws = |mut i: usize| {
+        while b.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i = i.saturating_add(1);
+        }
+        i
+    };
+    let mut pos = skip_ws(0);
+    let digits_start = pos;
+    while b.get(pos).is_some_and(u8::is_ascii_digit) {
+        pos = pos.saturating_add(1);
+    }
+    if pos == digits_start && b.get(pos) != Some(&b'.') {
+        return None;
+    }
+    while b.get(pos).is_some_and(|c| c.is_ascii_digit() || *c == b'.') {
+        pos = pos.saturating_add(1);
+    }
+    if pos < len {
+        if !(matches!(b[pos], b';' | b',') || b[pos].is_ascii_whitespace()) {
+            return None;
+        }
+        pos = skip_ws(pos);
+        if matches!(b.get(pos), Some(b';' | b',')) {
+            pos = pos.saturating_add(1);
+        }
+        pos = skip_ws(pos);
+    }
+    if pos >= len {
+        return None;
+    }
+    // Optional `url =` prefix; a partial prefix means the whole remainder is the URL.
+    let mut quoted_from = pos;
+    if matches!(b.get(pos), Some(b'u' | b'U')) {
+        let mut p = pos.saturating_add(1);
+        let full = matches!(b.get(p), Some(b'r' | b'R')) && {
+            p = p.saturating_add(1);
+            matches!(b.get(p), Some(b'l' | b'L'))
+        } && {
+            p = skip_ws(p.saturating_add(1));
+            b.get(p) == Some(&b'=')
+        };
+        if !full {
+            return Some(pos..len);
+        }
+        quoted_from = skip_ws(p.saturating_add(1));
+    }
+    let mut start = quoted_from;
+    let mut end = len;
+    if let Some(&q @ (b'\'' | b'"')) = b.get(start) {
+        start = start.saturating_add(1);
+        if let Some(off) = b[start..].iter().position(|c| *c == q) {
+            end = start.saturating_add(off);
+        }
+    }
+    (start <= end).then_some(start..end)
+}
+
+fn has_base_href(doc: &WebDoc, cancel: &CancellationToken) -> Result<bool, WebError> {
+    for id in 0..doc.len() {
+        if id & 0x3ff == 0 {
+            cancel.check()?;
+        }
+        let is_element = doc.node(id).is_some_and(|n| n.kind == NodeKind::Element);
+        if is_element && doc.tag_name(id).is_some_and(|t| t.eq_ignore_ascii_case("base")) && doc.attribute(id, "href").is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+struct Collector<'a> {
+    doc: &'a WebDoc,
+    port: &'a dyn AssetPort,
+    base_blocks: bool,
+    limit: usize,
+    out: Vec<AssetRef>,
+}
+
+impl Collector<'_> {
+    fn decide(&self, reference: &str, bad: bool) -> AssetOutcome {
+        if let Some(done) = classify(reference) {
+            return done;
+        }
+        if bad || reference.chars().any(char::is_control) {
+            return AssetOutcome::Denied(DenyReason::NotGranted);
+        }
+        if self.base_blocks {
+            return AssetOutcome::Denied(DenyReason::BaseHref);
+        }
+        if ambiguous_path(reference) {
+            return AssetOutcome::Denied(DenyReason::AmbiguousPath);
+        }
+        match self.port.resolve(reference) {
+            AssetDecision::Granted { id } => AssetOutcome::Granted { id },
+            AssetDecision::Denied => AssetOutcome::Denied(DenyReason::NotGranted),
+            AssetDecision::Unavailable => AssetOutcome::Unavailable,
+        }
+    }
+
+    fn push(&mut self, node: NodeId, source: AssetSource, reference: String, span: Range<usize>, outcome: AssetOutcome) -> Result<(), WebError> {
+        if self.out.len() >= self.limit {
+            return Err(WebError::LimitExceeded { limit: LimitKind::Nodes, span });
+        }
+        self.out.push(AssetRef { node, source, reference, span, outcome });
+        Ok(())
+    }
+
+    fn reference(&mut self, node: NodeId, source: AssetSource, reference: &str, bad: bool, span: Range<usize>) -> Result<(), WebError> {
+        let outcome = self.decide(reference, bad);
+        self.push(node, source, reference.to_owned(), span, outcome)
+    }
+
+    /// References in CSS `css`, whose first byte is document offset `origin` (`exact`: `css` is the source bytes).
+    fn css(&mut self, node: NodeId, source: &AssetSource, css: &str, origin: usize, exact: bool, whole: &Range<usize>) -> Result<(), WebError> {
+        let room = self.limit.saturating_sub(self.out.len()).saturating_add(1);
+        for r in css_references(css, room) {
+            let span = if exact { origin.saturating_add(r.span.start)..origin.saturating_add(r.span.end) } else { whole.clone() };
+            self.reference(node, source.clone(), &r.value, r.bad, span)?;
+        }
+        Ok(())
+    }
+
+    fn attribute(&mut self, node: NodeId, kind: Kind, name: &str, value_span: Range<usize>) -> Result<(), WebError> {
+        let raw = self.doc.slice(&value_span);
+        let decoded = decode_value(raw);
+        let source = if name == "style" { AssetSource::InlineStyle } else { AssetSource::Attribute(name.to_owned()) };
+        if decoded.undecodable {
+            return self.push(node, source, decoded.text, value_span, AssetOutcome::Denied(DenyReason::UndecodableReference));
+        }
+        let text = decoded.text.as_str();
+        let exact = text == raw;
+        let sub = |r: &Range<usize>| {
+            if exact { value_span.start.saturating_add(r.start)..value_span.start.saturating_add(r.end) } else { value_span.clone() }
+        };
+        match kind {
+            Kind::Url => {
+                if !text.trim().is_empty() {
+                    self.reference(node, source, text, false, value_span.clone())?;
+                }
+            }
+            Kind::Base => {
+                if !text.trim().is_empty() {
+                    let outcome = match classify(text) {
+                        Some(AssetOutcome::Denied(reason)) => AssetOutcome::Denied(reason),
+                        _ => AssetOutcome::Denied(DenyReason::BaseHref),
+                    };
+                    self.push(node, source, text.to_owned(), value_span.clone(), outcome)?;
+                }
+            }
+            Kind::UrlList => {
+                for r in tokens(text) {
+                    self.reference(node, source.clone(), &text[r.clone()], false, sub(&r))?;
+                }
+            }
+            Kind::Srcset => {
+                for r in srcset_urls(text) {
+                    self.reference(node, source.clone(), &text[r.clone()], false, sub(&r))?;
+                }
+            }
+            Kind::Refresh => {
+                if let Some(r) = refresh_url(text).filter(|r| !text[r.clone()].trim().is_empty()) {
+                    self.reference(node, source, &text[r.clone()], false, sub(&r))?;
+                }
+            }
+            Kind::Css => self.css(node, &source, text, value_span.start, exact, &value_span)?,
+            Kind::InlineDoc => {
+                if !text.trim().is_empty() {
+                    self.push(node, source, text.to_owned(), value_span.clone(), AssetOutcome::Denied(DenyReason::InlineDocument))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `<style>` content: raw text (HTML), text nodes and CDATA sections (foreign content).
+    fn style_children(&mut self, id: NodeId) -> Result<(), WebError> {
+        let doc = self.doc;
+        let Some(node) = doc.node(id) else { return Ok(()) };
+        for &child in &node.children {
+            let Some(c) = doc.node(child) else { continue };
+            let text = doc.slice(&c.span);
+            let source = AssetSource::StyleBody;
+            match c.kind {
+                NodeKind::Raw => self.css(id, &source, text, c.span.start, true, &c.span)?,
+                NodeKind::Text => {
+                    let decoded = decode_value(text);
+                    if decoded.undecodable {
+                        self.push(id, source, decoded.text, c.span.clone(), AssetOutcome::Denied(DenyReason::UndecodableReference))?;
+                    } else {
+                        self.css(id, &source, &decoded.text, c.span.start, decoded.text == text, &c.span)?;
+                    }
+                }
+                NodeKind::Unsupported => {
+                    const OPEN: &str = "<![CDATA[";
+                    if let Some(inner) = text.strip_prefix(OPEN).and_then(|t| t.strip_suffix("]]>")) {
+                        self.css(id, &source, inner, c.span.start.saturating_add(OPEN.len()), true, &c.span)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 
-/// Every asset-bearing reference in the document (`img/source/video/audio/iframe/embed/track/input[src]`,
-/// `link/a/area/use[href]`, `object[data]`, `video[poster]`, CSS `url(...)` and `@import "..."` in `style`
-/// attributes and `<style>` bodies), in document order, with the decision for each. `srcset`, `image-set()`
-/// and `<meta http-equiv=refresh>` are not scanned.
+/// Every asset-bearing reference in the document, in document order, with the decision for each: URL attributes
+/// (`href`/`xlink:href` on any element, `src` on `img image source video audio iframe frame embed track input
+/// script`, `poster`, `object data/codebase/classid/archive`, `form action`, `formaction`, `cite`, `ping`,
+/// `srcset`/`imagesrcset` candidates, obsolete `background longdesc lowsrc manifest`, `<meta http-equiv=refresh>`
+/// URL), `<base href>`, `iframe srcdoc` (reported denied), CSS `url(...)` / `@import "..."` in `style`
+/// attributes, SVG presentation attributes (`fill stroke clip-path cursor filter mask marker-*`) and `<style>`
+/// contents. `image-set()`/`src()` string arguments, `data:` payloads and `srcdoc` contents are not scanned.
 pub fn collect_assets(doc: &WebDoc, port: &dyn AssetPort, cancel: &CancellationToken) -> Result<Vec<AssetRef>, WebError> {
-    let limit = doc.limits().max_nodes;
-    let mut out: Vec<AssetRef> = Vec::new();
+    let mut c = Collector { doc, port, base_blocks: has_base_href(doc, cancel)?, limit: doc.limits().max_nodes, out: Vec::new() };
     for id in 0..doc.len() {
         if id & 0x3ff == 0 {
             cancel.check()?;
@@ -161,43 +482,23 @@ pub fn collect_assets(doc: &WebDoc, port: &dyn AssetPort, cancel: &CancellationT
             continue;
         }
         let tag = doc.tag_name(id).unwrap_or("").to_ascii_lowercase();
+        let refresh = tag == "meta"
+            && doc.attribute(id, "http-equiv").and_then(|a| doc.attr_value(a)).is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"));
         for attr in &node.attrs {
             let name = doc.attr_name(attr).to_ascii_lowercase();
-            let Some(value_span) = attr.value_span.clone() else { continue };
-            if out.len() >= limit {
-                return Err(WebError::LimitExceeded { limit: crate::error::LimitKind::Nodes, span: value_span });
-            }
-            if URL_ATTRIBUTES.iter().any(|(t, a)| *t == tag && *a == name) {
-                let reference = decode_entities(doc.slice(&value_span)).text;
-                if reference.trim().is_empty() {
-                    continue;
-                }
-                let outcome = decide(&reference, port);
-                out.push(AssetRef { node: id, source: AssetSource::Attribute(name.clone()), reference, span: value_span, outcome });
-            } else if name == "style" {
-                let raw = doc.slice(&value_span);
-                let decoded = decode_entities(raw).text;
-                let exact = decoded == raw;
-                for r in css_references(&decoded, limit.saturating_sub(out.len())) {
-                    let reference = decoded[r.clone()].to_owned();
-                    let span = if exact { value_span.start + r.start..value_span.start + r.end } else { value_span.clone() };
-                    let outcome = decide(&reference, port);
-                    out.push(AssetRef { node: id, source: AssetSource::InlineStyle, reference, span, outcome });
-                }
-            }
+            let kind = if tag == "base" && name == "href" {
+                Some(Kind::Base)
+            } else if refresh && name == "content" {
+                Some(Kind::Refresh)
+            } else {
+                attr_kind(&tag, &name)
+            };
+            let (Some(kind), Some(value_span)) = (kind, attr.value_span.clone()) else { continue };
+            c.attribute(id, kind, &name, value_span)?;
         }
-        if node.content == ContentModel::RawText && tag == "style" {
-            for &child in &node.children {
-                let Some(raw) = doc.node(child).filter(|c| c.kind == NodeKind::Raw) else { continue };
-                let css = doc.slice(&raw.span);
-                for r in css_references(css, limit.saturating_sub(out.len())) {
-                    let reference = css[r.clone()].to_owned();
-                    let span = raw.span.start + r.start..raw.span.start + r.end;
-                    let outcome = decide(&reference, port);
-                    out.push(AssetRef { node: id, source: AssetSource::StyleBody, reference, span, outcome });
-                }
-            }
+        if tag == "style" {
+            c.style_children(id)?;
         }
     }
-    Ok(out)
+    Ok(c.out)
 }

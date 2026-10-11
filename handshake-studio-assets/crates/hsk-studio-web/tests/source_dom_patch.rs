@@ -603,3 +603,261 @@ fn observe_report_maps_outcomes() {
         assert!(sink.0.is_empty());
     });
 }
+
+// ---- R5 group B remediation: hostile URL spellings must reach the same classification as the plain ones ----
+
+struct Spy {
+    calls: Mutex<Vec<String>>,
+}
+impl AssetPort for Spy {
+    fn resolve(&self, reference: &str) -> AssetDecision {
+        self.calls.lock().unwrap().push(reference.to_owned());
+        if reference.starts_with("logo.png") { AssetDecision::Granted { id: "asset-logo".into() } } else { AssetDecision::Denied }
+    }
+}
+
+const GRANTED: &str = "Granted { id: \"asset-logo\" }";
+const EXTERNAL: &str = "Denied(ExternalScheme)";
+const PROTOCOL_RELATIVE: &str = "Denied(ProtocolRelative)";
+const SCRIPT: &str = "Denied(ScriptScheme)";
+const NOT_GRANTED: &str = "Denied(NotGranted)";
+
+type Seen = Vec<(String, String)>;
+
+/// Every reported (reference, outcome as Debug text) in report order, and every reference the port was asked about.
+fn scan(html: &str) -> (Seen, Vec<String>) {
+    let doc = load(html);
+    let spy = Spy { calls: Mutex::new(Vec::new()) };
+    let found = collect_assets(&doc, &spy, &CancellationToken::default()).unwrap();
+    let seen = found.iter().map(|a| (a.reference.clone(), format!("{:?}", a.outcome))).collect();
+    (seen, spy.calls.into_inner().unwrap())
+}
+
+fn pairs(list: &[(&str, &str)]) -> Seen {
+    list.iter().map(|(r, o)| ((*r).to_owned(), (*o).to_owned())).collect()
+}
+
+#[test]
+fn css_escapes_cannot_hide_external_urls() {
+    bounded_case("css_escapes_cannot_hide_external_urls", || {
+        // Escaped function name, escaped scheme letters, mixed case, escaped line break inside a string, hex escapes with
+        // their optional trailing space, an escaped tab, and an escaped quoted-url function: a CSS engine reads all of them
+        // as the plain URL, so the port must never see any of them.
+        let html = r#"<div style="background:ur\6c(//e.invalid/s.png)"></div><style>
+.a{background:u\72l(https://e.invalid/a.png)}
+.b{background:url(ht\74p://e.invalid/b.png)}
+.c{background:url(HT\54P://e.invalid/c.png)}
+.d{background:url("ht\
+tp://e.invalid/d.png")}
+.e{background:url(\2f\2f e.invalid/e.png)}
+.f{background:url(java\73 cript:void)}
+.g{background:url(ht\9 tp://e.invalid/g.png)}
+.h{background:\75rl("//e.invalid/h.png")}
+.i{background:url(logo.png)}
+</style>"#;
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("//e.invalid/s.png", PROTOCOL_RELATIVE),
+                ("https://e.invalid/a.png", EXTERNAL),
+                ("http://e.invalid/b.png", EXTERNAL),
+                ("HTTP://e.invalid/c.png", EXTERNAL),
+                ("http://e.invalid/d.png", EXTERNAL),
+                ("//e.invalid/e.png", PROTOCOL_RELATIVE),
+                ("javascript:void", SCRIPT),
+                ("ht\ttp://e.invalid/g.png", EXTERNAL),
+                ("//e.invalid/h.png", PROTOCOL_RELATIVE),
+                ("logo.png", GRANTED),
+            ])
+        );
+        assert_eq!(calls, ["logo.png"]);
+    });
+}
+
+#[test]
+fn css_decoys_case_and_whitespace_follow_the_tokenizer() {
+    bounded_case("css_decoys_case_and_whitespace_follow_the_tokenizer", || {
+        // Decoys that look like url( but are not url tokens (comment, string, `url/**/(`, `url (`, `xurl(`, `1url(`)
+        // are not reported; real tokens survive case changes, inner whitespace and comments around @import; a bad-url
+        // token (whitespace then more text) is reported but never offered to the port.
+        let html = "<style>\n\
+            /* url(http://decoy.invalid/c1) */\n\
+            .k{content:\"url(http://decoy.invalid/s1)\"}\n\
+            .l{background:url/**/(http://decoy.invalid/l)}\n\
+            .m{background:url (http://decoy.invalid/m)}\n\
+            .n{background:xurl(http://decoy.invalid/n)}\n\
+            .o{background:1url(http://decoy.invalid/o)}\n\
+            .p{background:UrL(\n   HtTp://e.invalid/p.png\t)}\n\
+            .q{background:url(   \"//e.invalid/q.png\"   )}\n\
+            .r{background:URL( logo.png )}\n\
+            @IMPORT \"//e.invalid/r.css\";\n\
+            @import/**/'https://e.invalid/s.css';\n\
+            @import url(  //e.invalid/t.css  );\n\
+            .s{background:url(logo.png x)}\n\
+            </style>";
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("HtTp://e.invalid/p.png", EXTERNAL),
+                ("//e.invalid/q.png", PROTOCOL_RELATIVE),
+                ("logo.png", GRANTED),
+                ("//e.invalid/r.css", PROTOCOL_RELATIVE),
+                ("https://e.invalid/s.css", EXTERNAL),
+                ("//e.invalid/t.css", PROTOCOL_RELATIVE),
+                ("logo.png", NOT_GRANTED),
+            ])
+        );
+        assert_eq!(calls, ["logo.png"], "only the well-formed relative url token reaches the port");
+    });
+}
+
+#[test]
+fn character_references_cannot_hide_schemes() {
+    bounded_case("character_references_cannot_hide_schemes", || {
+        // Named references outside the old common set, numeric references without a semicolon or with many leading zeros,
+        // and a style attribute whose parentheses are references: a browser decodes all of them before URL parsing.
+        let html = "<a href=\"http&colon;//e.invalid/1\"></a>\
+            <img src=\"java&#115cript:alert(1)\">\
+            <img src=\"&#x0000000068;ttp://e.invalid/3\">\
+            <img src=\"&#104ttp://e.invalid/4\">\
+            <img src=\"/&sol;e.invalid/5\">\
+            <img src=\"ht&Tab;tp://e.invalid/6\">\
+            <img src=\"&notarealname;logo.png\">\
+            <img src=\"logo.png?x=1&y=2&copy=3\">\
+            <div style=\"background:url&lpar;//e.invalid/7&rpar;\"></div>";
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("http://e.invalid/1", EXTERNAL),
+                ("javascript:alert(1)", SCRIPT),
+                ("http://e.invalid/3", EXTERNAL),
+                ("http://e.invalid/4", EXTERNAL),
+                ("//e.invalid/5", PROTOCOL_RELATIVE),
+                ("ht\ttp://e.invalid/6", EXTERNAL),
+                ("&notarealname;logo.png", "Denied(UndecodableReference)"),
+                ("logo.png?x=1&y=2&copy=3", GRANTED),
+                ("//e.invalid/7", PROTOCOL_RELATIVE),
+            ])
+        );
+        assert_eq!(calls, ["logo.png?x=1&y=2&copy=3"], "a reference this crate cannot decode is refused before the port");
+    });
+}
+
+#[test]
+fn base_href_re_targets_every_relative_reference() {
+    bounded_case("base_href_re_targets_every_relative_reference", || {
+        const BASE: &str = "Denied(BaseHref)";
+        // External base: reported as denied, and no relative reference (any element, any position) is offered to the port.
+        let (seen, calls) = scan(
+            "<head><base href=\"https://evil.invalid/\"></head><body><img src=\"logo.png\"><a href=\"page.html\">x</a>\
+             <img src=\"http://e.invalid/x.png\"><div style=\"background:url(bg.png)\"></div></body>",
+        );
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("https://evil.invalid/", EXTERNAL),
+                ("logo.png", BASE),
+                ("page.html", BASE),
+                ("http://e.invalid/x.png", EXTERNAL),
+                ("bg.png", BASE),
+            ])
+        );
+        assert!(calls.is_empty());
+        // A relative base still moves every relative reference, also when it appears after them; a valueless one too.
+        let (seen, calls) = scan("<img src=\"logo.png\"><base href=\"sub/\">");
+        assert_eq!(seen, pairs(&[("logo.png", BASE), ("sub/", BASE)]));
+        assert!(calls.is_empty());
+        let (seen, calls) = scan("<base href><img src=\"logo.png\">");
+        assert_eq!(seen, pairs(&[("logo.png", BASE)]));
+        assert!(calls.is_empty());
+        // Without an href the base changes nothing.
+        let (seen, calls) = scan("<img src=\"logo.png\"><base target=\"_blank\">");
+        assert_eq!(seen, pairs(&[("logo.png", GRANTED)]));
+        assert_eq!(calls, ["logo.png"]);
+    });
+}
+
+#[test]
+fn more_url_attributes_and_foreign_content_are_scanned() {
+    bounded_case("more_url_attributes_and_foreign_content_are_scanned", || {
+        let html = r#"<!-- <img src="http://decoy.invalid/comment"> -->
+<img alt="http://decoy.invalid/alt" title="url(http://decoy.invalid/title)" srcset="logo.png 1x, http://e.invalid/a.png 2x, //e.invalid/b.png 480w">
+<picture><source srcset="https://e.invalid/c.png"></picture>
+<video poster="//e.invalid/d.png" src="logo.png"></video>
+<form action="http://e.invalid/post"><button formaction="//e.invalid/f">go</button></form>
+<table background="http://e.invalid/g.gif"></table>
+<a href="x" ping="http://e.invalid/p logo.png">p</a>
+<object data="http://e.invalid/o"></object>
+<link rel=preload as=image imagesrcset="https://e.invalid/h.png 1x">
+<iframe srcdoc="&lt;img src=//e.invalid/z&gt;"></iframe>
+<meta http-equiv="Refresh" content="5; URL = 'http://e.invalid/r'">
+<svg width="1" height="1"><image href="http://e.invalid/s1.png"/><use xlink:href="//e.invalid/s2.svg#a"/><a XLINK:HREF="https://e.invalid/s3"><rect fill="url(http://e.invalid/s4#p)" stroke="url(#local)" filter="u\72l(//e.invalid/s5)"/></a><style>@import url(//e.invalid/s6.css); .a{fill:url(logo.png)}</style><style><![CDATA[.b{fill:url(http://e.invalid/s7)}]]></style></svg>"#;
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("logo.png", GRANTED),
+                ("http://e.invalid/a.png", EXTERNAL),
+                ("//e.invalid/b.png", PROTOCOL_RELATIVE),
+                ("https://e.invalid/c.png", EXTERNAL),
+                ("//e.invalid/d.png", PROTOCOL_RELATIVE),
+                ("logo.png", GRANTED),
+                ("http://e.invalid/post", EXTERNAL),
+                ("//e.invalid/f", PROTOCOL_RELATIVE),
+                ("http://e.invalid/g.gif", EXTERNAL),
+                ("x", NOT_GRANTED),
+                ("http://e.invalid/p", EXTERNAL),
+                ("logo.png", GRANTED),
+                ("http://e.invalid/o", EXTERNAL),
+                ("https://e.invalid/h.png", EXTERNAL),
+                ("<img src=//e.invalid/z>", "Denied(InlineDocument)"),
+                ("http://e.invalid/r", EXTERNAL),
+                ("http://e.invalid/s1.png", EXTERNAL),
+                ("//e.invalid/s2.svg#a", PROTOCOL_RELATIVE),
+                ("https://e.invalid/s3", EXTERNAL),
+                ("http://e.invalid/s4#p", EXTERNAL),
+                ("#local", "SameDocument"),
+                ("//e.invalid/s5", PROTOCOL_RELATIVE),
+                ("//e.invalid/s6.css", PROTOCOL_RELATIVE),
+                ("logo.png", GRANTED),
+                ("http://e.invalid/s7", EXTERNAL),
+            ])
+        );
+        assert_eq!(calls, ["logo.png", "logo.png", "x", "logo.png", "logo.png"]);
+    });
+}
+
+#[test]
+fn ambiguous_relative_paths_never_reach_the_port() {
+    bounded_case("ambiguous_relative_paths_never_reach_the_port", || {
+        // Backslash separators and percent-encoded dots/slashes mean different paths to a browser and to a file-system
+        // port; they are refused. A plain `..` is the port's containment decision (the document location is unknown here).
+        let html = "<img src=\"..\\..\\secret.png\">\
+            <img src=\"a/%2e%2e/%2E%2E/b.png\">\
+            <img src=\"a%2f..%2fb.png\">\
+            <img src=\"a%5Cb.png\">\
+            <img src=\"../ok/logo.png\">\
+            <img src=\"logo.png\">\
+            <img src=\"logo.png?next=..%2f..%2fx\">\
+            <img src=\"sub/%20name.png\">";
+        let (seen, calls) = scan(html);
+        let ambiguous = "Denied(AmbiguousPath)";
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("..\\..\\secret.png", ambiguous),
+                ("a/%2e%2e/%2E%2E/b.png", ambiguous),
+                ("a%2f..%2fb.png", ambiguous),
+                ("a%5Cb.png", ambiguous),
+                ("../ok/logo.png", NOT_GRANTED),
+                ("logo.png", GRANTED),
+                ("logo.png?next=..%2f..%2fx", GRANTED),
+                ("sub/%20name.png", NOT_GRANTED),
+            ])
+        );
+        assert_eq!(calls, ["../ok/logo.png", "logo.png", "logo.png?next=..%2f..%2fx", "sub/%20name.png"]);
+    });
+}
