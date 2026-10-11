@@ -5,8 +5,9 @@
 //! Contract (edge policy and identity):
 //! - Layer alpha is read through a caller-supplied [`AlphaSource`] and only for the window grown by
 //!   [`super::effect_support_px`] (checked by `tests/effect_window.rs`
-//!   `source_reads_stay_inside_the_support_margin`). Alpha beyond [`WindowGeometry::layer`] is 0 and
-//!   the accessor is never asked for it.
+//!   `source_reads_stay_inside_the_support_margin`, which records every requested rectangle and
+//!   checks it against the margin and the layer). Alpha beyond [`WindowGeometry::layer`] is 0 and
+//!   the accessor is not asked for it.
 //! - [`WindowGeometry::domain`] is the extent of the reference plane: every intermediate of the
 //!   chain (grown matte, horizontal blur, vertical blur) reads the neutral value (0, or 1 for the
 //!   inverted matte of the inner effects) beyond it, exactly as [`super::reference_matte`] reads
@@ -72,7 +73,7 @@ pub enum WindowError {
     Source,
     /// More effects than [`MAX_EFFECTS_PER_LAYER`].
     TooManyEffects,
-    /// An internal geometry invariant failed (never expected).
+    /// An internal geometry invariant failed (not expected from validated geometry).
     Geometry,
 }
 impl WindowError {
@@ -223,7 +224,8 @@ impl WindowLimits {
     }
 }
 
-/// Predicted peak owned bytes and work of a call (exact: the receipt equals it).
+/// Predicted peak owned bytes and work of a call; the receipt equals it for every effect kind in
+/// `tests/effect_window.rs` `budgets_are_charged_before_allocation_and_match_the_receipt`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowCost {
     pub peak_bytes: u64,
@@ -755,7 +757,8 @@ fn dilate_into(
         .map_err(|_| WindowError::Overflow)?
         .checked_add(1)
         .ok_or(WindowError::Overflow)?;
-    // Charged before the early exit so that the receipt equals the prediction in every case.
+    // Charged before the early exit so that the receipt also equals the prediction when the shifted
+    // window leaves the domain (tests/effect_window.rs, third window of the budgets test).
     let cov_bytes = mulu(u64::try_from(covs_len).map_err(|_| WindowError::Overflow)?, 4)?;
     meter.reserve(cov_bytes)?;
     let Some(clip) = intersect(r1, domain)? else {
