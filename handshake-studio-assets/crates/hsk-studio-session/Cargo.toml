@@ -19,3 +19,7 @@ serde_json = { version = "=1.0.151", default-features = false, features = ["std"
 
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "session-consumer"
+path = "examples/session-consumer.rs"
