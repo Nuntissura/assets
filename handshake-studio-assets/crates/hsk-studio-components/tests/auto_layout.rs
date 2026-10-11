@@ -161,7 +161,7 @@ struct Fixture {
 }
 impl Fixture {
     fn design(&self) -> Design<'_> {
-        Design::new(&self.doc, &self.records, &self.local)
+        Design::new(&self.doc, &self.records, &self.local).unwrap()
     }
 }
 

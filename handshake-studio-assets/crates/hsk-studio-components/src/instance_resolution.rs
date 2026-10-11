@@ -27,7 +27,7 @@ use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_folio::{
     ComponentPropertyType as PropType, StudioComponent, StudioComponentInstance,
     StudioComponentProperty, StudioComponentSet, StudioInstanceProperty, StudioOverrideRecord,
-    StudioPropertyValue, StudioValue, StudioVariable, StudioVariableCollection,
+    StudioPropertyValue, StudioValue, StudioVariable, StudioVariableCollection, VariableType,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,8 +37,27 @@ pub fn is_overridable(field: &str) -> bool {
 }
 
 const MAX_TEXT: usize = 65_536;
-/// Footprint keys: `(node_id, field)`, `(record_id, "")`, `(instance_id, "property/<name>")`.
+/// Footprint keys: `(record_id, "")` record level, `(instance_id, "property/<name>")` and
+/// `(instance_id, "override/<node_id>/<field>")`: an override is written into its instance record,
+/// so two instances of one component have disjoint write keys (STU-ARC-011; test
+/// `override_write_keys_are_scoped_to_the_instance`).
 type Footprint = Vec<(String, String)>;
+
+fn override_key(instance_id: &str, node_id: &str, field: &str) -> (String, String) {
+    (
+        instance_id.to_owned(),
+        format!("override/{node_id}/{field}"),
+    )
+}
+
+/// Inserts `key` into `seen`; a repeat is `Duplicate(reported)`.
+pub(crate) fn unique<'a>(seen: &mut BTreeSet<&'a str>, key: &'a str, reported: &str) -> R<()> {
+    if seen.insert(key) {
+        Ok(())
+    } else {
+        Err(E::Duplicate(reported.to_owned()))
+    }
+}
 
 pub(crate) fn check_id(s: &str, prefix: &str) -> R<()> {
     match DomainId::parse(s) {
@@ -93,7 +112,9 @@ pub(crate) fn check_value(v: &StudioValue, target: &str, alias_ok: bool) -> R<()
 // Variables
 
 /// Borrowed lookup over Folio variable collections and variables. Built from the record vectors
-/// directly so an evaluator can be run (and refuse typed) on a set that Folio's validator rejects.
+/// directly so an evaluator can be run (and refuse typed) on a set that Folio's validator rejects;
+/// only a repeated collection or variable id is refused here (`Duplicate`), because a lookup by that
+/// id would otherwise pick one record silently.
 #[derive(Clone, Debug, Default)]
 pub struct VariableTable<'a> {
     collections: BTreeMap<&'a str, &'a StudioVariableCollection>,
@@ -103,18 +124,23 @@ impl<'a> VariableTable<'a> {
     pub fn new(
         collections: &'a [StudioVariableCollection],
         variables: &'a [StudioVariable],
-    ) -> Self {
+    ) -> R<Self> {
         let mut table = Self::default();
         for c in collections {
-            table
+            if table
                 .collections
-                .entry(c.collection_id.as_str())
-                .or_insert(c);
+                .insert(c.collection_id.as_str(), c)
+                .is_some()
+            {
+                return Err(E::Duplicate(c.collection_id.clone()));
+            }
         }
         for v in variables {
-            table.variables.entry(v.variable_id.as_str()).or_insert(v);
+            if table.variables.insert(v.variable_id.as_str(), v).is_some() {
+                return Err(E::Duplicate(v.variable_id.clone()));
+            }
         }
-        table
+        Ok(table)
     }
     pub fn variable(&self, id: &str) -> Option<&'a StudioVariable> {
         self.variables.get(id).copied()
@@ -234,10 +260,14 @@ pub fn resolve_variable(
 /// A value fits a component-property type: BOOLEAN takes booleans; TEXT, INSTANCE_SWAP and VARIANT
 /// take strings; SLOT takes nothing (refused in this slice).
 fn prop_value_ok(ty: PropType, v: &StudioValue) -> bool {
+    prop_type_ok(ty, v.resolved_type())
+}
+/// The value type a component-property type takes (a variable bound to it must resolve to it).
+fn prop_type_ok(ty: PropType, value_type: VariableType) -> bool {
     match ty {
-        PropType::Boolean => matches!(v.resolved_type(), hsk_studio_folio::VariableType::Boolean),
+        PropType::Boolean => value_type == VariableType::Boolean,
         PropType::Text | PropType::InstanceSwap | PropType::Variant => {
-            matches!(v.resolved_type(), hsk_studio_folio::VariableType::String)
+            value_type == VariableType::String
         }
         PropType::Slot => false,
     }
@@ -348,11 +378,16 @@ fn select_member<'a>(
         }
         want.insert(name.clone(), v.clone());
     }
-    let m = design
+    // Two members with one assignment (STU-DS-109 duplicate, refused by Folio) are refused here
+    // too, never resolved to whichever comes first.
+    let mut matching = design
         .members(set)
         .into_iter()
-        .find(|m| m.variant_properties.as_ref() == Some(&want))
-        .ok_or(E::NoSuchVariant)?;
+        .filter(|m| m.variant_properties.as_ref() == Some(&want));
+    let m = matching.next().ok_or(E::NoSuchVariant)?;
+    if let Some(other) = matching.next() {
+        return Err(E::VariantAssignmentDuplicate(other.component_id.clone()));
+    }
     Ok((m, Some(set)))
 }
 
@@ -395,13 +430,12 @@ fn check_property_value(name: &str, ty: PropType, value: &StudioValue) -> R<()> 
 }
 
 /// Every override must fit the node it names and the type of each source that can feed the field:
-/// a definition literal, the referenced component property, the bound variable. `vars` is `None`
-/// where no registry is at hand (swap and variant switch), which skips only the variable check.
+/// a definition literal, the referenced component property, the bound variable.
 fn build_overrides<'a>(
     inst: &'a StudioComponentInstance,
     nodes: &[DefNode<'a>],
     prop_defs: &PropDefs,
-    vars: Option<&VariableTable>,
+    vars: &VariableTable,
 ) -> R<Overrides<'a>> {
     let by_id: BTreeMap<&str, &DefNode> = nodes.iter().map(|n| (n.node_id, n)).collect();
     let mut out: Overrides = BTreeMap::new();
@@ -430,9 +464,10 @@ fn build_overrides<'a>(
                 .and_then(|d| d.component_property_references.get(f))
                 .and_then(|pname| prop_defs.get(pname.as_str()))
                 .is_some_and(|def| !prop_value_ok(def.property_type, v));
-            let variable_clash = vars
-                .zip(node.local.and_then(|l| l.variable_bindings.get(f)))
-                .and_then(|(table, vid)| table.variable(vid))
+            let variable_clash = node
+                .local
+                .and_then(|l| l.variable_bindings.get(f))
+                .and_then(|vid| vars.variable(vid))
                 .is_some_and(|var| var.resolved_type != v.resolved_type());
             if literal_clash || property_clash || variable_clash {
                 return Err(E::TypeMismatch(f.clone()));
@@ -451,26 +486,54 @@ fn build_overrides<'a>(
     Ok(out)
 }
 
-/// What `resolve_instance` can decide without variables or modes: every property is defined by the
-/// member (or its set) with the right type and value type, and every override fits its node.
-/// Swap and variant switch run it so they never return an instance that cannot resolve.
+/// Every check `resolve_instance` makes on the instance's own data, without a mode selection: the
+/// instance id; every property is defined by the member (or its set) with the right type; a literal
+/// property value has that type; a variable bound to a property exists and resolves to that type;
+/// every override fits its node, including the type of the node's variable binding; an alias
+/// override names an existing variable of the type it declares. Swap and variant switch run it on
+/// their result (tests `switch_variant_and_swap_never_return_an_unresolvable_instance`,
+/// `swap_and_switch_check_the_variable_types_of_the_result`). Resolution can still refuse for causes
+/// outside the instance, which refuse every instance of that target alike: the caller's modes and
+/// limits, and defects of the target definition or the variable set (a property reference nobody
+/// defines, an alias cycle, a missing mode value; Folio refuses the last two in `Design::validate`).
 fn check_shape<'a>(
     inst: &'a StudioComponentInstance,
     member: &'a StudioComponent,
     set: Option<&'a StudioComponentSet>,
     design: &Design<'a>,
 ) -> R<()> {
-    let prop_defs = design.property_definitions(member, set);
+    check_id(&inst.instance_id, "SCIN")?;
+    let prop_defs = design.property_definitions(member, set)?;
+    let vars = design.variables();
+    let typed_variable = |vid: &str, fits: &dyn Fn(VariableType) -> bool, refused: String| {
+        let var = vars
+            .variable(vid)
+            .ok_or_else(|| E::NoSuchVariable(vid.to_owned()))?;
+        if fits(var.resolved_type) {
+            Ok(())
+        } else {
+            Err(E::TypeMismatch(refused))
+        }
+    };
     for (name, p) in &inst.component_properties {
         check_key(name)?;
-        if check_property(name, p, &prop_defs, set.is_some())?
-            && property_variable(&inst.instance_id, name, p)?.is_none()
-            && let Some(value) = literal(&p.value)
-        {
-            check_property_value(name, p.property_type, &value)?;
+        if !check_property(name, p, &prop_defs, set.is_some())? {
+            continue; // VARIANT: it selected the member
+        }
+        match property_variable(&inst.instance_id, name, p)? {
+            Some(vid) => typed_variable(vid, &|t| prop_type_ok(p.property_type, t), name.clone())?,
+            None => {
+                let value = literal(&p.value).ok_or_else(|| E::TypeMismatch(name.clone()))?;
+                check_property_value(name, p.property_type, &value)?;
+            }
         }
     }
-    build_overrides(inst, &design.definition_nodes(member), &prop_defs, None)?;
+    let overrides = build_overrides(inst, &design.definition_nodes(member), &prop_defs, vars)?;
+    for v in overrides.values() {
+        if let StudioValue::VariableAlias { id, resolved_type } = v {
+            typed_variable(id, &|t| t == *resolved_type, id.clone())?;
+        }
+    }
     Ok(())
 }
 
@@ -517,7 +580,7 @@ pub fn resolve_instance(
         return Err(E::BudgetExceeded);
     }
     // Property definitions: the member's win over the set's; every instance property must be known.
-    let prop_defs = design.property_definitions(member, set);
+    let prop_defs = design.property_definitions(member, set)?;
     let mut given: BTreeMap<&str, (StudioValue, Footprint)> = BTreeMap::new();
     for (name, p) in &inst.component_properties {
         check_key(name)?;
@@ -535,7 +598,7 @@ pub fn resolve_instance(
         check_property_value(name, p.property_type, &value)?;
         given.insert(name.as_str(), (value, reads));
     }
-    let overrides = build_overrides(inst, &nodes, &prop_defs, Some(design.variables()))?;
+    let overrides = build_overrides(inst, &nodes, &prop_defs, design.variables())?;
     let mut ov_by_node: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (n, f) in overrides.keys() {
         ov_by_node.entry(n).or_default().push(f);
@@ -679,7 +742,9 @@ pub fn rematch_overrides(
 }
 
 /// `instance.swap_component`: points the instance at `new_main`, carrying matched overrides. The
-/// result is checked against the new definition (properties, value types), never returned unresolvable.
+/// result passes every check resolution makes on the instance's own data against the new
+/// definition and the design's variables (properties, value types, variable bindings, alias
+/// targets); see `check_shape` for what can still refuse at resolution.
 pub fn swap_component(
     inst: &StudioComponentInstance,
     design: &Design,
@@ -696,7 +761,7 @@ pub fn swap_component(
 }
 
 /// Variant switch in place: sets the VARIANT property `property` to `value` and re-matches overrides.
-/// The result is checked against the new member, so `Ok` is never an instance that cannot resolve.
+/// The result passes the same instance checks against the new member as a swap (`check_shape`).
 pub fn switch_variant(
     inst: &StudioComponentInstance,
     design: &Design,
@@ -738,6 +803,7 @@ pub struct OverrideProposal {
     pub base_revision: u64,
     pub instance: StudioComponentInstance,
     pub resolution: Resolution,
+    /// `(instance_id, "override/<node_id>/<field>")` per edited field.
     pub write_footprint: Vec<(String, String)>,
     /// Keys the edited fields' values depend on (definition record, variables, properties).
     pub read_footprint: Vec<(String, String)>,
@@ -807,13 +873,18 @@ pub fn propose_overrides(
     }
     let resolution = resolve_instance(&next, design, modes, base_revision, limits, cancel)?;
     design.validate_with_instance(&next, limits, cancel)?;
-    let write: BTreeSet<(String, String)> = edits
+    let edited: BTreeSet<(&str, &str)> = edits
         .iter()
-        .map(|e| (e.node_id.clone(), e.field.clone()))
+        .map(|e| (e.node_id.as_str(), e.field.as_str()))
+        .collect();
+    // The overrides live in this instance's record: the write keys are scoped to the instance.
+    let write: BTreeSet<(String, String)> = edited
+        .iter()
+        .map(|(node_id, field)| override_key(&inst.instance_id, node_id, field))
         .collect();
     let mut read = BTreeSet::new();
     for f in &resolution.fields {
-        if write.contains(&(f.node_id.clone(), f.field.clone())) {
+        if edited.contains(&(f.node_id.as_str(), f.field.as_str())) {
             read.extend(f.reads.iter().cloned());
         }
     }

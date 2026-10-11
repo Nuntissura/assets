@@ -332,7 +332,7 @@ struct Fixture {
 }
 impl Fixture {
     fn design(&self) -> Design<'_> {
-        Design::new(&self.doc, &self.records, &self.local)
+        Design::new(&self.doc, &self.records, &self.local).unwrap()
     }
 }
 impl World {
@@ -673,7 +673,7 @@ fn alias_type_disjoint_stale_cancel() {
         assert!(clash.target.starts_with(&id("SVAR", 3)));
 
         let records = variable_records(all);
-        let table = VariableTable::new(&records.variable_collections, &records.variables);
+        let table = VariableTable::new(&records.variable_collections, &records.variables).unwrap();
         let rv =
             |n: u32, l: &Limits| resolve_variable(&table, &id("SVAR", n), &no_modes(), l, &cancel);
         assert_eq!(rv(1, &limits), Err(E::AliasCycle(id("SVAR", 1))));
@@ -730,10 +730,9 @@ fn alias_type_disjoint_stale_cancel() {
             &cancel,
         )
         .unwrap();
-        assert_eq!(
-            p.write_footprint,
-            vec![(id("SLYR", 4), "characters".to_owned())]
-        );
+        // The override is written into instance 1's record, so its key is scoped to the instance.
+        let key = |n: u32, f: &str| (id("SCIN", 1), format!("override/{}/{f}", id("SLYR", n)));
+        assert_eq!(p.write_footprint, vec![key(4, "characters")]);
         assert_eq!(p.read_footprint, vec![(id("SCMP", 12), String::new())]);
         assert_eq!(p.instance.overrides, vec![record(4, "characters", s("Hi"))]);
         assert_eq!(inst, before, "the caller's instance is untouched");
@@ -748,7 +747,6 @@ fn alias_type_disjoint_stale_cancel() {
             &folio::Unresolved,
         )
         .unwrap();
-        let key = |n: u32, f: &str| (id("SLYR", n), f.to_owned());
         let expected = BTreeMap::from([
             (key(4, "characters"), 1u64),
             (key(3, "width"), 1),
@@ -762,8 +760,8 @@ fn alias_type_disjoint_stale_cancel() {
         assert_eq!(
             p.admit(&expected, &current),
             Err(E::StaleProperty {
-                node_id: id("SLYR", 4),
-                field: "characters".into()
+                node_id: id("SCIN", 1),
+                field: format!("override/{}/characters", id("SLYR", 4))
             })
         );
         // Record-level drift on the component definition read by the proposal is also stale.
@@ -1370,7 +1368,7 @@ fn folio_shape_and_prototype_graph() {
         };
         let limits = FlowLimits::default();
         let local = LocalContent::default();
-        let design = Design::new(snap.document(), &records, &local);
+        let design = Design::new(snap.document(), &records, &local).unwrap();
         let report = validate_flow(&flow, &design, &limits, &token).unwrap();
         assert_eq!(
             report.reachable_frames,
@@ -1393,7 +1391,7 @@ fn folio_shape_and_prototype_graph() {
         let run = |records: &folio::StudioDesignRecords, f: &PrototypeFlow| {
             validate_flow(
                 f,
-                &Design::new(snap.document(), records, &local),
+                &Design::new(snap.document(), records, &local).unwrap(),
                 &limits,
                 &token,
             )
@@ -1530,22 +1528,35 @@ fn set_members_must_have_distinct_ids() {
             w.build()
         };
         let validate = |fx: &Fixture| fx.design().validate(&limits, &cancel, &folio::Unresolved);
+        // A repeated id is refused by Folio's validator and, before any lookup, by Design::new.
+        let refusal = |fx: &Fixture| {
+            let folio = folio::validate_design_records(
+                &fx.records,
+                &fx.doc,
+                folio::Budget::default(),
+                &cancel,
+                &folio::Unresolved,
+            )
+            .unwrap_err();
+            assert_eq!(folio.code, folio::Code::DuplicateIdentity);
+            Design::new(&fx.doc, &fx.records, &fx.local).err()
+        };
         // Two different definitions under one member id: the lookup would return the first while a
         // variant selection could pick the second.
         assert_eq!(
-            validate(&set(
+            refusal(&set(
                 51,
                 vec![member(51, "small", vec![]), member(51, "large", vec![])]
             )),
-            Err(E::Duplicate(id("SCMP", 51)))
+            Some(E::Duplicate(id("SCMP", 51)))
         );
         // A member sharing the set's own id is the same ambiguity.
         assert_eq!(
-            validate(&set(
+            refusal(&set(
                 51,
                 vec![member(51, "small", vec![]), member(50, "large", vec![])]
             )),
-            Err(E::Duplicate(id("SCMP", 50)))
+            Some(E::Duplicate(id("SCMP", 50)))
         );
         // Distinct ids validate, and each member is found under its own id.
         let fx = set(
@@ -1587,7 +1598,7 @@ fn actions_after_the_first_add_no_reachability_edge() {
             let records = reaction_records(vec![(layer_ref(1), vec![react(click(), actions)])]);
             validate_flow(
                 &flow,
-                &Design::new(snap.document(), &records, &local),
+                &Design::new(snap.document(), &records, &local).unwrap(),
                 &limits,
                 &token,
             )
@@ -1690,5 +1701,335 @@ fn switch_variant_and_swap_never_return_an_unresolvable_instance() {
         let (next, dropped) = switch_variant(&on_set, &design, "size", "small").unwrap();
         assert!(dropped.is_empty());
         assert_eq!(resolves(&next).unwrap().component_id, id("SCMP", 11));
+    });
+}
+
+// ---- R5 regression tests: one per recorded finding ----------------------------------------------
+
+#[test]
+fn swap_and_switch_check_the_variable_types_of_the_result() {
+    bounded_case("swap_switch_variable_types", || {
+        let mut w = fixture_world();
+        let (limits, cancel) = (Limits::default(), CancellationToken::default());
+        // A plain component whose Button has no `fills` source, so any `fills` override fits it.
+        w.add_component(plain(60, vec![node(70, "Button", None)]), on_board());
+        // Set 80: the small Button has no `fills` source, the large one binds it to Color variable 1.
+        let mut bound_button = node(91, "Button", None);
+        bound_button.bindings.insert("fills".into(), id("SVAR", 1));
+        w.add_set(
+            80,
+            81,
+            &[("size", &["small", "large"])],
+            vec![prop_def(
+                "size",
+                PropType::Variant,
+                StudioPropertyValue::Text("small".into()),
+            )],
+            vec![
+                member(81, "small", vec![node(90, "Button", None)]),
+                member(82, "large", vec![bound_button]),
+            ],
+        );
+        let fx = w.checked();
+        let design = fx.design();
+        let resolves = |i: &folio::StudioComponentInstance| {
+            resolve_instance(i, &design, &no_modes(), 1, &limits, &cancel)
+        };
+        // An instance of `main` with a Float `fills` override on its Button node `button`.
+        let float_fills = |n: u32, main: u32, button: u32| {
+            let mut i = instance(n, &id("SCMP", main));
+            i.overrides.push(record(button, "fills", float(1.0)));
+            i
+        };
+
+        // Binding clash (swap): the Float `fills` override resolves on plain Button 70, but the large
+        // member's Button 3 binds `fills` to a Color variable. Swap used to return Ok here.
+        let on_plain = float_fills(1, 60, 70);
+        assert!(resolves(&on_plain).is_ok());
+        assert_eq!(
+            swap_component(&on_plain, &design, &id("SCMP", 12)).err(),
+            Some(E::TypeMismatch("fills".into()))
+        );
+        // Binding clash (variant switch): small Button 90 -> large Button 91 bound to the variable.
+        let on_small = float_fills(2, 81, 90);
+        assert!(resolves(&on_small).is_ok());
+        assert_eq!(
+            switch_variant(&on_small, &design, "size", "large").err(),
+            Some(E::TypeMismatch("fills".into()))
+        );
+        // A component property bound to a variable of the wrong type (Boolean showIcon <- Color).
+        let mut bound = instance(3, &id("SCMP", 12));
+        bound.component_properties.insert(
+            "showIcon".into(),
+            folio::StudioInstanceProperty {
+                property_type: PropType::Boolean,
+                value: StudioPropertyValue::Boolean(true),
+                bound_variable_id: Some(id("SVAR", 1)),
+            },
+        );
+        assert_eq!(resolves(&bound), Err(E::TypeMismatch("showIcon".into())));
+        assert_eq!(
+            swap_component(&bound, &design, &id("SCMP", 11)).err(),
+            Some(E::TypeMismatch("showIcon".into()))
+        );
+        // A carried alias override whose variable has another type, or does not exist.
+        let mut aliased = instance(4, &id("SCMP", 12));
+        aliased
+            .overrides
+            .push(record(4, "opacity", alias_to(1, VariableType::Float)));
+        assert_eq!(resolves(&aliased), Err(E::TypeMismatch(id("SVAR", 1))));
+        assert_eq!(
+            switch_variant(&aliased, &design, "size", "small").err(),
+            Some(E::TypeMismatch(id("SVAR", 1)))
+        );
+        let mut dangling = instance(5, &id("SCMP", 12));
+        dangling
+            .overrides
+            .push(record(4, "opacity", alias_to(99, VariableType::Float)));
+        assert_eq!(resolves(&dangling), Err(E::NoSuchVariable(id("SVAR", 99))));
+        assert_eq!(
+            switch_variant(&dangling, &design, "size", "small").err(),
+            Some(E::NoSuchVariable(id("SVAR", 99)))
+        );
+        // An instance id resolution refuses is refused by swap too (V4-06 sweep of the same class).
+        let mut bad_id = instance(7, &id("SCMP", 60));
+        bad_id.instance_id = "SCIN-not-an-id".into();
+        assert_eq!(
+            resolves(&bad_id),
+            Err(E::InvalidId("SCIN-not-an-id".into()))
+        );
+        assert_eq!(
+            swap_component(&bad_id, &design, &id("SCMP", 12)).err(),
+            Some(E::InvalidId("SCIN-not-an-id".into()))
+        );
+
+        // Right-typed results still pass and resolve.
+        let mut colour_fills = instance(6, &id("SCMP", 60));
+        colour_fills
+            .overrides
+            .push(record(70, "fills", color(1.0, 0.0, 0.0, 1.0)));
+        let (next, dropped) = swap_component(&colour_fills, &design, &id("SCMP", 12)).unwrap();
+        assert!(dropped.is_empty());
+        let r = resolves(&next).unwrap();
+        assert_eq!(
+            r.field(&id("SLYR", 3), "fills").unwrap().source,
+            Source::Override
+        );
+    });
+}
+
+#[test]
+fn design_refuses_repeated_ids() {
+    bounded_case("design_refuses_repeated_ids", || {
+        // Set 50 whose two members share id 51; the large one is a different definition. The
+        // unvalidated index used to let resolve_instance pick the second record silently under the
+        // shared id (size = large resolved to "SCMP-...33" with the Large layer); now no index exists.
+        let mut w = World::new();
+        w.add_set(
+            50,
+            51,
+            &[("size", &["small", "large"])],
+            vec![],
+            vec![
+                member(51, "small", vec![node(1, "Small", None)]),
+                member(51, "large", vec![node(2, "Large", None)]),
+            ],
+        );
+        let fx = w.build();
+        let index = |fx: &Fixture| Design::new(&fx.doc, &fx.records, &fx.local).err();
+        assert_eq!(index(&fx), Some(E::Duplicate(id("SCMP", 51))));
+
+        // Every other id the index keys by is refused the same way on an otherwise valid fixture.
+        let valid = fixture();
+        assert_eq!(index(&valid), None);
+        let refused = |change: &dyn Fn(&mut Fixture)| {
+            let mut fx = copy_of(&valid);
+            change(&mut fx);
+            index(&fx)
+        };
+        // A document layer id twice (layers, artboards and page spreads share one namespace).
+        let label = |fx: &Fixture| {
+            fx.doc
+                .layers
+                .iter()
+                .find(|l| l.layer_id == id("SLYR", 4))
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            refused(&|fx| {
+                let copy = label(fx);
+                fx.doc.layers.push(copy);
+            }),
+            Some(E::Duplicate(id("SLYR", 4)))
+        );
+        assert_eq!(
+            refused(&|fx| {
+                let mut copy = label(fx);
+                copy.layer_id = id("SART", 1);
+                fx.doc.layers.push(copy);
+            }),
+            Some(E::Duplicate(id("SART", 1)))
+        );
+        // Two design entries for one node.
+        assert_eq!(
+            refused(&|fx| fx.records.nodes.push(design_entry(layer_ref(4)))),
+            Some(E::Duplicate(id("SLYR", 4)))
+        );
+        // Two definitions on one container layer (reported with the second definition's id).
+        assert_eq!(
+            refused(
+                &|fx| fx.records.components[1].layer_id = fx.records.components[0].layer_id.clone()
+            ),
+            Some(E::Duplicate(id("SCMP", 12)))
+        );
+        // A repeated variable collection and a repeated variable.
+        assert_eq!(
+            refused(&|fx| {
+                let c = fx.records.variable_collections[0].clone();
+                fx.records.variable_collections.push(c);
+            }),
+            Some(E::Duplicate(id("SVCL", 1)))
+        );
+        assert_eq!(
+            refused(&|fx| {
+                let v = fx.records.variables[0].clone();
+                fx.records.variables.push(v);
+            }),
+            Some(E::Duplicate(id("SVAR", 1)))
+        );
+        // The standalone variable table refuses the same repeat.
+        let mut records = valid.records.clone();
+        records.variables.push(records.variables[0].clone());
+        assert_eq!(
+            VariableTable::new(&records.variable_collections, &records.variables).err(),
+            Some(E::Duplicate(id("SVAR", 1)))
+        );
+
+        // Same class, keyed by value rather than id (V4-06 sweep): every repeat Folio refuses is
+        // refused by the evaluator on an unvalidated set, never resolved to the first or last record.
+        let (limits, cancel) = (Limits::default(), CancellationToken::default());
+        let folio_code = |fx: &Fixture| {
+            folio::validate_design_records(
+                &fx.records,
+                &fx.doc,
+                folio::Budget::default(),
+                &cancel,
+                &folio::Unresolved,
+            )
+            .unwrap_err()
+            .code
+        };
+        // Two members with one variant assignment: the selection used to take the first.
+        let mut w = World::new();
+        w.add_set(
+            50,
+            51,
+            &[("size", &["small", "large"])],
+            vec![],
+            vec![
+                member(51, "small", vec![node(1, "First", None)]),
+                member(52, "small", vec![node(2, "Second", None)]),
+            ],
+        );
+        let twins = w.build();
+        assert_eq!(folio_code(&twins), folio::Code::VariantAssignmentDuplicate);
+        let mut on_set = instance(1, &id("SCMP", 50));
+        on_set
+            .component_properties
+            .insert("size".into(), variant_prop("small"));
+        let design = Design::new(&twins.doc, &twins.records, &twins.local).unwrap();
+        assert_eq!(
+            resolve_instance(&on_set, &design, &no_modes(), 1, &limits, &cancel),
+            Err(E::VariantAssignmentDuplicate(id("SCMP", 52)))
+        );
+        // A property defined twice in one list: the lookup used to keep the last definition.
+        let mut twice = copy_of(&valid);
+        twice.records.components[1]
+            .component_property_definitions
+            .extend([
+                prop_def(
+                    "label",
+                    PropType::Text,
+                    StudioPropertyValue::Text("a".into()),
+                ),
+                prop_def(
+                    "label",
+                    PropType::Text,
+                    StudioPropertyValue::Text("b".into()),
+                ),
+            ]);
+        assert_eq!(folio_code(&twice), folio::Code::InvalidField);
+        let design = Design::new(&twice.doc, &twice.records, &twice.local).unwrap();
+        assert_eq!(
+            resolve_instance(
+                &instance(2, &id("SCMP", 12)),
+                &design,
+                &no_modes(),
+                1,
+                &limits,
+                &cancel
+            ),
+            Err(E::Duplicate("label".into()))
+        );
+    });
+}
+
+/// A copy of a fixture to change.
+fn copy_of(fx: &Fixture) -> Fixture {
+    Fixture {
+        doc: fx.doc.clone(),
+        records: fx.records.clone(),
+        local: fx.local.clone(),
+    }
+}
+
+#[test]
+fn override_write_keys_are_scoped_to_the_instance() {
+    bounded_case("override_write_keys_per_instance", || {
+        let fx = fixture();
+        let design = fx.design();
+        let (limits, cancel) = (Limits::default(), CancellationToken::default());
+        let edit = OverrideEdit {
+            node_id: id("SLYR", 4),
+            field: "characters".into(),
+            value: s("Hi"),
+        };
+        let propose = |n: u32| {
+            propose_overrides(
+                &instance(n, &id("SCMP", 12)),
+                std::slice::from_ref(&edit),
+                &design,
+                &no_modes(),
+                3,
+                &limits,
+                &cancel,
+            )
+            .unwrap()
+        };
+        let (a, b) = (propose(1), propose(2));
+        // Two instances of one component write two different instance records: disjoint writes
+        // (STU-ARC-011). They used to share the definition key (SLYR-4, characters).
+        assert!(
+            a.write_footprint
+                .iter()
+                .all(|k| !b.write_footprint.contains(k))
+        );
+        // Committing `a` moves only its own keys: `b` stays admissible, a repeat of `a` is stale.
+        let expected: BTreeMap<(String, String), u64> = a
+            .footprint()
+            .into_iter()
+            .chain(b.footprint())
+            .map(|k| (k, 1))
+            .collect();
+        let mut current = expected.clone();
+        for k in &a.write_footprint {
+            current.insert(k.clone(), 2);
+        }
+        assert_eq!(b.admit(&expected, &current), Ok(()));
+        assert!(matches!(
+            a.admit(&expected, &current),
+            Err(E::StaleProperty { .. })
+        ));
     });
 }

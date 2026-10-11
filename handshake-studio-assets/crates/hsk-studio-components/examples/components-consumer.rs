@@ -233,7 +233,7 @@ fn run(args: &[String], cancel: &CancellationToken) -> Result<String, Components
         code_syntax: BTreeMap::new(),
     });
 
-    let design = Design::new(&document, &records, &local);
+    let design = Design::new(&document, &records, &local)?;
     let limits = Limits::default();
     design.validate(&limits, cancel, &folio::Unresolved)?;
 

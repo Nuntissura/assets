@@ -13,12 +13,15 @@
 //! (Folio layers carry no x/y/width/height). Local numbers are in the document's geometry unit, as
 //! Folio's spacing and padding are; `RectPt`/`SizePt` are points when the document unit is `pt`.
 //!
-//! [`Design::new`] only indexes; it never refuses. [`Design::validate`] is the validation step
-//! (Folio, then the crate-local rules). Every evaluator re-checks what it depends on (alias cycles,
-//! types, missing mode values, sizing agreement), so an unvalidated set yields a typed refusal and
-//! never a loop or a silent value.
+//! [`Design::new`] indexes and refuses only a repeated id (`Duplicate`), the one defect an index
+//! cannot re-check later: a lookup by a repeated id would pick one record silently. It runs no other
+//! validation (test `design_refuses_repeated_ids`). [`Design::validate`] is the validation step
+//! (Folio, then the crate-local rules). The evaluators re-check what they depend on, so an
+//! unvalidated set with these defects yields a typed refusal: alias cycles and alias type clashes
+//! (test `alias_type_disjoint_stale_cancel`), a missing mode value (`override_rules_and_properties`),
+//! container/child sizing disagreement (`wrap_lines_and_typed_refusals`).
 use super::constraints::RectPt;
-use super::instance_resolution::{Limits, VariableTable, check_id, check_key, check_value};
+use super::instance_resolution::{Limits, VariableTable, check_id, check_key, check_value, unique};
 use crate::{ComponentsError as E, R};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
@@ -76,19 +79,35 @@ pub struct Design<'a> {
 }
 
 impl<'a> Design<'a> {
-    /// Indexes the inputs. First record wins on a repeated id; validation reports the repeat.
+    /// Indexes the inputs and refuses a repeated id with `Duplicate`, so every lookup names exactly
+    /// one record: document node ids (artboards, page spreads and layers share one namespace, as in
+    /// Folio), design entry node ids, component and set ids (one namespace), the container layer of a
+    /// component or set (reported with the component or set id, as Folio does), variable collection
+    /// ids and variable ids. Nothing else is validated here; see [`Design::validate`].
     pub fn new(
         document: &'a StudioDocument,
         records: &'a StudioDesignRecords,
         local: &'a LocalContent,
-    ) -> Self {
+    ) -> R<Self> {
+        let mut node_ids: BTreeSet<&str> = BTreeSet::new();
+        for id in document
+            .artboards
+            .iter()
+            .map(|a| a.artboard_id.as_str())
+            .chain(
+                document
+                    .page_spreads
+                    .iter()
+                    .map(|s| s.page_spread_id.as_str()),
+            )
+            .chain(document.layers.iter().map(|l| l.layer_id.as_str()))
+        {
+            unique(&mut node_ids, id, id)?;
+        }
         let mut layers: BTreeMap<&str, &StudioLayer> = BTreeMap::new();
         let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for l in &document.layers {
             let id = l.layer_id.as_str();
-            if layers.contains_key(id) {
-                continue;
-            }
             layers.insert(id, l);
             if let Parent::Node(p) = &l.parent {
                 children.entry(p.node_id.as_str()).or_default().push(id);
@@ -96,17 +115,25 @@ impl<'a> Design<'a> {
         }
         let mut designs: BTreeMap<&str, &StudioNodeDesign> = BTreeMap::new();
         for n in &records.nodes {
-            designs.entry(n.node.node_id.as_str()).or_insert(n);
+            if designs.insert(n.node.node_id.as_str(), n).is_some() {
+                return Err(E::Duplicate(n.node.node_id.clone()));
+            }
         }
+        let mut definition_ids: BTreeSet<&str> = BTreeSet::new();
+        let mut container_layers: BTreeSet<&str> = BTreeSet::new();
         let mut components: BTreeMap<&str, &StudioComponent> = BTreeMap::new();
         for k in &records.components {
-            components.entry(k.component_id.as_str()).or_insert(k);
+            unique(&mut definition_ids, &k.component_id, &k.component_id)?;
+            unique(&mut container_layers, &k.layer_id, &k.component_id)?;
+            components.insert(k.component_id.as_str(), k);
         }
         let mut sets: BTreeMap<&str, &StudioComponentSet> = BTreeMap::new();
         let mut set_by_layer: BTreeMap<&str, &StudioComponentSet> = BTreeMap::new();
         for s in &records.component_sets {
-            sets.entry(s.component_id.as_str()).or_insert(s);
-            set_by_layer.entry(s.layer_id.as_str()).or_insert(s);
+            unique(&mut definition_ids, &s.component_id, &s.component_id)?;
+            unique(&mut container_layers, &s.layer_id, &s.component_id)?;
+            sets.insert(s.component_id.as_str(), s);
+            set_by_layer.insert(s.layer_id.as_str(), s);
         }
         // Set membership is a document fact: the components whose layer is a child of the set layer.
         let mut member_of: BTreeMap<&str, &StudioComponentSet> = BTreeMap::new();
@@ -118,10 +145,10 @@ impl<'a> Design<'a> {
                     Parent::Root(()) => None,
                 });
             if let Some(s) = parent.and_then(|p| set_by_layer.get(p)) {
-                member_of.entry(k.component_id.as_str()).or_insert(*s);
+                member_of.insert(k.component_id.as_str(), *s);
             }
         }
-        Self {
+        Ok(Self {
             document,
             records,
             local,
@@ -131,8 +158,8 @@ impl<'a> Design<'a> {
             components,
             sets,
             member_of,
-            vars: VariableTable::new(&records.variable_collections, &records.variables),
-        }
+            vars: VariableTable::new(&records.variable_collections, &records.variables)?,
+        })
     }
 
     pub fn document(&self) -> &'a StudioDocument {
@@ -226,22 +253,24 @@ impl<'a> Design<'a> {
     }
 
     /// Property definitions in force for a component: its own, then its set's (a member's win).
+    /// A name defined twice in one list is `Duplicate(name)` (Folio refuses it too), never a pick.
     pub(crate) fn property_definitions(
         &self,
         member: &'a StudioComponent,
         set: Option<&'a StudioComponentSet>,
-    ) -> BTreeMap<&'a str, &'a StudioComponentProperty> {
+    ) -> R<BTreeMap<&'a str, &'a StudioComponentProperty>> {
         let mut defs = BTreeMap::new();
-        for d in set
-            .iter()
-            .flat_map(|s| s.component_property_definitions.iter())
-        {
-            defs.insert(d.property_name.as_str(), d);
+        for list in [
+            set.map_or(&[][..], |s| s.component_property_definitions.as_slice()),
+            member.component_property_definitions.as_slice(),
+        ] {
+            let mut names = BTreeSet::new();
+            for d in list {
+                unique(&mut names, &d.property_name, &d.property_name)?;
+                defs.insert(d.property_name.as_str(), d);
+            }
         }
-        for d in &member.component_property_definitions {
-            defs.insert(d.property_name.as_str(), d);
-        }
-        defs
+        Ok(defs)
     }
 
     fn budget(limits: &Limits) -> Budget {
