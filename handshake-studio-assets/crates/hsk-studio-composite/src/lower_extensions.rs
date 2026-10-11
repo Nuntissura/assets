@@ -12,8 +12,9 @@
 //! `exposure_use_legacy`, `channel_blend_unsupported`, `layer_effects_not_rendered`.
 use crate::lower_plan::StepAppearance;
 use hsk_studio_folio::{
-    ADJUSTMENT_SCHEMA, Parent, Payload, ProfileBinding, StrokeFillType,
-    StrokePosition as FolioStrokePosition, StudioAdjustment,
+    ADJUSTMENT_SCHEMA, GlowSource as FolioGlowSource, GlowTechnique as FolioGlowTechnique,
+    Parent, Payload, ProfileBinding, StrokeFillType, StrokePosition as FolioStrokePosition,
+    StudioAdjustment,
     StudioAdjustmentChannel, StudioAdvancedBlending, StudioBlendChannel, StudioColor,
     StudioContour, StudioCurve, StudioEffect, StudioEffectKind, StudioEffectStack,
     StudioGlobalLight, StudioKnockout, StudioLayer, StudioLevelsRecord, StudioRasterRecords,
@@ -24,7 +25,8 @@ use hsk_studio_pigment::adjust_math::{
 use hsk_studio_pigment::blend_math::{BlendSpace, Exactness, StudioBlendMode};
 use hsk_studio_pigment::coverage_math::{BlendChannel, BlendRangeEntry};
 use hsk_studio_pigment::effect_math::{
-    ColourOverlayOp, DropShadowOp, EffectError, EffectOp, MAX_EFFECTS_PER_LAYER, StrokeOp,
+    ColourOverlayOp, DropShadowOp, EffectError, EffectFeature, EffectOp, GlowSource,
+    GlowTechnique, InnerGlowOp, InnerShadowOp, MAX_EFFECTS_PER_LAYER, OuterGlowOp, StrokeOp,
     StrokePosition as PigmentStrokePosition,
 };
 use hsk_studio_pigment::render_plan::{ExtOperator, Knockout};
@@ -81,10 +83,13 @@ pub const REFUSE_ADJUSTMENT_RECORD: &str = "adjustment_record_missing";
 pub const NOTE_CURVE_CORNER_DROPPED: &str = "curves_corner_flag_dropped";
 /// Lowering-report key: exposure linearisation exponent chosen from the plan blend space.
 pub const NOTE_EXPOSURE_LINEARIZE: &str = "exposure_linearize_gamma";
-/// Lowering-report key: drop shadow spread read as a percent of the size (STU-RAS-157 states pixels
-/// for it, but its observed range 0..100 exceeds the observed size range 0..65, and Photoshop's
-/// spread is a percentage; spec gap, UNVERIFIED).
-pub const NOTE_SHADOW_SPREAD_PERCENT: &str = "drop_shadow_spread_percent";
+/// Lowering-report key: a spread or choke read as a percent of the size (STU-RAS-157 states pixels
+/// for it, but the observed drop-shadow spread range 0..100 exceeds the observed size range 0..65,
+/// and Photoshop's spread and choke are percentages; spec unit conflict D19, UNVERIFIED).
+pub const NOTE_SPREAD_CHOKE_PERCENT: &str = "effect_spread_choke_percent";
+/// Lowering-report key: a glow jitter above zero on a solid-colour glow, passed to pigment as 0
+/// (Adobe-side evidence says jitter only acts on gradients; D5 case 16 decides, UNVERIFIED).
+pub const NOTE_GLOW_JITTER_IGNORED: &str = "glow_jitter_ignored_solid_colour";
 
 /// One recorded approximation of the lowering (never a silent drop). `exactness` is the class the
 /// approximation costs; the lowering ledger carries it under `key`.
@@ -368,6 +373,48 @@ fn effect_colour(
     Ok(rgb)
 }
 
+/// Global Light is a document-level angle shared by the effects that subscribe to it; an effect
+/// that follows it needs the record.
+fn shadow_angle(e: &StudioEffect, cx: &EffectContext<'_>) -> Result<f32, &'static str> {
+    let angle = if e.use_global_light {
+        cx.global_light.ok_or(REFUSE_EFFECT_GLOBAL_LIGHT)?.angle
+    } else {
+        e.angle
+    };
+    Ok(angle as f32)
+}
+
+/// Spread and choke are percents of the size (lead decision, D19): fraction = percent / 100.
+fn grown(notes: &mut Notes, e: &StudioEffect, field: &str, percent: f64) -> f32 {
+    if percent > 0.0 {
+        notes.push((
+            NOTE_SPREAD_CHOKE_PERCENT,
+            Exactness::Approximate,
+            format!("{}: {} {field} {percent}", e.instance_id, e.params.key()),
+        ));
+    }
+    (percent / 100.0) as f32
+}
+
+fn glow_technique(t: FolioGlowTechnique) -> GlowTechnique {
+    match t {
+        FolioGlowTechnique::Softer => GlowTechnique::Softer,
+        FolioGlowTechnique::Precise => GlowTechnique::Precise,
+    }
+}
+
+/// A solid-colour glow passes jitter 0 to pigment (lead decision; Adobe-side evidence says jitter
+/// acts on gradients only) and reports the loss.
+fn glow_jitter(notes: &mut Notes, e: &StudioEffect, jitter: f64) {
+    if jitter > 0.0 {
+        notes.push((
+            NOTE_GLOW_JITTER_IGNORED,
+            Exactness::Approximate,
+            format!("{}: jitter {jitter}", e.instance_id),
+        ));
+    }
+}
+
 fn convert_effect(
     e: &StudioEffect,
     cx: &EffectContext<'_>,
@@ -388,25 +435,72 @@ fn convert_effect(
             size,
             layer_knocks_out,
         } => {
-            // Global Light is a document-level angle shared by the effects that subscribe to it.
-            let angle = if e.use_global_light {
-                cx.global_light.ok_or(REFUSE_EFFECT_GLOBAL_LIGHT)?.angle
-            } else {
-                e.angle
-            };
-            if *spread > 0.0 {
-                notes.push((
-                    NOTE_SHADOW_SPREAD_PERCENT,
-                    Exactness::Approximate,
-                    format!("{}: spread {spread}", e.instance_id),
-                ));
-            }
+            let angle = shadow_angle(e, cx)?;
             EffectOp::DropShadow(
                 DropShadowOp::new(effect_colour(e, cx)?, mode, opacity)
-                    .with_offset(angle as f32, *distance as f32)
-                    .with_spread((*spread / 100.0) as f32)
+                    .with_offset(angle, *distance as f32)
+                    .with_spread(grown(notes, e, "spread", *spread))
                     .with_size(*size as f32)
                     .with_layer_knocks_out(*layer_knocks_out),
+            )
+        }
+        StudioEffectKind::InnerShadow {
+            distance,
+            choke,
+            size,
+        } => {
+            let angle = shadow_angle(e, cx)?;
+            EffectOp::InnerShadow(
+                InnerShadowOp::new(effect_colour(e, cx)?, mode, opacity)
+                    .with_offset(angle, *distance as f32)
+                    .with_choke(grown(notes, e, "choke", *choke))
+                    .with_size(*size as f32),
+            )
+        }
+        StudioEffectKind::OuterGlow {
+            technique,
+            spread,
+            size,
+            range,
+            jitter,
+            gradient,
+        } => {
+            if gradient.is_some() {
+                return Err(EffectFeature::GlowGradient.key());
+            }
+            glow_jitter(notes, e, *jitter);
+            EffectOp::OuterGlow(
+                OuterGlowOp::new(effect_colour(e, cx)?, mode, opacity)
+                    .with_spread(grown(notes, e, "spread", *spread))
+                    .with_size(*size as f32)
+                    .with_technique(glow_technique(*technique))
+                    .with_range((*range / 100.0) as f32),
+            )
+        }
+        StudioEffectKind::InnerGlow {
+            technique,
+            source,
+            choke,
+            size,
+            range,
+            jitter,
+            gradient,
+        } => {
+            if gradient.is_some() {
+                return Err(EffectFeature::GlowGradient.key());
+            }
+            glow_jitter(notes, e, *jitter);
+            let source = match source {
+                FolioGlowSource::Edge => GlowSource::Edge,
+                FolioGlowSource::Centre => GlowSource::Centre,
+            };
+            EffectOp::InnerGlow(
+                InnerGlowOp::new(effect_colour(e, cx)?, mode, opacity)
+                    .with_choke(grown(notes, e, "choke", *choke))
+                    .with_size(*size as f32)
+                    .with_source(source)
+                    .with_technique(glow_technique(*technique))
+                    .with_range((*range / 100.0) as f32),
             )
         }
         StudioEffectKind::ColourOverlay => {
@@ -438,7 +532,7 @@ fn convert_effect(
                 position,
             ))
         }
-        // Bevel and emboss, inner shadow, glows, satin, gradient and pattern overlay.
+        // Bevel and emboss, satin, gradient and pattern overlay.
         _ => return Err(REFUSE_EFFECTS),
     };
     // Pigment's own parameter and limit judgement, mapped to the code the lowering reports.
@@ -447,6 +541,8 @@ fn convert_effect(
             REFUSE_EFFECT_LIMIT
         }
         EffectError::ModeNotApplicable(_) => REFUSE_EFFECT_BLEND_MODE,
+        // A feature pigment recognises and refuses (glow range, Precise technique, ...): its key.
+        EffectError::Unsupported(feature) => feature.key(),
         _ => REFUSE_EFFECT_PARAMETER,
     })?;
     Ok(op)

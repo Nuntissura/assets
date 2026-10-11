@@ -1164,15 +1164,15 @@ fn knockout_and_effect_stack_are_refused() {
         let none = records(json!([{"layer_id":identity("SLYR",2),"advanced_blending":blending("inherited")}]));
         assert!(flow(&nested, &none).1.unwrap().extensions.is_empty());
 
-        // An enabled effect instance of a kind pigment does not render (here an inner shadow; wave
-        // 1 is drop shadow, colour overlay and stroke) is refused; a disabled stack, or one
-        // without enabled instances, is not.
+        // An enabled effect instance of a kind pigment does not render (here a satin; pigment
+        // renders drop shadow, colour overlay, stroke, inner shadow and the glows) is refused; a
+        // disabled stack, or one without enabled instances, is not.
         let stack = |enabled: bool, instance_enabled: bool| {
             json!({"effect_stack_id":"SEFX-019abcde-0000-7000-8000-000000000001","enabled":enabled,"scale":100.0,
                 "effects":[{"instance_id":"fx_1","enabled":instance_enabled,"visible_in_editor":true,
                     "blend_mode":5,"opacity":75.0,"colour":{"r":0.0,"g":0.0,"b":0.0,"colour_profile_id":null},
                     "anti_alias":false,"noise":0.0,"angle":120.0,"use_global_light":true,
-                    "params":{"effect_kind":"inner_shadow","distance":1.0,"choke":0.0,"size":1.0}}]})
+                    "params":{"effect_kind":"satin","distance":5.0,"size":5.0,"invert":false}}]})
         };
         let with = |enabled, instance_enabled| {
             records(json!([{"layer_id":identity("SLYR",3),"effects":stack(enabled, instance_enabled)}]))
@@ -1477,7 +1477,7 @@ fn effect_refusals_are_typed_and_nothing_is_dropped_or_approximated_silently() {
         assert_eq!(s.angle_deg, 120.0);
         assert!(ok(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), true, overlay())), enc).extensions.layers.len() == 1);
         // A kind pigment does not render, and stack scale other than 100 percent.
-        let glow = json!({"effect_kind":"outer_glow","technique":"softer","spread":0.0,"size":3.0,"range":50.0,"jitter":0.0});
+        let glow = json!({"effect_kind":"satin","distance":5.0,"size":5.0,"invert":false});
         refused(&doc, &on_layer_3(fx_effect("e1", 100.0, black(), false, glow.clone())), enc, "layer_effects_not_rendered");
         let mut scaled = on_layer_3(fx_effect("e1", 100.0, black(), false, overlay()));
         scaled.layers[0].effects.as_mut().unwrap().scale = 150.0;
@@ -1534,5 +1534,153 @@ fn effect_refusals_are_typed_and_nothing_is_dropped_or_approximated_silently() {
             StepStatus::Unavailable("effect_on_adjustment_layer".into())
         );
         assert!(unavailable_reason(lower_ext(&run, &adj)).contains("effect_on_adjustment_layer"));
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Effects wave 2 (inner shadow, outer glow, inner glow; colour source only).
+// ---------------------------------------------------------------------------------------------
+use hsk_studio_composite::lower_extensions::{NOTE_GLOW_JITTER_IGNORED, NOTE_SPREAD_CHOKE_PERCENT};
+use hsk_studio_pigment::effect_math::{GlowSource, InnerGlowOp, InnerShadowOp, OuterGlowOp};
+
+/// A Softer glow kind block (size 2, range 100, jitter 0) with `fields` overriding.
+fn fx_glow(kind: &str, fields: Value) -> Value {
+    let mut v = json!({"effect_kind":kind,"technique":"softer","size":2.0,"range":100.0,"jitter":0.0});
+    for (k, x) in fields.as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    v
+}
+
+#[test]
+fn inner_shadow_and_glows_lower_to_pigment_ops_that_render_as_derived() {
+    bounded_case("inner_shadow_and_glows_lower_to_pigment_ops_that_render_as_derived", || {
+        let normal = StudioBlendMode::Normal;
+        let black = || fx_colour(0.0, 0.0, 0.0);
+        // Layer 2: inner shadow following Global Light (180), distance 1, black. Layer 3: a red
+        // outer glow (spread 100 percent, size 2, 50 percent opacity) and a white inner glow
+        // from the edge (choke 100 percent, size 1).
+        let recs = fx_records(
+            Some(180.0),
+            json!([
+                {"layer_id":identity("SLYR",2),"effects":fx_stack(vec![fx_effect("is_1", 100.0, black(), true,
+                    json!({"effect_kind":"inner_shadow","distance":1.0,"choke":0.0,"size":0.0}))])},
+                {"layer_id":identity("SLYR",3),"effects":fx_stack(vec![
+                    fx_effect("og_1", 50.0, fx_colour(1.0,0.0,0.0), false, fx_glow("outer_glow", json!({"spread":100.0}))),
+                    fx_effect("ig_1", 100.0, fx_colour(1.0,1.0,1.0), false,
+                        fx_glow("inner_glow", json!({"source":"edge","choke":100.0,"size":1.0})))])}]),
+        );
+        let (report, low) = flow_space(&tiled(), &recs, BlendSpace::Encoded);
+        let low = low.unwrap();
+        let inner_shadow = EffectOp::InnerShadow(
+            InnerShadowOp::new([0.0; 3], normal, 1.0).with_offset(180.0, 1.0).with_choke(0.0).with_size(0.0),
+        );
+        let outer_glow = EffectOp::OuterGlow(
+            OuterGlowOp::new([1.0, 0.0, 0.0], normal, 0.5).with_spread(1.0).with_size(2.0),
+        );
+        let inner_glow = EffectOp::InnerGlow(
+            InnerGlowOp::new([1.0; 3], normal, 1.0).with_choke(1.0).with_size(1.0).with_source(GlowSource::Edge),
+        );
+        assert_eq!(
+            low.extensions.layers,
+            vec![
+                LayerExtension::new(PlanNodeId(4), 0).with_effects(vec![inner_shadow]),
+                LayerExtension::new(PlanNodeId(4), 1).with_effects(vec![outer_glow, inner_glow]),
+            ]
+        );
+        // Percent become fractions and the reading is reported (outer glow spread, inner glow choke).
+        let percent_notes = low.notes.iter().filter(|n| n.key == NOTE_SPREAD_CHOKE_PERCENT).count();
+        assert_eq!(percent_notes, 2, "{:?}", low.notes);
+        use hsk_studio_pigment::effect_math::EffectKind;
+        assert_eq!(
+            low.extensions.validate(&low.plan),
+            Ok(vec![
+                ExtOperator::Effect(EffectKind::InnerShadow),
+                ExtOperator::Effect(EffectKind::OuterGlow),
+                ExtOperator::Effect(EffectKind::InnerGlow),
+            ])
+        );
+        let token = CancellationToken::default();
+        assert!(admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token).is_ok());
+        for ledger in [&low.exactness, &report.receipt.exactness] {
+            for kind in [EffectKind::InnerShadow, EffectKind::OuterGlow, EffectKind::InnerGlow] {
+                let op = ExtOperator::Effect(kind);
+                assert!(
+                    ledger.operators.iter().any(|o| o.key == op.key() && o.exactness == op.intrinsic()),
+                    "{} missing from {:?}",
+                    op.key(),
+                    ledger.operators
+                );
+            }
+        }
+
+        // Inner shadow, 5 x 1 plane, blue bar at x = 1..2: angle 180 and distance 1 move the
+        // inverted matte [1,0,0,1,1] by (+1, 0) to [1,1,0,0,1] (beyond the plane reads 1), clipped
+        // to the alpha: only x = 1 is shadowed (black, opacity 1), x = 2 stays blue.
+        let blue = [0.0, 0.0, 1.0];
+        let bar = plane_with(5, 1, &[(1, 0), (2, 0)], blue);
+        let none = EffectPlane::transparent(5, 1).unwrap();
+        let out = render_layer_reference(&none, &bar, LayerParams::plain(), &low.extensions.layers[0].effects).unwrap();
+        assert_pixel(&out, 1, 0, Some([0.0; 3]), 1.0);
+        assert_pixel(&out, 2, 0, Some(blue), 1.0);
+        for x in [0, 3, 4] {
+            assert_pixel(&out, x, 0, None, 0.0);
+        }
+
+        // Outer glow, 5 x 1 plane, one blue pixel at x = 2: spread 100 percent of size 2 grows the
+        // matte as a hard disc of radius 2 (coverage 1 at offsets 1 and 2), so every pixel gets red
+        // at 50 percent behind the content; the content pixel stays blue.
+        let dot = plane_with(5, 1, &[(2, 0)], blue);
+        let out = render_layer_reference(&none, &dot, LayerParams::plain(), &low.extensions.layers[1].effects[..1]).unwrap();
+        assert_pixel(&out, 2, 0, Some(blue), 1.0);
+        for x in [0, 1, 3, 4] {
+            assert_pixel(&out, x, 0, Some([1.0, 0.0, 0.0]), 0.5);
+        }
+
+        // Inner glow from the edge, 5 x 5 plane, blue 3 x 3 square at 1..3: choke 100 percent of
+        // size 1 grows the inverted matte by one pixel, so the 8 square pixels next to the outline
+        // are white (opacity 1), the centre stays blue, and nothing is drawn outside the square.
+        let covered: Vec<(u32, u32)> = (1..4).flat_map(|y| (1..4).map(move |x| (x, y))).collect();
+        let square = plane_with(5, 5, &covered, blue);
+        let none5 = EffectPlane::transparent(5, 5).unwrap();
+        let out = render_layer_reference(&none5, &square, LayerParams::plain(), &low.extensions.layers[1].effects[1..]).unwrap();
+        for (x, y) in covered.iter().filter(|p| **p != (2, 2)) {
+            assert_pixel(&out, *x, *y, Some([1.0; 3]), 1.0);
+        }
+        assert_pixel(&out, 2, 2, Some(blue), 1.0);
+        assert_pixel(&out, 0, 0, None, 0.0);
+        assert_pixel(&out, 4, 2, None, 0.0);
+
+        // Source centre inverts it: the centre is white, the ring stays blue.
+        let centre = fx_records(None, json!([{"layer_id":identity("SLYR",3),"effects":fx_stack(vec![
+            fx_effect("ig_2", 100.0, fx_colour(1.0,1.0,1.0), false,
+                fx_glow("inner_glow", json!({"source":"centre","choke":100.0,"size":1.0})))])}]));
+        let low_c = flow_space(&tiled(), &centre, BlendSpace::Encoded).1.unwrap();
+        let out = render_layer_reference(&none5, &square, LayerParams::plain(), &low_c.extensions.layers[0].effects).unwrap();
+        assert_pixel(&out, 2, 2, Some([1.0; 3]), 1.0);
+        assert_pixel(&out, 1, 1, Some(blue), 1.0);
+        assert_pixel(&out, 3, 2, Some(blue), 1.0);
+
+        // Jitter on a solid-colour glow is passed as 0 and reported; the glow still lowers.
+        let jittery = fx_records(None, json!([{"layer_id":identity("SLYR",3),"effects":fx_stack(vec![
+            fx_effect("og_2", 100.0, black(), false, fx_glow("outer_glow", json!({"spread":0.0,"jitter":20.0})))])}]));
+        let low_j = flow_space(&tiled(), &jittery, BlendSpace::Encoded).1.unwrap();
+        let EffectOp::OuterGlow(g) = low_j.extensions.layers[0].effects[0] else { panic!("outer glow") };
+        assert_eq!(g.jitter, 0.0);
+        assert!(low_j.notes.iter().any(|n| n.key == NOTE_GLOW_JITTER_IGNORED && n.layer_id == identity("SLYR", 3)));
+
+        // Pigment's refusals surface under its feature keys; a domain error wins over them.
+        let refused = |fields: Value, kind: &str, code: &str| {
+            let r = fx_records(None, json!([{"layer_id":identity("SLYR",3),"effects":fx_stack(vec![
+                fx_effect("g", 100.0, black(), false, fx_glow(kind, fields))])}]));
+            let reason = unavailable_reason(flow_space(&tiled(), &r, BlendSpace::Encoded).1);
+            assert!(reason.contains(code), "{code} not in {reason}");
+        };
+        let gradient = json!({"schema_id":"hsk.studio.gradient@1","object_id":"GRAD-1"});
+        refused(json!({"gradient":gradient,"jitter":30.0}), "outer_glow", "glow_gradient");
+        refused(json!({"gradient":gradient}), "inner_glow", "glow_gradient");
+        refused(json!({"range":50.0}), "outer_glow", "glow_range");
+        refused(json!({"technique":"precise"}), "inner_glow", "glow_technique_precise");
+        refused(json!({"choke":150.0}), "inner_glow", "effect_parameter");
     });
 }
