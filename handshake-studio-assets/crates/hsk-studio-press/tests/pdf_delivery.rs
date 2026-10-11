@@ -111,7 +111,7 @@ fn token() -> CancellationToken {
 /// Default limits, with a 36 dpi flattening raster (Operator decision D27): these tests read structure
 /// and text, not pixels, and a debug build draws and proves a 150 dpi page in about two seconds.
 fn limits() -> Limits {
-    #[allow(unused_mut)]
+    #[allow(unused_mut, clippy::field_reassign_with_default)]
     let mut l = Limits::default();
     l.flatten_dpi = 36; // D27-new-api
     l
@@ -134,6 +134,7 @@ fn selector_save(pdf: &[u8], region: RedactionRegion, policy: UnsupportedPolicy)
 /// content 91, `resources`), because the region's page is flattened and none of its text survives.
 /// The objects of a `build` fixture (one `N 0 obj ... endobj` each, one xref section) and the extra
 /// trailer entries after `/Root 1 0 R`; `None` for anything else (an incremental file, junk).
+#[allow(clippy::type_complexity)]
 fn objects_of(pdf: &[u8]) -> Option<(Vec<(u32, Vec<u8>)>, String)> {
     if count(pdf, b"trailer") != 1 {
         return None;
@@ -1633,7 +1634,8 @@ fn raster_doc(img_dict_extra: &str, img_data: &[u8], content: &str) -> Vec<u8> {
 fn raster_doc2(img_dict_extra: &str, img_data: &[u8], page_one: &str, page_two: &str) -> Vec<u8> {
     let mut objs = base_objs(page_one.as_bytes(), "<< /Title (T) >>");
     objs[7].1 = stream_body(&format!("{IMG} {img_dict_extra}"), img_data);
-    let res = if page_two.contains("/Im1") { "/Font << /F1 6 0 R >> /XObject << /Im1 8 0 R >>" } else { "/Font << /F1 6 0 R >>" };
+    // Page two lists the image as page one did (drawn or not) whenever it has content.
+    let res = if page_two.is_empty() { "/Font << /F1 6 0 R >>" } else { "/Font << /F1 6 0 R >> /XObject << /Im1 8 0 R >>" };
     build(&with_page_two(objs, page_two, res), "/Info 7 0 R", b"")
 }
 
@@ -3137,7 +3139,8 @@ fn unmappable_glyph_names_and_encodingless_fonts_are_opaque() {
     let out = type3_run(doc_with(type3("/g1 /g2"), vec![glyph.clone()], &show("<0102>")));
     assert!(out.not_proven_reasons().contains(&NotProven::OpaqueText) && out.proof.opaque_text_streams.len() == 1, "Type 3, unmappable names: {:?}", out.not_proven_reasons());
     let read = type3_run(doc_with(type3(DIFF_NAMES), vec![glyph.clone()], &show(DIFF_CODES)));
-    assert_eq!(read.reports[0].unredacted, vec![RedactionClass::Type3Text]); // R8-new-api
+    // D27: split_region_page moved the Type 3 text to page two, so the region's page holds none.
+    assert!(read.reports[0].unredacted.is_empty()); // R8-new-api
     assert!(!read.not_proven_reasons().contains(&NotProven::OpaqueText) && read.proof.hits.is_empty(), "Type 3, readable names: {:?}", read.not_proven_reasons());
     assert_eq!(read.proof.kept_text_collisions.len(), 1, "the Type 3 text is read: the kept instance is a collision, not invisible");
 }
@@ -3546,7 +3549,7 @@ fn writing_mode_is_read_from_the_cmap() {
         expect(&mut red, !out.region_cleared() && !out.is_proven(), format!("{what}: vertical text read as cleared"));
         expect(&mut red, out.reports[0].unredacted == vec![RedactionClass::VerticalText], format!("{what}: {:?}", out.reports[0].unredacted));
         expect(&mut red, r9_run(pdf, R9_BELOW, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::VerticalText)), format!("{what}: not refused"));
-        assert_eq!(out.region_undetermined, vec![(0, RedactionClass::VerticalText)], "{what}"); // R9-new-api
+        assert!(out.region_undetermined.is_empty(), "{what}: D27, a flattened page holds no text"); // R9-new-api
     }
     // Controls: horizontal predefined CMaps (Identity-H, H) and an embedded CMap with /WMode 0.
     for (what, pdf) in [
@@ -3973,6 +3976,9 @@ fn wmode_spellings_and_identity_names_are_read_as_viewers_do() {
     };
     let vertical: Vec<(&str, Vec<u8>)> = vec![
         ("/WMode 1 pop", r9_cmap_doc("39 0 R", vec![r9_cmap("", "/WMode 1 pop")])),
+        // R11-F6: pdf.js ends the number at the first byte that is not part of it.
+        ("/WMode 1def", r9_cmap_doc("39 0 R", vec![r9_cmap("", "/CMapName /X def /WMode 1def")])),
+        ("/WMode 1e", r9_cmap_doc("39 0 R", vec![r9_cmap("", "/WMode 1e def")])),
         ("<< /WMode 1 >> def", r9_cmap_doc("39 0 R", vec![r9_cmap("", "/D << /WMode 1 >> def")])),
         ("[/WMode 1] def", r9_cmap_doc("39 0 R", vec![r9_cmap("", "/D [/WMode 1] def")])),
         ("/A /WMode 1 def", r9_cmap_doc("39 0 R", vec![r9_cmap("", "/A /WMode 1 def")])),

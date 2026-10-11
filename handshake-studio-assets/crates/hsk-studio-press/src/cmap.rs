@@ -392,6 +392,18 @@ pub(crate) struct Program {
     pub stray: bool,
 }
 
+/// The integer a word STARTS with when only non-number bytes follow it (`1def` is 1, `0x` is 0); `None`
+/// when the word does not start with digits (after one optional sign) or a `.` or digit follows them.
+fn leading_int(w: &[u8]) -> Option<i64> {
+    let sign = usize::from(matches!(w.first(), Some(b'+' | b'-')));
+    let digits = w.get(sign..)?.iter().take_while(|b| b.is_ascii_digit()).count();
+    let end = sign.checked_add(digits)?;
+    if digits == 0 || digits > 18 || w.get(end).is_some_and(|b| *b == b'.' || *b == b'+' || *b == b'-') {
+        return None;
+    }
+    std::str::from_utf8(w.get(..end)?).ok()?.parse().ok()
+}
+
 /// Parses an embedded encoding CMap program (module docs).
 pub(crate) fn parse_program(data: &[u8]) -> Program {
     let (all, stray) = tokenize(data);
@@ -410,6 +422,13 @@ pub(crate) fn parse_program(data: &[u8]) -> Program {
                     } else if let Ok(v) = text.parse::<f64>() {
                         // pdf.js reads `1.0` as the integer 1; MuPDF ignores a real.
                         p.wmodes.push(if v.fract() == 0.0 && v.is_finite() && v.abs() < 9.0e15 { WModeTok::Int(v as i64) } else { WModeTok::Other });
+                    } else if let Some(v) = leading_int(w) {
+                        // R11-F6: pdf.js ends a number at the first byte that is not part of it, so
+                        // `1def` is 1 followed by `def` (test wmode_spellings_and_identity_names_are_read_as_viewers_do).
+                        p.wmodes.push(WModeTok::Int(v));
+                    } else if w.first().is_some_and(|b| b.is_ascii_digit() || matches!(*b, b'+' | b'-' | b'.')) {
+                        // Any other number-like word (`--1`, `1.5x`): what a viewer reads is not known.
+                        p.wmodes.push(WModeTok::Other);
                     }
                 }
             }

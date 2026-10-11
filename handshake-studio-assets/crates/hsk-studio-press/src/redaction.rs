@@ -620,7 +620,12 @@ impl<'a> Interp<'a> {
         let objs = &self.doc.objects;
         let resources = self.resources;
         let cs = move |n: &[u8]| resource_components(objs, resources, n);
-        Ok(parse_strict(data, &self.doc.limits, &cs, &mut self.budget)?.ops)
+        let parsed = parse_strict(data, &self.doc.limits, &cs, &mut self.budget)?;
+        if parsed.inline_ambiguous {
+            // R11-F5: a viewer may end the inline data at an earlier EI and draw the rest as text.
+            self.mark(RedactionClass::AmbiguousInlineImage);
+        }
+        Ok(parsed.ops)
     }
 
     /// Interprets a form XObject under the current CTM. Returns a copy-on-write replacement form

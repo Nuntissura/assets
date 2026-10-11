@@ -1073,6 +1073,15 @@ pub(crate) fn content_role_streams(objs: &Objs) -> BTreeMap<u32, ContentRole<'_>
                 }
                 _ => continue,
             };
+            // R11-F1: pdf.js draws the /G form of an ExtGState /SMask dictionary (as the soft mask, or
+            // directly when it has no /Group) with its own /Resources or the caller's: content.
+            if let Some(Object::Dict(mask)) = d.get("SMask").map(|m| res(objs, m))
+                && let Some(g) = mask.get("G").and_then(Object::as_ref)
+                && let Some(Object::Stream(gs)) = objs.get(&g.num).map(|e| &e.obj)
+            {
+                let own = gs.dict.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict);
+                out.entry(g.num).or_insert(ContentRole { resources: own, type3_owners: Vec::new() });
+            }
             if d.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Type3"))
                 && let Some(procs) = d.get("CharProcs").map(|c| res(objs, c)).and_then(Object::as_dict)
             {

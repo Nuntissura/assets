@@ -238,8 +238,14 @@ pub(crate) fn read_font(objs: &Objs, fd: &Dict, limits: &Limits, budget: &mut us
     let metrics = match fd.get("Widths").map(|w| res(objs, w)) {
         Some(Object::Array(a)) => {
             let first = number(objs, fd.get("FirstChar")).filter(|f| f.fract() == 0.0).unwrap_or(0.0);
-            let missing = number(objs, desc.and_then(|d| d.get("MissingWidth"))).unwrap_or(0.0);
-            let mut v = vec![(missing, missing); 256];
+            let missing = match number(objs, desc.and_then(|d| d.get("MissingWidth"))) {
+                Some(m) => (m, m),
+                // R11-F3: without a /FontDescriptor pdf.js gives codes outside /Widths the base font's
+                // default width (600 for the Courier family and its aliases, else 0): only bounded.
+                None if desc.is_none() => (0.0, STD_MAX_WIDTH),
+                None => (0.0, 0.0),
+            };
+            let mut v = vec![missing; 256];
             for (i, w) in a.iter().enumerate() {
                 let code = first + i as f64;
                 if (0.0..256.0).contains(&code)

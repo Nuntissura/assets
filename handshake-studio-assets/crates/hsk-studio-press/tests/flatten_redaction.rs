@@ -63,7 +63,7 @@ fn token() -> CancellationToken {
 /// Default limits at a 36 dpi raster: the structural checks need no detail, and a debug build draws and
 /// proves a 150 dpi page in about two seconds.
 fn quick() -> Limits {
-    #[allow(unused_mut)]
+    #[allow(unused_mut, clippy::field_reassign_with_default)]
     let mut l = Limits::default();
     l.flatten_dpi = 36; // D27-new-api
     l
@@ -110,7 +110,7 @@ fn page_facts(bytes: &[u8], index: usize) -> PageFacts {
     let mut ops = Vec::new();
     let mut it = page.operations();
     while let Some(i) = it.next() {
-        ops.push(String::from_utf8_lossy(&i.operator).into_owned());
+        ops.push(String::from_utf8_lossy(i.operator).into_owned());
     }
     let raw = page.raw();
     let keys = raw.keys().map(|k| String::from_utf8_lossy(k.as_ref()).into_owned()).collect();
@@ -186,6 +186,7 @@ fn prereview_region_pages_are_flattened() {
     let smask_res = "/Font << /F1 6 0 R >> /ExtGState << /GS1 << /SMask << /S /Luminosity /G 30 0 R >> >> >>";
     let diff_font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding /Differences [1 /S /E /C /R /T /hyphen /A /L /P /H] >> >>".to_vec();
     let type3 = b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [1 0 0 1 0 0] /CharProcs << /A 41 0 R >> /Encoding << /Type /Encoding /Differences [65 /A] >> /FirstChar 65 /LastChar 65 /Widths [0.6] /Resources << >> >>".to_vec();
+    #[allow(clippy::type_complexity)]
     let cases: Vec<(&str, Vec<u8>, [f64; 4], UnsupportedPolicy, Vec<&str>)> = vec![
         (
             "R11-F1 (a) ExtGState /SMask /G form drawing the needle in the region",
@@ -221,7 +222,8 @@ fn prereview_region_pages_are_flattened() {
             UnsupportedPolicy::Refuse,
             vec!["SECRET-ALPHA", "T-ALPHA"],
         ),
-        ("R11-F5 inline data a viewer may end at its first EI", page_doc("/Font << /F1 6 0 R >>", &f5, vec![]), R, UnsupportedPolicy::Refuse, vec!["SECRET-ALPHA"]),
+        // R11-F5 (ReportAndContinue: under Refuse the selector refuses, see below).
+        ("R11-F5 inline data a viewer may end at its first EI", page_doc("/Font << /F1 6 0 R >>", &f5, vec![]), R, UnsupportedPolicy::ReportAndContinue, vec!["SECRET-ALPHA"]),
         (
             "R10-F3 form XObject whose /Subtype is an indirect reference",
             page_doc(
@@ -283,8 +285,118 @@ fn prereview_region_pages_are_flattened() {
         if out.flattened.len() != 1 { // D27-new-api
             red.push(format!("{what}: flattened {:?}", out.flattened)); // D27-new-api
         } // D27-new-api
+        // The words a viewer may draw from ambiguous inline data are unknown to the selector: the
+        // region is flattened, the result is not proven (R11-F5).
+        if what.starts_with("R11-F5") && out.is_proven() {
+            red.push(format!("{what}: proven although the region's text is not known"));
+        }
+    }
+    // R11-F5 under Refuse: typed refusal (fail closed), the document unchanged.
+    let f5_doc = page_doc("/Font << /F1 6 0 R >>", &f5, vec![]);
+    let mut doc = PdfDoc::open(&f5_doc, &quick(), &token()).expect("open");
+    if !matches!(redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()), Err(PressError::UnsupportedRedactionClass(_))) {
+        red.push("R11-F5 under Refuse: not refused".to_string());
     }
     assert!(red.is_empty(), "{red:#?}");
+}
+
+/// Two pages: the region on page one, `page_two` (with `resources` and `extra` objects) on page two.
+fn two_pages(page_two: &[u8], resources: &str, extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> >>".to_vec()),
+        (4, stream_body("", b"BT /F1 12 Tf 100 700 Td (SECRET-ALPHA) Tj ET")),
+        (5, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << {resources} >> >>").into_bytes()),
+        (6, HELVETICA.to_vec()),
+        (7, stream_body("", page_two)),
+    ];
+    objs.extend(extra);
+    build(&objs)
+}
+
+/// R11-F2 and R11-F5 on a page WITHOUT a region (canonical rewrite, not flattening): an inline image
+/// whose dictionary names another /Subtype, or whose data a viewer may end at an earlier EI, is never
+/// moved into an XObject; its stream stays as it was and the result is not proven.
+#[test]
+fn inline_image_keys_never_change_the_xobject() {
+    let f2_data: &[u8] = b"BT\n/F1 12 Tf\n100 100 Td\n(SECRET-ALPHA) Tj\nET\n";
+    let mut f2 = b"BI /W 45 /H 1 /BPC 8 /CS /G /Subtype /Form /BBox [0 0 612 792] ID ".to_vec();
+    f2.extend_from_slice(f2_data);
+    f2.extend_from_slice(b" EI");
+    let f5_data: &[u8] = b"x EI BT /F1 12 Tf 100 100 Td (SECRET-ALPHA) Tj ET";
+    let mut f5 = format!("BI /W {} /H 1 /BPC 8 /CS /G ID ", f5_data.len()).into_bytes();
+    f5.extend_from_slice(f5_data);
+    f5.extend_from_slice(b" EI");
+    let mut red = Vec::new();
+    for (what, content) in [("R11-F2 /Subtype /Form in an inline image", f2), ("R11-F5 ambiguous inline data", f5)] {
+        let pdf = two_pages(&content, "/Font << /F1 6 0 R >>", vec![]);
+        let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+        let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+        if find(&out.bytes, b"/HskIm0").is_some() {
+            red.push(format!("{what}: moved into an XObject"));
+        }
+        if out.is_proven() {
+            red.push(format!("{what}: proven"));
+        }
+        let ops = page_facts(&out.bytes, 1).ops;
+        if ops.iter().any(|o| o == "Do") {
+            red.push(format!("{what}: page two draws an XObject: {ops:?}"));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R11-F1 on a page WITHOUT a region: the /G stream of an ExtGState /SMask dictionary (no /Subtype, no
+/// /Resources, `TjET` glued) is content a viewer draws; the crate must read or refuse it, never keep it
+/// unread while proven.
+#[test]
+fn soft_mask_groups_are_content() {
+    let pdf = two_pages(
+        b"q /GS1 gs Q",
+        "/Font << /F2 9 0 R >> /ExtGState << /GS1 << /SMask << /S /Luminosity /G 8 0 R >> >> >>",
+        vec![
+            (8, stream_body("", b"BT /F2 24 Tf 100 100 Td <010203040205060708090A07>TjET")),
+            (9, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding /Differences [1 /S /E /C /R /T /hyphen /A /L /P /H] >> >>".to_vec()),
+        ],
+    );
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    assert!(!out.is_proven(), "an unread soft-mask group read as proven: {:?}", out.proof);
+}
+
+/// R11-F4: a node typed /Page that has /Kids is a page for viewers (pdf.js catalog.js) and an
+/// intermediate node for a reader that follows /Kids; a /Count other than the leaf count makes viewers
+/// index pages differently. Both are refused when the file is opened.
+#[test]
+fn ambiguous_page_trees_are_refused() {
+    let page = |n: u32, extra: &str| (n, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 9 0 R /Resources << /Font << /F1 6 0 R >> >> {extra} >>").into_bytes());
+    let common = |pages: Vec<(u32, Vec<u8>)>, root: &[u8]| {
+        let mut objs = vec![(1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()), (2, root.to_vec()), (6, HELVETICA.to_vec()), (9, stream_body("", b"BT /F1 12 Tf 100 700 Td (SECRET-ALPHA) Tj ET"))];
+        objs.extend(pages);
+        build(&objs)
+    };
+    let kids = common(vec![page(3, "/Kids [4 0 R]"), page(4, "")], b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    let count = common(vec![page(3, ""), page(4, "")], b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 3 >>");
+    let fine = common(vec![page(3, ""), page(4, "")], b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+    assert!(matches!(PdfDoc::open(&kids, &quick(), &token()), Err(PressError::Malformed("page_tree"))), "/Type /Page with /Kids");
+    assert!(matches!(PdfDoc::open(&count, &quick(), &token()), Err(PressError::Malformed("page_tree"))), "/Count 3 over 2 leaves");
+    assert_eq!(PdfDoc::open(&fine, &quick(), &token()).expect("open").inspect().page_count, 2);
+}
+
+/// R11-F3: a simple font with /Widths and no /FontDescriptor: pdf.js draws codes outside /Widths with the
+/// base font's default width (600 for Courier), so the crate bounds them instead of reading 0: the
+/// region over the advanced glyphs selects the string.
+#[test]
+fn widths_without_a_descriptor_are_bounded() {
+    let pdf = page_doc(
+        "/Font << /F1 32 0 R >>",
+        b"BT /F1 10 Tf 100 700 Td (SECRET-ALPHA) Tj ET",
+        vec![(32, b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /FirstChar 65 /LastChar 65 /Widths [600] >>".to_vec())],
+    );
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let report = doc.redact_region(&region([130.0, 690.0, 180.0, 715.0]), UnsupportedPolicy::Refuse, &token()).expect("select");
+    assert_eq!(report.removed_text, vec![b"SECRET-ALPHA".to_vec()], "the region over x 130..180 holds T-ALPHA for a viewer");
 }
 
 /// The raster shows the region opaque and the rest of the page rendered: a red rectangle partly under

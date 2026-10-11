@@ -106,6 +106,10 @@ pub enum RedactionClass {
     /// codespace cannot split into codes (lead decision 2026-10-11T15:00:20Z, R10-F6; `font.rs`; test
     /// `composite_geometry_uses_w_dw_and_signed_size`).
     UnknownGlyphMetrics,
+    /// An inline image on the page whose data holds `EI` and white space where pdf.js's look-ahead may
+    /// end it early and draw the rest as operators (R11-F5): text such a viewer draws from it is unknown
+    /// to the selector (test `prereview_region_pages_are_flattened`).
+    AmbiguousInlineImage,
 }
 
 /// Why a text-showing operator of a content stream was not positively determined (lead decision
@@ -148,6 +152,7 @@ impl RedactionClass {
             Self::UnresolvedFont => "unresolved_font",
             Self::UnresolvedWritingMode => "unresolved_writing_mode",
             Self::UnknownGlyphMetrics => "unknown_glyph_metrics",
+            Self::AmbiguousInlineImage => "ambiguous_inline_image",
         }
     }
 }

@@ -212,14 +212,23 @@ fn xobject_color_space(objs: &Objs, v: &Object, resources: Option<&Dict>) -> Opt
     }
 }
 
-/// The image XObject an inline image becomes (module docs).
+/// Keys an inline image dictionary may hold (ISO 32000-2 8.9.7 Tables 91 and 92, abbreviations spelled
+/// out; `/Length` is skipped): any other key (e.g. `/Subtype /Form`, `/Resources`, `/BBox`) is refused,
+/// so the XObject is always the image a viewer drew inline (R11-F2; test
+/// `inline_image_keys_never_change_the_xobject`).
+const INLINE_IMAGE_KEYS: [&[u8]; 10] =
+    [b"BitsPerComponent", b"ColorSpace", b"Decode", b"DecodeParms", b"Filter", b"Height", b"ImageMask", b"Intent", b"Interpolate", b"Width"];
+
+/// The image XObject an inline image becomes (module docs); `None` (the stream is left as it was, so
+/// the result is NOT proven) for a key outside `INLINE_IMAGE_KEYS`.
 fn image_xobject(objs: &Objs, op: &Op, data: &[u8], resources: Option<&Dict>) -> Option<Stream> {
     let mut dict = Dict::default();
-    dict.set("Type", Object::Name(b"XObject".to_vec()));
-    dict.set("Subtype", Object::Name(b"Image".to_vec()));
     for pair in op.operands.chunks(2) {
         let [Object::Name(k), v] = pair else { return None };
         let key = inline_key(k);
+        if key != b"Length" && !INLINE_IMAGE_KEYS.contains(&key) {
+            return None;
+        }
         let value = match key {
             b"Length" => continue,
             b"ColorSpace" => xobject_color_space(objs, v, resources)?,
@@ -232,6 +241,8 @@ fn image_xobject(objs: &Objs, op: &Op, data: &[u8], resources: Option<&Dict>) ->
         };
         dict.set_key(key, value);
     }
+    dict.set("Type", Object::Name(b"XObject".to_vec()));
+    dict.set("Subtype", Object::Name(b"Image".to_vec()));
     let (a, b) = op.inline_data?;
     Some(Stream { dict, data: data.get(a..b)?.to_vec() })
 }
@@ -258,6 +269,8 @@ fn parse_stream(objs: &Objs, num: u32, resources: Option<&Dict>, limits: &Limits
     };
     let cs = |n: &[u8]| resource_components(objs, resources, n);
     match parse_strict(&data, limits, &cs, budget) {
+        // R11-F5: pdf.js may end such inline data at an earlier EI and draw the rest as operators.
+        Ok(p) if p.inline_ambiguous => Ok(Err("inline_image_ambiguous")),
         Ok(p) => Ok(Ok((data, p))),
         Err(e @ (PressError::InputLimit("decoded_total" | "decoded_bytes") | PressError::Canceled)) => Err(e),
         Err(PressError::Malformed(why) | PressError::InputLimit(why)) => Ok(Err(why)),

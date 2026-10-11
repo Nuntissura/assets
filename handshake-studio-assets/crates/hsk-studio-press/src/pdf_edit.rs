@@ -223,6 +223,8 @@ impl PdfDoc {
             .ok_or(PressError::Malformed("no_pages"))?;
         let mut out = Vec::new();
         let mut visited = BTreeSet::new();
+        // Intermediate nodes: (object, its /Count).
+        let mut counted: Vec<(u32, Option<i64>)> = Vec::new();
         let mut stack = vec![(pages_ref.num, 1usize)];
         while let Some((num, depth)) = stack.pop() {
             check_cancel(cancel)?;
@@ -234,7 +236,13 @@ impl PdfDoc {
             }
             let dict = self.dict_of(num).ok_or(PressError::Malformed("page_node"))?;
             match dict.get("Kids").map(|k| self.resolve(k)) {
+                // R11-F4: viewers read a node typed /Page as a page whatever /Kids it has.
+                Some(Object::Array(_)) if dict.get("Type").map(|t| self.resolve(t)).is_some_and(|t| t.is_name("Page")) => {
+                    return Err(PressError::Malformed("page_tree"));
+                }
                 Some(Object::Array(kids)) => {
+                    let count = dict.get("Count").map(|c| self.resolve(c)).and_then(Object::as_int);
+                    counted.push((num, count));
                     for kid in kids.iter().rev() {
                         let r = kid.as_ref().ok_or(PressError::Malformed("page_kid"))?;
                         stack.push((r.num, depth.saturating_add(1)));
@@ -249,7 +257,32 @@ impl PdfDoc {
                 }
             }
         }
+        // R11-F4: pdf.js finds page N by each node's /Count; a /Count other than the node's leaf count
+        // names another page than this list would (the tree has no cycles: checked above).
+        for (num, count) in &counted {
+            let leaves = self.leaf_count(*num)?;
+            if *count != i64::try_from(leaves).ok() {
+                return Err(PressError::Malformed("page_tree"));
+            }
+        }
         Ok(out)
+    }
+
+    /// Leaves under a page-tree node (the tree was walked without cycles first; bounded by the walk).
+    fn leaf_count(&self, num: u32) -> Result<usize> {
+        let mut leaves = 0usize;
+        let mut stack = vec![num];
+        let mut seen = BTreeSet::new();
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                return Err(PressError::Malformed("page_tree_cycle"));
+            }
+            match self.dict_of(n).and_then(|d| d.get("Kids")).map(|k| self.resolve(k)) {
+                Some(Object::Array(kids)) => stack.extend(kids.iter().filter_map(Object::as_ref).map(|r| r.num)),
+                _ => leaves = leaves.saturating_add(1),
+            }
+        }
+        Ok(leaves)
     }
 
     /// Looks up an inheritable page attribute through the `/Parent` chain.
