@@ -825,6 +825,102 @@ pub fn resolve_instance(
 }
 
 // ----------------------------------------------------------------------------------------------
+// Swap and variant switch (STU-DS-119)
+
+/// An override that did not survive a swap or variant switch; reported, never silently moved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DroppedOverride {
+    pub node_id: String,
+    pub field: String,
+}
+
+type NodePath = Vec<(String, usize)>;
+/// Per node: the chain of `(layer name, ordinal among its siblings)` from the root.
+fn node_paths(def: &ComponentDef) -> BTreeMap<&str, NodePath> {
+    let mut paths: BTreeMap<&str, NodePath> = BTreeMap::new();
+    let mut counts: BTreeMap<Option<&str>, usize> = BTreeMap::new();
+    for n in &def.nodes {
+        let parent = n.parent.as_deref();
+        let ord = counts.entry(parent).or_default();
+        let mut path = parent.and_then(|p| paths.get(p)).cloned().unwrap_or_default();
+        path.push((n.name.clone(), *ord));
+        *ord += 1;
+        paths.insert(n.node_id.as_str(), path);
+    }
+    paths
+}
+
+/// Re-matches override records from definition `from` to `to` by (layer name, position in the child
+/// hierarchy). A record whose node has no counterpart is dropped and listed.
+pub fn rematch_overrides(
+    inst: &Instance,
+    from: &ComponentDef,
+    to: &ComponentDef,
+) -> R<(Vec<OverrideRecord>, Vec<DroppedOverride>)> {
+    let from_paths = node_paths(from);
+    let to_by_path: BTreeMap<NodePath, &str> = node_paths(to)
+        .into_iter()
+        .map(|(id, p)| (p, id))
+        .collect();
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for rec in &inst.overrides {
+        let path = from_paths
+            .get(rec.overridden_node_id.as_str())
+            .ok_or_else(|| E::NoSuchNode(rec.overridden_node_id.clone()))?;
+        match to_by_path.get(path) {
+            Some(target) => kept.push(OverrideRecord {
+                overridden_node_id: (*target).to_owned(),
+                ..rec.clone()
+            }),
+            None => dropped.extend(rec.overridden_fields.iter().map(|f| DroppedOverride {
+                node_id: rec.overridden_node_id.clone(),
+                field: f.clone(),
+            })),
+        }
+    }
+    Ok((kept, dropped))
+}
+
+/// `instance.swap_component`: points the instance at `new_main`, carrying matched overrides.
+pub fn swap_component(
+    inst: &Instance,
+    defs: &DefRegistry,
+    new_main: &str,
+) -> R<(Instance, Vec<DroppedOverride>)> {
+    let (from, _) = select_member(inst, defs)?;
+    let mut next = inst.clone();
+    next.main_component_id = Some(new_main.to_owned());
+    let (to, _) = select_member(&next, defs)?;
+    let (overrides, dropped) = rematch_overrides(inst, from, to)?;
+    next.overrides = overrides;
+    Ok((next, dropped))
+}
+
+/// Variant switch in place: sets the VARIANT property `property` to `value` and re-matches overrides.
+pub fn switch_variant(
+    inst: &Instance,
+    defs: &DefRegistry,
+    property: &str,
+    value: &str,
+) -> R<(Instance, Vec<DroppedOverride>)> {
+    let (from, _) = select_member(inst, defs)?;
+    let mut next = inst.clone();
+    next.component_properties.insert(
+        property.to_owned(),
+        InstanceProp {
+            ty: PropType::Variant,
+            value: Value::String(value.to_owned()),
+            bound_variable_id: None,
+        },
+    );
+    let (to, _) = select_member(&next, defs)?;
+    let (overrides, dropped) = rematch_overrides(inst, from, to)?;
+    next.overrides = overrides;
+    Ok((next, dropped))
+}
+
+// ----------------------------------------------------------------------------------------------
 // Override proposals and footprints (STU-ARC-011, STU-DS-163)
 
 #[derive(Clone, Debug, PartialEq)]

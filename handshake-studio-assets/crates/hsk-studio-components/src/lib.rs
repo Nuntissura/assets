@@ -18,11 +18,11 @@ pub use constraints::{
 };
 pub use folio_bridge::{INSTANCE_LAYER_BINDING, instance_layer};
 pub use instance_resolution::{
-    Collection, ComponentDef, ComponentSet, DefNode, DefRegistry, Instance, InstanceProp, Limits,
-    Mode, OVERRIDABLE_FIELDS, OverrideEdit, OverrideProposal, OverrideRecord, PropType,
-    PropertyDef, Resolution, ResolvedField, ResolvedVariable, Source, Value, VarEntry, VarRegistry,
-    VarType, Variable, check_footprint, is_overridable, propose_overrides, resolve_instance,
-    resolve_variable,
+    Collection, ComponentDef, ComponentSet, DefNode, DefRegistry, DroppedOverride, Instance,
+    InstanceProp, Limits, Mode, OVERRIDABLE_FIELDS, OverrideEdit, OverrideProposal, OverrideRecord,
+    PropType, PropertyDef, Resolution, ResolvedField, ResolvedVariable, Source, Value, VarEntry,
+    VarRegistry, VarType, Variable, check_footprint, is_overridable, propose_overrides,
+    rematch_overrides, resolve_instance, resolve_variable, swap_component, switch_variant,
 };
 pub use prototype::{
     Action, FlowLimits, FlowReport, FlowWarning, Navigation, PrototypeFlow, Reaction, Trigger,
