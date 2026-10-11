@@ -4,6 +4,8 @@
 //! disagreement is about how bytes are read, not about optional-tag inference.
 
 use crate::corpus::Cases;
+use crate::model::parse_model;
+use hsk_studio_web::{Namespace, NodeKind, decode_entities};
 
 pub struct Rng(u64);
 
@@ -785,21 +787,38 @@ impl Generator {
     }
 }
 
-/// True when a `pre`, `listing` or `textarea` start tag is directly followed by a newline (or a reference to one): the
-/// tree builder drops it (known product disagreement with its own test, `leading_newline_after_pre_listing_textarea`),
-/// and a mutation can create it by chance.
+/// True when the crate's own tree has an HTML `pre`, `listing` or `textarea` whose content starts with a newline (as text,
+/// raw body or character reference): the tree builder drops it (known product disagreement with its own test,
+/// `leading_newline_after_pre_listing_textarea`), and a mutation can create it by chance. Documents the crate refuses are
+/// never compared, so they need no filtering.
 fn newline_right_after_pre_like_start_tag(doc: &str) -> bool {
-    let lower = doc.to_ascii_lowercase();
-    ["<pre", "<listing", "<textarea"].iter().any(|start| {
-        lower.match_indices(start).any(|(at, _)| {
-            lower[at..].find('>').is_some_and(|gt| {
-                let rest = &lower[at + gt + 1..];
-                rest.starts_with(['\n', '\r'])
-                    || ["&#10;", "&#xa;", "&newline;", "&#x0a;", "&#13;", "&#xd;"]
-                        .iter()
-                        .any(|r| rest.starts_with(r))
-            })
-        })
+    let Ok(parsed) = parse_model(doc) else {
+        return false;
+    };
+    let rows = parsed.view();
+    rows.windows(2).any(|w| {
+        let (owner, first) = (&w[0], &w[1]);
+        let pre_like = owner.kind == NodeKind::Element
+            && parsed
+                .node(owner.id)
+                .is_some_and(|n| n.namespace == Namespace::Html)
+            && owner.tag.as_deref().is_some_and(|t| {
+                ["pre", "listing", "textarea"]
+                    .iter()
+                    .any(|n| t.eq_ignore_ascii_case(n))
+            });
+        if !pre_like || first.depth != owner.depth + 1 {
+            return false;
+        }
+        let body = first.text.as_deref().unwrap_or_default();
+        match first.kind {
+            NodeKind::Text => body.starts_with(['\n', '\r']),
+            NodeKind::Raw => {
+                decode_entities(body).text.starts_with(['\n', '\r'])
+                    || body.starts_with(['\n', '\r'])
+            }
+            _ => false,
+        }
     })
 }
 
