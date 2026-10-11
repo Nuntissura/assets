@@ -9,7 +9,10 @@
 //! (`level / 255`) and a density fraction (`percent / 100`).
 //!
 //! Refusals are codes, never silent drops: `hue_saturation_bands`, `threshold_colours`,
-//! `exposure_use_legacy`, `channel_blend_unsupported`, `layer_effects_not_rendered`.
+//! `exposure_use_legacy`, `channel_blend_unsupported`, `layer_effects_not_rendered`,
+//! `blend_clipped_layers_as_group_off_not_modelled` (a clip base with Blend Clipped Layers as Group
+//! off). Blend-If on a clip base or a clipped layer is carried to pigment, whose admission refuses
+//! it for every backend (`blend_if_clip_base`, `blend_if_clipped_layer`); the ledger says so.
 use crate::lower_plan::StepAppearance;
 use hsk_studio_folio::{
     ADJUSTMENT_SCHEMA, GlowSource as FolioGlowSource, GlowTechnique as FolioGlowTechnique,
@@ -29,7 +32,7 @@ use hsk_studio_pigment::effect_math::{
     GlowTechnique, InnerGlowOp, InnerShadowOp, MAX_EFFECTS_PER_LAYER, OuterGlowOp, StrokeOp,
     StrokePosition as PigmentStrokePosition,
 };
-use hsk_studio_pigment::render_plan::{ExtOperator, Knockout};
+use hsk_studio_pigment::render_plan::{ClipRole, ExtOperator, Knockout};
 use std::collections::BTreeMap;
 
 pub use hsk_studio_pigment::adjust_math::AdjustmentOp;
@@ -78,6 +81,13 @@ pub const REFUSE_EFFECT_ON_CLIPPED: &str = "effect_on_clipped_layer";
 pub const REFUSE_EFFECT_ON_CLIP_BASE: &str = "effect_on_clip_base";
 /// Refusal code: an adjustment layer whose record is absent.
 pub const REFUSE_ADJUSTMENT_RECORD: &str = "adjustment_record_missing";
+/// Refusal code: Blend Clipped Layers as Group switched off (PSD `clbl = 0`, Folio
+/// `StudioAdvancedBlending::blend_clipped_effects == false`) on the base of a clipping run that
+/// renders at least one clipped layer. Pigment's clip-to-base rule composites the run unit with the
+/// base's mode (the switched-on reading); the switched-off reading (each clipped layer keeps its own
+/// blend mode against the backdrop) is not modelled and must not be dropped silently. The code is
+/// the one interop-psd reports for the same file setting.
+pub const REFUSE_CLIP_GROUP_BLEND_OFF: &str = "blend_clipped_layers_as_group_off_not_modelled";
 
 /// Lowering-report key: one curve point whose corner flag pigment cannot carry.
 pub const NOTE_CURVE_CORNER_DROPPED: &str = "curves_corner_flag_dropped";
@@ -576,6 +586,20 @@ pub(crate) fn convert_effects(
     Ok((ops, notes))
 }
 
+/// The Blend-If operator pigment reports for a layer with a non-identity range in the clip role it
+/// has in its group (`PlanExtensions::validate`: `BlendIf` on an unclipped layer,
+/// `BlendIfClipBase` on the base of a clipping run, `BlendIfClippedLayer` on a clipped layer; the
+/// two clip operators are intrinsically Unsupported because no public source defines them). The
+/// role is a property of the parent group, so [`LayerFeatures::operators`] leaves Blend-If out and
+/// the evaluation records this operator per role.
+pub(crate) fn blend_if_operator(role: ClipRole) -> ExtOperator {
+    match role {
+        ClipRole::Unclipped => ExtOperator::BlendIf,
+        ClipRole::Base => ExtOperator::BlendIfClipBase,
+        ClipRole::Clipped => ExtOperator::BlendIfClippedLayer,
+    }
+}
+
 /// Mask parameters of a layer as pigment units. Only meaningful when the layer has an enabled
 /// coverage mask.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -595,6 +619,10 @@ pub(crate) struct LayerFeatures {
     pub effects: Result<Vec<EffectOp>, &'static str>,
     /// Approximations made while converting (effects); adjustments carry their own.
     pub notes: Notes,
+    /// Blend Clipped Layers as Group is switched off on this layer (`clbl = 0`). It only matters
+    /// when the layer is the base of a clipping run that renders a clipped layer: the callers that
+    /// know the run refuse it there (`REFUSE_CLIP_GROUP_BLEND_OFF`).
+    pub clipped_group_blend_off: bool,
     channel_blend_default: bool,
 }
 
@@ -624,6 +652,7 @@ impl LayerFeatures {
             knockout: resolve_knockout(layers, records, layer_id),
             effects,
             notes,
+            clipped_group_blend_off: blending.is_some_and(|b| !b.blend_clipped_effects),
             channel_blend_default: blending
                 .is_none_or(|b| b.channel_blend.red && b.channel_blend.green && b.channel_blend.blue),
         }
@@ -672,8 +701,9 @@ impl LayerFeatures {
         self.blend_if.is_empty() && self.knockout == Knockout::None && !self.has_effects()
     }
 
-    /// Envelope operators this layer uses. `coverage_mask`: the layer carries an enabled coverage
-    /// mask (density and feather act on it only).
+    /// Envelope operators this layer uses besides Blend-If (see [`blend_if_operator`]).
+    /// `coverage_mask`: the layer carries an enabled coverage mask (density and feather act on it
+    /// only).
     pub(crate) fn operators(&self, coverage_mask: bool) -> Vec<ExtOperator> {
         let mut ops = Vec::new();
         if let Some(m) = self.mask.filter(|_| coverage_mask) {
@@ -683,9 +713,6 @@ impl LayerFeatures {
             if m.feather_px > 0.0 {
                 ops.push(ExtOperator::MaskFeather);
             }
-        }
-        if !self.blend_if.is_empty() {
-            ops.push(ExtOperator::BlendIf);
         }
         if self.knockout != Knockout::None {
             ops.push(ExtOperator::Knockout(self.knockout));

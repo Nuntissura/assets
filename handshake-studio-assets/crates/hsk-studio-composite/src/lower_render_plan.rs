@@ -37,9 +37,12 @@
 //! adds no formula and no class. A feature the envelope cannot carry is `Unavailable` (effect
 //! kinds pigment does not render, effects on adjustment / pass-through / clipped / clip-base
 //! layers, non-linear contour, noise, gradient or pattern stroke fill, unresolved Global Light,
-//! effect colours it would have to convert, hue bands, threshold colours, channel enablement);
-//! knockout and modern brightness/contrast are carried and refused by pigment's
-//! `admit_extended`.
+//! effect colours it would have to convert, hue bands, threshold colours, channel enablement, and
+//! Blend Clipped Layers as Group switched off on a clip base that renders a clipped layer:
+//! `blend_clipped_layers_as_group_off_not_modelled`, because pigment's clip rule is the switched-on
+//! reading); knockout, modern brightness/contrast and Blend-If on a clip base or a clipped layer
+//! (`blend_if_clip_base`, `blend_if_clipped_layer`: no public definition) are carried and refused
+//! by pigment's `admit_extended`, and the ledger lists the operators as Unsupported.
 use crate::{
     CompositeError,
     evaluate_static::{EvalReport, StepStatus, tile_rects, union},
@@ -676,6 +679,9 @@ fn lower_inner(
                 let mut base_adjustment = false;
                 // Is that base an emitted layer with effects (pigment refuses it as a base)?
                 let mut base_effects = false;
+                // Is that base an emitted layer with Blend Clipped Layers as Group switched off
+                // (`clbl = 0`)? Pigment's clip rule is the switched-on reading.
+                let mut base_group_blend_off = false;
                 for input in inputs {
                     let child = index[input];
                     let child_visible = plan.steps[child].visible();
@@ -721,6 +727,15 @@ fn lower_inner(
                                 crate::lower_extensions::REFUSE_EFFECT_ON_CLIP_BASE
                             )));
                         }
+                        // The switched-off reading of Blend Clipped Layers as Group is not
+                        // modelled: refused with a typed code, never rendered as if it were on.
+                        if base_group_blend_off && present {
+                            return Err(CompositeError::Unavailable(format!(
+                                "{}:{}",
+                                input.text(),
+                                crate::lower_extensions::REFUSE_CLIP_GROUP_BLEND_OFF
+                            )));
+                        }
                         match base_emitted {
                             None => {
                                 return Err(CompositeError::Unavailable(format!(
@@ -738,6 +753,9 @@ fn lower_inner(
                             && plan.steps[child].appearance().mode == StudioBlendMode::PassThrough;
                         base_adjustment = adjustment && child_visible;
                         base_effects = features.as_ref().is_some_and(LayerFeatures::has_effects);
+                        base_group_blend_off = features
+                            .as_ref()
+                            .is_some_and(|f| f.clipped_group_blend_off);
                     }
                     let input_id = match slot {
                         Slot::Empty => continue,

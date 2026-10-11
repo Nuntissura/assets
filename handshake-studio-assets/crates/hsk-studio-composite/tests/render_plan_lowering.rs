@@ -1818,3 +1818,190 @@ fn adjustment_layer_in_a_real_folio_graph_lowers_at_its_input_ordinal() {
         .contains("unsupported_payload"));
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Blend-If on a clip role and Blend Clipped Layers as Group switched off (lane
+// SMB-BLENDIF-CLIP-ADOPT). Pigment 0d28c03 refuses a non-identity Blend-If on the base of a clipping
+// run and on a clipped layer for every backend (no public definition; keys and class are pigment's),
+// and its clip rule is the Blend Clipped Layers as Group ON reading. Expected values below are
+// derived from the fixtures and from pigment's own `ExtOperator` constants.
+// ---------------------------------------------------------------------------------------------
+use hsk_studio_composite::lower_extensions::REFUSE_CLIP_GROUP_BLEND_OFF;
+use hsk_studio_pigment::blend_math::ExactnessLedger;
+
+/// Group 1 = raster 2 (the clip base) then raster 3 clipped to it (Normal).
+fn clip_doc() -> Value {
+    let mut v = tiled();
+    v["layers"][2]["appearance"] = appearance(100.0, 100.0, 2, false);
+    v["layers"][2]["appearance"]["clipped"] = json!(true);
+    v
+}
+/// Source `[black_start, black_end, white_start, white_end]` in levels of the one gray entry.
+const SPLIT: [f64; 4] = [50.0, 100.0, 200.0, 240.0];
+const IDENTITY_LEVELS: [f64; 4] = [0.0, 0.0, 255.0, 255.0];
+/// Advanced blending of one layer: at most a gray range, Blend Clipped Layers as Group on or off.
+fn blending(range: Option<[f64; 4]>, clipped_as_group: bool) -> Value {
+    let entries = range.map_or(json!([]), |r| {
+        json!([{"channel":"gray","source_black":[r[0], r[1]],"source_white":[r[2], r[3]],
+            "destination_black":[0.0, 0.0],"destination_white":[255.0, 255.0]}])
+    });
+    json!({"blend_ranges":entries,"knockout":"disabled",
+        "channel_blend":{"red":true,"green":true,"blue":true},
+        "blend_interior_effects":true,"blend_clipped_effects":clipped_as_group,
+        "transparency_shapes_layer":true})
+}
+fn records_of(entries: &[(u8, Value)]) -> StudioRasterRecords {
+    records(Value::Array(
+        entries
+            .iter()
+            .map(|(n, b)| json!({"layer_id":identity("SLYR", *n),"advanced_blending":b}))
+            .collect(),
+    ))
+}
+fn has_operator(ledger: &ExactnessLedger, op: ExtOperator) -> bool {
+    ledger
+        .operators
+        .contains(&OperatorExactness { key: op.key(), exactness: op.intrinsic() })
+}
+fn has_key(ledger: &ExactnessLedger, key: &str) -> bool {
+    ledger.operators.iter().any(|o| o.key == key)
+}
+fn any_blend_if(ledger: &ExactnessLedger) -> bool {
+    ledger.operators.iter().any(|o| o.key.starts_with("blend_if"))
+}
+
+#[test]
+fn blend_if_on_clip_roles_is_reported_and_refused_like_pigment() {
+    bounded_case("blend_if_on_clip_roles_is_reported_and_refused_like_pigment", || {
+        let token = CancellationToken::default();
+        let all = [ExtOperator::BlendIf, ExtOperator::BlendIfClipBase, ExtOperator::BlendIfClippedLayer];
+
+        // Layer 2 is the base of the run in `clip_doc` and layer 3 the clipped layer; in `tiled`
+        // (no clipping) both are plain. The operator is pigment's choice by role; evaluation and
+        // lowering both report it, instead of `blend_if`, with pigment's key and class.
+        for (doc, layer, want) in [
+            (clip_doc(), 2_u8, ExtOperator::BlendIfClipBase),
+            (clip_doc(), 3, ExtOperator::BlendIfClippedLayer),
+            (tiled(), 2, ExtOperator::BlendIf),
+            (tiled(), 3, ExtOperator::BlendIf),
+        ] {
+            let recs = records_of(&[(layer, blending(Some(SPLIT), true))]);
+            let run = run_ext(&doc, &recs, false);
+            let ledger = &run.2.receipt.exactness;
+            for op in all {
+                assert_eq!(has_operator(ledger, op), op == want, "layer {layer} {op:?} in the evaluation ledger");
+            }
+            let low = lower_ext(&run, &recs).expect("the ranges are carried to pigment, not dropped");
+            assert_eq!(low.extensions.validate(&low.plan), Ok(vec![want]), "layer {layer}");
+            for op in all {
+                assert_eq!(has_operator(&low.exactness, op), op == want, "layer {layer} {op:?} in the lowering ledger");
+            }
+            // Shared admission, even for a backend that claims every operator Exact.
+            let admitted = admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token);
+            if want.intrinsic() == Exactness::Unsupported {
+                assert_eq!(ledger.lowest, Exactness::Unsupported, "layer {layer}");
+                assert_eq!(
+                    admitted,
+                    Err(BackendError::Unsupported { operator: want.key(), exactness: Exactness::Unsupported }),
+                    "layer {layer}"
+                );
+            } else {
+                assert!(admitted.is_ok(), "layer {layer}: Blend-If on an unclipped layer stays admitted");
+            }
+        }
+        assert_eq!(ExtOperator::BlendIfClipBase.key(), "blend_if_clip_base");
+        assert_eq!(ExtOperator::BlendIfClippedLayer.key(), "blend_if_clipped_layer");
+
+        // Identity ranges on both roles are not Blend-If: no operator, no entry, lowering and
+        // admission as for the plain run.
+        let recs = records_of(&[
+            (2, blending(Some(IDENTITY_LEVELS), true)),
+            (3, blending(Some(IDENTITY_LEVELS), true)),
+        ]);
+        let run = run_ext(&clip_doc(), &recs, false);
+        assert!(!any_blend_if(&run.2.receipt.exactness));
+        let low = lower_ext(&run, &recs).unwrap();
+        assert!(low.extensions.is_empty());
+        assert!(!any_blend_if(&low.exactness));
+
+        // A hidden clipped layer is not emitted, so the base is a plain layer: BlendIf, not the
+        // clip-base operator; the hidden layer's own ranges are no operator at all.
+        let mut hidden_clipped = clip_doc();
+        hidden_clipped["layers"][2]["visible"] = json!(false);
+        let recs = records_of(&[(2, blending(Some(SPLIT), true)), (3, blending(Some(SPLIT), true))]);
+        let run = run_ext(&hidden_clipped, &recs, false);
+        let ledger = &run.2.receipt.exactness;
+        assert!(has_operator(ledger, ExtOperator::BlendIf));
+        assert!(!has_operator(ledger, ExtOperator::BlendIfClipBase));
+        assert!(!has_operator(ledger, ExtOperator::BlendIfClippedLayer));
+        let low = lower_ext(&run, &recs).unwrap();
+        assert_eq!(low.extensions.validate(&low.plan), Ok(vec![ExtOperator::BlendIf]));
+
+        // A hidden base drops its clipped run: the clipped layer's ranges never reach the plan.
+        let mut hidden_base = clip_doc();
+        hidden_base["layers"][1]["visible"] = json!(false);
+        let recs = records_of(&[(3, blending(Some(SPLIT), true))]);
+        let run = run_ext(&hidden_base, &recs, false);
+        assert!(!any_blend_if(&run.2.receipt.exactness));
+        let low = lower_ext(&run, &recs).unwrap();
+        assert!(low.extensions.is_empty());
+    });
+}
+
+#[test]
+fn blend_clipped_layers_as_group_off_is_refused_on_a_clip_base() {
+    bounded_case("blend_clipped_layers_as_group_off_is_refused_on_a_clip_base", || {
+        let root = addr(1, "mix", "out");
+        let token = CancellationToken::default();
+        let lowers_and_is_ready = |doc: &Value, recs: &StudioRasterRecords, what: &str| {
+            let run = run_ext(doc, recs, false);
+            assert_eq!(run.2.step(&root).unwrap().status, StepStatus::Ready, "{what}");
+            assert!(!has_key(&run.2.receipt.exactness, REFUSE_CLIP_GROUP_BLEND_OFF), "{what}");
+            lower_ext(&run, recs).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        };
+
+        // Base 2 has the toggle off and a rendered clipped layer 3 sits on it: evaluation says
+        // Unsupported and the parent is Unavailable, naming the code and the clipped layer.
+        let recs = records_of(&[(2, blending(None, false))]);
+        let run = run_ext(&clip_doc(), &recs, false);
+        assert!(run.2.receipt.exactness.operators.contains(&OperatorExactness {
+            key: REFUSE_CLIP_GROUP_BLEND_OFF,
+            exactness: Exactness::Unsupported
+        }));
+        assert_eq!(run.2.receipt.exactness.lowest, Exactness::Unsupported);
+        match &run.2.step(&root).unwrap().status {
+            StepStatus::Unavailable(reason) => {
+                assert!(reason.starts_with(REFUSE_CLIP_GROUP_BLEND_OFF), "{reason}");
+                assert!(reason.contains(&identity("SLYR", 3)), "{reason}");
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        // Lowering refuses with the same code, from the evaluation status ...
+        let reason = unavailable_reason(lower_ext(&run, &recs));
+        assert!(reason.contains(REFUSE_CLIP_GROUP_BLEND_OFF), "{reason}");
+        // ... and by itself when the report comes from the v1 evaluation, which does not read the
+        // raster records and so calls the step Ready (the lowering never relies on that).
+        let snap = open(&clip_doc());
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let v1 = evaluate(&plan, &snap, &token).unwrap();
+        assert_eq!(v1.step(&root).unwrap().status, StepStatus::Ready);
+        let reason = unavailable_reason(lower_to_render_plan_extended(
+            &plan, &v1, &snap, &recs, &root, target(BlendSpace::Encoded), &Info,
+        ));
+        assert!(reason.contains(REFUSE_CLIP_GROUP_BLEND_OFF), "{reason}");
+        assert!(reason.contains(&identity("SLYR", 3)), "{reason}");
+
+        // The setting changes nothing, and so is not refused, when: it is on (the default the PSD
+        // importer writes for an absent clbl); there is no clipping; only the clipped layer has it
+        // off (the toggle belongs to the base); the clipped layer is hidden; the base is hidden.
+        lowers_and_is_ready(&clip_doc(), &records_of(&[(2, blending(None, true))]), "toggle on");
+        lowers_and_is_ready(&tiled(), &recs, "no clipping");
+        lowers_and_is_ready(&clip_doc(), &records_of(&[(3, blending(None, false))]), "off on the clipped layer");
+        let mut hidden_clipped = clip_doc();
+        hidden_clipped["layers"][2]["visible"] = json!(false);
+        lowers_and_is_ready(&hidden_clipped, &recs, "clipped layer hidden");
+        let mut hidden_base = clip_doc();
+        hidden_base["layers"][1]["visible"] = json!(false);
+        lowers_and_is_ready(&hidden_base, &recs, "base hidden");
+    });
+}

@@ -6,8 +6,8 @@
 use crate::{
     CompositeError,
     lower_extensions::{
-        ConvertedAdjustment, EffectContext, LayerFeatures, REFUSE_EFFECT_ON_CLIP_BASE,
-        adjustment_for, is_adjustment_layer,
+        ConvertedAdjustment, EffectContext, LayerFeatures, REFUSE_CLIP_GROUP_BLEND_OFF,
+        REFUSE_EFFECT_ON_CLIP_BASE, adjustment_for, blend_if_operator, is_adjustment_layer,
     },
     lower_plan::{LoweredPlan, NodeAddr, SourceValue, Step},
 };
@@ -20,7 +20,7 @@ use hsk_studio_pigment::blend_math::{
     Applicability, BlendError, BlendSpace, Exactness, ExactnessLedger, StudioBlendMode,
 };
 use hsk_studio_pigment::render_plan::{
-    ExtOperator, MaskFormat, Operator, PASS_THROUGH_FILL_OPERATOR, PlanError,
+    ClipRole, ExtOperator, MaskFormat, Operator, PASS_THROUGH_FILL_OPERATOR, PlanError,
 };
 use hsk_studio_pigment::{Grid, Rect};
 use std::collections::{BTreeMap, BTreeSet};
@@ -258,6 +258,89 @@ fn appearance_block(
     None
 }
 
+/// The clip roles a step has across the groups that composite it (a step shared by two groups can
+/// be the base of a run in one and unclipped in the other).
+#[derive(Clone, Copy, Default)]
+struct RoleSet {
+    unclipped: bool,
+    base: bool,
+    clipped: bool,
+}
+
+impl RoleSet {
+    fn add(&mut self, role: ClipRole) {
+        match role {
+            ClipRole::Unclipped => self.unclipped = true,
+            ClipRole::Base => self.base = true,
+            ClipRole::Clipped => self.clipped = true,
+        }
+    }
+    fn iter(self) -> impl Iterator<Item = ClipRole> {
+        [
+            (self.unclipped, ClipRole::Unclipped),
+            (self.base, ClipRole::Base),
+            (self.clipped, ClipRole::Clipped),
+        ]
+        .into_iter()
+        .filter_map(|(on, role)| on.then_some(role))
+    }
+}
+
+/// The clip role of every step in the groups that composite it, as the lowering emits it
+/// (pigment's `Group::clip_role`: a clipped layer is `Clipped`, an unclipped layer with an emitted
+/// clipped layer directly above it is `Base`, everything else `Unclipped`). A clipped layer under a
+/// hidden or empty base, and a hidden or empty clipped layer, are not emitted and have no role in
+/// that group, exactly like the lowering drops them. A step no group composites is `Unclipped`.
+fn clip_roles(
+    plan: &LoweredPlan,
+    evals: &[StepEval],
+    adjustment_steps: &[bool],
+    seen: &BTreeMap<&NodeAddr, usize>,
+) -> Vec<RoleSet> {
+    let mut roles = vec![RoleSet::default(); plan.steps.len()];
+    let mut has_parent = vec![false; plan.steps.len()];
+    for step in &plan.steps {
+        let Step::Composite { inputs, .. } = step else {
+            continue;
+        };
+        // (step index, role) in input order; `base_at` points at the current base in `local`.
+        let mut local: Vec<(usize, ClipRole)> = Vec::with_capacity(inputs.len());
+        let mut base_at: Option<usize> = None;
+        let mut base_dropped = false;
+        for input in inputs {
+            let Some(&i) = seen.get(input) else {
+                continue;
+            };
+            has_parent[i] = true;
+            let child = &evals[i];
+            let empty = child.is_ready_and_empty() && !adjustment_steps[i];
+            if !plan.steps[i].appearance().clipped {
+                base_dropped = !child.visible || empty;
+                base_at = Some(local.len());
+                local.push((i, ClipRole::Unclipped));
+            } else if let Some(base) = base_at
+                && !base_dropped
+                && child.visible
+                && !empty
+            {
+                if let Some(entry) = local.get_mut(base) {
+                    entry.1 = ClipRole::Base;
+                }
+                local.push((i, ClipRole::Clipped));
+            }
+        }
+        for (i, role) in local {
+            roles[i].add(role);
+        }
+    }
+    for (i, parent) in has_parent.iter().enumerate() {
+        if !parent {
+            roles[i].add(ClipRole::Unclipped);
+        }
+    }
+    roles
+}
+
 /// Evaluate `plan` against `snap`. Fails with `StaleRevision` when the plan and snapshot revisions
 /// differ, `Cycle` / `DanglingInput` when the (possibly hand-built) plan is not a topologically
 /// ordered closure, and `Canceled` when the token fires (checked per step).
@@ -318,6 +401,13 @@ fn evaluate_with(
     // Index-aligned with `evals`: the step is visible and carries rendered effects (such a layer
     // cannot be the base of a clipping run; pigment refuses it).
     let mut effects_steps: Vec<bool> = Vec::with_capacity(plan.steps.len());
+    // Index-aligned with `evals`: the step is visible and carries a non-identity Blend-If range.
+    // Its operator depends on the clip role in the parent group, which is known only once every
+    // step is evaluated (see `clip_roles`), so the ledger entry is added after the loop.
+    let mut blend_if_steps: Vec<bool> = Vec::with_capacity(plan.steps.len());
+    // Index-aligned with `evals`: the step is visible and has Blend Clipped Layers as Group
+    // switched off (it matters on a clip base that renders a clipped layer).
+    let mut group_blend_off_steps: Vec<bool> = Vec::with_capacity(plan.steps.len());
     let effect_cx = records.map(|r| EffectContext {
         global_light: r.global_light.as_ref(),
         blending: &doc.blending_space,
@@ -345,6 +435,8 @@ fn evaluate_with(
         record_appearance(&mut ledger, step, converted.is_some());
         let mut ext_block: Option<&'static str> = None;
         let mut step_effects = false;
+        let mut step_blend_if = false;
+        let mut step_group_blend_off = false;
         if let (Some(recs), Some(cx), Some(l), true) = (records, effect_cx.as_ref(), layer, step.visible())
         {
             if let Some(Ok(c)) = &converted {
@@ -373,9 +465,13 @@ fn evaluate_with(
             }
             ext_block = features.refusal(a, converted.is_some());
             step_effects = features.has_effects();
+            step_blend_if = !features.blend_if.is_empty();
+            step_group_blend_off = features.clipped_group_blend_off;
         }
         adjustment_steps.push(converted.is_some());
         effects_steps.push(step_effects);
+        blend_if_steps.push(step_blend_if);
+        group_blend_off_steps.push(step_group_blend_off);
         let eval = match step {
             Step::Source {
                 addr,
@@ -425,6 +521,9 @@ fn evaluate_with(
                 let mut adjustment_base = false;
                 // The current clip base is a rendered layer with effects (pigment refuses it).
                 let mut effects_base = false;
+                // The current clip base has Blend Clipped Layers as Group switched off (the
+                // switched-off reading is not modelled, so a rendered clipped layer is refused).
+                let mut group_blend_off_base = false;
                 for input in inputs {
                     let Some(&i) = seen.get(input) else {
                         return Err(if all.contains(input) {
@@ -456,6 +555,7 @@ fn evaluate_with(
                             rendered && plan.steps[i].appearance().mode == StudioBlendMode::PassThrough;
                         adjustment_base = child.visible && adjustment;
                         effects_base = rendered && effects_steps[i];
+                        group_blend_off_base = rendered && group_blend_off_steps[i];
                         base_dropped = !child.visible || (child.is_ready_and_empty() && !adjustment);
                     } else if base_dropped {
                         // Dropped with its hidden or empty base: not refused, not unavailable, no
@@ -485,6 +585,13 @@ fn evaluate_with(
                         );
                         blocked.get_or_insert_with(|| {
                             format!("{REFUSE_EFFECT_ON_CLIP_BASE}:{}", child.addr.text())
+                        });
+                    } else if group_blend_off_base && rendered {
+                        // Pigment's clip rule is the Blend Clipped Layers as Group ON reading; the
+                        // file's OFF setting is not modelled and is never ignored.
+                        ledger.record(REFUSE_CLIP_GROUP_BLEND_OFF, Exactness::Unsupported);
+                        blocked.get_or_insert_with(|| {
+                            format!("{REFUSE_CLIP_GROUP_BLEND_OFF}:{}", child.addr.text())
                         });
                     }
                     if !child.visible {
@@ -530,6 +637,21 @@ fn evaluate_with(
         };
         seen.insert(step.addr(), evals.len());
         evals.push(eval);
+    }
+
+    // Blend-If: pigment reports `BlendIf`, `BlendIfClipBase` or `BlendIfClippedLayer` by the clip
+    // role the layer has in its group; the two clip operators are Unsupported (no public
+    // definition), so the ledger mirrors pigment's admission (tests/render_plan_lowering.rs
+    // `blend_if_on_clip_roles_is_reported_and_refused_like_pigment`).
+    if records.is_some() {
+        let roles = clip_roles(plan, &evals, &adjustment_steps, &seen);
+        for (i, has_blend_if) in blend_if_steps.iter().enumerate() {
+            if *has_blend_if {
+                for role in roles[i].iter() {
+                    record_ext(&mut ledger, blend_if_operator(role));
+                }
+            }
+        }
     }
 
     let mut unavailable = Vec::new();
