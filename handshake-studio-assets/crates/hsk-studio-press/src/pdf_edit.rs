@@ -1,15 +1,19 @@
 //! `PdfDoc`: the bounded PDF object view. PDF bytes are provider transport; this type is a typed
 //! projection of one opened input and holds no document state beyond it.
 #![deny(clippy::arithmetic_side_effects)]
-use crate::error::{Limits, PressError, Result, SinkError};
+use crate::error::{Limits, MAX_REF_HOPS, PressError, Result, SinkError};
 use crate::reader::{Entry, Parsed, check_cancel, parse_document};
 use crate::syntax::{Dict, ObjRef, Object};
 use crate::writer::write_document;
 use hsk_studio_accord::CancellationToken;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 static NULL: Object = Object::Null;
+
+/// AcroForm walk item: object, parent name, inherited field type, inherited flags, depth.
+type FieldWork = (ObjRef, Rc<str>, Rc<str>, i64, usize);
 
 pub struct PdfDoc {
     pub(crate) source: Vec<u8>,
@@ -184,7 +188,7 @@ impl PdfDoc {
     }
 
     pub(crate) fn resolve<'a>(&'a self, mut o: &'a Object) -> &'a Object {
-        for _ in 0..16 {
+        for _ in 0..MAX_REF_HOPS {
             match o {
                 Object::Ref(r) => match self.objects.get(&r.num) {
                     Some(e) => o = &e.obj,
@@ -222,7 +226,7 @@ impl PdfDoc {
         let mut stack = vec![(pages_ref.num, 1usize)];
         while let Some((num, depth)) = stack.pop() {
             check_cancel(cancel)?;
-            if depth > self.limits.max_depth {
+            if depth > self.limits.depth_cap() {
                 return Err(PressError::InputLimit("depth"));
             }
             if !visited.insert(num) {
@@ -251,7 +255,7 @@ impl PdfDoc {
     /// Looks up an inheritable page attribute through the `/Parent` chain.
     pub(crate) fn inherited<'a>(&'a self, page: u32, key: &str) -> Option<&'a Object> {
         let mut num = page;
-        for _ in 0..self.limits.max_depth {
+        for _ in 0..self.limits.depth_cap() {
             let d = self.dict_of(num)?;
             if let Some(v) = d.get(key) {
                 return Some(self.resolve(v));
@@ -485,12 +489,17 @@ impl PdfDoc {
             return Ok((fields, sigs));
         };
         let mut visited = BTreeSet::new();
+        // Field names are shared (`Rc`) between a node and its kids, and the bytes of every name built
+        // are charged to `max_bytes`: a field with a huge /T and many kids would otherwise copy that
+        // name once per kid (test `hostile_nesting_cycles_and_overlap`).
+        let mut name_bytes = 0usize;
         // (object, parent name, inherited FT, inherited Ff, depth)
-        let mut stack: Vec<(ObjRef, String, String, i64, usize)> =
-            roots.iter().filter_map(Object::as_ref).rev().map(|r| (r, String::new(), String::new(), 0, 1)).collect();
+        let empty: Rc<str> = Rc::from("");
+        let mut stack: Vec<FieldWork> =
+            roots.iter().filter_map(Object::as_ref).rev().map(|r| (r, Rc::clone(&empty), Rc::clone(&empty), 0, 1)).collect();
         while let Some((r, parent, ft, ff, depth)) = stack.pop() {
             check_cancel(cancel)?;
-            if depth > self.limits.max_depth {
+            if depth > self.limits.depth_cap() {
                 return Err(PressError::InputLimit("depth"));
             }
             if !visited.insert(r.num) {
@@ -500,13 +509,32 @@ impl PdfDoc {
                 return Err(PressError::InputLimit("max_objects"));
             }
             let Some(d) = self.dict_of(r.num) else { continue };
-            let partial = d.get("T").map(|t| self.resolve(t)).and_then(|t| if let Object::Str(s) = t { Some(text_string(s)) } else { None });
-            let name = match (&partial, parent.is_empty()) {
-                (Some(p), true) => p.clone(),
-                (Some(p), false) => format!("{parent}.{p}"),
-                (None, _) => parent.clone(),
+            let raw_t = d.get("T").map(|t| self.resolve(t)).and_then(|t| if let Object::Str(s) = t { Some(s) } else { None });
+            if let Some(t) = raw_t {
+                // Many fields may share one huge /T string object: every decode is charged.
+                name_bytes = name_bytes.saturating_add(t.len());
+                if name_bytes > self.limits.max_bytes {
+                    return Err(PressError::InputLimit("field_names"));
+                }
+            }
+            let partial = raw_t.map(|s| text_string(s));
+            let name: Rc<str> = match (&partial, parent.is_empty()) {
+                (Some(p), true) => Rc::from(p.as_str()),
+                (Some(p), false) => {
+                    name_bytes = name_bytes.saturating_add(parent.len()).saturating_add(p.len()).saturating_add(1);
+                    if name_bytes > self.limits.max_bytes {
+                        return Err(PressError::InputLimit("field_names"));
+                    }
+                    Rc::from(format!("{parent}.{p}"))
+                }
+                (None, _) => Rc::clone(&parent),
             };
-            let ft = d.get("FT").map(|t| self.resolve(t)).and_then(Object::as_name).map(|n| String::from_utf8_lossy(n).into_owned()).unwrap_or(ft);
+            let ft: Rc<str> = d
+                .get("FT")
+                .map(|t| self.resolve(t))
+                .and_then(Object::as_name)
+                .map(|n| Rc::from(String::from_utf8_lossy(n).as_ref()))
+                .unwrap_or(ft);
             let ff = d.get("Ff").map(|t| self.resolve(t)).and_then(Object::as_int).unwrap_or(ff);
             let kids: Vec<ObjRef> = match d.get("Kids").map(|k| self.resolve(k)) {
                 Some(Object::Array(k)) => k.iter().filter_map(Object::as_ref).collect(),
@@ -516,21 +544,29 @@ impl PdfDoc {
             if partial.is_some() || !has_field_kids {
                 let value = d.get("V").map(|v| self.resolve(v));
                 let has_value = !matches!(value, None | Some(Object::Null));
+                name_bytes = name_bytes.saturating_add(name.len()).saturating_add(ft.len());
+                if name_bytes > self.limits.max_bytes {
+                    return Err(PressError::InputLimit("field_names"));
+                }
                 fields.push(FieldView {
                     object: r,
-                    name: name.clone(),
-                    field_type: ft.clone(),
+                    name: name.to_string(),
+                    field_type: ft.to_string(),
                     flags: ff,
                     read_only: ff & 1 != 0,
                     has_value,
                 });
-                if ft == "Sig" {
+                if &*ft == "Sig" {
                     let byte_range_present = value.and_then(Object::as_dict).is_some_and(|v| matches!(v.get("ByteRange"), Some(Object::Array(_))));
-                    sigs.push(SignatureView { field: r, name: name.clone(), signed: byte_range_present, byte_range_present });
+                    name_bytes = name_bytes.saturating_add(name.len());
+                    if name_bytes > self.limits.max_bytes {
+                        return Err(PressError::InputLimit("field_names"));
+                    }
+                    sigs.push(SignatureView { field: r, name: name.to_string(), signed: byte_range_present, byte_range_present });
                 }
             }
             for kid in kids.iter().rev() {
-                stack.push((*kid, name.clone(), ft.clone(), ff, depth.saturating_add(1)));
+                stack.push((*kid, Rc::clone(&name), Rc::clone(&ft), ff, depth.saturating_add(1)));
             }
         }
         Ok((fields, sigs))

@@ -18,7 +18,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::cmap::{Cmap, parse_to_unicode};
 use crate::content::{Op, parse_content};
-use crate::error::{PressError, RedactionClass, Result};
+use crate::error::{MAX_REF_HOPS, PressError, RedactionClass, Result};
 use crate::filters;
 use crate::pdf_edit::PdfDoc;
 use crate::reader::{Entry, check_cancel};
@@ -697,7 +697,7 @@ fn write_name_bytes(name: &[u8], out: &mut Vec<u8>) {
 
 pub(crate) fn res<'a>(m: &'a BTreeMap<u32, Entry>, mut o: &'a Object) -> &'a Object {
     static NULL: Object = Object::Null;
-    for _ in 0..16 {
+    for _ in 0..MAX_REF_HOPS {
         match o {
             Object::Ref(r) => match m.get(&r.num) {
                 Some(e) => o = &e.obj,
@@ -908,7 +908,7 @@ impl PdfDoc {
                 };
                 if let Some(fields) = fields {
                     let before = fields.len();
-                    let new_fields = purge_list(&mut staged, fields, &mut removed_refs, 1, self.limits.max_depth, &mut form_fields_removed)?;
+                    let new_fields = purge_list(&mut staged, fields, &mut removed_refs, 1, self.limits.depth_cap(), &mut form_fields_removed)?;
                     if new_fields.len() < before
                         && let Some(e) = staged.get_mut(&holder)
                     {

@@ -2,6 +2,12 @@
 //! reachable from the trailer (`/Root`, `/Info`), as one fresh file: no incremental tail, no
 //! orphan objects, no superseded revisions. Unmodified objects are copied verbatim from the
 //! source bytes; modified/new objects are serialized canonically.
+//!
+//! Hostile-input bounds: the cross-reference table of a save has one 20-byte line per object number
+//! up to the highest live one, so that number is limited to `Limits::max_object_number` and the
+//! table size is checked against `Limits::max_bytes` before a line is written (test
+//! `hostile_parser_dims_u32_max`).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Limits, PressError, Result};
 use crate::reader::{Entry, check_cancel};
 use crate::syntax::{Dict, Object};
@@ -29,7 +35,7 @@ pub(crate) fn write_object(obj: &Object, out: &mut Vec<u8>) {
         Object::Dict(d) => write_dict(d, out),
         Object::Stream(s) => {
             let mut dict = s.dict.clone();
-            dict.set("Length", Object::Int(s.data.len() as i64));
+            dict.set("Length", Object::Int(i64::try_from(s.data.len()).unwrap_or(i64::MAX)));
             write_dict(&dict, out);
             out.extend_from_slice(b"\nstream\n");
             out.extend_from_slice(&s.data);
@@ -87,7 +93,8 @@ fn write_string(s: &[u8], out: &mut Vec<u8>) {
     out.push(b')');
 }
 
-/// Every object number reachable from `roots` by following indirect references.
+/// Every object number reachable from `roots` by following indirect references. Iterative with a
+/// visited set, so reference cycles and very deep chains neither recurse nor loop.
 pub(crate) fn reachable(objects: &BTreeMap<u32, Entry>, roots: &[u32]) -> BTreeSet<u32> {
     let mut seen = BTreeSet::new();
     let mut work: Vec<u32> = roots.to_vec();
@@ -133,7 +140,11 @@ pub(crate) fn write_document(
         return Err(PressError::Malformed("no_root"));
     }
     let live = reachable(objects, &trailer_roots(trailer));
-    let size = live.iter().next_back().map_or(1, |m| *m as usize + 1);
+    let highest = live.iter().next_back().copied().unwrap_or(0);
+    if highest > limits.max_object_number {
+        return Err(PressError::InputLimit("object_number"));
+    }
+    let size = highest.checked_add(1).ok_or(PressError::InputLimit("object_number"))?;
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(format!("%PDF-{}\n", if version.is_empty() { "1.7" } else { version }).as_bytes());
     out.extend_from_slice(b"%\xE2\xE3\xCF\xD3\n");
@@ -142,11 +153,11 @@ pub(crate) fn write_document(
         if i % 256 == 0 {
             check_cancel(cancel)?;
         }
-        let entry = &objects[num];
+        let Some(entry) = objects.get(num) else { continue };
         offsets.insert(*num, (out.len(), entry.generation));
         out.extend_from_slice(format!("{} {} obj\n", num, entry.generation).as_bytes());
         match entry.span {
-            Some((s, e)) if e <= source.len() && s <= e => out.extend_from_slice(&source[s..e]),
+            Some((s, e)) if e <= source.len() && s <= e => out.extend_from_slice(source.get(s..e).unwrap_or(&[])),
             _ => write_object(&entry.obj, &mut out),
         }
         out.extend_from_slice(b"\nendobj\n");
@@ -154,24 +165,34 @@ pub(crate) fn write_document(
             return Err(PressError::InputLimit("max_output_bytes"));
         }
     }
+    // One 20-byte line per object number: refuse before writing a table the limit cannot hold.
+    let table = usize::try_from(size).unwrap_or(usize::MAX).saturating_mul(20);
+    if out.len().saturating_add(table) > limits.max_bytes {
+        return Err(PressError::InputLimit("max_output_bytes"));
+    }
     let xref_pos = out.len();
     out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
-    let free: Vec<u32> = (1..size as u32).filter(|n| !offsets.contains_key(n)).collect();
-    let next_free = |after: Option<u32>| -> u32 {
-        match after {
-            None => free.first().copied().unwrap_or(0),
-            Some(n) => free.iter().copied().find(|f| *f > n).unwrap_or(0),
+    // Free list: each free entry names the next free object number (0 = end). A run of live
+    // objects is walked once, by the free entry that precedes it.
+    let next_free = |after: u32| -> u32 {
+        let mut n = after.saturating_add(1);
+        while n < size {
+            if !offsets.contains_key(&n) {
+                return n;
+            }
+            n = n.saturating_add(1);
         }
+        0
     };
-    out.extend_from_slice(format!("{:010} 65535 f \n", next_free(None)).as_bytes());
-    for n in 1..size as u32 {
+    out.extend_from_slice(format!("{:010} 65535 f \n", next_free(0)).as_bytes());
+    for n in 1..size {
         match offsets.get(&n) {
             Some((off, generation)) => out.extend_from_slice(format!("{off:010} {generation:05} n \n").as_bytes()),
-            None => out.extend_from_slice(format!("{:010} 00001 f \n", next_free(Some(n))).as_bytes()),
+            None => out.extend_from_slice(format!("{:010} 00001 f \n", next_free(n)).as_bytes()),
         }
     }
     let mut t = Dict::default();
-    t.set("Size", Object::Int(size as i64));
+    t.set("Size", Object::Int(i64::from(size)));
     t.set("Root", Object::Ref(root));
     if let Some(info) = trailer.get("Info").and_then(Object::as_ref).filter(|r| live.contains(&r.num)) {
         t.set("Info", Object::Ref(info));

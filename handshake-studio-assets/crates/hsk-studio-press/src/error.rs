@@ -21,6 +21,28 @@ pub struct Limits {
     pub max_pages: usize,
     /// Maximum number of content-stream operations tokenised per page.
     pub max_content_ops: usize,
+    /// Largest object number accepted from a cross-reference structure or written by a save
+    /// (ISO 32000 Annex C, Table C.1: 8,388,607 indirect objects; text read through a secondary source).
+    pub max_object_number: u32,
+    /// Longest `/Filter` chain of one stream.
+    pub max_filters: usize,
+    /// Maximum parsed object nodes (every scalar, array element and dictionary value) over one document parse.
+    pub max_nodes: usize,
+}
+
+/// Hard ceiling for nesting depth and reference hops whatever `Limits` say: the tokenizer and the
+/// writer recurse, so an enormous `max_depth` must not be able to exhaust the stack.
+pub(crate) const HARD_MAX_DEPTH: usize = 256;
+
+/// Hops followed along one chain of indirect references before it reads as null (a reference cycle
+/// ends the same way); test `hostile_nesting_cycles_and_overlap`.
+pub(crate) const MAX_REF_HOPS: usize = 16;
+
+impl Limits {
+    /// Nesting depth actually enforced (`max_depth` clamped to [`HARD_MAX_DEPTH`]).
+    pub(crate) fn depth_cap(&self) -> usize {
+        self.max_depth.min(HARD_MAX_DEPTH)
+    }
 }
 
 impl Default for Limits {
@@ -34,6 +56,9 @@ impl Default for Limits {
             max_xref_sections: 64,
             max_pages: 10_000,
             max_content_ops: 2_000_000,
+            max_object_number: 8_388_607,
+            max_filters: 8,
+            max_nodes: 16 << 20,
         }
     }
 }
