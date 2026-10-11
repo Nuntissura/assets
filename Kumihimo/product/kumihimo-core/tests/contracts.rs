@@ -190,6 +190,8 @@ fn rejection_preserves_full_model_and_next_entity_allocation() {
     for case in 0..7 {
         let mut f = fixture();
         let mut control = fixture();
+        let identity = f.core.snapshot().identity.clone();
+        let control_identity = control.core.snapshot().identity.clone();
         let (command, error) = match case {
             0 => (
                 Command::CreateWorkspace { owner: Some(f.a) },
@@ -254,7 +256,14 @@ fn rejection_preserves_full_model_and_next_entity_allocation() {
             provider(&mut f.core, true),
             provider(&mut control.core, true)
         );
-        assert_eq!(f.core.snapshot(), control.core.snapshot());
+        assert_eq!(f.core.snapshot().identity, identity);
+        assert_eq!(control.core.snapshot().identity, control_identity);
+        assert_eq!(identity.lineage, control_identity.lineage);
+        assert_ne!(identity.incarnation, control_identity.incarnation);
+        // Independent host scopes differ; compare all arrangement fields after proving both scopes.
+        let mut expected = control.core.snapshot().clone();
+        expected.identity = identity;
+        assert_eq!(f.core.snapshot(), &expected);
     }
     let mut f = fixture();
     let mut control = fixture();

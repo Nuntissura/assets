@@ -337,9 +337,9 @@ source_review:
   status: complete_no_blocking_source_findings
   observed_at: '2026-10-12'
   product_file_count: 31
-  product_manifest_sha256: b45838fb1af1c96ee2c5d18cfc952f857c74e60d485dc8054dea5d1bf94f1ed6
+  product_manifest_sha256: 48f3e2d0bcf0b7ddcfcc7aa422e1194462919ffb94bf5bb896f3ef66c82d36b7
   manifest_algorithm: SHA256 of ordinal-sorted lowercase POSIX product/path plus colon plus lowercase SHA256 of raw file bytes, joined with LF and no final LF
-  source_state: Frozen staged product source at prepared-contract HEAD b2005b07f2d4ddfeb6513e6c53f0aa918f2e6ba2; no product edits or Cargo by evaluator
+  source_state: Frozen test-only remediation over candidate50563242c7f146a3534ff73bdff7a5b8a9626c99; unchanged source review reused; no product edits or Cargo by evaluator
   contract_refs: [WP009-R002, WP009-R003, WP009-R004, WP009-R005, WP009-R006, WP009-R007, WP009-R008, WP009-R009, WP009-R010, WP009-R011, WP009-R012, WP009-R013, WP009-R014, WP009-R015, WP009-R016, WP009-R017, WP009-R018, WP009-R019, WP009-R020, WP009-R021, WP009-R022]
   cases: [EVAL-KUM-009-001, EVAL-KUM-009-002, EVAL-KUM-009-003, EVAL-KUM-009-004, EVAL-KUM-009-005, EVAL-KUM-009-006, EVAL-KUM-009-007, EVAL-KUM-009-008, EVAL-KUM-009-009, EVAL-KUM-009-010, EVAL-KUM-009-011]
   inspected_paths:
@@ -381,6 +381,16 @@ source_review:
   - JSON rejects duplicate members before typed map normalization, checks complete input and byte bounds, retains the parser recursion guard and uses validated geometry constructors and decimal u64 representations.
   - Seven tab tests, seven layout tests and thirteen JSON recovery tests plus both examples were inspected as unrun consumer source, not runtime proof; the manual explicitly preserves that distinction and the host-storage boundary.
   proof_limit: Source review only; exact published candidate and lead-owned contracted runtime proof remain required
+  remediation:
+    status: limited_assertion_review_complete_runtime_pending
+    prior_candidate: 50563242c7f146a3534ff73bdff7a5b8a9626c99
+    prior_product_manifest_sha256: b45838fb1af1c96ee2c5d18cfc952f857c74e60d485dc8054dea5d1bf94f1ed6
+    lead_reported_failure: contracts.rs rejection_preserves_full_model_and_next_entity_allocation compared independent Core identities with intentionally distinct fixture incarnations; runtime logs not yet independently dispatched
+    changed_path: product/kumihimo-core/tests/contracts.rs
+    inspected_lines: [100, 104, 189, 193, 194, 256, 259, 260, 261, 262, 264, 265, 266]
+    observation: Existing reject helper retains the complete own-Core pre/post Snapshot check; allocated provider IDs remain compared. New assertions prove both original identities unchanged, matching lineage and different incarnations before normalizing only the cloned control identity for full arrangement comparison. Sole product diff against prior candidate is this test file.
+    verdict: No blocking finding in the exact test-only remediation; no production input changed and no runtime pass claimed
+    next_proof: Lead publishes the rebound candidate, reruns the failing ownership target and completes the pending contracted workspace and example proof
 prepared_binding:
   contract_sha256: 937ebb0a50cca1995dfc55c8f57ef4ba55046e43034f71e1b9c0586253c7fd86
   master_spec_sha256: f3c627a2199ac109092fd5fcb872bede40328e0106c6511b8547f5791bbe814b

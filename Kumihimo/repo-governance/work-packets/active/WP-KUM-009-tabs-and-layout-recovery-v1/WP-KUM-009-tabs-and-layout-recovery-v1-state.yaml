@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-generation: 8
+generation: 9
 phase: active
 owner: coder_02
 changed_files:
@@ -88,6 +88,12 @@ proof:
 - kind: focused_source_review
   observed: Evaluator independently matched31-file b45838fb digest and completed one R002-R022/11case source read
     without blocking finding; source_review_complete/runtime_pending; all checks/tests/examples remain unrun
+- kind: runtime_failure_and_test_remediation
+  source_revision: 50563242c7f146a3534ff73bdff7a5b8a9626c99
+  observed: Default-core/all-feature-all-target checks passed; test compile passed;1private/8ownership green, cross-fixture
+    snapshot assertion RED only differing incarnation. Exact contracts.rs-only migration fix preserves rejection
+    whole-state and next-ID checks, independently asserts both identities before detached-control identity normalization.
+    Production unchanged; focused ownership and remaining targets/examples pending.
 blockers: []
-next_action: Publish frozen candidate and bind31 Git blobs; lead serial default-core then workspace/all-feature
-  proof
+next_action: Publish test-only corrective candidate; focused ownership gate then remaining full workspace and examples;
+  reuse unchanged default-core proof
