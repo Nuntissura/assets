@@ -6,7 +6,8 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{Error, FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
 
 /// Map a segment result to the shared outcome vocabulary.
-/// Complete -> Success; truncation/partial -> Loss; missing codec/type -> Unsupported; cancel -> Canceled.
+/// Complete -> Success; truncation/partial -> Loss; missing codec/type -> Unsupported; cancel -> Canceled;
+/// I/O failure or an isolated-decoder fault -> Unavailable (not a statement about the media).
 pub fn outcome_for(result: &Result<SegmentReceipt, ReelError>) -> Outcome {
     match result {
         Ok(receipt) if receipt.complete => Outcome::Success,
@@ -19,7 +20,9 @@ pub fn outcome_for(result: &Result<SegmentReceipt, ReelError>) -> Outcome {
             | ReelError::Unsupported { .. }
             | ReelError::StrictOriginalRequired,
         ) => Outcome::Failure(FailureCode::Unsupported),
-        Err(ReelError::Io(_)) => Outcome::Failure(FailureCode::Unavailable),
+        Err(ReelError::Io(_) | ReelError::DecoderFault { .. }) => {
+            Outcome::Failure(FailureCode::Unavailable)
+        }
         Err(
             ReelError::StaleGrant
             | ReelError::OutOfRange { .. }

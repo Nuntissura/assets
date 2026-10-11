@@ -4,13 +4,17 @@ use crate::error::{ReelError, check_cancel};
 use crate::isobmff::IsobmffProvider;
 use crate::matroska::MatroskaProvider;
 use crate::model::*;
+use crate::video::{DecoderIdentity, ExternalVideoDecoder, SourceTrust, VideoRoute};
 use crate::wav::WavProvider;
 use crate::y4m::Y4mProvider;
 use hsk_studio_accord::CancellationToken;
 use std::io::SeekFrom;
+use std::sync::Arc;
 
 pub struct Registry {
     providers: Vec<Box<dyn MediaProvider>>,
+    /// Instance-owned external decoder for compressed video (see `crate::video`); none by default.
+    video_decoder: Option<Arc<dyn ExternalVideoDecoder>>,
 }
 
 /// A proxy candidate with its own grant. Used only for preview-purpose requests that prefer a proxy.
@@ -30,7 +34,37 @@ impl Registry {
     pub fn new() -> Self {
         Self {
             providers: Vec::new(),
+            video_decoder: None,
         }
+    }
+
+    /// Register the external (isolated) decoder that compressed video of UNTRUSTED sources is routed to.
+    /// Builder form of `set_video_decoder`.
+    pub fn with_video_decoder(mut self, decoder: Arc<dyn ExternalVideoDecoder>) -> Self {
+        self.video_decoder = Some(decoder);
+        self
+    }
+
+    /// Register the external decoder; one per registry (a second one is a determinate refusal, like a
+    /// duplicate provider id).
+    pub fn set_video_decoder(
+        &mut self,
+        decoder: Arc<dyn ExternalVideoDecoder>,
+    ) -> Result<(), ReelError> {
+        if self.video_decoder.is_some() {
+            return Err(ReelError::Unsupported {
+                what: "duplicate-video-decoder",
+            });
+        }
+        self.video_decoder = Some(decoder);
+        Ok(())
+    }
+
+    /// Identity of the registered external video decoder, if any.
+    pub fn video_decoder_identity(&self) -> Option<DecoderIdentity> {
+        self.video_decoder
+            .as_ref()
+            .map(|decoder| decoder.identity())
     }
 
     /// The license-free, pure-Rust provider set shipped by this crate.
@@ -113,6 +147,8 @@ impl Registry {
     }
 
     /// Decode a segment honouring the proxy/original policy; the receipt says which source was read.
+    /// The source is `SourceTrust::Untrusted`: compressed video goes to the registered external decoder
+    /// or is `CodecUnavailable` (see `crate::video`).
     #[allow(clippy::too_many_arguments)]
     pub fn decode_segment(
         &self,
@@ -123,6 +159,34 @@ impl Registry {
         cancel: &CancellationToken,
         sink: &mut dyn ChunkSink,
     ) -> Result<SegmentReceipt, ReelError> {
+        self.decode_segment_routed(
+            original,
+            proxy,
+            req,
+            limits,
+            cancel,
+            sink,
+            SourceTrust::Untrusted,
+        )
+    }
+
+    /// `decode_segment` with an explicit statement of how far the caller vouches for the source bytes.
+    /// `Trusted` additionally allows the in-process decoder (cargo feature `av1`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_segment_routed(
+        &self,
+        original: &mut dyn ReadSeek,
+        proxy: Option<ProxySource<'_>>,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+        trust: SourceTrust,
+    ) -> Result<SegmentReceipt, ReelError> {
+        let route = VideoRoute {
+            trust,
+            external: self.video_decoder.as_deref(),
+        };
         check_cancel(cancel)?;
         let provider = self.resolve(req)?;
         if req.prefer == SourcePreference::Proxy && req.purpose == Purpose::Export {
@@ -146,8 +210,9 @@ impl Registry {
                         let mut proxy_req = req.clone();
                         proxy_req.grant = grant;
                         proxy_req.expected_revision = expected_revision;
-                        let mut receipt =
-                            provider.decode_segment(reader, &proxy_req, limits, cancel, sink)?;
+                        let mut receipt = provider.decode_segment_routed(
+                            reader, &proxy_req, limits, cancel, sink, &route,
+                        )?;
                         receipt.source = SourceKind::Proxy;
                         receipt.proxy_note = ProxyNote::ProxyUsed;
                         receipt.original_id = req.grant.content_id.clone();
@@ -160,7 +225,8 @@ impl Registry {
                 }
             }
         }
-        let mut receipt = provider.decode_segment(original, req, limits, cancel, sink)?;
+        let mut receipt =
+            provider.decode_segment_routed(original, req, limits, cancel, sink, &route)?;
         receipt.proxy_note = note;
         receipt.proxy_id = proxy_id;
         Ok(receipt)

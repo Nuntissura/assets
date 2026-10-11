@@ -14,6 +14,7 @@ use crate::isobmff::{
     AudioFormat, ExternalTrack, SampleEntry, SeekResult, TrackIndex, TrackKind, deliver_packets,
 };
 use crate::model::*;
+use crate::video::{VideoCodec, VideoRoute, VideoTrack};
 use hsk_studio_accord::{CancellationToken, Rounding, Ticks, Timescale};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -1330,9 +1331,18 @@ impl MatroskaProvider {
         if len != index.source_len {
             return Err(ReelError::StaleGrant);
         }
-        self.deliver(src, index, req, limits, cancel, sink)
+        self.deliver(
+            src,
+            index,
+            req,
+            limits,
+            cancel,
+            sink,
+            &VideoRoute::default(),
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn deliver(
         &self,
         src: &mut dyn ReadSeek,
@@ -1341,27 +1351,31 @@ impl MatroskaProvider {
         limits: &Limits,
         cancel: &CancellationToken,
         sink: &mut dyn ChunkSink,
+        route: &VideoRoute<'_>,
     ) -> Result<SegmentReceipt, ReelError> {
         let track = select_track(index, req.track)?;
         if req.output == OutputMode::Decoded {
-            #[cfg(feature = "av1")]
             if track.info.codec_id == "V_AV1" {
-                if track.info.content_encoded {
-                    return Err(ReelError::Unsupported {
-                        what: "content-encoding",
-                    });
-                }
-                return crate::av1::decode_video_track(
+                return crate::video::decode_video_track(
                     src,
-                    &track.index,
-                    &track.info.codec_private,
-                    crate::isobmff::ColorTag::Untagged,
-                    track.info.codec_id.clone(),
-                    "matroska-demux",
+                    VideoTrack {
+                        track: &track.index,
+                        codec: VideoCodec::Av1,
+                        container: "matroska",
+                        demux_id: "matroska-demux",
+                        config: &track.info.codec_private,
+                        color: crate::isobmff::ColorTag::Untagged,
+                        codec_label: track.info.codec_id.clone(),
+                        width: track.info.width,
+                        height: track.info.height,
+                        // Reported only once a decoder exists: without one the track is simply unavailable.
+                        unsupported: track.info.content_encoded.then_some("content-encoding"),
+                    },
                     req,
                     limits,
                     cancel,
                     sink,
+                    route,
                 );
             }
             // No other decoder is registered for any Matroska CodecID in this slice.
@@ -1442,6 +1456,18 @@ impl MediaProvider for MatroskaProvider {
         cancel: &CancellationToken,
         sink: &mut dyn ChunkSink,
     ) -> Result<SegmentReceipt, ReelError> {
+        self.decode_segment_routed(src, req, limits, cancel, sink, &VideoRoute::default())
+    }
+
+    fn decode_segment_routed(
+        &self,
+        src: &mut dyn ReadSeek,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+        route: &VideoRoute<'_>,
+    ) -> Result<SegmentReceipt, ReelError> {
         check_cancel(cancel)?;
         if req.codec != MATROSKA_PROVIDER_ID {
             return Err(ReelError::CodecUnavailable {
@@ -1453,7 +1479,7 @@ impl MediaProvider for MatroskaProvider {
         }
         let file_len = verify_grant(src, &req.grant, req.expected_revision)?;
         let index = build_matroska_index(src, file_len, limits, cancel)?;
-        let mut receipt = self.deliver(src, &index, req, limits, cancel, sink)?;
+        let mut receipt = self.deliver(src, &index, req, limits, cancel, sink, route)?;
         receipt.bytes_read += index.bytes_read;
         Ok(receipt)
     }

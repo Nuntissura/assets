@@ -1,11 +1,12 @@
-//! AV1 video decode behind the optional cargo feature `av1` (default OFF).
+//! AV1 video decode behind the optional cargo feature `av1` (default OFF): the IN-PROCESS decoder.
 //!
 //! Decoder: rav1d 1.1.0 (BSD-2-Clause, Rust port of dav1d) built with its `asm` feature OFF (pure Rust,
 //! no nasm). Pinned and single-threaded: AV1 decoding is normative, so the output is bit-exact with any
 //! conformant decoder (libdav1d, libaom, hardware) and hash-testable; every frame and every segment
 //! receipt carries the decoder id and version. ISOBMFF `av01` (config `av1C`) and Matroska `V_AV1`
 //! (CodecPrivate = `av1C`) packets are decoded through the containers' own providers
-//! (`OutputMode::Decoded` -> `ChunkKind::VideoFrame` chunks laid out as `VideoFormat` says).
+//! (`OutputMode::Decoded` -> `ChunkKind::VideoFrame` chunks laid out as `VideoFormat` says) when the
+//! caller marks the source `SourceTrust::Trusted` (see `crate::video` for the routing policy).
 //!
 //! Colour: ITU-T H.273 code points come from the sequence header when it carries a colour description,
 //! else from the container (`colr` nclx), else stay "unspecified" (2) and are tagged `Untagged`; the range
@@ -16,16 +17,22 @@
 //! TRUSTED INPUT ONLY. rav1d 1.1.0 still contains `unwrap`/index panics reachable from corrupted
 //! bitstreams (observed: `decode.rs:4997` `Option::unwrap()` on a byte-mutated fixture). rav1d exposes the
 //! decoder as `extern "C"` functions, and a panic inside one aborts the whole process (it cannot be caught
-//! with `catch_unwind`). Until decode runs in an isolated worker process (planned subprocess isolation,
-//! `hsk-studio-reel-native`), do not feed this decoder bytes from an untrusted source.
+//! with `catch_unwind`). Untrusted media is therefore never routed here: the default route sends it to an
+//! external (isolated) decoder, e.g. `hsk-studio-reel-native`'s worker process, or refuses it with
+//! `CodecUnavailable`. `Av1Decoder` stays public because that worker hosts it.
 mod ffi;
 
-use crate::error::{ReelError, check_cancel};
-use crate::isobmff::{ColorTag, TrackIndex, deliver_packets};
+use crate::av1_config::av1_descriptor;
+use crate::error::ReelError;
+use crate::isobmff::ColorTag;
 use crate::model::*;
+use crate::video::{DecodedPicture, PictureSink, VideoDecodeError, VideoDecodeSession};
 use ffi::{Layout, Rav1d, RawPicture, SendStatus};
-use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_accord::CancellationToken;
 use std::collections::VecDeque;
+
+// The record parser is pure and always compiled; this path stays valid for in-process users.
+pub use crate::av1_config::{Av1Config, parse_av1c};
 
 pub const DECODER_ID: &str = "rav1d";
 
@@ -34,74 +41,9 @@ pub fn decoder_version() -> &'static str {
     ffi::version()
 }
 
-/// Enumerable capability descriptor (STU-VID-051) for AV1 decode.
+/// Enumerable capability descriptor (STU-VID-051) for AV1 decode by the in-process decoder.
 pub fn descriptor() -> CodecDescriptor {
-    CodecDescriptor {
-        id: "av1",
-        kind: MediaKind::Video,
-        container: "isobmff-mp4|matroska-webm",
-        bit_depths: &[8, 10, 12],
-        chroma: Some("mono|420|422|444"),
-        transfer: None,
-        decoder_version: decoder_version(),
-        can_decode: true,
-        can_encode: false,
-    }
-}
-
-/// `AV1CodecConfigurationRecord` (`av1C` box payload / Matroska CodecPrivate).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Av1Config {
-    pub profile: u8,
-    pub level: u8,
-    pub high_bitdepth: bool,
-    pub twelve_bit: bool,
-    pub monochrome: bool,
-    pub subsampling_x: bool,
-    pub subsampling_y: bool,
-    /// Sequence header (and other) OBUs, fed to the decoder before the first packet.
-    pub config_obus: Vec<u8>,
-}
-
-pub fn parse_av1c(record: &[u8]) -> Result<Av1Config, ReelError> {
-    let [b0, b1, b2, _, ..] = *record else {
-        return Err(ReelError::Corrupt {
-            what: "av1c-truncated",
-        });
-    };
-    if b0 & 0x80 == 0 {
-        return Err(ReelError::Corrupt {
-            what: "av1c-marker",
-        });
-    }
-    if b0 & 0x7F != 1 {
-        return Err(ReelError::Unsupported {
-            what: "av1c-version",
-        });
-    }
-    let profile = b1 >> 5;
-    if profile > 2 {
-        return Err(ReelError::Unsupported {
-            what: "av1-profile",
-        });
-    }
-    let (high_bitdepth, twelve_bit) = (b2 & 0x40 != 0, b2 & 0x20 != 0);
-    // Profile 2 alone defines 12-bit samples; profiles 0 and 1 are 8 or 10 bit.
-    if twelve_bit && (!high_bitdepth || profile != 2) {
-        return Err(ReelError::Corrupt {
-            what: "av1c-bit-depth",
-        });
-    }
-    Ok(Av1Config {
-        profile,
-        level: b1 & 0x1F,
-        high_bitdepth,
-        twelve_bit,
-        monochrome: b2 & 0x10 != 0,
-        subsampling_x: b2 & 0x08 != 0,
-        subsampling_y: b2 & 0x04 != 0,
-        config_obus: record[4..].to_vec(),
-    })
+    av1_descriptor(decoder_version(), true)
 }
 
 /// One decoded frame with its own receipt fields (decoder id + version).
@@ -250,133 +192,54 @@ impl Av1Decoder {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PacketMeta {
-    index: u64,
-    pts: i64,
-    duration: Ticks,
-    sync: bool,
-    preroll: bool,
-    trim_start: u64,
-}
+/// The in-process decoder as a routed decode session.
+struct InProcessSession(Av1Decoder);
 
-/// Chunk sink that decodes packets and forwards the frames of the requested span.
-struct Pump<'a> {
-    decoder: Av1Decoder,
-    pending: VecDeque<PacketMeta>,
-    sink: &'a mut dyn ChunkSink,
-    cancel: &'a CancellationToken,
-    max_chunk_bytes: usize,
-    format: Option<VideoFormat>,
-    delivered: u64,
-    packed: Vec<u8>,
-}
-
-impl Pump<'_> {
-    fn forward_ready(&mut self) -> Result<(), ReelError> {
-        while let Some(frame) = self.decoder.next_frame() {
-            let Some(at) = self.pending.iter().position(|m| m.index == frame.tag) else {
-                continue; // configuration units and dropped packets carry no presentable frame
-            };
-            let meta = self.pending[at];
-            self.pending.drain(..=at);
-            if meta.preroll {
-                continue; // decoded only to reach the requested frames
-            }
-            match self.format {
-                None => self.format = Some(frame.format),
-                Some(first) if first != frame.format => {
-                    return Err(ReelError::Unsupported {
-                        what: "av1-format-change-mid-segment",
-                    });
-                }
-                Some(_) => {}
-            }
-            self.packed.clear();
-            frame.pack_into(&mut self.packed);
-            if self.packed.len() > self.max_chunk_bytes {
-                return Err(ReelError::LimitExceeded {
-                    what: "av1-frame-bytes",
-                });
-            }
-            self.sink.accept(Chunk {
-                kind: ChunkKind::VideoFrame,
-                pts: meta.pts,
-                duration: meta.duration,
-                index: meta.index,
-                units: 1,
-                sync: meta.sync,
-                preroll: false,
-                trim_start: meta.trim_start,
-                bytes: &self.packed,
+impl InProcessSession {
+    fn drain(&mut self, out: &mut dyn PictureSink) -> Result<(), VideoDecodeError> {
+        while let Some(frame) = self.0.next_frame() {
+            out.accept(DecodedPicture {
+                tag: frame.tag,
+                format: frame.format,
+                film_grain_applied: frame.film_grain_applied,
+                planes: frame.planes,
             })?;
-            self.delivered += 1;
         }
         Ok(())
     }
 }
 
-impl ChunkSink for Pump<'_> {
-    fn accept(&mut self, chunk: Chunk<'_>) -> Result<(), ReelError> {
-        check_cancel(self.cancel)?;
-        self.pending.push_back(PacketMeta {
-            index: chunk.index,
-            pts: chunk.pts,
-            duration: chunk.duration,
-            sync: chunk.sync,
-            preroll: chunk.preroll,
-            trim_start: chunk.trim_start,
-        });
-        self.decoder.send(chunk.bytes, chunk.index)?;
-        self.forward_ready()
+impl VideoDecodeSession for InProcessSession {
+    fn send(
+        &mut self,
+        packet: &[u8],
+        tag: u64,
+        _cancel: &CancellationToken,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), VideoDecodeError> {
+        self.0.send(packet, tag)?;
+        self.drain(out)
+    }
+
+    fn finish(
+        &mut self,
+        _cancel: &CancellationToken,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), VideoDecodeError> {
+        self.0.finish()?;
+        self.drain(out)
     }
 }
 
-/// Decode one AV1 track segment: the container's packet delivery (frame-accurate start, pre-roll from the
-/// nearest earlier sync sample) feeds the decoder; frames of the requested span reach `sink` as
-/// `ChunkKind::VideoFrame` chunks. The receipt names rav1d and its version and carries the frame layout.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_video_track(
-    src: &mut dyn ReadSeek,
-    track: &TrackIndex,
+/// Open the in-process decoder for one segment (the route calls this only for trusted sources).
+pub(crate) fn open_session(
+    limits: &Limits,
     config: &[u8],
     container_color: ColorTag,
-    codec_label: String,
-    demux_id: &'static str,
-    req: &SegmentRequest,
-    limits: &Limits,
-    cancel: &CancellationToken,
-    sink: &mut dyn ChunkSink,
-) -> Result<SegmentReceipt, ReelError> {
-    let mut pump = Pump {
-        decoder: Av1Decoder::open(limits, config, container_color)?,
-        pending: VecDeque::new(),
-        sink,
-        cancel,
-        max_chunk_bytes: limits.max_chunk_bytes,
-        format: None,
-        delivered: 0,
-        packed: Vec::new(),
-    };
-    let mut receipt = deliver_packets(
-        src,
-        track,
-        codec_label,
-        demux_id,
-        req,
+) -> Result<Box<dyn VideoDecodeSession>, ReelError> {
+    Ok(Box::new(InProcessSession(Av1Decoder::open(
         limits,
-        cancel,
-        &mut pump,
-    )?;
-    pump.decoder.finish()?;
-    pump.forward_ready()?;
-    receipt.decoder_id = DECODER_ID;
-    receipt.decoder_version = decoder_version();
-    receipt.video = pump.format;
-    receipt.actual.units = pump.delivered;
-    if pump.delivered < req.count {
-        receipt.disposition = Disposition::Partial;
-        receipt.complete = false;
-    }
-    Ok(receipt)
+        config,
+        container_color,
+    )?)))
 }

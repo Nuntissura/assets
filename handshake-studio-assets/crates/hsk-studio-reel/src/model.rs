@@ -1,5 +1,6 @@
 //! Provider port, request/receipt vocabulary, limits. Instance-owned: there is no global registry.
 use crate::error::ReelError;
+use crate::video::VideoRoute;
 use hsk_studio_accord::{CancellationToken, Ticks};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -384,6 +385,21 @@ pub trait MediaProvider: Send + Sync {
         cancel: &CancellationToken,
         sink: &mut dyn ChunkSink,
     ) -> Result<SegmentReceipt, ReelError>;
+    /// `decode_segment` with explicit compressed-video routing (source trust and the external decoder).
+    /// Providers that never decode compressed video ignore the route; the container providers apply it
+    /// (see `crate::video`). `decode_segment` itself is the untrusted route with no external decoder.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_segment_routed(
+        &self,
+        src: &mut dyn ReadSeek,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+        _route: &VideoRoute<'_>,
+    ) -> Result<SegmentReceipt, ReelError> {
+        self.decode_segment(src, req, limits, cancel, sink)
+    }
     fn encode_segment(
         &self,
         _spec: &EncodeSpec,

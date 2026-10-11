@@ -1,4 +1,5 @@
-//! AV1 decode (feature `av1`): rav1d behind the ISOBMFF and Matroska providers.
+//! AV1 decode (feature `av1`): the in-process rav1d decoder behind the ISOBMFF and Matroska providers,
+//! reached through the explicit trusted route (`VideoRoute::trusted()`).
 //!
 //! Fixture: `tests/fixtures/av1/av1-16x16-3f.{mp4,mkv}` (16x16 4:2:0 8-bit, 3 frames @24 fps, one GOP),
 //! authored once offline by `generate.sh` (ffmpeg is a generator only). The expected per-frame SHA-256 are
@@ -67,12 +68,15 @@ fn decode(
     let provider = registry.detect(&mut src)?;
     let id = provider.descriptor().id;
     let mut sink = Collect::default();
-    let receipt = provider.decode_segment(
+    // The in-process decoder runs only for sources the caller explicitly marks trusted (these are the
+    // repository's own generated fixtures); the default route is covered by tests/video_route.rs.
+    let receipt = provider.decode_segment_routed(
         &mut src,
         &request(id, bytes, start, count),
         limits,
         &CancellationToken::default(),
         &mut sink,
+        &VideoRoute::trusted(),
     )?;
     Ok((receipt, sink))
 }

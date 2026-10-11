@@ -11,6 +11,7 @@
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
 use crate::time::media_to_ticks;
+use crate::video::{VideoCodec, VideoRoute, VideoTrack};
 use hsk_studio_accord::{CancellationToken, Ticks};
 use std::io::SeekFrom;
 
@@ -1510,6 +1511,18 @@ impl MediaProvider for IsobmffProvider {
         cancel: &CancellationToken,
         sink: &mut dyn ChunkSink,
     ) -> Result<SegmentReceipt, ReelError> {
+        self.decode_segment_routed(src, req, limits, cancel, sink, &VideoRoute::default())
+    }
+
+    fn decode_segment_routed(
+        &self,
+        src: &mut dyn ReadSeek,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+        route: &VideoRoute<'_>,
+    ) -> Result<SegmentReceipt, ReelError> {
         check_cancel(cancel)?;
         if req.codec != ISOBMFF_PROVIDER_ID {
             return Err(ReelError::CodecUnavailable {
@@ -1521,7 +1534,7 @@ impl MediaProvider for IsobmffProvider {
         }
         let file_len = verify_grant(src, &req.grant, req.expected_revision)?;
         let index = build_index(src, file_len, limits, cancel)?;
-        let mut receipt = self.deliver(src, &index, req, limits, cancel, sink)?;
+        let mut receipt = self.deliver(src, &index, req, limits, cancel, sink, route)?;
         receipt.bytes_read += index.bytes_read;
         Ok(receipt)
     }
@@ -1553,9 +1566,18 @@ impl IsobmffProvider {
             // The index describes a different file: replaying it would read the wrong bytes.
             return Err(ReelError::StaleGrant);
         }
-        self.deliver(src, index, req, limits, cancel, sink)
+        self.deliver(
+            src,
+            index,
+            req,
+            limits,
+            cancel,
+            sink,
+            &VideoRoute::default(),
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn deliver(
         &self,
         src: &mut dyn ReadSeek,
@@ -1564,22 +1586,30 @@ impl IsobmffProvider {
         limits: &Limits,
         cancel: &CancellationToken,
         sink: &mut dyn ChunkSink,
+        route: &VideoRoute<'_>,
     ) -> Result<SegmentReceipt, ReelError> {
         let track = select_track(index, req.track)?;
         if req.output == OutputMode::Decoded {
-            #[cfg(feature = "av1")]
             if track.codec == *b"av01" {
-                return crate::av1::decode_video_track(
+                return crate::video::decode_video_track(
                     src,
-                    track,
-                    &track.codec_config,
-                    track.color,
-                    fourcc_string(track.codec),
-                    "isobmff-demux",
+                    VideoTrack {
+                        track,
+                        codec: VideoCodec::Av1,
+                        container: "isobmff",
+                        demux_id: "isobmff-demux",
+                        config: &track.codec_config,
+                        color: track.color,
+                        codec_label: fourcc_string(track.codec),
+                        width: track.width,
+                        height: track.height,
+                        unsupported: None,
+                    },
                     req,
                     limits,
                     cancel,
                     sink,
+                    route,
                 );
             }
             // Only uncompressed PCM decodes here; other compressed sample entries have no registered

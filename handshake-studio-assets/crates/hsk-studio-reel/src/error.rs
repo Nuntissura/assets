@@ -2,6 +2,31 @@
 //! or parser text.
 use hsk_studio_accord::{Ticks, ValidationError};
 
+/// Fault of an ISOLATED decoder (a worker process or any other external decoder), as opposed to a
+/// statement about the media: the stream may be perfectly valid. Distinct from `Corrupt`/`Unsupported`
+/// so a consumer can retry on another decoder or report an infrastructure problem instead of blaming the
+/// file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecoderFault {
+    /// The decoder ended without a result: abort, native crash or killed from outside.
+    Crashed,
+    /// The decoder exceeded its time budget and was stopped.
+    Deadline,
+    /// The decoder broke the isolation protocol (garbled, stale, oversize or inconsistent reply).
+    Protocol,
+}
+
+impl DecoderFault {
+    /// Stable wire string.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Crashed => "decoder_crashed",
+            Self::Deadline => "decoder_deadline",
+            Self::Protocol => "decoder_protocol",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReelError {
     /// No adapter for the codec: determinate `MEDIA_CODEC_UNAVAILABLE`, never a silent empty render.
@@ -37,6 +62,11 @@ pub enum ReelError {
     /// Export purpose with a proxy preference: proxy fallback is refused.
     StrictOriginalRequired,
     Io(std::io::ErrorKind),
+    /// An isolated/external decoder failed as a process or protocol (see `DecoderFault`); says nothing
+    /// about the validity of the media.
+    DecoderFault {
+        fault: DecoderFault,
+    },
 }
 
 impl ReelError {
@@ -53,6 +83,7 @@ impl ReelError {
             Self::OutOfRange { .. } => "MEDIA_OUT_OF_RANGE",
             Self::StrictOriginalRequired => "MEDIA_STRICT_ORIGINAL_REQUIRED",
             Self::Io(_) => "MEDIA_IO",
+            Self::DecoderFault { .. } => "MEDIA_DECODER_FAULT",
         }
     }
 }
@@ -65,6 +96,7 @@ impl std::fmt::Display for ReelError {
                 write!(f, "{} detected={detected}", self.code())
             }
             Self::Truncated { delivered } => write!(f, "{} delivered={delivered}", self.code()),
+            Self::DecoderFault { fault } => write!(f, "{} {}", self.code(), fault.code()),
             Self::Corrupt { what } | Self::LimitExceeded { what } | Self::Unsupported { what } => {
                 write!(f, "{} {what}", self.code())
             }
