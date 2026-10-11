@@ -21,7 +21,11 @@
 //!   `>>` tokens, within the bound (strings, hex strings and comments are skipped). Binary roles that
 //!   are NOT scanned: image XObjects and their `/SMask` / `/Mask` images, font programs
 //!   (`/FontFile`, `/FontFile2`, `/FontFile3`, parsed by skrifa/read-fonts), ICC profiles, sampled
-//!   (type 0) functions, mesh shadings (types 4-7), `/JBIG2Globals`, metadata and embedded files.
+//!   (type 0) functions, mesh shadings (types 4-7), `/JBIG2Globals`, metadata and embedded files;
+//! - every colour space and function the renderer builds recursively (`/Indexed` and `/Pattern` bases,
+//!   `/Separation` / `/DeviceN` / `/NChannel` alternates and tint transforms, `/ICCBased` `/Alternate`,
+//!   stitching-function `/Functions`): no reference cycle and at most the same number of levels
+//!   (hayro-interpret 0.7.0 `ColorSpaceType::new_inner` and `Function::new` have no cycle guard).
 //!
 //! Images ([`FlattenCause::ImageBudget`]): every image XObject (its `/Subtype` resolved), every
 //! `/SMask` and `/Mask` image and every inline image of every content stream, with the abbreviated
@@ -130,6 +134,95 @@ pub(crate) fn syntax_nesting_within(data: &[u8], cap: usize) -> bool {
             return false;
         }
         i = i.saturating_add(1);
+    }
+    true
+}
+
+/// The objects hayro-interpret builds recursively from `o` while it constructs it (color.rs
+/// `ColorSpaceType::new_inner`, function/mod.rs `Function::new`): the base of an `/Indexed` and a
+/// `/Pattern` colour space, the alternate space and tint transform of `/Separation`, `/DeviceN` and
+/// `/NChannel`, the `/Alternate` of an `/ICCBased` profile, the `/Functions` of a stitching (type 3)
+/// function.
+fn chain_children<'a>(objs: &'a Objs, o: &'a Object) -> Vec<&'a Object> {
+    match res(objs, o) {
+        Object::Array(a) => {
+            let Some(first) = a.first().map(|f| res(objs, f)).and_then(Object::as_name).map(inline_value_name) else { return Vec::new() };
+            match first {
+                b"Indexed" | b"Pattern" => a.get(1).into_iter().collect(),
+                b"Separation" | b"DeviceN" | b"NChannel" => a.get(2..4).map(|s| s.iter().collect()).unwrap_or_default(),
+                b"ICCBased" => a.get(1).map(|s| res(objs, s)).and_then(Object::as_dict).and_then(|d| d.get("Alternate")).into_iter().collect(),
+                _ => Vec::new(),
+            }
+        }
+        d @ (Object::Dict(_) | Object::Stream(_)) => {
+            let Some(d) = d.as_dict() else { return Vec::new() };
+            if d.get("FunctionType").map(|t| res(objs, t)).and_then(Object::as_int) != Some(3) {
+                return Vec::new();
+            }
+            match d.get("Functions").map(|f| res(objs, f)) {
+                Some(Object::Array(fs)) => fs.iter().collect(),
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Every colour space and function of the document is built by the renderer without a reference cycle
+/// and with at most `cap` levels (module docs: a cycle recurses until the stack overflows).
+fn construction_chains_within(objs: &Objs, cap: usize) -> bool {
+    // Height of every node reached (key: address of the resolved object), computed iteratively.
+    let key = |o: &Object| res(objs, o) as *const Object as usize;
+    let mut height: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut roots: Vec<&Object> = Vec::new();
+    for e in objs.values() {
+        let mut stack: Vec<(&Object, usize)> = vec![(&e.obj, 0)];
+        while let Some((o, depth)) = stack.pop() {
+            if depth > 64 {
+                continue;
+            }
+            let next = depth.saturating_add(1);
+            if !chain_children(objs, o).is_empty() {
+                roots.push(o);
+            }
+            match o {
+                Object::Array(a) => stack.extend(a.iter().map(|x| (x, next))),
+                Object::Dict(d) => stack.extend(d.entries.iter().map(|(_, v)| (v, next))),
+                Object::Stream(s) => stack.extend(s.dict.entries.iter().map(|(_, v)| (v, next))),
+                _ => {}
+            }
+        }
+    }
+    for root in roots {
+        // Post-order DFS: (node, children visited); a node on the path again is a cycle.
+        let mut path: Vec<usize> = Vec::new();
+        let mut stack: Vec<(&Object, bool)> = vec![(root, false)];
+        while let Some((o, expanded)) = stack.pop() {
+            let k = key(o);
+            if expanded {
+                path.pop();
+                let h = chain_children(objs, o).iter().map(|c| height.get(&key(c)).copied().unwrap_or(0)).max().map_or(1, |m| m.saturating_add(1));
+                if h > cap {
+                    return false;
+                }
+                height.insert(k, h);
+                continue;
+            }
+            if height.contains_key(&k) {
+                continue;
+            }
+            if path.contains(&k) || path.len() > cap {
+                return false;
+            }
+            path.push(k);
+            stack.push((o, true));
+            for c in chain_children(objs, o) {
+                if path.contains(&key(c)) {
+                    return false;
+                }
+                stack.push((c, false));
+            }
+        }
     }
     true
 }
@@ -395,6 +488,9 @@ pub(crate) fn check(objs: &Objs, page_contents: &[u32], page_resources: Option<&
     let binary = binary_streams(objs);
     let images = image_streams(objs);
     let doc_comps = document_components(objs);
+    if !construction_chains_within(objs, cap) {
+        return Err(refuse(FlattenCause::NestingDepth));
+    }
     let mut budget = limits.max_decoded_total;
     for (i, (num, e)) in objs.iter().enumerate() {
         if i & 63 == 0 {
@@ -476,6 +572,37 @@ mod tests {
         fd.set("Type", Object::Name(b"FontDescriptor".to_vec()));
         fd.set("FontFile2", Object::Ref(ObjRef { num: 7, generation: 0 }));
         m.insert(8, entry(Object::Dict(fd)));
+        assert_eq!(checked(&m), Ok(()));
+    }
+
+    #[test]
+    fn colour_space_and_function_cycles_are_refused() {
+        let r = |n: u32| Object::Ref(ObjRef { num: n, generation: 0 });
+        let name = |n: &str| Object::Name(n.as_bytes().to_vec());
+        // An /Indexed space whose base is itself.
+        let mut m = Objs::new();
+        m.insert(5, entry(Object::Array(vec![name("Indexed"), r(5), Object::Int(0), Object::Str(vec![0])])));
+        assert_eq!(checked(&m), Err(PressError::FlattenRefused(FlattenCause::NestingDepth)));
+        // A stitching function that lists itself.
+        let mut f = Dict::default();
+        f.set("FunctionType", Object::Int(3));
+        f.set("Functions", Object::Array(vec![r(7)]));
+        let mut m = Objs::new();
+        m.insert(7, entry(Object::Dict(f)));
+        assert_eq!(checked(&m), Err(PressError::FlattenRefused(FlattenCause::NestingDepth)));
+        // A chain of 40 /Separation alternates (no cycle) is past the default 32 levels.
+        let mut m = Objs::new();
+        for n in 1..=40u32 {
+            m.insert(n, entry(Object::Array(vec![name("Separation"), name("S"), if n < 40 { r(n + 1) } else { name("DeviceGray") }, Object::Null])));
+        }
+        assert_eq!(checked(&m), Err(PressError::FlattenRefused(FlattenCause::NestingDepth)));
+        // An ordinary /Indexed over /ICCBased with an /Alternate: built.
+        let mut icc = Dict::default();
+        icc.set("N", Object::Int(3));
+        icc.set("Alternate", name("DeviceRGB"));
+        let mut m = Objs::new();
+        m.insert(3, entry(Object::Stream(Box::new(Stream { dict: icc, data: Vec::new() }))));
+        m.insert(4, entry(Object::Array(vec![name("Indexed"), Object::Array(vec![name("ICCBased"), r(3)]), Object::Int(0), Object::Str(vec![0, 0, 0])])));
         assert_eq!(checked(&m), Ok(()));
     }
 

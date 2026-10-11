@@ -111,15 +111,18 @@ fn page_facts(bytes: &[u8], index: usize) -> PageFacts {
         let h = s.dict().get::<u32>(b"Height")?;
         Some((w, h, s.decoded().ok()?.to_vec()))
     });
+    // The /Parent chain, followed through the cross-reference table as a viewer does.
     let mut chain = Vec::new();
     let mut viewer_annots: Option<usize> = raw.get::<HArray<'_>>(b"Annots").map(|a| a.raw_iter().count());
-    let mut node = raw.get::<HDict<'_>>(b"Parent");
-    while let Some(n) = node {
+    let mut parent = raw.get_ref(b"Parent");
+    assert!(parent.is_some(), "the page names its /Parent");
+    while let Some(r) = parent {
+        let n: HDict<'_> = pdf.xref().get(r.into()).expect("the /Parent node resolves");
         chain.push(keys(&n));
         if viewer_annots.is_none() {
             viewer_annots = n.get::<HArray<'_>>(b"Annots").map(|a| a.raw_iter().count());
         }
-        node = n.get::<HDict<'_>>(b"Parent");
+        parent = n.get_ref(b"Parent");
         if chain.len() > 64 {
             break;
         }
@@ -278,9 +281,9 @@ fn optional_content_hidden_by_default_stays_hidden() {
 }
 
 /// R13-F4: nesting the renderer would recurse through (hayro-syntax arrays in a form the selector never
-/// reads, a Type 4 tint transform, a ToUnicode CMap read by hayro-postscript) is refused typed BEFORE
-/// rendering, and the document is unchanged; a stack overflow would abort the process instead. Nesting
-/// within the bound renders.
+/// reads, a Type 4 tint transform, a colour space that is its own base, a ToUnicode CMap read by
+/// hayro-postscript) is refused typed BEFORE rendering, and the document is unchanged; a stack overflow
+/// would abort the process instead. Nesting within the bound renders.
 #[test]
 fn renderer_input_is_bounded_before_rendering() {
     let deep_arrays = vec![b'['; 100_000];
@@ -303,6 +306,10 @@ fn renderer_input_is_bounded_before_rendering() {
         (
             "Type 4 tint transform: 100000 nested procedures",
             page("/Font << /F1 6 0 R >> /ColorSpace << /CS0 [/Separation /Spot /DeviceGray 60 0 R] >>", "q /CS0 cs 1 scn 400 100 10 10 re f Q", vec![(60, stream_body("/FunctionType 4 /Domain [0 1] /Range [0 1]", &deep_procs))]),
+        ),
+        (
+            "an /Indexed colour space whose base is itself (the renderer builds it recursively)",
+            page("/Font << /F1 6 0 R >> /ColorSpace << /CS1 63 0 R >>", "q /CS1 cs 0 sc 400 200 10 10 re f Q", vec![(63, b"[/Indexed 63 0 R 0 <00>]".to_vec())]),
         ),
         (
             "ToUnicode CMap: a run of 100000 << tokens",
