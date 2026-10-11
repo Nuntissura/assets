@@ -109,6 +109,13 @@ fn show_error(ui: &mut Ui, spec: &ControlSpec) {
 }
 
 /// Slider gesture bookkeeping: 0 = idle, 1 = open, 2 = aborted until release.
+///
+/// Arrow keys on a focused slider are a discrete move and go through the descriptor's one step
+/// owner (`ControlSpec::step_value`). egui's own slider arrows are ignored: they move one track
+/// point per press, stop silently at the track ends and, with the value beyond the track (out of
+/// soft range), jump back to the track end against the pressed direction; routed through the
+/// clamping pointer route they also turned a step at a hard bound into an unchanged success
+/// (R5 audit; proof `tests/step_effect.rs` `slider_arrow_keys_use_the_descriptor_step_at_every_position`).
 fn slider(ui: &mut Ui, spec: &ControlSpec, current: &Value, lo: f64, hi: f64, integer: bool) -> Option<Interaction> {
     let sid = widget_id(&spec.id).with("slider-state");
     let state = ui.data(|d| d.get_temp::<u8>(sid)).unwrap_or(0);
@@ -129,12 +136,21 @@ fn slider(ui: &mut Ui, spec: &ControlSpec, current: &Value, lo: f64, hi: f64, in
         next = 2;
         out = Some(interaction(ui, spec, ChangeSource::Pointer, Some(GesturePhase::Abort), Ok(current.clone())));
     } else {
-        if r.changed() {
+        let (right, left, mods) = if r.has_focus() && !down {
+            ui.input(|i| (i.key_pressed(Key::ArrowRight), i.key_pressed(Key::ArrowLeft), i.modifiers))
+        } else {
+            (false, false, egui::Modifiers::NONE)
+        };
+        if right != left {
+            let step = spec.step_value(current, if right { 1 } else { -1 }, roles_from(mods));
+            out = Some(interaction(ui, spec, ChangeSource::Keyboard, None, step));
+        } else if r.changed() {
             if down {
                 next = 1;
                 out = Some(interaction(ui, spec, ChangeSource::Pointer, Some(GesturePhase::Update), spec.pointer_value(sv)));
             } else {
-                out = Some(interaction(ui, spec, ChangeSource::Keyboard, None, spec.pointer_value(sv)));
+                // Press and release in one frame (a click on the track): one discrete pointer target.
+                out = Some(interaction(ui, spec, ChangeSource::Pointer, None, spec.pointer_value(sv)));
             }
         }
         if state == 1 && !down {

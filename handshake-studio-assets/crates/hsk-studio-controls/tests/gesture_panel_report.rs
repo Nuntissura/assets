@@ -292,7 +292,7 @@ fn one_observe_terminal_frame_per_operation_with_redacted_values() {
     let id = "layer.opacity";
     let run = |store: &mut ValueStore, i: Interaction, sink: &mut Collect, token: &CancellationToken| {
         let result = store.apply(&reg, &i, None);
-        report(&ctx, store.revision(), &result, token, sink).unwrap().map(|r| r.outcome)
+        report(&ctx, store.revision(), i.gesture, &result, token, sink).unwrap().map(|r| r.outcome)
     };
 
     // Discrete accepted edit -> Success; unchanged value -> Success; exactly one terminal frame each.

@@ -6,6 +6,10 @@
 //! presentation, four bound fields), STU-FX-110/110a (step trio, integer step 1, one validation
 //! owner), STU-FX-112 (`integer` kind), STU-FX-149 + STU-SHL-188..192 (gesture roles, pointer
 //! sensitivity, clamping).
+//!
+//! Typed text from users and agents is decoded here (`parse_text`), so integer arithmetic is
+//! explicit (V4-01).
+#![deny(clippy::arithmetic_side_effects)]
 
 use crate::value::{ControlError, Value};
 use serde::{Deserialize, Serialize};
@@ -79,14 +83,15 @@ pub struct IntegerSpec {
 }
 
 fn pow10_neg(n: i32) -> f64 {
-    if n >= 0 { 1.0 / 10f64.powi(n) } else { 10f64.powi(-n) }
+    if n >= 0 { 1.0 / 10f64.powi(n) } else { 10f64.powi(n.saturating_neg()) }
 }
 
 /// Decimal digits of the grid that removes binary-representation noise: 9, and always one finer
 /// than the declared precision, so `fine_step = 10^-(precision+1)` (STU-FX-110) stays on the grid
-/// and a fine step can never round away (precision 9 needs 10 digits).
+/// and a fine step can never round away (precision 9 needs 10 digits; proof `tests/step_effect.rs`
+/// `every_declared_precision_steps_by_its_derived_increments`).
 fn clean_digits(precision: u8) -> i32 {
-    (i32::from(precision) + 1).max(9)
+    i32::from(precision).saturating_add(1).max(9)
 }
 
 /// Removes binary-representation noise from a computed value (0.5 + 0.01 -> 0.51) on the
@@ -118,10 +123,10 @@ impl NumberSpec {
         pow10_neg(i32::from(self.precision))
     }
     pub fn fine_step(&self) -> f64 {
-        pow10_neg(i32::from(self.precision) + 1)
+        pow10_neg(i32::from(self.precision).saturating_add(1))
     }
     pub fn coarse_step(&self) -> f64 {
-        pow10_neg(i32::from(self.precision) - 1)
+        pow10_neg(i32::from(self.precision).saturating_sub(1))
     }
 
     /// Track range for the slider widget: the complete soft pair, else the complete hard pair.
@@ -662,16 +667,19 @@ impl ControlSpec {
         self.validate_value(&if p.integer { Value::Int(v.round() as i64) } else { Value::Number(v) })
     }
 
-    /// Discrete keyboard/accessibility step. Numbers: `step`, `coarse_step` (coarse role),
+    /// Discrete keyboard/accessibility step, the single step implementation of the crate: the
+    /// text-field and slider arrows call it, and the agent `step_up`/`step_down` actions of the
+    /// projection are defined as this function. Numbers: `step`, `coarse_step` (coarse role),
     /// `fine_step` (fine role), `step*100` for both roles (STU-FX-110; the spec is silent on the
-    /// combined role for arrows, so the pointer map of STU-SHL-190 is extended). Integers: always
-    /// exactly one legal step regardless of roles. A step that would leave the hard range is
-    /// REJECTED (the spec defines clamping for pointer routes only; STU-FX-110a), and so is a
-    /// number step that leaves the value unchanged (`StepNoEffect`: the increment is below the
-    /// resolution of `f64` at this magnitude) instead of returning the old value as success.
+    /// combined role for arrows, so the pointer map of STU-SHL-190 is extended). Integers: exactly
+    /// one legal step whatever the roles (proofs: `tests/gesture_panel_report.rs`
+    /// `gesture_semantics_integer_domain_and_undo_coalescing`, `tests/step_effect.rs`
+    /// `slider_arrow_keys_use_the_descriptor_step_at_every_position`). A step that would leave the
+    /// hard range is REJECTED (the spec defines clamping for pointer routes only; STU-FX-110a).
+    /// Every result then passes `moved`, the one no-effect rule.
     pub fn step_value(&self, current: &Value, dir: i8, roles: GestureRoles) -> Result<Value, ControlError> {
         let sign = f64::from(dir.signum());
-        match (&self.kind, current) {
+        let next = match (&self.kind, current) {
             (ControlKind::Number(n), Value::Number(cur)) => {
                 let amount = match (roles.coarse, roles.fine) {
                     (false, false) => n.step(),
@@ -679,22 +687,41 @@ impl ControlSpec {
                     (false, true) => n.fine_step(),
                     (true, true) => n.step() * 100.0,
                 };
-                let next = clean(cur + sign * amount, n.precision);
-                if next == *cur {
-                    return Err(ControlError::StepNoEffect { control_id: self.id.clone() });
-                }
-                self.validate_value(&Value::Number(next))
+                Value::Number(clean(cur + sign * amount, n.precision))
             }
-            (ControlKind::Integer(_), Value::Int(cur)) => {
-                let next = cur.saturating_add(i64::from(dir.signum()));
-                self.validate_value(&Value::Int(next))
+            // Saturates at the i64 domain edge; `moved` turns the unchanged result into a refusal.
+            (ControlKind::Integer(_), Value::Int(cur)) => Value::Int(cur.saturating_add(i64::from(dir.signum()))),
+            _ => {
+                return Err(ControlError::TypeMismatch {
+                    control_id: self.id.clone(),
+                    expected: "number or integer",
+                    got: current.kind_name(),
+                });
             }
-            _ => Err(ControlError::TypeMismatch {
-                control_id: self.id.clone(),
-                expected: "number or integer",
-                got: current.kind_name(),
-            }),
+        };
+        if dir == 0 {
+            // No direction is no move. Checked explicitly: an off-grid number would otherwise come
+            // back changed by noise removal alone.
+            return Err(ControlError::StepNoEffect { control_id: self.id.clone() });
         }
+        self.moved(current, next)
+    }
+
+    /// The one no-effect rule for every discrete move (relative step) of every value kind: the
+    /// target must differ from `current`, else the move is refused with `StepNoEffect` and never
+    /// returned as an unchanged success (R3: number increment below `f64` resolution; R5: integer
+    /// step saturating at `i64::MAX`/`MIN`). A changed target then passes the single legality
+    /// check, so a move past a hard bound is `OutOfHardBounds*`, never clamped. Absolute routes
+    /// (typed/model set, pointer target, reset) are not moves: an unchanged result there means the
+    /// requested value already holds and the store answers `Ok(None)`. Proofs (`tests/step_effect.rs`):
+    /// `a_step_below_f64_resolution_is_refused_not_reported_as_success`,
+    /// `integer_and_directionless_steps_at_the_domain_edge_are_refused`,
+    /// `slider_arrow_keys_use_the_descriptor_step_at_every_position`.
+    pub(crate) fn moved(&self, current: &Value, next: Value) -> Result<Value, ControlError> {
+        if &next == current {
+            return Err(ControlError::StepNoEffect { control_id: self.id.clone() });
+        }
+        self.validate_value(&next)
     }
 }
 
@@ -705,37 +732,23 @@ fn soft_pair(a: Option<f64>, b: Option<f64>) -> Option<(f64, f64)> {
     }
 }
 
+/// `[+-] digits [. digits] [(e|E) [+-] digits]` with at least one mantissa digit; split-based, so
+/// no index arithmetic on untrusted text.
 fn strict_decimal(s: &str) -> bool {
-    let b = s.as_bytes();
-    let mut i = 0;
-    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
-        i += 1;
-    }
-    let digits = |i: &mut usize| {
-        let start = *i;
-        while *i < b.len() && b[*i].is_ascii_digit() {
-            *i += 1;
-        }
-        *i - start
+    let all_digits = |t: &str| t.bytes().all(|b| b.is_ascii_digit());
+    let unsigned = s.strip_prefix(['+', '-']).unwrap_or(s);
+    let (mantissa, exponent) = match unsigned.split_once(['e', 'E']) {
+        Some((m, e)) => (m, Some(e)),
+        None => (unsigned, None),
     };
-    let mut mantissa = digits(&mut i);
-    if i < b.len() && b[i] == b'.' {
-        i += 1;
-        mantissa += digits(&mut i);
-    }
-    if mantissa == 0 {
+    let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if (int.is_empty() && frac.is_empty()) || !all_digits(int) || !all_digits(frac) {
         return false;
     }
-    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
-        i += 1;
-        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
-            i += 1;
-        }
-        if digits(&mut i) == 0 {
-            return false;
-        }
-    }
-    i == b.len()
+    exponent.is_none_or(|e| {
+        let digits = e.strip_prefix(['+', '-']).unwrap_or(e);
+        !digits.is_empty() && all_digits(digits)
+    })
 }
 
 fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
@@ -743,6 +756,10 @@ fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
     if !(h.len() == 6 || h.len() == 8) || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
-    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
-    Some([byte(0)?, byte(2)?, byte(4)?, if h.len() == 8 { byte(6)? } else { 255 }])
+    // Alpha stays 255 for `#rrggbb`.
+    let mut rgba = [255_u8; 4];
+    for (slot, pair) in rgba.iter_mut().zip(h.as_bytes().chunks(2)) {
+        *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(rgba)
 }

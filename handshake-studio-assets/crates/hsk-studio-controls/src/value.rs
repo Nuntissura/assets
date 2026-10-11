@@ -49,8 +49,10 @@ pub enum ControlError {
     UnknownChoice { control_id: String, choice: String },
     TextTooLong { control_id: String, max_chars: usize, got_chars: usize },
     Stale { control_id: String, expected: Value, current: Value },
-    /// A discrete step would leave the value unchanged (increment below `f64` resolution at this
-    /// magnitude); refused instead of reporting an unchanged value as a successful step.
+    /// A discrete step would leave the value unchanged (no direction, number increment below `f64`
+    /// resolution at this magnitude, integer step at the `i64` domain edge); refused instead of
+    /// reporting an unchanged value as a successful step (`ControlSpec::moved`; proofs in
+    /// `tests/step_effect.rs`).
     StepNoEffect { control_id: String },
 }
 

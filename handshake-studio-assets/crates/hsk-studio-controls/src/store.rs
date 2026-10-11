@@ -58,7 +58,10 @@ impl ChangeEvent {
 pub enum GesturePhase {
     /// A drag/scrub sample (the first sample opens the gesture).
     Update,
-    /// Release / focus loss: finalize the gesture once.
+    /// Release / focus loss: finalize the gesture once. A refused `End` (error outcome or illegal
+    /// final value) leaves the store untouched, the open gesture included: the value stays at the
+    /// last live sample, `set` stays refused, and the caller sends a legal `End` or an `Abort`
+    /// (proof `tests/step_effect.rs` `no_change_is_reported_by_route_and_a_refused_end_keeps_the_gesture`).
     End,
     /// Escape / cancel: restore the press value.
     Abort,
@@ -173,7 +176,8 @@ impl ValueStore {
     }
 
     /// Applies a control interaction; a rejected outcome is returned as the error, store
-    /// untouched. Gesture interactions follow the open/update/commit-or-abort protocol above.
+    /// untouched (for a refused `End` the gesture stays open, see [`GesturePhase::End`]). Gesture
+    /// interactions follow the open/update/commit-or-abort protocol above.
     pub fn apply(
         &mut self,
         registry: &Registry,
