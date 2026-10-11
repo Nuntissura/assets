@@ -94,7 +94,11 @@ fn decode(
     (result, sink)
 }
 
-fn probe(provider: &dyn MediaProvider, bytes: &[u8], limits: &Limits) -> Result<StreamLayout, ReelError> {
+fn probe(
+    provider: &dyn MediaProvider,
+    bytes: &[u8],
+    limits: &Limits,
+) -> Result<StreamLayout, ReelError> {
     provider.probe(
         &mut Cursor::new(bytes.to_vec()),
         limits,
@@ -126,7 +130,10 @@ fn y4m_dims_u32_max() {
         let limits = Limits::default();
         // Header numbers at u32/u64 max: refused from the header text, before any frame buffer.
         for (text, expected) in [
-            ("W4294967295 H4294967295 F25:1 C444", corrupt("y4m-dimensions")),
+            (
+                "W4294967295 H4294967295 F25:1 C444",
+                corrupt("y4m-dimensions"),
+            ),
             ("W4294967295 H1 F25:1", corrupt("y4m-dimensions")),
             ("W65537 H1 F25:1", corrupt("y4m-dimensions")),
             ("W99999999999999999999 H1 F25:1", corrupt("y4m-width")),
@@ -135,10 +142,15 @@ fn y4m_dims_u32_max() {
             ("W65536 H65536 F25:1 C420", limit("frame-bytes")),
         ] {
             let bytes = y4m_header(text);
-            let (result, sink) = decode(&Y4mProvider, &bytes, &request("y4m", 0, 1, &bytes), &limits);
+            let (result, sink) =
+                decode(&Y4mProvider, &bytes, &request("y4m", 0, 1, &bytes), &limits);
             assert_eq!(result.unwrap_err(), expected, "{text}");
             assert_eq!(sink.chunks, 0);
-            assert_eq!(probe(&Y4mProvider, &bytes, &limits).unwrap_err(), expected, "{text}");
+            assert_eq!(
+                probe(&Y4mProvider, &bytes, &limits).unwrap_err(),
+                expected,
+                "{text}"
+            );
         }
         // Frame rates at the 64-bit limit are an unsupported (non-broadcast) rate, never a wrap.
         for text in [
@@ -257,7 +269,11 @@ fn y4m_aggregate_over_budget() {
         );
         assert_eq!(result.unwrap_err(), limit("source-exceeds-declared"));
         let header = b"YUV4MPEG2 W8 H8 F25:1 Ip A1:1 Cmono\n".len();
-        assert_eq!(out.len(), header + 2 * (6 + 64), "exactly the two declared frames were written");
+        assert_eq!(
+            out.len(),
+            header + 2 * (6 + 64),
+            "exactly the two declared frames were written"
+        );
         // Decode: asking for more frames than the file holds is Truncated with the delivered count.
         let (result, sink) = decode(&Y4mProvider, &small, &request("y4m", 0, 3, &small), &limits);
         assert_eq!(result.unwrap_err(), ReelError::Truncated { delivered: 2 });
@@ -314,13 +330,23 @@ fn wav_dims_u32_max() {
         let bytes = wav_with_data_size(u32::MAX - 1, 2);
         let layout = probe(&WavProvider, &bytes, &limits).unwrap();
         assert_eq!(layout.units, u64::from(u32::MAX - 1) / 4);
-        let (result, sink) = decode(&WavProvider, &bytes, &request("wav-pcm", 0, 3, &bytes), &limits);
+        let (result, sink) = decode(
+            &WavProvider,
+            &bytes,
+            &request("wav-pcm", 0, 3, &bytes),
+            &limits,
+        );
         assert_eq!(result.unwrap_err(), ReelError::Truncated { delivered: 2 });
         assert_eq!((sink.chunks, sink.bytes), (1, 8));
         // data size u32::MAX is the streaming marker: the declared length is the real length.
         let bytes = wav_with_data_size(u32::MAX, 2);
         assert_eq!(probe(&WavProvider, &bytes, &limits).unwrap().units, 2);
-        let (result, _) = decode(&WavProvider, &bytes, &request("wav-pcm", 0, 3, &bytes), &limits);
+        let (result, _) = decode(
+            &WavProvider,
+            &bytes,
+            &request("wav-pcm", 0, 3, &bytes),
+            &limits,
+        );
         assert!(matches!(result.unwrap_err(), ReelError::OutOfRange { .. }));
         // start at u64::MAX ticks: the sample index is far past the end: typed OutOfRange.
         let (result, _) = decode(
@@ -395,7 +421,10 @@ fn wav_dims_u32_max() {
             );
             (result, out)
         };
-        assert_eq!(encode(48000, u64::MAX).0.unwrap_err(), limit("wav-data-size"));
+        assert_eq!(
+            encode(48000, u64::MAX).0.unwrap_err(),
+            limit("wav-data-size")
+        );
         assert_eq!(
             encode(48000, u64::from(u32::MAX) / 4 + 1).0.unwrap_err(),
             limit("wav-data-size")
@@ -450,7 +479,10 @@ fn wav_aggregate_over_budget() {
             max_probe_bytes: 64,
             ..Limits::default()
         };
-        assert_eq!(probe(&WavProvider, &bytes, &tight).unwrap_err(), limit("probe-bytes"));
+        assert_eq!(
+            probe(&WavProvider, &bytes, &tight).unwrap_err(),
+            limit("probe-bytes")
+        );
         assert_eq!(probe(&WavProvider, &bytes, &limits).unwrap().units, 1);
         // Encode: the running total of samples may not pass the declared total (2 + 2 > 3).
         let spec = EncodeSpec {
@@ -478,7 +510,12 @@ fn wav_aggregate_over_budget() {
             ..Limits::default()
         };
         let ok = wav_pcm16(48000, 2, 4);
-        let (result, sink) = decode(&WavProvider, &ok, &request("wav-pcm", 0, 2, &ok), &small_chunks);
+        let (result, sink) = decode(
+            &WavProvider,
+            &ok,
+            &request("wav-pcm", 0, 2, &ok),
+            &small_chunks,
+        );
         assert_eq!(result.unwrap_err(), limit("chunk-smaller-than-sample"));
         assert_eq!(sink.chunks, 0);
     });
@@ -486,10 +523,22 @@ fn wav_aggregate_over_budget() {
 
 // ----- sampled source identity ----------------------------------------------------------------------
 
-/// A source of `len` zero bytes that is never materialised: reads hand out zeros, seeks move a cursor.
+/// A source of `len` zero bytes that is never materialised: reads hand out zeros, seeks move a cursor,
+/// and `reads` counts the bytes handed out.
 struct Sparse {
     len: u64,
     pos: u64,
+    reads: u64,
+}
+
+impl Sparse {
+    fn new(len: u64) -> Self {
+        Self {
+            len,
+            pos: 0,
+            reads: 0,
+        }
+    }
 }
 
 impl Read for Sparse {
@@ -498,6 +547,7 @@ impl Read for Sparse {
         let n = usize::try_from(left).map_or(buf.len(), |left| left.min(buf.len()));
         buf[..n].fill(0);
         self.pos += n as u64;
+        self.reads += n as u64;
         Ok(n)
     }
 }
@@ -512,6 +562,35 @@ impl Seek for Sparse {
         self.pos = target.ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         Ok(self.pos)
     }
+}
+
+#[test]
+fn identity_aggregate_over_budget() {
+    bounded_case("identity_aggregate_over_budget", || {
+        let cancel = CancellationToken::default();
+        let params = IdentityParams {
+            window: 4096,
+            windows: 8,
+        };
+        // A 1 TiB source costs exactly windows x window bytes of reads, however long it is.
+        let mut huge = Sparse::new(1 << 40);
+        let identity = sampled_identity(&mut huge, params, &cancel).unwrap();
+        assert!(!identity.exhaustive);
+        assert_eq!(huge.reads, 8 * 4096);
+        // A source that fits the covered bytes is read once, in full, and says so.
+        let mut small = Sparse::new(8 * 4096);
+        let identity = sampled_identity(&mut small, params, &cancel).unwrap();
+        assert!(identity.exhaustive);
+        assert_eq!(small.reads, 8 * 4096);
+        // One byte more is sampled, not exhaustive.
+        let mut over = Sparse::new(8 * 4096 + 1);
+        assert!(
+            !sampled_identity(&mut over, params, &cancel)
+                .unwrap()
+                .exhaustive
+        );
+        assert_eq!(over.reads, 8 * 4096);
+    });
 }
 
 #[test]
@@ -533,7 +612,7 @@ fn identity_dims_u32_max() {
                 windows: u32::MAX,
             },
         ] {
-            let mut src = Sparse { len: 1 << 20, pos: 0 };
+            let mut src = Sparse::new(1 << 20);
             assert_eq!(
                 sampled_identity(&mut src, params, &cancel).unwrap_err(),
                 limit("identity-params")
@@ -545,20 +624,613 @@ fn identity_dims_u32_max() {
             window: 4096,
             windows: 64,
         };
-        let first = sampled_identity(&mut Sparse { len: u64::MAX, pos: 0 }, params, &cancel).unwrap();
-        let again = sampled_identity(&mut Sparse { len: u64::MAX, pos: 0 }, params, &cancel).unwrap();
+        let first = sampled_identity(&mut Sparse::new(u64::MAX), params, &cancel).unwrap();
+        let again = sampled_identity(&mut Sparse::new(u64::MAX), params, &cancel).unwrap();
         assert_eq!((first.len, first.exhaustive), (u64::MAX, false));
         assert_eq!(first, again);
         // One byte less is a different identity (the length is framed into the digest).
-        let shorter =
-            sampled_identity(&mut Sparse { len: u64::MAX - 1, pos: 0 }, params, &cancel).unwrap();
+        let shorter = sampled_identity(&mut Sparse::new(u64::MAX - 1), params, &cancel).unwrap();
         assert_ne!(first.digest, shorter.digest);
         // The full digest chunk size is bounded in both directions.
         for chunk_bytes in [0, usize::MAX, (8 << 20) + 1] {
             assert_eq!(
-                full_digest(&mut Sparse { len: 16, pos: 0 }, chunk_bytes, &cancel).unwrap_err(),
+                full_digest(&mut Sparse::new(16), chunk_bytes, &cancel).unwrap_err(),
                 limit("digest-chunk-bytes")
             );
         }
+    });
+}
+
+// ----- ISOBMFF: MP4 / MOV ---------------------------------------------------------------------------
+
+fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut out = u32::try_from(payload.len() + 8)
+        .unwrap()
+        .to_be_bytes()
+        .to_vec();
+    out.extend_from_slice(kind);
+    out.extend_from_slice(payload);
+    out
+}
+
+/// A box whose 32-bit size field is 1 and whose 64-bit largesize is `size`, followed by `tail`.
+fn big_box(kind: &[u8; 4], size: u64, tail: &[u8]) -> Vec<u8> {
+    let mut out = 1u32.to_be_bytes().to_vec();
+    out.extend_from_slice(kind);
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(tail);
+    out
+}
+
+fn full(kind: &[u8; 4], version: u8, flags: u32, payload: &[u8]) -> Vec<u8> {
+    let mut body = ((u32::from(version) << 24) | flags).to_be_bytes().to_vec();
+    body.extend_from_slice(payload);
+    bx(kind, &body)
+}
+
+/// Offset of the first `tag` fourcc in `bytes` (the tag, not the box start).
+fn at(bytes: &[u8], tag: &[u8; 4]) -> usize {
+    bytes
+        .windows(4)
+        .position(|w| w == tag)
+        .unwrap_or_else(|| panic!("no {tag:?} box in the fixture"))
+}
+
+fn get32(bytes: &[u8], tag: &[u8; 4], rel: usize) -> u32 {
+    let p = at(bytes, tag) + rel;
+    u32::from_be_bytes(bytes[p..p + 4].try_into().unwrap())
+}
+
+fn put32(bytes: &mut [u8], tag: &[u8; 4], rel: usize, value: u32) {
+    let p = at(bytes, tag) + rel;
+    bytes[p..p + 4].copy_from_slice(&value.to_be_bytes());
+}
+
+fn put64(bytes: &mut [u8], tag: &[u8; 4], rel: usize, value: u64) {
+    let p = at(bytes, tag) + rel;
+    bytes[p..p + 8].copy_from_slice(&value.to_be_bytes());
+}
+
+fn index_of(bytes: &[u8], limits: &Limits) -> Result<MediaIndex, ReelError> {
+    build_index(
+        &mut Cursor::new(bytes.to_vec()),
+        bytes.len() as u64,
+        limits,
+        &CancellationToken::default(),
+    )
+}
+
+fn sample(duration: u32, cts_offset: i32, size: u32, sync: bool) -> Mp4Sample {
+    Mp4Sample {
+        duration,
+        cts_offset,
+        size,
+        sync,
+    }
+}
+
+fn four_samples() -> Vec<Mp4Sample> {
+    (0..4).map(|k| sample(20, 0, 16, k == 0)).collect()
+}
+
+fn mp4_spec(samples: Vec<Mp4Sample>) -> Mp4Spec {
+    Mp4Spec {
+        movie_timescale: 600,
+        media_timescale: 600,
+        codec: *b"avc1",
+        width: 64,
+        height: 36,
+        samples,
+        edits: None,
+        samples_per_chunk: 2,
+        co64: false,
+        ctts_version: 0,
+        moov_first: true,
+        colr_nclx: None,
+        pasp: None,
+    }
+}
+
+fn packet_request(start_pts: u64, count: u64, bytes: &[u8]) -> SegmentRequest {
+    SegmentRequest {
+        output: OutputMode::Packets,
+        ..request("isobmff", start_pts, count, bytes)
+    }
+}
+
+fn decode_packets(
+    bytes: &[u8],
+    index: &MediaIndex,
+    req: &SegmentRequest,
+    limits: &Limits,
+) -> Result<SegmentReceipt, ReelError> {
+    IsobmffProvider.decode_packets(
+        &mut Cursor::new(bytes.to_vec()),
+        index,
+        req,
+        limits,
+        &CancellationToken::default(),
+        &mut Count::default(),
+    )
+}
+
+#[test]
+fn isobmff_dims_u32_max() {
+    bounded_case("isobmff_dims_u32_max", || {
+        let limits = Limits::default();
+        // Hostile top-level and nested box sizes, including 64-bit largesize boxes.
+        let ftyp = bx(b"ftyp", b"isom\0\0\0\0isom");
+        let file = |tail: Vec<u8>| [ftyp.clone(), tail].concat();
+        let mut over_32 = u32::MAX.to_be_bytes().to_vec();
+        over_32.extend_from_slice(b"moov");
+        over_32.extend_from_slice(&[0; 16]);
+        // 20 bytes is smaller than the 8 + 16 byte header of a uuid box.
+        let mut uuid = 20u32.to_be_bytes().to_vec();
+        uuid.extend_from_slice(b"uuid");
+        uuid.extend_from_slice(&[0; 12]);
+        for (bytes, expected) in [
+            (
+                file(big_box(b"free", u64::MAX, &[])),
+                corrupt("moov-missing"),
+            ),
+            (
+                file(big_box(b"moov", u64::MAX, &[])),
+                corrupt("moov-exceeds-file"),
+            ),
+            (file(over_32), corrupt("moov-exceeds-file")),
+            (file(big_box(b"free", 15, &[])), corrupt("box-size")),
+            (
+                file(bx(b"moov", &big_box(b"trak", u64::MAX, &[]))),
+                corrupt("box-size"),
+            ),
+            (file(bx(b"moov", &uuid)), corrupt("box-size")),
+        ] {
+            assert_eq!(index_of(&bytes, &limits).unwrap_err(), expected);
+        }
+
+        // Table counts at u32::MAX against a valid file (the count fields sit at fixed offsets).
+        let valid = mp4_bytes(&mp4_spec(four_samples()));
+        assert_eq!(get32(&valid, b"stts", 8), 1, "one run-length entry");
+        assert_eq!(get32(&valid, b"stsz", 12), 4, "four samples");
+        let patched = |edit: &dyn Fn(&mut Vec<u8>)| {
+            let mut bytes = valid.clone();
+            edit(&mut bytes);
+            index_of(&bytes, &limits).unwrap_err()
+        };
+        assert_eq!(
+            patched(&|b| put32(b, b"stts", 8, u32::MAX)),
+            corrupt("table-exceeds-box")
+        );
+        assert_eq!(
+            patched(&|b| {
+                put32(b, b"stts", 12, u32::MAX);
+                put32(b, b"stsz", 12, u32::MAX);
+            }),
+            limit("sample-count")
+        );
+        assert_eq!(
+            patched(&|b| put32(b, b"stsz", 12, u32::MAX)),
+            corrupt("stts-count-mismatch")
+        );
+        // A chunk offset of u32::MAX is representable; reading it is Truncated, not a wrapped seek.
+        let mut far = valid.clone();
+        put32(&mut far, b"stco", 12, u32::MAX);
+        let index = index_of(&far, &limits).unwrap();
+        assert_eq!(
+            decode_packets(&far, &index, &packet_request(0, 1, &far), &limits).unwrap_err(),
+            ReelError::Truncated { delivered: 0 }
+        );
+        // A 64-bit chunk offset of u64::MAX cannot take a sample after it.
+        let mut wide_spec = mp4_spec(four_samples());
+        wide_spec.co64 = true;
+        let mut wide = mp4_bytes(&wide_spec);
+        put64(&mut wide, b"co64", 12, u64::MAX);
+        assert_eq!(
+            index_of(&wide, &limits).unwrap_err(),
+            corrupt("chunk-offset-overflow")
+        );
+        // A sample size of u32::MAX is refused against the chunk limit, never read.
+        let mut huge = valid.clone();
+        put32(&mut huge, b"stsz", 16, u32::MAX);
+        let index = index_of(&huge, &limits).unwrap();
+        assert_eq!(index.default_track().unwrap().samples()[0].size, u32::MAX);
+        assert_eq!(
+            decode_packets(&huge, &index, &packet_request(0, 1, &huge), &limits).unwrap_err(),
+            limit("sample-bytes")
+        );
+
+        // Edit lists at their extremes.
+        let with_edits = |edits: Vec<(u64, i64)>| {
+            let mut spec = mp4_spec(four_samples());
+            spec.edits = Some(edits);
+            mp4_bytes(&spec)
+        };
+        for (edits, expected) in [
+            (vec![(u64::MAX, 0)], limit("tick-range")),
+            (vec![(i64::MAX as u64, 0)], limit("tick-range")),
+            (
+                vec![(20_000_000_000, 0), (20_000_000_000, 0)],
+                limit("tick-range"),
+            ),
+            (vec![(10, -2)], corrupt("elst-media-time")),
+            (
+                vec![(u64::from(u32::MAX) + 1, i64::MIN)],
+                corrupt("elst-media-time"),
+            ),
+        ] {
+            assert_eq!(
+                index_of(&with_edits(edits.clone()), &limits).unwrap_err(),
+                expected,
+                "{edits:?}"
+            );
+        }
+        // media_time = i64::MAX starts past the last sample: a valid, empty presentation.
+        let index = index_of(&with_edits(vec![(10_000_000_000, i64::MAX)]), &limits).unwrap();
+        let track = index.default_track().unwrap();
+        assert!(track.presented().is_empty());
+        assert!(matches!(
+            track.seek(Ticks::new(0)).unwrap_err(),
+            ReelError::OutOfRange { .. }
+        ));
+
+        // ctts and durations at their extremes: nothing wraps, composition may precede decode time.
+        let spec = Mp4Spec {
+            ctts_version: 1,
+            ..mp4_spec(vec![
+                sample(u32::MAX, i32::MIN, 16, true),
+                sample(u32::MAX, i32::MAX, 16, false),
+                sample(u32::MAX, 0, 16, false),
+            ])
+        };
+        let index = index_of(&mp4_bytes(&spec), &limits).unwrap();
+        let s = index.default_track().unwrap().samples();
+        assert_eq!(s[0].pts, i64::from(i32::MIN));
+        assert_eq!(s[1].dts, i64::from(u32::MAX));
+        assert_eq!(s[1].pts, i64::from(u32::MAX) + i64::from(i32::MAX));
+        assert_eq!(s[2].dts, 2 * i64::from(u32::MAX));
+        // Timescale u32::MAX on both headers (tiny durations so the fixture itself cannot overflow).
+        let tiny = Mp4Spec {
+            movie_timescale: u32::MAX,
+            media_timescale: u32::MAX,
+            ..mp4_spec(four_samples())
+        };
+        assert_eq!(
+            index_of(&mp4_bytes(&tiny), &limits).unwrap().tracks.len(),
+            1
+        );
+        // One u32::MAX-unit sample at timescale 1 is 1.1e21 ticks: past i64, a typed limit.
+        let slow = Mp4Spec {
+            movie_timescale: 1,
+            media_timescale: 1,
+            ..mp4_spec(vec![sample(u32::MAX, 0, 16, true)])
+        };
+        assert_eq!(
+            index_of(&mp4_bytes(&slow), &limits).unwrap_err(),
+            limit("tick-range")
+        );
+
+        // Requests at u64::MAX against a valid index: out of range, never a wrapped index.
+        let index = index_of(&valid, &limits).unwrap();
+        for (start, count) in [(u64::MAX, 1), (0, u64::MAX), (u64::MAX, u64::MAX)] {
+            assert!(
+                matches!(
+                    decode_packets(
+                        &valid,
+                        &index,
+                        &packet_request(start, count, &valid),
+                        &limits
+                    )
+                    .unwrap_err(),
+                    ReelError::OutOfRange { .. }
+                ),
+                "start {start} count {count}"
+            );
+        }
+    });
+}
+
+#[test]
+fn isobmff_aggregate_over_budget() {
+    bounded_case("isobmff_aggregate_over_budget", || {
+        let limits = Limits::default();
+        let valid = mp4_bytes(&mp4_spec(four_samples()));
+        // The top-level scan has a box budget: the moov must be found within 65,536 boxes.
+        let moov_at = at(&valid, b"moov") - 4;
+        let (head, rest) = valid.split_at(moov_at);
+        let padded = |free_boxes: usize| {
+            let mut bytes = head.to_vec();
+            bytes.extend_from_slice(&bx(b"free", &[]).repeat(free_boxes));
+            bytes.extend_from_slice(rest);
+            bytes
+        };
+        assert!(
+            index_of(&padded(65_534), &limits).is_ok(),
+            "ftyp + 65,534 free + moov = 65,536 boxes"
+        );
+        assert_eq!(
+            index_of(&padded(65_535), &limits).unwrap_err(),
+            corrupt("moov-missing")
+        );
+        // A probe budget smaller than the movie box.
+        let tight = Limits {
+            max_probe_bytes: 64,
+            ..Limits::default()
+        };
+        assert_eq!(index_of(&valid, &tight).unwrap_err(), limit("moov-bytes"));
+        // The sample budget: exactly enough passes, one short fails.
+        for (max_samples, ok) in [(4, true), (3, false)] {
+            let tight = Limits {
+                max_samples,
+                ..Limits::default()
+            };
+            let result = index_of(&valid, &tight);
+            assert_eq!(result.is_ok(), ok, "max_samples {max_samples}");
+            if !ok {
+                assert_eq!(result.unwrap_err(), limit("sample-count"));
+            }
+        }
+        // One long audio track plus a video track share ONE sample budget: audio alone fits 5, video +
+        // audio does not.
+        let audio = PcmMovSpec {
+            fourcc: *b"twos",
+            kind: PcmKind::S16,
+            big_endian: true,
+            lpcm_v2: false,
+            non_interleaved: false,
+            channels: 2,
+            rate: 48000,
+            frames: 300,
+            frames_per_chunk: 128,
+            movie_timescale: 48000,
+            edits: None,
+            moov_first: true,
+            sound_version: None,
+        };
+        let five = Limits {
+            max_samples: 5,
+            ..Limits::default()
+        };
+        assert!(index_of(&mov_pcm_bytes(&audio), &five).is_ok());
+        assert!(matches!(
+            index_of(&mov_av_bytes(4, &audio), &five).unwrap_err(),
+            ReelError::LimitExceeded { .. }
+        ));
+        assert!(index_of(&mov_av_bytes(4, &audio), &limits).is_ok());
+        // Edit-list budgets: the caller's, and the hard 4096 bound.
+        let many = |n: usize| {
+            let mut spec = mp4_spec(four_samples());
+            spec.edits = Some(vec![(20, 0); n]);
+            mp4_bytes(&spec)
+        };
+        assert!(index_of(&many(2), &limits).is_ok());
+        let two = Limits {
+            max_edit_entries: 2,
+            ..Limits::default()
+        };
+        assert_eq!(index_of(&many(3), &two).unwrap_err(), limit("edit-count"));
+        assert_eq!(
+            index_of(&many(4097), &limits).unwrap_err(),
+            limit("edit-count")
+        );
+        // Track budget.
+        let none = Limits {
+            max_tracks: 0,
+            ..Limits::default()
+        };
+        assert_eq!(index_of(&valid, &none).unwrap_err(), limit("track-count"));
+    });
+}
+
+// ----- ISOBMFF: fragmented MP4 -----------------------------------------------------------------------
+
+fn frag_spec(fragments: usize, per: usize) -> FragSpec {
+    // Uniform samples, sync first: valid for both fixture styles (full trun fields and tfhd defaults).
+    let uniform: Vec<Mp4Sample> = (0..per).map(|k| sample(20, 0, 8, k == 0)).collect();
+    FragSpec {
+        movie_timescale: 600,
+        media_timescale: 600,
+        codec: *b"avc1",
+        width: 64,
+        height: 36,
+        fragments: vec![uniform; fragments],
+        tfdt: vec![true; fragments],
+        default_base_is_moof: true,
+        with_sidx: false,
+        edits: None,
+    }
+}
+
+/// `ftyp` + `moov` (with `mvex`) of a fragmented file with no fragments.
+fn frag_head() -> Vec<u8> {
+    fmp4_bytes(&frag_spec(0, 1)).bytes
+}
+
+struct Run {
+    flags: u32,
+    count: u32,
+    data_offset: i32,
+    per_sample: Vec<u8>,
+}
+
+fn run(flags: u32, count: u32, data_offset: i32, per_sample: Vec<u8>) -> Run {
+    Run {
+        flags,
+        count,
+        data_offset,
+        per_sample,
+    }
+}
+
+fn raw_moof(tfhd_flags: u32, base: u64, tfdt: Option<u64>, run: &Run) -> Vec<u8> {
+    let mut tfhd = 1u32.to_be_bytes().to_vec();
+    if tfhd_flags & 1 != 0 {
+        tfhd.extend_from_slice(&base.to_be_bytes());
+    }
+    let mut traf = full(b"tfhd", 0, tfhd_flags, &tfhd);
+    if let Some(time) = tfdt {
+        traf.extend_from_slice(&full(b"tfdt", 1, 0, &time.to_be_bytes()));
+    }
+    let mut trun = run.count.to_be_bytes().to_vec();
+    if run.flags & 1 != 0 {
+        trun.extend_from_slice(&run.data_offset.to_be_bytes());
+    }
+    trun.extend_from_slice(&run.per_sample);
+    traf.extend_from_slice(&full(b"trun", 0, run.flags, &trun));
+    let mut moof = full(b"mfhd", 0, 0, &1u32.to_be_bytes());
+    moof.extend_from_slice(&bx(b"traf", &traf));
+    bx(b"moof", &moof)
+}
+
+/// Version 1 `sidx` with `declared` references of which `entries` (word, duration, sap) are present.
+fn raw_sidx(first_offset: u64, declared: u16, entries: &[(u32, u32, u32)]) -> Vec<u8> {
+    let mut p = 1u32.to_be_bytes().to_vec();
+    p.extend_from_slice(&600u32.to_be_bytes());
+    p.extend_from_slice(&u64::MAX.to_be_bytes()); // earliest presentation time
+    p.extend_from_slice(&first_offset.to_be_bytes());
+    p.extend_from_slice(&0u16.to_be_bytes());
+    p.extend_from_slice(&declared.to_be_bytes());
+    for (word, duration, sap) in entries {
+        p.extend_from_slice(&word.to_be_bytes());
+        p.extend_from_slice(&duration.to_be_bytes());
+        p.extend_from_slice(&sap.to_be_bytes());
+    }
+    full(b"sidx", 1, 0, &p)
+}
+
+#[test]
+fn fragments_dims_u32_max() {
+    bounded_case("fragments_dims_u32_max", || {
+        let limits = Limits::default();
+        let head = frag_head();
+        let with = |tail: Vec<u8>| [head.clone(), tail].concat();
+        let max_i64 = i64::MAX as u64;
+        let u32_max = u32::MAX.to_be_bytes().to_vec();
+        for (name, tail, expected) in [
+            (
+                "tfdt u64::MAX",
+                raw_moof(0, 0, Some(u64::MAX), &run(0x1, 1, 0, Vec::new())),
+                limit("time-range"),
+            ),
+            (
+                "dts i64::MAX + duration u32::MAX",
+                raw_moof(0, 0, Some(max_i64), &run(0x101, 1, 0, u32_max.clone())),
+                limit("time-range"),
+            ),
+            (
+                "trun count u32::MAX with per-sample fields",
+                raw_moof(0, 0, None, &run(0x101, u32::MAX, 0, u32_max.clone())),
+                corrupt("trun-exceeds-box"),
+            ),
+            (
+                "trun count u32::MAX over the sample budget",
+                raw_moof(0, 0, None, &run(0x1, u32::MAX, 0, Vec::new())),
+                limit("sample-count"),
+            ),
+            (
+                "explicit base u64::MAX - 1 + data offset i32::MAX",
+                raw_moof(0x1, u64::MAX - 1, None, &run(0x1, 1, i32::MAX, Vec::new())),
+                corrupt("trun-data-offset"),
+            ),
+            (
+                "explicit base u64::MAX + sample size u32::MAX",
+                raw_moof(0x1, u64::MAX, None, &run(0x201, 1, 0, u32_max.clone())),
+                corrupt("chunk-offset-overflow"),
+            ),
+            (
+                "data offset i32::MIN below the moof",
+                raw_moof(0, 0, None, &run(0x1, 1, i32::MIN, Vec::new())),
+                corrupt("trun-data-offset"),
+            ),
+            (
+                "moof size 4 (below its own header)",
+                [&4u32.to_be_bytes()[..], &b"moof"[..]].concat(),
+                corrupt("box-size"),
+            ),
+            (
+                "second moov",
+                head[at(&head, b"moov") - 4..].to_vec(),
+                corrupt("second-moov"),
+            ),
+        ] {
+            assert_eq!(
+                index_of(&with(tail), &limits).unwrap_err(),
+                expected,
+                "{name}"
+            );
+        }
+        // A moof whose size runs past the end is a cut recording, flagged and not an error, whether
+        // the size is 32 or 64 bits.
+        for tail in [
+            [&u32::MAX.to_be_bytes()[..], &b"moof"[..], &[0u8; 8][..]].concat(),
+            big_box(b"moof", u64::MAX, &[0; 8]),
+        ] {
+            let index = index_of(&with(tail), &limits).unwrap();
+            assert!(index.truncated_tail && index.fragment_offsets.is_empty());
+        }
+        // sidx: reference offsets and counts at their limits.
+        let two = [(0x7FFF_FFFF, 1, 0), (0x7FFF_FFFF, 1, 0)];
+        let anchor = (head.len() + raw_sidx(0, 2, &two).len()) as u64;
+        for (name, sidx, expected) in [
+            (
+                "first_offset u64::MAX",
+                raw_sidx(u64::MAX, 1, &[(100, 1, 0)]),
+                corrupt("sidx-offset"),
+            ),
+            (
+                "65535 references, none present",
+                raw_sidx(0, u16::MAX, &[]),
+                corrupt("sidx-exceeds-box"),
+            ),
+            (
+                "two 2 GiB references past u64::MAX",
+                raw_sidx(u64::MAX - anchor - 0x7FFF_FFFF - 5, 2, &two),
+                corrupt("sidx-offset"),
+            ),
+        ] {
+            assert_eq!(
+                index_of(&with(sidx), &limits).unwrap_err(),
+                expected,
+                "{name}"
+            );
+        }
+    });
+}
+
+#[test]
+fn fragments_aggregate_over_budget() {
+    bounded_case("fragments_aggregate_over_budget", || {
+        let limits = Limits::default();
+        // The sample budget is shared by every fragment: 40 + 40 fits 100, the third fragment does not.
+        let samples = Limits {
+            max_samples: 100,
+            ..Limits::default()
+        };
+        assert!(index_of(&fmp4_bytes(&frag_spec(2, 40)).bytes, &samples).is_ok());
+        assert_eq!(
+            index_of(&fmp4_bytes(&frag_spec(12, 40)).bytes, &samples).unwrap_err(),
+            limit("sample-count")
+        );
+        // The probe budget is shared too: one fragment's index bytes fit, six together do not.
+        let one = index_of(&fmp4_bytes(&frag_spec(1, 40)).bytes, &limits).unwrap();
+        let probe = Limits {
+            max_probe_bytes: one.bytes_read + 100,
+            ..Limits::default()
+        };
+        assert!(index_of(&fmp4_bytes(&frag_spec(1, 40)).bytes, &probe).is_ok());
+        assert_eq!(
+            index_of(&fmp4_bytes(&frag_spec(6, 40)).bytes, &probe).unwrap_err(),
+            limit("fragment-index-bytes")
+        );
+        // The top-level box budget (2^20): a file that ends exactly on it is complete; one more box is
+        // a typed limit, never a silently partial index.
+        let head = frag_head();
+        let free = bx(b"free", &[]);
+        let at_budget = [head.clone(), free.repeat(1 << 20)].concat();
+        assert!(index_of(&at_budget, &limits).is_ok());
+        let over_budget = [head, free.repeat((1 << 20) + 1)].concat();
+        assert_eq!(
+            index_of(&over_budget, &limits).unwrap_err(),
+            limit("fragment-box-count")
+        );
     });
 }

@@ -65,12 +65,13 @@ pub struct SourceIdentity {
 
 pub fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len().saturating_mul(2)), |mut s, b| {
+    bytes.iter().fold(
+        String::with_capacity(bytes.len().saturating_mul(2)),
+        |mut s, b| {
             let _ = write!(s, "{b:02x}");
             s
-        })
+        },
+    )
 }
 
 impl SourceIdentity {

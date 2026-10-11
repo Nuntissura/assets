@@ -8,6 +8,11 @@
 //! sample entry is a determinate `CodecUnavailable` naming the FourCC. Uncompressed PCM audio
 //! (`twos`/`sowt`/`in24`/`in32`/`fl32`/`fl64`/`raw `/`lpcm`) decodes to little-endian samples (`pcm`
 //! module); `tmcd` timecode tracks expose their raw fields (`timecode` module).
+//!
+//! Every size, offset, count, duration and index taken from the file uses checked arithmetic and a typed
+//! error (V4-01), here and in the `fragments` submodule; `tests/v4_hardening.rs` pushes box sizes,
+//! largesize boxes, sample counts, durations, offsets, edit lists and `ctts` to their 32/64-bit limits.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
 use crate::time::media_to_ticks;
@@ -196,21 +201,28 @@ pub struct MediaIndex {
 impl MediaIndex {
     /// Approximate resident bytes (cache accounting).
     pub fn approx_bytes(&self) -> usize {
-        self.tracks
-            .iter()
-            .map(|t| {
-                t.samples.len() * std::mem::size_of::<SampleEntry>()
-                    + t.presented.len() * std::mem::size_of::<PresentedSample>()
-                    + t.sync_points.len() * 4
-                    + t.pcm.as_ref().map_or(0, PcmStream::approx_bytes)
-            })
-            .sum::<usize>()
-            + self.fragment_offsets.len() * 8
-            + self
-                .segment_indexes
-                .iter()
-                .map(|s| s.entries.len() * std::mem::size_of::<SegmentIndexEntry>())
-                .sum::<usize>()
+        let part = |len: usize, each: usize| len.saturating_mul(each);
+        let tracks = self.tracks.iter().fold(0usize, |total, t| {
+            total
+                .saturating_add(part(t.samples.len(), std::mem::size_of::<SampleEntry>()))
+                .saturating_add(part(
+                    t.presented.len(),
+                    std::mem::size_of::<PresentedSample>(),
+                ))
+                .saturating_add(part(t.sync_points.len(), 4))
+                .saturating_add(t.pcm.as_ref().map_or(0, PcmStream::approx_bytes))
+        });
+        let segments = self.segment_indexes.iter().fold(0usize, |total, s| {
+            total.saturating_add(part(
+                s.entries.len(),
+                std::mem::size_of::<SegmentIndexEntry>(),
+            ))
+        });
+        // An estimate for cache accounting: a total past usize::MAX saturates (it is "too big"), it
+        // never wraps to a small number.
+        tracks
+            .saturating_add(part(self.fragment_offsets.len(), 8))
+            .saturating_add(segments)
     }
 
     pub fn track(&self, id: u32) -> Option<&TrackIndex> {
@@ -251,8 +263,11 @@ impl TrackIndex {
             .iter()
             .enumerate()
             .filter(|(_, s)| s.sync)
-            .map(|(i, _)| i as u32)
-            .collect();
+            .map(|(i, _)| u32::try_from(i))
+            .collect::<Result<_, _>>()
+            .map_err(|_| ReelError::LimitExceeded {
+                what: "sample-count",
+            })?;
         let all_sync = sync_points.len() == samples.len();
         let mut track = TrackIndex {
             track_id: parts.track_id,
@@ -332,15 +347,17 @@ impl TrackIndex {
             return Ok(target);
         }
         let k = self.sync_points.partition_point(|&s| s <= target);
-        if k == 0 {
+        let Some(last) = k.checked_sub(1) else {
             return Err(ReelError::Corrupt {
                 what: "no-sync-sample-before-target",
             });
-        }
-        let mut start = self.sync_points[k - 1];
+        };
+        let mut start = self.sync_points[last];
         // Open-GOP leading picture: displayed before its sync sample -> start one GOP earlier.
-        if self.samples[start as usize].pts > self.samples[target as usize].pts && k >= 2 {
-            start = self.sync_points[k - 2];
+        if self.samples[start as usize].pts > self.samples[target as usize].pts
+            && let Some(earlier) = last.checked_sub(1)
+        {
+            start = self.sync_points[earlier];
         }
         Ok(start)
     }
@@ -357,29 +374,37 @@ impl TrackIndex {
         };
         let r = i128::from(requested.value());
         let k = self.presented.partition_point(|p| i128::from(p.pts) <= r);
-        if k == 0 {
+        let Some(shown) = k.checked_sub(1) else {
             return Err(out_of_range());
-        }
-        let p = self.presented[k - 1];
-        if r >= i128::from(p.pts) + i128::from(p.duration) {
+        };
+        let p = self.presented[shown];
+        // i64 + u64 always fits i128; saturating keeps the lint's contract without a branch.
+        if r >= i128::from(p.pts).saturating_add(i128::from(p.duration)) {
             return Err(out_of_range());
         }
         let start = self.sync_for(p.sample)?;
         let start_pts = self
             .pts_in_edit(p.edit, self.samples[start as usize].pts)?
             .0;
+        let samples_to_decode = p
+            .sample
+            .checked_sub(start)
+            .and_then(|span| span.checked_add(1))
+            .ok_or(ReelError::Corrupt {
+                what: "decode-start-after-target",
+            })?;
         Ok(SeekResult {
             requested,
             target: SeekPoint {
                 sample: p.sample,
                 pts: p.pts,
             },
-            presented_index: k - 1,
+            presented_index: shown,
             decode_from: SeekPoint {
                 sample: start,
                 pts: start_pts,
             },
-            samples_to_decode: p.sample.saturating_sub(start) + 1,
+            samples_to_decode,
             trim_start: p.trim_start,
             disposition: if r == i128::from(p.pts) && p.trim_start == 0 {
                 SeekDisposition::Exact
@@ -434,7 +459,7 @@ impl<'a> Iterator for Boxes<'a> {
         }
         let size32 = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]);
         let kind = [rest[4], rest[5], rest[6], rest[7]];
-        let (mut header, size) = match size32 {
+        let (header, size) = match size32 {
             0 => (8usize, rest.len() as u64),
             1 => {
                 if rest.len() < 16 {
@@ -446,14 +471,25 @@ impl<'a> Iterator for Boxes<'a> {
             }
             n => (8usize, u64::from(n)),
         };
-        if kind == *b"uuid" {
-            header += 16;
-        }
-        if size < header as u64 || size > rest.len() as u64 {
+        // `uuid` boxes carry a 16-byte extended type after the header. A size that does not fit the
+        // remaining bytes (a 64-bit largesize can be anything) is a corrupt box, never a wrapped slice.
+        let layout = (if kind == *b"uuid" {
+            header.checked_add(16)
+        } else {
+            Some(header)
+        })
+        .and_then(|header| {
+            let size = usize::try_from(size).ok()?;
+            (size >= header && size <= rest.len()).then_some((header, size))
+        });
+        let Some((header, size)) = layout else {
             return fail(self, "box-size");
-        }
-        let payload = &rest[header..size as usize];
-        self.pos += size as usize;
+        };
+        let Some(next) = self.pos.checked_add(size) else {
+            return fail(self, "box-size");
+        };
+        let payload = &rest[header..size];
+        self.pos = next;
         Some(Ok((kind, payload)))
     }
 }
@@ -510,7 +546,7 @@ impl<'a> Cur<'a> {
         Ok(u64::from_be_bytes(a))
     }
     fn remaining(&self) -> usize {
-        self.data.len() - self.pos
+        self.data.len().saturating_sub(self.pos)
     }
 }
 
@@ -634,6 +670,20 @@ struct SampleDescription {
 /// Largest codec configuration record kept (`av1C` carries one sequence header, tens of bytes).
 const MAX_CODEC_CONFIG: usize = 64 * 1024;
 
+fn be16(bytes: &[u8], at: usize) -> Option<u16> {
+    bytes
+        .get(at..)?
+        .first_chunk::<2>()
+        .map(|b| u16::from_be_bytes(*b))
+}
+
+fn be32(bytes: &[u8], at: usize) -> Option<u32> {
+    bytes
+        .get(at..)?
+        .first_chunk::<4>()
+        .map(|b| u32::from_be_bytes(*b))
+}
+
 /// Sample-entry child boxes (`colr`, `pasp`, `av1C`). A malformed child ends the scan: metadata is
 /// advisory and must never fail an otherwise indexable track.
 fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>, Vec<u8>) {
@@ -643,33 +693,35 @@ fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>, Vec<u8>)
         match &kind {
             b"colr" if payload.len() >= 4 => match &payload[..4] {
                 b"nclx" | b"nclc" if payload.len() >= 10 => {
-                    let word = |at: usize| u16::from_be_bytes([payload[at], payload[at + 1]]);
+                    let (Some(primaries), Some(transfer), Some(matrix)) =
+                        (be16(payload, 4), be16(payload, 6), be16(payload, 8))
+                    else {
+                        break;
+                    };
                     color = ColorTag::Nclx {
-                        primaries: word(4),
-                        transfer: word(6),
-                        matrix: word(8),
+                        primaries,
+                        transfer,
+                        matrix,
                         full_range: (&payload[..4] == b"nclx" && payload.len() >= 11)
                             .then(|| payload[10] & 0x80 != 0),
                     };
                 }
                 b"prof" | b"rICC" | b"ricc" => {
-                    color = ColorTag::IccProfile {
-                        bytes: (payload.len() - 4) as u32,
-                    };
+                    // A profile too large for the u32 size field cannot be a sample-entry child:
+                    // left untagged (advisory metadata), never a truncated size.
+                    if let Ok(bytes) = u32::try_from(payload.len().saturating_sub(4)) {
+                        color = ColorTag::IccProfile { bytes };
+                    }
                 }
                 _ => {}
             },
             b"pasp" if payload.len() >= 8 => {
-                let word = |at: usize| {
-                    u32::from_be_bytes([
-                        payload[at],
-                        payload[at + 1],
-                        payload[at + 2],
-                        payload[at + 3],
-                    ])
+                let (Some(horizontal), Some(vertical)) = (be32(payload, 0), be32(payload, 4))
+                else {
+                    break;
                 };
-                if word(0) > 0 && word(4) > 0 {
-                    aspect = Some((word(0), word(4)));
+                if horizontal > 0 && vertical > 0 {
+                    aspect = Some((horizontal, vertical));
                 }
             }
             b"av1C" if payload.len() <= MAX_CODEC_CONFIG => config = payload.to_vec(),
@@ -787,6 +839,23 @@ pub(crate) struct Budget {
     pub(crate) samples_left: usize,
 }
 
+/// Samples the chunk tables can address: for each `stsc` run (1-based `first_chunk`, samples per
+/// chunk) the chunks it covers (up to the next run or the last chunk) times its samples per chunk.
+/// Saturating on purpose: this is a lower bound compared against a sample count, so a saturated total
+/// still answers "enough".
+fn addressable_samples(stsc: &[(u32, u32)], chunks: usize) -> u64 {
+    let end_of_chunks = u64::try_from(chunks).map_or(u64::MAX, |c| c.saturating_add(1));
+    let mut total = 0u64;
+    for (i, (first, per_chunk)) in stsc.iter().enumerate() {
+        let run_end = stsc
+            .get(i.saturating_add(1))
+            .map_or(end_of_chunks, |next| u64::from(next.0).min(end_of_chunks));
+        let run = run_end.saturating_sub(u64::from(*first));
+        total = total.saturating_add(run.saturating_mul(u64::from(*per_chunk)));
+    }
+    total
+}
+
 /// Expand the sample tables into per-sample entries (decode order).
 #[allow(clippy::too_many_arguments)]
 fn expand_samples(
@@ -810,8 +879,13 @@ fn expand_samples(
         if index == n {
             break;
         }
-        while stsc_i + 1 < stsc.len() && (stsc[stsc_i + 1].0 as usize) <= chunk + 1 {
-            stsc_i += 1;
+        // Advance to the last stsc run that starts at or before this (1-based) chunk.
+        while let Some(next_run) = stsc.get(stsc_i.saturating_add(1)) {
+            if usize::try_from(next_run.0).is_ok_and(|first| first <= chunk.saturating_add(1)) {
+                stsc_i = stsc_i.saturating_add(1);
+            } else {
+                break;
+            }
         }
         let per_chunk = stsc.get(stsc_i).map_or(0, |e| e.1);
         let mut offset = *base;
@@ -823,26 +897,26 @@ fn expand_samples(
                 check_cancel(cancel)?;
             }
             while stts_left == 0 {
-                stts_i += 1;
+                stts_i = stts_i.saturating_add(1);
                 stts_left = stts.get(stts_i).ok_or(missing("stts-short"))?.0;
             }
             let duration = stts[stts_i].1;
-            stts_left -= 1;
+            stts_left = stts_left.checked_sub(1).ok_or(missing("stts-short"))?;
             let offset_ctts = if ctts.is_empty() {
                 0
             } else {
                 while ctts_left == 0 {
-                    ctts_i += 1;
+                    ctts_i = ctts_i.saturating_add(1);
                     ctts_left = ctts.get(ctts_i).ok_or(missing("ctts-short"))?.0;
                 }
-                ctts_left -= 1;
+                ctts_left = ctts_left.checked_sub(1).ok_or(missing("ctts-short"))?;
                 ctts[ctts_i].1
             };
             let size = sizes[index];
             let sync = if all_sync {
                 true
-            } else if sync_points.get(sync_i) == Some(&(index as u32)) {
-                sync_i += 1;
+            } else if u32::try_from(index).is_ok_and(|i| sync_points.get(sync_i) == Some(&i)) {
+                sync_i = sync_i.saturating_add(1);
                 true
             } else {
                 false
@@ -863,7 +937,7 @@ fn expand_samples(
             offset = offset
                 .checked_add(u64::from(size))
                 .ok_or(missing("chunk-offset-overflow"))?;
-            index += 1;
+            index = index.saturating_add(1);
         }
     }
     if index != n {
@@ -935,7 +1009,10 @@ fn track_from_tables(
     let mut total = 0u64;
     for _ in 0..entries {
         let (count, delta) = (t.u32()?, t.u32()?);
-        total += u64::from(count);
+        // A running total past u64 can never equal a 32-bit sample count: the same mismatch.
+        total = total
+            .checked_add(u64::from(count))
+            .ok_or(missing("stts-count-mismatch"))?;
         stts.push((count, delta));
     }
     if total != n as u64 {
@@ -949,7 +1026,9 @@ fn track_from_tables(
         let mut total = 0u64;
         for _ in 0..entries {
             let (count, offset) = (t.u32()?, t.i32()?);
-            total += u64::from(count);
+            total = total
+                .checked_add(u64::from(count))
+                .ok_or(missing("ctts-count-mismatch"))?;
             ctts.push((count, offset));
         }
         if total != n as u64 {
@@ -965,11 +1044,12 @@ fn track_from_tables(
         let mut prev = 0u32;
         for _ in 0..entries {
             let number = t.u32()?;
-            if number == 0 || number <= prev || number as usize > n {
+            let zero_based = number.checked_sub(1).ok_or(missing("stss-order"))?;
+            if number <= prev || number as usize > n {
                 return Err(missing("stss-order"));
             }
             prev = number;
-            sync_points.push(number - 1);
+            sync_points.push(zero_based);
         }
     }
 
@@ -1031,7 +1111,13 @@ fn track_from_tables(
                 what: "sample-count",
             });
         }
-        budget.samples_left -= n;
+        budget.samples_left =
+            budget
+                .samples_left
+                .checked_sub(n)
+                .ok_or(ReelError::LimitExceeded {
+                    what: "sample-count",
+                })?;
         if fixed_size == 0 {
             let need = n
                 .checked_mul(4)
@@ -1039,6 +1125,13 @@ fn track_from_tables(
             if need > z.remaining() {
                 return Err(missing("stsz-exceeds-box"));
             }
+        }
+        // A constant-size `stsz` carries no per-sample bytes, so the sample count alone could make a few
+        // hundred bytes of header reserve millions of entries. The chunk tables must be able to
+        // address `n` samples before anything is sized from it (expansion would end in `stsc-short`
+        // anyway; this is the same refusal, made before the allocation).
+        if n > 0 && addressable_samples(&stsc, chunk_offsets.len()) < n as u64 {
+            return Err(missing("stsc-short"));
         }
         let mut sizes = Vec::with_capacity(n);
         for _ in 0..n {
@@ -1188,8 +1281,10 @@ fn build_presentation(
     if track.edits.len() > limits.max_edit_entries {
         return Err(ReelError::LimitExceeded { what: "edit-count" });
     }
-    let n = track.samples.len();
-    let mut order: Vec<u32> = (0..n as u32).collect();
+    let n = u32::try_from(track.samples.len()).map_err(|_| ReelError::LimitExceeded {
+        what: "sample-count",
+    })?;
+    let mut order: Vec<u32> = (0..n).collect();
     order.sort_by_key(|&i| track.samples[i as usize].pts);
     let mut presented = Vec::new();
     for (e, edit) in track.edits.clone().iter().enumerate() {
@@ -1200,13 +1295,20 @@ fn build_presentation(
         let first = order.partition_point(|&i| track.samples[i as usize].pts < media_time);
         // An edit that starts inside a sample still presents it: decoding begins at the containing
         // sample, its presented time is clamped to the edit start and the lead-in is reported.
-        if first > 0 {
-            let i = order[first - 1];
+        if let Some(containing) = first.checked_sub(1) {
+            let i = order[containing];
             let sample = track.samples[i as usize];
             let end = sample.pts.saturating_add(i64::from(sample.duration));
             if end > media_time {
-                let remain = media_to_ticks(end - media_time, track.media_timescale)?;
-                let trim = media_to_ticks(media_time - sample.pts, track.media_timescale)?;
+                let tick_range = || ReelError::LimitExceeded { what: "tick-range" };
+                let remain = media_to_ticks(
+                    end.checked_sub(media_time).ok_or_else(tick_range)?,
+                    track.media_timescale,
+                )?;
+                let trim = media_to_ticks(
+                    media_time.checked_sub(sample.pts).ok_or_else(tick_range)?,
+                    track.media_timescale,
+                )?;
                 track.ticks_exact &= remain.exact && trim.exact;
                 presented.push(PresentedSample {
                     sample: i,
@@ -1269,15 +1371,15 @@ fn read_moov(
         src.seek(SeekFrom::Start(pos))?;
         let mut hdr = [0u8; 8];
         read_exact_structural(src, &mut hdr, "box-header")?;
-        probed += 8;
+        probed = probed.saturating_add(8);
         let size32 = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
         let kind = [hdr[4], hdr[5], hdr[6], hdr[7]];
         let (header, size) = match size32 {
-            0 => (8u64, file_len - pos),
+            0 => (8u64, file_len.saturating_sub(pos)),
             1 => {
                 let mut big = [0u8; 8];
                 read_exact_structural(src, &mut big, "box-largesize")?;
-                probed += 8;
+                probed = probed.saturating_add(8);
                 (16, u64::from_be_bytes(big))
             }
             n => (8, u64::from(n)),
@@ -1291,10 +1393,10 @@ fn read_moov(
                     what: "moof-before-moov",
                 });
             }
-            b"ftyp" if size >= header + 4 => {
+            b"ftyp" if size >= header.saturating_add(4) => {
                 let mut b = [0u8; 4];
                 read_exact_structural(src, &mut b, "ftyp")?;
-                probed += 4;
+                probed = probed.saturating_add(4);
                 brand = b;
             }
             b"moov" => {
@@ -1303,18 +1405,25 @@ fn read_moov(
                         what: "moov-exceeds-file",
                     });
                 }
-                let payload = size - header;
+                // `pos + size <= file_len` was just checked and `size >= header`, so none of these
+                // can fail; the checked forms keep the proof local.
+                let payload = size.saturating_sub(header);
                 if payload > limits.max_probe_bytes.saturating_sub(probed) {
                     return Err(ReelError::LimitExceeded { what: "moov-bytes" });
                 }
-                src.seek(SeekFrom::Start(pos + header))?;
-                let mut buf = vec![0u8; payload as usize];
+                let offset_error = ReelError::LimitExceeded { what: "moov-bytes" };
+                let payload_at = pos
+                    .checked_add(header)
+                    .ok_or_else(|| offset_error.clone())?;
+                src.seek(SeekFrom::Start(payload_at))?;
+                let mut buf =
+                    vec![0u8; usize::try_from(payload).map_err(|_| offset_error.clone())?];
                 read_exact_structural(src, &mut buf, "moov-truncated")?;
                 return Ok(MoovRead {
                     payload: buf,
                     brand,
-                    probed: probed + payload,
-                    next_pos: pos + size,
+                    probed: probed.saturating_add(payload),
+                    next_pos: pos.checked_add(size).ok_or(offset_error)?,
                 });
             }
             _ => {}
@@ -1425,6 +1534,16 @@ pub fn read_sample(
             what: "sample-bytes",
         });
     }
+    // The sample table is untrusted: a sample that does not lie inside the source is truncated media,
+    // found out before a buffer is sized from its declared length.
+    let len = src.seek(SeekFrom::End(0))?;
+    if sample
+        .offset
+        .checked_add(u64::from(sample.size))
+        .is_none_or(|end| end > len)
+    {
+        return Err(ReelError::Truncated { delivered });
+    }
     buf.clear();
     buf.resize(size, 0);
     src.seek(SeekFrom::Start(sample.offset))?;
@@ -1500,7 +1619,9 @@ impl MediaProvider for IsobmffProvider {
             ticks_per_unit,
             units,
             channels: track.audio.map_or(0, |a| a.channels),
-            tracks: index.tracks.len() as u32,
+            tracks: u32::try_from(index.tracks.len()).map_err(|_| ReelError::LimitExceeded {
+                what: "track-count",
+            })?,
         })
     }
 
@@ -1536,7 +1657,10 @@ impl MediaProvider for IsobmffProvider {
         let file_len = verify_grant(src, &req.grant, req.expected_revision)?;
         let index = build_index(src, file_len, limits, cancel)?;
         let mut receipt = self.deliver(src, &index, req, limits, cancel, sink, route)?;
-        receipt.bytes_read += index.bytes_read;
+        receipt.bytes_read = receipt
+            .bytes_read
+            .checked_add(index.bytes_read)
+            .ok_or(ReelError::LimitExceeded { what: "bytes-read" })?;
         Ok(receipt)
     }
 }
@@ -1660,7 +1784,11 @@ pub(crate) fn deliver_packets(
     sink: &mut dyn ChunkSink,
 ) -> Result<SegmentReceipt, ReelError> {
     let first = track.seek(req.start_pts)?;
-    let last_presented = usize::try_from(req.count - 1)
+    let last_presented = req
+        .count
+        .checked_sub(1)
+        .ok_or(ReelError::Unsupported { what: "zero-count" })?;
+    let last_presented = usize::try_from(last_presented)
         .ok()
         .and_then(|c| first.presented_index.checked_add(c))
         .filter(|i| *i < track.presented.len())
@@ -1679,10 +1807,19 @@ pub(crate) fn deliver_packets(
         hi = hi.max(p.sample);
     }
     let from = track.sync_for(lo)?.min(track.sync_for(wanted[0].sample)?);
-    let span = (hi - from) as usize + 1;
+    // `from <= lo <= hi` by construction (sync_for never moves forward); a violation is a corrupt index.
+    let order_error = || ReelError::Corrupt {
+        what: "sample-order",
+    };
+    let span = hi
+        .checked_sub(from)
+        .and_then(|d| usize::try_from(d).ok())
+        .and_then(|d| d.checked_add(1))
+        .ok_or_else(order_error)?;
     let mut slots: Vec<Option<(i64, u64, u64)>> = vec![None; span];
     for p in wanted {
-        slots[(p.sample - from) as usize] = Some((p.pts, p.duration, p.trim_start));
+        let slot = p.sample.checked_sub(from).ok_or_else(order_error)?;
+        slots[slot as usize] = Some((p.pts, p.duration, p.trim_start));
     }
     let last = *wanted.last().expect("count >= 1");
     let start_actual = to_ticks(wanted[0].pts)?;
@@ -1691,7 +1828,13 @@ pub(crate) fn deliver_packets(
             .checked_add(i64::try_from(last.duration).unwrap_or(i64::MAX))
             .ok_or(ReelError::LimitExceeded { what: "tick-range" })?,
     )?;
-    let length = end_actual.value() - start_actual.value();
+    let length =
+        end_actual
+            .value()
+            .checked_sub(start_actual.value())
+            .ok_or(ReelError::Corrupt {
+                what: "presentation-order",
+            })?;
     let (mut chunks, mut payload, mut delivered) = (0u32, 0u64, 0u64);
     let mut buf = Vec::new();
     let mut ticks_exact = track.ticks_exact;
@@ -1719,16 +1862,27 @@ pub(crate) fn deliver_packets(
             trim_start,
             bytes: &buf,
         })?;
-        chunks += 1;
-        payload += buf.len() as u64;
+        let counter_error = || ReelError::LimitExceeded {
+            what: "chunk-count",
+        };
+        chunks = chunks.checked_add(1).ok_or_else(counter_error)?;
+        payload = u64::try_from(buf.len())
+            .ok()
+            .and_then(|len| payload.checked_add(len))
+            .ok_or(ReelError::LimitExceeded { what: "bytes-read" })?;
         if !preroll {
-            delivered += 1;
+            delivered = delivered.checked_add(1).ok_or_else(counter_error)?;
         }
     }
     Ok(SegmentReceipt {
         requested: Span {
             start_pts: req.start_pts,
-            end_pts: Ticks::new(req.start_pts.value().saturating_add(length)),
+            end_pts: Ticks::new(
+                req.start_pts
+                    .value()
+                    .checked_add(length)
+                    .ok_or(ReelError::LimitExceeded { what: "tick-range" })?,
+            ),
             units: req.count,
         },
         actual: Span {

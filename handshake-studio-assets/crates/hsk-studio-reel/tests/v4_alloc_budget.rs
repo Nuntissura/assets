@@ -5,6 +5,7 @@
 //! The allocator records the LARGEST single request made by the current thread, so a refusal that merely
 //! happens to return the same error as a huge zeroed allocation still fails here.
 use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_reel::fixtures::*;
 use hsk_studio_reel::*;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -107,6 +108,149 @@ fn y4m_frame_buffer_is_bounded_by_the_source() {
         assert!(
             largest < (1 << 20),
             "largest single allocation was {largest} bytes for a source of a few dozen bytes"
+        );
+    });
+}
+
+// ----- ISOBMFF --------------------------------------------------------------------------------------
+
+fn at(bytes: &[u8], tag: &[u8; 4]) -> usize {
+    bytes
+        .windows(4)
+        .position(|w| w == tag)
+        .unwrap_or_else(|| panic!("no {tag:?} box in the fixture"))
+}
+
+fn put32(bytes: &mut [u8], tag: &[u8; 4], rel: usize, value: u32) {
+    let p = at(bytes, tag) + rel;
+    bytes[p..p + 4].copy_from_slice(&value.to_be_bytes());
+}
+
+fn packet_request(bytes: &[u8]) -> SegmentRequest {
+    SegmentRequest {
+        codec: "isobmff".into(),
+        start_pts: Ticks::new(0),
+        count: 1,
+        track: None,
+        output: OutputMode::Packets,
+        prefer: SourcePreference::Original,
+        purpose: Purpose::Preview,
+        grant: Grant {
+            content_id: ContentId::parse("v4-alloc-isobmff").unwrap(),
+            revision: 1,
+            expected_len: bytes.len() as u64,
+        },
+        expected_revision: 1,
+    }
+}
+
+/// A few hundred bytes of header declare 4,000,000 samples through a constant-size `stsz` (no table
+/// bytes) while the chunk tables can address four. The default sample budget admits the count, so the
+/// refusal must come from the chunk tables, before 176 MB of per-sample storage is reserved.
+#[test]
+fn isobmff_sample_storage_is_bounded_by_the_chunk_tables() {
+    bounded_case(
+        "isobmff_sample_storage_is_bounded_by_the_chunk_tables",
+        || {
+            let audio = PcmMovSpec {
+                fourcc: *b"twos",
+                kind: PcmKind::S16,
+                big_endian: true,
+                lpcm_v2: false,
+                non_interleaved: false,
+                channels: 2,
+                rate: 48000,
+                frames: 300,
+                frames_per_chunk: 128,
+                movie_timescale: 48000,
+                edits: None,
+                moov_first: true,
+                sound_version: None,
+            };
+            let mut bytes = mov_av_bytes(4, &audio);
+            put32(&mut bytes, b"stts", 12, 4_000_000);
+            put32(&mut bytes, b"stsz", 12, 4_000_000);
+            let limits = Limits::default();
+            assert!(
+                limits.max_samples >= 4_000_000,
+                "the count passes the budget"
+            );
+            LARGEST.with(|largest| largest.set(0));
+            let result = build_index(
+                &mut Cursor::new(bytes.clone()),
+                bytes.len() as u64,
+                &limits,
+                &CancellationToken::default(),
+            );
+            let largest = LARGEST.with(Cell::get);
+            assert_eq!(
+                result.unwrap_err(),
+                ReelError::Corrupt { what: "stsc-short" }
+            );
+            assert!(
+                largest < (1 << 20),
+                "largest single allocation was {largest} bytes for a {}-byte file",
+                bytes.len()
+            );
+        },
+    );
+}
+
+/// A sample table that declares a 4 GiB sample inside a few hundred bytes. The caller's limits admit
+/// the size; the source does not hold it, so the read is `Truncated` without a 4 GiB buffer.
+#[test]
+fn isobmff_sample_buffer_is_bounded_by_the_source() {
+    bounded_case("isobmff_sample_buffer_is_bounded_by_the_source", || {
+        let samples = (0..4u32)
+            .map(|k| Mp4Sample {
+                duration: 20,
+                cts_offset: 0,
+                size: 16,
+                sync: k == 0,
+            })
+            .collect();
+        let mut bytes = mp4_bytes(&Mp4Spec {
+            movie_timescale: 600,
+            media_timescale: 600,
+            codec: *b"avc1",
+            width: 64,
+            height: 36,
+            samples,
+            edits: None,
+            samples_per_chunk: 2,
+            co64: false,
+            ctts_version: 0,
+            moov_first: true,
+            colr_nclx: None,
+            pasp: None,
+        });
+        put32(&mut bytes, b"stsz", 16, u32::MAX); // first table entry
+        let limits = Limits {
+            max_chunk_bytes: usize::MAX,
+            ..Limits::default()
+        };
+        let index = build_index(
+            &mut Cursor::new(bytes.clone()),
+            bytes.len() as u64,
+            &limits,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        LARGEST.with(|largest| largest.set(0));
+        let result = IsobmffProvider.decode_packets(
+            &mut Cursor::new(bytes.clone()),
+            &index,
+            &packet_request(&bytes),
+            &limits,
+            &CancellationToken::default(),
+            &mut Discard,
+        );
+        let largest = LARGEST.with(Cell::get);
+        assert_eq!(result.unwrap_err(), ReelError::Truncated { delivered: 0 });
+        assert!(
+            largest < (1 << 20),
+            "largest single allocation was {largest} bytes for a {}-byte file",
+            bytes.len()
         );
     });
 }

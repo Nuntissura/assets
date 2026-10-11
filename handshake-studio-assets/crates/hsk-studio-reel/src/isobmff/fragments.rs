@@ -7,6 +7,9 @@
 //! 0x10000 duration-is-empty, 0x20000 default-base-is-moof; trun flags 0x1 data-offset, 0x4
 //! first-sample-flags, 0x100 duration, 0x200 size, 0x400 flags, 0x800 composition offset; sample flag
 //! bit 16 (0x10000) = non-sync.
+//!
+//! Offsets, byte budgets, counts and times use checked arithmetic and a typed error (V4-01).
+#![deny(clippy::arithmetic_side_effects)]
 use super::*;
 
 const MAX_FRAGMENT_BOXES: u32 = 1 << 20;
@@ -97,16 +100,18 @@ pub(super) fn scan(
         segment_indexes: Vec::new(),
         truncated_tail: false,
     };
+    let mut ended = false;
     for _ in 0..MAX_FRAGMENT_BOXES {
         check_cancel(cancel)?;
         let remaining = file_len.saturating_sub(pos);
         if remaining < 8 {
+            ended = true;
             break;
         }
         src.seek(SeekFrom::Start(pos))?;
         let mut hdr = [0u8; 8];
         read_exact_structural(src, &mut hdr, "box-header")?;
-        *bytes_read += 8;
+        *bytes_read = bytes_read.saturating_add(8);
         let size32 = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
         let kind = [hdr[4], hdr[5], hdr[6], hdr[7]];
         let (header, size) = match size32 {
@@ -114,7 +119,7 @@ pub(super) fn scan(
             1 => {
                 let mut big = [0u8; 8];
                 read_exact_structural(src, &mut big, "box-largesize")?;
-                *bytes_read += 8;
+                *bytes_read = bytes_read.saturating_add(8);
                 (16, u64::from_be_bytes(big))
             }
             n => (8, u64::from(n)),
@@ -127,23 +132,29 @@ pub(super) fn scan(
             b"moof" | b"sidx" => {
                 if truncated {
                     result.truncated_tail = true;
+                    ended = true;
                     break;
                 }
-                let payload_len = size - header;
+                // Not truncated: `pos + size <= file_len` and `size >= header`, so these cannot fail;
+                // the checked forms keep the proof local.
+                let budget_error = || ReelError::LimitExceeded {
+                    what: "fragment-index-bytes",
+                };
+                let payload_len = size.saturating_sub(header);
                 if payload_len > limits.max_probe_bytes.saturating_sub(*bytes_read) {
-                    return Err(ReelError::LimitExceeded {
-                        what: "fragment-index-bytes",
-                    });
+                    return Err(budget_error());
                 }
-                src.seek(SeekFrom::Start(pos + header))?;
-                let mut buf = vec![0u8; payload_len as usize];
+                let payload_at = pos.checked_add(header).ok_or_else(budget_error)?;
+                let box_end = pos.checked_add(size).ok_or_else(budget_error)?;
+                src.seek(SeekFrom::Start(payload_at))?;
+                let mut buf = vec![0u8; usize::try_from(payload_len).map_err(|_| budget_error())?];
                 read_exact_structural(src, &mut buf, "fragment-truncated")?;
-                *bytes_read += payload_len;
+                *bytes_read = bytes_read.saturating_add(payload_len);
                 if &kind == b"moof" {
                     parse_moof(&buf, pos, tracks, &mut state, trex, budget)?;
                     result.fragment_offsets.push(pos);
                 } else {
-                    result.segment_indexes.push(parse_sidx(&buf, pos + size)?);
+                    result.segment_indexes.push(parse_sidx(&buf, box_end)?);
                 }
             }
             b"moov" => {
@@ -154,14 +165,25 @@ pub(super) fn scan(
             _ => {
                 if truncated {
                     result.truncated_tail = true;
+                    ended = true;
                     break;
                 }
             }
         }
         pos = match pos.checked_add(size) {
             Some(next) => next,
-            None => break,
+            None => {
+                ended = true;
+                break;
+            }
         };
+    }
+    // The box budget ran out with bytes left to scan: a typed limit, never a silently partial index
+    // that looks complete.
+    if !ended && file_len.saturating_sub(pos) >= 8 {
+        return Err(ReelError::LimitExceeded {
+            what: "fragment-box-count",
+        });
     }
     for (track, st) in tracks.iter_mut().zip(&state) {
         if st.appended {
@@ -170,8 +192,11 @@ pub(super) fn scan(
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| s.sync)
-                .map(|(i, _)| i as u32)
-                .collect();
+                .map(|(i, _)| u32::try_from(i))
+                .collect::<Result<_, _>>()
+                .map_err(|_| ReelError::LimitExceeded {
+                    what: "sample-count",
+                })?;
             track.all_sync = track.sync_points.len() == track.samples.len();
             if track.all_sync {
                 track.sync_points.clear();
@@ -292,10 +317,12 @@ fn parse_traf(
         } else {
             None
         };
-        let per_sample = 4 * [0x100u32, 0x200, 0x400, 0x800]
+        // At most four 4-byte fields per sample.
+        let per_sample = [0x100u32, 0x200, 0x400, 0x800]
             .iter()
             .filter(|bit| tflags & **bit != 0)
-            .count();
+            .count()
+            .saturating_mul(4);
         if per_sample > 0
             && count
                 .checked_mul(per_sample)
@@ -308,7 +335,13 @@ fn parse_traf(
                 what: "sample-count",
             });
         }
-        budget.samples_left -= count;
+        budget.samples_left =
+            budget
+                .samples_left
+                .checked_sub(count)
+                .ok_or(ReelError::LimitExceeded {
+                    what: "sample-count",
+                })?;
         let mut offset = match data_offset {
             Some(delta) => base
                 .checked_add_signed(i64::from(delta))

@@ -63,9 +63,9 @@ fn le32(b: &[u8], at: usize) -> Result<u32, ReelError> {
 
 /// `offset + by` for a position in the file: a sum that does not fit u64 is a limit, never a wrap.
 fn advance(offset: u64, by: u64) -> Result<u64, ReelError> {
-    offset.checked_add(by).ok_or(ReelError::LimitExceeded {
-        what: "wav-offset",
-    })
+    offset
+        .checked_add(by)
+        .ok_or(ReelError::LimitExceeded { what: "wav-offset" })
 }
 
 fn parse_wav(
@@ -197,9 +197,8 @@ fn parse_wav(
                         what: "wav-chunk-exceeds-file",
                     });
                 }
-                let relative = i64::try_from(skip).map_err(|_| ReelError::LimitExceeded {
-                    what: "wav-offset",
-                })?;
+                let relative = i64::try_from(skip)
+                    .map_err(|_| ReelError::LimitExceeded { what: "wav-offset" })?;
                 src.seek(SeekFrom::Current(relative))?;
                 read = advance(read, skip)?;
             }
@@ -367,9 +366,7 @@ impl MediaProvider for WavProvider {
             payload = u64::try_from(bytes)
                 .ok()
                 .and_then(|b| payload.checked_add(b))
-                .ok_or(ReelError::LimitExceeded {
-                    what: "bytes-read",
-                })?;
+                .ok_or(ReelError::LimitExceeded { what: "bytes-read" })?;
         }
         let bytes_read = advance(info.header_bytes, payload)?;
         let delivered = deliver_end.saturating_sub(start);
@@ -446,11 +443,12 @@ impl MediaProvider for WavProvider {
                 what: "wav-encode-format",
             });
         }
-        let block = u32::from(channels)
-            .checked_mul(u32::from(bits / 8))
-            .ok_or(ReelError::Unsupported {
-                what: "wav-encode-format",
-            })?;
+        let block =
+            u32::from(channels)
+                .checked_mul(u32::from(bits / 8))
+                .ok_or(ReelError::Unsupported {
+                    what: "wav-encode-format",
+                })?;
         let data_bytes = spec
             .total_units
             .checked_mul(u64::from(block))
@@ -489,9 +487,10 @@ impl MediaProvider for WavProvider {
         header.extend_from_slice(b"data");
         header.extend_from_slice(&data_size.to_le_bytes());
         out.write_all(&header)?;
-        let mut bytes_written = u64::try_from(header.len()).map_err(|_| ReelError::LimitExceeded {
-            what: "bytes-written",
-        })?;
+        let mut bytes_written =
+            u64::try_from(header.len()).map_err(|_| ReelError::LimitExceeded {
+                what: "bytes-written",
+            })?;
 
         let mut buf = Vec::new();
         let mut written = 0u64;

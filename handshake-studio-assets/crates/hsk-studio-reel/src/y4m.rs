@@ -314,9 +314,10 @@ impl MediaProvider for Y4mProvider {
         // The most the source can still hold at the seek position: a frame buffer is allocated only
         // when one whole record fits there, whatever the header (and a generous `Limits`) declare.
         let available = file_len.saturating_sub(first_byte);
-        let frame_len = usize::try_from(info.frame_bytes).map_err(|_| ReelError::LimitExceeded {
-            what: "frame-bytes",
-        })?;
+        let frame_len =
+            usize::try_from(info.frame_bytes).map_err(|_| ReelError::LimitExceeded {
+                what: "frame-bytes",
+            })?;
 
         let mut buf: Vec<u8> = Vec::new();
         // One counter drives the loop, the chunk index and the receipt, so they cannot disagree; the
@@ -470,9 +471,10 @@ impl MediaProvider for Y4mProvider {
             }
         );
         out.write_all(header.as_bytes())?;
-        let mut bytes_written = u64::try_from(header.len()).map_err(|_| ReelError::LimitExceeded {
-            what: "bytes-written",
-        })?;
+        let mut bytes_written =
+            u64::try_from(header.len()).map_err(|_| ReelError::LimitExceeded {
+                what: "bytes-written",
+            })?;
         let (mut buf, mut written, mut canceled) = (Vec::new(), 0u64, false);
         loop {
             if check_cancel(cancel).is_err() {
