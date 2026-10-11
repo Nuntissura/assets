@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 10
+revision: 11
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -3542,7 +3542,8 @@ decisions:
   decision: 'Adopt three logical submodules: portable core behavior, optional replaceable GUI adapters and host-content
     integration contracts/adapters; organize them as small cohesive Rust modules/packages with independently selectable
     backend integrations, explicit dependency direction and host-owned content engines, retaining separate platform,
-    content, rendering and persistence boundaries. No fixed overall crate count is prescribed; Core and optional bounded JSON dependencies are selected for the next packet above, while further adapters remain separately selectable.'
+    content, rendering and persistence boundaries. No fixed overall crate count is prescribed; Core and the optional
+    bounded JSON package implement the verified WP009 scope above, while further adapters remain separately selectable.'
   rationale: Preserve reusable desktop/web behavior and keep expensive browser/rendering integrations independently
     selectable.
   research_source_refs:

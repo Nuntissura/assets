@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-generation: 12
+generation: 13
 phase: active
 owner: coder_02
 changed_files:
@@ -44,6 +44,12 @@ changed_files:
 - repo-governance/specification/current/spec-modules/master-spec.md
 - repo-governance/specification/current/spec-modules/roadmap.md
 - repo-governance/specification/current/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0/specification.yaml
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/INDEX.json
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/primitive-feature-mix-matrix.json
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v8-r8-ad89a1ca325f/primitive-list.json
@@ -123,6 +129,9 @@ proof:
 - kind: specification_status
   observed: Spec10 records eight partial areas; all99 full accepted requirement records unchanged; exact six-file
     published v9 bundle archived
+- kind: architecture_decision_status
+  observed: Spec11 aligns remaining DEC-KUM-ARCHITECTURE future-packet wording with proven009 Core/optionalJSON
+    scope; exactv10 six-file bundle archived; all99 requirement records unchanged
 blockers: []
 next_action: Publish evaluated009 outcome and verify exact remote/source containment; then settle done state and
   prepare010

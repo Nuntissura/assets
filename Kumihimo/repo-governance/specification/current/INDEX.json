@@ -1,13 +1,13 @@
 {
   "kind": "derived_spec_index",
   "specification_id": "SPEC-KUMIHIMO-v1",
-  "revision": 10,
+  "revision": 11,
   "documents": [
     {
       "document_id": "DOC-KUM-MASTER-v1",
       "path": "spec-modules/master-spec.md",
-      "revision": 10,
-      "digest": "sha256:afe22dc6fd627133ef828b0321ac44f717d04390a21b092035dce722c9ad65d3",
+      "revision": 11,
+      "digest": "sha256:275d29ce7d00f9bba8be77d86ab5297503b989bd71c3904d8400d7b6f96fa5bd",
       "semantic_entity_refs": [
         "TOPIC-KUM-WORKSPACE",
         "REQ-KUM-WORKSPACE-001",

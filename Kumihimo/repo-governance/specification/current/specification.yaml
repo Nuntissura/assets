@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 10
-  revision: 10
+  version: 11
+  revision: 11
   status: accepted_direction_implementation_authorized
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 10
-    digest: sha256:afe22dc6fd627133ef828b0321ac44f717d04390a21b092035dce722c9ad65d3
+    revision: 11
+    digest: sha256:275d29ce7d00f9bba8be77d86ab5297503b989bd71c3904d8400d7b6f96fa5bd
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -579,6 +579,12 @@ change_history:
   changed_anchor_ids:
   - TOPIC-KUM-CHOICES
   - TOPIC-KUM-ROADMAP
+- revision: 11
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
 design_status:
   accepted: Eight feature areas partially implemented at the proven headless boundary; all full requirement acceptances
     remain open.
