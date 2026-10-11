@@ -20,3 +20,7 @@ path = "src/lib.rs"
 [[example]]
 name = "develop-consumer"
 path = "examples/develop-consumer.rs"
+
+[[example]]
+name = "develop-bench"
+path = "examples/develop-bench.rs"
