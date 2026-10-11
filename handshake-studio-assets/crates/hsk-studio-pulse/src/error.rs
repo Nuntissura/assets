@@ -21,6 +21,18 @@ pub enum PulseError {
     UnorderedRanges,
     NotAdjacent,
     LimitExceeded,
+    UnknownClip,
+    UnknownSequence,
+    StaleRevision,
+    TrackLocked,
+    SyncLockBlocked,
+    PastSourceStart,
+    PastSourceEnd,
+    SourceExtentUnknown,
+    LinkedEditUnsupported,
+    DuplicateId,
+    NoChange,
+    FolioRejected,
     TimecodeUnsupported,
     DropFrameUnsupported,
     InvalidTimecode,
@@ -46,6 +58,18 @@ impl PulseError {
             Self::UnorderedRanges => "unordered_ranges",
             Self::NotAdjacent => "not_adjacent",
             Self::LimitExceeded => "limit_exceeded",
+            Self::UnknownClip => "unknown_clip",
+            Self::UnknownSequence => "unknown_sequence",
+            Self::StaleRevision => "stale_revision",
+            Self::TrackLocked => "track_locked",
+            Self::SyncLockBlocked => "sync_lock_blocked",
+            Self::PastSourceStart => "past_source_start",
+            Self::PastSourceEnd => "past_source_end",
+            Self::SourceExtentUnknown => "source_extent_unknown",
+            Self::LinkedEditUnsupported => "linked_edit_unsupported",
+            Self::DuplicateId => "duplicate_id",
+            Self::NoChange => "no_change",
+            Self::FolioRejected => "folio_rejected",
             Self::TimecodeUnsupported => "timecode_unsupported",
             Self::DropFrameUnsupported => "drop_frame_unsupported",
             Self::InvalidTimecode => "invalid_timecode",
@@ -61,6 +85,8 @@ impl PulseError {
             | Self::UnsupportedSampleRate
             | Self::TimecodeUnsupported
             | Self::DropFrameUnsupported
+            | Self::SourceExtentUnknown
+            | Self::LinkedEditUnsupported
             | Self::Inexact => Some(FailureCode::Unsupported),
             _ => Some(FailureCode::Validation),
         }

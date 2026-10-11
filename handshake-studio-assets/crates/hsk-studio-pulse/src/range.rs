@@ -57,13 +57,15 @@ pub enum Grid {
 }
 
 impl Grid {
-    fn check(self, delta: TickDelta) -> Result<()> {
+    /// Refuses an edge move that is not a whole number of frames on a frame grid.
+    pub fn check_delta(self, delta: TickDelta) -> Result<()> {
         match self {
             Self::Frames(rate) if !delta.is_whole_frames(rate) => Err(PulseError::NotFrameAligned),
             _ => Ok(()),
         }
     }
-    fn check_position(self, at: Ticks) -> Result<()> {
+    /// Refuses a position that is not on a frame boundary on a frame grid.
+    pub fn check_position(self, at: Ticks) -> Result<()> {
         match self {
             Self::Frames(rate) if !at.value().is_multiple_of(rate.ticks_per_frame()) => {
                 Err(PulseError::NotFrameAligned)
@@ -148,7 +150,7 @@ impl TickRange {
             return Err(PulseError::ZeroDuration);
         }
         let end = self.start.checked_add(new_duration)?;
-        grid.check(TickDelta::between(self.end, end))?;
+        grid.check_delta(TickDelta::between(self.end, end))?;
         Ok(Self {
             start: self.start,
             end,
@@ -161,7 +163,7 @@ impl TickRange {
             std::cmp::Ordering::Greater => return Err(PulseError::OutsideRange),
             std::cmp::Ordering::Less => {}
         }
-        grid.check(TickDelta::between(self.start, new_start))?;
+        grid.check_delta(TickDelta::between(self.start, new_start))?;
         Ok(Self {
             start: new_start,
             end: self.end,
@@ -298,7 +300,7 @@ pub fn ripple_trim_start(
         std::cmp::Ordering::Less => {}
     }
     let moved = TickDelta::between(original.start, new_start);
-    grid.check(moved)?;
+    grid.check_delta(moved)?;
     let change = moved.negated();
     let trimmed = TickRange {
         start: original.start,
@@ -480,7 +482,7 @@ pub fn roll_edit(
     if !left.abuts(right) {
         return Err(PulseError::NotAdjacent);
     }
-    grid.check(delta)?;
+    grid.check_delta(delta)?;
     let edit = offset(left.end, delta)?;
     let mut out = ranges.to_vec();
     out[left_index] = make_range(left.start, edit)?;
@@ -508,7 +510,7 @@ pub fn slide(
     if !previous.abuts(current) || !current.abuts(next) {
         return Err(PulseError::NotAdjacent);
     }
-    grid.check(delta)?;
+    grid.check_delta(delta)?;
     let moved = current.shifted(delta)?;
     let mut out = ranges.to_vec();
     out[index - 1] = make_range(previous.start, moved.start)?;

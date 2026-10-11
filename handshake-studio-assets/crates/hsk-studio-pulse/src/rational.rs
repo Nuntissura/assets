@@ -2,6 +2,7 @@
 //! stored authority). Conversions into ticks carry an explicit rounding policy and a loss flag.
 use crate::error::{PulseError, Result};
 use hsk_studio_accord::{TICKS_PER_SECOND, Ticks};
+use hsk_studio_folio::Speed;
 
 pub(crate) fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
@@ -10,45 +11,49 @@ pub(crate) fn gcd(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
-/// Rational speed multiplier; reverse is a negative numerator (STU-VID-031). Always reduced, so
-/// derived equality is value equality. Pure scaling arithmetic over tick spans.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Speed {
-    num: i64,
-    den: u64,
+/// Reduced speed in Folio's document type (`hsk_studio_folio::Speed` is the single owner of the
+/// stored value); `num/den` is reduced and a negative numerator is reverse (STU-VID-031).
+pub fn reduced_speed(numerator: i64, denominator: u64) -> Result<Speed> {
+    if numerator == 0 {
+        return Err(PulseError::ZeroSpeed);
+    }
+    if denominator == 0 || numerator == i64::MIN {
+        return Err(PulseError::InvalidSpeed);
+    }
+    let g = gcd(numerator.unsigned_abs(), denominator);
+    let magnitude =
+        i64::try_from(numerator.unsigned_abs() / g).map_err(|_| PulseError::InvalidSpeed)?;
+    Ok(Speed {
+        numerator: if numerator < 0 { -magnitude } else { magnitude },
+        denominator: denominator / g,
+    })
 }
 
-impl Speed {
-    pub const UNITY: Speed = Speed { num: 1, den: 1 };
-
-    pub fn new(num: i64, den: u64) -> Result<Self> {
-        if num == 0 {
-            return Err(PulseError::ZeroSpeed);
-        }
-        if den == 0 || num == i64::MIN {
-            return Err(PulseError::InvalidSpeed);
-        }
-        let g = gcd(num.unsigned_abs(), den);
-        let magnitude =
-            i64::try_from(num.unsigned_abs() / g).map_err(|_| PulseError::InvalidSpeed)?;
-        Ok(Self {
-            num: if num < 0 { -magnitude } else { magnitude },
-            den: den / g,
-        })
-    }
-    pub fn numerator(self) -> i64 {
-        self.num
-    }
-    pub fn denominator(self) -> u64 {
-        self.den
-    }
-    pub fn is_reversed(self) -> bool {
-        self.num < 0
-    }
+/// Pulse's exact tick arithmetic over Folio's stored [`Speed`].
+pub trait SpeedMath {
     /// Source ticks consumed by `duration` timeline ticks: `duration * |num| / den`, exact.
-    pub fn span_for_duration(self, duration: Ticks) -> Result<Ticks> {
-        let product = u128::from(duration.value()) * u128::from(self.num.unsigned_abs());
-        let den = u128::from(self.den);
+    fn span_for_duration(&self, duration: Ticks) -> Result<Ticks>;
+    /// Timeline ticks for a `span` of source ticks: `span * den / |num|`, exact.
+    fn duration_for_span(&self, span: Ticks) -> Result<Ticks>;
+}
+
+fn checked_speed(speed: &Speed) -> Result<(u128, u128)> {
+    if speed.numerator == 0 {
+        return Err(PulseError::ZeroSpeed);
+    }
+    if speed.denominator == 0 {
+        return Err(PulseError::InvalidSpeed);
+    }
+    Ok((
+        u128::from(speed.numerator.unsigned_abs()),
+        u128::from(speed.denominator),
+    ))
+}
+
+impl SpeedMath for Speed {
+    fn span_for_duration(&self, duration: Ticks) -> Result<Ticks> {
+        let (num, den) = checked_speed(self)?;
+        let product = u128::from(duration.value()) * num;
         if !product.is_multiple_of(den) {
             return Err(PulseError::Inexact);
         }
@@ -56,10 +61,9 @@ impl Speed {
             .map(Ticks::new)
             .map_err(|_| PulseError::Overflow)
     }
-    /// Timeline ticks for a `span` of source ticks: `span * den / |num|`, exact.
-    pub fn duration_for_span(self, span: Ticks) -> Result<Ticks> {
-        let product = u128::from(span.value()) * u128::from(self.den);
-        let num = u128::from(self.num.unsigned_abs());
+    fn duration_for_span(&self, span: Ticks) -> Result<Ticks> {
+        let (num, den) = checked_speed(self)?;
+        let product = u128::from(span.value()) * den;
         if !product.is_multiple_of(num) {
             return Err(PulseError::Inexact);
         }

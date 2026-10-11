@@ -167,22 +167,22 @@ fn legacy_rates_and_conversions() {
         );
         assert_eq!(rational_seconds_from_ticks(Ticks::new(0)), (0, 1));
         // Speed is a reduced rational with exact span arithmetic.
-        assert_eq!(Speed::new(2, 4).unwrap(), Speed::new(1, 2).unwrap());
-        assert_eq!(Speed::new(0, 1).unwrap_err(), PulseError::ZeroSpeed);
-        assert_eq!(Speed::new(1, 0).unwrap_err(), PulseError::InvalidSpeed);
+        assert_eq!(reduced_speed(2, 4).unwrap(), reduced_speed(1, 2).unwrap());
+        assert_eq!(reduced_speed(0, 1).unwrap_err(), PulseError::ZeroSpeed);
+        assert_eq!(reduced_speed(1, 0).unwrap_err(), PulseError::InvalidSpeed);
         assert_eq!(
-            Speed::new(1, 2)
+            reduced_speed(1, 2)
                 .unwrap()
                 .span_for_duration(Ticks::new(10))
                 .unwrap()
                 .value(),
             5
         );
-        let reverse = Speed::new(-3, 2).unwrap();
+        let reverse = reduced_speed(-3, 2).unwrap();
         assert!(reverse.is_reversed());
         assert_eq!(reverse.duration_for_span(Ticks::new(9)).unwrap().value(), 6);
         assert_eq!(
-            Speed::new(2, 3)
+            reduced_speed(2, 3)
                 .unwrap()
                 .duration_for_span(Ticks::new(1))
                 .unwrap_err(),
