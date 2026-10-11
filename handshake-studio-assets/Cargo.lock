@@ -907,6 +907,10 @@ dependencies = [
 [[package]]
 name = "hsk-studio-reel-native"
 version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-reel",
+]
 
 [[package]]
 name = "hsk-studio-render-cpu"
