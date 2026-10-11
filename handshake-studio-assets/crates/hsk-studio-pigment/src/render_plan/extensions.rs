@@ -476,12 +476,13 @@ pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
 }
 
 /// [`admit_extended`] with caller-supplied [`PlanLimits`], on the same terms as
-/// [`admit_with_limits`]: the plan is validated with `limits` (tighter budgets refuse a plan the
-/// defaults admit, a field above [`PlanLimits::MAXIMUM`] is refused as
+/// [`admit_with_limits`](super::admit_with_limits): the plan is validated with `limits` (tighter
+/// budgets refuse a plan the defaults admit, a field above [`PlanLimits::MAXIMUM`] is refused as
 /// `BackendError::InvalidPlan(PlanError::LimitAboveMaximum)` before the plan or the envelope is
-/// read), every later step and refusal key is unchanged. The envelope's own budgets
-/// (`MAX_EFFECTS_PER_LAYER`, `MAX_EFFECTS_PER_PLAN`, effect sizes) are fixed constants and are not
-/// part of `PlanLimits` (tests `tests/plan_limits.rs`).
+/// read; tests `tests/plan_limits.rs` `tightened_limits_refuse_what_the_defaults_admit`,
+/// `loosening_past_the_maxima_is_a_typed_error_everywhere`), every later step and refusal key is
+/// unchanged. The envelope's own budgets (`MAX_EFFECTS_PER_LAYER`, `MAX_EFFECTS_PER_PLAN`, effect
+/// sizes) are fixed constants outside `PlanLimits`.
 pub fn admit_extended_with_limits<V, B: RenderBackend<V> + ?Sized>(
     plan: &RenderPlan<V>,
     extensions: &PlanExtensions,
