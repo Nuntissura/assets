@@ -887,3 +887,78 @@ fn export_refuses_partial_video_decode() {
         }
     }
 }
+
+/// PLR-057: a refused export opens no decoder session, so no worker process is spawned for it. The
+/// exact-start check (and the request's own range check) runs before `ExternalVideoDecoder::open`; the
+/// fake decoder records every open. A preview of the same start keeps its order (one session, an
+/// `Approximate` receipt), and an export at a whole-frame start opens its session as before.
+#[test]
+fn export_not_exact_is_refused_before_a_decoder_session_opens() {
+    for (name, bytes, container, pts) in [
+        ("mp4", MP4, ISOBMFF_PROVIDER_ID, PTS_MP4),
+        ("mkv", MKV, MATROSKA_PROVIDER_ID, PTS_MKV),
+    ] {
+        let (fake, seen) = Fake::new(Plan::Works);
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let run = |purpose: Purpose, start: u64, count: u64| {
+            let mut req = request(container, bytes, start, count, OutputMode::Decoded);
+            req.purpose = purpose;
+            let mut sink = Collect::default();
+            let result = registry.decode_segment(
+                &mut Cursor::new(bytes.to_vec()),
+                None,
+                &req,
+                &Limits::default(),
+                &CancellationToken::default(),
+                &mut sink,
+            );
+            (result, sink)
+        };
+        let opens = || seen.lock().unwrap().opens.len();
+
+        // Export from the middle of frame 1: refused with the frame start as `nearest`, no session, no
+        // picture.
+        let inside = pts[1] + 1;
+        let (result, sink) = run(Purpose::Export, inside, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            ReelError::NotExact {
+                requested: Ticks::new(inside),
+                nearest: Ticks::new(pts[1]),
+            },
+            "{name}"
+        );
+        assert_eq!(
+            opens(),
+            0,
+            "{name}: a refused export opened a decoder session"
+        );
+        assert!(sink.chunks.is_empty(), "{name}");
+
+        // Export past the end of the clip: the range refusal comes before a session too.
+        let (result, sink) = run(Purpose::Export, pts[2] * 100, 1);
+        assert!(
+            matches!(result, Err(ReelError::OutOfRange { .. })),
+            "{name}: {result:?}"
+        );
+        assert_eq!(
+            opens(),
+            0,
+            "{name}: an out-of-range export opened a session"
+        );
+        assert!(sink.chunks.is_empty(), "{name}");
+
+        // Preview of the same start: unchanged, one session and an Approximate receipt.
+        let (result, sink) = run(Purpose::Preview, inside, 1);
+        let receipt = result.unwrap();
+        assert_eq!(receipt.disposition, Disposition::Approximate, "{name}");
+        assert_eq!((opens(), sink.chunks.len()), (1, 1), "{name}");
+
+        // Export at the frame start: exact, and it does open its session.
+        let (result, sink) = run(Purpose::Export, pts[1], 1);
+        let receipt = result.unwrap();
+        assert_eq!(receipt.disposition, Disposition::Exact, "{name}");
+        assert!(receipt.complete, "{name}");
+        assert_eq!((opens(), sink.chunks.len()), (2, 1), "{name}");
+    }
+}

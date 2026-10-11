@@ -201,6 +201,10 @@ pub struct TrackIndex {
     pub timecode: Option<TimecodeDescription>,
     /// Track id of the `tmcd` track this track references through `tref`.
     pub timecode_ref: Option<u32>,
+    /// A container feature of THIS track that the reader refuses (`elst-zero-duration`): the other tracks
+    /// of the file are indexed and usable, this one has no edit list or presented samples, and
+    /// `seek`, `probe` and every delivery of it are `Unsupported` with this name (see `unsupported()`).
+    unsupported: Option<&'static str>,
     pcm: Option<PcmStream>,
     samples: Vec<SampleEntry>,
     presented: Vec<PresentedSample>,
@@ -318,6 +322,7 @@ impl TrackIndex {
             ticks_exact: true,
             timecode: None,
             timecode_ref: None,
+            unsupported: None,
             pcm: None,
             samples,
             presented: Vec::new(),
@@ -346,6 +351,21 @@ impl TrackIndex {
     }
     pub fn sync_samples(&self) -> &[u32] {
         &self.sync_points
+    }
+
+    /// The container feature of THIS track that the reader refuses (`elst-zero-duration`), if any. The
+    /// refusal is per track: the file's other tracks are indexed and deliver as usual, while this one has
+    /// no edit list or presented samples and `seek`, `IsobmffProvider::probe` and every delivery of it
+    /// are `ReelError::Unsupported` with this name (test `zero_duration_edit_costs_only_its_track`).
+    pub fn unsupported(&self) -> Option<&'static str> {
+        self.unsupported
+    }
+
+    fn require_supported(&self) -> Result<(), ReelError> {
+        match self.unsupported {
+            Some(what) => Err(ReelError::Unsupported { what }),
+            None => Ok(()),
+        }
     }
 
     fn pts_in_edit(&self, edit: u32, media_pts: i64) -> Result<(i64, bool), ReelError> {
@@ -397,6 +417,7 @@ impl TrackIndex {
     /// A time outside the presented range (before the first frame, in an edit gap, at or after the end)
     /// is `OutOfRange`; it is never clamped.
     pub fn seek(&self, requested: Ticks) -> Result<SeekResult, ReelError> {
+        self.require_supported()?;
         let (first, end) = self.presentation_bounds();
         let out_of_range = || ReelError::OutOfRange {
             requested,
@@ -1252,6 +1273,7 @@ fn track_from_tables(
         ticks_exact: true,
         timecode: desc.timecode,
         timecode_ref,
+        unsupported: None,
         pcm,
         samples,
         presented: Vec::new(),
@@ -1352,7 +1374,8 @@ fn build_edits(
             // A zero segment_duration on the LAST edit of a fragmented file is open-ended (the edit
             // runs to the end of the media, as in a file without an edit list; ISO/IEC 14496-12 as
             // quoted by W3C bug 26066, secondary source). Anywhere else the length of the edit is
-            // unknown and is not guessed.
+            // unknown and is not guessed: the refusal reaches `build_index`, which turns it into the
+            // refusal of this one track (`TrackIndex::unsupported`).
             (0, _) if fragmented && seen == count => Some((i64::MAX, false)),
             (0, _) => {
                 return Err(ReelError::Unsupported {
@@ -1618,7 +1641,21 @@ pub fn build_index(
     }
     for (track, trak) in tracks.iter_mut().zip(&traks) {
         check_cancel(cancel)?;
-        finish_track(track, trak, movie_timescale, fragmented, limits, cancel)?;
+        match finish_track(track, trak, movie_timescale, fragmented, limits, cancel) {
+            Ok(()) => {}
+            // A zero-length edit this reader will not guess costs ITS track, not the file: the other
+            // tracks keep their index (an audio or timecode track must not make the video unusable).
+            // The track has no edit list or presented samples and every use of it is `Unsupported`
+            // with the same name (test `zero_duration_edit_costs_only_its_track`).
+            Err(ReelError::Unsupported {
+                what: what @ "elst-zero-duration",
+            }) => {
+                track.edits.clear();
+                track.presented.clear();
+                track.unsupported = Some(what);
+            }
+            Err(error) => return Err(error),
+        }
     }
     Ok(MediaIndex {
         major_brand: moov_read.brand,
@@ -1663,15 +1700,19 @@ pub fn read_sample(
     read_exact_or_truncated(src, buf, delivered)
 }
 
+/// The track a request names (else the default track). A track the reader refuses (`unsupported()`) is
+/// `Unsupported` here, so no delivery path of it (packets, PCM, video decode, cached or not) can start.
 fn select_track(index: &MediaIndex, wanted: Option<u32>) -> Result<&TrackIndex, ReelError> {
-    match wanted {
+    let track = match wanted {
         Some(id) => index.track(id).ok_or(ReelError::Unsupported {
             what: "track-not-found",
         }),
         None => index.default_track().ok_or(ReelError::Unsupported {
             what: "no-audio-or-video-track",
         }),
-    }
+    }?;
+    track.require_supported()?;
+    Ok(track)
 }
 
 fn to_ticks(value: i64) -> Result<Ticks, ReelError> {
@@ -1712,6 +1753,7 @@ impl MediaProvider for IsobmffProvider {
         let track = index.default_track().ok_or(ReelError::Unsupported {
             what: "no-audio-or-video-track",
         })?;
+        track.require_supported()?;
         let video = track.kind == TrackKind::Video;
         let (ticks_per_unit, units) = match track.pcm.as_ref().map(|p| &p.window) {
             Some(Ok(w)) => (w.ticks_per_frame, w.frames),
@@ -1882,6 +1924,43 @@ impl IsobmffProvider {
     }
 }
 
+/// Frame-accurate start of a request on `track`, and the Export rule for it: export is exact or it fails
+/// (`require_exact_start`), before the first sample is read or the sink is touched. The start must be a
+/// presented sample's own PTS and not inside an edit-trimmed first sample.
+///
+/// `nearest` of the refusal is a start the same export can be retried at: the start of the sample the
+/// request falls in, or, when that sample is the edit-trimmed first sample of an edit (no export can
+/// start at its cut presented start), the start of the next whole presented sample. When the track has
+/// no whole presented sample after it, nothing exact exists and `nearest` is the trimmed sample's own
+/// presented start (test `nearest_of_a_trimmed_first_sample_is_a_start_export_accepts`). A negative PTS,
+/// which ticks cannot hold, is the same typed refusal a preview of that sample gets.
+///
+/// Video decode calls this BEFORE it opens a decoder session, so a refused export spawns no worker
+/// (test `export_not_exact_is_refused_before_a_decoder_session_opens`); packet delivery calls it again
+/// for the same, cheap, answer.
+pub(crate) fn require_exact_track_start(
+    track: &TrackIndex,
+    req: &SegmentRequest,
+) -> Result<SeekResult, ReelError> {
+    let first = track.seek(req.start_pts)?;
+    require_exact_start(
+        req,
+        first.disposition == SeekDisposition::Exact && first.trim_start == 0,
+        || {
+            let whole = if first.trim_start == 0 {
+                None
+            } else {
+                track
+                    .presented
+                    .get(first.presented_index.saturating_add(1)..)
+                    .and_then(|after| after.iter().find(|p| p.trim_start == 0))
+            };
+            to_ticks(whole.map_or(first.target.pts, |p| p.pts))
+        },
+    )?;
+    Ok(first)
+}
+
 /// Packet delivery for any container whose index is a `TrackIndex`: frame-accurate start, pre-roll
 /// from the nearest earlier sync sample (conservative for open GOP), exact requested vs actual spans.
 /// `bytes_read` counts payload only.
@@ -1896,16 +1975,7 @@ pub(crate) fn deliver_packets(
     cancel: &CancellationToken,
     sink: &mut dyn ChunkSink,
 ) -> Result<SegmentReceipt, ReelError> {
-    let first = track.seek(req.start_pts)?;
-    // Export is exact or it fails, before the first sample is read or the sink is touched: the start
-    // must be a presented sample's own PTS and not inside an edit-trimmed first sample. `nearest` is
-    // that sample's PTS (a negative PTS, which ticks cannot hold, is the same typed refusal a preview
-    // of that sample gets).
-    require_exact_start(
-        req,
-        first.disposition == SeekDisposition::Exact && first.trim_start == 0,
-        || to_ticks(first.target.pts),
-    )?;
+    let first = require_exact_track_start(track, req)?;
     let last_presented = req
         .count
         .checked_sub(1)

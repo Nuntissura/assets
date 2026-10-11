@@ -69,8 +69,11 @@ pub enum ReelError {
     },
     /// `Purpose::Export` asked for a start that is not a whole unit of the source (inside a frame or
     /// sample, or inside an edit-trimmed first sample): export is exact or it fails, so nothing is
-    /// delivered. `nearest` is the start of the unit that would have been delivered instead
-    /// (test `export_is_exact_or_error_for_every_provider`).
+    /// delivered. `nearest` is a start the same export can be retried at: the start of the unit the
+    /// requested start falls in, which a preview delivers (test `export_is_exact_or_error_for_every_provider`);
+    /// for a start inside an edit-trimmed first sample, whose own presented start no export can use, the
+    /// start of the next whole presented sample, so `nearest` differs from `requested` there (test
+    /// `nearest_of_a_trimmed_first_sample_is_a_start_export_accepts`).
     NotExact {
         requested: Ticks,
         nearest: Ticks,

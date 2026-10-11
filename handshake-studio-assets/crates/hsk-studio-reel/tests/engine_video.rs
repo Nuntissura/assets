@@ -75,8 +75,10 @@ fn index_of(bytes: &[u8]) -> Result<MediaIndex, ReelError> {
 
 // ---- 1. export is exact or it fails -------------------------------------------------------------------
 
-/// One delivery site of one provider: an aligned start, a start inside a unit, and the start of the unit
-/// a preview delivers for it (`nearest`).
+/// One delivery site of one provider: an aligned start, a start inside a unit, the start of the unit a
+/// preview delivers for it (`preview_start`) and the start the refused export reports as `nearest`. The
+/// two are the same unit start, except for the edit-trimmed first sample: no export can start at its cut
+/// presented start, so `nearest` is the next whole sample there.
 struct Case {
     name: &'static str,
     provider: &'static str,
@@ -87,6 +89,7 @@ struct Case {
     aligned: u64,
     unaligned: u64,
     nearest: u64,
+    preview_start: u64,
 }
 
 fn run(
@@ -206,6 +209,7 @@ fn export_cases() -> Vec<Case> {
             aligned: 100 * TPS_48K,
             unaligned: 100 * TPS_48K + 1,
             nearest: 100 * TPS_48K,
+            preview_start: 100 * TPS_48K,
         },
         Case {
             name: "y4m frames",
@@ -217,6 +221,7 @@ fn export_cases() -> Vec<Case> {
             aligned: 2 * TPF_30,
             unaligned: 2 * TPF_30 + 1,
             nearest: 2 * TPF_30,
+            preview_start: 2 * TPF_30,
         },
         Case {
             name: "isobmff packets",
@@ -228,9 +233,11 @@ fn export_cases() -> Vec<Case> {
             aligned: 2 * TPF_2997,
             unaligned: 2 * TPF_2997 + TPF_2997 / 2,
             nearest: 2 * TPF_2997,
+            preview_start: 2 * TPF_2997,
         },
         // The edit list starts 500 units inside sample 0: the first presented sample is cut, so even
-        // a request at its own presented start is not exact. The next sample is whole.
+        // a request at its own presented start is not exact. The next sample is whole: that is the
+        // start an export can be retried at (`nearest`), while a preview delivers the cut sample.
         Case {
             name: "isobmff packets, edit-trimmed first sample",
             provider: ISOBMFF_PROVIDER_ID,
@@ -240,7 +247,8 @@ fn export_cases() -> Vec<Case> {
             count: 2,
             aligned: 501 * UNIT_30000,
             unaligned: 0,
-            nearest: 0,
+            nearest: 501 * UNIT_30000,
+            preview_start: 0,
         },
         Case {
             name: "isobmff pcm",
@@ -252,6 +260,7 @@ fn export_cases() -> Vec<Case> {
             aligned: 100 * TPS_48K,
             unaligned: 100 * TPS_48K + 1,
             nearest: 100 * TPS_48K,
+            preview_start: 100 * TPS_48K,
         },
         Case {
             name: "matroska packets",
@@ -263,6 +272,7 @@ fn export_cases() -> Vec<Case> {
             aligned: 40 * MS,
             unaligned: 41 * MS,
             nearest: 40 * MS,
+            preview_start: 40 * MS,
         },
         Case {
             name: "matroska pcm",
@@ -274,6 +284,7 @@ fn export_cases() -> Vec<Case> {
             aligned: 1000 * TPS_48K,
             unaligned: 1000 * TPS_48K + 1,
             nearest: 1000 * TPS_48K,
+            preview_start: 1000 * TPS_48K,
         },
         Case {
             name: "mxf packets",
@@ -285,6 +296,7 @@ fn export_cases() -> Vec<Case> {
             aligned: 2 * TPF_25,
             unaligned: 2 * TPF_25 + TPF_25 / 2,
             nearest: 2 * TPF_25,
+            preview_start: 2 * TPF_25,
         },
     ]
 }
@@ -293,7 +305,9 @@ fn export_cases() -> Vec<Case> {
 /// the sink. One case per delivery site (isobmff packets, isobmff and Matroska PCM, Matroska packets, WAV,
 /// Y4M, MXF); the test enumerates the registry's providers and fails when one has no case, so a provider
 /// added later cannot skip the rule. `Purpose::Preview` keeps its `Approximate` receipt, and the
-/// `nearest` of the refusal is the start of the unit that preview delivers.
+/// `nearest` of the refusal is a start the export is delivered at, exactly (the start of the unit a
+/// preview delivers, except for an edit-trimmed first sample, see
+/// `nearest_of_a_trimmed_first_sample_is_a_start_export_accepts`).
 #[test]
 fn export_is_exact_or_error_for_every_provider() {
     bounded_case("export_is_exact_or_error_for_every_provider", || {
@@ -343,8 +357,8 @@ fn export_is_exact_or_error_for_every_provider() {
             assert!(preview.complete, "{name}");
             assert_eq!(
                 (preview.requested.start_pts, preview.actual.start_pts),
-                (Ticks::new(case.unaligned), Ticks::new(case.nearest)),
-                "{name}: the unit a preview delivers is the `nearest` of the refusal"
+                (Ticks::new(case.unaligned), Ticks::new(case.preview_start)),
+                "{name}: the unit a preview delivers"
             );
 
             // Export: the same aligned start is delivered Exact ...
@@ -372,6 +386,17 @@ fn export_is_exact_or_error_for_every_provider() {
                 },
                 "{name}"
             );
+            // The start the refusal names is one the same export is delivered at, exactly.
+            let retried = run(
+                &registry,
+                case,
+                case.nearest,
+                Purpose::Export,
+                &mut Count::default(),
+            )
+            .unwrap_or_else(|e| panic!("{name}: export retried at nearest: {e}"));
+            assert_eq!(retried.disposition, Disposition::Exact, "{name}");
+            assert_eq!(retried.actual.start_pts, Ticks::new(case.nearest), "{name}");
             assert_eq!(error.code(), "MEDIA_NOT_EXACT", "{name}");
             assert_eq!(
                 error.to_string(),
@@ -395,6 +420,143 @@ fn export_is_exact_or_error_for_every_provider() {
         for code in ["MEDIA_NOT_EXACT", "MEDIA_INCOMPLETE"] {
             assert!(DESCRIPTOR.contains(code), "DESCRIPTOR lists {code}");
         }
+    });
+}
+
+/// `NotExact.nearest` is a start the same export can be retried at. For a start inside an edit-trimmed
+/// first sample, whose own cut presented start no export can use, it used to equal `requested` (a preview
+/// of that start delivers the cut sample), which offered no retry (SMB-REEL-ENG-1 residual R3, R9
+/// pre-review); it is now the start of the next whole presented sample, also for a trimmed sample that is
+/// not the first of the track (an edit that starts inside a sample later in the list). A start inside a
+/// whole sample keeps the start of that sample. When the track has no whole presented sample after the cut
+/// one, nothing exact exists and `nearest` stays the cut sample's own presented start.
+#[test]
+fn nearest_of_a_trimmed_first_sample_is_a_start_export_accepts() {
+    bounded_case("nearest_of_a_trimmed_first_sample", || {
+        let registry = Registry::standard();
+        let case_of = |edits: Vec<(u64, i64)>, count: u64| Case {
+            name: "trimmed",
+            provider: ISOBMFF_PROVIDER_ID,
+            bytes: video_mov(Some(edits)),
+            track: None,
+            output: OutputMode::Packets,
+            count,
+            aligned: 0,
+            unaligned: 0,
+            nearest: 0,
+            preview_start: 0,
+        };
+        // In media units of 1/30000 s: every sample lasts 1001; the edit starts 500 units inside sample 0.
+        // Presented: the cut sample 0 at 0 (501 units shown), then samples at 501, 1502, 2503, 3504.
+        let one_edit = case_of(vec![(4 * 1001, 500)], 2);
+        for (label, start, nearest) in [
+            ("the cut sample's own presented start", 0, 501),
+            ("inside the cut sample", 100, 501),
+            ("the last unit of the cut sample", 500, 501),
+            ("inside the whole sample after it", 600, 501),
+            ("inside a later whole sample", 1502 + 7, 1502),
+        ] {
+            let (requested, nearest) = (start * UNIT_30000, nearest * UNIT_30000);
+            let refused = run(
+                &registry,
+                &one_edit,
+                requested,
+                Purpose::Export,
+                &mut NeverReached(label),
+            )
+            .unwrap_err();
+            assert_eq!(
+                refused,
+                ReelError::NotExact {
+                    requested: Ticks::new(requested),
+                    nearest: Ticks::new(nearest),
+                },
+                "{label}"
+            );
+            assert_ne!(
+                requested, nearest,
+                "{label}: a retry start differs from the request"
+            );
+            let retried = run(
+                &registry,
+                &one_edit,
+                nearest,
+                Purpose::Export,
+                &mut Count::default(),
+            )
+            .unwrap_or_else(|e| panic!("{label}: export at nearest: {e}"));
+            assert_eq!(retried.disposition, Disposition::Exact, "{label}");
+            assert_eq!(retried.actual.start_pts, Ticks::new(nearest), "{label}");
+            assert!(retried.complete, "{label}");
+        }
+        // A preview of the cut sample's own presented start is unchanged: the cut sample, Approximate.
+        let preview = run(
+            &registry,
+            &one_edit,
+            0,
+            Purpose::Preview,
+            &mut Count::default(),
+        )
+        .unwrap();
+        assert_eq!(preview.disposition, Disposition::Approximate);
+        assert_eq!(preview.actual.start_pts, Ticks::new(0));
+
+        // A second edit that starts inside sample 3 (media 3500): its cut sample is presented at 2002,
+        // after the whole samples 0.. of the first edit. Presented: 0 (cut), 501, 1502, 2002 (cut), 2506,
+        // 3507.
+        let two_edits = case_of(vec![(2002, 500), (2002, 3500)], 2);
+        for (label, start, nearest) in [
+            ("the second edit's cut sample", 2002, 2506),
+            ("inside the second edit's cut sample", 2300, 2506),
+            ("the first edit's cut sample", 0, 501),
+        ] {
+            let (requested, nearest) = (start * UNIT_30000, nearest * UNIT_30000);
+            let refused = run(
+                &registry,
+                &two_edits,
+                requested,
+                Purpose::Export,
+                &mut NeverReached(label),
+            )
+            .unwrap_err();
+            assert_eq!(
+                refused,
+                ReelError::NotExact {
+                    requested: Ticks::new(requested),
+                    nearest: Ticks::new(nearest),
+                },
+                "{label}"
+            );
+            let retried = run(
+                &registry,
+                &two_edits,
+                nearest,
+                Purpose::Export,
+                &mut Count::default(),
+            )
+            .unwrap_or_else(|e| panic!("{label}: export at nearest: {e}"));
+            assert_eq!(retried.disposition, Disposition::Exact, "{label}");
+            assert_eq!(retried.actual.start_pts, Ticks::new(nearest), "{label}");
+        }
+
+        // Only the cut sample is presented (the edit ends inside sample 0 and 1): no start is exact, so
+        // `nearest` stays the cut sample's own presented start.
+        let only_cut = case_of(vec![(501, 500)], 1);
+        let refused = run(
+            &registry,
+            &only_cut,
+            0,
+            Purpose::Export,
+            &mut NeverReached("only the cut sample"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            refused,
+            ReelError::NotExact {
+                requested: Ticks::new(0),
+                nearest: Ticks::new(0),
+            }
+        );
     });
 }
 
@@ -509,14 +671,25 @@ fn fragmented_zero_duration_edit() {
             );
         }
 
-        // Anywhere else a zero length is not guessed.
+        // Anywhere else a zero length is not guessed: the TRACK is refused (the file still indexes, see
+        // `zero_duration_edit_costs_only_its_track`), with no edit list, no presented samples and a typed
+        // `Unsupported` for every use of it.
         let refused = ReelError::Unsupported {
             what: "elst-zero-duration",
         };
+        let track_refused = |label: &str, bytes: Vec<u8>| {
+            let index =
+                index_of(&bytes).unwrap_or_else(|e| panic!("{label}: the file must index: {e}"));
+            let track = &index.tracks[0];
+            assert_eq!(track.unsupported(), Some("elst-zero-duration"), "{label}");
+            assert!(track.edits.is_empty(), "{label}");
+            assert!(track.presented().is_empty(), "{label}");
+            assert_eq!(track.seek(Ticks::new(0)).unwrap_err(), refused, "{label}");
+        };
         // ... not the last edit of a fragmented file ...
-        assert_eq!(
-            index_of(&frag(Some(vec![(0, 2002), (full, 2002)]))).unwrap_err(),
-            refused
+        track_refused(
+            "fragmented, zero length before the last edit",
+            frag(Some(vec![(0, 2002), (full, 2002)])),
         );
         // ... and any non-empty zero-length edit of a progressive file.
         for edits in [
@@ -525,12 +698,14 @@ fn fragmented_zero_duration_edit() {
             vec![(80, 0), (0, 0)],
             vec![(0, -1), (0, 20)],
         ] {
-            assert_eq!(
-                index_of(&four_sample_mov(Some(edits.clone()))).unwrap_err(),
-                refused,
-                "progressive {edits:?}"
+            track_refused(
+                &format!("progressive {edits:?}"),
+                four_sample_mov(Some(edits.clone())),
             );
         }
+        // The accepted shapes above leave the track supported.
+        assert_eq!(open.tracks[0].unsupported(), None);
+        assert_eq!(reference.unsupported(), None);
         // A zero-length empty edit in a progressive file is still no segment.
         let plain = index_of(&four_sample_mov(Some(vec![(80, 0)]))).unwrap();
         let skipped = index_of(&four_sample_mov(Some(vec![(0, -1), (80, 0)]))).unwrap();
@@ -541,6 +716,138 @@ fn fragmented_zero_duration_edit() {
         let shifted = index_of(&four_sample_mov(Some(vec![(40, -1), (80, 0)]))).unwrap();
         assert_eq!(shifted.tracks[0].edits.len(), 2);
         assert_eq!(shifted.tracks[0].presented()[0].pts, 40 * 423_360_000);
+    });
+}
+
+/// The refusal of a zero-length edit belongs to the track that carries it (SMB-REEL-ENG-1 R9 pre-review): a
+/// two-track MOV whose AUDIO track has the edit still indexes, its video track keeps its index and
+/// delivers, and only the audio track is `Unsupported` (`TrackIndex::unsupported`, `seek`, `probe`, every
+/// delivery). When the refused track is the only or the default one the file indexes and the same typed
+/// refusal is what probing and decoding it return.
+#[test]
+fn zero_duration_edit_costs_only_its_track() {
+    bounded_case("zero_duration_edit_costs_only_its_track", || {
+        let refused = ReelError::Unsupported {
+            what: "elst-zero-duration",
+        };
+        let audio = |edits: Option<Vec<(u64, i64)>>| PcmMovSpec {
+            fourcc: *b"twos",
+            kind: PcmKind::S16,
+            big_endian: true,
+            lpcm_v2: false,
+            non_interleaved: false,
+            channels: 2,
+            rate: 48000,
+            frames: 4800,
+            frames_per_chunk: 1024,
+            movie_timescale: 1000,
+            edits,
+            moov_first: true,
+            sound_version: None,
+        };
+        let request =
+            |bytes: &[u8], track: Option<u32>, output: OutputMode, count: u64| SegmentRequest {
+                codec: ISOBMFF_PROVIDER_ID.into(),
+                start_pts: Ticks::new(0),
+                count,
+                track,
+                output,
+                prefer: SourcePreference::Original,
+                purpose: Purpose::Preview,
+                grant: Grant {
+                    content_id: ContentId::parse("zero-duration-track").unwrap(),
+                    revision: 1,
+                    expected_len: bytes.len() as u64,
+                },
+                expected_revision: 1,
+            };
+        let deliver = |bytes: &[u8], track: Option<u32>, output: OutputMode, count: u64| {
+            IsobmffProvider.decode_segment(
+                &mut Cursor::new(bytes.to_vec()),
+                &request(bytes, track, output, count),
+                &Limits::default(),
+                &CancellationToken::default(),
+                &mut Count::default(),
+            )
+        };
+        let probe = |bytes: &[u8]| {
+            IsobmffProvider.probe(
+                &mut Cursor::new(bytes.to_vec()),
+                &Limits::default(),
+                &CancellationToken::default(),
+            )
+        };
+
+        // Control: the same movie without the edit: both tracks usable.
+        let clean = mov_av_bytes(10, &audio(None));
+        let index = index_of(&clean).unwrap();
+        assert_eq!(index.tracks.len(), 2);
+        assert!(index.tracks.iter().all(|t| t.unsupported().is_none()));
+        assert!(
+            deliver(&clean, Some(1), OutputMode::Packets, 3)
+                .unwrap()
+                .complete
+        );
+        assert!(
+            deliver(&clean, Some(2), OutputMode::Decoded, 100)
+                .unwrap()
+                .complete
+        );
+
+        // The audio track carries a zero-length, non-empty edit.
+        let bytes = mov_av_bytes(10, &audio(Some(vec![(0, 0)])));
+        let index =
+            index_of(&bytes).expect("the file indexes: one track's edit list is not the file's");
+        let (video, sound) = (&index.tracks[0], &index.tracks[1]);
+        assert_eq!((video.track_id, sound.track_id), (1, 2));
+        assert_eq!(video.unsupported(), None);
+        assert_eq!(video.presented().len(), 10);
+        assert!(video.seek(Ticks::new(0)).is_ok());
+        assert_eq!(sound.unsupported(), Some("elst-zero-duration"));
+        assert!(sound.edits.is_empty() && sound.presented().is_empty());
+        assert_eq!(sound.seek(Ticks::new(0)).unwrap_err(), refused);
+
+        // The video track probes and delivers, by default and by id; the audio track does not.
+        let layout = probe(&bytes).unwrap();
+        assert_eq!(
+            (layout.kind, layout.units, layout.tracks),
+            (MediaKind::Video, 10, 2)
+        );
+        for track in [None, Some(1)] {
+            let receipt = deliver(&bytes, track, OutputMode::Packets, 3).unwrap();
+            assert!(
+                receipt.complete && receipt.actual.units == 3,
+                "video track {track:?}"
+            );
+        }
+        for output in [OutputMode::Packets, OutputMode::Decoded] {
+            assert_eq!(
+                deliver(&bytes, Some(2), output, 100).unwrap_err(),
+                refused,
+                "audio track {output:?}"
+            );
+        }
+        // A prebuilt (cached) index takes the same path.
+        let cached = IsobmffProvider.decode_packets(
+            &mut Cursor::new(bytes.clone()),
+            &index,
+            &request(&bytes, Some(2), OutputMode::Packets, 1),
+            &Limits::default(),
+            &CancellationToken::default(),
+            &mut Count::default(),
+        );
+        assert_eq!(cached.unwrap_err(), refused);
+
+        // The only track of the file carries the edit: the file indexes, using the track is refused.
+        let single = four_sample_mov(Some(vec![(0, 0)]));
+        let index = index_of(&single).unwrap();
+        assert_eq!(index.tracks.len(), 1);
+        assert_eq!(index.tracks[0].unsupported(), Some("elst-zero-duration"));
+        assert_eq!(probe(&single).unwrap_err(), refused);
+        assert_eq!(
+            deliver(&single, None, OutputMode::Packets, 1).unwrap_err(),
+            refused
+        );
     });
 }
 

@@ -187,7 +187,22 @@ impl MxfProvider {
             for d in start..end {
                 check_cancel(cancel)?;
                 let coded = if reordered {
-                    index.locate(index_sid, d)?.coded_position
+                    let coded = index.locate(index_sid, d)?.coded_position;
+                    // Temporal offsets are untrusted bytes. A conformant index maps display positions
+                    // to coded positions one-to-one, and `d` is delivered by the coded unit
+                    // `display_position_of` names for it: when another (earlier) display position
+                    // lands on the same coded position, `d` would never be delivered and the call
+                    // would return Ok with `complete == false` (test
+                    // `mxf_temporal_offsets_that_are_not_a_permutation_are_refused`). That is a
+                    // corrupt index, refused before any essence is read, for a preview and an export
+                    // alike: it is the class of a coded position no display position maps to
+                    // (`display_position_of` below), which is `Corrupt` already.
+                    if index.display_position_of(index_sid, coded)? != d {
+                        return Err(ReelError::Corrupt {
+                            what: "mxf-temporal-offset",
+                        });
+                    }
+                    coded
                 } else {
                     d
                 };
@@ -266,6 +281,8 @@ impl MxfProvider {
             decoder_version: DECODER_VERSION,
             chunks,
             bytes_read: payload,
+            // Each requested display position is delivered once, or the call was refused above
+            // (the reordered pre-pass), so a shortfall is not an Ok result of any purpose.
             complete: delivered == req.count,
             ticks_exact: ticks_exact && start_exact && end_exact,
             video: None,

@@ -942,3 +942,88 @@ fn mxf_hostile_inputs_refuse_cleanly() {
         }
     });
 }
+
+/// Temporal offsets are untrusted bytes and a conformant index maps display positions to coded
+/// positions one-to-one. When two display positions land on one coded unit, the request that contains the
+/// later one cannot be delivered whole: it used to return Ok with `complete == false` and an `Exact`
+/// disposition, for `Purpose::Export` too (SMB-REEL-ENG-1 R9 pre-review). It is a corrupt index, refused
+/// before any essence is read (sink untouched), for a preview and an export alike; requests that do not
+/// touch the damaged entries deliver completely.
+#[test]
+fn mxf_temporal_offsets_that_are_not_a_permutation_are_refused() {
+    bounded_case("mxf_temporal_offset_permutation", || {
+        let entry_array = [0x3F, 0x0A, 0x00, 0x9E, 0, 0, 0, 0x0A, 0, 0, 0, 0x0F];
+        let at = OP1A
+            .windows(entry_array.len())
+            .position(|w| w == entry_array)
+            .unwrap();
+        // The picture index entry for display position `k`: 15 bytes after the 12 byte array header; its
+        // first byte is the temporal offset.
+        let offset_byte = |k: usize| at + 12 + 15 * k;
+        // Decode order of the fixture is pts 0,3,1,2,6,4,5,9,7,8, so the offsets by display position are:
+        let fixture_offsets: [i8; 10] = [0, 1, 1, -2, 1, 1, -2, 1, 1, -2];
+        for (k, want) in fixture_offsets.iter().enumerate() {
+            assert_eq!(OP1A[offset_byte(k)] as i8, *want, "fixture entry {k}");
+        }
+        let with_offset = |k: usize, offset: i8| {
+            let mut bytes = OP1A.to_vec();
+            bytes[offset_byte(k)] = offset as u8;
+            bytes
+        };
+        // Display 1 now lands on coded 0, where display 0 already is.
+        let first_collides = with_offset(1, -1);
+        // Display 3 now lands on coded 2, where display 1 already is (the earlier position keeps it).
+        let later_collides = with_offset(3, -1);
+        // Display 9 now lands on coded 8, where display 7 already is. Only this variant leaves coded
+        // positions 0..=6 intact: delivery of a reordered picture starts from the single random access
+        // point, coded 0, so a hole before the requested range would be refused too.
+        let tail_collides = with_offset(9, -1);
+
+        for purpose in [Purpose::Preview, Purpose::Export] {
+            let run = |bytes: &[u8], start: u64, count: u64, sink: &mut dyn ChunkSink| {
+                let start_pts = start * TICKS_PER_FRAME_25;
+                let mut req = request(bytes, PICTURE_TRACK, start_pts, count, OutputMode::Packets);
+                req.purpose = purpose;
+                deliver(bytes, &req, &Limits::default(), sink)
+            };
+            let refused = ReelError::Corrupt {
+                what: "mxf-temporal-offset",
+            };
+            for (label, bytes, start, count) in [
+                ("display 1 on coded 0: 0..2", &first_collides, 0, 2),
+                ("display 1 on coded 0: 1..2", &first_collides, 1, 1),
+                ("display 1 on coded 0: whole clip", &first_collides, 0, 10),
+                ("display 3 on coded 2: 3..4", &later_collides, 3, 1),
+                ("display 3 on coded 2: 1..4", &later_collides, 1, 3),
+                ("display 9 on coded 8: 9..10", &tail_collides, 9, 1),
+                ("display 9 on coded 8: 7..10", &tail_collides, 7, 3),
+            ] {
+                assert_eq!(
+                    run(bytes, start, count, &mut NeverReached).unwrap_err(),
+                    refused,
+                    "{purpose:?} {label}"
+                );
+            }
+
+            // Requests that avoid the damaged entries, and the undamaged fixture, deliver completely.
+            for (label, bytes, start, count) in [
+                ("display 9 on coded 8: 0..7", &tail_collides, 0, 7),
+                ("display 9 on coded 8: 4..7", &tail_collides, 4, 3),
+                ("fixture: whole clip", &OP1A.to_vec(), 0, 10),
+            ] {
+                let mut sink = Collect::default();
+                let receipt = run(bytes, start, count, &mut sink)
+                    .unwrap_or_else(|e| panic!("{purpose:?} {label}: {e}"));
+                assert!(receipt.complete, "{purpose:?} {label}");
+                assert_eq!(receipt.actual.units, count, "{purpose:?} {label}");
+                assert_eq!(
+                    receipt.disposition,
+                    Disposition::Exact,
+                    "{purpose:?} {label}"
+                );
+                let delivered = sink.chunks.iter().filter(|c| !c.4).count() as u64;
+                assert_eq!(delivered, count, "{purpose:?} {label}");
+            }
+        }
+    });
+}
