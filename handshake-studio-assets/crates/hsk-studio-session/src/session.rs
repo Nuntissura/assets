@@ -1213,8 +1213,9 @@ impl Session {
                 };
                 let disagreement = self.disagreement(&receipt, &binding, &pending);
                 if disagreement.any() {
-                    // Never resolved here: it stays pending and is listed by `diverged()`
-                    // until an operator calls `discard_diverged` or `resync_diverged`.
+                    // Not resolved here: it stays pending and is listed by `diverged()` until an
+                    // operator calls `discard_diverged` or `resync_diverged` (test
+                    // `diverged_pending_commit_is_resolved_only_by_the_operator_discard_or_resync`).
                     pending.diverged = Some((receipt, disagreement));
                     self.receipts.insert(
                         key.to_owned(),
