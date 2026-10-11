@@ -33,7 +33,13 @@ impl LossBook {
     pub(crate) fn finish(self) -> Vec<LossEntry> {
         self.0
             .into_iter()
-            .map(|((part, element, kind, code), count)| LossEntry { part, element, kind, code, count })
+            .map(|((part, element, kind, code), count)| LossEntry {
+                part,
+                element,
+                kind,
+                code,
+                count,
+            })
             .collect()
     }
 }
@@ -87,7 +93,10 @@ fn extras(n: Node, handled: &[&str]) -> Attrs {
         .collect()
 }
 fn opaque(n: Node, text: &str) -> Opaque {
-    Opaque { element: name(n).to_owned(), xml: text[n.range()].to_owned() }
+    Opaque {
+        element: name(n).to_owned(),
+        xml: text[n.range()].to_owned(),
+    }
 }
 fn link(v: Option<&str>) -> Option<String> {
     v.filter(|s| !s.is_empty() && *s != "n").map(str::to_owned)
@@ -100,8 +109,15 @@ fn parse_f(s: &str) -> Result<f64> {
         .ok_or(IdmlError::InvalidGeometry)
 }
 fn floats(s: &str, n: usize) -> Result<Vec<f64>> {
-    let v = s.split_whitespace().map(parse_f).collect::<Result<Vec<_>>>()?;
-    if v.len() == n { Ok(v) } else { Err(IdmlError::InvalidGeometry) }
+    let v = s
+        .split_whitespace()
+        .map(parse_f)
+        .collect::<Result<Vec<_>>>()?;
+    if v.len() == n {
+        Ok(v)
+    } else {
+        Err(IdmlError::InvalidGeometry)
+    }
 }
 fn affine(n: Node) -> Result<Affine> {
     match attr(n, "ItemTransform") {
@@ -157,7 +173,12 @@ pub fn decode_idml(
     let mut loss = LossBook::default();
     let model = read_model(&package, limits, &mut loss, cancel)?;
     let proposal = proposal::project(&model, limits, mint, cancel, &mut loss)?;
-    Ok(IdmlImport { package, model, proposal, loss: loss.finish() })
+    Ok(IdmlImport {
+        package,
+        model,
+        proposal,
+        loss: loss.finish(),
+    })
 }
 
 fn read_model(
@@ -166,7 +187,9 @@ fn read_model(
     loss: &mut LossBook,
     cancel: &CancellationToken,
 ) -> Result<IdmlModel> {
-    let map_part = package.part(DESIGNMAP).ok_or(IdmlError::NotIdml("designmap_missing"))?;
+    let map_part = package
+        .part(DESIGNMAP)
+        .ok_or(IdmlError::NotIdml("designmap_missing"))?;
     let map_text = text_of(map_part)?;
     let map_doc = parse_xml(map_text, limits)?;
     let root = map_doc.root_element();
@@ -202,12 +225,22 @@ fn read_model(
                 _ => {}
             }
         }
-        loss.note(DESIGNMAP, name(c), LossKind::PreservedOpaque, "designmap_element_not_interpreted");
+        loss.note(
+            DESIGNMAP,
+            name(c),
+            LossKind::PreservedOpaque,
+            "designmap_element_not_interpreted",
+        );
         designmap.push(DesignmapItem::Opaque(opaque(c, map_text)));
     }
     for p in &package.parts {
         if !handled.contains(p.name.as_str()) {
-            loss.note(&p.name, "part", LossKind::PreservedOpaque, "part_preserved_verbatim");
+            loss.note(
+                &p.name,
+                "part",
+                LossKind::PreservedOpaque,
+                "part_preserved_verbatim",
+            );
         }
     }
 
@@ -311,7 +344,9 @@ fn read_spread(
     let doc = parse_xml(text, limits)?;
     let spread = inner(doc.root_element(), "Spread")?;
     let mut m = SpreadModel {
-        id: attr(spread, "Self").ok_or(IdmlError::NotIdml("spread_self"))?.to_owned(),
+        id: attr(spread, "Self")
+            .ok_or(IdmlError::NotIdml("spread_self"))?
+            .to_owned(),
         part: part.name.clone(),
         item_transform: affine(spread)?,
         attrs: extras(spread, &["Self", "PageCount", "ItemTransform"]),
@@ -331,7 +366,12 @@ fn read_spread(
                 m.frames.push(read_frame(c, text, &part.name, loss)?);
             }
             other => {
-                loss.note(&part.name, other, LossKind::PreservedOpaque, page_item_code(other));
+                loss.note(
+                    &part.name,
+                    other,
+                    LossKind::PreservedOpaque,
+                    page_item_code(other),
+                );
                 m.items.push(SpreadItem::Opaque(opaque(c, text)));
             }
         }
@@ -340,7 +380,10 @@ fn read_spread(
 }
 
 fn read_page(n: Node, text: &str, part: &str, loss: &mut LossBook) -> Result<PageModel> {
-    let b = floats(attr(n, "GeometricBounds").ok_or(IdmlError::InvalidGeometry)?, 4)?;
+    let b = floats(
+        attr(n, "GeometricBounds").ok_or(IdmlError::InvalidGeometry)?,
+        4,
+    )?;
     if b[2] <= b[0] || b[3] <= b[1] {
         return Err(IdmlError::InvalidGeometry);
     }
@@ -350,12 +393,19 @@ fn read_page(n: Node, text: &str, part: &str, loss: &mut LossBook) -> Result<Pag
         if name(c) == "MarginPreference" {
             margins_pt = Some(margins_of(c)?);
         } else {
-            loss.note(part, name(c), LossKind::PreservedOpaque, "page_element_not_interpreted");
+            loss.note(
+                part,
+                name(c),
+                LossKind::PreservedOpaque,
+                "page_element_not_interpreted",
+            );
         }
         children.push(opaque(c, text));
     }
     Ok(PageModel {
-        id: attr(n, "Self").ok_or(IdmlError::NotIdml("page_self"))?.to_owned(),
+        id: attr(n, "Self")
+            .ok_or(IdmlError::NotIdml("page_self"))?
+            .to_owned(),
         name: attr(n, "Name").unwrap_or_default().to_owned(),
         bounds_pt: [b[0], b[1], b[2], b[3]],
         item_transform: affine(n)?,
@@ -375,28 +425,56 @@ fn read_frame(n: Node, text: &str, part: &str, loss: &mut LossBook) -> Result<Fr
         match name(c) {
             "Properties" => {
                 for p in elements(c).filter(|p| name(*p) != "PathGeometry") {
-                    loss.note(part, name(p), LossKind::PreservedOpaque, "frame_property_not_interpreted");
+                    loss.note(
+                        part,
+                        name(p),
+                        LossKind::PreservedOpaque,
+                        "frame_property_not_interpreted",
+                    );
                 }
             }
             "TextFramePreference" => {}
             "TextWrapPreference" => {
-                loss.note(part, "TextWrapPreference", LossKind::PreservedOpaque, "text_wrap_not_interpreted");
+                loss.note(
+                    part,
+                    "TextWrapPreference",
+                    LossKind::PreservedOpaque,
+                    "text_wrap_not_interpreted",
+                );
             }
             other => {
-                loss.note(part, other, LossKind::PreservedOpaque, "frame_element_not_interpreted");
+                loss.note(
+                    part,
+                    other,
+                    LossKind::PreservedOpaque,
+                    "frame_element_not_interpreted",
+                );
             }
         }
         children.push(opaque(c, text));
     }
     let attrs = extras(
         n,
-        &["Self", "ParentStory", "PreviousTextFrame", "NextTextFrame", "ItemTransform"],
+        &[
+            "Self",
+            "ParentStory",
+            "PreviousTextFrame",
+            "NextTextFrame",
+            "ItemTransform",
+        ],
     );
     if !attrs.is_empty() {
-        loss.note(part, "TextFrame", LossKind::PreservedOpaque, "frame_attributes_not_interpreted");
+        loss.note(
+            part,
+            "TextFrame",
+            LossKind::PreservedOpaque,
+            "frame_attributes_not_interpreted",
+        );
     }
     Ok(FrameModel {
-        id: attr(n, "Self").ok_or(IdmlError::NotIdml("frame_self"))?.to_owned(),
+        id: attr(n, "Self")
+            .ok_or(IdmlError::NotIdml("frame_self"))?
+            .to_owned(),
         story_id: link(attr(n, "ParentStory")).ok_or(IdmlError::NotIdml("frame_story"))?,
         previous: link(attr(n, "PreviousTextFrame")),
         next: link(attr(n, "NextTextFrame")),
@@ -414,9 +492,16 @@ fn read_path(frame: Node, part: &str, loss: &mut LossBook) -> Result<(Vec<PathPo
     let Some(geometry) = geometry else {
         return Ok((Vec::new(), false));
     };
-    let subpaths: Vec<Node> = elements(geometry).filter(|c| name(*c) == "GeometryPathType").collect();
+    let subpaths: Vec<Node> = elements(geometry)
+        .filter(|c| name(*c) == "GeometryPathType")
+        .collect();
     if subpaths.len() > 1 {
-        loss.note(part, "TextFrame", LossKind::Approximated, "compound_frame_path");
+        loss.note(
+            part,
+            "TextFrame",
+            LossKind::Approximated,
+            "compound_frame_path",
+        );
     }
     let Some(first) = subpaths.first() else {
         return Ok((Vec::new(), false));
@@ -426,12 +511,27 @@ fn read_path(frame: Node, part: &str, loss: &mut LossBook) -> Result<(Vec<PathPo
     if let Some(array) = child(*first, "PathPointArray") {
         for p in elements(array).filter(|c| name(*c) == "PathPointType") {
             let anchor = pair(attr(p, "Anchor").ok_or(IdmlError::InvalidGeometry)?)?;
-            let left = attr(p, "LeftDirection").map(pair).transpose()?.unwrap_or(anchor);
-            let right = attr(p, "RightDirection").map(pair).transpose()?.unwrap_or(anchor);
+            let left = attr(p, "LeftDirection")
+                .map(pair)
+                .transpose()?
+                .unwrap_or(anchor);
+            let right = attr(p, "RightDirection")
+                .map(pair)
+                .transpose()?
+                .unwrap_or(anchor);
             if left != anchor || right != anchor {
-                loss.note(part, "TextFrame", LossKind::Approximated, "curved_frame_path_bounds_only");
+                loss.note(
+                    part,
+                    "TextFrame",
+                    LossKind::Approximated,
+                    "curved_frame_path_bounds_only",
+                );
             }
-            points.push(PathPoint { anchor, left, right });
+            points.push(PathPoint {
+                anchor,
+                left,
+                right,
+            });
         }
     }
     Ok((points, attr(*first, "PathOpen") == Some("true")))
@@ -456,7 +556,10 @@ const AS: [(&str, AutoSizing); 5] = [
     ("HeightOnly", AutoSizing::HeightOnly),
     ("WidthOnly", AutoSizing::WidthOnly),
     ("HeightAndWidth", AutoSizing::HeightAndWidth),
-    ("HeightAndWidthProportionally", AutoSizing::HeightAndWidthProportionally),
+    (
+        "HeightAndWidthProportionally",
+        AutoSizing::HeightAndWidthProportionally,
+    ),
 ];
 
 fn pick<T: Copy>(
@@ -472,7 +575,12 @@ fn pick<T: Copy>(
     };
     table.iter().find(|(k, _)| *k == v).map_or_else(
         || {
-            loss.note(part, "TextFramePreference", LossKind::Approximated, "frame_preference_value_unknown");
+            loss.note(
+                part,
+                "TextFramePreference",
+                LossKind::Approximated,
+                "frame_preference_value_unknown",
+            );
             default
         },
         |(_, t)| *t,
@@ -498,7 +606,14 @@ fn read_prefs(frame: Node, part: &str, loss: &mut LossBook) -> Result<FramePrefs
     if let Some(v) = attr(el, "MinimumFirstBaselineOffset") {
         p.min_first_baseline_pt = parse_f(v)?;
     }
-    p.vertical_justification = pick(el, "VerticalJustification", &VJ, p.vertical_justification, part, loss);
+    p.vertical_justification = pick(
+        el,
+        "VerticalJustification",
+        &VJ,
+        p.vertical_justification,
+        part,
+        loss,
+    );
     p.first_baseline = pick(el, "FirstBaselineOffset", &FB, p.first_baseline, part, loss);
     p.auto_size = pick(el, "AutoSizingType", &AS, p.auto_size, part, loss);
     if let Some(list) = child(el, "Properties").and_then(|c| child(c, "InsetSpacing")) {
@@ -525,8 +640,21 @@ fn language_class(value: &str) -> Option<&'static str> {
     } else if any(&["chinese", "japanese", "korean"]) {
         Some("cjk_language")
     } else if any(&[
-        "thai", "hindi", "bengali", "tamil", "telugu", "gujarati", "punjabi", "kannada",
-        "malayalam", "marathi", "nepali", "khmer", "lao", "burmese", "sanskrit",
+        "thai",
+        "hindi",
+        "bengali",
+        "tamil",
+        "telugu",
+        "gujarati",
+        "punjabi",
+        "kannada",
+        "malayalam",
+        "marathi",
+        "nepali",
+        "khmer",
+        "lao",
+        "burmese",
+        "sanskrit",
     ]) {
         Some("complex_script_language")
     } else {
@@ -535,7 +663,14 @@ fn language_class(value: &str) -> Option<&'static str> {
 }
 
 fn classify(key: &str, value: &str, out: &mut BTreeSet<&'static str>) {
-    const CJK: [&str; 6] = ["Kinsoku", "Ruby", "Kenten", "Tatechuyoko", "Warichu", "Mojikumi"];
+    const CJK: [&str; 6] = [
+        "Kinsoku",
+        "Ruby",
+        "Kenten",
+        "Tatechuyoko",
+        "Warichu",
+        "Mojikumi",
+    ];
     if key.ends_with("Direction") && value.contains("RightToLeft") {
         out.insert("rtl_direction");
     } else if key.ends_with("Orientation") && value.contains("Vertical") {
@@ -581,7 +716,9 @@ impl StoryBuilder<'_> {
     fn paragraph_range(&mut self, n: Node) {
         scan_composition(n, &mut self.comp);
         let template = ParaModel {
-            style: attr(n, "AppliedParagraphStyle").unwrap_or_default().to_owned(),
+            style: attr(n, "AppliedParagraphStyle")
+                .unwrap_or_default()
+                .to_owned(),
             attrs: extras(n, &["AppliedParagraphStyle"]),
             props: child(n, "Properties").map(|p| opaque(p, self.text)),
             runs: Vec::new(),
@@ -610,7 +747,9 @@ impl StoryBuilder<'_> {
                 .map(|s| s.trim().to_owned())
         });
         let proto = RunModel {
-            char_style: attr(n, "AppliedCharacterStyle").unwrap_or_default().to_owned(),
+            char_style: attr(n, "AppliedCharacterStyle")
+                .unwrap_or_default()
+                .to_owned(),
             attrs: extras(n, &["AppliedCharacterStyle"]),
             props: props.map(|p| opaque(p, self.text)),
             text: String::new(),
@@ -632,7 +771,12 @@ impl StoryBuilder<'_> {
                         }
                     }
                     if run.special {
-                        self.loss.note(self.part, "Content", LossKind::Unsupported, "special_character_dropped");
+                        self.loss.note(
+                            self.part,
+                            "Content",
+                            LossKind::Unsupported,
+                            "special_character_dropped",
+                        );
                     }
                     run.span = Some(c.range());
                     self.ensure_paragraph(template);
@@ -651,7 +795,10 @@ impl StoryBuilder<'_> {
                         None => {
                             self.ensure_paragraph(template);
                             if let Some(p) = self.paras.last_mut() {
-                                p.runs.push(RunModel { br: true, ..proto.clone() });
+                                p.runs.push(RunModel {
+                                    br: true,
+                                    ..proto.clone()
+                                });
                             }
                         }
                     }
@@ -678,7 +825,9 @@ fn read_story(
     let text = text_of(part)?;
     let doc = parse_xml(text, limits)?;
     let story = inner(doc.root_element(), "Story")?;
-    let id = attr(story, "Self").ok_or(IdmlError::NotIdml("story_self"))?.to_owned();
+    let id = attr(story, "Self")
+        .ok_or(IdmlError::NotIdml("story_self"))?
+        .to_owned();
     let mut b = StoryBuilder {
         part: &part.name,
         text,
@@ -699,11 +848,18 @@ fn read_story(
             right_to_left = attr(c, "StoryDirection") == Some("RightToLeftDirection");
             scan_composition(c, &mut b.comp);
         } else {
-            b.loss.note(&part.name, name(c), LossKind::PreservedOpaque, "story_element_not_interpreted");
+            b.loss.note(
+                &part.name,
+                name(c),
+                LossKind::PreservedOpaque,
+                "story_element_not_interpreted",
+            );
         }
         head.push(opaque(c, text));
     }
-    let StoryBuilder { comp, paras, loss, .. } = b;
+    let StoryBuilder {
+        comp, paras, loss, ..
+    } = b;
     for code in &comp {
         loss.note(&part.name, "Story", LossKind::UnsupportedComposition, code);
     }
@@ -747,7 +903,12 @@ pub(crate) fn thread_chains(
             let target = l.as_deref()?;
             let found = at.get(target).copied();
             if found.is_none() {
-                loss.note(&model.spreads[pos.0].part, "TextFrame", LossKind::Approximated, "thread_link_outside_subset");
+                loss.note(
+                    &model.spreads[pos.0].part,
+                    "TextFrame",
+                    LossKind::Approximated,
+                    "thread_link_outside_subset",
+                );
             }
             found
         };

@@ -83,10 +83,18 @@ fn designmap_xml(m: &IdmlModel) -> String {
                 s.push('\n');
             }
             DesignmapItem::Spread(i) => {
-                let _ = writeln!(s, "<idPkg:Spread src=\"{}\"/>", esc(&m.spreads[*i].part, true));
+                let _ = writeln!(
+                    s,
+                    "<idPkg:Spread src=\"{}\"/>",
+                    esc(&m.spreads[*i].part, true)
+                );
             }
             DesignmapItem::Story(i) => {
-                let _ = writeln!(s, "<idPkg:Story src=\"{}\"/>", esc(&m.stories[*i].part, true));
+                let _ = writeln!(
+                    s,
+                    "<idPkg:Story src=\"{}\"/>",
+                    esc(&m.stories[*i].part, true)
+                );
             }
         }
     }
@@ -207,10 +215,7 @@ fn story_xml(m: &IdmlModel, st: &StoryModel) -> String {
 
 /// Canonical export of the supported subset (see the module docs). Deterministic: the same model
 /// and package always yield the same bytes.
-pub fn export_idml(
-    import: &IdmlImport,
-    cancel: &CancellationToken,
-) -> Result<Vec<u8>> {
+pub fn export_idml(import: &IdmlImport, cancel: &CancellationToken) -> Result<Vec<u8>> {
     export_model(&import.model, &import.package, cancel)
 }
 
@@ -236,7 +241,10 @@ pub fn export_model(
         order.push((p.name.clone(), bytes));
     }
     order.extend(generated);
-    let refs: Vec<(&str, &[u8])> = order.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    let refs: Vec<(&str, &[u8])> = order
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.as_slice()))
+        .collect();
     container::write(&refs, true)
 }
 
@@ -266,7 +274,9 @@ pub fn replace_content(
     cancel: &CancellationToken,
 ) -> Result<IdmlPackage> {
     canceled(cancel)?;
-    let part = package.part(edit.part).ok_or(IdmlError::InvalidEdit("no_such_part"))?;
+    let part = package
+        .part(edit.part)
+        .ok_or(IdmlError::InvalidEdit("no_such_part"))?;
     if part.sha256 != edit.expected_part_sha256 {
         return Err(IdmlError::StaleSource);
     }
@@ -301,7 +311,10 @@ pub fn write_idml(package: &IdmlPackage) -> Result<Vec<u8>> {
     if package.parts.first().map(|p| p.name.as_str()) != Some("mimetype") {
         return Err(IdmlError::Mimetype("not_first"));
     }
-    let refs: Vec<(&str, &[u8])> =
-        package.parts.iter().map(|p| (p.name.as_str(), p.bytes.as_slice())).collect();
+    let refs: Vec<(&str, &[u8])> = package
+        .parts
+        .iter()
+        .map(|p| (p.name.as_str(), p.bytes.as_slice()))
+        .collect();
     container::write(&refs, true)
 }

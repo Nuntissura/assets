@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod container;
+mod descriptor;
 mod error;
 mod idml_decode;
 mod idml_encode;
@@ -11,6 +12,7 @@ mod model;
 mod proposal;
 
 pub use container::IDML_MIMETYPE;
+pub use descriptor::DESCRIPTOR;
 pub use error::{IdmlError, PreservedBlob, Result};
 pub use idml_decode::{decode_idml, import_idml, open_idml};
 pub use idml_encode::{ContentEdit, export_idml, export_model, replace_content, write_idml};

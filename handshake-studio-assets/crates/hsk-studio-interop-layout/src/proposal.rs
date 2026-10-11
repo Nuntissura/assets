@@ -41,7 +41,11 @@ impl Resolver for Known<'_> {
 }
 
 fn folio_err(d: Diagnostic) -> IdmlError {
-    if d.code == Code::Canceled { IdmlError::Canceled } else { IdmlError::Folio(d.code) }
+    if d.code == Code::Canceled {
+        IdmlError::Canceled
+    } else {
+        IdmlError::Folio(d.code)
+    }
 }
 fn pt(v: f64) -> Value {
     json!({"value": v, "unit": "pt"})
@@ -52,7 +56,12 @@ fn apply(t: &Affine, x: f64, y: f64) -> (f64, f64) {
 
 /// `[x0, y0, x1, y1]` of the points under `t`.
 fn bbox(points: impl Iterator<Item = (f64, f64)>, t: &Affine) -> [f64; 4] {
-    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut b = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
     for (x, y) in points {
         let (x, y) = apply(t, x, y);
         b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
@@ -63,7 +72,13 @@ fn bbox(points: impl Iterator<Item = (f64, f64)>, t: &Affine) -> [f64; 4] {
 fn key_of(raw: &str, seen: &mut BTreeSet<String>) -> String {
     let mut k: String = raw
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(100)
         .collect();
     if k.is_empty() {
@@ -79,10 +94,19 @@ fn key_of(raw: &str, seen: &mut BTreeSet<String>) -> String {
 }
 
 fn language_key(raw: &str) -> Option<String> {
-    let t = raw.trim().trim_start_matches("Language/").trim_start_matches("$ID/");
+    let t = raw
+        .trim()
+        .trim_start_matches("Language/")
+        .trim_start_matches("$ID/");
     let k: String = t
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(128)
         .collect();
     (!k.is_empty()).then_some(k)
@@ -95,7 +119,10 @@ struct Styles<'a> {
 impl Styles<'_> {
     /// `None` for the "no style" sentinels, else the STYS id of this (kind, name).
     fn reference(&mut self, paragraph: bool, name: &str) -> Option<String> {
-        if name.is_empty() || name.contains("[No paragraph style]") || name.contains("[No character style]") {
+        if name.is_empty()
+            || name.contains("[No paragraph style]")
+            || name.contains("[No character style]")
+        {
             return None;
         }
         let mint = &mut *self.mint;
@@ -174,11 +201,22 @@ pub(crate) fn project(
     for chain in &chains {
         let (si, fi) = chain[0];
         if !story_has_chain.insert(model.spreads[si].frames[fi].story_id.as_str()) {
-            loss.note(&model.spreads[si].part, "TextFrame", LossKind::Approximated, "extra_thread_chain_not_projected");
+            loss.note(
+                &model.spreads[si].part,
+                "TextFrame",
+                LossKind::Approximated,
+                "extra_thread_chain_not_projected",
+            );
             continue;
         }
         for (i, pos) in chain.iter().enumerate() {
-            kept.insert(*pos, (i.checked_sub(1).map(|p| chain[p]), chain.get(i + 1).copied()));
+            kept.insert(
+                *pos,
+                (
+                    i.checked_sub(1).map(|p| chain[p]),
+                    chain.get(i + 1).copied(),
+                ),
+            );
         }
     }
 
@@ -195,7 +233,11 @@ pub(crate) fn project(
     for (si, s) in model.spreads.iter().enumerate() {
         canceled(cancel)?;
         let spread_id = mint.mint("SPGS");
-        ids.push(IdLink { kind: "spread", idml: s.id.clone(), folio: spread_id.clone() });
+        ids.push(IdLink {
+            kind: "spread",
+            idml: s.id.clone(),
+            folio: spread_id.clone(),
+        });
         // Page rectangles in spread coordinates, pages ordered left to right.
         let mut order: Vec<usize> = (0..s.pages.len()).collect();
         let rects: Vec<[f64; 4]> = s
@@ -212,15 +254,30 @@ pub(crate) fn project(
         let (mut total_w, mut max_h) = (0.0f64, 0.0f64);
         for &pi in &order {
             let p = &s.pages[pi];
-            let (w, h) = (p.bounds_pt[3] - p.bounds_pt[1], p.bounds_pt[2] - p.bounds_pt[0]);
+            let (w, h) = (
+                p.bounds_pt[3] - p.bounds_pt[1],
+                p.bounds_pt[2] - p.bounds_pt[0],
+            );
             total_w += w;
             max_h = max_h.max(h);
             let key = key_of(&p.id, &mut page_keys_seen);
-            ids.push(IdLink { kind: "page", idml: p.id.clone(), folio: key.clone() });
-            let m = p.margins_pt.or(model.document.margins_pt).unwrap_or_else(|| {
-                loss.note(&s.part, "Page", LossKind::Approximated, "margins_defaulted_zero");
-                [0.0; 4]
+            ids.push(IdLink {
+                kind: "page",
+                idml: p.id.clone(),
+                folio: key.clone(),
             });
+            let m = p
+                .margins_pt
+                .or(model.document.margins_pt)
+                .unwrap_or_else(|| {
+                    loss.note(
+                        &s.part,
+                        "Page",
+                        LossKind::Approximated,
+                        "margins_defaulted_zero",
+                    );
+                    [0.0; 4]
+                });
             let side = if !model.document.facing_pages {
                 "single_sided"
             } else if rects[pi][2] <= 1e-6 {
@@ -254,22 +311,40 @@ pub(crate) fn project(
             };
             let layer_id = mint.mint("SLYR");
             layer_ids.insert((si, fi), layer_id.clone());
-            ids.push(IdLink { kind: "frame", idml: f.id.clone(), folio: layer_id.clone() });
+            ids.push(IdLink {
+                kind: "frame",
+                idml: f.id.clone(),
+                folio: layer_id.clone(),
+            });
             let t = &f.item_transform;
             if t[1].abs() > 1e-9 || t[2].abs() > 1e-9 {
-                loss.note(&s.part, "TextFrame", LossKind::Approximated, "frame_transform_not_axis_aligned");
+                loss.note(
+                    &s.part,
+                    "TextFrame",
+                    LossKind::Approximated,
+                    "frame_transform_not_axis_aligned",
+                );
             }
             let b = bbox(f.path.iter().map(|p| (p.anchor[0], p.anchor[1])), t);
             let overlap = |r: &[f64; 4]| {
-                (b[2].min(r[2]) - b[0].max(r[0])).max(0.0) * (b[3].min(r[3]) - b[1].max(r[1])).max(0.0)
+                (b[2].min(r[2]) - b[0].max(r[0])).max(0.0)
+                    * (b[3].min(r[3]) - b[1].max(r[1])).max(0.0)
             };
-            let best = (0..rects.len())
-                .max_by(|a, c| overlap(&rects[*a]).total_cmp(&overlap(&rects[*c])).then(c.cmp(a)));
+            let best = (0..rects.len()).max_by(|a, c| {
+                overlap(&rects[*a])
+                    .total_cmp(&overlap(&rects[*c]))
+                    .then(c.cmp(a))
+            });
             let Some(mut best) = best else {
                 return Err(IdmlError::NotIdml("frame_without_page"));
             };
             if overlap(&rects[best]) <= 0.0 {
-                loss.note(&s.part, "TextFrame", LossKind::Approximated, "frame_off_page");
+                loss.note(
+                    &s.part,
+                    "TextFrame",
+                    LossKind::Approximated,
+                    "frame_off_page",
+                );
                 let cx = (b[0] + b[2]) / 2.0;
                 best = (0..rects.len())
                     .min_by(|a, c| {
@@ -289,7 +364,9 @@ pub(crate) fn project(
                 .iter()
                 .find(|(k, _)| k == "Name")
                 .map_or("Text frame", |(_, v)| v.as_str());
-            let story = story_ids.get(f.story_id.as_str()).ok_or(IdmlError::DanglingStory)?;
+            let story = story_ids
+                .get(f.story_id.as_str())
+                .ok_or(IdmlError::DanglingStory)?;
             // Link ids are resolved after every layer id exists.
             layers_json.push((
                 prev,
@@ -319,14 +396,18 @@ pub(crate) fn project(
     let mut layers: Vec<Value> = Vec::new();
     for (prev, next, mut layer) in layers_json {
         let link = |l: Option<(usize, usize)>| {
-            l.and_then(|p| layer_ids.get(&p)).map_or(Value::Null, |id| json!(id))
+            l.and_then(|p| layer_ids.get(&p))
+                .map_or(Value::Null, |id| json!(id))
         };
         layer["text_frame"]["previous_text_frame"] = link(prev);
         layer["text_frame"]["next_text_frame"] = link(next);
         layers.push(layer);
     }
 
-    let mut styles = Styles { mint, by_name: BTreeMap::new() };
+    let mut styles = Styles {
+        mint,
+        by_name: BTreeMap::new(),
+    };
     let mut stories = Vec::new();
     let mut unresolved = Vec::new();
     let known: BTreeSet<String> = story_ids.values().cloned().collect();
@@ -334,7 +415,11 @@ pub(crate) fn project(
     for s in &model.stories {
         canceled(cancel)?;
         let folio_id = story_ids[s.id.as_str()].clone();
-        ids.push(IdLink { kind: "story", idml: s.id.clone(), folio: folio_id.clone() });
+        ids.push(IdLink {
+            kind: "story",
+            idml: s.id.clone(),
+            folio: folio_id.clone(),
+        });
         let wire = story_json(s, &folio_id, &mut styles);
         let story: StudioTextStory =
             serde_json::from_value(wire).map_err(|_| IdmlError::Folio(Code::InvalidField))?;
@@ -352,10 +437,19 @@ pub(crate) fn project(
     let style_refs = styles
         .by_name
         .into_iter()
-        .map(|((paragraph, idml_name), folio)| StyleRef { folio, idml_name, paragraph })
+        .map(|((paragraph, idml_name), folio)| StyleRef {
+            folio,
+            idml_name,
+            paragraph,
+        })
         .collect();
 
-    loss.note("designmap.xml", "Document", LossKind::Approximated, "colour_mode_assumed_rgb");
+    loss.note(
+        "designmap.xml",
+        "Document",
+        LossKind::Approximated,
+        "colour_mode_assumed_rgb",
+    );
     let wire = json!({
         "schema_id": "hsk.studio.document@1", "document_id": document_id, "revision": 1,
         "geometry_unit": "pt", "colour_mode": 3, "bits_per_channel": 8,
@@ -365,9 +459,16 @@ pub(crate) fn project(
         "graph": {"schema_id": "hsk.studio.layer_graph@1", "operations": [], "edges": [], "outputs": []},
     });
     let bytes = serde_json::to_vec(&wire).map_err(|_| IdmlError::Folio(Code::InvalidJson))?;
-    let snapshot = match inspect_bytes(&bytes, limits.folio, cancel, &resolver).map_err(folio_err)? {
-        Inspection::Editable(s) => s,
-        Inspection::ReadOnly(r) => return Err(IdmlError::Folio(r.diagnostic().code)),
-    };
-    Ok(LayoutProposal { snapshot, stories, style_refs, unresolved, ids })
+    let snapshot =
+        match inspect_bytes(&bytes, limits.folio, cancel, &resolver).map_err(folio_err)? {
+            Inspection::Editable(s) => s,
+            Inspection::ReadOnly(r) => return Err(IdmlError::Folio(r.diagnostic().code)),
+        };
+    Ok(LayoutProposal {
+        snapshot,
+        stories,
+        style_refs,
+        unresolved,
+        ids,
+    })
 }

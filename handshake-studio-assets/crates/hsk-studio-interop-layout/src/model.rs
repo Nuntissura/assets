@@ -62,7 +62,11 @@ pub struct IdmlPart {
 impl IdmlPart {
     pub fn new(name: String, bytes: Vec<u8>) -> Self {
         let sha256 = Sha256::digest(&bytes).into();
-        Self { name, bytes, sha256 }
+        Self {
+            name,
+            bytes,
+            sha256,
+        }
     }
 }
 
