@@ -60,6 +60,13 @@ impl Faults {
         }
     }
 
+    /// Before HELLO: sleep (the host normally kills the worker first), then carry on.
+    fn stall_hello(&self) {
+        if self.fault == WorkerTestFault::StallHello {
+            thread::sleep(HANG_LIMIT);
+        }
+    }
+
     /// Injects the fault on the first PACKET. Returns `Some(alive)` when the fault replaced the
     /// normal answer, `None` when the packet must be decoded normally.
     fn on_packet(&mut self, out: &mut impl Write, id: u64) -> Option<bool> {
@@ -77,7 +84,9 @@ impl Faults {
                 Some(reply(out, &wire::encode_oversize_frame(id, 2 << 20)))
             }
             WorkerTestFault::GarbageReply => Some(reply(out, &wire::encode_garbage())),
-            WorkerTestFault::None | WorkerTestFault::ExitOnOpen => None,
+            WorkerTestFault::None | WorkerTestFault::ExitOnOpen | WorkerTestFault::StallHello => {
+                None
+            }
         }
     }
 }
@@ -120,6 +129,8 @@ fn reply(out: &mut impl Write, payload: &[u8]) -> bool {
 fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
     #[cfg(feature = "test-faults")]
     let mut faults = Faults::from_env();
+    #[cfg(feature = "test-faults")]
+    faults.stall_hello();
     let stdout = io::stdout();
     let mut out = stdout.lock();
     if !reply(&mut out, &wire::encode_hello(DECODER_ID, decoder_version())) {

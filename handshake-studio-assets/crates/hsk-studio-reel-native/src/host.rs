@@ -11,7 +11,8 @@
 //!
 //! Supervision (one request = one write + replies read on a per-worker I/O thread, the calling thread only
 //! waits on a channel), in order of precedence:
-//! * cancel: the worker is killed, the call returns `Canceled`;
+//! * cancel: the worker is killed, the call returns `Canceled` (also while a new worker is still
+//!   starting: the HELLO wait is polled, `spawn_timeout` bounds it);
 //! * deadlines: every request (a batch = one packet and the pictures it releases) has `batch_deadline`
 //!   and the whole segment has `segment_deadline`, both on the real monotonic clock: the worker is
 //!   killed, `decoder_deadline`;
@@ -53,7 +54,7 @@ use hsk_studio_reel::{
 use std::{
     collections::VecDeque,
     io::SeekFrom,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, PoisonError,
@@ -92,8 +93,9 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Worker-pool policy.
 #[derive(Clone, Debug)]
 pub struct Av1WorkerOptions {
-    /// Worker executable. `None`: `reel-native-av1-worker` next to the running executable (or one
-    /// directory above it, for test and example binaries).
+    /// Worker executable. `None`: `reel-native-av1-worker` in the directory of the running executable and
+    /// nowhere else (no parent directory, no search path; test `worker_is_found_only_beside_the_running_executable`).
+    /// Test and example binaries, which cargo places one directory below the worker, pass the path here.
     pub program: Option<PathBuf>,
     /// Most worker processes alive at once (idle plus busy); a call beyond that is refused at once.
     pub max_workers: usize,
@@ -455,17 +457,17 @@ fn quiet(command: &mut Command) {
 #[cfg(not(windows))]
 fn quiet(_command: &mut Command) {}
 
-fn discover_program() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+/// The worker executable inside the directory of `exe` and nowhere else: no parent directory and no
+/// search path, so a file planted in a directory above the host's own cannot be executed as the decoder
+/// worker (HELLO only checks self-reported strings). Test `worker_is_found_only_beside_the_running_executable`;
+/// same rule as the motion-js (961c301) and score-plugin (7d5641c) workers.
+fn discover_beside(exe: &Path) -> Option<PathBuf> {
     let name = format!("{WORKER_PROGRAM}{}", std::env::consts::EXE_SUFFIX);
-    let dir = exe.parent()?;
-    [
-        Some(dir.join(&name)),
-        dir.parent().map(|parent| parent.join(&name)),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|candidate| candidate.is_file())
+    Some(exe.parent()?.join(name)).filter(|candidate| candidate.is_file())
+}
+
+fn discover_program() -> Option<PathBuf> {
+    discover_beside(&std::env::current_exe().ok()?)
 }
 
 /// Why a request ended without a usable terminal reply.
@@ -559,16 +561,20 @@ impl Pool {
         Ok(())
     }
 
-    fn spawn(&self) -> Result<Session, Av1WorkerFault> {
+    /// Starts one worker and waits for its HELLO. The wait is polled in `WAIT_SLICE` slices, so a cancel
+    /// is honoured within one slice (a stalled or slow-starting worker never holds a canceled call for
+    /// the whole `spawn_timeout`): the starting worker is killed and reaped and the call is `Canceled`.
+    /// `spawn_timeout` still bounds the wait. Test `canceled_call_does_not_wait_for_a_stalled_hello`.
+    fn spawn(&self, cancel: &CancellationToken) -> Result<Session, Av1Error> {
         let previous = self.live.fetch_add(1, Ordering::AcqRel);
         let permit = Permit(Arc::clone(&self.live));
         if previous >= self.max_workers {
-            return Err(Av1WorkerFault::PoolBusy);
+            return Err(Av1Error::Worker(Av1WorkerFault::PoolBusy));
         }
-        self.admit_spawn()?;
+        self.admit_spawn().map_err(Av1Error::Worker)?;
         let spawn_failed = || {
             bump(&self.counters.spawn_failed);
-            Av1WorkerFault::SpawnFailed
+            Av1Error::Worker(Av1WorkerFault::SpawnFailed)
         };
         let mut command = Command::new(&self.program);
         command
@@ -606,31 +612,33 @@ impl Pool {
         if io_thread.is_err() {
             return Err(spawn_failed());
         }
-        match session.frames.recv_timeout(self.spawn_timeout) {
-            Ok(Ok(hello)) => match wire::decode_hello(&hello) {
-                Ok(hello) if self.accept_hello(&hello) => Ok(session),
-                Ok(_) => {
-                    session.terminate(Duration::ZERO);
-                    Err(Av1WorkerFault::VersionMismatch)
-                }
-                Err(_) => {
-                    bump(&self.counters.protocol_faults);
-                    session.terminate(Duration::ZERO);
-                    Err(Av1WorkerFault::Protocol)
-                }
-            },
-            _ => {
+        let hello = match session.wait(cancel, deadline_after(self.spawn_timeout)) {
+            Waited::Frame(hello) => hello,
+            Waited::Canceled => return Err(self.fail(&mut session, Failure::Canceled)),
+            Waited::TimedOut | Waited::Failed(_) => {
                 session.terminate(Duration::ZERO);
-                Err(spawn_failed())
+                return Err(spawn_failed());
+            }
+        };
+        match wire::decode_hello(&hello) {
+            Ok(hello) if self.accept_hello(&hello) => Ok(session),
+            Ok(_) => {
+                session.terminate(Duration::ZERO);
+                Err(Av1Error::Worker(Av1WorkerFault::VersionMismatch))
+            }
+            Err(_) => {
+                bump(&self.counters.protocol_faults);
+                session.terminate(Duration::ZERO);
+                Err(Av1Error::Worker(Av1WorkerFault::Protocol))
             }
         }
     }
 
-    fn checkout(&self) -> Result<Session, Av1WorkerFault> {
+    fn checkout(&self, cancel: &CancellationToken) -> Result<Session, Av1Error> {
         loop {
             let idle = lock(&self.idle).pop();
             let Some(mut session) = idle else {
-                return self.spawn();
+                return self.spawn(cancel);
             };
             if session.is_alive() {
                 return Ok(session);
@@ -1024,8 +1032,7 @@ impl WorkerAv1Provider {
         } else {
             Some(parse_av1c(spec.config)?)
         };
-        let frame_cap =
-            declared_frame_cap(parsed.as_ref(), spec.width, spec.height, &spec.limits)?;
+        let frame_cap = declared_frame_cap(parsed.as_ref(), spec.width, spec.height, &spec.limits)?;
         let open = OpenRequest {
             max_chunk_bytes: u64::try_from(decoder_budget(spec.width, spec.height, &spec.limits)?)
                 .unwrap_or(u64::MAX),
@@ -1040,14 +1047,9 @@ impl WorkerAv1Provider {
             max_packet_bytes: spec.limits.max_chunk_bytes.min(MAX_PACKET_BYTES),
             faults,
         };
-        match pool.checkout() {
+        match pool.checkout(cancel) {
             Ok(session) => worker.session = Some(session),
-            Err(fault) => {
-                return Err(WorkerSession::convert(
-                    worker.faults.as_ref(),
-                    Av1Error::Worker(fault),
-                ));
-            }
+            Err(error) => return Err(WorkerSession::convert(worker.faults.as_ref(), error)),
         }
         let id = pool.next_id();
         // OPEN is answered by OPENED alone: a picture here is the worker breaking the protocol.
@@ -1214,5 +1216,50 @@ impl MediaProvider for WorkerAv1Provider {
     ) -> Result<SegmentReceipt, ReelError> {
         self.decode_av1(src, req, limits, cancel, sink)
             .map_err(Av1Error::into_reel)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Removes the scratch directory this test made (it lives under the TMP root of the cargo env).
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// R7 review B (PLR-034): a worker file planted in the directory ABOVE the host executable's own
+    /// directory is never selected; only the executable's directory is.
+    #[test]
+    fn worker_is_found_only_beside_the_running_executable() {
+        let root =
+            std::env::temp_dir().join(format!("hsk-reel-native-discover-{}", std::process::id()));
+        let _guard = Scratch(root.clone());
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("scratch directory");
+        let name = format!("{WORKER_PROGRAM}{}", std::env::consts::EXE_SUFFIX);
+        let host = bin.join(format!("host{}", std::env::consts::EXE_SUFFIX));
+
+        fs::write(root.join(&name), b"decoy above the executable directory").expect("decoy");
+        assert_eq!(
+            discover_beside(&host),
+            None,
+            "the parent directory must not be searched"
+        );
+        fs::create_dir_all(bin.join(&name)).expect("a directory named like the worker");
+        assert_eq!(
+            discover_beside(&host),
+            None,
+            "a directory is not a worker program"
+        );
+        fs::remove_dir_all(bin.join(&name)).expect("remove the directory");
+        fs::write(bin.join(&name), b"beside the executable").expect("worker beside the host");
+        assert_eq!(discover_beside(&host), Some(bin.join(&name)));
+        assert_eq!(discover_beside(Path::new("")), None, "no parent, no lookup");
     }
 }

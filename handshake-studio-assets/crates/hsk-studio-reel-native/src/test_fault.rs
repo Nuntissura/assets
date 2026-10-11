@@ -19,6 +19,8 @@ pub enum WorkerTestFault {
     OversizeFrame,
     /// First PACKET: answer with a frame of unknown kind.
     GarbageReply,
+    /// Before HELLO: sleep (no HELLO) so the host's spawn wait has to be cancelled or time out.
+    StallHello,
 }
 
 impl WorkerTestFault {
@@ -32,6 +34,7 @@ impl WorkerTestFault {
             Self::ExitOnOpen => Some("exit_on_open"),
             Self::OversizeFrame => Some("oversize_frame"),
             Self::GarbageReply => Some("garbage_reply"),
+            Self::StallHello => Some("stall_hello"),
         }
     }
 
@@ -43,6 +46,7 @@ impl WorkerTestFault {
             Ok("exit_on_open") => Self::ExitOnOpen,
             Ok("oversize_frame") => Self::OversizeFrame,
             Ok("garbage_reply") => Self::GarbageReply,
+            Ok("stall_hello") => Self::StallHello,
             _ => Self::None,
         }
     }

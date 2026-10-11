@@ -473,6 +473,109 @@ fn supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn() {
     });
 }
 
+/// R7 review B (PLR-035, uncancellable HELLO wait): a worker that stalls before its HELLO (here 30 s, with a
+/// 30 s spawn timeout) must not hold a canceled call. The wait is polled, the starting worker is killed and
+/// reaped, and the call answers Canceled within a few hundred ms; without a cancel `spawn_timeout` still
+/// bounds the wait with a typed spawn fault.
+#[test]
+fn canceled_call_does_not_wait_for_a_stalled_hello() {
+    bounded_case("canceled_call_does_not_wait_for_a_stalled_hello", || {
+        let limits = Limits::default();
+        let stalled = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::StallHello,
+            spawn_timeout: Duration::from_secs(30),
+            ..Av1WorkerOptions::default()
+        });
+        let cancel = CancellationToken::default();
+        let canceller = {
+            let cancel = cancel.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(300));
+                cancel.cancel();
+            })
+        };
+        let mut sink = Collect::default();
+        let started = Instant::now();
+        let error = stalled
+            .decode_av1(
+                &mut Cursor::new(MP4.to_vec()),
+                &request(AV1_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &cancel,
+                &mut sink,
+            )
+            .unwrap_err();
+        let waited = started.elapsed();
+        canceller.join().unwrap();
+        assert_eq!(error, Av1Error::Reel(ReelError::Canceled));
+        assert!(
+            waited < Duration::from_secs(5),
+            "the HELLO wait ignored the cancel: {waited:?}"
+        );
+        assert!(sink.chunks.is_empty());
+        let stats = stalled.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.killed_canceled,
+                stats.spawn_failed,
+                stats.crashed,
+                stats.alive
+            ),
+            (1, 1, 0, 0, 0),
+            "{stats:?}"
+        );
+
+        // Without a cancel the spawn timeout still bounds the wait: a typed spawn fault, not a hang.
+        let timed_out = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::StallHello,
+            spawn_timeout: Duration::from_millis(400),
+            ..Av1WorkerOptions::default()
+        });
+        let started = Instant::now();
+        let error = via_worker(&timed_out, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::SpawnFailed));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let stats = timed_out.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.spawn_failed,
+                stats.killed_canceled,
+                stats.alive
+            ),
+            (1, 1, 0, 0),
+            "{stats:?}"
+        );
+    });
+}
+
+/// R7 review B (PLR-034, parent-directory worker lookup): cargo puts the worker binary one directory ABOVE
+/// this test executable (`target/<profile>/` against `target/<profile>/deps/`), which is exactly the
+/// location the old lookup accepted. Default discovery must not find it; an explicit path still works.
+#[test]
+fn default_discovery_does_not_look_in_the_parent_of_the_executable_directory() {
+    let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let worker = std::fs::canonicalize(WORKER).unwrap();
+    let exe_dir = exe.parent().unwrap();
+    let layout_holds =
+        worker.parent() == exe_dir.parent() && !exe_dir.join(worker.file_name().unwrap()).exists();
+    if !layout_holds {
+        println!(
+            "NOT_PROVEN: the worker binary is not in the parent of this test executable's directory; \
+             unit test worker_is_found_only_beside_the_running_executable proves the lookup rule alone"
+        );
+        return;
+    }
+    assert_eq!(
+        WorkerAv1Provider::new(Av1WorkerOptions::default()).err(),
+        Some(Av1ConfigError::WorkerProgramMissing)
+    );
+    assert!(
+        WorkerAv1Provider::new(Av1WorkerOptions::default().with_worker_program(WORKER)).is_ok()
+    );
+}
+
 /// R5 (SMB-REEL-NATIVE-AV1-WORKER overflow): a container may declare PixelWidth = PixelHeight =
 /// 0xFFFFFFFF. The declared-size caps must refuse it as a typed limit before any worker starts, never
 /// overflow (a panic in this host process would defeat the isolation).
