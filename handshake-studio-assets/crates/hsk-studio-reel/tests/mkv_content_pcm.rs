@@ -120,13 +120,14 @@ struct PcmFixture {
     /// SHA-256 and size of the raw little-endian PCM libavcodec decodes from the file.
     raw_sha: &'static str,
     raw_bytes: usize,
-    /// (pts ms, payload bytes, SimpleBlock element position) as libavformat demuxes the blocks.
+    /// (pts ms, payload bytes, block position) as libavformat demuxes the blocks: `pos` is where the
+    /// Block data starts, i.e. the track-number vint, after the SimpleBlock id and size.
     blocks: [(i64, u32, u64); 5],
 }
 
-/// Header of a SimpleBlock in these files: element id (1) + 2-byte size vint + track vint (1) +
-/// timestamp (2) + flags (1) = 7 bytes before the first PCM byte (RFC 9559 section 10.2).
-const SIMPLE_BLOCK_HEADER: u64 = 7;
+/// Block header in these files: track-number vint (1) + relative timestamp (2) + flags (1) = 4 bytes
+/// between libavformat's `pos` and the first PCM byte (RFC 9559 section 10.1, no lacing).
+const SIMPLE_BLOCK_HEADER: u64 = 4;
 
 const PCM: [PcmFixture; 5] = [
     PcmFixture {
@@ -284,7 +285,13 @@ fn matroska_pcm_decodes_bit_exact_against_the_ffmpeg_oracle() {
             assert_eq!(receipt.decoder_id, "matroska-pcm");
             assert_eq!(receipt.actual.units, frames, "{}", f.name);
             assert_eq!(receipt.actual.end_pts, Ticks::new(frames * tps), "{}", f.name);
-            assert_eq!(receipt.bytes_read, f.raw_bytes as u64, "{}", f.name);
+            // Payload bytes read plus the index that was built from the same source for this call.
+            assert_eq!(
+                receipt.bytes_read,
+                f.raw_bytes as u64 + index.bytes_read,
+                "{}",
+                f.name
+            );
             // One chunk per block, positioned by the running frame count (not the rounded block times).
             assert_eq!(sink.chunks.len(), f.blocks.len(), "{}", f.name);
             let mut cursor = 0u64;
@@ -492,9 +499,10 @@ fn matroska_content_encodings_are_undone_exactly_like_ffprobe_and_python_zlib() 
                 assert!(!chunk.3, "{name} {k}: not pre-roll");
             }
             assert!(receipt.complete && receipt.disposition == Disposition::Exact, "{name}");
-            // The receipt counts the STORED bytes it read, not the decoded size.
+            // The receipt counts the STORED bytes it read (plus the index built for this call), not the
+            // decoded size.
             let stored: u64 = track.index.samples().iter().map(|s| u64::from(s.size)).sum();
-            assert_eq!(receipt.bytes_read, stored, "{name}");
+            assert_eq!(receipt.bytes_read, stored + index.bytes_read, "{name}");
             let decoded: usize = FRAME_SIZES.iter().sum();
             if name != "header stripping" {
                 assert!(stored < decoded as u64, "{name}: zlib really compressed");
