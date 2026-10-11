@@ -44,6 +44,8 @@ pub enum MotionError {
     },
     ReadLimit,
     NodeLimit,
+    DuplicateProperty,
+    UnknownProperty,
     /// Date clock value outside the exact +-8.64e15 ms range (MOT-256).
     DateOutOfRange,
     InvalidDateProfile,
@@ -74,6 +76,8 @@ impl MotionError {
             Self::AmbiguousReference { .. } => "ambiguous_reference",
             Self::ReadLimit => "read_limit",
             Self::NodeLimit => "node_limit",
+            Self::DuplicateProperty => "duplicate_property",
+            Self::UnknownProperty => "unknown_property",
             Self::DateOutOfRange => "date_out_of_range",
             Self::InvalidDateProfile => "invalid_date_profile",
         }

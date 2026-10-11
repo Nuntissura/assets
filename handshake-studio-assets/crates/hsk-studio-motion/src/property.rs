@@ -144,6 +144,11 @@ impl Property {
         self.disabled
     }
 
+    /// True while an enabled, not-disabled expression drives the value.
+    pub fn expression_active(&self) -> bool {
+        self.expression.is_some() && self.expression_enabled && self.disabled.is_none()
+    }
+
     fn revalidate(&mut self) -> Result<(), MotionError> {
         let dimension = self.static_value.len();
         if dimension == 0 || dimension > MAX_DIMENSION {
@@ -332,7 +337,7 @@ impl Property {
         let base = self.sample(ctx.tick, cancel)?;
         let mut profile = PROFILE_KEYFRAMES;
         let mut value = base.clone();
-        if self.expression.is_some() && self.expression_enabled && self.disabled.is_none() {
+        if self.expression_active() {
             profile = provider.profile_id();
             let base_for_expression = (!self.keys.is_empty()).then_some(base.as_slice());
             let source = self.expression.as_deref().unwrap_or_default();

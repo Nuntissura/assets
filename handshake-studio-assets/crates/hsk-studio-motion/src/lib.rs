@@ -12,6 +12,7 @@ mod keyframe;
 mod path;
 mod property;
 mod receipt;
+mod store;
 mod time;
 
 pub use date::{
@@ -34,4 +35,5 @@ pub use property::{
     EvalContext, Evaluation, MAX_EXPRESSION_BYTES, Property, PropertyState,
 };
 pub use receipt::{DESCRIPTOR, EvalReceipt, PROFILE_KEYFRAMES, report};
+pub use store::{PropertyStore, StoreContext, TickEvaluation};
 pub use time::EvalTick;
