@@ -409,6 +409,59 @@ fn pass_through_fill_is_refused_uniformly_by_admit() {
     assert_eq!(ledger.lowest, Exactness::Approximate);
 }
 
+/// Same failure class as R5 (admitted by pigment, refused by every backend at execute): a
+/// coverage mask with density < 1. The v1 `admit` now refuses it as `mask_density` (the key both
+/// backends report); the envelope path admits it as `ExtOperator::MaskDensity` when supported.
+#[test]
+fn mask_density_is_refused_by_v1_admit_and_admitted_through_the_envelope() {
+    let cancel = CancellationToken::default();
+    let mut p = plan();
+    let PlanNode::Group(g) = &mut p.nodes[2] else {
+        unreachable!()
+    };
+    g.layers[0].mask = Some(MaskInput {
+        key: SourceKey(4),
+        placement: R,
+        format: MaskFormat::CoverageU8,
+        sha256: [3; 32],
+        inverted: false,
+        density: 0.5,
+    });
+    assert!(p.has_mask_density());
+    let full = Fake {
+        ext: Exactness::Exact,
+    };
+    let refused = Err(BackendError::Unsupported {
+        operator: MASK_DENSITY_OPERATOR,
+        exactness: Exactness::Unsupported,
+    });
+    assert_eq!(
+        admit(&p, &full, &req(Exactness::Approximate), &cancel),
+        refused
+    );
+    // Envelope path: a supporting backend gets mask_density at the intrinsic Approximate class;
+    // a backend without envelope support is refused with the same operator key.
+    let empty = PlanExtensions::default();
+    let ledger = admit_extended(&p, &empty, &full, &req(Exactness::Approximate), &cancel).unwrap();
+    assert!(ledger.operators.contains(&OperatorExactness {
+        key: "mask_density",
+        exactness: Exactness::Approximate
+    }));
+    assert_eq!(
+        admit_extended(&p, &empty, &Legacy, &req(Exactness::Approximate), &cancel),
+        refused
+    );
+    // Control: density 1 stays admitted by v1 admit.
+    let PlanNode::Group(g) = &mut p.nodes[2] else {
+        unreachable!()
+    };
+    if let Some(m) = g.layers[0].mask.as_mut() {
+        m.density = 1.0;
+    }
+    assert!(!p.has_mask_density());
+    assert!(admit(&p, &full, &req(Exactness::Exact), &cancel).is_ok());
+}
+
 #[test]
 fn stack_oracle_adjustment_node() {
     // Invert over opaque (0.2, 0.4, 0.6), Normal, opacity 1 -> (0.8, 0.6, 0.4), alpha 1.

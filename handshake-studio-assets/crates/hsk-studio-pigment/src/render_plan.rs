@@ -708,11 +708,47 @@ pub trait RenderBackend<V = NoVector>: Send + Sync {
 /// Shared admission: cancel, stale revision, structural validation, then per-operator class =
 /// intrinsic lowered by the backend's class; refuses Unsupported or below `min_exactness` before
 /// any sink call, and refuses a pass-through layer with `fill_opacity < 1`
-/// ([`PASS_THROUGH_FILL_OPERATOR`], intrinsically Unsupported) for every backend. Returns the
-/// ledger for the receipt.
+/// ([`PASS_THROUGH_FILL_OPERATOR`], intrinsically Unsupported) for every backend. A coverage
+/// mask with `density < 1` has no v1 operator, so the v1 path refuses it here as
+/// [`MASK_DENSITY_OPERATOR`] (the key both backends report); the envelope path
+/// ([`admit_extended`]) admits it as `ExtOperator::MaskDensity` when the backend supports it.
+/// Returns the ledger for the receipt.
 pub fn admit<V>(
     plan: &RenderPlan<V>,
     backend: &(impl RenderBackend<V> + ?Sized),
+    request: &ExecuteRequest,
+    cancel: &CancellationToken,
+) -> Result<ExactnessLedger, BackendError> {
+    let ledger = admit_core(plan, backend, request, cancel)?;
+    if plan.has_mask_density() {
+        return Err(BackendError::Unsupported {
+            operator: MASK_DENSITY_OPERATOR,
+            exactness: Exactness::Unsupported,
+        });
+    }
+    Ok(ledger)
+}
+
+/// Operator key of a coverage mask with `density < 1` (v1 refusal and envelope operator).
+pub const MASK_DENSITY_OPERATOR: &str = "mask_density";
+impl<V> RenderPlan<V> {
+    /// Does any group layer carry a coverage mask (not clip-to-base) with `density < 1`?
+    pub fn has_mask_density(&self) -> bool {
+        self.nodes.iter().any(|n| match n {
+            PlanNode::Group(g) => g.layers.iter().any(|l| {
+                l.mask
+                    .as_ref()
+                    .is_some_and(|m| m.format != MaskFormat::BaseAlpha && m.density < 1.0)
+            }),
+            _ => false,
+        })
+    }
+}
+
+/// [`admit`] without the v1-only mask-density refusal (shared with [`admit_extended`]).
+pub(crate) fn admit_core<V, B: RenderBackend<V> + ?Sized>(
+    plan: &RenderPlan<V>,
+    backend: &B,
     request: &ExecuteRequest,
     cancel: &CancellationToken,
 ) -> Result<ExactnessLedger, BackendError> {
@@ -753,4 +789,4 @@ pub fn admit<V>(
     Ok(ledger)
 }
 
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference, no pass-through base; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pass_through_fill":"a pass-through layer with fill_opacity < 1 is intrinsically unsupported: admit refuses it for every backend as group_pass_through_fill_opacity (validate no longer rates it fill_opacity)","extensions":"PlanExtensions envelope next to the unchanged v1 plan (v1 types are literal-built/exhaustively matched by dependents): per (group, layer) adjustment layer (AdjustmentOp on a transparent Solid placeholder; colour lerp(Cb, B(Cb, f(Cb)), k), alpha kept), Blend-If entries (coverage_math), mask feather px, knockout (anything but none refused); ExtOperator classes; admit_extended; RenderBackend::extension_exactness (default unsupported) and execute_extended (default: empty envelope = execute, else refuse); digest_with","pending":["STU-CMP-020 members without discriminant","STU-CMP-020a stencil/silhouette node kinds","knockout shallow/deep, effects, mattes, time","clipped layer with its own mask","backend implementations of the envelope operators"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference, no pass-through base; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pass_through_fill":"a pass-through layer with fill_opacity < 1 is intrinsically unsupported: admit refuses it for every backend as group_pass_through_fill_opacity (validate no longer rates it fill_opacity; test plan_extensions pass_through_fill_is_refused_uniformly_by_admit)","mask_density":"v1 admit refuses a coverage mask with density < 1 as mask_density for every backend; admit_extended admits it as ExtOperator::MaskDensity when the backend supports it (test plan_extensions mask_density_is_refused_by_v1_admit_and_admitted_through_the_envelope)","extensions":"PlanExtensions envelope next to the unchanged v1 plan (v1 types are literal-built/exhaustively matched by dependents): per (group, layer) adjustment layer (AdjustmentOp on a transparent Solid placeholder; colour lerp(Cb, B(Cb, f(Cb)), k), alpha kept), Blend-If entries (coverage_math), mask feather px, knockout (anything but none refused); ExtOperator classes; admit_extended; RenderBackend::extension_exactness (default unsupported) and execute_extended (default: empty envelope = execute, else refuse); digest_with","pending":["STU-CMP-020 members without discriminant","STU-CMP-020a stencil/silhouette node kinds","knockout shallow/deep, effects, mattes, time","clipped layer with its own mask","backend implementations of the envelope operators"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;

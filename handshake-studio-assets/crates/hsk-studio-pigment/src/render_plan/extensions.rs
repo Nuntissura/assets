@@ -9,7 +9,7 @@
 //! [`RenderBackend::extension_exactness`] (default: nothing supported).
 use super::{
     Applicability, BackendError, ExactnessLedger, ExecuteRequest, MaskFormat, PlanError, PlanNode,
-    PlanNodeId, RenderBackend, RenderPlan, admit,
+    PlanNodeId, RenderBackend, RenderPlan, admit_core,
 };
 use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
 use crate::blend_math::{Exactness, StudioBlendMode};
@@ -261,15 +261,7 @@ impl PlanExtensions {
                 add(ExtOperator::MaskFeather);
             }
         }
-        let density = plan.nodes.iter().any(|n| match n {
-            PlanNode::Group(g) => g.layers.iter().any(|l| {
-                l.mask
-                    .as_ref()
-                    .is_some_and(|m| m.format != MaskFormat::BaseAlpha && m.density < 1.0)
-            }),
-            _ => false,
-        });
-        if density {
+        if plan.has_mask_density() {
             add(ExtOperator::MaskDensity);
         }
         Ok(ops)
@@ -289,7 +281,8 @@ impl PlanExtensions {
     }
 }
 
-/// Shared admission for a plan with its envelope: [`admit`] for the v1 plan, then envelope
+/// Shared admission for a plan with its envelope: [`admit`](super::admit) for the v1 plan (except its v1-only
+/// mask-density refusal: density is the envelope operator `MaskDensity` here), then envelope
 /// validation, then per envelope operator class = intrinsic lowered by
 /// [`RenderBackend::extension_exactness`]; refuses Unsupported or below `min_exactness` before any
 /// sink call. Knockout and refused adjustment features map to `BackendError::Unsupported` naming
@@ -301,7 +294,7 @@ pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
     request: &ExecuteRequest,
     cancel: &CancellationToken,
 ) -> Result<ExactnessLedger, BackendError> {
-    let mut ledger = admit(plan, backend, request, cancel)?;
+    let mut ledger = admit_core(plan, backend, request, cancel)?;
     let operators = extensions.validate(plan).map_err(|e| match e {
         PlanError::KnockoutUnsupported { depth, .. } => BackendError::Unsupported {
             operator: depth.key(),
