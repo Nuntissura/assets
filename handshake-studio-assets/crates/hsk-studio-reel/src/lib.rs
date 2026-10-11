@@ -10,7 +10,8 @@
 //! Compressed codecs are determinate `MEDIA_CODEC_UNAVAILABLE` until a decoder is routed to them. AV1 is
 //! routed by policy (`video`): untrusted sources only to a registered EXTERNAL decoder (an isolated worker,
 //! see `hsk-studio-reel-native`; available in every build), the in-process rav1d decoder (cargo feature
-//! `av1`) only for sources the caller marks `SourceTrust::Trusted`.
+//! `av1`) only for sources the caller marks `SourceTrust::Trusted`. A proxy is its own source: it is
+//! `Untrusted` unless its `ProxySource` is marked otherwise, whatever the original's trust is.
 // Default closure: no unsafe. With the opt-in `av1` feature only `av1/ffi.rs` may use it (rav1d C API).
 #![cfg_attr(not(feature = "av1"), forbid(unsafe_code))]
 #![cfg_attr(feature = "av1", deny(unsafe_code))]

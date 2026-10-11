@@ -863,11 +863,7 @@ fn encode_roundtrip_cancel_and_proxy_policy() {
             let source = owned.as_mut().map(|reader| {
                 let mut g = grant("proxy-1", proxy_bytes.unwrap());
                 g.expected_len += proxy_len_delta;
-                ProxySource {
-                    reader,
-                    grant: g,
-                    expected_revision: 1,
-                }
+                ProxySource::new(reader, g, 1)
             });
             let result = registry.decode_segment(
                 &mut Cursor::new(original.clone()),

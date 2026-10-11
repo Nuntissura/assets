@@ -439,11 +439,7 @@ fn r2_7_index_and_proxy_are_bound_to_the_granted_source() {
             let mut req = request(Y4M_PROVIDER_ID, 0, 1, OutputMode::Decoded, stale);
             req.prefer = SourcePreference::Proxy;
             let mut tripwire = Tripwire;
-            let proxy = ProxySource {
-                reader: &mut tripwire,
-                grant: grant("proxy", &original),
-                expected_revision: 1,
-            };
+            let proxy = ProxySource::new(&mut tripwire, grant("proxy", &original), 1);
             let result = Registry::standard().decode_segment(
                 &mut Cursor::new(original),
                 Some(proxy),

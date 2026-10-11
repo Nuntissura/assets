@@ -19,10 +19,36 @@ pub struct Registry {
 }
 
 /// A proxy candidate with its own grant. Used only for preview-purpose requests that prefer a proxy.
+///
+/// Trust is a property of the bytes that are decoded, and a proxy is a different source from the
+/// original (generated or fetched separately, with its own grant). It therefore carries its own
+/// `trust`; nothing is inherited from the trust the caller stated for the original. `new` starts
+/// `Untrusted`; `with_trust(SourceTrust::Trusted)` vouches for exactly this proxy (the content
+/// identity in `grant`), never for any other source.
 pub struct ProxySource<'a> {
     pub reader: &'a mut dyn ReadSeek,
     pub grant: Grant,
     pub expected_revision: u64,
+    /// How far the caller vouches for THIS proxy's bytes; independent of the original's trust.
+    pub trust: SourceTrust,
+}
+
+impl<'a> ProxySource<'a> {
+    /// A proxy candidate whose bytes are NOT vouched for (`SourceTrust::Untrusted`).
+    pub fn new(reader: &'a mut dyn ReadSeek, grant: Grant, expected_revision: u64) -> Self {
+        Self {
+            reader,
+            grant,
+            expected_revision,
+            trust: SourceTrust::Untrusted,
+        }
+    }
+
+    /// State how far the caller vouches for this proxy's own bytes (its `grant.content_id`).
+    pub fn with_trust(mut self, trust: SourceTrust) -> Self {
+        self.trust = trust;
+        self
+    }
 }
 
 impl Default for Registry {
@@ -175,8 +201,10 @@ impl Registry {
         )
     }
 
-    /// `decode_segment` with an explicit statement of how far the caller vouches for the source bytes.
-    /// `Trusted` additionally allows the in-process decoder (cargo feature `av1`).
+    /// `decode_segment` with an explicit statement of how far the caller vouches for the bytes of the
+    /// ORIGINAL (`req.grant`). `Trusted` additionally allows the in-process decoder (cargo feature
+    /// `av1`) for those bytes only. A proxy is a different source: it is decoded under its own
+    /// `ProxySource::trust` (default `Untrusted`), never under `trust`.
     #[allow(clippy::too_many_arguments)]
     pub fn decode_segment_routed(
         &self,
@@ -211,12 +239,23 @@ impl Registry {
                             reader,
                             grant,
                             expected_revision,
+                            trust: proxy_trust,
                         } = proxy;
                         let mut proxy_req = req.clone();
                         proxy_req.grant = grant;
                         proxy_req.expected_revision = expected_revision;
+                        // The proxy's own route: its trust is the proxy's, never the original's.
+                        let proxy_route = VideoRoute {
+                            trust: proxy_trust,
+                            external: route.external,
+                        };
                         let mut receipt = provider.decode_segment_routed(
-                            reader, &proxy_req, limits, cancel, sink, &route,
+                            reader,
+                            &proxy_req,
+                            limits,
+                            cancel,
+                            sink,
+                            &proxy_route,
                         )?;
                         receipt.source = SourceKind::Proxy;
                         receipt.proxy_note = ProxyNote::ProxyUsed;

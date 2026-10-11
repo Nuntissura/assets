@@ -29,6 +29,10 @@ use hsk_studio_accord::{CancellationToken, Ticks};
 use std::collections::VecDeque;
 
 /// How far the caller vouches for the bytes of a source.
+///
+/// Trust belongs to the bytes that are decoded, not to a request: a proxy (or any other derived source)
+/// is a different source and carries its own trust (`ProxySource::trust`, default `Untrusted`); the
+/// trust stated for an original never extends to it (test `trusted_original_never_lends_its_trust_to_a_proxy`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SourceTrust {
     /// Bytes from anywhere the caller does not control (imports, downloads, user media). The default:

@@ -426,6 +426,150 @@ fn trust_and_registration_decide_who_decodes() {
     assert_eq!(registry.descriptors_json(), before);
 }
 
+/// Preview decode that prefers a proxy: the original is the fixture itself (`request`'s grant), the proxy
+/// is a DIFFERENT source (own content id) with the same layout, so the proxy rules accept it. `proxy_trust`
+/// `None` is the `ProxySource::new` default; `stale_proxy_len` makes the proxy's grant stale.
+fn decode_preferring_proxy(
+    registry: &Registry,
+    bytes: &[u8],
+    container: &str,
+    original_trust: SourceTrust,
+    proxy_trust: Option<SourceTrust>,
+    stale_proxy_len: u64,
+) -> (Result<SegmentReceipt, ReelError>, Collect) {
+    let mut req = request(container, bytes, 0, 3, OutputMode::Decoded);
+    req.prefer = SourcePreference::Proxy;
+    let mut proxy_reader = Cursor::new(bytes.to_vec());
+    let proxy_grant = Grant {
+        content_id: ContentId::parse("av1-proxy").unwrap(),
+        revision: 1,
+        expected_len: (bytes.len() as u64) + stale_proxy_len,
+    };
+    let mut proxy = ProxySource::new(&mut proxy_reader, proxy_grant, 1);
+    if let Some(trust) = proxy_trust {
+        proxy = proxy.with_trust(trust);
+    }
+    let mut sink = Collect::default();
+    let result = registry.decode_segment_routed(
+        &mut Cursor::new(bytes.to_vec()),
+        Some(proxy),
+        &req,
+        &Limits::default(),
+        &CancellationToken::default(),
+        &mut sink,
+        original_trust,
+    );
+    (result, sink)
+}
+
+#[test]
+fn trusted_original_never_lends_its_trust_to_a_proxy() {
+    // Feature av1 is what makes a TRUSTED source reach the in-process decoder; in a default build a trusted
+    // source goes to the external decoder, so the in-process half of each expectation is feature-gated.
+    let in_process = cfg!(feature = "av1");
+    let proxy_id = Some(ContentId::parse("av1-proxy").unwrap());
+    for (bytes, container, label) in [
+        (MP4, ISOBMFF_PROVIDER_ID, "av01"),
+        (MKV, MATROSKA_PROVIDER_ID, "V_AV1"),
+    ] {
+        let unavailable = ReelError::CodecUnavailable {
+            codec: label.to_owned(),
+        };
+
+        // Trusted original + default proxy + a registered external decoder: the PROXY bytes are decoded
+        // by the external decoder (never by rav1d, whatever the original's trust says).
+        for original_trust in [SourceTrust::Trusted, SourceTrust::Untrusted] {
+            let (fake, seen) = Fake::new(Plan::Works);
+            let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+            let (result, sink) =
+                decode_preferring_proxy(&registry, bytes, container, original_trust, None, 0);
+            let receipt = result.unwrap();
+            assert_eq!(
+                receipt.source,
+                SourceKind::Proxy,
+                "{label} {original_trust:?}"
+            );
+            assert_eq!(receipt.proxy_note, ProxyNote::ProxyUsed);
+            assert_eq!(receipt.proxy_id, proxy_id);
+            assert_eq!(
+                receipt.decoder_id, FAKE.id,
+                "{label} {original_trust:?}: proxy bytes reached a decoder other than the external one"
+            );
+            assert_eq!(seen.lock().unwrap().opens.len(), 1);
+            assert_eq!(sink.chunks.len(), 3);
+        }
+
+        // Same, nothing registered: the proxy is CodecUnavailable (no in-process fallback), and no frame
+        // reaches the sink.
+        for original_trust in [SourceTrust::Trusted, SourceTrust::Untrusted] {
+            let bare = Registry::standard();
+            let (result, sink) =
+                decode_preferring_proxy(&bare, bytes, container, original_trust, None, 0);
+            assert_eq!(
+                result.unwrap_err(),
+                unavailable,
+                "{label} {original_trust:?}"
+            );
+            assert!(sink.chunks.is_empty());
+        }
+
+        // An EXPLICIT grant for the proxy is honoured on its own, whatever the original's trust is.
+        for original_trust in [SourceTrust::Trusted, SourceTrust::Untrusted] {
+            let (fake, seen) = Fake::new(Plan::Works);
+            let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+            let (result, _) = decode_preferring_proxy(
+                &registry,
+                bytes,
+                container,
+                original_trust,
+                Some(SourceTrust::Trusted),
+                0,
+            );
+            let receipt = result.unwrap();
+            assert_eq!(receipt.source, SourceKind::Proxy);
+            let external_opens = seen.lock().unwrap().opens.len();
+            if in_process {
+                assert_eq!(receipt.decoder_id, "rav1d", "{label} {original_trust:?}");
+                assert_eq!(external_opens, 0);
+            } else {
+                assert_eq!(receipt.decoder_id, FAKE.id);
+                assert_eq!(external_opens, 1);
+            }
+        }
+        // ... and an explicitly untrusted proxy next to a trusted original is the default again.
+        let (fake, seen) = Fake::new(Plan::Works);
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let (result, _) = decode_preferring_proxy(
+            &registry,
+            bytes,
+            container,
+            SourceTrust::Trusted,
+            Some(SourceTrust::Untrusted),
+            0,
+        );
+        assert_eq!(result.unwrap().decoder_id, FAKE.id);
+        assert_eq!(seen.lock().unwrap().opens.len(), 1);
+
+        // A proxy that cannot be used (stale grant) falls back to the original, which keeps the trust the
+        // caller stated for it.
+        let (fake, seen) = Fake::new(Plan::Works);
+        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let (result, _) =
+            decode_preferring_proxy(&registry, bytes, container, SourceTrust::Trusted, None, 1);
+        let receipt = result.unwrap();
+        assert_eq!(receipt.source, SourceKind::Original);
+        assert_eq!(receipt.proxy_note, ProxyNote::ProxyUnusableUsedOriginal);
+        let external_opens = seen.lock().unwrap().opens.len();
+        if in_process {
+            assert_eq!(receipt.decoder_id, "rav1d");
+            assert_eq!(external_opens, 0);
+        } else {
+            assert_eq!(receipt.decoder_id, FAKE.id);
+            assert_eq!(external_opens, 1);
+        }
+    }
+}
+
 #[test]
 fn decoder_faults_are_a_distinct_typed_error_and_media_errors_pass_through() {
     let run = |plan: Plan| {
