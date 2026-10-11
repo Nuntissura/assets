@@ -29,4 +29,4 @@ Verification used when the fixtures were made (both agree with the frames Python
     ffprobe -v error -show_packets -show_data_hash sha256 -show_entries packet=pts,size,pos,data_hash -of compact enc-zlib.mkv
     ffprobe -v error -show_packets -show_data_hash sha256 -show_entries packet=pts,size,pos,data_hash -of compact enc-headerstrip.mkv
 
-MXF: see `mxf/generate-mxf.sh` (added with the MXF index reader).
+MXF (run from `$GEN` on D:): `bash generate-mxf.sh`. It runs the two ffmpeg commands recorded in the script (OP1a: mpeg2video `-g 6 -bf 2` + `pcm_s16le`, `-f mxf`; OP-Atom: mono `pcm_s16le`, `-f mxf_opatom`) and prints the ffprobe `-show_packets` oracle that `tests/mxf_index.rs` pins.

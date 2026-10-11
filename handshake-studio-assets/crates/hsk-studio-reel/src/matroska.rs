@@ -14,8 +14,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{ReelError, check_cancel};
 use crate::isobmff::{
-    AudioFormat, ExternalTrack, PcmStream, SampleEntry, SeekResult, TrackIndex, TrackKind,
-    deliver_packets, deliver_pcm_stream,
+    AudioFormat, ExternalTrack, PcmStream, PresentedSample, SampleEntry, SeekResult, TrackIndex,
+    TrackKind, deliver_packets, deliver_pcm_stream,
 };
 use crate::mkv_content::{ContentPlan, DecodeSink, parse_content_encodings};
 use crate::mkv_pcm::{build_pcm_stream, pcm_format_of};
@@ -1218,6 +1218,48 @@ pub struct MkvIndex {
 }
 
 impl MkvIndex {
+    /// Approximate resident bytes (cache accounting): sample tables, presentation tables, sync points,
+    /// compact PCM runs, cluster and cue tables.
+    pub fn approx_bytes(&self) -> usize {
+        let tracks = self.tracks.iter().fold(0usize, |sum, t| {
+            sum.saturating_add(
+                t.index
+                    .samples()
+                    .len()
+                    .saturating_mul(std::mem::size_of::<SampleEntry>()),
+            )
+            .saturating_add(
+                t.index
+                    .presented()
+                    .len()
+                    .saturating_mul(std::mem::size_of::<PresentedSample>()),
+            )
+            .saturating_add(t.index.sync_samples().len().saturating_mul(4))
+            .saturating_add(
+                t.pcm
+                    .as_ref()
+                    .map_or(0, |p| p.chunk_runs().saturating_mul(24)),
+            )
+            .saturating_add(t.info.codec_private.len())
+        });
+        let cues = self.layout.cues.iter().fold(0usize, |sum, c| {
+            sum.saturating_add(std::mem::size_of::<CuePoint>())
+                .saturating_add(
+                    c.positions
+                        .len()
+                        .saturating_mul(std::mem::size_of::<CuePosition>()),
+                )
+        });
+        tracks
+            .saturating_add(
+                self.layout
+                    .clusters
+                    .len()
+                    .saturating_mul(std::mem::size_of::<ClusterRef>()),
+            )
+            .saturating_add(cues)
+    }
+
     pub fn track(&self, number: u32) -> Option<&MkvTrack> {
         self.tracks.iter().find(|t| t.info.number == number)
     }
