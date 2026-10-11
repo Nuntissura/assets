@@ -11,6 +11,13 @@
 #   --canary   nextest units run the first listed test of every package (profile "canary"); doctests run in full.
 # Step 0 (export, read-only, ~1 s): `cargo metadata --locked --offline` and `tools/registry-sync.py` check mode;
 #   drift exits 75 (infrastructure: the candidate needs a steward sync commit; nothing is rewritten here).
+#   Policy (both modes, read-only, before any build; hits with file:line in step0.policy.{json,txt}):
+#   V4-03 machine-local paths: every text file under crates/*/src and crates/*/tests, per line, drive-letter path
+#     ((?<![A-Za-z0-9])[A-Za-z]:[/\\]) or Users/ segment; a hit beyond .config/machine-paths.toml [pinned] counts
+#     (test data never opened as a host path) exits 72. Host data comes only via .config/oracle-corpus.toml.
+#   V4-05 frozen duplicates: .config/duplicate-fingerprints.toml patterns over crates/*/src; a match in a file
+#     outside that fingerprint's `allowed` crate prefixes (D16 ZIP/CRC-32, D18 worker supervision, timecode)
+#     exits 71.
 # Units (each its own result; all run; a unit's build failure skips only that unit's test run):
 #   default    union over the selection, default features: one build (nextest --no-run) + one run (--no-fail-fast);
 #              files at the results root (build.*, run.*, list.txt, canary-filter.txt, junit.xml) as before.
@@ -43,7 +50,8 @@
 #   "complete": false, the exit code and the reason (raw files kept).
 # Env: sets CARGO_TARGET_DIR, TMP/TEMP/TMPDIR (<target-dir>/../tmp), CARGO_PROFILE_{DEV,TEST}_DEBUG,
 #   CARGO_TERM_COLOR; unsets every HSK_* variable. Nothing else is required from the caller (python 3.11+).
-# Exit: 2 refused, 75 step 0 drift (infrastructure), 70 results aggregation failed, else the first failing unit
+# Exit: 2 refused, 75 step 0 drift (infrastructure), 72 step 0 machine-local path (V4-03), 71 step 0 new
+#   frozen-duplicate site (V4-05), 70 results aggregation failed, else the first failing unit
 #   build's exit code (default unit first), else the first failing test run's exit code (124 = doctest per-test
 #   timeout), else 74 when a declared feature-matrix unit is absent at the candidate, else 73 when any test
 #   reported NOT_PROVEN, else 0. Validators gate on round.json "exit" (== process exit) and "not_proven".
@@ -160,6 +168,80 @@ if [ $dev -eq 0 ]; then
   # Current mtimes force every workspace crate to rebuild from the export (content and manifest unchanged).
   find "$root" -type f -print0 | xargs -0 touch
 fi
+
+# Step 0 policy (read-only, both modes, before any build): V4-03 machine-local paths (.config/machine-paths.toml) and
+# V4-05 frozen duplicate fingerprints (.config/duplicate-fingerprints.toml); hits go to step0.policy.{json,txt}.
+set +e
+"$py" -X utf8 -I - "$root" >"$results/step0.policy.json" 2>"$results/step0.policy.txt" <<'PY'
+import json, pathlib, re, sys, tomllib
+
+sys.stdout.reconfigure(newline="\n")
+root = pathlib.Path(sys.argv[1])
+def load(name, schema):
+    p = root / ".config" / name
+    if not p.exists():
+        print(f"run-round: .config/{name} missing", file=sys.stderr); sys.exit(2)
+    doc = tomllib.loads(p.read_text(encoding="utf-8"))
+    if doc.get("schema") != schema:
+        print(f"run-round: .config/{name} schema must be {schema}", file=sys.stderr); sys.exit(2)
+    return doc
+def files(*subs):
+    for crate in sorted(p for p in (root / "crates").iterdir() if p.is_dir()):
+        for sub in subs:
+            if (crate / sub).is_dir():
+                for f in sorted((crate / sub).rglob("*"), key=lambda q: q.as_posix()):
+                    data = f.read_bytes() if f.is_file() else b"\0"
+                    if b"\0" not in data:
+                        yield f.relative_to(root).as_posix(), data.decode("utf-8", errors="replace").splitlines()
+paths_cfg = load("machine-paths.toml", "hsk.studio.machine-paths@1")
+dup_cfg = load("duplicate-fingerprints.toml", "hsk.studio.duplicate-fingerprints@1")
+pinned = paths_cfg.get("pinned", {})
+MP = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|Users[\\/]")
+hits = {}
+for rel, lines in files("src", "tests"):
+    for i, line in enumerate(lines, 1):
+        if MP.search(line):
+            hits.setdefault(rel, []).append(f"{rel}:{i}: {line.strip()[:160]}")
+path_violations = [{"file": rel, "hits": len(h), "pinned": pinned.get(rel), "lines": h[:20]}
+                   for rel, h in sorted(hits.items()) if len(h) > pinned.get(rel, 0)]
+pins_dropped = {rel: {"pinned": n, "now": len(hits.get(rel, []))} for rel, n in pinned.items()
+                if len(hits.get(rel, [])) < n}
+src = list(files("src"))
+dups = []
+for fp in dup_cfg.get("fingerprint", []):
+    pats = [re.compile(p) for p in fp["patterns"]]
+    sites = {}
+    for rel, lines in src:
+        for i, line in enumerate(lines, 1):
+            if any(p.search(line) for p in pats):
+                sites.setdefault(rel, []).append(f"{rel}:{i}: {line.strip()[:160]}")
+    allowed = list(fp["allowed"])  # path prefixes (crate dirs): moves inside an allowed crate stay allowed
+    ok = lambda rel: any(rel.startswith(a) for a in allowed)
+    new = {rel: sites[rel][:20] for rel in sorted(sites) if not ok(rel)}
+    dups.append({"id": fp["id"], "new_sites": new, "sites": sorted(sites),
+                 "allowed_without_match": [a for a in allowed if not any(r.startswith(a) for r in sites)]})
+new_dups = [d for d in dups if d["new_sites"]]
+print(json.dumps({"machine_paths": {"violations": path_violations, "pins_dropped": pins_dropped,
+                                    "files_with_hits": len(hits)},
+                  "duplicates": dups}, indent=1))
+for v in path_violations:
+    print(f"V4-03 machine-local path: {v['file']} hits={v['hits']} pinned={v['pinned']}", *v["lines"], sep="\n  ",
+          file=sys.stderr)
+for d in new_dups:
+    for rel, lines in d["new_sites"].items():
+        print(f"V4-05 new {d['id']} site: {rel}", *lines, sep="\n  ", file=sys.stderr)
+sys.exit(72 if path_violations else 71 if new_dups else 0)
+PY
+policy=$?
+set -e
+case $policy in
+  0) ;;
+  71|72)
+    reason="step0 policy: $([ $policy -eq 72 ] && echo 'V4-03 machine-local path' || echo 'V4-05 new frozen-duplicate site') (step0.policy.txt)"
+    echo "run-round: $reason" >&2; head -n 40 "$results/step0.policy.txt" >&2
+    exit $policy ;;
+  *) cat "$results/step0.policy.txt" >&2; die "step 0 policy check failed (step0.policy.txt)" ;;
+esac
 
 # Plan: selection, feature matrix units, doctest units and the doctest per-test budget (read-only).
 cargo metadata --no-deps --offline --format-version 1 ${locked[@]+"${locked[@]}"} >"$results/metadata.json" 2>"$results/metadata.stderr.txt" \
@@ -455,6 +537,8 @@ not_proven = [{"unit": t["unit"], "crate": t["crate"], "binary": t["binary"], "t
 code = int(E["RR_EXIT"])
 if code == 0 and not_proven:
     code = 73
+policy_file = res / "step0.policy.json"
+policy = json.loads(policy_file.read_text(encoding="utf-8")) if policy_file.exists() else None
 corpus_file = res / "oracle-corpus.json"
 corpus = json.loads(corpus_file.read_text(encoding="utf-8")) if corpus_file.exists() else {"present": False}
 mx = matrix.read_bytes() if matrix.exists() else b""
@@ -469,6 +553,12 @@ round_json = {
     "build_exit": default["build_exit"], "run_exit": default["run_exit"], "summary": default.get("summary", ""),
     "canary_filter": E["RR_FILTER"], "exit": code,
     "not_proven": not_proven, "oracle_corpus": corpus,
+    "step0_policy": None if policy is None else {
+        "machine_path_files_with_hits": policy["machine_paths"]["files_with_hits"],
+        "machine_path_pins_dropped": policy["machine_paths"]["pins_dropped"],
+        "duplicate_sites": {d["id"]: d["sites"] for d in policy["duplicates"]},
+        "duplicate_allowed_without_match": {d["id"]: d["allowed_without_match"] for d in policy["duplicates"]
+                                            if d["allowed_without_match"]}},
     "absent_units": absent,
     "timed_out_tests": [t["unit"] + ": " + t["name"] for t in tests if t["status"] == "timed_out"],
     "feature_matrix": {"file": ".config/round-features.toml", "sha256": hashlib.sha256(mx).hexdigest() if mx else None},

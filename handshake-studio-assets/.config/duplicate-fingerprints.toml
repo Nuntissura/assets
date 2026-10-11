@@ -1,0 +1,51 @@
+# Frozen duplicate capabilities (workflow V4-05, CX-CAP-001): tools/run-round.sh step 0 scans crates/*/src/** (product
+# code; tests and examples are not scanned) with every pattern below (Python regex, matched per line) and fails the round
+# fast (exit 71) when a file outside the `allowed` crate prefixes matches: a new copy of a frozen capability
+# (moves inside an allowed crate stay allowed). Sites as of 2026-10-11.
+# Changing `allowed` is a lead decision (owner moves, consolidation, D16/D18 rulings); workspace steward edits this file.
+schema = "hsk.studio.duplicate-fingerprints@1"
+
+[[fingerprint]]
+id = "D16"
+title = "bounded ZIP container parsing (local/central/EOCD/ZIP64 signatures) and CRC-32 table generation"
+owner = "open: Operator/lead decision D16 (single owner for bounded ZIP/deflate/CRC)"
+patterns = [
+  '(?i)0xedb8_?8320',
+  '(?i)\b0x0?(?:4034b50|2014b50|6054b50|6064b50|7064b50|8074b50)\b',
+  '(?i)\b0x0(?:403|201|605|606|706|807)_4b50\b',
+  'PK\\x0[1-8]',
+  '\[\s*0x50\s*,\s*0x4[bB]\s*,\s*0x0[1-8]',
+]
+allowed = [
+  "crates/hsk-studio-interop-fig/",
+  "crates/hsk-studio-interop-layout/",
+  "crates/hsk-studio-interop-vector/",
+  "crates/hsk-studio-package/",
+]
+
+[[fingerprint]]
+id = "D18"
+title = "worker process supervision (spawn, creation flags, kill/respawn)"
+owner = "open: lead decision D18 (single worker supervisor owner)"
+patterns = [
+  '\bCommand::new\s*\(',
+  '\.creation_flags\s*\(',
+]
+allowed = [
+  "crates/hsk-studio-motion-js/",
+  "crates/hsk-studio-reel-native/",
+  "crates/hsk-studio-score-plugin/",
+]
+
+[[fingerprint]]
+id = "TIMECODE"
+title = "timecode label arithmetic (frames/ticks <-> timecode, drop-frame), owned by hsk-studio-pulse"
+owner = "hsk-studio-pulse; interop-media copy frozen pending Operator decision D9"
+patterns = [
+  '\bfn\s+(?:frames_to_timecode|timecode_to_frames|ticks_to_timecode|timecode_to_ticks|parse_timecode|format_timecode)\b',
+  '(?i)\bfn\s+\w*drop_?frame\w*\s*[<(]',
+]
+allowed = [
+  "crates/hsk-studio-pulse/",
+  "crates/hsk-studio-interop-media/",
+]

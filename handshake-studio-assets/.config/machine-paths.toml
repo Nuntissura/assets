@@ -1,0 +1,29 @@
+# Machine-local path gate (workflow V4-03): tools/run-round.sh step 0 scans every text file under crates/*/src/** and
+# crates/*/tests/** line by line for a drive-letter path ((?<![A-Za-z0-9])[A-Za-z]:[/\\]) or a user-profile segment
+# (Users/ or Users\) and fails the round fast (exit 72) with file:line for any hit that is not pinned below.
+# Tests reach host data only through the documented corpus-root config (.config/oracle-corpus.toml, not scanned).
+# [pinned]: files whose CURRENT hits are test data, never opened as host paths (hostile-input vectors that the code
+# must refuse, synthetic catalog values, provenance records, populate-tool sources); value = exact hit count. A new
+# file with a hit, or a changed count in a pinned file, fails step 0. Entries are lead-reviewable: removing one makes
+# that file strict. Baseline 2026-10-11 (steward survey of origin c7be531..4ea5171; reasons below).
+schema = "hsk.studio.machine-paths@1"
+corpus_config = ".config/oracle-corpus.toml"
+
+[pinned]
+# hostile absolute-path vectors that Folio refuses as clip media paths
+"crates/hsk-studio-folio/tests/timeline_contract.rs" = 1
+# hostile absolute ZIP entry name that package refuses (absolute_name)
+"crates/hsk-studio-package/tests/foundation_contract.rs" = 1
+# hostile file:///c:/x link the web source patcher denies (FileScheme)
+"crates/hsk-studio-web/tests/source_dom_patch.rs" = 2
+# synthetic Lightroom catalog: root-folder values (absolute by Lightroom's format) and the generator that writes them
+"crates/hsk-studio-interop-lrcat/tests/fixtures/generate_fixtures.py" = 1
+"crates/hsk-studio-interop-lrcat/tests/fixtures/synthetic-main.expected.tsv" = 300
+"crates/hsk-studio-interop-lrcat/tests/fixtures/synthetic-wal.expected.tsv" = 301
+# Type evidence/provenance records (where reference files were taken from; tests read the vendored copies only)
+"crates/hsk-studio-type/tests/fixtures/FIXTURES_PROVENANCE.json" = 15
+"crates/hsk-studio-type/tests/fixtures/evidence/type-exact-oracle-recipe.json" = 4
+"crates/hsk-studio-type/tests/fixtures/evidence/type-foundation-preparation.json" = 13
+"crates/hsk-studio-type/tests/fixtures/evidence/type-reference-corrected-with-dlig.json" = 73
+# Prism oracle fixture: default_locations = source dirs of populate_corpus.py (copy tool); tests read the corpus root
+"crates/hsk-studio-prism/tests/oracle/t1_lcms2.json" = 1
