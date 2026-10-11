@@ -977,5 +977,6 @@
     "compiler": "cargo check --locked --tests -p hsk-studio-type --no-default-features exit0; owning runtime pending",
     "runtime": "NOT_RUN",
     "independent_verdict": "PENDING"
-  }
+  },
+  "hash_basis": "sha256 of committed git blob bytes (LF; root .gitattributes text=auto eol=lf), recomputed from HEAD 1d886fcdb938 on 2026-10-11; enforced by tests/provenance.rs (CRLF checkouts normalized to LF before hashing)"
 }

@@ -352,12 +352,12 @@
   "derivative_files": [
     {
       "path": "hb/aat_layout.rs",
-      "sha256": "7b20c5ce14b1ab4a8078138f89979e982795f668bfe42a7e86520eb8c42ab6e2",
+      "sha256": "5c3aae7f37212a4cfa4e1c8767af8824c99c930828b53c78c2b480959196aaae",
       "declared_module_graph": false
     },
     {
       "path": "hb/aat_layout_common.rs",
-      "sha256": "7f9dcce2c5c618ae1daf3a983e17711c8d6cd27a136df3b148f85425e9823062",
+      "sha256": "5112630735f4581cde3ac44935ce16484eb9267ecc7eed5cb6670d6466ab991e",
       "declared_module_graph": false
     },
     {
@@ -387,7 +387,7 @@
     },
     {
       "path": "hb/buffer.rs",
-      "sha256": "5ab9075af1436bc6138b9da9edd9d7343a9be910e898c326aef8088d42df54e0",
+      "sha256": "e26261dc791f4c5dfbd20aa34106b34c2c32049dd88a6bf3fdfce58b25a24c96",
       "declared_module_graph": true
     },
     {
@@ -407,12 +407,12 @@
     },
     {
       "path": "hb/machine_cursor.rs",
-      "sha256": "a4cfdece818b2f9d1b00457881ab83a46bae3edd09fefab57b10a86f283f2e19",
+      "sha256": "a436de07bc69fb22e8dbef362ce71183cff7ce0a15599825bebbf4e99238ad92",
       "declared_module_graph": true
     },
     {
       "path": "hb/mod.rs",
-      "sha256": "790742f0427468376199b16b56a1b0a695444e7ec447a34b2f312d73aaa41466",
+      "sha256": "339fc52af199bf61e008b1bc922e86a0fc1b17cd02b588c5465b960c9aebf169",
       "declared_module_graph": true
     },
     {
@@ -442,7 +442,7 @@
     },
     {
       "path": "hb/ot/layout/GPOS/mod.rs",
-      "sha256": "dfb58f3b1e0c372511d228c357a3f4d6b4b51a680e79a0d7394dd74ee5d51717",
+      "sha256": "ee9686d5c7dc9d0a635f22ff52a592e2f6ad9f78135031588261b92350e28bc8",
       "declared_module_graph": true
     },
     {
@@ -487,7 +487,7 @@
     },
     {
       "path": "hb/ot/layout/GSUB/mod.rs",
-      "sha256": "1c53557d89fec2eca74293eaee301d9aedf5a91a171803a61b5c8e24a5784197",
+      "sha256": "6364616406541cc2ddf46fb222742e179a0a3881b29f4d3228780d1f8dd491b5",
       "declared_module_graph": true
     },
     {
@@ -517,17 +517,17 @@
     },
     {
       "path": "hb/ot/layout/GSUB/subst_lookup_subtable.rs",
-      "sha256": "2ca025895ca66bd0bddf57451acee8885befadbc0550a4772fb550669fcbca05",
+      "sha256": "7f730614e66d4ed520584265168963836fddbb81b56458983da0b14d0e12965a",
       "declared_module_graph": false
     },
     {
       "path": "hb/ot/layout/mod.rs",
-      "sha256": "f73d1ddcca0b58b769342240b34d4204da2d291809efc6d8c69ff4bd7e0850f7",
+      "sha256": "85a941496b3849fad2f62dcf32e985b4b34d00d461b66b6a5e8f004eabc05850",
       "declared_module_graph": true
     },
     {
       "path": "hb/ot/mod.rs",
-      "sha256": "e87ce709bb9be0508be2a213e929ae3bae470daec26612002290730cd14259e7",
+      "sha256": "18d00b1700011a119acd587c804e4395a4da39e38f66d64374167482ac53ba0c",
       "declared_module_graph": true
     },
     {
@@ -552,7 +552,7 @@
     },
     {
       "path": "hb/ot_layout_gsubgpos.rs",
-      "sha256": "e59baa1e2e153ab80d9fe892777bdbb6f6f8f2b03009b4f4350ddb92cb6c0488",
+      "sha256": "c5ce21a57c3999af69d2c0a7129954bb9e267f64cb5befa4325353218a79755e",
       "declared_module_graph": true
     },
     {
@@ -562,7 +562,7 @@
     },
     {
       "path": "hb/ot_shape.rs",
-      "sha256": "d0be1d4d29029492076a2bd1f36a5f68dd1a622d4a052a4c25e849160c0696cc",
+      "sha256": "a92bfaa5d8f830361792c89dadc651ed503804eef465046e708f5480365093fb",
       "declared_module_graph": true
     },
     {
@@ -577,7 +577,7 @@
     },
     {
       "path": "hb/ot_shape_plan.rs",
-      "sha256": "45b26548148a7c363691592a12dd3316784f7024d727c315b3b6ee303b43ed1a",
+      "sha256": "f5be07b3086f324eda61da08670aa25b434faa45f99078a2411b880e9cd855a3",
       "declared_module_graph": true
     },
     {
@@ -587,7 +587,7 @@
     },
     {
       "path": "hb/ot_shaper_arabic.rs",
-      "sha256": "89af11603b30bf0b620b0282a8c17a0bd42c9fdb2623cd287c62d421bdd7cca2",
+      "sha256": "84aa5353a4cc220d9d7ec80f2d73da6d881af4d9412d43f839d22f08ad136a4f",
       "declared_module_graph": true
     },
     {
@@ -597,7 +597,7 @@
     },
     {
       "path": "hb/ot_shaper_hangul.rs",
-      "sha256": "b631addf41b7dbc6e5c863aec24d587a60435749426087d9333c1b71e037586e",
+      "sha256": "3f6d7a95b056917fadb0aa5da1bd4fb6f97374022e3cda5c5af53ced0a06125c",
       "declared_module_graph": false
     },
     {
@@ -622,7 +622,7 @@
     },
     {
       "path": "hb/ot_shaper_khmer.rs",
-      "sha256": "91f1a11ced89654fba89fbd65c6d7f52d0e51d575fa3f8c17b04d3ea7206aaba",
+      "sha256": "1e7802bb17cfc467b5d5946104587326eecafd269e40460cae95cd56744f3f48",
       "declared_module_graph": false
     },
     {
@@ -632,7 +632,7 @@
     },
     {
       "path": "hb/ot_shaper_myanmar.rs",
-      "sha256": "6899b45bd088f187fbd26e3fe3689aad193a1ef5d5fa375d0c5c66da26073962",
+      "sha256": "468c263d5e00e944c767d59a9edfc80e1cbad619eb04b28202768f085c052e62",
       "declared_module_graph": false
     },
     {
@@ -647,7 +647,7 @@
     },
     {
       "path": "hb/ot_shaper_thai.rs",
-      "sha256": "80a84ce488d81c1d59895d4b5fe4637a1bbd0d54f7d887c2da6093fb97beb624",
+      "sha256": "3890691c57d68239d8259ddf547194806a96e03193f3695b6f5045d3e940541c",
       "declared_module_graph": false
     },
     {
@@ -667,7 +667,7 @@
     },
     {
       "path": "hb/ot_shaper_vowel_constraints.rs",
-      "sha256": "2fe79b6135eddae764467011a50d623b0979bb6c03ad767d2fb6fd3df03b7ab5",
+      "sha256": "677c05a4cca75efaefa9b1833061fc18369392cf1aef017f9213a4e4f9bb62d1",
       "declared_module_graph": false
     },
     {
@@ -677,7 +677,7 @@
     },
     {
       "path": "hb/set_digest.rs",
-      "sha256": "6168f3de6e9ac2b2cde7a9ef5e63d5837bd89cdbeb87c2af05be260ab6acde77",
+      "sha256": "a3a6b1e283176900e38330ca8025de3eeae8c863c6469b7587e0364b10d771d8",
       "declared_module_graph": true
     },
     {
@@ -697,27 +697,27 @@
     },
     {
       "path": "hb/tag_table.rs",
-      "sha256": "a29ddd9857dc98bb01027f5583ccfb44107967797acb8068f4bd2942691c6308",
+      "sha256": "ad21417d546c9a3ab2c8402895452353e49070f6700d71f75cfa989379fa7e5d",
       "declared_module_graph": true
     },
     {
       "path": "hb/text_parser.rs",
-      "sha256": "6ddd2f9906228278cb9153dcc1246226a0ba3fea403c2294df9a5e24cfb81fd9",
+      "sha256": "76c881a9dfd7b0dfa13dce7278e830bab5529a2d03921356d58798f3548fd3a2",
       "declared_module_graph": true
     },
     {
       "path": "hb/unicode.rs",
-      "sha256": "d729e4cecbdfe82c8ef3893dfd86737fa1b2e29de4112fb9150147f18261bc0c",
+      "sha256": "46eb6bda0548020bbfb4f47c89952a7b30b2224bc299803969810a8bc15bec90",
       "declared_module_graph": true
     },
     {
       "path": "hb/unicode_norm.rs",
-      "sha256": "46fb4f86d1841b33a5aae4cda30f46e7b6a06768c177fd68de0823262743ef36",
+      "sha256": "91f24d16f13a6617ec3f9c2589ed9dced84b3404c45b5b11fb950201b5a1d064",
       "declared_module_graph": true
     },
     {
       "path": "mod.rs",
-      "sha256": "760d29c66129d953bc913927ca653ac327aa9b43f6c5889488e7a21f18096ce2",
+      "sha256": "18431075d2ad462b18f85dc63834af230c8d3686b0abd307a228bc2166f24085",
       "declared_module_graph": true
     }
   ],
@@ -800,5 +800,12 @@
     "source_cause": "Engine resolves an all-pinned-default-ignorable Zyyy span to COMMON; plan entry ot_shape_plan.rs and both shape.rs entries admitted only LATIN/ARABIC/HAN and refused UnsupportedProfile.",
     "patch": "Plan admits COMMON (default shaper). shape and shape_with_plan admit a COMMON buffer only when non-empty and every scalar is a pinned default-ignorable, and refuse UnsupportedProfile if any glyph survives shaping.",
     "verification": "independent PASS_V4 round STUDIO-R1; provenance hashes refreshed after the fact (drift left by e603db8)"
+  },
+  "hash_basis": "sha256 of committed git blob bytes (LF; root .gitattributes text=auto eol=lf), recomputed from HEAD 1d886fcdb938 on 2026-10-11; enforced by tests/provenance.rs (CRLF checkouts normalized to LF before hashing)",
+  "eol_hash_correction": {
+    "date": "2026-10-11",
+    "finding": "validation/R2-review-b.json (commit 87c1cd9)",
+    "note": "25/74 derivative hashes (incl. the 94331b00 refresh of hb/ot_shape_plan.rs and hb/shape.rs) had been computed over Windows CRLF working-tree bytes, not committed LF blobs; recomputed from committed blobs (R2-review-b finding)",
+    "check": "tests/provenance.rs vendored_derivative_hashes_match_committed_bytes"
   }
 }
