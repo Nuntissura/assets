@@ -3,8 +3,8 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, ContentDigest, Inspection, Unresolved, inspect_bytes};
 use hsk_studio_package::{
-    AssetError, AssetSource, DESCRIPTOR, Limits, LossReason, read_package, save_atomic,
-    write_package,
+    AssetError, AssetSource, Codec, DESCRIPTOR, Limits, LossReason, WriteOptions,
+    read_package_stream, save_atomic, sweep_stale_temps, write_package_with,
 };
 use std::{
     env,
@@ -63,11 +63,16 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         ["--write", doc, out, rest @ ..] => {
-            let assets = match rest {
-                [] => PathBuf::new(),
-                ["--assets", dir] => PathBuf::from(dir),
-                _ => return Err("unknown arguments".into()),
-            };
+            let mut assets = PathBuf::new();
+            let mut options = WriteOptions::default();
+            let mut flags = rest.iter();
+            while let Some(flag) = flags.next() {
+                match *flag {
+                    "--assets" => assets = PathBuf::from(flags.next().ok_or("missing --assets value")?),
+                    "--zstd" => options.asset_codec = Codec::Zstd,
+                    _ => return Err("unknown arguments".into()),
+                }
+            }
             let bytes = read_bounded(Path::new(doc))?;
             let snapshot = match inspect_bytes(&bytes, Budget::default(), &token, &Unresolved)
                 .map_err(|d| format!("document_rejected:{:?}", d.code))?
@@ -76,7 +81,15 @@ fn run() -> Result<(), String> {
                 Inspection::ReadOnly(_) => return Err("document is read-only".into()),
             };
             let mut package = Vec::new();
-            let receipt = write_package(&snapshot, &DirAssets(assets), &limits, &token, &mut package)
+            let receipt = write_package_with(
+                &snapshot,
+                &DirAssets(assets),
+                &[],
+                &options,
+                &limits,
+                &token,
+                &mut package,
+            )
                 .map_err(|e| e.code().to_owned())?;
             save_atomic(Path::new(out), &package, &limits, &token).map_err(|e| e.code().to_owned())?;
             println!(
@@ -91,8 +104,8 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         ["--read", input] => {
-            let bytes = read_bounded(Path::new(input))?;
-            let opened = read_package(&bytes, &limits, Budget::default(), &Unresolved, &token)
+            let file = File::open(input).map_err(|_| "input unavailable".to_owned())?;
+            let opened = read_package_stream(file, &limits, Budget::default(), &Unresolved, &token)
                 .map_err(|e| e.code().to_owned())?;
             let loss: Vec<&str> = opened
                 .loss
@@ -116,7 +129,19 @@ fn run() -> Result<(), String> {
             );
             Ok(())
         }
-        _ => Err("usage: --descriptor | --write DOC.json OUT.handshake [--assets DIR] | --read IN.handshake".into()),
+        ["--sweep", target] => {
+            let report = sweep_stale_temps(Path::new(target), &token).map_err(|e| e.code().to_owned())?;
+            println!(
+                "{}",
+                summary_json(&[
+                    ("removed", format!("{:?}", report.removed)),
+                    ("skipped_live", report.skipped_live.to_string()),
+                    ("ignored", report.ignored.to_string()),
+                ])
+            );
+            Ok(())
+        }
+        _ => Err("usage: --descriptor | --write DOC.json OUT.handshake [--assets DIR] [--zstd] | --read IN.handshake | --sweep TARGET".into()),
     }
 }
 

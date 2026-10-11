@@ -1262,7 +1262,8 @@ fn stale_temp_sweep_owner_marker() {
                 lines.read_line(&mut line).unwrap() > 0,
                 "live child never became ready"
             );
-            if line.trim() == "HSK-READY" {
+            // libtest prints "test <name> ... " without a newline before the body runs.
+            if line.contains("HSK-READY") {
                 break;
             }
         }
