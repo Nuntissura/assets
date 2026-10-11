@@ -463,6 +463,7 @@ fn razor_roll_slip_slide_exact_ticks() {
             clip_id: cid(clip),
             at: Ticks::new(frame * F),
             new_right_clip_id: cid(new),
+            linked: None,
         };
         let p = plan(&snap, &razor(2, 4, 9), ten).unwrap();
         assert_eq!(window(&after(&p, 2)), [2 * F, 3 * F, 3 * F, F]);
@@ -496,6 +497,7 @@ fn razor_roll_slip_slide_exact_ticks() {
             clip_id: cid(2),
             at: Ticks::new(4 * F + 1),
             new_right_clip_id: cid(9),
+            linked: None,
         };
         assert_eq!(err(plan(&snap, &off, ten)), PulseError::NotFrameAligned);
         // Roll: P gains what Q loses; Q's source head moves with the edit.
@@ -578,16 +580,14 @@ fn refusals_cancel_and_folio_validation() {
             err(at(3, "seq-main", &trim_out(77, 2, false))),
             PulseError::UnknownClip
         );
-        // Linked clips refuse razor/roll/slide with a typed unsupported code.
+        // A linked razor without caller-supplied right-half ids is refused with a typed code.
         let razor = TimelineEdit::Razor {
             clip_id: cid(1),
             at: Ticks::new(F),
             new_right_clip_id: cid(9),
+            linked: None,
         };
-        assert_eq!(
-            err(at(3, "seq-main", &razor)),
-            PulseError::LinkedEditUnsupported
-        );
+        assert_eq!(err(at(3, "seq-main", &razor)), PulseError::InsufficientIds);
         assert_eq!(
             PulseError::LinkedEditUnsupported.failure_code(),
             Some(hsk_studio_observe::FailureCode::Unsupported)

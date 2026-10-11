@@ -3,19 +3,22 @@
 //! proposal whose prospective document was validated by Folio itself (`validate_document`): pulse
 //! does not re-implement document validation, and it never commits (STU-ARC-011).
 //!
-//! Semantics: a link group (shared non-null `link_group`) is selected and trimmed/slipped together,
-//! one clip per track; razor, roll and slide refuse linked clips (`linked_edit_unsupported`).
-//! Ripple shifts later content on the edited tracks and on every other sync-locked track; it is
-//! refused when such a track is locked or the shift would collide. Video-track edits must move by
-//! whole frames. Moving a source-out bound later needs a known source length (`SourceExtents`);
-//! an unknown length refuses the extension rather than guessing.
+//! Semantics: a link group (shared non-null `link_group`) is selected and edited together, one
+//! clip per track. Trim, slip, lift and extract act on every member. Razor splits every member
+//! (caller supplies the new right-half ids and one new link group). Roll and slide act on every
+//! member track but only when the link groups of the clips they touch are CLOSED over the edit
+//! (every group member is among the touched clips), else `linked_edit_unsupported`. Range lift and
+//! extract refuse any linked clip they overlap (a cut would orphan or split a link group).
+//! Ripple, extract and close-gap shift later content on the edited tracks and on every other
+//! sync-locked track; refused when such a track is locked or the shift would collide. Video-track
+//! edits must move by whole frames. Moving a source-out bound later needs a known source length
+//! (`SourceExtents`); an unknown length refuses the extension rather than guessing.
 use crate::error::{PulseError, Result};
 use crate::range::{
-    Grid, TickDelta, TickRange, offset, ripple_shift, ripple_trim_end, ripple_trim_start,
-    roll_edit, slide, trim_end, trim_start,
+    Grid, LanePiece, TickDelta, TickRange, extract_span, gaps, lift_span, offset, ripple_shift,
+    ripple_trim_end, ripple_trim_start, roll_edit, slide, trim_end, trim_start,
 };
 use crate::rational::SpeedMath;
-use crate::time::{checked_add, checked_sub};
 use hsk_studio_accord::{CancellationToken, FrameRate, Ticks};
 use hsk_studio_folio::{
     Budget, ClipSource, Code, Diagnostic, Resolver, Snapshot, StudioClip, StudioSequence,
@@ -45,6 +48,14 @@ pub struct EditContext<'a> {
     pub cancel: &'a CancellationToken,
 }
 
+/// Fresh identities for a linked razor: pulse mints no ids. `right_clip_ids` lists
+/// `(existing member clip id, new right-half id)` for every member EXCEPT the primary clip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedRazor {
+    pub right_link_group: String,
+    pub right_clip_ids: Vec<(String, String)>,
+}
+
 /// Typed timeline commands (ids are Folio's string ids; times are ticks).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TimelineEdit {
@@ -60,17 +71,41 @@ pub enum TimelineEdit {
         new_head: Ticks,
         ripple: bool,
     },
-    /// Splits one clip at `at`; the right half gets `new_right_clip_id`.
+    /// Splits one clip at `at`; the right half gets `new_right_clip_id`. A linked clip needs
+    /// `linked` (ids for the other members' right halves and the right halves' new link group).
     Razor {
         clip_id: String,
         at: Ticks,
         new_right_clip_id: String,
+        linked: Option<LinkedRazor>,
     },
-    /// Moves the edit between a clip and the clip that abuts it on the same track.
+    /// Moves the edit between a clip and the clip that abuts it on the same track; for a linked
+    /// clip every member's edit moves by the same delta.
     Roll {
         left_clip_id: String,
         delta: TickDelta,
     },
+    /// Removes the clip (and its link group) and leaves a gap.
+    LiftClip { clip_id: String },
+    /// Removes the clip (and its link group) and closes the gap on its tracks and on every other
+    /// sync-locked track (ripple delete).
+    ExtractClip { clip_id: String },
+    /// Removes the time span from every targeted track and leaves a gap. A clip straddling the
+    /// span becomes two clips; the second takes the next id of `fresh_clip_ids` (track order,
+    /// then clip order).
+    LiftRange {
+        span: TickRange,
+        fresh_clip_ids: Vec<String>,
+    },
+    /// Removes the time span from every targeted track and closes it; other sync-locked tracks
+    /// shift by the span.
+    ExtractRange {
+        span: TickRange,
+        fresh_clip_ids: Vec<String>,
+    },
+    /// Closes the empty span on `track_id` that contains `at`, shifting later content there and on
+    /// every other sync-locked track.
+    CloseGap { track_id: String, at: Ticks },
     /// Shifts the source window by `delta` SOURCE ticks; timeline start and duration stay.
     Slip { clip_id: String, delta: TickDelta },
     /// Moves the clip by `delta` between its two abutting neighbours.
@@ -271,12 +306,24 @@ fn require_unlocked(
     Ok(())
 }
 
-fn refuse_linked(seq: &StudioSequence, clips: &[(usize, usize)]) -> Result<()> {
-    if clips
+/// Every link group touched by `involved` must be wholly inside it, else a partner would desync.
+fn require_closed(seq: &StudioSequence, involved: &[(usize, usize)]) -> Result<()> {
+    let set: BTreeSet<(usize, usize)> = involved.iter().copied().collect();
+    let groups: BTreeSet<&str> = involved
         .iter()
-        .any(|(t, c)| seq.tracks[*t].clips[*c].link_group.is_some())
-    {
-        return Err(PulseError::LinkedEditUnsupported);
+        .filter_map(|(t, c)| seq.tracks[*t].clips[*c].link_group.as_deref())
+        .collect();
+    for (t, track) in seq.tracks.iter().enumerate() {
+        for (c, clip) in track.clips.iter().enumerate() {
+            if clip
+                .link_group
+                .as_deref()
+                .is_some_and(|g| groups.contains(g))
+                && !set.contains(&(t, c))
+            {
+                return Err(PulseError::LinkedEditUnsupported);
+            }
+        }
     }
     Ok(())
 }
@@ -292,7 +339,7 @@ fn underflow_is_outside(error: PulseError) -> PulseError {
 fn check_extent(clip: &StudioClip, new_out: Ticks, ctx: &EditContext) -> Result<()> {
     match ctx.extents.extent(&clip.source_ref) {
         None => Err(PulseError::SourceExtentUnknown),
-        Some(extent) if new_out.value() > extent.value() => Err(PulseError::PastSourceEnd),
+        Some(extent) if new_out > extent => Err(PulseError::PastSourceEnd),
         Some(_) => Ok(()),
     }
 }
@@ -365,6 +412,7 @@ fn shift_other_tracks(
     if shift == TickDelta::ZERO {
         return Ok(());
     }
+    let rate = rate_of(seq)?;
     for (t, track) in seq.tracks.iter().enumerate() {
         ctx.cancel.check()?;
         if !track.sync_locked || members.iter().any(|(m, _)| *m == t) {
@@ -378,6 +426,7 @@ fn shift_other_tracks(
         if track.locked {
             return Err(PulseError::SyncLockBlocked);
         }
+        grid_of(track, rate).check_delta(shift)?;
         let shifted = ripple_shift(&lane, point, shift, ctx.cancel).map_err(|e| match e {
             PulseError::Overlap | PulseError::Underflow => PulseError::SyncLockBlocked,
             other => other,
@@ -447,49 +496,86 @@ fn razor(
     clip_id: &str,
     at: Ticks,
     new_id: &str,
+    linked: Option<&LinkedRazor>,
     ctx: &EditContext,
     reads: &mut Footprint,
 ) -> Result<StudioSequence> {
     ctx.cancel.check()?;
     let rate = rate_of(seq)?;
-    let (t, c) = locate(seq, clip_id)?;
-    require_unlocked(seq, &[(t, c)], reads)?;
-    refuse_linked(seq, &[(t, c)])?;
-    if seq
+    let primary = locate(seq, clip_id)?;
+    let members = selection(seq, primary)?;
+    require_unlocked(seq, &members, reads)?;
+    let group = seq.tracks[primary.0].clips[primary.1].link_group.as_deref();
+    // Right-half id per member (primary first) and the link group the right halves form.
+    let mut ids: Vec<&str> = vec![new_id];
+    let right_group = match (group, linked) {
+        (None, None) => None,
+        (None, Some(_)) => return Err(PulseError::InvalidInput),
+        (Some(_), None) => return Err(PulseError::InsufficientIds),
+        (Some(old), Some(extra)) => {
+            if extra.right_clip_ids.len() != members.len() - 1 {
+                return Err(PulseError::InsufficientIds);
+            }
+            for &(t, c) in &members[1..] {
+                let existing = &seq.tracks[t].clips[c].clip_id;
+                let (_, fresh) = extra
+                    .right_clip_ids
+                    .iter()
+                    .find(|(member, _)| member == existing)
+                    .ok_or(PulseError::InsufficientIds)?;
+                ids.push(fresh);
+            }
+            let in_use = seq
+                .tracks
+                .iter()
+                .flat_map(|t| t.clips.iter())
+                .any(|k| k.link_group.as_deref() == Some(extra.right_link_group.as_str()));
+            if in_use || extra.right_link_group == old {
+                return Err(PulseError::DuplicateId);
+            }
+            Some(extra.right_link_group.as_str())
+        }
+    };
+    let taken: BTreeSet<&str> = seq
         .tracks
         .iter()
-        .flat_map(|track| track.clips.iter())
-        .any(|k| k.clip_id == new_id)
-    {
+        .flat_map(|t| t.clips.iter())
+        .map(|k| k.clip_id.as_str())
+        .collect();
+    let fresh: BTreeSet<&str> = ids.iter().copied().collect();
+    if fresh.len() != ids.len() || ids.iter().any(|id| taken.contains(id)) {
         return Err(PulseError::DuplicateId);
     }
-    let track = &seq.tracks[t];
-    let clip = &track.clips[c];
-    let whole = TickRange::from_start_duration(clip.timeline_start, clip.duration)?;
-    let (left, right) = whole.split_at(at)?;
-    grid_of(track, rate).check_delta(TickDelta::between(whole.start(), at))?;
-    let span = clip.speed.span_for_duration(left.duration())?;
-    // Forward plays source_in -> source_out, reversed plays source_out -> source_in; the cut
-    // point is where the first half stops, and the second half continues from it.
-    let ((left_in, left_out), (right_in, right_out)) = if clip.speed.is_reversed() {
-        let cut = checked_sub(clip.source_out, span)?;
-        ((cut, clip.source_out), (clip.source_in, cut))
-    } else {
-        let cut = checked_add(clip.source_in, span)?;
-        ((clip.source_in, cut), (cut, clip.source_out))
-    };
     let mut out = seq.clone();
-    let mut second = clip.clone();
-    second.clip_id = new_id.to_owned();
-    second.source_in = right_in;
-    second.source_out = right_out;
-    second.timeline_start = right.start();
-    second.duration = right.duration();
-    let first = &mut out.tracks[t].clips[c];
-    first.source_in = left_in;
-    first.source_out = left_out;
-    first.duration = left.duration();
-    out.tracks[t].clips.insert(c + 1, second);
+    for (&(t, c), fresh_id) in members.iter().zip(&ids) {
+        let track = &seq.tracks[t];
+        let clip = &track.clips[c];
+        let whole = TickRange::from_start_duration(clip.timeline_start, clip.duration)?;
+        let (left, right) = whole.split_at(at)?;
+        grid_of(track, rate).check_delta(TickDelta::between(whole.start(), at))?;
+        let span = clip.speed.span_for_duration(left.duration())?;
+        // Forward plays source_in -> source_out, reversed plays source_out -> source_in; the cut
+        // point is where the first half stops, and the second half continues from it.
+        let ((left_in, left_out), (right_in, right_out)) = if clip.speed.is_reversed() {
+            let cut = clip.source_out.checked_sub(span)?;
+            ((cut, clip.source_out), (clip.source_in, cut))
+        } else {
+            let cut = clip.source_in.checked_add(span)?;
+            ((clip.source_in, cut), (cut, clip.source_out))
+        };
+        let mut second = clip.clone();
+        second.clip_id = (*fresh_id).to_owned();
+        second.source_in = right_in;
+        second.source_out = right_out;
+        second.timeline_start = right.start();
+        second.duration = right.duration();
+        second.link_group = right_group.map(str::to_owned);
+        let first = &mut out.tracks[t].clips[c];
+        first.source_in = left_in;
+        first.source_out = left_out;
+        first.duration = left.duration();
+        out.tracks[t].clips.insert(c + 1, second);
+    }
     Ok(out)
 }
 
@@ -502,30 +588,202 @@ fn neighbour_edit(
     reads: &mut Footprint,
 ) -> Result<StudioSequence> {
     let rate = rate_of(seq)?;
-    let (t, c) = locate(seq, clip_id)?;
-    require_unlocked(seq, &[(t, c)], reads)?;
-    let track = &seq.tracks[t];
-    let involved: Vec<(usize, usize)> = [c.checked_sub(1), Some(c), Some(c + 1)]
-        .into_iter()
-        .flatten()
-        .filter(|i| *i < track.clips.len())
-        .map(|i| (t, i))
-        .collect();
-    refuse_linked(seq, &involved)?;
-    let (lane, grid) = (lane_of(track)?, grid_of(track, rate));
-    let (new_lane, edges) = if is_roll {
-        (
-            roll_edit(&lane, c, delta, grid, ctx.cancel)?,
-            BTreeMap::from([(c, Edge::Tail), (c + 1, Edge::Head)]),
-        )
-    } else {
-        (
-            slide(&lane, c, delta, grid, ctx.cancel)?,
-            BTreeMap::from([(c.saturating_sub(1), Edge::Tail), (c + 1, Edge::Head)]),
-        )
-    };
+    let anchor = locate(seq, clip_id)?;
+    let members = selection(seq, anchor)?;
+    require_unlocked(seq, &members, reads)?;
+    let mut involved = Vec::new();
+    for &(t, c) in &members {
+        let len = seq.tracks[t].clips.len();
+        let first = if is_roll { c } else { c.saturating_sub(1) };
+        involved.extend((first..=c + 1).filter(|i| *i < len).map(|i| (t, i)));
+    }
+    require_closed(seq, &involved)?;
     let mut out = seq.clone();
-    write_lane(&mut out.tracks[t], &new_lane, &edges, ctx)?;
+    for &(t, c) in &members {
+        let track = &seq.tracks[t];
+        let (lane, grid) = (lane_of(track)?, grid_of(track, rate));
+        let (new_lane, edges) = if is_roll {
+            (
+                roll_edit(&lane, c, delta, grid, ctx.cancel)?,
+                BTreeMap::from([(c, Edge::Tail), (c + 1, Edge::Head)]),
+            )
+        } else {
+            (
+                slide(&lane, c, delta, grid, ctx.cancel)?,
+                BTreeMap::from([(c.saturating_sub(1), Edge::Tail), (c + 1, Edge::Head)]),
+            )
+        };
+        write_lane(&mut out.tracks[t], &new_lane, &edges, ctx)?;
+    }
+    Ok(out)
+}
+
+/// Rebuilds a track from lane pieces; the second piece of one origin clip takes a fresh id.
+fn write_pieces(
+    track: &mut StudioTrack,
+    pieces: &[LanePiece],
+    fresh: &mut std::slice::Iter<'_, String>,
+    taken: &mut BTreeSet<String>,
+    ctx: &EditContext,
+) -> Result<()> {
+    let originals = std::mem::take(&mut track.clips);
+    let mut rebuilt: Vec<StudioClip> = Vec::with_capacity(pieces.len());
+    let mut seen = BTreeSet::new();
+    for piece in pieces {
+        let mut clip = originals
+            .get(piece.origin)
+            .ok_or(PulseError::InvalidInput)?
+            .clone();
+        if !seen.insert(piece.origin) {
+            let id = fresh.next().ok_or(PulseError::InsufficientIds)?;
+            if !taken.insert(id.clone()) {
+                return Err(PulseError::DuplicateId);
+            }
+            clip.clip_id = id.clone();
+        }
+        let duration = piece.range.duration();
+        if piece.tail_cut.value() > 0 {
+            retime_edge(&mut clip, Edge::Tail, duration, ctx)?;
+        }
+        if piece.head_cut.value() > 0 {
+            retime_edge(&mut clip, Edge::Head, duration, ctx)?;
+        }
+        clip.timeline_start = piece.range.start();
+        clip.duration = duration;
+        rebuilt.push(clip);
+    }
+    track.clips = rebuilt;
+    Ok(())
+}
+
+/// Removes `plan[i].1` from track `plan[i].0` (lift) or removes and closes it (extract).
+fn cut_tracks(
+    seq: &StudioSequence,
+    out: &mut StudioSequence,
+    plan: &[(usize, TickRange)],
+    close: bool,
+    fresh: &[String],
+    ctx: &EditContext,
+) -> Result<()> {
+    let rate = rate_of(seq)?;
+    let mut taken: BTreeSet<String> = seq
+        .tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .map(|c| c.clip_id.clone())
+        .collect();
+    let mut ids = fresh.iter();
+    for &(t, span) in plan {
+        ctx.cancel.check()?;
+        let track = &seq.tracks[t];
+        let (lane, grid) = (lane_of(track)?, grid_of(track, rate));
+        let pieces = if close {
+            extract_span(&lane, span, grid, ctx.cancel)?
+        } else {
+            lift_span(&lane, span, grid, ctx.cancel)?
+        };
+        write_pieces(&mut out.tracks[t], &pieces, &mut ids, &mut taken, ctx)?;
+    }
+    Ok(())
+}
+
+fn remove_clips(
+    seq: &StudioSequence,
+    clip_id: &str,
+    close: bool,
+    ctx: &EditContext,
+    reads: &mut Footprint,
+) -> Result<StudioSequence> {
+    let primary = locate(seq, clip_id)?;
+    let members = selection(seq, primary)?;
+    require_unlocked(seq, &members, reads)?;
+    let mut plan = Vec::new();
+    for &(t, c) in &members {
+        let clip = &seq.tracks[t].clips[c];
+        plan.push((
+            t,
+            TickRange::from_start_duration(clip.timeline_start, clip.duration)?,
+        ));
+    }
+    let mut out = seq.clone();
+    cut_tracks(seq, &mut out, &plan, close, &[], ctx)?;
+    if close {
+        let lead = plan[0].1;
+        let shift = TickDelta::between(lead.end(), lead.start());
+        shift_other_tracks(seq, &mut out, &members, lead.end(), shift, ctx, reads)?;
+    }
+    Ok(out)
+}
+
+fn cut_range(
+    seq: &StudioSequence,
+    span: TickRange,
+    close: bool,
+    fresh: &[String],
+    ctx: &EditContext,
+    reads: &mut Footprint,
+) -> Result<StudioSequence> {
+    let targeted: Vec<usize> = (0..seq.tracks.len())
+        .filter(|t| seq.tracks[*t].targeted)
+        .collect();
+    if targeted.is_empty() {
+        return Err(PulseError::InvalidInput);
+    }
+    for &t in &targeted {
+        let track = &seq.tracks[t];
+        reads.add(&track.track_id);
+        if track.locked {
+            return Err(PulseError::TrackLocked);
+        }
+        let overlapped_link = track.clips.iter().any(|c| {
+            c.link_group.is_some()
+                && c.timeline_start < span.end()
+                && c.timeline_end().is_none_or(|end| end > span.start())
+        });
+        if overlapped_link {
+            return Err(PulseError::LinkedEditUnsupported);
+        }
+    }
+    let plan: Vec<(usize, TickRange)> = targeted.iter().map(|t| (*t, span)).collect();
+    let mut out = seq.clone();
+    cut_tracks(seq, &mut out, &plan, close, fresh, ctx)?;
+    if close {
+        let edited: Vec<(usize, usize)> = targeted.iter().map(|t| (*t, 0)).collect();
+        let shift = TickDelta::between(span.end(), span.start());
+        shift_other_tracks(seq, &mut out, &edited, span.end(), shift, ctx, reads)?;
+    }
+    Ok(out)
+}
+
+fn close_gap(
+    seq: &StudioSequence,
+    track_id: &str,
+    at: Ticks,
+    ctx: &EditContext,
+    reads: &mut Footprint,
+) -> Result<StudioSequence> {
+    let rate = rate_of(seq)?;
+    let t = seq
+        .tracks
+        .iter()
+        .position(|t| t.track_id == track_id)
+        .ok_or(PulseError::UnknownTrack)?;
+    let track = &seq.tracks[t];
+    reads.add(&track.track_id);
+    if track.locked {
+        return Err(PulseError::TrackLocked);
+    }
+    let lane = lane_of(track)?;
+    let gap = gaps(&lane, ctx.cancel)?
+        .into_iter()
+        .find(|g| g.contains(at))
+        .ok_or(PulseError::OutsideRange)?;
+    let shift = TickDelta::between(gap.end(), gap.start());
+    grid_of(track, rate).check_delta(shift)?;
+    let shifted = ripple_shift(&lane, gap.end(), shift, ctx.cancel)?;
+    let mut out = seq.clone();
+    write_lane(&mut out.tracks[t], &shifted, &BTreeMap::new(), ctx)?;
+    shift_other_tracks(seq, &mut out, &[(t, 0)], gap.end(), shift, ctx, reads)?;
     Ok(out)
 }
 
@@ -581,7 +839,27 @@ fn apply_edit(
             clip_id,
             at,
             new_right_clip_id,
-        } => razor(seq, clip_id, *at, new_right_clip_id, ctx, reads),
+            linked,
+        } => razor(
+            seq,
+            clip_id,
+            *at,
+            new_right_clip_id,
+            linked.as_ref(),
+            ctx,
+            reads,
+        ),
+        TimelineEdit::LiftClip { clip_id } => remove_clips(seq, clip_id, false, ctx, reads),
+        TimelineEdit::ExtractClip { clip_id } => remove_clips(seq, clip_id, true, ctx, reads),
+        TimelineEdit::LiftRange {
+            span,
+            fresh_clip_ids,
+        } => cut_range(seq, *span, false, fresh_clip_ids, ctx, reads),
+        TimelineEdit::ExtractRange {
+            span,
+            fresh_clip_ids,
+        } => cut_range(seq, *span, true, fresh_clip_ids, ctx, reads),
+        TimelineEdit::CloseGap { track_id, at } => close_gap(seq, track_id, *at, ctx, reads),
         TimelineEdit::Roll {
             left_clip_id,
             delta,

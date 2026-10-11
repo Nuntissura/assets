@@ -28,14 +28,6 @@ pub fn ticks_to_frames_floor(ticks: Ticks, rate: FrameRate) -> u64 {
     ticks.value() / rate.ticks_per_frame()
 }
 
-/// accord::Ticks has no subtraction; a negative result is `Underflow`.
-pub fn checked_sub(a: Ticks, b: Ticks) -> Result<Ticks> {
-    a.value()
-        .checked_sub(b.value())
-        .map(Ticks::new)
-        .ok_or(PulseError::Underflow)
-}
-
 /// Frames per second as a reduced fraction, e.g. 29.97 -> (30000, 1001), 25 -> (25, 1).
 pub fn fps_fraction(rate: FrameRate) -> (u64, u64) {
     let g = gcd(TICKS_PER_SECOND, rate.ticks_per_frame());
@@ -88,10 +80,6 @@ fn ticks_per_sample(sample_rate_hz: u32) -> Result<u64> {
         return Err(PulseError::UnsupportedSampleRate);
     }
     Ok(TICKS_PER_SECOND / hz)
-}
-
-pub fn checked_add(a: Ticks, b: Ticks) -> Result<Ticks> {
-    Ok(a.checked_add(b)?)
 }
 
 /// (nominal frames per second, NTSC 1001-ratio rate). `None` = no integer timecode base

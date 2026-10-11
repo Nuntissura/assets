@@ -367,9 +367,10 @@ fn lane_refusals() {
             offset(Ticks::new(5), TickDelta::new(-6).unwrap()).unwrap_err(),
             PulseError::Underflow
         );
+        // accord::Ticks::checked_sub reports underflow as TickOverflow, which pulse maps to overflow.
         assert_eq!(
-            checked_sub(Ticks::new(1), Ticks::new(2)).unwrap_err(),
-            PulseError::Underflow
+            PulseError::from(Ticks::new(1).checked_sub(Ticks::new(2)).unwrap_err()),
+            PulseError::Overflow
         );
     });
 }

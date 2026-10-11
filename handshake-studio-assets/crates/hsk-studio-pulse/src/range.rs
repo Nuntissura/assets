@@ -84,7 +84,7 @@ pub struct TickRange {
 
 impl TickRange {
     pub fn new(start: Ticks, end: Ticks) -> Result<Self> {
-        if start.value() > end.value() {
+        if start > end {
             return Err(PulseError::InvalidRange);
         }
         Ok(Self { start, end })
@@ -105,10 +105,10 @@ impl TickRange {
         self.start == self.end
     }
     pub fn contains(self, t: Ticks) -> bool {
-        self.start.value() <= t.value() && t.value() < self.end.value()
+        self.start <= t && t < self.end
     }
     pub fn overlaps(self, other: TickRange) -> bool {
-        self.start.value() < other.end.value() && other.start.value() < self.end.value()
+        self.start < other.end && other.start < self.end
     }
     /// `self` ends exactly where `other` starts.
     pub fn abuts(self, other: TickRange) -> bool {
@@ -130,7 +130,7 @@ impl TickRange {
     }
     /// Splits at an interior point; both halves are non-empty.
     pub fn split_at(self, at: Ticks) -> Result<(TickRange, TickRange)> {
-        if at.value() <= self.start.value() || at.value() >= self.end.value() {
+        if at <= self.start || at >= self.end {
             return Err(PulseError::OutsideRange);
         }
         Ok((
@@ -181,10 +181,10 @@ pub fn validate_lane(ranges: &[TickRange], cancel: &CancellationToken) -> Result
         if i % CANCEL_STRIDE == 0 {
             cancel.check()?;
         }
-        if pair[1].start.value() < pair[0].start.value() {
+        if pair[1].start < pair[0].start {
             return Err(PulseError::UnorderedRanges);
         }
-        if pair[1].start.value() < pair[0].end.value() {
+        if pair[1].start < pair[0].end {
             return Err(PulseError::Overlap);
         }
     }
@@ -214,7 +214,7 @@ pub fn ripple_shift(
     cancel: &CancellationToken,
 ) -> Result<Vec<TickRange>> {
     validate_lane(ranges, cancel)?;
-    let first = ranges.partition_point(|r| r.start.value() < from.value());
+    let first = ranges.partition_point(|r| r.start < from);
     let mut out = ranges.to_vec();
     shift_tail(&mut out[first..], delta, cancel)?;
     if first > 0 && first < out.len() && out[first].start.value() < out[first - 1].end.value() {
@@ -236,7 +236,7 @@ pub fn trim_end(
     let trimmed = index_of(ranges, index)?.trim_end_to(new_duration, grid)?;
     if ranges
         .get(index + 1)
-        .is_some_and(|next| trimmed.end.value() > next.start.value())
+        .is_some_and(|next| trimmed.end > next.start)
     {
         return Err(PulseError::Overlap);
     }
@@ -322,30 +322,22 @@ fn make_range(start: Ticks, end: Ticks) -> Result<TickRange> {
 
 /// Index of the range containing `t` in an ordered lane (scheduling: what is active at `t`).
 pub fn range_at(ranges: &[TickRange], t: Ticks) -> Option<usize> {
-    let i = ranges.partition_point(|r| r.end.value() <= t.value());
+    let i = ranges.partition_point(|r| r.end <= t);
     ranges.get(i).filter(|r| r.contains(t)).map(|_| i)
 }
 
 /// Smallest range boundary strictly after `after` in an ordered lane.
 pub fn next_edit_point(ranges: &[TickRange], after: Ticks) -> Option<Ticks> {
-    let i = ranges.partition_point(|r| r.end.value() <= after.value());
+    let i = ranges.partition_point(|r| r.end <= after);
     let r = ranges.get(i)?;
-    Some(if r.start.value() > after.value() {
-        r.start
-    } else {
-        r.end
-    })
+    Some(if r.start > after { r.start } else { r.end })
 }
 
 /// Largest range boundary strictly before `before` in an ordered lane.
 pub fn prev_edit_point(ranges: &[TickRange], before: Ticks) -> Option<Ticks> {
-    let j = ranges.partition_point(|r| r.start.value() < before.value());
+    let j = ranges.partition_point(|r| r.start < before);
     let r = ranges.get(j.checked_sub(1)?)?;
-    Some(if r.end.value() < before.value() {
-        r.end
-    } else {
-        r.start
-    })
+    Some(if r.end < before { r.end } else { r.start })
 }
 
 /// Empty spans between consecutive ranges (leading space before the first range is not a gap).
@@ -353,7 +345,7 @@ pub fn gaps(ranges: &[TickRange], cancel: &CancellationToken) -> Result<Vec<Tick
     validate_lane(ranges, cancel)?;
     Ok(ranges
         .windows(2)
-        .filter(|pair| pair[0].end.value() < pair[1].start.value())
+        .filter(|pair| pair[0].end < pair[1].start)
         .map(|pair| TickRange {
             start: pair[0].end,
             end: pair[1].start,
@@ -417,12 +409,12 @@ fn cut_span(
             head_cut: Ticks::new(head),
             tail_cut: Ticks::new(tail),
         };
-        if r.end.value() <= span.start.value() {
+        if r.end <= span.start {
             out.push(keep(*r, 0, 0));
-        } else if r.start.value() >= span.end.value() {
+        } else if r.start >= span.end {
             out.push(keep(r.shifted(closing)?, 0, 0));
         } else {
-            if r.start.value() < span.start.value() {
+            if r.start < span.start {
                 let tail = r.end.value() - span.start.value();
                 out.push(keep(
                     TickRange {
@@ -433,7 +425,7 @@ fn cut_span(
                     tail,
                 ));
             }
-            if r.end.value() > span.end.value() {
+            if r.end > span.end {
                 let head = span.end.value() - r.start.value();
                 let right = TickRange {
                     start: span.end,
