@@ -3,6 +3,7 @@
 //! the standard but occurs in the wild, so it is decoded (and written back as UTF-16BE) rather than
 //! being scanned as PDFDocEncoding garbage. Decoding is lossless for matching; encoding is only
 //! used for strings that were rewritten.
+#![deny(clippy::arithmetic_side_effects)]
 
 /// PDFDocEncoding 0x18..=0x1F (Table D.2: breve, caron, circumflex, dotaccent, hungarumlaut,
 /// ogonek, ring, tilde).
@@ -26,8 +27,8 @@ pub(crate) enum Enc {
 
 pub(crate) fn pdfdoc_char(b: u8) -> char {
     match b {
-        0x18..=0x1F => LOW[usize::from(b - 0x18)],
-        0x80..=0x9E => HIGH[usize::from(b - 0x80)],
+        0x18..=0x1F => LOW.get(usize::from(b.wrapping_sub(0x18))).copied().unwrap_or(char::from(b)),
+        0x80..=0x9E => HIGH.get(usize::from(b.wrapping_sub(0x80))).copied().unwrap_or(char::from(b)),
         0xA0 => '\u{20AC}',
         _ => char::from(b),
     }
@@ -41,8 +42,8 @@ pub(crate) fn pdfdoc_byte(c: char) -> Option<u8> {
         _ => LOW
             .iter()
             .position(|x| *x == c)
-            .map(|i| 0x18 + i as u8)
-            .or_else(|| HIGH.iter().position(|x| *x == c).map(|i| 0x80 + i as u8))
+            .map(|i| 0x18u8.wrapping_add(i as u8))
+            .or_else(|| HIGH.iter().position(|x| *x == c).map(|i| 0x80u8.wrapping_add(i as u8)))
             .or((c == '\u{20AC}').then_some(0xA0)),
     }
 }
@@ -62,7 +63,7 @@ pub(crate) fn decode_text(bytes: &[u8]) -> (Vec<char>, Enc) {
 }
 
 pub(crate) fn utf16be_bytes(chars: &[char]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(chars.len() * 2);
+    let mut out = Vec::with_capacity(chars.len().saturating_mul(2));
     let mut buf = [0u16; 2];
     for c in chars {
         for unit in c.encode_utf16(&mut buf) {

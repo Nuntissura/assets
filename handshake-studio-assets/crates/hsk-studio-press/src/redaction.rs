@@ -11,6 +11,12 @@
 //! `[-0.25, +0.95]` em vertically, transformed through Tm x CTM. Whole strings are removed (a
 //! string straddling the region edge is removed entirely). Over-removal is safe; under-removal is
 //! not.
+//! Images (image XObjects and inline images) cannot be erased pixel by pixel here: under
+//! `UnsupportedPolicy::RemoveImages` an image whose placement touches the region is removed whole
+//! (its `Do` / `BI..EI` leaves the content, the resource entry goes when nothing else uses it), under
+//! the other policies it is an unsupported class. No pixel codec is involved.
+#![deny(clippy::arithmetic_side_effects)]
+use crate::cmap::{Cmap, parse_to_unicode};
 use crate::content::{Op, parse_content};
 use crate::error::{PressError, RedactionClass, Result};
 use crate::filters;
@@ -20,6 +26,7 @@ use crate::syntax::{Dict, ObjRef, Object, Stream};
 use crate::writer::{reachable, trailer_roots, write_object};
 use hsk_studio_accord::CancellationToken;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 const ASCENT: f64 = 0.95;
 const DESCENT: f64 = 0.25;
@@ -38,6 +45,10 @@ pub enum UnsupportedPolicy {
     Refuse,
     /// Redact what can be proven and list the rest in `RedactionReport::unredacted`.
     ReportAndContinue,
+    /// Images and inline images whose placement touches a region are removed whole (listed in
+    /// `RedactionReport::images_removed` / `inline_images_removed`); every other unsupported class
+    /// still fails closed.
+    RemoveImages,
 }
 
 /// SENSITIVE: `removed_text` holds the removed string operands; route it only to the verifier.
@@ -46,7 +57,13 @@ pub struct RedactionReport {
     pub page_index: u32,
     pub text_strings_removed: u32,
     pub removed_text: Vec<Vec<u8>>,
+    /// `removed_text[i]` as its font's `/ToUnicode` reads it (`None`: the font has no usable map).
+    pub removed_unicode: Vec<Option<String>>,
     pub annotations_removed: Vec<ObjRef>,
+    /// Image XObjects whose placement touched the region and was removed (`RemoveImages`).
+    pub images_removed: Vec<ObjRef>,
+    /// Inline images removed (`RemoveImages`).
+    pub inline_images_removed: u32,
     pub form_fields_removed: u32,
     /// Classes present in the region that were NOT removed (only with `ReportAndContinue`).
     pub unredacted: Vec<RedactionClass>,
@@ -109,6 +126,8 @@ struct FontInfo {
     missing: f64,
     known: bool,
     composite: bool,
+    /// `/ToUnicode` reading of the font, when it has a usable one.
+    cmap: Option<Rc<Cmap>>,
 }
 
 struct Shown {
@@ -129,7 +148,13 @@ struct Interp<'a> {
     fonts: BTreeMap<Vec<u8>, FontInfo>,
     unsupported: Vec<RedactionClass>,
     removed: Vec<Vec<u8>>,
+    /// `removed[i]` read through its font's `/ToUnicode`.
+    removed_unicode: Vec<Option<String>>,
     layout_shift: bool,
+    /// Remove images whose placement touches the region (`UnsupportedPolicy::RemoveImages`).
+    remove_images: bool,
+    images_removed: Vec<ObjRef>,
+    inline_removed: u32,
     /// Remaining decoded-byte allowance for form-XObject content.
     budget: usize,
     next_num: u32,
@@ -181,7 +206,11 @@ impl<'a> Interp<'a> {
             fonts: BTreeMap::new(),
             unsupported: Vec::new(),
             removed: Vec::new(),
+            removed_unicode: Vec::new(),
             layout_shift: false,
+            remove_images: false,
+            images_removed: Vec::new(),
+            inline_removed: 0,
         }
     }
 
@@ -189,31 +218,65 @@ impl<'a> Interp<'a> {
         if let Some(f) = self.fonts.get(name) {
             return f.clone();
         }
-        let none = FontInfo { first: 0, widths: Vec::new(), missing: 0.0, known: false, composite: false };
+        let none = FontInfo { first: 0, widths: Vec::new(), missing: 0.0, known: false, composite: false, cmap: None };
         let doc = self.doc;
-        let info = (|| {
-            let fonts = self.resources?.get("Font").map(|f| doc.resolve(f)).and_then(Object::as_dict)?;
-            let fd = fonts.entries.iter().find(|(k, _)| k == name).map(|(_, v)| doc.resolve(v)).and_then(Object::as_dict)?;
-            if fd.get("Subtype").is_some_and(|s| s.is_name("Type0")) {
-                return Some(FontInfo { composite: true, ..none.clone() });
+        let fd = self
+            .resources
+            .and_then(|r| r.get("Font"))
+            .map(|f| doc.resolve(f))
+            .and_then(Object::as_dict)
+            .and_then(|fonts| fonts.entries.iter().find(|(k, _)| k == name))
+            .map(|(_, v)| doc.resolve(v))
+            .and_then(Object::as_dict);
+        let info = match fd {
+            None => none,
+            Some(fd) => {
+                let cmap = self.load_to_unicode(fd);
+                if fd.get("Subtype").is_some_and(|s| s.is_name("Type0")) {
+                    FontInfo { composite: true, cmap, ..none }
+                } else {
+                    let first = fd.get("FirstChar").map(|x| doc.resolve(x)).and_then(Object::as_int).unwrap_or(0);
+                    let widths: Vec<f64> = match fd.get("Widths").map(|w| doc.resolve(w)) {
+                        Some(Object::Array(a)) => a.iter().map(|w| doc.resolve(w).as_f64().unwrap_or(0.0)).collect(),
+                        _ => Vec::new(),
+                    };
+                    let missing = fd
+                        .get("FontDescriptor")
+                        .map(|d| doc.resolve(d))
+                        .and_then(Object::as_dict)
+                        .and_then(|d| d.get("MissingWidth"))
+                        .and_then(|m| doc.resolve(m).as_f64())
+                        .unwrap_or(0.0);
+                    FontInfo { first, known: !widths.is_empty(), widths, missing, composite: false, cmap }
+                }
             }
-            let first = fd.get("FirstChar").map(|x| doc.resolve(x)).and_then(Object::as_int).unwrap_or(0);
-            let widths: Vec<f64> = match fd.get("Widths").map(|w| doc.resolve(w)) {
-                Some(Object::Array(a)) => a.iter().map(|w| doc.resolve(w).as_f64().unwrap_or(0.0)).collect(),
-                _ => Vec::new(),
-            };
-            let missing = fd
-                .get("FontDescriptor")
-                .map(|d| doc.resolve(d))
-                .and_then(Object::as_dict)
-                .and_then(|d| d.get("MissingWidth"))
-                .and_then(|m| doc.resolve(m).as_f64())
-                .unwrap_or(0.0);
-            Some(FontInfo { first, known: !widths.is_empty(), widths, missing, composite: false })
-        })()
-        .unwrap_or(none);
+        };
         self.fonts.insert(name.to_vec(), info.clone());
         info
+    }
+
+    /// The font's `/ToUnicode` map, when it has a decodable one (decoded under the pass budget).
+    fn load_to_unicode(&mut self, fd: &Dict) -> Option<Rc<Cmap>> {
+        let Object::Stream(tu) = self.doc.resolve(fd.get("ToUnicode")?) else { return None };
+        if !filters::is_decodable(&tu.dict) {
+            return None;
+        }
+        let data = filters::decode_stream(tu, &self.doc.limits, &mut self.budget).ok()?;
+        parse_to_unicode(&data).map(Rc::new)
+    }
+
+    /// `s` read through the current font's `/ToUnicode` map.
+    fn unicode_of(&mut self, s: &[u8]) -> Option<String> {
+        let name = self.g.font.clone();
+        let font = self.font(&name);
+        font.cmap.as_ref().map(|c| c.decode(s).into_iter().collect())
+    }
+
+    /// Reference of the image XObject a resource name selects.
+    fn xobject_ref(&self, name: &[u8]) -> Option<ObjRef> {
+        let doc = self.doc;
+        let xo = self.resources?.get("XObject").map(|x| doc.resolve(x)).and_then(Object::as_dict)?;
+        xo.entries.iter().find(|(k, _)| k == name).and_then(|(_, v)| v.as_ref())
     }
 
     /// Computes the glyph-run box for `s` at the current text position and advances Tm.
@@ -226,7 +289,7 @@ impl<'a> Interp<'a> {
             let w = if font.composite || !font.known {
                 1000.0
             } else {
-                let idx = i64::from(b) - font.first;
+                let idx = i64::from(b).saturating_sub(font.first);
                 if idx >= 0 && (idx as usize) < font.widths.len() { font.widths[idx as usize] } else { font.missing }
             };
             adv += w / 1000.0 * fs + self.g.tc + if b == 32 && !font.composite { self.g.tw } else { 0.0 };
@@ -332,7 +395,7 @@ impl<'a> Interp<'a> {
         let doc = self.doc;
         loop {
             let candidate = format!("HskRd{}", self.name_counter).into_bytes();
-            self.name_counter += 1;
+            self.name_counter = self.name_counter.saturating_add(1);
             let in_resources = self
                 .resources
                 .and_then(|r| r.get("XObject"))
@@ -412,7 +475,10 @@ impl<'a> Interp<'a> {
             if op.name == b"Do"
                 && let Some(n) = op.operands.first().and_then(Object::as_name)
             {
-                *uses.entry(n.to_vec()).or_default() += 1;
+                {
+                    let c = uses.entry(n.to_vec()).or_default();
+                    *c = c.saturating_add(1);
+                }
             }
         }
         for (i, op) in ops.iter().enumerate() {
@@ -484,6 +550,8 @@ impl<'a> Interp<'a> {
                     let shown = self.show(s);
                     if shown.hit {
                         self.removed.push(s.clone());
+                        let u = self.unicode_of(s);
+                        self.removed_unicode.push(u);
                         changed = true;
                         keep = false;
                         out.extend_from_slice(&prefix);
@@ -506,6 +574,8 @@ impl<'a> Interp<'a> {
                                 if shown.hit {
                                     any = true;
                                     self.removed.push(s.clone());
+                                    let u = self.unicode_of(s);
+                                    self.removed_unicode.push(u);
                                     if let Some(n) = self.spacer(&shown) {
                                         new_items.push(Object::Real(n));
                                     }
@@ -533,14 +603,14 @@ impl<'a> Interp<'a> {
                     self.add_point(x, y);
                 }
                 b"c" => {
-                    for k in 0..3 {
-                        let (x, y) = (num(op, 2 * k)?, num(op, 2 * k + 1)?);
+                    for k in 0..3usize {
+                        let (x, y) = (num(op, k.saturating_mul(2))?, num(op, k.saturating_mul(2).saturating_add(1))?);
                         self.add_point(x, y);
                     }
                 }
                 b"v" | b"y" => {
-                    for k in 0..2 {
-                        let (x, y) = (num(op, 2 * k)?, num(op, 2 * k + 1)?);
+                    for k in 0..2usize {
+                        let (x, y) = (num(op, k.saturating_mul(2))?, num(op, k.saturating_mul(2).saturating_add(1))?);
                         self.add_point(x, y);
                     }
                 }
@@ -558,7 +628,13 @@ impl<'a> Interp<'a> {
                     let c = self.g.ctm;
                     let b = bbox(&[apply(&c, 0.0, 0.0), apply(&c, 1.0, 0.0), apply(&c, 0.0, 1.0), apply(&c, 1.0, 1.0)]);
                     if touches(&b, &self.region) {
-                        self.mark(RedactionClass::InlineImage);
+                        if self.remove_images {
+                            self.inline_removed = self.inline_removed.saturating_add(1);
+                            changed = true;
+                            keep = false;
+                        } else {
+                            self.mark(RedactionClass::InlineImage);
+                        }
                     }
                 }
                 b"Do" => {
@@ -567,10 +643,23 @@ impl<'a> Interp<'a> {
                         && touches(&x.bbox, &self.region)
                     {
                         match x.form {
+                            None if self.remove_images => {
+                                if let Some(r) = self.xobject_ref(name)
+                                    && !self.images_removed.contains(&r)
+                                {
+                                    self.images_removed.push(r);
+                                }
+                                if let Some(count) = uses.get_mut(name) {
+                                    *count = count.saturating_sub(1);
+                                }
+                                rewritten.insert(name.to_vec());
+                                changed = true;
+                                keep = false;
+                            }
                             None => self.mark(RedactionClass::Image),
                             Some(_) if depth >= MAX_FORM_DEPTH => self.mark(RedactionClass::FormXObject),
                             Some((stream, matrix)) => {
-                                if let Some(copy) = self.run_form(stream, matrix, cancel, depth + 1)? {
+                                if let Some(copy) = self.run_form(stream, matrix, cancel, depth.saturating_add(1))? {
                                     let fresh = self.fresh_name(&additions);
                                     out.push(b'/');
                                     write_name_bytes(&fresh, &mut out);
@@ -638,7 +727,7 @@ fn purge_list(
             continue;
         };
         if removed.contains(&r.num) {
-            *fields_removed += 1;
+            *fields_removed = fields_removed.saturating_add(1);
             continue;
         }
         let kids: Option<Vec<Object>> = m
@@ -650,11 +739,11 @@ fn purge_list(
             .map(<[Object]>::to_vec);
         if let Some(kids) = kids {
             let before = kids.len();
-            let kept = purge_list(m, kids, removed, depth + 1, max_depth, fields_removed)?;
+            let kept = purge_list(m, kids, removed, depth.saturating_add(1), max_depth, fields_removed)?;
             if kept.len() < before {
                 if kept.is_empty() {
                     removed.insert(r.num);
-                    *fields_removed += 1;
+                    *fields_removed = fields_removed.saturating_add(1);
                     continue;
                 }
                 if let Some(Entry { obj: Object::Dict(d), span, .. }) = m.get_mut(&r.num) {
@@ -713,15 +802,16 @@ impl PdfDoc {
         let ops = parse_content(&data, &self.limits)?;
         let resources = self.inherited(page_num, "Resources").and_then(Object::as_dict);
         let mut interp = Interp::new(self, resources, rect, budget);
+        interp.remove_images = policy == UnsupportedPolicy::RemoveImages;
         let pass = interp.run(&ops, &data, cancel, 0)?;
         let page_resources = if pass.additions.is_empty() && pass.removals.is_empty() {
             None
         } else {
             Some(interp.resources_with(resources, &pass.additions, &pass.removals))
         };
-        let Interp { unsupported, removed, layout_shift, new_objects, next_num, .. } = interp;
+        let Interp { unsupported, removed, removed_unicode, layout_shift, new_objects, next_num, images_removed, inline_removed, .. } = interp;
         let (new_content, changed) = (pass.out, pass.changed);
-        if policy == UnsupportedPolicy::Refuse
+        if policy != UnsupportedPolicy::ReportAndContinue
             && let Some(class) = unsupported.first()
         {
             return Err(PressError::UnsupportedRedactionClass(*class));
@@ -855,9 +945,12 @@ impl PdfDoc {
         unredacted.sort_by_key(|c| c.as_str());
         Ok(RedactionReport {
             page_index: region.page_index,
-            text_strings_removed: removed.len() as u32,
+            text_strings_removed: u32::try_from(removed.len()).unwrap_or(u32::MAX),
             removed_text: removed,
+            removed_unicode,
             annotations_removed,
+            images_removed,
+            inline_images_removed: inline_removed,
             form_fields_removed,
             complete: unredacted.is_empty(),
             unredacted,

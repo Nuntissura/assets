@@ -8,9 +8,11 @@ mod content;
 mod error;
 mod filters;
 mod pdf_edit;
+mod raster;
 mod reader;
 mod redaction;
 mod sanitized_save;
+mod show_text;
 mod syntax;
 mod text_codec;
 mod text_fields;
@@ -18,9 +20,10 @@ mod writer;
 
 pub use error::{Limits, PressError, RedactionClass, SinkError};
 pub use redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
+pub use raster::RASTER_CLASS;
 pub use sanitized_save::{
-    MIN_DISTINCTIVE_NEEDLE, PayloadHit, PayloadLocation, PayloadProof, RedactedOutput, SanitizePolicy, SanitizeReport,
-    TextCollision, redact_and_save, redact_and_save_with, sanitize_full_rewrite, verify_payload_absent,
+    MIN_DISTINCTIVE_NEEDLE, PayloadHit, PayloadLocation, PayloadProof, RasterStream, RedactedOutput, SanitizePolicy, SanitizeReport,
+    TextCollision, redact_and_save, redact_and_save_with, sanitize_full_rewrite, verify_payload_absent, verify_payload_absent_unicode,
 };
 pub use text_fields::{
     TextFieldOutcome, TextFieldPolicy, TextFieldReport, TextMode, TextOutcomeKind, TextRedactedOutput, TextRole,

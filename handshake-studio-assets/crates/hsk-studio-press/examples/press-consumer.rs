@@ -2,7 +2,7 @@
 //!   press-consumer --descriptor
 //!   press-consumer --inspect FILE.pdf
 //!   press-consumer --set-title NEW FILE.pdf OUT.pdf
-//!   press-consumer --redact PAGE X0 Y0 X1 Y1 FILE.pdf OUT.pdf [--partial]
+//!   press-consumer --redact PAGE X0 Y0 X1 Y1 FILE.pdf OUT.pdf [--partial | --remove-images]
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_press::{Limits, PayloadLocation, PdfDoc, PdfScalar, RedactionRegion, UnsupportedPolicy, redact_and_save};
 use std::process::ExitCode;
@@ -46,7 +46,13 @@ fn run(args: &[String]) -> Result<(), String> {
             let n = |i: usize| -> Result<f64, String> { args.get(i).ok_or("arg")?.parse::<f64>().map_err(|e| e.to_string()) };
             let region = RedactionRegion { page_index: n(1)? as u32, rect: [n(2)?, n(3)?, n(4)?, n(5)?] };
             let (file, out) = (args.get(6).ok_or("FILE")?, args.get(7).ok_or("OUT")?);
-            let policy = if args.iter().any(|a| a == "--partial") { UnsupportedPolicy::ReportAndContinue } else { UnsupportedPolicy::Refuse };
+            let policy = if args.iter().any(|a| a == "--partial") {
+                UnsupportedPolicy::ReportAndContinue
+            } else if args.iter().any(|a| a == "--remove-images") {
+                UnsupportedPolicy::RemoveImages
+            } else {
+                UnsupportedPolicy::Refuse
+            };
             let mut doc = open(file)?;
             let r = redact_and_save(&mut doc, &[region], policy, &cancel).map_err(|e| e.to_string())?;
             std::fs::write(out, &r.bytes).map_err(|e| format!("write: {e}"))?;
@@ -56,7 +62,7 @@ fn run(args: &[String]) -> Result<(), String> {
             for h in &r.proof.hits {
                 match h.location {
                     PayloadLocation::RawBytes { .. } => raw += 1,
-                    PayloadLocation::DecodedStream { object, .. } => {
+                    PayloadLocation::DecodedStream { object, .. } | PayloadLocation::DecodedText { object } => {
                         dec += 1;
                         objs.insert(object);
                     }
@@ -91,7 +97,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 r.residual_in_region
             );
         }
-        _ => return Err("usage: --descriptor | --inspect FILE | --set-title NEW FILE OUT | --redact PAGE X0 Y0 X1 Y1 FILE OUT [--partial]".into()),
+        _ => return Err("usage: --descriptor | --inspect FILE | --set-title NEW FILE OUT | --redact PAGE X0 Y0 X1 Y1 FILE OUT [--partial | --remove-images]".into()),
     }
     Ok(())
 }

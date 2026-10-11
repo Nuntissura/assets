@@ -24,18 +24,21 @@
 //! `/IRT` or a popup's `/Parent`. Appearance streams are read through the font's `/ToUnicode`
 //! CMap; composite-font text that cannot be decoded drops the appearance of an edited annotation
 //! and is otherwise reported `Unverifiable` (kept, never silent).
-//! Not covered (the proof still reports them as hits, never hides them): `/GoToR` and `/Launch`
-//! targets, other name trees (embedded file names), page/image `/Metadata`, structure elements that
-//! are direct dictionaries without `/P`, text only decodable through a `/ToUnicode` that the proof
-//! (a byte scan) cannot read.
-use crate::cmap::{Cmap, parse_to_unicode};
-use crate::content::parse_content;
+//! Slice 5 adds file targets: `GoToR`/`GoToE`/`Launch`/`ImportData`/`SubmitForm` actions (`/F` file
+//! specifications with `/UF /DOS /Mac /Unix /Desc`, the remote `/D`, the Launch `/Win` entries),
+//! every file specification (`/AF`, file attachment `/FS`, the `/Names /EmbeddedFiles` tree whose
+//! keys are renamed to opaque names), and `/Metadata` streams of pages, images and forms (a match
+//! drops the stream). Matching ignores case, white-space runs and zero-width characters.
+//! Not covered (the payload proof still reports them as hits): other name trees, structure elements
+//! that are direct dictionaries without `/P`, `SubmitForm /Fields`, embedded file CONTENT.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
 use crate::pdf_edit::PdfDoc;
 use crate::reader::{Entry, check_cancel};
 use crate::redaction::res;
 use crate::sanitized_save::{PayloadProof, variants_text, verify_with_variants};
+use crate::show_text::{FontCache, show_text};
 use crate::syntax::{Dict, ObjRef, Object, Stream};
 use crate::text_codec::{Enc, decode_text, encode_text};
 use crate::writer::{reachable, trailer_roots};
@@ -77,8 +80,12 @@ pub struct TextFieldPolicy {
     pub form_labels: bool,
     /// Structure element `/Alt`, `/ActualText`, `/E`, `/T`.
     pub structure_text: bool,
-    /// Trailer `/Info` string entries and the catalog `/Metadata` (XMP) stream.
+    /// Trailer `/Info` string entries and `/Metadata` (XMP) streams of the catalog, pages, images and
+    /// forms.
     pub info_fields: bool,
+    /// File targets: `GoToR`/`GoToE`/`Launch`/`ImportData`/`SubmitForm` actions, file
+    /// specifications (names and descriptions) and embedded-file names.
+    pub file_targets: bool,
     pub mode: TextMode,
     /// Simple case folding (one lowercase char per char). Default true (fail closed).
     pub case_insensitive: bool,
@@ -98,6 +105,7 @@ impl Default for TextFieldPolicy {
             form_labels: true,
             structure_text: true,
             info_fields: true,
+            file_targets: true,
             mode: TextMode::Replace("[REDACTED]".into()),
             case_insensitive: true,
             whole_token: false,
@@ -132,8 +140,18 @@ pub enum TextRole {
     StructTitle,
     /// A string entry of the trailer `/Info` dictionary.
     InfoField,
-    /// The catalog `/Metadata` (XMP) stream.
+    /// A `/Metadata` (XMP) stream.
     Xmp,
+    /// `/F /UF /DOS /Mac /Unix` of a file specification, or the `/F` of a remote/launch action.
+    FileSpecName,
+    /// `/Desc` of a file specification.
+    FileSpecDesc,
+    /// `/D` of a `GoToR`/`GoToE` action (a destination in another file).
+    RemoteDest,
+    /// `/F /D /P` of a `Launch` action's `/Win` dictionary.
+    LaunchWin,
+    /// A key of the `/Names /EmbeddedFiles` tree.
+    EmbeddedFileName,
 }
 
 impl TextRole {
@@ -157,6 +175,11 @@ impl TextRole {
             Self::StructTitle => "T",
             Self::InfoField => "Info",
             Self::Xmp => "Metadata",
+            Self::FileSpecName => "F",
+            Self::FileSpecDesc => "Desc",
+            Self::RemoteDest => "D",
+            Self::LaunchWin => "Win",
+            Self::EmbeddedFileName => "EmbeddedFiles",
         }
     }
 }
@@ -233,8 +256,38 @@ fn fold(c: char, ci: bool) -> char {
     if ci { c.to_lowercase().next().unwrap_or(c) } else { c }
 }
 
+/// Characters that render as nothing and must not split a needle (zero-width characters, soft
+/// hyphen).
+fn is_ignorable(c: char) -> bool {
+    matches!(c, '\u{AD}' | '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
+}
+
+/// Matching form of a text: case folded, runs of white space collapsed to one blank, ignorable
+/// characters dropped. `map[i]` is the `[start, end)` span of normalized char `i` in the original.
+fn normalize(text: &[char], ci: bool) -> (Vec<char>, Vec<(usize, usize)>) {
+    let (mut out, mut map) = (Vec::with_capacity(text.len()), Vec::with_capacity(text.len()));
+    let mut i = 0usize;
+    while let Some(&c) = text.get(i) {
+        let start = i;
+        if c.is_whitespace() {
+            while text.get(i).is_some_and(|x| x.is_whitespace() || is_ignorable(*x)) {
+                i = i.saturating_add(1);
+            }
+            out.push(' ');
+        } else if is_ignorable(c) {
+            i = i.saturating_add(1);
+            continue;
+        } else {
+            out.push(fold(c, ci));
+            i = i.saturating_add(1);
+        }
+        map.push((start, i));
+    }
+    (out, map)
+}
+
 struct Matcher {
-    /// Folded needles, longest first.
+    /// Normalized needles, longest first.
     needles: Vec<Vec<char>>,
     ci: bool,
     token: bool,
@@ -248,9 +301,14 @@ enum Rw {
 }
 
 fn boundary(hay: &[char], start: usize, end: usize, needle: &[char]) -> bool {
-    let before = start == 0 || !hay[start - 1].is_ascii_alphanumeric() || !needle[0].is_ascii_alphanumeric();
-    let after = end >= hay.len() || !hay[end].is_ascii_alphanumeric() || !needle[needle.len() - 1].is_ascii_alphanumeric();
+    let (Some(first), Some(last)) = (needle.first(), needle.last()) else { return false };
+    let before = start.checked_sub(1).and_then(|p| hay.get(p)).is_none_or(|c| !c.is_ascii_alphanumeric()) || !first.is_ascii_alphanumeric();
+    let after = hay.get(end).is_none_or(|c| !c.is_ascii_alphanumeric()) || !last.is_ascii_alphanumeric();
     before && after
+}
+
+fn count_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 impl Matcher {
@@ -260,39 +318,44 @@ impl Matcher {
         }
         let mut set: BTreeSet<Vec<char>> = BTreeSet::new();
         for n in needles {
-            let folded: Vec<char> = n.trim().chars().map(|c| fold(c, ci)).collect();
-            if folded.is_empty() {
+            let chars: Vec<char> = n.trim().chars().collect();
+            let (norm, _) = normalize(&chars, ci);
+            if norm.is_empty() {
                 continue;
             }
-            if folded.len() > MAX_NEEDLE_CHARS {
+            if norm.len() > MAX_NEEDLE_CHARS {
                 return Err(PressError::InputLimit("needle_chars"));
             }
-            set.insert(folded);
+            set.insert(norm);
         }
         let mut needles: Vec<Vec<char>> = set.into_iter().collect();
         needles.sort_by_key(|n| std::cmp::Reverse(n.len()));
         Ok(Self { needles, ci, token })
     }
 
-    /// Non-overlapping, leftmost, longest-first spans `[start, end)`.
+    /// Non-overlapping, leftmost, longest-first spans `[start, end)` of the original text. Case,
+    /// white-space runs and zero-width characters do not change what matches.
     fn find(&self, hay: &[char]) -> Vec<(usize, usize)> {
         if self.needles.is_empty() {
             return Vec::new();
         }
-        let folded: Vec<char> = hay.iter().map(|c| fold(*c, self.ci)).collect();
+        let (norm, map) = normalize(hay, self.ci);
         let mut out = Vec::new();
-        let mut i = 0;
-        while i < folded.len() {
+        let mut i = 0usize;
+        while i < norm.len() {
             let hit = self.needles.iter().find(|n| {
-                let end = i + n.len();
-                end <= folded.len() && folded[i..end] == n[..] && (!self.token || boundary(hay, i, end, n))
+                let end = i.saturating_add(n.len());
+                norm.get(i..end).is_some_and(|w| w == n.as_slice()) && (!self.token || boundary(&norm, i, end, n))
             });
             match hit {
                 Some(n) => {
-                    out.push((i, i + n.len()));
-                    i += n.len();
+                    let last = i.saturating_add(n.len()).saturating_sub(1);
+                    if let (Some(a), Some(b)) = (map.get(i), map.get(last)) {
+                        out.push((a.0, b.1));
+                    }
+                    i = i.saturating_add(n.len());
                 }
-                None => i += 1,
+                None => i = i.saturating_add(1),
             }
         }
         out
@@ -306,17 +369,17 @@ impl Matcher {
             if found.is_empty() {
                 return if total == 0 { Rw::Clean } else { Rw::Changed(cur, total) };
             }
-            total = total.saturating_add(found.len() as u32);
+            total = total.saturating_add(count_u32(found.len()));
             let mut next = Vec::with_capacity(cur.len());
-            let mut at = 0;
+            let mut at = 0usize;
             for (s, e) in found {
-                next.extend_from_slice(&cur[at..s]);
+                next.extend_from_slice(cur.get(at..s).unwrap_or(&[]));
                 if let TextMode::Replace(marker) = mode {
                     next.extend(marker.chars());
                 }
                 at = e;
             }
-            next.extend_from_slice(&cur[at..]);
+            next.extend_from_slice(cur.get(at..).unwrap_or(&[]));
             cur = next;
         }
         Rw::Unstable(total)
@@ -330,7 +393,7 @@ impl Matcher {
             collapse_ws(&decode_entities(&strip_markup(chars, false))),
             collapse_ws(&decode_entities(&strip_markup(chars, true))),
         ];
-        spellings.iter().map(|v| self.find(v).len() as u32).max().unwrap_or(0)
+        spellings.iter().map(|v| count_u32(self.find(v).len())).max().unwrap_or(0)
     }
 }
 
@@ -355,34 +418,35 @@ fn strip_markup(chars: &[char], gap: bool) -> Vec<char> {
 
 fn decode_entities(chars: &[char]) -> Vec<char> {
     let mut out = Vec::with_capacity(chars.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '&'
-            && let Some(len) = chars[i + 1..].iter().take(12).position(|c| *c == ';')
-        {
-            let name: String = chars[i + 1..i + 1 + len].iter().collect();
-            let decoded = match name.as_str() {
-                "amp" => Some('&'),
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "quot" => Some('"'),
-                "apos" => Some('\''),
-                "nbsp" => Some('\u{A0}'),
-                n => n
-                    .strip_prefix("#x")
-                    .or_else(|| n.strip_prefix("#X"))
-                    .and_then(|h| u32::from_str_radix(h, 16).ok())
-                    .or_else(|| n.strip_prefix('#').and_then(|d| d.parse::<u32>().ok()))
-                    .and_then(char::from_u32),
-            };
-            if let Some(c) = decoded {
-                out.push(c);
-                i += len + 2;
-                continue;
+    let mut i = 0usize;
+    while let Some(&c) = chars.get(i) {
+        if c == '&' {
+            let rest = chars.get(i.saturating_add(1)..).unwrap_or(&[]);
+            if let Some(len) = rest.iter().take(12).position(|x| *x == ';') {
+                let name: String = rest.get(..len).unwrap_or(&[]).iter().collect();
+                let decoded = match name.as_str() {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "nbsp" => Some('\u{A0}'),
+                    n => n
+                        .strip_prefix("#x")
+                        .or_else(|| n.strip_prefix("#X"))
+                        .and_then(|h| u32::from_str_radix(h, 16).ok())
+                        .or_else(|| n.strip_prefix('#').and_then(|d| d.parse::<u32>().ok()))
+                        .and_then(char::from_u32),
+                };
+                if let Some(d) = decoded {
+                    out.push(d);
+                    i = i.saturating_add(len).saturating_add(2);
+                    continue;
+                }
             }
         }
-        out.push(chars[i]);
-        i += 1;
+        out.push(c);
+        i = i.saturating_add(1);
     }
     out
 }
@@ -547,17 +611,7 @@ struct Target {
     catalog: bool,
 }
 
-/// How the show-operator strings of one font are read.
-enum FontText {
-    /// Single-byte codes read as Latin-1 (what the byte-level proof sees).
-    Simple,
-    /// `/ToUnicode` decodes the codes; non-composite fonts are also read as Latin-1.
-    Cmap { cmap: Cmap, composite: bool },
-    /// Composite font without a usable `/ToUnicode`: the codes cannot be read.
-    Opaque,
-}
-
-/// Unique opaque replacements for named-destination names, shared by the tree, the legacy
+/// Unique opaque replacements for name-tree and destination names, shared by the trees, the legacy
 /// dictionary and every reference.
 #[derive(Default)]
 struct DestRename {
@@ -575,7 +629,7 @@ impl DestRename {
         }
         let new = loop {
             let c = format!("HskRd{}", self.counter).into_bytes();
-            self.counter += 1;
+            self.counter = self.counter.saturating_add(1);
             if !self.taken.contains(&c) {
                 break c;
             }
@@ -587,9 +641,20 @@ impl DestRename {
     }
 }
 
+/// State shared by the sweep over all reachable objects.
+struct SweepState {
+    rn: DestRename,
+    /// Objects that are file specifications although they carry no `/Type /Filespec`.
+    fs: BTreeSet<u32>,
+}
+
 /// Text of a destination name: a name object is UTF-8 bytes, a string is a PDF text string.
 fn name_text(bytes: &[u8], is_name: bool) -> Vec<char> {
     if is_name { String::from_utf8_lossy(bytes).chars().collect() } else { decode_text(bytes).0 }
+}
+
+fn typed_filespec(d: &Dict) -> bool {
+    d.get("Type").is_some_and(|t| t.is_name("Filespec"))
 }
 
 struct Ctx<'a> {
@@ -597,6 +662,7 @@ struct Ctx<'a> {
     policy: &'a TextFieldPolicy,
     limits: &'a Limits,
     budget: usize,
+    fonts: FontCache,
 }
 
 impl Ctx<'_> {
@@ -634,7 +700,7 @@ impl Ctx<'_> {
                     let (chars, enc) = decode_text(s);
                     self.plain(&chars, enc)
                 }
-                Object::Array(inner) if depth < 2 => self.rewrite_items(objs, inner, depth + 1),
+                Object::Array(inner) if depth < 2 => self.rewrite_items(objs, inner, depth.saturating_add(1)),
                 _ => Rewrite::NotText,
             };
             match part {
@@ -712,83 +778,8 @@ impl Ctx<'_> {
         Ok(Applied::Edited)
     }
 
-    fn font_text(&mut self, objs: &Objs, fonts: Option<&Dict>, name: &[u8]) -> Result<FontText> {
-        let Some(fd) = fonts.and_then(|f| f.get_key(name)).map(|v| res(objs, v)).and_then(Object::as_dict) else {
-            return Ok(FontText::Simple);
-        };
-        let composite = fd.get("Subtype").is_some_and(|s| s.is_name("Type0"));
-        if let Some(Object::Stream(tu)) = fd.get("ToUnicode").map(|v| res(objs, v))
-            && let Some(data) = self.stream_bytes(tu)?
-            && let Some(cmap) = parse_to_unicode(&data)
-        {
-            return Ok(FontText::Cmap { cmap, composite });
-        }
-        Ok(if composite { FontText::Opaque } else { FontText::Simple })
-    }
-
-    /// Text shown by the show operators of a form/content stream, in order, one space between
-    /// operators; codes are read through the font's `/ToUnicode` where there is one. The flag is set
-    /// when text drawn with a composite font that cannot be decoded was seen.
-    fn content_text(&mut self, objs: &Objs, st: &Stream, data: &[u8]) -> Result<(Vec<char>, bool)> {
-        fn strings<'o>(o: &'o Object, out: &mut Vec<&'o [u8]>) {
-            match o {
-                Object::Str(s) => out.push(s),
-                Object::Array(a) => a.iter().for_each(|x| strings(x, out)),
-                _ => {}
-            }
-        }
-        let latin1 = |s: &[u8]| s.iter().map(|b| char::from(*b)).collect::<Vec<char>>();
-        let Ok(ops) = parse_content(data, self.limits) else {
-            return Ok((latin1(data), false));
-        };
-        let fonts = st
-            .dict
-            .get("Resources")
-            .map(|r| res(objs, r))
-            .and_then(Object::as_dict)
-            .and_then(|r| r.get("Font"))
-            .map(|f| res(objs, f))
-            .and_then(Object::as_dict);
-        let mut cache: BTreeMap<Vec<u8>, FontText> = BTreeMap::new();
-        let (mut out, mut opaque, mut cur) = (Vec::new(), false, None::<Vec<u8>>);
-        for op in &ops {
-            match op.name.as_slice() {
-                b"Tf" => cur = op.operands.first().and_then(Object::as_name).map(<[u8]>::to_vec),
-                b"Tj" | b"TJ" | b"'" | b"\"" => {
-                    if let Some(n) = &cur
-                        && !cache.contains_key(n)
-                    {
-                        let f = self.font_text(objs, fonts, n)?;
-                        cache.insert(n.clone(), f);
-                    }
-                    let font = cur.as_ref().and_then(|n| cache.get(n));
-                    let mut strs = Vec::new();
-                    op.operands.iter().for_each(|o| strings(o, &mut strs));
-                    for s in strs {
-                        match font {
-                            Some(FontText::Cmap { cmap, composite }) => {
-                                out.extend(cmap.decode(s));
-                                if !composite {
-                                    out.push(' ');
-                                    out.extend(latin1(s));
-                                }
-                            }
-                            Some(FontText::Opaque) => {
-                                opaque |= !s.is_empty();
-                                out.extend(latin1(s));
-                            }
-                            _ => out.extend(latin1(s)),
-                        }
-                    }
-                    out.push(' ');
-                }
-                _ => {}
-            }
-        }
-        Ok((out, opaque))
-    }
-
-    /// `(matches in appearance text, some appearance could not be read)`.
+    /// `(matches in appearance text, some appearance could not be read)`. Text is read through each
+    /// font's `/ToUnicode` map where there is one.
     fn appearance_scan(&mut self, objs: &Objs, d: &Dict) -> Result<(u32, bool)> {
         let (mut matches, mut undecodable) = (0u32, false);
         for n in appearance_streams_of(objs, d) {
@@ -796,9 +787,10 @@ impl Ctx<'_> {
             match self.stream_bytes(st)? {
                 None => undecodable = true,
                 Some(data) => {
-                    let (text, opaque) = self.content_text(objs, st, &data)?;
-                    undecodable |= opaque;
-                    matches = matches.saturating_add(self.matcher.find(&text).len() as u32);
+                    let resources = st.dict.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict);
+                    let shown = show_text(objs, resources, &data, self.limits, &mut self.budget, &mut self.fonts)?;
+                    undecodable |= shown.opaque;
+                    matches = matches.saturating_add(count_u32(self.matcher.find(&shown.all).len()));
                 }
             }
         }
@@ -875,7 +867,7 @@ impl Ctx<'_> {
             Some(Object::Name(n)) => (n.clone(), true),
             _ => return false,
         };
-        let matches = self.matcher.find(&name_text(&bytes, is_name)).len() as u32;
+        let matches = count_u32(self.matcher.find(&name_text(&bytes, is_name)).len());
         if matches == 0 {
             return false;
         }
@@ -890,25 +882,44 @@ impl Ctx<'_> {
         true
     }
 
-    /// Slice 4 sweep over one reachable dictionary: destination references, URI actions, the
-    /// catalog base URI and structure elements.
-    fn sweep(&mut self, objs: &Objs, rn: &mut DestRename, d: &mut Dict, loc: Loc, out: &mut Vec<TextFieldOutcome>) -> Result<bool> {
+    /// File specification dictionary: `/F /UF /DOS /Mac /Unix` (names) and `/Desc`.
+    fn filespec(&mut self, objs: &Objs, d: &mut Dict, loc: Loc, out: &mut Vec<TextFieldOutcome>) -> Result<bool> {
+        let enabled = self.policy.file_targets;
+        let mut changed = false;
+        for (key, role) in [
+            ("F", TextRole::FileSpecName),
+            ("UF", TextRole::FileSpecName),
+            ("DOS", TextRole::FileSpecName),
+            ("Mac", TextRole::FileSpecName),
+            ("Unix", TextRole::FileSpecName),
+            ("Desc", TextRole::FileSpecDesc),
+        ] {
+            let s = Slot::new(key, role, SlotKind::Plain, enabled);
+            changed |= matches!(self.slot(objs, d, &s, loc, out)?, Applied::Edited);
+        }
+        Ok(changed)
+    }
+
+    /// Slice 4/5 sweep over one reachable dictionary: destination references, URI actions, the
+    /// catalog base URI, structure elements, remote and launch actions, file specifications and
+    /// `/Metadata` streams.
+    fn sweep(&mut self, objs: &Objs, st: &mut SweepState, d: &mut Dict, loc: Loc, out: &mut Vec<TextFieldOutcome>) -> Result<bool> {
         let p = self.policy;
+        let nested = Loc { direct: true, ..loc };
         let mut changed = false;
         let s_name = d.get("S").and_then(Object::as_name).map(<[u8]>::to_vec);
+        let is_catalog = d.get("Type").is_some_and(|t| t.is_name("Catalog"));
         for key in ["Dest", "OpenAction"] {
-            changed |= self.rename_ref(rn, d, key, loc, out);
+            changed |= self.rename_ref(&mut st.rn, d, key, loc, out);
         }
         if s_name.as_deref() == Some(b"GoTo") {
-            changed |= self.rename_ref(rn, d, "D", loc, out);
+            changed |= self.rename_ref(&mut st.rn, d, "D", loc, out);
         }
         if s_name.as_deref() == Some(b"URI") {
             let s = Slot::new("URI", TextRole::ActionUri, SlotKind::Plain, p.action_uris);
             changed |= matches!(self.slot(objs, d, &s, loc, out)?, Applied::Edited);
         }
-        if d.get("Type").is_some_and(|t| t.is_name("Catalog"))
-            && let Some(Object::Dict(u)) = d.get_mut("URI")
-        {
+        if is_catalog && let Some(Object::Dict(u)) = d.get_mut("URI") {
             let s = Slot::new("Base", TextRole::ActionUri, SlotKind::Plain, p.action_uris);
             changed |= matches!(self.slot(objs, u, &s, loc, out)?, Applied::Edited);
         }
@@ -923,6 +934,53 @@ impl Ctx<'_> {
                 changed |= matches!(self.slot(objs, d, &s, loc, out)?, Applied::Edited);
             }
         }
+        // File specifications: typed, referenced as one (`st.fs`), or reached through an action,
+        // a file attachment annotation or `/AF`.
+        if typed_filespec(d) || (!loc.direct && st.fs.contains(&loc.holder.num)) {
+            changed |= self.filespec(objs, d, loc, out)?;
+        }
+        let remote = matches!(s_name.as_deref(), Some(b"GoToR" | b"GoToE" | b"Launch" | b"ImportData" | b"SubmitForm"));
+        if remote {
+            let s = Slot::new("F", TextRole::FileSpecName, SlotKind::Plain, p.file_targets);
+            changed |= matches!(self.slot(objs, d, &s, loc, out)?, Applied::Edited);
+            if matches!(s_name.as_deref(), Some(b"GoToR" | b"GoToE")) {
+                let s = Slot::new("D", TextRole::RemoteDest, SlotKind::Plain, p.file_targets);
+                changed |= matches!(self.slot(objs, d, &s, loc, out)?, Applied::Edited);
+            }
+            if s_name.as_deref() == Some(b"Launch")
+                && let Some(Object::Dict(w)) = d.get_mut("Win")
+            {
+                for key in ["F", "D", "P"] {
+                    let s = Slot::new(key, TextRole::LaunchWin, SlotKind::Plain, p.file_targets);
+                    changed |= matches!(self.slot(objs, w, &s, nested, out)?, Applied::Edited);
+                }
+            }
+            if let Some(Object::Dict(f)) = d.get_mut("F")
+                && !typed_filespec(f)
+            {
+                changed |= self.filespec(objs, f, nested, out)?;
+            }
+        }
+        if d.get("Subtype").is_some_and(|t| t.is_name("FileAttachment"))
+            && let Some(Object::Dict(f)) = d.get_mut("FS")
+            && !typed_filespec(f)
+        {
+            changed |= self.filespec(objs, f, nested, out)?;
+        }
+        if let Some(Object::Array(items)) = d.get_mut("AF") {
+            for item in items.iter_mut() {
+                if let Object::Dict(f) = item
+                    && !typed_filespec(f)
+                {
+                    changed |= self.filespec(objs, f, nested, out)?;
+                }
+            }
+        }
+        // XMP of pages, images, forms and any other carrier (the catalog's is a target of its own).
+        if !is_catalog && d.get("Metadata").is_some() {
+            let s = Slot::new("Metadata", TextRole::Xmp, SlotKind::Rich, p.info_fields);
+            changed |= matches!(self.slot(objs, d, &s, loc, out)?, Applied::Edited);
+        }
         Ok(changed)
     }
 }
@@ -932,23 +990,24 @@ fn walk_dicts(o: &mut Object, depth: usize, f: &mut dyn FnMut(&mut Dict, usize) 
     if depth > 64 {
         return Ok(false);
     }
+    let next = depth.saturating_add(1);
     let mut changed = false;
     match o {
         Object::Dict(d) => {
             changed |= f(d, depth)?;
             for (_, v) in &mut d.entries {
-                changed |= walk_dicts(v, depth + 1, f)?;
+                changed |= walk_dicts(v, next, f)?;
             }
         }
         Object::Stream(s) => {
             changed |= f(&mut s.dict, depth)?;
             for (_, v) in &mut s.dict.entries {
-                changed |= walk_dicts(v, depth + 1, f)?;
+                changed |= walk_dicts(v, next, f)?;
             }
         }
         Object::Array(a) => {
             for v in a {
-                changed |= walk_dicts(v, depth + 1, f)?;
+                changed |= walk_dicts(v, next, f)?;
             }
         }
         _ => {}
@@ -964,7 +1023,7 @@ fn edit_at(staged: &mut Objs, num: u32, path: &[&str], f: &mut dyn FnMut(&mut Ob
     let (mut next_hop, mut done) = (None::<(u32, usize)>, false);
     {
         let mut cur: &mut Object = &mut entry.obj;
-        let mut idx = 0;
+        let mut idx = 0usize;
         loop {
             let Some(key) = path.get(idx) else {
                 f(cur);
@@ -974,11 +1033,11 @@ fn edit_at(staged: &mut Objs, num: u32, path: &[&str], f: &mut dyn FnMut(&mut Ob
             let Object::Dict(d) = cur else { break };
             let Some(next) = d.get_mut(key) else { break };
             if let Object::Ref(r) = next {
-                next_hop = Some((r.num, idx + 1));
+                next_hop = Some((r.num, idx.saturating_add(1)));
                 break;
             }
             cur = next;
-            idx += 1;
+            idx = idx.saturating_add(1);
         }
     }
     let holder = done.then_some(num);
@@ -987,17 +1046,17 @@ fn edit_at(staged: &mut Objs, num: u32, path: &[&str], f: &mut dyn FnMut(&mut Ob
     }
     staged.insert(num, entry);
     match next_hop {
-        Some((n, idx)) => edit_at(staged, n, &path[idx..], f).or(holder),
+        Some((n, idx)) => edit_at(staged, n, path.get(idx..).unwrap_or(&[]), f).or(holder),
         None => holder,
     }
 }
 
-/// Entries `(key, value)` of the catalog `/Names /Dests` name tree (every leaf, any depth) and the
+/// Entries `(key, value)` of the catalog `/Names /<key>` name tree (every leaf, any depth) and the
 /// number of the object that holds its root.
-fn read_dest_tree(objs: &Objs, root_num: u32, max: usize) -> Result<Option<(u32, NamePairs)>> {
+fn read_name_tree(objs: &Objs, root_num: u32, key: &str, max: usize) -> Result<Option<(u32, NamePairs)>> {
     let Some(cat) = objs.get(&root_num).and_then(|e| e.obj.as_dict()) else { return Ok(None) };
     let Some(names_v) = cat.get("Names") else { return Ok(None) };
-    let Some(root_v) = res(objs, names_v).as_dict().and_then(|n| n.get("Dests")) else { return Ok(None) };
+    let Some(root_v) = res(objs, names_v).as_dict().and_then(|n| n.get(key)) else { return Ok(None) };
     let holder = match (root_v, names_v) {
         (Object::Ref(r), _) | (_, Object::Ref(r)) => r.num,
         _ => root_num,
@@ -1042,56 +1101,139 @@ fn read_legacy_dests(objs: &Objs, root_num: u32) -> Option<(u32, NamePairs)> {
     Some((holder, d.entries.clone()))
 }
 
-/// Renames matching destination names in the name tree (rebuilt as one sorted leaf) and in the
-/// legacy dictionary. References are renamed by the sweep through the same `DestRename`.
-fn redact_dest_names(ctx: &Ctx, staged: &mut Objs, root_num: u32, rn: &mut DestRename, out: &mut Vec<TextFieldOutcome>) -> Result<()> {
-    let tree = read_dest_tree(staged, root_num, ctx.limits.max_objects)?;
-    let legacy = read_legacy_dests(staged, root_num);
-    let count = |bytes: &[u8], is_name: bool| ctx.matcher.find(&name_text(bytes, is_name)).len() as u32;
-    let outcome = |holder: u32, kind, matches| TextFieldOutcome {
+/// One name tree under the catalog `/Names` dictionary.
+struct TreeSpec {
+    key: &'static str,
+    role: TextRole,
+    enabled: bool,
+}
+
+/// Renames matching keys of one name tree (rebuilt as one sorted leaf with the original values).
+fn tree_pass(
+    ctx: &Ctx,
+    staged: &mut Objs,
+    root_num: u32,
+    spec: &TreeSpec,
+    tree: Option<(u32, NamePairs)>,
+    rn: &mut DestRename,
+    out: &mut Vec<TextFieldOutcome>,
+) {
+    let Some((holder, pairs)) = tree else { return };
+    let count = |bytes: &[u8]| count_u32(ctx.matcher.find(&name_text(bytes, false)).len());
+    let hits = pairs.iter().fold(0u32, |a, (k, _)| a.saturating_add(count(k)));
+    if hits == 0 {
+        return;
+    }
+    let outcome = |holder: u32, kind| TextFieldOutcome {
         object: ObjRef { num: holder, generation: 0 },
         direct: false,
-        role: TextRole::DestName,
+        role: spec.role,
         kind,
-        matches,
+        matches: hits,
         unreadable: false,
     };
-    if let Some((_, pairs)) = &tree {
+    if !spec.enabled {
+        out.push(outcome(holder, TextOutcomeKind::KeptByPolicy));
+        return;
+    }
+    let mut renamed: NamePairs = pairs.into_iter().map(|(k, v)| if count(&k) > 0 { (rn.rename(&k, false), v) } else { (k, v) }).collect();
+    renamed.sort_by(|a, b| a.0.cmp(&b.0));
+    renamed.dedup_by(|later, first| later.0 == first.0);
+    let arr: Vec<Object> = renamed.into_iter().flat_map(|(k, v)| [Object::Str(k), v]).collect();
+    let mut root = Dict::default();
+    root.set("Names", Object::Array(arr));
+    let new_root = Object::Dict(root);
+    let at = edit_at(staged, root_num, &["Names", spec.key], &mut |o| *o = new_root.clone()).unwrap_or(holder);
+    out.push(outcome(at, TextOutcomeKind::Replaced));
+}
+
+/// Renames matching destination names (tree and legacy dictionary) and embedded-file names. Returns
+/// the objects the embedded-file tree points at (file specifications). References to destinations
+/// are renamed by the sweep through the same `DestRename`.
+fn redact_name_trees(ctx: &Ctx, staged: &mut Objs, root_num: u32, rn: &mut DestRename, out: &mut Vec<TextFieldOutcome>) -> Result<Vec<u32>> {
+    let max = ctx.limits.max_objects;
+    let dests = read_name_tree(staged, root_num, "Dests", max)?;
+    let files = read_name_tree(staged, root_num, "EmbeddedFiles", max)?;
+    let legacy = read_legacy_dests(staged, root_num);
+    for (_, pairs) in dests.iter().chain(files.iter()) {
         rn.taken.extend(pairs.iter().map(|(k, _)| k.clone()));
     }
     if let Some((_, entries)) = &legacy {
         rn.taken.extend(entries.iter().map(|(k, _)| k.clone()));
     }
-    if let Some((holder, pairs)) = tree {
-        let hits: u32 = pairs.iter().map(|(k, _)| count(k, false)).sum();
-        if hits > 0 && !ctx.policy.destinations {
-            out.push(outcome(holder, TextOutcomeKind::KeptByPolicy, hits));
-        } else if hits > 0 {
-            let mut renamed: Vec<(Vec<u8>, Object)> =
-                pairs.into_iter().map(|(k, v)| if count(&k, false) > 0 { (rn.rename(&k, false), v) } else { (k, v) }).collect();
-            renamed.sort_by(|a, b| a.0.cmp(&b.0));
-            renamed.dedup_by(|later, first| later.0 == first.0);
-            let arr: Vec<Object> = renamed.into_iter().flat_map(|(k, v)| [Object::Str(k), v]).collect();
-            let mut root = Dict::default();
-            root.set("Names", Object::Array(arr));
-            let new_root = Object::Dict(root);
-            let at = edit_at(staged, root_num, &["Names", "Dests"], &mut |o| *o = new_root.clone()).unwrap_or(holder);
-            out.push(outcome(at, TextOutcomeKind::Replaced, hits));
-        }
-    }
+    let fs_refs: Vec<u32> = files.iter().flat_map(|(_, pairs)| pairs.iter().filter_map(|(_, v)| v.as_ref().map(|r| r.num))).collect();
+    tree_pass(ctx, staged, root_num, &TreeSpec { key: "Dests", role: TextRole::DestName, enabled: ctx.policy.destinations }, dests, rn, out);
+    tree_pass(
+        ctx,
+        staged,
+        root_num,
+        &TreeSpec { key: "EmbeddedFiles", role: TextRole::EmbeddedFileName, enabled: ctx.policy.file_targets },
+        files,
+        rn,
+        out,
+    );
     if let Some((holder, entries)) = legacy {
-        let hits: u32 = entries.iter().map(|(k, _)| count(k, true)).sum();
+        let count = |bytes: &[u8]| count_u32(ctx.matcher.find(&name_text(bytes, true)).len());
+        let hits = entries.iter().fold(0u32, |a, (k, _)| a.saturating_add(count(k)));
+        let outcome = |holder: u32, kind| TextFieldOutcome {
+            object: ObjRef { num: holder, generation: 0 },
+            direct: false,
+            role: TextRole::DestName,
+            kind,
+            matches: hits,
+            unreadable: false,
+        };
         if hits > 0 && !ctx.policy.destinations {
-            out.push(outcome(holder, TextOutcomeKind::KeptByPolicy, hits));
+            out.push(outcome(holder, TextOutcomeKind::KeptByPolicy));
         } else if hits > 0 {
-            let renamed: Vec<(Vec<u8>, Object)> =
-                entries.into_iter().map(|(k, v)| if count(&k, true) > 0 { (rn.rename(&k, true), v) } else { (k, v) }).collect();
+            let renamed: NamePairs = entries.into_iter().map(|(k, v)| if count(&k) > 0 { (rn.rename(&k, true), v) } else { (k, v) }).collect();
             let new_dict = Object::Dict(Dict { entries: renamed });
             let at = edit_at(staged, root_num, &["Dests"], &mut |o| *o = new_dict.clone()).unwrap_or(holder);
-            out.push(outcome(at, TextOutcomeKind::Replaced, hits));
+            out.push(outcome(at, TextOutcomeKind::Replaced));
         }
     }
-    Ok(())
+    Ok(fs_refs)
+}
+
+/// Objects that are file specifications without `/Type /Filespec`: the `/F` of a remote or launch
+/// action, `/FS` of a file attachment annotation, `/AF` entries, plus `extra` (embedded-file tree).
+fn collect_filespec_nums(objs: &Objs, live: &BTreeSet<u32>, extra: Vec<u32>) -> BTreeSet<u32> {
+    let mut out: BTreeSet<u32> = extra.into_iter().collect();
+    for num in live {
+        let Some(e) = objs.get(num) else { continue };
+        let mut stack: Vec<&Object> = vec![&e.obj];
+        while let Some(o) = stack.pop() {
+            match o {
+                Object::Array(a) => stack.extend(a.iter()),
+                Object::Dict(_) | Object::Stream(_) => {
+                    let Some(d) = o.as_dict() else { continue };
+                    let remote = matches!(
+                        d.get("S").and_then(Object::as_name),
+                        Some(b"GoToR" | b"GoToE" | b"Launch" | b"ImportData" | b"SubmitForm")
+                    );
+                    if remote && let Some(Object::Ref(r)) = d.get("F") {
+                        out.insert(r.num);
+                    }
+                    if d.get("Subtype").is_some_and(|t| t.is_name("FileAttachment")) && let Some(Object::Ref(r)) = d.get("FS") {
+                        out.insert(r.num);
+                    }
+                    match d.get("AF") {
+                        Some(Object::Ref(r)) => {
+                            out.insert(r.num);
+                            if let Some(Entry { obj: Object::Array(a), .. }) = objs.get(&r.num) {
+                                out.extend(a.iter().filter_map(Object::as_ref).map(|x| x.num));
+                            }
+                        }
+                        Some(Object::Array(a)) => out.extend(a.iter().filter_map(Object::as_ref).map(|x| x.num)),
+                        _ => {}
+                    }
+                    stack.extend(d.entries.iter().map(|(_, v)| v));
+                }
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// Outline items: everything reachable from `/Outlines` through `/First /Last /Next /Prev` (the
@@ -1138,10 +1280,10 @@ fn annot_items(obj: &mut Object, page_holder: bool) -> Option<&mut Vec<Object>> 
 
 impl PdfDoc {
     /// Redacts `needles` (Unicode text) from outline titles, annotation text, named destinations,
-    /// URI actions, form labels, structure text and document information per `policy`, as one
-    /// atomic in-memory change (the document is untouched on error). Call `save_full` (or use
-    /// [`redact_text_fields_and_save`]) afterwards; nothing is proven until the saved bytes pass
-    /// `verify_payload_absent`.
+    /// URI and file-target actions, file specifications, form labels, structure text, document
+    /// information and XMP per `policy`, as one atomic in-memory change (the document is untouched
+    /// on error). Call `save_full` (or use [`redact_text_fields_and_save`]) afterwards; nothing is
+    /// proven until the saved bytes pass `verify_payload_absent`.
     pub fn redact_text_fields(&mut self, needles: &[String], policy: &TextFieldPolicy, cancel: &CancellationToken) -> Result<TextFieldReport> {
         self.guard_mutation(cancel)?;
         let matcher = Matcher::new(needles, policy.case_insensitive, policy.whole_token)?;
@@ -1209,7 +1351,7 @@ impl PdfDoc {
                 }
                 targets.entry(n).or_default().field = true;
                 if let Some(Object::Array(kids)) = self.dict_of(n).and_then(|d| d.get("Kids")).map(|k| self.resolve(k)) {
-                    stack.extend(kids.iter().filter_map(Object::as_ref).map(|r| (r.num, depth + 1)));
+                    stack.extend(kids.iter().filter_map(Object::as_ref).map(|r| (r.num, depth.saturating_add(1))));
                 }
             }
         }
@@ -1221,7 +1363,7 @@ impl PdfDoc {
 
         // 2. Rewrite on a staged copy; commit at the end.
         let mut staged = self.objects.clone();
-        let mut ctx = Ctx { matcher: &matcher, policy, limits: &self.limits, budget: self.limits.max_decoded_total };
+        let mut ctx = Ctx { matcher: &matcher, policy, limits: &self.limits, budget: self.limits.max_decoded_total, fonts: FontCache::default() };
         let mut report = TextFieldReport::default();
         for (i, (num, t)) in targets.into_iter().enumerate() {
             if i % 256 == 0 {
@@ -1231,9 +1373,9 @@ impl PdfDoc {
             let loc = Loc { holder: ObjRef { num, generation: entry.generation }, direct: false };
             let changed = match &mut entry.obj {
                 Object::Dict(d) => {
-                    report.outline_items_scanned += u32::from(t.outline);
-                    report.annotations_scanned += u32::from(t.annot);
-                    report.fields_scanned += u32::from(t.field);
+                    report.outline_items_scanned = report.outline_items_scanned.saturating_add(u32::from(t.outline));
+                    report.annotations_scanned = report.annotations_scanned.saturating_add(u32::from(t.annot));
+                    report.fields_scanned = report.fields_scanned.saturating_add(u32::from(t.field));
                     ctx.dict(&staged, d, t, loc, &mut report.outcomes)?
                 }
                 _ => false,
@@ -1251,7 +1393,7 @@ impl PdfDoc {
             if let Some(items) = annot_items(&mut entry.obj, is_page) {
                 for item in items.iter_mut() {
                     if let Object::Dict(d) = item {
-                        report.annotations_scanned += 1;
+                        report.annotations_scanned = report.annotations_scanned.saturating_add(1);
                         changed |= ctx.dict(&staged, d, Target { annot: true, ..Target::default() }, loc, &mut report.outcomes)?;
                     }
                 }
@@ -1262,12 +1404,15 @@ impl PdfDoc {
             staged.insert(holder, entry);
         }
 
-        // 3. Named destinations: the tree and the legacy dictionary, then every reference below.
-        let mut rn = DestRename::default();
-        redact_dest_names(&ctx, &mut staged, root_num, &mut rn, &mut report.outcomes)?;
+        // 3. Name trees: destinations (tree and legacy dictionary) and embedded-file names; the
+        //    references to destinations are renamed by the sweep below.
+        let mut state = SweepState { rn: DestRename::default(), fs: BTreeSet::new() };
+        let fs_refs = redact_name_trees(&ctx, &mut staged, root_num, &mut state.rn, &mut report.outcomes)?;
 
-        // 4. Sweep every reachable object: destination references, URI actions, structure text.
+        // 4. Sweep every reachable object: destination references, URI and file-target actions,
+        //    file specifications, structure text, XMP.
         let live = reachable(&staged, &trailer_roots(&self.trailer));
+        state.fs = collect_filespec_nums(&staged, &live, fs_refs);
         for (i, num) in live.into_iter().enumerate() {
             if i % 256 == 0 {
                 check_cancel(cancel)?;
@@ -1276,7 +1421,7 @@ impl PdfDoc {
             let generation = entry.generation;
             let changed = walk_dicts(&mut entry.obj, 0, &mut |d, depth| {
                 let loc = Loc { holder: ObjRef { num, generation }, direct: depth > 0 };
-                ctx.sweep(&staged, &mut rn, d, loc, &mut report.outcomes)
+                ctx.sweep(&staged, &mut state, d, loc, &mut report.outcomes)
             })?;
             if changed {
                 entry.span = None;
@@ -1284,7 +1429,7 @@ impl PdfDoc {
             staged.insert(num, entry);
         }
 
-        let count = |k: TextOutcomeKind| report.outcomes.iter().filter(|o| o.kind == k).count() as u32;
+        let count = |k: TextOutcomeKind| count_u32(report.outcomes.iter().filter(|o| o.kind == k).count());
         report.kept_by_policy = count(TextOutcomeKind::KeptByPolicy);
         report.unverifiable = count(TextOutcomeKind::Unverifiable);
         report.matches_redacted = report

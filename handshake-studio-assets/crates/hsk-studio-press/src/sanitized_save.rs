@@ -2,19 +2,27 @@
 //!
 //! `verify_payload_absent` re-opens the OUTPUT bytes with the bounded reader (it shares no state
 //! with the redaction code) and looks for the removed strings in: every raw byte of the file, every
-//! decoded stream (Flate/ASCIIHex/ASCII85/RunLength, object streams included), every PDF
+//! decoded stream (Flate/LZW/ASCIIHex/ASCII85/RunLength, object streams included), every PDF
 //! string/name object (hex and escaped spellings compare by decoded value), every string operand of
-//! decoded content streams, plus the UTF-16BE spelling of ASCII needles. It also reports
-//! incremental sections, objects present in the cross-reference table but unreachable from the
-//! trailer, and `endobj` markers with no cross-reference entry (orphans an exporter left behind).
-//! Streams whose filter is not implemented (DCT, JPX, CCITT, JBIG2, LZW, Crypt) can only be scanned
-//! raw and are listed in `streams_not_decodable`; the proof never claims more than it scanned.
+//! decoded content streams, plus the UTF-16BE spelling of PDFDocEncoding-readable needles, and the
+//! text that only a font's `/ToUnicode` map reveals. It also reports incremental sections, objects
+//! present in the cross-reference table but unreachable from the trailer, and `endobj` markers with
+//! no cross-reference entry (orphans an exporter left behind).
+//! A stream whose filter is not implemented is scanned as raw bytes only and listed in
+//! `streams_not_decodable`, which withholds `is_clean`/`is_proven` (test:
+//! `undecodable_stream_never_reads_as_proven`). The one exception is the narrow raster class (see
+//! `raster`): image XObjects and inline images whose chain ends in a raster codec are listed in
+//! `raster_streams`, scanned after their decodable prefix, and do not block (test:
+//! `raster_class_is_listed_and_region_images_are_removed`).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::content::parse_content;
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
 use crate::pdf_edit::PdfDoc;
+use crate::raster::{InlineClass, RASTER_CLASS, classify_inline, decode_prefix, raster_tail};
 use crate::reader::{check_cancel, find, parse_document};
 use crate::redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
+use crate::show_text::{FontCache, content_resources, show_text_ops};
 use crate::syntax::{Dict, Object};
 use crate::text_codec::{Enc, decode_text, pdfdoc_byte, utf16be_bytes};
 use crate::text_fields::{TextFieldPolicy, TextFieldReport, appearance_stream_nums};
@@ -30,6 +38,8 @@ pub enum PayloadLocation {
     DecodedStream { object: u32, offset: usize },
     StringObject { object: u32 },
     ContentString { object: u32 },
+    /// Text drawn in an annotation appearance that only the font's `/ToUnicode` map reveals.
+    DecodedText { object: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,7 +50,7 @@ pub struct PayloadHit {
 }
 
 /// A needle found as (part of) a text-showing operand of a decoded content stream: the same text
-/// legitimately occurs in kept content. Reported separately; never counted as a leak.
+/// legitimately occurs in kept content. Reported separately; not counted as a leak.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextCollision {
     pub needle: usize,
@@ -48,13 +58,30 @@ pub struct TextCollision {
     pub count: u32,
 }
 
+/// A stream (or inline image) of the `raster_unsearchable` class: listed, not blocking.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RasterStream {
+    /// The stream object, or for an inline image the content stream that holds it.
+    pub object: u32,
+    /// [`RASTER_CLASS`].
+    pub class: &'static str,
+    /// The final raster codec (`DCTDecode`, `JPXDecode`, `CCITTFaxDecode`, `JBIG2Decode`).
+    pub filter: String,
+    pub inline: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayloadProof {
     pub raw_bytes_scanned: usize,
     pub objects_checked: u32,
     pub streams_decoded: u32,
-    /// Streams scanned raw only: `(object number, filter name or reason)`.
+    /// Streams scanned raw only: `(object number, filter name or reason)`. Blocks `is_clean`.
     pub streams_not_decodable: Vec<(u32, String)>,
+    /// Raster image streams excluded from the text-needle proof (listed, never blocking).
+    pub raster_streams: Vec<RasterStream>,
+    /// Content streams that draw text with a composite font having no usable `/ToUnicode`: that
+    /// text is invisible to this proof (listed, not blocking).
+    pub opaque_text_streams: Vec<u32>,
     /// Cross-reference sections in the output (1 = fresh full save, no incremental tail).
     pub xref_sections: u32,
     /// Objects in the cross-reference table that are unreachable from the trailer.
@@ -71,8 +98,9 @@ impl PayloadProof {
     /// No needle found anywhere scanned, a single xref section, no unreachable or unlisted
     /// objects, AND every stream decoded and scanned. A stream the verifier cannot decode (a filter
     /// this crate does not implement, or a decode error) is only scanned as raw bytes, which says
-    /// nothing about a needle stored in its encoded form, so a document holding one is never
-    /// reported clean: see `streams_not_decodable` for which streams block the claim.
+    /// nothing about a needle stored in its encoded form, so a document holding one is not reported
+    /// clean: see `streams_not_decodable` for which streams block the claim. Raster-class streams
+    /// (`raster_streams`) do not block.
     pub fn is_clean(&self) -> bool {
         self.hits.is_empty()
             && self.xref_sections <= 1
@@ -86,32 +114,44 @@ impl PayloadProof {
     }
 }
 
-/// A search pattern: the needle bytes (or a spelling of them) and whether the whole-token
-/// boundary rule applies.
+/// A search pattern: the needle bytes (or a spelling of them), whether the whole-token boundary
+/// rule applies, and (on one variant per needle) the needle as text for matching ToUnicode text.
 pub(crate) struct Variant {
     pub(crate) needle_index: usize,
     pub(crate) bytes: Vec<u8>,
     pub(crate) token: bool,
+    pub(crate) text: Option<String>,
 }
 
 /// Raw-byte needles: the bytes as given, plus (for PDFDocEncoding-readable needles) their
 /// UTF-16BE spelling, which is how outline titles and annotation text are usually stored.
-fn variants(needles: &[Vec<u8>]) -> Vec<Variant> {
+/// `unicode[i]`, when present, is the text of needle `i` as its font's `/ToUnicode` reads it.
+fn variants_unicode(needles: &[Vec<u8>], unicode: &[Option<String>]) -> Vec<Variant> {
     let mut out = Vec::new();
     for (i, n) in needles.iter().enumerate() {
         if n.is_empty() {
             continue;
         }
-        out.push(Variant { needle_index: i, bytes: n.clone(), token: true });
         let (chars, enc) = decode_text(n);
+        let text = unicode
+            .get(i)
+            .cloned()
+            .flatten()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| (enc == Enc::PdfDoc).then(|| chars.iter().collect::<String>()));
+        out.push(Variant { needle_index: i, bytes: n.clone(), token: true, text });
         if enc == Enc::PdfDoc {
             let u = utf16be_bytes(&chars);
             if u != *n {
-                out.push(Variant { needle_index: i, bytes: u, token: false });
+                out.push(Variant { needle_index: i, bytes: u, token: false, text: None });
             }
         }
     }
     out
+}
+
+fn variants(needles: &[Vec<u8>]) -> Vec<Variant> {
+    variants_unicode(needles, &[])
 }
 
 /// Unicode needles: ASCII needles by bytes and UTF-16BE; other needles by PDFDocEncoding (when
@@ -124,15 +164,16 @@ pub(crate) fn variants_text(needles: &[String]) -> Vec<Variant> {
             continue;
         }
         let chars: Vec<char> = t.chars().collect();
+        let text = Some(t.to_owned());
         if t.is_ascii() {
-            out.push(Variant { needle_index: i, bytes: t.as_bytes().to_vec(), token: true });
+            out.push(Variant { needle_index: i, bytes: t.as_bytes().to_vec(), token: true, text });
         } else {
             if let Some(b) = chars.iter().map(|c| pdfdoc_byte(*c)).collect::<Option<Vec<u8>>>() {
-                out.push(Variant { needle_index: i, bytes: b, token: true });
+                out.push(Variant { needle_index: i, bytes: b, token: true, text: None });
             }
-            out.push(Variant { needle_index: i, bytes: t.as_bytes().to_vec(), token: true });
+            out.push(Variant { needle_index: i, bytes: t.as_bytes().to_vec(), token: true, text });
         }
-        out.push(Variant { needle_index: i, bytes: utf16be_bytes(&chars), token: false });
+        out.push(Variant { needle_index: i, bytes: utf16be_bytes(&chars), token: false, text: None });
     }
     out
 }
@@ -145,23 +186,40 @@ fn at_boundary(hay: &[u8], at: usize, v: &Variant) -> bool {
     if !v.token {
         return true;
     }
-    let (first, last) = (v.bytes[0], v.bytes[v.bytes.len() - 1]);
-    let before = at == 0 || !hay[at - 1].is_ascii_alphanumeric() || !first.is_ascii_alphanumeric();
-    let end = at + v.bytes.len();
-    let after = end >= hay.len() || !hay[end].is_ascii_alphanumeric() || !last.is_ascii_alphanumeric();
+    let (Some(first), Some(last)) = (v.bytes.first(), v.bytes.last()) else { return false };
+    let before = at.checked_sub(1).and_then(|p| hay.get(p)).is_none_or(|b| !b.is_ascii_alphanumeric()) || !first.is_ascii_alphanumeric();
+    let after = hay.get(at.saturating_add(v.bytes.len())).is_none_or(|b| !b.is_ascii_alphanumeric()) || !last.is_ascii_alphanumeric();
     before && after
+}
+
+/// The same whole-token rule over characters (ToUnicode text).
+fn text_found(hay: &[char], needle: &[char], token: bool) -> bool {
+    let n = needle.len();
+    let (Some(first), Some(last)) = (needle.first(), needle.last()) else { return false };
+    if hay.len() < n {
+        return false;
+    }
+    (0..=hay.len().saturating_sub(n)).any(|i| {
+        let end = i.saturating_add(n);
+        hay.get(i..end) == Some(needle)
+            && (!token || {
+                let before = i.checked_sub(1).and_then(|p| hay.get(p)).is_none_or(|c| !c.is_ascii_alphanumeric()) || !first.is_ascii_alphanumeric();
+                let after = hay.get(end).is_none_or(|c| !c.is_ascii_alphanumeric()) || !last.is_ascii_alphanumeric();
+                before && after
+            })
+    })
 }
 
 fn scan(hay: &[u8], vars: &[Variant]) -> Vec<(usize, usize)> {
     let mut hits = Vec::new();
     for v in vars {
         let mut from = 0usize;
-        while let Some(at) = find(&hay[from..], &v.bytes) {
-            let pos = from + at;
+        while let Some(at) = find(hay.get(from..).unwrap_or(&[]), &v.bytes) {
+            let pos = from.saturating_add(at);
             if at_boundary(hay, pos, v) {
                 hits.push((v.needle_index, pos));
             }
-            from = pos + 1;
+            from = pos.saturating_add(1);
             if hits.len() >= MAX_HITS {
                 return hits;
             }
@@ -176,12 +234,12 @@ fn contains(s: &[u8], vars: &[Variant]) -> Option<usize> {
 
 fn scan_one(hay: &[u8], v: &Variant) -> bool {
     let mut from = 0usize;
-    while let Some(at) = find(&hay[from..], &v.bytes) {
-        let pos = from + at;
+    while let Some(at) = find(hay.get(from..).unwrap_or(&[]), &v.bytes) {
+        let pos = from.saturating_add(at);
         if at_boundary(hay, pos, v) {
             return true;
         }
-        from = pos + 1;
+        from = pos.saturating_add(1);
     }
     false
 }
@@ -205,8 +263,9 @@ fn looks_like_content(d: &Dict) -> bool {
 /// residual pass in [`redact_and_save`]). A needle anywhere else is a leak and lands in `hits`:
 /// raw bytes outside decoded streams (headers, object text, xref, orphan bodies), string/name
 /// objects (metadata, annotation contents, outlines, ActualText), non-show content operands
-/// (marked-content properties), inline-image data, comments, and every decoded non-content stream
-/// (XMP, embedded files, thumbnails, private data, object streams).
+/// (marked-content properties), inline-image data, comments, every decoded non-content stream
+/// (XMP, embedded files, thumbnails, private data, object streams), and all text of annotation
+/// appearance streams.
 pub fn verify_payload_absent(
     output: &[u8],
     needles: &[Vec<u8>],
@@ -216,6 +275,18 @@ pub fn verify_payload_absent(
     verify_with_variants(output, variants(needles), limits, cancel)
 }
 
+/// [`verify_payload_absent`] with the text of each needle as its font's `/ToUnicode` reads it
+/// (`unicode[i]` belongs to `needles[i]`), so the same words drawn with other font codes are found.
+pub fn verify_payload_absent_unicode(
+    output: &[u8],
+    needles: &[Vec<u8>],
+    unicode: &[Option<String>],
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<PayloadProof> {
+    verify_with_variants(output, variants_unicode(needles, unicode), limits, cancel)
+}
+
 pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &Limits, cancel: &CancellationToken) -> Result<PayloadProof> {
     let parsed = parse_document(output, limits, cancel)?;
     let mut proof = PayloadProof {
@@ -223,7 +294,9 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         objects_checked: 0,
         streams_decoded: 0,
         streams_not_decodable: Vec::new(),
-        xref_sections: parsed.xref_sections as u32,
+        raster_streams: Vec::new(),
+        opaque_text_streams: Vec::new(),
+        xref_sections: u32::try_from(parsed.xref_sections).unwrap_or(u32::MAX),
         unreachable_objects: Vec::new(),
         unlisted_object_markers: 0,
         hits: Vec::new(),
@@ -234,11 +307,16 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
     proof.unreachable_objects = parsed.objects.keys().copied().filter(|n| !live.contains(n)).collect();
     let markers = output.windows(6).filter(|w| *w == b"endobj").count();
     let listed = parsed.objects.values().filter(|e| e.span.is_some()).count();
-    proof.unlisted_object_markers = markers.saturating_sub(listed) as u32;
+    proof.unlisted_object_markers = u32::try_from(markers.saturating_sub(listed)).unwrap_or(u32::MAX);
 
     // Annotation appearance streams hold annotation text, not kept page text: a needle in their
-    // show operands is a leak (hit), never a kept-text collision.
+    // show operands is a leak (hit), not a kept-text collision.
     let ap_streams = appearance_stream_nums(&parsed.objects);
+    // Text needles for ToUnicode-read text, and the resources that apply to each content stream.
+    let texts: Vec<(usize, Vec<char>, bool)> =
+        vars.iter().filter_map(|v| v.text.as_ref().map(|t| (v.needle_index, t.chars().collect(), v.token))).collect();
+    let resources = content_resources(&parsed.objects);
+    let mut fonts = FontCache::default();
     // Raw spans of streams that decode successfully: their bytes are judged in decoded context.
     let mut covered: Vec<(usize, usize)> = Vec::new();
     let mut collisions: BTreeMap<(usize, u32), u32> = BTreeMap::new();
@@ -247,7 +325,7 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         if i % 64 == 0 {
             check_cancel(cancel)?;
         }
-        proof.objects_checked += 1;
+        proof.objects_checked = proof.objects_checked.saturating_add(1);
         let mut stack: Vec<&Object> = vec![&entry.obj];
         while let Some(o) = stack.pop() {
             match o {
@@ -263,28 +341,64 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
             }
         }
         let Object::Stream(s) = &entry.obj else { continue };
+        let mut raster: Option<String> = None;
         if !filters::is_decodable(&s.dict) {
-            let name = s
-                .dict
-                .get("Filter")
-                .map(|f| match f {
-                    Object::Name(n) => String::from_utf8_lossy(n).into_owned(),
-                    Object::Array(a) => a.iter().filter_map(|x| x.as_name().map(|n| String::from_utf8_lossy(n).into_owned())).collect::<Vec<_>>().join("+"),
-                    _ => "unknown".into(),
-                })
-                .unwrap_or_default();
-            proof.streams_not_decodable.push((*num, name));
-            continue;
+            raster = raster_tail(&s.dict);
+            if raster.is_none() {
+                let name = s
+                    .dict
+                    .get("Filter")
+                    .map(|f| match f {
+                        Object::Name(n) => String::from_utf8_lossy(n).into_owned(),
+                        Object::Array(a) => a.iter().filter_map(|x| x.as_name().map(|n| String::from_utf8_lossy(n).into_owned())).collect::<Vec<_>>().join("+"),
+                        _ => "unknown".into(),
+                    })
+                    .unwrap_or_default();
+                proof.streams_not_decodable.push((*num, name));
+                continue;
+            }
         }
-        match filters::decode_stream(s, limits, &mut budget) {
+        let decoded = if raster.is_some() { decode_prefix(s, limits, &mut budget) } else { filters::decode_stream(s, limits, &mut budget) };
+        match decoded {
             Ok(bytes) => {
-                proof.streams_decoded += 1;
+                match raster {
+                    Some(filter) => proof.raster_streams.push(RasterStream { object: *num, class: RASTER_CLASS, filter, inline: false }),
+                    None => proof.streams_decoded = proof.streams_decoded.saturating_add(1),
+                }
                 if let Some(span) = entry.span {
                     covered.push(span);
                 }
                 let ops = if looks_like_content(&s.dict) { parse_content(&bytes, limits).ok() } else { None };
                 let is_show = |name: &[u8]| matches!(name, b"Tj" | b"TJ" | b"'" | b"\"");
                 let is_ap = ap_streams.contains(num);
+                if let Some(list) = &ops {
+                    for op in list.iter().filter(|op| op.name == b"BI") {
+                        match classify_inline(&op.operands) {
+                            InlineClass::Searchable => {}
+                            InlineClass::Raster(filter) => {
+                                proof.raster_streams.push(RasterStream { object: *num, class: RASTER_CLASS, filter, inline: true })
+                            }
+                            InlineClass::Blocking(f) => proof.streams_not_decodable.push((*num, format!("inline:{f}"))),
+                        }
+                    }
+                    let shown = show_text_ops(&parsed.objects, resources.get(num).copied(), list, limits, &mut budget, &mut fonts)?;
+                    if shown.opaque {
+                        proof.opaque_text_streams.push(*num);
+                    }
+                    if !shown.mapped.is_empty() {
+                        for (needle, text, token) in &texts {
+                            if !text_found(&shown.mapped, text, *token) {
+                                continue;
+                            }
+                            if is_ap {
+                                proof.hits.push(PayloadHit { needle: *needle, location: PayloadLocation::DecodedText { object: *num } });
+                            } else {
+                                let c = collisions.entry((*needle, *num)).or_default();
+                                *c = c.saturating_add(1);
+                            }
+                        }
+                    }
+                }
                 let show_spans: Vec<(usize, usize)> = if is_ap {
                     Vec::new()
                 } else {
@@ -303,7 +417,8 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
                             Object::Str(x) => {
                                 if let Some(needle) = contains(x, &vars) {
                                     if show && !is_ap {
-                                        *collisions.entry((needle, *num)).or_default() += 1;
+                                        let c = collisions.entry((needle, *num)).or_default();
+                                        *c = c.saturating_add(1);
                                     } else {
                                         proof.hits.push(PayloadHit { needle, location: PayloadLocation::ContentString { object: *num } });
                                     }
@@ -362,12 +477,14 @@ impl RedactedOutput {
         self.region_cleared() && self.proof.hits.is_empty()
     }
 
-    /// The regions themselves are proven clear: every mark removed, a fresh pass over the saved
-    /// bytes selects nothing, one xref section, no unreachable or unlisted objects, and every
-    /// stream of the saved file was decoded (an undecodable stream can still hold a removed string
-    /// in its encoded form, so the structural claim is withheld: `proof.streams_not_decodable`
-    /// names the blockers). Says nothing about the same words legitimately living elsewhere
-    /// (outline titles, metadata); `is_proven` also requires `proof.hits` to be empty.
+    /// The regions themselves are proven clear: every mark removed (an image under a region is
+    /// removed only with `UnsupportedPolicy::RemoveImages`, otherwise the region is incomplete), a
+    /// fresh pass over the saved bytes selects nothing, one xref section, no unreachable or
+    /// unlisted objects, and every stream of the saved file was decoded (an undecodable stream can
+    /// still hold a removed string in its encoded form, so the structural claim is withheld:
+    /// `proof.streams_not_decodable` names the blockers; raster-class streams do not block). Says
+    /// nothing about the same words legitimately living elsewhere (outline titles, metadata);
+    /// `is_proven` also requires `proof.hits` to be empty.
     pub fn region_cleared(&self) -> bool {
         self.reports.iter().all(|r| r.complete)
             && self.residual_in_region == 0
@@ -408,18 +525,26 @@ pub fn redact_and_save_with(
         for region in regions {
             reports.push(doc.redact_region(region, policy, cancel)?);
         }
-        let all: Vec<Vec<u8>> = reports.iter().flat_map(|r| r.removed_text.iter().cloned()).collect();
-        let needles: Vec<Vec<u8>> = all.iter().filter(|n| n.len() >= MIN_DISTINCTIVE_NEEDLE).cloned().collect();
-        let short_needles = (all.len() - needles.len()) as u32;
+        let all: Vec<(Vec<u8>, Option<String>)> = reports
+            .iter()
+            .flat_map(|r| r.removed_text.iter().cloned().zip(r.removed_unicode.iter().cloned()))
+            .collect();
+        let (needles, unicode): (Vec<Vec<u8>>, Vec<Option<String>>) =
+            all.iter().filter(|(n, _)| n.len() >= MIN_DISTINCTIVE_NEEDLE).cloned().unzip();
+        let short_needles = u32::try_from(all.len().saturating_sub(needles.len())).unwrap_or(u32::MAX);
         let text_fields = match text {
             Some(tp) => {
-                let strings: Vec<String> = needles.iter().map(|n| decode_text(n).0.into_iter().collect()).collect();
+                let strings: Vec<String> = needles
+                    .iter()
+                    .zip(&unicode)
+                    .map(|(n, u)| u.clone().unwrap_or_else(|| decode_text(n).0.into_iter().collect()))
+                    .collect();
                 Some(doc.redact_text_fields(&strings, tp, cancel)?)
             }
             None => None,
         };
         let bytes = doc.save_full(cancel)?;
-        let proof = verify_payload_absent(&bytes, &needles, &doc.limits, cancel)?;
+        let proof = verify_payload_absent_unicode(&bytes, &needles, &unicode, &doc.limits, cancel)?;
         // Fresh re-open of the saved bytes: the region test must now select nothing.
         let mut saved = PdfDoc::open(&bytes, &doc.limits, cancel)?;
         let mut residual = 0u32;
@@ -427,8 +552,8 @@ pub fn redact_and_save_with(
             let again = saved.redact_region(region, UnsupportedPolicy::ReportAndContinue, cancel)?;
             residual = residual
                 .saturating_add(again.text_strings_removed)
-                .saturating_add(again.annotations_removed.len() as u32)
-                .saturating_add(again.unredacted.len() as u32);
+                .saturating_add(u32::try_from(again.annotations_removed.len()).unwrap_or(u32::MAX))
+                .saturating_add(u32::try_from(again.unredacted.len()).unwrap_or(u32::MAX));
         }
         Ok(RedactedOutput { bytes, reports, proof, short_needles, residual_in_region: residual, text_fields })
     })();
@@ -472,20 +597,21 @@ fn visit_dicts(o: &mut Object, f: &mut dyn FnMut(&mut Dict), depth: usize) {
     if depth > 64 {
         return;
     }
+    let next = depth.saturating_add(1);
     match o {
         Object::Dict(d) => {
             f(d);
             for (_, v) in &mut d.entries {
-                visit_dicts(v, f, depth + 1);
+                visit_dicts(v, f, next);
             }
         }
         Object::Stream(s) => {
             f(&mut s.dict);
             for (_, v) in &mut s.dict.entries {
-                visit_dicts(v, f, depth + 1);
+                visit_dicts(v, f, next);
             }
         }
-        Object::Array(a) => a.iter_mut().for_each(|v| visit_dicts(v, f, depth + 1)),
+        Object::Array(a) => a.iter_mut().for_each(|v| visit_dicts(v, f, next)),
         _ => {}
     }
 }
@@ -501,8 +627,12 @@ pub fn sanitize_full_rewrite(
     let mut staged = doc.objects.clone();
     let mut trailer = doc.trailer.clone();
     let mut counts: BTreeMap<&'static str, u32> = BTreeMap::new();
+    let bump = |counts: &mut BTreeMap<&'static str, u32>, class: &'static str| {
+        let c = counts.entry(class).or_default();
+        *c = c.saturating_add(1);
+    };
     if policy.drop_info_metadata && trailer.remove("Info").is_some() {
-        *counts.entry("info_metadata").or_default() += 1;
+        bump(&mut counts, "info_metadata");
     }
     let js_nums: BTreeSet<u32> = staged
         .iter()
@@ -521,7 +651,7 @@ pub fn sanitize_full_rewrite(
             &mut |d: &mut Dict| {
                 let mut hit = |key: &str, class: &'static str, d: &mut Dict| {
                     if d.remove(key).is_some() {
-                        *counts.entry(class).or_default() += 1;
+                        bump(&mut counts, class);
                         touched = true;
                     }
                 };

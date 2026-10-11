@@ -1,7 +1,13 @@
 //! Content-stream tokenizer (ISO 32000 7.8.2). Produces operations with their source byte spans
 //! so unchanged operations can be re-emitted verbatim. Nothing is executed or interpreted here.
+//! For `BI` the operands are the key/value objects of the inline image dictionary (the image data
+//! stays inside the operation's span).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Limits, PressError, Result};
 use crate::syntax::{Lexer, Object, is_regular, is_ws};
+
+/// Operands one operation may carry (an inline image dictionary counts key and value objects).
+const MAX_OPERANDS: usize = 256;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Op {
@@ -31,7 +37,7 @@ pub(crate) fn parse_content(data: &[u8], limits: &Limits) -> Result<Vec<Op>> {
             match b {
                 b'/' | b'(' | b'<' | b'[' | b'+' | b'-' | b'.' | b'0'..=b'9' => {
                     operands.push(lx.parse_object(0, false)?);
-                    if operands.len() > 256 {
+                    if operands.len() > MAX_OPERANDS {
                         return Err(PressError::InputLimit("operands"));
                     }
                 }
@@ -49,35 +55,41 @@ pub(crate) fn parse_content(data: &[u8], limits: &Limits) -> Result<Vec<Op>> {
         };
         if name == b"BI" {
             // Inline image: key/value pairs, `ID`, binary data, `EI`.
+            operands.clear();
             loop {
                 lx.skip_ws();
-                if lx.starts_with(b"ID") && lx.data.get(lx.pos + 2).is_none_or(|b| !is_regular(*b)) {
-                    lx.pos += 2;
+                if lx.starts_with(b"ID") && lx.data.get(lx.pos.saturating_add(2)).is_none_or(|b| !is_regular(*b)) {
+                    lx.pos = lx.pos.saturating_add(2);
                     break;
                 }
                 if lx.peek().is_none() {
                     return Err(PressError::Malformed("inline_image"));
                 }
-                lx.parse_object(0, false)?;
+                operands.push(lx.parse_object(0, false)?);
+                if operands.len() > MAX_OPERANDS {
+                    return Err(PressError::InputLimit("operands"));
+                }
             }
             if lx.peek().is_some_and(is_ws) {
-                lx.pos += 1;
+                lx.pos = lx.pos.saturating_add(1);
             }
             let mut p = lx.pos;
             let end = loop {
-                let Some(at) = crate::reader::find(&data[p..], b"EI") else {
+                let Some(rest) = data.get(p..) else {
                     return Err(PressError::Malformed("inline_image"));
                 };
-                let q = p + at;
-                let before_ok = q == 0 || is_ws(data[q - 1]);
-                let after_ok = data.get(q + 2).is_none_or(|b| !is_regular(*b));
+                let Some(at) = crate::reader::find(rest, b"EI") else {
+                    return Err(PressError::Malformed("inline_image"));
+                };
+                let q = p.saturating_add(at);
+                let before_ok = q == 0 || data.get(q.saturating_sub(1)).is_some_and(|b| is_ws(*b));
+                let after_ok = data.get(q.saturating_add(2)).is_none_or(|b| !is_regular(*b));
                 if before_ok && after_ok {
-                    break q + 2;
+                    break q.saturating_add(2);
                 }
-                p = q + 2;
+                p = q.saturating_add(2);
             };
             lx.pos = end;
-            operands.clear();
         }
         ops.push(Op { name, operands, start, end: lx.pos });
         if ops.len() > limits.max_content_ops {
