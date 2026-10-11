@@ -6,7 +6,9 @@
 //! `HSK_STUDIO_TEST_REQUIRE_GPU=1` turns even "no adapter" into a failure. Device creation is
 //! serialised by `DEVICE_LOCK`; the parity tests share one lazily created backend.
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_pigment::blend_math::{MODES, PixelSite, Rgba, composite_over};
+use hsk_studio_pigment::blend_math::{
+    Applicability, Family, MODES, PixelSite, Rgba, blend_rgb, composite_over,
+};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BlendSpace, ColourTag, Exactness, ExecuteRequest, Group, Layer,
     MaskFormat, MaskInput, NoVector, OutputTarget, PlanError, PlanNode, PlanNodeId, PlanSources,
@@ -20,6 +22,24 @@ use hsk_studio_render_gpu::{
 };
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Instant;
+
+/// The modes the backend must refuse, pinned HERE independently of `gpu_blend_qualifies` so the
+/// predicate cannot silently widen or shrink: structural (pass_through is a group), stochastic
+/// (dissolve: the plan carries no seed), tool-only and unspecified modes. Every other pigment mode
+/// is generated and parity-tested; a refused mode is never replaced by Normal.
+const REFUSED_MODES: [StudioBlendMode; 11] = [
+    StudioBlendMode::PassThrough,
+    StudioBlendMode::Dissolve,
+    StudioBlendMode::Behind,
+    StudioBlendMode::Clear,
+    StudioBlendMode::DarkerColour,
+    StudioBlendMode::LighterColour,
+    StudioBlendMode::Average,
+    StudioBlendMode::Negation,
+    StudioBlendMode::Reflect,
+    StudioBlendMode::Glow,
+    StudioBlendMode::Erase,
+];
 
 static DEVICE_LOCK: Mutex<()> = Mutex::new(());
 fn device_lock() -> MutexGuard<'static, ()> {
@@ -114,6 +134,28 @@ impl OwnedTile {
                 colour.extend_from_slice(&next().to_le_bytes());
             }
             alpha.extend_from_slice(&next().to_le_bytes());
+        }
+        Self {
+            width,
+            height,
+            colour_sha: hsk_studio_prism::profile_hash(&colour),
+            alpha_sha: hsk_studio_prism::profile_hash(&alpha),
+            colour,
+            alpha,
+        }
+    }
+    /// A tile whose pixel (x, y) is `pixel(x, y)` (straight RGBA).
+    fn from_pixels(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [f32; 4]) -> Self {
+        let mut colour = Vec::new();
+        let mut alpha = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let p = pixel(x, y);
+                for c in &p[..3] {
+                    colour.extend_from_slice(&c.to_le_bytes());
+                }
+                alpha.extend_from_slice(&p[3].to_le_bytes());
+            }
         }
         Self {
             width,
@@ -401,9 +443,14 @@ fn admission_refusals_run_without_adapter() {
             found: 5
         })
     );
-    // modes the shader does not implement (Approximate separable, non-separable) are refused at
-    // admission, naming the operator
-    for mode in [StudioBlendMode::LinearBurn, StudioBlendMode::Hue] {
+    // modes the shader does not implement (stochastic dissolve, whole-pixel, unspecified) are
+    // refused at admission, naming the operator, never replaced by Normal
+    for mode in REFUSED_MODES
+        .iter()
+        .copied()
+        .filter(|m| m.facts().applicability == Applicability::Layer)
+        .chain([StudioBlendMode::Average])
+    {
         let refused = run(
             &backend,
             &base(mode),
@@ -428,12 +475,74 @@ fn admission_refusals_run_without_adapter() {
             "{} qualifies by pigment facts but has no WGSL formula (or vice versa)",
             facts.key
         );
+        // ...and the list itself is pinned independently of the predicate: exactly the modes in
+        // REFUSED_MODES are refused, every other pigment mode is generated
+        assert_eq!(
+            gpu_blend_supported(facts.mode),
+            !REFUSED_MODES.contains(&facts.mode),
+            "{}: supported list differs from the declared refusals",
+            facts.key
+        );
     }
     assert!(gpu_blend_supported(StudioBlendMode::Normal));
     assert!(gpu_blend_supported(StudioBlendMode::Overlay));
-    assert!(!gpu_blend_supported(StudioBlendMode::LinearBurn));
-    assert!(!gpu_blend_supported(StudioBlendMode::Hue));
+    assert!(gpu_blend_supported(StudioBlendMode::LinearBurn));
+    assert!(gpu_blend_supported(StudioBlendMode::Hue));
     assert!(!gpu_blend_supported(StudioBlendMode::PassThrough));
+    // pigment's class travels: an Approximate mode is refused by a Fitted floor (class Approximate,
+    // not the backend's Fitted), admitted by an Approximate floor; an Exact non-separable mode is
+    // Fitted on the GPU, refused by an Exact floor
+    for (mode, floor, class) in [
+        (
+            StudioBlendMode::LinearBurn,
+            Exactness::Fitted,
+            Exactness::Approximate,
+        ),
+        (
+            StudioBlendMode::HardMix,
+            Exactness::Exact,
+            Exactness::Approximate,
+        ),
+        (StudioBlendMode::Hue, Exactness::Exact, Exactness::Fitted),
+        (
+            StudioBlendMode::Luminosity,
+            Exactness::Exact,
+            Exactness::Fitted,
+        ),
+    ] {
+        assert_eq!(
+            run(
+                &backend,
+                &base(mode),
+                &request(5, floor),
+                &sources,
+                &mut sink
+            ),
+            Err(BackendError::Unsupported {
+                operator: mode.key(),
+                exactness: class
+            }),
+            "{mode:?} at floor {floor:?}"
+        );
+    }
+    for (mode, floor) in [
+        (StudioBlendMode::LinearBurn, Exactness::Approximate),
+        (StudioBlendMode::Divide, Exactness::Approximate),
+        (StudioBlendMode::Hue, Exactness::Fitted),
+        (StudioBlendMode::Saturation, Exactness::Approximate),
+    ] {
+        assert_eq!(
+            run(
+                &backend,
+                &base(mode),
+                &request(5, floor),
+                &sources,
+                &mut sink
+            ),
+            Err(BackendError::Unavailable("no_adapter")),
+            "{mode:?} at floor {floor:?} is admitted (then the missing device)"
+        );
+    }
     // GPU blend operators are class Fitted: an export floor of Exact refuses them (by design)
     let exact_floor = run(
         &backend,
@@ -665,10 +774,21 @@ fn admission_refusals_run_without_adapter() {
         backend.exactness(Operator::Blend(StudioBlendMode::SoftLight)),
         Exactness::Fitted
     );
-    assert_eq!(
-        backend.exactness(Operator::Blend(StudioBlendMode::Hue)),
-        Exactness::Unsupported
-    );
+    // backend class only (pigment's intrinsic class is applied by admit): Fitted for every
+    // generated mode, Unsupported for the refused ones
+    for facts in &MODES {
+        let want = if REFUSED_MODES.contains(&facts.mode) {
+            Exactness::Unsupported
+        } else {
+            Exactness::Fitted
+        };
+        assert_eq!(
+            backend.exactness(Operator::Blend(facts.mode)),
+            want,
+            "{}",
+            facts.key
+        );
+    }
     assert_eq!(backend.exactness(Operator::IsolatedGroup), Exactness::Exact);
     assert_eq!(
         backend.exactness(Operator::PassThroughGroup),
@@ -1642,8 +1762,15 @@ fn gpu_modes_masks_groups_clip_parity() {
             ],
         );
         let sources = Sources::with_tiles(vec![(1, backdrop.clone()), (2, source)]);
-        let (err, at, receipt) = gpu_vs_reference(backend, &plan, &sources, Exactness::Fitted);
-        eprintln!("MODE {:<17} max_err {err:e} at {at:?}", facts.key);
+        // pigment's class travels (the backend only lowers it): Fitted for an Exact mode,
+        // Approximate for a community-formula mode
+        let class = facts.exactness.lowest_of(Exactness::Fitted);
+        let (err, at, receipt) = gpu_vs_reference(backend, &plan, &sources, class);
+        eprintln!(
+            "MODE {:<17} class {} max_err {err:e} at {at:?}",
+            facts.key,
+            class.key()
+        );
         if err > 1.0e-5 {
             let (px, py) = (at.0 as u32, at.1 as u32);
             eprintln!(
@@ -1658,13 +1785,24 @@ fn gpu_modes_masks_groups_clip_parity() {
             facts.key,
             2.0 * TOL_PER_LAYER
         );
-        assert_eq!(receipt.exactness.lowest, Exactness::Fitted, "{}", facts.key);
+        assert_eq!(receipt.exactness.lowest, class, "{}", facts.key);
+        assert!(
+            receipt
+                .exactness
+                .operators
+                .iter()
+                .any(|o| o.key == facts.key && o.exactness == class),
+            "{}: ledger does not carry class {}",
+            facts.key,
+            class.key()
+        );
         worst_mode = worst_mode.max(err);
         tested += 1;
     }
-    assert!(
-        tested >= 12,
-        "expected Normal + 11 separable modes, got {tested}"
+    assert_eq!(
+        tested,
+        MODES.len() - REFUSED_MODES.len(),
+        "every non-refused pigment mode must have been executed"
     );
     eprintln!("MODES tested {tested}, worst max_err {worst_mode:e}");
 
@@ -1903,5 +2041,373 @@ fn gpu_modes_masks_groups_clip_parity() {
     }
     assert_eq!(receipt.exactness.lowest, Exactness::Approximate);
     assert_eq!(backend.last_stats().expect("stats").levels, 2);
+    assert_eq!(backend.resident_bytes(), 0);
+}
+
+// ---- slice 3: non-separable family and Approximate separable modes ------------------------------
+
+/// The modes slice 3 added, taken from pigment's facts (not listed here): the non-separable family
+/// (class Exact in pigment) and the separable modes pigment marks Approximate.
+fn slice3_modes() -> Vec<StudioBlendMode> {
+    MODES
+        .iter()
+        .filter(|f| {
+            f.applicability == Applicability::Layer
+                && (f.family == Family::NonSeparable
+                    || (f.family == Family::Separable && f.exactness == Exactness::Approximate))
+        })
+        .map(|f| f.mode)
+        .collect()
+}
+
+fn max_abs(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn slice3_hand_oracles_and_lattice_parity() {
+    const TOL_PER_LAYER: f32 = 1.0e-6;
+    // Hand-derived (W3C Compositing 1 s10.2 and the documented community functions), opaque
+    // backdrop and source, opacity 1: the composite equals B(Cb, Cs). Derivations:
+    //  Lum(C) = 0.3R + 0.59G + 0.11B. Cb = (0.2,0.4,0.6): Lum 0.362, Sat 0.4. Cs = (0.8,0.4,0.2):
+    //  Lum 0.498, Sat 0.6.
+    //  luminosity = SetLum(Cb, 0.498): d = 0.136 -> (0.336,0.536,0.736).
+    //  colour = SetLum(Cs, 0.362): d = -0.136 -> (0.664,0.264,0.064).
+    //  hue = SetLum(SetSat(Cs, 0.4), 0.362): SetSat -> (0.4, 0.2*0.4/0.6, 0) = (0.4,0.13333,0), Lum
+    //   0.198667, d = 0.163333 -> (0.563333,0.296667,0.163333).
+    //  saturation = SetLum(SetSat(Cb, 0.6), 0.362): SetSat -> (0, 0.2*0.6/0.4, 0.6) = (0,0.3,0.6),
+    //   Lum 0.243, d = 0.119 -> (0.119,0.419,0.719).
+    //  colour, Cb gray 0.9, Cs red: SetLum((1,0,0), 0.9) = (1.6,0.6,0.6), Lum 0.9, x = 1.6 > 1:
+    //   C = 0.9 + (C-0.9)*0.1/0.7 -> (1.0, 0.857143, 0.857143).
+    //  colour, Cb gray 0.1, Cs red: SetLum -> (0.8,-0.2,-0.2), Lum 0.1, n = -0.2 < 0:
+    //   C = 0.1 + (C-0.1)*0.1/0.3 -> (0.333333, 0, 0).
+    //  Approximate separable on Cb = (0.2,0.4,0.6): linear_burn max(b+s-1,0), linear_dodge_add
+    //   min(b+s,1), subtract max(b-s,0), divide min(b/s,1), linear_light clamp(b+2s-1),
+    //   vivid_light (s<0.5: 1-(1-b)/2s; else b/(2(1-s))), pin_light (s<0.5: min(b,2s); else
+    //   max(b,2s-1)), hard_mix (b+s>=1 ? 1 : 0).
+    type Hand = (StudioBlendMode, [f32; 3], [f32; 3], [f32; 3]);
+    let cb = [0.2_f32, 0.4, 0.6];
+    let cs = [0.8_f32, 0.4, 0.2];
+    let hand: [Hand; 14] = [
+        (
+            StudioBlendMode::Hue,
+            cb,
+            cs,
+            [0.563_333, 0.296_667, 0.163_333],
+        ),
+        (StudioBlendMode::Saturation, cb, cs, [0.119, 0.419, 0.719]),
+        (StudioBlendMode::Colour, cb, cs, [0.664, 0.264, 0.064]),
+        (StudioBlendMode::Luminosity, cb, cs, [0.336, 0.536, 0.736]),
+        (
+            StudioBlendMode::Colour,
+            [0.9; 3],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.857_143, 0.857_143],
+        ),
+        (
+            StudioBlendMode::Colour,
+            [0.1; 3],
+            [1.0, 0.0, 0.0],
+            [0.333_333, 0.0, 0.0],
+        ),
+        (
+            StudioBlendMode::LinearBurn,
+            cb,
+            [0.9, 0.8, 0.7],
+            [0.1, 0.2, 0.3],
+        ),
+        (
+            StudioBlendMode::LinearDodgeAdd,
+            cb,
+            [0.5, 0.3, 0.1],
+            [0.7, 0.7, 0.7],
+        ),
+        (
+            StudioBlendMode::Subtract,
+            cb,
+            [0.5, 0.3, 0.1],
+            [0.0, 0.1, 0.5],
+        ),
+        (
+            StudioBlendMode::Divide,
+            cb,
+            [0.5, 0.3, 0.1],
+            [0.4, 1.0, 1.0],
+        ),
+        (
+            StudioBlendMode::LinearLight,
+            cb,
+            [0.6, 0.4, 0.3],
+            [0.4, 0.2, 0.2],
+        ),
+        (
+            StudioBlendMode::VividLight,
+            cb,
+            [0.6, 0.4, 0.3],
+            [0.25, 0.25, 0.333_333],
+        ),
+        (
+            StudioBlendMode::PinLight,
+            cb,
+            [0.7, 0.1, 0.2],
+            [0.4, 0.2, 0.4],
+        ),
+        (
+            StudioBlendMode::HardMix,
+            cb,
+            [0.9, 0.3, 0.45],
+            [1.0, 0.0, 1.0],
+        ),
+    ];
+    let modes = slice3_modes();
+    assert_eq!(
+        modes.len(),
+        12,
+        "slice 3 = hue, saturation, colour, luminosity + 8 Approximate separable modes: {modes:?}"
+    );
+    for (mode, b, s, expect) in hand {
+        assert!(modes.contains(&mode), "{mode:?} is a slice-3 mode");
+        // the hand table agrees with pigment itself (so a wrong hand value cannot hide a GPU bug)
+        let cpu = blend_rgb(mode, b, s).expect("pigment blend");
+        assert!(
+            max_abs(cpu, expect) <= 2.0 * TOL_PER_LAYER,
+            "{mode:?}: hand {expect:?} vs pigment {cpu:?}"
+        );
+    }
+
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) = gpu_gate(backend, "slice-3 GPU parity").unwrap_or_else(|e| panic!("{e}"))
+    else {
+        // NOT_PROVEN (no adapter): the hand table above was checked against pigment only
+        let tiny = rect(0, 0, 1, 1);
+        let plan = plan_of(
+            1,
+            tiny,
+            vec![solid(tiny, [0.2, 0.4, 0.6, 1.0])],
+            vec![layer(0, StudioBlendMode::Hue, 1.0, 1.0)],
+        );
+        let mut sink = Image::new(tiny);
+        assert_eq!(
+            run(
+                backend,
+                &plan,
+                &request(1, Exactness::Fitted),
+                &Sources::default(),
+                &mut sink
+            ),
+            Err(BackendError::Unavailable("no_adapter"))
+        );
+        assert_eq!(sink.accepted, 0);
+        return;
+    };
+    eprintln!("GPU_BACKEND: {} (slice 3)", info.text());
+
+    // (a) the hand table on the device
+    let tiny = rect(0, 0, 1, 1);
+    let mut worst_hand = 0.0_f32;
+    for (mode, b, s, expect) in hand {
+        let class = mode.facts().exactness.lowest_of(Exactness::Fitted);
+        let plan = plan_of(
+            1,
+            tiny,
+            vec![
+                solid(tiny, [b[0], b[1], b[2], 1.0]),
+                solid(tiny, [s[0], s[1], s[2], 1.0]),
+            ],
+            vec![
+                layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+                layer(1, mode, 1.0, 1.0),
+            ],
+        );
+        let mut sink = Image::new(tiny);
+        let receipt = run(
+            backend,
+            &plan,
+            &request(1, class),
+            &Sources::default(),
+            &mut sink,
+        )
+        .expect("hand plan executes on the device");
+        let got = sink.px[0];
+        let err = max_abs([got[0], got[1], got[2]], expect);
+        eprintln!(
+            "HAND {:<17} got {got:?} want {expect:?} max_err {err:e}",
+            mode.key()
+        );
+        assert!(err <= 2.0 * TOL_PER_LAYER, "{mode:?} hand error {err:e}");
+        assert_eq!(got[3], 1.0);
+        assert_eq!(receipt.exactness.lowest, class, "{mode:?}");
+        worst_hand = worst_hand.max(err);
+    }
+
+    // (b) exhaustive lattice: every (backdrop, source) pair of 7^3 colours with channel values
+    // {0, 0.1, 0.25, 0.5, 0.75, 0.9, 1} (equal channels, ties between channels, exact 0 / 1 and
+    // exact sums of 1: the places where sorts, clips and thresholds change branch). Both layers are
+    // opaque and the backdrop tile enters bit-exact, so every comparison sees identical inputs
+    // on CPU and GPU. Reference = pigment `composite_over`. Tolerance 2e-6 (two composited
+    // layers at 1e-6 each; the Normal layer is exact). The non-separable family is ill-conditioned
+    // next to its clip boundaries (colour over a white backdrop: Lum is 1 +- 1 ulp and the clip
+    // scale (1 - l) / (x - l) divides by a near-zero difference): pigment's own f32 result differs
+    // from the same formula in f64 by up to 1.6e-6 at such inputs (independent f32/f64 emulation),
+    // so GPU-vs-pigment differences of about 1e-6 there are input conditioning, not a formula
+    // difference; the hand and random-tile cases stay at 5e-7 or less.
+    let levels = [0.0_f32, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+    let mut colours = Vec::new();
+    for r in levels {
+        for g in levels {
+            for b in levels {
+                colours.push([r, g, b]);
+            }
+        }
+    }
+    let n = colours.len() as u32;
+    let extent = rect(0, 0, n, n);
+    let backdrop = OwnedTile::from_pixels(n, n, |_, y| {
+        let c = colours[y as usize];
+        [c[0], c[1], c[2], 1.0]
+    });
+    let source = OwnedTile::from_pixels(n, n, |x, _| {
+        let c = colours[x as usize];
+        [c[0], c[1], c[2], 1.0]
+    });
+    let sources = Sources::with_tiles(vec![(1, backdrop), (2, source)]);
+    let (mut worst_nonsep, mut worst_approx) = (0.0_f32, 0.0_f32);
+    for mode in &modes {
+        let facts = mode.facts();
+        let class = facts.exactness.lowest_of(Exactness::Fitted);
+        let plan = plan_of(
+            11,
+            extent,
+            vec![
+                sources.tiles[0].1.input(1, extent),
+                sources.tiles[1].1.input(2, extent),
+            ],
+            vec![
+                layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+                layer(1, *mode, 1.0, 1.0),
+            ],
+        );
+        let (err, at, receipt) = gpu_vs_reference(backend, &plan, &sources, class);
+        eprintln!(
+            "LATTICE {:<17} {} px class {} max_err {err:e} at {at:?}",
+            facts.key,
+            u64::from(n) * u64::from(n),
+            class.key()
+        );
+        assert!(
+            err <= 2.0 * TOL_PER_LAYER,
+            "{} lattice error {err:e} at {at:?} > {:e}",
+            facts.key,
+            2.0 * TOL_PER_LAYER
+        );
+        assert_eq!(receipt.exactness.lowest, class, "{}", facts.key);
+        assert!(
+            receipt
+                .exactness
+                .operators
+                .iter()
+                .any(|o| o.key == facts.key && o.exactness == class),
+            "{}: ledger does not carry class {}",
+            facts.key,
+            class.key()
+        );
+        if facts.family == Family::NonSeparable {
+            worst_nonsep = worst_nonsep.max(err);
+        } else {
+            worst_approx = worst_approx.max(err);
+        }
+    }
+    eprintln!(
+        "SLICE3 max_err: hand {worst_hand:e}, lattice non-separable {worst_nonsep:e}, lattice approximate-separable {worst_approx:e} (tolerance {:e})",
+        2.0 * TOL_PER_LAYER
+    );
+    assert_eq!(backend.resident_bytes(), 0);
+}
+
+#[test]
+fn slice3_modes_in_groups_masks_clip_parity() {
+    const TOL_PER_LAYER: f32 = 1.0e-6;
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) = gpu_gate(backend, "slice-3 group parity").unwrap_or_else(|e| panic!("{e}"))
+    else {
+        return;
+    };
+    eprintln!("GPU_BACKEND: {} (slice 3 groups)", info.text());
+    let clip = Some(MaskInput::clip_to_base());
+    let extent = rect(0, 0, 24, 18);
+    let t_a = OwnedTile::random(24, 18, 61);
+    let t_b = OwnedTile::random(12, 10, 62);
+    let m = OwnedMask::random(rect(0, 0, 24, 18), MaskFormat::CoverageU8, 9);
+    let plan = plan_of(
+        8,
+        extent,
+        vec![
+            t_a.input(1, extent),                            // 0
+            solid(rect(4, 2, 14, 12), [0.7, 0.2, 0.4, 0.8]), // 1
+            t_b.input(2, rect(6, 4, 12, 10)),                // 2
+            solid(extent, [0.4, 0.5, 0.1, 0.7]),             // 3
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![
+                    layer(2, StudioBlendMode::Normal, 1.0, 1.0),
+                    layer(1, StudioBlendMode::VividLight, 0.8, 1.0),
+                ],
+            }), // 4: isolated group with an Approximate member
+        ],
+        vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            Layer {
+                mask: Some(m.input(21, false)),
+                ..layer(4, StudioBlendMode::Hue, 0.7, 1.0)
+            },
+            layer(1, StudioBlendMode::Saturation, 0.6, 0.9),
+            layer(2, StudioBlendMode::Divide, 0.9, 1.0), // base of the clipping run
+            Layer {
+                mask: clip,
+                ..layer(3, StudioBlendMode::Luminosity, 0.8, 1.0)
+            },
+            Layer {
+                mask: clip,
+                ..layer(1, StudioBlendMode::PinLight, 0.7, 1.0)
+            },
+        ],
+    );
+    let sources = Sources {
+        tiles: vec![(1, t_a), (2, t_b)],
+        masks: vec![(21, m)],
+    };
+    let (err, at, receipt) = gpu_vs_reference(backend, &plan, &sources, Exactness::Approximate);
+    let tolerance = TOL_PER_LAYER * layer_records(&plan) as f32;
+    eprintln!("SLICE3_GROUPS max_err {err:e} at {at:?} (tolerance {tolerance:e})");
+    assert!(
+        err <= tolerance,
+        "slice-3 group parity {err:e} > {tolerance:e}"
+    );
+    assert_eq!(receipt.exactness.lowest, Exactness::Approximate);
+    for key in ["vivid_light", "divide", "pin_light"] {
+        assert!(
+            receipt
+                .exactness
+                .operators
+                .iter()
+                .any(|o| o.key == key && o.exactness == Exactness::Approximate),
+            "{key} must travel as Approximate"
+        );
+    }
+    for key in ["hue", "saturation", "luminosity"] {
+        assert!(
+            receipt
+                .exactness
+                .operators
+                .iter()
+                .any(|o| o.key == key && o.exactness == Exactness::Fitted),
+            "{key} must be Fitted"
+        );
+    }
     assert_eq!(backend.resident_bytes(), 0);
 }

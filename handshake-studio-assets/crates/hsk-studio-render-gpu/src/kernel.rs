@@ -3,11 +3,13 @@
 //! coverage mask) into a chunk destination buffer.
 //!
 //! The list of blend modes is NOT written here: `gpu_blend_qualifies` derives it from pigment's
-//! `MODES` facts (layer-applicable, class Exact, separable family, plus Normal) and the WGSL
-//! switch is generated from that list, so pigment is the only owner of "which modes exist". This
-//! module owns only the per-mode WGSL formula bodies (`FORMULAS`, transcribed from
-//! `blend_math`); a qualifying mode without a body is simply unsupported (admission refuses it)
-//! and the drift test in `tests/gpu_plan.rs` fails until a body with a parity case exists.
+//! `MODES` facts (layer-applicable, class not Unsupported, separable or non-separable family,
+//! plus Normal) and the WGSL switch is generated from that list, so pigment is the only owner of
+//! "which modes exist" and of each mode's exactness class (an Approximate mode stays Approximate
+//! in every receipt: the backend only ever lowers a class). This module owns only the per-mode
+//! WGSL formula bodies (`FORMULAS` per channel, `FORMULAS_RGB` over the whole colour, transcribed
+//! from `blend_math`); a qualifying mode without a body is simply unsupported (admission refuses
+//! it) and the drift test in `tests/gpu_plan.rs` fails until a body with a parity case exists.
 use crate::error::GpuError;
 use hsk_studio_pigment::blend_math::{Applicability, Exactness, Family, MODES, StudioBlendMode};
 
@@ -20,7 +22,8 @@ pub(crate) const TEXEL_BYTES: u64 = 16;
 pub(crate) const MASK_TEXEL_BYTES: u64 = 4;
 
 /// WGSL bodies of `fn blend_<key>(b: f32, s: f32) -> f32` (b = backdrop, s = source), copied
-/// operation-for-operation from `hsk_studio_pigment::blend_math` (W3C Compositing 1 s10.1).
+/// operation-for-operation from `hsk_studio_pigment::blend_math` (W3C Compositing 1 s10.1 and the
+/// community-documented separable functions).
 const FORMULAS: &[(StudioBlendMode, &str)] = &[
     (StudioBlendMode::Darken, "return min(b, s);"),
     (StudioBlendMode::Multiply, "return b * s;"),
@@ -49,6 +52,54 @@ const FORMULAS: &[(StudioBlendMode, &str)] = &[
     ),
     (StudioBlendMode::Difference, "return abs(b - s);"),
     (StudioBlendMode::Exclusion, "return b + s - 2.0 * b * s;"),
+    // ---- community-documented separable modes (pigment class Approximate); pigment names the
+    // arguments (a = backdrop, b = source), here b = backdrop and s = source ----
+    (StudioBlendMode::LinearBurn, "return max(b + s - 1.0, 0.0);"),
+    (StudioBlendMode::LinearDodgeAdd, "return min(b + s, 1.0);"),
+    (
+        StudioBlendMode::VividLight,
+        "if (s < 0.5) { if (s == 0.0) { if (b >= 1.0) { return 1.0; } return 0.0; } return clamp(1.0 - (1.0 - b) / (2.0 * s), 0.0, 1.0); } if (s >= 1.0) { if (b <= 0.0) { return 0.0; } return 1.0; } return clamp(b / (2.0 * (1.0 - s)), 0.0, 1.0);",
+    ),
+    (
+        StudioBlendMode::LinearLight,
+        "return clamp(b + 2.0 * s - 1.0, 0.0, 1.0);",
+    ),
+    (
+        StudioBlendMode::PinLight,
+        "if (s < 0.5) { return min(b, 2.0 * s); } return max(b, 2.0 * s - 1.0);",
+    ),
+    (
+        StudioBlendMode::HardMix,
+        "if (b + s >= 1.0) { return 1.0; } return 0.0;",
+    ),
+    (StudioBlendMode::Subtract, "return max(b - s, 0.0);"),
+    (
+        StudioBlendMode::Divide,
+        "if (s == 0.0) { if (b == 0.0) { return 0.0; } return 1.0; } return min(b / s, 1.0);",
+    ),
+];
+
+/// WGSL bodies of `fn blend_<key>(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32>` for the modes whose
+/// result mixes channels (W3C Compositing 1 s10.2 non-separable family). They call the helpers
+/// `hsk_lum`, `hsk_set_lum`, `hsk_sat`, `hsk_set_sat` of `kernel.wgsl`, which follow
+/// `blend_math::{lum, set_lum, sat, set_sat}` operation for operation.
+const FORMULAS_RGB: &[(StudioBlendMode, &str)] = &[
+    (
+        StudioBlendMode::Hue,
+        "return hsk_set_lum(hsk_set_sat(cs, hsk_sat(cb)), hsk_lum(cb));",
+    ),
+    (
+        StudioBlendMode::Saturation,
+        "return hsk_set_lum(hsk_set_sat(cb, hsk_sat(cs)), hsk_lum(cb));",
+    ),
+    (
+        StudioBlendMode::Colour,
+        "return hsk_set_lum(cs, hsk_lum(cb));",
+    ),
+    (
+        StudioBlendMode::Luminosity,
+        "return hsk_set_lum(cb, hsk_lum(cs));",
+    ),
 ];
 
 fn formula(mode: StudioBlendMode) -> Option<&'static str> {
@@ -58,20 +109,33 @@ fn formula(mode: StudioBlendMode) -> Option<&'static str> {
         .map(|(_, body)| *body)
 }
 
-/// Does pigment's fact table say the GPU backend should implement `mode`? Layer-applicable, class
-/// Exact, and `Normal` or the separable family (non-separable and Approximate modes are later
-/// slices). This is the single source of the supported list.
+fn formula_rgb(mode: StudioBlendMode) -> Option<&'static str> {
+    FORMULAS_RGB
+        .iter()
+        .find(|(m, _)| *m == mode)
+        .map(|(_, body)| *body)
+}
+
+/// Does pigment's fact table say the GPU backend should implement `mode`? Layer-applicable, a
+/// usable formula (class Exact or Approximate, never Unsupported), and `Normal`, the separable or
+/// the non-separable family. Stochastic (dissolve), whole-pixel, structural, tool-only and
+/// unspecified modes are not in the list. This is the single source of the supported list; the
+/// class itself stays pigment's (`facts().exactness`).
 pub fn gpu_blend_qualifies(mode: StudioBlendMode) -> bool {
     let facts = mode.facts();
     facts.applicability == Applicability::Layer
-        && facts.exactness == Exactness::Exact
-        && (mode == StudioBlendMode::Normal || facts.family == Family::Separable)
+        && facts.exactness != Exactness::Unsupported
+        && (mode == StudioBlendMode::Normal
+            || matches!(facts.family, Family::Separable | Family::NonSeparable))
 }
 
 /// Qualifies by pigment's facts AND has a WGSL body here (`Normal` needs none). Only these modes
 /// pass `exactness()` and are compiled into the shader.
 pub fn gpu_blend_supported(mode: StudioBlendMode) -> bool {
-    gpu_blend_qualifies(mode) && (mode == StudioBlendMode::Normal || formula(mode).is_some())
+    gpu_blend_qualifies(mode)
+        && (mode == StudioBlendMode::Normal
+            || formula(mode).is_some()
+            || formula_rgb(mode).is_some())
 }
 
 /// The shader with its blend functions and mode switch generated from `MODES`.
@@ -91,13 +155,21 @@ pub(crate) fn shader_source() -> String {
             continue;
         }
         let key = facts.key;
-        let body = formula(mode).unwrap_or("return s;");
-        functions.push_str(&format!(
-            "fn blend_{key}(b: f32, s: f32) -> f32 {{\n    {body}\n}}\n"
-        ));
-        cases.push_str(&format!(
-            "        case {d}u: {{\n            raw = vec3<f32>(blend_{key}(cb.x, cs.x), blend_{key}(cb.y, cs.y), blend_{key}(cb.z, cs.z));\n        }}\n"
-        ));
+        if let Some(body) = formula(mode) {
+            functions.push_str(&format!(
+                "fn blend_{key}(b: f32, s: f32) -> f32 {{\n    {body}\n}}\n"
+            ));
+            cases.push_str(&format!(
+                "        case {d}u: {{\n            raw = vec3<f32>(blend_{key}(cb.x, cs.x), blend_{key}(cb.y, cs.y), blend_{key}(cb.z, cs.z));\n        }}\n"
+            ));
+        } else if let Some(body) = formula_rgb(mode) {
+            functions.push_str(&format!(
+                "fn blend_{key}(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {{\n    {body}\n}}\n"
+            ));
+            cases.push_str(&format!(
+                "        case {d}u: {{\n            raw = blend_{key}(cb, cs);\n        }}\n"
+            ));
+        }
     }
     include_str!("kernel.wgsl")
         .replace("//@BLEND_FUNCTIONS@", &functions)

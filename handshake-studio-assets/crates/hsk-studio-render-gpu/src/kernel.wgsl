@@ -29,6 +29,72 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> dst: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read> mask: array<f32>;
 
+// ---- non-separable helpers, W3C Compositing 1 s10.2: the same operations in the same order as
+// hsk_studio_pigment::blend_math::{lum, clip_color, set_lum, sat, set_sat} (pigment is the owner;
+// parity is tested against it). Functions are prefixed so no WGSL reserved word can collide.
+
+fn hsk_lum(c: vec3<f32>) -> f32 {
+    return 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
+}
+
+fn hsk_clip_color(c_in: vec3<f32>) -> vec3<f32> {
+    var c = c_in;
+    // l, n and x are taken once from the input, as in pigment (the second step reuses them).
+    let l = hsk_lum(c_in);
+    let n = min(c_in.x, min(c_in.y, c_in.z));
+    let x = max(c_in.x, max(c_in.y, c_in.z));
+    if (n < 0.0) {
+        c = vec3<f32>(l) + (c - vec3<f32>(l)) * l / (l - n);
+    }
+    if (x > 1.0) {
+        c = vec3<f32>(l) + (c - vec3<f32>(l)) * (1.0 - l) / (x - l);
+    }
+    return c;
+}
+
+fn hsk_set_lum(c: vec3<f32>, l: f32) -> vec3<f32> {
+    let d = l - hsk_lum(c);
+    return hsk_clip_color(c + vec3<f32>(d));
+}
+
+fn hsk_sat(c: vec3<f32>) -> f32 {
+    return max(c.x, max(c.y, c.z)) - min(c.x, min(c.y, c.z));
+}
+
+// Position of each channel in the STABLE ascending order of the three values (equal values keep
+// channel order), the order pigment's stable sort gives min / mid / max.
+fn hsk_rank3(c: vec3<f32>) -> vec3<u32> {
+    return vec3<u32>(
+        u32(c.y < c.x) + u32(c.z < c.x),
+        u32(c.x <= c.y) + u32(c.z < c.y),
+        u32(c.x <= c.z) + u32(c.y <= c.z)
+    );
+}
+
+fn hsk_sat_channel(v: f32, rank: u32, lo: f32, hi: f32, s: f32) -> f32 {
+    if (rank == 2u) {
+        return s;
+    }
+    if (rank == 0u) {
+        return 0.0;
+    }
+    return (v - lo) * s / (hi - lo);
+}
+
+fn hsk_set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
+    let lo = min(c.x, min(c.y, c.z));
+    let hi = max(c.x, max(c.y, c.z));
+    if (!(hi > lo)) {
+        return vec3<f32>(0.0);
+    }
+    let r = hsk_rank3(c);
+    return vec3<f32>(
+        hsk_sat_channel(c.x, r.x, lo, hi, s),
+        hsk_sat_channel(c.y, r.y, lo, hi, s),
+        hsk_sat_channel(c.z, r.z, lo, hi, s)
+    );
+}
+
 //@BLEND_FUNCTIONS@
 
 fn blend(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
