@@ -454,13 +454,13 @@ pub fn import_svg(
     imp.check_href(root, root_loc);
 
     // Viewport and viewBox mapping (preserveAspectRatio).
-    let view_box = root.attribute("viewBox").and_then(|v| svgtypes::ViewBox::from_str(v).ok());
-    if root.attribute("viewBox").is_some() && view_box.is_none_or(|v| !(v.w > 0.0 && v.h > 0.0)) {
+    let view_box = plain_attr(root, "viewBox").and_then(|v| svgtypes::ViewBox::from_str(v).ok());
+    if plain_attr(root, "viewBox").is_some() && view_box.is_none_or(|v| !(v.w > 0.0 && v.h > 0.0)) {
         imp.note(root_loc, LossKind::Unsupported, "view_box_invalid");
     }
     let view_box = view_box.filter(|v| v.w > 0.0 && v.h > 0.0 && v.w.is_finite() && v.h.is_finite());
     let size_attr = |name: &str| {
-        root.attribute(name)
+        plain_attr(root, name)
             .and_then(|v| svgtypes::Length::from_str(v.trim()).ok())
             .and_then(unit_to_user)
             .filter(|v| *v > 0.0 && v.is_finite())
@@ -480,8 +480,7 @@ pub fn import_svg(
     }
     let mut base = Affine::scale(px_to_pt, px_to_pt);
     if let Some(vb) = view_box {
-        let par = root
-            .attribute("preserveAspectRatio")
+        let par = plain_attr(root, "preserveAspectRatio")
             .and_then(|v| svgtypes::AspectRatio::from_str(v).ok())
             .unwrap_or_default();
         let (sx, sy) = (vw / vb.w, vh / vb.h);
@@ -602,6 +601,13 @@ pub fn import_svg(
     })
 }
 
+/// Attribute without a namespace; `foo:d` never stands in for `d`.
+fn plain_attr<'a>(el: Node<'a, '_>, name: &str) -> Option<&'a str> {
+    el.attributes()
+        .find(|a| a.name() == name && a.namespace().is_none())
+        .map(|a| a.value())
+}
+
 fn pt(value: f64) -> FolioLength {
     FolioLength {
         value,
@@ -641,14 +647,13 @@ impl Importer<'_> {
     /// Links and embedded resources are never followed: only `#local` and `data:` targets are
     /// accepted (and neither is resolved by this slice).
     fn check_href(&mut self, el: Node, loc: &str) {
-        for value in [
-            el.attribute("href"),
-            el.attribute((XLINK_NS, "href")),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let v = value.trim_start();
+        for attr in el.attributes() {
+            let linking =
+                attr.name() == "href" && matches!(attr.namespace(), None | Some(XLINK_NS));
+            if !linking {
+                continue;
+            }
+            let v = attr.value().trim_start();
             if !(v.starts_with('#') || v.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("data:"))) {
                 self.note(loc, LossKind::ExternalDenied, "external_href_denied");
             }
@@ -704,7 +709,7 @@ impl Importer<'_> {
 
     /// Parses the element's own `transform`, if any, and records the bake.
     fn own_transform(&mut self, el: Node, loc: &str) -> Result<Option<Affine>> {
-        let Some(text) = el.attribute("transform") else {
+        let Some(text) = plain_attr(el, "transform") else {
             return Ok(None);
         };
         match svgtypes::Transform::from_str(text) {
@@ -743,7 +748,7 @@ impl Importer<'_> {
             .filter(|a| a.namespace().is_none())
             .map(|a| (a.name(), a.value()))
             .collect();
-        if let Some(style) = el.attribute("style") {
+        if let Some(style) = plain_attr(el, "style") {
             for decl in style.split(';') {
                 if let Some((name, value)) = decl.split_once(':') {
                     let value = value.trim();
@@ -855,7 +860,7 @@ impl Importer<'_> {
     }
 
     fn layer_name(el: Node) -> String {
-        let name = el.attribute("id").unwrap_or_else(|| el.tag_name().name());
+        let name = plain_attr(el, "id").unwrap_or_else(|| el.tag_name().name());
         name.chars().take(128).collect()
     }
 
@@ -897,7 +902,7 @@ impl Importer<'_> {
     }
 
     fn len_attr(&mut self, el: Node, name: &str, loc: &str) -> f64 {
-        let Some(v) = el.attribute(name) else {
+        let Some(v) = plain_attr(el, name) else {
             return 0.0;
         };
         match svgtypes::Length::from_str(v.trim()) {
@@ -928,10 +933,10 @@ impl Importer<'_> {
                 let (w, h) = (self.len_attr(el, "width", loc), self.len_attr(el, "height", loc));
                 let mut rx = self.len_attr(el, "rx", loc).max(0.0);
                 let mut ry = self.len_attr(el, "ry", loc).max(0.0);
-                if el.attribute("rx").is_none() {
+                if plain_attr(el, "rx").is_none() {
                     rx = ry;
                 }
-                if el.attribute("ry").is_none() {
+                if plain_attr(el, "ry").is_none() {
                     ry = rx;
                 }
                 if w > 0.0 && h > 0.0 {
@@ -962,7 +967,7 @@ impl Importer<'_> {
                 no_fill = true;
             }
             _ => {
-                let points = el.attribute("points").unwrap_or("");
+                let points = plain_attr(el, "points").unwrap_or("");
                 let mut count = 0usize;
                 for (x, y) in svgtypes::PointsParser::from(points) {
                     count += 1;
@@ -993,7 +998,7 @@ impl Importer<'_> {
 
     fn path_data(&mut self, el: Node, loc: &str, b: &mut SubpathBuilder) -> Result<()> {
         use svgtypes::SimplePathSegment as S;
-        let Some(d) = el.attribute("d") else {
+        let Some(d) = plain_attr(el, "d") else {
             return Ok(());
         };
         if d.bytes().any(|c| c == b'a' || c == b'A') {
