@@ -32,8 +32,25 @@ pub fn unhex(s: &str) -> Vec<u8> {
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
         .collect()
 }
+/// Pinned MT-35536 evidence root: the nearest ancestor of this crate's manifest directory that
+/// holds it, so the worktree and any export below the same root resolve it without env vars.
 pub fn research() -> PathBuf {
-    std::env::var_os("HSK_TYPE_RESEARCH_ROOT").map(PathBuf::from).unwrap_or_else(||Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap().join("Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research"))
+    const RELATIVE: &str =
+        "Handshake_Artifacts/WP-KERNEL-STUDIO/MT-35536/studio-assets-kernel-builder/research";
+    if let Some(root) = std::env::var_os("HSK_TYPE_RESEARCH_ROOT") {
+        return PathBuf::from(root);
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .ancestors()
+        .map(|ancestor| ancestor.join(RELATIVE))
+        .find(|root| root.join("type-exact-oracle-recipe.json").is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "required evidence root {RELATIVE} not found above {}",
+                manifest.display()
+            )
+        })
 }
 pub fn json(path: &Path) -> Value {
     serde_json::from_slice(

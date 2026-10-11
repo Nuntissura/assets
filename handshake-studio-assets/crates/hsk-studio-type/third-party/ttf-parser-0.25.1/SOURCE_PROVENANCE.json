@@ -20,7 +20,8 @@
     "crate-root namespace remapping",
     "module-local std configuration",
     "operation-local bounded parser methods and checked arithmetic; no context retained in Face/tables",
-    "Rust2024 match ergonomics and explicit borrowed GPOS anchor lifetime from named compile diagnostics"
+    "Rust2024 match ergonomics and explicit borrowed GPOS anchor lifetime from named compile diagnostics",
+    "three upstream doc examples (Variation, Tag::from_bytes, Face::outline_glyph) fenced as text: crate-private module, ttf_parser paths cannot compile as doctests; line numbers unchanged"
   ],
   "upstream_files": [
     {
@@ -407,8 +408,8 @@
     },
     {
       "path": "src/provider/ttf/mod.rs",
-      "bytes": 93730,
-      "sha256": "3b4c3f24d1297b0db00ed413fe7f37d27e6d43bde422d6fce820d6ed9f83eb28"
+      "bytes": 93738,
+      "sha256": "3367f548c5845fc98d796c6f578858cd67b7a3224529c5a0a80c73eedc90278b"
     },
     {
       "path": "src/provider/ttf/parser.rs",

@@ -577,7 +577,7 @@
     },
     {
       "path": "hb/ot_shape_plan.rs",
-      "sha256": "14896ae3f4277fa32f2bf8d949a561a6d67546e1038bb3f55220eb248da2488f",
+      "sha256": "45b26548148a7c363691592a12dd3316784f7024d727c315b3b6ee303b43ed1a",
       "declared_module_graph": true
     },
     {
@@ -682,7 +682,7 @@
     },
     {
       "path": "hb/shape.rs",
-      "sha256": "fec691104b584365f0acc8a08a1171846f936a637ec9504ae6d3ba3c89d6beb7",
+      "sha256": "83c4521d56b6d8e94f9f2ee435d7d33bb37975f615cf16e1a98331206e387a9f",
       "declared_module_graph": true
     },
     {
@@ -793,5 +793,12 @@
       "ot_shape.rs propagate_flags: mask metadata only, no len mutation"
     ],
     "verification": "rustfmt1.97.1 exit0; parent compile and independent Arabic positive runtime pending"
+  },
+  "common_control_remediation": {
+    "finding_id": "MT-35536-FINDING-ISOLATE-POSITIVE-V3",
+    "commit": "e603db86031feb860039f59658273d8fe17d2b30",
+    "source_cause": "Engine resolves an all-pinned-default-ignorable Zyyy span to COMMON; plan entry ot_shape_plan.rs and both shape.rs entries admitted only LATIN/ARABIC/HAN and refused UnsupportedProfile.",
+    "patch": "Plan admits COMMON (default shaper). shape and shape_with_plan admit a COMMON buffer only when non-empty and every scalar is a pinned default-ignorable, and refuse UnsupportedProfile if any glyph survives shaping.",
+    "verification": "independent PASS_V4 round STUDIO-R1; provenance hashes refreshed after the fact (drift left by e603db8)"
   }
 }

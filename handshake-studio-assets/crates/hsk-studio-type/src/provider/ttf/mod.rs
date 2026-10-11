@@ -179,7 +179,7 @@ impl NormalizedCoordinate {
 ///
 /// # Example
 ///
-/// ```
+/// ```text
 /// use ttf_parser::{Variation, Tag};
 ///
 /// Variation { axis: Tag::from_bytes(b"wght"), value: 500.0 };
@@ -202,7 +202,7 @@ impl Tag {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```text
     /// println!("{}", ttf_parser::Tag::from_bytes(b"name"));
     /// ```
     #[inline]
@@ -2077,7 +2077,7 @@ impl<'a> Face<'a> {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```text
     /// use std::fmt::Write;
     /// use ttf_parser;
     ///
