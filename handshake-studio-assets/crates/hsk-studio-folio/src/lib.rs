@@ -38,6 +38,21 @@ mod layout;
 pub use layout::*;
 mod story;
 pub use story::*;
+mod values;
+pub use values::{
+    CubicBezier, SpringEasing, StudioColor, StudioDocumentationLink, StudioEasing, StudioPublishing,
+    StudioRgba, StudioValue, VariableType,
+};
+mod paint;
+pub use paint::*;
+mod autolayout;
+pub use autolayout::*;
+mod reactions;
+pub use reactions::*;
+mod components;
+pub use components::*;
+mod records;
+pub use records::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum GeometryUnit {
     #[serde(rename = "mm")]
@@ -390,6 +405,12 @@ pub enum Code {
     InvalidThread,
     /// Text-frame thread links that loop back on themselves.
     ThreadCycle,
+    /// A component-set member omits a declared variant property (STU-DS-173).
+    VariantAssignmentIncomplete,
+    /// Two members of one component set carry identical variant assignments (STU-DS-174).
+    VariantAssignmentDuplicate,
+    /// Variable aliases that return to a variable already on the chain (STU-DS-175).
+    VariableAliasCycle,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
