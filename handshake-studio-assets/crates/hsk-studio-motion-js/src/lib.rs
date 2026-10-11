@@ -6,6 +6,7 @@ mod clock;
 mod descriptor;
 mod engine;
 mod limits;
+mod profile;
 mod provider;
 #[cfg(feature = "quickjs")]
 mod quickjs;
@@ -19,9 +20,14 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use descriptor::DESCRIPTOR;
 pub use engine::{
     BudgetKind, Engine, EngineFailure, EngineFault, EngineIdentity, EngineLimits, EngineRun,
-    EvalJob, HostBridge, JsValue, RealmReceipt, ThrownKind,
+    EvalJob, HostBridge, JsValue, RealmReceipt, SourceLanguage, ThrownKind,
 };
 pub use limits::{ConfigError, QuotaSpec, Quotas};
+pub use profile::{
+    DEFAULT_MAX_DEPTH, DEFAULT_MAX_TOKENS, DENIED_KEYWORDS, DENIED_NAMES, MAX_DEPTH_CEILING,
+    ProfileLimits, ProfileValidator, ProfileViolation, ValidatedSource, ViolationClass,
+    ViolationKind,
+};
 pub use provider::{MotionJsProvider, PROFILE_ID, ProviderStats, RetireReport, report_eval};
 #[cfg(feature = "quickjs")]
 pub use quickjs::{

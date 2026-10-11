@@ -5,9 +5,10 @@ use crate::{
     clock::{Clock, SystemClock},
     engine::{
         BudgetKind, Engine, EngineFailure, EngineFault, EngineIdentity, EngineLimits, EvalJob,
-        HostBridge, JsValue, ThrownKind,
+        HostBridge, JsValue, SourceLanguage, ThrownKind,
     },
     limits::Quotas,
+    profile::{ProfileValidator, ProfileViolation, ViolationClass},
 };
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_motion::{
@@ -35,6 +36,7 @@ struct Counters {
     charged_units: AtomicU64,
     checkpoints: AtomicU64,
     host_reads: AtomicU64,
+    validation_rejected: AtomicU64,
     denials: [AtomicU64; BudgetKind::COUNT],
     faults: [AtomicU64; EngineFault::COUNT],
 }
@@ -48,6 +50,8 @@ pub struct ProviderStats {
     pub charged_units: u64,
     pub checkpoints: u64,
     pub host_reads: u64,
+    /// Sources refused by the profile validator before any engine ran.
+    pub validation_rejected: u64,
     /// Budget denials indexed by `BudgetKind::index()`.
     pub denials: [u64; BudgetKind::COUNT],
     /// Out-of-process isolation faults indexed by `EngineFault::index()`.
@@ -99,19 +103,25 @@ pub struct MotionJsProvider<E: Engine> {
     date: DateProfile,
     clock: Arc<dyn Clock>,
     owner: ThreadId,
+    validator: Option<ProfileValidator>,
     in_flight: AtomicU32,
     poisoned: AtomicBool,
     counters: Counters,
 }
 
 impl<E: Engine> MotionJsProvider<E> {
+    /// A JavaScript engine gets the admitted-syntax profile validator by default (sources outside the
+    /// profile are refused before the engine runs); `without_validator` removes it.
     pub fn new(engine: E, quotas: Quotas) -> Self {
+        let validator = (engine.source_language() == SourceLanguage::JavaScript)
+            .then(|| ProfileValidator::for_max_bytes(quotas.max_source_bytes()));
         Self {
             engine,
             quotas,
             date: DateProfile::default(),
             clock: Arc::new(SystemClock::new()),
             owner: thread::current().id(),
+            validator,
             in_flight: AtomicU32::new(0),
             poisoned: AtomicBool::new(false),
             counters: Counters::default(),
@@ -127,6 +137,23 @@ impl<E: Engine> MotionJsProvider<E> {
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Replaces the profile validator (for example with other token/depth bounds).
+    pub fn with_validator(mut self, validator: ProfileValidator) -> Self {
+        self.validator = Some(validator);
+        self
+    }
+
+    /// Removes the profile validator so source reaches the engine unchecked. Only for tests that
+    /// attack the engine's own hardening directly; production callers keep the default.
+    pub fn without_validator(mut self) -> Self {
+        self.validator = None;
+        self
+    }
+
+    pub fn validator(&self) -> Option<&ProfileValidator> {
+        self.validator.as_ref()
     }
 
     pub fn engine_identity(&self) -> EngineIdentity {
@@ -163,6 +190,7 @@ impl<E: Engine> MotionJsProvider<E> {
             charged_units: c.charged_units.load(Ordering::Acquire),
             checkpoints: c.checkpoints.load(Ordering::Acquire),
             host_reads: c.host_reads.load(Ordering::Acquire),
+            validation_rejected: c.validation_rejected.load(Ordering::Acquire),
             denials,
             faults,
         }
@@ -192,6 +220,23 @@ impl<E: Engine> MotionJsProvider<E> {
     fn fault(&self, kind: EngineFault) -> ExprError {
         self.counters.faults[kind.index()].fetch_add(1, Ordering::AcqRel);
         ExprError::new(ExprErrorCode::Unsupported)
+    }
+
+    /// Maps a profile violation to the typed Motion error with its exact position (STU-MOT-259).
+    fn reject(&self, violation: ProfileViolation) -> ExprError {
+        self.counters.validation_rejected.fetch_add(1, Ordering::AcqRel);
+        let code = match violation.kind.class() {
+            ViolationClass::Parse => ExprErrorCode::Parse,
+            ViolationClass::Unsupported => ExprErrorCode::Unsupported,
+            ViolationClass::Budget(kind) => {
+                self.counters.denials[kind.index()].fetch_add(1, Ordering::AcqRel);
+                ExprErrorCode::Budget
+            }
+        };
+        ExprError {
+            code,
+            span: Some(violation.span),
+        }
     }
 
     fn poison(&self) -> ExprError {
@@ -370,6 +415,11 @@ impl<E: Engine> ExpressionProvider for MotionJsProvider<E> {
         }
         if request.source.len() > self.quotas.max_source_bytes() {
             return Err(self.deny(BudgetKind::SourceBytes));
+        }
+        if let Some(validator) = &self.validator
+            && let Err(violation) = validator.validate(request.source)
+        {
+            return Err(self.reject(violation));
         }
         let _permit = self.acquire()?;
         self.counters.evaluations.fetch_add(1, Ordering::AcqRel);

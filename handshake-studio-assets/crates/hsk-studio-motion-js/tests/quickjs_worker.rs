@@ -54,7 +54,9 @@ type P = MotionJsProvider<QuickJsBackend>;
 
 fn provider(spec: QuotaSpec, options: QuickJsOptions) -> P {
     let quotas = Quotas::try_from_spec(spec).unwrap();
+    // Hostile source must reach the engine and the worker supervisor, so no profile validator here.
     MotionJsProvider::new(QuickJsBackend::new(&quotas, options).unwrap(), quotas)
+        .without_validator()
         .with_date(DateProfile::new(1000, 0).unwrap())
 }
 

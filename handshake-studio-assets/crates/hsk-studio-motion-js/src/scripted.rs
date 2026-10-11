@@ -11,7 +11,7 @@
 use crate::{
     engine::{
         BudgetKind, Engine, EngineFailure, EngineIdentity, EngineRun, EvalJob, HostBridge, JsValue,
-        RealmReceipt, ThrownKind,
+        RealmReceipt, SourceLanguage, ThrownKind,
     },
     clock::ManualClock,
 };
@@ -150,6 +150,10 @@ impl ScriptedEngine {
 impl Engine for ScriptedEngine {
     fn identity(&self) -> EngineIdentity {
         EngineIdentity { name: "scripted-double", version: "1", native: false }
+    }
+
+    fn source_language(&self) -> SourceLanguage {
+        SourceLanguage::Scripted
     }
 
     fn run(&self, job: &EvalJob<'_>, host: &mut dyn HostBridge) -> EngineRun {

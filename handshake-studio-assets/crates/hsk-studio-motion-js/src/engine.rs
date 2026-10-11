@@ -61,10 +61,12 @@ pub enum BudgetKind {
     HostReads,
     SourceBytes,
     Realms,
+    /// CPU time of a worker process, enforced by an operating-system cap (never by script text).
+    Cpu,
 }
 
 impl BudgetKind {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
 
     pub const fn index(self) -> usize {
         match self {
@@ -76,6 +78,7 @@ impl BudgetKind {
             Self::HostReads => 5,
             Self::SourceBytes => 6,
             Self::Realms => 7,
+            Self::Cpu => 8,
         }
     }
 
@@ -89,8 +92,19 @@ impl BudgetKind {
             Self::HostReads => "host_reads",
             Self::SourceBytes => "source_bytes",
             Self::Realms => "realms",
+            Self::Cpu => "cpu",
         }
     }
+}
+
+/// What an engine accepts as `EvalJob::source`. The provider applies the admitted-syntax profile
+/// validator (`ProfileValidator`) before evaluation only for JavaScript engines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceLanguage {
+    /// ECMAScript-shaped source (the Studio expression profile).
+    JavaScript,
+    /// A non-JavaScript test-double command language (`ScriptedEngine`); never validated as JS.
+    Scripted,
 }
 
 /// Typed isolation faults of an out-of-process engine (never produced by in-process engines).
@@ -204,6 +218,10 @@ pub trait HostBridge {
 
 pub trait Engine: Send + Sync {
     fn identity(&self) -> EngineIdentity;
+    /// Source language this engine evaluates (default JavaScript: the profile validator applies).
+    fn source_language(&self) -> SourceLanguage {
+        SourceLanguage::JavaScript
+    }
     /// One evaluation in a fresh realm that is dropped before returning.
     fn run(&self, job: &EvalJob<'_>, host: &mut dyn HostBridge) -> EngineRun;
 }

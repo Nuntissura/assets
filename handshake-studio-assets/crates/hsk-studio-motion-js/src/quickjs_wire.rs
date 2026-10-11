@@ -229,6 +229,7 @@ const BUDGETS: [BudgetKind; BudgetKind::COUNT] = [
     BudgetKind::HostReads,
     BudgetKind::SourceBytes,
     BudgetKind::Realms,
+    BudgetKind::Cpu,
 ];
 
 const EXPR_CODES: [ExprErrorCode; 9] = [

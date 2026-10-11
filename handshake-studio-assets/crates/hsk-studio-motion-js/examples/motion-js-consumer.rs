@@ -34,11 +34,13 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let (mut source, mut fuel, mut dimension, mut engine) = (None, 1000_u64, 1_usize, "scripted");
+    let mut validate: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         let value = args.get(i + 1).ok_or("missing_argument")?;
         match args[i].as_str() {
             "--eval" => source = Some(value.clone()),
+            "--validate" => validate = Some(value.clone()),
             "--engine" => {
                 engine = match value.as_str() {
                     "scripted" => "scripted",
@@ -53,6 +55,19 @@ fn run() -> Result<(), String> {
             _ => return Err("unknown_argument".into()),
         }
         i += 2;
+    }
+    if let Some(text) = validate {
+        match ProfileValidator::default().validate(&text) {
+            Ok(facts) => println!("profile=ok {facts:?}"),
+            Err(v) => println!(
+                "profile=violation kind={} line={} column={} len={}",
+                v.kind.code(),
+                v.span.line,
+                v.span.column,
+                v.len
+            ),
+        }
+        return Ok(());
     }
     let source = source.ok_or("missing_eval")?;
     let quotas = Quotas::default();

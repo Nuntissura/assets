@@ -63,7 +63,9 @@ fn backend(spec: QuotaSpec) -> Result<QuickJsBackend, QuickJsConfigError> {
 
 fn provider_with(spec: QuotaSpec) -> P {
     let quotas = Quotas::try_from_spec(spec).unwrap();
-    MotionJsProvider::new(QuickJsBackend::new(&quotas, options()).unwrap(), quotas)
+    // These tests attack the engine's own hardening with hostile source, so they run without the
+    // profile validator (tests/profile_contract.rs covers the validator and its precedence).
+    MotionJsProvider::new(QuickJsBackend::new(&quotas, options()).unwrap(), quotas).without_validator()
 }
 
 fn call(provider: &P, source: &str, dimension: usize, tick: i64, fuel: &mut Fuel, cancel: &CancellationToken) -> Result<Vec<f64>, ExprError> {
@@ -156,7 +158,7 @@ fn quickjs_limits_interrupt_and_fuel() {
         // Heap limit accepted by the live engine and read back.
         let readback = engine(default).unwrap().verify_limits().unwrap();
         assert_eq!((readback.memory_limit, readback.stack_applied), (16 << 20, 512 << 10));
-        let mismatched = MotionJsProvider::new(engine(default).unwrap(), Quotas::try_from_spec(QuotaSpec { memory_bytes: 8 << 20, ..default }).unwrap());
+        let mismatched = MotionJsProvider::new(engine(default).unwrap(), Quotas::try_from_spec(QuotaSpec { memory_bytes: 8 << 20, ..default }).unwrap()).without_validator();
         assert_eq!(code(eval(&mismatched, "1", 1)).0, ExprErrorCode::Unsupported);
         assert!(mismatched.is_poisoned(), "engine/quota mismatch must fail closed");
 
