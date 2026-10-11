@@ -6,14 +6,19 @@
 //! decoded camera CFA bytes (STU-CON-042..045). Scalar oracle only; no SIMD, no unsafe.
 #![forbid(unsafe_code)]
 
+pub mod color;
 pub mod curves;
+pub mod dng;
 pub mod pipeline;
 pub mod recipe;
+mod tiff;
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, SinkPort};
 
+pub use color::{CameraSolution, DngColor};
 pub use curves::{Curve, PreparedCurve};
+pub use dng::{ActiveArea, DngRaw, PlaneWindow, RangePolicy, WindowReport};
 pub use pipeline::{
     Bayer, Cfa, CfaPattern, CfaPlane, DevelopReceipt, DevelopRequest, DevelopedTile,
     ExecutionHint, Limits, PlaneInit, SinkError, demosaic_normalized, develop,
@@ -35,7 +40,13 @@ pub enum DevelopError {
     UnsupportedExecution,
     UnsupportedPattern,
     UnsupportedCurve,
+    UnsupportedContainer,
+    UnsupportedCompression,
+    UnsupportedActiveArea,
+    UnsupportedIlluminant,
     UnsupportedContribution(&'static str),
+    MissingColourData,
+    ColorNoConvergence,
     NonFinite,
     NotInvertibleMatrix,
     InvalidProfile,
@@ -75,6 +86,12 @@ impl DevelopError {
             Self::UnsupportedExecution => "unsupported_execution",
             Self::UnsupportedPattern => "unsupported_pattern",
             Self::UnsupportedCurve => "unsupported_curve",
+            Self::UnsupportedContainer => "unsupported_container",
+            Self::UnsupportedCompression => "unsupported_compression",
+            Self::UnsupportedActiveArea => "unsupported_active_area",
+            Self::UnsupportedIlluminant => "unsupported_illuminant",
+            Self::MissingColourData => "missing_colour_data",
+            Self::ColorNoConvergence => "color_no_convergence",
             Self::UnsupportedContribution(_) => "unsupported_contribution",
             Self::NonFinite => "non_finite",
             Self::NotInvertibleMatrix => "not_invertible_matrix",
@@ -118,6 +135,10 @@ impl DevelopError {
             | Self::UnsupportedExecution
             | Self::UnsupportedPattern
             | Self::UnsupportedCurve
+            | Self::UnsupportedContainer
+            | Self::UnsupportedCompression
+            | Self::UnsupportedActiveArea
+            | Self::UnsupportedIlluminant
             | Self::UnsupportedContribution(_) => Outcome::Failure(FailureCode::Unsupported),
             Self::DecoderUnavailable | Self::SinkRejected => {
                 Outcome::Failure(FailureCode::Unavailable)
@@ -146,10 +167,18 @@ impl From<hsk_studio_accord::ValidationError> for DevelopError {
     }
 }
 
-/// Explicit "missing RAW container decoder" outcome (STU-CON-042: direct container input and
-/// unresolved decoder capability return typed refusal). DNG decode lands in the `dng` module.
-pub fn decode_container(_bytes: &[u8]) -> Result<CfaPlane, DevelopError> {
-    Err(DevelopError::DecoderUnavailable)
+/// Container entry point. DNG (TIFF header + DNGVersion) decodes to an immutable raw frame; any
+/// other container is the explicit "missing RAW decoder" outcome (STU-CON-042: typed refusal).
+pub fn decode_container(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
+    // TIFF family (classic + BigTIFF magic); BigTIFF is then refused by the reader, not mislabeled.
+    if [&b"II*\0"[..], b"MM\0*", b"II+\0", b"MM\0+"]
+        .iter()
+        .any(|magic| bytes.starts_with(magic))
+    {
+        dng::decode(bytes)
+    } else {
+        Err(DevelopError::DecoderUnavailable)
+    }
 }
 
 /// Deliver the terminal outcome of one develop run through the caller-owned sink.
@@ -179,4 +208,4 @@ pub fn report(
     )
 }
 
-pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-develop","module":"develop","slice":1,"scope":"source-only decoded-CFA develop over caller-granted bytes; no RAW container decoder, no catalog, no persistence, no host wiring","process_version":"1.0","engine_version":"1.0","math_token":"native_cfa_bilinear_hermite_v1","demosaic_algorithm":"bilinear_reflect_native_v1","cfa":["RGGB","BGGR","GRBG","GBRG","xtrans_6x6"],"white_balance_modes":["as_shot"],"profile_transform":"identity_only_working_equals_output","curves":"monotone_hermite_2_to_32_points_linear_output_domain","execution":{"supported":["scalar","auto"],"auto_route":"scalar","unsupported":["sse2"]},"limits":{"spec_v1":{"side_min_bayer":2,"side_min_xtrans":6,"side_max":256,"stride_max_bytes":1024,"plane_max_bytes":262144,"tile_edge_max":64,"tiles_max":16,"output_max_bytes":16777216}},"output":{"colour":"rgb_f32le linear_light","alpha":"f32le straight, 1.0 inside crop only","coverage":"coverage_u8"},"supported_enables":["enable_tone_curve"],"refusals":"typed, stable snake_case codes; nothing clipped, defaulted or silently zeroed","pending":["SIMD route","prism profile transform","host grants and publication","RAW container decoders other than DNG"]}"#;
+pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-develop","module":"develop","slice":1,"scope":"source-only decoded-CFA develop over caller-granted bytes plus an own DNG reader (classic TIFF, uncompressed 8/16-bit, strips or tiles, ColorMatrix/ForwardMatrix); no catalog, no persistence, no host wiring","process_version":"1.0","engine_version":"1.0","math_token":"native_cfa_bilinear_hermite_v1","demosaic_algorithm":"bilinear_reflect_native_v1","cfa":["RGGB","BGGR","GRBG","GBRG","xtrans_6x6"],"white_balance_modes":["as_shot"],"profile_transform":"identity_only_working_equals_output","curves":"monotone_hermite_2_to_32_points_linear_output_domain","execution":{"supported":["scalar","auto"],"auto_route":"scalar","unsupported":["sse2"]},"limits":{"spec_v1":{"side_min_bayer":2,"side_min_xtrans":6,"side_max":256,"stride_max_bytes":1024,"plane_max_bytes":262144,"tile_edge_max":64,"tiles_max":16,"output_max_bytes":16777216}},"output":{"colour":"rgb_f32le linear_light","alpha":"f32le straight, 1.0 inside crop only","coverage":"coverage_u8"},"supported_enables":["enable_tone_curve"],"refusals":"typed, stable snake_case codes; nothing clipped, defaulted or silently zeroed","pending":["SIMD route","prism profile transform","host grants and publication","DNG lossless JPEG and other compressions","proprietary RAW containers (decoder_unavailable)"]}"#;

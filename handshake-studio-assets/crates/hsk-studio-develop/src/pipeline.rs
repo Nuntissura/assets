@@ -19,7 +19,7 @@ pub enum Bayer {
 
 impl Bayer {
     /// `[row][col]` channel indices of the 2x2 cell, R=0 G=1 B=2.
-    const fn cell(self) -> [[u8; 2]; 2] {
+    pub(crate) const fn cell(self) -> [[u8; 2]; 2] {
         match self {
             Self::Rggb => [[0, 1], [1, 2]],
             Self::Bggr => [[2, 1], [1, 0]],
@@ -30,7 +30,7 @@ impl Bayer {
 }
 
 /// Fixed X-Trans 6x6 rows from STU-CON-043: GGRGGB GGBGGR BRGRBG GGBGGR GGRGGB RBGBRG.
-const XTRANS: [[u8; 6]; 6] = [
+pub(crate) const XTRANS: [[u8; 6]; 6] = [
     [1, 1, 0, 1, 1, 2],
     [1, 1, 2, 1, 1, 0],
     [2, 0, 1, 0, 2, 1],

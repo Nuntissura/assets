@@ -199,6 +199,29 @@ pub struct DevelopRecipe {
     pub crop: NormalizedCrop,
 }
 
+/// As-shot white-balance gains (STU-CON-044): r = 1/neutral, m = min(r), gain = r/m.
+pub fn as_shot_gain(neutral: [f64; 3]) -> Result<[f64; 3], DevelopError> {
+    if neutral.iter().any(|n| !n.is_finite() || *n <= 0.0) {
+        return Err(DevelopError::NonFinite);
+    }
+    let mut r = [0.0f64; 3];
+    for (slot, n) in r.iter_mut().zip(neutral) {
+        *slot = 1.0 / n;
+        if !slot.is_finite() || *slot == 0.0 {
+            return Err(DevelopError::StageUnderflow);
+        }
+    }
+    let m = r[0].min(r[1]).min(r[2]);
+    let mut gain = [0.0f64; 3];
+    for (slot, ri) in gain.iter_mut().zip(r) {
+        *slot = ri / m;
+        if !slot.is_finite() || *slot <= 0.0 {
+            return Err(DevelopError::StageOverflow);
+        }
+    }
+    Ok(gain)
+}
+
 /// Derived, validated numbers used by the pipeline.
 pub(crate) struct PreparedRecipe {
     pub gain: [f64; 3],
@@ -267,29 +290,7 @@ impl DevelopRecipe {
             return Err(DevelopError::UnsupportedProfileTransform);
         }
 
-        // As-shot gains: r = 1/neutral, m = min(r), gain = r/m.
-        if self
-            .as_shot_neutral
-            .iter()
-            .any(|n| !n.is_finite() || *n <= 0.0)
-        {
-            return Err(DevelopError::NonFinite);
-        }
-        let mut r = [0.0f64; 3];
-        for (slot, n) in r.iter_mut().zip(self.as_shot_neutral) {
-            *slot = 1.0 / n;
-            if !slot.is_finite() || *slot == 0.0 {
-                return Err(DevelopError::StageUnderflow);
-            }
-        }
-        let m = r[0].min(r[1]).min(r[2]);
-        let mut gain = [0.0f64; 3];
-        for (slot, ri) in gain.iter_mut().zip(r) {
-            *slot = ri / m;
-            if !slot.is_finite() || *slot <= 0.0 {
-                return Err(DevelopError::StageOverflow);
-            }
-        }
+        let gain = as_shot_gain(self.as_shot_neutral)?;
 
         let c = &self.camera_to_profile_rgb;
         if c.iter().any(|v| !v.is_finite()) {
