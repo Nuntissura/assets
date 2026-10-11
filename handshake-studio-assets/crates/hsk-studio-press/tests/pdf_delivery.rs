@@ -3548,7 +3548,7 @@ fn writing_mode_is_read_from_the_cmap() {
     for (what, pdf) in &vertical {
         let out = r9_run(pdf, R9_BELOW, UnsupportedPolicy::ReportAndContinue).unwrap();
         // D27: the run's page is flattened (the run is gone from the file); the selector still marks it.
-        assert!(independent_streams(&out.bytes).iter().all(|s| find(s, R7_CODES.as_bytes()).is_none()), "{what}");
+        assert!(independent_streams(&out.bytes).iter().all(|s| find(s, R7_CODES.as_bytes()).is_none()), "{what}"); // D27-flatten
         expect(&mut red, !out.region_cleared() && !out.is_proven(), format!("{what}: vertical text read as cleared"));
         expect(&mut red, out.reports[0].unredacted == vec![RedactionClass::VerticalText], format!("{what}: {:?}", out.reports[0].unredacted));
         expect(&mut red, r9_run(pdf, R9_BELOW, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::VerticalText)), format!("{what}: not refused"));
@@ -3992,7 +3992,7 @@ fn wmode_spellings_and_identity_names_are_read_as_viewers_do() {
     for (what, pdf) in &vertical {
         let out = r9_run(pdf, R9_BELOW, UnsupportedPolicy::ReportAndContinue).unwrap();
         // D27: the run's page is flattened (the run is gone from the file); the selector still marks it.
-        assert!(independent_streams(&out.bytes).iter().all(|s| find(s, R7_CODES.as_bytes()).is_none()), "{what}");
+        assert!(independent_streams(&out.bytes).iter().all(|s| find(s, R7_CODES.as_bytes()).is_none()), "{what}"); // D27-flatten
         expect(&mut red, !out.region_cleared() && !out.is_proven(), format!("{what}: vertical text read as cleared"));
         expect(&mut red, out.reports[0].unredacted == vec![RedactionClass::VerticalText], format!("{what}: {:?}", out.reports[0].unredacted));
         expect(&mut red, r9_run(pdf, R9_BELOW, UnsupportedPolicy::Refuse) == Err(PressError::UnsupportedRedactionClass(RedactionClass::VerticalText)), format!("{what}: not refused"));
