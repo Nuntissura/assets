@@ -16,8 +16,7 @@
 #     ((?<![A-Za-z0-9])[A-Za-z]:[/\\]) or Users/ segment; a hit beyond .config/machine-paths.toml [pinned] counts
 #     (test data never opened as a host path) exits 72. Host data comes only via .config/oracle-corpus.toml.
 #   V4-05 frozen duplicates: .config/duplicate-fingerprints.toml patterns over crates/*/src; a match in a file
-#     outside that fingerprint's `allowed` crate prefixes (D16 ZIP/CRC-32, D18 worker supervision, timecode)
-#     exits 71.
+#     outside that fingerprint's `allowed` sites (D16 ZIP/CRC-32, D18 worker supervision, timecode) exits 71.
 # Units (each its own result; all run; a unit's build failure skips only that unit's test run):
 #   default    union over the selection, default features: one build (nextest --no-run) + one run (--no-fail-fast);
 #              files at the results root (build.*, run.*, list.txt, canary-filter.txt, junit.xml) as before.
@@ -32,6 +31,11 @@
 #              [doctest] per-test-timeout-s (.config/round-features.toml), appends TIMEOUT to that line, reports the
 #              unit's doctests without a verdict NOT_RUN, and the unit's run exit is 124. Compiling the crate before
 #              its first doctest is not covered.
+#   fixture    .config/oracle-fixtures.toml, built before the other units when a `needed_by` crate is selected:
+#              cargo build --offline --locked of the standalone fixture package into <target-dir>/fixtures/<id>, then
+#              placed with MANIFEST.json (library sha256, source sha256, round sha) under the oracle corpus root, where
+#              tests find it via .config/oracle-corpus.toml (no env vars); a build failure counts as a unit build
+#              failure, an absent corpus root is recorded corpus_absent (the tests then report NOT_PROVEN).
 # NOT_PROVEN: a test that cannot prove its claim on this host (no GPU adapter, oracle input absent, ...) prints a
 #   line starting `NOT_PROVEN:` (leading spaces allowed) followed by the reason, and may pass. Every such line in a
 #   nextest unit's captured output (junit system-out/system-err, stored for passing tests) is collected into
@@ -215,7 +219,7 @@ for fp in dup_cfg.get("fingerprint", []):
         for i, line in enumerate(lines, 1):
             if any(p.search(line) for p in pats):
                 sites.setdefault(rel, []).append(f"{rel}:{i}: {line.strip()[:160]}")
-    allowed = list(fp["allowed"])  # path prefixes (crate dirs): moves inside an allowed crate stay allowed
+    allowed = list(fp["allowed"])  # path prefixes relative to the workspace root (exact files or dirs)
     ok = lambda rel: any(rel.startswith(a) for a in allowed)
     new = {rel: sites[rel][:20] for rel in sorted(sites) if not ok(rel)}
     dups.append({"id": fp["id"], "new_sites": new, "sites": sorted(sites),
@@ -421,8 +425,69 @@ doctest_unit() {
 if [ $all -eq 1 ]; then sel=(--workspace); else sel=(); for c in "${crates[@]}"; do sel+=(-p "$c"); done; fi
 doctest_budget=$(awk -F'\t' '$1 == "config" && $2 == "doctest-per-test-timeout-s" { print $3 }' "$plan")
 set +e
+# Oracle fixtures (.config/oracle-fixtures.toml): built before any unit and placed in the corpus root (with
+# MANIFEST.json) so tests find them via the corpus convention; rows join units.tsv after the default unit.
+mkdir -p "$results/fixtures"
+"$py" -X utf8 -I - "$root" "$results" "$target" "$identity_sha" "$all" ${crates[@]+"${crates[@]}"} \
+  >"$results/fixtures/units.tsv" 2>"$results/fixtures/step.stderr.txt" <<'PY'
+import datetime, hashlib, json, os, pathlib, subprocess, sys, tomllib
+
+sys.stdout.reconfigure(newline="\n")
+root, res, target, sha, sel_all, asked = (pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]),
+                                          pathlib.Path(sys.argv[3]), sys.argv[4], sys.argv[5] == "1", sys.argv[6:])
+cfg_path = root / ".config" / "oracle-fixtures.toml"
+cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {"fixture": []}
+if cfg_path.exists() and cfg.get("schema") != "hsk.studio.oracle-fixtures@1":
+    sys.exit("run-round: oracle-fixtures.toml schema must be hsk.studio.oracle-fixtures@1")
+meta = json.loads((res / "metadata.json").read_text(encoding="utf-8"))
+ids = set(meta["workspace_members"])
+members = {p["name"] for p in meta["packages"] if p["id"] in ids}
+selected = members if sel_all else set(asked)
+corpus = json.loads((res / "oracle-corpus.json").read_text(encoding="utf-8"))
+lib_file = {"win32": "{}.dll", "darwin": "lib{}.dylib"}.get(sys.platform, "lib{}.so")
+def tree_sha(d):
+    lines = []
+    for f in sorted((p for p in d.rglob("*") if p.is_file()), key=lambda p: p.relative_to(d).as_posix()):
+        lines.append(f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.relative_to(d).as_posix()}\n")
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+for fx in cfg.get("fixture", []):
+    fid, safe = fx["id"], fx["id"].replace("/", "+")
+    if not set(fx["needed_by"]) & selected:
+        continue
+    if not corpus.get("present"):
+        print(f"fixture:{fid}\tfixture\t{fx['needed_by'][0]}\t-\tcorpus_absent\t-\t-\t-")
+        continue
+    manifest = root / fx["manifest"]
+    tdir = target / "fixtures" / safe
+    cmd = ["cargo", "build", "--offline", "--locked", "--manifest-path", str(manifest), "--target-dir", str(tdir)]
+    with open(res / "fixtures" / f"{safe}.build.stdout.txt", "wb") as so, \
+            open(res / "fixtures" / f"{safe}.build.stderr.txt", "wb") as se:
+        rc = subprocess.run(cmd, stdout=so, stderr=se, stdin=subprocess.DEVNULL).returncode
+    status, dest_rel = "run", f"fixtures/{safe}"
+    if rc == 0:
+        name = lib_file.format(fx["lib"])
+        built = tdir / "debug" / name
+        data = built.read_bytes()
+        dest = pathlib.Path(corpus["root"]) / fx["dest"]
+        dest.mkdir(parents=True, exist_ok=True)
+        tmp = dest / f".{name}.tmp-{os.getpid()}"
+        tmp.write_bytes(data)
+        os.replace(tmp, dest / name)
+        record = {"schema": "hsk.studio.oracle-fixture@1", "id": fid, "library": name,
+                  "sha256": hashlib.sha256(data).hexdigest(), "source_manifest": fx["manifest"],
+                  "source_sha256": tree_sha(manifest.parent / "src"), "round_sha": sha,
+                  "built_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        tmp = dest / f".MANIFEST.json.tmp-{os.getpid()}"
+        tmp.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8", newline="\n")
+        os.replace(tmp, dest / "MANIFEST.json")
+        (res / "fixtures" / f"{safe}.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8",
+                                                       newline="\n")
+    print(f"fixture:{fid}\tfixture\t{fx['needed_by'][0]}\t-\t{status}\t{rc}\t-\t{dest_rel}")
+PY
+[ $? -eq 0 ] || { reason="oracle fixture step failed (fixtures/step.stderr.txt)"; cat "$results/fixtures/step.stderr.txt" >&2; exit 2; }
 nextest_unit "$results" - "${sel[@]}"
 rec default nextest '*' - run "$U_BUILD" "$U_RUN" .
+cat "$results/fixtures/units.tsv" >>"$units"
 default_filter=$U_FILTER
 mkdir -p "$results/features" "$results/doctest"
 while IFS=$'\t' read -r kind crate feats status; do

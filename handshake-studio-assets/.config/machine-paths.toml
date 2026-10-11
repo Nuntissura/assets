@@ -4,8 +4,9 @@
 # Tests reach host data only through the documented corpus-root config (.config/oracle-corpus.toml, not scanned).
 # [pinned]: files whose CURRENT hits are test data, never opened as host paths (hostile-input vectors that the code
 # must refuse, synthetic catalog values, provenance records, populate-tool sources); value = exact hit count. A new
-# file with a hit, or a changed count in a pinned file, fails step 0. Entries are lead-reviewable: removing one makes
-# that file strict. Baseline 2026-10-11 (steward survey of origin c7be531..4ea5171; reasons below).
+# file with a hit, or more hits than pinned in a pinned file, fails step 0. Entries are lead-reviewable: removing one makes
+# that file strict. Baseline 2026-10-11 (steward survey at origin c2bbb9b; reasons below). A pinned count that
+# drops is reported (round.json step0_policy.machine_path_pins_dropped) and tightened at the next steward sync.
 schema = "hsk.studio.machine-paths@1"
 corpus_config = ".config/oracle-corpus.toml"
 
@@ -16,8 +17,7 @@ corpus_config = ".config/oracle-corpus.toml"
 "crates/hsk-studio-package/tests/foundation_contract.rs" = 1
 # hostile file:///c:/x link the web source patcher denies (FileScheme)
 "crates/hsk-studio-web/tests/source_dom_patch.rs" = 2
-# synthetic Lightroom catalog: root-folder values (absolute by Lightroom's format) and the generator that writes them
-"crates/hsk-studio-interop-lrcat/tests/fixtures/generate_fixtures.py" = 1
+# synthetic Lightroom catalog: root-folder values (absolute by Lightroom's format)
 "crates/hsk-studio-interop-lrcat/tests/fixtures/synthetic-main.expected.tsv" = 300
 "crates/hsk-studio-interop-lrcat/tests/fixtures/synthetic-wal.expected.tsv" = 301
 # Type evidence/provenance records (where reference files were taken from; tests read the vendored copies only)
