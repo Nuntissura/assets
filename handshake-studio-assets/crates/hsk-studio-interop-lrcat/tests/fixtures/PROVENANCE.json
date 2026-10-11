@@ -1,0 +1,37 @@
+{
+  "files": {
+    "synthetic-main.expected.tsv": {
+      "bytes": 34081,
+      "sha256": "152deed3b5831d394697a376365d667f851eee420c70f47f62a1aede4ea8a6ef"
+    },
+    "synthetic-main.lrcat": {
+      "bytes": 115712,
+      "sha256": "ef0d87c344bbd7a023a7502af545ee56aa0f708e5e791a3e1f10d7850810def1"
+    },
+    "synthetic-wal-uncommitted.lrcat-wal": {
+      "bytes": 56312,
+      "sha256": "be195725cb363a8e716646efc3bda2b80d02032859039e2fc7c6053f5dbbfcd7"
+    },
+    "synthetic-wal.expected.tsv": {
+      "bytes": 34184,
+      "sha256": "10bde237d03bfb24b4d58b5855ced5186259141d319c97d77d9268b5c57fd40e"
+    },
+    "synthetic-wal.lrcat": {
+      "bytes": 115712,
+      "sha256": "fcb20bd731326e2e510550ae9306bdafc0491e0e92470d8ab2c5c78fe66fbd4c"
+    },
+    "synthetic-wal.lrcat-wal": {
+      "bytes": 4856,
+      "sha256": "9eb25f431b0bb235c82fb2a1c76e5d6eb66308fc615e86e749f02e4d0dc20fd5"
+    }
+  },
+  "generator": "generate_fixtures.py (hsk-studio-interop-lrcat tests/fixtures)",
+  "images_main": 300,
+  "images_wal": 301,
+  "page_size": 512,
+  "purpose": "synthetic lrcat-shaped fixtures; byte-decoding proof only; not Lightroom-written; no personal data",
+  "python": "3.14.0",
+  "sqlite_library_version": "3.50.4",
+  "wal_committed_len": 4856,
+  "wal_uncommitted_len": 56312
+}
