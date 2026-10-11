@@ -394,3 +394,146 @@ fn admission_floors_exactness_through_object_safe_port() {
         assert_eq!(sink.0, before, "refusals never reach the sink");
     });
 }
+
+/// Backend that implements every operator exactly and opts in to the clip-to-base route.
+struct ClipProbe;
+impl RenderBackend for ClipProbe {
+    fn identity(&self) -> BackendIdentity {
+        BackendIdentity {
+            name: "clip-probe",
+            version: "0",
+            device: DeviceClass::Cpu,
+            adapter: String::new(),
+            generation: 0,
+        }
+    }
+    fn exactness(&self, _operator: Operator) -> Exactness {
+        Exactness::Exact
+    }
+    fn supports_clip_to_base(&self) -> bool {
+        true
+    }
+    fn execute(
+        &self,
+        _plan: &RenderPlan,
+        _request: &ExecuteRequest,
+        _sources: &dyn PlanSources,
+        _cancel: &CancellationToken,
+        _sink: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, BackendError> {
+        Err(BackendError::Unavailable("probe"))
+    }
+}
+
+fn solid() -> PlanNode {
+    PlanNode::Solid {
+        rect: R,
+        rgba: [1.0, 0.0, 0.0, 1.0],
+    }
+}
+fn clipped_layer(input: u32, mode: StudioBlendMode) -> Layer {
+    Layer {
+        mask: Some(MaskInput::clip_to_base()),
+        ..layer(input, mode)
+    }
+}
+fn group_plan(layers: Vec<Layer>) -> RenderPlan {
+    RenderPlan {
+        revision: 9,
+        target: target(),
+        nodes: vec![
+            solid(),
+            solid(),
+            PlanNode::Group(Group {
+                isolated: true,
+                layers,
+            }),
+        ],
+        root: PlanNodeId(2),
+    }
+}
+
+#[test]
+fn clip_to_base_is_validated_refused_without_opt_in_and_approximate() {
+    bounded_case(|| {
+        let limits = PlanLimits::default();
+        let base = layer(0, StudioBlendMode::Normal);
+        let ok = group_plan(vec![base, clipped_layer(1, StudioBlendMode::Multiply)]);
+        let ops = ok.validate(&limits).expect("base plus clipped layer");
+        assert!(ops.contains(&Operator::Mask(MaskFormat::BaseAlpha)));
+        assert_eq!(Operator::Mask(MaskFormat::BaseAlpha).key(), "clip_to_base");
+        assert_eq!(
+            Operator::Mask(MaskFormat::BaseAlpha).intrinsic(),
+            Exactness::Approximate
+        );
+        // Several clipped layers share one base, and a later unclipped layer starts a new run.
+        for layers in [
+            vec![base, clipped_layer(1, StudioBlendMode::Screen), clipped_layer(1, StudioBlendMode::Multiply)],
+            vec![base, clipped_layer(1, StudioBlendMode::Normal), base, clipped_layer(1, StudioBlendMode::Normal)],
+        ] {
+            assert!(group_plan(layers).validate(&limits).is_ok());
+        }
+        // No unclipped layer below: refused, with the layer's group as the node.
+        assert_eq!(
+            group_plan(vec![clipped_layer(0, StudioBlendMode::Normal), base]).validate(&limits),
+            Err(PlanError::ClipWithoutBase { node: 2 })
+        );
+        // Only the canonical encoding is a clip route.
+        for broken in [
+            MaskInput { density: 0.5, ..MaskInput::clip_to_base() },
+            MaskInput { inverted: true, ..MaskInput::clip_to_base() },
+            MaskInput { key: SourceKey(3), ..MaskInput::clip_to_base() },
+            MaskInput { sha256: [1; 32], ..MaskInput::clip_to_base() },
+        ] {
+            let layer = Layer { mask: Some(broken), ..layer(1, StudioBlendMode::Normal) };
+            assert_eq!(
+                group_plan(vec![base, layer]).validate(&limits),
+                Err(PlanError::ClipFields { node: 2 })
+            );
+        }
+        // A clipped layer cannot reference a pass-through group.
+        let mut pass = group_plan(vec![base]);
+        pass.nodes.push(PlanNode::Group(Group {
+            isolated: false,
+            layers: vec![layer(1, StudioBlendMode::Normal)],
+        }));
+        pass.nodes.push(PlanNode::Group(Group {
+            isolated: true,
+            layers: vec![
+                layer(0, StudioBlendMode::Normal),
+                Layer { mask: Some(MaskInput::clip_to_base()), ..layer(3, StudioBlendMode::PassThrough) },
+            ],
+        }));
+        pass.root = PlanNodeId(4);
+        assert_eq!(pass.validate(&limits), Err(PlanError::ClipPassThrough { node: 4 }));
+
+        // Admission: a backend that does not opt in refuses (typed), however it answers
+        // `exactness`; an opted-in backend is held to the route's Approximate class.
+        let cancel = CancellationToken::default();
+        let request = |floor| ExecuteRequest {
+            expected_revision: 9,
+            min_exactness: floor,
+            deadline: None,
+            max_working_bytes: 1 << 20,
+        };
+        assert_eq!(
+            admit(&ok, &Probe, &request(Exactness::Approximate), &cancel),
+            Err(BackendError::Unsupported {
+                operator: "clip_to_base",
+                exactness: Exactness::Unsupported
+            })
+        );
+        assert_eq!(
+            admit(&ok, &ClipProbe, &request(Exactness::Exact), &cancel),
+            Err(BackendError::Unsupported {
+                operator: "clip_to_base",
+                exactness: Exactness::Approximate
+            })
+        );
+        let ledger = admit(&ok, &ClipProbe, &request(Exactness::Approximate), &cancel).unwrap();
+        assert_eq!(ledger.lowest, Exactness::Approximate);
+        assert!(ledger.operators.iter().any(|o| o.key == "clip_to_base"));
+        // Plans without the route are unaffected by the capability flag.
+        assert!(admit(&plan(StudioBlendMode::Multiply), &Probe, &request(Exactness::Exact), &cancel).is_ok());
+    });
+}

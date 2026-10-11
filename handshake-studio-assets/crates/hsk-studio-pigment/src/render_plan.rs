@@ -41,12 +41,30 @@ impl SampleFormat {
 pub enum MaskFormat {
     CoverageU8,
     CoverageU16Le,
+    /// Clip-to-base route (Photoshop clipping group). The coverage is not a plane: it is the
+    /// alpha of the layer's clip base, i.e. the nearest EARLIER layer of the same group that is
+    /// not itself clipped (consecutive clipped layers share that base). Build it with
+    /// [`MaskInput::clip_to_base`]; every other `MaskInput` field must hold its canonical value.
+    ///
+    /// Evaluation rule (exactness Approximate; Photoshop's exact rule is UNVERIFIED, oracle
+    /// pending): the run `[base, c1..cn]` is evaluated as an isolated unit `G`. `G` starts as the
+    /// base content with the base's own mask applied (but not its opacity, fill or mode). Each
+    /// clipped layer `ci` is composited onto `G` with its own mode, opacity and fill, its source
+    /// alpha multiplied by the base alpha, and `G`'s alpha is then held at the base alpha (clipped
+    /// content never extends beyond the base). `G` is composited onto the parent's running backdrop
+    /// with the BASE layer's mode, opacity and fill. A clipped layer cannot also carry its own
+    /// coverage mask (one mask slot), and cannot reference a pass-through group.
+    ///
+    /// A backend must opt in through [`RenderBackend::supports_clip_to_base`]; [`admit`] refuses
+    /// the plan as `Unsupported { operator: "clip_to_base" }` otherwise, so it is never ignored.
+    BaseAlpha,
 }
 impl MaskFormat {
     pub const fn key(self) -> &'static str {
         match self {
             Self::CoverageU8 => "coverage_u8",
             Self::CoverageU16Le => "coverage_u16le",
+            Self::BaseAlpha => "clip_to_base",
         }
     }
 }
@@ -77,6 +95,29 @@ pub struct MaskInput {
     pub sha256: [u8; 32],
     pub inverted: bool,
     pub density: f32,
+}
+impl MaskInput {
+    /// The one canonical encoding of a clipped layer: coverage = alpha of the clip base
+    /// ([`MaskFormat::BaseAlpha`]). `key`, `placement` and `sha256` carry no information.
+    pub const fn clip_to_base() -> Self {
+        Self {
+            key: SourceKey(0),
+            placement: Rect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
+            format: MaskFormat::BaseAlpha,
+            sha256: [0; 32],
+            inverted: false,
+            density: 1.0,
+        }
+    }
+    /// Is this the clip-to-base route (as opposed to a coverage plane)?
+    pub fn is_clip_to_base(&self) -> bool {
+        self.format == MaskFormat::BaseAlpha
+    }
 }
 /// One composited entry of a group. Hidden layers are never emitted.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -178,6 +219,8 @@ impl Operator {
         match self {
             Self::Blend(m) => m.facts().exactness,
             Self::PassThroughOpacity | Self::FillOpacity => Exactness::Approximate,
+            // Clipping-group rule UNVERIFIED against Photoshop (see `MaskFormat::BaseAlpha`).
+            Self::Mask(MaskFormat::BaseAlpha) => Exactness::Approximate,
             _ => Exactness::Exact,
         }
     }
@@ -195,6 +238,12 @@ pub enum PlanError {
     ModeNotApplicable { node: u32, mode: StudioBlendMode },
     PassThroughOnIsolated { node: u32 },
     TooDeep,
+    /// A clipped layer has no unclipped layer below it in the same group.
+    ClipWithoutBase { node: u32 },
+    /// A clip-to-base mask is not the canonical [`MaskInput::clip_to_base`] encoding.
+    ClipFields { node: u32 },
+    /// A clipped layer references a pass-through group (no isolation to clip within).
+    ClipPassThrough { node: u32 },
 }
 impl PlanError {
     pub const fn code(self) -> &'static str {
@@ -209,6 +258,9 @@ impl PlanError {
             Self::ModeNotApplicable { .. } => "plan_mode_not_applicable",
             Self::PassThroughOnIsolated { .. } => "plan_pass_through_on_isolated",
             Self::TooDeep => "plan_too_deep",
+            Self::ClipWithoutBase { .. } => "plan_clip_without_base",
+            Self::ClipFields { .. } => "plan_clip_fields",
+            Self::ClipPassThrough { .. } => "plan_clip_pass_through",
         }
     }
 }
@@ -268,7 +320,7 @@ impl<V> RenderPlan<V> {
                     if layers > limits.max_layers {
                         return Err(PlanError::BudgetExceeded);
                     }
-                    for l in &g.layers {
+                    for (li, l) in g.layers.iter().enumerate() {
                         let input = l.input.0 as usize;
                         if input >= i {
                             return Err(PlanError::ForwardReference {
@@ -319,7 +371,26 @@ impl<V> RenderPlan<V> {
                         if l.fill_opacity < 1.0 && l.mode != StudioBlendMode::Normal {
                             add(Operator::FillOpacity);
                         }
-                        if let Some(m) = &l.mask {
+                        if let Some(m) = &l.mask
+                            && m.is_clip_to_base()
+                        {
+                            // Photoshop clipping group: the base is the nearest earlier layer of
+                            // this group that is not itself clipped, so a clipped layer is valid
+                            // exactly when some earlier layer is unclipped.
+                            if *m != MaskInput::clip_to_base() {
+                                return Err(PlanError::ClipFields { node: n });
+                            }
+                            let has_base = g.layers[..li]
+                                .iter()
+                                .any(|b| !b.mask.as_ref().is_some_and(MaskInput::is_clip_to_base));
+                            if !has_base {
+                                return Err(PlanError::ClipWithoutBase { node: n });
+                            }
+                            if facts.applicability == Applicability::GroupOnly {
+                                return Err(PlanError::ClipPassThrough { node: n });
+                            }
+                            add(Operator::Mask(MaskFormat::BaseAlpha));
+                        } else if let Some(m) = &l.mask {
                             rect_ok(m.placement, n)?;
                             if !m.density.is_finite() {
                                 return Err(PlanError::NonFinite { node: n });
@@ -524,6 +595,12 @@ pub trait RenderBackend<V = NoVector>: Send + Sync {
     fn identity(&self) -> BackendIdentity;
     /// Capability query (STU-RAS-155); `Unsupported` = typed refusal at admission.
     fn exactness(&self, operator: Operator) -> Exactness;
+    /// Does this backend implement the clip-to-base route ([`MaskFormat::BaseAlpha`])? Default
+    /// `false`: [`admit`] then refuses any plan that uses it, so a backend written before the
+    /// route existed cannot render a clipped layer unclipped.
+    fn supports_clip_to_base(&self) -> bool {
+        false
+    }
     /// Must call [`admit`] before any work; emits chunks to `sink`, receipt only on full success.
     fn execute(
         &self,
@@ -554,6 +631,13 @@ pub fn admit<V>(
     let operators = plan
         .validate(&PlanLimits::default())
         .map_err(BackendError::InvalidPlan)?;
+    if operators.contains(&Operator::Mask(MaskFormat::BaseAlpha)) && !backend.supports_clip_to_base()
+    {
+        return Err(BackendError::Unsupported {
+            operator: MaskFormat::BaseAlpha.key(),
+            exactness: Exactness::Unsupported,
+        });
+    }
     let mut ledger = ExactnessLedger::default();
     for op in operators {
         let class = op.intrinsic().lowest_of(backend.exactness(op));
@@ -568,4 +652,4 @@ pub fn admit<V>(
     Ok(ledger)
 }
 
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","pending":["STU-CMP-020 members without discriminant","STU-CMP-020a stencil/silhouette node kinds","clipping, knockout, blend-if, effects, mattes, time"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pending":["STU-CMP-020 members without discriminant","STU-CMP-020a stencil/silhouette node kinds","knockout, blend-if, effects, mattes, time","clipped layer with its own mask"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;
