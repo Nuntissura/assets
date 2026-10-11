@@ -289,7 +289,7 @@ pub fn mov_pcm_bytes(spec: &PcmMovSpec) -> Vec<u8> {
         body.extend_from_slice(&be32(spec.rate << 16));
     }
     let entry = boxed(&spec.fourcc, &body);
-    let per = u64::from(spec.frames_per_chunk.max(1));
+    let per = u64::from(spec.frames_per_chunk.max(1)).min(spec.frames.max(1));
     let chunks = spec.frames.div_ceil(per);
     let mut stsc = vec![(1u32, per as u32)];
     if !spec.frames.is_multiple_of(per) {

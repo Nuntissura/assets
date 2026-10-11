@@ -305,7 +305,7 @@ fn isobmff_layouts_corruption_and_limits() {
         assert_eq!(
             index_of(&fragmented, &limits).unwrap_err(),
             ReelError::Unsupported {
-                what: "fragmented-isobmff"
+                what: "moof-before-moov"
             }
         );
         let tight = Limits {
