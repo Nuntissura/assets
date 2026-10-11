@@ -650,6 +650,184 @@ fn unreachable_nodes_are_not_counted_like_the_backends() {
     assert!(!bad_input.has_pass_through_mask() && !bad_input.uses_premultiplied_alpha());
 }
 
+/// Lane SMB-PARITY-FOLLOWUP, lead decision "one rule, no exceptions": the older shared refusals
+/// read the same set the backends execute. render-cpu and render-gpu check the pass-through fill,
+/// the Solid colour range and the mask density inside their reachable-node loops (`if !reach[i]`),
+/// so a node no layer reaches asks for nothing. Each test: the unreachable node admits (v1,
+/// extended, execute), the reached node is refused with the same key as before.
+#[test]
+fn unreachable_pass_through_fill_is_not_counted_like_the_backends() {
+    let filled = |l: Layer| Layer {
+        fill_opacity: 0.5,
+        ..l
+    };
+    let key = PASS_THROUGH_FILL_OPERATOR;
+    // Nodes: 0 solid | 1 non-isolated {0} | 2 isolated {pass-through over 1, fill 0.5}
+    // | 3 solid | 4 root {Normal over 3}. Node 2 is referenced by nobody.
+    let unreachable = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![filled(layer(1, StudioBlendMode::PassThrough))]),
+        solid([0.1, 0.2, 0.3, 1.0]),
+        group(true, vec![layer(3, StudioBlendMode::Normal)]),
+    ]);
+    assert!(unreachable.validate(&PlanLimits::default()).is_ok());
+    assert!(!unreachable.has_pass_through_fill());
+    for backend in all_backends() {
+        assert!(v1(&unreachable, &backend, Exactness::Approximate).is_ok());
+        assert!(
+            extended(
+                &unreachable,
+                &PlanExtensions::default(),
+                &backend,
+                Exactness::Approximate
+            )
+            .is_ok()
+        );
+        assert_eq!(executes(&unreachable, &backend), (refusal_unavailable(), 1));
+    }
+    // Reached by the root directly, and through a chain of groups: refused as before.
+    // direct: 0 solid | 1 non-isolated {0} | 2 root {pass-through over 1, fill 0.5}.
+    let direct = pass_through_plan(filled);
+    let chained = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![filled(layer(1, StudioBlendMode::PassThrough))]),
+        group(true, vec![layer(2, StudioBlendMode::Normal)]),
+        group(true, vec![layer(3, StudioBlendMode::Normal)]),
+    ]);
+    for (what, p) in [("direct", &direct), ("chained", &chained)] {
+        assert!(p.has_pass_through_fill(), "{what}");
+        for backend in all_backends() {
+            assert_eq!(
+                v1(p, &backend, Exactness::Approximate).map(|_| ()),
+                refusal(key, Exactness::Unsupported),
+                "{what}"
+            );
+            assert_eq!(
+                executes(p, &backend),
+                (refusal(key, Exactness::Unsupported), 0),
+                "{what}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unreachable_solid_outside_unit_is_not_counted_like_the_backends() {
+    let key = SAMPLE_RANGE_OPERATOR;
+    let hdr = [2.0, 0.5, 0.5, 1.0];
+    // Nodes: 0 solid outside [0, 1] (referenced by nobody) | 1 solid | 2 root {Normal over 1}.
+    let unreachable = plan(vec![
+        solid(hdr),
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(true, vec![layer(1, StudioBlendMode::Normal)]),
+    ]);
+    assert!(unreachable.validate(&PlanLimits::default()).is_ok());
+    assert!(!unreachable.has_solid_outside_unit());
+    for backend in all_backends() {
+        assert!(v1(&unreachable, &backend, Exactness::Approximate).is_ok());
+        assert!(
+            extended(
+                &unreachable,
+                &PlanExtensions::default(),
+                &backend,
+                Exactness::Approximate
+            )
+            .is_ok()
+        );
+        assert_eq!(executes(&unreachable, &backend), (refusal_unavailable(), 1));
+    }
+    // Reached through a layer, through a chain of groups, and as the leaf root itself.
+    let direct = plan(vec![
+        solid(hdr),
+        group(true, vec![layer(0, StudioBlendMode::Normal)]),
+    ]);
+    let chained = plan(vec![
+        solid(hdr),
+        group(true, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![layer(1, StudioBlendMode::Normal)]),
+    ]);
+    let leaf_root = plan(vec![solid(hdr)]);
+    for (what, p) in [
+        ("direct", &direct),
+        ("chained", &chained),
+        ("leaf root", &leaf_root),
+    ] {
+        assert!(p.has_solid_outside_unit(), "{what}");
+        for backend in all_backends() {
+            assert_eq!(
+                v1(p, &backend, Exactness::Approximate).map(|_| ()),
+                refusal(key, Exactness::Unsupported),
+                "{what}"
+            );
+            assert_eq!(
+                executes(p, &backend),
+                (refusal(key, Exactness::Unsupported), 0),
+                "{what}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unreachable_mask_density_is_not_counted_like_the_backends() {
+    let key = MASK_DENSITY_OPERATOR;
+    let half = mask(MaskFormat::CoverageU8, false, 0.5);
+    // Nodes: 0 solid | 1 isolated {Normal over 0, mask density 0.5} (referenced by nobody)
+    // | 2 solid | 3 root {Normal over 2}.
+    let unreachable = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(true, vec![masked(0, StudioBlendMode::Normal, half)]),
+        solid([0.1, 0.2, 0.3, 1.0]),
+        group(true, vec![layer(2, StudioBlendMode::Normal)]),
+    ]);
+    assert!(unreachable.validate(&PlanLimits::default()).is_ok());
+    assert!(!unreachable.has_mask_density());
+    for backend in all_backends() {
+        assert!(v1(&unreachable, &backend, Exactness::Approximate).is_ok());
+        // The envelope path does not even list the operator: no reached layer uses it.
+        let ledger = extended(
+            &unreachable,
+            &PlanExtensions::default(),
+            &backend,
+            Exactness::Approximate,
+        )
+        .unwrap();
+        assert!(ledger.operators.iter().all(|o| o.key != key));
+        assert_eq!(executes(&unreachable, &backend), (refusal_unavailable(), 1));
+    }
+    // Reached directly and through a chain of groups: the v1 path refuses it as before, the
+    // envelope path admits it as the MaskDensity operator.
+    let direct = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(true, vec![masked(0, StudioBlendMode::Normal, half)]),
+    ]);
+    let chained = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(true, vec![masked(0, StudioBlendMode::Normal, half)]),
+        group(true, vec![layer(1, StudioBlendMode::Normal)]),
+    ]);
+    for (what, p) in [("direct", &direct), ("chained", &chained)] {
+        assert!(p.has_mask_density(), "{what}");
+        for backend in all_backends() {
+            assert_eq!(
+                v1(p, &backend, Exactness::Approximate).map(|_| ()),
+                refusal(key, Exactness::Unsupported),
+                "{what}"
+            );
+            let ledger = extended(
+                p,
+                &PlanExtensions::default(),
+                &backend,
+                Exactness::Approximate,
+            )
+            .unwrap();
+            assert!(ledger.operators.iter().any(|o| o.key == key), "{what}");
+        }
+    }
+}
+
 /// Evidence for the GPU's `effect_size` refusal being unreachable after admission: the widest
 /// effect blur pigment admits (`MAX_EFFECT_SIZE_PX`, an effect's blur is at most its size) needs
 /// 3001 taps, and render-gpu `fx.rs` `MAX_TAPS` is 3004. If pigment raises the limit, this test
