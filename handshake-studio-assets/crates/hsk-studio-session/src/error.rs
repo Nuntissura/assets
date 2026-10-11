@@ -63,6 +63,39 @@ pub enum SessionError {
     VerifyMismatch,
     /// `save` was called on a session with no origin path.
     NoDestination,
+    /// Idempotency key is empty, longer than 128 bytes or contains control characters.
+    InvalidKey,
+    /// A commit authority is injected, so every submit must carry a caller-supplied key (this
+    /// crate never mints identifiers).
+    KeyRequired,
+    /// The grant port reports the grant revoked (checked afresh on every submit and retry).
+    GrantRevoked,
+    /// The grant port reports no grant.
+    GrantMissing,
+    /// Same key, different principal/resource/action/payload/expected revision.
+    IdempotencyConflict,
+    /// Bounded admission is full; retry after the hint. Nothing was started.
+    Overloaded {
+        retry_after_ms: u64,
+    },
+    /// The operation alone is larger than the whole admission budget; retrying cannot help.
+    CostExceedsBudget,
+    /// Admission was closed by `close_admission` / `drain`.
+    Closed,
+    /// The commit authority did not say whether the transaction was committed. The transaction
+    /// is pending under its key: `reconcile` (or a retry with the same key) looks it up and
+    /// adopts it exactly once or clears it; it is never blindly re-applied.
+    OutcomeUnknown,
+    /// An unresolved pending outcome exists; resolve it before submitting anything else.
+    ReconciliationRequired,
+    /// The commit authority fenced this session's epoch (a newer lease holder exists).
+    StaleEpoch,
+    /// Stable authority-owned rejection code.
+    CommitRejected(&'static str),
+    /// The authority's receipt does not match the revision or binding the session sent.
+    ReceiptMismatch,
+    /// The idempotency table is full (`Budgets::max_receipts`).
+    ReceiptsFull,
 }
 
 impl SessionError {
@@ -79,6 +112,20 @@ impl SessionError {
             Self::ProposalInconsistent => "proposal_inconsistent",
             Self::VerifyMismatch => "verify_mismatch",
             Self::NoDestination => "no_destination",
+            Self::InvalidKey => "invalid_idempotency_key",
+            Self::KeyRequired => "key_required",
+            Self::GrantRevoked => "grant_revoked",
+            Self::GrantMissing => "grant_missing",
+            Self::IdempotencyConflict => "idempotency_conflict",
+            Self::Overloaded { .. } => "overloaded",
+            Self::CostExceedsBudget => "cost_exceeds_budget",
+            Self::Closed => "closed",
+            Self::OutcomeUnknown => "outcome_unknown",
+            Self::ReconciliationRequired => "reconciliation_required",
+            Self::StaleEpoch => "stale_epoch",
+            Self::CommitRejected(code) => code,
+            Self::ReceiptMismatch => "receipt_mismatch",
+            Self::ReceiptsFull => "receipts_full",
         }
     }
 
@@ -87,7 +134,12 @@ impl SessionError {
         match self {
             Self::Canceled => Outcome::Canceled,
             Self::Package(PackageError::Canceled) => Outcome::Canceled,
-            Self::Io(_) | Self::ProviderUnavailable => Outcome::Failure(FailureCode::Unavailable),
+            Self::Io(_)
+            | Self::ProviderUnavailable
+            | Self::Overloaded { .. }
+            | Self::Closed
+            | Self::OutcomeUnknown
+            | Self::ReconciliationRequired => Outcome::Failure(FailureCode::Unavailable),
             Self::Package(e) => hsk_studio_package::outcome_for::<()>(&Err(e.clone())),
             Self::ReadOnlyDocument => Outcome::Failure(FailureCode::Unsupported),
             Self::InvalidBudget
@@ -95,7 +147,17 @@ impl SessionError {
             | Self::Provider(_)
             | Self::ProposalInconsistent
             | Self::VerifyMismatch
-            | Self::NoDestination => Outcome::Failure(FailureCode::Validation),
+            | Self::NoDestination
+            | Self::InvalidKey
+            | Self::KeyRequired
+            | Self::GrantRevoked
+            | Self::GrantMissing
+            | Self::IdempotencyConflict
+            | Self::CostExceedsBudget
+            | Self::StaleEpoch
+            | Self::CommitRejected(_)
+            | Self::ReceiptMismatch
+            | Self::ReceiptsFull => Outcome::Failure(FailureCode::Validation),
         }
     }
 
