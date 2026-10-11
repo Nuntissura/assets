@@ -1,0 +1,62 @@
+{
+  "schema": "hsk.studio.type_test_font_provenance@1",
+  "purpose": "Unmodified OFL-1.1 test fonts 0..2 of type-exact-oracle-recipe.json (MT-35536) and their adjacent licenses, vendored so Type tests do not depend on another worktree; byte-identical to the recipe/preparation hash pins, so reference sha256 6579f9a90162edaf6dc1bcb91b964d8014eaeaf8d7fef7536243e55bd52c2bbe stays valid",
+  "resolution": "tests/support/mod.rs font_root(): CARGO_MANIFEST_DIR/tests/fixtures/fonts joined with the recipe path file name; HSK_TYPE_FONT_ROOT optional override",
+  "line_endings": ".gitattributes '* -text' keeps exact bytes (OFL.txt is CRLF; root '* text=auto eol=lf' would rewrite it)",
+  "vendored_from": "D:/Projects/LLM projects/Handshake/Handshake Worktrees/wtc-native-editors-v1/src/frontend/handshake_native/assets/fonts/",
+  "vendored_at": "2026-10-11",
+  "files": [
+    {
+      "file": "Inter-Regular.ttf",
+      "recipe_font_index": 0,
+      "bytes": 680240,
+      "sha256": "529be850e06f62f8904f22bda77e45bde4834498fdbec4ff4201fa3177447a3a",
+      "family": "Inter",
+      "version": "Version 3.019;git-0a5106e0b",
+      "copyright": "Copyright © 2020 The Inter Project Authors",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, http://scripts.sil.org/OFL; OS/2 fsType 0",
+      "license_file": "OFL.txt",
+      "reserved_font_name": "Inter (applies to modified versions only; file is unmodified)",
+      "upstream": "https://github.com/rsms/inter"
+    },
+    {
+      "file": "NotoSansArabic-Regular.ttf",
+      "recipe_font_index": 1,
+      "bytes": 234892,
+      "sha256": "bdff3e5659d67e67def05b33f749683b9376ae819d65d3dd62ac4640b3aaef48",
+      "family": "Noto Sans Arabic",
+      "version": "Version 2.013; ttfautohint (v1.8.4.16-eb64)",
+      "copyright": "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/arabic)",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, https://openfontlicense.org; OS/2 fsType 0",
+      "license_file": "NotoSans-OFL.txt",
+      "upstream": "https://github.com/notofonts/arabic"
+    },
+    {
+      "file": "NotoSansSC-Regular.otf",
+      "recipe_font_index": 2,
+      "bytes": 8331336,
+      "sha256": "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9",
+      "family": "Noto Sans SC",
+      "version": "Version 2.004;hotconv 1.0.118;makeotfexe 2.5.65603",
+      "copyright": "© 2014-2021 Adobe (http://www.adobe.com/).",
+      "license": "OFL-1.1",
+      "license_evidence": "name ID 13/14 SIL Open Font License 1.1, http://scripts.sil.org/OFL; OS/2 fsType 0",
+      "license_file": "NotoSans-OFL.txt",
+      "upstream": "https://github.com/googlefonts/noto-cjk (Sans/LICENSE: SIL OFL 1.1)"
+    },
+    {
+      "file": "OFL.txt",
+      "bytes": 4520,
+      "sha256": "156202d7470eec0af1427ea332098720cb88212bacf669791d7575db2ba8a7aa",
+      "covers": ["Inter-Regular.ttf"]
+    },
+    {
+      "file": "NotoSans-OFL.txt",
+      "bytes": 4301,
+      "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+      "covers": ["NotoSansArabic-Regular.ttf", "NotoSansSC-Regular.otf"]
+    }
+  ]
+}

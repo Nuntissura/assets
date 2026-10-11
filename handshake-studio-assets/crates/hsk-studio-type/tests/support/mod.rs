@@ -206,6 +206,13 @@ impl AdmissionPort for Ledger {
         Generation::new(self, h)
     }
 }
+/// Vendored OFL-1.1 fonts 0..2 and their adjacent licenses: byte-identical to the recipe's
+/// hash-pinned originals, whose absolute paths serve only as provenance file names.
+pub fn font_root() -> PathBuf {
+    std::env::var_os("HSK_TYPE_FONT_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts"))
+}
 pub struct Fonts {
     data: [Vec<u8>; 4],
     hashes: [[u8; 32]; 4],
@@ -222,10 +229,7 @@ impl Fonts {
             .filter(|r| r["path"].as_str().is_some_and(|p| p.ends_with("OFL.txt")))
         {
             let original = PathBuf::from(record["path"].as_str().unwrap());
-            let path = std::env::var_os("HSK_TYPE_FONT_ROOT")
-                .map(PathBuf::from)
-                .map(|root| root.join(original.file_name().unwrap()))
-                .unwrap_or(original);
+            let path = font_root().join(original.file_name().unwrap());
             assert_eq!(
                 hash(&std::fs::read(&path).unwrap()).as_slice(),
                 unhex(record["sha256"].as_str().unwrap()),
@@ -243,10 +247,7 @@ impl Fonts {
             let path = if i == 3 {
                 research().join("Inter-variable-opsz-wght.ttf")
             } else {
-                std::env::var_os("HSK_TYPE_FONT_ROOT")
-                    .map(PathBuf::from)
-                    .map(|p| p.join(original.file_name().unwrap()))
-                    .unwrap_or(original)
+                font_root().join(original.file_name().unwrap())
             };
             std::fs::read(&path)
                 .unwrap_or_else(|e| panic!("required original font {}: {e}", path.display()))
