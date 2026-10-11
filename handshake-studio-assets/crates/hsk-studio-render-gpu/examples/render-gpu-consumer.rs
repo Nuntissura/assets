@@ -1,10 +1,10 @@
 //! Render-gpu consumer (headless: no window, no surface, no focus).
 //! `--descriptor` prints the module descriptor. `--probe [auto|vulkan|dx12|metal|none]` acquires a device and prints one JSON
 //! line with the backend/adapter kind/generation, or the typed unavailable reason (exit 3), or the
-//! typed pipeline failure of a present adapter (exit 1: a defect, never "no GPU").
+//! typed pipeline failure of a present adapter (exit 1: a defect, reported separately from "no GPU", exit 3).
 //! `--selftest` renders the hand-computed oracle (backdrop 0.2/0.4/0.6, red source at opacity 0.5;
 //! Normal, Multiply, Screen) on the device and fails (exit 1) on mismatch or on a pipeline
-//! failure; only with no adapter at all it prints NOT_PROVEN and exits 3, never a pass.
+//! failure; only with no adapter at all it prints NOT_PROVEN and exits 3, which is not a pass (the exit code is non-zero).
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::render_plan::{
