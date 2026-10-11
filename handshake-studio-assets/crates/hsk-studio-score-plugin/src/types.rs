@@ -175,7 +175,7 @@ pub struct ProcessReceipt {
     pub completeness: Completeness,
 }
 
-/// Why a call failed and what happened to the worker; the output block held silence, never
+/// Why a call failed and what happened to the worker; the output block held silence instead of
 /// partial plugin data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FaultReport {
@@ -247,7 +247,7 @@ impl LifecycleState {
 /// Port to a plugin host. The only implementation here is [`IsolatedHost`](crate::IsolatedHost):
 /// there is no in-process implementation and no fallback to one (PLATFORM-08).
 pub trait PluginProvider: Send + Sync {
-    /// Runs the plugin's probe inside an isolated worker; the host process never loads the file.
+    /// Runs the plugin's probe inside an isolated worker; the host process does not load the file.
     fn probe(
         &self,
         plugin: &ApprovedPlugin,

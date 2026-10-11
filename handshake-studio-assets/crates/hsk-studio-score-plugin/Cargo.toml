@@ -7,6 +7,7 @@ rust-version = { workspace = true }
 [features]
 default = []
 clap = ["dep:clack-host"]
+test-faults = []
 
 [dependencies]
 clack-host = { version = "=0.2.0", default-features = false, features = ["libloading"], optional = true }

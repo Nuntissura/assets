@@ -1,187 +1,26 @@
-//! Process-isolation contract of the Score Plugin provider, proven with the REFERENCE worker (a pure
-//! Rust gain-and-delay processor behind the real protocol). This proves spawn, deadline, crash,
-//! cancel, protocol-fault, reap and budget behaviour; it does NOT prove CLAP or VST3 (MT-35560: a mock
-//! host does not prove a plugin format; no plugin fixture exists, so CLAP stays NOT_PROVEN).
-//!
-//! Oracles the worker cannot edit: the gain/delay arithmetic is recomputed in the test from the input
-//! signal (exact binary fractions, so equality is bit-exact); the approved-file hash is the NIST
-//! SHA-256 vector of "abc"; worker liveness is read from the operating system (`tasklist`), not from the
-//! host's own bookkeeping. Every child is one this test's host spawned; nothing opens a window.
-use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
+//! Process-isolation contract of the Score Plugin provider, default features (no fault injection),
+//! proven with the REFERENCE worker (a pure Rust gain-and-delay processor behind the real protocol).
+//! This proves spawn, reap, authorization, lifecycle, state versioning and budgets; it does NOT prove
+//! CLAP or VST3 (MT-35560: a mock host does not prove a plugin format). Crash, hang, protocol-fault and
+//! mid-call cancel behaviour is proven in `fault_injection.rs` (feature `test-faults`); the native CLAP
+//! path in `clap_fixture.rs` (feature `clap`). Shared helpers and oracles: `common/mod.rs`.
+mod common;
+
+use common::*;
+use hsk_studio_accord::{CancellationToken, DomainId};
 use hsk_studio_observe::{
     Budget, DeliveryClass, DeliveryError, Error as ObserveError, FailureCode, MAX_FRAME_BYTES,
     Observe, Outcome, SinkPort,
 };
-use hsk_studio_score::{
-    BlockSpec, ChannelLayout, Engine, InputBlock, OutputBlock, RequestContext, ScoreError,
-};
+use hsk_studio_score::{ChannelLayout, Engine, InputBlock, OutputBlock, RequestContext};
 use hsk_studio_score_plugin::*;
-use std::{
-    path::PathBuf,
-    sync::atomic::{AtomicU32, Ordering},
-    time::{Duration, Instant},
-};
-
-const WORKER: &str = env!("CARGO_BIN_EXE_score-plugin-worker");
-const RESOURCE: &str = "STRK-019abcde-0000-7000-8000-000000000001";
-/// NIST FIPS 180-4 SHA-256("abc").
-const ABC_SHA256: [u8; 32] = [
-    0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
-    0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
-];
-const DEADLINE: Duration = Duration::from_secs(10);
-
-fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
-    use std::{
-        panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-        sync::mpsc,
-    };
-    let (tx, rx) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let _ = tx.send(catch_unwind(AssertUnwindSafe(body)));
-    });
-    match rx.recv_timeout(Duration::from_secs(120)) {
-        Ok(Ok(())) => {}
-        Ok(Err(p)) => resume_unwind(p),
-        Err(e) => panic!("case {name} exceeded/lost declared 120s deadline: {e}"),
-    }
-}
-
-/// The approved "plugin" file ("abc"), removed when dropped (the test creates it, the test removes it).
-struct PluginFile(PathBuf);
-
-impl PluginFile {
-    fn new() -> Self {
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "hsk-score-plugin-{}-{}.bin",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::AcqRel)
-        ));
-        std::fs::write(&path, b"abc").unwrap();
-        Self(path)
-    }
-    fn approved(&self) -> ApprovedPlugin {
-        ApprovedPlugin {
-            path: self.0.clone(),
-            content_sha256: ABC_SHA256,
-            format: PluginFormat::Clap,
-            arch: Arch::host().expect("known arch"),
-            abi_version: SUPPORTED_CLAP_ABI,
-        }
-    }
-}
-
-impl Drop for PluginFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-fn actor() -> ActorContext {
-    ActorContext::new(
-        "account",
-        "principal",
-        "owner",
-        "owner-principal",
-        "space",
-        "session-7",
-    )
-    .unwrap()
-}
-
-fn grant() -> PluginGrant {
-    PluginGrant {
-        actor: actor(),
-        content_sha256: ABC_SHA256,
-    }
-}
-
-fn host_with(args: &[&str], limits: HostLimits) -> IsolatedHost {
-    let mut options = HostOptions::default().with_worker_program(WORKER);
-    options.limits = limits;
-    options.test_args = args.iter().map(|a| (*a).to_owned()).collect();
-    IsolatedHost::new(options).unwrap()
-}
-
-fn host(args: &[&str]) -> IsolatedHost {
-    host_with(args, HostLimits::default())
-}
-
-fn config(file: &PluginFile, gain: f64) -> ProcessConfig {
-    ProcessConfig {
-        plugin: file.approved(),
-        grant: Some(grant()),
-        sample_rate_hz: 48_000,
-        layout: ChannelLayout::stereo(),
-        max_block_frames: 256,
-        parameters: vec![Parameter { id: 0, value: gain }],
-        max_state_bytes: 64,
-    }
-}
-
-/// L[n] = ((n mod 251) / 256) - 0.5, R = -L: exact binary fractions, so gain 0.5 / 0.25 and the delay
-/// are exact in f32.
-fn signal(frames: usize) -> (Vec<f32>, Vec<f32>) {
-    let left: Vec<f32> = (0..frames)
-        .map(|n| (n % 251) as f32 / 256.0 - 0.5)
-        .collect();
-    let right = left.iter().map(|s| -s).collect();
-    (left, right)
-}
-
-fn bits(samples: &[f32]) -> Vec<u32> {
-    samples.iter().map(|s| s.to_bits()).collect()
-}
-
-fn spec(frames: usize, start_sample: u64) -> BlockSpec {
-    BlockSpec {
-        sample_rate_hz: 48_000,
-        layout: ChannelLayout::stereo(),
-        frames,
-        start_sample,
-    }
-}
-
-/// Operating-system view of a worker's liveness (not the host's bookkeeping).
-fn pid_alive(pid: u32) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let out = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-            .creation_flags(0x0800_0000)
-            .output()
-            .expect("tasklist runs");
-        String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\""))
-    }
-    #[cfg(not(windows))]
-    {
-        std::path::Path::new(&format!("/proc/{pid}")).exists()
-    }
-}
-
-fn silent(out: &OutputBlock, frames: usize) -> bool {
-    (0..out.layout().channels()).all(|ch| {
-        out.backing().chunks(out.capacity()).nth(ch).unwrap()[..frames]
-            .iter()
-            .all(|s| *s == 0.0)
-    })
-}
-
-fn prefilled(frames: usize) -> OutputBlock {
-    let mut out = OutputBlock::with_capacity(ChannelLayout::stereo(), frames).unwrap();
-    for channel in out.channels_mut() {
-        channel.fill(7.0);
-    }
-    out
-}
+use std::time::{Duration, Instant};
 
 #[test]
 fn worker_gain_block_exact() {
     bounded_case("worker_gain_block_exact", || {
         let file = PluginFile::new();
-        let host = host(&["--latency", "3"]);
+        let host = host_with(HostLimits::default(), 3);
         let cancel = CancellationToken::default();
         let descriptor = host
             .probe(&file.approved(), Some(&grant()), &cancel, DEADLINE)
@@ -190,6 +29,7 @@ fn worker_gain_block_exact() {
             (descriptor.format, descriptor.abi_version, descriptor.inputs),
             (PluginFormat::Clap, 1, 2)
         );
+        assert_eq!(descriptor.provider_identity, REFERENCE_IDENTITY);
         let mut instance = host
             .activate(&config(&file, 0.5), &cancel, DEADLINE)
             .unwrap();
@@ -251,7 +91,7 @@ fn worker_gain_block_exact() {
                 ),
                 (256, 3, 1)
             );
-            assert_eq!(&*plugin_receipt.provider_identity, "reference-gain-delay@1");
+            assert_eq!(&*plugin_receipt.provider_identity, REFERENCE_IDENTITY);
             assert_eq!(plugin_receipt.completeness, Completeness::Complete);
             assert_eq!(plugin_receipt.instance_id, 1, "first instance of this host");
             assert_eq!(
@@ -295,100 +135,10 @@ fn worker_gain_block_exact() {
 }
 
 #[test]
-fn crash_and_timeout_are_contained() {
-    bounded_case("crash_and_timeout_are_contained", || {
-        let file = PluginFile::new();
-        let cancel = CancellationToken::default();
-        let (left, right) = signal(256);
-        let sp = spec(256, 0);
-        let channels: [&[f32]; 2] = [&left, &right];
-        let input = InputBlock::new(&sp, &channels);
-
-        // A worker that exits abnormally on its first block.
-        let crashing = host(&["--fault", "crash-on-block=1"]);
-        let mut instance = crashing
-            .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
-            .unwrap();
-        let pid = instance.pid().unwrap();
-        let mut out = prefilled(256);
-        let error = instance
-            .process(&input, &mut out, &cancel, DEADLINE)
-            .unwrap_err();
-        assert_eq!(
-            error,
-            PluginError::Crashed {
-                exit_code: Some(FAULT_EXIT_CODE)
-            }
-        );
-        assert!(
-            silent(&out, 256),
-            "a crashed block leaves silence, never partial data"
-        );
-        let fault = instance.last_fault().unwrap().clone();
-        assert_eq!(
-            (fault.reaped, fault.safe_output, fault.exit_code),
-            (true, true, Some(FAULT_EXIT_CODE))
-        );
-        assert!(!pid_alive(pid));
-        assert_eq!(instance.lifecycle(), LifecycleState::Draining);
-        // Only retire is legal after a fault.
-        assert_eq!(
-            instance
-                .process(&input, &mut out, &cancel, DEADLINE)
-                .unwrap_err(),
-            PluginError::IllegalTransition {
-                from: LifecycleState::Draining,
-                to: LifecycleState::Processing
-            }
-        );
-        let report = instance.retire_in_place();
-        assert!(report.reaped);
-        let s = crashing.stats();
-        assert_eq!((s.crashed, s.workers_live, s.in_flight_bytes), (1, 0, 0));
-
-        // A worker that hangs on its first block: killed at the deadline, reaped.
-        let hanging = host(&["--fault", "hang-on-block=1"]);
-        let mut instance = hanging
-            .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
-            .unwrap();
-        let pid = instance.pid().unwrap();
-        let deadline = Duration::from_millis(300);
-        let mut out = prefilled(256);
-        let started = Instant::now();
-        let error = instance
-            .process(&input, &mut out, &cancel, deadline)
-            .unwrap_err();
-        let elapsed = started.elapsed();
-        assert_eq!(error, PluginError::Timeout);
-        assert!(
-            elapsed >= deadline && elapsed < deadline * 2,
-            "returned after {elapsed:?}"
-        );
-        assert!(silent(&out, 256));
-        let fault = instance.last_fault().unwrap();
-        assert_eq!(
-            (fault.killed, fault.reaped, fault.safe_output),
-            (true, true, true)
-        );
-        assert!(
-            !pid_alive(pid),
-            "a hung worker must be killed, not left running"
-        );
-        let report = instance.retire_in_place();
-        assert!(report.killed && report.reaped);
-        let s = hanging.stats();
-        assert_eq!(
-            (s.timed_out, s.killed, s.workers_live, s.in_flight_bytes),
-            (1, 1, 0, 0)
-        );
-    });
-}
-
-#[test]
 fn unauthorized_and_mismatch_rejected() {
     bounded_case("unauthorized_and_mismatch_rejected", || {
         let file = PluginFile::new();
-        let host = host(&[]);
+        let host = host();
         let cancel = CancellationToken::default();
         let probe = |plugin: &ApprovedPlugin, grant: Option<&PluginGrant>| {
             host.probe(plugin, grant, &cancel, DEADLINE)
@@ -457,57 +207,31 @@ fn unauthorized_and_mismatch_rejected() {
         let s = host.stats();
         assert_eq!((s.spawned, s.reaped, s.workers_live), (1, 1, 0));
 
-        // A worker that breaks the protocol is killed and reaped: garbage, oversize and short frames.
-        let (left, right) = signal(256);
-        let sp = spec(256, 0);
-        let channels: [&[f32]; 2] = [&left, &right];
-        for (fault, expected) in [
-            ("garbage-on-block=1", ProtocolFault::Garbage),
-            ("oversize-on-block=1", ProtocolFault::Oversize),
-            ("short-on-block=1", ProtocolFault::Truncated),
-        ] {
-            let bad = self::host(&["--fault", fault]);
-            let mut instance = bad
-                .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
-                .unwrap();
-            let pid = instance.pid().unwrap();
-            let mut out = prefilled(256);
-            let error = instance
-                .process(
-                    &InputBlock::new(&sp, &channels),
-                    &mut out,
-                    &cancel,
-                    DEADLINE,
-                )
-                .unwrap_err();
-            assert_eq!(error, PluginError::Protocol(expected), "{fault}");
-            assert!(silent(&out, 256), "{fault}: silence on protocol fault");
-            assert!(instance.last_fault().unwrap().reaped, "{fault}");
-            assert!(!pid_alive(pid), "{fault}: worker must be gone");
-            instance.retire_in_place();
-            let s = bad.stats();
-            assert_eq!(
-                (s.protocol_faults, s.workers_live, s.in_flight_bytes),
-                (1, 0, 0),
-                "{fault}"
-            );
-        }
+        // A worker program that does not exist is `unavailable`, never a fallback.
+        let mut missing_worker = options(HostLimits::default(), 0);
+        missing_worker.program = Some(file.0.with_extension("no-worker"));
+        assert_eq!(
+            IsolatedHost::new(missing_worker).err(),
+            Some(PluginError::Unavailable)
+        );
 
-        // A worker that never answers the probe: ProbeTimeout, killed and reaped.
-        let silent_host = self::host(&["--fault", "hang-on-probe"]);
-        let started = Instant::now();
-        let error = silent_host
-            .probe(
-                &file.approved(),
-                Some(&grant()),
-                &cancel,
-                Duration::from_millis(300),
-            )
-            .unwrap_err();
-        assert_eq!(error, PluginError::ProbeTimeout);
-        assert!(started.elapsed() < Duration::from_secs(5));
-        let s = silent_host.stats();
-        assert_eq!((s.killed, s.reaped, s.workers_live), (1, 1, 0));
+        // V4-04: a default build has no fault hook; the worker rejects the flag as unknown (exit 2)
+        // before it reads a single request.
+        #[cfg(not(feature = "test-faults"))]
+        {
+            let mut command = std::process::Command::new(WORKER);
+            command
+                .args(["--fault", "crash-on-block=1"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            assert_eq!(command.status().unwrap().code(), Some(2));
+        }
     });
 }
 
@@ -552,7 +276,7 @@ fn lifecycle_and_stale_state() {
         let channels: [&[f32]; 2] = [&left, &right];
         let input = InputBlock::new(&sp, &channels);
 
-        let host = host(&[]);
+        let host = host();
         let mut instance = host
             .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
             .unwrap();
@@ -644,29 +368,6 @@ fn lifecycle_and_stale_state() {
             illegal
         );
         assert_eq!(instance.retire_in_place(), report, "retire is idempotent");
-
-        // Partial and unavailable state are reported as such, never as complete.
-        for (fault, completeness, len) in [
-            ("partial-state", Completeness::Partial, 4),
-            ("no-state", Completeness::Unavailable, 0),
-        ] {
-            let host = self::host(&["--fault", fault]);
-            let mut instance = host
-                .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
-                .unwrap();
-            let capture = instance.capture_state(&cancel, DEADLINE, 64).unwrap();
-            assert_eq!(
-                (capture.completeness, capture.bytes.len()),
-                (completeness, len),
-                "{fault}"
-            );
-            let mut out = prefilled(256);
-            let receipt = instance
-                .process(&input, &mut out, &cancel, DEADLINE)
-                .unwrap();
-            assert_eq!(receipt.completeness, completeness, "{fault}");
-            instance.retire_in_place();
-        }
     });
 }
 
@@ -690,8 +391,8 @@ fn admission_and_cancel() {
             max_workers: 1,
             ..HostLimits::default()
         };
-        let one = host_with(&[], limits);
-        let first = one
+        let one = host_with(limits, 0);
+        let mut first = one
             .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
             .unwrap();
         let started = Instant::now();
@@ -710,7 +411,6 @@ fn admission_and_cancel() {
             PluginError::BudgetExceeded
         );
         // Retire frees the slot: the next activation is admitted again.
-        let mut first = first;
         first.retire_in_place();
         let mut again = one
             .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
@@ -726,7 +426,7 @@ fn admission_and_cancel() {
             max_in_flight_bytes: 1024,
             ..HostLimits::default()
         };
-        let small = host_with(&[], tiny);
+        let small = host_with(tiny, 0);
         assert_eq!(
             small
                 .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
@@ -744,59 +444,6 @@ fn admission_and_cancel() {
             PluginError::Canceled
         );
         assert_eq!(one.stats().spawned, 2);
-
-        // Cancel mid-process: the hung worker is killed and reaped, the engine publishes nothing.
-        let hanging = host(&["--fault", "hang-on-block=1"]);
-        let mut instance = hanging
-            .activate_isolated(&config(&file, 0.5), &cancel, DEADLINE)
-            .unwrap();
-        let pid = instance.pid().unwrap();
-        let (left, right) = signal(256);
-        let sp = spec(256, 0);
-        let channels: [&[f32]; 2] = [&left, &right];
-        let resource = DomainId::parse(RESOURCE).unwrap();
-        let engine = Engine::new(resource.clone(), 7);
-        let ctx = RequestContext {
-            resource: resource.clone(),
-            actor: Some(actor()),
-            expected_revision: 7,
-        };
-        let mut out = OutputBlock::with_capacity(ChannelLayout::stereo(), 256).unwrap();
-        let mid = CancellationToken::default();
-        let trigger = mid.clone();
-        let canceller = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150));
-            trigger.cancel();
-        });
-        let started = Instant::now();
-        let (result, typed) = {
-            let mut processor = PluginProcessor::new(&mut instance, Duration::from_secs(30));
-            let result = engine.process(
-                &ctx,
-                &InputBlock::new(&sp, &channels),
-                &mut processor,
-                &mut out,
-                &mid,
-            );
-            (result, processor.take_error())
-        };
-        canceller.join().unwrap();
-        assert_eq!(result.unwrap_err(), ScoreError::Canceled);
-        assert_eq!(typed, Some(PluginError::Canceled));
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "cancel must not wait for the deadline"
-        );
-        assert_eq!(out.published_frames(), 0, "no partial output is published");
-        let fault = instance.last_fault().unwrap();
-        assert_eq!(
-            (fault.killed, fault.reaped, fault.error),
-            (true, true, PluginError::Canceled)
-        );
-        assert!(!pid_alive(pid));
-        instance.retire_in_place();
-        let s = hanging.stats();
-        assert_eq!((s.canceled, s.workers_live, s.in_flight_bytes), (1, 0, 0));
 
         // One terminal frame per outcome, then the emitter is closed (never a duplicate).
         let results: [(Result<(), PluginError>, Outcome); 5] = [

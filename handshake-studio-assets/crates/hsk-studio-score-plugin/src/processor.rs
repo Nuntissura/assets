@@ -1,6 +1,7 @@
 //! Adapter that lets a score `Engine` drive a hosted plugin: the engine admits the block, this adapter
 //! runs it through the isolated instance, and the engine alone publishes it (or discards it on any
-//! failure, so a crashed or timed-out plugin never leaves partial audio).
+//! failure, so a crashed or timed-out plugin leaves no partial audio; test:
+//! `tests/fault_injection.rs::state_completeness_and_cancel_mid_process`).
 use crate::error::PluginError;
 use crate::types::{PluginInstance, ProcessReceipt};
 use hsk_studio_accord::CancellationToken;

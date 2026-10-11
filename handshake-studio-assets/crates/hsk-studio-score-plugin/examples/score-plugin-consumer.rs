@@ -1,9 +1,10 @@
 //! Real consumer of the public Score Plugin API: spawns the reference worker, activates it on the
 //! worker executable itself as the "approved plugin file" (the reference backend verifies the file's
-//! SHA-256 but never loads it), processes one stereo block through a score `Engine` and prints the
+//! SHA-256 but does not load it), processes one stereo block through a score `Engine` and prints the
 //! receipts. No device, no window; every child it spawns is reaped before it exits. Usage:
 //! `score-plugin-consumer [--descriptor] --worker PATH [--gain G] [--frames N] [--latency L]
-//! [--crash-on N] [--hang-on N] [--deadline-ms MS]`
+//! [--crash-on N] [--hang-on N] [--deadline-ms MS]` (`--crash-on` / `--hang-on` exist only when built
+//! with the non-default cargo feature `test-faults`)
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::{
     Budget, DeliveryClass, DeliveryError, MAX_FRAME_BYTES, Observe, SinkPort,
@@ -56,16 +57,23 @@ fn run() -> Result<(), String> {
     let deadline = Duration::from_millis(deadline_ms);
 
     let mut options = HostOptions::default().with_worker_program(&worker);
-    options.test_args = vec!["--latency".to_owned(), latency.to_string()];
-    if let Some(n) = crash_on {
-        options
-            .test_args
-            .extend(["--fault".to_owned(), format!("crash-on-block={n}")]);
+    options.reference_latency = latency;
+    #[cfg(feature = "test-faults")]
+    {
+        if let Some(n) = crash_on {
+            options
+                .test_args
+                .extend(["--fault".to_owned(), format!("crash-on-block={n}")]);
+        }
+        if let Some(n) = hang_on {
+            options
+                .test_args
+                .extend(["--fault".to_owned(), format!("hang-on-block={n}")]);
+        }
     }
-    if let Some(n) = hang_on {
-        options
-            .test_args
-            .extend(["--fault".to_owned(), format!("hang-on-block={n}")]);
+    #[cfg(not(feature = "test-faults"))]
+    if crash_on.is_some() || hang_on.is_some() {
+        return Err("fault_flags_need_feature_test_faults".into());
     }
     let host = IsolatedHost::new(options).map_err(|e| e.code())?;
 

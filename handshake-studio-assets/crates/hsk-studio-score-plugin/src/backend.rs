@@ -1,9 +1,10 @@
 //! Worker-side backend port and the pure-Rust REFERENCE backend.
 //!
 //! A backend is the code that sits behind the framed protocol inside the worker process. The reference
-//! backend is a gain-and-delay processor: it proves protocol, isolation, timeout and reclaim, and never
-//! loads or runs the approved plugin file (it only verifies its SHA-256). The native CLAP backend
+//! backend is a gain-and-delay processor: it exercises protocol, isolation, timeout and reclaim, and does not
+//! load or run the approved plugin file (it only verifies its SHA-256). The native CLAP backend
 //! (feature `clap`, `clap_backend.rs`) is the only code that loads foreign plugin code.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::types::{Arch, Completeness, PluginFormat, SUPPORTED_CLAP_ABI};
 use crate::wire::{
     ConfigureSpec, E_ABI, E_BUDGET, E_CONFIG, E_HASH, E_NOT_CONFIGURED, E_STALE, E_UNAVAILABLE,
@@ -100,27 +101,38 @@ struct Active {
 }
 
 impl Active {
+    /// `frames` is non-zero and `samples` holds `channels * frames` samples (the caller checked both).
     fn process(&mut self, frames: usize, samples: &[f32]) -> Vec<f32> {
         let gain = self.gain as f32;
         let latency = self.delay.first().map_or(0, Vec::len);
         let mut out = vec![0.0_f32; samples.len()];
-        for (ch, history) in self.delay.iter_mut().enumerate() {
-            let input = &samples[ch * frames..(ch + 1) * frames];
-            let dst = &mut out[ch * frames..(ch + 1) * frames];
+        for ((history, input), dst) in self
+            .delay
+            .iter_mut()
+            .zip(samples.chunks_exact(frames))
+            .zip(out.chunks_exact_mut(frames))
+        {
             for (i, slot) in dst.iter_mut().enumerate() {
-                let source = if i < latency {
-                    history[i]
-                } else {
-                    input[i - latency]
+                let source = match i.checked_sub(latency) {
+                    None => history.get(i).copied(),
+                    Some(j) => input.get(j).copied(),
                 };
-                *slot = source * gain;
+                *slot = source.unwrap_or(0.0) * gain;
             }
             if latency > 0 {
-                if frames >= latency {
-                    history.copy_from_slice(&input[frames - latency..]);
-                } else {
-                    history.rotate_left(frames);
-                    history[latency - frames..].copy_from_slice(input);
+                match frames.checked_sub(latency) {
+                    Some(start) => {
+                        if let Some(tail) = input.get(start..) {
+                            history.copy_from_slice(tail);
+                        }
+                    }
+                    None => {
+                        history.rotate_left(frames);
+                        let from = latency.saturating_sub(frames);
+                        if let Some(room) = history.get_mut(from..) {
+                            room.copy_from_slice(input);
+                        }
+                    }
                 }
             }
         }
@@ -213,6 +225,10 @@ impl Backend for Reference {
         if expected_version != active.version {
             return Err((E_STALE, active.version));
         }
+        let expected_samples = channels.checked_mul(frames);
+        if frames == 0 || expected_samples != Some(samples.len()) {
+            return Err((E_CONFIG, 0));
+        }
         if channels != active.channels || frames > active.max_frames {
             return Err((E_BUDGET, u64::try_from(frames).unwrap_or(u64::MAX)));
         }
@@ -230,7 +246,7 @@ impl Backend for Reference {
             return Err((E_CONFIG, u64::from(param)));
         }
         active.gain = value;
-        active.version += 1;
+        active.version = active.version.checked_add(1).ok_or((E_CONFIG, 0))?;
         Ok(active.version)
     }
 

@@ -7,8 +7,8 @@
 //! Build the fixture and point the test at the library (paths are the caller's; nothing is scanned):
 //!   cd tests/fixtures/clap-gain && cargo build            (target dir under the artifact root, not C:)
 //!   HSK_SCORE_PLUGIN_CLAP_FIXTURE=<target>/debug/hsk_score_plugin_clap_gain_fixture.dll
-//! Without the variable this test FAILS with these instructions (it never passes vacuously): CLAP stays
-//! NOT_PROVEN until it has run green.
+//! Without the variable each test prints a line starting `NOT_PROVEN:` and returns (V4-03: the round
+//! counts such a test as NOT_PROVEN, never PASS): CLAP stays NOT_PROVEN until it has run green.
 //!
 //! Not proven even when green: latency, state capture, audio-port discovery and thread affinity of real
 //! plugins (see the `clap_backend` module docs); only a gain plugin without parameters was run.
@@ -56,12 +56,17 @@ fn actor() -> ActorContext {
     .unwrap()
 }
 
-fn fixture_path() -> PathBuf {
-    let path = std::env::var_os("HSK_SCORE_PLUGIN_CLAP_FIXTURE").expect(
-        "NOT_PROVEN: set HSK_SCORE_PLUGIN_CLAP_FIXTURE to the built fixture library \
-         (cd tests/fixtures/clap-gain && cargo build; see this file's header)",
-    );
-    PathBuf::from(path)
+/// The built fixture library, or `None` after printing the `NOT_PROVEN:` line the round counts (V4-03:
+/// a test that cannot prove its claim must never be a silent green).
+fn fixture_path() -> Option<PathBuf> {
+    let path = std::env::var_os("HSK_SCORE_PLUGIN_CLAP_FIXTURE");
+    if path.is_none() {
+        println!(
+            "NOT_PROVEN: native CLAP path not run; set HSK_SCORE_PLUGIN_CLAP_FIXTURE to the built \
+             fixture library (cd tests/fixtures/clap-gain && cargo build; see this file's header)"
+        );
+    }
+    path.map(PathBuf::from)
 }
 
 fn approved(path: PathBuf, content_sha256: [u8; 32]) -> ApprovedPlugin {
@@ -151,7 +156,9 @@ impl Drop for Scratch {
 #[test]
 fn clap_fixture_gain_runs_in_the_worker() {
     bounded_case("clap_fixture_gain_runs_in_the_worker", || {
-        let path = fixture_path();
+        let Some(path) = fixture_path() else {
+            return;
+        };
         let bytes = std::fs::read(&path).expect("fixture library readable");
         let plugin = approved(path, sha256(&bytes));
         let host = clap_host();
@@ -287,7 +294,9 @@ fn clap_fixture_gain_runs_in_the_worker() {
 #[test]
 fn clap_refuses_tampered_and_non_library_files() {
     bounded_case("clap_refuses_tampered_and_non_library_files", || {
-        let path = fixture_path();
+        let Some(path) = fixture_path() else {
+            return;
+        };
         let mut bytes = std::fs::read(&path).expect("fixture library readable");
         let honest_hash = sha256(&bytes);
         let cancel = CancellationToken::default();

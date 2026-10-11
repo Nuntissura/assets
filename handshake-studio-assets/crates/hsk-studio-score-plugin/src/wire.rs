@@ -5,8 +5,9 @@
 //! is checked against the caller's cap BEFORE any payload allocation; the payload is read incrementally,
 //! so a peer that lies about the length cannot make the reader allocate more than it actually sent.
 //! The worker speaks first (HELLO); every request carries a `u64` id that its single reply echoes, so a
-//! stale or mismatched reply is a protocol fault. Decoding is bounds-checked: malformed input never
-//! panics. Blocks are planar `f32` (channel after channel) with explicit frame and channel counts.
+//! stale or mismatched reply is a protocol fault. Decoding is bounds-checked: malformed input returns a typed
+//! error (tests: `dims_u32_max`, `aggregate_over_budget`, `wire_roundtrip_and_hostile_input`). Blocks are planar `f32` (channel after channel) with explicit frame and channel counts.
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{PluginError, ProtocolFault};
 use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS};
 use std::io::{self, Read, Write};
@@ -113,7 +114,7 @@ pub(crate) fn read_frame(reader: &mut impl Read, cap: u32) -> Res<Frame> {
                     WireError::Truncated
                 });
             }
-            Ok(n) => got += n,
+            Ok(n) => got = got.saturating_add(n),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => return Err(WireError::Closed),
         }
@@ -159,7 +160,7 @@ struct Out(Vec<u8>);
 
 impl Out {
     fn begin(kind: u8, capacity: usize) -> Self {
-        let mut out = Vec::with_capacity(HEADER_BYTES + capacity);
+        let mut out = Vec::with_capacity(HEADER_BYTES.saturating_add(capacity));
         out.extend_from_slice(&MAGIC.to_le_bytes());
         out.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
         out.push(kind);
@@ -192,7 +193,7 @@ impl Out {
         }
     }
     fn finish(mut self) -> Vec<u8> {
-        let length = u32::try_from(self.0.len() - HEADER_BYTES).unwrap_or(u32::MAX);
+        let length = u32::try_from(self.0.len().saturating_sub(HEADER_BYTES)).unwrap_or(u32::MAX);
         self.0[7..HEADER_BYTES].copy_from_slice(&length.to_le_bytes());
         self.0
     }
@@ -245,8 +246,8 @@ impl<'a> In<'a> {
         if frames == 0 || frames > MAX_BLOCK_FRAMES || channels == 0 || channels > MAX_CHANNELS {
             return Err(WireError::Malformed);
         }
-        let count = frames * channels;
-        let bytes = self.take(count * 4)?;
+        let count = frames.checked_mul(channels).ok_or(WireError::Malformed)?;
+        let bytes = self.take(count.checked_mul(4).ok_or(WireError::Malformed)?)?;
         Ok(bytes
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -364,14 +365,19 @@ fn get_spec(r: &mut In<'_>) -> Res<PluginSpec> {
 }
 
 pub(crate) fn encode_probe(id: u64, spec: &PluginSpec) -> Vec<u8> {
-    let mut out = Out::begin(K_PROBE, 64 + spec.path.len());
+    let mut out = Out::begin(K_PROBE, 64_usize.saturating_add(spec.path.len()));
     out.u64(id);
     put_spec(&mut out, spec);
     out.finish()
 }
 
 pub(crate) fn encode_configure(id: u64, spec: &PluginSpec, cfg: &ConfigureSpec) -> Vec<u8> {
-    let mut out = Out::begin(K_CONFIGURE, 96 + spec.path.len() + cfg.params.len() * 12);
+    let mut out = Out::begin(
+        K_CONFIGURE,
+        96_usize
+            .saturating_add(spec.path.len())
+            .saturating_add(cfg.params.len().saturating_mul(12)),
+    );
     out.u64(id);
     put_spec(&mut out, spec);
     out.u32(cfg.sample_rate_hz);
@@ -393,7 +399,10 @@ pub(crate) fn encode_process(
     channels: u16,
     samples: &[f32],
 ) -> Vec<u8> {
-    let mut out = Out::begin(K_PROCESS, 32 + samples.len() * 4);
+    let mut out = Out::begin(
+        K_PROCESS,
+        32_usize.saturating_add(samples.len().saturating_mul(4)),
+    );
     out.u64(id);
     out.u64(expected_version);
     out.u64(start_sample);
@@ -559,7 +568,12 @@ pub(crate) fn encode_reply(reply: &Reply) -> Vec<u8> {
             inputs,
             outputs,
         } => {
-            let mut out = Out::begin(K_PROBED, 64 + plugin_id.len() + name.len());
+            let mut out = Out::begin(
+                K_PROBED,
+                64_usize
+                    .saturating_add(plugin_id.len())
+                    .saturating_add(name.len()),
+            );
             out.u64(*id);
             out.text(plugin_id);
             out.text(name);
@@ -575,7 +589,7 @@ pub(crate) fn encode_reply(reply: &Reply) -> Vec<u8> {
             latency,
             version,
         } => {
-            let mut out = Out::begin(K_CONFIGURED, 32 + identity.len());
+            let mut out = Out::begin(K_CONFIGURED, 32_usize.saturating_add(identity.len()));
             out.u64(*id);
             out.text(identity);
             out.u32(*latency);
@@ -591,7 +605,10 @@ pub(crate) fn encode_reply(reply: &Reply) -> Vec<u8> {
             channels,
             samples,
         } => {
-            let mut out = Out::begin(K_PROCESSED, 40 + samples.len() * 4);
+            let mut out = Out::begin(
+                K_PROCESSED,
+                40_usize.saturating_add(samples.len().saturating_mul(4)),
+            );
             out.u64(*id);
             out.u64(*version);
             out.u8(*completeness);
@@ -613,7 +630,7 @@ pub(crate) fn encode_reply(reply: &Reply) -> Vec<u8> {
             completeness,
             bytes,
         } => {
-            let mut out = Out::begin(K_STATE, 24 + bytes.len());
+            let mut out = Out::begin(K_STATE, 24_usize.saturating_add(bytes.len()));
             out.u64(*id);
             out.u64(*version);
             out.u8(*completeness);
@@ -714,6 +731,7 @@ pub(crate) fn error_of(code: u8) -> PluginError {
 }
 
 #[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)] // test code indexes and offsets fixed fixtures
 mod tests {
     use super::*;
 
@@ -815,5 +833,106 @@ mod tests {
             read_frame(&mut io::Cursor::new(ok[..ok.len() - 1].to_vec()), 64).err(),
             Some(WireError::Truncated)
         );
+    }
+
+    /// Offsets inside a PROCESS frame built by `encode_process`: header 11, then id, expected version and
+    /// start sample (8 bytes each), then `frames: u32` and `channels: u16`.
+    const FRAMES_AT: usize = HEADER_BYTES + 24;
+    const CHANNELS_AT: usize = FRAMES_AT + 4;
+
+    fn process_with_dims(frames: u32, channels: u16) -> Vec<u8> {
+        let mut bytes = encode_process(1, 1, 0, 2, 1, &[0.0, 0.0]);
+        bytes[FRAMES_AT..FRAMES_AT + 4].copy_from_slice(&frames.to_le_bytes());
+        bytes[CHANNELS_AT..CHANNELS_AT + 2].copy_from_slice(&channels.to_le_bytes());
+        bytes
+    }
+
+    /// Hostile dimensions: `u32::MAX` frames, `u16::MAX` channels, zero, and just past the bounds are
+    /// refused with a typed error before any sample buffer is allocated (the payload holds 2 samples).
+    #[test]
+    fn dims_u32_max() {
+        for (frames, channels) in [
+            (u32::MAX, u16::MAX),
+            (u32::MAX, 1),
+            (1, u16::MAX),
+            (0, 1),
+            (1, 0),
+            (u32::try_from(MAX_BLOCK_FRAMES).unwrap() + 1, 1),
+            (1, u16::try_from(MAX_CHANNELS).unwrap() + 1),
+        ] {
+            let frame = frame_of(&process_with_dims(frames, channels));
+            assert_eq!(
+                decode_request(&frame),
+                Err(WireError::Malformed),
+                "{frames} x {channels}"
+            );
+        }
+        // The same hostile dimensions in a reply, and an absurd text and blob length.
+        let mut reply = encode_reply(&Reply::Processed {
+            id: 1,
+            version: 1,
+            completeness: 1,
+            latency: 0,
+            frames: 2,
+            channels: 1,
+            samples: vec![0.0, 0.0],
+        });
+        // After the header: id 8, version 8, completeness 1, latency 4, then frames u32, channels u16.
+        let at = HEADER_BYTES + 21;
+        reply[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        reply[at + 4..at + 6].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert_eq!(decode_reply(&frame_of(&reply)), Err(WireError::Malformed));
+        let mut state = encode_reply(&Reply::State {
+            id: 1,
+            version: 1,
+            completeness: 1,
+            bytes: vec![1, 2, 3, 4],
+        });
+        let len_at = HEADER_BYTES + 17;
+        state[len_at..len_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(decode_reply(&frame_of(&state)), Err(WireError::Malformed));
+        let mut hello = encode_hello(&Hello {
+            identity: "x".to_owned(),
+            clap_abi: 1,
+            arch: 1,
+        });
+        hello[HEADER_BYTES..HEADER_BYTES + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert_eq!(decode_hello(&frame_of(&hello)), Err(WireError::Malformed));
+    }
+
+    /// The running aggregate: legal-looking maximal dimensions whose samples are not in the payload, a
+    /// declared frame length above the cap (nothing is read), a lying length that the stream cannot
+    /// satisfy, and trailing bytes after a complete message are all refused.
+    #[test]
+    fn aggregate_over_budget() {
+        // Largest legal dimensions (64 MiB of samples) declared over a payload that carries 2 samples.
+        let frame = frame_of(&process_with_dims(
+            u32::try_from(MAX_BLOCK_FRAMES).unwrap(),
+            u16::try_from(MAX_CHANNELS).unwrap(),
+        ));
+        assert_eq!(decode_request(&frame), Err(WireError::Malformed));
+        // A frame whose declared payload (64 MiB) exceeds the reader's cap is refused from the header.
+        let mut header_only = encode_shutdown(1);
+        header_only[7..HEADER_BYTES].copy_from_slice(&(64_u32 << 20).to_le_bytes());
+        let mut cursor = io::Cursor::new(header_only.clone());
+        assert_eq!(
+            read_frame(&mut cursor, 1 << 20).err(),
+            Some(WireError::TooLarge)
+        );
+        assert_eq!(
+            cursor.position(),
+            u64::try_from(HEADER_BYTES).unwrap(),
+            "no payload byte consumed"
+        );
+        // Within the cap but unsatisfiable: the stream ends first, the reader reports it, no hang.
+        let mut cursor = io::Cursor::new(header_only);
+        assert_eq!(
+            read_frame(&mut cursor, 128 << 20).err(),
+            Some(WireError::Truncated)
+        );
+        // Trailing bytes after a complete message are not silently ignored.
+        let mut padded = frame_of(&encode_shutdown(1));
+        padded.payload.push(0);
+        assert_eq!(decode_request(&padded), Err(WireError::Malformed));
     }
 }

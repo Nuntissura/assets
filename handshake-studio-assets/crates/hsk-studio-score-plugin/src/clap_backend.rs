@@ -22,6 +22,7 @@
 //!
 //! Proof status: CLAP stays NOT_PROVEN until a real plugin runs through this path
 //! (`tests/clap_fixture.rs` does that when a fixture library is supplied).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::backend::{Backend, Captured, Configured, ProbeInfo, Processed, Refusal, verify_file};
 use crate::types::{Completeness, PluginFormat, SUPPORTED_CLAP_ABI};
 use crate::wire::{
@@ -261,7 +262,7 @@ impl Backend for ClapBackend {
             return Err((E_CONFIG, u64::from(param)));
         }
         loaded.pending.push((id, value));
-        loaded.version += 1;
+        loaded.version = loaded.version.checked_add(1).ok_or((E_CONFIG, 0))?;
         Ok(loaded.version)
     }
 
