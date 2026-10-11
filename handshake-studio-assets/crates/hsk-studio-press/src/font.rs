@@ -509,4 +509,25 @@ mod tests {
         let i = font(&[(31, "/Type0"), (21, "<< /Subtype /CIDFontType2 >>")], "<< /Subtype 31 0 R /Encoding /Identity-V /DescendantFonts [21 0 R] >>");
         assert!(i.composite() && i.wmode == WMode::Vertical);
     }
+
+    /// V4-02 for the /W reader: a range to the last CID allocates nothing (dims_u32_max), and every
+    /// element is charged to the operation budget (aggregate_over_budget).
+    #[test]
+    fn w_arrays_are_bounded() {
+        let f = font(&[(21, "<< /Subtype /CIDFontType2 /W [0 4294967295 500] >>")], "<< /Subtype /Type0 /Encoding /Identity-H /DescendantFonts [21 0 R] >>");
+        assert_eq!(widths(&f, &[0xFF, 0xFF]), vec![(500.0, 500.0)]);
+        let many: String = (0..20_000).map(|i| format!("{i} [{}] ", i % 900)).collect();
+        let m: Objs = {
+            let mut m = BTreeMap::new();
+            let obj = Lexer::new(format!("<< /Subtype /CIDFontType2 /W [{many}] >>").as_bytes(), 0, 32).parse_object(0, true).unwrap();
+            m.insert(21, Entry { generation: 0, obj, span: None, data_at: None });
+            m
+        };
+        let fd = Lexer::new(b"<< /Subtype /Type0 /Encoding /Identity-H /DescendantFonts [21 0 R] >>", 0, 32).parse_object(0, true).unwrap();
+        let mut budget = 100_000usize;
+        assert!(matches!(read_font(&m, fd.as_dict().unwrap(), &Limits::default(), &mut budget), Err(PressError::InputLimit("decoded_total"))));
+        let mut budget = usize::MAX;
+        let f = read_font(&m, fd.as_dict().unwrap(), &Limits::default(), &mut budget).unwrap();
+        assert_eq!(widths(&f, &[0x4E, 0x1F]), vec![(199.0, 199.0)], "CID 19999 = 0x4E1F: width 19999 mod 900");
+    }
 }

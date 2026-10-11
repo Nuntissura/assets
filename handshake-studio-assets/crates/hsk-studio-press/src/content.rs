@@ -535,4 +535,21 @@ mod tests {
         assert!(!joins_cleanly(b"q % note", &p(b"q % note"), b"\nQ"));
         assert!(joins_cleanly(b"q % note\n", &p(b"q % note\n"), b"Q"));
     }
+
+    /// V4-02: finding where a Flate inline image ends inflates it; the output is charged to the
+    /// operation budget (aggregate_over_budget), and an overrun is a refusal, not a guessed end.
+    #[test]
+    fn inline_image_extents_are_charged_to_the_budget() {
+        let mut src = b"BI /W 50000 /H 1 /BPC 8 /CS /G /F /Fl ID ".to_vec();
+        src.extend_from_slice(&miniz_oxide::deflate::compress_to_vec_zlib(&[0u8; 50_000], 6));
+        src.extend_from_slice(b" EI");
+        let mut budget = 10_000usize;
+        assert_eq!(parse_strict(&src, &Limits::default(), &no_color_spaces, &mut budget).unwrap_err(), PressError::InputLimit("decoded_total"));
+        let mut budget = 10_000usize;
+        assert_eq!(tokenize(&src, &Limits::default(), &no_color_spaces, &mut budget).unwrap_err(), PressError::InputLimit("decoded_total"), "the lenient reading does not guess either");
+        let mut budget = usize::MAX;
+        let p = parse_strict(&src, &Limits::default(), &no_color_spaces, &mut budget).unwrap();
+        assert_eq!(usize::MAX - budget, 50_000);
+        assert_eq!(p.ops.len(), 1);
+    }
 }

@@ -660,6 +660,39 @@ mod tests {
         }
     }
 
+    /// V4-02 for the document rewrite: every content stream it decodes is charged to the operation's
+    /// `max_decoded_total` (aggregate_over_budget); an overrun refuses the save instead of leaving
+    /// streams unwritten.
+    #[test]
+    fn canonical_rewrite_is_charged_to_the_budget() {
+        let content = "q Q\n".repeat(50_000);
+        let objs: [(u32, String); 4] = [
+            (1, "<< /Type /Catalog /Pages 2 0 R >>".into()),
+            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Contents 4 0 R /Resources << >> >>".into()),
+            (4, format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len())),
+        ];
+        let mut pdf = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (n, body) in &objs {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{n} 0 obj\n{body}\nendobj\n").as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+        for o in offsets {
+            pdf.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        let cancel = CancellationToken::default();
+        let mut doc = crate::pdf_edit::PdfDoc::open(&pdf, &Limits::default(), &cancel).unwrap();
+        let tight = Limits { max_decoded_total: 100_000, ..Limits::default() };
+        let mut objects = doc.objects.clone();
+        assert_eq!(canonicalize(&mut objects, &doc.trailer, &tight, &cancel).unwrap_err(), PressError::InputLimit("decoded_total"));
+        let done = canonicalize(&mut doc.objects, &doc.trailer, &Limits::default(), &cancel).unwrap();
+        assert_eq!((done.refused.len(), done.inline_images), (0, 0));
+    }
+
     #[test]
     fn inline_images_become_xobjects() {
         let img: &[u8] = b"BI /W 1 /H 1 /BPC 8 /CS /CS0 /F /AHx /I true ID 41> EI";

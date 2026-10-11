@@ -168,7 +168,7 @@ pub enum NotProven {
     UnresolvedWritingMode,
     /// A redaction's saved file holds a content stream that is not the canonical serialisation of its
     /// own parse (`PayloadProof::non_canonical_streams`): a viewer may read other operators from it
-    /// than the proof did (lead decision 2026-10-11T15:00:20Z; test `canonical_rewrite_round_trips`).
+    /// than the proof did (lead decision 2026-10-11T15:00:20Z; test `canonical_rewrite_keeps_only_written_content`).
     NonCanonicalContent,
 }
 
