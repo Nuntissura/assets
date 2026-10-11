@@ -329,11 +329,11 @@ pub(crate) const CARRIERS: &[Carrier] = &[
     },
     Carrier {
         class: Class::HtmlAttribute,
-        elements: &["img", "input"],
+        elements: &["img", "input", "image"],
         names: &["src"],
         path: Path::Url,
         load: Load::Image,
-        source: HTML,
+        source: "HTML Standard (9 Oct 2026) indices.html src (img; input); `image` (HTML: parsed as img; SVG `<image src>`: no engine loads it, kept from the R7 scan conservatively)",
         fixture: "html_url",
     },
     Carrier {

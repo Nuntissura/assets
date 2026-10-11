@@ -63,6 +63,8 @@ fn html_element(el: &str, name: &str, value: &str) -> String {
         }
         "source" | "track" => format!("<video><{el} {a}></video>"),
         "input" if name == "src" => format!("<input type=\"image\" {a}>"),
+        // HTML `<image>` is an `img` (covered by that name); the row's own name is the SVG element.
+        "image" => format!("<svg><image {a}/></svg>"),
         el if VOID.contains(&el) => format!("<{el} {a}>"),
         el => format!("<{el} {a}></{el}>"),
     }
