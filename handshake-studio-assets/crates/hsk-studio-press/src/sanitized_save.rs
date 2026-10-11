@@ -458,47 +458,70 @@ struct Needle {
     token: bool,
 }
 
-/// Occurrences `(start, end, exempt)` of `n` in `hay` (normalised), where `slot[i]` names the drawn
-/// string (or text string) character `i` belongs to ([`SEP`]: a separator). Matching is by substring.
-/// The whole-token rule may only EXEMPT a match, and only where the drawn reading proves a different
-/// token: the whole match lies in one string and an ASCII letter or digit of that SAME string touches a
-/// needle edge that is one too. A match that spans strings (a concatenated reading) is never exempt
-/// (lead decision 2026-10-11T13:10:26Z; test `split_runs_are_read_whole`).
-fn text_matches(hay: &[char], slot: &[u32], n: &Needle) -> Vec<(usize, usize, bool)> {
-    let mut out = Vec::new();
-    let (Some(first), Some(last)) = (n.chars.first(), n.chars.last()) else { return out };
-    let len = n.chars.len();
-    if hay.len() < len {
-        return out;
-    }
-    for i in 0..=hay.len().saturating_sub(len) {
-        if hay.get(i) != Some(first) {
-            continue;
+/// The needles, indexed by their first character (a text is searched once for all of them).
+struct Needles {
+    list: Vec<Needle>,
+    by_first: BTreeMap<char, Vec<usize>>,
+}
+
+impl Needles {
+    fn new(list: Vec<Needle>) -> Self {
+        let mut by_first: BTreeMap<char, Vec<usize>> = BTreeMap::new();
+        for (i, n) in list.iter().enumerate() {
+            if let Some(c) = n.chars.first() {
+                by_first.entry(*c).or_default().push(i);
+            }
         }
-        let end = i.saturating_add(len);
-        if hay.get(i..end) != Some(n.chars.as_slice()) {
-            continue;
-        }
-        let s0 = slot.get(i).copied().unwrap_or(SEP);
-        let single = s0 != SEP && slot.get(i..end).is_some_and(|s| s.iter().all(|x| *x == s0));
-        let glued = |at: Option<usize>, edge: &char| {
-            at.is_some_and(|p| slot.get(p) == Some(&s0) && hay.get(p).is_some_and(char::is_ascii_alphanumeric)) && edge.is_ascii_alphanumeric()
-        };
-        let exempt = n.token && single && (glued(i.checked_sub(1), first) || glued(Some(end), last));
-        out.push((i, end, exempt));
+        Self { list, by_first }
     }
-    out
+
+    fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
+    /// Occurrences `(needle, start, end, exempt)` in `hay` (normalised), where `slot[i]` names the drawn
+    /// string (or text string) character `i` belongs to ([`SEP`]: a separator); `needle` indexes
+    /// `list`. Matching is by substring. The whole-token rule may only EXEMPT a match, and only where
+    /// the drawn reading proves a different token: the whole match lies in one string and an ASCII
+    /// letter or digit of that SAME string touches a needle edge that is one too. A match that spans
+    /// strings (a concatenated reading) is never exempt (lead decision 2026-10-11T13:10:26Z; test
+    /// `split_runs_are_read_whole`).
+    fn matches(&self, hay: &[char], slot: &[u32]) -> Vec<(usize, usize, usize, bool)> {
+        let mut out = Vec::new();
+        for (i, c) in hay.iter().enumerate() {
+            let Some(candidates) = self.by_first.get(c) else { continue };
+            for k in candidates {
+                let Some(n) = self.list.get(*k) else { continue };
+                let (Some(first), Some(last)) = (n.chars.first(), n.chars.last()) else { continue };
+                let end = i.saturating_add(n.chars.len());
+                if hay.get(i..end) != Some(n.chars.as_slice()) {
+                    continue;
+                }
+                let s0 = slot.get(i).copied().unwrap_or(SEP);
+                let single = s0 != SEP && slot.get(i..end).is_some_and(|s| s.iter().all(|x| *x == s0));
+                let glued = |at: Option<usize>, edge: &char| {
+                    at.is_some_and(|p| slot.get(p) == Some(&s0) && hay.get(p).is_some_and(char::is_ascii_alphanumeric)) && edge.is_ascii_alphanumeric()
+                };
+                let exempt = n.token && single && (glued(i.checked_sub(1), first) || glued(Some(end), last));
+                out.push((*k, i, end, exempt));
+            }
+        }
+        out
+    }
 }
 
 /// Needles found (not exempt) in a text string or name read as text, both with its language escapes
 /// dropped (as a viewer shows it) and with only the `ESC` characters dropped.
-fn string_text_hits(text: &[char], needles: &[Needle], escape_forms: &[Escapes]) -> BTreeSet<usize> {
+fn string_text_hits(text: &[char], needles: &Needles, escape_forms: &[Escapes]) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
+    if needles.is_empty() {
+        return out;
+    }
     for esc in escape_forms {
         let hay = normalized(text, *esc);
         let slot = vec![0u32; hay.len()];
-        for n in needles {
-            if text_matches(&hay, &slot, n).iter().any(|(_, _, exempt)| !exempt) {
+        for (k, _, _, exempt) in needles.matches(&hay, &slot) {
+            if !exempt && let Some(n) = needles.list.get(k) {
                 out.insert(n.index);
             }
         }
@@ -509,7 +532,7 @@ fn string_text_hits(text: &[char], needles: &[Needle], escape_forms: &[Escapes])
 /// Needles found (not exempt) in a decoded stream read as text (UTF-16 with a byte-order mark, else
 /// UTF-8), normalised. Only streams with a byte outside printable ASCII are read this way: anything
 /// else is covered by the byte spellings.
-fn stream_text_hits(bytes: &[u8], needles: &[Needle]) -> BTreeSet<usize> {
+fn stream_text_hits(bytes: &[u8], needles: &Needles) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
     if needles.is_empty() || bytes.iter().all(|b| (0x20..0x7F).contains(b) || matches!(b, b'\t' | b'\n' | b'\r' | b'\x0C')) {
         return out;
@@ -522,7 +545,7 @@ fn stream_text_hits(bytes: &[u8], needles: &[Needle]) -> BTreeSet<usize> {
     let forms: &[Escapes] = if text.contains('\u{1B}') { &[Escapes::Chars, Escapes::Segments] } else { &[Escapes::Chars] };
     for escapes in forms {
         let hay = normalized_str(&text, *escapes);
-        for n in needles {
+        for n in &needles.list {
             let pat: String = n.chars.iter().collect();
             let (first, last) = (n.chars.first().copied().unwrap_or(' '), n.chars.last().copied().unwrap_or(' '));
             let found = hay.match_indices(pat.as_str()).any(|(at, m)| {
@@ -800,11 +823,13 @@ fn verify_internal(
     // Text needles (normalised, norm.rs) for every text match: drawn text, text strings, text streams.
     let texts: Vec<(usize, Vec<char>, bool)> =
         vars.iter().filter_map(|v| v.text.as_ref().map(|t| (v.needle_index, t.chars().collect(), v.token))).collect();
-    let needles: Vec<Needle> = texts
-        .iter()
-        .map(|(index, chars, token)| Needle { index: *index, chars: normalized(chars, Escapes::Chars), token: *token })
-        .filter(|n| !n.chars.is_empty())
-        .collect();
+    let needles = Needles::new(
+        texts
+            .iter()
+            .map(|(index, chars, token)| Needle { index: *index, chars: normalized(chars, Escapes::Chars), token: *token })
+            .filter(|n| !n.chars.is_empty())
+            .collect(),
+    );
 
     // 1. Object model: every string, name and dictionary key, by its spellings and as normalised
     // text (a text string with its language escapes dropped and with only ESC dropped; R9-P2).
@@ -1006,8 +1031,9 @@ fn verify_internal(
             let (chars, src) = normalize(&hay.chars, escapes);
             let slot: Vec<u32> = src.iter().map(|i| hay.slot.get(*i).copied().unwrap_or(SEP)).collect();
             let font_reading = h < KINDS.saturating_sub(1).saturating_mul(2);
-            for n in &needles {
-                for (a, b, exempt) in text_matches(&chars, &slot, n) {
+            for (k, a, b, exempt) in needles.matches(&chars, &slot) {
+                let Some(n) = needles.list.get(k) else { continue };
+                {
                     let recs: BTreeSet<usize> =
                         slot.get(a..b).unwrap_or(&[]).iter().filter(|s| **s != SEP).filter_map(|s| rt.slots.get(*s as usize)).map(|(r, _)| *r).collect();
                     let Some(first) = recs.first().copied() else { continue };
