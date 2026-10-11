@@ -15,7 +15,9 @@
 //! `AdjustmentKind::ALL` has this kind and `ADJ_FORMULAS` has a body", the adjustment switch is
 //! generated from `ALL` (the opcode of a kind is its position in `ALL`), and the module holds three
 //! entry points: `composite` (v1, bindings 0-3), `composite_ext` (adds the Blend-If weight,
-//! bindings 0-4) and `adjust` (adjustment layers, bindings 0-5).
+//! bindings 0-4) and `adjust` (adjustment layers, bindings 0-5). The layer-effect matte passes are
+//! a second module (`fx.wgsl`, entry point `fx`, its own bind group layout of one uniform block and
+//! four storage buffers); `fx.rs` lists the passes of each effect.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::GpuError;
 use hsk_studio_pigment::adjust_math::AdjustmentKind;
@@ -326,6 +328,9 @@ pub(crate) struct Kernel {
     pipeline_ext: wgpu::ComputePipeline,
     pipeline_adjust: wgpu::ComputePipeline,
     layout_ext: wgpu::BindGroupLayout,
+    /// Layer-effect matte passes (`fx.wgsl`, its own module and bind group layout).
+    pipeline_fx: wgpu::ComputePipeline,
+    layout_fx: wgpu::BindGroupLayout,
 }
 
 impl Kernel {
@@ -405,6 +410,36 @@ impl Kernel {
             &pipeline_layout_ext,
             "adjust",
         );
+        // Layer-effect passes: a separate module so the layouts above stay as they were. Bindings:
+        // 0 uniform parameter block (with the blur taps), 1-2 read-only planes, 3 the output plane,
+        // 4 the content frame; four storage buffers is the device's downlevel limit.
+        let layout_fx = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hsk-studio-render-gpu effect layout"),
+            entries: &[
+                entry(0, wgpu::BufferBindingType::Uniform),
+                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
+                entry(2, wgpu::BufferBindingType::Storage { read_only: true }),
+                entry(3, wgpu::BufferBindingType::Storage { read_only: false }),
+                entry(4, wgpu::BufferBindingType::Storage { read_only: true }),
+            ],
+        });
+        let pipeline_layout_fx = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hsk-studio-render-gpu effect pipeline layout"),
+            bind_group_layouts: &[&layout_fx],
+            push_constant_ranges: &[],
+        });
+        let fx_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hsk-studio-render-gpu effects"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("fx.wgsl"))),
+        });
+        let pipeline_fx = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("hsk-studio-render-gpu effects"),
+            layout: Some(&pipeline_layout_fx),
+            module: &fx_module,
+            entry_point: Some("fx"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
         match crate::device::block_on_bounded(device.pop_error_scope(), None) {
             Some(None) => Ok(Self {
                 pipeline,
@@ -412,6 +447,8 @@ impl Kernel {
                 pipeline_ext,
                 pipeline_adjust,
                 layout_ext,
+                pipeline_fx,
+                layout_fx,
             }),
             Some(Some(_)) => Err(GpuError::Pipeline("shader_validation")),
             None => Err(GpuError::Pipeline("shader_validation_timeout")),
@@ -446,6 +483,44 @@ impl Kernel {
                 at(3, mask),
                 at(4, ext),
                 at(5, lut),
+            ],
+        })
+    }
+
+    /// Bind group of one effect pass: parameter block, two read-only planes, the output plane and
+    /// the content frame. The output must be a different buffer from both inputs.
+    pub(crate) fn bind_fx(
+        &self,
+        device: &wgpu::Device,
+        params: &wgpu::Buffer,
+        planes: [&wgpu::Buffer; 3],
+        content: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        let [fin, fin2, fout] = planes;
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hsk-studio-render-gpu effect bind"),
+            layout: &self.layout_fx,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: fin.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: fin2.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: fout.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: content.as_entire_binding(),
+                },
             ],
         })
     }
@@ -513,6 +588,17 @@ impl Kernel {
         height: u32,
     ) {
         Self::dispatch_with(&self.pipeline_adjust, encoder, bind, width, height);
+    }
+
+    /// One effect pass over `width` x `height` texels (bind group from [`Kernel::bind_fx`]).
+    pub(crate) fn dispatch_fx(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        Self::dispatch_with(&self.pipeline_fx, encoder, bind, width, height);
     }
 
     fn dispatch_with(

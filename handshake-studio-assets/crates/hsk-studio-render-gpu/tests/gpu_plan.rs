@@ -13,12 +13,17 @@ use hsk_studio_pigment::adjust_math::{
     LevelsRecord, composite_adjustment,
 };
 use hsk_studio_pigment::blend_math::{
-    Applicability, Family, MODES, PixelSite, Rgba, blend_rgb, composite_over,
+    Applicability, BlendContext, Family, MODES, PixelSite, Rgba, StackNode, blend_rgb,
+    composite_over, evaluate_stack,
 };
 use hsk_studio_pigment::coverage_math::{
     BlendChannel, BlendRangeEntry, IDENTITY_RANGE, blend_if_weight, feather_kernel, mask_coverage,
 };
-use hsk_studio_pigment::effect_math::{ColourOverlayOp, EffectOp};
+use hsk_studio_pigment::effect_math::{
+    ColourOverlayOp, DropShadowOp, EffectKind, EffectOp, EffectPlane, GlowFill, GlowSource,
+    InnerGlowOp, InnerShadowOp, LayerParams as RefLayerParams, OuterGlowOp, StrokeOp,
+    StrokePosition, render_layer_reference,
+};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BlendSpace, ColourTag, Exactness, ExecuteRequest, ExtOperator,
     Group, Knockout, Layer, LayerExtension, MaskFormat, MaskInput, NoVector, OutputTarget,
@@ -201,6 +206,7 @@ impl OwnedTile {
 }
 /// A coverage plane (`coverage_u8` or `coverage_u16le`) with deterministic pseudo-random samples
 /// including exact 0 and full-scale values.
+#[derive(Clone)]
 struct OwnedMask {
     bounds: Rect,
     format: MaskFormat,
@@ -2969,8 +2975,9 @@ fn ext_blend_if_parity() {
         "Blend-If must change the output, changed {differing} texels"
     );
 
-    // (b) Blend-If on a clipping-run base, a clipped layer, a layer sourced from an isolated
-    // group, and a layer inside that group.
+    // (b) Blend-If on a clipped layer of a clipping run, a layer sourced from an isolated group,
+    // and a layer inside that group. (The BASE of a run is refused: pigment's clip rule does not
+    // define where its ranges apply; see fx_admission_and_refusals_run_without_adapter.)
     let ge = rect(0, 0, 26, 20);
     let t_a = OwnedTile::random(26, 20, 101);
     let t_b = OwnedTile::random(26, 20, 102);
@@ -3005,11 +3012,6 @@ fn ext_blend_if_parity() {
     );
     let root = plan.root;
     let ext = PlanExtensions::from_layers(vec![
-        LayerExtension::new(root, 1).with_blend_if(vec![entry(
-            BlendChannel::Gray,
-            [0.1, 0.3, 0.9, 1.0],
-            IDENTITY_RANGE,
-        )]),
         LayerExtension::new(root, 2).with_blend_if(vec![entry(
             BlendChannel::Blue,
             IDENTITY_RANGE,
@@ -3380,10 +3382,14 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
             "{}: supported list differs from the declared refusals",
             kind.key()
         );
+        // a supported operator reports the lower class of pigment's and Fitted (never a better
+        // one than pigment's, CX-CAP-001)
         let want = if REFUSED_ADJUSTMENTS.contains(&kind) {
             Exactness::Unsupported
         } else {
-            Exactness::Fitted
+            ExtOperator::Adjustment(kind)
+                .intrinsic()
+                .lowest_of(Exactness::Fitted)
         };
         assert_eq!(
             backend.extension_exactness(ExtOperator::Adjustment(kind)),
@@ -3398,7 +3404,7 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
     ] {
         assert_eq!(
             backend.extension_exactness(op),
-            Exactness::Fitted,
+            op.intrinsic().lowest_of(Exactness::Fitted),
             "{}",
             op.key()
         );
@@ -3409,18 +3415,15 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
             Exactness::Unsupported
         );
     }
-    assert_eq!(
-        backend.extension_exactness(ExtOperator::Effect(
-            EffectOp::ColourOverlay(ColourOverlayOp::new(
-                [1.0, 0.0, 0.0],
-                StudioBlendMode::Normal,
-                0.5
-            ))
-            .kind()
-        )),
-        Exactness::Unsupported,
-        "effects are not implemented on the GPU"
-    );
+    // effects are implemented (fx_* tests); their class is pigment's (Approximate)
+    for kind in EffectKind::ALL {
+        assert_eq!(
+            backend.extension_exactness(ExtOperator::Effect(kind)),
+            Exactness::Approximate,
+            "{}",
+            kind.key()
+        );
+    }
 
     // mask density: refused by v1 execute, admitted by the envelope path (then only the missing
     // device remains)
@@ -3519,22 +3522,23 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
             "{depth:?}"
         );
     }
-    // effects are refused, never rendered without their effect
+    // an effect on an adjustment layer is pigment's structural refusal (never rendered without it)
     let effect = EffectOp::ColourOverlay(ColourOverlayOp::new(
         [1.0, 0.0, 0.0],
         StudioBlendMode::Normal,
         0.5,
     ));
     let effects = PlanExtensions::from_layers(vec![
-        LayerExtension::new(adj_plan.root, 0).with_effects(vec![effect]),
+        LayerExtension::new(adj_plan.root, 1)
+            .with_adjustment(AdjustmentOp::Invert)
+            .with_effects(vec![effect]),
     ]);
-    assert_eq!(
+    assert!(matches!(
         run_ext(&backend, &adj_plan, &effects, &approx, &sources, &mut sink),
-        Err(BackendError::Unsupported {
-            operator: ExtOperator::Effect(effect.kind()).key(),
-            exactness: Exactness::Unsupported
-        })
-    );
+        Err(BackendError::InvalidPlan(
+            PlanError::EffectOnAdjustment { .. }
+        ))
+    ));
     // feather without a mask is pigment's structural refusal
     let feather = PlanExtensions::from_layers(vec![
         LayerExtension::new(adj_plan.root, 0).with_mask_feather(2.0),
@@ -3602,6 +3606,1232 @@ fn ext_refusals_and_capabilities_run_without_adapter() {
     ));
     // nothing above touched the sink or the residency ledger
     assert_eq!((sink.accepted, big_sink.accepted), (0, 0));
+    assert_eq!(backend.resident_bytes(), 0);
+}
+
+// ---- agreement with pigment's evaluate_stack (Blend-If on an adjustment layer and on a layer) -----
+
+/// Per-pixel reference of one pixel of the first layer (a Normal tile over transparent) through
+/// pigment's `evaluate_stack`, the backdrop the second layer sees.
+fn stack_backdrop(tile: &OwnedTile, x: u32, y: u32, ctx: &BlendContext) -> Rgba {
+    let p = tile.pixel(x, y);
+    evaluate_stack(
+        &[StackNode::Leaf {
+            source: Rgba::new([p[0], p[1], p[2]], p[3]),
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+        }],
+        Rgba::TRANSPARENT,
+        ctx,
+    )
+    .expect("backdrop stack")
+    .0
+}
+
+fn rgba_err(got: [f32; 4], want: Rgba) -> f32 {
+    let mut e = (got[3] - want.a).abs();
+    for (g, w) in got.iter().zip(want.rgb.iter()) {
+        e = e.max((g - w).abs());
+    }
+    e
+}
+
+/// Agreement check (lead decision: pigment's `evaluate_stack` / `adjust_math` / `coverage_math` own
+/// the Blend-If semantics, the GPU must match them). Case A: Blend-If on an adjustment layer. The
+/// layer's content is `f(backdrop)` (pigment: "Content = f(backdrop)"), so its "This Layer" colour
+/// is the adjusted colour and the weight is `blend_if_weight(entries, f(Cb), Cb)`; the reference
+/// is `evaluate_stack` with an `Adjustment` node at `opacity * fill * weight`. Case B: Blend-If on
+/// a plain layer: `evaluate_stack` with a `Leaf` at `opacity * fill * weight(source, Cb)`.
+#[test]
+fn ext_blend_if_agrees_with_pigment_evaluate_stack() {
+    const TOL: f32 = 5.0e-6;
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) = gpu_gate(backend, "Blend-If agreement with pigment evaluate_stack")
+        .unwrap_or_else(|e| panic!("{e}"))
+    else {
+        return;
+    };
+    eprintln!("GPU_BACKEND: {} (Blend-If vs evaluate_stack)", info.text());
+    let ctx = BlendContext {
+        space: BlendSpace::LinearLight,
+        site: PixelSite::default(),
+    };
+    let entry = |channel, source, destination| BlendRangeEntry {
+        channel,
+        source,
+        destination,
+    };
+    let extent = rect(0, 0, 48, 6);
+    let back = OwnedTile::random(48, 6, 201);
+    let top = OwnedTile::random(48, 6, 202);
+    let sources = Sources::with_tiles(vec![(1, back), (2, top)]);
+    let entries_sets = [
+        vec![
+            entry(
+                BlendChannel::Gray,
+                [0.2, 0.4, 0.6, 0.8],
+                [0.0, 0.0, 0.75, 0.9],
+            ),
+            entry(BlendChannel::Red, IDENTITY_RANGE, [0.25, 0.5, 1.0, 1.0]),
+        ],
+        vec![entry(
+            BlendChannel::Blue,
+            [0.1, 0.3, 0.7, 0.95],
+            [0.3, 0.5, 0.5, 0.7],
+        )],
+    ];
+
+    // Case A: adjustment layers.
+    let adjustments = [
+        (
+            AdjustmentOp::Invert,
+            StudioBlendMode::Normal,
+            0.8_f32,
+            1.0_f32,
+        ),
+        (
+            AdjustmentOp::Levels(Levels {
+                composite: LevelsRecord {
+                    input_black: 0.1,
+                    input_white: 0.9,
+                    gamma: 2.0,
+                    output_black: 0.05,
+                    output_white: 0.95,
+                },
+                red: LevelsRecord::IDENTITY,
+                green: LevelsRecord::IDENTITY,
+                blue: LevelsRecord::IDENTITY,
+            }),
+            StudioBlendMode::Multiply,
+            0.7,
+            0.9,
+        ),
+        (
+            AdjustmentOp::HueSaturation(HueSaturation {
+                hue: 60.0,
+                saturation: 30.0,
+                lightness: -10.0,
+                colorize: false,
+            }),
+            StudioBlendMode::Normal,
+            1.0,
+            1.0,
+        ),
+    ];
+    let mut worst = 0.0_f32;
+    let mut partial_weights = 0_usize;
+    for (n, (op, mode, opacity, fill)) in adjustments.iter().enumerate() {
+        for (set_index, entries) in entries_sets.iter().enumerate() {
+            let rev = 61 + (n * 2 + set_index) as u64;
+            let plan = plan_of(
+                rev,
+                extent,
+                vec![
+                    sources.tiles[0].1.input(1, extent),
+                    solid(extent, [0.0; 4]), // the adjustment placeholder
+                ],
+                vec![
+                    layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+                    layer(1, *mode, *opacity, *fill),
+                ],
+            );
+            let ext = PlanExtensions::from_layers(vec![
+                LayerExtension::new(plan.root, 1)
+                    .with_adjustment(op.clone())
+                    .with_blend_if(entries.clone()),
+            ]);
+            let mut sink = Image::new(extent);
+            let receipt = run_ext(
+                backend,
+                &plan,
+                &ext,
+                &request(rev, Exactness::Approximate),
+                &sources,
+                &mut sink,
+            )
+            .expect("adjustment with Blend-If");
+            assert!(has_operator(&receipt, "blend_if", Exactness::Approximate));
+            let prepared = op.prepare().expect("prepared adjustment");
+            let mut case_worst = 0.0_f32;
+            for y in 0..extent.height {
+                for x in 0..extent.width {
+                    let cb = stack_backdrop(&sources.tiles[0].1, x, y, &ctx);
+                    let adjusted = if cb.a > 0.0 {
+                        prepared.apply(cb.rgb).expect("adjusted colour")
+                    } else {
+                        cb.rgb
+                    };
+                    let w = blend_if_weight(entries, adjusted, cb.rgb).expect("weight");
+                    if cb.a > 0.0 && w > 0.0 && w < 1.0 {
+                        partial_weights += 1;
+                    }
+                    let k = opacity * fill * w;
+                    let p = sources.tiles[0].1.pixel(x, y);
+                    let want = evaluate_stack(
+                        &[
+                            StackNode::Leaf {
+                                source: Rgba::new([p[0], p[1], p[2]], p[3]),
+                                mode: StudioBlendMode::Normal,
+                                opacity: 1.0,
+                            },
+                            StackNode::Adjustment {
+                                op: op.clone(),
+                                mode: *mode,
+                                opacity: k,
+                            },
+                        ],
+                        Rgba::TRANSPARENT,
+                        &ctx,
+                    )
+                    .expect("evaluate_stack adjustment")
+                    .0;
+                    let got = sink.px[(y * extent.width + x) as usize];
+                    case_worst = case_worst.max(rgba_err(got, want));
+                }
+            }
+            eprintln!(
+                "EXT_BLEND_IF_STACK adjustment {} set {set_index}: max_err {case_worst:e} (tolerance {TOL:e})",
+                op.kind().key()
+            );
+            assert!(
+                case_worst <= TOL,
+                "adjustment {} set {set_index}: {case_worst:e}",
+                op.kind().key()
+            );
+            worst = worst.max(case_worst);
+        }
+    }
+    assert!(
+        partial_weights > 20,
+        "the Blend-If weights must be partial somewhere ({partial_weights} texels)"
+    );
+
+    // Case B: a plain layer with Blend-If against an evaluate_stack Leaf.
+    for (set_index, entries) in entries_sets.iter().enumerate() {
+        let rev = 80 + set_index as u64;
+        let plan = plan_of(
+            rev,
+            extent,
+            vec![
+                sources.tiles[0].1.input(1, extent),
+                sources.tiles[1].1.input(2, extent),
+            ],
+            vec![
+                layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+                layer(1, StudioBlendMode::Multiply, 0.8, 0.9),
+            ],
+        );
+        let ext = PlanExtensions::from_layers(vec![
+            LayerExtension::new(plan.root, 1).with_blend_if(entries.clone()),
+        ]);
+        let mut sink = Image::new(extent);
+        run_ext(
+            backend,
+            &plan,
+            &ext,
+            &request(rev, Exactness::Approximate),
+            &sources,
+            &mut sink,
+        )
+        .expect("layer with Blend-If");
+        let mut case_worst = 0.0_f32;
+        for y in 0..extent.height {
+            for x in 0..extent.width {
+                let cb = stack_backdrop(&sources.tiles[0].1, x, y, &ctx);
+                let s = sources.tiles[1].1.pixel(x, y);
+                let w = blend_if_weight(entries, [s[0], s[1], s[2]], cb.rgb).expect("weight");
+                let want = evaluate_stack(
+                    &[
+                        StackNode::Leaf {
+                            source: Rgba::new(cb.rgb, cb.a),
+                            mode: StudioBlendMode::Normal,
+                            opacity: 1.0,
+                        },
+                        StackNode::Leaf {
+                            source: Rgba::new([s[0], s[1], s[2]], s[3]),
+                            mode: StudioBlendMode::Multiply,
+                            opacity: 0.8 * 0.9 * w,
+                        },
+                    ],
+                    Rgba::TRANSPARENT,
+                    &ctx,
+                )
+                .expect("evaluate_stack leaf")
+                .0;
+                let got = sink.px[(y * extent.width + x) as usize];
+                case_worst = case_worst.max(rgba_err(got, want));
+            }
+        }
+        eprintln!(
+            "EXT_BLEND_IF_STACK layer set {set_index}: max_err {case_worst:e} (tolerance {TOL:e})"
+        );
+        assert!(case_worst <= TOL, "layer set {set_index}: {case_worst:e}");
+        worst = worst.max(case_worst);
+    }
+    eprintln!("EXT_BLEND_IF_STACK worst {worst:e} (tolerance {TOL:e})");
+    assert_eq!(backend.resident_bytes(), 0);
+}
+
+// ---- layer effects (pigment effect_math), parity against render_layer_reference --------------
+
+/// A soft-edged disc with a hole: alpha ramps over one pixel around 0.5 at the rim, so stroke and
+/// inner-effect decisions (alpha >= 0.5) see fractional values; colour varies across the tile.
+fn blob(width: u32, height: u32) -> OwnedTile {
+    OwnedTile::from_pixels(width, height, |x, y| {
+        let cx = (width as f32 - 1.0) / 2.0;
+        let cy = (height as f32 - 1.0) / 2.0;
+        let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
+        let outer = width.min(height) as f32 / 2.0 - 0.5;
+        let mut a = (outer - d + 0.5).clamp(0.0, 1.0);
+        if d < 1.8 {
+            a = 0.0; // a hole, so inner effects see a second edge
+        }
+        [x as f32 / width as f32, y as f32 / height as f32, 0.55, a]
+    })
+}
+
+/// A translucent backdrop (alpha > 0 everywhere, so the straight colour is meaningful).
+fn translucent_backdrop(width: u32, height: u32) -> OwnedTile {
+    OwnedTile::from_pixels(width, height, |x, y| {
+        [
+            0.9 - x as f32 / (2.0 * width as f32),
+            0.2 + y as f32 / (2.0 * height as f32),
+            0.35,
+            0.45 + 0.5 * ((x + y) % 5) as f32 / 4.0,
+        ]
+    })
+}
+
+/// A reference plane of `extent` holding `tile` at `at` (optionally times a plain mask coverage)
+/// over transparent.
+fn effect_plane_of(
+    extent: Rect,
+    tile: &OwnedTile,
+    at: Rect,
+    mask: Option<&OwnedMask>,
+) -> EffectPlane {
+    let (w, h) = (extent.width, extent.height);
+    let mut rgb = vec![[0.0_f32; 3]; (w * h) as usize];
+    let mut alpha = vec![0.0_f32; (w * h) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let (gx, gy) = (i64::from(x) + extent.x, i64::from(y) + extent.y);
+            if !inside(at, gx, gy) {
+                continue;
+            }
+            let p = tile.pixel((gx - at.x) as u32, (gy - at.y) as u32);
+            let m = mask.map_or(1.0, |m| m.coverage(gx, gy, false));
+            let i = (y * w + x) as usize;
+            rgb[i] = [p[0], p[1], p[2]];
+            alpha[i] = p[3] * m;
+        }
+    }
+    EffectPlane::new(w, h, rgb, alpha).expect("reference plane")
+}
+
+/// Largest difference between a rendered image and a reference plane: alpha and premultiplied
+/// colour (a straight colour is not meaningful where the alpha is tiny).
+fn plane_error(image: &Image, plane: &EffectPlane) -> (f32, (u32, u32)) {
+    let (w, h) = (plane.width(), plane.height());
+    let (mut worst, mut at) = (0.0_f32, (0, 0));
+    for y in 0..h {
+        for x in 0..w {
+            let got = image.px[(y * w + x) as usize];
+            let want = plane.pixel(x, y).expect("plane pixel");
+            let mut e = (got[3] - want.a).abs();
+            for c in 0..3 {
+                e = e.max((got[c] * got[3] - want.rgb[c] * want.a).abs());
+            }
+            assert!(e.is_finite(), "non-finite output at ({x},{y})");
+            if e > worst {
+                worst = e;
+                at = (x, y);
+            }
+        }
+    }
+    (worst, at)
+}
+
+/// Pixels where two reference planes differ by more than 1e-3 in alpha or premultiplied colour: an
+/// effect case that changes nothing would pass any parity check, so each case asserts it changes
+/// the bare layer (or, for an empty matte, nothing).
+fn planes_differ(a: &EffectPlane, b: &EffectPlane) -> usize {
+    let mut n = 0;
+    for y in 0..a.height() {
+        for x in 0..a.width() {
+            let (p, q) = (a.pixel(x, y).expect("pixel"), b.pixel(x, y).expect("pixel"));
+            let mut e = (p.a - q.a).abs();
+            for (u, v) in p.rgb.iter().zip(q.rgb.iter()) {
+                e = e.max((u * p.a - v * q.a).abs());
+            }
+            if e > 1.0e-3 {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// One effect parity case on the device: `layer` over `backdrop`, rendered through the envelope and
+/// compared with pigment's `render_layer_reference` on a plane that holds the layer plus its margin.
+#[allow(clippy::too_many_arguments)]
+fn fx_vs_reference(
+    backend: &GpuBackend,
+    rev: u64,
+    extent: Rect,
+    backdrop: &OwnedTile,
+    content: &OwnedTile,
+    at: Rect,
+    mask: Option<OwnedMask>,
+    params: (StudioBlendMode, f32, f32),
+    ops: &[EffectOp],
+) -> (
+    f32,
+    (u32, u32),
+    hsk_studio_pigment::render_plan::RenderReceipt,
+    usize,
+) {
+    let (mode, opacity, fill) = params;
+    let back_plane = effect_plane_of(extent, backdrop, extent, None);
+    let content_plane = effect_plane_of(extent, content, at, mask.as_ref());
+    let bare = render_layer_reference(
+        &back_plane,
+        &content_plane,
+        RefLayerParams {
+            mode,
+            opacity,
+            fill_opacity: fill,
+        },
+        &[],
+    )
+    .expect("reference without effects");
+    let want = render_layer_reference(
+        &back_plane,
+        &content_plane,
+        RefLayerParams {
+            mode,
+            opacity,
+            fill_opacity: fill,
+        },
+        ops,
+    )
+    .expect("reference render");
+    let mut top = layer(1, mode, opacity, fill);
+    let mut sources = Sources::with_tiles(vec![(1, backdrop.clone()), (2, content.clone())]);
+    if let Some(m) = mask {
+        top.mask = Some(m.input(7, false));
+        sources.masks.push((7, m));
+    }
+    let plan = plan_of(
+        rev,
+        extent,
+        vec![backdrop.input(1, extent), content.input(2, at)],
+        vec![layer(0, StudioBlendMode::Normal, 1.0, 1.0), top],
+    );
+    let ext = PlanExtensions::from_layers(vec![
+        LayerExtension::new(plan.root, 1).with_effects(ops.to_vec()),
+    ]);
+    let mut sink = Image::new(extent);
+    let receipt = run_ext(
+        backend,
+        &plan,
+        &ext,
+        &request(rev, Exactness::Approximate),
+        &sources,
+        &mut sink,
+    )
+    .expect("effects execute on the device");
+    let (err, worst) = plane_error(&sink, &want);
+    (err, worst, receipt, planes_differ(&want, &bare))
+}
+
+fn black() -> [f32; 3] {
+    [0.0, 0.0, 0.0]
+}
+
+/// A named effect stack with the layer's (mode, opacity, fill).
+type FxCase = (&'static str, Vec<EffectOp>, (StudioBlendMode, f32, f32));
+
+#[test]
+fn fx_wave1_parity_vs_pigment_render_layer_reference() {
+    const TOL: f32 = 1.0e-5;
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) = gpu_gate(backend, "effects wave 1 parity").unwrap_or_else(|e| panic!("{e}"))
+    else {
+        return;
+    };
+    eprintln!("GPU_BACKEND: {} (effects wave 1)", info.text());
+    // The plane holds the layer plus a margin of 14 px (every case reads at most 13).
+    let extent = rect(0, 0, 48, 44);
+    let at = rect(15, 14, 18, 16);
+    let content = blob(18, 16);
+    let backdrop = translucent_backdrop(48, 44);
+    let normal = StudioBlendMode::Normal;
+    let cases: Vec<FxCase> = vec![
+        (
+            "drop shadow size 6 spread 0.3 angle 120 distance 4",
+            vec![EffectOp::DropShadow(
+                DropShadowOp::new(black(), normal, 0.75)
+                    .with_offset(120.0, 4.0)
+                    .with_spread(0.3)
+                    .with_size(6.0),
+            )],
+            (normal, 1.0, 1.0),
+        ),
+        (
+            "drop shadow knockout, fill 0.4, hard offset",
+            vec![EffectOp::DropShadow(
+                DropShadowOp::new([0.1, 0.0, 0.3], normal, 0.9)
+                    .with_offset(180.0, 3.0)
+                    .with_layer_knocks_out(true),
+            )],
+            (normal, 0.9, 0.4),
+        ),
+        (
+            "drop shadow pure blur 10 multiply",
+            vec![EffectOp::DropShadow(
+                DropShadowOp::new([0.3, 0.1, 0.0], StudioBlendMode::Multiply, 0.8).with_size(10.0),
+            )],
+            (normal, 1.0, 1.0),
+        ),
+        (
+            "colour overlay 50% at fill 0 (full strength)",
+            vec![EffectOp::ColourOverlay(ColourOverlayOp::new(
+                [1.0, 0.0, 0.0],
+                normal,
+                0.5,
+            ))],
+            (normal, 1.0, 0.0),
+        ),
+        (
+            "stroke outside 3 / inside 3 / centre 5",
+            vec![
+                EffectOp::Stroke(StrokeOp::new(
+                    [1.0, 1.0, 0.0],
+                    normal,
+                    0.8,
+                    3.0,
+                    StrokePosition::Outside,
+                )),
+                EffectOp::Stroke(StrokeOp::new(
+                    [0.0, 0.5, 1.0],
+                    normal,
+                    0.8,
+                    3.0,
+                    StrokePosition::Inside,
+                )),
+                EffectOp::Stroke(StrokeOp::new(
+                    [0.0, 1.0, 0.0],
+                    normal,
+                    0.6,
+                    5.0,
+                    StrokePosition::Centre,
+                )),
+            ],
+            (normal, 1.0, 1.0),
+        ),
+        (
+            "stroke size 0 is an empty matte",
+            vec![EffectOp::Stroke(StrokeOp::new(
+                [1.0, 1.0, 0.0],
+                normal,
+                0.8,
+                0.0,
+                StrokePosition::Centre,
+            ))],
+            (normal, 1.0, 1.0),
+        ),
+        (
+            "layer opacity 0 draws nothing (effects fade with it)",
+            vec![EffectOp::DropShadow(
+                DropShadowOp::new(black(), normal, 0.75)
+                    .with_offset(120.0, 4.0)
+                    .with_size(6.0),
+            )],
+            (normal, 0.0, 1.0),
+        ),
+    ];
+    let mut worst = 0.0_f32;
+    for (n, (name, ops, params)) in cases.iter().enumerate() {
+        let (err, at_px, receipt, changed) = fx_vs_reference(
+            backend,
+            100 + n as u64,
+            extent,
+            &backdrop,
+            &content,
+            at,
+            None,
+            *params,
+            ops,
+        );
+        eprintln!(
+            "FX_WAVE1 {name}: max_err {err:e} at {at_px:?}, {changed} texels differ from the bare layer (tolerance {TOL:e})"
+        );
+        assert!(err <= TOL, "{name}: {err:e} > {TOL:e}");
+        if name.contains("empty matte") || name.contains("draws nothing") {
+            assert_eq!(changed, 0, "{name}: draws nothing");
+        } else {
+            assert!(changed > 10, "{name}: the effect changed {changed} texels");
+        }
+        for op in ops {
+            // pigment's declared class travels; the backend never reports a better one
+            assert!(
+                has_operator(&receipt, op.kind().key(), Exactness::Approximate),
+                "{name}: {:?}",
+                receipt.exactness
+            );
+        }
+        worst = worst.max(err);
+    }
+    eprintln!("FX_WAVE1 worst {worst:e} (tolerance {TOL:e})");
+    assert_eq!(backend.resident_bytes(), 0);
+}
+
+#[test]
+fn fx_wave2_parity_vs_pigment_render_layer_reference() {
+    const TOL: f32 = 1.0e-5;
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) = gpu_gate(backend, "effects wave 2 parity").unwrap_or_else(|e| panic!("{e}"))
+    else {
+        return;
+    };
+    eprintln!("GPU_BACKEND: {} (effects wave 2)", info.text());
+    let extent = rect(0, 0, 48, 44);
+    let at = rect(15, 14, 18, 16);
+    let content = blob(18, 16);
+    let backdrop = translucent_backdrop(48, 44);
+    let normal = StudioBlendMode::Normal;
+    let cases: Vec<(&str, EffectOp)> = vec![
+        (
+            "inner shadow size 6 choke 0.4 angle -45 distance 3",
+            EffectOp::InnerShadow(
+                InnerShadowOp::new(black(), normal, 0.75)
+                    .with_offset(-45.0, 3.0)
+                    .with_choke(0.4)
+                    .with_size(6.0),
+            ),
+        ),
+        (
+            "inner shadow hard (size 0)",
+            EffectOp::InnerShadow(
+                InnerShadowOp::new([0.2, 0.0, 0.4], StudioBlendMode::Multiply, 0.9)
+                    .with_offset(90.0, 2.0),
+            ),
+        ),
+        (
+            "outer glow size 8 spread 0.25",
+            EffectOp::OuterGlow(
+                OuterGlowOp::new([1.0, 0.9, 0.3], StudioBlendMode::Screen, 0.8)
+                    .with_spread(0.25)
+                    .with_size(8.0),
+            ),
+        ),
+        (
+            "inner glow edge size 5 choke 0.2",
+            EffectOp::InnerGlow(
+                InnerGlowOp::new([1.0, 1.0, 0.8], normal, 0.7)
+                    .with_choke(0.2)
+                    .with_size(5.0),
+            ),
+        ),
+        (
+            "inner glow centre size 6",
+            EffectOp::InnerGlow(
+                InnerGlowOp::new([0.6, 1.0, 0.8], normal, 0.7)
+                    .with_size(6.0)
+                    .with_source(GlowSource::Centre),
+            ),
+        ),
+    ];
+    let mut worst = 0.0_f32;
+    for (n, (name, op)) in cases.iter().enumerate() {
+        let (err, at_px, receipt, changed) = fx_vs_reference(
+            backend,
+            120 + n as u64,
+            extent,
+            &backdrop,
+            &content,
+            at,
+            None,
+            (normal, 1.0, 1.0),
+            std::slice::from_ref(op),
+        );
+        eprintln!(
+            "FX_WAVE2 {name}: max_err {err:e} at {at_px:?}, {changed} texels differ from the bare layer (tolerance {TOL:e})"
+        );
+        assert!(err <= TOL, "{name}: {err:e} > {TOL:e}");
+        assert!(changed > 10, "{name}: the effect changed {changed} texels");
+        assert!(has_operator(
+            &receipt,
+            op.kind().key(),
+            Exactness::Approximate
+        ));
+        worst = worst.max(err);
+    }
+    eprintln!("FX_WAVE2 worst {worst:e} (tolerance {TOL:e})");
+    assert_eq!(backend.resident_bytes(), 0);
+}
+
+/// Composition rules of a layer with effects: all six kinds in one stack (behind effects before
+/// the content, the rest over it, list order), layer opacity versus fill, a layer mask on the
+/// effect layer, an isolated group as the effect layer's content, and a nested layer with effects
+/// inside that group (the frame margin is the sum along the nesting). Each case equals pigment's
+/// `render_layer_reference` on a plane that holds the layer plus its margins.
+#[test]
+fn fx_stack_mask_group_and_nesting_parity() {
+    const TOL: f32 = 1.0e-5;
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) =
+        gpu_gate(backend, "effects composition parity").unwrap_or_else(|e| panic!("{e}"))
+    else {
+        return;
+    };
+    eprintln!("GPU_BACKEND: {} (effects composition)", info.text());
+    let extent = rect(0, 0, 48, 44);
+    let at = rect(15, 14, 18, 16);
+    let content = blob(18, 16);
+    let backdrop = translucent_backdrop(48, 44);
+    let normal = StudioBlendMode::Normal;
+    let stack = vec![
+        EffectOp::DropShadow(
+            DropShadowOp::new(black(), StudioBlendMode::Multiply, 0.8)
+                .with_offset(135.0, 3.0)
+                .with_spread(0.2)
+                .with_size(5.0),
+        ),
+        EffectOp::OuterGlow(
+            OuterGlowOp::new([1.0, 0.8, 0.2], StudioBlendMode::Screen, 0.6).with_size(4.0),
+        ),
+        EffectOp::ColourOverlay(ColourOverlayOp::new(
+            [0.2, 0.4, 1.0],
+            StudioBlendMode::SoftLight,
+            0.5,
+        )),
+        EffectOp::Stroke(StrokeOp::new(
+            [1.0, 1.0, 1.0],
+            normal,
+            0.9,
+            2.0,
+            StrokePosition::Outside,
+        )),
+        EffectOp::InnerShadow(
+            InnerShadowOp::new(black(), normal, 0.5)
+                .with_offset(45.0, 2.0)
+                .with_choke(0.1)
+                .with_size(3.0),
+        ),
+        EffectOp::InnerGlow(InnerGlowOp::new([1.0, 0.5, 0.5], normal, 0.5).with_size(3.0)),
+    ];
+    let mut worst = 0.0_f32;
+
+    // (a) the whole stack, layer opacity 0.8 and fill 0.5 (effects fade with the opacity only)
+    let (err, at_px, receipt, changed) = fx_vs_reference(
+        backend,
+        140,
+        extent,
+        &backdrop,
+        &content,
+        at,
+        None,
+        (normal, 0.8, 0.5),
+        &stack,
+    );
+    eprintln!(
+        "FX_STACK six kinds opacity 0.8 fill 0.5: max_err {err:e} at {at_px:?}, {changed} texels differ from the bare layer"
+    );
+    assert!(err <= TOL, "stack: {err:e}");
+    assert!(changed > 200, "the stack changed {changed} texels");
+    for op in &stack {
+        assert!(has_operator(
+            &receipt,
+            op.kind().key(),
+            Exactness::Approximate
+        ));
+    }
+    worst = worst.max(err);
+
+    // (b) a coverage mask on the effect layer multiplies the content alpha the mattes derive from
+    let mask = OwnedMask::from_u8(
+        extent,
+        (0..48 * 44)
+            .map(|i| {
+                let (x, y) = (i % 48, i / 48);
+                if (x + y) % 7 < 2 { 90_u8 } else { 255 }
+            })
+            .collect(),
+    );
+    let (err, at_px, _, changed) = fx_vs_reference(
+        backend,
+        141,
+        extent,
+        &backdrop,
+        &content,
+        at,
+        Some(mask),
+        (normal, 1.0, 1.0),
+        &stack[..4],
+    );
+    eprintln!(
+        "FX_STACK masked layer: max_err {err:e} at {at_px:?}, {changed} texels differ from the bare layer"
+    );
+    assert!(err <= TOL, "masked stack: {err:e}");
+    assert!(changed > 100, "the masked stack changed {changed} texels");
+    worst = worst.max(err);
+
+    // (c) the effect layer's content is an isolated group of two tiles (Normal, then Multiply),
+    // and (d) the same group holds a layer with its own effects: outer margin + inner margin.
+    let tile_a = blob(18, 16);
+    let tile_b = OwnedTile::from_pixels(12, 10, |x, y| {
+        [0.2 + x as f32 / 20.0, 0.7, 0.3 + y as f32 / 20.0, 0.8]
+    });
+    let at_b = rect(18, 17, 12, 10);
+    let outer = vec![
+        EffectOp::DropShadow(
+            DropShadowOp::new(black(), normal, 0.7)
+                .with_offset(90.0, 2.0)
+                .with_size(4.0),
+        ),
+        EffectOp::Stroke(StrokeOp::new(
+            [1.0, 0.0, 0.0],
+            normal,
+            0.8,
+            2.0,
+            StrokePosition::Outside,
+        )),
+    ];
+    let inner = vec![EffectOp::OuterGlow(
+        OuterGlowOp::new([0.0, 1.0, 0.5], normal, 0.9).with_size(4.0),
+    )];
+    let sources = Sources::with_tiles(vec![
+        (1, backdrop.clone()),
+        (2, tile_a.clone()),
+        (3, tile_b.clone()),
+    ]);
+    // reference group result: tile A, then tile B Multiply 0.9 over it, each over transparent
+    let ctx_site = PixelSite::default();
+    let group_plane = |with_inner: bool| -> EffectPlane {
+        let mut rgb = vec![[0.0_f32; 3]; 48 * 44];
+        let mut alpha = vec![0.0_f32; 48 * 44];
+        for y in 0..44_i64 {
+            for x in 0..48_i64 {
+                let mut px = Rgba::TRANSPARENT;
+                if inside(at, x, y) {
+                    let p = tile_a.pixel((x - at.x) as u32, (y - at.y) as u32);
+                    px = composite_over(
+                        StudioBlendMode::Normal,
+                        px,
+                        Rgba::new([p[0], p[1], p[2]], p[3]),
+                        1.0,
+                        ctx_site,
+                    )
+                    .expect("tile A");
+                }
+                if inside(at_b, x, y) {
+                    let p = tile_b.pixel((x - at_b.x) as u32, (y - at_b.y) as u32);
+                    px = composite_over(
+                        StudioBlendMode::Multiply,
+                        px,
+                        Rgba::new([p[0], p[1], p[2]], p[3]),
+                        0.9,
+                        ctx_site,
+                    )
+                    .expect("tile B");
+                }
+                let i = (y * 48 + x) as usize;
+                rgb[i] = px.rgb;
+                alpha[i] = px.a.min(1.0);
+            }
+        }
+        let plane = EffectPlane::new(48, 44, rgb, alpha).expect("group plane");
+        if !with_inner {
+            return plane;
+        }
+        // the group is [layer with the inner effects over transparent]; its result is that layer
+        render_layer_reference(
+            &EffectPlane::transparent(48, 44).expect("transparent"),
+            &plane,
+            RefLayerParams {
+                mode: normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+            },
+            &inner,
+        )
+        .expect("inner effects")
+    };
+    let back_plane = effect_plane_of(extent, &backdrop, extent, None);
+    for (rev, nested) in [(142_u64, false), (143, true)] {
+        let want = render_layer_reference(
+            &back_plane,
+            &group_plane(nested),
+            RefLayerParams {
+                mode: normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+            },
+            &outer,
+        )
+        .expect("reference render");
+        // nodes: 0 backdrop, 1 tile A, 2 tile B, 3 group (A, B multiply 0.9), 4 group holding
+        // layer 3 with the inner effects (nested case) / the plain group (flat case)
+        let mut nodes = vec![
+            backdrop.input(1, extent),
+            tile_a.input(2, at),
+            tile_b.input(3, at_b),
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![
+                    layer(1, normal, 1.0, 1.0),
+                    layer(2, StudioBlendMode::Multiply, 0.9, 1.0),
+                ],
+            }),
+        ];
+        let (content_node, mut ext_layers) = if nested {
+            nodes.push(PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![layer(3, normal, 1.0, 1.0)],
+            }));
+            (
+                4_u32,
+                vec![LayerExtension::new(PlanNodeId(4), 0).with_effects(inner.clone())],
+            )
+        } else {
+            (3_u32, Vec::new())
+        };
+        let plan = plan_of(
+            rev,
+            extent,
+            nodes,
+            vec![
+                layer(0, normal, 1.0, 1.0),
+                layer(content_node, normal, 1.0, 1.0),
+            ],
+        );
+        ext_layers.push(LayerExtension::new(plan.root, 1).with_effects(outer.clone()));
+        let ext = PlanExtensions::from_layers(ext_layers);
+        let mut sink = Image::new(extent);
+        run_ext(
+            backend,
+            &plan,
+            &ext,
+            &request(rev, Exactness::Approximate),
+            &sources,
+            &mut sink,
+        )
+        .expect("group content with effects");
+        let (err, at_px) = plane_error(&sink, &want);
+        let bare = render_layer_reference(
+            &back_plane,
+            &group_plane(nested),
+            RefLayerParams {
+                mode: normal,
+                opacity: 1.0,
+                fill_opacity: 1.0,
+            },
+            &[],
+        )
+        .expect("bare group layer");
+        let changed = planes_differ(&want, &bare);
+        eprintln!(
+            "FX_STACK group content (nested inner effects: {nested}): max_err {err:e} at {at_px:?}, {changed} texels differ from the bare layer"
+        );
+        assert!(err <= TOL, "group content nested={nested}: {err:e}");
+        assert!(changed > 100, "group content changed {changed} texels");
+        worst = worst.max(err);
+    }
+    eprintln!("FX_STACK worst {worst:e} (tolerance {TOL:e})");
+    assert_eq!(backend.resident_bytes(), 0);
+
+    // (e) a starved working-byte limit is refused by the frame sizing before any dispatch
+    let plan = plan_of(
+        150,
+        extent,
+        vec![backdrop.input(1, extent), content.input(2, at)],
+        vec![layer(0, normal, 1.0, 1.0), layer(1, normal, 1.0, 1.0)],
+    );
+    let ext = PlanExtensions::from_layers(vec![
+        LayerExtension::new(plan.root, 1).with_effects(stack.clone()),
+    ]);
+    let fx_sources = Sources::with_tiles(vec![(1, backdrop.clone()), (2, content.clone())]);
+    let mut starved = request(150, Exactness::Approximate);
+    starved.max_working_bytes = 20_000;
+    let mut sink = Image::new(extent);
+    let refused = run_ext(backend, &plan, &ext, &starved, &fx_sources, &mut sink);
+    assert!(
+        matches!(
+            refused,
+            Err(BackendError::BudgetExceeded { limit: 20_000, .. })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(sink.accepted, 0);
+    assert_eq!(backend.resident_bytes(), 0);
+    // hostile size: a 30000 px shadow distance (pigment's largest) needs a frame margin no budget
+    // holds; it is a typed refusal before any dispatch, not an overflow or a wrapped size
+    let far =
+        PlanExtensions::from_layers(vec![LayerExtension::new(plan.root, 1).with_effects(vec![
+            EffectOp::DropShadow(
+                DropShadowOp::new(black(), normal, 0.5).with_offset(0.0, 30_000.0),
+            ),
+        ])]);
+    let refused = run_ext(
+        backend,
+        &plan,
+        &far,
+        &request(150, Exactness::Approximate),
+        &fx_sources,
+        &mut sink,
+    );
+    assert!(
+        matches!(refused, Err(BackendError::BudgetExceeded { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(sink.accepted, 0);
+    assert_eq!(backend.resident_bytes(), 0);
+    // an effect whose window costs more than one pass may (grow 1000 px: a 2001 x 2001 window) is
+    // refused as Unsupported{effect_cost} before any dispatch
+    let heavy = PlanExtensions::from_layers(vec![LayerExtension::new(plan.root, 1).with_effects(
+        vec![EffectOp::OuterGlow(
+            OuterGlowOp::new([1.0, 0.0, 0.0], normal, 0.5)
+                .with_spread(1.0)
+                .with_size(1000.0),
+        )],
+    )]);
+    let refused = run_ext(
+        backend,
+        &plan,
+        &heavy,
+        &request(150, Exactness::Approximate),
+        &fx_sources,
+        &mut sink,
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(BackendError::Unsupported {
+                operator: "effect_cost",
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(sink.accepted, 0);
+    assert_eq!(backend.resident_bytes(), 0);
+}
+
+/// Hardware-independent: effect capability classes, shared admission and the backend-side
+/// refusals happen before any device work.
+#[test]
+fn fx_admission_and_refusals_run_without_adapter() {
+    let backend = GpuBackend::new(no_adapter());
+    let extent = rect(0, 0, 8, 8);
+    let back = OwnedTile::random(8, 8, 3);
+    let sources = Sources::with_tiles(vec![(1, back)]);
+    let approx = request(71, Exactness::Approximate);
+    let plan = plan_of(
+        71,
+        extent,
+        vec![
+            sources.tiles[0].1.input(1, extent),
+            solid(extent, [0.4, 0.5, 0.6, 1.0]),
+        ],
+        vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            layer(1, StudioBlendMode::Normal, 1.0, 1.0),
+        ],
+    );
+    let mut sink = Image::new(extent);
+    let overlay = EffectOp::ColourOverlay(ColourOverlayOp::new(
+        [1.0, 0.0, 0.0],
+        StudioBlendMode::Normal,
+        0.5,
+    ));
+
+    // capability: all six kinds are supported and report pigment's class, never a better one
+    for kind in EffectKind::ALL {
+        let op = ExtOperator::Effect(kind);
+        assert_eq!(
+            backend.extension_exactness(op),
+            Exactness::Approximate,
+            "{}",
+            kind.key()
+        );
+        assert!(
+            backend.extension_exactness(op).rank() >= op.intrinsic().rank(),
+            "{}: reported class is better than pigment's",
+            kind.key()
+        );
+    }
+    // every supported envelope operator reports at least pigment's class
+    for kind in AdjustmentKind::ALL {
+        let op = ExtOperator::Adjustment(kind);
+        let got = backend.extension_exactness(op);
+        if got != Exactness::Unsupported {
+            assert!(got.rank() >= op.intrinsic().rank(), "{}", kind.key());
+        }
+    }
+
+    let with_effects = |ops: Vec<EffectOp>| {
+        PlanExtensions::from_layers(vec![LayerExtension::new(plan.root, 1).with_effects(ops)])
+    };
+    // class Approximate: a Fitted floor refuses the effect, the Approximate floor reaches the device
+    assert_eq!(
+        run_ext(
+            &backend,
+            &plan,
+            &with_effects(vec![overlay]),
+            &request(71, Exactness::Fitted),
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unsupported {
+            operator: "colour_overlay",
+            exactness: Exactness::Approximate
+        })
+    );
+    assert_eq!(
+        run_ext(
+            &backend,
+            &plan,
+            &with_effects(vec![overlay]),
+            &approx,
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unavailable("no_adapter"))
+    );
+    // an effect blend mode the backend has no body for is refused as that mode
+    let dissolve = EffectOp::ColourOverlay(ColourOverlayOp::new(
+        [1.0, 0.0, 0.0],
+        StudioBlendMode::Dissolve,
+        0.5,
+    ));
+    assert!(matches!(
+        run_ext(
+            &backend,
+            &plan,
+            &with_effects(vec![dissolve]),
+            &approx,
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unsupported {
+            operator: "dissolve",
+            ..
+        })
+    ));
+    // pigment's own typed refusals are kept: a gradient glow is never drawn as a flat colour
+    let gradient = EffectOp::OuterGlow(
+        OuterGlowOp::new([1.0, 0.0, 0.0], StudioBlendMode::Normal, 0.5)
+            .with_fill(GlowFill::Gradient),
+    );
+    assert!(matches!(
+        run_ext(
+            &backend,
+            &plan,
+            &with_effects(vec![gradient]),
+            &approx,
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unsupported {
+            operator: "glow_gradient",
+            ..
+        })
+    ));
+    // effects together with Blend-If on one layer are refused (render-cpu refuses them too)
+    let both = PlanExtensions::from_layers(vec![
+        LayerExtension::new(plan.root, 1)
+            .with_effects(vec![overlay])
+            .with_blend_if(vec![BlendRangeEntry {
+                channel: BlendChannel::Gray,
+                source: [0.2, 0.4, 0.6, 0.8],
+                destination: IDENTITY_RANGE,
+            }]),
+    ]);
+    assert!(matches!(
+        run_ext(&backend, &plan, &both, &approx, &sources, &mut sink),
+        Err(BackendError::Unsupported {
+            operator: "effects_with_blend_if",
+            ..
+        })
+    ));
+    // aggregate_over_budget (V4-02): the blur kernels are charged to max_working_bytes while the
+    // effects compile, before any device work
+    let blurred = EffectOp::DropShadow(
+        DropShadowOp::new(black(), StudioBlendMode::Normal, 0.5).with_size(50.0),
+    );
+    let mut starved = request(71, Exactness::Approximate);
+    starved.max_working_bytes = 100;
+    assert!(matches!(
+        run_ext(
+            &backend,
+            &plan,
+            &with_effects(vec![blurred]),
+            &starved,
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::BudgetExceeded { limit: 100, .. })
+    ));
+
+    // Blend-If on the base of a clipping run is refused (pigment's clip rule does not define it);
+    // the same entry on the clipped layer is admitted and only the missing device remains
+    let clip_plan = plan_of(
+        72,
+        extent,
+        vec![
+            solid(extent, [0.4, 0.5, 0.6, 1.0]),
+            solid(rect(1, 1, 5, 5), [0.9, 0.2, 0.1, 1.0]),
+            solid(extent, [0.1, 0.8, 0.3, 0.9]),
+        ],
+        vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            layer(1, StudioBlendMode::Normal, 1.0, 1.0), // clip base
+            Layer {
+                mask: Some(MaskInput::clip_to_base()),
+                ..layer(2, StudioBlendMode::Multiply, 0.8, 1.0)
+            },
+        ],
+    );
+    let entry = vec![BlendRangeEntry {
+        channel: BlendChannel::Gray,
+        source: [0.1, 0.3, 0.9, 1.0],
+        destination: IDENTITY_RANGE,
+    }];
+    let on_base = PlanExtensions::from_layers(vec![
+        LayerExtension::new(clip_plan.root, 1).with_blend_if(entry.clone()),
+    ]);
+    let on_clipped = PlanExtensions::from_layers(vec![
+        LayerExtension::new(clip_plan.root, 2).with_blend_if(entry),
+    ]);
+    let approx72 = request(72, Exactness::Approximate);
+    assert!(matches!(
+        run_ext(
+            &backend, &clip_plan, &on_base, &approx72, &sources, &mut sink
+        ),
+        Err(BackendError::Unsupported {
+            operator: "blend_if_clip_base",
+            ..
+        })
+    ));
+    assert_eq!(
+        run_ext(
+            &backend,
+            &clip_plan,
+            &on_clipped,
+            &approx72,
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unavailable("no_adapter"))
+    );
+    // nothing above touched the sink or the residency ledger
+    assert_eq!(sink.accepted, 0);
     assert_eq!(backend.resident_bytes(), 0);
 }
 

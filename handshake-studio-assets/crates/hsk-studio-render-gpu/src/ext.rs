@@ -236,10 +236,15 @@ impl FeatherPlane {
             .unwrap_or(u64::MAX)
             .saturating_mul(4)
     }
-    /// Blurred coverage at an absolute pixel of the region.
+    /// Blurred coverage at an absolute pixel of the region; a pixel beyond the region (frames of a
+    /// plan with layer effects reach past the target) reads the nearest region texel.
     pub(crate) fn at(&self, x: i64, y: i64) -> f32 {
-        let (Some(dx), Some(dy)) = (x.checked_sub(self.region.x), y.checked_sub(self.region.y))
-        else {
+        let last_x = i64::from(self.region.width.saturating_sub(1));
+        let last_y = i64::from(self.region.height.saturating_sub(1));
+        let (Some(dx), Some(dy)) = (
+            x.checked_sub(self.region.x).map(|v| v.clamp(0, last_x)),
+            y.checked_sub(self.region.y).map(|v| v.clamp(0, last_y)),
+        ) else {
             return 0.0;
         };
         let (Ok(dx), Ok(dy), Ok(w)) = (

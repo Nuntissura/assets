@@ -9,7 +9,10 @@
 //! opacity; coverage masks (`coverage_u8` / `coverage_u16le`, inversion, density 1); isolated
 //! groups (own transparent buffer per nesting level, then composited with the layer's mode,
 //! opacity and mask) and pass-through groups (layers composited onto the parent's running
-//! backdrop). Straight alpha, `rgb_f32le` in the plan's colour tag. Everything else (other modes,
+//! backdrop). Straight alpha, `rgb_f32le` in the plan's colour tag. The plan-extension envelope
+//! (`execute_extended`) adds mask density and feather, Blend-If, adjustment layers and the layer
+//! effects of pigment's `effect_math`, which render through `eval_effect_layer` and `fx.rs`.
+//! Everything else (other modes,
 //! vector, mask density, pass-through opacity, non-isolated blended groups,
 //! premultiplied alpha) is refused by `admit` or source preparation as `Unsupported`, typed and
 //! before any upload. There is no CPU fallback: no adapter is `Unavailable`, a lost device is
@@ -27,6 +30,10 @@ use crate::ext::{
     AdjustGpu, BlendIfGpu, EXT_BYTES, FeatherError, FeatherPlane, LUT_BYTES, MIN_LUT_BYTES,
     compile_adjustment, ext_bytes, feather_plane, opcode_of,
 };
+use crate::fx::{
+    Buf, FX_PASS_MAX_OPS, FXP_BYTES, FxEffect, FxError, FxKernels, FxLayer, FxStep, compile_effect,
+    margin_of, params_bytes,
+};
 use crate::kernel::{
     LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES, SourceKind, TEXEL_BYTES, gpu_adjust_supported,
     gpu_blend_supported,
@@ -34,6 +41,7 @@ use crate::kernel::{
 use crate::residency::{Residency, ResidentKey};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
+use hsk_studio_pigment::effect_math::EffectKind;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BackendIdentity, ColourTag, DeviceClass, Exactness,
     ExactnessLedger, ExecuteRequest, ExtOperator, Knockout, MaskFormat, NoVector, Operator,
@@ -48,6 +56,11 @@ pub const RENDERER_NAME: &str = "hsk-studio-render-gpu";
 pub const RENDERER_VERSION: &str = "0.1";
 /// Smallest chunk (texels) the executor will shrink to before reporting `BudgetExceeded`.
 const MIN_CHUNK_TEXELS: u64 = 64;
+/// Smallest output side of a chunk of a plan with layer effects before it is refused (the frame
+/// around it adds the effect margin on every side).
+const MIN_FX_SIDE: u32 = 8;
+/// Bytes per frame texel of the three f32 matte planes.
+const FX_PLANE_TEXEL_BYTES: u64 = 12;
 const DEFAULT_POLL_LIMIT: Duration = Duration::from_secs(60);
 
 /// Counters of one successful execution (device-side detail the shared receipt has no field for).
@@ -82,11 +95,17 @@ struct MaskView<'a> {
 }
 impl MaskView<'_> {
     /// Stored coverage before feather, inversion and density. Same conversion as render-cpu: f64
-    /// division, one rounding to f32. The caller keeps `(x, y)` inside the verified plane bounds; a
-    /// coordinate outside the plane reads as 0 coverage instead of panicking.
+    /// division, one rounding to f32. Inside a plain execution `(x, y)` stays inside the verified
+    /// plane bounds. A plan with layer effects evaluates frames that reach beyond the target, and
+    /// there a coordinate beyond the plane reads the nearest plane texel (render-cpu's clamped
+    /// read); the plane's data beyond the target is unknown either way.
     fn raw(&self, x: i64, y: i64) -> f32 {
-        let (Some(dx), Some(dy)) = (x.checked_sub(self.bounds.x), y.checked_sub(self.bounds.y))
-        else {
+        let last_x = i64::from(self.bounds.width.saturating_sub(1));
+        let last_y = i64::from(self.bounds.height.saturating_sub(1));
+        let (Some(dx), Some(dy)) = (
+            x.checked_sub(self.bounds.x).map(|v| v.clamp(0, last_x)),
+            y.checked_sub(self.bounds.y).map(|v| v.clamp(0, last_y)),
+        ) else {
             return 0.0;
         };
         let (Ok(dx), Ok(dy)) = (usize::try_from(dx), usize::try_from(dy)) else {
@@ -127,12 +146,16 @@ struct PLayer<'a> {
     mode: StudioBlendMode,
     /// `opacity * fill_opacity` (fill folded in as a product, class Approximate, as render-cpu).
     opacity: f32,
+    /// The layer opacity alone: the effects of a layer fade with it and not with the fill.
+    layer_opacity: f32,
     mask: Option<MaskView<'a>>,
     /// Blend-If entries of the plan-extension envelope (`None` = the v1 composite).
     blend_if: Option<BlendIfGpu>,
     /// Adjustment layer of the envelope: the layer's input is the transparent placeholder and the
     /// content is `f(running backdrop)`.
     adjust: Option<Box<AdjustGpu>>,
+    /// Layer effects of the envelope (pigment `effect_math`), compiled into matte passes.
+    fx: Option<Box<FxLayer>>,
 }
 enum PNode<'a> {
     Unused,
@@ -163,6 +186,15 @@ struct Prepared<'a> {
     has_ext: bool,
     /// Some adjustment is a curve: the full look-up table binding is needed.
     has_curves: bool,
+    /// Some reachable layer has effects: the frame, the matte planes and the effect pipeline exist.
+    has_fx: bool,
+    /// Blur kernels of all effects (charged to the working-byte limit while compiling).
+    fx_kernels: FxKernels,
+    /// Largest per-pixel window cost of any effect pass (the chunk shrinks to bound a pass).
+    fx_window_ops: u64,
+    /// Margin in pixels every chunk is evaluated with beyond its own rectangle: the largest sum,
+    /// along any chain of nested layers with effects, of the margins the effects read.
+    frame_margin: u32,
 }
 
 fn unsupported(operator: &'static str) -> GpuError {
@@ -176,6 +208,28 @@ fn mismatch(key: SourceKey) -> GpuError {
 }
 fn overflow() -> GpuError {
     GpuError::Backend(BackendError::Overflow)
+}
+/// `rect` grown by `margin` pixels on every side.
+fn grow_rect(rect: Rect, margin: u32) -> Result<Rect, GpuError> {
+    let m = i64::from(margin);
+    let side = |v: u32| u32::try_from(i64::from(v).checked_add(m.checked_mul(2)?)?).ok();
+    Ok(Rect {
+        x: rect.x.checked_sub(m).ok_or_else(overflow)?,
+        y: rect.y.checked_sub(m).ok_or_else(overflow)?,
+        width: side(rect.width).ok_or_else(overflow)?,
+        height: side(rect.height).ok_or_else(overflow)?,
+    })
+}
+/// Typed refusal of an effect that could not be compiled.
+fn fx_error(e: FxError, limit: u64) -> GpuError {
+    match e {
+        FxError::Overflow => overflow(),
+        FxError::Unsupported(key) => unsupported(key),
+        FxError::Budget { requested } => GpuError::BudgetExceeded {
+            requested,
+            budget: limit,
+        },
+    }
 }
 fn end(rect: Rect) -> Result<(i64, i64), GpuError> {
     rect.end().map_err(|_| overflow())
@@ -338,14 +392,20 @@ fn prepare<'a>(
     let (mut has_ext, mut has_curves) = (false, false);
     let mut feathered: Vec<FeatherPlane> = Vec::new();
     let mut feather_bytes = 0u64;
+    let mut has_fx = false;
+    let mut fx_kernels = FxKernels::default();
+    let mut fx_window_ops = 1u64;
+    // Per node: the margin a chunk must be evaluated with so the effects inside it read real data.
+    let mut margins: Vec<u32> = Vec::with_capacity(n);
     for (i, node) in plan.nodes.iter().enumerate() {
         if !reach[i] {
             nodes.push(PNode::Unused);
             bounds.push(None);
             need.push(0);
+            margins.push(0);
             continue;
         }
-        let (pnode, node_bounds, node_need) = match node {
+        let (pnode, node_bounds, node_need, node_margin) = match node {
             PlanNode::Tile(t) => {
                 let planes = sources
                     .tile(t.key)
@@ -360,6 +420,7 @@ fn prepare<'a>(
                     },
                     Some(t.placement),
                     0,
+                    0,
                 )
             }
             PlanNode::Solid { rect, rgba } => {
@@ -370,13 +431,14 @@ fn prepare<'a>(
                     return Err(unsupported("sample_range_outside_unit"));
                 }
                 end(*rect)?;
-                (PNode::Solid { rgba: *rgba }, Some(*rect), 0)
+                (PNode::Solid { rgba: *rgba }, Some(*rect), 0, 0)
             }
             PlanNode::Vector(never) => match *never {},
             PlanNode::Group(g) => {
                 let mut layers = Vec::with_capacity(g.layers.len());
                 let mut group_bounds = None;
                 let mut group_need = 0usize;
+                let mut group_margin = 0u32;
                 for (layer_index, l) in g.layers.iter().enumerate() {
                     let input = l.input.0 as usize;
                     let pass_through = l.mode == StudioBlendMode::PassThrough;
@@ -407,12 +469,29 @@ fn prepare<'a>(
                     {
                         return Err(unsupported(x.knockout.key()));
                     }
-                    // Layer effects (pigment effect_math) are not implemented on the GPU yet:
-                    // `extension_exactness(Effect)` is Unsupported so admission refuses them first;
-                    // this is the defence in depth that never renders a plan without its effects.
-                    if layer_ext.is_some_and(|x| !x.effects.is_empty()) {
-                        return Err(unsupported("effect"));
-                    }
+                    // Layer effects (pigment effect_math): compiled into matte passes and a
+                    // margin. The compile charges the blur kernels to the working-byte limit.
+                    let fx = match layer_ext {
+                        Some(x) if !x.effects.is_empty() => {
+                            let mut effects = Vec::with_capacity(x.effects.len());
+                            let mut margin = 0u32;
+                            for op in &x.effects {
+                                margin = margin
+                                    .max(margin_of(op).map_err(|e| fx_error(e, scratch_limit))?);
+                                let compiled = compile_effect(
+                                    op,
+                                    &mut fx_kernels,
+                                    scratch_limit.saturating_sub(feather_bytes),
+                                )
+                                .map_err(|e| fx_error(e, scratch_limit))?;
+                                fx_window_ops = fx_window_ops.max(compiled.window_ops);
+                                effects.push(compiled);
+                            }
+                            has_fx = true;
+                            Some(Box::new(FxLayer { effects, margin }))
+                        }
+                        _ => None,
+                    };
                     let clipped = l.mask.as_ref().is_some_and(|m| m.is_clip_to_base());
                     let layer_region =
                         bounds[input].and_then(|b| intersect(b, target.extent).ok().flatten());
@@ -498,25 +577,71 @@ fn prepare<'a>(
                         }
                         None => None,
                     };
+                    // Blend-If with effects: the weight depends on the backdrop of the content
+                    // composite and pigment does not define the combination (render-cpu refuses
+                    // it too, under the same key).
+                    if blend_if.is_some() && fx.is_some() {
+                        return Err(unsupported("effects_with_blend_if"));
+                    }
+                    // Blend-If on the base of a clipping run: pigment's `BaseAlpha` rule lists the
+                    // base's mode, opacity and fill for the run composite and the mask for the run
+                    // unit, and does not say where the base's Blend-If ranges apply (at the final
+                    // composite, or while the unit is formed), so it is refused instead of guessed
+                    // (test fx_admission_and_refusals_run_without_adapter).
+                    let is_clip_base = !clipped
+                        && g.layers
+                            .get(layer_index.saturating_add(1))
+                            .is_some_and(|next| {
+                                next.mask.as_ref().is_some_and(|m| m.is_clip_to_base())
+                            });
+                    if blend_if.is_some() && is_clip_base {
+                        return Err(unsupported("blend_if_clip_base"));
+                    }
                     has_ext |= blend_if.is_some() || adjust.is_some();
-                    group_bounds = union(group_bounds, bounds[input])?;
+                    // The layer's bounds grow by its effect margin; the margin of the node is the
+                    // largest chain sum of effect margins through nested groups.
+                    let layer_margin = fx.as_ref().map_or(0, |f| f.margin);
+                    let layer_bounds = match (bounds[input], fx.as_ref()) {
+                        (Some(b), Some(f)) => Some(grow_rect(b, f.margin)?),
+                        (b, _) => b,
+                    };
+                    let child_margin = match &plan.nodes[input] {
+                        PlanNode::Group(_) => margins[input],
+                        _ => 0,
+                    };
+                    group_margin = group_margin.max(
+                        layer_margin
+                            .checked_add(child_margin)
+                            .ok_or_else(overflow)?,
+                    );
+                    group_bounds = union(group_bounds, layer_bounds)?;
                     layers.push(PLayer {
                         input,
                         clipped,
                         mode: l.mode,
                         opacity: l.opacity * l.fill_opacity,
+                        layer_opacity: l.opacity,
                         mask,
                         blend_if,
                         adjust,
+                        fx,
                     });
                 }
                 // Destination levels below this group's own: a plain layer needs its isolated child's
                 // buffer (1 + the child's need); a clipping run needs the run buffer G (1) plus,
                 // below G, each member's isolated child.
-                let child_depth = |k: usize| match &plan.nodes[layers[k].input] {
-                    PlanNode::Group(c) if c.isolated => need[layers[k].input].saturating_add(1),
-                    PlanNode::Group(_) => need[layers[k].input],
-                    _ => 0,
+                // A layer with effects also holds its content frame one level below its own.
+                let child_depth = |k: usize| {
+                    let below = match &plan.nodes[layers[k].input] {
+                        PlanNode::Group(c) if c.isolated => need[layers[k].input].saturating_add(1),
+                        PlanNode::Group(_) => need[layers[k].input],
+                        _ => 0,
+                    };
+                    if layers[k].fx.is_some() {
+                        below.saturating_add(1)
+                    } else {
+                        below
+                    }
                 };
                 let mut i = 0;
                 while i < layers.len() {
@@ -546,12 +671,14 @@ fn prepare<'a>(
                     },
                     group_bounds,
                     group_need,
+                    group_margin,
                 )
             }
         };
         nodes.push(pnode);
         bounds.push(node_bounds);
         need.push(node_need);
+        margins.push(node_margin);
     }
     Ok(Prepared {
         nodes,
@@ -564,6 +691,10 @@ fn prepare<'a>(
         feathered,
         has_ext,
         has_curves,
+        has_fx,
+        fx_kernels,
+        fx_window_ops,
+        frame_margin: margins[root],
     })
 }
 
@@ -942,19 +1073,36 @@ impl RenderBackend<NoVector> for GpuBackend {
     fn supports_clip_to_base(&self) -> bool {
         true
     }
-    /// Envelope operators this backend implements, all `Fitted` (f32 GPU arithmetic is
-    /// tolerance-equal to pigment's reference, not bit-exact; curves are sampled from a 4096-entry
-    /// table, feather is a host blur with pigment's taps). The adjustment kinds are those with a
-    /// shader body (`gpu_adjust_supported`); knockout is not implemented (test
-    /// ext_refusals_and_capabilities_run_without_adapter).
+    /// Envelope operators this backend implements. A supported operator reports the lower class of
+    /// pigment's declared class (`ExtOperator::intrinsic`) and `Fitted`: f32 GPU arithmetic is
+    /// tolerance-equal to pigment's reference, not bit-exact (curves are sampled from a 4096-entry
+    /// table, feather is a host blur with pigment's taps, effect blurs accumulate in binary32), and
+    /// the reported class never exceeds pigment's (CX-CAP-001; test
+    /// ext_refusals_and_capabilities_run_without_adapter). The adjustment kinds are those with a
+    /// shader body (`gpu_adjust_supported`), the effect kinds are the six of pigment's waves 1 and
+    /// 2; knockout is not implemented.
     fn extension_exactness(&self, operator: ExtOperator) -> Exactness {
-        match operator {
+        let supported = match operator {
             ExtOperator::AdjustmentLayer
             | ExtOperator::BlendIf
             | ExtOperator::MaskDensity
-            | ExtOperator::MaskFeather => Exactness::Fitted,
-            ExtOperator::Adjustment(kind) if gpu_adjust_supported(kind) => Exactness::Fitted,
-            _ => Exactness::Unsupported,
+            | ExtOperator::MaskFeather => true,
+            ExtOperator::Adjustment(kind) => gpu_adjust_supported(kind),
+            ExtOperator::Effect(kind) => matches!(
+                kind,
+                EffectKind::DropShadow
+                    | EffectKind::ColourOverlay
+                    | EffectKind::Stroke
+                    | EffectKind::InnerShadow
+                    | EffectKind::OuterGlow
+                    | EffectKind::InnerGlow
+            ),
+            _ => false,
+        };
+        if supported {
+            operator.intrinsic().lowest_of(Exactness::Fitted)
+        } else {
+            Exactness::Unsupported
         }
     }
     fn execute_extended(
@@ -1034,6 +1182,13 @@ struct ExtBuffers {
     binds_chunk: Vec<wgpu::BindGroup>,
 }
 
+/// Device buffers of the effect passes (only when a layer has effects): the parameter block and
+/// three f32 scratch planes of frame size. The matte itself is written into `Exec::mask`.
+struct FxBuffers {
+    params: wgpu::Buffer,
+    planes: [wgpu::Buffer; 3],
+}
+
 /// Device buffers and bind groups of one execution plus the state the layer recursion shares.
 struct Exec<'e> {
     ctx: &'e GpuContext,
@@ -1049,6 +1204,9 @@ struct Exec<'e> {
     /// `binds_chunk[l]`: dst = `levels[l]`, src = `levels[l + 1]` (an isolated group's result).
     binds_chunk: Vec<wgpu::BindGroup>,
     ext: Option<ExtBuffers>,
+    fx: Option<FxBuffers>,
+    /// Blur kernels of the plan's effects (the passes index into it).
+    kernels: &'e FxKernels,
     /// Blurred mask coverage of the envelope's feathered layers (`MaskView::feather` indexes it).
     feathered: &'e [FeatherPlane],
     upload: Vec<u8>,
@@ -1201,6 +1359,102 @@ impl Exec<'_> {
         Ok(())
     }
 
+    /// One matte pass over `region` of the frame `chunk`: reads the content frame `levels[content]`
+    /// (its alpha is the layer's shape alpha) and the planes the step names, writes its output plane.
+    fn fx_pass(
+        &mut self,
+        step: &FxStep,
+        region: Rect,
+        chunk: Rect,
+        content: usize,
+    ) -> Result<(), GpuError> {
+        let ctx = self.ctx;
+        let Some(fx) = self.fx.as_ref() else {
+            return Err(unsupported("plan_shape"));
+        };
+        let bytes = params_bytes(
+            step,
+            self.kernels,
+            chunk.width,
+            [
+                offset(region.x, chunk.x)?,
+                offset(region.y, chunk.y)?,
+                region.width,
+                region.height,
+            ],
+        )
+        .map_err(|e| fx_error(e, u64::MAX))?;
+        ctx.queue.write_buffer(&fx.params, 0, &bytes);
+        let plane = |b: Buf| match b {
+            Buf::T0 => &fx.planes[0],
+            Buf::T1 => &fx.planes[1],
+            Buf::T2 => &fx.planes[2],
+            Buf::Mask => &self.mask,
+        };
+        let bind = ctx.kernel.bind_fx(
+            &ctx.device,
+            &fx.params,
+            [plane(step.fin), plane(step.fin2), plane(step.fout)],
+            &self.levels[content],
+        );
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu effect pass"),
+            });
+        ctx.kernel
+            .dispatch_fx(&mut encoder, &bind, region.width, region.height);
+        ctx.queue.submit(Some(encoder.finish()));
+        self.stats.dispatches = self.stats.dispatches.saturating_add(1);
+        Ok(())
+    }
+
+    /// Composite the matte (in the mask buffer, region-sized) as a solid colour onto
+    /// `levels[level]` with the effect's mode and `opacity` (effect opacity times layer opacity).
+    fn composite_matte(
+        &mut self,
+        effect: &FxEffect,
+        opacity: f32,
+        region: Rect,
+        chunk: Rect,
+        level: usize,
+    ) -> Result<(), GpuError> {
+        let ctx = self.ctx;
+        let [r, g, b] = effect.colour;
+        let params = LayerParams {
+            chunk_w: chunk.width,
+            chunk_h: chunk.height,
+            region: [
+                offset(region.x, chunk.x)?,
+                offset(region.y, chunk.y)?,
+                region.width,
+                region.height,
+            ],
+            mode: effect.mode,
+            source: SourceKind::Solid([r, g, b, 1.0]),
+            has_mask: true,
+            opacity,
+            replace: false,
+            clip: false,
+            density: 1.0,
+        };
+        ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu effect composite"),
+            });
+        ctx.kernel.dispatch(
+            &mut encoder,
+            &self.binds_tile[level],
+            region.width,
+            region.height,
+        );
+        ctx.queue.submit(Some(encoder.finish()));
+        self.stats.dispatches = self.stats.dispatches.saturating_add(1);
+        Ok(())
+    }
+
     /// Adjustment layer: `levels[level]` (the running backdrop of the layer's group, or the run
     /// unit of a clipping run) is adjusted in place over `region`. A clipped adjustment ignores a
     /// mask like every clipped layer.
@@ -1330,8 +1584,8 @@ fn source_pass(
     } else {
         layer.mask.as_ref()
     };
-    // The base of a clipping run applies its Blend-If at the final composite of the run unit, not
-    // while the unit is initialised.
+    // Initialising the run unit from the base never weighs it (a base with Blend-If is refused in
+    // `prepare`).
     let blend_if = if pass == Pass::Replace {
         None
     } else {
@@ -1396,6 +1650,9 @@ fn eval_layer(
     level: usize,
 ) -> Result<(), GpuError> {
     ex.check()?;
+    if let Some(fx) = &layer.fx {
+        return eval_effect_layer(ex, prep, layer, fx, chunk, level);
+    }
     if layer.opacity <= 0.0 {
         return Ok(());
     }
@@ -1417,6 +1674,111 @@ fn eval_layer(
         return eval_group(ex, prep, layer.input, chunk, level);
     }
     source_pass(ex, prep, layer, Pass::Normal, region, chunk, level)
+}
+
+/// A layer with effects (pigment `render_layer_reference` order): every behind-content effect in
+/// list order, the content with `opacity * fill`, every over-content effect in list order. The
+/// content (with the layer mask applied to its alpha: the shape the mattes derive from) is
+/// rendered into the level below, each effect's matte is built from its alpha by the matte passes
+/// into the mask buffer and composited as a solid colour with the effect's mode and
+/// `effect opacity * layer opacity` (effects fade with the layer opacity, not with the fill).
+fn eval_effect_layer(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    fx: &FxLayer,
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    if layer.layer_opacity <= 0.0 {
+        return Ok(());
+    }
+    // Content outside the frame is farther than the margin from every pixel that is kept.
+    let Some(bounds) = prep.bounds[layer.input] else {
+        return Ok(());
+    };
+    let Some(content_region) = intersect(bounds, chunk)? else {
+        return Ok(());
+    };
+    let Some(fx_region) = intersect(grow_rect(bounds, fx.margin)?, chunk)? else {
+        return Ok(());
+    };
+    let content = level.saturating_add(1);
+    ex.clear(content, texel_bytes(chunk.width, chunk.height));
+    let mask = layer.mask.as_ref();
+    match &prep.nodes[layer.input] {
+        PNode::Group { isolated: true, .. } => {
+            let below = content.saturating_add(1);
+            ex.clear(below, texel_bytes(chunk.width, chunk.height));
+            eval_group(ex, prep, layer.input, chunk, below)?;
+            ex.composite(
+                StudioBlendMode::Normal,
+                1.0,
+                mask,
+                None,
+                Pass::Normal,
+                content_region,
+                chunk,
+                content,
+                Src::Chunk,
+            )?;
+        }
+        PNode::Tile { planes, rect } => ex.composite(
+            StudioBlendMode::Normal,
+            1.0,
+            mask,
+            None,
+            Pass::Normal,
+            content_region,
+            chunk,
+            content,
+            Src::Tile(planes, *rect),
+        )?,
+        PNode::Solid { rgba } if rgba[3] <= 0.0 => {}
+        PNode::Solid { rgba } => ex.composite(
+            StudioBlendMode::Normal,
+            1.0,
+            mask,
+            None,
+            Pass::Normal,
+            content_region,
+            chunk,
+            content,
+            Src::Solid(*rgba),
+        )?,
+        PNode::Group {
+            isolated: false, ..
+        }
+        | PNode::Unused => return Err(unsupported("plan_shape")),
+    }
+    for behind in [true, false] {
+        if !behind {
+            // the content itself, mask already inside its alpha
+            ex.composite(
+                layer.mode,
+                layer.opacity,
+                None,
+                None,
+                Pass::Normal,
+                content_region,
+                chunk,
+                level,
+                Src::Chunk,
+            )?;
+        }
+        for effect in fx.effects.iter().filter(|e| e.over_content != behind) {
+            ex.check()?;
+            let opacity = effect.opacity * layer.layer_opacity;
+            if effect.steps.is_empty() || opacity <= 0.0 {
+                continue;
+            }
+            for step in &effect.steps {
+                ex.fx_pass(step, fx_region, chunk, content)?;
+            }
+            ex.composite_matte(effect, opacity, fx_region, chunk, level)?;
+        }
+    }
+    Ok(())
 }
 
 /// `run = [base, clipped...]` evaluated as an isolated unit G one level down (pigment
@@ -1461,11 +1823,13 @@ fn eval_clip_run(
         };
         source_pass(ex, prep, clipped, Pass::Clip, region, chunk, g)?;
     }
+    // A base with Blend-If is refused in `prepare` (pigment does not define where its ranges
+    // apply), so this composite has no weight.
     ex.composite(
         base.mode,
         base.opacity,
         None,
-        base.blend_if.as_ref(),
+        None,
         Pass::Normal,
         base_region,
         chunk,
@@ -1516,26 +1880,27 @@ fn run(
     } else {
         0
     };
+    // A plan with layer effects evaluates every chunk as a FRAME: the chunk grown by `margin`
+    // pixels on each side (the effects read that far), so the level, source, mask and matte
+    // buffers are frame-sized; only the central chunk is read back.
+    let fx_on = prepared.has_fx;
+    let margin = prepared.frame_margin;
+    let margin2 = margin.checked_mul(2).ok_or_else(overflow)?;
+    let masked = prepared.has_masks || fx_on;
     let per_texel = sum_bytes(&[
         mul_bytes(
             TEXEL_BYTES,
             sum_bytes(&[levels_u64, 1, u64::from(prepared.has_tiles)])?,
         )?,
-        if prepared.has_masks {
-            MASK_TEXEL_BYTES
-        } else {
-            0
-        },
+        if masked { MASK_TEXEL_BYTES } else { 0 },
+        if fx_on { FX_PLANE_TEXEL_BYTES } else { 0 },
     ])?;
     let fixed = sum_bytes(&[
         PARAMS_BYTES,
         if prepared.has_tiles { 0 } else { TEXEL_BYTES },
-        if prepared.has_masks {
-            0
-        } else {
-            MASK_TEXEL_BYTES
-        },
+        if masked { 0 } else { MASK_TEXEL_BYTES },
         ext_fixed,
+        if fx_on { FXP_BYTES } else { 0 },
     ])?;
     let limit = request.max_working_bytes.min(residency.budget_bytes());
     let by_budget = limit
@@ -1550,26 +1915,58 @@ fn run(
             budget: limit,
         });
     }
-    let side = u32::try_from(max_texels.isqrt())
+    let mut frame_side = u32::try_from(max_texels.isqrt())
         .unwrap_or(u32::MAX)
-        .min(options.chunk_side)
+        .min(options.chunk_side.saturating_add(margin2))
         .max(1);
+    // One effect pass costs `window x frame pixels`; the frame shrinks until a pass stays under the
+    // cost bound (a pass that runs for seconds can hit the driver's watchdog).
+    let mut cost_limited = false;
+    if fx_on {
+        let by_cost = u32::try_from(
+            FX_PASS_MAX_OPS
+                .checked_div(prepared.fx_window_ops)
+                .unwrap_or(0)
+                .isqrt(),
+        )
+        .unwrap_or(u32::MAX);
+        if by_cost < frame_side {
+            frame_side = by_cost;
+            cost_limited = true;
+        }
+    }
+    let side = frame_side.saturating_sub(margin2);
+    let min_side = if fx_on { MIN_FX_SIDE } else { 1 };
+    if side < min_side {
+        if cost_limited {
+            return Err(unsupported("effect_cost"));
+        }
+        let frame_min = u64::from(min_side).saturating_add(u64::from(margin2));
+        return Err(GpuError::BudgetExceeded {
+            requested: fixed
+                .saturating_add(per_texel.saturating_mul(frame_min.saturating_mul(frame_min))),
+            budget: limit,
+        });
+    }
     let chunk_w = side.min(extent.width);
     let chunk_h = side.min(extent.height);
+    let frame_w = chunk_w.checked_add(margin2).ok_or_else(overflow)?;
+    let frame_h = chunk_h.checked_add(margin2).ok_or_else(overflow)?;
+    let frame_bytes = texel_bytes(frame_w, frame_h);
     let chunk_bytes = texel_bytes(chunk_w, chunk_h);
+    let frame_texels = mul_bytes(u64::from(frame_w), u64::from(frame_h))?;
     let src_bytes = if prepared.has_tiles {
-        chunk_bytes
+        frame_bytes
     } else {
         TEXEL_BYTES
     };
-    let mask_bytes = if prepared.has_masks {
-        mul_bytes(
-            mul_bytes(u64::from(chunk_w), u64::from(chunk_h))?,
-            MASK_TEXEL_BYTES,
-        )?
+    let mask_bytes = if masked {
+        mul_bytes(frame_texels, MASK_TEXEL_BYTES)?
     } else {
         MASK_TEXEL_BYTES
     };
+    // One f32 matte plane of the frame (three of them exist when a layer has effects).
+    let plane_bytes = mul_bytes(frame_texels, 4)?;
     stats.chunk_width = chunk_w;
     stats.chunk_height = chunk_h;
     stats.levels = u32::try_from(level_count).map_err(|_| overflow())?;
@@ -1577,7 +1974,7 @@ fn run(
     // ---- charge residency first, then create the buffers ----
     for level in 0..level_count {
         let level = u32::try_from(level).map_err(|_| overflow())?;
-        residency.reserve(ResidentKey::Level(level), chunk_bytes)?;
+        residency.reserve(ResidentKey::Level(level), frame_bytes)?;
     }
     for (name, bytes) in [
         ("staging", chunk_bytes),
@@ -1591,16 +1988,27 @@ fn run(
         residency.reserve(ResidentKey::Scratch("ext"), EXT_BYTES)?;
         residency.reserve(ResidentKey::Scratch("lut"), lut_bytes)?;
     }
+    let fx_total = if fx_on {
+        residency.reserve(ResidentKey::Scratch("fx_params"), FXP_BYTES)?;
+        for name in ["fx_plane0", "fx_plane1", "fx_plane2"] {
+            residency.reserve(ResidentKey::Scratch(name), plane_bytes)?;
+        }
+        sum_bytes(&[FXP_BYTES, mul_bytes(plane_bytes, 3)?])?
+    } else {
+        0
+    };
     let total = sum_bytes(&[
-        mul_bytes(chunk_bytes, sum_bytes(&[levels_u64, 1])?)?,
+        mul_bytes(frame_bytes, levels_u64)?,
+        chunk_bytes,
         src_bytes,
         mask_bytes,
         PARAMS_BYTES,
         ext_fixed,
+        fx_total,
     ])?;
     let device = &ctx.device;
     let queue = &ctx.queue;
-    let (levels, staging, src, mask, params, binds_tile, binds_chunk, ext_buffers) =
+    let (levels, staging, src, mask, params, binds_tile, binds_chunk, ext_buffers, fx_buffers) =
         scoped(device, total, limit, || {
             let buffer = |label, size, usage| {
                 device.create_buffer(&wgpu::BufferDescriptor {
@@ -1614,7 +2022,7 @@ fn run(
                 .map(|_| {
                     buffer(
                         "hsk-studio-render-gpu level",
-                        chunk_bytes,
+                        frame_bytes,
                         wgpu::BufferUsages::STORAGE
                             | wgpu::BufferUsages::COPY_SRC
                             | wgpu::BufferUsages::COPY_DST,
@@ -1650,6 +2058,20 @@ fn run(
                 .zip(levels.iter().skip(1))
                 .map(|(dst, below)| ctx.kernel.bind(device, &params, below, &mask, dst))
                 .collect();
+            let fx_buffers = fx_on.then(|| FxBuffers {
+                params: buffer(
+                    "hsk-studio-render-gpu effect params",
+                    FXP_BYTES,
+                    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                ),
+                planes: [0, 1, 2].map(|_| {
+                    buffer(
+                        "hsk-studio-render-gpu effect plane",
+                        plane_bytes,
+                        wgpu::BufferUsages::STORAGE,
+                    )
+                }),
+            });
             let ext_buffers = prepared.has_ext.then(|| {
                 let ext = buffer(
                     "hsk-studio-render-gpu envelope params",
@@ -1692,6 +2114,7 @@ fn run(
                 binds_tile,
                 binds_chunk,
                 ext_buffers,
+                fx_buffers,
             )
         })?;
 
@@ -1706,6 +2129,8 @@ fn run(
         binds_tile,
         binds_chunk,
         ext: ext_buffers,
+        fx: fx_buffers,
+        kernels: &prepared.fx_kernels,
         feathered: &prepared.feathered,
         upload: Vec::new(),
         mask_upload: Vec::new(),
@@ -1717,9 +2142,11 @@ fn run(
         clipped: false,
         mode: StudioBlendMode::Normal,
         opacity: 1.0,
+        layer_opacity: 1.0,
         mask: None,
         blend_if: None,
         adjust: None,
+        fx: None,
     };
     let mut colour: Vec<u8> = Vec::new();
     let mut alpha: Vec<u8> = Vec::new();
@@ -1740,21 +2167,37 @@ fn run(
                     .map_err(|_| overflow())?,
             };
             let count = texel_bytes(rect.width, rect.height);
+            // The frame: the chunk plus the effect margin (the chunk itself without effects).
+            let frame = grow_rect(rect, margin)?;
 
-            // Transparent backdrop for this chunk, then the root group (transparent backdrop, so
+            // Transparent backdrop for this frame, then the root group (transparent backdrop, so
             // isolated and not are the same here) or the single leaf.
-            ex.clear(0, count);
+            ex.clear(0, texel_bytes(frame.width, frame.height));
             if matches!(prepared.nodes[prepared.root], PNode::Group { .. }) {
-                eval_group(&mut ex, prepared, prepared.root, rect, 0)?;
+                eval_group(&mut ex, prepared, prepared.root, frame, 0)?;
             } else {
-                eval_layer(&mut ex, prepared, &root_layer, rect, 0)?;
+                eval_layer(&mut ex, prepared, &root_layer, frame, 0)?;
             }
 
-            // Read the finished chunk back.
+            // Read the finished chunk back (the central rows of the frame when it has a margin).
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hsk-studio-render-gpu readback"),
             });
-            encoder.copy_buffer_to_buffer(&ex.levels[0], 0, &staging, 0, count);
+            if margin == 0 {
+                encoder.copy_buffer_to_buffer(&ex.levels[0], 0, &staging, 0, count);
+            } else {
+                let row_bytes = texel_bytes(rect.width, 1);
+                for row in 0..rect.height {
+                    let first = u64::from(row)
+                        .checked_add(u64::from(margin))
+                        .and_then(|r| r.checked_mul(u64::from(frame.width)))
+                        .and_then(|r| r.checked_add(u64::from(margin)))
+                        .and_then(|r| r.checked_mul(TEXEL_BYTES))
+                        .ok_or_else(overflow)?;
+                    let to = u64::from(row).checked_mul(row_bytes).ok_or_else(overflow)?;
+                    encoder.copy_buffer_to_buffer(&ex.levels[0], first, &staging, to, row_bytes);
+                }
+            }
             queue.submit(Some(encoder.finish()));
             let (tx, rx) = std::sync::mpsc::channel();
             staging
