@@ -45,6 +45,7 @@ use crate::pdf_edit::PdfDoc;
 use crate::reader::{Entry, check_cancel};
 use crate::redaction::res;
 use crate::sanitized_save::{NotProven, PayloadProof, variants_text, verify_with_variants};
+use crate::norm::{self, Escapes};
 use crate::show_text::{FontCache, show_text};
 use crate::syntax::{Dict, ObjRef, Object, Stream};
 use crate::text_codec::{Enc, decode_text, encode_text};
@@ -288,34 +289,12 @@ fn fold(c: char, ci: bool) -> char {
     if ci { c.to_lowercase().next().unwrap_or(c) } else { c }
 }
 
-/// Characters that render as nothing and must not split a needle (zero-width characters, soft
-/// hyphen).
-fn is_ignorable(c: char) -> bool {
-    matches!(c, '\u{AD}' | '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
-}
-
-/// Matching form of a text: case folded, runs of white space collapsed to one blank, ignorable
-/// characters dropped. `map[i]` is the `[start, end)` span of normalized char `i` in the original.
-fn normalize(text: &[char], ci: bool) -> (Vec<char>, Vec<(usize, usize)>) {
-    let (mut out, mut map) = (Vec::with_capacity(text.len()), Vec::with_capacity(text.len()));
-    let mut i = 0usize;
-    while let Some(&c) = text.get(i) {
-        let start = i;
-        if c.is_whitespace() {
-            while text.get(i).is_some_and(|x| x.is_whitespace() || is_ignorable(*x)) {
-                i = i.saturating_add(1);
-            }
-            out.push(' ');
-        } else if is_ignorable(c) {
-            i = i.saturating_add(1);
-            continue;
-        } else {
-            out.push(fold(c, ci));
-            i = i.saturating_add(1);
-        }
-        map.push((start, i));
-    }
-    (out, map)
+/// Matching form of a text: the proof's normalisation (`norm.rs`: language escapes, characters that
+/// draw nothing, compatibility forms, white-space runs; R9-P2), then case folded. `map[i]` is the
+/// source position of normalized char `i` in the original.
+fn normalize(text: &[char], ci: bool, escapes: Escapes) -> (Vec<char>, Vec<usize>) {
+    let (chars, src) = norm::normalize(text, escapes);
+    (chars.into_iter().map(|c| fold(c, ci)).collect(), src)
 }
 
 struct Matcher {
@@ -351,14 +330,15 @@ impl Matcher {
         let mut set: BTreeSet<Vec<char>> = BTreeSet::new();
         for n in needles {
             let chars: Vec<char> = n.trim().chars().collect();
-            let (norm, _) = normalize(&chars, ci);
-            if norm.is_empty() {
+            let (normal, _) = normalize(&chars, ci, Escapes::Chars);
+            let normal: Vec<char> = normal.iter().collect::<String>().trim_matches(' ').chars().collect();
+            if normal.is_empty() {
                 continue;
             }
-            if norm.len() > MAX_NEEDLE_CHARS {
+            if normal.len() > MAX_NEEDLE_CHARS {
                 return Err(PressError::InputLimit("needle_chars"));
             }
-            set.insert(norm);
+            set.insert(normal);
         }
         let mut needles: Vec<Vec<char>> = set.into_iter().collect();
         needles.sort_by_key(|n| std::cmp::Reverse(n.len()));
@@ -366,26 +346,41 @@ impl Matcher {
     }
 
     /// Non-overlapping, leftmost, longest-first spans `[start, end)` of the original text. Case,
-    /// white-space runs and zero-width characters do not change what matches.
+    /// white-space runs, language escapes, characters that draw nothing and compatibility forms do not
+    /// change what matches (the text is read with its `ESC`..`ESC` language escapes dropped, as a viewer
+    /// shows a text string, and with only the `ESC` characters dropped, as the proof reads drawn text).
     fn find(&self, hay: &[char]) -> Vec<(usize, usize)> {
+        let mut spans = self.find_in(hay, Escapes::Segments);
+        for s in self.find_in(hay, Escapes::Chars) {
+            if !spans.iter().any(|t| s.0 < t.1 && t.0 < s.1) {
+                spans.push(s);
+            }
+        }
+        spans.sort_unstable();
+        spans
+    }
+
+    fn find_in(&self, hay: &[char], escapes: Escapes) -> Vec<(usize, usize)> {
         if self.needles.is_empty() {
             return Vec::new();
         }
-        let (norm, map) = normalize(hay, self.ci);
+        let (normal, map) = normalize(hay, self.ci, escapes);
         let mut out = Vec::new();
         let mut i = 0usize;
-        while i < norm.len() {
+        while i < normal.len() {
             let hit = self.needles.iter().find(|n| {
                 let end = i.saturating_add(n.len());
-                norm.get(i..end).is_some_and(|w| w == n.as_slice()) && (!self.token || boundary(&norm, i, end, n))
+                normal.get(i..end).is_some_and(|w| w == n.as_slice()) && (!self.token || boundary(&normal, i, end, n))
             });
             match hit {
                 Some(n) => {
-                    let last = i.saturating_add(n.len()).saturating_sub(1);
-                    if let (Some(a), Some(b)) = (map.get(i), map.get(last)) {
-                        out.push((a.0, b.1));
+                    let end = i.saturating_add(n.len());
+                    // Marks put in canonical order can move: the span covers every source position.
+                    let src = map.get(i..end).unwrap_or(&[]);
+                    if let (Some(a), Some(b)) = (src.iter().min(), src.iter().max()) {
+                        out.push((*a, b.saturating_add(1)));
                     }
-                    i = i.saturating_add(n.len());
+                    i = end;
                 }
                 None => i = i.saturating_add(1),
             }
@@ -831,7 +826,7 @@ impl Ctx<'_> {
                     let resources = st.dict.get("Resources").map(|r| res(objs, r)).and_then(Object::as_dict);
                     let shown = show_text(objs, resources, &data, self.limits, &mut self.budget, &mut self.fonts)?;
                     undecodable |= shown.opaque;
-                    let found = self.matcher.find(&shown.all).len().max(self.matcher.find(&shown.joined).len());
+                    let found = shown.texts.iter().map(|t| self.matcher.find(t).len()).max().unwrap_or(0);
                     matches = matches.saturating_add(count_u32(found));
                 }
             }

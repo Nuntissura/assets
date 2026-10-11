@@ -10,12 +10,19 @@
 //! has `/Widths`, otherwise 1000/1000 em per byte, an upper bound for the standard fonts) and
 //! `[-0.25, +0.95]` em vertically, transformed through Tm x CTM. Whole strings are removed (a
 //! string straddling the region edge is removed entirely). Over-removal is safe; under-removal is
-//! not. Not computed (lead decision 2026-10-11T11:58:11Z; geometry is lane SMB-PRESS-GEOMETRY): Type 3
-//! glyphs (advance through `/FontMatrix`, procedures may draw anywhere) and vertical writing
-//! (`/WMode 1`, `-V` CMaps). Text of either kind anywhere on the page makes the region
-//! [`RedactionClass::Type3Text`] / [`RedactionClass::VerticalText`]: refused under
+//! not. The font is graphics state as for a viewer (lead decision 2026-10-11T13:10:26Z, R9-F2): `Tf`
+//! and an ExtGState `/Font` set by `gs` (font and size; ISO 32000-2 8.4.5 Table 57) select it, `q`/`Q`
+//! save and restore it, and a form XObject drawn by `Do` starts with the caller's resolved font
+//! whatever its own `/Resources` hold (8.10.1; test `font_is_graphics_state_in_the_selector`). Not
+//! computed (lead decisions 2026-10-11T11:58:11Z and 13:10:26Z; geometry is lane SMB-PRESS-GEOMETRY):
+//! Type 3 glyphs (advance through `/FontMatrix`, procedures may draw anywhere), vertical writing, a
+//! writing mode that is not positively known (`determination::writing_mode`) and text whose font is
+//! not determined. Text of any such kind anywhere on the page makes the region
+//! [`RedactionClass::Type3Text`] / [`RedactionClass::VerticalText`] /
+//! [`RedactionClass::UnresolvedWritingMode`] / [`RedactionClass::UnresolvedFont`]: refused under
 //! [`UnsupportedPolicy::Refuse`], listed in `unredacted` (never complete) under `ReportAndContinue`
-//! (test `type3_and_vertical_text_never_read_as_cleared`).
+//! (tests `type3_and_vertical_text_never_read_as_cleared`, `writing_mode_is_read_from_the_cmap`,
+//! `font_is_graphics_state_in_the_selector`).
 //! Images (image XObjects and inline images) cannot be erased pixel by pixel here: under
 //! `UnsupportedPolicy::RemoveImages` an image whose placement touches the region is removed whole
 //! (its `Do` / `BI..EI` leaves the content, the resource entry goes when nothing else uses it), under
@@ -23,8 +30,10 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::cmap::{Cmap, parse_to_unicode};
 use crate::content::{Op, parse_content};
+use crate::determination::{WMode, writing_mode};
 use crate::encoding::{SimpleEncoding, is_composite, same_words};
 use crate::error::{MAX_REF_HOPS, PressError, RedactionClass, Result};
+use crate::text_codec::pdfdoc_char;
 use crate::filters;
 use crate::pdf_edit::PdfDoc;
 use crate::reader::{Entry, check_cancel};
@@ -63,18 +72,22 @@ pub struct RedactionReport {
     pub page_index: u32,
     /// Removed string operands (elements of a `TJ` counted one by one).
     pub text_strings_removed: u32,
-    /// The removed string operands, and for every run of two or more adjacent removed elements of one
-    /// `TJ` that run joined (what a viewer draws as one run; R8 F2, test `kerned_tj_runs_are_read_whole`).
+    /// The removed string operands, and for every run of two or more consecutive removed strings of
+    /// one text object (`BT`..`ET`, across `Tj`, `TJ`, `'` and `"` operators and the elements of a
+    /// `TJ`, ended by a kept non-empty string) that run joined: what a viewer draws as one run (R8 F2,
+    /// R9-F3; tests `kerned_tj_runs_are_read_whole`, `split_runs_are_read_whole`).
     pub removed_text: Vec<Vec<u8>>,
     /// `removed_text[i]` as its font draws it: its simple font's encoding reading when that is complete
     /// and tells more than the bytes, else its `/ToUnicode` reading (`None`: the bytes are the text, or
     /// nothing reads them; see `removed_unreadable`).
     pub removed_unicode: Vec<Option<String>>,
-    /// `removed_text[i]` has no complete reading: its font is not in the resources (or no `Tf` set
-    /// one), is a composite font without a usable `/ToUnicode` or with codes the map does not name, or
-    /// is a simple font with a code neither its encoding nor its `/ToUnicode` reads. The words it drew
-    /// are unknown; a distinctive one withholds `RedactedOutput::is_proven`
-    /// (`NotProven::UnreadableRemovedText`, R8 F3/D3; test `unreadable_removed_text_is_never_proven`).
+    /// `removed_text[i]` has no complete reading: its font is not determined (no `Tf` or `gs /Font`
+    /// selected one, or the name is not in the resources), is a composite font without a usable
+    /// `/ToUnicode` or with codes the map does not name, or is a simple font with a code neither its
+    /// encoding nor its `/ToUnicode` reads. The words it drew are unknown; any such string, whatever its
+    /// length (one glyph per operator included), withholds `RedactedOutput::is_proven`
+    /// (`NotProven::UnreadableRemovedText`, R8 F3/D3, R9-F3; tests
+    /// `unreadable_removed_text_is_never_proven`, `split_runs_are_read_whole`).
     pub removed_unreadable: Vec<bool>,
     pub annotations_removed: Vec<ObjRef>,
     /// Image XObjects whose placement touched the region and was removed (`RemoveImages`).
@@ -132,6 +145,17 @@ fn touches(a: &[f64; 4], b: &[f64; 4]) -> bool {
     a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1]
 }
 
+/// The font of the graphics state (R9-F2): resolved once where it is selected, then carried by value
+/// (saved by `q`, restored by `Q`, inherited by forms).
+#[derive(Clone)]
+enum FontSel {
+    /// No `Tf` or ExtGState `/Font` selected a font.
+    Unset,
+    Known(Rc<FontInfo>),
+    /// The name (or the ExtGState `/Font` entry) is not a font dictionary of the resources in force.
+    Unresolved,
+}
+
 #[derive(Clone)]
 struct Gfx {
     ctm: Mat,
@@ -141,28 +165,33 @@ struct Gfx {
     tl: f64,
     ts: f64,
     fs: f64,
-    font: Vec<u8>,
+    font: FontSel,
     lw: f64,
 }
 
-#[derive(Clone)]
 struct FontInfo {
     first: i64,
     widths: Vec<f64>,
     missing: f64,
     known: bool,
     composite: bool,
-    /// The resources hold a font of this name.
-    resolved: bool,
     /// A Type 3 font (glyph geometry not computed here).
     type3: bool,
-    /// A composite font that writes vertically (glyph geometry not computed here).
-    vertical: bool,
+    /// Writing mode (simple fonts: horizontal; composite fonts: from the CMap).
+    wmode: WMode,
     /// `/ToUnicode` reading of the font, when it has a usable one.
     cmap: Option<Rc<Cmap>>,
     /// Encoding of a simple font (base encoding, `/Differences`, glyph names); `None` for composite
-    /// fonts and fonts the resources do not hold.
+    /// fonts.
     enc: Option<Rc<SimpleEncoding>>,
+}
+
+/// Consecutive removed strings of one text object (R9-F3): their bytes, and per piece its reading
+/// (`None`: the bytes are the text) and whether that reading is complete.
+#[derive(Default)]
+struct Run {
+    bytes: Vec<u8>,
+    pieces: Vec<(Vec<u8>, Option<String>, bool)>,
 }
 
 struct Shown {
@@ -180,11 +209,15 @@ struct Interp<'a> {
     tm: Mat,
     tlm: Mat,
     path: Option<[f64; 4]>,
-    fonts: BTreeMap<Vec<u8>, FontInfo>,
+    /// Fonts already read, by the address of their (resolved) font dictionary: valid for the whole
+    /// pass because the document's objects are not mutated while it runs.
+    fonts: BTreeMap<usize, Rc<FontInfo>>,
     unsupported: Vec<RedactionClass>,
     removed: Vec<Vec<u8>>,
     /// Removed string operands (`removed` also holds joined runs).
     strings_removed: u32,
+    /// The current run of consecutive removed strings of the text object.
+    run: Run,
     /// `removed[i]` read through its font's `/ToUnicode`.
     removed_unicode: Vec<Option<String>>,
     /// `removed[i]` has no complete reading.
@@ -237,7 +270,7 @@ impl<'a> Interp<'a> {
             doc,
             resources,
             region,
-            g: Gfx { ctm: IDENT, tc: 0.0, tw: 0.0, th: 1.0, tl: 0.0, ts: 0.0, fs: 0.0, font: Vec::new(), lw: 1.0 },
+            g: Gfx { ctm: IDENT, tc: 0.0, tw: 0.0, th: 1.0, tl: 0.0, ts: 0.0, fs: 0.0, font: FontSel::Unset, lw: 1.0 },
             stack: Vec::new(),
             tm: IDENT,
             tlm: IDENT,
@@ -246,6 +279,7 @@ impl<'a> Interp<'a> {
             unsupported: Vec::new(),
             removed: Vec::new(),
             strings_removed: 0,
+            run: Run::default(),
             removed_unicode: Vec::new(),
             removed_unreadable: Vec::new(),
             layout_shift: false,
@@ -255,65 +289,89 @@ impl<'a> Interp<'a> {
         }
     }
 
-    fn font(&mut self, name: &[u8]) -> Result<FontInfo> {
-        if let Some(f) = self.fonts.get(name) {
-            return Ok(f.clone());
-        }
-        let none = FontInfo {
-            first: 0,
-            widths: Vec::new(),
-            missing: 0.0,
-            known: false,
-            composite: false,
-            resolved: false,
-            type3: false,
-            vertical: false,
-            cmap: None,
-            enc: None,
-        };
+    /// The font a font dictionary value selects (`None`: not a font dictionary), read once per
+    /// dictionary.
+    fn font_info(&mut self, value: &Object) -> Result<Option<Rc<FontInfo>>> {
         let doc = self.doc;
-        let fd = self
+        let Some(fd) = doc.resolve(value).as_dict() else { return Ok(None) };
+        let address = std::ptr::from_ref(fd) as usize;
+        if let Some(f) = self.fonts.get(&address) {
+            return Ok(Some(Rc::clone(f)));
+        }
+        let cmap = self.load_to_unicode(fd)?;
+        let info = if is_composite(fd) {
+            let wmode = writing_mode(&doc.objects, fd.get("Encoding"), &doc.limits, &mut self.budget, 0)?;
+            FontInfo { first: 0, widths: Vec::new(), missing: 0.0, known: false, composite: true, type3: false, wmode, cmap, enc: None }
+        } else {
+            let first = fd.get("FirstChar").map(|x| doc.resolve(x)).and_then(Object::as_int).unwrap_or(0);
+            let widths: Vec<f64> = match fd.get("Widths").map(|w| doc.resolve(w)) {
+                Some(Object::Array(a)) => a.iter().map(|w| doc.resolve(w).as_f64().unwrap_or(0.0)).collect(),
+                _ => Vec::new(),
+            };
+            let missing = fd
+                .get("FontDescriptor")
+                .map(|d| doc.resolve(d))
+                .and_then(Object::as_dict)
+                .and_then(|d| d.get("MissingWidth"))
+                .and_then(|m| doc.resolve(m).as_f64())
+                .unwrap_or(0.0);
+            // Charged to the pass budget; running out is a refusal (InputLimit), not "no
+            // encoding": the removed text's reading must not be lost silently (R8 F3/D3; test
+            // unreadable_removed_text_is_never_proven, budget case).
+            let enc = Some(Rc::new(SimpleEncoding::of_font(&doc.objects, fd, &mut self.budget)?));
+            let type3 = fd.get("Subtype").map(|t| doc.resolve(t)).is_some_and(|t| t.is_name("Type3"));
+            FontInfo { first, known: !widths.is_empty(), widths, missing, composite: false, type3, wmode: WMode::Horizontal, cmap, enc }
+        };
+        let info = Rc::new(info);
+        self.fonts.insert(address, Rc::clone(&info));
+        Ok(Some(info))
+    }
+
+    /// `Tf`: the font a resource name selects in the resources in force.
+    fn font_named(&mut self, name: &[u8]) -> Result<FontSel> {
+        let doc = self.doc;
+        let value = self
             .resources
             .and_then(|r| r.get("Font"))
             .map(|f| doc.resolve(f))
             .and_then(Object::as_dict)
             .and_then(|fonts| fonts.entries.iter().find(|(k, _)| k == name))
+            .map(|(_, v)| v);
+        Ok(match value {
+            Some(v) => self.font_info(v)?.map_or(FontSel::Unresolved, FontSel::Known),
+            None => FontSel::Unresolved,
+        })
+    }
+
+    /// `gs`: an ExtGState sets the font and size with `/Font [font size]` (ISO 32000-2 8.4.5 Table 57;
+    /// the operands of `Tf`, the font given as a reference) and the line width with `/LW`.
+    fn ext_gstate(&mut self, name: &[u8]) -> Result<()> {
+        let doc = self.doc;
+        let Some(gs) = self
+            .resources
+            .and_then(|r| r.get("ExtGState"))
+            .map(|g| doc.resolve(g))
+            .and_then(Object::as_dict)
+            .and_then(|g| g.entries.iter().find(|(k, _)| k == name))
             .map(|(_, v)| doc.resolve(v))
-            .and_then(Object::as_dict);
-        let info = match fd {
-            None => none,
-            Some(fd) => {
-                let cmap = self.load_to_unicode(fd)?;
-                if is_composite(fd) {
-                    let vertical = match fd.get("Encoding") {
-                        Some(e) => self.cmap_vertical(e, 0)?,
-                        None => false,
-                    };
-                    FontInfo { composite: true, resolved: true, vertical, cmap, ..none }
-                } else {
-                    let first = fd.get("FirstChar").map(|x| doc.resolve(x)).and_then(Object::as_int).unwrap_or(0);
-                    let widths: Vec<f64> = match fd.get("Widths").map(|w| doc.resolve(w)) {
-                        Some(Object::Array(a)) => a.iter().map(|w| doc.resolve(w).as_f64().unwrap_or(0.0)).collect(),
-                        _ => Vec::new(),
-                    };
-                    let missing = fd
-                        .get("FontDescriptor")
-                        .map(|d| doc.resolve(d))
-                        .and_then(Object::as_dict)
-                        .and_then(|d| d.get("MissingWidth"))
-                        .and_then(|m| doc.resolve(m).as_f64())
-                        .unwrap_or(0.0);
-                    // Charged to the pass budget; running out is a refusal (InputLimit), not "no
-                    // encoding": the removed text's reading must not be lost silently (R8 F3/D3; test
-                    // unreadable_removed_text_is_never_proven, budget case).
-                    let enc = Some(Rc::new(SimpleEncoding::of_font(&doc.objects, fd, &mut self.budget)?));
-                    let type3 = fd.get("Subtype").map(|t| doc.resolve(t)).is_some_and(|t| t.is_name("Type3"));
-                    FontInfo { first, known: !widths.is_empty(), widths, missing, composite: false, resolved: true, type3, vertical: false, cmap, enc }
-                }
-            }
+            .and_then(Object::as_dict)
+        else {
+            return Ok(());
         };
-        self.fonts.insert(name.to_vec(), info.clone());
-        Ok(info)
+        if let Some(lw) = gs.get("LW").and_then(|w| doc.resolve(w).as_f64()) {
+            self.g.lw = lw;
+        }
+        let Some(entry) = gs.get("Font").map(|f| doc.resolve(f)) else { return Ok(()) };
+        let pair = entry.as_array().filter(|a| a.len() == 2);
+        self.g.font = match pair.and_then(|a| a.first()) {
+            Some(v) => self.font_info(v)?.map_or(FontSel::Unresolved, FontSel::Known),
+            None => FontSel::Unresolved,
+        };
+        match pair.and_then(|a| a.get(1)).and_then(|s| doc.resolve(s).as_f64()) {
+            Some(size) => self.g.fs = size,
+            None => self.g.font = FontSel::Unresolved,
+        }
+        Ok(())
     }
 
     /// The font's `/ToUnicode` map, when it has a decodable one (decoded under the pass budget). A
@@ -332,64 +390,30 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// Whether a composite font's CMap (`/Encoding`) writes vertically: a predefined CMap whose name
-    /// ends in `-V` (`Identity-V`, `UniJIS-UCS2-V`, ...), or an embedded CMap stream with `/WMode 1`
-    /// in its dictionary or data, or one that uses (`/UseCMap`) a vertical CMap. An embedded CMap that
-    /// cannot be read counts as vertical (fail closed).
-    fn cmap_vertical(&mut self, enc: &Object, depth: usize) -> Result<bool> {
-        let doc = self.doc;
-        match doc.resolve(enc) {
-            Object::Name(n) => Ok(n.ends_with(b"-V")),
-            Object::Stream(s) => {
-                if depth >= 4 || s.dict.get("WMode").map(|w| doc.resolve(w)).and_then(Object::as_int) == Some(1) {
-                    return Ok(true);
-                }
-                if let Some(used) = s.dict.get("UseCMap")
-                    && self.cmap_vertical(used, depth.saturating_add(1))?
-                {
-                    return Ok(true);
-                }
-                if !filters::is_decodable(&s.dict) {
-                    return Ok(true);
-                }
-                match filters::decode_stream(s, &doc.limits, &mut self.budget) {
-                    Ok(data) => Ok(sets_wmode_one(&data)),
-                    Err(e @ (PressError::InputLimit(_) | PressError::Canceled)) => Err(e),
-                    Err(_) => Ok(true),
-                }
-            }
-            _ => Ok(false),
-        }
-    }
-
     /// `s` as text the way a viewer draws it, and whether that reading is complete: through the simple
     /// font's encoding (base encoding, `/Differences`, glyph names; a code it cannot read is completed
     /// by `/ToUnicode`) when that reading tells more than the bytes do, else through the `/ToUnicode`
     /// map. Text `None`: the bytes are the text (PDFDocEncoding reading by the caller) or nothing reads
-    /// them. Incomplete (`false`): the font is not in the resources, a composite font has no usable map
-    /// or a code its map does not name, or a simple font has a code nothing reads (R8 F3/D3).
-    fn reading_of(&mut self, s: &[u8]) -> Result<(Option<String>, bool)> {
-        let name = self.g.font.clone();
-        let font = self.font(&name)?;
-        if !font.resolved {
-            return Ok((None, false));
-        }
+    /// them. Incomplete (`false`): no font is determined, a composite font has no usable map or a code
+    /// its map does not name, or a simple font has a code nothing reads (R8 F3/D3).
+    fn reading_of(&self, s: &[u8]) -> (Option<String>, bool) {
+        let FontSel::Known(font) = &self.g.font else { return (None, false) };
         if font.composite {
-            return Ok(match &font.cmap {
+            return match &font.cmap {
                 Some(c) => {
                     let (text, complete) = c.decode_checked(s);
                     (Some(text.into_iter().collect()), complete)
                 }
                 None => (None, false),
-            });
+            };
         }
-        let Some(enc) = &font.enc else { return Ok((None, false)) };
+        let Some(enc) = &font.enc else { return (None, false) };
         let read = enc.read(s, font.cmap.as_deref());
         let raw: Vec<char> = s.iter().map(|b| char::from(*b)).collect();
         if !read.opaque && !read.text.is_empty() && !same_words(&read.text, &raw) {
-            return Ok((Some(read.text.into_iter().collect()), true));
+            return (Some(read.text.into_iter().collect()), true);
         }
-        Ok((font.cmap.as_ref().map(|c| c.decode(s).into_iter().collect()), !read.opaque))
+        (font.cmap.as_ref().map(|c| c.decode(s).into_iter().collect()), !read.opaque)
     }
 
     /// Reference of the image XObject a resource name selects.
@@ -399,29 +423,41 @@ impl<'a> Interp<'a> {
         xo.entries.iter().find(|(k, _)| k == name).and_then(|(_, v)| v.as_ref())
     }
 
-    /// Computes the glyph-run box for `s` at the current text position and advances Tm. Type 3 and
-    /// vertical text mark the page's region as not computable (module docs).
-    fn show(&mut self, s: &[u8]) -> Result<Shown> {
-        let name = self.g.font.clone();
-        let font = self.font(&name)?;
+    /// Computes the glyph-run box for `s` at the current text position and advances Tm. Text whose
+    /// glyph geometry is not computed here (Type 3, vertical, unresolved writing mode, undetermined
+    /// font) marks the page's region (module docs).
+    fn show(&mut self, s: &[u8]) -> Shown {
+        let font = match &self.g.font {
+            FontSel::Known(f) => Some(Rc::clone(f)),
+            FontSel::Unset | FontSel::Unresolved => None,
+        };
         if !s.is_empty() {
-            if font.type3 {
-                self.mark(RedactionClass::Type3Text);
-            }
-            if font.vertical {
-                self.mark(RedactionClass::VerticalText);
+            match &font {
+                None => self.mark(RedactionClass::UnresolvedFont),
+                Some(f) => {
+                    if f.type3 {
+                        self.mark(RedactionClass::Type3Text);
+                    }
+                    match f.wmode {
+                        WMode::Horizontal => {}
+                        WMode::Vertical => self.mark(RedactionClass::VerticalText),
+                        WMode::Unresolved => self.mark(RedactionClass::UnresolvedWritingMode),
+                    }
+                }
             }
         }
         let fs = self.g.fs;
         let mut adv = 0.0f64;
         for &b in s {
-            let w = if font.composite || !font.known {
-                1000.0
-            } else {
-                let idx = i64::from(b).saturating_sub(font.first);
-                if idx >= 0 && (idx as usize) < font.widths.len() { font.widths[idx as usize] } else { font.missing }
+            let w = match &font {
+                Some(f) if f.known && !f.composite => {
+                    let idx = i64::from(b).saturating_sub(f.first);
+                    if idx >= 0 && (idx as usize) < f.widths.len() { f.widths[idx as usize] } else { f.missing }
+                }
+                _ => 1000.0,
             };
-            adv += w / 1000.0 * fs + self.g.tc + if b == 32 && !font.composite { self.g.tw } else { 0.0 };
+            let composite = font.as_ref().is_some_and(|f| f.composite);
+            adv += w / 1000.0 * fs + self.g.tc + if b == 32 && !composite { self.g.tw } else { 0.0 };
         }
         let m = mul(&self.tm, &self.g.ctm);
         let (x0, x1) = (0.0, adv * self.g.th);
@@ -429,27 +465,45 @@ impl<'a> Interp<'a> {
         let pts = [apply(&m, x0, y0), apply(&m, x1, y0), apply(&m, x0, y1), apply(&m, x1, y1)];
         let hit = touches(&bbox(&pts), &self.region);
         self.tm = mul(&translate(adv * self.g.th, 0.0), &self.tm);
-        Ok(Shown { hit, adv, exact: font.known && !font.composite && !font.type3 })
+        let exact = font.as_ref().is_some_and(|f| f.known && !f.composite && !f.type3);
+        Shown { hit, adv, exact }
     }
 
-    /// Records `s` (removed, or a joined run of removed elements) with its reading.
-    fn record_removed(&mut self, s: &[u8]) -> Result<()> {
-        let (u, complete) = self.reading_of(s)?;
+    /// Records `s` (a removed string) with its reading and adds it to the current run.
+    fn record_removed(&mut self, s: &[u8]) {
+        let (u, complete) = self.reading_of(s);
         self.removed.push(s.to_vec());
-        self.removed_unicode.push(u);
+        self.removed_unicode.push(u.clone());
         self.removed_unreadable.push(!complete);
-        Ok(())
+        if !s.is_empty() {
+            self.run.bytes.extend_from_slice(s);
+            self.run.pieces.push((s.to_vec(), u, complete));
+        }
     }
 
-    /// Ends a run of adjacent removed elements of one `TJ`: two or more are also recorded joined,
-    /// the text a viewer draws as one run, so kerned pieces shorter than a distinctive needle are still
-    /// searched as the word they form (R8 F2; test `kerned_tj_runs_are_read_whole`).
-    fn flush_run(&mut self, run: &mut (Vec<u8>, u32)) -> Result<()> {
-        let (bytes, n) = std::mem::take(run);
-        if n >= 2 {
-            self.record_removed(&bytes)?;
+    /// Ends the run of consecutive removed strings of the text object (at `BT`, `ET`, `Do`, a kept
+    /// non-empty string and the end of the content): two or more are also recorded joined, the text a
+    /// viewer draws as one run, so pieces shorter than a distinctive needle (kerned `TJ` elements, one
+    /// `Tj` per syllable or glyph) are searched as the word they form, and its readability is judged on
+    /// the whole run (R8 F2, R9-F3; tests `kerned_tj_runs_are_read_whole`, `split_runs_are_read_whole`).
+    fn flush_run(&mut self) {
+        let Run { bytes, pieces } = std::mem::take(&mut self.run);
+        if pieces.len() < 2 {
+            return;
         }
-        Ok(())
+        let complete = pieces.iter().all(|(_, _, c)| *c);
+        let unicode = pieces.iter().any(|(_, u, _)| u.is_some()).then(|| {
+            pieces
+                .iter()
+                .map(|(b, u, _)| match u {
+                    Some(t) => t.clone(),
+                    None => b.iter().map(|x| pdfdoc_char(*x)).collect(),
+                })
+                .collect::<String>()
+        });
+        self.removed.push(bytes);
+        self.removed_unicode.push(unicode);
+        self.removed_unreadable.push(!complete);
     }
 
     /// Kerning number that reproduces the advance of a removed string, when exactly known.
@@ -585,7 +639,6 @@ impl<'a> Interp<'a> {
             self.tm,
             self.tlm,
             self.path.take(),
-            std::mem::take(&mut self.fonts),
         );
         self.g.ctm = mul(&matrix, &self.g.ctm);
         if own_resources.is_some() {
@@ -593,7 +646,7 @@ impl<'a> Interp<'a> {
         }
         let pass = self.run(&ops, &data, cancel, depth);
         let effective = self.resources;
-        (self.g, self.stack, self.tm, self.tlm, self.path, self.fonts) = saved;
+        (self.g, self.stack, self.tm, self.tlm, self.path) = saved;
         self.resources = parent_resources;
         let pass = pass?;
         if !pass.changed {
@@ -650,12 +703,20 @@ impl<'a> Interp<'a> {
                 b"cm" => self.g.ctm = mul(&matrix(op)?, &self.g.ctm),
                 b"w" => self.g.lw = num(op, 0)?,
                 b"BT" => {
+                    self.flush_run();
                     self.tm = IDENT;
                     self.tlm = IDENT;
                 }
+                b"ET" => self.flush_run(),
                 b"Tf" => {
-                    self.g.font = op.operands.first().and_then(Object::as_name).ok_or(PressError::Malformed("content_operands"))?.to_vec();
+                    let name = op.operands.first().and_then(Object::as_name).ok_or(PressError::Malformed("content_operands"))?;
                     self.g.fs = num(op, 1)?;
+                    self.g.font = self.font_named(name)?;
+                }
+                b"gs" => {
+                    if let Some(name) = op.operands.first().and_then(Object::as_name) {
+                        self.ext_gstate(name)?;
+                    }
                 }
                 b"Tc" => self.g.tc = num(op, 0)?,
                 b"Tw" => self.g.tw = num(op, 0)?,
@@ -696,10 +757,10 @@ impl<'a> Interp<'a> {
                     let Some(Object::Str(s)) = op.operands.get(si) else {
                         return Err(PressError::Malformed("content_operands"));
                     };
-                    let shown = self.show(s)?;
+                    let shown = self.show(s);
                     if shown.hit {
                         self.strings_removed = self.strings_removed.saturating_add(1);
-                        self.record_removed(s)?;
+                        self.record_removed(s);
                         changed = true;
                         keep = false;
                         out.extend_from_slice(&prefix);
@@ -707,6 +768,8 @@ impl<'a> Interp<'a> {
                             write_object(&Object::Array(vec![Object::Real(n)]), &mut out);
                             out.extend_from_slice(b" TJ\n");
                         }
+                    } else if !s.is_empty() {
+                        self.flush_run();
                     }
                 }
                 b"TJ" => {
@@ -715,24 +778,21 @@ impl<'a> Interp<'a> {
                     };
                     let mut new_items: Vec<Object> = Vec::with_capacity(items.len());
                     let mut any = false;
-                    // Adjacent removed elements draw one run: its joined bytes are a needle too.
-                    let mut run: (Vec<u8>, u32) = (Vec::new(), 0);
+                    // Adjacent removed elements extend the text object's run (flush_run).
                     for item in items {
                         match item {
                             Object::Str(s) => {
-                                let shown = self.show(s)?;
+                                let shown = self.show(s);
                                 if shown.hit {
                                     any = true;
                                     self.strings_removed = self.strings_removed.saturating_add(1);
-                                    self.record_removed(s)?;
-                                    run.0.extend_from_slice(s);
-                                    run.1 = run.1.saturating_add(1);
+                                    self.record_removed(s);
                                     if let Some(n) = self.spacer(&shown) {
                                         new_items.push(Object::Real(n));
                                     }
                                 } else {
                                     if !s.is_empty() {
-                                        self.flush_run(&mut run)?;
+                                        self.flush_run();
                                     }
                                     new_items.push(item.clone());
                                 }
@@ -745,7 +805,6 @@ impl<'a> Interp<'a> {
                             _ => return Err(PressError::Malformed("tj_element")),
                         }
                     }
-                    self.flush_run(&mut run)?;
                     if any {
                         changed = true;
                         keep = false;
@@ -793,6 +852,7 @@ impl<'a> Interp<'a> {
                     }
                 }
                 b"Do" => {
+                    self.flush_run();
                     let name = op.operands.first().and_then(Object::as_name).ok_or(PressError::Malformed("content_operands"))?;
                     if let Some(x) = self.xobject(name)
                         && touches(&x.bbox, &self.region)
@@ -839,26 +899,10 @@ impl<'a> Interp<'a> {
                 out.push(b'\n');
             }
         }
+        self.flush_run();
         let removals: Vec<Vec<u8>> = rewritten.into_iter().filter(|n| uses.get(n).copied().unwrap_or(0) == 0).collect();
         Ok(Pass { out, changed, additions, removals })
     }
-}
-
-/// An embedded CMap program sets `/WMode 1` (a `/WMode` key followed, after white space, by the
-/// integer 1).
-fn sets_wmode_one(data: &[u8]) -> bool {
-    const KEY: &[u8] = b"/WMode";
-    let mut from = 0usize;
-    while let Some(at) = crate::reader::find(data.get(from..).unwrap_or(&[]), KEY) {
-        let after = from.saturating_add(at).saturating_add(KEY.len());
-        let rest = data.get(after..).unwrap_or(&[]);
-        let value = rest.iter().position(|b| !b.is_ascii_whitespace()).and_then(|p| rest.get(p..)).unwrap_or(&[]);
-        if value.first() == Some(&b'1') && value.get(1).is_none_or(|b| !b.is_ascii_digit() && *b != b'.') {
-            return true;
-        }
-        from = from.saturating_add(at).saturating_add(1);
-    }
-    false
 }
 
 fn write_name_bytes(name: &[u8], out: &mut Vec<u8>) {

@@ -182,27 +182,6 @@ impl SimpleEncoding {
     }
 }
 
-/// `text` with the Latin ligature characters U+FB00..U+FB06 spelled out as letters, when it holds any
-/// (a needle `office` must find `o` + `\u{FB03}` + `ce`).
-pub(crate) fn expand_ligatures(text: &[char]) -> Option<Vec<char>> {
-    if !text.iter().any(|c| ('\u{FB00}'..='\u{FB06}').contains(c)) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(text.len());
-    for c in text {
-        match c {
-            '\u{FB00}' => out.extend(['f', 'f']),
-            '\u{FB01}' => out.extend(['f', 'i']),
-            '\u{FB02}' => out.extend(['f', 'l']),
-            '\u{FB03}' => out.extend(['f', 'f', 'i']),
-            '\u{FB04}' => out.extend(['f', 'f', 'l']),
-            '\u{FB05}' | '\u{FB06}' => out.extend(['s', 't']),
-            other => out.push(*other),
-        }
-    }
-    Some(out)
-}
-
 /// Both texts hold the same letters and digits in the same order (punctuation, spaces and quote
 /// shapes ignored): the encoding reading tells nothing the bytes did not.
 pub(crate) fn same_words(a: &[char], b: &[char]) -> bool {
@@ -556,8 +535,11 @@ mod tests {
     #[test]
     fn helpers_expand_ligatures_and_compare_words() {
         let chars = |s: &str| s.chars().collect::<Vec<_>>();
-        assert_eq!(expand_ligatures(&chars("o\u{FB03}ce")), Some(chars("office")));
-        assert_eq!(expand_ligatures(&chars("office")), None);
+        // R9: ligatures are spelled out by the matching normalisation (norm.rs, NFKD table), which
+        // replaced expand_ligatures.
+        let norm = |s: &str| crate::norm::normalized(&chars(s), crate::norm::Escapes::Chars);
+        assert_eq!(norm("o\u{FB03}ce"), chars("office"));
+        assert_eq!(norm("office"), chars("office"));
         assert!(same_words(&chars("it\u{2019}s"), &chars("it's")));
         assert!(!same_words(&chars("SECRET"), &chars("\u{1}\u{2}")));
     }

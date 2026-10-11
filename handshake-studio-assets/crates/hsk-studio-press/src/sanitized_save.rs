@@ -39,13 +39,14 @@
 //! embedded file, compressed data at an arbitrary offset of a stream that is not content) and pixels.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::content::Op;
-use crate::error::{Limits, PressError, Result};
+use crate::error::{Limits, PressError, RedactionClass, Result, TextCause};
 use crate::filters;
+use crate::norm::{Escapes, normalize, normalized, normalized_str};
 use crate::pdf_edit::PdfDoc;
 use crate::raster::{InlineClass, RASTER_CLASS, classify_inline, codec_signature, decode_prefix, hidden_zlib, raster_tail};
 use crate::reader::{check_cancel, find, parse_document};
 use crate::redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
-use crate::show_text::{FontCache, FontText, Role, Walker, content_role_streams, fonts_in, is_show, pages, pages_outside_tree, show_strings};
+use crate::show_text::{FontCache, FontText, KINDS, Role, SEP, Walker, content_role_streams, fonts_in, is_show, pages, pages_outside_tree, show_strings};
 use crate::syntax::{Dict, Object, Stream};
 use crate::text_codec::{Enc, decode_text, pdfdoc_byte, utf16be_bytes};
 use crate::text_fields::{TextFieldPolicy, TextFieldReport, appearance_roots};
@@ -136,6 +137,10 @@ pub enum NotProven {
     /// elsewhere (`RedactedOutput::unreadable_removed`; R8 F3/D3; test
     /// `unreadable_removed_text_is_never_proven`). Withholds `is_proven`, not `region_cleared`.
     UnreadableRemovedText,
+    /// Some text is drawn with a composite font whose writing mode is not positively known
+    /// (`PayloadProof::undetermined_text` with [`TextCause::UnresolvedWritingMode`]; lead decision
+    /// 2026-10-11T13:10:26Z, R9-F1; test `writing_mode_is_read_from_the_cmap`).
+    UnresolvedWritingMode,
 }
 
 impl NotProven {
@@ -151,6 +156,7 @@ impl NotProven {
             Self::TrailingData => "trailing_data",
             Self::UnreadableContent => "unreadable_content",
             Self::UnreadableRemovedText => "unreadable_removed_text",
+            Self::UnresolvedWritingMode => "unresolved_writing_mode",
         }
     }
 }
@@ -168,8 +174,16 @@ pub struct PayloadProof {
     /// `/ToUnicode` or with a code the map does not name, a simple-font code neither its encoding nor
     /// its `/ToUnicode` reads, or page and stray content naming a font its resources do not hold (tests
     /// `opaque_composite_text_blocks_the_proof`, `partial_tounicode_and_unreachable_pages_are_read_or_opaque`).
-    /// Blocks `is_clean` when `needles_searched > 0` (reason `NotProven::OpaqueText`).
+    /// Blocks `is_clean` when `needles_searched > 0` (reason `NotProven::OpaqueText`). Since the
+    /// positive determination (lead decision 2026-10-11T13:10:26Z) it also lists text with no font
+    /// selected and text whose font is not resolved in any role (an appearance included).
     pub opaque_text_streams: Vec<u32>,
+    /// `(content stream, cause)` of every text-showing operator that was not positively determined
+    /// (sorted, unique): no font, an unresolved font, an unresolved writing mode, an unreadable code.
+    /// Font and code causes are `opaque_text_streams` (`NotProven::OpaqueText`), a writing-mode cause
+    /// is `NotProven::UnresolvedWritingMode` (tests `font_is_graphics_state_in_the_selector`,
+    /// `writing_mode_is_read_from_the_cmap`).
+    pub undetermined_text: Vec<(u32, TextCause)>,
     /// `(object, first filter)` of streams with non-whitespace input after a filter's end-of-data
     /// marker (`inline:<filter>` for inline images, `hidden_zlib` behind a raster codec name).
     /// Blocks `is_clean` (reason `NotProven::TrailingData`).
@@ -208,15 +222,18 @@ impl PayloadProof {
     }
     /// Every reason this proof is not clean (empty = clean). Test: `opaque_composite_text_blocks_the_proof`.
     pub fn not_proven_reasons(&self) -> Vec<NotProven> {
-        let mut v = self.structural_reasons();
+        let mut v = self.structural_reasons(self.needles_searched > 0);
         if !self.hits.is_empty() {
             v.insert(0, NotProven::Leak);
         }
         v
     }
-    /// The reasons that do not depend on what was found: structure, undecodable, trailing data,
-    /// opaque text and unreadable content.
-    fn structural_reasons(&self) -> Vec<NotProven> {
+    /// The reasons that do not depend on what was found: structure, undecodable, trailing data, and
+    /// (when `determination` applies) opaque text, an unresolved writing mode and unreadable content.
+    /// A plain payload check applies the determination when a needle search ran; a redaction always
+    /// does (lead decision 2026-10-11T13:10:26Z: every text-showing operator of the saved file must be
+    /// determined, whatever was removed; test `opaque_composite_text_blocks_the_proof`).
+    fn structural_reasons(&self, determination: bool) -> Vec<NotProven> {
         let mut v = Vec::new();
         if self.xref_sections > 1 || !self.unreachable_objects.is_empty() || self.unlisted_object_markers != 0 {
             v.push(NotProven::Structure);
@@ -227,11 +244,14 @@ impl PayloadProof {
         if !self.trailing_data_streams.is_empty() {
             v.push(NotProven::TrailingData);
         }
-        if self.opaque_text_blocks() {
+        if determination && !self.opaque_text_streams.is_empty() {
             v.push(NotProven::OpaqueText);
         }
-        if self.needles_searched > 0 && !self.unreadable_content_streams.is_empty() {
+        if determination && !self.unreadable_content_streams.is_empty() {
             v.push(NotProven::UnreadableContent);
+        }
+        if determination && self.undetermined_text.iter().any(|(_, c)| *c == TextCause::UnresolvedWritingMode) {
+            v.push(NotProven::UnresolvedWritingMode);
         }
         v
     }
@@ -346,24 +366,6 @@ fn at_boundary(hay: &[u8], at: usize, v: &Variant) -> bool {
     before && after
 }
 
-/// The same whole-token rule over characters (ToUnicode text).
-fn text_found(hay: &[char], needle: &[char], token: bool) -> bool {
-    let n = needle.len();
-    let (Some(first), Some(last)) = (needle.first(), needle.last()) else { return false };
-    if hay.len() < n {
-        return false;
-    }
-    (0..=hay.len().saturating_sub(n)).any(|i| {
-        let end = i.saturating_add(n);
-        hay.get(i..end) == Some(needle)
-            && (!token || {
-                let before = i.checked_sub(1).and_then(|p| hay.get(p)).is_none_or(|c| !c.is_ascii_alphanumeric()) || !first.is_ascii_alphanumeric();
-                let after = hay.get(end).is_none_or(|c| !c.is_ascii_alphanumeric()) || !last.is_ascii_alphanumeric();
-                before && after
-            })
-    })
-}
-
 /// Window of one search step: cancellation is polled between windows (a 64 MiB file is 64 polls).
 const SCAN_CHUNK: usize = 1 << 20;
 
@@ -434,33 +436,109 @@ fn scan_one(hay: &[u8], v: &Variant) -> bool {
     false
 }
 
-/// Streams a best-effort tokenization is tried on when no page, appearance or role draws them (their
-/// string operands and inline images are then checked too).
-fn looks_like_content(d: &Dict) -> bool {
-    let sub_ok = match d.get("Subtype") {
-        None => true,
-        Some(s) => s.is_name("Form"),
-    };
-    let type_ok = !matches!(d.get("Type").and_then(Object::as_name), Some(b"XRef" | b"ObjStm" | b"Metadata" | b"EmbeddedFile"));
-    sub_ok && type_ok
+/// A needle's text, normalised (`norm.rs`), for matching drawn text, text strings and text streams.
+struct Needle {
+    index: usize,
+    chars: Vec<char>,
+    token: bool,
 }
 
-/// What the kept contexts of one text-showing operator draw: every font reading (per string spaced,
-/// and joined over a kerned `TJ`), and per string whether its bytes are themselves drawn text.
+/// Occurrences `(start, end, exempt)` of `n` in `hay` (normalised), where `slot[i]` names the drawn
+/// string (or text string) character `i` belongs to ([`SEP`]: a separator). Matching is by substring.
+/// The whole-token rule may only EXEMPT a match, and only where the drawn reading proves a different
+/// token: the whole match lies in one string and an ASCII letter or digit of that SAME string touches a
+/// needle edge that is one too. A match that spans strings (a concatenated reading) is never exempt
+/// (lead decision 2026-10-11T13:10:26Z; test `split_runs_are_read_whole`).
+fn text_matches(hay: &[char], slot: &[u32], n: &Needle) -> Vec<(usize, usize, bool)> {
+    let mut out = Vec::new();
+    let (Some(first), Some(last)) = (n.chars.first(), n.chars.last()) else { return out };
+    let len = n.chars.len();
+    if hay.len() < len {
+        return out;
+    }
+    for i in 0..=hay.len().saturating_sub(len) {
+        if hay.get(i) != Some(first) {
+            continue;
+        }
+        let end = i.saturating_add(len);
+        if hay.get(i..end) != Some(n.chars.as_slice()) {
+            continue;
+        }
+        let s0 = slot.get(i).copied().unwrap_or(SEP);
+        let single = s0 != SEP && slot.get(i..end).is_some_and(|s| s.iter().all(|x| *x == s0));
+        let glued = |at: Option<usize>, edge: &char| {
+            at.is_some_and(|p| slot.get(p) == Some(&s0) && hay.get(p).is_some_and(char::is_ascii_alphanumeric)) && edge.is_ascii_alphanumeric()
+        };
+        let exempt = n.token && single && (glued(i.checked_sub(1), first) || glued(Some(end), last));
+        out.push((i, end, exempt));
+    }
+    out
+}
+
+/// Needles found (not exempt) in a text string or name read as text, both with its language escapes
+/// dropped (as a viewer shows it) and with only the `ESC` characters dropped.
+fn string_text_hits(text: &[char], needles: &[Needle], escape_forms: &[Escapes]) -> BTreeSet<usize> {
+    let mut out = BTreeSet::new();
+    for esc in escape_forms {
+        let hay = normalized(text, *esc);
+        let slot = vec![0u32; hay.len()];
+        for n in needles {
+            if text_matches(&hay, &slot, n).iter().any(|(_, _, exempt)| !exempt) {
+                out.insert(n.index);
+            }
+        }
+    }
+    out
+}
+
+/// Needles found (not exempt) in a decoded stream read as text (UTF-16 with a byte-order mark, else
+/// UTF-8), normalised. Only streams with a byte outside printable ASCII are read this way: anything
+/// else is covered by the byte spellings.
+fn stream_text_hits(bytes: &[u8], needles: &[Needle]) -> BTreeSet<usize> {
+    let mut out = BTreeSet::new();
+    if needles.is_empty() || bytes.iter().all(|b| (0x20..0x7F).contains(b) || matches!(b, b'\t' | b'\n' | b'\r' | b'\x0C')) {
+        return out;
+    }
+    let text: String = if bytes.starts_with(&[0xFE, 0xFF]) || bytes.starts_with(&[0xFF, 0xFE]) {
+        decode_text(bytes).0.into_iter().collect()
+    } else {
+        String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)).into_owned()
+    };
+    let hay = normalized_str(&text, Escapes::Chars);
+    for n in needles {
+        let pat: String = n.chars.iter().collect();
+        let (first, last) = (n.chars.first().copied().unwrap_or(' '), n.chars.last().copied().unwrap_or(' '));
+        let found = hay.match_indices(pat.as_str()).any(|(at, m)| {
+            if !n.token {
+                return true;
+            }
+            let before = hay.get(..at).and_then(|h| h.chars().next_back()).is_some_and(|c| c.is_ascii_alphanumeric()) && first.is_ascii_alphanumeric();
+            let after = hay.get(at.saturating_add(m.len())..).and_then(|h| h.chars().next()).is_some_and(|c| c.is_ascii_alphanumeric()) && last.is_ascii_alphanumeric();
+            !(before || after)
+        });
+        if found {
+            out.insert(n.index);
+        }
+    }
+    out
+}
+
+/// What the kept contexts of one text-showing operator draw: the needles a match lying wholly in this
+/// operator's font readings carries, and per string whether its bytes are themselves drawn text.
 #[derive(Default)]
 struct KeptOp {
-    readings: Vec<Vec<char>>,
+    drawn: BTreeSet<usize>,
     raw_drawn: Vec<bool>,
 }
 
 /// Needles a kept text-showing operator itself DRAWS: a non-hex spelling inside one of its string
 /// values whose bytes are the drawn text (a simple font that reads the same letters as the bytes; no
-/// token rule), or a font reading of the operator (encoding, `/ToUnicode`, kerned run joined). Only
+/// token rule), or a font reading of the operator (encoding, `/ToUnicode`, its strings joined). Only
 /// these may exempt a match inside the operator's bytes, so a comment or a name between operand and
 /// operator never rides along, and bytes a font draws as other glyphs (`/Differences` remapping,
 /// composite codes, an unresolved or unset font) are no kept text (R8 P1; test
 /// `kept_text_needs_a_drawn_reading`).
-fn shown_needles(op: &Op, kept: Option<&KeptOp>, vars: &[Variant], texts: &[(usize, Vec<char>, bool)]) -> BTreeSet<usize> {
+fn shown_needles(op: &Op, kept: Option<&KeptOp>, vars: &[Variant]) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
     let Some(k) = kept else { return out };
     for (idx, s) in show_strings(op).into_iter().enumerate() {
@@ -473,13 +551,7 @@ fn shown_needles(op: &Op, kept: Option<&KeptOp>, vars: &[Variant], texts: &[(usi
             }
         }
     }
-    for m in &k.readings {
-        for (needle, text, _) in texts {
-            if text_found(m, text, false) {
-                out.insert(*needle);
-            }
-        }
-    }
+    out.extend(k.drawn.iter().copied());
     out
 }
 
@@ -613,9 +685,9 @@ pub fn verify_payload_absent_unicode(
 /// fonts) and through the encoding of a simple font (base encoding, `/Differences`).
 fn font_codes(font: &FontText, text: &[char]) -> Vec<Vec<u8>> {
     match font {
-        FontText::Composite { cmap } => cmap.encode(text).into_iter().collect(),
-        FontText::Simple { enc, cmap } => enc.encode(text).into_iter().chain(cmap.as_ref().and_then(|c| c.encode(text))).collect(),
-        FontText::Opaque => Vec::new(),
+        FontText::Composite { cmap: Some(cmap), .. } => cmap.encode(text).into_iter().collect(),
+        FontText::Simple { enc, cmap, .. } => enc.encode(text).into_iter().chain(cmap.as_ref().and_then(|c| c.encode(text))).collect(),
+        FontText::Composite { cmap: None, .. } => Vec::new(),
     }
 }
 
@@ -646,6 +718,39 @@ fn code_variants(
 }
 
 pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &Limits, cancel: &CancellationToken) -> Result<PayloadProof> {
+    verify_internal(output, vars, limits, cancel, &[]).map(|(proof, _)| proof)
+}
+
+/// Every text-showing operator drawn on one of `region_pages` (page objects of the saved file): the
+/// page's content streams and every form they draw (any depth, by `Do`, as walked). The geometry
+/// determination of those operators decides whether the region can be cleared.
+fn page_classes(walker: &Walker<'_>, segments: &[u32]) -> BTreeSet<RedactionClass> {
+    let mut closure: BTreeSet<u32> = BTreeSet::new();
+    let mut work: Vec<u32> = segments.to_vec();
+    while let Some(n) = work.pop() {
+        if closure.insert(n)
+            && let Some(forms) = walker.draws.get(&n)
+        {
+            work.extend(forms.iter().copied());
+        }
+    }
+    walker
+        .records
+        .iter()
+        .filter(|r| r.role == Role::Kept && r.stream.is_some_and(|s| closure.contains(&s)))
+        .flat_map(|r| r.geometry())
+        .collect()
+}
+
+/// [`verify_with_variants`] plus, for each page object in `region_pages`, the classes of text drawn
+/// on it whose glyph geometry the redaction selector does not compute (`(page object, class)`).
+fn verify_internal(
+    output: &[u8],
+    vars: Vec<Variant>,
+    limits: &Limits,
+    cancel: &CancellationToken,
+    region_pages: &[u32],
+) -> Result<(PayloadProof, Vec<(u32, RedactionClass)>)> {
     let parsed = parse_document(output, limits, cancel)?;
     let objs = &parsed.objects;
     let mut proof = PayloadProof {
@@ -655,6 +760,7 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         streams_not_decodable: Vec::new(),
         raster_streams: Vec::new(),
         opaque_text_streams: Vec::new(),
+        undetermined_text: Vec::new(),
         trailing_data_streams: Vec::new(),
         unreadable_content_streams: Vec::new(),
         needles_searched: u32::try_from(
@@ -673,26 +779,38 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
     let markers = count_marker(output, b"endobj", cancel)?;
     let listed = objs.values().filter(|e| e.span.is_some()).count();
     proof.unlisted_object_markers = u32::try_from(markers.saturating_sub(listed)).unwrap_or(u32::MAX);
-    // Text needles for ToUnicode-read text.
+    // Text needles (normalised, norm.rs) for every text match: drawn text, text strings, text streams.
     let texts: Vec<(usize, Vec<char>, bool)> =
         vars.iter().filter_map(|v| v.text.as_ref().map(|t| (v.needle_index, t.chars().collect(), v.token))).collect();
+    let needles: Vec<Needle> = texts
+        .iter()
+        .map(|(index, chars, token)| Needle { index: *index, chars: normalized(chars, Escapes::Chars), token: *token })
+        .filter(|n| !n.chars.is_empty())
+        .collect();
 
-    // 1. Object model: every string, name and dictionary key.
+    // 1. Object model: every string, name and dictionary key, by its spellings and as normalised
+    // text (a text string with its language escapes dropped and with only ESC dropped; R9-P2).
     for (i, (num, entry)) in objs.iter().enumerate() {
         if i % 64 == 0 {
             check_cancel(cancel)?;
         }
         proof.objects_checked = proof.objects_checked.saturating_add(1);
         let mut stack: Vec<&Object> = vec![&entry.obj];
-        let hit = |s: &[u8], proof: &mut PayloadProof| {
-            if let Some(needle) = contains(s, &vars) {
+        let hit = |s: &[u8], text: Vec<char>, escapes: &[Escapes], proof: &mut PayloadProof| {
+            let mut found: BTreeSet<usize> = contains(s, &vars).into_iter().collect();
+            found.extend(string_text_hits(&text, &needles, escapes));
+            for needle in found {
                 proof.hits.push(PayloadHit { needle, location: PayloadLocation::StringObject { object: *num } });
             }
         };
         while let Some(o) = stack.pop() {
             let dict = match o {
-                Object::Str(s) | Object::Name(s) => {
-                    hit(s, &mut proof);
+                Object::Str(s) => {
+                    hit(s, decode_text(s).0, &[Escapes::Segments, Escapes::Chars], &mut proof);
+                    continue;
+                }
+                Object::Name(s) => {
+                    hit(s, String::from_utf8_lossy(s).chars().collect(), &[Escapes::Chars], &mut proof);
                     continue;
                 }
                 Object::Array(a) => {
@@ -704,7 +822,7 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
                 _ => continue,
             };
             for (k, v) in &dict.entries {
-                hit(k, &mut proof);
+                hit(k, String::from_utf8_lossy(k).chars().collect(), &[Escapes::Chars], &mut proof);
                 stack.push(v);
             }
         }
@@ -775,9 +893,10 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         }
     }
 
-    // 3. Content walk over the object table (R8 F1): pages of the page tree (kept text), page
-    // objects outside it, appearances, content-role streams, then every other stream that tokenizes
-    // as content (stray, no resources).
+    // 3. The determination pass over the object table (R8 F1, R9): pages of the page tree (kept
+    // text), page objects outside it, appearances, content-role streams (Type 3 glyph procedures of
+    // direct font dictionaries included, R9-P1), then EVERY other decoded stream that tokenizes as
+    // content (stray, no resources; no dictionary key exempts a stream, R9-P1).
     let mut walker = Walker::new(objs, limits, budget, FontCache::default()).with_decoded(&decoded);
     let tree = pages(objs, &parsed.trailer);
     for (_, segments, resources) in &tree {
@@ -808,65 +927,111 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         if walker.roles.contains_key(num) || raster_objects.contains(num) {
             continue;
         }
-        if let Some(Object::Stream(s)) = objs.get(num).map(|e| &e.obj)
-            && looks_like_content(&s.dict)
-        {
+        if matches!(objs.get(num).map(|e| &e.obj), Some(Object::Stream(_))) {
             walker.run_unreached(*num)?;
         }
     }
     check_cancel(cancel)?;
 
-    // Records by (stream, op): font readings in their drawing contexts. Kept text is a collision;
-    // anything else a hit. A kerned TJ is matched spaced (per string) and joined (one run): its
-    // readings joined and its string bytes joined, in every byte spelling (R8 F2/D2).
-    let mut collisions: BTreeMap<(usize, u32), u32> = BTreeMap::new();
-    let mut kept_ops: BTreeMap<(u32, usize), KeptOp> = BTreeMap::new();
+    // Determination record -> typed reasons: every operator not positively determined is listed
+    // with its cause; unreadable text (no or unresolved font, unread code) is opaque.
     let mut opaque: BTreeSet<u32> = BTreeSet::new();
+    let mut undetermined: BTreeSet<(u32, TextCause)> = BTreeSet::new();
     for rec in &walker.records {
         let Some(stream) = rec.stream else { continue };
-        if rec.opaque {
+        if rec.opaque() {
             opaque.insert(stream);
         }
-        let raw_joined: Vec<char> = rec.bytes.iter().map(|b| char::from(*b)).collect();
-        if rec.role == Role::Kept {
-            let k = kept_ops.entry((stream, rec.op)).or_default();
-            if !rec.mapped.is_empty() {
-                k.readings.push(rec.mapped.clone());
+        undetermined.extend(rec.causes().into_iter().map(|c| (stream, c)));
+    }
+    proof.opaque_text_streams = opaque.into_iter().collect();
+    proof.undetermined_text = undetermined.into_iter().collect();
+    proof.unreadable_content_streams = walker.unreadable.iter().map(|(n, why)| (*n, (*why).to_owned())).collect();
+    let mut region: Vec<(u32, RedactionClass)> = Vec::new();
+    for page in region_pages {
+        let segments: &[u32] = tree.iter().find(|(n, _, _)| n == page).map(|(_, s, _)| s.as_slice()).unwrap_or(&[]);
+        region.extend(page_classes(&walker, segments).into_iter().map(|c| (*page, c)));
+    }
+
+    // Needles in the text each root draws (drawing order, joined and spaced, every reading kind;
+    // walker.root_texts). Kept text is a collision; anything else a hit. Only the font readings (not
+    // the bytes) of one kept operator make the needles it draws (exemption of byte matches).
+    let mut collisions: BTreeMap<(usize, u32), u32> = BTreeMap::new();
+    let mut kept_ops: BTreeMap<(u32, usize), KeptOp> = BTreeMap::new();
+    let mut text_hits: BTreeSet<(usize, u32)> = BTreeSet::new();
+    for rec in walker.records.iter().filter(|r| r.role == Role::Kept) {
+        let Some(stream) = rec.stream else { continue };
+        let k = kept_ops.entry((stream, rec.op)).or_default();
+        if k.raw_drawn.len() < rec.strings.len() {
+            k.raw_drawn.resize(rec.strings.len(), false);
+        }
+        for (slot, s) in k.raw_drawn.iter_mut().zip(&rec.strings) {
+            *slot |= s.raw_drawn;
+        }
+    }
+    let mut chars_left = limits.max_decoded_total;
+    let roots = walker.root_texts(&mut chars_left)?;
+    for rt in &roots {
+        check_cancel(cancel)?;
+        let mut matched: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for (h, hay) in rt.hays.iter().enumerate() {
+            if hay.chars.is_empty() {
+                continue;
             }
-            k.readings.extend(rec.joined.iter().cloned());
-            if !raw_joined.is_empty() && rec.raw_drawn.iter().all(|d| *d) {
-                k.readings.push(raw_joined.clone());
-            }
-            if k.raw_drawn.len() < rec.raw_drawn.len() {
-                k.raw_drawn.resize(rec.raw_drawn.len(), false);
-            }
-            for (slot, d) in k.raw_drawn.iter_mut().zip(&rec.raw_drawn) {
-                *slot |= *d;
+            let (chars, src) = normalize(&hay.chars, Escapes::Chars);
+            let slot: Vec<u32> = src.iter().map(|i| hay.slot.get(*i).copied().unwrap_or(SEP)).collect();
+            let font_reading = h < KINDS.saturating_sub(1).saturating_mul(2);
+            for n in &needles {
+                for (a, b, exempt) in text_matches(&chars, &slot, n) {
+                    let recs: BTreeSet<usize> =
+                        slot.get(a..b).unwrap_or(&[]).iter().filter(|s| **s != SEP).filter_map(|s| rt.slots.get(*s as usize)).map(|(r, _)| *r).collect();
+                    let Some(first) = recs.first().copied() else { continue };
+                    if rt.role == Role::Kept
+                        && font_reading
+                        && recs.len() == 1
+                        && let Some(r) = walker.records.get(first)
+                        && let Some(stream) = r.stream
+                    {
+                        kept_ops.entry((stream, r.op)).or_default().drawn.insert(n.index);
+                    }
+                    if !exempt {
+                        matched.insert((n.index, first));
+                    }
+                }
             }
         }
-        let mut matched: BTreeSet<usize> = BTreeSet::new();
-        for (needle, text, token) in &texts {
-            let readings = std::iter::once(&rec.mapped).chain(rec.joined.iter()).chain(std::iter::once(&raw_joined));
-            if readings.filter(|r| !r.is_empty()).any(|r| text_found(r, text, *token)) {
-                matched.insert(*needle);
+        for (needle, first) in matched {
+            let Some(stream) = walker.records.get(first).and_then(|r| r.stream) else { continue };
+            if rt.role == Role::Kept {
+                let c = collisions.entry((needle, stream)).or_default();
+                *c = c.saturating_add(1);
+            } else {
+                text_hits.insert((needle, stream));
             }
         }
-        if !rec.bytes.is_empty() {
-            matched.extend(vars.iter().filter(|v| !v.hex && scan_one(&rec.bytes, v)).map(|v| v.needle_index));
+    }
+    // The joined string bytes of one operator of two or more strings, in every byte spelling.
+    for rec in &walker.records {
+        let Some(stream) = rec.stream else { continue };
+        if rec.strings.iter().filter(|s| !s.raw.is_empty()).count() < 2 {
+            continue;
         }
-        for needle in matched {
+        let bytes: Vec<u8> = rec.strings.iter().flat_map(|s| s.raw.iter().map(|c| u8::try_from(u32::from(*c)).unwrap_or(0))).collect();
+        for needle in vars.iter().filter(|v| !v.hex && scan_one(&bytes, v)).map(|v| v.needle_index).collect::<BTreeSet<_>>() {
             if rec.role == Role::Kept {
                 let c = collisions.entry((needle, stream)).or_default();
                 *c = c.saturating_add(1);
             } else {
-                proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedText { object: stream } });
+                text_hits.insert((needle, stream));
             }
         }
     }
-    proof.opaque_text_streams = opaque.into_iter().collect();
-    proof.unreadable_content_streams = walker.unreadable.iter().map(|(n, why)| (*n, (*why).to_owned())).collect();
+    for (needle, stream) in text_hits {
+        proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedText { object: stream } });
+    }
 
-    // 4. Every decoded stream: bytes, content operands, inline images.
+    // 4. Every decoded stream: bytes, content operands, inline images, and a non-content stream's
+    // text (XMP, embedded files) normalised.
     let mut found: BTreeSet<(usize, u32)> = BTreeSet::new();
     let mut fonts = FontCache::default();
     for (i, (num, bytes)) in decoded.iter().enumerate() {
@@ -876,20 +1041,26 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         if !matches!(objs.get(num).map(|e| &e.obj), Some(Object::Stream(_))) {
             continue;
         }
-        let roles = walker.roles.get(num);
+        let roles = walker.roles.get(num).cloned();
         // Byte exemptions only where every context that draws this stream is kept page text.
-        let exempt = roles.is_some_and(|r| !r.is_empty() && r.iter().all(|x| *x == Role::Kept));
+        let exempt = roles.as_ref().is_some_and(|r| !r.is_empty() && r.iter().all(|x| *x == Role::Kept));
         // Every stream that tokenizes as content was walked above (it has a role); any other stream
-        // is not content and its bytes are scanned in every spelling.
+        // is not content: its bytes are scanned in every spelling and read as text.
         let ops: Option<Rc<(Vec<Op>, bool)>> = if roles.is_some() { walker.ops_of(*num)? } else { None };
         let ops_list: &[Op] = ops.as_ref().map(|p| p.0.as_slice()).unwrap_or(&[]);
+        if roles.is_none() && !raster_objects.contains(num) {
+            for needle in stream_text_hits(bytes, &needles) {
+                found.insert((needle, *num));
+                proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedStream { object: *num, offset: 0 } });
+            }
+        }
         // Needles each kept show operator draws (only those exempt a match in its bytes or operands).
         let drawn: BTreeMap<usize, BTreeSet<usize>> = if exempt {
             ops_list
                 .iter()
                 .enumerate()
                 .filter(|(_, op)| is_show(&op.name))
-                .map(|(k, op)| (k, shown_needles(op, kept_ops.get(&(*num, k)), &vars, &texts)))
+                .map(|(k, op)| (k, shown_needles(op, kept_ops.get(&(*num, k)), &vars)))
                 .filter(|(_, ns)| !ns.is_empty())
                 .collect()
         } else {
@@ -914,11 +1085,18 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
         }
         for (k, op) in ops_list.iter().enumerate() {
             let kept_needles = drawn.get(&k);
+            let show = is_show(&op.name);
             let mut st: Vec<&Object> = op.operands.iter().collect();
             while let Some(o) = st.pop() {
                 match o {
                     Object::Str(x) => {
-                        if let Some(needle) = contains(x, &vars) {
+                        let mut found_here: BTreeSet<usize> = contains(x, &vars).into_iter().collect();
+                        // A text string outside a show operator (ActualText, marked-content
+                        // properties) is read as text too; show strings are read through their font.
+                        if !show {
+                            found_here.extend(string_text_hits(&decode_text(x).0, &needles, &[Escapes::Segments, Escapes::Chars]));
+                        }
+                        for needle in found_here {
                             if kept_needles.is_some_and(|ns| ns.contains(&needle)) {
                                 let c = collisions.entry((needle, *num)).or_default();
                                 *c = c.saturating_add(1);
@@ -963,7 +1141,7 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
     }
     proof.hits.truncate(MAX_HITS);
     proof.kept_text_collisions = collisions.into_iter().map(|((needle, object), count)| TextCollision { needle, object, count }).collect();
-    Ok(proof)
+    Ok((proof, region))
 }
 
 /// Output of [`redact_and_save`]: the saved bytes, what each region removed, and the
@@ -976,7 +1154,8 @@ pub struct RedactedOutput {
     pub proof: PayloadProof,
     /// Removed strings shorter than [`MIN_DISTINCTIVE_NEEDLE`] bytes (typical for kerned words
     /// and subset-font glyph codes). A byte scan is no evidence for those because they legitimately
-    /// occur elsewhere, so they are NOT part of `proof`; `residual_in_region` covers them.
+    /// occur elsewhere, so they are NOT part of `proof`; `residual_in_region` covers them, and their
+    /// readability still counts (`unreadable_removed`).
     pub short_needles: u32,
     /// Text strings, annotations and unsupported marks a fresh redaction pass over the SAVED
     /// bytes still finds in the regions (0 = the saved bytes hold nothing the region test selects).
@@ -984,17 +1163,24 @@ pub struct RedactedOutput {
     /// Outline/annotation text redaction of the removed strings (`redact_and_save_with` with a
     /// text policy); `None` when it was not requested.
     pub text_fields: Option<TextFieldReport>,
-    /// Distinctive removed strings (at least [`MIN_DISTINCTIVE_NEEDLE`] bytes) without a complete
-    /// reading (`RedactionReport::removed_unreadable`): the words they drew are unknown, so the proof
-    /// searched only their codes. Non-zero withholds `is_proven` with
-    /// `NotProven::UnreadableRemovedText` (R8 F3/D3; test `unreadable_removed_text_is_never_proven`).
+    /// Removed strings and runs (`RedactionReport::removed_unreadable`), of ANY length, without a
+    /// complete reading: the words they drew are unknown, so the proof could not search for them.
+    /// Non-zero withholds `is_proven` with `NotProven::UnreadableRemovedText` (R8 F3/D3; lead decision
+    /// 2026-10-11T13:10:26Z removed the 6-byte minimum: one glyph per operator counts; tests
+    /// `unreadable_removed_text_is_never_proven`, `split_runs_are_read_whole`).
     pub unreadable_removed: u32,
+    /// `(region page index, class)`: text drawn on a region's page in the SAVED file whose glyph
+    /// geometry the selector does not compute (Type 3, vertical, unresolved writing mode, unresolved
+    /// font), from the determination pass of the proof (sorted, unique). Non-empty makes the region
+    /// incomplete (`NotProven::RegionIncomplete`; lead decision 2026-10-11T13:10:26Z; tests
+    /// `font_is_graphics_state_in_the_selector`, `writing_mode_is_read_from_the_cmap`).
+    pub region_undetermined: Vec<(u32, RedactionClass)>,
 }
 
 impl RedactedOutput {
     /// Every region fully removed (nothing left in `unredacted`), the saved bytes pass the payload
-    /// proof for every distinctive removed string, every distinctive removed string has a complete
-    /// reading, and a fresh pass over the saved bytes finds nothing left in the regions.
+    /// proof for every distinctive removed string, every removed string has a complete reading, and a
+    /// fresh pass over the saved bytes finds nothing left in the regions.
     pub fn is_proven(&self) -> bool {
         self.not_proven_reasons().is_empty()
     }
@@ -1014,27 +1200,28 @@ impl RedactedOutput {
 
     fn region_reasons(&self) -> Vec<NotProven> {
         let mut v = Vec::new();
-        if !self.reports.iter().all(|r| r.complete) {
+        if !self.reports.iter().all(|r| r.complete) || !self.region_undetermined.is_empty() {
             v.push(NotProven::RegionIncomplete);
         }
         if self.residual_in_region != 0 {
             v.push(NotProven::ResidualInRegion);
         }
-        v.extend(self.proof.structural_reasons());
+        // Positive determination: every text-showing operator of the saved file, whatever was removed.
+        v.extend(self.proof.structural_reasons(true));
         v
     }
 
     /// The regions themselves are proven clear: every mark removed (an image under a region is
-    /// removed only with `UnsupportedPolicy::RemoveImages`, otherwise the region is incomplete), a
-    /// fresh pass over the saved bytes selects nothing, one xref section, no unreachable or
-    /// unlisted objects, and every stream of the saved file was decoded (an undecodable stream can
-    /// still hold a removed string in its encoded form, so the structural claim is withheld:
-    /// `proof.streams_not_decodable` names the blockers; raster-class streams do not block; bytes after
-    /// an end-of-data marker block, `NotProven::TrailingData`; unreadable composite text and content
-    /// the walk cannot follow block when a needle search ran, `NotProven::OpaqueText` and
-    /// `NotProven::UnreadableContent`). Says
-    /// nothing about the same words legitimately living elsewhere (outline titles, metadata);
-    /// `is_proven` also requires `proof.hits` to be empty.
+    /// removed only with `UnsupportedPolicy::RemoveImages`, otherwise the region is incomplete), no
+    /// text whose geometry is not computed on a region's page (`region_undetermined`), a fresh pass over
+    /// the saved bytes selects nothing, one xref section, no unreachable or unlisted objects, every
+    /// stream of the saved file decoded (`proof.streams_not_decodable` names the blockers; raster-class
+    /// streams do not block), no bytes after an end-of-data marker (`NotProven::TrailingData`), and
+    /// every text-showing operator of the saved file positively determined: font resolved, writing
+    /// mode known, every code read, content followed (`NotProven::OpaqueText`,
+    /// `NotProven::UnresolvedWritingMode`, `NotProven::UnreadableContent`), whatever was removed (lead
+    /// decision 2026-10-11T13:10:26Z). Says nothing about the same words legitimately living elsewhere
+    /// (outline titles, metadata); `is_proven` also requires `proof.hits` to be empty.
     pub fn region_cleared(&self) -> bool {
         self.region_reasons().is_empty()
     }
@@ -1077,12 +1264,9 @@ pub fn redact_and_save_with(
         let (needles, unicode): (Vec<Vec<u8>>, Vec<Option<String>>) =
             all.iter().filter(|(n, _)| n.len() >= MIN_DISTINCTIVE_NEEDLE).cloned().unzip();
         let short_needles = u32::try_from(all.len().saturating_sub(needles.len())).unwrap_or(u32::MAX);
-        // R8 F3/D3: a distinctive removed string whose words are unknown cannot be searched for.
-        let unreadable = reports
-            .iter()
-            .flat_map(|r| r.removed_text.iter().zip(r.removed_unreadable.iter()))
-            .filter(|(n, unreadable)| n.len() >= MIN_DISTINCTIVE_NEEDLE && **unreadable)
-            .count();
+        // R8 F3/D3, R9-F3 (d): a removed string or run whose words are unknown cannot be searched for,
+        // whatever its length.
+        let unreadable = reports.iter().flat_map(|r| r.removed_unreadable.iter()).filter(|u| **u).count();
         let unreadable_removed = u32::try_from(unreadable).unwrap_or(u32::MAX);
         let text_fields = match text {
             Some(tp) => {
@@ -1096,9 +1280,18 @@ pub fn redact_and_save_with(
             None => None,
         };
         let bytes = doc.save_full(cancel)?;
-        let proof = verify_payload_absent_unicode(&bytes, &needles, &unicode, &doc.limits, cancel)?;
         // Fresh re-open of the saved bytes: the region test must now select nothing.
         let mut saved = PdfDoc::open(&bytes, &doc.limits, cancel)?;
+        let pages: Vec<(u32, u32)> =
+            regions.iter().filter_map(|r| saved.pages.get(r.page_index as usize).map(|p| (r.page_index, *p))).collect();
+        let page_objects: Vec<u32> = pages.iter().map(|(_, p)| *p).collect();
+        let (proof, classes) = verify_internal(&bytes, variants_unicode(&needles, &unicode), &doc.limits, cancel, &page_objects)?;
+        let mut region_undetermined: Vec<(u32, RedactionClass)> = classes
+            .into_iter()
+            .flat_map(|(object, class)| pages.iter().filter(move |(_, p)| *p == object).map(move |(index, _)| (*index, class)))
+            .collect();
+        region_undetermined.sort();
+        region_undetermined.dedup();
         let mut residual = 0u32;
         for region in regions {
             let again = saved.redact_region(region, UnsupportedPolicy::ReportAndContinue, cancel)?;
@@ -1107,7 +1300,7 @@ pub fn redact_and_save_with(
                 .saturating_add(u32::try_from(again.annotations_removed.len()).unwrap_or(u32::MAX))
                 .saturating_add(u32::try_from(again.unredacted.len()).unwrap_or(u32::MAX));
         }
-        Ok(RedactedOutput { bytes, reports, proof, short_needles, residual_in_region: residual, text_fields, unreadable_removed })
+        Ok(RedactedOutput { bytes, reports, proof, short_needles, residual_in_region: residual, text_fields, unreadable_removed, region_undetermined })
     })();
     if result.is_err() {
         doc.objects = backup;

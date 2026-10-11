@@ -5,10 +5,13 @@
 
 mod cmap;
 mod content;
+mod determination;
 mod encoding;
 mod encoding_data;
 mod error;
 mod filters;
+mod norm;
+mod norm_data;
 mod pdf_edit;
 mod raster;
 mod reader;
@@ -20,7 +23,7 @@ mod text_codec;
 mod text_fields;
 mod writer;
 
-pub use error::{Limits, PressError, RedactionClass, SinkError};
+pub use error::{Limits, PressError, RedactionClass, SinkError, TextCause};
 pub use redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
 pub use raster::RASTER_CLASS;
 pub use sanitized_save::{

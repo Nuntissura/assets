@@ -64,7 +64,7 @@ impl Default for Limits {
 }
 
 /// Content classes a region redaction cannot yet remove with proof.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RedactionClass {
     Image,
     Vector,
@@ -76,9 +76,48 @@ pub enum RedactionClass {
     /// region cannot be proven clear (lead decision 2026-10-11T11:58:11Z, R8 F4/D4; geometry is lane
     /// SMB-PRESS-GEOMETRY; test `type3_and_vertical_text_never_read_as_cleared`).
     Type3Text,
-    /// Vertical writing anywhere on the page (a composite font with `/Identity-V`, another `-V`
-    /// CMap or `/WMode 1`): glyphs advance down the page, not along x (same decision and test).
+    /// Vertical writing anywhere on the page (a composite font whose CMap is a vertical predefined
+    /// CMap such as `/Identity-V` or `/V`, or an embedded CMap with `/WMode 1`, also through
+    /// `/UseCMap` or `usecmap`): glyphs advance down the page, not along x (same decision; tests
+    /// `type3_and_vertical_text_never_read_as_cleared`, `writing_mode_is_read_from_the_cmap`).
     VerticalText,
+    /// Text on the page whose font is not determined (lead decision 2026-10-11T13:10:26Z, R9-F2): no
+    /// `Tf` or ExtGState `/Font` selected one, or the name is not a font dictionary of the resources
+    /// in force. Its glyph widths are unknown, so its box is unknown (test
+    /// `font_is_graphics_state_in_the_selector`).
+    UnresolvedFont,
+    /// Text on the page drawn with a composite font whose CMap is neither a known horizontal nor a
+    /// known vertical CMap (a predefined name outside ISO 32000-2 9.7.5.2 Table 116, an embedded CMap
+    /// that cannot be read, a `/WMode` other than 0 or 1): its advance direction is unknown (R9-F1;
+    /// test `writing_mode_is_read_from_the_cmap`).
+    UnresolvedWritingMode,
+}
+
+/// Why a text-showing operator of a content stream was not positively determined (lead decision
+/// 2026-10-11T13:10:26Z): listed per content stream in `PayloadProof::undetermined_text`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TextCause {
+    /// No `Tf` and no ExtGState `/Font` (through `gs`) selected a font before the operator.
+    NoFont,
+    /// The font name (`Tf`) or the ExtGState `/Font` entry is not a font dictionary of the resources
+    /// in force (an appearance also looks in `/AcroForm /DR`).
+    UnresolvedFont,
+    /// A composite font whose writing mode is not known ([`RedactionClass::UnresolvedWritingMode`]).
+    UnresolvedWritingMode,
+    /// A code the font cannot turn into text (composite font without a usable `/ToUnicode` or with a
+    /// code it does not name; simple-font code neither the encoding nor `/ToUnicode` reads).
+    UnreadableCode,
+}
+
+impl TextCause {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoFont => "no_font",
+            Self::UnresolvedFont => "unresolved_font",
+            Self::UnresolvedWritingMode => "unresolved_writing_mode",
+            Self::UnreadableCode => "unreadable_code",
+        }
+    }
 }
 
 impl RedactionClass {
@@ -91,6 +130,8 @@ impl RedactionClass {
             Self::InlineImage => "inline_image",
             Self::Type3Text => "type3_text",
             Self::VerticalText => "vertical_text",
+            Self::UnresolvedFont => "unresolved_font",
+            Self::UnresolvedWritingMode => "unresolved_writing_mode",
         }
     }
 }
