@@ -338,13 +338,19 @@ impl MediaProvider for WavProvider {
                     what: "chunk-bytes",
                 })
         };
-        let cap = slice_bytes(chunk_samples.min(deliver_end.saturating_sub(start)))?;
+        // The bound of the loop below. The receipt is read from where the loop's cursor stops, not from
+        // this bound, the request or the file's length (a test can stop the loop short of it, see
+        // `model::short_loop`; test `wav_receipt_states_what_the_loop_delivered`).
+        let loop_end = deliver_end;
+        #[cfg(test)]
+        let loop_end = short_loop::bound(loop_end);
+        let cap = slice_bytes(chunk_samples.min(loop_end.saturating_sub(start)))?;
         let mut buf = vec![0u8; cap];
         let mut cursor = start;
         let (mut chunks, mut payload) = (0u32, 0u64);
-        while cursor < deliver_end {
+        while cursor < loop_end {
             check_cancel(cancel)?;
-            let remaining = deliver_end.saturating_sub(cursor);
+            let remaining = loop_end.saturating_sub(cursor);
             let n = chunk_samples.min(remaining);
             let bytes = slice_bytes(n)?;
             let done = cursor.saturating_sub(start);
@@ -371,7 +377,10 @@ impl MediaProvider for WavProvider {
                 .ok_or(ReelError::LimitExceeded { what: "bytes-read" })?;
         }
         let bytes_read = advance(info.header_bytes, payload)?;
-        let delivered = deliver_end.saturating_sub(start);
+        // The samples the loop above handed to the sink (its cursor), not `deliver_end - start`, which is
+        // computed from the request and the file's length and equals the cursor only while the loop keeps
+        // its invariant (PLR-066).
+        let delivered = cursor.saturating_sub(start);
         if deliver_end < want_end {
             return Err(ReelError::Truncated { delivered });
         }
@@ -389,7 +398,8 @@ impl MediaProvider for WavProvider {
             },
             actual: Span {
                 start_pts: tick_span(start, tps)?,
-                end_pts: tick_span(deliver_end, tps)?,
+                // The end of what was delivered: where the loop's cursor stopped.
+                end_pts: tick_span(cursor, tps)?,
                 units: delivered,
             },
             disposition: delivery_disposition(aligned, complete),

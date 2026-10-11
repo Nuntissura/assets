@@ -90,6 +90,9 @@ struct Case {
     unaligned: u64,
     nearest: u64,
     preview_start: u64,
+    /// A start from which `count` units run past the end of the source (a range, not a start outside
+    /// it); `None` for a case that repeats the source of another one.
+    past_end: Option<u64>,
 }
 
 fn run(
@@ -210,6 +213,7 @@ fn export_cases() -> Vec<Case> {
             unaligned: 100 * TPS_48K + 1,
             nearest: 100 * TPS_48K,
             preview_start: 100 * TPS_48K,
+            past_end: Some(475 * TPS_48K),
         },
         Case {
             name: "y4m frames",
@@ -222,6 +226,7 @@ fn export_cases() -> Vec<Case> {
             unaligned: 2 * TPF_30 + 1,
             nearest: 2 * TPF_30,
             preview_start: 2 * TPF_30,
+            past_end: Some(5 * TPF_30),
         },
         Case {
             name: "isobmff packets",
@@ -234,6 +239,7 @@ fn export_cases() -> Vec<Case> {
             unaligned: 2 * TPF_2997 + TPF_2997 / 2,
             nearest: 2 * TPF_2997,
             preview_start: 2 * TPF_2997,
+            past_end: Some(5 * TPF_2997),
         },
         // The edit list starts 500 units inside sample 0: the first presented sample is cut, so even
         // a request at its own presented start is not exact. The next sample is whole: that is the
@@ -249,6 +255,7 @@ fn export_cases() -> Vec<Case> {
             unaligned: 0,
             nearest: 501 * UNIT_30000,
             preview_start: 0,
+            past_end: None,
         },
         Case {
             name: "isobmff pcm",
@@ -261,6 +268,7 @@ fn export_cases() -> Vec<Case> {
             unaligned: 100 * TPS_48K + 1,
             nearest: 100 * TPS_48K,
             preview_start: 100 * TPS_48K,
+            past_end: Some(295 * TPS_48K),
         },
         Case {
             name: "matroska packets",
@@ -273,6 +281,7 @@ fn export_cases() -> Vec<Case> {
             unaligned: 41 * MS,
             nearest: 40 * MS,
             preview_start: 40 * MS,
+            past_end: Some(3 * 40 * MS),
         },
         Case {
             name: "matroska pcm",
@@ -285,6 +294,7 @@ fn export_cases() -> Vec<Case> {
             unaligned: 1000 * TPS_48K + 1,
             nearest: 1000 * TPS_48K,
             preview_start: 1000 * TPS_48K,
+            past_end: Some(4750 * TPS_48K),
         },
         Case {
             name: "mxf packets",
@@ -297,6 +307,7 @@ fn export_cases() -> Vec<Case> {
             unaligned: 2 * TPF_25 + TPF_25 / 2,
             nearest: 2 * TPF_25,
             preview_start: 2 * TPF_25,
+            past_end: Some(9 * TPF_25),
         },
     ]
 }
@@ -423,6 +434,110 @@ fn export_is_exact_or_error_for_every_provider() {
     });
 }
 
+/// PLR-068 (REEL-R11-3): a range that runs past the end of the source is `MEDIA_OUT_OF_RANGE` for an
+/// export BEFORE the first payload read, whichever provider delivers it. Y4m had no such check: the frames
+/// before the end reached the sink and the call then failed `Truncated`. The test enumerates the same
+/// cases as `export_is_exact_or_error_for_every_provider`, so a provider added later cannot skip it.
+///
+/// A preview of such a range is `OutOfRange` before the first read in every provider but y4m, whose header
+/// declares no frame count: a y4m preview keeps streaming the frames that exist and ends `Truncated` with
+/// the delivered count (the contract `wav_and_y4m_exact_truncated_and_bounded` and `v4_hardening` pin).
+#[test]
+fn export_range_past_the_end_is_refused_before_the_first_read_for_every_provider() {
+    bounded_case(
+        "export_range_past_the_end_is_refused_before_the_first_read_for_every_provider",
+        || {
+            let mut registry = Registry::standard();
+            registry.register(Box::new(MxfProvider)).unwrap();
+            let cases = export_cases();
+            let ids: Vec<&str> = registry.descriptors().iter().map(|d| d.id).collect();
+            for id in &ids {
+                assert!(
+                    cases
+                        .iter()
+                        .any(|c| c.provider == *id && c.past_end.is_some()),
+                    "provider {id} has no past-the-end case: add one before registering a provider"
+                );
+            }
+
+            for case in &cases {
+                let Some(start) = case.past_end else { continue };
+                let name = case.name;
+                // Export: typed, sink untouched. The error names the requested start.
+                let error = run(
+                    &registry,
+                    case,
+                    start,
+                    Purpose::Export,
+                    &mut NeverReached(name),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(
+                        error,
+                        ReelError::OutOfRange { requested, .. } if requested == Ticks::new(start)
+                    ),
+                    "{name}: export past the end: {error:?}"
+                );
+                assert_eq!(error.code(), "MEDIA_OUT_OF_RANGE", "{name}");
+
+                if case.provider == Y4M_PROVIDER_ID {
+                    continue;
+                }
+                // Preview: the same typed error before the first read.
+                let error = run(
+                    &registry,
+                    case,
+                    start,
+                    Purpose::Preview,
+                    &mut NeverReached(name),
+                )
+                .unwrap_err();
+                assert_eq!(error.code(), "MEDIA_OUT_OF_RANGE", "{name}: preview");
+            }
+
+            // Y4m in detail: 6 frames, a request for frames 5 and 6.
+            let case = cases
+                .iter()
+                .find(|c| c.provider == Y4M_PROVIDER_ID)
+                .expect("y4m case");
+            let start = case.past_end.unwrap();
+            assert_eq!(
+                start,
+                5 * TPF_30,
+                "frame 5 is the last of 6; 2 frames run past it"
+            );
+            let out_of_range = ReelError::OutOfRange {
+                requested: Ticks::new(start),
+                first: 0,
+                end: i64::try_from(6 * TPF_30).unwrap(),
+            };
+            let export = |start: u64, sink: &mut dyn ChunkSink| {
+                run(&registry, case, start, Purpose::Export, sink)
+            };
+            // The range check precedes the exactness check, as in wav, PCM and mxf.
+            assert_eq!(
+                export(start, &mut NeverReached("y4m")).unwrap_err(),
+                out_of_range
+            );
+            assert!(matches!(
+                export(start + 1, &mut NeverReached("y4m unaligned")),
+                Err(ReelError::OutOfRange { .. })
+            ));
+            // A range that ends exactly at the last complete frame is delivered, exact and complete.
+            let mut sink = Count::default();
+            let receipt = export(4 * TPF_30, &mut sink).unwrap();
+            assert!(receipt.complete && receipt.disposition == Disposition::Exact);
+            assert_eq!((receipt.actual.units, sink.chunks), (2, 2));
+            // A preview of the range past the end streams the one frame that exists, then `Truncated`.
+            let mut sink = Count::default();
+            let error = run(&registry, case, start, Purpose::Preview, &mut sink).unwrap_err();
+            assert_eq!(error, ReelError::Truncated { delivered: 1 });
+            assert_eq!(sink.chunks, 1);
+        },
+    );
+}
+
 /// `NotExact.nearest` is a start the same export can be retried at. For a start inside an edit-trimmed
 /// first sample, whose own cut presented start no export can use, it used to equal `requested` (a preview
 /// of that start delivers the cut sample), which offered no retry (SMB-REEL-ENG-1 residual R3, R9
@@ -445,6 +560,7 @@ fn nearest_of_a_trimmed_first_sample_is_a_start_export_accepts() {
             unaligned: 0,
             nearest: 0,
             preview_start: 0,
+            past_end: None,
         };
         // In media units of 1/30000 s: every sample lasts 1001; the edit starts 500 units inside sample 0.
         // Presented: the cut sample 0 at 0 (501 units shown), then samples at 501, 1502, 2503, 3504.
@@ -991,6 +1107,17 @@ fn repeated_media_sample_is_a_shortfall_not_a_silent_success() {
             assert_eq!(receipt.actual.units, 2, "two different media samples exist");
             assert!(!receipt.complete);
             assert_eq!(receipt.disposition, Disposition::Partial);
+            // The span says what the units say (PLR-067, REEL-R11-2): `actual` ends where the two
+            // delivered chunks end (0..40 units), while `requested` still names the presented range the
+            // request covers (0..80 units). The end of `actual` was the presented range end.
+            assert_eq!(receipt.actual.start_pts, Ticks::new(0));
+            assert_eq!(
+                receipt.actual.end_pts,
+                Ticks::new(at(40)),
+                "actual.end_pts is the end of the delivered chunks, not of the presented range"
+            );
+            assert_eq!(receipt.requested.start_pts, Ticks::new(0));
+            assert_eq!(receipt.requested.end_pts, Ticks::new(at(80)));
             assert_eq!(
                 outcome_for(&Ok(receipt)),
                 Outcome::Failure(FailureCode::Loss)
@@ -1002,6 +1129,28 @@ fn repeated_media_sample_is_a_shortfall_not_a_silent_success() {
                 [(0, 0, false), (1, 20 * UNIT_600, false)],
                 "chunks of the preview"
             );
+
+            // The repeated entry in the MIDDLE: s0 s0 s1 (edits of 20 and 40 units from media time 0).
+            // Two chunks arrive, 0..20 and 40..60 units, so the delivered chunks end where the presented
+            // range ends: the end of `actual` is the latest end of a delivered chunk, not
+            // `start + units * duration` (40 units) and not a function of the unit count.
+            let middle = four_sample_mov(Some(vec![(20, 0), (40, 0)]));
+            let mut record = Record::default();
+            let receipt = deliver_mov(&middle, None, preview, (0, 3), &mut record).unwrap();
+            assert_eq!(receipt.requested.units, 3);
+            assert_eq!(receipt.actual.units, 2);
+            assert!(!receipt.complete);
+            assert_eq!(receipt.disposition, Disposition::Partial);
+            assert_eq!(
+                record.0,
+                [(0, 0, false), (1, 40 * UNIT_600, false)],
+                "chunks of the middle repeat"
+            );
+            assert_eq!(
+                (receipt.actual.start_pts, receipt.actual.end_pts),
+                (Ticks::new(0), Ticks::new(at(60)))
+            );
+            assert_eq!(receipt.requested.end_pts, Ticks::new(at(60)));
 
             // Control: an edit list without overlap is delivered whole and exact.
             let plain = four_sample_mov(Some(vec![(80, 0)]));

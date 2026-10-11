@@ -469,7 +469,13 @@ pub(crate) fn deliver_pcm_stream(
         .checked_add(start)
         .ok_or_else(tick_range)?;
     let mut run_i = stream.runs.partition_point(|r| r.end() <= first_media);
-    while cursor < want_end {
+    // The bound of the loop below. The receipt is read from the loop's cursor, not from this bound or the
+    // request (a test can stop the loop short of it, see `model::short_loop`; test
+    // `pcm_receipt_states_what_the_loop_delivered`).
+    let loop_end = want_end;
+    #[cfg(test)]
+    let loop_end = short_loop::bound(loop_end);
+    while cursor < loop_end {
         check_cancel(cancel)?;
         let media_frame = window
             .first_frame
@@ -485,7 +491,7 @@ pub(crate) fn deliver_pcm_stream(
         let run = stream.runs.get(run_i).ok_or(ReelError::Corrupt {
             what: "pcm-frame-outside-chunks",
         })?;
-        let n = want_end
+        let n = loop_end
             .saturating_sub(cursor)
             .min(run.end().saturating_sub(media_frame))
             .min(chunk_frames);
@@ -538,7 +544,8 @@ pub(crate) fn deliver_pcm_stream(
         )
     };
     let actual_start = tick_at(start)?;
-    let actual_end = tick_at(want_end)?;
+    // The end of what was delivered: where the loop's cursor stopped, not the end the request named.
+    let actual_end = tick_at(cursor)?;
     // Frames the loop above handed to the sink (its cursor), not the frames the request named.
     let delivered = cursor.saturating_sub(start);
     let complete = delivery_complete(req, delivered)?;

@@ -298,13 +298,27 @@ impl MediaProvider for Y4mProvider {
                 what: "y4m-zero-frame-duration",
             })?;
         let aligned = req.start_pts.value().is_multiple_of(tpf);
-        // Export is exact or it fails, before any frame is read: the start must be a whole frame.
-        require_exact_start(req, aligned, || tick_span(start, tpf))?;
         let want_end = start
             .checked_add(req.count)
             .ok_or(ReelError::LimitExceeded {
                 what: "frame-range",
             })?;
+        // Export is exact or it fails, before any frame is read: the range must lie inside the complete
+        // frames of the file (PLR-068), as in every other provider; without this check the frames before
+        // the end reached the sink and the call then failed `Truncated`. A y4m header declares no frame
+        // count, so a preview of a range past the last complete frame keeps streaming the frames that
+        // exist and ends `Truncated { delivered }` (test `wav_and_y4m_exact_truncated_and_bounded`);
+        // test `export_range_past_the_end_is_refused_before_the_first_read_for_every_provider` pins both.
+        if req.purpose == Purpose::Export && want_end > info.complete_frames {
+            return Err(ReelError::OutOfRange {
+                requested: req.start_pts,
+                first: 0,
+                end: i64::try_from(tick_span(info.complete_frames, tpf)?.value())
+                    .unwrap_or(i64::MAX),
+            });
+        }
+        // ... and the start must be a whole frame.
+        require_exact_start(req, aligned, || tick_span(start, tpf))?;
         let record = info.record;
         let first_byte = start
             .checked_mul(record)
@@ -325,7 +339,13 @@ impl MediaProvider for Y4mProvider {
         // One counter drives the loop, the chunk index and the receipt, so they cannot disagree; the
         // receipt field is u32, so the 2^32-th chunk is refused instead of wrapping.
         let (mut chunks, mut marker) = (0u32, [0u8; 6]);
-        while u64::from(chunks) < req.count {
+        // The bound of the loop below; the receipt reads the loop's counter, not this bound or the request
+        // (a test can stop the loop short of it, see `model::short_loop`; test
+        // `y4m_receipt_states_what_the_loop_delivered`).
+        let loop_count = req.count;
+        #[cfg(test)]
+        let loop_count = short_loop::bound(loop_count);
+        while u64::from(chunks) < loop_count {
             check_cancel(cancel)?;
             let delivered = u64::from(chunks);
             let index = start
@@ -369,6 +389,11 @@ impl MediaProvider for Y4mProvider {
             })?;
         }
         let delivered = u64::from(chunks);
+        let delivered_end = start
+            .checked_add(delivered)
+            .ok_or(ReelError::LimitExceeded {
+                what: "frame-range",
+            })?;
         let complete = delivery_complete(req, delivered)?;
         let bytes_read = delivered
             .checked_mul(record)
@@ -389,7 +414,8 @@ impl MediaProvider for Y4mProvider {
             },
             actual: Span {
                 start_pts: tick_span(start, tpf)?,
-                end_pts: tick_span(want_end, tpf)?,
+                // The end of what was delivered (the frames the loop counted), not of what was requested.
+                end_pts: tick_span(delivered_end, tpf)?,
                 units: delivered,
             },
             disposition: delivery_disposition(aligned, complete),

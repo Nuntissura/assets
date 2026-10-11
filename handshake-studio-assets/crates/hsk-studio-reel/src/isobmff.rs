@@ -2047,6 +2047,8 @@ pub(crate) fn require_exportable_range<'a>(
 /// preview reports it (`complete == false`, `Disposition::Partial`, `actual.units` the units delivered), an
 /// export is refused before the first read (`require_exportable_range`). `complete` is computed from the
 /// units delivered (`model::delivery_complete`; test `repeated_media_sample_is_a_shortfall_not_a_silent_success`).
+/// The span follows: `requested` ends at the end of the presented range the request covers, `actual` at
+/// the latest end of a chunk the loop delivered (the same test asserts both over a repeating edit list).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn deliver_packets(
     src: &mut dyn ReadSeek,
@@ -2083,19 +2085,23 @@ pub(crate) fn deliver_packets(
     }
     let last = *wanted.last().expect("count >= 1");
     let start_actual = to_ticks(wanted[0].pts)?;
-    let end_actual = to_ticks(
+    // The end of the presented range the request names (the end of its last presented entry): the
+    // REQUESTED end. The end of `actual` is the end of what the loop below delivered, which is a shorter
+    // time when the range presents a media sample more than once (PLR-067).
+    let range_end = to_ticks(
         last.pts
             .checked_add(i64::try_from(last.duration).unwrap_or(i64::MAX))
             .ok_or(ReelError::LimitExceeded { what: "tick-range" })?,
     )?;
-    let length =
-        end_actual
-            .value()
-            .checked_sub(start_actual.value())
-            .ok_or(ReelError::Corrupt {
-                what: "presentation-order",
-            })?;
+    let length = range_end
+        .value()
+        .checked_sub(start_actual.value())
+        .ok_or(ReelError::Corrupt {
+            what: "presentation-order",
+        })?;
     let (mut chunks, mut payload, mut delivered) = (0u32, 0u64, 0u64);
+    // The latest end (pts + duration) of a chunk the loop delivered as a requested unit.
+    let mut delivered_end = start_actual.value();
     let mut buf = Vec::new();
     let mut ticks_exact = track.ticks_exact;
     for (slot, sample_index) in (from..=hi).enumerate() {
@@ -2132,11 +2138,19 @@ pub(crate) fn deliver_packets(
             .ok_or(ReelError::LimitExceeded { what: "bytes-read" })?;
         if !preroll {
             delivered = delivered.checked_add(1).ok_or_else(counter_error)?;
+            let chunk_end = pts
+                .checked_add(i64::try_from(duration).unwrap_or(i64::MAX))
+                .ok_or(ReelError::LimitExceeded { what: "tick-range" })
+                .and_then(to_ticks)?;
+            delivered_end = delivered_end.max(chunk_end.value());
         }
     }
     // The shortfall check reads the units this loop delivered: an export that delivered fewer fails with
     // `Incomplete`, a preview reports it.
     let complete = delivery_complete(req, delivered)?;
+    // The end of `actual` is where the delivered chunks end (test
+    // `repeated_media_sample_is_a_shortfall_not_a_silent_success` asserts it over a repeating edit list).
+    let end_actual = Ticks::new(delivered_end);
     Ok(SegmentReceipt {
         requested: Span {
             start_pts: req.start_pts,

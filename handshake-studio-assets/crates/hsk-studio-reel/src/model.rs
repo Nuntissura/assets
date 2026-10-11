@@ -472,9 +472,17 @@ pub(crate) fn require_exact_start(
 /// delivery that handed over 2 of 4 requested units, test
 /// `repeated_media_sample_is_a_shortfall_not_a_silent_success`). A shortfall is `false` for a
 /// `Purpose::Preview` receipt (paired with `delivery_disposition`, which reports `Partial`) and the typed
-/// `Incomplete { requested, delivered }` for `Purpose::Export`, which is exact or fails. The
-/// delivery receipts of the wav, y4m, PCM, packet and mxf providers take `complete` from here (unit test
-/// `delivery_complete_is_computed_from_delivered_units`).
+/// `Incomplete { requested, delivered }` for `Purpose::Export`, which is exact or fails.
+///
+/// `delivered` is the count of the provider's OWN delivery loop (its cursor or counter), never a number
+/// computed from the request (SMB-REEL-RECEIPTS, PLR-066): the wav, y4m, PCM, packet and mxf receipts take
+/// `complete`, `actual.units` and the end of `actual` from what their loop handed to the sink. The helper
+/// is unit-tested (`delivery_complete_is_computed_from_delivered_units`); each provider's call site is
+/// pinned by `delivery_tests` (`wav_receipt_states_what_the_loop_delivered`,
+/// `y4m_receipt_states_what_the_loop_delivered`, `pcm_receipt_states_what_the_loop_delivered`,
+/// `mxf_receipt_states_what_the_loop_delivered`), which shorten the loop with `short_loop` and fail when
+/// a receipt still states the requested count; the packet site by
+/// `repeated_media_sample_is_a_shortfall_not_a_silent_success`.
 pub(crate) fn delivery_complete(req: &SegmentRequest, delivered: u64) -> Result<bool, ReelError> {
     if delivered == req.count {
         return Ok(true);
@@ -495,6 +503,42 @@ pub(crate) fn delivery_disposition(exact_start: bool, complete: bool) -> Disposi
         (false, _) => Disposition::Partial,
         (true, true) => Disposition::Exact,
         (true, false) => Disposition::Approximate,
+    }
+}
+
+/// Test seam (V4-04: `cfg(test)` only, compiled into no product build). It makes a provider's delivery loop
+/// stop `units` short of the bound the request and the source give it, the way a defective loop would,
+/// without any error on the way: a receipt that states the requested count (or the requested end) then
+/// disagrees with what reached the sink, and the tests in `delivery_tests` fail on it. On every reachable
+/// input the loop delivers exactly the requested units (that is the loop invariant the receipts rely on),
+/// so without this seam a receipt computed from the request and one computed from the loop cannot be told
+/// apart. The seam is thread-local and reset when its guard drops.
+#[cfg(test)]
+pub(crate) mod short_loop {
+    use std::cell::Cell;
+
+    thread_local! {
+        static UNITS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Resets the seam when dropped.
+    pub(crate) struct Guard(());
+
+    /// The delivery loops of this thread stop `units` short of their bound until the guard drops.
+    pub(crate) fn engage(units: u64) -> Guard {
+        UNITS.with(|c| c.set(units));
+        Guard(())
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            UNITS.with(|c| c.set(0));
+        }
+    }
+
+    /// `bound` less the engaged shortfall (the bound itself while the seam is off).
+    pub(crate) fn bound(bound: u64) -> u64 {
+        bound.saturating_sub(UNITS.with(Cell::get))
     }
 }
 

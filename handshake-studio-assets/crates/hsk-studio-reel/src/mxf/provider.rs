@@ -137,9 +137,15 @@ impl MxfProvider {
                 });
             }
             let mut position = start;
-            while position < end {
+            // The bound of the loop below. The receipt reads the loop's `delivered`, not this bound or
+            // the request (a test can stop the loop short of it, see `model::short_loop`; test
+            // `mxf_receipt_states_what_the_loop_delivered`).
+            let loop_end = end;
+            #[cfg(test)]
+            let loop_end = short_loop::bound(loop_end);
+            while position < loop_end {
                 check_cancel(cancel)?;
-                let n = end.saturating_sub(position).min(max_units);
+                let n = loop_end.saturating_sub(position).min(max_units);
                 let unit = index.locate(index_sid, position)?;
                 let want = n.saturating_mul(bytes_per_unit);
                 let wanted_end =
@@ -215,7 +221,12 @@ impl MxfProvider {
                     from = from.saturating_sub(1);
                 }
             }
-            for coded in from..=hi {
+            // The last coded position the loop below visits (a test can stop it short, see
+            // `model::short_loop`).
+            let last_coded = hi;
+            #[cfg(test)]
+            let last_coded = short_loop::bound(last_coded);
+            for coded in from..=last_coded {
                 check_cancel(cancel)?;
                 let unit = index.locate_coded(index_sid, coded)?;
                 let display = if reordered {
@@ -256,6 +267,10 @@ impl MxfProvider {
         let (start_ticks, start_exact) = units_to_ticks(start, rate)?;
         let (end_ticks, end_exact) = units_to_ticks(end, rate)?;
         let span = end_ticks.saturating_sub(start_ticks);
+        // The end of what was delivered: `delivered` edit units from the start (the requested end is
+        // `end`, which the loops do not read).
+        let (delivered_end_ticks, delivered_end_exact) =
+            units_to_ticks(start.saturating_add(delivered), rate)?;
         // Each requested display position is delivered once, or the call was refused above (the reordered
         // pre-pass); the flag is read from the delivered count all the same, as at every other site.
         let complete = delivery_complete(req, delivered)?;
@@ -267,7 +282,7 @@ impl MxfProvider {
             },
             actual: Span {
                 start_pts: Ticks::new(start_ticks),
-                end_pts: Ticks::new(end_ticks),
+                end_pts: Ticks::new(delivered_end_ticks),
                 units: delivered,
             },
             disposition: delivery_disposition(aligned, complete),
@@ -281,7 +296,7 @@ impl MxfProvider {
             chunks,
             bytes_read: payload,
             complete,
-            ticks_exact: ticks_exact && start_exact && end_exact,
+            ticks_exact: ticks_exact && start_exact && end_exact && delivered_end_exact,
             video: None,
         })
     }
