@@ -240,6 +240,36 @@ runtime_observations:
       cache_errors: 0
       compilation_failures: 0
     attribution_limit: Shared cumulative counters are not attributable to Kumihimo; do not infer its cache hit rate or speedup.
+  wp008_execution:
+    candidate_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+    toolchain: The runner used Cargo resolved from PATH; these proof logs do not capture the resolved Cargo/rustc version.
+    runner:
+      git_root_relative_file: .local/kumihimo-layout/run-proof.ps1
+      inspected_not_rerun: true
+      candidate_head_guard: Script requires HEAD to equal the requested candidate revision.
+      pre_round_gameplan_check: Script runs the orchestrator before_round check before each proof command.
+      process_local_settings:
+        CARGO_TARGET_DIR: Kumihimo project-root-relative .local/cargo-target, resolved by the script
+        RUSTC_WRAPPER: installed sccache executable resolved from PATH
+        CARGO_INCREMENTAL: '0'
+        cargo_jobs: 2
+      command_constraints: Each command uses --locked and --offline.
+    proof_logs:
+      check:
+        git_root_relative_file: .local/kumihimo-layout/proof/check-90f93239d2e4.log
+        command: cargo check --manifest-path product/Cargo.toml --all-targets --locked --offline -j 2
+        observed: Cargo dev profile finished in 4.71s.
+      test:
+        git_root_relative_file: .local/kumihimo-layout/proof/test-90f93239d2e4.log
+        command: cargo test --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core -j 2
+        observed: Test result groups passed 1, 9, and 12 tests; 0 failures; doc-test target had 0 tests.
+        cargo_profile_duration: 7.32s
+      example:
+        git_root_relative_file: .local/kumihimo-layout/proof/example-90f93239d2e4.log
+        command: cargo run --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core --example workspace -j 2
+        observed: Cargo dev profile finished in 0.01s.
+        limit: Single recorded duration only; no comparative performance or cache-speedup claim.
+    cache_observation: No shared sccache statistics were queried for this WP008 run; existing shared cumulative counters remain unattributed.
 research_sources:
   - title: Cargo Book, Build Cache
     url: https://doc.rust-lang.org/cargo/reference/build-cache.html

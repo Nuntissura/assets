@@ -1,9 +1,10 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-008-layout-and-tool-docking-v1
-generation: 5
+generation: 6
 phase: active
 owner: coder_01
 changed_files:
+- README.md
 - product/Cargo.lock
 - product/Cargo.toml
 - product/README.md
@@ -40,6 +41,12 @@ changed_files:
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/spec-modules/master-spec.md
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/spec-modules/roadmap.md
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v6-r6-95cd73be3f72/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v7-r7-90f93239d2e4/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v7-r7-90f93239d2e4/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v7-r7-90f93239d2e4/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v7-r7-90f93239d2e4/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v7-r7-90f93239d2e4/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v7-r7-90f93239d2e4/specification.yaml
 - repo-governance/taskboard/taskboard.yaml
 - repo-governance/topology/links.yaml
 - repo-governance/topology/product.yaml
@@ -63,5 +70,25 @@ proof:
 - kind: frozen_dependency_and_source_review
   observed: Ready std-only dependency report and SOURCE_REVIEW_COMPLETE_RUNTIME_PENDING evaluation inspected; independent
     19-file manifest matches 3c5ff0f1413ff0d2ab28474b63897e622cf3b153d2cba71cc1f95939dc5845a0
+- kind: compile
+  source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  observed: All-targets locked offline check passed; Rust1.91.1 Windows x64 MSVC;4.71s
+- kind: behavior
+  source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  observed: 1 private +9 ownership +12 layout/tool tests passed; float-return regression passed; test compile7.32s
+- kind: consumer_example
+  source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  observed: Passed generation11 tool8 content640x336 after24 top strip panes2; warm devprofile0.01s is not a benchmark
+- kind: candidate_binding
+  source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  observed: All19 published product blobs matched before execution; frozen hash3c5ff0f1413ff0d2ab28474b63897e622cf3b153d2cba71cc1f95939dc5845a0;
+    only later README proof text may differ
+- kind: specification_status
+  observed: Spec8 records seven partial areas; all99 accepted requirement records preserved; exact six-file published
+    v7 archived
+- kind: independent_evaluation
+  source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  observed: 'EVAL-KUM-008-v1 PASS_SCOPED_RUNTIME: actual logs, exact published source and all18 unchanged runtime
+    inputs independently inspected; F01 regression green'
 blockers: []
-next_action: Publish active candidate; dev lead owns serial focused proof, then exact-candidate evaluation
+next_action: Publish verified WP008 outcome; independent exact remote read precedes done status and coder rotation

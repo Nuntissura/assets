@@ -1,7 +1,7 @@
 ---
 file_id: KUM-PRODUCT-MANUAL-v1
 file_kind: product-and-model-manual
-updated_at: '2026-10-11'
+updated_at: '2026-10-12'
 ---
 
 <topic id="purpose-and-boundaries">
@@ -30,7 +30,7 @@ The console example creates nested ownership, moves a frame, supplies geometry, 
 
 To consume the library, add a path dependency on `product/kumihimo-core` from your application's Cargo manifest, relative to that manifest. `src/lib.rs` exports the API; `src/model.rs` defines records/policy; `src/command.rs` defines envelopes/results; `src/core.rs` owns replay; `src/mutation.rs` applies ownership changes; private `arrangement.rs` validates detached candidates; private `layout.rs`, `geometry.rs`, `solver.rs`, `tools.rs` and `docking.rs` implement packing, geometry and tool/dock policies. `tests/contracts.rs` and `tests/layout_contracts.rs` demonstrate consumer use without access to private model storage.
 
-Observed on 2026-10-11 for candidate `a004dbd4c655d6d193e288d21e37dc9987095353`, using stable rustc 1.91.1 on Windows x64 MSVC: the all-targets check passed, one private exhaustion test and nine external contract tests passed, and the console example returned `generation=8 root_frames=[FrameId(2), FrameId(4)] view=ViewId(7) resource=ResourceId(6)`. This historical WP007 result proves the earlier ownership core on that host; it does not validate the pending 0.2 layout extension. Windows ARM64, WASM, native GUI, cross-platform runtime and performance remain unproven.
+Observed for WP008 candidate `90f93239d2e474e28451cab15458454ecd1649dc`, using stable rustc 1.91.1 on Windows x64 MSVC: the locked/offline all-targets check passed, one private exhaustion test, nine existing ownership contracts and all twelve layout/tool/docking contracts passed. The console example returned `generation=11`, root frames 2 and 4, view 7/resource 6, tool 8, content `(0,24,640,336)` and two panes. The float-return regression passed with append excluded and with no eligible return. These results prove the admitted headless in-memory scope on that host; Windows ARM64, WASM, native GUI, cross-platform runtime and performance remain unproven. The earlier WP007 candidate `a004dbd4c655d6d193e288d21e37dc9987095353` passed its ownership-only proof before this extension.
 
 </topic>
 

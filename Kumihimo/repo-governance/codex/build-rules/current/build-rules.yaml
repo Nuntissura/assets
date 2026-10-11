@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 27
+  version: 28
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -23,7 +23,7 @@ project_profile:
   - aarch64 Windows development host
   product_workspace:
     manifest_file: product/Cargo.toml
-  implementation_status: layout_candidate_runtime_pending
+  implementation_status: ownership_and_layout_packets_proven
   gui_applicability: planned
   test_entrypoint: product/Cargo.toml
   build_environment:
@@ -43,7 +43,7 @@ canonical_commands:
 rule_sets: {}
 build_matrix:
   matrix_id: BM-KUMIHIMO-001
-  revision: 2
+  revision: 3
   entries:
   - entry_id: BM-KUM-CORE-WINX64-001
     wp_ref: WP-KUM-007-core-model-v1
@@ -56,6 +56,28 @@ build_matrix:
       public_contract_tests: 9 passed
       private_exhaustion_tests: 1 passed
       console_example: passed; generation=8; root frames 2,4; view7 references resource6
+    not_proven:
+    - ARM64 execution
+    - WASM
+    - GUI
+    - native popouts
+    - performance
+    - persistent recovery
+    - provider engines
+  - entry_id: BM-KUM-LAYOUT-WINX64-001
+    wp_ref: WP-KUM-008-layout-and-tool-docking-v1
+    source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+    package_manifest: product/kumihimo-core/Cargo.toml
+    package_version: 0.2.0
+    snapshot_version: 2
+    observed_target: x86_64-pc-windows-msvc
+    rustc_version: 1.91.1
+    proof:
+      all_targets_check: passed
+      ownership_contract_tests: 9 passed
+      layout_tool_contract_tests: 12 passed
+      private_exhaustion_tests: 1 passed
+      console_example: passed; generation11, tool8, content640x336 after24 top strip, panes2
     not_proven:
     - ARM64 execution
     - WASM

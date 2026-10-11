@@ -2,14 +2,14 @@ schema_version: kumihimo.wp-evaluation.v1
 evaluation_id: EVAL-KUM-008-v1
 wp_id: WP-KUM-008-layout-and-tool-docking-v1
 evaluator: ROLE-KUM-EVALUATION
-phase: candidate_source_and_consumer_review_complete
-verdict: SOURCE_REVIEW_COMPLETE_RUNTIME_PENDING
+phase: scoped_runtime_evaluation_complete
+verdict: PASS_SCOPED_RUNTIME
 cases_frozen: true
 report_frozen_for_publication: true
 baseline_revision: 95cd73be3f7263ca5968dc8635773d20396f9cf2
 contract_revision: e63a1a29787f71c00966cd4f90f4b8af1fbd70aa
 spec_revision: 7
-scope: Headless acceptance cases, single pre-compile source read and final frozen consumer/manual/example binding; runtime/GUI verdict pending
+scope: Published WP008 headless candidate on observed Windows x64 MSVC host; no GUI, other-target or performance verdict
 inspected_sources:
   - repo-governance/specification/current/spec-modules/master-spec.md (LAYOUT, CHROME, POPOUTS)
   - repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-contract.yaml
@@ -91,7 +91,7 @@ boundary_decisions:
     decision: LAYOUT-004 is carried forward to WP009. Tools join aggregate record admission; aggregate layout entries default to 65536 with configurable/unrestricted policies and lowered-budget recovery. Snapshot 2/package 0.2 declare the unreleased public extension.
 gap_flags:
   - No blocking contradiction found in full contract R001-R019 against these focused preparation cases; dependency readiness and lead admission remain separate prerequisites.
-  - Frozen source and consumer assertions inspected; no compile/test/example execution result has been inspected yet.
+  - Exact published candidate check/test/example logs and lead execution exit codes independently inspected; closing outcome publication remains pending.
   - Native popout creation, render/input/accessibility, persistence and actual editor actions remain separate boundaries.
 proof_plan:
   - Coder owns focused public tests; evaluator inspects meaningful geometry and atomicity assertions against the published contract.
@@ -124,10 +124,49 @@ frozen_candidate:
     - Tool tests inspect original owner/target, keyboard-focus independence, release/retain reservations, compatible rebinding, strip ordering and occupied-grid rejection.
     - F01 test asserts an eligible Left-only return, successful redock and atomic no-return rejection.
     - Manual/example disclose one canonical owner, version 2/package 0.2, iterative geometry, host policies, count limits, recovery and later adapter boundaries; historical WP007 proof is explicitly distinguished from pending WP008 execution.
-  publication: Pending lead commit/push and exact remote binding
+  publication:
+    status: independently_verified
+    revision: 90f93239d2e474e28451cab15458454ecd1649dc
+    command: git ls-remote origin refs/heads/codex/handpick
+    observed: Exact published candidate matched remote; all 19 product Git blobs reproduce the frozen manifest
+    current_runtime_binding: All 18 runtime input files match candidate bytes; only README proof paragraph and updated_at differ, inspected as a documentation-only update
+runtime_proof:
+  candidate: 90f93239d2e474e28451cab15458454ecd1649dc
+  observed_at: '2026-10-12'
+  host: x86_64-pc-windows-msvc
+  compiler: rustc 1.91.1 (ed61e7d7e 2025-11-07)
+  producer: Lead-owned serial run-proof.ps1; evaluator read script, actual saved logs and completed lead commandExecution results
+  gate: All three lead commands completed with exit 0 and gameplan PASS 10/10
+  environment: Stable project .local/cargo-target, RUSTC_WRAPPER sccache, CARGO_INCREMENTAL 0, locked/offline, jobs 2
+  commands:
+    - kind: check
+      command: cargo check --manifest-path product/Cargo.toml --all-targets --locked --offline -j 2
+      log: ../.local/kumihimo-layout/proof/check-90f93239d2e4.log
+      result: PASS; dev profile completed in 4.71 seconds
+    - kind: test
+      command: cargo test --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core -j 2
+      log: ../.local/kumihimo-layout/proof/test-90f93239d2e4.log
+      result: PASS; 1 private exhaustion + 9 existing ownership + 12 focused layout/tool/docking tests; 0 failed, ignored or filtered; 0 doctests
+    - kind: example
+      command: cargo run --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core --example workspace -j 2
+      log: ../.local/kumihimo-layout/proof/example-90f93239d2e4.log
+      result: PASS; generation 11, frames 2/4, view 7, resource 6, tool 8, content (0,24,640,336), two panes
+  acceptance_mapping:
+    EVAL-KUM-008-001: Shared split/grid weights and nested legacy reconciliation assertions passed; prior source inspection bound by unchanged runtime bytes
+    EVAL-KUM-008-002: Finite construction/exact replay and malformed-plan/arithmetic rejection with allocation control passed
+    EVAL-KUM-008-003: Reject/virtual extent, complete frame accounting, restored clipping and zero-extent assertions passed
+    EVAL-KUM-008-004: In-app float/redock, eligible snap and F01 return-path assertions passed
+    EVAL-KUM-008-005: Independent target/focus/visibility, outward owner/target preservation and compatible/incompatible rebind assertions passed
+    EVAL-KUM-008-006: Multiple strip ordering/reservation and occupied-grid/forbidden destination rejection assertions passed
+    EVAL-KUM-008-007: Pure preview/cancel, ledger/allocation controls, current commit, retained replay and stale context/topology/tool-policy assertions passed
+    EVAL-KUM-008-008: Metadata admission/lowered unchanged recovery, tool record budget and all retained WP007 contracts passed
+    EVAL-KUM-008-009: Deferred accepted WP009 scope, excluded from WP008 runtime verdict
+outcome_publication:
+  status: pending_lead_closing_publication
+  proof_limit: Runtime verdict is bound to the tested candidate; final outcome/report commit and remote proof have not yet been inspected
 INDEPENDENT_FINDINGS:
   - finding_id: EVAL-KUM-008-F01
-    status: source_remediation_inspected_runtime_pending
+    status: resolved_scoped_runtime
     refs: [WP008-R012, WP008-A007, EVAL-KUM-008-004]
     source: product/kumihimo-core/src/docking.rs
     anchors: Initial return_location at lines 165-170; dock_frame eligibility at lines 245-252 in the inspected source
@@ -136,7 +175,8 @@ INDEPENDENT_FINDINGS:
     remediation: Preserve/select an eligible return location or reject an impossible-return float atomically; exercise float/redock without Append eligibility in the focused consumer proof.
     remediation_observed: Float now probes saved/append and allowed same-workspace return locations through detached Redock mutation/validation, stores an accepted location or rejects when none succeeds (docking.rs lines 179-194 in the inspected revision).
     focused_test: floating_uses_an_eligible_return_and_requires_a_return_path inspects Left-only return, redocks, then rejects a float with no allowed destination.
-    proof_limit: Source change and focused test inspected and bound to frozen candidate manifest; compile/execution proof remains pending
+    proof_limit: Inspected source remediation and focused assertions are bound to candidate 90f93239d2e474e28451cab15458454ecd1649dc; actual test log reports the focused return-path regression ok
 RESIDUAL_UNCERTAINTY:
-  - Exact candidate compilation/tests/example execution and remote publication remain unverified; no dependency or runtime product verdict issued.
-next_action: Lead publishes the frozen candidate/report; inspect exact serialized check/test/example logs and remote identity, including F01 test result, before runtime verdict.
+  - Native GUI/input/accessibility, ARM64/WASM/other-target runtime, performance and provider engine/lifecycle behavior are outside this headless proof.
+  - Closing outcome publication remains pending; this verdict does not replace its independent exact-remote proof.
+next_action: Lead publishes the evaluated outcome; independently inspect closing remote and unchanged runtime inputs before final publication confirmation.

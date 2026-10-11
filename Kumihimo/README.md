@@ -1,7 +1,7 @@
 ---
 file_id: KUM-MANUAL-v1
 file_kind: product-and-model-manual
-updated_at: '2026-10-11'
+updated_at: '2026-10-12'
 ---
 
 <topic id="kumihimo">
@@ -10,7 +10,7 @@ updated_at: '2026-10-11'
 
 A reusable Rust window/frame asset for desktop and web apps: grids, tabs, grouped tabs, docking, popouts and configurable surrounding controls. Hosts provide the actual editors, browsers, media and graphics.
 
-The first Rust ownership core passed its Windows x64 compile check, ten focused tests and console example. It manages nested frames, ordered views, groups, host resource references, validated moves and bounded command replay. Working GUI adapters remain planned. The researched spec covers 18 feature areas with explicit host ownership and focused acceptance scenarios.
+The Rust ownership and layout core passed its Windows x64 all-targets check, 22 focused tests and console example. It manages nested frames, tabs/groups, split/grid geometry, pinned tool docking, previews, in-app floats, host resource references, admission and bounded command replay. Working GUI adapters remain planned. The researched spec covers 18 feature areas with explicit host ownership and focused acceptance scenarios.
 
 </topic>
 

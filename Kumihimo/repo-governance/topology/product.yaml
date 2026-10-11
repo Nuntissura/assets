@@ -1,5 +1,5 @@
 kind: product_topology
-implementation_status: layout_candidate_runtime_pending
+implementation_status: ownership_and_layout_packets_proven
 nodes:
 - id: KUM-PRODUCT
   path: product/
@@ -33,5 +33,4 @@ nodes:
   responsibility: No-context API use, diagnostics and recovery
 - id: KUM-LAYOUT-CONTRACTS
   path: product/kumihimo-core/tests/layout_contracts.rs
-  responsibility: Public consumer packing, geometry, tool docking, preview, float and admission assertions; execution
-    pending
+  responsibility: Executed public consumer packing, geometry, tool docking, preview, float and admission assertions

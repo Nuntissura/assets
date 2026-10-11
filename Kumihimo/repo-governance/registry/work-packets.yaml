@@ -59,7 +59,7 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-008-layout-and-tool-docking-v1/WP-KUM-008-layout-and-tool-docking-v1-state.yaml
-  next_action: Publish active candidate; dev lead owns serial focused proof, then exact-candidate evaluation
+  next_action: Publish verified WP008 outcome; independent exact remote read precedes done status and coder rotation
   blockers: []
 - wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
   title: Implement tabs, groups and persisted arrangement

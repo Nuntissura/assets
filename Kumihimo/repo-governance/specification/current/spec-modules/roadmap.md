@@ -2,9 +2,9 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 7
+revision: 8
 title: Kumihimo roadmap
-updated_at: '2026-10-11'
+updated_at: '2026-10-12'
 ---
 
 ```yaml
@@ -25,7 +25,7 @@ content_blocks:
 ```markdown
 # Planned
 
-Five feature areas now have partial core implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.
+Seven feature areas now have partial core implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.
 
 A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 
@@ -37,7 +37,9 @@ Verification stays focused on the behavior a work packet changes. A real rendere
 
 WP-KUM-007 implements the first in-memory ownership core. The Windows x64 MSVC all-target compile check, nine public consumer tests, one private counter-exhaustion test and console example passed at source revision a004dbd4c655d6d193e288d21e37dc9987095353. Functional scenarios include variable 20-by-30 counts and 1,024 nested frame levels; they are not performance benchmarks. No complete future feature area is marked implemented.
 
-Current implementation covers portable identity, containment, lightweight content references, view/group order, validated commands, admission and bounded replay. Geometry, docking controls, persistence, GUI adapters, provider lifecycle and browser/renderer integrations remain subsequent work. The accepted organization is three logical submodules (core, optional GUI adapters, host-content integration), implemented later through small cohesive packages with independently selected adapters; no fixed crate count is prescribed. Navigation presentation is host-selectable: scrollbar, permanent minimap, both, or a temporary minimap during scrubbing.
+WP-KUM-008 adds finite shared split/grid geometry, minima-first weighted allocation, explicit virtual-extent overflow, pinned tool placement/reservations, atomic configured-layout repair, pure previews, eligible snaps and bounded in-app floats. At source revision 90f93239d2e474e28451cab15458454ecd1649dc, the all-targets check, 22 tests and console example passed on Windows x64 MSVC.
+
+Current implementation covers portable identity, containment, lightweight content references, view/group order, geometry/tool-docking commands, admission and bounded replay. Equalize/swap/maximize/restore remain accepted WP009 work; persistence, visible docking controls, GUI adapters, provider lifecycle and browser/renderer integrations remain subsequent work. The accepted organization is three logical submodules (core, optional GUI adapters, host-content integration), implemented later through small cohesive packages with independently selected adapters; no fixed crate count is prescribed. Navigation presentation is host-selectable: scrollbar, permanent minimap, both, or a temporary minimap during scrubbing.
 ```
 
 ```yaml
@@ -55,11 +57,11 @@ roadmap:
   - REQ-KUM-WORKSPACE-004
   - REQ-KUM-WORKSPACE-005
   - REQ-KUM-WORKSPACE-006
-  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
-  verification_summary: 'Partial: recursive in-memory frame/view ownership proven; resizing, docking, floating/native
-    windows, lifecycle and adapters remain open.'
+  implementation_source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  verification_summary: 'Partial: nested frame/view ownership and headless packing, docking and in-app floats proven;
+    visible controls, native windows, lifecycle and adapters remain open.'
   matrix_entry_refs:
-  - BM-KUM-CORE-WINX64-001
+  - BM-KUM-LAYOUT-WINX64-001
 - item_ref: FEAT-KUM-BOUNDARIES
   source_topic_refs:
   - TOPIC-KUM-BOUNDARIES
@@ -74,11 +76,11 @@ roadmap:
   - REQ-KUM-BOUNDARIES-005
   - REQ-KUM-BOUNDARIES-006
   - REQ-KUM-BOUNDARIES-007
-  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
-  verification_summary: 'Partial: cohesive std-only core, distinct frame/view/resource/provider references and host-owned
-    engines proven; concrete adapters and remaining integration contracts are open.'
+  implementation_source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  verification_summary: 'Partial: cohesive std-only core with separate geometry/layout/tool/docking modules and
+    host-owned content references proven; concrete adapters and provider contracts remain open.'
   matrix_entry_refs:
-  - BM-KUM-CORE-WINX64-001
+  - BM-KUM-LAYOUT-WINX64-001
 - item_ref: FEAT-KUM-LAYOUT
   source_topic_refs:
   - TOPIC-KUM-LAYOUT
@@ -93,11 +95,12 @@ roadmap:
   - REQ-KUM-LAYOUT-005
   - REQ-KUM-LAYOUT-006
   - REQ-KUM-LAYOUT-007
-  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
-  verification_summary: 'Partial: frame-owned nested workspaces and identity-preserving validated moves proven;
-    geometric layouts, resizing, snapping, floats and tool docking remain open.'
+  implementation_source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  verification_summary: 'Partial: flat split/grid packing, shared minima-first geometry, legacy layout repair, previews,
+    eligible snaps, in-app floats and tool docking proven; equalize/swap/maximize/restore and GUI interaction remain
+    open.'
   matrix_entry_refs:
-  - BM-KUM-CORE-WINX64-001
+  - BM-KUM-LAYOUT-WINX64-001
 - item_ref: FEAT-KUM-TABS
   source_topic_refs:
   - TOPIC-KUM-TABS
@@ -120,7 +123,7 @@ roadmap:
   source_topic_refs:
   - TOPIC-KUM-POPOUTS
   overview_summary: Floating frames, native popouts and temporary popups
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-POPOUTS-001
@@ -128,14 +131,16 @@ roadmap:
   - REQ-KUM-POPOUTS-003
   - REQ-KUM-POPOUTS-004
   - REQ-KUM-POPOUTS-005
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  verification_summary: 'Partial: bounded in-app floats retain owner/identities and a validated return location;
+    native popout handoff, close/return effects and platform proof remain open.'
+  matrix_entry_refs:
+  - BM-KUM-LAYOUT-WINX64-001
 - item_ref: FEAT-KUM-CHROME
   source_topic_refs:
   - TOPIC-KUM-CHROME
   overview_summary: Configurable bars, borders and host settings
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-CHROME-001
@@ -148,9 +153,12 @@ roadmap:
   - REQ-KUM-CHROME-008
   - REQ-KUM-CHROME-009
   - REQ-KUM-CHROME-010
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  verification_summary: 'Partial: pinned tool origin/target/placement, compatible explicit rebinding, focus-independent
+    visibility, edge/grid eligibility and release/retain reservations proven; visible controls and provider actions
+    remain open.'
+  matrix_entry_refs:
+  - BM-KUM-LAYOUT-WINX64-001
 - item_ref: FEAT-KUM-CONTENT
   source_topic_refs:
   - TOPIC-KUM-CONTENT
@@ -312,11 +320,12 @@ roadmap:
   - REQ-KUM-MODEL-003
   - REQ-KUM-MODEL-004
   - REQ-KUM-MODEL-005
-  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
-  verification_summary: 'Partial: attributable generation-checked commands, structured rejection, bounded complete-envelope
-    replay and inspection snapshots proven; complete model-operation surfaces remain open.'
+  implementation_source_revision: 90f93239d2e474e28451cab15458454ecd1649dc
+  verification_summary: 'Partial: attributable generation commands, structured rejection, complete-envelope replay,
+    geometry inspection and pure generation-bound docking preview/commit proven; complete model/adapter operation
+    surfaces remain open.'
   matrix_entry_refs:
-  - BM-KUM-CORE-WINX64-001
+  - BM-KUM-LAYOUT-WINX64-001
 - item_ref: FEAT-KUM-PLATFORMS
   source_topic_refs:
   - TOPIC-KUM-PLATFORMS

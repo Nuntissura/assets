@@ -47,8 +47,8 @@ communication:
   file_ownership: Dev lead owns spec, authority, task state and Git; coder owns admitted product paths; roles own
     dispatched reports
 build_lane:
-  owner: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
-  phase: candidate_publication
+  owner: null
+  phase: idle
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -58,4 +58,4 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish frozen WP008 candidate; run one serial focused check/test/example batch; evaluate exact source
+next_action: Publish evaluated WP008 outcome, verify remote, close packet and rotate coder before WP009 preparation
