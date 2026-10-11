@@ -1109,6 +1109,7 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-observe",
  "hsk-studio-score",
+ "sha2 0.10.9",
 ]
 
 [[package]]

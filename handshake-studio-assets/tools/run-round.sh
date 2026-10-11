@@ -13,7 +13,8 @@
 #   drift exits 75 (infrastructure: the candidate needs a steward sync commit; nothing is rewritten here).
 #   Policy (both modes, read-only, before any build; hits with file:line in step0.policy.{json,txt}):
 #   V4-03 machine-local paths: every text file under crates/*/src and crates/*/tests, per line, drive-letter path
-#     ((?<![A-Za-z0-9])[A-Za-z]:[/\\]) or Users/ segment; a hit beyond .config/machine-paths.toml [pinned] counts
+#     ((?<![A-Za-z0-9])[A-Za-z]:/ or [A-Za-z]:\ not followed by a quote, so the escaped quote of CSS `a:\"` in a
+#     Rust string is not a path) or Users/ segment; a hit beyond .config/machine-paths.toml [pinned] counts
 #     (test data never opened as a host path) exits 72. Host data comes only via .config/oracle-corpus.toml.
 #   V4-05 frozen duplicates: .config/duplicate-fingerprints.toml patterns over crates/*/src; a match in a file
 #     outside that fingerprint's `allowed` sites (D16 ZIP/CRC-32, D18 worker supervision, timecode) exits 71.
@@ -40,11 +41,12 @@
 #              hashed AFTER placement; round.json "fixtures" binds library path, sha256 and MANIFEST.json sha256 and
 #              re-verifies both after the units ("binding_intact"; changed = exit 76). A build failure counts as a
 #              unit build failure; an absent corpus root is recorded corpus_absent (the tests then report NOT_PROVEN).
-# Disk-wide build lock (CX-984-002, tools/disk-build-lock.sh): held from the first build to the end of the run (all
-#   cargo calls, the python fixture build included); root from STUDIO_DISK_BUILD_LOCK_DIR or the walk-up of
-#   .config/disk-build-lock.toml (they must agree); waits print to stderr; results/disk-lock.json and round.json
-#   "disk_lock" record root, token, waited_s, a broken stale lock; giving up (STUDIO_DISK_BUILD_LOCK_TIMEOUT_S,
-#   default 7200) exits 75.
+# Disk-wide build lock (CX-984-002, tools/disk-build-lock.sh protocol @2): the round queues with priority (class
+#   round) and holds the lock for every cargo unit (fixture build included); between units, after holding it for
+#   STUDIO_DISK_BUILD_LOCK_ROUND_SLICE_S (default 300) s, it yields one gap to the first queued builder and re-queues
+#   first. Root from STUDIO_DISK_BUILD_LOCK_DIR or the walk-up of .config/disk-build-lock.toml (they must agree);
+#   waits print to stderr; results/disk-lock.json and round.json "disk_lock" record holds, yields, waits and broken
+#   stale locks; giving up (STUDIO_DISK_BUILD_LOCK_TIMEOUT_S, default 7200) or a protocol mismatch exits 75.
 # Tree binding: <target-dir>/.studio-workspace-root binds the target dir to ONE workspace root (`cargo
 #   locate-project --workspace` output; the team's studio-env.sh uses the same marker); another root is refused
 #   (exit 2), because trees sharing a target reuse each other's artifacts by mtime.
@@ -262,7 +264,7 @@ def files(*subs):
 paths_cfg = load("machine-paths.toml", "hsk.studio.machine-paths@1")
 dup_cfg = load("duplicate-fingerprints.toml", "hsk.studio.duplicate-fingerprints@1")
 pinned = paths_cfg.get("pinned", {})
-MP = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|Users[\\/]")
+MP = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:(?:/|\\(?![\"']))|Users[\\/]")
 hits = {}
 for rel, lines in files("src", "tests"):
     for i, line in enumerate(lines, 1):
@@ -491,14 +493,32 @@ doctest_unit() {
 
 if [ $all -eq 1 ]; then sel=(--workspace); else sel=(); for c in "${crates[@]}"; do sel+=(-p "$c"); done; fi
 doctest_budget=$(awk -F'\t' '$1 == "config" && $2 == "doctest-per-test-timeout-s" { print $3 }' "$plan")
-# Disk-wide build lock: held from the first build (the fixture) to the end of the run (released by finish).
-lock_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-dbl_acquire "$lock_root" "run-round $(basename "${owner_dir:-$root}")" "run-round $([ $all -eq 1 ] && echo --all || echo "${crates[*]}") sha ${identity_sha:0:12} results $results" run-round \
-  || { reason="disk build lock: gave up waiting ($lock_root)"; exit 75; }
-printf '{"root": %s, "token": %s, "nested": %s, "waited_s": %s, "broke_stale": %s, "requested_at": %s, "acquired_at": %s}\n' \
-  "$(jstr "$lock_root")" "$(jstr "$DBL_TOKEN")" "$([ "$DBL_NESTED" -eq 1 ] && echo true || echo false)" "$DBL_WAITED_S" \
-  "$(jstr "$DBL_BROKE")" "$(jstr "$lock_started")" "$(jstr "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" >"$results/disk-lock.json"
+# Disk-wide build lock (class round = queue priority): held for every cargo unit (fixture, default, feature, doctest);
+# between units, once the round has held it for STUDIO_DISK_BUILD_LOCK_ROUND_SLICE_S (default 300) s, it yields
+# (release + gap: one queued builder may build) and re-queues first. results/disk-lock.json sums it up.
+lock_label="run-round $([ $all -eq 1 ] && echo --all || echo "${crates[*]}") sha ${identity_sha:0:12} results $results"
+lock_owner="run-round $(basename "${owner_dir:-$root}")"
+lock_slice=${STUDIO_DISK_BUILD_LOCK_ROUND_SLICE_S:-300}
+lock_holds=0 lock_yields=0 lock_waited=0 lock_max_wait=0 lock_broke="" lock_since=0 lock_first=""
+lock_unit() {
+  [ -n "${DBL_TOKEN:-}" ] && return 0
+  dbl_acquire "$lock_root" round "$lock_owner" "$lock_label" run-round \
+    || { reason="disk build lock: gave up waiting or protocol mismatch ($lock_root)"; exit 75; }
+  lock_holds=$((lock_holds + 1)) lock_waited=$((lock_waited + DBL_WAITED_S))
+  [ "$DBL_WAITED_S" -gt "$lock_max_wait" ] && lock_max_wait=$DBL_WAITED_S
+  [ -n "$DBL_BROKE" ] && lock_broke="$lock_broke $DBL_BROKE"
+  [ -n "$lock_first" ] || lock_first=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  dbl_now; lock_since=$DBL_NOW
+  return 0
+}
+unlock_unit() {
+  [ -n "${DBL_TOKEN:-}" ] || return 0
+  dbl_now
+  if [ $((DBL_NOW - lock_since)) -ge "$lock_slice" ]; then dbl_yield; lock_yields=$((lock_yields + 1)); fi
+  return 0
+}
 set +e
+lock_unit
 # Oracle fixtures (.config/oracle-fixtures.toml): built before any unit into the run's own target dir, then placed in
 # the corpus root under a content-addressed name (<dest>/sha256/<library sha256>/<file>, written only when absent or
 # different, never replacing other content) with <dest>/MANIFEST.json naming that file (atomic replace), so tests find
@@ -572,8 +592,11 @@ for fx in cfg.get("fixture", []):
     print(f"fixture:{fid}\tfixture\t{fx['needed_by'][0]}\t-\t{status}\t{rc}\t-\t{dest_rel}")
 PY
 [ $? -eq 0 ] || { reason="oracle fixture step failed (fixtures/step.stderr.txt)"; cat "$results/fixtures/step.stderr.txt" >&2; exit 2; }
+unlock_unit
 corpus_json bind   # after placement: binds the corpus the tests will load
+lock_unit
 nextest_unit "$results" - "${sel[@]}"
+unlock_unit
 rec default nextest '*' - run "$U_BUILD" "$U_RUN" .
 cat "$results/fixtures/units.tsv" >>"$units"
 default_filter=$U_FILTER
@@ -586,12 +609,16 @@ while IFS=$'\t' read -r kind crate feats status; do
     k=doctest; [ "$kind" = features ] && k=nextest
     rec "$kind:$name" "$k" "$crate" "$feats" "$status" - - -
   elif [ "$kind" = features ]; then
+    lock_unit
     nextest_unit "$results/features/$name" "$feats" -p "$crate"
+    unlock_unit
     rec "features:$name" nextest "$crate" "$feats" run "$U_BUILD" "$U_RUN" "features/$name"
   else
     fa=(); [ "$feats" != - ] && fa=(--features "$feats")
+    lock_unit
     doctest_unit "$results/doctest/$name.stdout.txt" "$results/doctest/$name.stderr.txt" \
       ${locked[@]+"${locked[@]}"} -p "$crate" ${fa[@]+"${fa[@]}"}
+    unlock_unit
     # A library that does not compile is a build failure; anything else is the doctest run's verdict.
     if [ $D_EXIT -ne 0 ] && [ -z "$D_TIMEOUT" ] && grep -q '^error: could not compile' "$results/doctest/$name.stderr.txt"; then
       b=$D_EXIT r=-
@@ -601,6 +628,10 @@ while IFS=$'\t' read -r kind crate feats status; do
     rec "doctest:$name" doctest "$crate" "$feats" run "$b" "$r" "doctest/$name"
   fi
 done <"$plan"
+dbl_release   # no build after the units (aggregation reads files only)
+printf '{"root": %s, "schema": %s, "class": "round", "holds": %s, "yields": %s, "slice_s": %s, "waited_s_total": %s, "waited_s_max": %s, "broke_stale": %s, "first_acquired_at": %s, "released_at": %s}\n' \
+  "$(jstr "$lock_root")" "$(jstr "$DBL_SCHEMA")" "$lock_holds" "$lock_yields" "$lock_slice" "$lock_waited" "$lock_max_wait" \
+  "$(jstr "${lock_broke# }")" "$(jstr "$lock_first")" "$(jstr "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" >"$results/disk-lock.json"
 ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 first_build=0 first_run=0 absent=0
 while IFS=$'\t' read -r _ _ _ _ status b r _; do
@@ -752,9 +783,10 @@ for n in not_proven:
 for b in fixtures:
     print("  FIXTURE %s %s sha256 %s manifest %s intact=%s placed=%s" % (b["id"], b["library_path"], b["sha256"][:16],
           b["manifest_sha256"][:16], b["binding_intact"], b["placed"]))
-print("SUMMARY exit=%d units=%d not_proven=%d absent=%d timed_out=%d oracle_corpus=%s disk_lock_waited_s=%s" % (code,
-      len(units), len(not_proven), len(round_json["absent_units"]), len(round_json["timed_out_tests"]),
-      corpus.get("root") or "absent", (disk_lock or {}).get("waited_s")))
+dl = disk_lock or {}
+print("SUMMARY exit=%d units=%d not_proven=%d absent=%d timed_out=%d oracle_corpus=%s disk_lock holds=%s yields=%s waited_s=%s (max %s)" % (
+      code, len(units), len(not_proven), len(round_json["absent_units"]), len(round_json["timed_out_tests"]),
+      corpus.get("root") or "absent", dl.get("holds"), dl.get("yields"), dl.get("waited_s_total"), dl.get("waited_s_max")))
 PY
   reason="results aggregation failed (raw files kept)"
   echo "run-round: $reason" >&2

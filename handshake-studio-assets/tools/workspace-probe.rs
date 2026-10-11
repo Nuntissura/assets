@@ -502,7 +502,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-press", &["miniz_oxide", "sha2"]),
     ("hsk-studio-web", &["sha2"]),
     ("hsk-studio-score-device", &["cpal"]),
-    ("hsk-studio-score-plugin", &["clack-host"]),
+    ("hsk-studio-score-plugin", &["clack-host", "sha2"]),
     ("hsk-studio-interop-lrcat", &["sha2"]),
     ("hsk-studio-motion-js", &["rquickjs", "windows-sys"]),
 ];
