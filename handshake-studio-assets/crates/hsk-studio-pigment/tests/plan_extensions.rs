@@ -462,6 +462,37 @@ fn mask_density_is_refused_by_v1_admit_and_admitted_through_the_envelope() {
     assert!(admit(&p, &full, &req(Exactness::Exact), &cancel).is_ok());
 }
 
+/// R5 PLAUSIBLE item (same class): a `Solid` colour outside [0, 1] passed validate and admit and
+/// was refused by each backend; shared admission now refuses it with the backends' key, on both
+/// the v1 and the envelope path. Alpha range stays a structural `validate` error.
+#[test]
+fn solid_outside_unit_is_refused_by_shared_admission() {
+    let cancel = CancellationToken::default();
+    let full = Fake {
+        ext: Exactness::Exact,
+    };
+    let mut hdr = plan();
+    hdr.nodes[0] = PlanNode::Solid {
+        rect: R,
+        rgba: [2.0, 0.0, 0.0, 1.0],
+    };
+    assert!(hdr.validate(&PlanLimits::default()).is_ok());
+    let refused = Err(BackendError::Unsupported {
+        operator: SAMPLE_RANGE_OPERATOR,
+        exactness: Exactness::Unsupported,
+    });
+    assert_eq!(
+        admit(&hdr, &full, &req(Exactness::Approximate), &cancel),
+        refused
+    );
+    let empty = PlanExtensions::default();
+    assert_eq!(
+        admit_extended(&hdr, &empty, &full, &req(Exactness::Approximate), &cancel),
+        refused
+    );
+    assert!(!plan().has_solid_outside_unit());
+}
+
 #[test]
 fn stack_oracle_adjustment_node() {
     // Invert over opaque (0.2, 0.4, 0.6), Normal, opacity 1 -> (0.8, 0.6, 0.4), alpha 1.
