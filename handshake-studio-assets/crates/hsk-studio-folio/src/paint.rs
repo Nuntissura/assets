@@ -4,8 +4,8 @@
 //! stores and validates only; rasterising a gradient, stroking and blending belong to the render and
 //! pigment crates.
 //!
-//! A stack lives in a standalone `StudioPaintStyle` (an `SSTY` style-registry entry) that a vector
-//! path or layer names through its style reference (STU-DS-136); `StudioLayer` and `LayerAppearance`
+//! A stack lives in a standalone `StudioPaintStyle` (an `SSTY` style-registry entry) that a node names
+//! through `StudioNodeDesign::style_refs` (the STU-DS-136 fields); `StudioLayer` and `LayerAppearance`
 //! are untouched, so every struct-literal constructor of them keeps compiling.
 //!
 //! Units: a stroke weight, dash and dash offset are Folio `Length` values in any unit; the spec unit
@@ -216,6 +216,16 @@ pub enum StudioAppearanceRow {
         visible: bool,
     },
 }
+
+/// STU-DS-136 closed set of the fields of a node that hold a style reference.
+pub const STYLE_REF_FIELDS: [&str; 6] = [
+    "fill_style_id",
+    "stroke_style_id",
+    "text_style_id",
+    "effect_style_id",
+    "grid_style_id",
+    "background_style_id",
+];
 
 /// STU-DS-134 style kind. Only `PAINT` entries are modelled by [`StudioPaintStyle`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

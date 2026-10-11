@@ -5,8 +5,8 @@
 //! document is a node id, and a reference to a record is checked against the same set.
 //!
 //! The set carries per-node design entries (auto layout, child layout, size clamps, constraints,
-//! reactions, component property references, explicit variable modes), components, component sets,
-//! instances, variable collections, variables and paint styles. There is no spec primitive name for the
+//! reactions, component property references, explicit variable modes, style references),
+//! components, component sets, instances, variable collections, variables and paint styles. There is no spec primitive name for the
 //! set; its members keep their spec names and schema tokens. A document that has no design records
 //! is unchanged and is not re-encoded.
 //!
@@ -24,8 +24,8 @@
 //! count of two or more per set (STU-DS-102) is not enforced; the alias-cycle check uses the union of
 //! all modes (a conservative reading of STU-DS-175).
 use super::{
-    Budget, Code, NodeKind, NodeRef, Parent, Payload, ResolutionIssue, Resolver, Result,
-    StudioDocument,
+    Budget, Code, NodeKind, NodeRef, Parent, Payload, Resolution, ResolutionIssue, Resolver,
+    Result, StudioDocument,
     autolayout::{
         ChildPositioning, StudioAutoLayout, StudioChildLayout, StudioConstraint, StudioSizeClamps,
         validate_auto_layout, validate_clamps,
@@ -38,7 +38,7 @@ use super::{
         validate_variable,
     },
     err, id,
-    paint::{StudioPaintStyle, validate_style},
+    paint::{STYLE_REF_FIELDS, StudioPaintStyle, validate_style},
     reactions::{StudioReaction, validate_reactions},
     values::{Ctx, VariableType, label},
 };
@@ -78,6 +78,9 @@ pub struct StudioNodeDesign {
     /// STU-DS-132: `SVCL` collection id to mode id, on a container node.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub explicit_variable_modes: BTreeMap<String, String>,
+    /// STU-DS-136: style-reference field name (one of [`STYLE_REF_FIELDS`]) to `SSTY` style id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub style_refs: BTreeMap<String, String>,
 }
 
 /// The design records of one document.
@@ -488,6 +491,7 @@ fn check_nodes(
             flow.insert(n.node.node_id.as_str());
         }
     }
+    let paint_styles: BTreeSet<&str> = r.paint_styles.iter().map(|s| s.style_id.as_str()).collect();
     let definitions: BTreeSet<&str> = r
         .components
         .iter()
@@ -552,6 +556,24 @@ fn check_nodes(
                 }
                 c.text(field, nid)?;
                 c.text(reference, nid)?;
+            }
+        }
+        for (field, style) in &n.style_refs {
+            let target = format!("{nid}/style_refs");
+            if !STYLE_REF_FIELDS.contains(&field.as_str()) {
+                return Err(err(Code::InvalidField, target));
+            }
+            id(style, "SSTY", &target)?;
+            if !paint_styles.contains(style.as_str()) {
+                let disposition = c
+                    .resolver
+                    .primitive(hsk_studio_accord::SCHEMA_STUDIO_STYLE_REGISTRY, style);
+                if disposition != Resolution::Available {
+                    c.issues.push(ResolutionIssue {
+                        target,
+                        disposition,
+                    });
+                }
             }
         }
         if !n.explicit_variable_modes.is_empty() {

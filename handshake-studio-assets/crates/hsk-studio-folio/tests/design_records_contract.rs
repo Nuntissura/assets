@@ -251,7 +251,8 @@ fn records() -> Value {
                             "variable_value": {"type": "BOOLEAN", "value": true}}]},
                     {"trigger": null, "actions": [{"type": "BACK"}]}]},
             {"node": node("layer", identity("SLYR", 3)), "child_layout": child_layout(0, "ABSOLUTE"),
-                "constraints": constraint("MAX", "STRETCH")},
+                "constraints": constraint("MAX", "STRETCH"),
+                "style_refs": {"fill_style_id": identity("SSTY", 1), "stroke_style_id": identity("SSTY", 1)}},
             {"node": node("layer", identity("SLYR", 5)), "constraints": constraint("SCALE", "CENTER")},
             {"node": node("layer", identity("SLYR", 13)),
                 "component_property_references": {"visible": "showIcon#12:3", "characters": "label#4:1"}},
@@ -682,6 +683,40 @@ fn design_records_round_trip_and_node_rules_are_refused() {
             )],
             Code::InvalidField,
             "/component_property_references",
+        );
+        refused(
+            &[(
+                "/nodes/3/style_refs",
+                json!({"fill_color_id": identity("SSTY", 1)}),
+            )],
+            Code::InvalidField,
+            "/style_refs",
+        );
+        refused(
+            &[(
+                "/nodes/3/style_refs",
+                json!({"fill_style_id": identity("SLYR", 1)}),
+            )],
+            Code::InvalidId,
+            "/style_refs",
+        );
+        // A style that is not one of this set's paint styles is the host's: reported, not refused.
+        let mut foreign = v.clone();
+        set(
+            &mut foreign,
+            "/nodes/3/style_refs",
+            json!({"fill_style_id": identity("SSTY", 9)}),
+        );
+        let issues = result(&foreign, &Caller(Resolution::Absent)).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].target.ends_with("/style_refs")
+                && issues[0].disposition == Resolution::Absent
+        );
+        assert!(
+            result(&foreign, &Caller(Resolution::Available))
+                .unwrap()
+                .is_empty()
         );
         refused(
             &[(
