@@ -13,8 +13,12 @@
 //! geometry numbers are in gradient space (dimensionless); `transform` maps gradient space to
 //! document geometry units.
 //!
+//! The `pattern` paint kind (STU-VEC-134) is not a `StudioPaint` variant (dependents match the
+//! enum exhaustively); it is a binding of a row to a pattern in `StudioVectorRecords` (`vector.rs`),
+//! and the row's own paint is its stand-in.
+//!
 //! Declared gaps, not invented here: paint kinds `none`, `process_cmyk`, `gray`, `spot`, `lab`,
-//! `pattern`, `image`, `video` (STU-VEC-134) and gradient kinds `angular`, `diamond`, `freeform`,
+//! `image`, `video` (STU-VEC-134) and gradient kinds `angular`, `diamond`, `freeform`,
 //! `mesh` (STU-VEC-135) and the raster `StudioGradient` form (noise, separate transparency stop list,
 //! STU-RAS-160) are not stored; effect rows and the per-row effect scope (STU-VEC-023) are not
 //! stored; stroke per-side weights, `stroke_cap`/`stroke_join` per network vertex, dash cap, dash
