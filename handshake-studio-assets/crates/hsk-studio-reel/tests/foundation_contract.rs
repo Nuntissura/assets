@@ -125,6 +125,8 @@ fn gop_spec() -> Mp4Spec {
         co64: false,
         ctts_version: 0,
         moov_first: true,
+        colr_nclx: Some((1, 1, 1, false)),
+        pasp: Some((1, 1)),
     }
 }
 
@@ -144,6 +146,16 @@ fn isobmff_index_seek_and_packets() {
         let track = index.default_track().unwrap();
         assert_eq!((track.codec, track.width, track.height), (*b"avc1", 64, 36));
         assert!(track.ticks_exact && !track.is_all_sync());
+        assert_eq!(
+            track.color,
+            ColorTag::Nclx {
+                primaries: 1,
+                transfer: 1,
+                matrix: 1,
+                full_range: Some(false)
+            }
+        );
+        assert_eq!(track.pixel_aspect, Some((1, 1)));
         assert_eq!(track.sync_samples(), &[0, 7]);
 
         // Exact PTS for every frame: edit list shifts the 2-frame B-frame delay to presentation zero.
@@ -314,6 +326,76 @@ fn isobmff_layouts_corruption_and_limits() {
             index_of(&first, &tiny_probe).unwrap_err(),
             ReelError::LimitExceeded { what: "moov-bytes" }
         );
+
+        // Leading empty edit: presentation starts 3 frames in; earlier times are out of range, not clamped.
+        let mut gap = gop_spec();
+        gap.edits = Some(vec![(3003, -1), (12 * 1001, 2002)]);
+        let gapped = index_of(&mp4_bytes(&gap), &limits).unwrap();
+        let t = &gapped.tracks[0];
+        assert_eq!(t.edits[0].media_time, None);
+        assert_eq!(t.presented()[0].pts, 3 * TPF_2997 as i64);
+        assert_eq!(
+            t.seek(Ticks::new(TPF_2997)).unwrap_err().code(),
+            "MEDIA_OUT_OF_RANGE"
+        );
+        let r = t.seek(Ticks::new(3 * TPF_2997)).unwrap();
+        assert_eq!(
+            (r.target.sample, r.disposition),
+            (0, SeekDisposition::Exact)
+        );
+
+        // 100 ns timebase does not divide the tick rate: PTS rounds to nearest and says so.
+        let spec = Mp4Spec {
+            movie_timescale: 10_000_000,
+            media_timescale: 10_000_000,
+            samples: (0..4)
+                .map(|_| Mp4Sample {
+                    duration: 333_667,
+                    cts_offset: 0,
+                    size: 10,
+                    sync: true,
+                })
+                .collect(),
+            edits: None,
+            colr_nclx: None,
+            pasp: None,
+            ..gop_spec()
+        };
+        let odd = mp4_bytes(&spec);
+        let odd_index = index_of(&odd, &limits).unwrap();
+        let t = &odd_index.tracks[0];
+        assert!(!t.ticks_exact);
+        assert_eq!((t.color, t.pixel_aspect), (ColorTag::Untagged, None));
+        let exact = 333_667i128 * i128::from(TICKS_PER_SECOND);
+        let error = i128::from(t.presented()[1].pts) * 10_000_000 - exact;
+        assert!(
+            error != 0 && error.abs() * 2 <= 10_000_000,
+            "nearest-tick rounding"
+        );
+        let mut req = request(ISOBMFF_PROVIDER_ID, 0, 2, grant("odd", &odd));
+        req.output = OutputMode::Packets;
+        let r = decode(
+            &IsobmffProvider,
+            &odd,
+            &req,
+            &limits,
+            &mut Collect::default(),
+        )
+        .unwrap();
+        assert!(!r.ticks_exact && r.complete);
+        // A prebuilt index can be reused without re-reading moov.
+        let mut again = Collect::default();
+        let reused = IsobmffProvider
+            .decode_packets(
+                &mut Cursor::new(odd.clone()),
+                &odd_index,
+                &req,
+                &limits,
+                &cancel,
+                &mut again,
+            )
+            .unwrap();
+        assert_eq!((again.chunks.len(), reused.bytes_read), (2, 20));
 
         // A stale grant is rejected before any payload is read.
         let mut stale = grant("orig-mp4", &first);

@@ -100,6 +100,10 @@ pub struct Mp4Spec {
     pub co64: bool,
     pub ctts_version: u8,
     pub moov_first: bool,
+    /// `colr nclx` (primaries, transfer, matrix, full_range).
+    pub colr_nclx: Option<(u16, u16, u16, bool)>,
+    /// `pasp` (horizontal, vertical spacing).
+    pub pasp: Option<(u32, u32)>,
 }
 
 /// Byte `offset` of sample `index` in the MP4 `mdat` fixture pattern.
@@ -214,6 +218,19 @@ fn moov(spec: &Mp4Spec, mdat_payload_offset: u64) -> Vec<u8> {
     entry.extend_from_slice(&[0; 32]);
     entry.extend_from_slice(&0x0018u16.to_be_bytes());
     entry.extend_from_slice(&0xFFFFu16.to_be_bytes());
+    if let Some((primaries, transfer, matrix, full)) = spec.colr_nclx {
+        let mut colr = b"nclx".to_vec();
+        for v in [primaries, transfer, matrix] {
+            colr.extend_from_slice(&v.to_be_bytes());
+        }
+        colr.push(u8::from(full) << 7);
+        entry.extend_from_slice(&boxed(b"colr", &colr));
+    }
+    if let Some((h, v)) = spec.pasp {
+        let mut pasp = be32(h).to_vec();
+        pasp.extend_from_slice(&be32(v));
+        entry.extend_from_slice(&boxed(b"pasp", &pasp));
+    }
     let mut stsd = be32(1).to_vec();
     stsd.extend_from_slice(&boxed(&spec.codec, &entry));
 
@@ -254,7 +271,7 @@ fn moov(spec: &Mp4Spec, mdat_payload_offset: u64) -> Vec<u8> {
     }
     stbl.extend_from_slice(&full_box(b"stsz", 0, 0, &stsz));
 
-    let per = spec.samples_per_chunk.max(1) as usize;
+    let per = (spec.samples_per_chunk.max(1) as usize).min(n.max(1));
     let chunks = n.div_ceil(per);
     let mut stsc_entries = vec![(1u32, per as u32)];
     if !n.is_multiple_of(per) {

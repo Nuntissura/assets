@@ -39,6 +39,24 @@ pub struct SampleEntry {
     pub sync: bool,
 }
 
+/// Colour tagging carried by the sample entry (`colr`). Absence is `Untagged`: consumers must record an
+/// `assumed(rule)` instead of silently guessing primaries, transfer, matrix or range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorTag {
+    Untagged,
+    /// ITU-T H.273 code points (QuickTime `nclc` carries no range flag: `full_range == None`).
+    Nclx {
+        primaries: u16,
+        transfer: u16,
+        matrix: u16,
+        full_range: Option<bool>,
+    },
+    /// Embedded ICC profile (`prof` / `rICC` / `ricc`); only its size is indexed.
+    IccProfile {
+        bytes: u32,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioFormat {
     pub channels: u16,
@@ -103,6 +121,9 @@ pub struct TrackIndex {
     pub width: u32,
     pub height: u32,
     pub audio: Option<AudioFormat>,
+    pub color: ColorTag,
+    /// `pasp` pixel aspect ratio (horizontal, vertical spacing).
+    pub pixel_aspect: Option<(u32, u32)>,
     pub edits: Vec<EditSegment>,
     /// False when any media-time to tick conversion on this track needed rounding.
     pub ticks_exact: bool,
@@ -450,6 +471,52 @@ struct SampleDescription {
     width: u32,
     height: u32,
     audio: Option<AudioFormat>,
+    color: ColorTag,
+    pixel_aspect: Option<(u32, u32)>,
+}
+
+/// Sample-entry child boxes (`colr`, `pasp`). A malformed child ends the scan: metadata is advisory and
+/// must never fail an otherwise indexable track.
+fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>) {
+    let (mut color, mut aspect) = (ColorTag::Untagged, None);
+    for item in boxes(rest) {
+        let Ok((kind, payload)) = item else { break };
+        match &kind {
+            b"colr" if payload.len() >= 4 => match &payload[..4] {
+                b"nclx" | b"nclc" if payload.len() >= 10 => {
+                    let word = |at: usize| u16::from_be_bytes([payload[at], payload[at + 1]]);
+                    color = ColorTag::Nclx {
+                        primaries: word(4),
+                        transfer: word(6),
+                        matrix: word(8),
+                        full_range: (&payload[..4] == b"nclx" && payload.len() >= 11)
+                            .then(|| payload[10] & 0x80 != 0),
+                    };
+                }
+                b"prof" | b"rICC" | b"ricc" => {
+                    color = ColorTag::IccProfile {
+                        bytes: (payload.len() - 4) as u32,
+                    };
+                }
+                _ => {}
+            },
+            b"pasp" if payload.len() >= 8 => {
+                let word = |at: usize| {
+                    u32::from_be_bytes([
+                        payload[at],
+                        payload[at + 1],
+                        payload[at + 2],
+                        payload[at + 3],
+                    ])
+                };
+                if word(0) > 0 && word(4) > 0 {
+                    aspect = Some((word(0), word(4)));
+                }
+            }
+            _ => {}
+        }
+    }
+    (color, aspect)
 }
 
 fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, ReelError> {
@@ -461,6 +528,8 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
             width: 0,
             height: 0,
             audio: None,
+            color: ColorTag::Untagged,
+            pixel_aspect: None,
         });
     }
     let size = c.u32()? as usize;
@@ -475,11 +544,16 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
     let mut e = Cur::new(c.take(body_len)?);
     e.skip(8)?; // reserved[6] + data_reference_index
     let (mut width, mut height, mut audio) = (0, 0, None);
+    let (mut color, mut pixel_aspect) = (ColorTag::Untagged, None);
     match kind {
         TrackKind::Video => {
             e.skip(16)?;
             width = u32::from(e.u16()?);
             height = u32::from(e.u16()?);
+            // hres, vres, reserved, frame_count, compressorname[32], depth, pre_defined
+            e.skip(50)?;
+            let remaining = e.remaining();
+            (color, pixel_aspect) = parse_visual_children(e.take(remaining)?);
         }
         TrackKind::Audio => {
             let version = e.u16()?;
@@ -503,6 +577,8 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
         width,
         height,
         audio,
+        color,
+        pixel_aspect,
     })
 }
 
@@ -732,6 +808,8 @@ fn build_track(
         width: desc.width,
         height: desc.height,
         audio: desc.audio,
+        color: desc.color,
+        pixel_aspect: desc.pixel_aspect,
         edits: Vec::new(),
         ticks_exact: true,
         samples,
@@ -1094,7 +1172,47 @@ impl MediaProvider for IsobmffProvider {
         }
         let file_len = verify_grant(src, &req.grant, req.expected_revision)?;
         let index = build_index(src, file_len, limits, cancel)?;
-        let track = select_track(&index, req.track)?;
+        let mut receipt = self.deliver(src, &index, req, limits, cancel, sink)?;
+        receipt.bytes_read += index.bytes_read;
+        Ok(receipt)
+    }
+}
+
+impl IsobmffProvider {
+    /// Packet delivery over a prebuilt (cacheable) index. The grant is verified against the live source
+    /// before any payload read; `bytes_read` counts payload only (the index was read earlier).
+    pub fn decode_packets(
+        &self,
+        src: &mut dyn ReadSeek,
+        index: &MediaIndex,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+    ) -> Result<SegmentReceipt, ReelError> {
+        check_cancel(cancel)?;
+        if req.codec != ISOBMFF_PROVIDER_ID {
+            return Err(ReelError::CodecUnavailable {
+                codec: req.codec.clone(),
+            });
+        }
+        if req.count == 0 {
+            return Err(ReelError::Unsupported { what: "zero-count" });
+        }
+        verify_grant(src, &req.grant, req.expected_revision)?;
+        self.deliver(src, index, req, limits, cancel, sink)
+    }
+
+    fn deliver(
+        &self,
+        src: &mut dyn ReadSeek,
+        index: &MediaIndex,
+        req: &SegmentRequest,
+        limits: &Limits,
+        cancel: &CancellationToken,
+        sink: &mut dyn ChunkSink,
+    ) -> Result<SegmentReceipt, ReelError> {
+        let track = select_track(index, req.track)?;
         if req.output == OutputMode::Decoded {
             // No pure-Rust decoder is registered for compressed sample entries in this slice.
             return Err(ReelError::CodecUnavailable {
@@ -1190,7 +1308,7 @@ impl MediaProvider for IsobmffProvider {
             decoder_id: "isobmff-demux",
             decoder_version: DECODER_VERSION,
             chunks,
-            bytes_read: index.bytes_read + payload,
+            bytes_read: payload,
             complete: true,
             ticks_exact,
         })

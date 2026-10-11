@@ -22,9 +22,9 @@ mod y4m;
 
 pub use error::ReelError;
 pub use isobmff::{
-    AudioFormat, EditSegment, ISOBMFF_PROVIDER_ID, IsobmffProvider, MediaIndex, PresentedSample,
-    SampleEntry, SeekDisposition, SeekPoint, SeekResult, TrackIndex, TrackKind, build_index,
-    fourcc_string, read_sample,
+    AudioFormat, ColorTag, EditSegment, ISOBMFF_PROVIDER_ID, IsobmffProvider, MediaIndex,
+    PresentedSample, SampleEntry, SeekDisposition, SeekPoint, SeekResult, TrackIndex, TrackKind,
+    build_index, fourcc_string, read_sample,
 };
 pub use model::*;
 pub use registry::{ProxySource, Registry, detect_type};
