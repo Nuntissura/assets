@@ -7,5 +7,17 @@ rust-version = { workspace = true }
 [features]
 default = []
 
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-prism = { path = "../hsk-studio-prism", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-features = false }
+kurbo = { version = "=0.13.1", default-features = false, features = ["std"] }
+
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "render-cpu-consumer"
+path = "examples/render-cpu-consumer.rs"
