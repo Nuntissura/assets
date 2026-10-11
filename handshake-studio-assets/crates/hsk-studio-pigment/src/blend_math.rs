@@ -795,6 +795,12 @@ fn fold_nodes(
 
 /// Evaluate a bottom-first stack of leaves and groups on one pixel (reference oracle for
 /// backends; single-pixel, not a renderer).
+///
+/// There is no clip-run node and no Blend-If input here by design: Blend-If on an unclipped layer
+/// or adjustment layer is `opacity * fill * blend_if_weight(..)` folded into the node opacity by the
+/// caller, and Blend-If on a clip base or a clipped layer has no public definition, so the render
+/// plan refuses it (`render_plan::ExtOperator::BlendIfClipBase`, `BlendIfClippedLayer`) instead of
+/// giving a backend something to match.
 pub fn evaluate_stack(
     nodes: &[StackNode],
     backdrop: Rgba,

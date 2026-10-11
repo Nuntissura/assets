@@ -8,8 +8,8 @@
 //! its envelope; a backend opts in per operator through
 //! [`RenderBackend::extension_exactness`] (default: nothing supported).
 use super::{
-    Applicability, BackendError, ExactnessLedger, ExecuteRequest, MaskFormat, Operator, PlanError,
-    PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core,
+    Applicability, BackendError, ClipRole, ExactnessLedger, ExecuteRequest, MaskFormat, Operator,
+    PlanError, PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core,
 };
 use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
 use crate::blend_math::{Exactness, StudioBlendMode};
@@ -53,7 +53,11 @@ impl Knockout {
 ///   `k = opacity * fill_opacity * mask * blend_if`, colour `lerp(Cb, B_mode(Cb, f(Cb)), k)`, alpha
 ///   unchanged ([`crate::adjust_math::composite_adjustment`]). It may not be a clip base.
 /// - `blend_if`: Blend-If entries ([`crate::coverage_math::blend_if_weight`] multiplies the
-///   source alpha). Empty or all-identity = no Blend-If. Refused on a pass-through layer.
+///   source alpha). Empty or all-identity = no Blend-If. Refused on a pass-through layer. A
+///   non-identity Blend-If on the base of a clipping run or on a clipped layer is not defined by any
+///   public source and is refused by [`admit_extended`] for every backend
+///   ([`ExtOperator::BlendIfClipBase`], [`ExtOperator::BlendIfClippedLayer`]; the clip role is
+///   [`super::Group::clip_role`]).
 /// - `mask_feather_px`: Gaussian feather radius of the layer's coverage mask
 ///   ([`crate::coverage_math::feather_kernel`], applied before density); `0` = none.
 /// - `knockout`: only `Knockout::None` is admitted.
@@ -128,6 +132,15 @@ pub enum ExtOperator {
     /// The per-pixel maths of one adjustment kind.
     Adjustment(AdjustmentKind),
     BlendIf,
+    /// Non-identity Blend-If on the BASE of a clipping run ([`super::ClipRole::Base`]). Reported
+    /// instead of [`ExtOperator::BlendIf`]; intrinsically `Unsupported` because no public source
+    /// defines it (work-folder `diagnostics/adjustments-advanced-blending.md` topic
+    /// `blend-if-clip-roles`), so [`admit_extended`] refuses it for every backend whatever the
+    /// backend claims (`tests/blend_if_clip.rs`).
+    BlendIfClipBase,
+    /// Non-identity Blend-If on a CLIPPED layer or clipped adjustment layer
+    /// ([`super::ClipRole::Clipped`]); same status as [`ExtOperator::BlendIfClipBase`].
+    BlendIfClippedLayer,
     /// A coverage mask with `density < 1` (the v1 path keeps today's backend refusal).
     MaskDensity,
     MaskFeather,
@@ -146,6 +159,8 @@ impl ExtOperator {
             Self::AdjustmentLayer => "adjustment_layer",
             Self::Adjustment(k) => k.key(),
             Self::BlendIf => "blend_if",
+            Self::BlendIfClipBase => "blend_if_clip_base",
+            Self::BlendIfClippedLayer => "blend_if_clipped_layer",
             Self::MaskDensity => "mask_density",
             Self::MaskFeather => "mask_feather",
             Self::Knockout(k) => k.key(),
@@ -158,6 +173,7 @@ impl ExtOperator {
             Self::AdjustmentLayer => ADJUSTMENT_LAYER_EXACTNESS,
             Self::Adjustment(k) => k.facts().exactness,
             Self::BlendIf | Self::MaskDensity | Self::MaskFeather => COVERAGE_EXACTNESS,
+            Self::BlendIfClipBase | Self::BlendIfClippedLayer => Exactness::Unsupported,
             Self::Knockout(Knockout::None) => Exactness::Exact,
             Self::Knockout(_) => Exactness::Unsupported,
             Self::Effect(_) => EFFECT_EXACTNESS,
@@ -295,7 +311,14 @@ impl PlanExtensions {
                     .iter()
                     .any(|x| x.source != IDENTITY_RANGE || x.destination != IDENTITY_RANGE)
                 {
-                    add(ExtOperator::BlendIf);
+                    // Blend-If inside a clipping run has no defined semantics (no public source):
+                    // the clip roles get their own intrinsically unsupported operators, so the
+                    // shared admission refuses them identically for every backend.
+                    add(match g.clip_role(e.layer as usize) {
+                        Some(ClipRole::Base) => ExtOperator::BlendIfClipBase,
+                        Some(ClipRole::Clipped) => ExtOperator::BlendIfClippedLayer,
+                        _ => ExtOperator::BlendIf,
+                    });
                 }
             }
             if !e.mask_feather_px.is_finite() {
