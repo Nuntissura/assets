@@ -258,7 +258,9 @@ struct Forward<'a> {
 }
 
 /// True when the picture has the plane count its format implies and every plane has exactly
-/// width x height x bytes-per-sample bytes.
+/// width x height x bytes-per-sample bytes. The format comes from the decoder (untrusted output), so the
+/// expected size is computed with checked arithmetic: a size that does not fit u64 can match no real
+/// plane and is a mismatch (the caller reports a protocol fault), never an overflow.
 fn planes_match_format(picture: &DecodedPicture) -> bool {
     let dims = picture.format.plane_dims();
     let bytes_per_sample = picture.format.bytes_per_sample() as u64;
@@ -266,7 +268,10 @@ fn planes_match_format(picture: &DecodedPicture) -> bool {
         && picture.format.height > 0
         && picture.planes.len() == dims.len()
         && picture.planes.iter().zip(dims).all(|(plane, (w, h))| {
-            plane.len() as u64 == u64::from(w) * u64::from(h) * bytes_per_sample
+            u64::from(w)
+                .checked_mul(u64::from(h))
+                .and_then(|samples| samples.checked_mul(bytes_per_sample))
+                .is_some_and(|expected| plane.len() as u64 == expected)
         })
 }
 

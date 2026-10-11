@@ -145,8 +145,13 @@ impl Av1Decoder {
         } else {
             Some(parse_av1c(config)?)
         };
-        // Largest picture whose packed 4:4:4 16-bit form still fits one chunk.
-        let pixel_limit = u32::try_from(limits.max_chunk_bytes / 6).unwrap_or(u32::MAX);
+        // Largest picture whose packed form still fits one chunk: sized from the stream's own `av1C`
+        // layout and bit depth (1080p 4:2:0 8-bit fits the default chunk). Only a stream without a
+        // record falls back to the 4:4:4 16-bit worst case.
+        let pixel_limit = parsed.as_ref().map_or_else(
+            || u32::try_from(limits.max_chunk_bytes / 6).unwrap_or(u32::MAX),
+            |config| config.pixel_limit(limits.max_chunk_bytes),
+        );
         let mut decoder = Self {
             raw: Rav1d::open(pixel_limit, limits.max_chunk_bytes)?,
             container_color,

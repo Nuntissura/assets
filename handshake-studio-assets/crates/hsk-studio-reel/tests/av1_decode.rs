@@ -183,3 +183,39 @@ fn av1_refuses_unsupported_or_hostile_streams_with_typed_errors() {
         "MEDIA_LIMIT_EXCEEDED"
     );
 }
+
+const MP4_1080P: &[u8] = include_bytes!("fixtures/av1/av1-1920x1080-2f.mp4");
+/// Raw yuv420p frame SHA-256 of `av1-1920x1080-2f.mp4` from libdav1d (see `provenance.json`).
+const ORACLE_1080P: [&str; 2] = [
+    "deb0b61137e5d33deeffe5eda5125bfb860c9d86a1c7523e1b21b991b91cbd80",
+    "ff3ac0c64bc2772c846a2a7083b25fa57161a66cc25b4128ad2dc7c8459acf34",
+];
+
+/// R5 SMB-REEL-ENG-3 (av1/mod.rs:148-151): the pixel limit was `max_chunk_bytes / 6` (the 4:4:4 16-bit
+/// worst case), 1,398,101 px at default limits, so an ordinary 1920x1080 8-bit 4:2:0 stream (3,110,400
+/// bytes packed, well inside the 8 MiB chunk limit) was refused as `av1-frame-resources`. The limit now
+/// follows the stream's own `av1C` layout and bit depth; a limit that really cannot hold the frame still
+/// refuses it with the typed error.
+#[test]
+fn av1_1080p_decodes_at_default_limits_and_a_smaller_limit_still_refuses_it() {
+    let (receipt, sink) = decode(MP4_1080P, 0, 2, &Limits::default()).unwrap();
+    let video = receipt.video.expect("video format on the receipt");
+    assert_eq!((video.width, video.height, video.bit_depth), (1920, 1080, 8));
+    assert_eq!(video.chroma, ChromaFormat::Yuv420);
+    assert_eq!(video.frame_bytes(), Some(3_110_400));
+    assert!(receipt.complete && receipt.actual.units == 2);
+    let digests: Vec<String> = sink.frames.iter().map(|(_, _, b)| hash(b)).collect();
+    assert_eq!(digests, ORACLE_1080P);
+
+    // 2 MiB holds 1,398,101 px of 4:2:0 8-bit: smaller than 1080p, so the decoder refuses it up front.
+    let small = Limits {
+        max_chunk_bytes: 2 * 1024 * 1024,
+        ..Limits::default()
+    };
+    assert_eq!(
+        decode(MP4_1080P, 0, 1, &small).unwrap_err(),
+        ReelError::LimitExceeded {
+            what: "av1-frame-resources"
+        }
+    );
+}

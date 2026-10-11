@@ -33,6 +33,30 @@ pub struct Av1Config {
     pub config_obus: Vec<u8>,
 }
 
+impl Av1Config {
+    /// Largest picture (width x height) whose PACKED frame in this record's chroma layout and bit depth
+    /// fits `max_frame_bytes` (planes tight, one byte per sample at 8 bit, two above; see `VideoFormat`).
+    /// 4:2:0 8-bit is 1.5 bytes per pixel, so the default 8 MiB chunk holds 5,592,405 px (1080p is
+    /// 2,073,600); the 4:4:4 16-bit worst case, used only when no record describes the stream, is 6.
+    /// This sizes the decoder's pre-allocation guard; the exact packed size of every decoded picture is
+    /// still checked against `max_frame_bytes` before it is copied.
+    pub fn pixel_limit(&self, max_frame_bytes: usize) -> u32 {
+        // Samples per pixel, doubled to stay integral for the half-sample chroma planes.
+        let samples_x2: u64 = if self.monochrome {
+            2
+        } else {
+            match (self.subsampling_x, self.subsampling_y) {
+                (true, true) => 3,
+                (true, false) => 4,
+                _ => 6,
+            }
+        };
+        let bytes_x2 = samples_x2 * if self.high_bitdepth { 2 } else { 1 };
+        let pixels = (max_frame_bytes as u64).saturating_mul(2) / bytes_x2;
+        u32::try_from(pixels).unwrap_or(u32::MAX)
+    }
+}
+
 pub fn parse_av1c(record: &[u8]) -> Result<Av1Config, ReelError> {
     let [b0, b1, b2, _, ..] = *record else {
         return Err(ReelError::Corrupt {

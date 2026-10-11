@@ -80,6 +80,10 @@ const MAX_EBML_HEADER: u64 = 4096;
 const LACE_PEEK: u64 = 65_536;
 const PEEK: usize = 12;
 const DEFAULT_TIMESTAMP_SCALE_NS: u64 = 1_000_000;
+/// Largest declared picture side accepted (16K video is 16_384). Sizes feed width x height x planes x
+/// bytes arithmetic downstream (decoder caps, frame budgets): bounding them here keeps every such
+/// product far inside u64 and stops a hostile `PixelWidth` from becoming a wrapped or panicking size.
+const MAX_VIDEO_DIMENSION: u64 = 1 << 20;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatroskaProvider;
@@ -211,6 +215,19 @@ impl<'a> Iterator for Elems<'a> {
             }
         }
     }
+}
+
+/// A declared `PixelWidth` / `PixelHeight`: bounded, never truncated (a value above u32::MAX used to
+/// become 0, "undeclared").
+fn video_dimension(value: u64) -> Result<u32, ReelError> {
+    if value > MAX_VIDEO_DIMENSION {
+        return Err(ReelError::LimitExceeded {
+            what: "video-dimensions",
+        });
+    }
+    u32::try_from(value).map_err(|_| ReelError::LimitExceeded {
+        what: "video-dimensions",
+    })
 }
 
 /// Unsigned vint inside a lace header.
@@ -388,8 +405,8 @@ fn parse_track_entry(payload: &[u8]) -> Result<MkvTrackInfo, ReelError> {
                 for sub in elems(p) {
                     let (sid, sp) = sub?;
                     match sid {
-                        ID_PIXEL_WIDTH => t.width = u32::try_from(uint(sp)?).unwrap_or(0),
-                        ID_PIXEL_HEIGHT => t.height = u32::try_from(uint(sp)?).unwrap_or(0),
+                        ID_PIXEL_WIDTH => t.width = video_dimension(uint(sp)?)?,
+                        ID_PIXEL_HEIGHT => t.height = video_dimension(uint(sp)?)?,
                         _ => {}
                     }
                 }

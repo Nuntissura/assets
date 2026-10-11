@@ -131,7 +131,7 @@ pub struct Mkv {
     pub segment_data_start: u64,
 }
 
-fn tracks_payload(spec: &MkvSpec) -> Vec<u8> {
+fn tracks_payload(spec: &MkvSpec, (width, height): (u64, u64)) -> Vec<u8> {
     let mut video = uint_elem(0xD7, 1);
     video.extend(uint_elem(0x73C5, 11));
     video.extend(uint_elem(0x83, 1));
@@ -141,8 +141,8 @@ fn tracks_payload(spec: &MkvSpec) -> Vec<u8> {
     }
     video.extend(string_elem(0x86, "V_MPEG4/ISO/AVC"));
     video.extend(element(0x63A2, &[1, 2, 3, 4]));
-    let mut dims = uint_elem(0xB0, 64);
-    dims.extend(uint_elem(0xBA, 36));
+    let mut dims = uint_elem(0xB0, width);
+    dims.extend(uint_elem(0xBA, height));
     video.extend(element(0xE0, &dims));
     if spec.content_encoding_on_video {
         video.extend(element(0x6D80, &element(0x6240, &uint_elem(0x5031, 0))));
@@ -211,6 +211,12 @@ fn block_payload(block: &MkvBlock, frame_ids: &mut u32) -> (Vec<u8>, Vec<(usize,
 }
 
 pub fn mkv_bytes(spec: &MkvSpec) -> Mkv {
+    mkv_bytes_with_video_dims(spec, 64, 36)
+}
+
+/// `mkv_bytes` with the video track's declared `PixelWidth` / `PixelHeight` chosen by the caller (any
+/// 64-bit EBML unsigned value, to forge hostile dimensions).
+pub fn mkv_bytes_with_video_dims(spec: &MkvSpec, width: u64, height: u64) -> Mkv {
     let mut file = element(0x1A45DFA3, &{
         let mut h = uint_elem(0x4286, 1);
         h.extend(uint_elem(0x42F7, 1));
@@ -229,7 +235,7 @@ pub fn mkv_bytes(spec: &MkvSpec) -> Mkv {
     info.extend(float_elem(0x4489, last_tc as f64));
     info.extend(string_elem(0x4D80, "hsk-studio-reel-fixture"));
     body.extend(element(0x1549A966, &info));
-    body.extend(element(0x1654AE6B, &tracks_payload(spec)));
+    body.extend(element(0x1654AE6B, &tracks_payload(spec, (width, height))));
 
     let mut frame_ids = 0u32;
     let mut cluster_positions = Vec::new();

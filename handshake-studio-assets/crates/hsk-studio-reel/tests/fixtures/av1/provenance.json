@@ -35,4 +35,12 @@
     "identical_for_both_containers": true
   },
   "product_decoder_under_test": "rav1d 1.1.0 (BSD-2-Clause), asm feature OFF"
+  ,"fixture_1080p": {
+    "purpose": "STUDIO-R5 SMB-REEL-ENG-3 regression: the AV1 pixel limit follows the av1C layout (tests/av1_decode.rs av1_1080p_*); 1920x1080 4:2:0 8-bit decodes at Limits::default()",
+    "generated_by": "generate.sh section 1080p (run once, offline, under the artifact root on D:; never by tests)",
+    "generated_on": "2026-10-11",
+    "file": { "name": "av1-1920x1080-2f.mp4", "bytes": 11478, "sha256": "e264d98b37f91eb99d022b6cb51760b62d00bb95d0d398203588eaa2932d59e3", "container": "ISOBMFF (av01 + av1C)" },
+    "stream": { "width": 1920, "height": 1080, "pix_fmt": "yuv420p", "bit_depth": 8, "frames": 2, "packets": [ { "pts_mp4_timescale_12288": 0, "bytes": 8642, "key": true }, { "pts_mp4_timescale_12288": 512, "bytes": 2022, "key": false } ] },
+    "oracle": { "decoder": "libdav1d via ffmpeg -c:v libdav1d -f framehash -hash sha256", "layout": "raw planar yuv420p, tight rows, 3110400 bytes per frame", "frame_sha256": [ "deb0b61137e5d33deeffe5eda5125bfb860c9d86a1c7523e1b21b991b91cbd80", "ff3ac0c64bc2772c846a2a7083b25fa57161a66cc25b4128ad2dc7c8459acf34" ] }
+  }
 }
