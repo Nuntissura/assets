@@ -1361,7 +1361,7 @@ pub fn redact_and_save_with(
     let result = (|| -> Result<RedactedOutput> {
         let mut reports = Vec::with_capacity(regions.len());
         for region in regions {
-            reports.push(doc.redact_region(region, policy, cancel)?);
+            reports.push(doc.select_region(region, policy, true, cancel)?);
         }
         let all: Vec<(Vec<u8>, Option<String>)> = reports
             .iter()

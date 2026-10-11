@@ -122,6 +122,12 @@ pub struct RedactionReport {
     pub layout_shift_possible: bool,
     /// Every mark in the region was removed with proof (`unredacted` is empty).
     pub complete: bool,
+    /// Classes in the region that only the flattening removes (`redact_and_save`, Operator decision
+    /// D27): images, vectors, shadings and inline images the selector does not remove from the page
+    /// content are painted over on the raster that replaces the page, so they are neither refused nor
+    /// `unredacted` there (test `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`). Always
+    /// empty from [`PdfDoc::redact_region`], which does not flatten.
+    pub painted_over: Vec<RedactionClass>,
 }
 
 type Mat = [f64; 6];
@@ -961,11 +967,27 @@ impl PdfDoc {
 
     /// Irreversibly removes the text-showing operators and annotations that touch `region` from
     /// the in-memory document. Call `save_full` (or `redact_and_save`) afterwards; nothing is
-    /// proven until the saved bytes pass `verify_payload_absent`.
+    /// proven until the saved bytes pass `verify_payload_absent`. This is the selector alone: it does
+    /// NOT flatten the page (only `redact_and_save` / `redact_and_save_with` do, Operator decision D27),
+    /// so images, vectors and text it cannot place stay on the page.
     pub fn redact_region(
         &mut self,
         region: &RedactionRegion,
         policy: UnsupportedPolicy,
+        cancel: &CancellationToken,
+    ) -> Result<RedactionReport> {
+        self.select_region(region, policy, false, cancel)
+    }
+
+    /// The region selector. With `flattening` (the page is replaced by its raster afterwards) the
+    /// painted classes it does not remove (images, vectors, shadings, inline images) are listed in
+    /// `painted_over` instead of refused or `unredacted`; text it cannot place and forms nested past
+    /// its depth still count, because the words they draw are the needles of the proof.
+    pub(crate) fn select_region(
+        &mut self,
+        region: &RedactionRegion,
+        policy: UnsupportedPolicy,
+        flattening: bool,
         cancel: &CancellationToken,
     ) -> Result<RedactionReport> {
         self.guard_mutation(cancel)?;
@@ -998,7 +1020,14 @@ impl PdfDoc {
         } else {
             Some(interp.resources_with(resources, &pass.additions, &pass.removals))
         };
-        let Interp { unsupported, removed, strings_removed, removed_unicode, removed_unreadable, layout_shift, new_objects, next_num, images_removed, inline_removed, .. } = interp;
+        let Interp { mut unsupported, removed, strings_removed, removed_unicode, removed_unreadable, layout_shift, new_objects, next_num, images_removed, inline_removed, .. } = interp;
+        let mut painted_over: Vec<RedactionClass> = Vec::new();
+        if flattening {
+            let painted = |c: &RedactionClass| matches!(c, RedactionClass::Image | RedactionClass::Vector | RedactionClass::Shading | RedactionClass::InlineImage);
+            painted_over = unsupported.iter().copied().filter(painted).collect();
+            painted_over.sort_by_key(|c| c.as_str());
+            unsupported.retain(|c| !painted(c));
+        }
         let (new_content, changed) = (pass.out, pass.changed);
         if policy != UnsupportedPolicy::ReportAndContinue
             && let Some(class) = unsupported.first()
@@ -1145,6 +1174,7 @@ impl PdfDoc {
             complete: unredacted.is_empty(),
             unredacted,
             layout_shift_possible: layout_shift,
+            painted_over,
         })
     }
 }

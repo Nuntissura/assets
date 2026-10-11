@@ -108,8 +108,17 @@ fn token() -> CancellationToken {
     CancellationToken::default()
 }
 
+/// Default limits, with a 36 dpi flattening raster (Operator decision D27): these tests read structure
+/// and text, not pixels, and a debug build draws and proves a 150 dpi page in about two seconds.
+fn limits() -> Limits {
+    #[allow(unused_mut)]
+    let mut l = Limits::default();
+    l.flatten_dpi = 36; // D27-new-api
+    l
+}
+
 fn open(bytes: &[u8]) -> PdfDoc {
-    PdfDoc::open(bytes, &Limits::default(), &token()).expect("open")
+    PdfDoc::open(bytes, &limits(), &token()).expect("open")
 }
 
 // ------------------------------------------------------------------- tests
