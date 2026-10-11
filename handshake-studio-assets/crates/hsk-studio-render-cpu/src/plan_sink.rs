@@ -8,6 +8,7 @@
 use crate::coverage::PreparedPath;
 use crate::vector::VectorSource;
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_nib::PathLimits;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, composite_over};
 use hsk_studio_pigment::render_plan::{
@@ -22,7 +23,7 @@ use std::time::Instant;
 
 pub const RENDERER_NAME: &str = "hsk-studio-render-cpu";
 pub const RENDERER_VERSION: &str = "0.1";
-pub const MAX_ANCHORS: usize = 65_536;
+pub use hsk_studio_nib::MAX_PATH_ELEMENTS;
 pub const MAX_CHUNK_SIDE: u32 = 4096;
 pub const DEFAULT_CHUNK_SIDE: u32 = 64;
 /// Scratch charged per chunk pixel: 16 working (RGBA f32) + 12 colour out + 4 alpha out.
@@ -376,20 +377,8 @@ fn prepare<'a, V: VectorSource>(
             PlanNode::Vector(v) => {
                 let fill = v.fill();
                 unit_rgb(fill.rgba)?;
-                if fill.anchors.len() > MAX_ANCHORS {
-                    return Err(BackendError::BudgetExceeded {
-                        requested: fill.anchors.len() as u64,
-                        limit: MAX_ANCHORS as u64,
-                    }
-                    .into());
-                }
-                let path = PreparedPath::prepare(
-                    &fill.anchors,
-                    fill.closed,
-                    fill.winding,
-                    fill.aa_samples,
-                    fill.pixels_per_inch,
-                )?;
+                let path =
+                    PreparedPath::prepare(&fill.path, fill.aa_samples, &PathLimits::default())?;
                 end(path.bounds)?;
                 let bounds = path.bounds;
                 (

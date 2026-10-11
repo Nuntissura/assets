@@ -1,5 +1,7 @@
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId, Length, Unit};
-use hsk_studio_nib::{Anchor, Mirroring, Point, Winding};
+use hsk_studio_nib::{
+    Anchor, FillRule, Mirroring, OwnedPath, PathElement, PathLimits, PathPoint, Point, Winding,
+};
 use hsk_studio_observe::{
     Budget, DeliveryClass, DeliveryError, FailureCode, Observe, Outcome, SinkPort,
 };
@@ -101,17 +103,33 @@ fn anchor(position: Point, incoming: Point, outgoing: Point) -> Anchor {
         handle_mirroring: Mirroring::None,
     }
 }
-fn vector(points: &[(f64, f64)], winding: Winding, aa_samples: u8) -> PlanNode<VectorFill> {
-    PlanNode::Vector(VectorFill {
-        anchors: points
-            .iter()
-            .map(|&(x, y)| anchor(px(x, y), px(0.0, 0.0), px(0.0, 0.0)))
-            .collect(),
-        closed: true,
+fn from_anchors(anchors: &[Anchor], winding: Winding) -> OwnedPath {
+    OwnedPath::from_anchors(
+        anchors,
+        true,
         winding,
+        Unit::Pixels,
+        None,
+        &PathLimits::default(),
+    )
+    .unwrap()
+}
+fn vector(points: &[(f64, f64)], winding: Winding, aa_samples: u8) -> PlanNode<VectorFill> {
+    let anchors: Vec<Anchor> = points
+        .iter()
+        .map(|&(x, y)| anchor(px(x, y), px(0.0, 0.0), px(0.0, 0.0)))
+        .collect();
+    PlanNode::Vector(VectorFill {
+        path: from_anchors(&anchors, winding),
         rgba: [1.0, 0.0, 0.0, 1.0],
         aa_samples,
-        pixels_per_inch: None,
+    })
+}
+fn fill_of(path: OwnedPath, aa_samples: u8) -> PlanNode<VectorFill> {
+    PlanNode::Vector(VectorFill {
+        path,
+        rgba: [1.0, 0.0, 0.0, 1.0],
+        aa_samples,
     })
 }
 
@@ -513,19 +531,18 @@ fn known_alpha_mask_sample_math() {
         // Curves: four cubics (kappa = 0.5522847498, handles relative to anchors) approximate a
         // circle of r = 8 at (10, 10); summed coverage equals pi r^2 within sampling error.
         let (r, k) = (8.0_f64, 0.552_284_749_8 * 8.0);
-        let circle = PlanNode::Vector(VectorFill {
-            anchors: vec![
-                anchor(px(10.0, 2.0), px(-k, 0.0), px(k, 0.0)),
-                anchor(px(18.0, 10.0), px(0.0, -k), px(0.0, k)),
-                anchor(px(10.0, 18.0), px(k, 0.0), px(-k, 0.0)),
-                anchor(px(2.0, 10.0), px(0.0, k), px(0.0, -k)),
-            ],
-            closed: true,
-            winding: Winding::NonZero,
-            rgba: [1.0, 0.0, 0.0, 1.0],
-            aa_samples: 8,
-            pixels_per_inch: None,
-        });
+        let circle = fill_of(
+            from_anchors(
+                &[
+                    anchor(px(10.0, 2.0), px(-k, 0.0), px(k, 0.0)),
+                    anchor(px(18.0, 10.0), px(0.0, -k), px(0.0, k)),
+                    anchor(px(10.0, 18.0), px(k, 0.0), px(-k, 0.0)),
+                    anchor(px(2.0, 10.0), px(0.0, k), px(0.0, -k)),
+                ],
+                Winding::NonZero,
+            ),
+            8,
+        );
         let sink = render(&plan(extent, vec![circle], 0), 7, &Sources::default());
         let area: f64 = (0..20)
             .flat_map(|y| (0..20).map(move |x| (x, y)))
@@ -1155,6 +1172,92 @@ fn unsupported_op_stale_result() {
             unsupported("alpha_premultiplied", Exactness::Unsupported)
         );
 
+        // Vector faults: nib validates geometry, render-cpu refuses instead of drawing a guess.
+        let vec_check = |node: PlanNode<VectorFill>| {
+            let p: RenderPlan<VectorFill> = plan(
+                extent,
+                vec![
+                    node,
+                    group(true, vec![layer(0, StudioBlendMode::Normal, 1.0)]),
+                ],
+                1,
+            );
+            let mut sink = Collect::new(extent);
+            let result = renderer.execute_detailed(
+                &p,
+                &req(Exactness::Approximate),
+                &none,
+                &CancellationToken::default(),
+                &mut sink,
+            );
+            assert_eq!(sink.calls, 0);
+            result.unwrap_err()
+        };
+        let pt = PathPoint::new;
+        let path_of = |elements: Vec<PathElement>| OwnedPath {
+            elements,
+            fill_rule: FillRule::NonZero,
+        };
+        let tri = vec![
+            PathElement::MoveTo(pt(0.0, 0.0)),
+            PathElement::LineTo(pt(2.0, 0.0)),
+            PathElement::LineTo(pt(1.0, 2.0)),
+        ];
+        assert_eq!(
+            vec_check(fill_of(path_of(vec![PathElement::LineTo(pt(1.0, 1.0))]), 4)),
+            unsupported("vector_geometry", Exactness::Unsupported)
+        );
+        let mut nan = tri.clone();
+        nan[1] = PathElement::LineTo(pt(f64::NAN, 0.0));
+        assert_eq!(
+            vec_check(fill_of(path_of(nan), 4)),
+            unsupported("vector_geometry", Exactness::Unsupported)
+        );
+        assert_eq!(
+            vec_check(fill_of(path_of(tri.clone()), 0)),
+            unsupported("vector_aa_samples", Exactness::Unsupported)
+        );
+        assert_eq!(
+            vec_check(fill_of(
+                path_of(vec![
+                    PathElement::MoveTo(pt(0.0, 0.0));
+                    MAX_PATH_ELEMENTS + 1
+                ]),
+                4
+            )),
+            backend(BackendError::BudgetExceeded {
+                requested: MAX_PATH_ELEMENTS as u64 + 1,
+                limit: MAX_PATH_ELEMENTS as u64
+            })
+        );
+        let mut loud = fill_of(path_of(tri.clone()), 4);
+        if let PlanNode::Vector(v) = &mut loud {
+            v.rgba = [2.0, 0.0, 0.0, 1.0];
+        }
+        assert_eq!(
+            vec_check(loud),
+            unsupported("sample_range_outside_unit", Exactness::Unsupported)
+        );
+        // An open subpath fills as if closed by a straight segment: same pixels as the closed one.
+        let mut closed = tri.clone();
+        closed.push(PathElement::Close);
+        let open_sink = render(
+            &plan(extent, vec![fill_of(path_of(tri), 4)], 0),
+            2,
+            &Sources::default(),
+        );
+        let closed_sink = render(
+            &plan(extent, vec![fill_of(path_of(closed), 4)], 0),
+            2,
+            &Sources::default(),
+        );
+        assert_eq!(open_sink.colour, closed_sink.colour);
+        assert_eq!(open_sink.alpha, closed_sink.alpha);
+        assert!(
+            open_sink.alpha.iter().any(|b| *b != 0),
+            "the triangle covers pixels"
+        );
+
         // Mask faults.
         let mask = MaskData::u8(extent, |_, _| 255);
         let with_mask = |input: MaskInput| -> RenderPlan {
@@ -1267,7 +1370,7 @@ fn receipt_binds_revision_profile_and_observe() {
         assert_eq!(receipt.plan_digest, p.digest().unwrap());
         let mut moved = p.clone();
         if let PlanNode::Vector(v) = &mut moved.nodes[1] {
-            v.anchors[0] = anchor(px(11.0, 20.0), px(0.0, 0.0), px(0.0, 0.0));
+            v.path.elements[0] = PathElement::MoveTo(PathPoint::new(11.0, 20.0));
         }
         assert_ne!(
             receipt.plan_digest,
@@ -1395,7 +1498,7 @@ fn receipt_binds_revision_profile_and_observe() {
             descriptor["renderer"],
             format!("{RENDERER_NAME}/{RENDERER_VERSION}")
         );
-        assert_eq!(descriptor["limits"]["anchors_per_path"], MAX_ANCHORS);
+        assert_eq!(descriptor["limits"]["path_elements"], MAX_PATH_ELEMENTS);
         assert_eq!(descriptor["limits"]["chunk_side_max"], MAX_CHUNK_SIDE);
         assert_eq!(
             descriptor["limits"]["default_chunk_side"],

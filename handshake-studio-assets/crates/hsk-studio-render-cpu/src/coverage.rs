@@ -1,15 +1,12 @@
 //! Path-fill coverage: exact winding of the true curve (kurbo, analytic on cubic segments) sampled
 //! on an N x N pixel-centred grid. Coverage is `hits / N^2`, so a pixel fully inside is exactly 1.0,
 //! fully outside exactly 0.0, and an axis-aligned half-pixel edge exactly 0.5 for even N.
+//! The path model itself is nib's `OwnedPath` (CX-CAP-001); this module only rasterizes it.
 use crate::plan_sink::{RenderError, unsupported};
-use hsk_studio_accord::Unit;
-use hsk_studio_nib::{Anchor, Point, Winding};
+use hsk_studio_nib::{Error as NibError, FillRule, OwnedPath, PathLimits};
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::render_plan::BackendError;
-use kurbo::{BezPath, Shape};
-
-/// Magnitude cap (pixels) so integer bounds and sample coordinates stay exact in binary64.
-const COORD_LIMIT: f64 = 1.0e9;
+use kurbo::{BezPath, PathEl, Shape};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedPath {
@@ -19,86 +16,80 @@ pub(crate) struct PreparedPath {
     samples: u32,
 }
 
-fn px(value: hsk_studio_accord::Length, ppi: Option<f64>) -> Result<f64, RenderError> {
-    let v = value
-        .convert(Unit::Pixels, ppi)
-        .map_err(|_| unsupported("vector_geometry"))?
-        .value();
-    if v.is_finite() && v.abs() <= COORD_LIMIT {
-        Ok(v)
-    } else {
-        Err(unsupported("vector_geometry"))
+fn nib_error(error: NibError, limits: &PathLimits, requested: usize) -> RenderError {
+    match error {
+        NibError::BudgetExceeded => RenderError::Backend(BackendError::BudgetExceeded {
+            requested: requested as u64,
+            limit: limits.max_elements as u64,
+        }),
+        _ => unsupported("vector_geometry"),
     }
 }
 
-fn pair(p: Point, ppi: Option<f64>) -> Result<(f64, f64), RenderError> {
-    Ok((px(p.x, ppi)?, px(p.y, ppi)?))
-}
-
 impl PreparedPath {
-    /// Anchor handles are vectors relative to their anchor (nib descriptor: "zero relative pt
-    /// vectors"). The outgoing handle of anchor A and the incoming handle of anchor B bound the
-    /// cubic A -> B; both zero means a straight segment. The path is always filled closed; when
-    /// `closed` is false the closing segment is a straight line (SVG/PDF fill semantics).
+    /// Validates `path` (finite, bounded, well-formed subpaths), closes every open subpath with a
+    /// straight segment (fill semantics), and computes the integer pixel bounding box.
     pub(crate) fn prepare(
-        anchors: &[Anchor],
-        closed: bool,
-        winding: Winding,
+        path: &OwnedPath,
         samples: u8,
-        ppi: Option<f64>,
+        limits: &PathLimits,
     ) -> Result<Self, RenderError> {
-        let even_odd = match winding {
-            Winding::NonZero => false,
-            Winding::EvenOdd => true,
-            Winding::None => return Err(unsupported("vector_winding_none")),
-        };
-        if anchors.len() < 2 {
-            return Err(unsupported("vector_geometry"));
-        }
         if !(1..=16).contains(&samples) {
             return Err(unsupported("vector_aa_samples"));
         }
-        let mut path = BezPath::new();
-        let first = pair(anchors[0].position, ppi)?;
-        path.move_to(first);
-        let segments = if closed {
-            anchors.len()
-        } else {
-            anchors.len() - 1
-        };
-        for i in 0..segments {
-            let a = &anchors[i];
-            let b = &anchors[(i + 1) % anchors.len()];
-            let (ax, ay) = pair(a.position, ppi)?;
-            let (bx, by) = pair(b.position, ppi)?;
-            let (ox, oy) = pair(a.outgoing, ppi)?;
-            let (ix, iy) = pair(b.incoming, ppi)?;
-            if ox == 0.0 && oy == 0.0 && ix == 0.0 && iy == 0.0 {
-                path.line_to((bx, by));
-            } else {
-                path.curve_to((ax + ox, ay + oy), (bx + ix, by + iy), (bx, by));
+        path.validate(limits)
+            .map_err(|e| nib_error(e, limits, path.elements.len()))?;
+        let source = path
+            .to_kurbo()
+            .map_err(|e| nib_error(e, limits, path.elements.len()))?;
+        // kurbo's winding only counts a subpath's closing segment when it is explicit.
+        let mut closed = BezPath::new();
+        let mut open = false;
+        for element in source.elements() {
+            match element {
+                PathEl::MoveTo(_) => {
+                    if open {
+                        closed.close_path();
+                    }
+                    open = false;
+                    closed.push(*element);
+                }
+                PathEl::ClosePath => {
+                    closed.push(*element);
+                    open = false;
+                }
+                _ => {
+                    closed.push(*element);
+                    open = true;
+                }
             }
         }
-        path.close_path();
-        let bb = path.bounding_box();
-        let (x0, y0) = (bb.x0.floor(), bb.y0.floor());
-        let (x1, y1) = (bb.x1.ceil(), bb.y1.ceil());
-        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
-            return Err(unsupported("vector_geometry"));
+        if open {
+            closed.close_path();
         }
-        let width = u32::try_from((x1 - x0) as i64)
-            .map_err(|_| RenderError::Backend(BackendError::Overflow))?;
-        let height = u32::try_from((y1 - y0) as i64)
-            .map_err(|_| RenderError::Backend(BackendError::Overflow))?;
-        Ok(Self {
-            path,
-            bounds: Rect {
+        let bounds = if closed.elements().is_empty() {
+            Rect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            }
+        } else {
+            let bb = closed.bounding_box();
+            let (x0, y0) = (bb.x0.floor(), bb.y0.floor());
+            let (x1, y1) = (bb.x1.ceil(), bb.y1.ceil());
+            let overflow = |_| RenderError::Backend(BackendError::Overflow);
+            Rect {
                 x: x0 as i64,
                 y: y0 as i64,
-                width,
-                height,
-            },
-            even_odd,
+                width: u32::try_from((x1 - x0) as i64).map_err(overflow)?,
+                height: u32::try_from((y1 - y0) as i64).map_err(overflow)?,
+            }
+        };
+        Ok(Self {
+            path: closed,
+            bounds,
+            even_odd: path.fill_rule == FillRule::EvenOdd,
             samples: u32::from(samples),
         })
     }
