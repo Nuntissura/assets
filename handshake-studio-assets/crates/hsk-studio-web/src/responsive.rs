@@ -16,7 +16,8 @@ pub struct Breakpoint {
 }
 impl Breakpoint {
     pub fn matches(&self, width_px: f64) -> bool {
-        self.min_width_px.is_none_or(|m| width_px >= m) && self.max_width_px.is_none_or(|m| width_px <= m)
+        self.min_width_px.is_none_or(|m| width_px >= m)
+            && self.max_width_px.is_none_or(|m| width_px <= m)
     }
 }
 
@@ -31,7 +32,10 @@ enum Tok {
 }
 
 fn malformed(span: Range<usize>) -> WebError {
-    WebError::Malformed { kind: MalformedKind::InvalidMediaQuery, span }
+    WebError::Malformed {
+        kind: MalformedKind::InvalidMediaQuery,
+        span,
+    }
 }
 fn unsupported(kind: UnsupportedKind, span: Range<usize>) -> WebError {
     WebError::Unsupported { kind, span }
@@ -39,11 +43,16 @@ fn unsupported(kind: UnsupportedKind, span: Range<usize>) -> WebError {
 
 fn parse_px(value: &str, span: Range<usize>) -> Result<f64, WebError> {
     let value = value.trim();
-    let digits = value.bytes().take_while(|c| c.is_ascii_digit() || *c == b'.').count();
+    let digits = value
+        .bytes()
+        .take_while(|c| c.is_ascii_digit() || *c == b'.')
+        .count();
     if digits == 0 {
         return Err(malformed(span));
     }
-    let number: f64 = value[..digits].parse().map_err(|_| malformed(span.clone()))?;
+    let number: f64 = value[..digits]
+        .parse()
+        .map_err(|_| malformed(span.clone()))?;
     let unit = &value[digits..];
     if unit.eq_ignore_ascii_case("px") || (unit.is_empty() && number == 0.0) {
         Ok(number)
@@ -85,7 +94,10 @@ fn parse_part(query: &str, range: Range<usize>) -> Result<Breakpoint, WebError> 
         if b[i].is_ascii_whitespace() {
             i += 1;
         } else if b[i] == b'(' {
-            let Some(off) = b[i + 1..range.end].iter().position(|&c| c == b')' || c == b'(') else {
+            let Some(off) = b[i + 1..range.end]
+                .iter()
+                .position(|&c| c == b')' || c == b'(')
+            else {
                 return Err(malformed(i..range.end));
             };
             if b[i + 1 + off] == b'(' {
@@ -202,11 +214,19 @@ fn at_media(b: &[u8], i: usize) -> bool {
 }
 
 fn css_error(span: Range<usize>) -> WebError {
-    WebError::Malformed { kind: MalformedKind::UnterminatedCss, span }
+    WebError::Malformed {
+        kind: MalformedKind::UnterminatedCss,
+        span,
+    }
 }
 
 /// Find every `@media` rule in `css` (comments and strings are skipped, nested rules reported with depth).
-pub fn scan_media_blocks(css: &str, base: usize, limits: &Limits, cancel: &CancellationToken) -> Result<Vec<MediaBlock>, WebError> {
+pub fn scan_media_blocks(
+    css: &str,
+    base: usize,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<Vec<MediaBlock>, WebError> {
     let b = css.as_bytes();
     let len = b.len();
     let mut blocks: Vec<MediaBlock> = Vec::new();
@@ -243,7 +263,9 @@ pub fn scan_media_blocks(css: &str, base: usize, limits: &Limits, cancel: &Cance
                 i += 1;
             }
             b'}' => {
-                brace = brace.checked_sub(1).ok_or_else(|| css_error(base + i..base + i + 1))?;
+                brace = brace
+                    .checked_sub(1)
+                    .ok_or_else(|| css_error(base + i..base + i + 1))?;
                 if let Some(&(bi, d)) = open.last()
                     && d == brace
                 {
@@ -265,13 +287,21 @@ pub fn scan_media_blocks(css: &str, base: usize, limits: &Limits, cancel: &Cance
                     return Err(malformed(base + i..base + j + 1));
                 }
                 if blocks.len() >= limits.max_nodes {
-                    return Err(WebError::LimitExceeded { limit: LimitKind::MediaBlocks, span: base + i..base + j });
+                    return Err(WebError::LimitExceeded {
+                        limit: LimitKind::MediaBlocks,
+                        span: base + i..base + j,
+                    });
                 }
                 let raw = &css[ps..j];
                 let lead = raw.len() - raw.trim_start().len();
                 let (qs, qe) = (ps + lead, ps + lead + raw.trim().len());
                 let breakpoints = parse_media_query(&css[qs..qe]).map_err(|e| e.shift(base + qs));
-                blocks.push(MediaBlock { query_span: base + qs..base + qe, body_span: base + j + 1..base + j + 1, depth: open.len(), breakpoints });
+                blocks.push(MediaBlock {
+                    query_span: base + qs..base + qe,
+                    body_span: base + j + 1..base + j + 1,
+                    depth: open.len(),
+                    breakpoints,
+                });
                 open.push((blocks.len() - 1, brace));
                 brace += 1;
                 i = j + 1;
@@ -286,19 +316,31 @@ pub fn scan_media_blocks(css: &str, base: usize, limits: &Limits, cancel: &Cance
 }
 
 /// All `@media` rules inside the document's `<style>` bodies, in document order and document offsets.
-pub fn document_media_blocks(doc: &WebDoc, cancel: &CancellationToken) -> Result<Vec<MediaBlock>, WebError> {
+pub fn document_media_blocks(
+    doc: &WebDoc,
+    cancel: &CancellationToken,
+) -> Result<Vec<MediaBlock>, WebError> {
     let mut out = Vec::new();
     for id in 0..doc.len() {
         let Some(node) = doc.node(id) else { continue };
         let is_style = node.kind == NodeKind::Element
             && node.content == ContentModel::RawText
-            && doc.tag_name(id).is_some_and(|n| n.eq_ignore_ascii_case("style"));
+            && doc
+                .tag_name(id)
+                .is_some_and(|n| n.eq_ignore_ascii_case("style"));
         if !is_style {
             continue;
         }
         for &child in &node.children {
-            let Some(raw) = doc.node(child).filter(|c| c.kind == NodeKind::Raw) else { continue };
-            out.extend(scan_media_blocks(doc.slice(&raw.span), raw.span.start, doc.limits(), cancel)?);
+            let Some(raw) = doc.node(child).filter(|c| c.kind == NodeKind::Raw) else {
+                continue;
+            };
+            out.extend(scan_media_blocks(
+                doc.slice(&raw.span),
+                raw.span.start,
+                doc.limits(),
+                cancel,
+            )?);
         }
     }
     Ok(out)

@@ -1,7 +1,10 @@
 //! `web-consumer --descriptor | --tree FILE | --set-attr NODEKEY NAME VALUE FILE | --media QUERY`
 //! Reads FILE, never writes it: the patched source goes to stdout. Exit 0 ok, 1 typed refusal, 2 usage.
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_web::{DESCRIPTOR, Limits, NodeKey, WebDoc, WebError, parse, responsive::parse_media_query, set_attribute};
+use hsk_studio_web::{
+    DESCRIPTOR, Limits, NodeKey, WebDoc, WebError, parse, responsive::parse_media_query,
+    set_attribute,
+};
 use std::{env, fs, process::ExitCode};
 
 fn load(path: &str) -> Result<WebDoc, String> {
@@ -14,14 +17,29 @@ fn refusal(e: WebError) -> String {
 }
 
 fn run(args: &[String]) -> Result<Option<String>, String> {
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["--descriptor"] => Ok(Some(format!("{DESCRIPTOR}\n"))),
         ["--tree", file] => {
             let doc = load(file)?;
             let mut out = String::new();
             for row in doc.view() {
-                let key = doc.key_of(row.id).map(|k| k.to_string()).unwrap_or_default();
-                out.push_str(&format!("{} {:?} {} {}..{}\n", "  ".repeat(row.depth), row.kind, key, row.span.start, row.span.end));
+                let key = doc
+                    .key_of(row.id)
+                    .map(|k| k.to_string())
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "{} {:?} {} {}..{}\n",
+                    "  ".repeat(row.depth),
+                    row.kind,
+                    key,
+                    row.span.start,
+                    row.span.end
+                ));
             }
             Ok(Some(out))
         }
@@ -47,7 +65,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(None) => {
-            eprintln!("usage: web-consumer --descriptor | --tree FILE | --set-attr NODEKEY NAME VALUE FILE | --media QUERY");
+            eprintln!(
+                "usage: web-consumer --descriptor | --tree FILE | --set-attr NODEKEY NAME VALUE FILE | --media QUERY"
+            );
             ExitCode::from(2)
         }
         Err(message) => {

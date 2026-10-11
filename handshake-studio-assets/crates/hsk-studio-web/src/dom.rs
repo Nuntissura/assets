@@ -34,26 +34,70 @@ use std::ops::Range;
 pub type NodeId = usize;
 
 pub(crate) const VOID: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
 ];
 pub(crate) const RAWTEXT: &[&str] = &["script", "style", "iframe", "noembed", "noframes", "xmp"];
 const RCDATA: &[&str] = &["textarea", "title"];
 /// Elements whose end tag HTML may omit; seeing one unclosed means the document needs HTML5 tree building.
 const OPTIONAL_END: &[&str] = &[
-    "li", "p", "dt", "dd", "tr", "td", "th", "thead", "tbody", "tfoot", "option", "optgroup", "colgroup", "caption", "head",
-    "body", "html", "rp", "rt",
+    "li", "p", "dt", "dd", "tr", "td", "th", "thead", "tbody", "tfoot", "option", "optgroup",
+    "colgroup", "caption", "head", "body", "html", "rp", "rt",
 ];
 /// STU-WEB-020 protected contents: a formatter must keep these verbatim.
 const PROTECTED: &[&str] = &["pre", "script", "style", "textarea"];
 /// HTML start tags that pop foreign content (HTML Standard 13.2.6.5); `font` only with `color`, `face` or `size`.
 const BREAKOUT: &[&str] = &[
-    "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5",
-    "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small", "span",
-    "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var",
+    "b",
+    "big",
+    "blockquote",
+    "body",
+    "br",
+    "center",
+    "code",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "embed",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "listing",
+    "menu",
+    "meta",
+    "nobr",
+    "ol",
+    "p",
+    "pre",
+    "ruby",
+    "s",
+    "small",
+    "span",
+    "strong",
+    "strike",
+    "sub",
+    "sup",
+    "table",
+    "tt",
+    "u",
+    "ul",
+    "var",
 ];
 /// Read as raw text by parsers following the current `select` content model, ignored (so their content becomes markup)
 /// by the older "in select" insertion mode: refused inside `select`.
-const SELECT_DIVERGENT: &[&str] = &["style", "xmp", "iframe", "noembed", "noframes", "noscript", "title", "svg", "math"];
+const SELECT_DIVERGENT: &[&str] = &[
+    "style", "xmp", "iframe", "noembed", "noframes", "noscript", "title", "svg", "math",
+];
 
 /// Namespace an HTML parser gives an element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,7 +142,14 @@ pub struct Limits {
 }
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_bytes: 8 << 20, max_nodes: 200_000, max_depth: 128, max_attributes: 256, max_edits: 1024, max_rules: 2048 }
+        Self {
+            max_bytes: 8 << 20,
+            max_nodes: 200_000,
+            max_depth: 128,
+            max_attributes: 256,
+            max_edits: 1024,
+            max_rules: 2048,
+        }
     }
 }
 
@@ -240,10 +291,18 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Parse `src` as revision `revision`. Bounded by `limits`; cancellation is checked between chunks.
-pub fn parse(src: &str, revision: u64, limits: &Limits, cancel: &CancellationToken) -> Result<WebDoc, WebError> {
+pub fn parse(
+    src: &str,
+    revision: u64,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<WebDoc, WebError> {
     cancel.check()?;
     if src.len() > limits.max_bytes {
-        return Err(WebError::LimitExceeded { limit: LimitKind::Bytes, span: limits.max_bytes..src.len() });
+        return Err(WebError::LimitExceeded {
+            limit: LimitKind::Bytes,
+            span: limits.max_bytes..src.len(),
+        });
     }
     let mut root = Node::new(NodeKind::Document, 0..src.len());
     root.content = ContentModel::Normal;
@@ -252,7 +311,14 @@ pub fn parse(src: &str, revision: u64, limits: &Limits, cancel: &CancellationTok
         b: src.as_bytes(),
         pos: 0,
         nodes: vec![root],
-        stack: vec![Frame { id: 0, ns: Namespace::Html, html_ip: false, mathml_text_ip: false, annotation_xml: false, noscript_close: None }],
+        stack: vec![Frame {
+            id: 0,
+            ns: Namespace::Html,
+            html_ip: false,
+            mathml_text_ip: false,
+            annotation_xml: false,
+            noscript_close: None,
+        }],
         selects: 0,
         loss: LossReport::default(),
         limits: *limits,
@@ -320,15 +386,20 @@ fn comment_end(b: &[u8], start: usize) -> Option<usize> {
 /// Length of the ASCII-alpha run at `i` and whether it equals `name` (ASCII case-insensitive) and is followed by
 /// whitespace, `/` or `>` (an appropriate end tag, or the double-escape keyword).
 fn keyword_at(b: &[u8], i: usize, name: &[u8]) -> (usize, bool) {
-    let run = b.get(i..).map_or(0, |r| r.iter().take_while(|c| c.is_ascii_alphabetic()).count());
+    let run = b.get(i..).map_or(0, |r| {
+        r.iter().take_while(|c| c.is_ascii_alphabetic()).count()
+    });
     let hit = run == name.len()
-        && b.get(i..at(i, run)).is_some_and(|w| w.eq_ignore_ascii_case(name))
-        && b.get(at(i, run)).is_some_and(|&c| is_ws(c) || c == b'/' || c == b'>');
+        && b.get(i..at(i, run))
+            .is_some_and(|w| w.eq_ignore_ascii_case(name))
+        && b.get(at(i, run))
+            .is_some_and(|&c| is_ws(c) || c == b'/' || c == b'>');
     (run, hit)
 }
 
 fn tag_terminator(b: &[u8], i: usize) -> bool {
-    b.get(i).is_some_and(|&t| is_ws(t) || t == b'/' || t == b'>')
+    b.get(i)
+        .is_some_and(|&t| is_ws(t) || t == b'/' || t == b'>')
 }
 
 /// Start of the `</script` that ends script data begun at `from` (HTML Standard 13.2.5.4-13.2.5.31: escaped `<!--`
@@ -369,7 +440,11 @@ pub(crate) fn find_script_close(b: &[u8], from: usize) -> Option<usize> {
             }
             S::Escaped | S::EscapedDash | S::EscapedDashDash => match c {
                 b'-' => {
-                    s = if s == S::Escaped { S::EscapedDash } else { S::EscapedDashDash };
+                    s = if s == S::Escaped {
+                        S::EscapedDash
+                    } else {
+                        S::EscapedDashDash
+                    };
                     i = at(i, 1);
                 }
                 b'<' => {
@@ -405,7 +480,11 @@ pub(crate) fn find_script_close(b: &[u8], from: usize) -> Option<usize> {
             },
             S::Double | S::DoubleDash | S::DoubleDashDash => match c {
                 b'-' => {
-                    s = if s == S::Double { S::DoubleDash } else { S::DoubleDashDash };
+                    s = if s == S::Double {
+                        S::DoubleDash
+                    } else {
+                        S::DoubleDashDash
+                    };
                     i = at(i, 1);
                 }
                 b'<' => {
@@ -439,15 +518,24 @@ pub(crate) fn find_script_close(b: &[u8], from: usize) -> Option<usize> {
 /// Start of the close tag of raw text named `name` begun at `from`: script data rules for `script`, the RAWTEXT /
 /// RCDATA appropriate end tag otherwise.
 pub(crate) fn find_raw_text_close(b: &[u8], from: usize, name: &str) -> Option<usize> {
-    if name.eq_ignore_ascii_case("script") { find_script_close(b, from) } else { find_raw_close(b, from, name.as_bytes()) }
+    if name.eq_ignore_ascii_case("script") {
+        find_script_close(b, from)
+    } else {
+        find_raw_close(b, from, name.as_bytes())
+    }
 }
 
 fn is_html_integration_point(ns: Namespace, name: &str, encoding: Option<&str>) -> bool {
     match ns {
-        Namespace::Svg => ["foreignObject", "desc", "title"].iter().any(|n| name.eq_ignore_ascii_case(n)),
+        Namespace::Svg => ["foreignObject", "desc", "title"]
+            .iter()
+            .any(|n| name.eq_ignore_ascii_case(n)),
         Namespace::MathMl => {
             name.eq_ignore_ascii_case("annotation-xml")
-                && encoding.is_some_and(|e| e.eq_ignore_ascii_case("text/html") || e.eq_ignore_ascii_case("application/xhtml+xml"))
+                && encoding.is_some_and(|e| {
+                    e.eq_ignore_ascii_case("text/html")
+                        || e.eq_ignore_ascii_case("application/xhtml+xml")
+                })
         }
         Namespace::Html => false,
     }
@@ -483,12 +571,18 @@ impl<'a> Parser<'a> {
     }
 
     fn char_end(&self, i: usize) -> usize {
-        self.src[i..].chars().next().map_or(at(i, 1), |c| at(i, c.len_utf8()))
+        self.src[i..]
+            .chars()
+            .next()
+            .map_or(at(i, 1), |c| at(i, c.len_utf8()))
     }
 
     fn push_under(&mut self, parent: NodeId, mut node: Node) -> Result<NodeId, WebError> {
         if self.nodes.len() >= self.limits.max_nodes {
-            return Err(WebError::LimitExceeded { limit: LimitKind::Nodes, span: node.span });
+            return Err(WebError::LimitExceeded {
+                limit: LimitKind::Nodes,
+                span: node.span,
+            });
         }
         let id = self.nodes.len();
         node.parent = Some(parent);
@@ -509,7 +603,10 @@ impl<'a> Parser<'a> {
     }
 
     fn name_of(&self, id: NodeId) -> &'a str {
-        let span = self.nodes[id].name_span.clone().expect("element has a name");
+        let span = self.nodes[id]
+            .name_span
+            .clone()
+            .expect("element has a name");
         &self.src[span]
     }
 
@@ -535,11 +632,20 @@ impl<'a> Parser<'a> {
         }
         if self.stack.len() > 1 {
             let id = self.top().id;
-            let open = self.nodes[id].open_span.clone().expect("element has an open tag");
+            let open = self.nodes[id]
+                .open_span
+                .clone()
+                .expect("element has an open tag");
             return Err(if in_set(OPTIONAL_END, self.name_of(id)) {
-                WebError::Unsupported { kind: UnsupportedKind::ImpliedEndTag, span: open }
+                WebError::Unsupported {
+                    kind: UnsupportedKind::ImpliedEndTag,
+                    span: open,
+                }
             } else {
-                WebError::Malformed { kind: MalformedKind::UnclosedElement, span: open }
+                WebError::Malformed {
+                    kind: MalformedKind::UnclosedElement,
+                    span: open,
+                }
             });
         }
         Ok(())
@@ -580,7 +686,10 @@ impl<'a> Parser<'a> {
     fn bogus(&mut self, loss: LossKind) -> Result<(), WebError> {
         let start = self.pos;
         let Some(off) = self.b[at(start, 2)..].iter().position(|&c| c == b'>') else {
-            return Err(WebError::Malformed { kind: MalformedKind::UnterminatedMarkup, span: start..self.b.len() });
+            return Err(WebError::Malformed {
+                kind: MalformedKind::UnterminatedMarkup,
+                span: start..self.b.len(),
+            });
         };
         let end = at(at(start, 2), at(off, 1));
         self.loss.push(loss, start..end);
@@ -592,12 +701,18 @@ impl<'a> Parser<'a> {
         let rest = &self.b[start..];
         if rest.starts_with(b"<!--") {
             let Some(end) = comment_end(self.b, start) else {
-                return Err(WebError::Malformed { kind: MalformedKind::UnterminatedComment, span: start..self.b.len() });
+                return Err(WebError::Malformed {
+                    kind: MalformedKind::UnterminatedComment,
+                    span: start..self.b.len(),
+                });
             };
             self.leaf(NodeKind::Comment, end)
         } else if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case(b"<!doctype") {
             let Some(off) = rest.iter().position(|&c| c == b'>') else {
-                return Err(WebError::Malformed { kind: MalformedKind::UnterminatedMarkup, span: start..self.b.len() });
+                return Err(WebError::Malformed {
+                    kind: MalformedKind::UnterminatedMarkup,
+                    span: start..self.b.len(),
+                });
             };
             self.leaf(NodeKind::Doctype, at(at(start, off), 1))
         } else if rest.starts_with(b"<![CDATA[") {
@@ -606,10 +721,15 @@ impl<'a> Parser<'a> {
             let end = if self.top().id != 0 && self.top().ns != Namespace::Html {
                 find(&rest[9..], b"]]>").map(|off| at(at(start, 9), at(off, 3)))
             } else {
-                rest.iter().position(|&c| c == b'>').map(|off| at(at(start, off), 1))
+                rest.iter()
+                    .position(|&c| c == b'>')
+                    .map(|off| at(at(start, off), 1))
             };
             let Some(end) = end else {
-                return Err(WebError::Malformed { kind: MalformedKind::UnterminatedMarkup, span: start..self.b.len() });
+                return Err(WebError::Malformed {
+                    kind: MalformedKind::UnterminatedMarkup,
+                    span: start..self.b.len(),
+                });
             };
             self.loss.push(LossKind::Cdata, start..end);
             self.leaf(NodeKind::Unsupported, end)
@@ -634,7 +754,10 @@ impl<'a> Parser<'a> {
                 i = at(i, 1);
             }
             if i >= len {
-                return Err(WebError::Malformed { kind: MalformedKind::UnterminatedTag, span: start..len });
+                return Err(WebError::Malformed {
+                    kind: MalformedKind::UnterminatedTag,
+                    span: start..len,
+                });
             }
             match b[i] {
                 b'>' => break (at(i, 1), false),
@@ -646,12 +769,18 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 b'=' => {
-                    return Err(WebError::Malformed { kind: MalformedKind::InvalidAttribute, span: i..at(i, 1) });
+                    return Err(WebError::Malformed {
+                        kind: MalformedKind::InvalidAttribute,
+                        span: i..at(i, 1),
+                    });
                 }
                 _ => {}
             }
             if attrs.len() >= self.limits.max_attributes {
-                return Err(WebError::LimitExceeded { limit: LimitKind::Attributes, span: start..i });
+                return Err(WebError::LimitExceeded {
+                    limit: LimitKind::Attributes,
+                    span: start..i,
+                });
             }
             self.tick()?;
             let a_start = i;
@@ -669,37 +798,60 @@ impl<'a> Parser<'a> {
                     j = at(j, 1);
                 }
                 if j >= len {
-                    return Err(WebError::Malformed { kind: MalformedKind::UnterminatedTag, span: start..len });
+                    return Err(WebError::Malformed {
+                        kind: MalformedKind::UnterminatedTag,
+                        span: start..len,
+                    });
                 }
                 match b[j] {
                     q @ (b'"' | b'\'') => {
                         let vs = at(j, 1);
                         let Some(off) = b[vs..].iter().position(|&c| c == q) else {
-                            return Err(WebError::Malformed { kind: MalformedKind::UnterminatedValue, span: j..len });
+                            return Err(WebError::Malformed {
+                                kind: MalformedKind::UnterminatedValue,
+                                span: j..len,
+                            });
                         };
                         let ve = at(vs, off);
                         attrs.push(Attr {
                             span: a_start..at(ve, 1),
                             name_span: a_name,
                             value_span: Some(vs..ve),
-                            quote: if q == b'"' { Quote::Double } else { Quote::Single },
+                            quote: if q == b'"' {
+                                Quote::Double
+                            } else {
+                                Quote::Single
+                            },
                         });
                         i = at(ve, 1);
                     }
                     b'>' => {
-                        return Err(WebError::Malformed { kind: MalformedKind::InvalidAttribute, span: a_start..at(j, 1) });
+                        return Err(WebError::Malformed {
+                            kind: MalformedKind::InvalidAttribute,
+                            span: a_start..at(j, 1),
+                        });
                     }
                     _ => {
                         let mut k = j;
                         while k < len && !is_ws(b[k]) && b[k] != b'>' {
                             k = at(k, 1);
                         }
-                        attrs.push(Attr { span: a_start..k, name_span: a_name, value_span: Some(j..k), quote: Quote::Unquoted });
+                        attrs.push(Attr {
+                            span: a_start..k,
+                            name_span: a_name,
+                            value_span: Some(j..k),
+                            quote: Quote::Unquoted,
+                        });
                         i = k;
                     }
                 }
             } else {
-                attrs.push(Attr { span: a_start..i, name_span: a_name, value_span: None, quote: Quote::Absent });
+                attrs.push(Attr {
+                    span: a_start..i,
+                    name_span: a_name,
+                    value_span: None,
+                    quote: Quote::Absent,
+                });
             }
         };
 
@@ -721,28 +873,43 @@ impl<'a> Parser<'a> {
             }
         } else {
             let font_breakout = name.eq_ignore_ascii_case("font")
-                && attrs.iter().any(|a| in_set(&["color", "face", "size"], &self.src[a.name_span.clone()]));
+                && attrs
+                    .iter()
+                    .any(|a| in_set(&["color", "face", "size"], &self.src[a.name_span.clone()]));
             if in_set(BREAKOUT, name) || font_breakout {
                 // A browser pops the foreign elements and re-nests this element; the crate never re-nests.
-                return Err(WebError::Unsupported { kind: UnsupportedKind::ForeignBreakout, span: start..open_end });
+                return Err(WebError::Unsupported {
+                    kind: UnsupportedKind::ForeignBreakout,
+                    span: start..open_end,
+                });
             }
             top.ns
         };
         let html = ns == Namespace::Html;
         if html && name.eq_ignore_ascii_case("plaintext") {
-            return Err(WebError::Unsupported { kind: UnsupportedKind::PlaintextElement, span: start..open_end });
+            return Err(WebError::Unsupported {
+                kind: UnsupportedKind::PlaintextElement,
+                span: start..open_end,
+            });
         }
         if html && name.eq_ignore_ascii_case("frameset") {
-            return Err(WebError::Unsupported { kind: UnsupportedKind::FramesetDocument, span: start..open_end });
+            return Err(WebError::Unsupported {
+                kind: UnsupportedKind::FramesetDocument,
+                span: start..open_end,
+            });
         }
         if self.selects > 0 && html_rules && in_set(SELECT_DIVERGENT, name) {
-            return Err(WebError::Unsupported { kind: UnsupportedKind::SelectContent, span: start..open_end });
+            return Err(WebError::Unsupported {
+                kind: UnsupportedKind::SelectContent,
+                span: start..open_end,
+            });
         }
         let is_void = html && in_set(VOID, name);
         let acknowledged = is_void || !html;
         let empty = is_void || (self_closing && !html);
         if self_closing && !acknowledged {
-            self.loss.push(LossKind::SelfClosingIgnored, start..open_end);
+            self.loss
+                .push(LossKind::SelfClosingIgnored, start..open_end);
         }
         if html_rules && !html {
             self.loss.push(LossKind::ForeignContent, start..open_end);
@@ -775,10 +942,15 @@ impl<'a> Parser<'a> {
             id: 0,
             ns,
             html_ip: is_html_integration_point(ns, name, encoding.as_deref()),
-            mathml_text_ip: ns == Namespace::MathMl && in_set(&["mi", "mo", "mn", "ms", "mtext"], name),
+            mathml_text_ip: ns == Namespace::MathMl
+                && in_set(&["mi", "mo", "mn", "ms", "mtext"], name),
             annotation_xml: ns == Namespace::MathMl && name.eq_ignore_ascii_case("annotation-xml"),
             // With scripting enabled a browser reads `noscript` as RAWTEXT; both readings must end at the same tag.
-            noscript_close: if noscript { find_raw_close(b, open_end, b"noscript") } else { None },
+            noscript_close: if noscript {
+                find_raw_close(b, open_end, b"noscript")
+            } else {
+                None
+            },
         };
         let select = html && name.eq_ignore_ascii_case("select");
         let open_span = start..open_end;
@@ -797,7 +969,10 @@ impl<'a> Parser<'a> {
             ContentModel::Empty => {}
             ContentModel::Normal => {
                 if self.stack.len() > self.limits.max_depth {
-                    return Err(WebError::LimitExceeded { limit: LimitKind::Depth, span: start..open_end });
+                    return Err(WebError::LimitExceeded {
+                        limit: LimitKind::Depth,
+                        span: start..open_end,
+                    });
                 }
                 self.stack.push(Frame { id, ..frame_base });
                 if select {
@@ -812,17 +987,30 @@ impl<'a> Parser<'a> {
     fn raw_body(&mut self, id: NodeId, name: &str) -> Result<(), WebError> {
         let b = self.b;
         let content_start = self.pos;
-        let open = self.nodes[id].open_span.clone().expect("element has an open tag");
+        let open = self.nodes[id]
+            .open_span
+            .clone()
+            .expect("element has an open tag");
         let Some(close) = find_raw_text_close(b, content_start, name) else {
-            return Err(WebError::Malformed { kind: MalformedKind::UnterminatedRawText, span: open });
+            return Err(WebError::Malformed {
+                kind: MalformedKind::UnterminatedRawText,
+                span: open,
+            });
         };
         let mut j = at(at(close, 2), name.len());
         while j < b.len() && is_ws(b[j]) {
             j = at(j, 1);
         }
         if j >= b.len() || b[j] != b'>' {
-            let end = if j < b.len() { self.char_end(j) } else { b.len() };
-            return Err(WebError::Malformed { kind: MalformedKind::InvalidEndTag, span: close..end });
+            let end = if j < b.len() {
+                self.char_end(j)
+            } else {
+                b.len()
+            };
+            return Err(WebError::Malformed {
+                kind: MalformedKind::InvalidEndTag,
+                span: close..end,
+            });
         }
         let end = at(j, 1);
         if close > content_start {
@@ -848,39 +1036,67 @@ impl<'a> Parser<'a> {
             i = at(i, 1);
         }
         if i >= len {
-            return Err(WebError::Malformed { kind: MalformedKind::UnterminatedTag, span: start..len });
+            return Err(WebError::Malformed {
+                kind: MalformedKind::UnterminatedTag,
+                span: start..len,
+            });
         }
         if b[i] != b'>' {
-            return Err(WebError::Malformed { kind: MalformedKind::InvalidEndTag, span: start..self.char_end(i) });
+            return Err(WebError::Malformed {
+                kind: MalformedKind::InvalidEndTag,
+                span: start..self.char_end(i),
+            });
         }
         let end = i.saturating_add(1);
         let name = &self.src[name_start..name_end];
         let frame = self.top();
         let top = frame.id;
         // A foreign element named like an HTML void element (`<svg><source></source>`) has content and an end tag.
-        let foreign_match = top != 0 && frame.ns != Namespace::Html && self.name_of(top).eq_ignore_ascii_case(name);
+        let foreign_match =
+            top != 0 && frame.ns != Namespace::Html && self.name_of(top).eq_ignore_ascii_case(name);
         if !foreign_match && in_set(VOID, name) {
-            return Err(WebError::Malformed { kind: MalformedKind::VoidEndTag, span: start..end });
+            return Err(WebError::Malformed {
+                kind: MalformedKind::VoidEndTag,
+                span: start..end,
+            });
         }
         if top == 0 {
-            return Err(WebError::Malformed { kind: MalformedKind::StrayEndTag, span: start..end });
+            return Err(WebError::Malformed {
+                kind: MalformedKind::StrayEndTag,
+                span: start..end,
+            });
         }
         let top_name = self.name_of(top);
         if !top_name.eq_ignore_ascii_case(name) {
-            let ancestor = self.stack[1..].iter().any(|f| self.name_of(f.id).eq_ignore_ascii_case(name));
+            let ancestor = self.stack[1..]
+                .iter()
+                .any(|f| self.name_of(f.id).eq_ignore_ascii_case(name));
             return Err(if !ancestor {
-                WebError::Malformed { kind: MalformedKind::StrayEndTag, span: start..end }
+                WebError::Malformed {
+                    kind: MalformedKind::StrayEndTag,
+                    span: start..end,
+                }
             } else if in_set(OPTIONAL_END, top_name) {
-                WebError::Unsupported { kind: UnsupportedKind::ImpliedEndTag, span: start..end }
+                WebError::Unsupported {
+                    kind: UnsupportedKind::ImpliedEndTag,
+                    span: start..end,
+                }
             } else {
-                WebError::Malformed { kind: MalformedKind::MisnestedEndTag, span: start..end }
+                WebError::Malformed {
+                    kind: MalformedKind::MisnestedEndTag,
+                    span: start..end,
+                }
             });
         }
         let html = frame.ns == Namespace::Html;
-        if html && top_name.eq_ignore_ascii_case("noscript") && frame.noscript_close != Some(start) {
+        if html && top_name.eq_ignore_ascii_case("noscript") && frame.noscript_close != Some(start)
+        {
             // Scripting enabled, the RAWTEXT reading ends at an earlier `</noscript`; the two readings disagree.
             let at = frame.noscript_close.unwrap_or(start);
-            return Err(WebError::Unsupported { kind: UnsupportedKind::ScriptingDependent, span: at..at.saturating_add(10) });
+            return Err(WebError::Unsupported {
+                kind: UnsupportedKind::ScriptingDependent,
+                span: at..at.saturating_add(10),
+            });
         }
         let select = html && top_name.eq_ignore_ascii_case("select");
         let node = &mut self.nodes[top];
@@ -904,7 +1120,8 @@ impl Iterator for Descendants<'_> {
     type Item = NodeId;
     fn next(&mut self) -> Option<NodeId> {
         let id = self.stack.pop()?;
-        self.stack.extend(self.doc.nodes[id].children.iter().rev().copied());
+        self.stack
+            .extend(self.doc.nodes[id].children.iter().rev().copied());
         Some(id)
     }
 }
@@ -953,16 +1170,29 @@ impl WebDoc {
 
     /// Value decoded as an HTML tokenizer decodes attribute values; `None` for a valueless attribute.
     pub fn attr_value(&self, attr: &Attr) -> Option<String> {
-        attr.value_span.as_ref().map(|s| decode(&self.source[s.clone()], Context::Attribute).text)
+        attr.value_span
+            .as_ref()
+            .map(|s| decode(&self.source[s.clone()], Context::Attribute).text)
     }
 
     /// First attribute with this name (ASCII case-insensitive); later duplicates are ignored as in HTML.
     pub fn attribute(&self, id: NodeId, name: &str) -> Option<&Attr> {
-        self.nodes.get(id)?.attrs.iter().find(|a| self.attr_name(a).eq_ignore_ascii_case(name))
+        self.nodes
+            .get(id)?
+            .attrs
+            .iter()
+            .find(|a| self.attr_name(a).eq_ignore_ascii_case(name))
     }
 
     pub fn descendants(&self, id: NodeId) -> Descendants<'_> {
-        Descendants { doc: self, stack: if id < self.nodes.len() { vec![id] } else { Vec::new() } }
+        Descendants {
+            doc: self,
+            stack: if id < self.nodes.len() {
+                vec![id]
+            } else {
+                Vec::new()
+            },
+        }
     }
 
     pub(crate) fn label(&self, id: NodeId) -> String {
@@ -1031,7 +1261,12 @@ impl WebDoc {
 
     pub fn find_by_tag(&self, tag: &str) -> Vec<NodeId> {
         (0..self.nodes.len())
-            .filter(|&id| self.nodes[id].kind == NodeKind::Element && self.tag_name(id).is_some_and(|n| n.eq_ignore_ascii_case(tag)))
+            .filter(|&id| {
+                self.nodes[id].kind == NodeKind::Element
+                    && self
+                        .tag_name(id)
+                        .is_some_and(|n| n.eq_ignore_ascii_case(tag))
+            })
             .collect()
     }
 
@@ -1039,7 +1274,11 @@ impl WebDoc {
     pub fn find_by_html_id(&self, value: &str) -> Option<NodeId> {
         (0..self.nodes.len()).find(|&id| {
             self.nodes[id].kind == NodeKind::Element
-                && self.attribute(id, "id").and_then(|a| self.attr_value(a)).as_deref() == Some(value)
+                && self
+                    .attribute(id, "id")
+                    .and_then(|a| self.attr_value(a))
+                    .as_deref()
+                    == Some(value)
         })
     }
 
@@ -1051,10 +1290,17 @@ impl WebDoc {
             let node = &self.nodes[id];
             let text = match node.kind {
                 NodeKind::Text => Some(decode(self.slice(&node.span), Context::Text).text),
-                NodeKind::Raw | NodeKind::Doctype | NodeKind::Unsupported => Some(self.slice(&node.span).to_owned()),
+                NodeKind::Raw | NodeKind::Doctype | NodeKind::Unsupported => {
+                    Some(self.slice(&node.span).to_owned())
+                }
                 NodeKind::Comment => {
                     let s = self.slice(&node.span);
-                    Some(s.strip_prefix("<!--").map(|s| s.strip_suffix("-->").unwrap_or(s)).unwrap_or(s).to_owned())
+                    Some(
+                        s.strip_prefix("<!--")
+                            .map(|s| s.strip_suffix("-->").unwrap_or(s))
+                            .unwrap_or(s)
+                            .to_owned(),
+                    )
                 }
                 _ => None,
             };
@@ -1063,7 +1309,11 @@ impl WebDoc {
                 depth,
                 kind: node.kind,
                 tag: self.tag_name(id).map(str::to_owned),
-                attrs: node.attrs.iter().map(|a| (self.attr_name(a).to_owned(), self.attr_value(a))).collect(),
+                attrs: node
+                    .attrs
+                    .iter()
+                    .map(|a| (self.attr_name(a).to_owned(), self.attr_value(a)))
+                    .collect(),
                 text,
                 span: node.span.clone(),
             });

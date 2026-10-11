@@ -73,7 +73,9 @@ impl DenyReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssetOutcome {
-    Granted { id: String },
+    Granted {
+        id: String,
+    },
     Unavailable,
     Denied(DenyReason),
     /// `data:` URI: carried in the source itself, nothing to resolve.
@@ -128,7 +130,11 @@ fn attr_kind(tag: &str, name: &str) -> Option<Kind> {
         // `href` and `xlink:href` on every element: html `a area link`, svg `a image use script feImage ...`.
         (_, "href" | "xlink:href") => Kind::Url,
         // `image` is rewritten to `img` by the HTML parser.
-        ("img" | "image" | "source" | "video" | "audio" | "iframe" | "frame" | "embed" | "track" | "input" | "script", "src") => Kind::Url,
+        (
+            "img" | "image" | "source" | "video" | "audio" | "iframe" | "frame" | "embed" | "track"
+            | "input" | "script",
+            "src",
+        ) => Kind::Url,
         ("video", "poster") => Kind::Url,
         ("object", "data" | "codebase" | "classid") => Kind::Url,
         ("object", "archive") => Kind::UrlList,
@@ -137,11 +143,17 @@ fn attr_kind(tag: &str, name: &str) -> Option<Kind> {
         ("blockquote" | "del" | "ins" | "q", "cite") => Kind::Url,
         ("a" | "area", "ping") => Kind::UrlList,
         ("img" | "source", "srcset") | ("link", "imagesrcset") => Kind::Srcset,
-        ("body" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th", "background") => Kind::Url,
+        ("body" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th", "background") => {
+            Kind::Url
+        }
         ("iframe" | "img", "longdesc") | ("img", "lowsrc") | ("html", "manifest") => Kind::Url,
         ("iframe", "srcdoc") => Kind::InlineDoc,
         (_, "style") => Kind::Css,
-        (_, "fill" | "stroke" | "clip-path" | "cursor" | "filter" | "mask" | "marker-start" | "marker-mid" | "marker-end") => Kind::Css,
+        (
+            _,
+            "fill" | "stroke" | "clip-path" | "cursor" | "filter" | "mask" | "marker-start"
+            | "marker-mid" | "marker-end",
+        ) => Kind::Css,
         _ => return None,
     })
 }
@@ -154,7 +166,13 @@ fn classify(reference: &str) -> Option<AssetOutcome> {
         .trim_matches(|c: char| c <= ' ')
         .chars()
         .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
-        .map(|c| if c == '\\' { '/' } else { c.to_ascii_lowercase() })
+        .map(|c| {
+            if c == '\\' {
+                '/'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
         .collect();
     if cleaned.starts_with('#') {
         return Some(AssetOutcome::SameDocument);
@@ -168,8 +186,13 @@ fn classify(reference: &str) -> Option<AssetOutcome> {
         && first_delim.is_none_or(|d| colon < d)
     {
         let scheme = &cleaned[..colon];
-        let valid = scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+        let valid = scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
         if valid {
             return Some(match scheme {
                 "data" => AssetOutcome::Inline,
@@ -186,10 +209,13 @@ fn classify(reference: &str) -> Option<AssetOutcome> {
 fn ambiguous_path(reference: &str) -> bool {
     let path = reference.split(['?', '#']).next().unwrap_or(reference);
     path.contains('\\')
-        || path
-            .as_bytes()
-            .windows(3)
-            .any(|w| w[0] == b'%' && matches!((w[1], w[2]), (b'2', b'e' | b'E' | b'f' | b'F') | (b'5', b'c' | b'C')))
+        || path.as_bytes().windows(3).any(|w| {
+            w[0] == b'%'
+                && matches!(
+                    (w[1], w[2]),
+                    (b'2', b'e' | b'E' | b'f' | b'F') | (b'5', b'c' | b'C')
+                )
+        })
 }
 
 /// Ranges of ASCII-whitespace separated tokens.
@@ -294,13 +320,15 @@ fn refresh_url(s: &str) -> Option<Range<usize>> {
     let mut quoted_from = pos;
     if matches!(b.get(pos), Some(b'u' | b'U')) {
         let mut p = pos.saturating_add(1);
-        let full = matches!(b.get(p), Some(b'r' | b'R')) && {
-            p = p.saturating_add(1);
-            matches!(b.get(p), Some(b'l' | b'L'))
-        } && {
-            p = skip_ws(p.saturating_add(1));
-            b.get(p) == Some(&b'=')
-        };
+        let full = matches!(b.get(p), Some(b'r' | b'R'))
+            && {
+                p = p.saturating_add(1);
+                matches!(b.get(p), Some(b'l' | b'L'))
+            }
+            && {
+                p = skip_ws(p.saturating_add(1));
+                b.get(p) == Some(&b'=')
+            };
         if !full {
             return Some(pos..len);
         }
@@ -323,7 +351,12 @@ fn has_base_href(doc: &WebDoc, cancel: &CancellationToken) -> Result<bool, WebEr
             cancel.check()?;
         }
         let is_element = doc.node(id).is_some_and(|n| n.kind == NodeKind::Element);
-        if is_element && doc.tag_name(id).is_some_and(|t| t.eq_ignore_ascii_case("base")) && doc.attribute(id, "href").is_some() {
+        if is_element
+            && doc
+                .tag_name(id)
+                .is_some_and(|t| t.eq_ignore_ascii_case("base"))
+            && doc.attribute(id, "href").is_some()
+        {
             return Ok(true);
         }
     }
@@ -359,37 +392,86 @@ impl Collector<'_> {
         }
     }
 
-    fn push(&mut self, node: NodeId, source: AssetSource, reference: String, span: Range<usize>, outcome: AssetOutcome) -> Result<(), WebError> {
+    fn push(
+        &mut self,
+        node: NodeId,
+        source: AssetSource,
+        reference: String,
+        span: Range<usize>,
+        outcome: AssetOutcome,
+    ) -> Result<(), WebError> {
         if self.out.len() >= self.limit {
-            return Err(WebError::LimitExceeded { limit: LimitKind::Nodes, span });
+            return Err(WebError::LimitExceeded {
+                limit: LimitKind::Nodes,
+                span,
+            });
         }
-        self.out.push(AssetRef { node, source, reference, span, outcome });
+        self.out.push(AssetRef {
+            node,
+            source,
+            reference,
+            span,
+            outcome,
+        });
         Ok(())
     }
 
-    fn reference(&mut self, node: NodeId, source: AssetSource, reference: &str, bad: bool, span: Range<usize>) -> Result<(), WebError> {
+    fn reference(
+        &mut self,
+        node: NodeId,
+        source: AssetSource,
+        reference: &str,
+        bad: bool,
+        span: Range<usize>,
+    ) -> Result<(), WebError> {
         let outcome = self.decide(reference, bad);
         self.push(node, source, reference.to_owned(), span, outcome)
     }
 
     /// References in CSS `css`, whose first byte is document offset `origin` (`exact`: `css` is the source bytes).
-    fn css(&mut self, node: NodeId, source: &AssetSource, css: &str, origin: usize, exact: bool, whole: &Range<usize>) -> Result<(), WebError> {
+    fn css(
+        &mut self,
+        node: NodeId,
+        source: &AssetSource,
+        css: &str,
+        origin: usize,
+        exact: bool,
+        whole: &Range<usize>,
+    ) -> Result<(), WebError> {
         let room = self.limit.saturating_sub(self.out.len()).saturating_add(1);
         for r in css_references(css, room) {
-            let span = if exact { origin.saturating_add(r.span.start)..origin.saturating_add(r.span.end) } else { whole.clone() };
+            let span = if exact {
+                origin.saturating_add(r.span.start)..origin.saturating_add(r.span.end)
+            } else {
+                whole.clone()
+            };
             self.reference(node, source.clone(), &r.value, r.bad, span)?;
         }
         Ok(())
     }
 
-    fn attribute(&mut self, node: NodeId, kind: Kind, name: &str, value_span: Range<usize>) -> Result<(), WebError> {
+    fn attribute(
+        &mut self,
+        node: NodeId,
+        kind: Kind,
+        name: &str,
+        value_span: Range<usize>,
+    ) -> Result<(), WebError> {
         let raw = self.doc.slice(&value_span);
         let decoded = decode(raw, Context::Attribute);
-        let source = if name == "style" { AssetSource::InlineStyle } else { AssetSource::Attribute(name.to_owned()) };
+        let source = if name == "style" {
+            AssetSource::InlineStyle
+        } else {
+            AssetSource::Attribute(name.to_owned())
+        };
         let text = decoded.text.as_str();
         let exact = text == raw;
         let sub = |r: &Range<usize>| {
-            if exact { value_span.start.saturating_add(r.start)..value_span.start.saturating_add(r.end) } else { value_span.clone() }
+            if exact {
+                value_span.start.saturating_add(r.start)..value_span.start.saturating_add(r.end)
+            } else {
+                value_span.clone()
+            }
         };
         match kind {
             Kind::Url => {
@@ -414,7 +496,8 @@ impl Collector<'_> {
                     let lead = part.len().saturating_sub(part.trim_start().len());
                     let item = part.trim();
                     if !item.is_empty() {
-                        let r = start.saturating_add(lead)..start.saturating_add(lead).saturating_add(item.len());
+                        let r = start.saturating_add(lead)
+                            ..start.saturating_add(lead).saturating_add(item.len());
                         self.reference(node, source.clone(), item, false, sub(&r))?;
                     }
                 }
@@ -437,7 +520,13 @@ impl Collector<'_> {
             Kind::Css => self.css(node, &source, text, value_span.start, exact, &value_span)?,
             Kind::InlineDoc => {
                 if !text.trim().is_empty() {
-                    self.push(node, source, text.to_owned(), value_span.clone(), AssetOutcome::Denied(DenyReason::InlineDocument))?;
+                    self.push(
+                        node,
+                        source,
+                        text.to_owned(),
+                        value_span.clone(),
+                        AssetOutcome::Denied(DenyReason::InlineDocument),
+                    )?;
                 }
             }
         }
@@ -449,7 +538,9 @@ impl Collector<'_> {
     /// order, as the DOM joins them before CSS sees them; comments and child elements contribute nothing).
     fn style_children(&mut self, id: NodeId) -> Result<(), WebError> {
         let doc = self.doc;
-        let Some(node) = doc.node(id) else { return Ok(()) };
+        let Some(node) = doc.node(id) else {
+            return Ok(());
+        };
         let source = AssetSource::StyleBody;
         if node.content == ContentModel::RawText {
             for &child in &node.children {
@@ -472,10 +563,15 @@ impl Collector<'_> {
                     let origin = (d == raw).then_some(c.span.start);
                     (d, origin)
                 }
-                NodeKind::Unsupported => match raw.strip_prefix(OPEN).and_then(|t| t.strip_suffix("]]>")) {
-                    Some(inner) => (inner.to_owned(), Some(c.span.start.saturating_add(OPEN.len()))),
-                    None => continue,
-                },
+                NodeKind::Unsupported => {
+                    match raw.strip_prefix(OPEN).and_then(|t| t.strip_suffix("]]>")) {
+                        Some(inner) => (
+                            inner.to_owned(),
+                            Some(c.span.start.saturating_add(OPEN.len())),
+                        ),
+                        None => continue,
+                    }
+                }
                 _ => continue,
             };
             parts = parts.saturating_add(1);
@@ -495,7 +591,11 @@ impl Collector<'_> {
 
 /// The URL kind an SVG animation element (`set`, `animate`) writes into its target attribute (`attributeName`).
 fn animated_kind(doc: &WebDoc, id: NodeId) -> Option<Kind> {
-    let target = doc.attribute(id, "attributename").and_then(|a| doc.attr_value(a))?.trim().to_ascii_lowercase();
+    let target = doc
+        .attribute(id, "attributename")
+        .and_then(|a| doc.attr_value(a))?
+        .trim()
+        .to_ascii_lowercase();
     if target == "src" {
         return Some(Kind::Url);
     }
@@ -515,8 +615,18 @@ fn animated_kind(doc: &WebDoc, id: NodeId) -> Option<Kind> {
 /// values` of SVG `set`/`animate` whose `attributeName` is `href`, `xlink:href`, `src` or one of those presentation
 /// attributes, and `<style>` contents. `image-set()`/`src()` string arguments, `data:` payloads and `srcdoc` contents
 /// are not scanned.
-pub fn collect_assets(doc: &WebDoc, port: &dyn AssetPort, cancel: &CancellationToken) -> Result<Vec<AssetRef>, WebError> {
-    let mut c = Collector { doc, port, base_blocks: has_base_href(doc, cancel)?, limit: doc.limits().max_nodes, out: Vec::new() };
+pub fn collect_assets(
+    doc: &WebDoc,
+    port: &dyn AssetPort,
+    cancel: &CancellationToken,
+) -> Result<Vec<AssetRef>, WebError> {
+    let mut c = Collector {
+        doc,
+        port,
+        base_blocks: has_base_href(doc, cancel)?,
+        limit: doc.limits().max_nodes,
+        out: Vec::new(),
+    };
     for id in 0..doc.len() {
         if id & 0x3ff == 0 {
             cancel.check()?;
@@ -533,19 +643,31 @@ pub fn collect_assets(doc: &WebDoc, port: &dyn AssetPort, cancel: &CancellationT
                 .and_then(|a| doc.attr_value(a))
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"));
         // SVG animation of an href (or of a url()-bearing presentation attribute) loads the values it animates to.
-        let animated = if matches!(tag.as_str(), "set" | "animate") { animated_kind(doc, id) } else { None };
+        let animated = if matches!(tag.as_str(), "set" | "animate") {
+            animated_kind(doc, id)
+        } else {
+            None
+        };
         for attr in &node.attrs {
             let name = doc.attr_name(attr).to_ascii_lowercase();
             let kind = if tag == "base" && name == "href" {
                 Some(Kind::Base)
             } else if refresh && name == "content" {
                 Some(Kind::Refresh)
-            } else if let Some(kind) = animated.filter(|_| matches!(name.as_str(), "to" | "from" | "by" | "values")) {
-                Some(if kind == Kind::Url && name == "values" { Kind::UrlValues } else { kind })
+            } else if let Some(kind) =
+                animated.filter(|_| matches!(name.as_str(), "to" | "from" | "by" | "values"))
+            {
+                Some(if kind == Kind::Url && name == "values" {
+                    Kind::UrlValues
+                } else {
+                    kind
+                })
             } else {
                 attr_kind(&tag, &name)
             };
-            let (Some(kind), Some(value_span)) = (kind, attr.value_span.clone()) else { continue };
+            let (Some(kind), Some(value_span)) = (kind, attr.value_span.clone()) else {
+                continue;
+            };
             c.attribute(id, kind, &name, value_span)?;
         }
         if tag == "style" {

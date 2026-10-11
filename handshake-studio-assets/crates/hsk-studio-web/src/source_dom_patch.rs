@@ -5,7 +5,10 @@
 
 #![deny(clippy::arithmetic_side_effects)]
 
-use crate::dom::{ContentModel, NodeId, NodeKey, NodeKind, Quote, RAWTEXT, VOID, WebDoc, find_raw_text_close, in_set, parse, sha256_hex};
+use crate::dom::{
+    ContentModel, NodeId, NodeKey, NodeKind, Quote, RAWTEXT, VOID, WebDoc, find_raw_text_close,
+    in_set, parse, sha256_hex,
+};
 use crate::entity::{escape_attr, escape_text};
 use crate::error::{EditRefusal, LimitKind, LossKind, MalformedKind, UnsupportedKind, WebError};
 use hsk_studio_accord::CancellationToken;
@@ -25,7 +28,11 @@ pub struct SourcePatch {
 }
 impl SourcePatch {
     pub fn new(doc: &WebDoc, edits: Vec<TextEdit>) -> Self {
-        Self { base_revision: doc.revision(), base_sha256_hex: doc.sha256_hex().to_owned(), edits }
+        Self {
+            base_revision: doc.revision(),
+            base_sha256_hex: doc.sha256_hex().to_owned(),
+            edits,
+        }
     }
 
     /// A patch whose edits change nothing (setting a value to what it already is).
@@ -36,10 +43,15 @@ impl SourcePatch {
     /// Combine two patches made against the same revision into one; overlap is rejected by `apply`.
     pub fn compose(mut self, other: SourcePatch) -> Result<SourcePatch, WebError> {
         if self.base_revision != other.base_revision {
-            return Err(WebError::StaleRevision { expected: self.base_revision, found: other.base_revision });
+            return Err(WebError::StaleRevision {
+                expected: self.base_revision,
+                found: other.base_revision,
+            });
         }
         if self.base_sha256_hex != other.base_sha256_hex {
-            return Err(WebError::Conflict { span: other.edits.first().map_or(0..0, |e| e.span.clone()) });
+            return Err(WebError::Conflict {
+                span: other.edits.first().map_or(0..0, |e| e.span.clone()),
+            });
         }
         self.edits.extend(other.edits);
         Ok(self)
@@ -58,31 +70,56 @@ pub struct Applied {
 /// Apply a patch to the document it was made against. A patch with no edits keeps the revision.
 pub fn apply(doc: &WebDoc, patch: &SourcePatch) -> Result<Applied, WebError> {
     if patch.base_revision != doc.revision() {
-        return Err(WebError::StaleRevision { expected: doc.revision(), found: patch.base_revision });
+        return Err(WebError::StaleRevision {
+            expected: doc.revision(),
+            found: patch.base_revision,
+        });
     }
     if patch.base_sha256_hex != doc.sha256_hex() {
-        return Err(WebError::Conflict { span: patch.edits.first().map_or(0..0, |e| e.span.clone()) });
+        return Err(WebError::Conflict {
+            span: patch.edits.first().map_or(0..0, |e| e.span.clone()),
+        });
     }
     let src = doc.source();
     if patch.edits.is_empty() {
-        return Ok(Applied { source: src.to_owned(), revision: doc.revision(), sha256_hex: doc.sha256_hex().to_owned(), changed: Vec::new() });
+        return Ok(Applied {
+            source: src.to_owned(),
+            revision: doc.revision(),
+            sha256_hex: doc.sha256_hex().to_owned(),
+            changed: Vec::new(),
+        });
     }
     if patch.edits.len() > doc.limits().max_edits {
-        return Err(WebError::LimitExceeded { limit: LimitKind::Edits, span: 0..0 });
+        return Err(WebError::LimitExceeded {
+            limit: LimitKind::Edits,
+            span: 0..0,
+        });
     }
     let mut order: Vec<&TextEdit> = patch.edits.iter().collect();
     order.sort_by_key(|e| (e.span.start, e.span.end));
     for e in &order {
-        if e.span.start > e.span.end || e.span.end > src.len() || !src.is_char_boundary(e.span.start) || !src.is_char_boundary(e.span.end) {
-            return Err(WebError::InvalidSpan { span: e.span.clone() });
+        if e.span.start > e.span.end
+            || e.span.end > src.len()
+            || !src.is_char_boundary(e.span.start)
+            || !src.is_char_boundary(e.span.end)
+        {
+            return Err(WebError::InvalidSpan {
+                span: e.span.clone(),
+            });
         }
     }
     for pair in order.windows(2) {
         if pair[0].span.end > pair[1].span.start {
-            return Err(WebError::OverlappingEdits { first: pair[0].span.clone(), second: pair[1].span.clone() });
+            return Err(WebError::OverlappingEdits {
+                first: pair[0].span.clone(),
+                second: pair[1].span.clone(),
+            });
         }
     }
-    let revision = doc.revision().checked_add(1).ok_or(WebError::RevisionOverflow)?;
+    let revision = doc
+        .revision()
+        .checked_add(1)
+        .ok_or(WebError::RevisionOverflow)?;
     let mut out = String::with_capacity(src.len());
     let mut changed = Vec::with_capacity(order.len());
     let mut cursor = 0;
@@ -93,20 +130,35 @@ pub fn apply(doc: &WebDoc, patch: &SourcePatch) -> Result<Applied, WebError> {
         changed.push(start..out.len());
         cursor = e.span.end;
         if out.len() > doc.limits().max_bytes {
-            return Err(WebError::LimitExceeded { limit: LimitKind::Bytes, span: e.span.clone() });
+            return Err(WebError::LimitExceeded {
+                limit: LimitKind::Bytes,
+                span: e.span.clone(),
+            });
         }
     }
     out.push_str(&src[cursor..]);
     if out.len() > doc.limits().max_bytes {
-        return Err(WebError::LimitExceeded { limit: LimitKind::Bytes, span: 0..src.len() });
+        return Err(WebError::LimitExceeded {
+            limit: LimitKind::Bytes,
+            span: 0..src.len(),
+        });
     }
     let sha256_hex = sha256_hex(out.as_bytes());
-    Ok(Applied { source: out, revision, sha256_hex, changed })
+    Ok(Applied {
+        source: out,
+        revision,
+        sha256_hex,
+        changed,
+    })
 }
 
 impl WebDoc {
     /// Apply a patch and re-project the result at the new revision (`parse(apply(..))`).
-    pub fn apply_patch(&self, patch: &SourcePatch, cancel: &CancellationToken) -> Result<WebDoc, WebError> {
+    pub fn apply_patch(
+        &self,
+        patch: &SourcePatch,
+        cancel: &CancellationToken,
+    ) -> Result<WebDoc, WebError> {
         let applied = apply(self, patch)?;
         parse(&applied.source, applied.revision, self.limits(), cancel)
     }
@@ -130,17 +182,27 @@ fn element(doc: &WebDoc, key: &NodeKey) -> Result<NodeId, WebError> {
     let id = doc.resolve(key).ok_or(WebError::NoSuchNode)?;
     match doc.node(id).ok_or(WebError::NoSuchNode)?.kind {
         NodeKind::Element => Ok(id),
-        NodeKind::Document => Err(WebError::NotEditable { reason: EditRefusal::DocumentRoot }),
-        NodeKind::Unsupported => Err(WebError::NotEditable { reason: EditRefusal::Opaque }),
-        NodeKind::Raw => Err(WebError::NotEditable { reason: EditRefusal::RawChild }),
-        _ => Err(WebError::NotEditable { reason: EditRefusal::NotAnElement }),
+        NodeKind::Document => Err(WebError::NotEditable {
+            reason: EditRefusal::DocumentRoot,
+        }),
+        NodeKind::Unsupported => Err(WebError::NotEditable {
+            reason: EditRefusal::Opaque,
+        }),
+        NodeKind::Raw => Err(WebError::NotEditable {
+            reason: EditRefusal::RawChild,
+        }),
+        _ => Err(WebError::NotEditable {
+            reason: EditRefusal::NotAnElement,
+        }),
     }
 }
 
 fn unquoted_safe(value: &str) -> bool {
     !value.is_empty()
         && !value.ends_with('/')
-        && !value.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '=' | '<' | '>' | '`'))
+        && !value
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '=' | '<' | '>' | '`'))
 }
 
 fn single(doc: &WebDoc, span: Range<usize>, replacement: String) -> SourcePatch {
@@ -153,7 +215,12 @@ fn single(doc: &WebDoc, span: Range<usize>, replacement: String) -> SourcePatch 
 /// Set an attribute from its decoded value. An existing attribute keeps its quote style (an unquoted value
 /// that needs quoting becomes double-quoted); a missing one is appended after the last attribute as
 /// ` name="value"`. Only the value span (or the insertion point) changes.
-pub fn set_attribute(doc: &WebDoc, key: &NodeKey, name: &str, value: &str) -> Result<SourcePatch, WebError> {
+pub fn set_attribute(
+    doc: &WebDoc,
+    key: &NodeKey,
+    name: &str,
+    value: &str,
+) -> Result<SourcePatch, WebError> {
     if !valid_attr_name(name) {
         return Err(WebError::InvalidName);
     }
@@ -163,16 +230,35 @@ pub fn set_attribute(doc: &WebDoc, key: &NodeKey, name: &str, value: &str) -> Re
         return Ok(match (&attr.value_span, attr.quote) {
             (Some(vs), Quote::Double) => single(doc, vs.clone(), escape_attr(value, '"')),
             (Some(vs), Quote::Single) => single(doc, vs.clone(), escape_attr(value, '\'')),
-            (Some(vs), _) if unquoted_safe(value) => single(doc, vs.clone(), escape_attr(value, '"')),
+            (Some(vs), _) if unquoted_safe(value) => {
+                single(doc, vs.clone(), escape_attr(value, '"'))
+            }
             (Some(vs), _) => single(doc, vs.clone(), format!("\"{}\"", escape_attr(value, '"'))),
             (None, _) => {
                 let at = attr.name_span.end;
-                SourcePatch::new(doc, vec![TextEdit { span: at..at, replacement: format!("=\"{}\"", escape_attr(value, '"')) }])
+                SourcePatch::new(
+                    doc,
+                    vec![TextEdit {
+                        span: at..at,
+                        replacement: format!("=\"{}\"", escape_attr(value, '"')),
+                    }],
+                )
             }
         });
     }
-    let at = node.attrs.last().map(|a| a.span.end).or(node.name_span.as_ref().map(|s| s.end)).ok_or(WebError::NoSuchNode)?;
-    Ok(SourcePatch::new(doc, vec![TextEdit { span: at..at, replacement: format!(" {name}=\"{}\"", escape_attr(value, '"')) }]))
+    let at = node
+        .attrs
+        .last()
+        .map(|a| a.span.end)
+        .or(node.name_span.as_ref().map(|s| s.end))
+        .ok_or(WebError::NoSuchNode)?;
+    Ok(SourcePatch::new(
+        doc,
+        vec![TextEdit {
+            span: at..at,
+            replacement: format!(" {name}=\"{}\"", escape_attr(value, '"')),
+        }],
+    ))
 }
 
 /// Remove an attribute together with the whitespace that separated it from the previous token.
@@ -180,13 +266,26 @@ pub fn remove_attribute(doc: &WebDoc, key: &NodeKey, name: &str) -> Result<Sourc
     let id = element(doc, key)?;
     let node = doc.node(id).ok_or(WebError::NoSuchNode)?;
     let attr = doc.attribute(id, name).ok_or(WebError::NoSuchAttribute)?;
-    let position = node.attrs.iter().position(|a| a == attr).ok_or(WebError::NoSuchAttribute)?;
+    let position = node
+        .attrs
+        .iter()
+        .position(|a| a == attr)
+        .ok_or(WebError::NoSuchAttribute)?;
     let from = if position == 0 {
-        node.name_span.as_ref().map(|s| s.end).ok_or(WebError::NoSuchNode)?
+        node.name_span
+            .as_ref()
+            .map(|s| s.end)
+            .ok_or(WebError::NoSuchNode)?
     } else {
         node.attrs[position.saturating_sub(1)].span.end
     };
-    Ok(SourcePatch::new(doc, vec![TextEdit { span: from..attr.span.end, replacement: String::new() }]))
+    Ok(SourcePatch::new(
+        doc,
+        vec![TextEdit {
+            span: from..attr.span.end,
+            replacement: String::new(),
+        }],
+    ))
 }
 
 /// True when `text` as the body of raw-text element `name` would not end exactly at the element's own close tag: an
@@ -207,36 +306,55 @@ pub fn set_text(doc: &WebDoc, key: &NodeKey, text: &str) -> Result<SourcePatch, 
         NodeKind::Text => Ok(single(doc, node.span.clone(), escape_text(text))),
         NodeKind::Element => {
             let Some(content) = node.content_span() else {
-                return Err(WebError::NotEditable { reason: EditRefusal::Void });
+                return Err(WebError::NotEditable {
+                    reason: EditRefusal::Void,
+                });
             };
             let name = doc.tag_name(id).unwrap_or("");
             let replacement = match node.content {
                 ContentModel::RawText => {
                     if closes_raw(text, name) {
-                        return Err(WebError::NotEditable { reason: EditRefusal::UnsafeRawText });
+                        return Err(WebError::NotEditable {
+                            reason: EditRefusal::UnsafeRawText,
+                        });
                     }
                     text.to_owned()
                 }
                 ContentModel::Rcdata => {
                     if closes_raw(text, name) {
-                        return Err(WebError::NotEditable { reason: EditRefusal::UnsafeRawText });
+                        return Err(WebError::NotEditable {
+                            reason: EditRefusal::UnsafeRawText,
+                        });
                     }
                     escape_text(text)
                 }
                 _ => {
-                    let only_text = node.children.iter().all(|&c| doc.node(c).is_some_and(|n| n.kind == NodeKind::Text));
+                    let only_text = node
+                        .children
+                        .iter()
+                        .all(|&c| doc.node(c).is_some_and(|n| n.kind == NodeKind::Text));
                     if !only_text {
-                        return Err(WebError::NotEditable { reason: EditRefusal::HasMarkupChildren });
+                        return Err(WebError::NotEditable {
+                            reason: EditRefusal::HasMarkupChildren,
+                        });
                     }
                     escape_text(text)
                 }
             };
             Ok(single(doc, content, replacement))
         }
-        NodeKind::Document => Err(WebError::NotEditable { reason: EditRefusal::DocumentRoot }),
-        NodeKind::Unsupported => Err(WebError::NotEditable { reason: EditRefusal::Opaque }),
-        NodeKind::Raw => Err(WebError::NotEditable { reason: EditRefusal::RawChild }),
-        NodeKind::Comment | NodeKind::Doctype => Err(WebError::NotEditable { reason: EditRefusal::NotAnElement }),
+        NodeKind::Document => Err(WebError::NotEditable {
+            reason: EditRefusal::DocumentRoot,
+        }),
+        NodeKind::Unsupported => Err(WebError::NotEditable {
+            reason: EditRefusal::Opaque,
+        }),
+        NodeKind::Raw => Err(WebError::NotEditable {
+            reason: EditRefusal::RawChild,
+        }),
+        NodeKind::Comment | NodeKind::Doctype => Err(WebError::NotEditable {
+            reason: EditRefusal::NotAnElement,
+        }),
     }
 }
 
@@ -245,22 +363,50 @@ pub fn remove_node(doc: &WebDoc, key: &NodeKey) -> Result<SourcePatch, WebError>
     let id = doc.resolve(key).ok_or(WebError::NoSuchNode)?;
     let node = doc.node(id).ok_or(WebError::NoSuchNode)?;
     match node.kind {
-        NodeKind::Document => Err(WebError::NotEditable { reason: EditRefusal::DocumentRoot }),
-        NodeKind::Unsupported => Err(WebError::NotEditable { reason: EditRefusal::Opaque }),
-        NodeKind::Raw => Err(WebError::NotEditable { reason: EditRefusal::RawChild }),
-        _ => Ok(SourcePatch::new(doc, vec![TextEdit { span: node.span.clone(), replacement: String::new() }])),
+        NodeKind::Document => Err(WebError::NotEditable {
+            reason: EditRefusal::DocumentRoot,
+        }),
+        NodeKind::Unsupported => Err(WebError::NotEditable {
+            reason: EditRefusal::Opaque,
+        }),
+        NodeKind::Raw => Err(WebError::NotEditable {
+            reason: EditRefusal::RawChild,
+        }),
+        _ => Ok(SourcePatch::new(
+            doc,
+            vec![TextEdit {
+                span: node.span.clone(),
+                replacement: String::new(),
+            }],
+        )),
     }
 }
 
-fn check_fragment(doc: &WebDoc, fragment: &str, cancel: &CancellationToken) -> Result<WebDoc, WebError> {
+fn check_fragment(
+    doc: &WebDoc,
+    fragment: &str,
+    cancel: &CancellationToken,
+) -> Result<WebDoc, WebError> {
     let parsed = match parse(fragment, 0, doc.limits(), cancel) {
         Ok(parsed) => parsed,
         Err(WebError::Canceled) => return Err(WebError::Canceled),
-        Err(_) => return Err(WebError::Malformed { kind: MalformedKind::InvalidFragment, span: 0..fragment.len() }),
+        Err(_) => {
+            return Err(WebError::Malformed {
+                kind: MalformedKind::InvalidFragment,
+                span: 0..fragment.len(),
+            });
+        }
     };
-    let opaque = parsed.loss().entries().iter().any(|e| e.kind.is_opaque() || e.kind == LossKind::SelfClosingIgnored);
+    let opaque = parsed
+        .loss()
+        .entries()
+        .iter()
+        .any(|e| e.kind.is_opaque() || e.kind == LossKind::SelfClosingIgnored);
     if opaque {
-        return Err(WebError::Unsupported { kind: UnsupportedKind::FragmentConstruct, span: 0..fragment.len() });
+        return Err(WebError::Unsupported {
+            kind: UnsupportedKind::FragmentConstruct,
+            span: 0..fragment.len(),
+        });
     }
     Ok(parsed)
 }
@@ -272,19 +418,35 @@ fn insertion_point(doc: &WebDoc, parent: &NodeKey, index: usize) -> Result<usize
         NodeKind::Document => {}
         NodeKind::Element => {
             if node.content != ContentModel::Normal || node.close_span.is_none() {
-                return Err(WebError::NotEditable { reason: EditRefusal::Void });
+                return Err(WebError::NotEditable {
+                    reason: EditRefusal::Void,
+                });
             }
         }
-        NodeKind::Unsupported => return Err(WebError::NotEditable { reason: EditRefusal::Opaque }),
-        _ => return Err(WebError::NotEditable { reason: EditRefusal::NotAnElement }),
+        NodeKind::Unsupported => {
+            return Err(WebError::NotEditable {
+                reason: EditRefusal::Opaque,
+            });
+        }
+        _ => {
+            return Err(WebError::NotEditable {
+                reason: EditRefusal::NotAnElement,
+            });
+        }
     }
     match index.cmp(&node.children.len()) {
-        std::cmp::Ordering::Less => Ok(doc.node(node.children[index]).ok_or(WebError::NoSuchNode)?.span.start),
+        std::cmp::Ordering::Less => Ok(doc
+            .node(node.children[index])
+            .ok_or(WebError::NoSuchNode)?
+            .span
+            .start),
         std::cmp::Ordering::Equal => match node.kind {
             NodeKind::Document => Ok(doc.source().len()),
             _ => Ok(node.close_span.as_ref().ok_or(WebError::NoSuchNode)?.start),
         },
-        std::cmp::Ordering::Greater => Err(WebError::NotEditable { reason: EditRefusal::IndexOutOfRange }),
+        std::cmp::Ordering::Greater => Err(WebError::NotEditable {
+            reason: EditRefusal::IndexOutOfRange,
+        }),
     }
 }
 
@@ -300,7 +462,13 @@ pub fn insert_fragment(
 ) -> Result<SourcePatch, WebError> {
     let at = insertion_point(doc, parent, index)?;
     check_fragment(doc, fragment, cancel)?;
-    Ok(SourcePatch::new(doc, vec![TextEdit { span: at..at, replacement: fragment.to_owned() }]))
+    Ok(SourcePatch::new(
+        doc,
+        vec![TextEdit {
+            span: at..at,
+            replacement: fragment.to_owned(),
+        }],
+    ))
 }
 
 /// Insert a new element built from a tag, decoded attribute values and optional text (escaped on write;
@@ -320,7 +488,9 @@ pub fn insert_element(
     }
     let void = in_set(VOID, tag);
     if void && text.is_some() {
-        return Err(WebError::NotEditable { reason: EditRefusal::Void });
+        return Err(WebError::NotEditable {
+            reason: EditRefusal::Void,
+        });
     }
     let mut fragment = format!("<{tag}");
     for (name, value) in attrs {
@@ -330,16 +500,35 @@ pub fn insert_element(
     if !void {
         let raw = in_set(RAWTEXT, tag);
         if let Some(text) = text {
-            fragment.push_str(&if raw { text.to_owned() } else { escape_text(text) });
+            fragment.push_str(&if raw {
+                text.to_owned()
+            } else {
+                escape_text(text)
+            });
         }
         fragment.push_str(&format!("</{tag}>"));
     }
     let at = insertion_point(doc, parent, index)?;
     let parsed = check_fragment(doc, &fragment, cancel)?;
-    let roots = &parsed.node(parsed.root()).ok_or(WebError::NoSuchNode)?.children;
-    let one_element = roots.len() == 1 && parsed.node(roots[0]).is_some_and(|n| n.kind == NodeKind::Element);
+    let roots = &parsed
+        .node(parsed.root())
+        .ok_or(WebError::NoSuchNode)?
+        .children;
+    let one_element = roots.len() == 1
+        && parsed
+            .node(roots[0])
+            .is_some_and(|n| n.kind == NodeKind::Element);
     if !one_element {
-        return Err(WebError::Malformed { kind: MalformedKind::InvalidFragment, span: 0..fragment.len() });
+        return Err(WebError::Malformed {
+            kind: MalformedKind::InvalidFragment,
+            span: 0..fragment.len(),
+        });
     }
-    Ok(SourcePatch::new(doc, vec![TextEdit { span: at..at, replacement: fragment }]))
+    Ok(SourcePatch::new(
+        doc,
+        vec![TextEdit {
+            span: at..at,
+            replacement: fragment,
+        }],
+    ))
 }

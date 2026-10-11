@@ -54,14 +54,21 @@ impl KeyMap {
         self.removed_nodes
     }
     pub fn added_keys(&self, new: &WebDoc) -> Vec<NodeKey> {
-        self.added_roots.iter().filter_map(|&id| new.key_of(id)).collect()
+        self.added_roots
+            .iter()
+            .filter_map(|&id| new.key_of(id))
+            .collect()
     }
     pub fn removed_keys(&self, old: &WebDoc) -> Vec<NodeKey> {
-        self.removed_roots.iter().filter_map(|&id| old.key_of(id)).collect()
+        self.removed_roots
+            .iter()
+            .filter_map(|&id| old.key_of(id))
+            .collect()
     }
     /// True when more roots were added or removed than `MAX_REPORTED_ROOTS` lists.
     pub fn truncated(&self) -> bool {
-        self.added_roots.len() >= MAX_REPORTED_ROOTS || self.removed_roots.len() >= MAX_REPORTED_ROOTS
+        self.added_roots.len() >= MAX_REPORTED_ROOTS
+            || self.removed_roots.len() >= MAX_REPORTED_ROOTS
     }
 }
 
@@ -73,12 +80,18 @@ fn signature(doc: &WebDoc, id: NodeId) -> Sig {
 }
 
 /// Pairs of positions (old index, new index) of matched children.
-fn match_children(old: &WebDoc, old_kids: &[NodeId], new: &WebDoc, new_kids: &[NodeId]) -> Vec<(usize, usize)> {
+fn match_children(
+    old: &WebDoc,
+    old_kids: &[NodeId],
+    new: &WebDoc,
+    new_kids: &[NodeId],
+) -> Vec<(usize, usize)> {
     let old_sigs: Vec<Sig> = old_kids.iter().map(|&c| signature(old, c)).collect();
     let new_sigs: Vec<Sig> = new_kids.iter().map(|&c| signature(new, c)).collect();
     let mut pairs = Vec::new();
     let mut prefix = 0;
-    while prefix < old_sigs.len() && prefix < new_sigs.len() && old_sigs[prefix] == new_sigs[prefix] {
+    while prefix < old_sigs.len() && prefix < new_sigs.len() && old_sigs[prefix] == new_sigs[prefix]
+    {
         pairs.push((prefix, prefix));
         prefix += 1;
     }
@@ -111,9 +124,15 @@ fn match_children(old: &WebDoc, old_kids: &[NodeId], new: &WebDoc, new_kids: &[N
                 queues.entry(k).or_default().push_back(o);
             }
         }
-        let (mut last, mut used_old, mut used_new) = (None::<usize>, vec![false; old_sigs.len()], vec![false; new_sigs.len()]);
+        let (mut last, mut used_old, mut used_new) = (
+            None::<usize>,
+            vec![false; old_sigs.len()],
+            vec![false; new_sigs.len()],
+        );
         for &n in &new_free {
-            let Some(queue) = key(&new_sigs[n]).and_then(|k| queues.get_mut(&k)) else { continue };
+            let Some(queue) = key(&new_sigs[n]).and_then(|k| queues.get_mut(&k)) else {
+                continue;
+            };
             if pass > 0 {
                 while queue.front().is_some_and(|&o| last.is_some_and(|l| o <= l)) {
                     queue.pop_front();
@@ -135,7 +154,11 @@ fn match_children(old: &WebDoc, old_kids: &[NodeId], new: &WebDoc, new_kids: &[N
 /// Match two projections of the same document lineage. Cost is linear in the node count (plus the cost of
 /// the changed middle of each child list).
 pub fn key_map(old: &WebDoc, new: &WebDoc, cancel: &CancellationToken) -> Result<KeyMap, WebError> {
-    let mut map = KeyMap { to_new: vec![None; old.len()], to_old: vec![None; new.len()], ..KeyMap::default() };
+    let mut map = KeyMap {
+        to_new: vec![None; old.len()],
+        to_old: vec![None; new.len()],
+        ..KeyMap::default()
+    };
     map.to_new[0] = Some(0);
     map.to_old[0] = Some(0);
     map.kept = 1;
@@ -185,10 +208,21 @@ pub fn key_map(old: &WebDoc, new: &WebDoc, cancel: &CancellationToken) -> Result
 
 /// Re-parse edited source as the next revision of `old` and map identities across the edit. Equal to
 /// `parse(new_src, old.revision() + 1)` plus the key map; any other target revision is `StaleRevision`.
-pub fn refresh(old: &WebDoc, new_src: &str, new_revision: u64, cancel: &CancellationToken) -> Result<(WebDoc, KeyMap), WebError> {
-    let expected = old.revision().checked_add(1).ok_or(WebError::RevisionOverflow)?;
+pub fn refresh(
+    old: &WebDoc,
+    new_src: &str,
+    new_revision: u64,
+    cancel: &CancellationToken,
+) -> Result<(WebDoc, KeyMap), WebError> {
+    let expected = old
+        .revision()
+        .checked_add(1)
+        .ok_or(WebError::RevisionOverflow)?;
     if new_revision != expected {
-        return Err(WebError::StaleRevision { expected, found: new_revision });
+        return Err(WebError::StaleRevision {
+            expected,
+            found: new_revision,
+        });
     }
     let new = parse(new_src, new_revision, old.limits(), cancel)?;
     let map = key_map(old, &new, cancel)?;

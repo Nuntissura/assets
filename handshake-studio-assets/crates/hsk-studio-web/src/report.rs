@@ -26,7 +26,13 @@ pub fn report<T>(
     sink: &mut (impl SinkPort + ?Sized),
 ) -> Result<Receipt, ObserveError> {
     observer.emit(
-        Observation { correlation_id, revision, outcome: outcome_of(result), progress: None, private_project_text: None },
+        Observation {
+            correlation_id,
+            revision,
+            outcome: outcome_of(result),
+            progress: None,
+            private_project_text: None,
+        },
         cancel,
         sink,
     )

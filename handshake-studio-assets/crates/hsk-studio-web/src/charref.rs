@@ -71,13 +71,20 @@ const C1: [Option<char>; 32] = [
 ];
 
 fn lookup(name: &str) -> Option<(u32, u32)> {
-    NAMED.binary_search_by(|(n, _, _)| n.as_bytes().cmp(name.as_bytes())).ok().map(|i| (NAMED[i].1, NAMED[i].2))
+    NAMED
+        .binary_search_by(|(n, _, _)| n.as_bytes().cmp(name.as_bytes()))
+        .ok()
+        .map(|i| (NAMED[i].1, NAMED[i].2))
 }
 
 /// Longest table name that `after` (the text following `&`) starts with: (bytes consumed, code points).
 fn longest_named(after: &str) -> Option<(usize, u32, u32)> {
     let b = after.as_bytes();
-    let run = b.iter().take(MAX_NAME_LEN.saturating_add(1)).take_while(|c| c.is_ascii_alphanumeric()).count();
+    let run = b
+        .iter()
+        .take(MAX_NAME_LEN.saturating_add(1))
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .count();
     if run < MAX_NAME_LEN && b.get(run) == Some(&b';') {
         let with_semi = run.saturating_add(1);
         if let Some((a, c)) = lookup(&after[..with_semi]) {
@@ -85,7 +92,9 @@ fn longest_named(after: &str) -> Option<(usize, u32, u32)> {
         }
     }
     // Names without `;` are prefixes of the alphanumeric run (only legacy names lack the semicolon).
-    (1..=run.min(MAX_NAME_LEN)).rev().find_map(|k| lookup(&after[..k]).map(|(a, c)| (k, a, c)))
+    (1..=run.min(MAX_NAME_LEN))
+        .rev()
+        .find_map(|k| lookup(&after[..k]).map(|(a, c)| (k, a, c)))
 }
 
 fn numeric_char(value: u32) -> char {
@@ -109,7 +118,10 @@ pub(crate) fn decode(input: &str, context: Context) -> Decoded {
     let mut unresolved = Vec::new();
     let mut last = 0usize;
     let mut i = 0usize;
-    while let Some(off) = b.get(i..).and_then(|rest| rest.iter().position(|&c| c == b'&')) {
+    while let Some(off) = b
+        .get(i..)
+        .and_then(|rest| rest.iter().position(|&c| c == b'&'))
+    {
         let amp = i.saturating_add(off);
         let after = amp.saturating_add(1);
         match b.get(after) {
@@ -131,7 +143,11 @@ pub(crate) fn decode(input: &str, context: Context) -> Decoded {
                     i = after;
                     continue;
                 }
-                let end = if b.get(p) == Some(&b';') { p.saturating_add(1) } else { p };
+                let end = if b.get(p) == Some(&b';') {
+                    p.saturating_add(1)
+                } else {
+                    p
+                };
                 text.push_str(&input[last..amp]);
                 text.push(numeric_char(value));
                 last = end;
@@ -141,7 +157,9 @@ pub(crate) fn decode(input: &str, context: Context) -> Decoded {
                 Some((len, first, second)) => {
                     let end = after.saturating_add(len);
                     let terminated = b.get(end.saturating_sub(1)) == Some(&b';');
-                    let next_blocks = b.get(end).is_some_and(|n| *n == b'=' || n.is_ascii_alphanumeric());
+                    let next_blocks = b
+                        .get(end)
+                        .is_some_and(|n| *n == b'=' || n.is_ascii_alphanumeric());
                     if context == Context::Attribute && !terminated && next_blocks {
                         i = end;
                         continue;
@@ -155,7 +173,10 @@ pub(crate) fn decode(input: &str, context: Context) -> Decoded {
                     i = end;
                 }
                 None => {
-                    let run = b[after..].iter().take_while(|c| c.is_ascii_alphanumeric()).count();
+                    let run = b[after..]
+                        .iter()
+                        .take_while(|c| c.is_ascii_alphanumeric())
+                        .count();
                     let run_end = after.saturating_add(run);
                     if b.get(run_end) == Some(&b';') {
                         unresolved.push(amp..run_end.saturating_add(1));
@@ -188,7 +209,17 @@ mod tests {
             assert!(out <= reference.saturating_add(1), "{name}");
             assert!(out <= reference || reference >= 5, "{name}");
         }
-        assert_eq!(decode("&notit; &notin; &CounterClockwiseContourIntegral;", Context::Text).text, "\u{ac}it; \u{2209} \u{2233}");
-        assert_eq!(decode("&#x80;&#150;&#x81;", Context::Text).text, "\u{20ac}\u{2013}\u{81}");
+        assert_eq!(
+            decode(
+                "&notit; &notin; &CounterClockwiseContourIntegral;",
+                Context::Text
+            )
+            .text,
+            "\u{ac}it; \u{2209} \u{2233}"
+        );
+        assert_eq!(
+            decode("&#x80;&#150;&#x81;", Context::Text).text,
+            "\u{20ac}\u{2013}\u{81}"
+        );
     }
 }

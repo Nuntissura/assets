@@ -17,7 +17,10 @@ pub struct Decoded {
 /// The output is at most `input.len() + input.len() / 5` bytes (one byte of growth per reference of five or more).
 pub fn decode_entities(input: &str) -> Decoded {
     let d = decode(input, Context::Text);
-    Decoded { text: d.text, unresolved: d.unresolved }
+    Decoded {
+        text: d.text,
+        unresolved: d.unresolved,
+    }
 }
 
 /// Escape text node content: `& < >`.

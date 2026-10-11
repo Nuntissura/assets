@@ -71,7 +71,11 @@ impl<'a> Cur<'a> {
         // positioned at `/*`
         let body = self.rest().get(2..).unwrap_or("");
         self.pos = match body.find("*/") {
-            Some(off) => self.pos.saturating_add(2).saturating_add(off).saturating_add(2),
+            Some(off) => self
+                .pos
+                .saturating_add(2)
+                .saturating_add(off)
+                .saturating_add(2),
             None => self.s.len(),
         };
     }
@@ -116,7 +120,9 @@ impl<'a> Cur<'a> {
                         self.bump();
                     }
                 }
-                char::from_u32(value).filter(|c| *c != '\0').unwrap_or('\u{fffd}')
+                char::from_u32(value)
+                    .filter(|c| *c != '\0')
+                    .unwrap_or('\u{fffd}')
             }
             Some(c) => clean(c),
         }
@@ -229,7 +235,11 @@ impl<'a> Cur<'a> {
                 Some(c) => value.push(clean(c)),
             }
         };
-        CssRef { span: start..end, value, bad }
+        CssRef {
+            span: start..end,
+            value,
+            bad,
+        }
     }
 }
 

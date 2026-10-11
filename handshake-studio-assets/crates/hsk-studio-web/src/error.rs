@@ -145,19 +145,40 @@ impl EditRefusal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebError {
     Canceled,
-    LimitExceeded { limit: LimitKind, span: Range<usize> },
-    Malformed { kind: MalformedKind, span: Range<usize> },
-    Unsupported { kind: UnsupportedKind, span: Range<usize> },
+    LimitExceeded {
+        limit: LimitKind,
+        span: Range<usize>,
+    },
+    Malformed {
+        kind: MalformedKind,
+        span: Range<usize>,
+    },
+    Unsupported {
+        kind: UnsupportedKind,
+        span: Range<usize>,
+    },
     NoSuchNode,
     NoSuchAttribute,
     /// Attribute or tag name outside the writable name grammar.
     InvalidName,
-    InvalidSpan { span: Range<usize> },
-    OverlappingEdits { first: Range<usize>, second: Range<usize> },
-    NotEditable { reason: EditRefusal },
+    InvalidSpan {
+        span: Range<usize>,
+    },
+    OverlappingEdits {
+        first: Range<usize>,
+        second: Range<usize>,
+    },
+    NotEditable {
+        reason: EditRefusal,
+    },
     /// Same revision number but different source bytes than the patch was made against.
-    Conflict { span: Range<usize> },
-    StaleRevision { expected: u64, found: u64 },
+    Conflict {
+        span: Range<usize>,
+    },
+    StaleRevision {
+        expected: u64,
+        found: u64,
+    },
     RevisionOverflow,
     /// Viewport width must be finite and non-negative.
     InvalidViewport,
@@ -209,7 +230,9 @@ impl WebError {
             | Self::Malformed { span, .. }
             | Self::Unsupported { span, .. }
             | Self::InvalidSpan { span }
-            | Self::Conflict { span } => *span = span.start.saturating_add(by)..span.end.saturating_add(by),
+            | Self::Conflict { span } => {
+                *span = span.start.saturating_add(by)..span.end.saturating_add(by)
+            }
             _ => {}
         }
         self
@@ -259,7 +282,10 @@ impl LossKind {
     }
     /// True when the finding makes a node opaque (kept verbatim, never patched).
     pub const fn is_opaque(self) -> bool {
-        matches!(self, Self::Cdata | Self::ProcessingInstruction | Self::BogusMarkup)
+        matches!(
+            self,
+            Self::Cdata | Self::ProcessingInstruction | Self::BogusMarkup
+        )
     }
 }
 

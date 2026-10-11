@@ -5,7 +5,10 @@
 //! (`tag`, `*`, `.class`, `#id`, compounds and comma lists) by importance, origin, specificity and order.
 //! Everything outside that is listed in `unsupported`, never guessed. Nothing is fetched or executed.
 
-use crate::css::{Compound, Declaration, ElemInfo, RuleRefusal, Stylesheet, parse_declarations, parse_selectors, parse_stylesheet};
+use crate::css::{
+    Compound, Declaration, ElemInfo, RuleRefusal, Stylesheet, parse_declarations, parse_selectors,
+    parse_stylesheet,
+};
 use crate::dom::{ContentModel, NodeId, NodeKind, WebDoc};
 use crate::error::{LimitKind, WebError};
 use crate::responsive::matches_any;
@@ -84,10 +87,22 @@ pub struct PreviewTree {
     pub unnamed: Vec<NodeId>,
 }
 
-const NOT_RENDERED: &[&str] = &["head", "script", "style", "template", "title", "meta", "link", "base"];
+const NOT_RENDERED: &[&str] = &[
+    "head", "script", "style", "template", "title", "meta", "link", "base",
+];
 const SECTIONING: &[&str] = &["article", "aside", "main", "nav", "section"];
 const NAME_FROM_CONTENT: &[&str] = &["button", "link", "heading", "columnheader"];
-const NEEDS_NAME: &[&str] = &["button", "link", "img", "textbox", "checkbox", "radio", "combobox", "slider", "spinbutton"];
+const NEEDS_NAME: &[&str] = &[
+    "button",
+    "link",
+    "img",
+    "textbox",
+    "checkbox",
+    "radio",
+    "combobox",
+    "slider",
+    "spinbutton",
+];
 
 fn normalize(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -107,14 +122,28 @@ fn has_attr(doc: &WebDoc, id: NodeId, name: &str) -> bool {
 }
 
 fn input_type(doc: &WebDoc, id: NodeId) -> String {
-    attr(doc, id, "type").map(|t| t.trim().to_ascii_lowercase()).unwrap_or_else(|| "text".into())
+    attr(doc, id, "type")
+        .map(|t| t.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "text".into())
 }
 
-fn role_of(doc: &WebDoc, id: NodeId, tag: &str, sectioning_depth: usize) -> (Option<String>, Option<u8>) {
+fn role_of(
+    doc: &WebDoc,
+    id: NodeId,
+    tag: &str,
+    sectioning_depth: usize,
+) -> (Option<String>, Option<u8>) {
     if let Some(role) = attr(doc, id, "role") {
-        let first = role.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        let first = role
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         if !first.is_empty() && first.bytes().all(|c| c.is_ascii_lowercase() || c == b'-') {
-            let level = tag.strip_prefix('h').and_then(|n| n.parse::<u8>().ok()).filter(|n| (1..=6).contains(n));
+            let level = tag
+                .strip_prefix('h')
+                .and_then(|n| n.parse::<u8>().ok())
+                .filter(|n| (1..=6).contains(n));
             return (Some(first), level);
         }
     }
@@ -137,7 +166,9 @@ fn role_of(doc: &WebDoc, id: NodeId, tag: &str, sectioning_depth: usize) -> (Opt
                 "img"
             }
         }
-        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => return (Some("heading".into()), tag[1..].parse().ok()),
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            return (Some("heading".into()), tag[1..].parse().ok());
+        }
         "ul" | "ol" => "list",
         "li" => "listitem",
         "table" => "table",
@@ -174,7 +205,10 @@ fn label_text(doc: &WebDoc, id: NodeId, maps: &Maps) -> Option<String> {
     }
     let mut cur = doc.node(id)?.parent;
     while let Some(p) = cur {
-        if doc.tag_name(p).is_some_and(|t| t.eq_ignore_ascii_case("label")) {
+        if doc
+            .tag_name(p)
+            .is_some_and(|t| t.eq_ignore_ascii_case("label"))
+        {
             let text = normalize(&doc.text_content(p));
             return (!text.is_empty()).then_some(text);
         }
@@ -183,7 +217,13 @@ fn label_text(doc: &WebDoc, id: NodeId, maps: &Maps) -> Option<String> {
     None
 }
 
-fn accessible_name(doc: &WebDoc, id: NodeId, tag: &str, role: Option<&str>, maps: &Maps) -> Option<String> {
+fn accessible_name(
+    doc: &WebDoc,
+    id: NodeId,
+    tag: &str,
+    role: Option<&str>,
+    maps: &Maps,
+) -> Option<String> {
     if let Some(v) = attr(doc, id, "aria-labelledby") {
         let parts: Vec<String> = v
             .split_whitespace()
@@ -200,7 +240,11 @@ fn accessible_name(doc: &WebDoc, id: NodeId, tag: &str, role: Option<&str>, maps
     {
         return Some(v);
     }
-    let from_attr = |name: &str| attr(doc, id, name).map(|v| normalize(&v)).filter(|v| !v.is_empty());
+    let from_attr = |name: &str| {
+        attr(doc, id, name)
+            .map(|v| normalize(&v))
+            .filter(|v| !v.is_empty())
+    };
     let own = match tag {
         "img" | "area" => from_attr("alt"),
         "input" => match input_type(doc, id).as_str() {
@@ -250,7 +294,11 @@ struct PendingRule {
 }
 
 /// Build the preview of `doc` at `viewport_width_px` (finite, >= 0).
-pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationToken) -> Result<PreviewTree, WebError> {
+pub fn preview_tree(
+    doc: &WebDoc,
+    viewport_width_px: f64,
+    cancel: &CancellationToken,
+) -> Result<PreviewTree, WebError> {
     cancel.check()?;
     if !viewport_width_px.is_finite() || viewport_width_px < 0.0 {
         return Err(WebError::InvalidViewport);
@@ -284,12 +332,24 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
         if tag == "style" && node.content == ContentModel::RawText {
             for &child in &node.children {
                 if let Some(raw) = doc.node(child).filter(|c| c.kind == NodeKind::Raw) {
-                    parse_stylesheet(doc.slice(&raw.span), raw.span.start, &mut sheet, &limits, cancel)?;
+                    parse_stylesheet(
+                        doc.slice(&raw.span),
+                        raw.span.start,
+                        &mut sheet,
+                        &limits,
+                        cancel,
+                    )?;
                 }
             }
         }
-        let classes = attr(doc, id, "class").map(|c| c.split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
-        infos.push(Some(ElemInfo { tag, id: html_id, classes }));
+        let classes = attr(doc, id, "class")
+            .map(|c| c.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default();
+        infos.push(Some(ElemInfo {
+            tag,
+            id: html_id,
+            classes,
+        }));
     }
     let maps = Maps { ids, labels_for };
 
@@ -297,7 +357,10 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
     let mut unsupported: Vec<UnsupportedRule> = sheet
         .unsupported
         .iter()
-        .map(|(span, r)| UnsupportedRule { span: span.clone(), reason: UnsupportedRuleReason::Rule(*r) })
+        .map(|(span, r)| UnsupportedRule {
+            span: span.clone(),
+            reason: UnsupportedRuleReason::Rule(*r),
+        })
         .collect();
     let mut reported_media: HashSet<usize> = HashSet::new();
     let mut pending: Vec<PendingRule> = Vec::new();
@@ -326,10 +389,17 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
         }
         let selector = doc.source()[rule.selector_span.clone()].to_owned();
         let Some(selectors) = parse_selectors(&selector) else {
-            unsupported.push(UnsupportedRule { span: rule.selector_span.clone(), reason: UnsupportedRuleReason::Rule(RuleRefusal::Selector) });
+            unsupported.push(UnsupportedRule {
+                span: rule.selector_span.clone(),
+                reason: UnsupportedRuleReason::Rule(RuleRefusal::Selector),
+            });
             continue;
         };
-        let specificity = selectors.iter().map(Compound::specificity).max().unwrap_or(0);
+        let specificity = selectors
+            .iter()
+            .map(Compound::specificity)
+            .max()
+            .unwrap_or(0);
         pending.push(PendingRule {
             selectors,
             public: ActiveRule {
@@ -337,14 +407,20 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
                 selector_span: rule.selector_span.clone(),
                 specificity,
                 declarations: parse_declarations(&doc.source()[rule.decl_span.clone()]),
-                media: chain.iter().map(|&m| sheet.media[m].query_span.clone()).collect(),
+                media: chain
+                    .iter()
+                    .map(|&m| sheet.media[m].query_span.clone())
+                    .collect(),
                 matched_count: 0,
                 matched: Vec::new(),
             },
         });
     }
     if pending.len().saturating_mul(doc.len()) > MAX_MATCH_WORK {
-        return Err(WebError::LimitExceeded { limit: LimitKind::Rules, span: 0..0 });
+        return Err(WebError::LimitExceeded {
+            limit: LimitKind::Rules,
+            span: 0..0,
+        });
     }
 
     // 3. Match rules against elements; resolve the winning `display` per element.
@@ -356,13 +432,27 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
         let decl = last_display(&rule.public.declarations).cloned();
         for (id, info) in infos.iter().enumerate() {
             let Some(info) = info else { continue };
-            let Some(spec) = rule.selectors.iter().filter(|s| s.matches(info)).map(Compound::specificity).max() else { continue };
+            let Some(spec) = rule
+                .selectors
+                .iter()
+                .filter(|s| s.matches(info))
+                .map(Compound::specificity)
+                .max()
+            else {
+                continue;
+            };
             rule.public.matched_count += 1;
             if rule.public.matched.len() < MAX_MATCHES_LISTED {
                 rule.public.matched.push(id);
             }
             if let Some(d) = &decl {
-                let win: DisplayWin = (d.important, false, spec, order, d.value.trim().eq_ignore_ascii_case("none"));
+                let win: DisplayWin = (
+                    d.important,
+                    false,
+                    spec,
+                    order,
+                    d.value.trim().eq_ignore_ascii_case("none"),
+                );
                 if display[id].is_none_or(|cur| win > cur) {
                     display[id] = Some(win);
                 }
@@ -376,7 +466,13 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
         if let Some(style) = attr(doc, id, "style")
             && let Some(d) = last_display(&parse_declarations(&style))
         {
-            let win: DisplayWin = (d.important, true, 0, 0, d.value.trim().eq_ignore_ascii_case("none"));
+            let win: DisplayWin = (
+                d.important,
+                true,
+                0,
+                0,
+                d.value.trim().eq_ignore_ascii_case("none"),
+            );
             if display[id].is_none_or(|cur| win > cur) {
                 display[id] = Some(win);
             }
@@ -394,24 +490,43 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
         if nodes.len() & 0x3ff == 0 {
             cancel.check()?;
         }
-        let Some(info) = infos[id].as_ref() else { continue };
+        let Some(info) = infos[id].as_ref() else {
+            continue;
+        };
         if NOT_RENDERED.contains(&info.tag.as_str()) {
             continue;
         }
         let tag = info.tag.clone();
         let hidden = match display[id] {
-            Some((_, inline, _, _, true)) => Some(if inline { HiddenReason::InlineStyle } else { HiddenReason::StyleRule }),
+            Some((_, inline, _, _, true)) => Some(if inline {
+                HiddenReason::InlineStyle
+            } else {
+                HiddenReason::StyleRule
+            }),
             Some(_) => None,
             None if has_attr(doc, id, "hidden") => Some(HiddenReason::HiddenAttribute),
-            None if tag == "input" && input_type(doc, id) == "hidden" => Some(HiddenReason::InputHidden),
+            None if tag == "input" && input_type(doc, id) == "hidden" => {
+                Some(HiddenReason::InputHidden)
+            }
             None => None,
         };
-        let a11y_hidden = a11y_inherited || attr(doc, id, "aria-hidden").is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
+        let a11y_hidden = a11y_inherited
+            || attr(doc, id, "aria-hidden").is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
         let (role, heading_level) = role_of(doc, id, &tag, sectioning);
-        let name = if hidden.is_some() { None } else { accessible_name(doc, id, &tag, role.as_deref(), &maps) };
+        let name = if hidden.is_some() {
+            None
+        } else {
+            accessible_name(doc, id, &tag, role.as_deref(), &maps)
+        };
         let tab_index = parse_tabindex(doc, id);
-        let focusable = hidden.is_none() && (natively_focusable(doc, id, &tag) || (tab_index.is_some() && !has_attr(doc, id, "disabled")));
-        if hidden.is_none() && !a11y_hidden && name.is_none() && role.as_deref().is_some_and(|r| NEEDS_NAME.contains(&r)) {
+        let focusable = hidden.is_none()
+            && (natively_focusable(doc, id, &tag)
+                || (tab_index.is_some() && !has_attr(doc, id, "disabled")));
+        if hidden.is_none()
+            && !a11y_hidden
+            && name.is_none()
+            && role.as_deref().is_some_and(|r| NEEDS_NAME.contains(&r))
+        {
             unnamed.push(id);
         }
         nodes.push(PreviewNode {
@@ -430,7 +545,12 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
         if hidden.is_none() {
             let next_sectioning = sectioning + usize::from(SECTIONING.contains(&tag.as_str()));
             if let Some(node) = doc.node(id) {
-                work.extend(node.children.iter().rev().map(|&c| (c, depth + 1, a11y_hidden, next_sectioning)));
+                work.extend(
+                    node.children
+                        .iter()
+                        .rev()
+                        .map(|&c| (c, depth + 1, a11y_hidden, next_sectioning)),
+                );
             }
         }
     }
@@ -446,7 +566,11 @@ pub fn preview_tree(doc: &WebDoc, viewport_width_px: f64, cancel: &CancellationT
         }
     }
     positive.sort_by_key(|&(t, _)| t);
-    let tab_order = positive.into_iter().map(|(_, id)| id).chain(natural).collect();
+    let tab_order = positive
+        .into_iter()
+        .map(|(_, id)| id)
+        .chain(natural)
+        .collect();
 
     Ok(PreviewTree {
         source_revision: doc.revision(),
