@@ -26,8 +26,20 @@
 //!   accepted: test `exact_and_smaller_pictures_than_declared_are_accepted`). Reel repeats the check on its side;
 //! * protocol: a reply the request does not allow is a worker protocol fault (counted in `protocol_faults`, the
 //!   worker is killed, `worker_protocol`), for example a frame of unknown kind (test
-//!   `supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn`) or a FRAME answering OPEN
-//!   (test `frame_reply_to_open_is_a_protocol_fault`);
+//!   `supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn`), a FRAME answering OPEN
+//!   (test `frame_reply_to_open_is_a_protocol_fault`) or a FRAME whose tag no PACKET of the session carried
+//!   (test `frame_with_an_unsent_tag_is_a_protocol_fault`; the pictures of pre-roll packets carry sent tags and
+//!   are legal, test `worker_decode_is_bit_exact_with_in_process_and_the_dav1d_oracle`). The accepted
+//!   replies per request are listed in `wire.rs`;
+//! * handshake: the worker greets first and the greeting is bounded (`HELLO_CAP`, 1024 bytes). A greeting
+//!   above the bound, bytes that are no frame, and a frame the host cannot decode are the same protocol
+//!   fault (tests `oversize_hello_is_a_protocol_fault_not_a_spawn_failure`,
+//!   `garbage_hello_is_a_protocol_fault_not_a_spawn_failure`,
+//!   `malformed_hello_is_a_protocol_fault_not_a_spawn_failure`). A well-formed greeting of another protocol
+//!   version or decoder is `worker_version_mismatch`. A worker that closes its output before greeting (test
+//!   `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault`), stays silent past
+//!   `spawn_timeout` (test `canceled_call_does_not_wait_for_a_stalled_hello`) or cannot be started is
+//!   `worker_spawn_failed`, counted in `spawn_failed`;
 //! * crash: end of stream (abort, native crash, external kill) returns `decoder_crashed` with the exit
 //!   code and the worker is reaped. The provider stays usable; the next call starts a fresh worker, but
 //!   at most `max_spawns` workers start per `spawn_window` (`worker_respawn_limited` beyond that).
@@ -61,7 +73,7 @@ use hsk_studio_reel::{
     VideoRoute, VideoStreamSpec, av1_descriptor, detect_type, parse_av1c,
 };
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     io::SeekFrom,
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
@@ -175,11 +187,14 @@ pub enum Av1WorkerFault {
     DecoderDeadline,
     /// A reply frame above the cap derived from the declared dimensions; the worker was killed.
     OutputTooLarge,
-    /// Wrong kind, id, count or content in a reply; the worker was killed.
+    /// Wrong kind, id, count or content in a reply (including a picture tag no packet carried), or a
+    /// greeting above the handshake cap, made of bytes that are no frame, or undecodable; the worker was
+    /// killed.
     Protocol,
     /// The worker speaks another protocol version or decoder than this host was built for.
     VersionMismatch,
-    /// The worker process could not be started or did not complete HELLO.
+    /// The worker process could not be started, or it closed its output or stayed silent before HELLO
+    /// (a greeting that arrives and breaks the protocol is `Protocol`).
     SpawnFailed,
     /// More than `max_spawns` workers would have started within `spawn_window`.
     RespawnLimited,
@@ -495,7 +510,7 @@ enum Want {
 }
 
 /// One request to a worker: what to send, the reply cap, and the terminal reply that ends it.
-struct Call {
+struct Call<'a> {
     id: u64,
     frame: Vec<u8>,
     cap: usize,
@@ -503,6 +518,9 @@ struct Call {
     /// `(width, height)` the container declares for the track (0 = that side is not declared): a reply
     /// picture above it is a worker protocol fault (`within_declared_size`).
     declared: (u32, u32),
+    /// Tags of the PACKETs sent in this session so far: a reply picture with any other tag is a worker
+    /// protocol fault (reel's route would drop it without a word).
+    sent: &'a HashSet<u64>,
 }
 
 /// Per-segment time and cancel context shared by every request of the segment.
@@ -627,7 +645,17 @@ impl Pool {
         let hello = match session.wait(cancel, deadline_after(self.spawn_timeout)) {
             Waited::Frame(hello) => hello,
             Waited::Canceled => return Err(self.fail(&mut session, Failure::Canceled)),
-            Waited::TimedOut | Waited::Failed(_) => {
+            // A greeting above `HELLO_CAP`, or bytes that are no frame (their first four read as a huge
+            // length), is the worker breaking the protocol, like an undecodable greeting below: counted
+            // once, `worker_protocol`. Tests `oversize_hello_is_a_protocol_fault_not_a_spawn_failure`,
+            // `garbage_hello_is_a_protocol_fault_not_a_spawn_failure` and
+            // `malformed_hello_is_a_protocol_fault_not_a_spawn_failure`.
+            Waited::Failed(WireError::TooLarge | WireError::Malformed) => {
+                return Err(self.fail(&mut session, Failure::Protocol));
+            }
+            // A worker that closed its output or stayed silent never greeted: a spawn failure. Test
+            // `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault`.
+            Waited::TimedOut | Waited::Failed(WireError::Closed) => {
                 session.terminate(Duration::ZERO);
                 return Err(spawn_failed());
             }
@@ -638,11 +666,7 @@ impl Pool {
                 session.terminate(Duration::ZERO);
                 Err(Av1Error::Worker(Av1WorkerFault::VersionMismatch))
             }
-            Err(_) => {
-                bump(&self.counters.protocol_faults);
-                session.terminate(Duration::ZERO);
-                Err(Av1Error::Worker(Av1WorkerFault::Protocol))
-            }
+            Err(_) => Err(self.fail(&mut session, Failure::Protocol)),
         }
     }
 
@@ -709,7 +733,7 @@ impl Pool {
     fn exchange(
         &self,
         session: &mut Session,
-        call: Call,
+        call: Call<'_>,
         clock: &Clock<'_>,
         on_frame: &mut dyn FnMut(WireFrame) -> Result<(), ReelError>,
     ) -> Result<(), Av1Error> {
@@ -719,6 +743,7 @@ impl Pool {
             cap,
             want,
             declared,
+            sent,
         } = call;
         let wall = deadline_after(self.batch_deadline).min(clock.segment_wall);
         if session.jobs.send(Job { frame, cap }).is_err() {
@@ -748,9 +773,11 @@ impl Pool {
                     frames = frames.saturating_add(1);
                     if frames > wire::MAX_FRAMES_PER_BATCH
                         || !within_declared_size(&picture.format, declared)
+                        || !sent.contains(&picture.tag)
                     {
                         // A lying worker: classified here, before reel's route sees the picture (the
-                        // route refuses it too, but as a sink error that would not be counted).
+                        // route refuses an oversize picture too, but as a sink error that would not be
+                        // counted, and drops a picture whose tag matches no packet without a word).
                         return Err(self.fail(session, Failure::Protocol));
                     }
                     if let Err(error) = on_frame(picture) {
@@ -795,6 +822,9 @@ struct WorkerSession {
     max_packet_bytes: usize,
     /// Container-declared `(width, height)` of the stream (the spec's, 0 = not declared).
     declared: (u32, u32),
+    /// Tags of the PACKETs sent in this session (one entry per non-empty packet reel fed it, so bounded by
+    /// the packets of the requested segment): the only tags a reply picture may carry.
+    sent_tags: HashSet<u64>,
     faults: Option<FaultSlot>,
 }
 
@@ -839,6 +869,7 @@ impl WorkerSession {
             cap: self.reply_cap,
             want,
             declared: self.declared,
+            sent: &self.sent_tags,
         };
         let clock = Clock {
             cancel,
@@ -867,6 +898,7 @@ impl VideoDecodeSession for WorkerSession {
         if packet.is_empty() {
             return Ok(()); // an empty unit decodes to nothing, as in-process
         }
+        self.sent_tags.insert(tag);
         let id = self.pool.next_id();
         self.request(
             wire::encode_packet(id, tag, packet),
@@ -1068,6 +1100,7 @@ impl WorkerAv1Provider {
             reply_cap: frame_cap.saturating_add(wire::REPLY_SLACK),
             max_packet_bytes: spec.limits.max_chunk_bytes.min(MAX_PACKET_BYTES),
             declared: (spec.width, spec.height),
+            sent_tags: HashSet::new(),
             faults,
         };
         match pool.checkout(cancel) {

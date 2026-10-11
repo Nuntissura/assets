@@ -3,11 +3,30 @@
 //!
 //! Frame: `u32 length` + payload, length bounded by a caller-supplied cap BEFORE any allocation.
 //! Payload: `u8 kind, u16 protocol version, u64 request id` + body. The worker speaks first with HELLO
-//! (protocol version + decoder identity). One request is answered by zero or more FRAME replies and
-//! exactly one terminal reply (OPENED, BATCH_END or ERROR), every reply echoing the request id, so a
-//! stale or mismatched frame is a protocol fault. All decoding is bounds-checked and all size arithmetic
-//! is checked: a malformed frame (including one declaring u32::MAX dimensions, test
-//! `frame_dims_u32_max_is_malformed`) is `Malformed`, and nothing is allocated beyond the bytes present.
+//! (protocol version + decoder identity), bounded by `HELLO_CAP`.
+//!
+//! Replies the host accepts, per request (enforced by the arm guards of the host's `Pool::exchange`; any
+//! other reply is a worker protocol fault, counted in `protocol_faults` and typed `worker_protocol`):
+//! * OPEN is answered by OPENED alone (or by ERROR). A FRAME answering OPEN is a protocol fault (test
+//!   `frame_reply_to_open_is_a_protocol_fault`); so is a BATCH_END.
+//! * PACKET and FINISH are answered by zero or more FRAME replies (at most `MAX_FRAMES_PER_BATCH`) and then
+//!   one BATCH_END whose count equals the FRAMEs received (or an ERROR; OPENED is a protocol fault). Each
+//!   FRAME is within the container-declared picture size and carries the tag of a PACKET sent in the same
+//!   session (tests `oversize_picture_under_the_reply_cap_is_a_protocol_fault`,
+//!   `frame_with_an_unsent_tag_is_a_protocol_fault`).
+//! * Every reply echoes the request id, so a stale or mismatched frame is a protocol fault (unit test
+//!   `wire_roundtrip_and_bounds`).
+//!
+//! HELLO: a greeting above the cap, made of bytes that are no frame, or that cannot be decoded is a
+//! protocol fault (tests `oversize_hello_is_a_protocol_fault_not_a_spawn_failure`,
+//! `garbage_hello_is_a_protocol_fault_not_a_spawn_failure`,
+//! `malformed_hello_is_a_protocol_fault_not_a_spawn_failure`); a worker that closes its output before
+//! greeting is a spawn failure (test `a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault`).
+//!
+//! All decoding is bounds-checked and all size arithmetic is checked: a malformed frame (including one
+//! declaring u32::MAX dimensions, test `frame_dims_u32_max_is_malformed`) is `Malformed`, and nothing is
+//! allocated beyond the bytes present.
+//!
 //! Worker-side encoders are compiled only for the worker (`av1-worker`) and the unit tests.
 #![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_reel::{ChromaFormat, ColorInfo, ColorOrigin, ColorTag, ReelError, VideoFormat};
@@ -458,6 +477,29 @@ pub(crate) fn encode_tiny_frame(id: u64) -> Vec<u8> {
         },
     )
 }
+
+/// A HELLO of the right kind and version padded to twice the handshake cap: the worker's oversize-HELLO
+/// test fault (the host refuses it from its length prefix alone).
+#[cfg(all(feature = "av1-worker", feature = "test-faults"))]
+pub(crate) fn encode_oversize_hello() -> Vec<u8> {
+    let mut out = Out::header(KIND_HELLO, 0);
+    out.0.resize(HELLO_CAP.saturating_mul(2), 0);
+    out.0
+}
+
+/// A HELLO of the right kind and version, within the handshake cap, whose first string claims more bytes
+/// than the frame holds: the worker's malformed-HELLO test fault.
+#[cfg(all(feature = "av1-worker", feature = "test-faults"))]
+pub(crate) fn encode_malformed_hello() -> Vec<u8> {
+    let mut out = Out::header(KIND_HELLO, 0);
+    out.u32(1000);
+    out.0
+}
+
+/// Bytes that are no frame (text): the worker's garbage-HELLO test fault. Their first four bytes read as a
+/// length prefix far above the handshake cap.
+#[cfg(all(feature = "av1-worker", feature = "test-faults"))]
+pub(crate) const GARBAGE_HELLO: &[u8] = b"reel-native-av1-worker banner, not a frame\n";
 
 /// A frame of an unknown kind: the worker's protocol-garbage test fault.
 #[cfg(all(feature = "av1-worker", feature = "test-faults"))]

@@ -34,11 +34,16 @@ use std::{
 pub const PANIC_EXIT_CODE: i32 = 70;
 /// Native stack of the decode thread (virtual reservation; pages are committed on use).
 const DECODE_STACK_BYTES: usize = 32 << 20;
+/// Bit flipped into the tag of every picture by `WorkerTestFault::WrongTag`: container packet indices are
+/// small, so the result matches no tag the host sent.
+#[cfg(feature = "test-faults")]
+const UNSENT_TAG_BIT: u64 = 1 << 62;
 /// How long an injected hang lasts before the worker leaves by itself (the host normally kills it first).
 #[cfg(feature = "test-faults")]
 const HANG_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Fault this worker injects into its first request (`test-faults` only).
+/// Fault this worker injects (`test-faults` only): the handshake, the first request, or every picture
+/// (the picture and tag faults).
 #[cfg(feature = "test-faults")]
 struct Faults {
     fault: WorkerTestFault,
@@ -67,6 +72,28 @@ impl Faults {
         }
     }
 
+    /// Before HELLO: exit without greeting.
+    fn exit_before_hello(&self) {
+        if self.fault == WorkerTestFault::ExitBeforeHello {
+            std::process::exit(86);
+        }
+    }
+
+    /// HELLO: the handshake faults replace the greeting with a bad one. Returns `Some(alive)` when the
+    /// fault replaced the greeting, `None` when the real HELLO must be sent.
+    fn on_hello(&self, out: &mut impl Write) -> Option<bool> {
+        match self.fault {
+            WorkerTestFault::OversizeHello => Some(reply(out, &wire::encode_oversize_hello())),
+            WorkerTestFault::MalformedHello => Some(reply(out, &wire::encode_malformed_hello())),
+            WorkerTestFault::GarbageHello => Some(
+                out.write_all(wire::GARBAGE_HELLO)
+                    .and_then(|()| out.flush())
+                    .is_ok(),
+            ),
+            _ => None,
+        }
+    }
+
     /// OPEN: answers with a FRAME instead of OPENED. Returns `Some(alive)` when the fault replaced the
     /// normal answer, `None` when the request must be served normally.
     fn on_open(&self, out: &mut impl Write, id: u64) -> Option<bool> {
@@ -85,6 +112,10 @@ impl Faults {
                 frame.format.width.saturating_sub(2).max(1),
                 frame.format.height.saturating_sub(2).max(1),
             ),
+            WorkerTestFault::WrongTag => {
+                frame.tag ^= UNSENT_TAG_BIT;
+                return frame;
+            }
             _ => return frame,
         };
         frame.format.width = width;
@@ -126,7 +157,12 @@ impl Faults {
             | WorkerTestFault::StallHello
             | WorkerTestFault::OversizePicture
             | WorkerTestFault::UndersizePicture
-            | WorkerTestFault::FrameOnOpen => None,
+            | WorkerTestFault::FrameOnOpen
+            | WorkerTestFault::WrongTag
+            | WorkerTestFault::OversizeHello
+            | WorkerTestFault::GarbageHello
+            | WorkerTestFault::MalformedHello
+            | WorkerTestFault::ExitBeforeHello => None,
         }
     }
 }
@@ -179,9 +215,19 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
     let mut faults = Faults::from_env();
     #[cfg(feature = "test-faults")]
     faults.stall_hello();
+    #[cfg(feature = "test-faults")]
+    faults.exit_before_hello();
     let stdout = io::stdout();
     let mut out = stdout.lock();
-    if !reply(&mut out, &wire::encode_hello(DECODER_ID, decoder_version())) {
+    #[cfg(feature = "test-faults")]
+    let hello_replaced = match faults.on_hello(&mut out) {
+        Some(true) => true,
+        Some(false) => return 1,
+        None => false,
+    };
+    #[cfg(not(feature = "test-faults"))]
+    let hello_replaced = false;
+    if !hello_replaced && !reply(&mut out, &wire::encode_hello(DECODER_ID, decoder_version())) {
         return 1;
     }
     let mut decoder: Option<Av1Decoder> = None;

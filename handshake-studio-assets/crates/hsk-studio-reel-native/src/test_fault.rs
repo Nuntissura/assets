@@ -29,6 +29,19 @@ pub enum WorkerTestFault {
     UndersizePicture,
     /// OPEN: answer with a well-formed FRAME (2x2 mono, inside any declared size) instead of OPENED.
     FrameOnOpen,
+    /// Every decoded FRAME is answered with a tag that no PACKET of the session carried (the top tag bit
+    /// flipped; the picture itself is the decoded one, so only the tag check sees it).
+    WrongTag,
+    /// Before HELLO: a HELLO frame longer than the host's handshake cap (right kind and version, padded).
+    OversizeHello,
+    /// Before HELLO: bytes that are no frame at all (text); their first four bytes read as a length far
+    /// above the handshake cap.
+    GarbageHello,
+    /// HELLO: a well-framed HELLO of the right kind whose body is cut short (a string longer than the
+    /// bytes present), so the host's decoder rejects it.
+    MalformedHello,
+    /// Before HELLO: exit with code 86 (a worker that closes its output without ever greeting).
+    ExitBeforeHello,
 }
 
 impl WorkerTestFault {
@@ -46,6 +59,11 @@ impl WorkerTestFault {
             Self::OversizePicture => Some("oversize_picture"),
             Self::UndersizePicture => Some("undersize_picture"),
             Self::FrameOnOpen => Some("frame_on_open"),
+            Self::WrongTag => Some("wrong_tag"),
+            Self::OversizeHello => Some("oversize_hello"),
+            Self::GarbageHello => Some("garbage_hello"),
+            Self::MalformedHello => Some("malformed_hello"),
+            Self::ExitBeforeHello => Some("exit_before_hello"),
         }
     }
 
@@ -61,6 +79,11 @@ impl WorkerTestFault {
             Ok("oversize_picture") => Self::OversizePicture,
             Ok("undersize_picture") => Self::UndersizePicture,
             Ok("frame_on_open") => Self::FrameOnOpen,
+            Ok("wrong_tag") => Self::WrongTag,
+            Ok("oversize_hello") => Self::OversizeHello,
+            Ok("garbage_hello") => Self::GarbageHello,
+            Ok("malformed_hello") => Self::MalformedHello,
+            Ok("exit_before_hello") => Self::ExitBeforeHello,
             _ => Self::None,
         }
     }

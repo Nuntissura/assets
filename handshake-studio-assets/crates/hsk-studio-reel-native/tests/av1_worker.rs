@@ -656,6 +656,215 @@ fn frame_reply_to_open_is_a_protocol_fault() {
     });
 }
 
+/// The two legs every counted worker protocol fault test shares. `liar` is a provider whose worker breaks the
+/// protocol on every call (a fresh worker per call, because a faulty one is killed): `decode_av1` on mp4 then
+/// mkv gives the typed `Av1Error::Worker(Protocol)` (code `worker_protocol`), nothing reaches the sink and the
+/// violation is counted exactly once per call (`protocol_faults` is 1, then 2); then the same provider behind
+/// reel's registry route gives reel's distinct `DecoderFault::Protocol`, counted once more (3). Nothing is
+/// counted as a spawn failure, an output-cap kill or a crash, and no worker stays alive or is pooled.
+fn assert_protocol_fault_counted_once_per_call(liar: &WorkerAv1Provider, case: &str) {
+    let limits = Limits::default();
+    for (round, (name, bytes)) in [("mp4", MP4), ("mkv", MKV)].into_iter().enumerate() {
+        let mut sink = Collect::default();
+        let error = liar
+            .decode_av1(
+                &mut Cursor::new(bytes.to_vec()),
+                &request(AV1_PROVIDER_ID, bytes, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            Av1Error::Worker(Av1WorkerFault::Protocol),
+            "{case} {name}"
+        );
+        assert_eq!(error.code(), "worker_protocol", "{case} {name}");
+        assert!(
+            sink.chunks.is_empty(),
+            "{case} {name}: a picture reached the sink"
+        );
+        let stats = liar.stats();
+        assert_eq!(
+            (
+                stats.protocol_faults,
+                stats.spawn_failed,
+                stats.killed_oversize,
+                stats.crashed,
+                stats.alive
+            ),
+            (round as u64 + 1, 0, 0, 0, 0),
+            "{case} {name}: {stats:?}"
+        );
+    }
+    let registry = Registry::standard().with_video_decoder(Arc::new(liar.clone()));
+    let mut sink = Collect::default();
+    let error = registry
+        .decode_segment(
+            &mut Cursor::new(MP4.to_vec()),
+            None,
+            &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+            &limits,
+            &CancellationToken::default(),
+            &mut sink,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ReelError::DecoderFault {
+            fault: DecoderFault::Protocol
+        },
+        "{case} registry route"
+    );
+    assert!(sink.chunks.is_empty(), "{case} registry route");
+    let stats = liar.stats();
+    assert_eq!(
+        (
+            stats.spawned,
+            stats.protocol_faults,
+            stats.spawn_failed,
+            stats.killed_oversize,
+            stats.crashed,
+            stats.alive
+        ),
+        (3, 3, 0, 0, 0, 0),
+        "{case} registry route: {stats:?}"
+    );
+}
+
+/// R9 pre-review (PLR-059): a FRAME whose tag no PACKET of the session carried is a lying worker. Reel's route
+/// drops such a picture without a word (the result is a shortfall, Partial or Incomplete, and nothing is
+/// counted), so the host classifies it before reel sees it: a worker protocol fault, counted once per call,
+/// the worker is killed. The pictures here are the decoded ones, the size is legal and the framing is
+/// well-formed: only the tag is wrong. The legal side (every tag sent, including the pre-roll pictures of a
+/// random-access start) is `worker_decode_is_bit_exact_with_in_process_and_the_dav1d_oracle`.
+#[test]
+fn frame_with_an_unsent_tag_is_a_protocol_fault() {
+    bounded_case("frame_with_an_unsent_tag_is_a_protocol_fault", || {
+        let liar = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::WrongTag,
+            ..Av1WorkerOptions::default()
+        });
+        assert_protocol_fault_counted_once_per_call(&liar, "wrong tag");
+    });
+}
+
+/// A worker that greets with `fault` (a bad HELLO), counted once per call as a worker protocol fault.
+fn bad_hello_case(case: &'static str, fault: WorkerTestFault) {
+    bounded_case(case, move || {
+        let liar = provider(Av1WorkerOptions {
+            test_fault: fault,
+            ..Av1WorkerOptions::default()
+        });
+        assert_protocol_fault_counted_once_per_call(&liar, case);
+    });
+}
+
+/// R9 pre-review (PLR-060): the worker greets first and the host bounds the greeting (`HELLO_CAP`, 1024
+/// bytes). A greeting above the cap is the worker breaking the protocol: counted in `protocol_faults`, not in
+/// `spawn_failed`, typed `worker_protocol` (reel `DecoderFault::Protocol`), and the worker is killed, not
+/// pooled. The next two tests do the same for greeting bytes that are no frame and for a well-framed greeting
+/// the decoder rejects.
+#[test]
+fn oversize_hello_is_a_protocol_fault_not_a_spawn_failure() {
+    bad_hello_case("oversize hello", WorkerTestFault::OversizeHello);
+}
+
+/// R9 pre-review (PLR-060): greeting bytes that are no frame at all (text whose first four bytes read as a
+/// length far above the cap) are a counted worker protocol fault, not a spawn failure.
+#[test]
+fn garbage_hello_is_a_protocol_fault_not_a_spawn_failure() {
+    bad_hello_case("garbage hello", WorkerTestFault::GarbageHello);
+}
+
+/// R9 pre-review (PLR-060): a well-framed greeting of the right kind that the decoder rejects was already a
+/// counted protocol fault before this fix; the test keeps the two arms (cap and decoder) in agreement.
+#[test]
+fn malformed_hello_is_a_protocol_fault_not_a_spawn_failure() {
+    bad_hello_case("malformed hello", WorkerTestFault::MalformedHello);
+}
+
+/// R9 pre-review (PLR-060), the other side of the boundary: a worker that never greets (it exits and closes
+/// its output before HELLO), and a program the system cannot start at all, are real spawn failures and stay
+/// `worker_spawn_failed` (reel `CodecUnavailable`), counted in `spawn_failed` and not in `protocol_faults`.
+/// A worker that stays silent past `spawn_timeout` is pinned by `canceled_call_does_not_wait_for_a_stalled_hello`.
+#[test]
+fn a_worker_that_never_greets_is_a_spawn_failure_not_a_protocol_fault() {
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    bounded_case("a_worker_that_never_greets", || {
+        let limits = Limits::default();
+        let silent = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::ExitBeforeHello,
+            ..Av1WorkerOptions::default()
+        });
+        let error = via_worker(&silent, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::SpawnFailed));
+        assert_eq!(error.code(), "worker_spawn_failed");
+        let stats = silent.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.spawn_failed,
+                stats.protocol_faults,
+                stats.crashed,
+                stats.alive
+            ),
+            (1, 1, 0, 0, 0),
+            "{stats:?}"
+        );
+        let registry = Registry::standard().with_video_decoder(Arc::new(silent.clone()));
+        let mut sink = Collect::default();
+        let error = registry
+            .decode_segment(
+                &mut Cursor::new(MP4.to_vec()),
+                None,
+                &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "MEDIA_CODEC_UNAVAILABLE", "{error:?}");
+        assert!(sink.chunks.is_empty());
+        let stats = silent.stats();
+        assert_eq!(
+            (stats.spawned, stats.spawn_failed, stats.protocol_faults),
+            (2, 2, 0),
+            "{stats:?}"
+        );
+
+        // A file that is no executable: process creation fails, nothing was spawned or counted as a fault.
+        let fake = Scratch(std::env::temp_dir().join(format!(
+            "hsk-reel-native-not-a-worker-{}",
+            std::process::id()
+        )));
+        std::fs::write(&fake.0, b"this file is not an executable").unwrap();
+        let broken =
+            WorkerAv1Provider::new(Av1WorkerOptions::default().with_worker_program(fake.0.clone()))
+                .unwrap();
+        let error = via_worker(&broken, MP4, 0, 3, &limits).unwrap_err();
+        assert_eq!(error, Av1Error::Worker(Av1WorkerFault::SpawnFailed));
+        let stats = broken.stats();
+        assert_eq!(
+            (
+                stats.spawned,
+                stats.spawn_failed,
+                stats.protocol_faults,
+                stats.alive
+            ),
+            (0, 1, 0, 0),
+            "{stats:?}"
+        );
+    });
+}
+
 /// R7 review B (PLR-035, uncancellable HELLO wait): a worker that stalls before its HELLO (here 30 s, with a
 /// 30 s spawn timeout) must not hold a canceled call. The wait is polled, the starting worker is killed and
 /// reaped, and the call answers Canceled within a few hundred ms; without a cancel `spawn_timeout` still
