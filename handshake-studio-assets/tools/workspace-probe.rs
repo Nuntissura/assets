@@ -448,12 +448,25 @@ fn inherited_text<'a>(d: &'a Document, w: &'a Document, key: &str) -> Result<&'a
 }
 const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const MAX_REGISTRY_RECORDS: usize = 256;
+// Records observed across one whole selection: per-owner bound times the 35-package closure bound.
+const MAX_OBSERVED_RECORDS: usize = MAX_REGISTRY_RECORDS * 35;
+// Stable semver core X.Y.Z, optionally with build metadata (`+1.3.281`, as crates.io publishes for
+// ash/spirv); pre-releases (`-alpha`) still reject.
 fn stable_version(version: &str) -> bool {
-    let parts: Vec<_> = version.split('.').collect();
+    let (core, build) = match version.split_once('+') {
+        Some((core, build)) => (core, Some(build)),
+        None => (version, None),
+    };
+    let parts: Vec<_> = core.split('.').collect();
     parts.len() == 3
         && parts
             .iter()
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && build.is_none_or(|b| {
+            !b.is_empty()
+                && b.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
+        })
 }
 // Owner -> approved direct crates.io libraries (mirrors workspace.metadata.studio.registry.OWNER.direct).
 // Maintained by the workspace steward's registry sync tool; only edit between the markers.
@@ -654,7 +667,7 @@ fn registry_closure(
             return Err("registry_checksum_pin_mismatch".into());
         }
         observed.insert(format!("{owner}:{key}:{checksum}"));
-        if observed.len() > MAX_REGISTRY_RECORDS {
+        if observed.len() > MAX_OBSERVED_RECORDS {
             return Err("registry_record_limit".into());
         }
         if let Some(dependencies) = locked.get("dependencies") {
