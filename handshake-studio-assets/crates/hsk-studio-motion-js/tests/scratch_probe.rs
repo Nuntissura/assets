@@ -257,3 +257,55 @@ fn v7_async_ctor_replace() {
     drop(rt);
     println!("v7_async_ctor_replace dropped");
 }
+
+#[test]
+fn w1_async_with_promise() {
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::builder().with::<intrinsic::Eval>().with::<intrinsic::Promise>().build(&rt).unwrap();
+    ctx.with(|ctx| {
+        let v: f64 = ctx.eval("async function f(){}; 1").unwrap();
+        println!("w1_async_with_promise {v}");
+    });
+    drop(ctx);
+    drop(rt);
+    println!("w1_async_with_promise dropped");
+}
+
+#[test]
+fn w2_asyncgen_with_promise() {
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::builder().with::<intrinsic::Eval>().with::<intrinsic::Promise>().build(&rt).unwrap();
+    ctx.with(|ctx| {
+        let v: f64 = ctx.eval("async function* g(){}; 1").unwrap();
+        println!("w2_asyncgen_with_promise {v}");
+    });
+    drop(ctx);
+    drop(rt);
+    println!("w2_asyncgen_with_promise dropped");
+}
+
+#[test]
+fn w3_async_plain_eval_only_run_call() {
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::builder().with::<intrinsic::Eval>().build(&rt).unwrap();
+    ctx.with(|ctx| {
+        let v: f64 = ctx.eval("(async function(){ return 1 })(); 1").unwrap();
+        println!("w3_async_plain_eval_only_run_call {v}");
+    });
+    drop(ctx);
+    drop(rt);
+    println!("w3_async_plain_eval_only_run_call dropped");
+}
+
+#[test]
+fn w4_async_call_with_promise() {
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::builder().with::<intrinsic::Eval>().with::<intrinsic::Promise>().build(&rt).unwrap();
+    ctx.with(|ctx| {
+        let v: f64 = ctx.eval("(async function(){ return 1 })(); 1").unwrap();
+        println!("w4_async_call_with_promise {v}");
+    });
+    drop(ctx);
+    drop(rt);
+    println!("w4_async_call_with_promise dropped");
+}
