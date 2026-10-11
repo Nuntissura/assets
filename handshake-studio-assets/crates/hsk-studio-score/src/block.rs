@@ -147,6 +147,9 @@ impl OutputBlock {
         let (a, rest) = self.data.split_at_mut(self.capacity);
         Some((a, &mut rest[..self.capacity]))
     }
+    pub(crate) fn backing_mut(&mut self) -> &mut [f32] {
+        &mut self.data
+    }
     pub(crate) fn unpublish(&mut self) {
         self.published = None;
     }

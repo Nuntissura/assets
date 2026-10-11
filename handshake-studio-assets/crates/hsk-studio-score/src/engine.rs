@@ -55,6 +55,39 @@ pub struct BlockReceipt {
 }
 
 impl BlockReceipt {
+    /// Builds a receipt from the (about to be published) output samples. Allocation-free.
+    pub(crate) fn measure(
+        out: &OutputBlock,
+        frames: usize,
+        latency_samples: u32,
+        sample_rate_hz: u32,
+        start_sample: u64,
+        end_sample: u64,
+        revision: u64,
+    ) -> Self {
+        let channels = out.layout().channels();
+        let mut receipt = Self {
+            processed_frames: frames,
+            latency_samples,
+            sample_rate_hz,
+            start_sample,
+            end_sample,
+            revision,
+            channels,
+            labels: [0; MAX_CHANNELS],
+            peak: [0.0; MAX_CHANNELS],
+        };
+        receipt.labels[..channels].copy_from_slice(out.layout().labels());
+        for (slot, samples) in receipt.peak[..channels]
+            .iter_mut()
+            .zip(out.backing().chunks(out.capacity()))
+        {
+            *slot = samples[..frames]
+                .iter()
+                .fold(0.0_f32, |peak, s| peak.max(s.abs()));
+        }
+        receipt
+    }
     /// Output channel labels, in layout order.
     pub fn labels(&self) -> &[u16] {
         &self.labels[..self.channels]
@@ -117,6 +150,41 @@ impl Engine {
         Ok(Reservation { busy: &self.busy })
     }
 
+    /// Request-level admission shared by every engine operation: cancel, grant context,
+    /// resource, revision, then the single slot. Touches no PCM.
+    pub(crate) fn admit(
+        &self,
+        ctx: &RequestContext,
+        cancel: &CancellationToken,
+    ) -> Result<Reservation<'_>, ScoreError> {
+        cancel.check().map_err(|_| ScoreError::Canceled)?;
+        if ctx.actor.is_none() {
+            return Err(ScoreError::MissingContext);
+        }
+        if ctx.resource != self.resource {
+            return Err(ScoreError::ResourceMismatch);
+        }
+        if ctx.expected_revision != self.revision() {
+            return Err(ScoreError::StaleRevision);
+        }
+        self.reserve()
+    }
+
+    /// Publication gate: cancellation and revision are re-checked after the work, so a block
+    /// that became stale or canceled while in flight is discarded instead of published.
+    pub(crate) fn settle(
+        &self,
+        ctx: &RequestContext,
+        cancel: &CancellationToken,
+    ) -> Result<(), ScoreError> {
+        cancel.check().map_err(|_| ScoreError::Canceled)?;
+        if ctx.expected_revision == self.revision() {
+            Ok(())
+        } else {
+            Err(ScoreError::StaleRevision)
+        }
+    }
+
     /// Admits, processes and publishes one block.
     ///
     /// Everything that can be refused is checked before the first write to `out`; a refused
@@ -130,17 +198,7 @@ impl Engine {
         out: &mut OutputBlock,
         cancel: &CancellationToken,
     ) -> Result<BlockReceipt, ScoreError> {
-        cancel.check().map_err(|_| ScoreError::Canceled)?;
-        if ctx.actor.is_none() {
-            return Err(ScoreError::MissingContext);
-        }
-        if ctx.resource != self.resource {
-            return Err(ScoreError::ResourceMismatch);
-        }
-        if ctx.expected_revision != self.revision() {
-            return Err(ScoreError::StaleRevision);
-        }
-        let _slot = self.reserve()?;
+        let _slot = self.admit(ctx, cancel)?;
 
         input.validate()?;
         let spec = input.spec();
@@ -161,38 +219,21 @@ impl Engine {
         out.unpublish();
         let settled = proc
             .process(input, out, cancel)
-            .and_then(|()| cancel.check().map_err(|_| ScoreError::Canceled))
-            .and_then(|()| {
-                if ctx.expected_revision == self.revision() {
-                    Ok(())
-                } else {
-                    Err(ScoreError::StaleRevision)
-                }
-            });
+            .and_then(|()| self.settle(ctx, cancel));
         if let Err(error) = settled {
             proc.reset();
             return Err(error);
         }
 
-        let channels = out.layout().channels();
-        let mut receipt = BlockReceipt {
-            processed_frames: spec.frames,
-            latency_samples: proc.latency_samples(),
-            sample_rate_hz: spec.sample_rate_hz,
-            start_sample: spec.start_sample,
+        let receipt = BlockReceipt::measure(
+            out,
+            spec.frames,
+            proc.latency_samples(),
+            spec.sample_rate_hz,
+            spec.start_sample,
             end_sample,
-            revision: ctx.expected_revision,
-            channels,
-            labels: [0; MAX_CHANNELS],
-            peak: [0.0; MAX_CHANNELS],
-        };
-        receipt.labels[..channels].copy_from_slice(out.layout().labels());
-        for (slot, samples) in receipt.peak[..channels]
-            .iter_mut()
-            .zip(out.channels_mut().map(|c| &c[..spec.frames]))
-        {
-            *slot = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
-        }
+            ctx.expected_revision,
+        );
         out.publish(spec.frames, spec.start_sample, spec.sample_rate_hz);
         Ok(receipt)
     }
