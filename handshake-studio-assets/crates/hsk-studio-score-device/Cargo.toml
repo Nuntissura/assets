@@ -7,5 +7,14 @@ rust-version = { workspace = true }
 [features]
 default = []
 
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false }
+
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "score-device-consumer"
+path = "examples/score-device-consumer.rs"
