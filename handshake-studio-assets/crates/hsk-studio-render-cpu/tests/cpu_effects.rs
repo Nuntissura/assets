@@ -388,9 +388,11 @@ fn effect_stack_matches_reference_for_every_chunking() {
     // Layer Normal at opacity 0.8 and fill 0.5 over an opaque backdrop with a shadow (Multiply,
     // behind the content), a colour overlay and two strokes (over the content, list order).
     // Pigment's rule (effect_math module doc): effects fade with the layer opacity and not with
-    // the fill; the reference defines the pixels. Chunks 24 (one tile), 7 and 5 with one and three
-    // workers must all equal it, bit for bit, and each other.
-    let extent = rect(0, 0, 24, 20);
+    // the fill; the reference defines the pixels. Chunks 40 (one tile), 13 and 9 with one and
+    // three workers must all equal it, bit for bit, and each other. The reference plane holds the
+    // layer plus its margin (9 px; the content has 11 px around it): pigment's reference reads
+    // zero beyond its plane, so a shadow that shifts in from outside the plane would be cut.
+    let extent = rect(0, 0, 40, 36);
     let backdrop = [0.2, 0.4, 0.6, 1.0];
     let colour = [0.9, 0.3, 0.1];
     let ops = [
@@ -419,17 +421,17 @@ fn effect_stack_matches_reference_for_every_chunking() {
     let p = effect_plan(
         extent,
         backdrop,
-        solid(rect(6, 5, 9, 8), [colour[0], colour[1], colour[2], 1.0]),
+        solid(rect(11, 11, 9, 8), [colour[0], colour[1], colour[2], 1.0]),
         NORMAL,
         0.8,
         0.5,
     );
     let ext = with_effects(&ops);
-    let want_backdrop = opaque(24, 20, [backdrop[0], backdrop[1], backdrop[2]]);
-    let want_content = block(24, 20, (6, 5), (9, 8), colour);
+    let want_backdrop = opaque(40, 36, [backdrop[0], backdrop[1], backdrop[2]]);
+    let want_content = block(40, 36, (11, 11), (9, 8), colour);
     let mut first: Option<Vec<[u32; 4]>> = None;
     let mut compared = 0_usize;
-    for (chunk, threads) in [(24, 1), (7, 1), (5, 3)] {
+    for (chunk, threads) in [(40, 1), (13, 1), (9, 3)] {
         let (result, grid) = render(chunk, threads, &p, &ext);
         result.unwrap();
         compared = compared.saturating_add(assert_reference(
@@ -442,7 +444,7 @@ fn effect_stack_matches_reference_for_every_chunking() {
         let bits: Vec<[u32; 4]> = grid.px.iter().map(|p| p.map(f32::to_bits)).collect();
         assert_eq!(first.get_or_insert_with(|| bits.clone()), &bits);
     }
-    assert_eq!(compared, 1440);
+    assert_eq!(compared, 4320);
 }
 
 // ---- 5. refusals and budget ------------------------------------------------------------------
