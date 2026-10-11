@@ -164,6 +164,9 @@ impl std::fmt::Display for ValidationError {
 impl std::error::Error for ValidationError {}
 type Result<T> = std::result::Result<T, ValidationError>;
 
+mod timescale;
+pub use timescale::{Conversion, Rounding, Timescale};
+
 #[derive(Clone, Default, Debug)]
 pub struct CancellationToken(Arc<AtomicBool>);
 impl CancellationToken {
