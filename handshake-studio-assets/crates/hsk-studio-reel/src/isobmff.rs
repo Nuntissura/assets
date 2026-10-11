@@ -2,15 +2,25 @@
 //! stss, stsz, stsc, stco/co64 -> a per-track sample index with exact decode/presentation times, plus
 //! frame-accurate seek (requested vs actual PTS) and bounded packet delivery.
 //!
-//! Scope: progressive (non-fragmented) files, constant-1.0 edit rate, first sample description only.
-//! Fragmented files (`moof`/`mvex`), `stz2`, QuickTime sound v2 and multi-description tracks are typed
-//! `Unsupported`, never guessed. Codec payloads are NOT decoded here: `OutputMode::Decoded` for a
-//! compressed sample entry is a determinate `CodecUnavailable` naming the FourCC.
+//! Scope: progressive and fragmented (`moof`/`traf`/`tfhd`/`tfdt`/`trun`, `sidx`) files, constant-1.0 edit
+//! rate, first sample description only. `stz2` and multi-description tracks are typed `Unsupported`,
+//! never guessed. Compressed codec payloads are NOT decoded here: `OutputMode::Decoded` for a compressed
+//! sample entry is a determinate `CodecUnavailable` naming the FourCC. Uncompressed PCM audio
+//! (`twos`/`sowt`/`in24`/`in32`/`fl32`/`fl64`/`raw `/`lpcm`) decodes to little-endian samples (`pcm`
+//! module); `tmcd` timecode tracks expose their raw fields (`timecode` module).
 use crate::error::{ReelError, check_cancel};
 use crate::model::*;
 use crate::time::media_to_ticks;
 use hsk_studio_accord::{CancellationToken, Ticks};
 use std::io::SeekFrom;
+
+mod fragments;
+mod pcm;
+mod timecode;
+
+pub use fragments::{SegmentIndex, SegmentIndexEntry};
+pub use pcm::{PcmFormat, PcmStream, PcmWindow, pcm_format};
+pub use timecode::{TimecodeDescription, TimecodeStart, read_timecode_start};
 
 pub const ISOBMFF_PROVIDER_ID: &str = "isobmff";
 const DECODER_VERSION: &str = "1";
@@ -57,11 +67,27 @@ pub enum ColorTag {
     },
 }
 
+/// QuickTime sound sample description fields (versions 0, 1 and 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioFormat {
     pub channels: u16,
     pub sample_size: u16,
+    /// Integral sample rate; `0` when a version 2 float64 rate is not a positive integer.
     pub sample_rate: u32,
+    pub version: u16,
+    pub compression_id: u16,
+    /// Version 2 (`lpcm`) fields.
+    pub lpcm: Option<LpcmDescription>,
+}
+
+/// Version 2 sound description fields that define linear PCM layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LpcmDescription {
+    pub bits_per_channel: u32,
+    /// kAudioFormatFlag* bits: 0x1 float, 0x2 big-endian, 0x4 signed, 0x8 packed, 0x20 non-interleaved.
+    pub flags: u32,
+    pub bytes_per_packet: u32,
+    pub frames_per_packet: u32,
 }
 
 /// One edit-list segment on the presentation timeline (ticks). `media_time == None` is an empty edit.
@@ -127,6 +153,11 @@ pub struct TrackIndex {
     pub edits: Vec<EditSegment>,
     /// False when any media-time to tick conversion on this track needed rounding.
     pub ticks_exact: bool,
+    /// `tmcd` sample-entry fields when this is a timecode track.
+    pub timecode: Option<TimecodeDescription>,
+    /// Track id of the `tmcd` track this track references through `tref`.
+    pub timecode_ref: Option<u32>,
+    pcm: Option<PcmStream>,
     samples: Vec<SampleEntry>,
     presented: Vec<PresentedSample>,
     sync_points: Vec<u32>,
@@ -138,11 +169,38 @@ pub struct MediaIndex {
     pub major_brand: [u8; 4],
     pub movie_timescale: u32,
     pub tracks: Vec<TrackIndex>,
-    /// Bytes read to build the index (box headers + moov).
+    /// Bytes read to build the index (box headers + moov + every moof/sidx).
     pub bytes_read: u64,
+    /// `mvex` present: samples come from movie fragments.
+    pub fragmented: bool,
+    /// Absolute offset of every `moof` found (fragmented files).
+    pub fragment_offsets: Vec<u64>,
+    /// `sidx` boxes, with absolute reference offsets.
+    pub segment_indexes: Vec<SegmentIndex>,
+    /// A fragment, `mdat` or `moof` ran past the end of the file: recording cut short.
+    pub truncated_tail: bool,
 }
 
 impl MediaIndex {
+    /// Approximate resident bytes (cache accounting).
+    pub fn approx_bytes(&self) -> usize {
+        self.tracks
+            .iter()
+            .map(|t| {
+                t.samples.len() * std::mem::size_of::<SampleEntry>()
+                    + t.presented.len() * std::mem::size_of::<PresentedSample>()
+                    + t.sync_points.len() * 4
+                    + t.pcm.as_ref().map_or(0, PcmStream::approx_bytes)
+            })
+            .sum::<usize>()
+            + self.fragment_offsets.len() * 8
+            + self
+                .segment_indexes
+                .iter()
+                .map(|s| s.entries.len() * std::mem::size_of::<SegmentIndexEntry>())
+                .sum::<usize>()
+    }
+
     pub fn track(&self, id: u32) -> Option<&TrackIndex> {
         self.tracks.iter().find(|t| t.track_id == id)
     }
@@ -156,6 +214,10 @@ impl MediaIndex {
 }
 
 impl TrackIndex {
+    /// Compact PCM representation (audio tracks of uncompressed PCM with a regular sample table).
+    pub fn pcm(&self) -> Option<&PcmStream> {
+        self.pcm.as_ref()
+    }
     pub fn samples(&self) -> &[SampleEntry] {
         &self.samples
     }
@@ -431,7 +493,11 @@ enum Offsets<'a> {
     Co64(&'a [u8]),
 }
 
-fn parse_stbl(stbl: &[u8]) -> Result<Stbl<'_>, ReelError> {
+static EMPTY_TABLE: [u8; 8] = [0; 8];
+static EMPTY_STSZ: [u8; 12] = [0; 12];
+
+/// `fragmented`: a movie with `mvex` may omit the (empty) sample tables; absent tables are empty.
+fn parse_stbl(stbl: &[u8], fragmented: bool) -> Result<Stbl<'_>, ReelError> {
     let (mut stsd, mut stts, mut ctts, mut stss, mut stsz, mut stsc) =
         (None, None, None, None, None, None);
     let mut offsets = None;
@@ -455,14 +521,30 @@ fn parse_stbl(stbl: &[u8]) -> Result<Stbl<'_>, ReelError> {
         }
     }
     let missing = |what| ReelError::Corrupt { what };
+    fn or_empty<'a>(
+        value: Option<&'a [u8]>,
+        empty: &'static [u8],
+        fragmented: bool,
+        what: &'static str,
+    ) -> Result<&'a [u8], ReelError> {
+        match value {
+            Some(payload) => Ok(payload),
+            None if fragmented => Ok(empty),
+            None => Err(ReelError::Corrupt { what }),
+        }
+    }
     Ok(Stbl {
         stsd: stsd.ok_or(missing("stsd-missing"))?,
-        stts: stts.ok_or(missing("stts-missing"))?,
+        stts: or_empty(stts, &EMPTY_TABLE, fragmented, "stts-missing")?,
         ctts,
         stss,
-        stsz: stsz.ok_or(missing("stsz-missing"))?,
-        stsc: stsc.ok_or(missing("stsc-missing"))?,
-        chunk_offsets: offsets.ok_or(missing("stco-missing"))?,
+        stsz: or_empty(stsz, &EMPTY_STSZ, fragmented, "stsz-missing")?,
+        stsc: or_empty(stsc, &EMPTY_TABLE, fragmented, "stsc-missing")?,
+        chunk_offsets: match offsets {
+            Some(o) => o,
+            None if fragmented => Offsets::Co32(&EMPTY_TABLE),
+            None => return Err(missing("stco-missing")),
+        },
     })
 }
 
@@ -473,6 +555,7 @@ struct SampleDescription {
     audio: Option<AudioFormat>,
     color: ColorTag,
     pixel_aspect: Option<(u32, u32)>,
+    timecode: Option<TimecodeDescription>,
 }
 
 /// Sample-entry child boxes (`colr`, `pasp`). A malformed child ends the scan: metadata is advisory and
@@ -530,6 +613,7 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
             audio: None,
             color: ColorTag::Untagged,
             pixel_aspect: None,
+            timecode: None,
         });
     }
     let size = c.u32()? as usize;
@@ -545,6 +629,7 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
     e.skip(8)?; // reserved[6] + data_reference_index
     let (mut width, mut height, mut audio) = (0, 0, None);
     let (mut color, mut pixel_aspect) = (ColorTag::Untagged, None);
+    let mut timecode = None;
     match kind {
         TrackKind::Video => {
             e.skip(16)?;
@@ -561,16 +646,48 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
                 e.skip(6)?; // revision + vendor
                 let channels = e.u16()?;
                 let sample_size = e.u16()?;
-                e.skip(4)?; // compression id + packet size
+                let compression_id = e.u16()?;
+                e.skip(2)?; // packet size
                 let rate = e.u32()? >> 16;
                 audio = Some(AudioFormat {
                     channels,
                     sample_size,
                     sample_rate: rate,
+                    version,
+                    compression_id,
+                    lpcm: None,
+                });
+            } else if version == 2 {
+                // revision, vendor, always3, always16, alwaysMinus2, always0, always65536, sizeOfStructOnly
+                e.skip(6 + 8 + 4 + 4)?;
+                let float_rate = f64::from_bits(e.u64()?);
+                let channels = e.u32()?;
+                e.skip(4)?; // always 0x7F000000
+                let bits_per_channel = e.u32()?;
+                let flags = e.u32()?;
+                let bytes_per_packet = e.u32()?;
+                let frames_per_packet = e.u32()?;
+                let integral = float_rate.is_finite()
+                    && float_rate >= 1.0
+                    && float_rate <= f64::from(u32::MAX)
+                    && float_rate.fract() == 0.0;
+                audio = Some(AudioFormat {
+                    channels: u16::try_from(channels).unwrap_or(0),
+                    sample_size: u16::try_from(bits_per_channel).unwrap_or(0),
+                    sample_rate: if integral { float_rate as u32 } else { 0 },
+                    version,
+                    compression_id: 0,
+                    lpcm: Some(LpcmDescription {
+                        bits_per_channel,
+                        flags,
+                        bytes_per_packet,
+                        frames_per_packet,
+                    }),
                 });
             }
         }
-        _ => {}
+        TrackKind::Timecode => timecode = Some(timecode::parse_tmcd(&mut e)?),
+        TrackKind::Other => {}
     }
     Ok(SampleDescription {
         codec,
@@ -579,155 +696,28 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
         audio,
         color,
         pixel_aspect,
+        timecode,
     })
 }
 
-struct Budget {
-    samples_left: usize,
+pub(crate) struct Budget {
+    pub(crate) samples_left: usize,
 }
 
-#[allow(clippy::too_many_lines)]
-fn build_track(
-    trak: &[u8],
-    movie_timescale: u32,
-    limits: &Limits,
-    budget: &mut Budget,
+/// Expand the sample tables into per-sample entries (decode order).
+#[allow(clippy::too_many_arguments)]
+fn expand_samples(
+    n: usize,
+    sizes: &[u32],
+    stts: &[(u32, u32)],
+    ctts: &[(u32, i32)],
+    sync_points: &[u32],
+    all_sync: bool,
+    stsc: &[(u32, u32)],
+    chunk_offsets: &[u64],
     cancel: &CancellationToken,
-) -> Result<TrackIndex, ReelError> {
+) -> Result<Vec<SampleEntry>, ReelError> {
     let missing = |what| ReelError::Corrupt { what };
-    let tkhd = child(trak, b"tkhd")?.ok_or(missing("tkhd-missing"))?;
-    let (version, flags, mut c) = full(tkhd)?;
-    let track_id = if version == 1 {
-        c.skip(16)?;
-        c.u32()?
-    } else {
-        c.skip(8)?;
-        c.u32()?
-    };
-    let mdia = child(trak, b"mdia")?.ok_or(missing("mdia-missing"))?;
-    let (media_timescale, media_duration) =
-        header_time(child(mdia, b"mdhd")?.ok_or(missing("mdhd-missing"))?)?;
-    if media_timescale == 0 {
-        return Err(missing("zero-media-timescale"));
-    }
-    let hdlr = child(mdia, b"hdlr")?.ok_or(missing("hdlr-missing"))?;
-    let (_, _, mut h) = full(hdlr)?;
-    h.skip(4)?;
-    let handler = {
-        let b = h.take(4)?;
-        [b[0], b[1], b[2], b[3]]
-    };
-    let kind = match &handler {
-        b"vide" => TrackKind::Video,
-        b"soun" => TrackKind::Audio,
-        b"tmcd" => TrackKind::Timecode,
-        _ => TrackKind::Other,
-    };
-    let minf = child(mdia, b"minf")?.ok_or(missing("minf-missing"))?;
-    let stbl_payload = child(minf, b"stbl")?.ok_or(missing("stbl-missing"))?;
-    let stbl = parse_stbl(stbl_payload)?;
-    let desc = parse_stsd(stbl.stsd, kind)?;
-
-    // stsz: sample count and sizes.
-    let (_, _, mut z) = full(stbl.stsz)?;
-    let fixed_size = z.u32()?;
-    let n = z.u32()? as usize;
-    if n > budget.samples_left || n > limits.max_samples {
-        return Err(ReelError::LimitExceeded {
-            what: "sample-count",
-        });
-    }
-    budget.samples_left -= n;
-    if fixed_size == 0 {
-        let need = n
-            .checked_mul(4)
-            .ok_or(ReelError::Corrupt { what: "stsz-size" })?;
-        if need > z.remaining() {
-            return Err(missing("stsz-exceeds-box"));
-        }
-    }
-    let mut sizes = Vec::with_capacity(n);
-    for _ in 0..n {
-        sizes.push(if fixed_size == 0 {
-            z.u32()?
-        } else {
-            fixed_size
-        });
-    }
-
-    // stts: decode durations; the total must equal the sample count.
-    let (entries, mut t) = table(stbl.stts, 8)?;
-    let mut stts = Vec::with_capacity(entries);
-    let mut total = 0u64;
-    for _ in 0..entries {
-        let (count, delta) = (t.u32()?, t.u32()?);
-        total += u64::from(count);
-        stts.push((count, delta));
-    }
-    if total != n as u64 {
-        return Err(missing("stts-count-mismatch"));
-    }
-
-    // ctts: composition offsets (version 0 read as signed: QuickTime writers emit negatives).
-    let mut ctts: Vec<(u32, i32)> = Vec::new();
-    if let Some(payload) = stbl.ctts {
-        let (entries, mut t) = table(payload, 8)?;
-        let mut total = 0u64;
-        for _ in 0..entries {
-            let (count, offset) = (t.u32()?, t.i32()?);
-            total += u64::from(count);
-            ctts.push((count, offset));
-        }
-        if total != n as u64 {
-            return Err(missing("ctts-count-mismatch"));
-        }
-    }
-
-    // stss: 1-based ascending sync sample numbers.
-    let mut sync_points: Vec<u32> = Vec::new();
-    let all_sync = stbl.stss.is_none();
-    if let Some(payload) = stbl.stss {
-        let (entries, mut t) = table(payload, 4)?;
-        let mut prev = 0u32;
-        for _ in 0..entries {
-            let number = t.u32()?;
-            if number == 0 || number <= prev || number as usize > n {
-                return Err(missing("stss-order"));
-            }
-            prev = number;
-            sync_points.push(number - 1);
-        }
-    }
-
-    // stsc + chunk offsets -> per-sample byte offsets.
-    let (stsc_entries, mut s) = table(stbl.stsc, 12)?;
-    let mut stsc = Vec::with_capacity(stsc_entries);
-    for _ in 0..stsc_entries {
-        let (first, per_chunk, desc_index) = (s.u32()?, s.u32()?, s.u32()?);
-        if desc_index != 1 {
-            return Err(ReelError::Unsupported {
-                what: "multiple-sample-descriptions",
-            });
-        }
-        stsc.push((first, per_chunk));
-    }
-    if n > 0 && (stsc.first().map(|e| e.0) != Some(1) || stsc.windows(2).any(|w| w[0].0 >= w[1].0))
-    {
-        return Err(missing("stsc-order"));
-    }
-    let chunk_offsets: Vec<u64> = match stbl.chunk_offsets {
-        Offsets::Co32(p) => {
-            let (count, mut t) = table(p, 4)?;
-            (0..count)
-                .map(|_| t.u32().map(u64::from))
-                .collect::<Result<_, _>>()?
-        }
-        Offsets::Co64(p) => {
-            let (count, mut t) = table(p, 8)?;
-            (0..count).map(|_| t.u64()).collect::<Result<_, _>>()?
-        }
-    };
-
     let mut samples = Vec::with_capacity(n);
     let (mut stts_i, mut stts_left) = (0usize, stts.first().map_or(0, |e| e.0));
     let (mut ctts_i, mut ctts_left) = (0usize, ctts.first().map_or(0, |e| e.0));
@@ -796,8 +786,198 @@ fn build_track(
     if index != n {
         return Err(missing("stsc-short"));
     }
+    Ok(samples)
+}
 
-    let mut track = TrackIndex {
+/// Read one `trak`'s sample tables into a track (no edit list, no presentation yet).
+#[allow(clippy::too_many_lines)]
+fn track_from_tables(
+    trak: &[u8],
+    limits: &Limits,
+    budget: &mut Budget,
+    cancel: &CancellationToken,
+    fragmented: bool,
+) -> Result<TrackIndex, ReelError> {
+    let missing = |what| ReelError::Corrupt { what };
+    let tkhd = child(trak, b"tkhd")?.ok_or(missing("tkhd-missing"))?;
+    let (version, flags, mut c) = full(tkhd)?;
+    let track_id = if version == 1 {
+        c.skip(16)?;
+        c.u32()?
+    } else {
+        c.skip(8)?;
+        c.u32()?
+    };
+    let timecode_ref = match child(trak, b"tref")? {
+        Some(tref) => match child(tref, b"tmcd")? {
+            Some(ids) if ids.len() >= 4 => {
+                Some(u32::from_be_bytes([ids[0], ids[1], ids[2], ids[3]]))
+            }
+            _ => None,
+        },
+        None => None,
+    };
+    let mdia = child(trak, b"mdia")?.ok_or(missing("mdia-missing"))?;
+    let (media_timescale, media_duration) =
+        header_time(child(mdia, b"mdhd")?.ok_or(missing("mdhd-missing"))?)?;
+    if media_timescale == 0 {
+        return Err(missing("zero-media-timescale"));
+    }
+    let hdlr = child(mdia, b"hdlr")?.ok_or(missing("hdlr-missing"))?;
+    let (_, _, mut h) = full(hdlr)?;
+    h.skip(4)?;
+    let handler = {
+        let b = h.take(4)?;
+        [b[0], b[1], b[2], b[3]]
+    };
+    let kind = match &handler {
+        b"vide" => TrackKind::Video,
+        b"soun" => TrackKind::Audio,
+        b"tmcd" => TrackKind::Timecode,
+        _ => TrackKind::Other,
+    };
+    let minf = child(mdia, b"minf")?.ok_or(missing("minf-missing"))?;
+    let stbl_payload = child(minf, b"stbl")?.ok_or(missing("stbl-missing"))?;
+    let stbl = parse_stbl(stbl_payload, fragmented)?;
+    let desc = parse_stsd(stbl.stsd, kind)?;
+
+    // stsz header: constant sample size (or table) and sample count.
+    let (_, _, mut z) = full(stbl.stsz)?;
+    let fixed_size = z.u32()?;
+    let n = z.u32()? as usize;
+
+    // stts: decode durations; the total must equal the sample count.
+    let (entries, mut t) = table(stbl.stts, 8)?;
+    let mut stts = Vec::with_capacity(entries);
+    let mut total = 0u64;
+    for _ in 0..entries {
+        let (count, delta) = (t.u32()?, t.u32()?);
+        total += u64::from(count);
+        stts.push((count, delta));
+    }
+    if total != n as u64 {
+        return Err(missing("stts-count-mismatch"));
+    }
+
+    // ctts: composition offsets (version 0 read as signed: QuickTime writers emit negatives).
+    let mut ctts: Vec<(u32, i32)> = Vec::new();
+    if let Some(payload) = stbl.ctts {
+        let (entries, mut t) = table(payload, 8)?;
+        let mut total = 0u64;
+        for _ in 0..entries {
+            let (count, offset) = (t.u32()?, t.i32()?);
+            total += u64::from(count);
+            ctts.push((count, offset));
+        }
+        if total != n as u64 {
+            return Err(missing("ctts-count-mismatch"));
+        }
+    }
+
+    // stss: 1-based ascending sync sample numbers.
+    let mut sync_points: Vec<u32> = Vec::new();
+    let all_sync = stbl.stss.is_none();
+    if let Some(payload) = stbl.stss {
+        let (entries, mut t) = table(payload, 4)?;
+        let mut prev = 0u32;
+        for _ in 0..entries {
+            let number = t.u32()?;
+            if number == 0 || number <= prev || number as usize > n {
+                return Err(missing("stss-order"));
+            }
+            prev = number;
+            sync_points.push(number - 1);
+        }
+    }
+
+    // stsc + chunk offsets.
+    let (stsc_entries, mut s) = table(stbl.stsc, 12)?;
+    let mut stsc = Vec::with_capacity(stsc_entries);
+    for _ in 0..stsc_entries {
+        let (first, per_chunk, desc_index) = (s.u32()?, s.u32()?, s.u32()?);
+        if desc_index != 1 {
+            return Err(ReelError::Unsupported {
+                what: "multiple-sample-descriptions",
+            });
+        }
+        stsc.push((first, per_chunk));
+    }
+    if n > 0 && (stsc.first().map(|e| e.0) != Some(1) || stsc.windows(2).any(|w| w[0].0 >= w[1].0))
+    {
+        return Err(missing("stsc-order"));
+    }
+    let chunk_offsets: Vec<u64> = match stbl.chunk_offsets {
+        Offsets::Co32(p) => {
+            let (count, mut t) = table(p, 4)?;
+            (0..count)
+                .map(|_| t.u32().map(u64::from))
+                .collect::<Result<_, _>>()?
+        }
+        Offsets::Co64(p) => {
+            let (count, mut t) = table(p, 8)?;
+            (0..count).map(|_| t.u64()).collect::<Result<_, _>>()?
+        }
+    };
+
+    // Regular PCM audio is kept as chunk runs: never one entry per audio frame.
+    let pcm = if kind == TrackKind::Audio && fixed_size != 0 && n > 0 && ctts.is_empty() && all_sync
+    {
+        pcm::try_compact(
+            pcm::CompactInput {
+                codec: desc.codec,
+                audio: desc.audio,
+                fixed_size,
+                samples: n,
+                stts: &stts,
+                stsc: &stsc,
+                chunk_offsets: &chunk_offsets,
+                media_timescale,
+            },
+            limits,
+        )?
+    } else {
+        None
+    };
+
+    let samples = if pcm.is_some() {
+        Vec::new()
+    } else {
+        if n > budget.samples_left || n > limits.max_samples {
+            return Err(ReelError::LimitExceeded {
+                what: "sample-count",
+            });
+        }
+        budget.samples_left -= n;
+        if fixed_size == 0 {
+            let need = n
+                .checked_mul(4)
+                .ok_or(ReelError::Corrupt { what: "stsz-size" })?;
+            if need > z.remaining() {
+                return Err(missing("stsz-exceeds-box"));
+            }
+        }
+        let mut sizes = Vec::with_capacity(n);
+        for _ in 0..n {
+            sizes.push(if fixed_size == 0 {
+                z.u32()?
+            } else {
+                fixed_size
+            });
+        }
+        expand_samples(
+            n,
+            &sizes,
+            &stts,
+            &ctts,
+            &sync_points,
+            all_sync,
+            &stsc,
+            &chunk_offsets,
+            cancel,
+        )?
+    };
+
+    Ok(TrackIndex {
         track_id,
         kind,
         handler,
@@ -812,14 +992,31 @@ fn build_track(
         pixel_aspect: desc.pixel_aspect,
         edits: Vec::new(),
         ticks_exact: true,
+        timecode: desc.timecode,
+        timecode_ref,
+        pcm,
         samples,
         presented: Vec::new(),
         sync_points,
         all_sync,
-    };
-    build_edits(&mut track, trak, movie_timescale)?;
-    build_presentation(&mut track, limits, cancel)?;
-    Ok(track)
+    })
+}
+
+/// Edit list and presentation timeline, after every sample (including fragments) is known.
+fn finish_track(
+    track: &mut TrackIndex,
+    trak: &[u8],
+    movie_timescale: u32,
+    limits: &Limits,
+    cancel: &CancellationToken,
+) -> Result<(), ReelError> {
+    build_edits(track, trak, movie_timescale)?;
+    if track.pcm.is_some() {
+        pcm::apply_window(track);
+        Ok(())
+    } else {
+        build_presentation(track, limits, cancel)
+    }
 }
 
 fn build_edits(track: &mut TrackIndex, trak: &[u8], movie_timescale: u32) -> Result<(), ReelError> {
@@ -943,13 +1140,21 @@ fn build_presentation(
     Ok(())
 }
 
-/// Locate and read `moov` from a progressive file without loading `mdat`.
+/// Where the movie box ended: the fragment scan (if any) continues from `next_pos`.
+struct MoovRead {
+    payload: Vec<u8>,
+    brand: [u8; 4],
+    probed: u64,
+    next_pos: u64,
+}
+
+/// Locate and read `moov` without loading `mdat`.
 fn read_moov(
     src: &mut dyn ReadSeek,
     file_len: u64,
     limits: &Limits,
     cancel: &CancellationToken,
-) -> Result<(Vec<u8>, [u8; 4], u64), ReelError> {
+) -> Result<MoovRead, ReelError> {
     let (mut pos, mut brand, mut probed) = (0u64, [0u8; 4], 0u64);
     for _ in 0..MAX_TOP_LEVEL_BOXES {
         check_cancel(cancel)?;
@@ -976,9 +1181,9 @@ fn read_moov(
             return Err(ReelError::Corrupt { what: "box-size" });
         }
         match &kind {
-            b"moof" | b"mfra" => {
+            b"moof" => {
                 return Err(ReelError::Unsupported {
-                    what: "fragmented-isobmff",
+                    what: "moof-before-moov",
                 });
             }
             b"ftyp" if size >= header + 4 => {
@@ -1000,7 +1205,12 @@ fn read_moov(
                 src.seek(SeekFrom::Start(pos + header))?;
                 let mut buf = vec![0u8; payload as usize];
                 read_exact_structural(src, &mut buf, "moov-truncated")?;
-                return Ok((buf, brand, probed + payload));
+                return Ok(MoovRead {
+                    payload: buf,
+                    brand,
+                    probed: probed + payload,
+                    next_pos: pos + size,
+                });
             }
             _ => {}
         }
@@ -1015,25 +1225,24 @@ fn read_moov(
     })
 }
 
-/// Build the full per-track sample index. Reads only box headers and `moov` (never `mdat`).
+/// Build the full per-track sample index. Reads only box headers, `moov` and (fragmented files) each
+/// `moof`/`sidx`; it never loads `mdat`.
 pub fn build_index(
     src: &mut dyn ReadSeek,
     file_len: u64,
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> Result<MediaIndex, ReelError> {
-    let (moov, major_brand, bytes_read) = read_moov(src, file_len, limits, cancel)?;
+    let moov_read = read_moov(src, file_len, limits, cancel)?;
+    let moov = &moov_read.payload;
     let mut movie_timescale = 0u32;
     let mut traks = Vec::new();
-    for item in boxes(&moov) {
+    let mut mvex = None;
+    for item in boxes(moov) {
         let (kind, payload) = item?;
         match &kind {
             b"mvhd" => movie_timescale = header_time(payload)?.0,
-            b"mvex" => {
-                return Err(ReelError::Unsupported {
-                    what: "fragmented-isobmff",
-                });
-            }
+            b"mvex" => mvex = Some(payload),
             b"trak" => {
                 if traks.len() >= limits.max_tracks {
                     return Err(ReelError::LimitExceeded {
@@ -1045,25 +1254,54 @@ pub fn build_index(
             _ => {}
         }
     }
+    let fragmented = mvex.is_some();
     let mut budget = Budget {
         samples_left: limits.max_samples,
     };
     let mut tracks = Vec::with_capacity(traks.len());
-    for trak in traks {
+    for trak in &traks {
         check_cancel(cancel)?;
-        tracks.push(build_track(
+        tracks.push(track_from_tables(
             trak,
-            movie_timescale,
             limits,
             &mut budget,
             cancel,
+            fragmented,
         )?);
     }
+    let mut bytes_read = moov_read.probed;
+    let (mut fragment_offsets, mut segment_indexes, mut truncated_tail) =
+        (Vec::new(), Vec::new(), false);
+    if let Some(mvex) = mvex {
+        let trex = fragments::parse_trex_list(mvex)?;
+        let scan = fragments::scan(
+            src,
+            file_len,
+            moov_read.next_pos,
+            limits,
+            cancel,
+            &mut bytes_read,
+            &mut tracks,
+            &trex,
+            &mut budget,
+        )?;
+        fragment_offsets = scan.fragment_offsets;
+        segment_indexes = scan.segment_indexes;
+        truncated_tail = scan.truncated_tail;
+    }
+    for (track, trak) in tracks.iter_mut().zip(&traks) {
+        check_cancel(cancel)?;
+        finish_track(track, trak, movie_timescale, limits, cancel)?;
+    }
     Ok(MediaIndex {
-        major_brand,
+        major_brand: moov_read.brand,
         movie_timescale,
         tracks,
         bytes_read,
+        fragmented,
+        fragment_offsets,
+        segment_indexes,
+        truncated_tail,
     })
 }
 
@@ -1137,6 +1375,13 @@ impl MediaProvider for IsobmffProvider {
             what: "no-audio-or-video-track",
         })?;
         let video = track.kind == TrackKind::Video;
+        let (ticks_per_unit, units) = match track.pcm.as_ref().map(|p| &p.window) {
+            Some(Ok(w)) => (w.ticks_per_frame, w.frames),
+            _ => (
+                track.presented.first().map_or(0, |p| p.duration),
+                track.presented.len() as u64,
+            ),
+        };
         Ok(StreamLayout {
             kind: if video {
                 MediaKind::Video
@@ -1146,8 +1391,8 @@ impl MediaProvider for IsobmffProvider {
             codec: fourcc_string(track.codec),
             width: track.width,
             height: track.height,
-            ticks_per_unit: track.presented.first().map_or(0, |p| p.duration),
-            units: track.presented.len() as u64,
+            ticks_per_unit,
+            units,
             channels: track.audio.map_or(0, |a| a.channels),
             tracks: index.tracks.len() as u32,
         })
@@ -1214,9 +1459,22 @@ impl IsobmffProvider {
     ) -> Result<SegmentReceipt, ReelError> {
         let track = select_track(index, req.track)?;
         if req.output == OutputMode::Decoded {
-            // No pure-Rust decoder is registered for compressed sample entries in this slice.
-            return Err(ReelError::CodecUnavailable {
-                codec: fourcc_string(track.codec),
+            // Only uncompressed PCM decodes here; compressed sample entries have no registered decoder.
+            return match pcm::pcm_format(track.codec, track.audio.as_ref())? {
+                Some(_) => match &track.pcm {
+                    Some(stream) => self.deliver_pcm(src, track, stream, req, limits, cancel, sink),
+                    None => Err(ReelError::Unsupported {
+                        what: "pcm-irregular-sample-table",
+                    }),
+                },
+                None => Err(ReelError::CodecUnavailable {
+                    codec: fourcc_string(track.codec),
+                }),
+            };
+        }
+        if track.pcm.is_some() {
+            return Err(ReelError::Unsupported {
+                what: "packets-of-compact-pcm-track",
             });
         }
         let first = track.seek(req.start_pts)?;

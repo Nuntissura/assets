@@ -10,6 +10,7 @@
 //! Compressed codecs are determinate `MEDIA_CODEC_UNAVAILABLE` until a licensed/pure provider is added.
 #![forbid(unsafe_code)]
 
+mod cache;
 mod error;
 pub mod fixtures;
 mod isobmff;
@@ -20,11 +21,14 @@ mod time;
 mod wav;
 mod y4m;
 
+pub use cache::{CacheStats, IndexCache};
 pub use error::ReelError;
 pub use isobmff::{
-    AudioFormat, ColorTag, EditSegment, ISOBMFF_PROVIDER_ID, IsobmffProvider, MediaIndex,
-    PresentedSample, SampleEntry, SeekDisposition, SeekPoint, SeekResult, TrackIndex, TrackKind,
-    build_index, fourcc_string, read_sample,
+    AudioFormat, ColorTag, EditSegment, ISOBMFF_PROVIDER_ID, IsobmffProvider, LpcmDescription,
+    MediaIndex, PcmFormat, PcmStream, PcmWindow, PresentedSample, SampleEntry, SeekDisposition,
+    SeekPoint, SeekResult, SegmentIndex, SegmentIndexEntry, TimecodeDescription, TimecodeStart,
+    TrackIndex, TrackKind, build_index, fourcc_string, pcm_format, read_sample,
+    read_timecode_start,
 };
 pub use model::*;
 pub use registry::{ProxySource, Registry, detect_type};

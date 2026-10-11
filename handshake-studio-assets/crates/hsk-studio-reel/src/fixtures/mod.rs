@@ -1,5 +1,7 @@
 //! Synthetic media byte builders (WAV, Y4M, MP4/MOV skeleton). Used by tests and the consumer example so
 //! no media is downloaded or stored. Deterministic: every byte is a pure function of its position.
+mod mov;
+pub use mov::*;
 
 /// 16-bit sample of `channel` at `frame` (never touches a codec: independent oracle for tests).
 pub fn pcm16_sample(frame: u64, channel: u16) -> i16 {
