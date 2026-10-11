@@ -471,16 +471,19 @@ fn validate_placement(p: &StudioPatternPlacement, unit: GeometryUnit, target: &s
     }
 }
 
-/// Node of the reference graph (layer ids and pattern ids are separate namespaces).
+/// Node of the reference graph (layer, style and pattern ids are separate namespaces). A style is
+/// a node of its own so that a style used by many layers and bound to many patterns adds the sum,
+/// not the product, of the two edge counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Node<'a> {
     Layer(&'a str),
+    Style(&'a str),
     Pattern(&'a str),
 }
 impl Node<'_> {
     fn text(self) -> String {
         match self {
-            Self::Layer(v) | Self::Pattern(v) => v.to_owned(),
+            Self::Layer(v) | Self::Style(v) | Self::Pattern(v) => v.to_owned(),
         }
     }
 }
@@ -505,17 +508,25 @@ fn check_cycles(
                 .push(Node::Layer(&l.layer_id));
         }
     }
+    let clip_source: BTreeMap<&str, &str> = r
+        .clips
+        .iter()
+        .map(|c| (c.clip_id.as_str(), c.source_layer_id.as_str()))
+        .collect();
+    let mask_source: BTreeMap<&str, &str> = r
+        .masks
+        .iter()
+        .map(|m| (m.mask_id.as_str(), m.source_layer_id.as_str()))
+        .collect();
     for a in &r.attachments {
         cx.tick()?;
         let sources = [
             a.clip_id
                 .as_deref()
-                .and_then(|c| r.clip(c))
-                .map(|c| c.source_layer_id.as_str()),
+                .and_then(|c| clip_source.get(c).copied()),
             a.mask_id
                 .as_deref()
-                .and_then(|m| r.mask(m))
-                .map(|m| m.source_layer_id.as_str()),
+                .and_then(|m| mask_source.get(m).copied()),
         ];
         for source in sources.into_iter().flatten() {
             edges
@@ -540,19 +551,20 @@ fn check_cycles(
             .push(Node::Layer(content));
     }
     if let Some(design) = design {
-        let mut used: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for pp in &r.pattern_paints {
-            used.entry(&pp.style_id).or_default().push(&pp.pattern_id);
+            cx.tick()?;
+            edges
+                .entry(Node::Style(&pp.style_id))
+                .or_default()
+                .push(Node::Pattern(&pp.pattern_id));
         }
         for n in &design.nodes {
             cx.tick()?;
             for style in n.style_refs.values() {
-                for pattern in used.get(style.as_str()).into_iter().flatten() {
-                    edges
-                        .entry(Node::Layer(&n.node.node_id))
-                        .or_default()
-                        .push(Node::Pattern(pattern));
-                }
+                edges
+                    .entry(Node::Layer(&n.node.node_id))
+                    .or_default()
+                    .push(Node::Style(style));
             }
         }
     }
