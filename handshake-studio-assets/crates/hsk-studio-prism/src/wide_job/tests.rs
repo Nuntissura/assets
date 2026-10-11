@@ -200,3 +200,21 @@ fn a_request_canceled_mid_request_returns_no_pixels() {
         assert_eq!(eng.cache_stats().rejected, 1, "edge {edge}");
     }
 }
+
+#[test]
+fn the_job_chunk_account_reports_the_stage_a_band_really_holds() {
+    // The record is derived from the stage type, so it cannot drift from the buffer `convert_band*` allocate.
+    assert_eq!(std::mem::size_of::<Stage>(), 1024);
+    assert_eq!(band_account().scratch_bytes, std::mem::size_of::<Stage>());
+    let ids = ids();
+    let input = pixels(PIXELS);
+    let mut eng = engine(&ids);
+    let job = prepare(&mut eng, &ids);
+    let mut out = vec![0.0f32; input.len()];
+    let report = job.convert_band(0, &input, &mut out, &CancellationToken::default()).unwrap();
+    assert_eq!(report.chunks.scratch_bytes, std::mem::size_of::<Stage>());
+    let done = job.finish(&CancellationToken::default(), &mut Null).unwrap();
+    assert_eq!(done.receipt.receipt.chunks.scratch_bytes, std::mem::size_of::<Stage>());
+    // A request over the same RGB pixels stages 64 x 3 channels x 4 bytes on the heap: a different, smaller buffer.
+    assert_eq!(WideChunkAccount::new(3).scratch_bytes, 768);
+}

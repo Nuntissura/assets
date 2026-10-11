@@ -87,6 +87,13 @@ fn expected(pixels: usize, out_channels: usize) -> WideChunkAccount {
         scratch_bytes: BOUND * out_channels * 4,
     }
 }
+/// The account of a JOB band (and of a job receipt): the digest staging buffer of a band is a 1024-byte stack array
+/// (64 pixels x 4 channels x 4 bytes) whatever the destination channel count, unlike a request's heap buffer
+/// (`expected`: 64 x destination channels x 4).
+const BAND_STAGE_BYTES: usize = BOUND * 4 * 4;
+fn expected_band(pixels: usize) -> WideChunkAccount {
+    WideChunkAccount { scratch_bytes: BAND_STAGE_BYTES, ..expected(pixels, 4) }
+}
 fn bits(v: &[f32]) -> Vec<u32> {
     v.iter().map(|x| x.to_bits()).collect()
 }
@@ -153,7 +160,7 @@ fn chunk_accounting_is_bounded_deterministic_and_allocation_free() {
             let job = eng.prepare_job(&job_request(&ctx, src, dst, WideBands::Sizes(&SIZES), intent, bpc), &t).unwrap();
             let (out, reports) = convert_all(&job, in_ch, out_ch, &input, threads, &t);
             for (band, report) in reports.iter().enumerate() {
-                assert_eq!(report.chunks, expected(SIZES[band], out_ch), "{name}: band {band} ({threads} threads)");
+                assert_eq!(report.chunks, expected_band(SIZES[band]), "{name}: band {band} ({threads} threads)");
                 assert!(report.chunks.max_chunk_pixels <= BOUND);
             }
             let result = job.finish(&t, &mut Collect(Vec::new())).unwrap();
@@ -161,7 +168,7 @@ fn chunk_accounting_is_bounded_deterministic_and_allocation_free() {
             let account = result.receipt.receipt.chunks;
             assert_eq!(
                 account,
-                WideChunkAccount { bound_pixels: BOUND, chunks: sum_chunks, pixels: total as u64, max_chunk_pixels: BOUND, scratch_bytes: BOUND * out_ch * 4 },
+                WideChunkAccount { bound_pixels: BOUND, chunks: sum_chunks, pixels: total as u64, max_chunk_pixels: BOUND, scratch_bytes: BAND_STAGE_BYTES },
                 "{name}: job account = the bands' chunks ({threads} threads)"
             );
             // The chunk size is not part of the arithmetic: same bits as the whole-frame request.
@@ -179,7 +186,7 @@ fn chunk_accounting_is_bounded_deterministic_and_allocation_free() {
             let before = allocs();
             let report = job.convert_band(band, px, &mut out, &t).unwrap();
             assert_eq!(allocs(), before, "{name}: band {band} allocated while converting");
-            assert_eq!(report.chunks, expected(n, out_ch));
+            assert_eq!(report.chunks, expected_band(n));
             start += n;
         }
         job.finish(&t, &mut Collect(Vec::new())).unwrap();
@@ -191,7 +198,7 @@ fn chunk_accounting_is_bounded_deterministic_and_allocation_free() {
                 let before = allocs();
                 let report = job.convert_band_in_place(band, &mut buffer, &t).unwrap();
                 assert_eq!(allocs(), before, "{name}: in-place band {band} allocated while converting");
-                assert_eq!(report.chunks, expected(n, out_ch));
+                assert_eq!(report.chunks, expected_band(n));
                 start += n;
             }
             job.finish(&t, &mut Collect(Vec::new())).unwrap();
@@ -228,6 +235,38 @@ fn a_canceled_token_stops_a_band_before_its_first_chunk() {
     assert_eq!(job.convert_band_in_place(1, &mut buffer, &canceled).err(), Some(WideError::Canceled));
     assert_eq!(bits(&buffer), bits(&input), "an in-place band canceled before its first chunk changed the caller's input");
     assert_eq!(job.finish(&t, &mut Collect(Vec::new())).err().map(|f| f.error), Some(WideError::Canceled));
+}
+
+/// The staging record follows the buffer that is really held: a request stages 64 x destination channels x 4 bytes
+/// (Gray 256, RGB 768, CMYK 1024), a job band always the 1024-byte stack array, in the band report and the job
+/// receipt, for plain and in-place conversion.
+#[test]
+fn staging_record_matches_the_buffer_a_request_and_a_job_band_really_hold() {
+    let ctx = Ctx::new();
+    let t = CancellationToken::default();
+    let gray = assemble(0x0210_0000, b"mntr", b"GRAY", b"XYZ ", &[xyz_tag(D50), curv(Some(2.2))], &[(b"wtpt", 0), (b"kTRC", 1)]);
+    let cmyk = cmyk_k_profile(9, 3, 20.0);
+    let n = 200usize;
+    // (destination, channels, request staging bytes)
+    for (name, destination, out_ch, request_bytes) in [("gray", &gray[..], 1usize, 256usize), ("rgb", P3, 3, 768), ("cmyk", &cmyk[..], 4, 1024)] {
+        let input = device_pixels(3, n, 0x1234_5678_9abc_def1);
+        let mut eng = engine(&ctx);
+        let request = run(&mut eng, &ctx, SRGB, destination, &input, Intent::RelativeColorimetric, false).unwrap();
+        assert_eq!(request.receipt.chunks.scratch_bytes, request_bytes, "{name}: request staging buffer");
+        assert_eq!(request.receipt.chunks, expected(n, out_ch), "{name}");
+        let job = eng.prepare_job(&job_request(&ctx, SRGB, destination, WideBands::Sizes(&[n]), Intent::RelativeColorimetric, false), &t).unwrap();
+        let mut out = vec![0.0f32; n * out_ch];
+        let band = job.convert_band(0, &input, &mut out, &t).unwrap();
+        assert_eq!(band.chunks, expected_band(n), "{name}: job band staging buffer");
+        assert_eq!(job.finish(&t, &mut Collect(Vec::new())).unwrap().receipt.receipt.chunks.scratch_bytes, BAND_STAGE_BYTES, "{name}: job receipt");
+        if out_ch == 3 {
+            let mut eng = engine(&ctx);
+            let job = eng.prepare_job(&job_request(&ctx, SRGB, destination, WideBands::Sizes(&[n]), Intent::RelativeColorimetric, false), &t).unwrap();
+            let mut buffer = input.clone();
+            let band = job.convert_band_in_place(0, &mut buffer, &t).unwrap();
+            assert_eq!(band.chunks, expected_band(n), "{name}: in-place band staging buffer");
+        }
+    }
 }
 
 // ---------------------------------------------------------------- the admitted route carries the account
@@ -296,12 +335,15 @@ fn admitted_transform_and_job_report_their_chunks() {
     let r0 = job.convert_band(0, &pixels[..1500], &mut out, &t).unwrap();
     let mut out2 = vec![0.0f32; 1500];
     let r1 = job.convert_band(1, &pixels[1500..], &mut out2, &t).unwrap();
-    assert_eq!((r0.chunks, r1.chunks), (expected(500, 3), expected(500, 3)));
+    assert_eq!((r0.chunks, r1.chunks), (expected_band(500), expected_band(500)));
+    assert_eq!(transform.result().receipt.chunks.scratch_bytes, 768, "a request stages 64 x 3 channels x 4 bytes");
+    assert_eq!(r0.chunks.scratch_bytes, 1024, "a job band stages the fixed 1024-byte stack array");
     assert_eq!((ledger.live.load(SeqCst), ledger.calls.load(SeqCst)), live_before, "chunks charge nothing after prepare");
     let done = job.finish(&t, &mut Null).unwrap();
     assert_eq!(done.result().receipt.receipt.chunks.chunks, 16);
     assert_eq!(done.result().receipt.receipt.chunks.pixels, 1000);
     assert_eq!(done.result().receipt.receipt.chunks.max_chunk_pixels, BOUND);
+    assert_eq!(done.result().receipt.receipt.chunks.scratch_bytes, BAND_STAGE_BYTES);
     assert_eq!([&out[..], &out2[..]].concat(), transform.result().pixels, "job and request give the same bits");
 }
 
