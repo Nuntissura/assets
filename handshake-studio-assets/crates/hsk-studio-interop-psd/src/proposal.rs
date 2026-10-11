@@ -40,6 +40,7 @@ use hsk_studio_folio::{
     StudioRasterRecords, inspect_bytes, validate_raster_records,
 };
 use hsk_studio_pigment::Grid;
+use hsk_studio_pigment::render_plan::{ExtOperator, PASS_THROUGH_MASK_OPERATOR};
 use hsk_studio_prism::{hash_hex, profile_hash};
 use serde_json::{Value, json};
 
@@ -640,7 +641,7 @@ impl Builder<'_, '_, '_> {
         Ok(())
     }
 
-    /// Two Photoshop clipping-run properties the render-plan IR does not model, reported per stack so a
+    /// Photoshop layer properties the render-plan IR does not model, reported per stack so a
     /// consumer is told before rendering refuses (`panel_order` is one stack, top-first, after
     /// [`Self::unclip_adjustment_bases`]; roles follow the clip flag written to Folio, as pigment's
     /// `Group::clip_role` does: Clipped carries it, Base is unclipped with a clipped layer directly above).
@@ -652,9 +653,21 @@ impl Builder<'_, '_, '_> {
     ///   held only as preserved opaque bytes is not a Blend-If pigment sees.
     /// - Blend Clipped Layers as Group switched off (`clbl = 0`) on a Base: pigment's clip rule is the
     ///   switched-on reading, so the file's setting is not modelled. The record keeps the toggle.
+    /// - Effects together with non-identity Blend-If ranges on one layer that is neither a Base nor a Clipped
+    ///   layer (SMB-FX-OPS-ADOPT): no public source defines how the Blend-If weight composes with the effect
+    ///   mattes, so pigment refuses the combination for every backend (`effects_with_blend_if`, pigment's key).
+    ///   The ranges and the effect stack stay in the record; the entry names the layer id. A switched-off stack
+    ///   or one with no enabled effect renders nothing and is not the combination. A Base or a Clipped layer
+    ///   keeps only its clip-role entry (pigment names the clip role first).
+    /// - A layer mask on a Pass Through group (SMB-FX-OPS-ADOPT): pigment defines no mask on a pass-through layer
+    ///   (there is no group result to weigh; Photoshop behaviour UNVERIFIED, D5 cases 28-29), so it refuses it for
+    ///   every backend (`mask_on_pass_through`, pigment's constant). The mask coverage stays in the document and
+    ///   the entry names the layer id. A disabled mask is an authored "no mask" and is not reported.
     ///
-    /// Tests `blend_if_on_a_clip_base_or_a_clipped_layer_keeps_the_ranges_and_reports_the_refusal` and
-    /// `blend_clipped_layers_as_group_off_is_a_typed_loss_on_a_clip_base`.
+    /// Tests `blend_if_on_a_clip_base_or_a_clipped_layer_keeps_the_ranges_and_reports_the_refusal`,
+    /// `blend_clipped_layers_as_group_off_is_a_typed_loss_on_a_clip_base`,
+    /// `effects_with_blend_if_on_one_layer_is_a_typed_loss_and_both_stay_in_the_record` and
+    /// `mask_on_a_pass_through_group_is_a_typed_loss_and_the_mask_stays_in_the_document`.
     fn note_clip_role_gaps(&mut self, panel_order: &[StackEntry]) {
         let written: Vec<bool> = panel_order
             .iter()
@@ -667,17 +680,46 @@ impl Builder<'_, '_, '_> {
                     .unwrap_or(false)
             })
             .collect();
+        // A Pass Through group with an enabled layer mask, as written to Folio.
+        let masked_pass_through: Vec<bool> = panel_order
+            .iter()
+            .map(|e| {
+                self.layers.get(e.slot).and_then(|l| l.get("appearance")).is_some_and(|a| {
+                    a.get("isolation").and_then(Value::as_str) == Some("pass_through")
+                        && a.get("mask").and_then(|m| m.get("enabled")).and_then(Value::as_bool) == Some(true)
+                })
+            })
+            .collect();
         let doc = self.doc;
         for (k, entry) in panel_order.iter().enumerate() {
             let clipped = written.get(k).copied().unwrap_or(false);
             let run_above = k.checked_sub(1).and_then(|above| written.get(above)).copied().unwrap_or(false);
             let is_base = !clipped && run_above;
-            if !(clipped || is_base) {
-                continue;
+            if !clipped && masked_pass_through.get(k).copied().unwrap_or(false) {
+                self.note(
+                    format!("layer[{}]/mask(layer_id={})", entry.psd_index, entry.layer_id),
+                    LossKind::Unsupported,
+                    PASS_THROUGH_MASK_OPERATOR,
+                );
             }
             let ranges_recorded = self.records.iter().any(|r| {
                 r.layer_id == entry.layer_id && r.advanced_blending.as_ref().is_some_and(|a| !a.blend_ranges.is_empty())
             });
+            if !(clipped || is_base) {
+                // Only enabled effects render, so a switched-off stack is not the combination.
+                let effects_recorded = self.records.iter().any(|r| {
+                    r.layer_id == entry.layer_id
+                        && r.effects.as_ref().is_some_and(|s| s.enabled && s.effects.iter().any(|e| e.enabled))
+                });
+                if ranges_recorded && effects_recorded {
+                    self.note(
+                        format!("layer[{}]/blend_ranges(layer_id={})", entry.psd_index, entry.layer_id),
+                        LossKind::Unsupported,
+                        ExtOperator::EffectsWithBlendIf.key(),
+                    );
+                }
+                continue;
+            }
             if ranges_recorded {
                 let at = entry.psd_index;
                 let (code, path) = if clipped {

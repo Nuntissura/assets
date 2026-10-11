@@ -35,6 +35,9 @@ impl IdMint for Mint {
     fn tile_manifest_id(&mut self, layer_id: &str, object_key: &str) -> String {
         format!("manifest/{layer_id}/{object_key}")
     }
+    fn effect_stack_id(&mut self, _layer_id: &str) -> Option<String> {
+        Some(self.next("SEFX"))
+    }
 }
 /// A host resolver that binds the adjustment primitive.
 struct Host;
@@ -233,5 +236,177 @@ fn blend_clipped_layers_as_group_off_is_a_typed_loss_on_a_clip_base() {
         // both gaps on one base are two independent entries
         let p = proposal(&doc_with(&[with_clbl(with_blend_if(pixel("base", 0)), 0), pixel("c1", 1)]));
         assert_eq!((losses(&p, code).len(), losses(&p, "blend_if_clip_base").len()), (1, 1));
+    });
+}
+
+// ---- SMB-FX-OPS-ADOPT: effects with Blend-If on one layer, and a mask on a Pass Through group --------------
+
+// Photoshop descriptor builders, independent of the crate's reader (the same shapes as adjustment_records.rs).
+fn ds_key(k: &str) -> Vec<u8> {
+    let mut v = if k.len() == 4 { be32(0) } else { be32(k.len() as u32) };
+    v.extend_from_slice(k.as_bytes());
+    v
+}
+fn tagged(tag: &[u8; 4], payload: Vec<u8>) -> Vec<u8> {
+    let mut v = tag.to_vec();
+    v.extend(payload);
+    v
+}
+fn ds_object(class: &str, items: Vec<(&str, Vec<u8>)>) -> Vec<u8> {
+    let mut v = be32(0); // empty Unicode class name
+    v.extend(ds_key(class));
+    v.extend(be32(items.len() as u32));
+    for (key, value) in items {
+        v.extend(ds_key(key));
+        v.extend(value);
+    }
+    v
+}
+fn v_objc(class: &str, items: Vec<(&str, Vec<u8>)>) -> Vec<u8> {
+    tagged(b"Objc", ds_object(class, items))
+}
+fn v_untf(unit: &[u8; 4], value: f64) -> Vec<u8> {
+    let mut v = unit.to_vec();
+    v.extend(value.to_be_bytes());
+    tagged(b"UntF", v)
+}
+fn v_doub(value: f64) -> Vec<u8> {
+    tagged(b"doub", value.to_be_bytes().to_vec())
+}
+fn v_bool(value: bool) -> Vec<u8> {
+    tagged(b"bool", vec![u8::from(value)])
+}
+fn v_enum(type_id: &str, value: &str) -> Vec<u8> {
+    let mut v = ds_key(type_id);
+    v.extend(ds_key(value));
+    tagged(b"enum", v)
+}
+/// An `lfx2` block with one enabled drop shadow; `master` is the stack switch (`masterFXSwitch`).
+fn lfx2_shadow(master: bool) -> Vec<u8> {
+    let shadow = v_objc(
+        "DrSh",
+        vec![
+            ("enab", v_bool(true)),
+            ("Md  ", v_enum("BlnM", "Mltp")),
+            ("Opct", v_untf(b"#Prc", 75.0)),
+            ("Clr ", v_objc("RGBC", vec![("Rd  ", v_doub(255.0)), ("Grn ", v_doub(0.0)), ("Bl  ", v_doub(51.0))])),
+            ("uglg", v_bool(true)),
+            ("lagl", v_untf(b"#Ang", 120.0)),
+            ("Dstn", v_untf(b"#Pxl", 2.0)),
+            ("Ckmt", v_untf(b"#Prc", 10.0)),
+            ("blur", v_untf(b"#Pxl", 4.0)),
+            ("Nose", v_untf(b"#Prc", 0.0)),
+            ("AntA", v_bool(false)),
+        ],
+    );
+    let mut v = be32(0); // object-effects version
+    v.extend(be32(16)); // descriptor version
+    v.extend(ds_object("null", vec![("masterFXSwitch", v_bool(master)), ("DrSh", shadow)]));
+    v
+}
+fn with_effects(mut layer: TLayer, master: bool) -> TLayer {
+    layer.blocks.push(layer_block(b"lfx2", &lfx2_shadow(master), false));
+    layer
+}
+/// A layer mask over the 1x1 document: rectangle, default colour 255, `flags` (bit 1 = disabled), padding.
+fn with_user_mask(mut layer: TLayer, flags: u8) -> TLayer {
+    let mut mask: Vec<u8> = [0i32, 0, 1, 1].iter().flat_map(|v| v.to_be_bytes()).collect();
+    mask.extend([255, flags, 0, 0]);
+    layer.mask = mask;
+    layer.channels.push((-2, 0, vec![255]));
+    layer
+}
+/// An open folder with the `pass` blend key: a Pass Through group.
+fn pass_through_folder(name: &'static str) -> TLayer {
+    let mut l = TLayer::new(name, [0, 0, 0, 0]);
+    l.key = *b"pass";
+    l.channels = empty_channels(&[0, 1, 2]);
+    let mut lsct = be32(1);
+    lsct.extend_from_slice(b"8BIM");
+    lsct.extend_from_slice(b"pass");
+    l.blocks = vec![layer_block(b"lsct", &lsct, false)];
+    l
+}
+fn effect_stack_enabled(p: &ImportProposal, name: &str) -> Option<bool> {
+    p.raster_records.layer(&id_of(p, name)).and_then(|r| r.effects.as_ref()).map(|s| s.enabled)
+}
+
+/// Effects together with non-identity Blend-If ranges on one layer: pigment refuses the combination for every
+/// backend as `effects_with_blend_if` (no public source defines how the weight composes with the effect mattes),
+/// so the importer says so. Both the ranges and the effect stack stay in the Folio records; the entry is
+/// `Unsupported`, its code is pigment's key and its path names the layer id. Counterfactuals: effects alone,
+/// ranges alone, effects with identity ranges, a switched-off stack, and a clip base (which keeps only its
+/// clip-role entry) get no `effects_with_blend_if` entry.
+#[test]
+fn effects_with_blend_if_on_one_layer_is_a_typed_loss_and_both_stay_in_the_record() {
+    bounded_case("effects_with_blend_if_on_one_layer_is_a_typed_loss_and_both_stay_in_the_record", || {
+        let code = hsk_studio_pigment::render_plan::ExtOperator::EffectsWithBlendIf.key();
+        assert_eq!(code, "effects_with_blend_if", "the pigment key, not a literal of this crate");
+
+        // file order is bottom to top inside the folder "stack"
+        let bytes = doc_with(&[
+            divider(),
+            with_effects(with_blend_if(pixel("both", 0)), true),
+            with_effects(pixel("fx_only", 0), true),
+            with_blend_if(pixel("ranges_only", 0)),
+            with_effects(with_identity_ranges(pixel("identity", 0)), true),
+            with_effects(with_blend_if(pixel("off", 0)), false),
+            folder("stack", 0),
+        ]);
+        let p = proposal(&bytes);
+        let both = id_of(&p, "both");
+        let found = losses(&p, code);
+        assert_eq!(found.len(), 1, "{:?}", p.loss.to_json());
+        assert_eq!((found[0].kind, found[0].path.as_str()), (LossKind::Unsupported, format!("layer[1]/blend_ranges(layer_id={both})").as_str()));
+        assert!(p.loss.to_json().contains(code), "the key survives the JSON projection");
+        // nothing is dropped: the ranges and the stack are in the record, the switched-off stack too
+        assert_eq!(ranges_in_record(&p, "both"), 1);
+        assert_eq!(effect_stack_enabled(&p, "both"), Some(true));
+        assert_eq!(effect_stack_enabled(&p, "off"), Some(false));
+        assert_eq!(ranges_in_record(&p, "off"), 1);
+        assert_eq!(effect_stack_enabled(&p, "ranges_only"), None);
+
+        // a clip base with effects and ranges has its clip-role entry only; the combination is not doubled
+        let p = proposal(&doc_with(&[with_effects(with_blend_if(pixel("base", 0)), true), pixel("c1", 1)]));
+        assert!(losses(&p, code).is_empty(), "{:?}", p.loss.to_json());
+        assert_eq!(losses(&p, "blend_if_clip_base").len(), 1);
+
+        // a group is a layer too
+        let p = proposal(&doc_with(&[divider(), pixel("inner", 0), with_effects(with_blend_if(folder("grp", 0)), true)]));
+        let found = losses(&p, code);
+        assert_eq!(found.len(), 1, "{:?}", p.loss.to_json());
+        assert_eq!(found[0].path, format!("layer[2]/blend_ranges(layer_id={})", id_of(&p, "grp")));
+    });
+}
+
+/// A layer mask on a Pass Through group: pigment defines no mask on a pass-through layer and refuses it for every
+/// backend (`mask_on_pass_through`), so the importer reports it per group, as a typed `Unsupported` entry under
+/// pigment's constant. The mask itself stays in the Folio document. Counterfactuals: the same mask on an isolated
+/// group or on a raster layer, a Pass Through group without a mask and one with a disabled mask get no entry.
+#[test]
+fn mask_on_a_pass_through_group_is_a_typed_loss_and_the_mask_stays_in_the_document() {
+    bounded_case("mask_on_a_pass_through_group_is_a_typed_loss_and_the_mask_stays_in_the_document", || {
+        let code = hsk_studio_pigment::render_plan::PASS_THROUGH_MASK_OPERATOR;
+        assert_eq!(code, "mask_on_pass_through");
+
+        let p = proposal(&doc_with(&[divider(), pixel("inner", 0), with_user_mask(pass_through_folder("grp"), 0)]));
+        let grp = id_of(&p, "grp");
+        let found = losses(&p, code);
+        assert_eq!(found.len(), 1, "{:?}", p.loss.to_json());
+        assert_eq!((found[0].kind, found[0].path.as_str()), (LossKind::Unsupported, format!("layer[2]/mask(layer_id={grp})").as_str()));
+        assert!(p.loss.to_json().contains(code), "the key survives the JSON projection");
+        let layer = p.snapshot.document().layers.iter().find(|l| l.layer_id == grp).expect("group");
+        let mask = layer.appearance.as_ref().and_then(|a| a.mask.as_ref()).expect("the mask stays in the document");
+        assert!(mask.enabled && !mask.tiles.is_empty());
+
+        for (what, layers) in [
+            ("isolated group", vec![divider(), pixel("inner", 0), with_user_mask(folder("grp", 0), 0)]),
+            ("raster layer", vec![with_user_mask(pixel("px", 0), 0)]),
+            ("pass-through group without a mask", vec![divider(), pixel("inner", 0), pass_through_folder("grp")]),
+            ("disabled mask (an authored no mask)", vec![divider(), pixel("inner", 0), with_user_mask(pass_through_folder("grp"), 2)]),
+        ] {
+            let p = proposal(&doc_with(&layers));
+            assert!(losses(&p, code).is_empty(), "{what}: {:?}", p.loss.to_json());
+        }
     });
 }
