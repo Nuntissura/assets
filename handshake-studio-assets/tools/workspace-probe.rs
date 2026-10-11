@@ -464,13 +464,20 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-prism", &["moxcms", "sha2"]),
     ("hsk-studio-pigment", &["serde", "serde_json"]),
     ("hsk-studio-nib", &["kurbo", "sha2"]),
-    ("hsk-studio-type", &["bitflags", "bytemuck", "serde_json", "sha2", "unicode-bidi-mirroring", "unicode-ccc", "unicode-properties", "unicode-script"]),
+    ("hsk-studio-type", &["bitflags", "bytemuck", "harfrust", "serde_json", "sha2", "unicode-bidi-mirroring", "unicode-ccc", "unicode-properties", "unicode-script"]),
+    ("hsk-studio-layout", &["unicode-linebreak"]),
     ("hsk-studio-develop", &["sha2"]),
     ("hsk-studio-score", &["rubato"]),
+    ("hsk-studio-reel", &["sha2"]),
     ("hsk-studio-composite", &["serde_json"]),
-    ("hsk-studio-render-cpu", &["kurbo", "serde_json"]),
+    ("hsk-studio-render-cpu", &["kurbo", "serde", "serde_json"]),
+    ("hsk-studio-render-gpu", &["wgpu"]),
     ("hsk-studio-package", &["crc32fast", "ruzstd", "serde", "serde_json", "sha2"]),
     ("hsk-studio-interop-psd", &["miniz_oxide", "serde_json"]),
+    ("hsk-studio-controls", &["egui", "serde", "serde_json"]),
+    ("hsk-studio-session", &["serde_json"]),
+    ("hsk-studio-press", &["miniz_oxide", "sha2"]),
+    ("hsk-studio-motion-js", &["rquickjs"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.
