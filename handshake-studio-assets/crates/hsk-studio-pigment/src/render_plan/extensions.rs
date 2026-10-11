@@ -57,14 +57,17 @@ impl Knockout {
 ///   non-identity Blend-If on the base of a clipping run or on a clipped layer is not defined by any
 ///   public source and is refused by [`admit_extended`] for every backend
 ///   ([`ExtOperator::BlendIfClipBase`], [`ExtOperator::BlendIfClippedLayer`]; the clip role is
-///   [`super::Group::clip_role`]).
+///   [`super::Group::clip_role`]). A non-identity Blend-If on a layer that also carries effects has
+///   no public definition either and is refused the same way ([`ExtOperator::EffectsWithBlendIf`]).
 /// - `mask_feather_px`: Gaussian feather radius of the layer's coverage mask
 ///   ([`crate::coverage_math::feather_kernel`], applied before density); `0` = none.
 /// - `knockout`: only `Knockout::None` is admitted.
 /// - `effects`: layer effects of waves 1 and 2 ([`crate::effect_math`]: drop shadow, colour
 ///   overlay, solid stroke, inner shadow, outer glow, inner glow), rendered in list order within
 ///   each placement (behind the content, over the content). Not allowed on an adjustment layer, a pass-through layer, a clipped layer or the
-///   base of a clipping run. Empty = no effects (and absent from the digest).
+///   base of a clipping run. A layer whose content holds another layer with effects is reported as
+///   [`ExtOperator::EffectsNested`], which a backend must declare through
+///   [`RenderBackend::extension_exactness`]. Empty = no effects (and absent from the digest).
 ///
 /// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
 /// [`LayerExtension::new`] and the `with_*` methods or field assignment.
@@ -141,6 +144,19 @@ pub enum ExtOperator {
     /// Non-identity Blend-If on a CLIPPED layer or clipped adjustment layer
     /// ([`super::ClipRole::Clipped`]); same status as [`ExtOperator::BlendIfClipBase`].
     BlendIfClippedLayer,
+    /// Layer effects together with a non-identity Blend-If on ONE (unclipped) layer. Reported
+    /// instead of [`ExtOperator::BlendIf`] (effects on a clip role are refused earlier, as
+    /// [`PlanError::EffectClipRun`]); intrinsically `Unsupported` because no public source defines
+    /// how the Blend-If weight composes with the effect mattes (work-folder
+    /// `diagnostics/adjustments-advanced-blending.md` topic `effects-ops`), so [`admit_extended`]
+    /// refuses it for every backend whatever the backend claims (`tests/effects_ops.rs`).
+    EffectsWithBlendIf,
+    /// A layer with effects whose content contains, directly or through nested group layers,
+    /// another layer with effects. Classed like the effects themselves
+    /// ([`EFFECT_EXACTNESS`], Approximate): a backend declares whether it evaluates the nesting
+    /// through [`RenderBackend::extension_exactness`], and [`admit_extended`] refuses a backend
+    /// that reports it `Unsupported` before any sink call (`tests/effects_ops.rs`).
+    EffectsNested,
     /// A coverage mask with `density < 1` (the v1 path keeps today's backend refusal).
     MaskDensity,
     MaskFeather,
@@ -161,6 +177,8 @@ impl ExtOperator {
             Self::BlendIf => "blend_if",
             Self::BlendIfClipBase => "blend_if_clip_base",
             Self::BlendIfClippedLayer => "blend_if_clipped_layer",
+            Self::EffectsWithBlendIf => "effects_with_blend_if",
+            Self::EffectsNested => "effects_nested",
             Self::MaskDensity => "mask_density",
             Self::MaskFeather => "mask_feather",
             Self::Knockout(k) => k.key(),
@@ -173,10 +191,12 @@ impl ExtOperator {
             Self::AdjustmentLayer => ADJUSTMENT_LAYER_EXACTNESS,
             Self::Adjustment(k) => k.facts().exactness,
             Self::BlendIf | Self::MaskDensity | Self::MaskFeather => COVERAGE_EXACTNESS,
-            Self::BlendIfClipBase | Self::BlendIfClippedLayer => Exactness::Unsupported,
+            Self::BlendIfClipBase | Self::BlendIfClippedLayer | Self::EffectsWithBlendIf => {
+                Exactness::Unsupported
+            }
             Self::Knockout(Knockout::None) => Exactness::Exact,
             Self::Knockout(_) => Exactness::Unsupported,
-            Self::Effect(_) => EFFECT_EXACTNESS,
+            Self::Effect(_) | Self::EffectsNested => EFFECT_EXACTNESS,
         }
     }
 }
@@ -202,6 +222,33 @@ impl PlanExtensions {
             .find(|e| e.group == group && e.layer == layer)
     }
 
+    /// `flags[n]`: node `n` is a group holding, directly or through the inputs of its layers, a
+    /// layer that carries effects in this envelope. Nodes are index-ordered (an input is an
+    /// earlier node), so one forward pass suffices; empty when no layer has effects.
+    fn nodes_holding_effects<V>(&self, plan: &RenderPlan<V>) -> Vec<bool> {
+        let with_effects: BTreeSet<(u32, u32)> = self
+            .layers
+            .iter()
+            .filter(|e| !e.effects.is_empty())
+            .map(|e| (e.group.0, e.layer))
+            .collect();
+        if with_effects.is_empty() {
+            return Vec::new();
+        }
+        let mut flags: Vec<bool> = Vec::with_capacity(plan.nodes.len());
+        for (n, node) in plan.nodes.iter().enumerate() {
+            let holds = match (node, u32::try_from(n)) {
+                (PlanNode::Group(g), Ok(n32)) => g.layers.iter().enumerate().any(|(li, l)| {
+                    u32::try_from(li).is_ok_and(|li32| with_effects.contains(&(n32, li32)))
+                        || flags.get(l.input.0 as usize).copied().unwrap_or(false)
+                }),
+                _ => false,
+            };
+            flags.push(holds);
+        }
+        flags
+    }
+
     /// Structural validation of the envelope against its plan (run after `plan.validate`).
     /// Returns the distinct envelope operators in first-use order.
     pub fn validate<V>(&self, plan: &RenderPlan<V>) -> Result<Vec<ExtOperator>, PlanError> {
@@ -213,6 +260,7 @@ impl PlanExtensions {
         };
         let mut seen = BTreeSet::new();
         let mut total_effects = 0usize;
+        let holding_effects = self.nodes_holding_effects(plan);
         for e in &self.layers {
             let node = e.group.0;
             let Some(PlanNode::Group(g)) = plan.nodes.get(node as usize) else {
@@ -271,8 +319,7 @@ impl PlanExtensions {
                     return Err(PlanError::EffectClipRun { node });
                 }
                 total_effects = total_effects.saturating_add(e.effects.len());
-                if e.effects.len() > MAX_EFFECTS_PER_LAYER || total_effects > MAX_EFFECTS_PER_PLAN
-                {
+                if e.effects.len() > MAX_EFFECTS_PER_LAYER || total_effects > MAX_EFFECTS_PER_PLAN {
                     return Err(PlanError::EffectLimit { node });
                 }
                 for effect in &e.effects {
@@ -289,6 +336,17 @@ impl PlanExtensions {
                         _ => PlanError::EffectParameter { node },
                     })?;
                     add(ExtOperator::Effect(effect.kind()));
+                }
+                // Effects inside the content of a layer with effects: the content node must be an
+                // EARLIER node (the plan is index-ordered), whose group subtree holds a layer with
+                // effects. Backends declare whether they evaluate it.
+                if layer.input.0 < node
+                    && holding_effects
+                        .get(layer.input.0 as usize)
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    add(ExtOperator::EffectsNested);
                 }
             }
             if !e.blend_if.is_empty() {
@@ -313,10 +371,13 @@ impl PlanExtensions {
                 {
                     // Blend-If inside a clipping run has no defined semantics (no public source):
                     // the clip roles get their own intrinsically unsupported operators, so the
-                    // shared admission refuses them identically for every backend.
+                    // shared admission refuses them identically for every backend. Effects on
+                    // the same layer have no defined composition with the Blend-If weight either
+                    // (a layer with effects is never a clip role: `EffectClipRun` above).
                     add(match g.clip_role(e.layer as usize) {
                         Some(ClipRole::Base) => ExtOperator::BlendIfClipBase,
                         Some(ClipRole::Clipped) => ExtOperator::BlendIfClippedLayer,
+                        _ if !e.effects.is_empty() => ExtOperator::EffectsWithBlendIf,
                         _ => ExtOperator::BlendIf,
                     });
                 }
