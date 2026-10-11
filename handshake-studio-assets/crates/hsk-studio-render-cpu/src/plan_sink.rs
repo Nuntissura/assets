@@ -27,6 +27,7 @@ use hsk_studio_pigment::render_plan::{
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
@@ -421,6 +422,8 @@ fn prepare<'a, V: VectorSource>(
                     let clipped = is_clipped(l);
                     let starts_run = !clipped && g.layers.get(li + 1).is_some_and(is_clipped);
                     // A pass-through group has no isolated content to take a base alpha from.
+                    // Pigment validation refuses it first (`ClipBasePassThrough`); kept so
+                    // `prepare` stays safe on its own.
                     if starts_run && pass_through {
                         return Err(unsupported("clip_base_pass_through"));
                     }
@@ -431,6 +434,14 @@ fn prepare<'a, V: VectorSource>(
                     // Structural validation already guaranteed pass_through <-> non-isolated group.
                     if pass_through && l.opacity < 1.0 {
                         return Err(unsupported("group_pass_through_opacity"));
+                    }
+                    // A non-isolated group composites straight onto the running backdrop, so there
+                    // is no group result to scale: fill is as undefined as opacity here. Pigment
+                    // rates `fill_opacity` Approximate for any non-Normal mode, so admission lets
+                    // it through; refuse it here, typed and before the first sink call, never
+                    // render the group at full strength while the receipt claims fill was applied.
+                    if pass_through && l.fill_opacity < 1.0 {
+                        return Err(unsupported("group_pass_through_fill_opacity"));
                     }
                     if !pass_through {
                         if child_isolated == Some(false) {
@@ -981,9 +992,49 @@ fn between_chunks(
     Ok(())
 }
 
+/// Run `body`; a panic inside it becomes the typed `Unavailable(what)` instead of an unwind (a
+/// worker or sink that panics must neither hang a parallel run nor tear down the caller).
+fn caught<T>(
+    what: &'static str,
+    body: impl FnOnce() -> Result<T, RenderError>,
+) -> Result<T, RenderError> {
+    catch_unwind(AssertUnwindSafe(body))
+        .unwrap_or_else(|_| Err(RenderError::Backend(BackendError::Unavailable(what))))
+}
+/// The only place the caller's sink is invoked: sink errors keep their typed mapping, a sink panic
+/// is `Unavailable("sink_panic")`.
+fn deliver(
+    sink: &mut dyn TileSink,
+    rect: Rect,
+    colour: &[u8],
+    alpha: &[u8],
+) -> Result<(), RenderError> {
+    caught("sink_panic", || {
+        sink.accept(rect, colour, alpha)
+            .map_err(|e| RenderError::Backend(BackendError::Sink(e)))
+    })
+}
+
+/// Evaluates one chunk of the plan into the scratch output planes.
+type ChunkFn<'f> = dyn Fn(Rect, &mut Scratch) -> Result<(), RenderError> + Sync + 'f;
+
 enum Message {
     Chunk(usize, Vec<u8>, Vec<u8>),
     Failed(RenderError),
+}
+
+/// Stops the workers when dropped, on every exit of the delivering thread including an unwind: a
+/// parked worker (waiting for the delivered prefix to advance) would otherwise never be released
+/// and `thread::scope` would never return.
+struct StopWorkers<'a> {
+    abort: &'a AtomicBool,
+    gate: &'a (Mutex<usize>, Condvar),
+}
+impl Drop for StopWorkers<'_> {
+    fn drop(&mut self) {
+        self.abort.store(true, Ordering::Release);
+        self.gate.1.notify_all();
+    }
 }
 
 impl Renderer {
@@ -1056,7 +1107,9 @@ impl Renderer {
     /// Execute with the detailed internal error. Order: admission (cancel, stale revision, plan
     /// validation, per-operator exactness), source verification (so a bad plan or source never
     /// reaches the sink), then chunks. Cancel and deadline are observed before every chunk. A
-    /// receipt exists only after the last chunk was accepted.
+    /// receipt exists only after the last chunk was accepted. A panic in chunk evaluation or in the
+    /// sink is returned as `Unavailable("worker_panic" | "sink_panic")` on every thread count: it
+    /// never hangs the run and never unwinds into the caller.
     pub fn execute_detailed<V: VectorSource + Serialize + Send + Sync>(
         &self,
         plan: &RenderPlan<V>,
@@ -1084,6 +1137,7 @@ impl Renderer {
         let eval = Eval {
             prepared: &prepared,
         };
+        let compute = |rect: Rect, scratch: &mut Scratch| compute_chunk(&eval, rect, scratch);
         let pixels = max_pixels as usize;
 
         let chunks = if workers == 1 {
@@ -1091,14 +1145,13 @@ impl Renderer {
             for index in 0..geometry.total {
                 between_chunks(cancel, request.deadline)?;
                 let rect = geometry.rect(index);
-                compute_chunk(&eval, rect, &mut scratch)?;
-                sink.accept(rect, &scratch.colour, &scratch.alpha)
-                    .map_err(BackendError::Sink)?;
+                caught("worker_panic", || compute(rect, &mut scratch))?;
+                deliver(sink, rect, &scratch.colour, &scratch.alpha)?;
             }
             geometry.total as u64
         } else {
             run_parallel(
-                &eval,
+                &compute,
                 geometry,
                 workers,
                 pixels,
@@ -1124,10 +1177,12 @@ impl Renderer {
 
 /// Workers claim chunk indices in increasing order and may run at most `2 * workers` chunks ahead
 /// of delivery; the calling thread reorders results and is the only one that touches `sink`, so the
-/// sink sees row-major chunks exactly as in the single-threaded run.
+/// sink sees row-major chunks exactly as in the single-threaded run. A panicking worker is reported
+/// as `Message::Failed`, a panicking sink as a typed error, and `StopWorkers` releases the parked
+/// workers however the delivering side exits, so the run always terminates.
 #[allow(clippy::too_many_arguments)]
 fn run_parallel(
-    eval: &Eval<'_, '_>,
+    compute: &ChunkFn<'_>,
     geometry: Geometry,
     workers: usize,
     pixels: usize,
@@ -1146,49 +1201,71 @@ fn run_parallel(
             let tx = tx.clone();
             let (next, abort, gate) = (&next, &abort, &gate);
             scope.spawn(move || {
-                let mut scratch = Scratch::new(pixels, depth);
-                loop {
-                    let index = next.fetch_add(1, Ordering::AcqRel);
-                    if index >= geometry.total || abort.load(Ordering::Acquire) {
-                        return;
-                    }
-                    // Stay within the reorder window of the delivered prefix.
-                    {
-                        let (delivered, wake) = gate;
-                        let mut guard = delivered.lock().unwrap_or_else(PoisonError::into_inner);
-                        while index >= *guard + window && !abort.load(Ordering::Acquire) {
-                            guard = wake
-                                .wait_timeout(guard, Duration::from_millis(20))
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .0;
+                let crashed = catch_unwind(AssertUnwindSafe(|| {
+                    let mut scratch = Scratch::new(pixels, depth);
+                    loop {
+                        let index = next.fetch_add(1, Ordering::AcqRel);
+                        if index >= geometry.total || abort.load(Ordering::Acquire) {
+                            return;
+                        }
+                        // Stay within the reorder window of the delivered prefix.
+                        {
+                            let (delivered, wake) = gate;
+                            let mut guard =
+                                delivered.lock().unwrap_or_else(PoisonError::into_inner);
+                            while index >= *guard + window && !abort.load(Ordering::Acquire) {
+                                guard = wake
+                                    .wait_timeout(guard, Duration::from_millis(20))
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .0;
+                            }
+                        }
+                        if abort.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let outcome = between_chunks(cancel, deadline)
+                            .map_err(RenderError::from)
+                            .and_then(|()| compute(geometry.rect(index), &mut scratch));
+                        let message = match outcome {
+                            Ok(()) => Message::Chunk(
+                                index,
+                                std::mem::replace(
+                                    &mut scratch.colour,
+                                    Vec::with_capacity(pixels * 12),
+                                ),
+                                std::mem::replace(
+                                    &mut scratch.alpha,
+                                    Vec::with_capacity(pixels * 4),
+                                ),
+                            ),
+                            Err(error) => Message::Failed(error),
+                        };
+                        let failed = matches!(message, Message::Failed(_));
+                        if tx.send(message).is_err() || failed {
+                            return;
                         }
                     }
-                    if abort.load(Ordering::Acquire) {
-                        return;
-                    }
-                    let outcome = between_chunks(cancel, deadline)
-                        .map_err(RenderError::from)
-                        .and_then(|()| compute_chunk(eval, geometry.rect(index), &mut scratch));
-                    let message = match outcome {
-                        Ok(()) => Message::Chunk(
-                            index,
-                            std::mem::replace(&mut scratch.colour, Vec::with_capacity(pixels * 12)),
-                            std::mem::replace(&mut scratch.alpha, Vec::with_capacity(pixels * 4)),
-                        ),
-                        Err(error) => Message::Failed(error),
-                    };
-                    let failed = matches!(message, Message::Failed(_));
-                    if tx.send(message).is_err() || failed {
-                        return;
-                    }
+                }))
+                .is_err();
+                if crashed {
+                    // Its chunk will never arrive: say so, and release the parked workers.
+                    abort.store(true, Ordering::Release);
+                    gate.1.notify_all();
+                    let _ = tx.send(Message::Failed(RenderError::Backend(
+                        BackendError::Unavailable("worker_panic"),
+                    )));
                 }
             });
         }
         drop(tx);
+        let _stop = StopWorkers {
+            abort: &abort,
+            gate: &gate,
+        };
 
         let mut pending: BTreeMap<usize, (Vec<u8>, Vec<u8>)> = BTreeMap::new();
         let mut delivered = 0_usize;
-        let result = 'deliver: loop {
+        'deliver: loop {
             if delivered == geometry.total {
                 break Ok(delivered as u64);
             }
@@ -1199,8 +1276,10 @@ fn run_parallel(
                         if let Err(error) = between_chunks(cancel, deadline) {
                             break 'deliver Err(error.into());
                         }
-                        if let Err(error) = sink.accept(geometry.rect(delivered), &colour, &alpha) {
-                            break 'deliver Err(BackendError::Sink(error).into());
+                        if let Err(error) =
+                            deliver(sink, geometry.rect(delivered), &colour, &alpha)
+                        {
+                            break 'deliver Err(error);
                         }
                         delivered += 1;
                         *gate.0.lock().unwrap_or_else(PoisonError::into_inner) = delivered;
@@ -1210,10 +1289,7 @@ fn run_parallel(
                 Ok(Message::Failed(error)) => break Err(error),
                 Err(_) => break Err(BackendError::Unavailable("worker_lost").into()),
             }
-        };
-        abort.store(true, Ordering::Release);
-        gate.1.notify_all();
-        result
+        }
     })
 }
 
@@ -1268,5 +1344,76 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
     ) -> Result<RenderReceipt, BackendError> {
         self.execute_detailed(plan, request, sources, cancel, sink)
             .map_err(BackendError::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hsk_studio_pigment::render_plan::SinkError;
+    use std::sync::mpsc::RecvTimeoutError;
+
+    struct Rects(Vec<Rect>);
+    impl TileSink for Rects {
+        fn accept(&mut self, rect: Rect, _colour: &[u8], _alpha: &[u8]) -> Result<(), SinkError> {
+            self.0.push(rect);
+            Ok(())
+        }
+    }
+
+    /// R3: a worker that panics never sends its chunk, so the delivered prefix stopped advancing,
+    /// the other workers parked at the reorder window and the receiver waited forever. The panic
+    /// is now caught in the worker and reported; the run returns the typed error.
+    #[test]
+    fn panicking_worker_is_a_typed_error_and_never_hangs() {
+        for workers in [2_usize, 3, 4] {
+            let (done, result) = mpsc::channel();
+            std::thread::spawn(move || {
+                // 16 one-pixel chunks; chunk 3 panics.
+                let geometry = Geometry::new(
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: 16,
+                        height: 1,
+                    },
+                    1,
+                )
+                .unwrap();
+                let compute = |rect: Rect, scratch: &mut Scratch| {
+                    assert_ne!(rect.x, 3, "injected worker panic");
+                    scratch.colour = vec![0; 12];
+                    scratch.alpha = vec![0; 4];
+                    Ok(())
+                };
+                let mut sink = Rects(Vec::new());
+                let outcome = run_parallel(
+                    &compute,
+                    geometry,
+                    workers,
+                    1,
+                    0,
+                    None,
+                    &CancellationToken::default(),
+                    &mut sink,
+                );
+                let _ = done.send((outcome, sink.0));
+            });
+            let (outcome, delivered) = match result.recv_timeout(Duration::from_secs(20)) {
+                Ok(r) => r,
+                Err(RecvTimeoutError::Timeout) => panic!("{workers} workers: run hung"),
+                Err(RecvTimeoutError::Disconnected) => panic!("{workers} workers: run unwound"),
+            };
+            assert_eq!(
+                outcome,
+                Err(RenderError::Backend(BackendError::Unavailable("worker_panic"))),
+                "{workers} workers"
+            );
+            // Chunk 3 never completed, so only the in-order prefix 0..3 can have been delivered.
+            assert!(delivered.len() <= 3, "{delivered:?}");
+            for (i, rect) in delivered.iter().enumerate() {
+                assert_eq!(rect.x, i as i64, "in-order prefix");
+            }
+        }
     }
 }

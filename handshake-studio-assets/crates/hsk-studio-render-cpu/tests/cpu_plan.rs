@@ -1848,8 +1848,9 @@ fn clip_to_base_hidden_base_lowering_shape_and_refusals() {
         assert_eq!(through.colour, sink.colour);
         assert_eq!(through.alpha, sink.alpha);
 
-        // A pass-through group has no isolated content to take a base alpha from: typed refusal,
-        // before the first sink call, nothing charged.
+        // A pass-through group has no isolated content to take a base alpha from: typed refusal
+        // by the shared plan validation (pigment `ClipBasePassThrough`, node 4 = the group holding
+        // the run), before the first sink call, nothing charged.
         let pass_through: RenderPlan = plan(
             extent,
             vec![
@@ -1878,14 +1879,136 @@ fn clip_to_base_hidden_base_lowering_shape_and_refusals() {
             &mut refused,
         )
         .unwrap_err();
-        assert!(matches!(
+        assert_eq!(
             error,
-            BackendError::Unsupported {
-                operator: "clip_base_pass_through",
-                ..
-            }
-        ));
+            BackendError::InvalidPlan(PlanError::ClipBasePassThrough { node: 4 })
+        );
         assert_eq!(refused.calls, 0);
         assert_eq!(renderer.live_scratch_bytes(), 0);
+    });
+}
+
+#[test]
+fn pass_through_fill_opacity_is_refused_typed_never_ignored() {
+    bounded_case("pass_through_fill_opacity_is_refused", || {
+        // R3: a pass-through layer with fill_opacity < 1 was admitted at Approximate and rendered at
+        // full strength while the receipt claimed fill was honoured. A non-isolated group has no
+        // group result to scale, so the backend refuses it (as it does opacity < 1), typed and
+        // before the first sink call.
+        let extent = rect(0, 0, 2, 2);
+        let none = Sources::default();
+        let pass = |fill: f32| -> RenderPlan {
+            let mut l = layer(1, StudioBlendMode::PassThrough, 1.0);
+            l.fill_opacity = fill;
+            plan(
+                extent,
+                vec![
+                    solid(extent, [1.0, 0.0, 0.0, 1.0]),
+                    group(false, vec![layer(0, StudioBlendMode::Normal, 1.0)]),
+                    group(true, vec![l]),
+                ],
+                2,
+            )
+        };
+        for threads in [1_usize, 3] {
+            let renderer = Renderer::with_threads(1, threads).unwrap();
+            // Control: fill 1 is the plain pass-through, red over the transparent root backdrop.
+            let mut sink = Collect::new(extent);
+            run(&renderer, &pass(1.0), Exactness::Approximate, &none, &mut sink).unwrap();
+            assert_eq!(sink.pixel(1, 1), [1.0, 0.0, 0.0, 1.0], "{threads} threads");
+            // fill < 1: refused even at the most permissive floor; nothing reaches the sink.
+            for fill in [0.5_f32, 0.0] {
+                let mut sink = Collect::new(extent);
+                assert_eq!(
+                    run(&renderer, &pass(fill), Exactness::Approximate, &none, &mut sink)
+                        .unwrap_err(),
+                    BackendError::Unsupported {
+                        operator: "group_pass_through_fill_opacity",
+                        exactness: Exactness::Unsupported,
+                    },
+                    "fill {fill}, {threads} threads"
+                );
+                assert_eq!(sink.calls, 0);
+                assert_eq!(renderer.live_scratch_bytes(), 0);
+            }
+        }
+        // A non-pass-through layer keeps its Approximate fill (control for the new refusal).
+        let mut fill = layer(1, StudioBlendMode::Multiply, 1.0);
+        fill.fill_opacity = 0.5;
+        let filled: RenderPlan = plan(
+            extent,
+            vec![
+                solid(extent, [0.5, 0.5, 0.5, 1.0]),
+                solid(extent, [1.0, 0.0, 0.0, 1.0]),
+                group(true, vec![layer(0, StudioBlendMode::Normal, 1.0), fill]),
+            ],
+            2,
+        );
+        let mut sink = Collect::new(extent);
+        run(&Renderer::new(2).unwrap(), &filled, Exactness::Approximate, &none, &mut sink).unwrap();
+    });
+}
+
+/// Panics on its `panic_at`-th call (0-based), succeeds otherwise.
+struct PanicSink {
+    calls: usize,
+    panic_at: usize,
+}
+impl TileSink for PanicSink {
+    fn accept(&mut self, _rect: Rect, _colour: &[u8], _alpha: &[u8]) -> Result<(), SinkError> {
+        let call = self.calls;
+        self.calls += 1;
+        if call == self.panic_at {
+            panic!("injected sink panic");
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn panicking_sink_is_a_typed_error_and_never_hangs_any_thread_count() {
+    bounded_case("panicking_sink_is_a_typed_error", || {
+        // R3: with workers > 1 a sink panic left parked workers waiting for the delivered prefix
+        // forever, so the run never returned (the 30 s case deadline is the only way out). 16
+        // one-pixel chunks, window = 2 * workers: with the panic on the first call the workers
+        // beyond the window are parked when the delivering thread dies.
+        let extent = rect(0, 0, 16, 1);
+        let p: RenderPlan = plan(
+            extent,
+            vec![
+                solid(extent, [0.5, 0.5, 0.5, 1.0]),
+                group(true, vec![layer(0, StudioBlendMode::Normal, 1.0)]),
+            ],
+            1,
+        );
+        let none = Sources::default();
+        for threads in [1_usize, 2, 4] {
+            let renderer = Renderer::with_threads(1, threads).unwrap();
+            for panic_at in [0_usize, 5] {
+                let mut sink = PanicSink { calls: 0, panic_at };
+                let error = renderer
+                    .execute(
+                        &p,
+                        &req(Exactness::Exact),
+                        &none,
+                        &CancellationToken::default(),
+                        &mut sink,
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    error,
+                    BackendError::Unavailable("sink_panic"),
+                    "{threads} threads, panic at {panic_at}"
+                );
+                assert_eq!(error.code(), "backend_unavailable");
+                assert_eq!(sink.calls, panic_at + 1, "delivery stops at the panicking call");
+                assert_eq!(renderer.live_scratch_bytes(), 0, "scratch released");
+            }
+            // The renderer is not poisoned: the next run completes with a receipt.
+            let mut ok = Collect::new(extent);
+            let receipt = run(&renderer, &p, Exactness::Exact, &none, &mut ok).unwrap();
+            assert_eq!(receipt.chunks, 16);
+            assert_eq!(ok.pixel(15, 0), [0.5, 0.5, 0.5, 1.0]);
+        }
     });
 }
