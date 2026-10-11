@@ -78,7 +78,7 @@ impl folio::Resolver for Granted {
         folio::Resolution::Available
     }
     fn format_supported(&self, f: &str) -> bool {
-        f == "caller-selected-format"
+        matches!(f, "caller-selected-format" | "rgb_f32le" | "coverage_u16le")
     }
     fn primitive_layer_binding(&self, _: &str, _: &str) -> bool {
         false
@@ -1321,5 +1321,436 @@ fn stale_temp_sweep_owner_marker() {
         // Next save still publishes over last-good after all of the above.
         save_atomic(&target, &new, &limits, &token()).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), new);
+    });
+}
+
+// ===== slice 3: shuffle+zstd codec, preview entry kind ======================================
+
+fn fixture_formats(blobs: &[(Vec<u8>, &str)]) -> (folio::Snapshot, MemoryAssetSource) {
+    let mut assets = MemoryAssetSource::new();
+    let tiles = blobs
+        .iter()
+        .enumerate()
+        .map(|(i, (bytes, format))| {
+            let digest = ContentDigestPair(assets.insert(bytes.clone()).digest);
+            let mut t = tile(i as u8, &digest);
+            t["format"] = json!(format);
+            t
+        })
+        .collect();
+    (open_doc(&mixed(tiles)), assets)
+}
+
+fn asset_rows(package: &[u8]) -> Vec<ManifestEntry> {
+    read(package)
+        .unwrap()
+        .manifest
+        .entries
+        .into_iter()
+        .filter(|e| e.kind == EntryKind::Asset)
+        .collect()
+}
+
+#[test]
+fn shuffle_zstd_codec_exactness_and_ratio() {
+    bounded_case("shuffle_zstd_codec_exactness_and_ratio", || {
+        // Pure transform: exact inverse for every length and element size, remainder kept verbatim.
+        let noise = lcg_bytes(80, 5);
+        for elem in [0usize, 1, 2, 3, 4, 8] {
+            for len in 0..=noise.len() {
+                let shuffled = byte_shuffle(&noise[..len], elem);
+                assert_eq!(shuffled.len(), len);
+                assert_eq!(
+                    byte_unshuffle(&shuffled, elem),
+                    noise[..len],
+                    "elem {elem} len {len}"
+                );
+            }
+        }
+        assert_eq!(
+            byte_shuffle(&[1, 2, 3, 4, 5, 6, 7, 8, 9], 4),
+            [1, 5, 2, 6, 3, 7, 4, 8, 9]
+        );
+
+        // Older manifests (no codec fields, and the slice-2 zstd form) still parse canonically.
+        let hex = "ab".repeat(32);
+        let v1 = format!(
+            r#"{{"container_version":1,"document_id":"SDOC-x","revision":7,"entries":[{{"name":"assets/{hex}","kind":"asset","sha256_hex":"{hex}","len":5,"codec":"zstd","raw_len":9}},{{"name":"document.json","kind":"document","sha256_hex":"{hex}","len":10}}]}}"#
+        );
+        let parsed = Manifest::parse(v1.as_bytes(), &Limits::default()).unwrap();
+        assert_eq!(parsed.entries[0].codec, Codec::Zstd);
+        assert_eq!(parsed.entries[1].codec, Codec::Raw);
+
+        // Synthetic tiles: a smooth linear f32 gradient, a smooth 2D f32 field, an RGB f32 image
+        // whose rows repeat exactly (plain zstd's best case), an odd-length u16 ramp and noise.
+        let gradient: Vec<u8> = (0..65_536u32)
+            .flat_map(|i| (i as f32 / 65_536.0).to_le_bytes())
+            .collect();
+        let field: Vec<u8> = (0..256u32)
+            .flat_map(|y| {
+                (0..256u32).flat_map(move |x| {
+                    (((x as f32) * 0.031).sin() * ((y as f32) * 0.047).cos() * 0.5 + 0.5)
+                        .to_le_bytes()
+                })
+            })
+            .collect();
+        let rows: Vec<u8> = (0..128u32)
+            .flat_map(|y| {
+                (0..128u32).flat_map(move |x| {
+                    [x as f32 / 127.0, y as f32 / 127.0, (x + y) as f32 / 254.0]
+                        .into_iter()
+                        .flat_map(f32::to_le_bytes)
+                })
+            })
+            .collect();
+        let mut ramp: Vec<u8> = (0..10_000u32)
+            .flat_map(|i| ((i * 3) as u16).to_le_bytes())
+            .collect();
+        ramp.push(0x5a);
+        let noise_tile = lcg_bytes(4096, 11);
+        let (snapshot, assets) = fixture_formats(&[
+            (gradient.clone(), "rgb_f32le"),
+            (field.clone(), "rgb_f32le"),
+            (rows.clone(), "rgb_f32le"),
+            (ramp.clone(), "coverage_u16le"),
+            (noise_tile.clone(), "rgb_f32le"),
+        ]);
+        let option = |codec| WriteOptions {
+            asset_codec: codec,
+            ..WriteOptions::default()
+        };
+        let raw = write_with(&snapshot, &assets, &option(Codec::Raw));
+        let plain = write_with(&snapshot, &assets, &option(Codec::Zstd));
+        let shuffled = write_with(&snapshot, &assets, &option(Codec::ShuffleZstd));
+        let stored = |package: &[u8], blob: &[u8]| {
+            let name = format!("{ASSET_PREFIX}{}", sha256_hex_of(blob));
+            asset_rows(package)
+                .into_iter()
+                .find(|e| e.name == name)
+                .unwrap()
+        };
+        for (label, blob) in [
+            ("smooth linear f32 gradient 256x256", &gradient),
+            ("smooth 2D f32 field 256x256", &field),
+            ("f32 RGB 128x128, exactly repeating rows", &rows),
+            ("u16 ramp, odd length", &ramp),
+        ] {
+            let (p, sh) = (stored(&plain, blob), stored(&shuffled, blob));
+            eprintln!(
+                "MEASURED {label} ({} B): zstd {} B ({:.3}x), shuffle+zstd {} B ({:.3}x) [{:?}]",
+                blob.len(),
+                p.len,
+                blob.len() as f64 / p.len as f64,
+                sh.len,
+                blob.len() as f64 / sh.len as f64,
+                sh.codec,
+            );
+            assert!(
+                sh.len <= p.len,
+                "{label}: shuffle must not be worse than plain zstd"
+            );
+            assert_eq!(stored(&raw, blob).codec, Codec::Raw);
+        }
+        let g = stored(&shuffled, &gradient);
+        assert_eq!(
+            g.codec,
+            Codec::ShuffleZstd,
+            "smooth gradient takes the shuffle path"
+        );
+        assert_eq!(g.elem_size, Some(4));
+        assert!(g.len < stored(&plain, &gradient).len);
+        let r = stored(&shuffled, &ramp);
+        assert_eq!((r.codec, r.elem_size), (Codec::ShuffleZstd, Some(2)));
+        assert_eq!(
+            stored(&shuffled, &rows).codec,
+            Codec::Zstd,
+            "repeating rows: selection falls back to plain zstd"
+        );
+        assert_eq!(
+            stored(&shuffled, &noise_tile).codec,
+            Codec::Raw,
+            "noise stays raw"
+        );
+
+        // Exact roundtrip (odd-length tail included), deterministic rewrite from the opened value.
+        let opened = read(&shuffled).unwrap();
+        for blob in [&gradient, &field, &rows, &ramp, &noise_tile] {
+            assert_eq!(opened.assets.get(&sha256_hex_of(blob)), Some(blob));
+        }
+        let resaved = write_with(
+            opened.snapshot().unwrap(),
+            &MemoryAssetSource::from_opened(&opened),
+            &option(Codec::ShuffleZstd),
+        );
+        assert_eq!(resaved, shuffled);
+
+        // Hostile declarations.
+        let code = |package: &[u8]| read(package).unwrap_err().code();
+        let edit_gradient = |edit: &dyn Fn(&mut ManifestEntry)| {
+            repack(&shuffled, |e| {
+                let mut m = manifest_of(e);
+                let name = format!("{ASSET_PREFIX}{}", sha256_hex_of(&gradient));
+                edit(m.entries.iter_mut().find(|r| r.name == name).unwrap());
+                set_manifest(e, &m);
+            })
+        };
+        assert_eq!(
+            code(&edit_gradient(&|r| r.elem_size = Some(2))),
+            "hash_mismatch"
+        );
+        assert_eq!(
+            code(&edit_gradient(&|r| r.elem_size = Some(3))),
+            "manifest_invalid"
+        );
+        assert_eq!(
+            code(&edit_gradient(&|r| r.elem_size = None)),
+            "manifest_invalid"
+        );
+        assert_eq!(
+            code(&edit_gradient(&|r| r.codec = Codec::Zstd)),
+            "manifest_invalid"
+        );
+        assert_eq!(
+            code(&edit_gradient(&|r| r.raw_len = Some(r.raw_len.unwrap() - 4))),
+            "length_mismatch"
+        );
+        let on_document = repack(&raw, |e| {
+            let mut m = manifest_of(e);
+            let row = m
+                .entries
+                .iter_mut()
+                .find(|r| r.kind == EntryKind::Document)
+                .unwrap();
+            row.codec = Codec::ShuffleZstd;
+            row.raw_len = Some(1);
+            row.elem_size = Some(4);
+            set_manifest(e, &m);
+        });
+        assert_eq!(code(&on_document), "manifest_invalid");
+    });
+}
+
+fn gradient_rgba(width: u32, height: u32) -> Vec<u8> {
+    (0..height)
+        .flat_map(|y| {
+            (0..width).flat_map(move |x| [(x * 4) as u8, (y * 8) as u8, ((x + y) * 2) as u8, 255])
+        })
+        .collect()
+}
+
+fn rgba_info(width: u32, height: u32) -> PreviewInfo {
+    PreviewInfo {
+        format: PixelFormat::Rgba8,
+        width,
+        height,
+        color: "srgb".to_owned(),
+    }
+}
+
+fn write_previews(
+    snapshot: &folio::Snapshot,
+    assets: &dyn AssetSource,
+    previews: &[PreviewImage],
+    codec: Codec,
+) -> Result<Vec<u8>, PackageError> {
+    let mut out = Vec::new();
+    write_package_with(
+        snapshot,
+        assets,
+        &Extras {
+            previews,
+            ..Extras::default()
+        },
+        &WriteOptions {
+            asset_codec: codec,
+            ..WriteOptions::default()
+        },
+        &Limits::default(),
+        &token(),
+        &mut out,
+    )?;
+    Ok(out)
+}
+
+#[test]
+fn preview_entry_kind_declared_lazy_and_verified() {
+    bounded_case("preview_entry_kind_declared_lazy_and_verified", || {
+        let (snapshot, assets, _) = fixture();
+        let colour = PreviewImage {
+            info: rgba_info(64, 32),
+            pixels: gradient_rgba(64, 32),
+        };
+        let grey = PreviewImage {
+            info: PreviewInfo {
+                format: PixelFormat::Gray8,
+                width: 4,
+                height: 4,
+                color: "linear-gray".to_owned(),
+            },
+            pixels: (0..16).map(|i| i * 16).collect(),
+        };
+        let previews = [colour.clone(), grey.clone()];
+
+        // Optional: a package without previews is valid and declares none.
+        let bare = write_to_vec(&snapshot, &assets);
+        assert!(read(&bare).unwrap().previews.is_empty());
+        assert!(
+            list_previews(&bare, &Limits::default(), &token())
+                .unwrap()
+                .is_empty()
+        );
+
+        // Declared metadata, digest-addressed names, deterministic bytes, exact pixels on request.
+        let raw = write_previews(&snapshot, &assets, &previews, Codec::Raw).unwrap();
+        let packed = write_previews(&snapshot, &assets, &previews, Codec::Zstd).unwrap();
+        assert_eq!(
+            raw,
+            write_previews(&snapshot, &assets, &previews, Codec::Raw).unwrap()
+        );
+        assert!(packed.len() < raw.len(), "gradient preview compresses");
+        for package in [&raw, &packed] {
+            let opened = read(package).unwrap();
+            assert_eq!(opened.previews.len(), 2);
+            assert!(opened.quarantined.is_empty() && opened.loss.is_empty());
+            let listed = list_previews(package, &Limits::default(), &token()).unwrap();
+            assert_eq!(listed, opened.previews);
+            for image in &previews {
+                let name = format!("{PREVIEW_PREFIX}{}", sha256_hex_of(&image.pixels));
+                let reference = listed
+                    .iter()
+                    .find(|r| r.name == name)
+                    .expect("addressed by digest");
+                assert_eq!(reference.info, image.info);
+                assert_eq!(
+                    read_preview(package, &Limits::default(), &name, &token()).unwrap(),
+                    *image
+                );
+            }
+            // Streaming reader: same declared set, lazy fetch.
+            let mut reader = PackageReader::open(
+                io::Cursor::new(package.clone()),
+                &Limits::default(),
+                &token(),
+            )
+            .unwrap();
+            assert_eq!(reader.previews(), listed);
+            assert_eq!(
+                reader.read_preview(&listed[0].name, &token()).unwrap().info,
+                listed[0].info
+            );
+            reader.verify_all(&token()).unwrap();
+        }
+        // Re-saving an opened document without previews drops them (derived data), nothing else.
+        let opened = read(&packed).unwrap();
+        let resaved = write_to_vec(
+            opened.snapshot().unwrap(),
+            &MemoryAssetSource::from_opened(&opened),
+        );
+        assert!(read(&resaved).unwrap().previews.is_empty());
+
+        // Never decoded unless asked: corrupt bodies (same length, valid CRC) do not affect opening.
+        let victim = format!("{PREVIEW_PREFIX}{}", sha256_hex_of(&colour.pixels));
+        let ruin = |package: &[u8]| {
+            repack(package, |e| {
+                let slot = e.iter_mut().find(|(n, _)| *n == victim).unwrap();
+                slot.1 = vec![0xAB; slot.1.len()];
+            })
+        };
+        for (package, expected) in [(&packed, "decode_failed"), (&raw, "hash_mismatch")] {
+            let ruined = ruin(package);
+            let opened = read(&ruined).expect("opening never touches preview bodies");
+            assert_eq!(opened.previews.len(), 2);
+            assert_eq!(
+                read_preview(&ruined, &Limits::default(), &victim, &token())
+                    .unwrap_err()
+                    .code(),
+                expected
+            );
+            let mut reader =
+                PackageReader::open(io::Cursor::new(ruined), &Limits::default(), &token()).unwrap();
+            assert_eq!(reader.verify_all(&token()).unwrap_err().code(), expected);
+        }
+        assert_eq!(
+            read_preview(&raw, &Limits::default(), "previews/missing", &token()).unwrap_err(),
+            PackageError::MissingEntry
+        );
+
+        // Declared metadata is validated without decoding anything.
+        let edit_preview = |edit: &dyn Fn(&mut ManifestEntry)| {
+            repack(&raw, |e| {
+                let mut m = manifest_of(e);
+                edit(m.entries.iter_mut().find(|r| r.name == victim).unwrap());
+                set_manifest(e, &m);
+            })
+        };
+        let code = |package: &[u8]| read(package).unwrap_err().code();
+        let with_info = |change: &dyn Fn(&mut PreviewInfo)| {
+            edit_preview(&|r| change(r.preview.as_mut().unwrap()))
+        };
+        assert_eq!(code(&with_info(&|i| i.width = 65)), "manifest_invalid");
+        assert_eq!(code(&with_info(&|i| i.width = 0)), "manifest_invalid");
+        assert_eq!(
+            code(&with_info(&|i| i.format = PixelFormat::Rgb8)),
+            "manifest_invalid"
+        );
+        assert_eq!(
+            code(&with_info(&|i| i.color = "not valid".into())),
+            "manifest_invalid"
+        );
+        assert_eq!(
+            code(&with_info(&|i| i.color = String::new())),
+            "manifest_invalid"
+        );
+        assert_eq!(
+            code(&with_info(&|i| i.color = "x".repeat(65))),
+            "manifest_invalid"
+        );
+        assert_eq!(
+            code(&edit_preview(&|r| r.preview = None)),
+            "manifest_invalid"
+        );
+        let on_asset = repack(&raw, |e| {
+            let mut m = manifest_of(e);
+            let row = m
+                .entries
+                .iter_mut()
+                .find(|r| r.kind == EntryKind::Asset)
+                .unwrap();
+            row.preview = Some(rgba_info(1, 1));
+            set_manifest(e, &m);
+        });
+        assert_eq!(code(&on_asset), "manifest_invalid");
+        let tight = Limits {
+            max_preview_dimension: 32,
+            ..Limits::default()
+        };
+        let err =
+            read_package(&raw, &tight, folio::Budget::default(), &Granted, &token()).unwrap_err();
+        assert_eq!(
+            err.code(),
+            "manifest_invalid",
+            "64 px wide exceeds the 32 px limit"
+        );
+
+        // Writer refuses inconsistent or duplicate previews before producing any bytes.
+        let short = PreviewImage {
+            info: rgba_info(64, 32),
+            pixels: vec![0; 10],
+        };
+        let write_err = |previews: &[PreviewImage]| {
+            write_previews(&snapshot, &assets, previews, Codec::Raw)
+                .unwrap_err()
+                .code()
+        };
+        assert_eq!(write_err(&[short]), "preview_mismatch");
+        assert_eq!(
+            write_err(&[colour.clone(), colour.clone()]),
+            "duplicate_name"
+        );
+        let huge = PreviewImage {
+            info: rgba_info(20_000, 1),
+            pixels: vec![0; 80_000],
+        };
+        assert_eq!(write_err(&[huge]), "preview_mismatch");
     });
 }
