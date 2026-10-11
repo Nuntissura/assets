@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-003-surface-riffs-v1
-generation: 2
-phase: active
+generation: 3
+phase: done
 owner: model_maintainer
 changed_files:
 - repo-governance/docs/research/overlays-grids-and-morphing-borders.md
@@ -17,5 +17,7 @@ proof:
   observed: git diff --exit-code bc5f95a for product, current specification and repo scripts passed; no implementation or accepted requirement changes
 - kind: source_shape
   observed: Affected WP YAML and research frontmatter/topic framing parsed successfully
+- kind: publication
+  observed: git ls-remote origin refs/heads/codex/handpick matched prep-note commit 2a02d25631c7974375b1cc345ee78cf476901e83
 blockers: []
-next_action: Publish prep note; verify remote; settle this research WP while design iteration remains open
+next_action: Continue operator-led design discussion; no implementation authorized and no new concepts adopted into the master spec
