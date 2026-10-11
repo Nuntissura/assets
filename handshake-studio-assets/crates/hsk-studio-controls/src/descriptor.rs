@@ -1,6 +1,11 @@
 //! Control descriptors: the one configuration that drives the egui renderer, the agent JSON
 //! projection and the UserManual topic. Descriptors are also the single owner of value
 //! legality: typed text, pointer scrubbing, keyboard steps and model sets all validate here.
+//!
+//! Spec basis (`14-studio-creative-suite.md`): STU-FX-104/105/107 (hard error vs soft
+//! presentation, four bound fields), STU-FX-110/110a (step trio, integer step 1, one validation
+//! owner), STU-FX-112 (`integer` kind), STU-FX-149 + STU-SHL-188..192 (gesture roles, pointer
+//! sensitivity, clamping).
 
 use crate::value::{ControlError, Value};
 use serde::{Deserialize, Serialize};
@@ -19,12 +24,26 @@ pub enum NumberWidget {
     Slider,
 }
 
-/// Which step increment a keyboard/accessibility step uses. A modifier applies once.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StepModifier {
-    None,
-    Fine,
-    Coarse,
+/// The fixed semantic gesture roles of STU-SHL-190 / STU-FX-149 (physical keys are the
+/// renderer's concern): normal x1, coarse x10, fine /10, coarse+fine x100. Alt has no role.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GestureRoles {
+    pub coarse: bool,
+    pub fine: bool,
+}
+
+impl GestureRoles {
+    pub const NONE: Self = Self { coarse: false, fine: false };
+
+    /// Pointer/wheel multiplier (STU-SHL-190); applied once to the frozen gesture step.
+    pub fn factor(self) -> f64 {
+        match (self.coarse, self.fine) {
+            (false, false) => 1.0,
+            (true, false) => 10.0,
+            (false, true) => 0.1,
+            (true, true) => 100.0,
+        }
+    }
 }
 
 /// Presentation state of a number against its soft range (STU-FX-105).
@@ -45,6 +64,18 @@ pub struct NumberSpec {
     pub hard_max: Option<f64>,
     pub soft_min: Option<f64>,
     pub soft_max: Option<f64>,
+}
+
+/// Signed-integer configuration (`integer` kind, STU-FX-112). Four bound fields as for numbers;
+/// `step = coarse_step = fine_step = 1` and every discrete action walks exactly one legal step
+/// (STU-FX-110): modifiers never skip values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegerSpec {
+    pub widget: NumberWidget,
+    pub hard_min: Option<i64>,
+    pub hard_max: Option<i64>,
+    pub soft_min: Option<i64>,
+    pub soft_max: Option<i64>,
 }
 
 fn pow10_neg(n: i32) -> f64 {
@@ -94,6 +125,30 @@ impl NumberSpec {
     }
 }
 
+impl IntegerSpec {
+    pub fn field(hard_min: Option<i64>, hard_max: Option<i64>) -> Self {
+        Self { widget: NumberWidget::Field, hard_min, hard_max, soft_min: None, soft_max: None }
+    }
+
+    pub fn slider(hard: (i64, i64), soft: (i64, i64)) -> Self {
+        Self {
+            widget: NumberWidget::Slider,
+            hard_min: Some(hard.0),
+            hard_max: Some(hard.1),
+            soft_min: Some(soft.0),
+            soft_max: Some(soft.1),
+        }
+    }
+
+    pub fn track(&self) -> Option<(f64, f64)> {
+        match (self.soft_min, self.soft_max, self.hard_min, self.hard_max) {
+            (Some(a), Some(b), _, _) => Some((a as f64, b as f64)),
+            (_, _, Some(a), Some(b)) => Some((a as f64, b as f64)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChoiceOption {
     pub id: String,
@@ -110,6 +165,7 @@ impl ChoiceOption {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlKind {
     Number(NumberSpec),
+    Integer(IntegerSpec),
     Toggle,
     Choice { options: Vec<ChoiceOption> },
     Color,
@@ -117,7 +173,8 @@ pub enum ControlKind {
 }
 
 /// One control. `id` is stable: it is the egui id source, the store key, the agent address and
-/// the manual topic id.
+/// the manual topic id. `group_path` is the ordered chain of declared section ids (root first)
+/// the control sits in (STU-SHL-165 / STU-IO-109); empty = panel root.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ControlSpec {
     pub id: String,
@@ -128,6 +185,85 @@ pub struct ControlSpec {
     pub help: String,
     pub kind: ControlKind,
     pub default: Value,
+    #[serde(default)]
+    pub group_path: Vec<String>,
+}
+
+/// Numeric view shared by `Number` and `Integer` for sensitivity, scrubbing and sliders.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrubParams {
+    pub hard_min: Option<f64>,
+    pub hard_max: Option<f64>,
+    /// Complete, finite, increasing soft pair, else None.
+    pub soft: Option<(f64, f64)>,
+    /// `10^-precision` for numbers, 0 for integers (no declared precision).
+    pub q: f64,
+    pub integer: bool,
+}
+
+impl ScrubParams {
+    /// STU-SHL-191: `max(q, soft_range/200)`, or without a usable soft range
+    /// `max(q, max(|v_anchor|, 1)/200)`, in stored units per pixel.
+    pub fn step_per_pixel(&self, anchor: f64) -> f64 {
+        let soft_range = self.soft.map(|(a, b)| b - a).filter(|r| r.is_finite() && *r > 0.0);
+        match soft_range {
+            Some(r) => self.q.max(r / 200.0),
+            None => self.q.max(anchor.abs().max(1.0) / 200.0),
+        }
+    }
+}
+
+/// One pointer/scrub gesture. The step and anchor are frozen at press, the modifier roles are
+/// sampled on every drag sample and multiplied in once, fractional travel accumulates in value
+/// space, and the accumulator is clamped to the hard bounds only, so dragging back from a hard
+/// stop returns immediately (STU-SHL-188/190/191/192). It crosses soft bounds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrubGesture {
+    start: Value,
+    raw: f64,
+    step: f64,
+    params: ScrubParams,
+}
+
+impl ScrubGesture {
+    pub fn begin(spec: &ControlSpec, current: &Value) -> Result<Self, ControlError> {
+        let mismatch = || ControlError::TypeMismatch {
+            control_id: spec.id.clone(),
+            expected: "number or integer",
+            got: current.kind_name(),
+        };
+        let params = spec.scrub_params().ok_or_else(mismatch)?;
+        let anchor = spec.numeric_value(current).ok_or_else(mismatch)?;
+        Ok(Self { start: current.clone(), raw: anchor, step: params.step_per_pixel(anchor), params })
+    }
+
+    /// Value at press (what an abort restores).
+    pub fn start(&self) -> &Value {
+        &self.start
+    }
+
+    /// Sensitivity frozen for this gesture (stored units per pixel, before the role factor).
+    pub fn step(&self) -> f64 {
+        self.step
+    }
+
+    /// Advances by `delta_px = dx - dy` screen pixels (rightward and upward both increase).
+    pub fn drag(&mut self, spec: &ControlSpec, delta_px: f64, roles: GestureRoles) -> Result<Value, ControlError> {
+        let next = self.raw + delta_px * self.step * roles.factor();
+        if !delta_px.is_finite() || !next.is_finite() {
+            return Err(ControlError::NonFinite { control_id: spec.id.clone() });
+        }
+        let mut raw = next;
+        if let Some(m) = self.params.hard_min {
+            raw = raw.max(m);
+        }
+        if let Some(m) = self.params.hard_max {
+            raw = raw.min(m);
+        }
+        self.raw = raw;
+        let value = if self.params.integer { Value::Int(raw.round() as i64) } else { Value::Number(clean(raw)) };
+        spec.validate_value(&value)
+    }
 }
 
 fn invalid(id: &str, reason: impl Into<String>) -> ControlError {
@@ -138,13 +274,33 @@ fn no_controls(s: &str) -> bool {
     !s.chars().any(char::is_control)
 }
 
+/// Id syntax shared by controls, sections and group path elements.
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_ID_CHARS
+        && id.starts_with(|c: char| c.is_ascii_lowercase())
+        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
 impl ControlSpec {
     pub fn new(id: &str, label: &str, help: &str, kind: ControlKind, default: Value) -> Self {
-        Self { id: id.to_string(), label: label.to_string(), unit: None, help: help.to_string(), kind, default }
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            unit: None,
+            help: help.to_string(),
+            kind,
+            default,
+            group_path: Vec::new(),
+        }
     }
 
     pub fn number(id: &str, label: &str, help: &str, spec: NumberSpec, default: f64) -> Self {
         Self::new(id, label, help, ControlKind::Number(spec), Value::Number(default))
+    }
+
+    pub fn integer(id: &str, label: &str, help: &str, spec: IntegerSpec, default: i64) -> Self {
+        Self::new(id, label, help, ControlKind::Integer(spec), Value::Int(default))
     }
 
     pub fn toggle(id: &str, label: &str, help: &str, default: bool) -> Self {
@@ -168,9 +324,69 @@ impl ControlSpec {
         self
     }
 
+    /// Places the control in declared sections (root first); the registry checks the chain.
+    pub fn in_group(mut self, path: &[&str]) -> Self {
+        self.group_path = path.iter().map(|s| (*s).to_string()).collect();
+        self
+    }
+
     pub fn number_spec(&self) -> Option<&NumberSpec> {
         match &self.kind {
             ControlKind::Number(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    pub fn integer_spec(&self) -> Option<&IntegerSpec> {
+        match &self.kind {
+            ControlKind::Integer(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Slider/field presentation for number and integer controls.
+    pub fn numeric_widget(&self) -> Option<NumberWidget> {
+        match &self.kind {
+            ControlKind::Number(n) => Some(n.widget),
+            ControlKind::Integer(n) => Some(n.widget),
+            _ => None,
+        }
+    }
+
+    /// Slider track (soft pair, else hard pair) as floats.
+    pub fn track(&self) -> Option<(f64, f64)> {
+        match &self.kind {
+            ControlKind::Number(n) => n.track(),
+            ControlKind::Integer(n) => n.track(),
+            _ => None,
+        }
+    }
+
+    /// Numeric content of a value for a numeric control (integers widen to f64).
+    pub fn numeric_value(&self, value: &Value) -> Option<f64> {
+        match (&self.kind, value) {
+            (ControlKind::Number(_), Value::Number(v)) => Some(*v),
+            (ControlKind::Integer(_), Value::Int(v)) => Some(*v as f64),
+            _ => None,
+        }
+    }
+
+    pub fn scrub_params(&self) -> Option<ScrubParams> {
+        match &self.kind {
+            ControlKind::Number(n) => Some(ScrubParams {
+                hard_min: n.hard_min,
+                hard_max: n.hard_max,
+                soft: soft_pair(n.soft_min, n.soft_max),
+                q: n.step(),
+                integer: false,
+            }),
+            ControlKind::Integer(n) => Some(ScrubParams {
+                hard_min: n.hard_min.map(|v| v as f64),
+                hard_max: n.hard_max.map(|v| v as f64),
+                soft: soft_pair(n.soft_min.map(|v| v as f64), n.soft_max.map(|v| v as f64)),
+                q: 0.0,
+                integer: true,
+            }),
             _ => None,
         }
     }
@@ -179,11 +395,7 @@ impl ControlSpec {
     /// projected and given a manual topic.
     pub fn validate(&self) -> Result<(), ControlError> {
         let id = self.id.as_str();
-        let id_ok = !id.is_empty()
-            && id.len() <= MAX_ID_CHARS
-            && id.starts_with(|c: char| c.is_ascii_lowercase())
-            && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'));
-        if !id_ok {
+        if !valid_id(id) {
             return Err(invalid(id, "id must be 1-96 chars of [a-z0-9._-] starting with a letter"));
         }
         if self.label.trim().is_empty() || self.label.chars().count() > 128 || !no_controls(&self.label) {
@@ -192,9 +404,12 @@ impl ControlSpec {
         if self.help.trim().is_empty() || self.help.chars().count() > 1024 {
             return Err(invalid(id, "help (UserManual text) must be 1-1024 chars"));
         }
+        if self.group_path.len() > 16 || self.group_path.iter().any(|g| !valid_id(g)) {
+            return Err(invalid(id, "group_path must be at most 16 valid section ids"));
+        }
         if let Some(u) = &self.unit {
-            if !matches!(self.kind, ControlKind::Number(_)) {
-                return Err(invalid(id, "unit is only valid on number controls"));
+            if !matches!(self.kind, ControlKind::Number(_) | ControlKind::Integer(_)) {
+                return Err(invalid(id, "unit is only valid on number and integer controls"));
             }
             if u.is_empty() || u.chars().count() > 8 || u.chars().any(|c| c.is_whitespace() || c.is_control()) {
                 return Err(invalid(id, "unit must be 1-8 chars without whitespace"));
@@ -202,6 +417,7 @@ impl ControlSpec {
         }
         match &self.kind {
             ControlKind::Number(n) => Self::validate_number(id, n)?,
+            ControlKind::Integer(n) => Self::validate_integer(id, n)?,
             ControlKind::Toggle | ControlKind::Color => {}
             ControlKind::Choice { options } => {
                 if options.is_empty() {
@@ -244,6 +460,17 @@ impl ControlSpec {
         Ok(())
     }
 
+    fn validate_integer(id: &str, n: &IntegerSpec) -> Result<(), ControlError> {
+        let ordered = [n.hard_min, n.soft_min, n.soft_max, n.hard_max].iter().flatten().copied().collect::<Vec<_>>();
+        if ordered.windows(2).any(|w| w[0] > w[1]) {
+            return Err(invalid(id, "bounds must satisfy hard_min <= soft_min <= soft_max <= hard_max"));
+        }
+        if n.widget == NumberWidget::Slider && n.track().is_none() {
+            return Err(invalid(id, "slider needs a complete soft or hard range"));
+        }
+        Ok(())
+    }
+
     /// The single legality check. Hard-bound violations are an error naming the control, the
     /// value and both bounds; they are never clamped (STU-FX-104).
     pub fn validate_value(&self, value: &Value) -> Result<Value, ControlError> {
@@ -271,6 +498,18 @@ impl ControlSpec {
                 Ok(Value::Number(if *v == 0.0 { 0.0 } else { *v }))
             }
             (ControlKind::Number(_), _) => Err(mismatch("number")),
+            (ControlKind::Integer(n), Value::Int(v)) => {
+                if n.hard_min.is_some_and(|m| *v < m) || n.hard_max.is_some_and(|m| *v > m) {
+                    return Err(ControlError::OutOfHardBoundsInt {
+                        control_id: id,
+                        value: *v,
+                        hard_min: n.hard_min,
+                        hard_max: n.hard_max,
+                    });
+                }
+                Ok(value.clone())
+            }
+            (ControlKind::Integer(_), _) => Err(mismatch("integer")),
             (ControlKind::Toggle, Value::Bool(_)) => Ok(value.clone()),
             (ControlKind::Toggle, _) => Err(mismatch("bool")),
             (ControlKind::Choice { options }, Value::Choice(c)) => {
@@ -298,20 +537,26 @@ impl ControlSpec {
         }
     }
 
+    fn strip_unit<'a>(&self, text: &'a str) -> &'a str {
+        let t = text.trim();
+        if let Some(u) = &self.unit
+            && let Some(rest) = t.strip_suffix(u.as_str())
+            && !rest.trim_end().is_empty()
+        {
+            return rest.trim_end();
+        }
+        t
+    }
+
     /// Strict typed-entry parser: no arithmetic, no junk stripping. Numbers: optional sign,
-    /// digits, optional dot + digits, optional exponent, optional exact unit suffix.
+    /// digits, optional dot + digits, optional exponent, optional exact unit suffix. Integers:
+    /// optional sign + digits. Typed entry is exact: out-of-hard-range rejects (STU-FX-110a).
     pub fn parse_text(&self, text: &str) -> Result<Value, ControlError> {
         let id = self.id.clone();
         let bad = |reason: &'static str| ControlError::InvalidText { control_id: id.clone(), reason };
         let value = match &self.kind {
             ControlKind::Number(_) => {
-                let mut t = text.trim();
-                if let Some(u) = &self.unit
-                    && let Some(rest) = t.strip_suffix(u.as_str())
-                    && !rest.trim_end().is_empty()
-                {
-                    t = rest.trim_end();
-                }
+                let t = self.strip_unit(text);
                 let unsigned = t.strip_prefix(['+', '-']).unwrap_or(t).to_ascii_lowercase();
                 if matches!(unsigned.as_str(), "nan" | "inf" | "infinity") {
                     return Err(ControlError::NonFinite { control_id: id });
@@ -324,6 +569,14 @@ impl ControlSpec {
                     return Err(ControlError::NonFinite { control_id: id });
                 }
                 Value::Number(v)
+            }
+            ControlKind::Integer(_) => {
+                let t = self.strip_unit(text);
+                let digits = t.strip_prefix(['+', '-']).unwrap_or(t);
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(bad("not a plain integer"));
+                }
+                Value::Int(t.parse::<i64>().map_err(|_| bad("integer out of 64-bit range"))?)
             }
             ControlKind::Toggle => match text.trim() {
                 "true" | "on" => Value::Bool(true),
@@ -345,6 +598,7 @@ impl ControlSpec {
                 let v = if *v == 0.0 { 0.0 } else { *v };
                 format!("{v:.*}", usize::from(n.precision))
             }
+            (_, Value::Int(v)) => v.to_string(),
             (_, Value::Bool(b)) => b.to_string(),
             (ControlKind::Choice { options }, Value::Choice(c)) => {
                 options.iter().find(|o| &o.id == c).map_or_else(|| c.clone(), |o| o.label.clone())
@@ -364,42 +618,71 @@ impl ControlSpec {
                     SoftState::InRange
                 }
             }
+            (ControlKind::Integer(n), Value::Int(v)) => {
+                if n.soft_min.is_some_and(|m| *v < m) || n.soft_max.is_some_and(|m| *v > m) {
+                    SoftState::OutOfSoft
+                } else {
+                    SoftState::InRange
+                }
+            }
             _ => SoftState::InRange,
         }
     }
 
-    /// Pointer route: the ONLY route that clamps, and only to the hard bounds; it crosses soft
-    /// bounds (STU-FX-110a).
+    /// Pointer route for a one-shot target: clamps ONLY the hard bounds and crosses soft bounds
+    /// (STU-FX-110a / STU-SHL-192). Integers round to the nearest legal step. Continuous drags use
+    /// [`ScrubGesture`].
     pub fn pointer_value(&self, target: f64) -> Result<Value, ControlError> {
-        let ControlKind::Number(n) = &self.kind else {
-            return Err(ControlError::TypeMismatch { control_id: self.id.clone(), expected: "number", got: "pointer" });
+        let Some(p) = self.scrub_params() else {
+            return Err(ControlError::TypeMismatch { control_id: self.id.clone(), expected: "number or integer", got: "pointer" });
         };
         if !target.is_finite() {
             return Err(ControlError::NonFinite { control_id: self.id.clone() });
         }
         let mut v = target;
-        if let Some(m) = n.hard_min {
+        if let Some(m) = p.hard_min {
             v = v.max(m);
         }
-        if let Some(m) = n.hard_max {
+        if let Some(m) = p.hard_max {
             v = v.min(m);
         }
-        self.validate_value(&Value::Number(v))
+        self.validate_value(&if p.integer { Value::Int(v.round() as i64) } else { Value::Number(v) })
     }
 
-    /// Keyboard/accessibility step: one increment (modifier applied once). At a hard bound the
-    /// step is REJECTED with `OutOfHardBounds` (it never clamps or silently no-ops).
-    pub fn step_value(&self, current: &Value, dir: i8, modifier: StepModifier) -> Result<Value, ControlError> {
-        let (ControlKind::Number(n), Value::Number(cur)) = (&self.kind, current) else {
-            return Err(ControlError::TypeMismatch { control_id: self.id.clone(), expected: "number", got: current.kind_name() });
-        };
-        let amount = match modifier {
-            StepModifier::None => n.step(),
-            StepModifier::Fine => n.fine_step(),
-            StepModifier::Coarse => n.coarse_step(),
-        };
-        let next = clean(cur + f64::from(dir.signum()) * amount);
-        self.validate_value(&Value::Number(next))
+    /// Discrete keyboard/accessibility step. Numbers: `step`, `coarse_step` (coarse role),
+    /// `fine_step` (fine role), `step*100` for both roles (STU-FX-110; the spec is silent on the
+    /// combined role for arrows, so the pointer map of STU-SHL-190 is extended). Integers: always
+    /// exactly one legal step regardless of roles. A step that would leave the hard range is
+    /// REJECTED (the spec defines clamping for pointer routes only; STU-FX-110a).
+    pub fn step_value(&self, current: &Value, dir: i8, roles: GestureRoles) -> Result<Value, ControlError> {
+        let sign = f64::from(dir.signum());
+        match (&self.kind, current) {
+            (ControlKind::Number(n), Value::Number(cur)) => {
+                let amount = match (roles.coarse, roles.fine) {
+                    (false, false) => n.step(),
+                    (true, false) => n.coarse_step(),
+                    (false, true) => n.fine_step(),
+                    (true, true) => n.step() * 100.0,
+                };
+                self.validate_value(&Value::Number(clean(cur + sign * amount)))
+            }
+            (ControlKind::Integer(_), Value::Int(cur)) => {
+                let next = cur.saturating_add(i64::from(dir.signum()));
+                self.validate_value(&Value::Int(next))
+            }
+            _ => Err(ControlError::TypeMismatch {
+                control_id: self.id.clone(),
+                expected: "number or integer",
+                got: current.kind_name(),
+            }),
+        }
+    }
+}
+
+fn soft_pair(a: Option<f64>, b: Option<f64>) -> Option<(f64, f64)> {
+    match (a, b) {
+        (Some(a), Some(b)) if a.is_finite() && b.is_finite() && b > a => Some((a, b)),
+        _ => None,
     }
 }
 

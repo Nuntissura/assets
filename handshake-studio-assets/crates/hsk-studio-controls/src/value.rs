@@ -9,6 +9,8 @@ use std::fmt;
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum Value {
     Number(f64),
+    /// Signed integer domain (`StudioParameterKind::integer`, STU-FX-112).
+    Int(i64),
     Bool(bool),
     /// Id of one `ChoiceOption` of an enum/select control.
     Choice(String),
@@ -21,6 +23,7 @@ impl Value {
     pub fn kind_name(&self) -> &'static str {
         match self {
             Value::Number(_) => "number",
+            Value::Int(_) => "integer",
             Value::Bool(_) => "bool",
             Value::Choice(_) => "choice",
             Value::Color(_) => "color",
@@ -40,6 +43,9 @@ pub enum ControlError {
     InvalidText { control_id: String, reason: &'static str },
     NonFinite { control_id: String },
     OutOfHardBounds { control_id: String, value: f64, hard_min: Option<f64>, hard_max: Option<f64> },
+    OutOfHardBoundsInt { control_id: String, value: i64, hard_min: Option<i64>, hard_max: Option<i64> },
+    /// A gesture rule was violated (write during a gesture, event that is not an undo step, ...).
+    Gesture { control_id: String, reason: &'static str },
     UnknownChoice { control_id: String, choice: String },
     TextTooLong { control_id: String, max_chars: usize, got_chars: usize },
     Stale { control_id: String, expected: Value, current: Value },
@@ -55,7 +61,8 @@ impl ControlError {
             ControlError::TypeMismatch { .. } => "type_mismatch",
             ControlError::InvalidText { .. } => "invalid_text",
             ControlError::NonFinite { .. } => "non_finite",
-            ControlError::OutOfHardBounds { .. } => "out_of_hard_bounds",
+            ControlError::OutOfHardBounds { .. } | ControlError::OutOfHardBoundsInt { .. } => "out_of_hard_bounds",
+            ControlError::Gesture { .. } => "gesture",
             ControlError::UnknownChoice { .. } => "unknown_choice",
             ControlError::TextTooLong { .. } => "text_too_long",
             ControlError::Stale { .. } => "stale",
@@ -88,6 +95,13 @@ impl fmt::Display for ControlError {
                 bound(hard_min),
                 bound(hard_max)
             ),
+            ControlError::OutOfHardBoundsInt { control_id, value, hard_min, hard_max } => write!(
+                f,
+                "control `{control_id}`: {value} is outside the hard range [{}, {}]",
+                hard_min.map_or_else(|| "unbounded".to_string(), |v| v.to_string()),
+                hard_max.map_or_else(|| "unbounded".to_string(), |v| v.to_string())
+            ),
+            ControlError::Gesture { control_id, reason } => write!(f, "control `{control_id}`: {reason}"),
             ControlError::UnknownChoice { control_id, choice } => {
                 write!(f, "control `{control_id}`: unknown choice `{choice}`")
             }

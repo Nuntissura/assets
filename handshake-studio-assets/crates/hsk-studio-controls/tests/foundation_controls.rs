@@ -5,7 +5,7 @@ use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, vec2};
 use hsk_studio_controls::egui_adapter::{edit_id, show_panel_and_apply};
 use hsk_studio_controls::projection::{agent_json, manual_topics, registry_from_json};
 use hsk_studio_controls::{
-    ChangeEvent, ChangeSource, ChoiceOption, ControlError, ControlSpec, NumberSpec, Registry, SoftState, StepModifier,
+    ChangeEvent, ChangeSource, ChoiceOption, ControlError, ControlSpec, GestureRoles, NumberSpec, Registry, SoftState,
     Value, ValueStore,
 };
 
@@ -88,10 +88,10 @@ fn fixture_numeric_legality_store_and_undo() {
     // Pointer clamps ONLY hard bounds and crosses soft; keyboard steps once per modifier.
     assert_eq!(spec.pointer_value(1.7).unwrap(), num(1.0));
     assert_eq!(spec.pointer_value(0.9).unwrap(), num(0.9));
-    assert_eq!(spec.step_value(&num(0.5), 1, StepModifier::None).unwrap(), num(0.51));
-    assert_eq!(spec.step_value(&num(0.5), 1, StepModifier::Coarse).unwrap(), num(0.6));
-    assert_eq!(spec.step_value(&num(0.5), -1, StepModifier::Fine).unwrap(), num(0.499));
-    assert!(matches!(spec.step_value(&num(1.0), 1, StepModifier::None), Err(ControlError::OutOfHardBounds { .. })));
+    assert_eq!(spec.step_value(&num(0.5), 1, GestureRoles::NONE).unwrap(), num(0.51));
+    assert_eq!(spec.step_value(&num(0.5), 1, GestureRoles { coarse: true, fine: false }).unwrap(), num(0.6));
+    assert_eq!(spec.step_value(&num(0.5), -1, GestureRoles { coarse: false, fine: true }).unwrap(), num(0.499));
+    assert!(matches!(spec.step_value(&num(1.0), 1, GestureRoles::NONE), Err(ControlError::OutOfHardBounds { .. })));
 
     // Store: rejected writes leave value and revision untouched; accepted writes emit undo events.
     let mut store = ValueStore::new(&reg);
@@ -122,7 +122,7 @@ fn frame(ctx: &egui::Context, t: &mut f64, events: Vec<Event>, reg: &Registry, s
     let _ = ctx.run(raw, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             *origin = ui.next_widget_position();
-            changes.extend(show_panel_and_apply(ui, reg, store, None));
+            changes.extend(show_panel_and_apply(ui, reg, store, None).changes);
         });
     });
     changes

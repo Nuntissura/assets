@@ -1,15 +1,20 @@
 //! The one egui renderer: every widget is chosen and configured ONLY by a `ControlSpec`.
 //! It never mutates values; it returns `Interaction`s (already routed through the descriptor's
 //! legality checks) that the host applies to a `ValueStore`. Headless-safe: no window, no eframe.
+//!
+//! Gesture mapping (STU-SHL-188..194, STU-FX-149): dragging a numeric control's label scrubs
+//! (`dx - dy` pixels, frozen sensitivity, Shift = coarse x10, Ctrl/Command = fine /10, both x100,
+//! Alt unused); press..release is ONE gesture (`Update`* then `End`), Escape during a drag aborts
+//! it (`Abort`). Typed entry commits on Enter/blur, Escape discards; arrow keys step.
 
-use crate::descriptor::{ControlKind, ControlSpec, NumberSpec, NumberWidget, SoftState, StepModifier};
+use crate::descriptor::{ControlKind, ControlSpec, GestureRoles, NumberWidget, ScrubGesture, SoftState};
 use crate::registry::Registry;
-use crate::store::{ChangeEvent, ChangeSource, Interaction, ValueStore};
-use crate::value::Value;
-use egui::{CursorIcon, Id, Key, Sense, TextEdit, Ui};
+use crate::store::{ChangeEvent, ChangeSource, GesturePhase, Interaction, ValueStore};
+use crate::value::{ControlError, Value};
+use egui::{CursorIcon, Id, Key, Rect, Sense, TextEdit, Ui};
 use hsk_studio_accord::ActorContext;
 
-/// Stable egui id source of a control (`control_id` is the only input).
+/// Stable egui id source of a control or section (the descriptor id is the only input).
 pub fn widget_id(control_id: &str) -> Id {
     Id::new(("hsk-studio-control", control_id))
 }
@@ -27,7 +32,13 @@ fn err_id(control_id: &str) -> Id {
     widget_id(control_id).with("err")
 }
 
-fn set_error(ui: &Ui, spec: &ControlSpec, outcome: &Result<Value, crate::value::ControlError>) {
+/// Default physical mapping of the gesture roles (STU-SHL-190): Shift = coarse; `command`
+/// (Ctrl on Windows/Linux, Command on macOS) = fine. Alt has no numeric role.
+pub fn roles_from(mods: egui::Modifiers) -> GestureRoles {
+    GestureRoles { coarse: mods.shift, fine: mods.command }
+}
+
+fn set_error(ui: &Ui, spec: &ControlSpec, outcome: &Result<Value, ControlError>) {
     let id = err_id(&spec.id);
     ui.data_mut(|d| match outcome {
         Ok(_) => d.remove::<String>(id),
@@ -35,15 +46,21 @@ fn set_error(ui: &Ui, spec: &ControlSpec, outcome: &Result<Value, crate::value::
     });
 }
 
-fn interaction(ui: &Ui, spec: &ControlSpec, source: ChangeSource, outcome: Result<Value, crate::value::ControlError>) -> Interaction {
+fn interaction(
+    ui: &Ui,
+    spec: &ControlSpec,
+    source: ChangeSource,
+    gesture: Option<GesturePhase>,
+    outcome: Result<Value, ControlError>,
+) -> Interaction {
     set_error(ui, spec, &outcome);
-    Interaction { control_id: spec.id.clone(), source, outcome }
+    Interaction { control_id: spec.id.clone(), source, outcome, gesture }
 }
 
 enum FieldEvent {
     None,
     Commit(String),
-    Step(i8, StepModifier),
+    Step(i8, GestureRoles),
 }
 
 /// Text field with commit-on-Enter/blur, Escape discard, and (for numbers) arrow-key steps.
@@ -76,16 +93,8 @@ fn text_field(ui: &mut Ui, spec: &ControlSpec, formatted: &str, multiline: bool,
         if steppable {
             let (up, down, mods) = ui.input(|i| (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown), i.modifiers));
             if up != down {
-                // Modifier defaults (STU-FX-149) are UNVERIFIED here: shift = coarse, alt = fine, applied once.
-                let modifier = if mods.shift {
-                    StepModifier::Coarse
-                } else if mods.alt {
-                    StepModifier::Fine
-                } else {
-                    StepModifier::None
-                };
                 ui.data_mut(|d| d.remove::<String>(bid));
-                event = FieldEvent::Step(if up { 1 } else { -1 }, modifier);
+                event = FieldEvent::Step(if up { 1 } else { -1 }, roles_from(mods));
             }
         }
     }
@@ -99,40 +108,92 @@ fn show_error(ui: &mut Ui, spec: &ControlSpec) {
     }
 }
 
-fn number(ui: &mut Ui, spec: &ControlSpec, n: &NumberSpec, v: f64, current: &Value) -> Option<Interaction> {
+/// Slider gesture bookkeeping: 0 = idle, 1 = open, 2 = aborted until release.
+fn slider(ui: &mut Ui, spec: &ControlSpec, current: &Value, lo: f64, hi: f64, integer: bool) -> Option<Interaction> {
+    let sid = widget_id(&spec.id).with("slider-state");
+    let state = ui.data(|d| d.get_temp::<u8>(sid)).unwrap_or(0);
+    let mut sv = spec.numeric_value(current).unwrap_or(lo);
+    let mut widget = egui::Slider::new(&mut sv, lo..=hi).show_value(false).clamping(egui::SliderClamping::Never);
+    if integer {
+        widget = widget.step_by(1.0);
+    }
+    let r = ui.add(widget);
+    let down = r.is_pointer_button_down_on();
+    let escape = ui.input(|i| i.key_pressed(Key::Escape));
+    let (mut next, mut out) = (state, None);
+    if state == 2 {
+        if !down {
+            next = 0;
+        }
+    } else if state == 1 && escape {
+        next = 2;
+        out = Some(interaction(ui, spec, ChangeSource::Pointer, Some(GesturePhase::Abort), Ok(current.clone())));
+    } else {
+        if r.changed() {
+            if down {
+                next = 1;
+                out = Some(interaction(ui, spec, ChangeSource::Pointer, Some(GesturePhase::Update), spec.pointer_value(sv)));
+            } else {
+                out = Some(interaction(ui, spec, ChangeSource::Keyboard, None, spec.pointer_value(sv)));
+            }
+        }
+        if state == 1 && !down {
+            next = 0;
+            out = Some(interaction(ui, spec, ChangeSource::Pointer, Some(GesturePhase::End), Ok(current.clone())));
+        }
+    }
+    if next != state {
+        ui.data_mut(|d| d.insert_temp(sid, next));
+    }
+    out
+}
+
+fn numeric(ui: &mut Ui, spec: &ControlSpec, current: &Value) -> Option<Interaction> {
     let mut out = None;
-    // The label is the scrub handle (drag to change); pointer scrubbing clamps hard bounds only.
+    let gid = widget_id(&spec.id).with("scrub");
+    // The label is the scrub handle: press-drag changes the value, one gesture per drag.
     let label = ui
         .add(egui::Label::new(spec.label.as_str()).sense(Sense::drag()))
         .on_hover_cursor(CursorIcon::ResizeHorizontal)
         .on_hover_text(spec.help.as_str());
-    if label.dragged() {
-        let dx = f64::from(label.drag_delta().x);
-        if dx != 0.0 {
-            let mods = ui.input(|i| i.modifiers);
-            let per_px = if mods.shift {
-                n.coarse_step()
-            } else if mods.alt {
-                n.fine_step()
-            } else {
-                n.step()
-            };
-            out = Some(interaction(ui, spec, ChangeSource::Pointer, spec.pointer_value(v + dx * per_px)));
+    let escape = ui.input(|i| i.key_pressed(Key::Escape));
+    if label.drag_started() {
+        match ScrubGesture::begin(spec, current) {
+            Ok(g) => ui.data_mut(|d| d.insert_temp(gid, g)),
+            Err(e) => out = Some(interaction(ui, spec, ChangeSource::Pointer, None, Err(e))),
         }
     }
-    if n.widget == NumberWidget::Slider
-        && let Some((lo, hi)) = n.track()
+    // The gesture state exists exactly while the gesture is open, so Escape aborts it even if the
+    // backend already ended the pointer drag.
+    let open_gesture = ui.data(|d| d.get_temp::<ScrubGesture>(gid));
+    if escape && open_gesture.is_some() {
+        ui.data_mut(|d| d.remove::<ScrubGesture>(gid));
+        out = Some(interaction(ui, spec, ChangeSource::Pointer, Some(GesturePhase::Abort), Ok(current.clone())));
+    } else if label.dragged()
+        && let Some(mut g) = open_gesture
     {
-        let mut sv = v;
-        let r = ui.add(egui::Slider::new(&mut sv, lo..=hi).show_value(false).clamping(egui::SliderClamping::Never));
-        if r.changed() {
-            out = Some(interaction(ui, spec, ChangeSource::Pointer, spec.pointer_value(sv)));
+        let delta = label.drag_delta();
+        let px = f64::from(delta.x - delta.y);
+        if px != 0.0 {
+            let outcome = g.drag(spec, px, roles_from(ui.input(|i| i.modifiers)));
+            ui.data_mut(|d| d.insert_temp(gid, g));
+            out = Some(interaction(ui, spec, ChangeSource::Pointer, Some(GesturePhase::Update), outcome));
         }
+    }
+    if label.drag_stopped() && ui.data(|d| d.get_temp::<ScrubGesture>(gid)).is_some() {
+        ui.data_mut(|d| d.remove::<ScrubGesture>(gid));
+        out = Some(interaction(ui, spec, ChangeSource::Pointer, Some(GesturePhase::End), Ok(current.clone())));
+    }
+    if spec.numeric_widget() == Some(NumberWidget::Slider)
+        && let Some((lo, hi)) = spec.track()
+        && let Some(i) = slider(ui, spec, current, lo, hi, matches!(spec.kind, ControlKind::Integer(_)))
+    {
+        out = Some(i);
     }
     match text_field(ui, spec, &spec.format_value(current), false, true) {
-        FieldEvent::Commit(text) => out = Some(interaction(ui, spec, ChangeSource::Typed, spec.parse_text(&text))),
-        FieldEvent::Step(dir, modifier) => {
-            out = Some(interaction(ui, spec, ChangeSource::Keyboard, spec.step_value(current, dir, modifier)));
+        FieldEvent::Commit(text) => out = Some(interaction(ui, spec, ChangeSource::Typed, None, spec.parse_text(&text))),
+        FieldEvent::Step(dir, roles) => {
+            out = Some(interaction(ui, spec, ChangeSource::Keyboard, None, spec.step_value(current, dir, roles)));
         }
         FieldEvent::None => {}
     }
@@ -151,11 +212,11 @@ fn number(ui: &mut Ui, spec: &ControlSpec, n: &NumberSpec, v: f64, current: &Val
 pub fn show(ui: &mut Ui, spec: &ControlSpec, current: &Value) -> Option<Interaction> {
     ui.push_id(widget_id(&spec.id), |ui| {
         ui.horizontal(|ui| match (&spec.kind, current) {
-            (ControlKind::Number(n), Value::Number(v)) => number(ui, spec, n, *v, current),
+            (ControlKind::Number(_), Value::Number(_)) | (ControlKind::Integer(_), Value::Int(_)) => numeric(ui, spec, current),
             (ControlKind::Toggle, Value::Bool(b)) => {
                 let mut checked = *b;
                 let r = ui.checkbox(&mut checked, spec.label.as_str()).on_hover_text(spec.help.as_str());
-                r.changed().then(|| interaction(ui, spec, ChangeSource::Pointer, spec.validate_value(&Value::Bool(checked))))
+                r.changed().then(|| interaction(ui, spec, ChangeSource::Pointer, None, spec.validate_value(&Value::Bool(checked))))
             }
             (ControlKind::Choice { options }, Value::Choice(selected)) => {
                 let mut out = None;
@@ -163,7 +224,7 @@ pub fn show(ui: &mut Ui, spec: &ControlSpec, current: &Value) -> Option<Interact
                 egui::ComboBox::from_id_salt(widget_id(&spec.id).with("combo")).selected_text(spec.format_value(current)).show_ui(ui, |ui| {
                     for o in options {
                         if ui.selectable_label(&o.id == selected, o.label.as_str()).clicked() && &o.id != selected {
-                            out = Some(interaction(ui, spec, ChangeSource::Pointer, spec.validate_value(&Value::Choice(o.id.clone()))));
+                            out = Some(interaction(ui, spec, ChangeSource::Pointer, None, spec.validate_value(&Value::Choice(o.id.clone()))));
                         }
                     }
                 });
@@ -173,12 +234,12 @@ pub fn show(ui: &mut Ui, spec: &ControlSpec, current: &Value) -> Option<Interact
                 ui.label(spec.label.as_str()).on_hover_text(spec.help.as_str());
                 let mut c = *rgba;
                 let r = ui.color_edit_button_srgba_unmultiplied(&mut c);
-                r.changed().then(|| interaction(ui, spec, ChangeSource::Pointer, spec.validate_value(&Value::Color(c))))
+                r.changed().then(|| interaction(ui, spec, ChangeSource::Pointer, None, spec.validate_value(&Value::Color(c))))
             }
             (ControlKind::Text { multiline, .. }, Value::Text(t)) => {
                 ui.label(spec.label.as_str()).on_hover_text(spec.help.as_str());
                 let out = match text_field(ui, spec, t, *multiline, false) {
-                    FieldEvent::Commit(text) => Some(interaction(ui, spec, ChangeSource::Typed, spec.parse_text(&text))),
+                    FieldEvent::Commit(text) => Some(interaction(ui, spec, ChangeSource::Typed, None, spec.parse_text(&text))),
                     _ => None,
                 };
                 show_error(ui, spec);
@@ -195,21 +256,76 @@ pub fn show(ui: &mut Ui, spec: &ControlSpec, current: &Value) -> Option<Interact
     .inner
 }
 
-/// Renders every registered control in registration order; returns this frame's interactions.
-pub fn show_panel(ui: &mut Ui, registry: &Registry, store: &ValueStore) -> Vec<Interaction> {
-    let mut out = Vec::new();
-    for spec in registry.specs() {
+/// Where one section header was drawn this frame (visual-debug / agent surface).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionFrame {
+    pub id: String,
+    pub header: Rect,
+    pub open: bool,
+}
+
+/// What a panel frame rendered and produced.
+#[derive(Clone, Debug, Default)]
+pub struct PanelFrame {
+    pub interactions: Vec<Interaction>,
+    /// Control ids drawn this frame, in order (controls inside collapsed sections are absent).
+    pub rendered: Vec<String>,
+    pub sections: Vec<SectionFrame>,
+}
+
+fn show_level(ui: &mut Ui, registry: &Registry, store: &ValueStore, section: Option<&str>, frame: &mut PanelFrame) {
+    for spec in registry.controls_in(section) {
         if let Some(v) = store.get(&spec.id) {
-            out.extend(show(ui, spec, v));
+            frame.rendered.push(spec.id.clone());
+            frame.interactions.extend(show(ui, spec, v));
+        }
+    }
+    for sec in registry.children_of(section) {
+        let response = egui::CollapsingHeader::new(sec.label.as_str())
+            .id_salt(widget_id(&sec.id))
+            .default_open(!sec.collapsed_by_default)
+            .show(ui, |ui| show_level(ui, registry, store, Some(&sec.id), frame));
+        response.header_response.clone().on_hover_text(sec.help.as_str());
+        frame.sections.push(SectionFrame { id: sec.id.clone(), header: response.header_response.rect, open: response.body_response.is_some() });
+    }
+}
+
+/// Renders the panel tree from the registry: root controls, then root sections (collapsible,
+/// `collapsed_by_default` honoured), each with its controls then child sections.
+pub fn show_panel(ui: &mut Ui, registry: &Registry, store: &ValueStore) -> PanelFrame {
+    let mut frame = PanelFrame::default();
+    show_level(ui, registry, store, None, &mut frame);
+    frame
+}
+
+/// Result of one panel frame applied to a store.
+#[derive(Clone, Debug, Default)]
+pub struct PanelOutcome {
+    /// Accepted changes (live gesture samples, discrete edits, committed/aborted gestures).
+    pub changes: Vec<ChangeEvent>,
+    pub rendered: Vec<String>,
+    pub sections: Vec<SectionFrame>,
+    /// Interactions the store refused (their error text is also shown next to the control).
+    pub rejected: Vec<ControlError>,
+}
+
+impl PanelOutcome {
+    /// Events a host pushes on its undo stack: one per discrete edit and one per finished gesture.
+    pub fn undo_steps(&self) -> impl Iterator<Item = &ChangeEvent> {
+        self.changes.iter().filter(|e| e.is_undo_step())
+    }
+}
+
+/// Renders the panel and applies this frame's interactions to `store`.
+pub fn show_panel_and_apply(ui: &mut Ui, registry: &Registry, store: &mut ValueStore, actor: Option<&ActorContext>) -> PanelOutcome {
+    let frame = show_panel(ui, registry, store);
+    let mut out = PanelOutcome { rendered: frame.rendered, sections: frame.sections, ..PanelOutcome::default() };
+    for i in &frame.interactions {
+        match store.apply(registry, i, actor) {
+            Ok(Some(ev)) => out.changes.push(ev),
+            Ok(None) => {}
+            Err(e) => out.rejected.push(e),
         }
     }
     out
-}
-
-/// Renders the panel and applies this frame's interactions to `store`; returns accepted changes.
-/// Rejected interactions leave the store untouched (their error text stays visible next to the
-/// control until the next accepted edit or Escape).
-pub fn show_panel_and_apply(ui: &mut Ui, registry: &Registry, store: &mut ValueStore, actor: Option<&ActorContext>) -> Vec<ChangeEvent> {
-    let interactions = show_panel(ui, registry, store);
-    interactions.iter().filter_map(|i| store.apply(registry, i, actor).ok().flatten()).collect()
 }
