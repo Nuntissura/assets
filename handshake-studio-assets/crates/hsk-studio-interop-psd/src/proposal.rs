@@ -95,6 +95,9 @@ pub struct LayerAppearance {
     pub blend_mode: Option<BlendMode>,
     /// The same mode as Pigment's `StudioBlendMode` (single owner of the enumeration).
     pub studio_blend: Option<StudioBlendMode>,
+    /// `pass` on a group record: the group composites its children straight into the backdrop.
+    /// It is a group flag, never a leaf layer mode (a leaf with `pass` has `studio_blend` None).
+    pub pass_through: bool,
     pub clipped: bool,
     pub blend_clipped_elements: Option<bool>,
     pub blend_interior_elements: Option<bool>,
@@ -216,14 +219,21 @@ impl Builder<'_, '_> {
         self.loss.entries.push(crate::loss::LossEntry { path, kind, code });
     }
 
-    fn record_appearance(&mut self, layer_id: &str, index: usize, layer: &PsdLayer) {
+    fn record_appearance(&mut self, layer_id: &str, index: usize, layer: &PsdLayer, is_group: bool) {
+        let mode = layer.blend_mode();
+        let pass_through = is_group && mode == Some(BlendMode::PassThrough);
+        let studio_blend = match mode {
+            Some(BlendMode::PassThrough) if !is_group => None,
+            other => other.map(BlendMode::studio_mode),
+        };
         self.appearance.push(LayerAppearance {
             layer_id: layer_id.to_owned(),
             psd_index: index,
             opacity: layer.opacity,
             blend_key: layer.blend_key,
             blend_mode: layer.blend_mode(),
-            studio_blend: layer.blend_mode().map(BlendMode::studio_mode),
+            studio_blend,
+            pass_through,
             clipped: layer.clipping == 1,
             blend_clipped_elements: layer.blend_clipped_elements(),
             blend_interior_elements: layer.blend_interior_elements(),
@@ -259,7 +269,7 @@ impl Builder<'_, '_> {
             "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
             "kind": "group", "payload": {"payload_kind": "group"}, "visible": layer.visible(),
         }));
-        self.record_appearance(&id, folder, layer);
+        self.record_appearance(&id, folder, layer, true);
         let inner_parent = json!({"node_kind": "layer", "node_id": id});
         let child_outputs = self.walk(children, &inner_parent)?;
         self.operations.push(json!({
@@ -303,7 +313,7 @@ impl Builder<'_, '_> {
                 "visible": layer.visible(),
             }));
             self.note(format!("layer[{index}]"), LossKind::Unsupported, code);
-            self.record_appearance(&id, index, layer);
+            self.record_appearance(&id, index, layer, false);
             return Ok(None);
         }
         if layer.blocks.iter().any(|b| CACHED_PIXEL_KEYS.contains(&&b.key)) {
@@ -318,7 +328,7 @@ impl Builder<'_, '_> {
                 "visible": layer.visible(),
             }));
             self.note(format!("layer[{index}]/pixels"), LossKind::Unsupported, "raster_pixels_unmapped");
-            self.record_appearance(&id, index, layer);
+            self.record_appearance(&id, index, layer, false);
             return Ok(None);
         }
         let tiles = self.tiles_for(index, layer, &id)?;
@@ -330,7 +340,7 @@ impl Builder<'_, '_> {
             "layer_id": id, "operation_key": "source", "operation_kind": "source",
             "inputs": [], "outputs": [port("out", "one", "source")],
         }));
-        self.record_appearance(&id, index, layer);
+        self.record_appearance(&id, index, layer, false);
         Ok(Some(address(&id, "source", "out")))
     }
 

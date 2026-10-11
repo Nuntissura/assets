@@ -122,6 +122,10 @@ fn layer_entries(i: usize, layer: &PsdLayer, report: &mut LossReport) {
         // Never mapped to Normal: the key stays verbatim in the record.
         report.push(at("blend"), LossKind::Unsupported, "blend_mode_unknown");
     }
+    if layer.blend_mode() == Some(BlendMode::PassThrough) && layer.group_role() == GroupRole::None {
+        // `pass` is a group property; on a leaf it has no Studio meaning and is not mapped to Normal.
+        report.push(at("blend"), LossKind::Unsupported, "pass_through_on_leaf_layer");
+    }
     if let Some(key) = layer.group_blend_key()
         && key != layer.blend_key
         && !matches!(layer.group_role(), GroupRole::None)

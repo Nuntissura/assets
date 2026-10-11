@@ -504,7 +504,10 @@ fn unknown_blend_and_unmapped_fields_are_typed_losses() {
             layer_block(b"levl", &[0; 4], false),
             layer_block(b"clbl", &[1], false),
         ];
-        let info = layer_info(&[l], false, false);
+        let mut leaf_pass = TLayer::new("p", [0, 0, 1, 1]);
+        leaf_pass.key = *b"pass";
+        leaf_pass.channels = vec![(0, 0, vec![1]), (1, 0, vec![2]), (2, 0, vec![3])];
+        let info = layer_info(&[l, leaf_pass], false, false);
         let bytes = Doc {
             version: 1,
             channels: 3,
@@ -527,6 +530,8 @@ fn unknown_blend_and_unmapped_fields_are_typed_losses() {
         let report = doc.loss_report(&limits);
         let code = |path: &str| report.find(path).map(|e| (e.kind, e.code));
         assert_eq!(code("layer[0]/blend"), Some((LossKind::Unsupported, "blend_mode_unknown")));
+        assert_eq!(code("layer[1]/blend"), Some((LossKind::Unsupported, "pass_through_on_leaf_layer")));
+        assert_eq!(doc.layers()[1].blend_key, *b"pass", "the raw key stays byte-preserved");
         assert_eq!(code("layer[0]/tagged/TySh"), Some((LossKind::PreservedOpaque, "text_layer_not_editable")));
         assert_eq!(code("layer[0]/tagged/lfx2"), Some((LossKind::PreservedOpaque, "layer_effects_not_rendered")));
         assert_eq!(code("layer[0]/tagged/ABCD"), Some((LossKind::PreservedOpaque, "tagged_block_opaque")));
@@ -725,7 +730,10 @@ fn proposal_edit_loop_roundtrip_and_observe() {
         assert_eq!(studio.len(), 28);
         let fg_look = appearance("fg");
         assert_eq!((fg_look.blend_mode, fg_look.clipped), (Some(BlendMode::Screen), true));
-        assert_eq!(appearance("Group \u{fc}").blend_mode, Some(BlendMode::PassThrough));
+        let group_look = appearance("Group \u{fc}");
+        assert_eq!(group_look.blend_mode, Some(BlendMode::PassThrough));
+        assert!(group_look.pass_through, "pass on a group record is the pass-through flag");
+        assert!(!bg_look.pass_through && !fg_look.pass_through);
 
         assert_eq!(proposal.tiles.len(), 4);
         let bg = proposal.tiles.iter().find(|t| t.layer_id == id_of("bg")).unwrap();
