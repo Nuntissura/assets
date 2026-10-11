@@ -641,7 +641,12 @@ fn budgets_are_charged_before_allocation_and_match_the_receipt() {
                     .unwrap();
             assert_eq!(exact.receipt.peak_bytes, cost.peak_bytes, "{name} {win:?}");
             assert_eq!(exact.receipt.work, cost.work, "{name} {win:?}");
-            assert!(calls.load(Ordering::SeqCst) > 0, "{name}");
+            // A zero-size stroke has nothing to read; every other kind reads the alpha.
+            assert_eq!(
+                calls.load(Ordering::SeqCst) > 0,
+                !name.contains("zero size"),
+                "{name}"
+            );
 
             calls.store(0, Ordering::SeqCst);
             let low = WindowLimits::new(cost.peak_bytes - 1, cost.work);
