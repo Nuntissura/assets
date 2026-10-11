@@ -59,6 +59,10 @@ pub enum SessionError {
     /// A provider returned a transaction the session refuses to commit (wrong document, not
     /// exactly one revision ahead, or property revisions that do not follow the session vector).
     ProposalInconsistent,
+    /// A provider's successor document is not the live document plus the property writes the
+    /// proposal declares (it was prepared from another base, or carries unrevisioned edits).
+    /// Nothing was published or sent to the commit authority.
+    ProposalNotDerived,
     /// The saved file did not read back as the revision the session wrote.
     VerifyMismatch,
     /// `save` was called on a session with no origin path.
@@ -110,6 +114,7 @@ impl SessionError {
             Self::ProviderUnavailable => "provider_unavailable",
             Self::Provider(code) => code,
             Self::ProposalInconsistent => "proposal_inconsistent",
+            Self::ProposalNotDerived => "proposal_not_derived",
             Self::VerifyMismatch => "verify_mismatch",
             Self::NoDestination => "no_destination",
             Self::InvalidKey => "invalid_idempotency_key",
@@ -146,6 +151,7 @@ impl SessionError {
             | Self::StaleRevision { .. }
             | Self::Provider(_)
             | Self::ProposalInconsistent
+            | Self::ProposalNotDerived
             | Self::VerifyMismatch
             | Self::NoDestination
             | Self::InvalidKey

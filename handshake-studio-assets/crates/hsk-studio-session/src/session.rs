@@ -413,6 +413,56 @@ fn seed_revisions(document: &StudioDocument) -> Vec<RevisionEntry> {
     vector
 }
 
+/// Sets the addressed property to a neutral value so two documents can be compared without it.
+/// False when the address names no such node or property (chronicle's addressable table).
+fn mask_property(document: &mut StudioDocument, address: &chronicle::PropertyAddress) -> bool {
+    let id = address.target.node_id.as_str();
+    match (&address.target.node_kind, address.property) {
+        (&NodeKind::Layer, chronicle::Property::Name) => document
+            .layers
+            .iter_mut()
+            .find(|layer| layer.layer_id == id)
+            .map(|layer| layer.name.clear())
+            .is_some(),
+        (&NodeKind::Layer, chronicle::Property::Visible) => document
+            .layers
+            .iter_mut()
+            .find(|layer| layer.layer_id == id)
+            .map(|layer| layer.visible = false)
+            .is_some(),
+        (&NodeKind::Artboard, chronicle::Property::Name) => document
+            .artboards
+            .iter_mut()
+            .find(|artboard| artboard.artboard_id == id)
+            .map(|artboard| artboard.name.clear())
+            .is_some(),
+        (&NodeKind::PageSpread, chronicle::Property::Name) => document
+            .page_spreads
+            .iter_mut()
+            .find(|spread| spread.page_spread_id == id)
+            .map(|spread| spread.name.clear())
+            .is_some(),
+        _ => false,
+    }
+}
+
+/// True when `successor` is `base` plus new values at exactly the declared `updates` addresses
+/// (and the successor's revision). A provider may have prepared its transaction from some other
+/// copy of the document; nothing else it changed may ride along unrevisioned.
+fn derives_from(
+    base: &StudioDocument,
+    successor: &StudioDocument,
+    updates: &[RevisionUpdate],
+) -> bool {
+    let mut expected = base.clone();
+    let mut actual = successor.clone();
+    expected.revision = actual.revision;
+    updates
+        .iter()
+        .all(|u| mask_property(&mut expected, &u.address) && mask_property(&mut actual, &u.address))
+        && expected == actual
+}
+
 fn inherited_codec(manifest: &Manifest) -> Codec {
     let mut codec = Codec::Raw;
     for entry in &manifest.entries {
@@ -867,6 +917,14 @@ impl Session {
                     return Err(SessionError::ProposalInconsistent);
                 }
                 slots.push((slot, update.revision));
+            }
+            // Lineage: the successor must be the live document advanced by the declared writes.
+            if !derives_from(
+                self.snapshot.document(),
+                successor.document(),
+                prepared.revision_updates(),
+            ) {
+                return Err(SessionError::ProposalNotDerived);
             }
             successor_snapshot = Some(successor.clone());
         }

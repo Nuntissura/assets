@@ -850,6 +850,90 @@ fn providers_are_instance_owned_enumerable_and_not_trusted() {
     );
 }
 
+/// Renames layer 1 like `RenameFirstLayer`, but prepares from a copy of the live snapshot (same
+/// document id, same revision) that already carries an unrevisioned edit of layer 2 when `forge`.
+struct PrepareFromEditedCopy {
+    forge: bool,
+}
+impl ProposalProvider for PrepareFromEditedCopy {
+    fn propose(&self, request: &ProposalRequest<'_>) -> Result<Prepared, ProviderError> {
+        let mut base = request.snapshot.clone();
+        if self.forge {
+            let mut edited = request.snapshot.document().clone();
+            edited.layers[1].name = "smuggled".into();
+            base = folio::validate_document(
+                edited,
+                request.budget.folio,
+                request.cancel,
+                request.resolver,
+            )
+            .map_err(|_| ProviderError::Rejected("forge_failed"))?;
+        }
+        let revision = request
+            .revisions
+            .iter()
+            .find(|e| e.address == name_address(1))
+            .map_or(0, |e| e.revision);
+        let patch = rename_patch(1, "layer-1", "honest", revision, "forged-base");
+        chronicle::prepare(
+            &patch,
+            &base,
+            request.revisions,
+            request.budget,
+            request.cancel,
+            request.resolver,
+        )
+        .map_err(provider_error)
+    }
+}
+
+#[test]
+fn successor_that_does_not_derive_from_the_live_snapshot_is_refused_before_commit() {
+    bounded_case("forged_successor_refused_before_commit", || {
+        let rig = Rig::new("forged-base", 2);
+        let mut session = rig.session();
+        for (id, forge) in [("test.honest", false), ("test.forged", true)] {
+            session
+                .providers_mut()
+                .register(id, Box::new(PrepareFromEditedCopy { forge }))
+                .unwrap();
+        }
+        let revisions = session.revisions().to_vec();
+        let before = session.snapshot().encoded_bytes().to_vec();
+
+        // The forged successor is the right document and the right revision (8) and its declared
+        // revision update is legal, so every earlier check passes; only lineage catches it.
+        let refused = session
+            .submit_keyed(&key("forge-0001"), "test.forged", b"", 7, &token())
+            .unwrap_err();
+        assert_eq!(refused.error, SessionError::ProposalNotDerived);
+        assert_eq!(refused.code(), "proposal_not_derived");
+        assert_eq!(
+            refused.error.outcome(),
+            Outcome::Failure(FailureCode::Validation)
+        );
+        assert_eq!(session.document_revision(), 7);
+        assert_eq!(session.snapshot().document().layers[0].name, "layer-1");
+        assert_eq!(session.snapshot().document().layers[1].name, "layer-2");
+        assert_eq!(session.snapshot().encoded_bytes(), before.as_slice());
+        assert_eq!(session.revisions(), revisions.as_slice());
+        assert_eq!(
+            (rig.authority.commit_calls(), session.receipt_count()),
+            (0, 0)
+        );
+
+        // The same provider on the live snapshot is an ordinary proposal and commits.
+        let applied = session
+            .submit_keyed(&key("forge-0002"), "test.honest", b"", 7, &token())
+            .unwrap();
+        assert_eq!((applied.previous_revision, applied.revision), (7, 8));
+        assert_eq!(session.snapshot().document().layers[0].name, "honest");
+        assert_eq!(session.snapshot().document().layers[1].name, "layer-2");
+        assert_eq!(rig.authority.commits(), 1);
+        rig.assert_balanced(&session);
+    });
+}
+
 // ----- slice 2: injected ports; the doubles really enforce epoch, revision and idempotency --
 
 #[derive(Clone, Default)]
