@@ -10,7 +10,7 @@
 //! census is produced only when the entire message decodes (test: unsupported_version_duplicate_key_bomb_cancel
 //! asserts no census for an unknown field id and a truncated message).
 #![deny(clippy::arithmetic_side_effects)]
-use crate::container::{CANVAS_PART, FigContainer, Limits};
+use crate::container::{CANVAS_PART, FigContainer, InflateFail, Limits, inflate_exact};
 use crate::import::{
     Census, DefinitionSummary, FieldSummary, LossEntry, LossKind, SchemaSummary, SourceId,
 };
@@ -213,7 +213,7 @@ pub(crate) fn decode_schema(bytes: &[u8], limits: &Limits) -> Result<Schema> {
             if *kind == Kind::Message && *value == 0 {
                 return Err(bad("field_id_zero"));
             }
-            if *kind != Kind::Struct && out.iter().any(|f: &Field| f.value == *value) {
+            if out.iter().any(|f: &Field| f.value == *value) {
                 return Err(bad("duplicate_field_id"));
             }
             out.push(Field {
@@ -524,36 +524,45 @@ fn inflate_raw(
     cap: usize,
     limit_name: &'static str,
     soft_err: FigError,
+    trailing_err: FigError,
 ) -> Result<Vec<u8>> {
-    match miniz_oxide::inflate::decompress_to_vec_with_limit(data, cap) {
-        Ok(out) => Ok(out),
-        Err(e) if e.status == miniz_oxide::inflate::TINFLStatus::HasMoreOutput => {
-            Err(FigError::BudgetExceeded(limit_name))
-        }
-        Err(_) => Err(soft_err),
-    }
+    inflate_exact(data, cap).map_err(|fail| match fail {
+        InflateFail::OutputLimit => FigError::BudgetExceeded(limit_name),
+        InflateFail::Invalid => soft_err,
+        InflateFail::Trailing => trailing_err,
+    })
 }
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
 fn zstd_decode(data: &[u8], cap: usize, cancel: &CancellationToken) -> Result<Vec<u8>> {
     use std::io::Read;
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(data)
-        .map_err(|_| FigError::MessageInvalid("zstd_header_invalid"))?;
-    let (mut out, mut buf) = (Vec::new(), vec![0u8; 64 * 1024]);
-    loop {
-        cancel.check().map_err(|_| FigError::Canceled)?;
-        let n = decoder
-            .read(&mut buf)
-            .map_err(|_| FigError::MessageInvalid("zstd_decode_failed"))?;
-        if n == 0 {
-            return Ok(out);
+    // Concatenated frames are valid zstd (RFC 8878 s3.1) but only the first frame is decoded here:
+    // input left after it would make the census partial, so it is a typed refusal.
+    let mut source = data;
+    let mut out = Vec::new();
+    {
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(&mut source)
+            .map_err(|_| FigError::MessageInvalid("zstd_header_invalid"))?;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            cancel.check().map_err(|_| FigError::Canceled)?;
+            let n = decoder
+                .read(&mut buf)
+                .map_err(|_| FigError::MessageInvalid("zstd_decode_failed"))?;
+            if n == 0 {
+                break;
+            }
+            if out.len().saturating_add(n) > cap {
+                return Err(FigError::BudgetExceeded("message_bytes"));
+            }
+            out.extend_from_slice(&buf[..n]);
         }
-        if out.len().saturating_add(n) > cap {
-            return Err(FigError::BudgetExceeded("message_bytes"));
-        }
-        out.extend_from_slice(&buf[..n]);
     }
+    if !source.is_empty() {
+        return Err(FigError::MessageInvalid("zstd_trailing_bytes"));
+    }
+    Ok(out)
 }
 
 fn chunk_loss(index: usize, code: &'static str) -> LossEntry {
@@ -564,8 +573,9 @@ fn chunk_loss(index: usize, code: &'static str) -> LossEntry {
     }
 }
 
-/// Parses the Kiwi schema (the first of chunks 0 and 1 that inflates as raw DEFLATE and parses; the
-/// public notes disagree on numbering, so what was found is recorded) and, when it decodes, walks
+/// Parses the Kiwi schema (the first of chunks 0 and 1 that inflates as a raw DEFLATE stream; a parse
+/// failure or trailing bytes in that chunk is final; the public notes disagree on numbering, so the
+/// index found is recorded) and, when it decodes, walks
 /// the next chunk as the message (zstd by magic, else raw DEFLATE) for the census. Soft failures
 /// (invalid schema/message, unrecognised compression) become loss entries with no census; bound
 /// hits and cancellation are hard errors.
@@ -585,6 +595,7 @@ pub(crate) fn decode_canvas(
             limits.max_schema_bytes,
             "schema_bytes",
             FigError::SchemaInvalid("schema_inflate_failed"),
+            FigError::SchemaInvalid("schema_chunk_trailing_bytes"),
         )
         .and_then(|raw| decode_schema(&raw, limits));
         match attempt {
@@ -592,7 +603,14 @@ pub(crate) fn decode_canvas(
                 found = Some((index, schema));
                 break;
             }
-            Err(e) => last_soft = soft(&e).ok_or(e)?,
+            Err(e) => {
+                last_soft = soft(&e).ok_or(e)?;
+                // A chunk that inflates is the schema candidate and its failure is final (no second
+                // candidate, so there is no ambiguity about which chunk was the schema).
+                if last_soft != "schema_inflate_failed" {
+                    break;
+                }
+            }
         }
     }
     let Some((schema_index, schema)) = found else {
@@ -634,6 +652,7 @@ pub(crate) fn decode_canvas(
             FigError::DecoderUnavailable {
                 stage: "message_compression_unrecognized",
             },
+            FigError::MessageInvalid("message_chunk_trailing_bytes"),
         ),
     }
     .and_then(|message| census(&schema, &message, limits, cancel));

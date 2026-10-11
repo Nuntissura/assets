@@ -42,6 +42,12 @@ const D_NODE_CHANGE: i32 = 2;
 /// MESSAGE NodeChange {GUID guid=1, NodeType type=2, string name=3}; MESSAGE Message
 /// {NodeChange[] nodeChanges=1, string note=2}. Field ids and values are synthetic.
 fn schema_bytes() -> Vec<u8> {
+    schema_with(2)
+}
+
+/// `schema_bytes` with the GUID struct's `localID` field value chosen by the caller (1 duplicates the
+/// `sessionID` value).
+fn schema_with(local_id_value: u32) -> Vec<u8> {
     type Def<'a> = (&'a str, u8, Vec<(&'a str, i32, bool, u32)>);
     let defs: Vec<Def> = vec![
         (
@@ -58,7 +64,7 @@ fn schema_bytes() -> Vec<u8> {
             1,
             vec![
                 ("sessionID", T_UINT, false, 1),
-                ("localID", T_UINT, false, 2),
+                ("localID", T_UINT, false, local_id_value),
             ],
         ),
         (
@@ -137,6 +143,15 @@ fn canvas_with_message(prelude: &[u8; 8], version: u32, message: &[u8]) -> Vec<u
     out
 }
 
+/// Synthetic `canvas.fig` with exactly the given schema and message chunk bytes.
+fn canvas_chunks(schema_chunk: &[u8], message_chunk: &[u8]) -> Vec<u8> {
+    let mut out = b"fig-kiwi".to_vec();
+    out.extend_from_slice(&SYNTH_VERSION.to_le_bytes());
+    chunk(&mut out, schema_chunk);
+    chunk(&mut out, message_chunk);
+    out
+}
+
 fn canvas(prelude: &[u8; 8], version: u32, nodes: &[(u32, u32, u32, &str)]) -> Vec<u8> {
     canvas_with_message(prelude, version, &message_bytes(nodes))
 }
@@ -174,11 +189,20 @@ fn crc32(data: &[u8]) -> u32 {
 /// ZIP writer for fixtures; names are written as given (duplicates, `..` and so on are allowed
 /// so hostile containers can be built). `deflate` chooses DEFLATE over STORE per part.
 fn zip(parts: &[(&str, &[u8], bool)]) -> Vec<u8> {
+    zip_junk(parts, &[])
+}
+
+/// `zip` with `junk` appended to every DEFLATE body (inside the declared compressed size).
+fn zip_junk(parts: &[(&str, &[u8], bool)], junk: &[u8]) -> Vec<u8> {
     let (mut out, mut central) = (Vec::new(), Vec::new());
     let p16 = |v: &mut Vec<u8>, x: u16| v.extend_from_slice(&x.to_le_bytes());
     let p32 = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_le_bytes());
     for (name, data, deflate) in parts {
-        let packed = deflate.then(|| miniz_oxide::deflate::compress_to_vec(data, 6));
+        let packed = deflate.then(|| {
+            let mut body = miniz_oxide::deflate::compress_to_vec(data, 6);
+            body.extend_from_slice(junk);
+            body
+        });
         let (method, body): (u16, &[u8]) = match &packed {
             Some(d) => (8, d),
             None => (0, data),
@@ -614,6 +638,69 @@ fn unsupported_version_duplicate_key_bomb_cancel() {
         }),
         FigError::BudgetExceeded("definitions")
     );
+    // Trailing bytes after a compressed stream end are refused with a typed reason, never ignored
+    // (RFC 1951 gives a DEFLATE stream a final block, so bytes after it carry no data; RFC 8878 s3.1
+    // allows concatenated zstd frames, but only the first frame is decoded here, so a census of it
+    // would be partial). The clean deflate message is the no-false-positive control.
+    let schema_deflated = miniz_oxide::deflate::compress_to_vec(&schema_bytes(), 6);
+    let message = message_bytes(&nodes());
+    let message_deflated = miniz_oxide::deflate::compress_to_vec(&message, 6);
+    let message_zstd = ruzstd::encoding::compress_to_vec(
+        message.as_slice(),
+        ruzstd::encoding::CompressionLevel::Fastest,
+    );
+    let decode_loss = |imp: &FigImport| {
+        imp.loss
+            .iter()
+            .find(|l| {
+                l.part == "canvas.fig"
+                    && l.kind == LossKind::Unsupported
+                    && l.code != "semantic_decode_blocked"
+            })
+            .map(|l| l.code)
+    };
+    let decoded = |chunks: (&[u8], &[u8])| {
+        imported(&zip(&[(
+            "canvas.fig",
+            &canvas_chunks(chunks.0, chunks.1),
+            false,
+        )]))
+    };
+    let clean = decoded((&schema_deflated, &message_deflated));
+    assert!(clean.census.is_some() && decode_loss(&clean).is_none());
+    let junk = |bytes: &[u8]| [bytes, &[0u8][..]].concat();
+    let case = decoded((&junk(&schema_deflated), &message_deflated));
+    assert!(case.schema_summary.is_none() && case.census.is_none());
+    assert_eq!(decode_loss(&case), Some("schema_chunk_trailing_bytes"));
+    let case = decoded((&schema_deflated, &junk(&message_deflated)));
+    assert!(case.schema_summary.is_some() && case.census.is_none());
+    assert_eq!(decode_loss(&case), Some("message_chunk_trailing_bytes"));
+    let case = decoded((&schema_deflated, &junk(&message_zstd)));
+    assert!(case.census.is_none());
+    assert_eq!(decode_loss(&case), Some("zstd_trailing_bytes"));
+    let two_frames = [message_zstd.clone(), message_zstd.clone()].concat();
+    let case = decoded((&schema_deflated, &two_frames));
+    assert!(case.census.is_none());
+    assert_eq!(decode_loss(&case), Some("zstd_trailing_bytes"));
+    let entry_junk = zip_junk(
+        &[
+            ("canvas.fig", &canvas_ok, false),
+            ("meta.json", b"{}", true),
+        ],
+        &[0],
+    );
+    assert_eq!(
+        open_fig(&entry_junk, &limits, &live).unwrap_err(),
+        FigError::Zip("trailing_compressed_bytes")
+    );
+
+    // Duplicate field ids inside a struct are a typed schema refusal at parse time (the GUID struct
+    // below gives sessionID and localID the same id), never last-wins.
+    let dup_schema = miniz_oxide::deflate::compress_to_vec(&schema_with(1), 6);
+    let case = decoded((&dup_schema, &message_zstd));
+    assert!(case.schema_summary.is_none() && case.census.is_none());
+    assert_eq!(decode_loss(&case), Some("duplicate_field_id"));
+
     // A schema whose type index is out of range is a soft, typed loss.
     let mut bad_schema = vec![1u8];
     bad_schema.extend_from_slice(b"M\0");

@@ -11,11 +11,13 @@
 //! case-folded duplicate names, traversal/absolute/backslash/drive/control names refused; local
 //! headers cross-checked against the central directory (encryption flags, method, CRC and sizes; a data
 //! descriptor may defer CRC and sizes with all-zero local fields; test:
-//! unsupported_version_duplicate_key_bomb_cancel); overlapping entry data refused; CRC-32 verified; STORE and DEFLATE only (no ZIP64, encryption or multi-disk). Uses no file system access (no `std::fs` in this crate).
+//! unsupported_version_duplicate_key_bomb_cancel); overlapping entry data refused; CRC-32 verified;
+//! DEFLATE data must end exactly at the declared compressed size (bytes after the final block are
+//! refused; same test); STORE and DEFLATE only (no ZIP64, encryption or multi-disk). Uses no file
+//! system access (no `std::fs` in this crate).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::{FigError, Result};
 use hsk_studio_accord::CancellationToken;
-use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
@@ -226,6 +228,60 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
     !data.iter().fold(!0u32, |c, b| {
         CRC_TABLE[usize::from((c as u8) ^ b)] ^ (c >> 8)
     })
+}
+
+/// Why a raw DEFLATE stream was refused by [`inflate_exact`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InflateFail {
+    /// More than `cap` bytes would be produced.
+    OutputLimit,
+    /// Not a valid DEFLATE stream (or truncated).
+    Invalid,
+    /// Valid stream, but input bytes remain after its final block.
+    Trailing,
+}
+
+/// Raw DEFLATE (RFC 1951) of exactly `data` into at most `cap` bytes: the stream must end at the end
+/// of `data`, because bytes after the final block carry no data and would let two readers disagree
+/// about the entry. Uses miniz_oxide's own resumable inflater; the growth loop mirrors the one in
+/// its `decompress_to_vec_with_limit`, plus the consumed-input check that function does not make.
+pub(crate) fn inflate_exact(data: &[u8], cap: usize) -> std::result::Result<Vec<u8>, InflateFail> {
+    use miniz_oxide::inflate::TINFLStatus;
+    use miniz_oxide::inflate::core::{
+        DecompressorOxide, decompress, inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
+    };
+    let mut out = vec![0u8; data.len().saturating_mul(2).min(cap)];
+    let mut state = Box::<DecompressorOxide>::default();
+    let (mut in_pos, mut out_pos) = (0usize, 0usize);
+    loop {
+        let input = data.get(in_pos..).ok_or(InflateFail::Invalid)?;
+        let (status, used, wrote) = decompress(
+            &mut state,
+            input,
+            &mut out,
+            out_pos,
+            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
+        );
+        in_pos = in_pos.checked_add(used).ok_or(InflateFail::Invalid)?;
+        out_pos = out_pos.checked_add(wrote).ok_or(InflateFail::Invalid)?;
+        match status {
+            TINFLStatus::Done => {
+                if in_pos != data.len() {
+                    return Err(InflateFail::Trailing);
+                }
+                out.truncate(out_pos);
+                return Ok(out);
+            }
+            TINFLStatus::HasMoreOutput => {
+                let grown = out.len().saturating_mul(2).max(64).min(cap);
+                if grown <= out.len() {
+                    return Err(InflateFail::OutputLimit);
+                }
+                out.resize(grown, 0);
+            }
+            _ => return Err(InflateFail::Invalid),
+        }
+    }
 }
 
 /// `bytes[at + delta .. at + delta + len]`, every sum checked.
@@ -458,8 +514,12 @@ fn read_zip(
             data.to_vec()
         } else {
             let cap = usize::try_from(e.uncomp).map_err(|_| entry_bounds())?;
-            decompress_to_vec_with_limit(data, cap)
-                .map_err(|_| FigError::Zip("inflate_failed_or_size_mismatch"))?
+            inflate_exact(data, cap).map_err(|fail| match fail {
+                InflateFail::Trailing => FigError::Zip("trailing_compressed_bytes"),
+                InflateFail::OutputLimit | InflateFail::Invalid => {
+                    FigError::Zip("inflate_failed_or_size_mismatch")
+                }
+            })?
         };
         if u64::try_from(content.len()).ok() != Some(e.uncomp) {
             return Err(FigError::Zip("size_mismatch"));
