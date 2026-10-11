@@ -608,6 +608,11 @@ dependencies = [
 [[package]]
 name = "hsk-studio-components"
 version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-folio",
+ "hsk-studio-observe",
+]
 
 [[package]]
 name = "hsk-studio-composite"
@@ -692,6 +697,14 @@ dependencies = [
 [[package]]
 name = "hsk-studio-interop-vector"
 version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-folio",
+ "hsk-studio-nib",
+ "hsk-studio-observe",
+ "roxmltree",
+ "svgtypes",
+]
 
 [[package]]
 name = "hsk-studio-kernel-bindings"
@@ -1273,6 +1286,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "rquickjs"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1447,6 +1469,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "siphasher"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1478,6 +1506,16 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "svgtypes"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
+dependencies = [
+ "kurbo",
+ "siphasher",
+]
 
 [[package]]
 name = "syn"
