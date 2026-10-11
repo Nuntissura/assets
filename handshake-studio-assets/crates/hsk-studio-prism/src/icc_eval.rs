@@ -368,6 +368,17 @@ fn table_inverse(t: &[f64], y: f64) -> f64 {
 
 // ------------------------------------------------------------------ CLUT
 const MAX_CH: usize = 16;
+/// Most input channels a `mAB ` / `mBA ` CLUT can describe. ICC.1:2022 Table 46 (lutAToBType CLUT, clause 10.12)
+/// and Table 48 (lutBToAType CLUT, clause 10.13) store "Number of grid points in each dimension" as
+/// `uInt8Number[16]` and say "Only the first i entries are used, where i is the number of input channels", so
+/// i <= 16. moxcms 0.9.1 keeps those 16 entries (`LutMultidimensionalType::grid_points: [u8; 16]`) but its reader
+/// skips a tag only when BOTH channel counts exceed 4 (`read_lut_abm_type`), so a profile byte up to 255 reaches
+/// this crate and must be checked against the array before it indexes it.
+const ICC_MAX_CLUT_INPUTS: usize = 16;
+/// The input-channel bound of a `mAB `/`mBA ` table whose grid array holds `grid_entries` entries.
+fn mab_max_inputs(grid_entries: usize) -> usize {
+    grid_entries.min(ICC_MAX_CLUT_INPUTS)
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct Clut {
@@ -654,9 +665,21 @@ impl Table {
             }
             LutWarehouse::Multidimensional(t) => {
                 let (inputs, outputs) = (usize::from(t.num_input_channels), usize::from(t.num_output_channels));
+                // Untrusted count (a profile byte, 0..=255) against the fixed-size grid array and the ICC maximum,
+                // refused before it indexes anything (R6 review A; tests/wide_hostile.rs:
+                // mab_input_channel_counts_beyond_the_icc_clut_array_are_refused_typed).
+                if inputs > mab_max_inputs(t.grid_points.len()) {
+                    return Err(WideError::MalformedProfile);
+                }
                 let clut = match &t.clut {
                     Some(store) => {
-                        let grid: Vec<usize> = t.grid_points[..inputs].iter().map(|g| usize::from(*g)).collect();
+                        let grid: Vec<usize> = t
+                            .grid_points
+                            .get(..inputs)
+                            .ok_or(WideError::MalformedProfile)?
+                            .iter()
+                            .map(|g| usize::from(*g))
+                            .collect();
                         Some(Clut::new(store, &grid, outputs)?)
                     }
                     None if inputs == outputs => None,

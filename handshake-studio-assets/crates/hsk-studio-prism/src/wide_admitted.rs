@@ -21,8 +21,12 @@
 //! * black point compensation may build up to four extra stages while planning: `BPC_STAGES` x the plan
 //!   bound, plus the 256-point ramp.
 //!
-//! Requests are bounded by `MAX_WIDE_PIXELS`; callers wanting smaller resident output (develop: chunks)
-//! split their frame into several requests, each charged separately.
+//! Requests are bounded by `MAX_WIDE_PIXELS`; callers wanting smaller resident output split their frame into
+//! several requests, each charged separately, or use a job (`prepare_job`) whose bands live in caller buffers.
+//! Whatever the request or band size, the conversion runs in chunks of at most `ADMITTED_CHUNK_PIXELS` (64,
+//! STU-CON-044) pixels: the per-request digest staging buffer charged below is one such chunk, and the receipt's
+//! `chunks` record names the chunks that ran (tests/wide_chunks.rs:
+//! chunk_accounting_is_bounded_deterministic_and_allocation_free).
 #![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
 use crate::admitted::{actor_bytes, add, reserve, reserve_without_cancellation, supported_target};
 use crate::wide::{CHUNK_PIXELS, MAX_WIDE_PIXELS, frame, verify};

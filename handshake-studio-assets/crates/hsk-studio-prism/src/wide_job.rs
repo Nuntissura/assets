@@ -16,15 +16,23 @@
 //!   pixel copy for in-place work); everything the job owns is allocated by `prepare_job`. The admitted route
 //!   charges it all before the job exists, so its ledger trace does not depend on the thread count
 //!   (tests/wide_job.rs: admitted_job_charges_everything_before_the_bands_for_every_thread_count).
+//! * Chunks (STU-CON-044, "bounded chunks of at most 64 pixels ... accounted lifetime"): a band is evaluated in
+//!   chunks of at most `ADMITTED_CHUNK_PIXELS` pixels, one after the other, each with its own cancellation
+//!   check, finite-output check and digest update. `WideBandReport::chunks` records the band's chunks and the job
+//!   receipt's `WideReceipt::chunks` the merge over all bands; both are functions of the band sizes alone. A chunk
+//!   allocates nothing and charges nothing: its only Prism-owned memory is the band's stack staging buffer
+//!   (`WideChunkAccount::scratch_bytes`), and the ledger was charged in full at prepare (tests/wide_chunks.rs:
+//!   chunk_accounting_is_bounded_deterministic_and_allocation_free). Output bits and digests do not depend on the
+//!   chunk size (the digest is one SHA-256 stream over the band's output).
 //! * Failures: a band's outcome depends only on the plan and its pixels; `finish` reports the lowest band that
 //!   failed or was never converted (tests/wide_job.rs: band_contract_is_typed_and_finish_reports_the_lowest_failed_band).
 //! * Digests: each band reports SHA-256 of its output f32 bits (the serial request digest of that band); the job
 //!   receipt carries SHA-256 over the band digests in band order (`JOB_DIGEST_RULE`), independent of thread count.
 #![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
 use crate::wide::{
-    CHUNK_PIXELS, ClipMethod, ClipReport, ForwardSink, MAX_WIDE_PIXELS, Plan, SourceSpace, WIDE_ENGINE_NAME,
-    WIDE_ENGINE_VERSION, WideEngine, WideError, WideFailure, WideProfileDescriptor, WideReceipt, WideSource,
-    canceled, engine_build,
+    CHUNK_PIXELS, CHUNK_STAGE_BYTES, ClipMethod, ClipReport, ForwardSink, MAX_WIDE_PIXELS, Plan, SourceSpace,
+    WIDE_ENGINE_NAME, WIDE_ENGINE_VERSION, WideChunkAccount, WideEngine, WideError, WideFailure,
+    WideProfileDescriptor, WideReceipt, WideSource, canceled, engine_build,
 };
 use crate::{EvaluationOptions, Intent, ProfileInput};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
@@ -118,6 +126,9 @@ pub struct WideBandReport {
     pub band: usize,
     pub pixel_count: usize,
     pub clip: ClipReport,
+    /// Chunks this band ran (STU-CON-044): at most `ADMITTED_CHUNK_PIXELS` pixels each, a function of the band
+    /// size alone.
+    pub chunks: WideChunkAccount,
     /// SHA-256 of this band's output as little-endian f32 bits: the `output_sha256` of a serial
     /// `WideEngine::transform` request holding exactly this band's pixels.
     pub output_sha256: [u8; 32],
@@ -143,6 +154,7 @@ pub struct WideJobResult {
 #[derive(Clone, Copy)]
 struct BandRecord {
     clip: ClipReport,
+    chunks: WideChunkAccount,
     sha256: [u8; 32],
 }
 struct Slot {
@@ -188,19 +200,19 @@ fn merge_clip(total: &mut ClipReport, part: &ClipReport) {
     total.max_overshoot = total.max_overshoot.max(part.max_overshoot);
 }
 
-/// Refuse non-finite output, then feed the chunk's f32 bits (little-endian) to the digest through a stack buffer.
-fn seal_chunk(out: &[f32], hasher: &mut Sha256) -> Result<(), WideError> {
+/// Refuse non-finite output, then feed the chunk's f32 bits (little-endian) to the digest through the band's stack
+/// staging buffer (`CHUNK_STAGE_BYTES`: one chunk of CMYK values).
+fn seal_chunk(out: &[f32], stage: &mut [u8; CHUNK_STAGE_BYTES], hasher: &mut Sha256) -> Result<(), WideError> {
     if out.iter().any(|v| !v.is_finite()) {
         return Err(WideError::NonfiniteOutput);
     }
-    let mut bytes = [0u8; 1024];
-    for group in out.chunks(256) {
+    for group in out.chunks(CHUNK_STAGE_BYTES / 4) {
         let mut used = 0usize;
-        for (dst, v) in bytes.chunks_exact_mut(4).zip(group) {
+        for (dst, v) in stage.chunks_exact_mut(4).zip(group) {
             dst.copy_from_slice(&v.to_le_bytes());
             used = used.saturating_add(4);
         }
-        hasher.update(&bytes[..used]);
+        hasher.update(&stage[..used]);
     }
     Ok(())
 }
@@ -311,6 +323,7 @@ impl WideJob<'_> {
             band,
             pixel_count: slot.pixels,
             clip: r.clip,
+            chunks: r.chunks,
             output_sha256: r.sha256,
         })
     }
@@ -359,19 +372,23 @@ impl WideJob<'_> {
         let outcome = self.check_pixels(pixels).and_then(|()| {
             let mut clip = self.new_clip();
             let mut hasher = Sha256::new();
+            let mut stage = [0u8; CHUNK_STAGE_BYTES];
+            let mut chunks = WideChunkAccount::new(self.out_ch);
             let (chunk_in, chunk_out) = (CHUNK_PIXELS.saturating_mul(self.in_ch), CHUNK_PIXELS.saturating_mul(self.out_ch));
             for (px_chunk, out_chunk) in pixels.chunks(chunk_in).zip(out.chunks_mut(chunk_out)) {
                 canceled(cancel)?;
+                chunks.begin(px_chunk.len().checked_div(self.in_ch).unwrap_or(0));
                 for (px, o) in px_chunk.chunks_exact(self.in_ch).zip(out_chunk.chunks_exact_mut(self.out_ch)) {
                     if let Some(lin) = self.plan.pixel(px, self.lab, o) {
                         Plan::scan_clip(lin, self.clip_channels, &mut clip);
                     }
                 }
-                seal_chunk(out_chunk, &mut hasher)?;
+                seal_chunk(out_chunk, &mut stage, &mut hasher)?;
             }
             canceled(cancel)?;
             Ok(BandRecord {
                 clip,
+                chunks,
                 sha256: hasher.finalize().into(),
             })
         });
@@ -398,8 +415,11 @@ impl WideJob<'_> {
         let outcome = self.check_pixels(buffer).and_then(|()| {
             let mut clip = self.new_clip();
             let mut hasher = Sha256::new();
+            let mut stage = [0u8; CHUNK_STAGE_BYTES];
+            let mut chunks = WideChunkAccount::new(ch);
             for chunk in buffer.chunks_mut(CHUNK_PIXELS.saturating_mul(ch)) {
                 canceled(cancel)?;
+                chunks.begin(chunk.len().checked_div(ch).unwrap_or(0));
                 for px in chunk.chunks_exact_mut(ch) {
                     let mut src = [0.0f32; 4];
                     src[..ch].copy_from_slice(px);
@@ -407,11 +427,12 @@ impl WideJob<'_> {
                         Plan::scan_clip(lin, self.clip_channels, &mut clip);
                     }
                 }
-                seal_chunk(chunk, &mut hasher)?;
+                seal_chunk(chunk, &mut stage, &mut hasher)?;
             }
             canceled(cancel)?;
             Ok(BandRecord {
                 clip,
+                chunks,
                 sha256: hasher.finalize().into(),
             })
         });
@@ -437,6 +458,7 @@ impl WideJob<'_> {
             total_pixels,
             slots,
             clip_method,
+            out_ch,
             ..
         } = self;
         let bands = slots.len();
@@ -444,12 +466,14 @@ impl WideJob<'_> {
             method: clip_method,
             ..Default::default()
         };
+        let mut chunks = WideChunkAccount::new(out_ch);
         let mut digest = Sha256::new();
         let mut verdict: Result<(), WideError> = Ok(());
         for slot in &slots {
             match slot.done.get() {
                 Some(Ok(record)) => {
                     merge_clip(&mut clip, &record.clip);
+                    chunks.merge(&record.chunks);
                     digest.update(record.sha256);
                 }
                 Some(Err(error)) => {
@@ -543,6 +567,7 @@ impl WideJob<'_> {
             revision,
             correlation_id,
             pixel_count: usize::try_from(total_pixels).unwrap_or(usize::MAX),
+            chunks,
             output_sha256: digest.finalize().into(),
         };
         Ok(WideJobResult {

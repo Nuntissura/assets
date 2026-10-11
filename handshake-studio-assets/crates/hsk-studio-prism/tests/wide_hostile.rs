@@ -67,6 +67,71 @@ fn dims_u32_max_and_oversized_tables_are_refused_typed() {
     assert_eq!(inspect(&big).unwrap_err(), WideError::ProfileLimit);
 }
 
+/// `mAB `/`mBA ` tag with explicit (hostile) channel counts: no curves, no matrix, and for `Some(grid)` a CLUT whose
+/// 16 grid sizes are all `grid` (precision 2, zero data of the length moxcms reads: the product of the first
+/// min(inputs, 16) grid sizes times the output channels).
+fn mab_counts(sig: &[u8; 4], inputs: u8, outputs: u8, grid: Option<u8>) -> Vec<u8> {
+    let mut t = sig.to_vec();
+    t.extend_from_slice(&[0; 4]);
+    t.extend_from_slice(&[inputs, outputs, 0, 0]);
+    t.extend_from_slice(&be32(0)); // B curves
+    t.extend_from_slice(&be32(0)); // matrix
+    t.extend_from_slice(&be32(0)); // M curves
+    t.extend_from_slice(&be32(if grid.is_some() { 32 } else { 0 })); // CLUT
+    t.extend_from_slice(&be32(0)); // A curves
+    if let Some(g) = grid {
+        t.extend_from_slice(&[g; 16]);
+        t.extend_from_slice(&[2, 0, 0, 0]);
+        let nodes = usize::from(g).pow(u32::from(inputs.min(16))) * usize::from(outputs);
+        t.resize(t.len() + nodes * 2, 0);
+    }
+    t
+}
+fn rgb_with_table(sig: &[u8; 4], table: Vec<u8>) -> Vec<u8> {
+    assemble(0x0420_0000, b"mntr", b"RGB ", b"XYZ ", &[xyz_tag(D50), table], &[(b"wtpt", 0), (sig, 1)])
+}
+/// Which typed error a one-pixel conversion through a plan built from the profile ends in.
+fn plan_error(source: &[u8], destination: &[u8]) -> WideError {
+    let ctx = Ctx::new();
+    let mut eng = engine(&ctx);
+    match run(&mut eng, &ctx, source, destination, &[0.5, 0.5, 0.5], Intent::RelativeColorimetric, false) {
+        Ok(_) => panic!("hostile table was admitted"),
+        Err(f) => f.error,
+    }
+}
+
+/// R6 review A (icc_eval.rs Table::build): the input-channel byte of a `mAB `/`mBA ` tag (0..=255) used to slice the
+/// 16-entry grid array unchecked, and moxcms 0.9.1 parses a tag with up to 255 inputs when it has at most 4
+/// outputs. Every such count must end in a typed refusal, never a panic.
+#[test]
+fn mab_input_channel_counts_beyond_the_icc_clut_array_are_refused_typed() {
+    // Source side (A2B0 `mAB `, RGB device): 17, 64 and 255 inputs with a CLUT, and without one.
+    for inputs in [17u8, 64, 255] {
+        let with_clut = rgb_with_table(b"A2B0", mab_counts(b"mAB ", inputs, 3, Some(2)));
+        assert_eq!(plan_error(&with_clut, SRGB), WideError::MalformedProfile, "A2B0 {inputs} inputs with CLUT");
+        let no_clut = rgb_with_table(b"A2B0", mab_counts(b"mAB ", inputs, 3, None));
+        assert_eq!(plan_error(&no_clut, SRGB), WideError::MalformedProfile, "A2B0 {inputs} inputs no CLUT");
+    }
+    // Destination side (B2A0 `mBA `): the same counts in the PCS -> device table.
+    for inputs in [17u8, 255] {
+        let with_clut = rgb_with_table(b"B2A0", mab_counts(b"mBA ", inputs, 3, Some(2)));
+        assert_eq!(plan_error(SRGB, &with_clut), WideError::MalformedProfile, "B2A0 {inputs} inputs with CLUT");
+    }
+    // Inside the ICC array (<= 16) but beyond Prism's own 8-input CLUT bound: unsupported, not malformed.
+    for inputs in [9u8, 16] {
+        let table = rgb_with_table(b"A2B0", mab_counts(b"mAB ", inputs, 3, Some(2)));
+        assert_eq!(plan_error(&table, SRGB), WideError::UnsupportedProfile, "A2B0 {inputs} inputs");
+    }
+    // Output channel counts: 17 and 255 outputs (3 inputs) exceed the evaluator's 16-channel scratch.
+    for outputs in [17u8, 255] {
+        let table = rgb_with_table(b"A2B0", mab_counts(b"mAB ", 3, outputs, Some(2)));
+        assert_eq!(plan_error(&table, SRGB), WideError::UnsupportedProfile, "A2B0 {outputs} outputs");
+    }
+    // A table whose channel counts differ from the device (5 inputs on an RGB profile) is malformed.
+    let five = rgb_with_table(b"A2B0", mab_counts(b"mAB ", 5, 3, Some(2)));
+    assert_eq!(plan_error(&five, SRGB), WideError::MalformedProfile);
+}
+
 struct CappedLedger {
     live: AtomicU64,
     cap: u64,

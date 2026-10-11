@@ -47,6 +47,38 @@ impl ProviderAdmission for Admission {
     }
 }
 
+/// R6 review A (wide.rs WIDE_DESCRIPTOR): the descriptor must not list ledger admission as out of scope while
+/// the admitted route exists, and its admitted_route claim must name the tests that prove the bookkeeping.
+#[test]
+fn descriptor_scopes_the_ledger_not_in_scope_entry_to_the_plain_engine_and_cites_its_tests() {
+    let d = WIDE_DESCRIPTOR;
+    assert!(!d.contains("caller memory-ledger admission of the wide path"), "unscoped not_in_scope entry is back");
+    let after = |key: &str| d.split_once(key).map(|(_, rest)| rest).unwrap_or_else(|| panic!("descriptor has no {key}"));
+    let admitted = after("\"admitted_route\":").split("\",\"job_route\"").next().unwrap();
+    assert!(admitted.contains("tests/wide_admitted.rs admitted_wide_engine_charges_plans_outputs_and_requests_before_allocating"));
+    assert!(admitted.contains("tests/wide_job.rs admitted_job_charges_everything_before_the_bands_for_every_thread_count"));
+    let scope = after("\"not_in_scope\":").split("],\"manual_route\"").next().unwrap();
+    assert!(scope.contains("by the plain WideEngine") && scope.contains("AdmittedWideEngine does charge it"), "{scope}");
+    // Structural JSON check without a JSON dependency: strings close, brackets balance.
+    let (mut depth, mut in_string, mut escaped) = (0i32, false, false);
+    for c in d.chars() {
+        match (in_string, escaped, c) {
+            (true, true, _) => escaped = false,
+            (true, false, '\\') => escaped = true,
+            (true, false, '"') => in_string = false,
+            (true, false, _) => {}
+            (false, _, '"') => in_string = true,
+            (false, _, '{' | '[') => depth += 1,
+            (false, _, '}' | ']') => {
+                depth -= 1;
+                assert!(depth >= 0, "unbalanced closing bracket");
+            }
+            _ => {}
+        }
+    }
+    assert!(!in_string && depth == 0, "descriptor is not balanced JSON");
+}
+
 #[test]
 fn admitted_wide_engine_charges_plans_outputs_and_requests_before_allocating() {
     if !cfg!(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")) {
