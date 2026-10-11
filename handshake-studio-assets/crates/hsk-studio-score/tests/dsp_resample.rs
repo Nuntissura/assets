@@ -168,12 +168,12 @@ fn resampler_preserves_counts_tone_and_dc() {
         assert_eq!(got.len(), 4410);
         // The output is a pure 1 kHz tone at half amplitude: least-squares fit `a sin + b cos`
         // over the clip interior leaves (almost) no residual, so nothing was aliased, distorted
-        // or rescaled. The phase lead is the uncaptured sub-frame alignment (rubato trims
-        // floor(256 * ratio / 2) output frames; measured 0.4..1.02 frames across tested ratios).
+        // or rescaled. The phase lead is the residual alignment error: ClipResampler pads and
+        // drops frames so it is whole-frame exact (measured under 0.02 frames; see alignment_bounce).
         let fit = fit_tone(got, 1000.0, 44_100.0, 400..4000);
         assert!((fit.amplitude - 0.5).abs() < 1e-3, "amplitude {}", fit.amplitude);
         assert!(fit.residual_rms < 1e-3, "residual {}", fit.residual_rms);
-        assert!(fit.lead_frames.abs() < 1.6, "alignment {} frames", fit.lead_frames);
+        assert!(fit.lead_frames.abs() < 0.05, "alignment {} frames", fit.lead_frames);
 
         // Up-conversion 32 kHz -> 48 kHz (x1.5) of a constant keeps the constant (DC gain 1).
         let dc = vec![0.5_f32; 3200];
