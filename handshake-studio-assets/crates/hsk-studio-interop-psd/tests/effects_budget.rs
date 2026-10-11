@@ -24,11 +24,15 @@ const OVER_LAYER: &str = "effects_over_budget";
 const OVER_DOCUMENT: &str = "effects_over_document_budget";
 const OVER_UNRENDERED: &str = "effects_unrendered_over_document_budget";
 
-struct Mint(u64);
+/// Host identity minting; `stacks` counts the `SEFX` ids it was asked for.
+struct Mint {
+    n: u64,
+    stacks: usize,
+}
 impl Mint {
     fn next(&mut self, prefix: &str) -> String {
-        self.0 += 1;
-        format!("{prefix}-019abcde-0000-7000-8000-{:012x}", self.0)
+        self.n += 1;
+        format!("{prefix}-019abcde-0000-7000-8000-{:012x}", self.n)
     }
 }
 impl IdMint for Mint {
@@ -48,6 +52,7 @@ impl IdMint for Mint {
         format!("manifest/{layer_id}/{object_key}")
     }
     fn effect_stack_id(&mut self, _layer_id: &str) -> Option<String> {
+        self.stacks += 1;
         Some(self.next("SEFX"))
     }
 }
@@ -315,18 +320,23 @@ fn repeated(n: usize, fx: Fx) -> impl Iterator<Item = Fx> {
 // ---- import and inspection helpers ----------------------------------------------------------
 
 fn import(bytes: &[u8]) -> Result<(PsdDocument, ImportProposal)> {
+    import_counting(bytes).map(|(doc, proposal, _)| (doc, proposal))
+}
+/// [`import`], and how many `SEFX` ids the importer asked the host to mint.
+fn import_counting(bytes: &[u8]) -> Result<(PsdDocument, ImportProposal, usize)> {
     let limits = Limits::default();
     let doc = read(bytes);
     let cfg = ProposalConfig::new(&limits, budget(), &Host);
+    let mut mint = Mint { n: 0, stacks: 0 };
     let proposal = to_proposal(
         &doc,
         &SourceIdentity::of(bytes),
         &cfg,
-        &mut Mint(0),
+        &mut mint,
         None,
         &CancellationToken::default(),
     )?;
-    Ok((doc, proposal))
+    Ok((doc, proposal, mint.stacks))
 }
 fn layer_id_of(p: &ImportProposal, psd_index: usize) -> String {
     p.layer_map
@@ -573,7 +583,12 @@ fn effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on(
             ));
             panel.push(Node::Layer(Fx::live(1)));
             let bytes = build(&panel);
-            let (doc, p) = import(&bytes).expect("4097 counted effects: the import continues");
+            let (doc, p, minted) =
+                import_counting(&bytes).expect("4097 counted effects: the import continues");
+            assert_eq!(
+                minted, MAX_EFFECTS_PLAN_LAYERS,
+                "a refused stack consumes no SEFX id: one is minted per kept stack"
+            );
             assert_eq!(
                 p.snapshot.document().layers.len(),
                 MAX_EFFECTS_PLAN_LAYERS + 1,
