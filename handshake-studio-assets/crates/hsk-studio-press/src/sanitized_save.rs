@@ -13,16 +13,30 @@
 //!   input left after a filter's end-of-data marker is `NotProven::TrailingData`.
 //! - Every PDF string, name and dictionary key (hex and escaped spellings compare by decoded value),
 //!   and every string operand of content that tokenizes.
-//! - Text that only a font reading reveals, read by the content walk (`show_text`): fonts
-//!   follow the graphics state (`q`/`Q`, `gs`, `Tf`, across a page's content streams and into forms
-//!   drawn by `Do`, with inherited resources); content the walk cannot follow is
-//!   `NotProven::UnreadableContent` (tests `font_state_follows_q_q_gs_and_do`,
+//! - Text that only a font reading reveals, read by the determination pass (`show_text`, lead
+//!   decision 2026-10-11T13:10:26Z): fonts follow the graphics state (`q`/`Q`, `gs`, `Tf`, across a
+//!   page's content streams and into forms drawn by `Do`, with inherited resources); content the walk
+//!   cannot follow is `NotProven::UnreadableContent` (tests `font_state_follows_q_q_gs_and_do`,
 //!   `unreadable_or_stray_content_never_reads_clean`). The walk covers the object table, not only
 //!   the page tree: page objects outside the tree (template pages, pages reached only through a
-//!   destination) are read with their resources, and every other stream that tokenizes as content is
-//!   read with none (an unresolvable font makes its text opaque); a kerned `TJ` is matched per string
-//!   and as one joined run (R8 F1/F2; tests `partial_tounicode_and_unreachable_pages_are_read_or_opaque`,
-//!   `kerned_tj_runs_are_read_whole`).
+//!   destination) are read with their resources, Type 3 glyph procedures of every Type 3 font
+//!   (direct dictionaries included) with the font's, and every other stream that tokenizes as content
+//!   with none, whatever its dictionary keys (R8 F1, R9-P1; tests
+//!   `partial_tounicode_and_unreachable_pages_are_read_or_opaque`, `direct_type3_glyph_procedures_are_read`).
+//!   Every text-showing operator is recorded as positively determined or not (font, writing mode,
+//!   reading; `PayloadProof::undetermined_text`): an undetermined one is `NotProven::OpaqueText` or
+//!   `NotProven::UnresolvedWritingMode`, and on a redaction's page an operator whose glyph geometry is
+//!   not computed makes the region incomplete (`RedactedOutput::region_undetermined`).
+//! - Needles are matched in the text each root draws in drawing order: the readings of all its
+//!   strings (across operators, text objects and the forms it draws) joined, and spaced (a space
+//!   between strings, so kerning used as the word space reads as one), every reading kind (font text,
+//!   `/ToUnicode`, bytes); the whole-token rule exempts only a match inside ONE string glued to a letter
+//!   of that string, never a match that spans strings (R9-F3; tests `split_runs_are_read_whole`,
+//!   `kerning_word_spaces_are_read`). Every string and name, and the text of every stream that is not
+//!   only kept page text (XMP, embedded files), is also matched as text. All text is normalised first
+//!   (`norm.rs`: language escapes, characters that draw nothing, NFKC compatibility forms; R9-P2; tests
+//!   `language_escapes_and_invisible_characters_never_hide_text`,
+//!   `zero_width_and_compatibility_characters_never_hide_text`).
 //! - Spellings: the given bytes, PDFDocEncoding, UTF-8, UTF-16BE, UTF-16LE, upper- and lower-case hex
 //!   of the byte and UTF-16BE spellings, and the codes each font's `/ToUnicode` map gives the text
 //!   (scanned in the content streams that can select that font).
@@ -62,12 +76,13 @@ const MAX_CODE_VARIANTS: usize = 256;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PayloadLocation {
     RawBytes { offset: usize },
+    /// In a decoded stream: at `offset` of its bytes, or (offset 0) in the stream read as text.
     DecodedStream { object: u32, offset: usize },
     StringObject { object: u32 },
     ContentString { object: u32 },
     /// Text drawn in an annotation appearance or stray content (including page objects outside the
-    /// page tree) that only a font reading (encoding, `/ToUnicode`) or the joined run of a kerned
-    /// `TJ` reveals.
+    /// page tree), read through its fonts in drawing order (`object`: the stream of the first string
+    /// of the match).
     DecodedText { object: u32 },
     /// The decoded data of an inline image in content stream `object`.
     InlineImage { object: u32, offset: usize },
@@ -139,7 +154,7 @@ pub enum NotProven {
     UnreadableRemovedText,
     /// Some text is drawn with a composite font whose writing mode is not positively known
     /// (`PayloadProof::undetermined_text` with [`TextCause::UnresolvedWritingMode`]; lead decision
-    /// 2026-10-11T13:10:26Z, R9-F1; test `writing_mode_is_read_from_the_cmap`).
+    /// 2026-10-11T13:10:26Z, R9-F1; test `unknown_cmap_names_are_unresolved_writing_modes`).
     UnresolvedWritingMode,
 }
 
@@ -181,8 +196,8 @@ pub struct PayloadProof {
     /// `(content stream, cause)` of every text-showing operator that was not positively determined
     /// (sorted, unique): no font, an unresolved font, an unresolved writing mode, an unreadable code.
     /// Font and code causes are `opaque_text_streams` (`NotProven::OpaqueText`), a writing-mode cause
-    /// is `NotProven::UnresolvedWritingMode` (tests `font_is_graphics_state_in_the_selector`,
-    /// `writing_mode_is_read_from_the_cmap`).
+    /// is `NotProven::UnresolvedWritingMode` (tests `undetermined_fonts_never_read_as_cleared`,
+    /// `unknown_cmap_names_are_unresolved_writing_modes`).
     pub undetermined_text: Vec<(u32, TextCause)>,
     /// `(object, first filter)` of streams with non-whitespace input after a filter's end-of-data
     /// marker (`inline:<filter>` for inline images, `hidden_zlib` behind a raster codec name).
@@ -504,20 +519,23 @@ fn stream_text_hits(bytes: &[u8], needles: &[Needle]) -> BTreeSet<usize> {
     } else {
         String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)).into_owned()
     };
-    let hay = normalized_str(&text, Escapes::Chars);
-    for n in needles {
-        let pat: String = n.chars.iter().collect();
-        let (first, last) = (n.chars.first().copied().unwrap_or(' '), n.chars.last().copied().unwrap_or(' '));
-        let found = hay.match_indices(pat.as_str()).any(|(at, m)| {
-            if !n.token {
-                return true;
+    let forms: &[Escapes] = if text.contains('\u{1B}') { &[Escapes::Chars, Escapes::Segments] } else { &[Escapes::Chars] };
+    for escapes in forms {
+        let hay = normalized_str(&text, *escapes);
+        for n in needles {
+            let pat: String = n.chars.iter().collect();
+            let (first, last) = (n.chars.first().copied().unwrap_or(' '), n.chars.last().copied().unwrap_or(' '));
+            let found = hay.match_indices(pat.as_str()).any(|(at, m)| {
+                if !n.token {
+                    return true;
+                }
+                let before = hay.get(..at).and_then(|h| h.chars().next_back()).is_some_and(|c| c.is_ascii_alphanumeric()) && first.is_ascii_alphanumeric();
+                let after = hay.get(at.saturating_add(m.len())..).and_then(|h| h.chars().next()).is_some_and(|c| c.is_ascii_alphanumeric()) && last.is_ascii_alphanumeric();
+                !(before || after)
+            });
+            if found {
+                out.insert(n.index);
             }
-            let before = hay.get(..at).and_then(|h| h.chars().next_back()).is_some_and(|c| c.is_ascii_alphanumeric()) && first.is_ascii_alphanumeric();
-            let after = hay.get(at.saturating_add(m.len())..).and_then(|h| h.chars().next()).is_some_and(|c| c.is_ascii_alphanumeric()) && last.is_ascii_alphanumeric();
-            !(before || after)
-        });
-        if found {
-            out.insert(n.index);
         }
     }
     out
@@ -976,11 +994,16 @@ fn verify_internal(
     for rt in &roots {
         check_cancel(cancel)?;
         let mut matched: BTreeSet<(usize, usize)> = BTreeSet::new();
-        for (h, hay) in rt.hays.iter().enumerate() {
+        // A reading with an ESC is matched with its ESC..ESC segments dropped too (as in a text string).
+        let forms = rt.hays.iter().enumerate().flat_map(|(h, hay)| {
+            let both: &[Escapes] = if hay.chars.contains(&'\u{1B}') { &[Escapes::Chars, Escapes::Segments] } else { &[Escapes::Chars] };
+            both.iter().map(move |e| (h, hay, *e))
+        });
+        for (h, hay, escapes) in forms {
             if hay.chars.is_empty() {
                 continue;
             }
-            let (chars, src) = normalize(&hay.chars, Escapes::Chars);
+            let (chars, src) = normalize(&hay.chars, escapes);
             let slot: Vec<u32> = src.iter().map(|i| hay.slot.get(*i).copied().unwrap_or(SEP)).collect();
             let font_reading = h < KINDS.saturating_sub(1).saturating_mul(2);
             for n in &needles {
@@ -1180,13 +1203,14 @@ pub struct RedactedOutput {
     /// complete reading: the words they drew are unknown, so the proof could not search for them.
     /// Non-zero withholds `is_proven` with `NotProven::UnreadableRemovedText` (R8 F3/D3; lead decision
     /// 2026-10-11T13:10:26Z removed the 6-byte minimum: one glyph per operator counts; tests
-    /// `unreadable_removed_text_is_never_proven`, `split_runs_are_read_whole`).
+    /// `unreadable_removed_text_is_never_proven`, `glyph_by_glyph_unreadable_text_is_never_proven`).
     pub unreadable_removed: u32,
     /// `(region page index, class)`: text drawn on a region's page in the SAVED file whose glyph
     /// geometry the selector does not compute (Type 3, vertical, unresolved writing mode, unresolved
     /// font), from the determination pass of the proof (sorted, unique). Non-empty makes the region
     /// incomplete (`NotProven::RegionIncomplete`; lead decision 2026-10-11T13:10:26Z; tests
-    /// `font_is_graphics_state_in_the_selector`, `writing_mode_is_read_from_the_cmap`).
+    /// `fonts_inherited_into_forms_are_resolved`, `writing_mode_is_read_from_the_cmap`,
+    /// `undetermined_fonts_never_read_as_cleared`).
     pub region_undetermined: Vec<(u32, RedactionClass)>,
 }
 

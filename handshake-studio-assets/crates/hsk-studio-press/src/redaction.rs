@@ -22,7 +22,8 @@
 //! [`RedactionClass::UnresolvedWritingMode`] / [`RedactionClass::UnresolvedFont`]: refused under
 //! [`UnsupportedPolicy::Refuse`], listed in `unredacted` (never complete) under `ReportAndContinue`
 //! (tests `type3_and_vertical_text_never_read_as_cleared`, `writing_mode_is_read_from_the_cmap`,
-//! `font_is_graphics_state_in_the_selector`).
+//! `unknown_cmap_names_are_unresolved_writing_modes`, `fonts_inherited_into_forms_are_resolved`,
+//! `undetermined_fonts_never_read_as_cleared`).
 //! Images (image XObjects and inline images) cannot be erased pixel by pixel here: under
 //! `UnsupportedPolicy::RemoveImages` an image whose placement touches the region is removed whole
 //! (its `Do` / `BI..EI` leaves the content, the resource entry goes when nothing else uses it), under
@@ -75,7 +76,7 @@ pub struct RedactionReport {
     /// The removed string operands, and for every run of two or more consecutive removed strings of
     /// one text object (`BT`..`ET`, across `Tj`, `TJ`, `'` and `"` operators and the elements of a
     /// `TJ`, ended by a kept non-empty string) that run joined: what a viewer draws as one run (R8 F2,
-    /// R9-F3; tests `kerned_tj_runs_are_read_whole`, `split_runs_are_read_whole`).
+    /// R9-F3; tests `kerned_tj_runs_are_read_whole`, `removed_runs_join_across_show_operators`).
     pub removed_text: Vec<Vec<u8>>,
     /// `removed_text[i]` as its font draws it: its simple font's encoding reading when that is complete
     /// and tells more than the bytes, else its `/ToUnicode` reading (`None`: the bytes are the text, or
@@ -87,7 +88,7 @@ pub struct RedactionReport {
     /// encoding nor its `/ToUnicode` reads. The words it drew are unknown; any such string, whatever its
     /// length (one glyph per operator included), withholds `RedactedOutput::is_proven`
     /// (`NotProven::UnreadableRemovedText`, R8 F3/D3, R9-F3; tests
-    /// `unreadable_removed_text_is_never_proven`, `split_runs_are_read_whole`).
+    /// `unreadable_removed_text_is_never_proven`, `glyph_by_glyph_unreadable_text_is_never_proven`).
     pub removed_unreadable: Vec<bool>,
     pub annotations_removed: Vec<ObjRef>,
     /// Image XObjects whose placement touched the region and was removed (`RemoveImages`).
@@ -485,7 +486,8 @@ impl<'a> Interp<'a> {
     /// non-empty string and the end of the content): two or more are also recorded joined, the text a
     /// viewer draws as one run, so pieces shorter than a distinctive needle (kerned `TJ` elements, one
     /// `Tj` per syllable or glyph) are searched as the word they form, and its readability is judged on
-    /// the whole run (R8 F2, R9-F3; tests `kerned_tj_runs_are_read_whole`, `split_runs_are_read_whole`).
+    /// the whole run (R8 F2, R9-F3; tests `kerned_tj_runs_are_read_whole`, `removed_runs_join_across_show_operators`,
+    /// `glyph_by_glyph_unreadable_text_is_never_proven`).
     fn flush_run(&mut self) {
         let Run { bytes, pieces } = std::mem::take(&mut self.run);
         if pieces.len() < 2 {

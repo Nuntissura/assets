@@ -310,7 +310,7 @@ fn is_pua(c: char) -> bool {
 /// Only the exact name `.notdef` draws no text (ISO 32000-2 9.6.5); any other name whose stem has no
 /// component (`/.s1`, `/.A`, `/_`, `/__`, the empty name) names a glyph the font program draws, which
 /// this reading cannot turn into text: unknown, so the text is opaque (R8 D1; unit test
-/// `glyph_names_follow_the_agl_specification`, test `unmappable_glyph_names_and_encodingless_fonts_are_opaque`).
+/// `glyph_names_follow_the_agl_specification`, test `empty_stem_glyph_names_are_opaque`; R9-D1 citation).
 fn glyph_text(name: &[u8]) -> Glyph {
     let Ok(name) = std::str::from_utf8(name) else { return Glyph::Unknown };
     if name.len() > MAX_GLYPH_NAME {

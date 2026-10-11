@@ -21,7 +21,8 @@
 //! Arlington PDF Model (`tsv/latest/FontType0.tsv`, key `Encoding`, PossibleValues; 61 names, read
 //! 2026-10-11); the horizontal/vertical split cross-checked against the `IS_VERTICAL` flag of the CMap
 //! data bundled with pdfminer.six 20260107 for the 59 names other than Identity-H/-V (0 differences).
-//! Tests: `writing_mode_is_read_from_the_cmap`, `type3_and_vertical_text_never_read_as_cleared` and the
+//! Tests: `writing_mode_is_read_from_the_cmap`, `unknown_cmap_names_are_unresolved_writing_modes`,
+//! `type3_and_vertical_text_never_read_as_cleared` and the
 //! unit test below.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::content::parse_content;

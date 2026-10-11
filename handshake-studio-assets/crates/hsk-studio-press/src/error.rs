@@ -84,12 +84,12 @@ pub enum RedactionClass {
     /// Text on the page whose font is not determined (lead decision 2026-10-11T13:10:26Z, R9-F2): no
     /// `Tf` or ExtGState `/Font` selected one, or the name is not a font dictionary of the resources
     /// in force. Its glyph widths are unknown, so its box is unknown (test
-    /// `font_is_graphics_state_in_the_selector`).
+    /// `undetermined_fonts_never_read_as_cleared`).
     UnresolvedFont,
     /// Text on the page drawn with a composite font whose CMap is neither a known horizontal nor a
     /// known vertical CMap (a predefined name outside ISO 32000-2 9.7.5.2 Table 116, an embedded CMap
     /// that cannot be read, a `/WMode` other than 0 or 1): its advance direction is unknown (R9-F1;
-    /// test `writing_mode_is_read_from_the_cmap`).
+    /// test `unknown_cmap_names_are_unresolved_writing_modes`).
     UnresolvedWritingMode,
 }
 

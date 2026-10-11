@@ -2,11 +2,12 @@
 //! and every text they are matched against (font readings of drawn text, text strings, decoded
 //! streams read as text) go through the same steps, so text a viewer shows as the needle is found
 //! whatever invisible or compatibility characters it is spelled with:
-//! - language escapes: in a PDF text string an `ESC`..`ESC` sequence (ISO 32000-2 7.9.2.2.1; `ESC` =
+//! - language escapes: in a PDF text string an `ESC`..`ESC` sequence (ISO 32000-2 7.9.2.2; `ESC` =
 //!   U+001B) is a language mark, not text; pdf.js `stringToPDFString` drops it, and an `ESC` with no
 //!   closing `ESC` drops the rest of the string ([`Escapes::Segments`]). In drawn text there are no
 //!   language escapes, so only the `ESC` characters are dropped ([`Escapes::Chars`]): a font cannot
-//!   hide glyphs by mapping a code to `ESC`. Callers that match text strings match both forms;
+//!   hide glyphs by mapping a code to `ESC`. Callers match both forms for text strings, and for any
+//!   other text that holds an `ESC` (matching more is the safe side);
 //! - characters that draw nothing are dropped ([`is_ignorable`]: soft hyphen, zero-width space and
 //!   joiners, direction marks and embeddings, word joiner and invisible operators, variation
 //!   selectors, the byte-order mark, tags);
@@ -20,7 +21,8 @@
 //!   characters compare as themselves (stated in the DESCRIPTOR `proof.normalisation`);
 //! - every run of white space reads as one space (U+0020).
 //!
-//! Tests: unit tests below; `language_escapes_and_invisible_characters_never_hide_text` (R9-P2).
+//! Tests: unit tests below; `language_escapes_and_invisible_characters_never_hide_text`,
+//! `zero_width_and_compatibility_characters_never_hide_text` (R9-P2).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::norm_data::{COMPAT, MARK_CLASS};
 
@@ -176,7 +178,7 @@ mod tests {
 
     #[test]
     fn escapes_invisible_and_compatibility_characters_normalise() {
-        // Language escapes in a text string (ISO 32000-2 7.9.2.2.1; pdf.js drops ESC..ESC and ESC..end).
+        // Language escapes in a text string (ISO 32000-2 7.9.2.2; pdf.js drops ESC..ESC and ESC..end).
         assert_eq!(n("SEC\u{1B}en\u{1B}RET", Escapes::Segments), "SECRET");
         assert_eq!(n("SECRET\u{1B}enUS", Escapes::Segments), "SECRET");
         // Drawn text: only the ESC characters go.

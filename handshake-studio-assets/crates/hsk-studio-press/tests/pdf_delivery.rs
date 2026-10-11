@@ -3508,11 +3508,12 @@ fn split_runs_are_read_whole() {
     let out = redact_text_fields_and_save(&mut doc, &["SECRET-ALPHA".to_string()], &TextFieldPolicy::default(), &token()).unwrap();
     expect(&mut red, rows(&out.report, TextRole::Appearance) == vec![(5, false, TextOutcomeKind::Dropped, 1)], format!("text fields: {:?}", out.report.outcomes));
     expect(&mut red, out.is_proven(), format!("text fields: {:?}", out.not_proven_reasons()));
-    // The whole-token rule exempts only what the drawn reading proves: a letter glued in the SAME
-    // string is another token (clean), a letter of the NEXT string is not (a hit).
+    // The whole-token rule exempts only what the drawn reading proves: a match inside ONE string
+    // glued to a letter of that string is another token (clean); a match that spans strings is never
+    // suppressed, whatever letter precedes it (a hit).
     let p = verify_secret(&r8_ap_doc(helv.clone(), "BT /F1 12 Tf 2 5 Td (SECRET-ALPHAx) Tj ET", vec![]));
     assert!(p.is_clean(), "{:?}", p.hits);
-    let p = verify_secret(&r8_ap_doc(helv, "BT /F1 12 Tf 2 5 Td (SECRET-ALPHA) Tj (x) Tj ET", vec![]));
+    let p = verify_secret(&r8_ap_doc(helv, "BT /F1 12 Tf 2 5 Td (xSECRET-) Tj (ALPHA) Tj ET", vec![]));
     expect(&mut red, decoded_text_hit(&p, 13), format!("a concatenated match was suppressed: {:?}", p.hits));
     assert!(red.is_empty(), "{red:#?}");
 }
@@ -3617,7 +3618,7 @@ fn r9_title_found(red: &mut Vec<String>, what: &str, title: &str) {
     expect(red, rows(with.text_fields.as_ref().unwrap(), TextRole::OutlineTitle) == vec![(41, false, TextOutcomeKind::Replaced, 1)], format!("{what}: title outcome"));
 }
 
-/// R9-P2 (language escapes): ESC..ESC in a text string is a language mark (ISO 32000-2 7.9.2.2.1);
+/// R9-P2 (language escapes): ESC..ESC in a text string is a language mark (ISO 32000-2 7.9.2.2);
 /// pdf.js drops it (also in PDFDocEncoding), so the bookmark panel shows SECRET-ALPHA plan. At 49731a5
 /// neither the proof nor the text-field pass found the title.
 #[test]
@@ -3663,4 +3664,18 @@ fn zero_width_and_compatibility_characters_never_hide_text() {
     let out = r7_run(&r8_doc(&r8_page(""), "", "/Outlines 40 0 R", r9_titled(&u16hex("SEC\u{200B}RET-BETA plan"))));
     assert!(out.is_proven(), "{:?}", out.proof.hits);
     assert!(red.is_empty(), "{red:#?}");
+}
+
+/// V4-02 for the determination pass: the text every root draws is charged to `max_decoded_total`
+/// characters (every reading kind, joined and spaced), so content of many long strings runs out of the
+/// budget (aggregate_over_budget) instead of building unbounded text; within the default budget it reads.
+#[test]
+fn determination_text_is_bounded() {
+    let long = "x".repeat(4000);
+    let content: String = (0..20).map(|_| format!("BT /F1 12 Tf 72 300 Td ({long}) Tj ET\n")).collect();
+    let pdf = build(&base_objs(content.as_bytes(), "<< /Title (T) >>"), "/Info 7 0 R", b"");
+    let tight = Limits { max_decoded_total: 200_000, ..Limits::default() };
+    assert_eq!(verify_payload_absent(&pdf, &[b"zzzzzz".to_vec()], &tight, &token()).unwrap_err(), PressError::InputLimit("text_runs"));
+    let p = verify_payload_absent(&pdf, &[b"zzzzzz".to_vec()], &Limits::default(), &token()).unwrap();
+    assert!(p.is_clean(), "{:?}", p.not_proven_reasons());
 }
