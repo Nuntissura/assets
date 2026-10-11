@@ -1160,3 +1160,181 @@ fn detail_actual_value_budget_and_unavailable_rejections() {
         },
     );
 }
+
+/// A document with every node kind chronicle can address plus a layer it cannot:
+/// layer 1 (group), artboard 1, page spread 1, and layer 3 with an unsupported payload.
+fn table_snapshot() -> Snapshot {
+    let bounds = json!({"x":{"value":0,"unit":"mm"},"y":{"value":0,"unit":"mm"},"width":{"value":100,"unit":"mm"},"height":{"value":50,"unit":"mm"}});
+    let mut d = doc();
+    d["artboards"] = json!([{"schema_id":"hsk.studio.artboard@1","artboard_id":id("SART",1),"name":"board","parent":null,"bounds":bounds.clone()}]);
+    d["page_spreads"] = json!([{"schema_id":"hsk.studio.page_spread@1","page_spread_id":id("SPGS",1),"name":"spread","parent":null,"bounds":bounds}]);
+    d["layers"].as_array_mut().unwrap().push(json!({
+        "schema_id":"hsk.studio.layer@1","layer_id":id("SLYR",3),"name":"opaque","parent":null,
+        "kind":"vendor-thing","visible":true,
+        "payload":{"payload_kind":"unsupported","kind":"vendor-thing","schema_id":"vendor.thing@1","encoded_bytes":[1,2,3],"reason":"preserved"}
+    }));
+    match hsk_studio_folio::inspect_bytes(
+        &serde_json::to_vec(&d).unwrap(),
+        Budget::default().folio,
+        &CancellationToken::default(),
+        &Unresolved,
+    )
+    .unwrap()
+    {
+        Inspection::Editable(s) => s,
+        _ => panic!("table fixture became read-only"),
+    }
+}
+fn node(kind: NodeKind, node_id: String, property: Property) -> PropertyAddress {
+    PropertyAddress {
+        target: NodeRef {
+            node_kind: kind,
+            node_id,
+        },
+        property,
+    }
+}
+#[test]
+fn exported_table_is_the_table_prepare_enforces() {
+    bounded_case("exported_table_is_the_table_prepare_enforces", || {
+        // A new Property variant fails to compile here, so PROPERTIES cannot silently lag the enum.
+        fn index(p: Property) -> usize {
+            match p {
+                Property::Name => 0,
+                Property::Visible => 1,
+            }
+        }
+        for (i, p) in PROPERTIES.into_iter().enumerate() {
+            assert_eq!(index(p), i);
+        }
+
+        let s = table_snapshot();
+        let seeded = seed_revisions(s.document());
+        let supported = |a: &PropertyAddress| a.target.node_id != id("SLYR", 3);
+
+        // Every (node, property) pair of every node kind: prepare itself decides acceptance, with
+        // a vector that holds only the pair under test (prepare refuses an unaddressable entry).
+        let nodes = [
+            (NodeKind::Layer, id("SLYR", 1), "original-private-name"),
+            (NodeKind::Layer, id("SLYR", 3), "opaque"),
+            (NodeKind::Artboard, id("SART", 1), "board"),
+            (NodeKind::PageSpread, id("SPGS", 1), "spread"),
+        ];
+        let mut accepted = 0usize;
+        for (kind, node_id, name) in &nodes {
+            for property in PROPERTIES {
+                let at = node(kind.clone(), node_id.clone(), property);
+                let (current, written) = match property {
+                    Property::Name => (
+                        PropertyValue::String((*name).into()),
+                        PropertyValue::String("probe".into()),
+                    ),
+                    Property::Visible => (PropertyValue::Bool(true), PropertyValue::Bool(false)),
+                };
+                let mut p = patch(Property::Name, PropertyValue::String("x".into()));
+                p.reads = vec![PropertyRead {
+                    address: at.clone(),
+                    expected_revision: 0,
+                    expected_value: current,
+                }];
+                p.writes = vec![PropertyWrite {
+                    address: at.clone(),
+                    value: written,
+                }];
+                let entry = RevisionEntry {
+                    address: at.clone(),
+                    revision: 0,
+                };
+                let verdict = run(&p, &s, std::slice::from_ref(&entry));
+                let table_says = addressable(kind, property) && supported(&at);
+                assert_eq!(
+                    verdict.is_ok(),
+                    table_says,
+                    "table and prepare disagree on {at:?}: {:?}",
+                    verdict.err()
+                );
+                assert_eq!(
+                    seeded.contains(&entry),
+                    table_says,
+                    "seed and prepare disagree on {at:?}"
+                );
+                accepted += usize::from(verdict.is_ok());
+            }
+        }
+        // Layer 1 (name, visible), the artboard and the page spread (name): 4 of 8 pairs.
+        assert_eq!((accepted, seeded.len()), (4, 4));
+        // The unsupported layer and visibility of artboards and page spreads are refused with the
+        // dimension that explains it.
+        assert!(!addressable(&NodeKind::Artboard, Property::Visible));
+        assert!(!addressable(&NodeKind::PageSpread, Property::Visible));
+        assert!(addressable(&NodeKind::Layer, Property::Visible));
+        let mut hidden_board = patch(Property::Name, PropertyValue::String("x".into()));
+        let at = node(NodeKind::Artboard, id("SART", 1), Property::Visible);
+        hidden_board.reads[0].address = at.clone();
+        hidden_board.reads[0].expected_value = PropertyValue::Bool(true);
+        hidden_board.writes[0].address = at.clone();
+        hidden_board.writes[0].value = PropertyValue::Bool(false);
+        assert_eq!(
+            run(&hidden_board, &s, &[]).unwrap_err().code,
+            Code::WrongType
+        );
+
+        // The seed is the document-order vector at revision 0, and prepare takes it whole.
+        assert_eq!(
+            seeded.iter().map(|e| e.revision).collect::<Vec<_>>(),
+            [0, 0, 0, 0]
+        );
+        assert_eq!(
+            seeded.iter().map(|e| e.address.clone()).collect::<Vec<_>>(),
+            [
+                node(NodeKind::Layer, id("SLYR", 1), Property::Name),
+                node(NodeKind::Layer, id("SLYR", 1), Property::Visible),
+                node(NodeKind::Artboard, id("SART", 1), Property::Name),
+                node(NodeKind::PageSpread, id("SPGS", 1), Property::Name),
+            ]
+        );
+        let mut both = patch(Property::Name, PropertyValue::String("renamed".into()));
+        let board = node(NodeKind::Artboard, id("SART", 1), Property::Name);
+        both.reads.push(PropertyRead {
+            address: board.clone(),
+            expected_revision: 0,
+            expected_value: PropertyValue::String("board".into()),
+        });
+        both.writes.push(PropertyWrite {
+            address: board,
+            value: PropertyValue::String("renamed-board".into()),
+        });
+        let prepared = run(&both, &s, &seeded).unwrap();
+        assert_eq!(prepared.revision_updates().len(), 2);
+
+        // mask_property: every seeded address masks; two documents that differ only at those
+        // addresses compare equal afterwards; an unaddressable pair or a missing node is
+        // refused and leaves the document as it was.
+        let mut a = s.document().clone();
+        let mut b = s.document().clone();
+        b.layers[0].name = "other".into();
+        b.layers[0].visible = false;
+        b.artboards[0].name = "other-board".into();
+        b.page_spreads[0].name = "other-spread".into();
+        assert_ne!(a, b);
+        for entry in &seeded {
+            assert!(mask_property(&mut a, &entry.address), "{:?}", entry.address);
+            assert!(mask_property(&mut b, &entry.address), "{:?}", entry.address);
+        }
+        assert_eq!(a, b);
+        assert_eq!(
+            (&a.layers[0].name, a.layers[0].visible, &a.artboards[0].name),
+            (&String::new(), false, &String::new())
+        );
+        let before = a.clone();
+        for refused in [
+            node(NodeKind::Artboard, id("SART", 1), Property::Visible),
+            node(NodeKind::PageSpread, id("SPGS", 1), Property::Visible),
+            node(NodeKind::Layer, id("SLYR", 99), Property::Name),
+            node(NodeKind::Artboard, id("SART", 99), Property::Name),
+        ] {
+            assert!(!mask_property(&mut a, &refused), "{refused:?}");
+            assert_eq!(a, before);
+        }
+    });
+}

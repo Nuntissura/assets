@@ -1,6 +1,9 @@
 //! Pure source-local property patch preparation; no history stack or authority database.
+#![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
-use hsk_studio_folio::{NodeKind, NodeRef, Payload, Resolver, Snapshot, StudioDocument};
+use hsk_studio_folio::{
+    NodeKind, NodeRef, Payload, Resolver, Snapshot, StudioDocument, StudioLayer,
+};
 use hsk_studio_observe::{Observation, Observe, Outcome, SinkPort};
 use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{
@@ -140,7 +143,8 @@ pub struct Inverse {
     pub writes: Vec<PropertyWrite>,
 }
 impl Inverse {
-    /// Fresh attribution/command identity is supplied by the caller, never copied as approval.
+    /// The caller supplies fresh command, correlation and actor identity; the source command's
+    /// identity is not reused (test: `actual_apply_inverse_and_typed_wire_roundtrip`).
     pub fn invocation(
         &self,
         command_id: String,
@@ -276,10 +280,84 @@ fn address_valid(a: &PropertyAddress) -> Result<()> {
     if !DomainId::parse(&a.target.node_id).is_ok_and(|id| id.prefix() == prefix) {
         return Err(failure(Code::InvalidTarget, None));
     }
-    if a.property == Property::Visible && a.target.node_kind != NodeKind::Layer {
+    if !addressable(&a.target.node_kind, a.property) {
         return Err(failure(Code::WrongType, Some(a)));
     }
     Ok(())
+}
+/// Every property chronicle can address on some node kind, in the order `seed_revisions` lists them.
+/// Adding a `Property` variant fails to compile in `addressable` and `mask_property` until the
+/// table is extended; this list is the one hand-maintained mirror of the enum (compile-time
+/// guard in the test `exported_table_is_the_table_prepare_enforces`).
+pub const PROPERTIES: [Property; 2] = [Property::Name, Property::Visible];
+/// The addressability table: whether chronicle can address `property` on a `kind` node.
+///
+/// This is the single owner of that fact. `prepare` refuses an address for which this is false
+/// (`Code::WrongType`), and `seed_revisions` and `mask_property` read it, so a consumer needs no
+/// copy of the table. Exhaustive over node kind x property with no wildcard: a new variant on
+/// either side is a compile error here. It is type-level; whether a given node can be addressed
+/// is a document question, answered by `seed_revisions` (an unsupported layer has no entry).
+/// Test: `exported_table_is_the_table_prepare_enforces`.
+pub fn addressable(kind: &NodeKind, property: Property) -> bool {
+    match (kind, property) {
+        (NodeKind::Layer, Property::Name | Property::Visible)
+        | (NodeKind::Artboard | NodeKind::PageSpread, Property::Name) => true,
+        (NodeKind::Artboard | NodeKind::PageSpread, Property::Visible) => false,
+    }
+}
+/// A layer whose payload folio preserves but does not understand is read-only to chronicle.
+fn layer_addressable(layer: &StudioLayer) -> bool {
+    !matches!(layer.payload, Payload::Unsupported { .. })
+}
+/// The revision vector of a freshly opened document: one entry at revision 0 for every
+/// addressable (node, property) pair, layers first, then artboards, then page spreads (document
+/// order), properties in `PROPERTIES` order. Nodes chronicle cannot address (a layer with an
+/// unsupported payload) get no entry, and neither does a pair `addressable` refuses (visibility
+/// of an artboard or page spread). `prepare` accepts the whole vector, and accepts a write to
+/// each seeded address. Test: `exported_table_is_the_table_prepare_enforces`.
+pub fn seed_revisions(document: &StudioDocument) -> Vec<RevisionEntry> {
+    let mut vector = Vec::new();
+    let mut seed = |node_kind: NodeKind, node_id: &str| {
+        for property in PROPERTIES {
+            if addressable(&node_kind, property) {
+                vector.push(RevisionEntry {
+                    address: PropertyAddress {
+                        target: NodeRef {
+                            node_kind: node_kind.clone(),
+                            node_id: node_id.to_owned(),
+                        },
+                        property,
+                    },
+                    revision: 0,
+                });
+            }
+        }
+    };
+    for layer in document.layers.iter().filter(|l| layer_addressable(l)) {
+        seed(NodeKind::Layer, &layer.layer_id);
+    }
+    for artboard in &document.artboards {
+        seed(NodeKind::Artboard, &artboard.artboard_id);
+    }
+    for spread in &document.page_spreads {
+        seed(NodeKind::PageSpread, &spread.page_spread_id);
+    }
+    vector
+}
+/// Sets the addressed property to a neutral value (empty name, not visible) so two documents can
+/// be compared with that property left out, for example to check that a successor differs from
+/// its base only at declared addresses. False, with the document untouched, when `addressable`
+/// refuses the pair or the document has no such node. Test:
+/// `exported_table_is_the_table_prepare_enforces`.
+pub fn mask_property(document: &mut StudioDocument, address: &PropertyAddress) -> bool {
+    if !addressable(&address.target.node_kind, address.property) {
+        return false;
+    }
+    let neutral = match address.property {
+        Property::Name => PropertyValue::String(String::new()),
+        Property::Visible => PropertyValue::Bool(false),
+    };
+    set(document, address, &neutral).is_ok()
 }
 enum ValueRef<'a> {
     String(&'a str),
@@ -309,7 +387,7 @@ fn value<'a>(d: &'a StudioDocument, a: &PropertyAddress) -> Result<ValueRef<'a>>
                 .iter()
                 .find(|l| l.layer_id == a.target.node_id)
                 .ok_or_else(|| failure(Code::InvalidTarget, Some(a)))?;
-            if matches!(l.payload, Payload::Unsupported { .. }) {
+            if !layer_addressable(l) {
                 return Err(failure(Code::InvalidTarget, Some(a)));
             }
             match a.property {
@@ -418,7 +496,7 @@ fn snapshot_budget(s: &Snapshot, b: hsk_studio_folio::Budget, t: &CancellationTo
             match byte {
                 b'"' => quoted = true,
                 b'{' | b'[' => {
-                    depth += 1;
+                    depth = depth.saturating_add(1);
                     if depth > b.depth {
                         return Err(failure(Code::BudgetExceeded, None));
                     }
@@ -931,7 +1009,7 @@ pub fn deliver_result(
     })
 }
 // Bounded unique-key decoding checks array counts before pushing, byte counts before cloning,
-// and depth/cancellation at every visited JSON value. Value is temporary transport, never authority.
+// and depth/cancellation at every visited JSON value. Value is temporary transport, not authority.
 struct DecodeContext<'a> {
     budget: Budget,
     token: &'a CancellationToken,
@@ -1014,7 +1092,7 @@ impl<'de> Visitor<'de> for Seed<'_, '_> {
             }
             let next = a.next_element_seed(Seed {
                 context: self.context,
-                depth: self.depth + 1,
+                depth: self.depth.saturating_add(1),
                 array_limit: 16,
                 value_text: false,
             })?;
@@ -1044,7 +1122,7 @@ impl<'de> Visitor<'de> for Seed<'_, '_> {
             };
             let v = a.next_value_seed(Seed {
                 context: self.context,
-                depth: self.depth + 1,
+                depth: self.depth.saturating_add(1),
                 array_limit: limit,
                 value_text: k == "value",
             })?;
@@ -1121,4 +1199,4 @@ pub fn result_schema() -> schemars::Schema {
         .into_generator()
         .into_root_schema_for::<SourceResult>()
 }
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-CHRONICLE","version":1,"scope":"Pure CON022-026 source-local patch preparation; no persisted StudioEditProposal/HistoryEntry, approval, EventLedger, CRDT, retained history or host acceptance","api":"decode_patch / decode_revisions / prepare / Inverse::invocation / deliver_result / legacy deliver","consumer":"chronicle-consumer --document FILE --revisions FILE --patch FILE [--patch FILE ...] [--inverse] [--cancel-before] [--cancel-after] [--delivery delivered|rejected|indeterminate] [--max-bytes N --max-reads N --max-writes N --max-value-bytes N]; --schema; --result-schema; --descriptor","input":"Explicit version1 actor/doc/base provenance, reads+writes/name or visible; caller-owned current revision entries; immutable Folio document; budget/cancellation/resolver","result":"changed with actual canonical successor/revision_updates/conditional inverse, or closed metadata-only no_change; typed failure with stable address and conflict dimension","recovery":"Refresh current snapshot and property vector; re-evaluate conflict against fresh current state; missing entries unavailable, no default zero; correct type/reference; invert with fresh attribution only when conditional reads still hold","parallel":"Caller serializes latest read and local publication; disjoint old-base footprints succeed; global successor revision is bookkeeping, not CAS; no private queue/database","manual":"Same typed transport and generated draft2020-12 schema shared by model/API/operator","argus":{"inspect":"actual snapshot, property updates, inverse and typed diagnostic address","steer":"same bounded prepare API","state":"explicit changed/no_change/failure plus delivery counters","capture":"caller captures protected actual output without focus stealing"},"diagnostics":"Observe emit_detail shared closed version2 stable code/validated conflict address/source disposition and capped attempted/admitted/changed counters; result retained independently of delivery; names/string values/raw input never telemetry; missing/indeterminate delivery cannot undo accepted source result","host":"Pending actual grants, serialized SurrealDB/EventLedger promotion, idempotency/restart, history cursor, native GUI and three diagnostic tiers"}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-CHRONICLE","version":1,"scope":"Pure CON022-026 source-local patch preparation; no persisted StudioEditProposal/HistoryEntry, approval, EventLedger, CRDT, retained history or host acceptance","api":"decode_patch / decode_revisions / prepare / Inverse::invocation / deliver_result / legacy deliver / addressability table: PROPERTIES, addressable(kind, property), seed_revisions(document), mask_property(document, address)","consumer":"chronicle-consumer --document FILE --revisions FILE --patch FILE [--patch FILE ...] [--inverse] [--cancel-before] [--cancel-after] [--delivery delivered|rejected|indeterminate] [--max-bytes N --max-reads N --max-writes N --max-value-bytes N]; --schema; --result-schema; --descriptor","input":"Explicit version1 actor/doc/base provenance, reads+writes/name or visible; caller-owned current revision entries; immutable Folio document; budget/cancellation/resolver","result":"changed with actual canonical successor/revision_updates/conditional inverse, or closed metadata-only no_change; typed failure with stable address and conflict dimension","recovery":"Refresh current snapshot and property vector; re-evaluate conflict against fresh current state; missing entries unavailable, no default zero; correct type/reference; invert with fresh attribution only when conditional reads still hold","parallel":"Caller serializes latest read and local publication; disjoint old-base footprints succeed; global successor revision is bookkeeping, not CAS; no private queue/database","manual":"Same typed transport and generated draft2020-12 schema shared by model/API/operator","argus":{"inspect":"actual snapshot, property updates, inverse and typed diagnostic address","steer":"same bounded prepare API","state":"explicit changed/no_change/failure plus delivery counters","capture":"caller captures protected actual output without focus stealing"},"diagnostics":"Observe emit_detail shared closed version2 stable code/validated conflict address/source disposition and capped attempted/admitted/changed counters; result retained independently of delivery; names/string values/raw input are not telemetry (test actual_detail_changed_nochange_inverse_conflict_and_privacy); missing/indeterminate delivery cannot undo accepted source result","host":"Pending actual grants, serialized SurrealDB/EventLedger promotion, idempotency/restart, history cursor, native GUI and three diagnostic tiers"}"#;
