@@ -1013,6 +1013,18 @@ fn isobmff_aggregate_over_budget() {
             index_of(&many(4097), &limits).unwrap_err(),
             limit("edit-count")
         );
+        // A zero-length empty edit is no segment, but it is still an entry the file declares: the hard
+        // bound counts entries, so skipping them is not a way around it (SMB-REEL-ENG-1).
+        let zero_length = |n: usize| {
+            let mut spec = mp4_spec(four_samples());
+            spec.edits = Some(vec![(0, -1); n]);
+            mp4_bytes(&spec)
+        };
+        assert!(index_of(&zero_length(4096), &limits).is_ok());
+        assert_eq!(
+            index_of(&zero_length(4097), &limits).unwrap_err(),
+            limit("edit-count")
+        );
         // Track budget.
         let none = Limits {
             max_tracks: 0,

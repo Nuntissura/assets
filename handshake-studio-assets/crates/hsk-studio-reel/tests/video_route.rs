@@ -64,6 +64,8 @@ enum Plan {
     MediaErrorOnPacket(u64),
     FaultOnFinish(DecoderFault),
     ShortPlane,
+    /// The picture of the packet with this tag is never released (a decoder that drops a picture).
+    DropPicture(u64),
     /// A picture of `width` x `height` whose planes are sized for 8-bit 4:2:0 at that size, whatever
     /// `bit_depth` the format claims (`bit_depth` other than 8 makes planes and format disagree).
     Picture {
@@ -145,6 +147,9 @@ impl VideoDecodeSession for FakeSession {
                 return Err(ReelError::Corrupt { what: "fake-media" }.into());
             }
             _ => {}
+        }
+        if matches!(self.plan, Plan::DropPicture(at) if at == tag) {
+            return Ok(());
         }
         if let Plan::Picture {
             width,
@@ -804,6 +809,81 @@ fn decoded_picture_size_is_checked_against_the_container_declared_size() {
         } else {
             assert_eq!(result.unwrap_err(), protocol, "{label}");
             assert!(sink.chunks.is_empty(), "{label}");
+        }
+    }
+}
+
+/// Export is exact or it fails (STU-ARC-021): a decode that delivers fewer pictures than requested is a
+/// `Partial` receipt for a preview and `Incomplete { requested, delivered }` for an export. Pictures that
+/// were delivered before the shortfall was known stay delivered; the error is the statement that the
+/// export must not publish them. The preview result is unchanged.
+#[test]
+fn export_refuses_partial_video_decode() {
+    for (name, bytes, container) in [
+        ("mp4", MP4, ISOBMFF_PROVIDER_ID),
+        ("mkv", MKV, MATROSKA_PROVIDER_ID),
+    ] {
+        let run = |purpose: Purpose, plan: Plan| {
+            let (fake, _) = Fake::new(plan);
+            let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+            let mut req = request(container, bytes, 0, 3, OutputMode::Decoded);
+            req.purpose = purpose;
+            let mut sink = Collect::default();
+            let result = registry.decode_segment(
+                &mut Cursor::new(bytes.to_vec()),
+                None,
+                &req,
+                &Limits::default(),
+                &CancellationToken::default(),
+                &mut sink,
+            );
+            (result, sink)
+        };
+
+        // Control: nothing dropped, the export is exact and complete.
+        let (result, sink) = run(Purpose::Export, Plan::Works);
+        let receipt = result.unwrap();
+        assert_eq!(receipt.disposition, Disposition::Exact, "{name}");
+        assert!(receipt.complete && receipt.actual.units == 3, "{name}");
+        assert_eq!(sink.chunks.len(), 3, "{name}");
+
+        for dropped in [0, 1, 2] {
+            // Preview: a partial receipt that says how many pictures came out.
+            let (result, sink) = run(Purpose::Preview, Plan::DropPicture(dropped));
+            let receipt = result.unwrap();
+            assert_eq!(
+                receipt.disposition,
+                Disposition::Partial,
+                "{name} {dropped}"
+            );
+            assert!(!receipt.complete, "{name} {dropped}");
+            assert_eq!(receipt.requested.units, 3, "{name} {dropped}");
+            assert_eq!(receipt.actual.units, 2, "{name} {dropped}");
+            let indexes: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
+            let expected: Vec<u64> = (0..3).filter(|i| *i != dropped).collect();
+            assert_eq!(indexes, expected, "{name} {dropped}");
+
+            // Export: the typed error, the delivered pictures stay delivered.
+            let (result, sink) = run(Purpose::Export, Plan::DropPicture(dropped));
+            let error = result.unwrap_err();
+            assert_eq!(
+                error,
+                ReelError::Incomplete {
+                    requested: 3,
+                    delivered: 2,
+                },
+                "{name} {dropped}"
+            );
+            assert_eq!(error.code(), "MEDIA_INCOMPLETE");
+            assert_eq!(
+                error.to_string(),
+                "MEDIA_INCOMPLETE requested=3 delivered=2"
+            );
+            assert_eq!(sink.chunks.len(), 2, "{name} {dropped}");
+            assert_eq!(
+                outcome_for(&Err(error)),
+                Outcome::Failure(FailureCode::Loss)
+            );
         }
     }
 }

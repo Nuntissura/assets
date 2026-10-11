@@ -148,7 +148,7 @@ fn rle<T: PartialEq + Copy>(values: impl Iterator<Item = T>) -> Vec<(u32, T)> {
     runs
 }
 
-fn moov(spec: &Mp4Spec, mdat_payload_offset: u64) -> Vec<u8> {
+fn moov(spec: &Mp4Spec, mdat_payload_offset: u64, extra_children: &[u8]) -> Vec<u8> {
     let n = spec.samples.len();
     let be32 = |v: u32| v.to_be_bytes();
     let total_media: u64 = spec.samples.iter().map(|s| u64::from(s.duration)).sum();
@@ -238,6 +238,7 @@ fn moov(spec: &Mp4Spec, mdat_payload_offset: u64) -> Vec<u8> {
         pasp.extend_from_slice(&be32(v));
         entry.extend_from_slice(&boxed(b"pasp", &pasp));
     }
+    entry.extend_from_slice(extra_children);
     let mut stsd = be32(1).to_vec();
     stsd.extend_from_slice(&boxed(&spec.codec, &entry));
 
@@ -331,8 +332,19 @@ fn moov(spec: &Mp4Spec, mdat_payload_offset: u64) -> Vec<u8> {
     boxed(b"moov", &movie)
 }
 
+/// One sample-entry child box (`fiel`, `clap`, ...) for `mp4_bytes_with_children`.
+pub fn visual_child(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    boxed(kind, payload)
+}
+
 /// Progressive MP4/MOV with one video track and a synthetic `mdat`.
 pub fn mp4_bytes(spec: &Mp4Spec) -> Vec<u8> {
+    mp4_bytes_with_children(spec, &[])
+}
+
+/// `mp4_bytes` with `children` (already boxed, see `visual_child`) appended to the video sample entry
+/// after `colr`/`pasp`: raw bytes, so a test can also write truncated or hostile children.
+pub fn mp4_bytes_with_children(spec: &Mp4Spec, children: &[u8]) -> Vec<u8> {
     let mut ftyp = Vec::new();
     ftyp.extend_from_slice(b"isom");
     ftyp.extend_from_slice(&0u32.to_be_bytes());
@@ -345,14 +357,14 @@ pub fn mp4_bytes(spec: &Mp4Spec) -> Vec<u8> {
     let mdat = boxed(b"mdat", &mdat_payload);
     let mut out = ftyp.clone();
     if spec.moov_first {
-        let moov_len = moov(spec, 0).len() as u64;
+        let moov_len = moov(spec, 0, children).len() as u64;
         let base = ftyp.len() as u64 + moov_len + 8;
-        out.extend_from_slice(&moov(spec, base));
+        out.extend_from_slice(&moov(spec, base, children));
         out.extend_from_slice(&mdat);
     } else {
         let base = ftyp.len() as u64 + 8;
         out.extend_from_slice(&mdat);
-        out.extend_from_slice(&moov(spec, base));
+        out.extend_from_slice(&moov(spec, base, children));
     }
     out
 }

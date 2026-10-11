@@ -222,3 +222,105 @@ fn av1_1080p_decodes_at_default_limits_and_a_smaller_limit_still_refuses_it() {
         }
     );
 }
+
+/// `bytes` with the one occurrence of `pattern` replaced (same length); the pattern must be unique, so a
+/// fixture that changes cannot make the patch silently miss.
+fn patched(bytes: &[u8], pattern: &[u8], replacement: &[u8]) -> Vec<u8> {
+    assert_eq!(pattern.len(), replacement.len());
+    let hits: Vec<usize> = bytes
+        .windows(pattern.len())
+        .enumerate()
+        .filter(|(_, w)| *w == pattern)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(hits.len(), 1, "pattern {pattern:02x?} must occur once");
+    let mut out = bytes.to_vec();
+    out[hits[0]..hits[0] + pattern.len()].copy_from_slice(replacement);
+    out
+}
+
+/// The 16x16 fixtures with the size the CONTAINER declares changed (the bitstream still holds 16x16):
+/// the `av01` sample entry width/height, or the Matroska PixelWidth/PixelHeight elements.
+fn declared(container: &str, width: u8, height: u8) -> Vec<u8> {
+    if container == ISOBMFF_PROVIDER_ID {
+        let entry = |w: u8, h: u8| {
+            [
+                b"av01".as_slice(),
+                &[0; 6],
+                &[0, 1],
+                &[0; 16],
+                &[0, w, 0, h],
+            ]
+            .concat()
+        };
+        patched(MP4, &entry(16, 16), &entry(width, height))
+    } else {
+        patched(
+            MKV,
+            &[0xB0, 0x81, 16, 0xBA, 0x81, 16],
+            &[0xB0, 0x81, width, 0xBA, 0x81, height],
+        )
+    }
+}
+
+/// PLR-056: the oversize-picture refusal (`within_declared_size`, PLR-032) on the TRUSTED in-process
+/// rav1d path, with the container declaring less than the bitstream holds. The route's other test of this
+/// rule drives a fake external decoder (`tests/video_route.rs`); here the picture comes from the real
+/// decoder. A picture above the declared size on either side is `DecoderFault::Protocol` and nothing
+/// reaches the sink; the declared size is the sequence maximum, so a larger declared size (or an
+/// undeclared side, 0) decodes bit-exactly as before.
+#[test]
+fn oversize_picture_on_the_trusted_rav1d_path_is_refused() {
+    let trusted = |bytes: &[u8]| {
+        let registry = Registry::standard();
+        let mut src = Cursor::new(bytes.to_vec());
+        let id = registry.detect(&mut src).unwrap().descriptor().id;
+        let mut sink = Collect::default();
+        let result = registry.resolve_id(id).unwrap().decode_segment_routed(
+            &mut src,
+            &request(id, bytes, 0, 3),
+            &Limits::default(),
+            &CancellationToken::default(),
+            &mut sink,
+            &VideoRoute::trusted(),
+        );
+        (result, sink)
+    };
+    let protocol = ReelError::DecoderFault {
+        fault: DecoderFault::Protocol,
+    };
+    for (name, container) in [("mp4", ISOBMFF_PROVIDER_ID), ("mkv", MATROSKA_PROVIDER_ID)] {
+        // Control: the fixture as written (16x16 declared, 16x16 decoded) decodes through rav1d.
+        let (result, sink) = trusted(&declared(container, 16, 16));
+        let receipt = result.unwrap_or_else(|e| panic!("{name} control: {e}"));
+        assert_eq!(receipt.decoder_id, "rav1d", "{name}");
+        assert_eq!(sink.frames.len(), 3, "{name}");
+
+        // Declared smaller than the 16x16 the stream holds, on either side or both: refused.
+        for (w, h) in [(15, 16), (16, 15), (8, 8), (1, 1)] {
+            let (result, sink) = trusted(&declared(container, w, h));
+            assert_eq!(result.unwrap_err(), protocol, "{name} declared {w}x{h}");
+            assert!(
+                sink.frames.is_empty(),
+                "{name} declared {w}x{h}: nothing is delivered"
+            );
+        }
+
+        // Declared larger (the sequence maximum): legal, and the pictures are the oracle's.
+        for (w, h) in [(17, 16), (32, 32), (255, 255)] {
+            let (result, sink) = trusted(&declared(container, w, h));
+            let receipt = result.unwrap_or_else(|e| panic!("{name} declared {w}x{h}: {e}"));
+            assert_eq!(receipt.video.map(|v| (v.width, v.height)), Some((16, 16)));
+            let digests: Vec<String> = sink.frames.iter().map(|(_, _, b)| hash(b)).collect();
+            assert_eq!(digests, ORACLE, "{name} declared {w}x{h}");
+        }
+    }
+    // An undeclared side (0) is not checked; the declared side still is. (MP4 only: Matroska has no
+    // zero-size video track.)
+    let (result, sink) = trusted(&declared(ISOBMFF_PROVIDER_ID, 0, 16));
+    result.unwrap();
+    assert_eq!(sink.frames.len(), 3);
+    let (result, sink) = trusted(&declared(ISOBMFF_PROVIDER_ID, 0, 15));
+    assert_eq!(result.unwrap_err(), protocol);
+    assert!(sink.frames.is_empty());
+}

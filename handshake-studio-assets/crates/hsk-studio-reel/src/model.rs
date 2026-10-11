@@ -447,7 +447,7 @@ pub(crate) fn verify_grant(
 /// Export is exact or it fails (STU-ARC-021): a `Purpose::Export` request whose start is not a whole unit
 /// of the source is `NotExact { requested, nearest }`, where `nearest` is the start of the unit a preview
 /// would have delivered (`nearest` is only evaluated for a refusal, so `Purpose::Preview` and an exact
-/// export do no extra work and see no new error). `Purpose::Preview` is never refused here. Every
+/// export do no extra work and see no new error). A `Purpose::Preview` request is not refused here. Every
 /// provider calls this BEFORE its first payload read and before the first `sink.accept`, so a refused
 /// export leaves the sink untouched (test `export_is_exact_or_error_for_every_provider`). Rounding of a
 /// media time to ticks (`ticks_exact == false`) is a receipt flag, not an export refusal.

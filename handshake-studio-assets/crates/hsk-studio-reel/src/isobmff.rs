@@ -79,7 +79,8 @@ pub enum ColorTag {
 /// 14 for interlaced), but the direction of detail 9 and 14 is disputed (older QuickTime File Format
 /// text vs TN2162, reported reversed by an Apple engineer), so reel ships no field-order claim: a
 /// consumer that needs one uses the codec's own header first and treats this as a container-level
-/// fallback. Advisory metadata: a malformed or absent box never fails a track.
+/// fallback. Advisory metadata: a malformed or absent box does not fail a track (test
+/// `fiel_and_clap_are_raw_and_advisory`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldInfo {
     pub fields: u8,
@@ -89,7 +90,7 @@ pub struct FieldInfo {
 /// Clean aperture carried by the sample entry (`clap`), stored RAW as (numerator, denominator) pairs,
 /// the eight signed 32-bit fields of the QuickTime File Format clean aperture atom. No division happens
 /// in reel: a zero denominator is stored as read and left to the consumer. Advisory metadata: a
-/// truncated or absent box never fails a track.
+/// truncated or absent box does not fail a track (test `fiel_and_clap_are_raw_and_advisory`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CleanAperture {
     pub width: (i32, i32),
@@ -730,8 +731,9 @@ struct VisualChildren {
 const CLAP_BYTES: usize = 32;
 
 /// Sample-entry child boxes (`colr`, `pasp`, `av1C`, `fiel`, `clap`). A malformed child ends the scan:
-/// metadata is advisory and must never fail an otherwise indexable track. A `fiel` or `clap` shorter
-/// than its layout is ignored (the field stays `None`), never read past its payload.
+/// metadata is advisory and does not fail an otherwise indexable track. A `fiel` or `clap` shorter
+/// than its layout is ignored (the field stays `None`) and is not read past its payload (test
+/// `fiel_and_clap_are_raw_and_advisory`).
 fn parse_visual_children(rest: &[u8]) -> VisualChildren {
     let mut out = VisualChildren::default();
     for item in boxes(rest) {
