@@ -6,6 +6,8 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+# V4-04: fault-injection hooks (Fault, TransientHost::plan_fault); not part of a default build.
+test-faults = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }

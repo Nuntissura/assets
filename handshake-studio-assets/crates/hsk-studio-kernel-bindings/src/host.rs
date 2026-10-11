@@ -17,9 +17,17 @@ use crate::wire::{
 use hsk_studio_accord::{ActorContext, DomainId};
 use hsk_studio_session::Action;
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     sync::{Mutex, MutexGuard, PoisonError},
 };
+
+// V4-04: every fault-injection hook lives in `host/faults.rs`, compiled only under `cfg(test)` or
+// the non-default `test-faults` feature. Test `fault_hooks_exist_only_under_the_test_faults_feature`
+// scans for it; the compile_fail doctests in `lib.rs` show a default build has no such item.
+#[cfg(any(test, feature = "test-faults"))]
+mod faults;
+#[cfg(any(test, feature = "test-faults"))]
+pub use faults::Fault;
 
 /// A host reachable as bytes in, bytes out. A real adapter (shared client, broker, ledger) is a
 /// drop-in; an empty or undecodable return is "no usable reply" to the caller.
@@ -31,17 +39,6 @@ impl<T: HostBridge + ?Sized> HostBridge for std::sync::Arc<T> {
     fn handle(&self, request: &[u8]) -> Vec<u8> {
         (**self).handle(request)
     }
-}
-
-/// One-shot test faults, consumed by the next commit request in order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Fault {
-    /// The commit is applied, but the reply is lost (the caller sees no reply at all).
-    DropAck,
-    /// The principal's grant is revoked after the grant check and before the commit.
-    RevokeBeforeCommit,
-    /// The resource's lease epoch moves on before the commit.
-    BumpEpoch,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -116,7 +113,8 @@ struct State {
     jobs: BTreeMap<u64, JobEntry>,
     next_ticket: u64,
     diagnostics: Vec<DiagnosticRecord>,
-    faults: VecDeque<Fault>,
+    #[cfg(any(test, feature = "test-faults"))]
+    faults: std::collections::VecDeque<faults::Fault>,
     requests: u64,
 }
 
@@ -184,10 +182,6 @@ impl TransientHost {
                 document: document.to_vec(),
             },
         );
-    }
-
-    pub fn plan_fault(&self, fault: Fault) {
-        self.lock().faults.push_back(fault);
     }
 
     // ----- independent inspection (the oracle for tests) ---------------------------------------
@@ -366,7 +360,6 @@ impl TransientHost {
         envelope: &Envelope,
         commit: &CommitMsg,
     ) -> (CommitDecision, bool) {
-        let fault = state.faults.pop_front();
         let actor = &envelope.actor;
         let resource = envelope.resource_id.as_str();
         let edit_key: GrantKey = (
@@ -375,17 +368,11 @@ impl TransientHost {
             resource.to_owned(),
             ActionWire::Edit,
         );
-        if fault == Some(Fault::RevokeBeforeCommit) {
-            if state.grants.remove(&edit_key) {
-                state.revoked.insert(edit_key.clone());
-            }
-            state.tokens.remove(&edit_key);
-        }
-        if fault == Some(Fault::BumpEpoch)
-            && let Some(r) = state.resources.get_mut(resource)
-        {
-            r.epoch = r.epoch.saturating_add(1);
-        }
+        // Whether this commit's reply is withheld: set only by a planned fault (test-faults).
+        #[cfg(any(test, feature = "test-faults"))]
+        let lose_reply = faults::before_commit(state, &edit_key, resource);
+        #[cfg(not(any(test, feature = "test-faults")))]
+        let lose_reply = false;
         let reject = |code| (CommitDecision::Rejected { code }, false);
 
         // 1. Authorization is rechecked on every commit, replays included, before anything else.
@@ -406,7 +393,7 @@ impl TransientHost {
                 && entry.resource == resource
                 && entry.binding == commit.binding;
             return if same {
-                (CommitDecision::Accepted(entry.receipt.clone()), fault == Some(Fault::DropAck))
+                (CommitDecision::Accepted(entry.receipt.clone()), lose_reply)
             } else {
                 reject(RejectCode::IdempotencyConflict)
             };
@@ -468,7 +455,7 @@ impl TransientHost {
                 receipt: receipt.clone(),
             },
         );
-        (CommitDecision::Accepted(receipt), fault == Some(Fault::DropAck))
+        (CommitDecision::Accepted(receipt), lose_reply)
     }
 }
 

@@ -2,6 +2,7 @@
 //! the receipt chain as JSON. Memory only: nothing is read from or written to disk.
 //!
 //! kernel-bindings-consumer --descriptor | --roundtrip | --revoke | --drop-ack | --cancel
+//! (`--drop-ack` needs `--features test-faults`; a default build refuses it with exit 2)
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_folio as folio;
 use hsk_studio_kernel_bindings::*;
@@ -103,7 +104,10 @@ fn scenario(name: &str) -> Result<Value, String> {
         host.inner.grant(&actor, &resource, Action::Edit);
     }
     if name == "drop-ack" {
+        #[cfg(feature = "test-faults")]
         host.inner.plan_fault(Fault::DropAck);
+        #[cfg(not(feature = "test-faults"))]
+        return Err("--drop-ack needs the test-faults feature (cargo run --example kernel-bindings-consumer --features test-faults -- --drop-ack)".to_owned());
     }
     // Only the cancel scenario hands the session the token the host trips after a commit.
     let live = if name == "cancel" { token } else { CancellationToken::default() };

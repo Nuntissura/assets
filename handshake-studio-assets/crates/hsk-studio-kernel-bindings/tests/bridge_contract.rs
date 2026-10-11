@@ -316,19 +316,23 @@ fn fail_closed_on_absent_or_revoked_grant() {
         assert_eq!((host.receipts().len(), host.idempotency_len()), (0, 0));
 
         // Revoked between the grant check and the commit: rejected, no state change anywhere.
-        host.grant(&actor(), &rig.resource, Action::Edit);
-        host.plan_fault(Fault::RevokeBeforeCommit);
-        let revoked = submit(&mut rig, &key("k-1"), &token()).unwrap_err();
-        assert_eq!(revoked.code(), "grant_revoked");
-        assert_eq!(delivered(revoked.report), Outcome::Failure(FailureCode::Validation));
-        assert_eq!(rig.session.document_revision(), START);
-        assert_eq!(rig.session.receipt_count(), 0, "a rejected key stores no receipt");
-        assert_eq!(host.committed_revision(&rig.resource), Some(START));
-        assert_eq!((host.receipts().len(), host.idempotency_len()), (0, 0));
-        assert_eq!(host.jobs_in_flight(), (0, 0));
-        let diagnostic = only_diagnostic(&rig);
-        assert_eq!(diagnostic.outcome, OutcomeWire::FailureValidation);
-        assert_eq!(diagnostic.code.as_deref(), Some("grant_revoked"));
+        // Needs the planned fault, so it runs only with `--features test-faults` (V4-04).
+        #[cfg(feature = "test-faults")]
+        {
+            host.grant(&actor(), &rig.resource, Action::Edit);
+            host.plan_fault(Fault::RevokeBeforeCommit);
+            let revoked = submit(&mut rig, &key("k-1"), &token()).unwrap_err();
+            assert_eq!(revoked.code(), "grant_revoked");
+            assert_eq!(delivered(revoked.report), Outcome::Failure(FailureCode::Validation));
+            assert_eq!(rig.session.document_revision(), START);
+            assert_eq!(rig.session.receipt_count(), 0, "a rejected key stores no receipt");
+            assert_eq!(host.committed_revision(&rig.resource), Some(START));
+            assert_eq!((host.receipts().len(), host.idempotency_len()), (0, 0));
+            assert_eq!(host.jobs_in_flight(), (0, 0));
+            let diagnostic = only_diagnostic(&rig);
+            assert_eq!(diagnostic.outcome, OutcomeWire::FailureValidation);
+            assert_eq!(diagnostic.code.as_deref(), Some("grant_revoked"));
+        }
 
         // The retry re-checks the grant (a new one stands now) instead of replaying anything.
         host.grant(&actor(), &rig.resource, Action::Edit);
@@ -344,14 +348,27 @@ fn fail_closed_on_absent_or_revoked_grant() {
 #[test]
 fn stale_epoch_conflict_and_unknown_outcome() {
     bounded_case("stale_conflict_unknown", || {
-        // Lease epoch moved on at the host: StaleEpoch, nothing applied.
-        let mut a = rig(true);
-        a.host.inner.plan_fault(Fault::BumpEpoch);
-        let stale_epoch = submit(&mut a, &key("k-1"), &token()).unwrap_err();
-        assert_eq!(stale_epoch.code(), "stale_epoch");
-        assert_eq!(a.host.inner.committed_revision(&a.resource), Some(START));
-        assert_eq!(a.host.inner.lease_epoch(&a.resource), Some(EPOCH + 1));
-        assert_eq!(a.host.inner.receipts().len(), 0);
+        // Lease epoch moved on at the host: StaleEpoch, nothing applied. Needs the planned fault,
+        // so it runs only with `--features test-faults` (V4-04).
+        #[cfg(feature = "test-faults")]
+        {
+            let mut a = rig(true);
+            a.host.inner.plan_fault(Fault::BumpEpoch);
+            let stale_epoch = submit(&mut a, &key("k-1"), &token()).unwrap_err();
+            assert_eq!(stale_epoch.code(), "stale_epoch");
+            assert_eq!(a.host.inner.committed_revision(&a.resource), Some(START));
+            assert_eq!(a.host.inner.lease_epoch(&a.resource), Some(EPOCH + 1));
+            assert_eq!(a.host.inner.receipts().len(), 0);
+        }
+
+        // The same fence without a hook: the host was reseeded with an epoch ahead of the session's.
+        let mut e = rig(true);
+        e.host.inner.seed_resource(&e.resource, START, EPOCH + 1, b"epoch-ahead");
+        let ahead = submit(&mut e, &key("k-1"), &token()).unwrap_err();
+        assert_eq!(ahead.code(), "stale_epoch");
+        assert_eq!(e.host.inner.document_bytes(&e.resource).unwrap(), b"epoch-ahead");
+        assert_eq!(e.host.inner.lease_epoch(&e.resource), Some(EPOCH + 1));
+        assert_eq!(e.host.inner.receipts().len(), 0);
 
         // Host holds a newer revision than the session expected: Stale, current is reported.
         let mut b = rig(true);
@@ -381,25 +398,29 @@ fn stale_epoch_conflict_and_unknown_outcome() {
         assert_eq!(c.host.inner.receipts().len(), 1);
 
         // Lost acknowledgement: the host applied the edit, the session sees Unknown (not
-        // Rejected), lookup rediscovers the receipt, and the edit is applied exactly once.
-        let mut d = rig(true);
-        d.host.inner.plan_fault(Fault::DropAck);
-        let unknown = submit(&mut d, &key("k-1"), &token()).unwrap_err();
-        assert_eq!(unknown.code(), "outcome_unknown");
-        assert_eq!(delivered(unknown.report), Outcome::Failure(FailureCode::Unavailable));
-        assert_eq!(d.session.document_revision(), START, "not adopted before the receipt is known");
-        assert_eq!(d.host.inner.committed_revision(&d.resource), Some(START + 1));
-        assert_eq!(d.session.pending(), ["k-1"]);
-        let diagnostic = only_diagnostic(&d);
-        assert_eq!(diagnostic.outcome, OutcomeWire::FailureUnavailable);
-        assert_eq!(diagnostic.code.as_deref(), Some("outcome_unknown"));
-        let report = d.session.reconcile(&token()).unwrap();
-        assert_eq!((report.adopted, report.cleared, report.still_unknown), (1, 0, 0));
-        assert_eq!(d.session.document_revision(), START + 1);
-        assert_eq!(d.host.inner.receipts().len(), 1, "applied exactly once");
-        assert_eq!(sent_kinds(&d).iter().filter(|k| **k == "commit").count(), 1);
-        assert!(sent_kinds(&d).contains(&"lookup"));
-        assert_eq!(host_document(&d), (START + 1, TO.to_owned()));
+        // Rejected), lookup rediscovers the receipt, and the edit is applied exactly once. Needs
+        // the planned fault, so it runs only with `--features test-faults` (V4-04).
+        #[cfg(feature = "test-faults")]
+        {
+            let mut d = rig(true);
+            d.host.inner.plan_fault(Fault::DropAck);
+            let unknown = submit(&mut d, &key("k-1"), &token()).unwrap_err();
+            assert_eq!(unknown.code(), "outcome_unknown");
+            assert_eq!(delivered(unknown.report), Outcome::Failure(FailureCode::Unavailable));
+            assert_eq!(d.session.document_revision(), START, "not adopted before the receipt is known");
+            assert_eq!(d.host.inner.committed_revision(&d.resource), Some(START + 1));
+            assert_eq!(d.session.pending(), ["k-1"]);
+            let diagnostic = only_diagnostic(&d);
+            assert_eq!(diagnostic.outcome, OutcomeWire::FailureUnavailable);
+            assert_eq!(diagnostic.code.as_deref(), Some("outcome_unknown"));
+            let report = d.session.reconcile(&token()).unwrap();
+            assert_eq!((report.adopted, report.cleared, report.still_unknown), (1, 0, 0));
+            assert_eq!(d.session.document_revision(), START + 1);
+            assert_eq!(d.host.inner.receipts().len(), 1, "applied exactly once");
+            assert_eq!(sent_kinds(&d).iter().filter(|k| **k == "commit").count(), 1);
+            assert!(sent_kinds(&d).contains(&"lookup"));
+            assert_eq!(host_document(&d), (START + 1, TO.to_owned()));
+        }
     });
 }
 
@@ -855,4 +876,108 @@ fn only_canonical_bytes_decode() {
         assert_eq!(host.requests_seen(), 1);
         assert_eq!(host.receipts().len(), 0);
     });
+}
+
+// ----- V4-04: fault-injection hooks ------------------------------------------------------------
+
+/// Without `--features test-faults` the fault scenarios above (revoke between check and commit,
+/// host epoch bump, lost reply) are compiled out; this ignored test keeps that gap visible in the
+/// test list instead of silent (V4-03).
+#[cfg(not(feature = "test-faults"))]
+#[test]
+#[ignore = "needs --features test-faults: the fault scenarios are compiled out of default builds"]
+fn fault_scenarios_need_the_test_faults_feature() {}
+
+/// V4-04: every fault-injection hook (`Fault`, `plan_fault` and the host code behind them) is
+/// compiled only under `cfg(test)` or the non-default `test-faults` feature. The scan reads every
+/// source and example file of this crate and requires each line that names a hook word to be
+/// directly preceded by a gate attribute; `src/host/faults.rs` is wholly gated by its `mod faults;`
+/// line in `host.rs`, which the scan checks like any other. The compile_fail doctests on
+/// `FAULT_HOOKS_ARE_NOT_PUBLIC` (lib.rs) show a default build rejects every hook at compile time.
+#[test]
+fn fault_hooks_exist_only_under_the_test_faults_feature() {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+    // Hook words are whole tokens; a hyphen is a token character so `test-faults` is not `faults`.
+    const HOOK_WORDS: [&str; 6] = [
+        "Fault",
+        "plan_fault",
+        "DropAck",
+        "RevokeBeforeCommit",
+        "BumpEpoch",
+        "faults",
+    ];
+    const GATES: [&str; 2] = [
+        "#[cfg(any(test, feature = \"test-faults\"))]",
+        "#[cfg(feature = \"test-faults\")]",
+    ];
+    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files(&root.join("src"), &mut files);
+    rust_files(&root.join("examples"), &mut files);
+    files.sort();
+    let names: Vec<String> = files
+        .iter()
+        .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(names.contains(&"src/host/faults.rs".to_owned()), "the gated fault module exists");
+
+    let mut gated_sites = Vec::new();
+    for (path, name) in files.iter().zip(&names) {
+        if name == "src/host/faults.rs" {
+            continue; // wholly gated by `mod faults;` in host.rs, checked below as a site
+        }
+        let text = fs::read_to_string(path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let code = line.trim();
+            // Comments and the DESCRIPTOR data string name hooks as prose, not as code.
+            if code.starts_with("//") || code.starts_with("pub const DESCRIPTOR") {
+                continue;
+            }
+            let hit = code
+                .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+                .any(|token| HOOK_WORDS.contains(&token));
+            if !hit {
+                continue;
+            }
+            let gated = i > 0 && GATES.contains(&lines[i - 1].trim());
+            assert!(
+                gated,
+                "{name}:{}: fault-injection hook without the test-faults gate directly above it: {code}",
+                i + 1
+            );
+            gated_sites.push(format!("{name}: {code}"));
+        }
+    }
+    assert_eq!(
+        gated_sites,
+        [
+            "examples/kernel-bindings-consumer.rs: host.inner.plan_fault(Fault::DropAck);",
+            "src/host.rs: mod faults;",
+            "src/host.rs: pub use faults::Fault;",
+            "src/host.rs: faults: std::collections::VecDeque<faults::Fault>,",
+            "src/host.rs: let lose_reply = faults::before_commit(state, &edit_key, resource);",
+            "src/lib.rs: pub use host::Fault;",
+        ],
+        "every fault-hook site, each gated"
+    );
+
+    // The feature exists and is not a default feature.
+    let manifest = include_str!("../Cargo.toml");
+    let features = manifest.split("[features]").nth(1).unwrap().split("\n[").next().unwrap();
+    assert!(features.lines().any(|l| l.trim() == "default = []"), "test-faults must not be a default feature");
+    assert!(features.lines().any(|l| l.trim() == "test-faults = []"));
 }
