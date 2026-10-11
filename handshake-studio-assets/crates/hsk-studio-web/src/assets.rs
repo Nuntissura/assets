@@ -789,9 +789,15 @@ impl Collector<'_> {
         node: NodeId,
         name: &str,
         value_span: Range<usize>,
+        valueless: bool,
         route: Route,
     ) -> Result<(), WebError> {
-        let raw = self.doc.slice(&value_span);
+        // A valueless attribute (`<script src>`) has the empty string as its value; its span is the attribute name.
+        let raw = if valueless {
+            ""
+        } else {
+            self.doc.slice(&value_span)
+        };
         let decoded = decode(raw, Context::Attribute);
         let source = if name == "style" {
             AssetSource::InlineStyle
@@ -1057,9 +1063,11 @@ pub fn collect_assets(
         };
         for attr in &node.attrs {
             let name = doc.attr_local_name(attr);
-            let Some(value_span) = attr.value_span.clone() else {
-                continue;
-            };
+            let valueless = attr.value_span.is_none();
+            let value_span = attr
+                .value_span
+                .clone()
+                .unwrap_or_else(|| attr.name_span.clone());
             if let Some(path) = carriers::animation_path(&tag, &name) {
                 if let Some((_, target)) = &animated {
                     let loads = animated_url_loads.unwrap_or(Loads::of(Load::Resource));
@@ -1068,7 +1076,7 @@ pub fn collect_assets(
                         loads,
                         target: Some(*target),
                     };
-                    c.attribute(id, &name, value_span, route)?;
+                    c.attribute(id, &name, value_span, valueless, route)?;
                 }
                 continue;
             }
@@ -1092,7 +1100,7 @@ pub fn collect_assets(
                     loads,
                     target: None,
                 };
-                c.attribute(id, &name, value_span, route)?;
+                c.attribute(id, &name, value_span, valueless, route)?;
             }
         }
         if tag == "style" {

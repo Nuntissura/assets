@@ -980,6 +980,22 @@ fn r12_f2_self_references_from_style_sheet_and_script_carriers_are_denied() {
                 let (seen, _) = scan(src).unwrap();
                 assert!(seen.is_empty(), "{src:?}: {seen:?}");
             }
+            // A valueless attribute is the empty string too: nothing in a navigation or image carrier, a self-reference in a
+            // style sheet or script carrier.
+            for src in ["<img src>", "<a href></a>", "<iframe SRC></iframe>"] {
+                let (seen, _) = scan(src).unwrap();
+                assert!(seen.is_empty(), "{src:?}: {seen:?}");
+            }
+            for src in [
+                "<script src></script>",
+                "<SCRIPT SRC></SCRIPT>",
+                "<link rel=stylesheet href>",
+                "<svg><script href/></svg>",
+                "<video><track src></video>",
+                "<link rel=manifest HREF>",
+            ] {
+                assert_only(src, "", SELF_REFERENCE);
+            }
             // Anything else relative in those carriers still reaches the port (not a self-reference).
             let (_, calls) =
                 scan("<link rel=stylesheet href=\"?x\"><script src=\"./\"></script>").unwrap();
