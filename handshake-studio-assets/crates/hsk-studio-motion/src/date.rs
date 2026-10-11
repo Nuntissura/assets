@@ -9,19 +9,10 @@ pub const MAX_ABS_UTC_MS: i64 = 8_640_000_000_000_000;
 const MS_PER_DAY: i64 = 86_400_000;
 const TICKS_PER_SECOND_WIDE: i128 = TICKS_PER_SECOND as i128;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DateProfile {
     epoch_ms: i64,
     origin_tick: u64,
-}
-
-impl Default for DateProfile {
-    fn default() -> Self {
-        Self {
-            epoch_ms: 0,
-            origin_tick: 0,
-        }
-    }
 }
 
 impl DateProfile {

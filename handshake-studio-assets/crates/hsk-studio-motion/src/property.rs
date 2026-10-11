@@ -305,7 +305,8 @@ impl Property {
         ctx: &EvalContext,
         cancel: &CancellationToken,
     ) -> Result<Evaluation, MotionError> {
-        self.evaluate_with(ctx, &NoProvider, &NoHost, &mut Fuel::new(0), cancel)
+        // One unit pays for the single provider call; `NoProvider` itself spends nothing.
+        self.evaluate_with(ctx, &NoProvider, &NoHost, &mut Fuel::new(1), cancel)
     }
 
     /// STU-MOT-071/078 evaluation: stale revision rejected; expression error (any code except
