@@ -204,9 +204,9 @@ pub fn font_root() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| fixtures().join("fonts"))
 }
-pub struct Fonts {
-    data: [Vec<u8>; 4],
-    hashes: [[u8; 32]; 4],
+pub struct Fonts<const N: usize = 4> {
+    data: [Vec<u8>; N],
+    hashes: [[u8; 32]; N],
 }
 impl Fonts {
     fn load() -> Self {
@@ -253,25 +253,60 @@ impl Fonts {
         Self { data, hashes }
     }
 }
-const NAMES: [&str; 4] = [
+/// Recipe fonts 0..3 plus the SMB-TYPE-ENG-1 coverage fonts 4..5 (vendored OFL-1.1, hash-pinned
+/// in tests/fixtures/FIXTURES_PROVENANCE.json); only the spike test loads them.
+impl Fonts<6> {
+    pub fn load_with_coverage_scripts() -> Self {
+        let base = Fonts::load();
+        let provenance = json(&fixtures().join("FIXTURES_PROVENANCE.json"));
+        let extra = ["NotoSansDevanagari-Regular.ttf", "NotoSansHebrew-Regular.ttf"].map(|file| {
+            let bytes = std::fs::read(font_root().join(file)).unwrap();
+            let pinned = provenance["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["file"] == format!("fonts/{file}"))
+                .unwrap_or_else(|| panic!("provenance for {file}"));
+            let expected: [u8; 32] = unhex(pinned["sha256"].as_str().unwrap()).try_into().unwrap();
+            assert_eq!(hash(&bytes), expected, "pinned coverage font {file}");
+            (bytes, expected)
+        });
+        let [base0, base1, base2, base3] = base.data;
+        let [extra0, extra1] = extra;
+        Fonts {
+            data: [base0, base1, base2, base3, extra0.0, extra1.0],
+            hashes: [
+                base.hashes[0],
+                base.hashes[1],
+                base.hashes[2],
+                base.hashes[3],
+                extra0.1,
+                extra1.1,
+            ],
+        }
+    }
+}
+const NAMES: [&str; 6] = [
     "Inter-Regular",
     "NotoSansArabic-Regular",
     "NotoSansSC-Regular",
     "Inter-Variable",
+    "NotoSansDevanagari-Regular",
+    "NotoSansHebrew-Regular",
 ];
-pub struct Resolver<'a> {
-    fonts: &'a Fonts,
+pub struct Resolver<'a, const N: usize = 4> {
+    fonts: &'a Fonts<N>,
     ledger: &'a Ledger,
-    handles: [u64; 4],
+    handles: [u64; N],
     revision: AtomicU64,
     mode: AtomicU64,
 }
-impl FontResolver for Resolver<'_> {
+impl<const N: usize> FontResolver for Resolver<'_, N> {
     fn revision(&self) -> Result<u64, Error> {
         Ok(self.revision.load(Ordering::SeqCst))
     }
     fn resolve(&self, r: &FontResource<'_>) -> Result<FontRead<'_>, Error> {
-        let i = NAMES
+        let i = NAMES[..N]
             .iter()
             .position(|n| *n == r.identity)
             .ok_or(Error::MissingFont)?;
@@ -291,7 +326,7 @@ impl FontResolver for Resolver<'_> {
         })
     }
     fn verify_lifetime(&self, r: &FontResource<'_>, read: &FontRead<'_>) -> Result<(), Error> {
-        let i = NAMES
+        let i = NAMES[..N]
             .iter()
             .position(|n| *n == r.identity)
             .ok_or(Error::MissingFont)?;
@@ -630,11 +665,11 @@ pub fn diagnostic_frame(capture: &Capture, index: usize) -> (u8, u8, u64, u64, u
         get(4 + 8 * 8),
     )
 }
-pub fn with_case(
-    fonts: &Fonts,
+pub fn with_case<const N: usize>(
+    fonts: &Fonts<N>,
     case: &Value,
     candidate_override: Option<&[usize]>,
-    body: impl for<'a> FnOnce(Request<'a>, &Ports<'a>, &Scene<'a>, &Ledger, &Resolver<'a>),
+    body: impl for<'a> FnOnce(Request<'a>, &Ports<'a>, &Scene<'a>, &Ledger, &Resolver<'a, N>),
 ) {
     let text = case["text"].as_str().unwrap();
     assert_eq!(
@@ -656,9 +691,9 @@ pub fn with_case(
     .unwrap();
     let cancel = CancellationToken::default();
     let ledger = Ledger::new();
-    let mut handles = [0; 4];
-    let mut font_leases = Vec::with_capacity(4);
-    for i in 0..4 {
+    let mut handles = [0; N];
+    let mut font_leases = Vec::with_capacity(N);
+    for i in 0..N {
         let (h, r) = ledger.base(fonts.data[i].capacity() as u64);
         handles[i] = h;
         font_leases.push(r);

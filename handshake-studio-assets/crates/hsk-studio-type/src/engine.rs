@@ -5,11 +5,36 @@ use std::ops::Range;
 /// Stateless native shaping; every resource and authority is supplied by the caller.
 #[derive(Default)]
 pub struct TextEngine;
+/// Shaping provider behind the Type provider boundary; the vendored provider is the only default.
+#[derive(Clone, Copy)]
+enum Provider {
+    Vendored,
+    #[cfg(feature = "harfrust")]
+    Harfrust,
+}
 impl TextEngine {
     pub fn shaped_runs<'a>(
         &self,
         request: Request<'a>,
         ports: &Ports<'a>,
+    ) -> Result<Prepared<'a>, Rejected> {
+        self.run(request, ports, Provider::Vendored)
+    }
+    /// SMB-TYPE-ENG-1 spike only (Operator decision D7 pending): same contract, but each run is
+    /// shaped by HarfRust 0.14.0 with bounds enforced at the call boundary, not inside the shaper.
+    #[cfg(feature = "harfrust")]
+    pub fn shaped_runs_harfrust<'a>(
+        &self,
+        request: Request<'a>,
+        ports: &Ports<'a>,
+    ) -> Result<Prepared<'a>, Rejected> {
+        self.run(request, ports, Provider::Harfrust)
+    }
+    fn run<'a>(
+        &self,
+        request: Request<'a>,
+        ports: &Ports<'a>,
+        provider: Provider,
     ) -> Result<Prepared<'a>, Rejected> {
         let ctx = Context::new(
             request.cancellation,
@@ -30,7 +55,7 @@ impl TextEngine {
             input_bytes: request.text_utf8.len() as u64,
             ..Counts::default()
         };
-        self.prepare(request, ports, &ctx, &mut counts)
+        self.prepare(request, ports, &ctx, &mut counts, provider)
             .map_err(|error| {
                 counts.work_units = ctx.work();
                 if let Ok(snapshot) = ports.admission.snapshot() {
@@ -52,6 +77,7 @@ impl TextEngine {
         ports: &Ports<'a>,
         ctx: &Context<'a>,
         counts: &mut Counts,
+        provider: Provider,
     ) -> ProviderResult<Prepared<'a>> {
         let input = ports.input_lifetime.verify(&request)?;
         let initial = ports.admission.snapshot()?;
@@ -184,7 +210,12 @@ impl TextEngine {
                             start: span.start as u64,
                             end: span.end as u64,
                         }));
-                        let run = shape(
+                        let shaper = match provider {
+                            Provider::Vendored => shape,
+                            #[cfg(feature = "harfrust")]
+                            Provider::Harfrust => crate::provider::harfrust::shape_run,
+                        };
+                        let run = shaper(
                             &request,
                             &request.styles[*index as usize],
                             span.clone(),
@@ -285,60 +316,7 @@ fn shape<'a>(
     ctx: &Context<'a>,
 ) -> ProviderResult<Run<'a>> {
     let text = &request.text_utf8[span.clone()];
-    let mut selected = None;
-    for (candidate, resource) in style.candidates.iter().enumerate() {
-        ctx.step()?;
-        if candidate > 0 {
-            counts.fallback_attempts = counts
-                .fallback_attempts
-                .checked_add(1)
-                .ok_or(Error::Overflow)?;
-            if counts.fallback_attempts > request.limits.fallback_attempts {
-                return Err(Error::Budget);
-            }
-        }
-        if candidate == 0 && resource.identity != style.requested_identity {
-            let mapping = style.substitution.ok_or(Error::MissingFont)?;
-            if mapping.requested_identity != style.requested_identity
-                || mapping.resolved_identity != resource.identity
-                || mapping.reason == SubstitutionReason::CoverageFallback
-            {
-                return Err(Error::MissingFont);
-            }
-        }
-        let mut cached = None;
-        for (i, font) in cache.iter().enumerate() {
-            ctx.step()?;
-            if font.resource.content_hash == resource.content_hash
-                && font.resource.face_index == resource.face_index
-                && font.resource.resource_revision == resource.resource_revision
-                && font.resource.grant_revision == resource.grant_revision
-                && font.resource.identity == resource.identity
-                && font.resource.location == resource.location
-            {
-                cached = Some(i);
-                break;
-            }
-        }
-        let index = match cached {
-            Some(index) => index,
-            None => {
-                if cache.len() as u64 >= request.limits.font_resources {
-                    return Err(Error::Budget);
-                }
-                let font = crate::fonts::load(*resource, ports, request.limits, ctx)?;
-                cache.push(font, ctx)?;
-                counts.fonts = counts.fonts.checked_add(1).ok_or(Error::Overflow)?;
-                cache.len() - 1
-            }
-        };
-        // A complete style/bidi span is a conservative shaping-safe fallback unit: never split marks or joining context.
-        if crate::fonts::covers(&cache[index].face, text, ctx)? {
-            selected = Some((candidate, index));
-            break;
-        }
-    }
-    let (candidate, index) = selected.ok_or(Error::MissingGlyph)?;
+    let (candidate, index) = select_font(request, style, text, ports, cache, counts, ctx)?;
     let font = &mut cache[index];
     ports.resolver.verify_lifetime(&font.resource, &font.read)?;
     let axes = crate::fonts::axes(&mut font.face, style, request.limits, ctx)?;
@@ -583,6 +561,71 @@ fn shape<'a>(
         glyphs,
     })
 }
+/// First candidate whose face covers the whole span; loads and caches fonts under the limits.
+pub(crate) fn select_font<'a>(
+    request: &Request<'a>,
+    style: &Style<'a>,
+    text: &str,
+    ports: &Ports<'a>,
+    cache: &mut ChargedVec<'a, crate::fonts::CachedFont<'a>>,
+    counts: &mut Counts,
+    ctx: &Context<'a>,
+) -> ProviderResult<(usize, usize)> {
+    let mut selected = None;
+    for (candidate, resource) in style.candidates.iter().enumerate() {
+        ctx.step()?;
+        if candidate > 0 {
+            counts.fallback_attempts = counts
+                .fallback_attempts
+                .checked_add(1)
+                .ok_or(Error::Overflow)?;
+            if counts.fallback_attempts > request.limits.fallback_attempts {
+                return Err(Error::Budget);
+            }
+        }
+        if candidate == 0 && resource.identity != style.requested_identity {
+            let mapping = style.substitution.ok_or(Error::MissingFont)?;
+            if mapping.requested_identity != style.requested_identity
+                || mapping.resolved_identity != resource.identity
+                || mapping.reason == SubstitutionReason::CoverageFallback
+            {
+                return Err(Error::MissingFont);
+            }
+        }
+        let mut cached = None;
+        for (i, font) in cache.iter().enumerate() {
+            ctx.step()?;
+            if font.resource.content_hash == resource.content_hash
+                && font.resource.face_index == resource.face_index
+                && font.resource.resource_revision == resource.resource_revision
+                && font.resource.grant_revision == resource.grant_revision
+                && font.resource.identity == resource.identity
+                && font.resource.location == resource.location
+            {
+                cached = Some(i);
+                break;
+            }
+        }
+        let index = match cached {
+            Some(index) => index,
+            None => {
+                if cache.len() as u64 >= request.limits.font_resources {
+                    return Err(Error::Budget);
+                }
+                let font = crate::fonts::load(*resource, ports, request.limits, ctx)?;
+                cache.push(font, ctx)?;
+                counts.fonts = counts.fonts.checked_add(1).ok_or(Error::Overflow)?;
+                cache.len() - 1
+            }
+        };
+        // A complete style/bidi span is a conservative shaping-safe fallback unit: never split marks or joining context.
+        if crate::fonts::covers(&cache[index].face, text, ctx)? {
+            selected = Some((candidate, index));
+            break;
+        }
+    }
+    selected.ok_or(Error::MissingGlyph)
+}
 fn resolved_script(declared: [u8; 4], text: &str, ctx: &Context<'_>) -> ProviderResult<[u8; 4]> {
     use unicode_script::{Script, UnicodeScript};
     let mut selected = if declared == *b"Zyyy" {
@@ -621,7 +664,7 @@ fn resolved_script(declared: [u8; 4], text: &str, ctx: &Context<'_>) -> Provider
     }
     Ok(*b"Zyyy")
 }
-fn points(value: i32, size: f64, scale: u32) -> ProviderResult<f64> {
+pub(crate) fn points(value: i32, size: f64, scale: u32) -> ProviderResult<f64> {
     let product = f64::from(value) * size;
     let value = product / f64::from(scale);
     if !product.is_finite() || !value.is_finite() {
