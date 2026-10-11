@@ -3,12 +3,13 @@
 //! `--threads 1,8,16` (default `1,auto`: one thread, then `Threads::auto()`), plus a SHA-256 of each
 //! stage's output taken outside the timed section; the last line compares those digests across the
 //! thread counts (`determinism=PASS` means byte-identical). `--width W --height H` override the frame.
-//! The last stage converts Display P3 -> sRGB (CC0 linear test profiles) through the wide Prism route.
+//! The last stage converts Display P3 -> sRGB (CC0 linear test profiles) through the admitted wide Prism route
+//! (an unmetered ledger: the timing excludes any budget).
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_develop::*;
 use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
 use hsk_studio_pigment::Grid;
-use hsk_studio_prism::{AdmittedPrism, ProviderAdmission, ProviderReservation, WideEngine, profile_hash};
+use hsk_studio_prism::{AdmittedPrism, AdmittedWideEngine, ProviderAdmission, ProviderReservation, profile_hash};
 use sha2::{Digest, Sha256};
 use std::{env, time::Instant};
 
@@ -138,7 +139,7 @@ fn run(threads: Threads, plane: &CfaPlane, digests: &mut Vec<(String, String)>) 
     let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();
     let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
     let prism = AdmittedPrism::new(&actor, 1, Unmetered).unwrap();
-    let mut wide = WideEngine::new(actor.clone(), 8).unwrap();
+    let mut wide = AdmittedWideEngine::new(&actor, 8, Unmetered).unwrap();
     let mut sink = CountingSink(0);
     let mut converter = PrismConverter::new(
         &prism,

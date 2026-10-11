@@ -4,7 +4,8 @@ use hsk_studio_develop::*;
 use hsk_studio_observe::{DeliveryClass, DeliveryError, SinkPort};
 use hsk_studio_pigment::Grid;
 use hsk_studio_prism::{
-    AdmittedPrism, ClipMethod, ProviderAdmission, ProviderReservation, WideEngine, profile_hash,
+    AdmittedPrism, AdmittedWideEngine, ClipMethod, ProviderAdmission, ProviderReservation,
+    profile_hash,
 };
 use std::sync::{
     Arc,
@@ -33,9 +34,21 @@ fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
 }
 
 // ---- caller-owned admission ledger and diagnostics sink ---------------------------------------
-#[derive(Default)]
+/// Live reserved bytes, the highest live total seen, and a cap (`u64::MAX` = unlimited) beyond
+/// which `reserve` denies.
 struct Ledger {
     live: AtomicU64,
+    peak: AtomicU64,
+    cap: AtomicU64,
+}
+impl Default for Ledger {
+    fn default() -> Self {
+        Self {
+            live: AtomicU64::new(0),
+            peak: AtomicU64::new(0),
+            cap: AtomicU64::new(u64::MAX),
+        }
+    }
 }
 #[derive(Clone)]
 struct Admission(Arc<Ledger>);
@@ -59,7 +72,12 @@ impl ProviderAdmission for Admission {
         true
     }
     fn reserve(&self, bytes: u64) -> Result<Lease, hsk_studio_prism::Error> {
-        self.0.live.fetch_add(bytes, Ordering::SeqCst);
+        let after = self.0.live.fetch_add(bytes, Ordering::SeqCst).saturating_add(bytes);
+        if after > self.0.cap.load(Ordering::SeqCst) {
+            self.0.live.fetch_sub(bytes, Ordering::SeqCst);
+            return Err(hsk_studio_prism::Error::AdmissionDenied);
+        }
+        self.0.peak.fetch_max(after, Ordering::SeqCst);
         Ok(Lease {
             ledger: self.0.clone(),
             bytes,
@@ -187,8 +205,7 @@ fn profile_transform_admitted() {
 
         // sRGB-linear -> DisplayP3-linear: admitted inspection, wide transform; 256 pixels = 1 request.
         let prism = AdmittedPrism::new(&actor, 1, ledger.clone()).unwrap();
-        let mut wide = WideEngine::new(actor.clone(), 8).unwrap();
-        let reserved = prism.provider_reserved_bytes();
+        let mut wide = AdmittedWideEngine::new(&actor, 8, ledger.clone()).unwrap();
         let mut sink = Collect::default();
         let mut converter = PrismConverter::new(
             &prism,
@@ -292,10 +309,14 @@ fn profile_transform_admitted() {
         let receipt = receipt.unwrap();
         assert_eq!((receipt.profile_route, receipt.profile_calls), ("identity_inspected", 0));
         assert_eq!(tiles[0].colour, baseline[0].colour);
-        // Every lease taken for inspection is retired; only the provider lease remains (the wide
-        // transform caches its plan inside the engine, outside the admission ledger).
+        // Every transient lease (inspection, build, request, output) is retired; what remains on the
+        // ledger is exactly the two provider leases and the leases of the cached plans.
         let live = ledger.0.live.load(Ordering::SeqCst);
-        assert_eq!(live, reserved);
+        assert_eq!(
+            live,
+            prism.provider_reserved_bytes() + wide.provider_reserved_bytes() + wide.plan_reserved_bytes()
+        );
+        assert!(wide.plan_reserved_bytes() > 0, "the cached plan is accounted");
     });
 }
 
@@ -332,8 +353,9 @@ fn wide_requests_are_chunk_invariant_and_report_plan_cache_and_clip() {
     bounded_case("wide_requests", || {
         let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();
         let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
-        let prism = AdmittedPrism::new(&actor, 1, Admission(Arc::new(Ledger::default()))).unwrap();
-        let mut wide = WideEngine::new(actor.clone(), 8).unwrap();
+        let ledger = Admission(Arc::new(Ledger::default()));
+        let prism = AdmittedPrism::new(&actor, 1, ledger.clone()).unwrap();
+        let mut wide = AdmittedWideEngine::new(&actor, 8, ledger).unwrap();
         let srgb = binding("SCPF-019abcde-0000-7000-8000-000000000001", SRGB);
         let p3 = binding("SCPF-019abcde-0000-7000-8000-000000000002", P3);
         let (plane, recipe) = (plane(), recipe(&p3, &srgb));
@@ -420,5 +442,84 @@ fn wide_requests_are_chunk_invariant_and_report_plan_cache_and_clip() {
             let converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
             assert_eq!(converter.with_chunk_pixels(bad).err(), Some(DevelopError::InvalidLimits));
         }
+    });
+}
+
+/// STU-CON-044 accounting: a ledger that is one byte short of what the conversion needs refuses it
+/// with `admission_denied` BEFORE the engine parses a profile or converts a pixel, and a ledger
+/// with exactly enough succeeds with the same bytes. A ledger that only covers the two provider
+/// leases refuses at inspection, before any pixel is computed.
+#[test]
+fn short_admission_budget_is_refused_before_any_work() {
+    bounded_case("short_admission_budget", || {
+        let actor = ActorContext::new("a", "p", "o", "op", "s", "sess").unwrap();
+        let resource = DomainId::parse("SDOC-019abcde-0000-7000-8000-000000000001").unwrap();
+        let srgb = binding("SCPF-019abcde-0000-7000-8000-000000000001", SRGB);
+        let p3 = binding("SCPF-019abcde-0000-7000-8000-000000000002", P3);
+        let (plane, recipe) = (plane(), recipe(&srgb, &p3));
+        let cancel = CancellationToken::default();
+        let context = PrismContext { actor: &actor, resource_id: &resource, correlation_id: 5, revision: 7 };
+        let (src, dst) = (IccProfile { binding: &srgb, icc: SRGB }, IccProfile { binding: &p3, icc: P3 });
+        let engines = |ledger: &Admission| {
+            (
+                AdmittedPrism::new(&actor, 1, ledger.clone()).unwrap(),
+                AdmittedWideEngine::new(&actor, 8, ledger.clone()).unwrap(),
+            )
+        };
+
+        // Unlimited ledger: measure what the conversion needs and keep the output.
+        let ledger = Admission(Arc::new(Ledger::default()));
+        let (prism, mut wide) = engines(&ledger);
+        let base = ledger.0.live.load(Ordering::SeqCst);
+        let mut sink = Collect::default();
+        let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
+        let (receipt, reference) = run(&plane, &recipe, Some(&mut converter), &cancel);
+        receipt.unwrap();
+        let peak = ledger.0.peak.load(Ordering::SeqCst);
+        assert!(peak > base, "the conversion reserves bytes beyond the provider leases");
+
+        // Exactly enough: succeeds, same bytes, transient leases retired.
+        let ledger = Admission(Arc::new(Ledger::default()));
+        let (prism, mut wide) = engines(&ledger);
+        ledger.0.cap.store(peak, Ordering::SeqCst);
+        let mut sink = Collect::default();
+        let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
+        let (receipt, tiles) = run(&plane, &recipe, Some(&mut converter), &cancel);
+        receipt.unwrap();
+        assert_eq!(tiles[0].colour, reference[0].colour);
+
+        // One byte short of the peak: denied while taking the last lease of the first request,
+        // before the plan is built (no parse, no plan, no observation, no tile).
+        let ledger = Admission(Arc::new(Ledger::default()));
+        let (prism, mut wide) = engines(&ledger);
+        let provider = ledger.0.live.load(Ordering::SeqCst);
+        ledger.0.cap.store(peak - 1, Ordering::SeqCst);
+        let mut sink = Collect::default();
+        let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
+        let (result, tiles) = run(&plane, &recipe, Some(&mut converter), &cancel);
+        assert_eq!((result.err(), tiles.len()), (Some(DevelopError::Prism("admission_denied")), 0));
+        assert_eq!(converter.calls(), 0);
+        assert!(sink.0.is_empty(), "no Prism request was delivered");
+        let stats = wide.cache_stats();
+        assert_eq!((stats.entries, stats.hits, stats.misses, stats.parses), (0, 0, 0, 0), "nothing parsed or planned");
+        assert_eq!(wide.plan_reserved_bytes(), 0);
+        assert_eq!(ledger.0.live.load(Ordering::SeqCst), provider, "every transient lease was released");
+
+        // Only the provider leases fit: refused at inspection, before any pixel is computed.
+        let ledger = Admission(Arc::new(Ledger::default()));
+        let (prism, mut wide) = engines(&ledger);
+        let provider = ledger.0.live.load(Ordering::SeqCst);
+        ledger.0.cap.store(provider, Ordering::SeqCst);
+        let mut sink = Collect::default();
+        let mut converter = PrismConverter::new(&prism, &mut wide, src, dst, context, &mut sink);
+        let (result, tiles) = run(&plane, &recipe, Some(&mut converter), &cancel);
+        assert_eq!((result.err(), tiles.len()), (Some(DevelopError::Prism("admission_denied")), 0));
+        assert_eq!(converter.calls(), 0);
+        assert_eq!(ledger.0.live.load(Ordering::SeqCst), provider);
+        // The refusal is classified as unavailable, not as a validation failure.
+        assert_eq!(
+            DevelopError::Prism("admission_denied").outcome(),
+            hsk_studio_observe::Outcome::Failure(hsk_studio_observe::FailureCode::Unavailable)
+        );
     });
 }

@@ -1,21 +1,26 @@
 //! Working -> output profile conversion (STU-CON-044). Both profiles are inspected through Prism's
 //! ADMITTED route first (verified linear-light descriptors under the caller's admission ledger),
-//! then pixels convert through Prism's [`WideEngine`] in requests of at most [`WIDE_CHUNK_PIXELS`]
-//! with relative-colorimetric / BPC off. The engine caches its transform plan per (profile hashes,
-//! intent, BPC), so a frame parses each profile once instead of once per call. Prism's range
-//! refusal outside 0..1 surfaces as a typed error and is never clipped; the output is not clamped
-//! and out-of-gamut destination values are counted in a clip report. There is no fallback to
-//! Prism's legacy unbudgeted route.
+//! then pixels convert through Prism's [`AdmittedWideEngine`] in requests of at most
+//! [`WIDE_CHUNK_PIXELS`] with relative-colorimetric / BPC off. The engine caches its transform plan
+//! per (profile hashes, intent, BPC), so a frame parses each profile once instead of once per call.
+//! Prism's range refusal outside 0..1 surfaces as a typed error and is never clipped; the output is
+//! not clamped and out-of-gamut destination values are counted in a clip report. There is no
+//! fallback to Prism's legacy unbudgeted route or to the unaccounted `WideEngine`.
 //!
-//! The wide transform is bounded by request size (and 2 MiB profiles, 8 cached plans) but is NOT
-//! charged to the caller's admission ledger; only the admitted inspection is.
+//! Accounting (STU-CON-044 "accounted lifetime"): the admitted wide engine charges the caller's
+//! ledger BEFORE every allocation it causes (provider lease at construction, plan and transient
+//! build leases on a cache miss, request and output leases per request) and a denial surfaces as
+//! `DevelopError::Prism("admission_denied")` before any parse or conversion work of that request
+//! (`tests/develop_profile.rs`: `short_admission_budget_is_refused_before_any_work`). The 64-pixel
+//! chunk size of the spec text is still not used (requests are up to [`WIDE_CHUNK_PIXELS`] pixels).
 use crate::DevelopError;
 use crate::recipe::ProfileBinding;
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::SinkPort;
 use hsk_studio_prism::{
-    AdmittedPrism, ClipReport, Intent, MAX_WIDE_PIXELS, ProfileInput, ProviderAdmission, Transfer,
-    WideCacheStats, WideEngine, WideError, WideFailure, WideSource, WideTransformRequest,
+    AdmittedPrism, AdmittedWideEngine, AdmittedWideError, ClipReport, Intent, MAX_WIDE_PIXELS,
+    ProfileInput, ProviderAdmission, Transfer, WideCacheStats, WideError, WideSource,
+    WideTransformRequest,
 };
 
 /// Default pixels per wide Prism request: 3 MiB of f32 RGB in and 3 MiB out. Hard limit:
@@ -68,7 +73,7 @@ pub struct IccProfile<'a> {
 }
 
 /// Request-scoped Prism context (revision is a local precondition, equal on both sides). The
-/// actor must equal the one the [`WideEngine`] was created for.
+/// actor must equal the one the [`AdmittedWideEngine`] was created for.
 #[derive(Clone, Copy)]
 pub struct PrismContext<'a> {
     pub actor: &'a ActorContext,
@@ -80,8 +85,9 @@ pub struct PrismContext<'a> {
 pub struct PrismConverter<'a, A: ProviderAdmission> {
     /// Admitted inspection only (linear-light proof, caller-owned ledger).
     prism: &'a AdmittedPrism<A>,
-    /// The transform: plan cache plus two-leg conversion; reuse one engine across frames.
-    wide: &'a mut WideEngine,
+    /// The transform: plan cache plus two-leg conversion, every allocation charged to the caller's
+    /// ledger first; reuse one engine across frames.
+    wide: &'a mut AdmittedWideEngine<A>,
     source: IccProfile<'a>,
     destination: IccProfile<'a>,
     context: PrismContext<'a>,
@@ -96,7 +102,7 @@ pub struct PrismConverter<'a, A: ProviderAdmission> {
 impl<'a, A: ProviderAdmission> PrismConverter<'a, A> {
     pub fn new(
         prism: &'a AdmittedPrism<A>,
-        wide: &'a mut WideEngine,
+        wide: &'a mut AdmittedWideEngine<A>,
         source: IccProfile<'a>,
         destination: IccProfile<'a>,
         context: PrismContext<'a>,
@@ -149,6 +155,16 @@ fn map_wide(error: WideError) -> DevelopError {
     }
 }
 
+/// Admission denials keep Prism's `admission_denied` code (outcome: unavailable); cancellation
+/// stays `Canceled` whichever layer saw it.
+fn map_admitted(error: AdmittedWideError) -> DevelopError {
+    match error {
+        AdmittedWideError::Admission(error) => map(error),
+        AdmittedWideError::Refused(error) => map_wide(error),
+        AdmittedWideError::Wide(failure) => map_wide(failure.error),
+    }
+}
+
 /// Fold one request's clip report into the running total.
 fn merge_clip(total: &mut ClipReport, part: &ClipReport) {
     total.method = part.method;
@@ -179,7 +195,7 @@ impl<A: ProviderAdmission> ProfileConverter for PrismConverter<'_, A> {
             // The wide path builds its plan from the same bytes: refuse here, before any pixel.
             self.wide
                 .inspect_profile(request, cancel)
-                .map_err(map_wide)?;
+                .map_err(map_admitted)?;
         }
         Ok(())
     }
@@ -204,11 +220,13 @@ impl<A: ProviderAdmission> ProfileConverter for PrismConverter<'_, A> {
                 resource_id: self.context.resource_id,
                 actor: self.context.actor,
             };
-            let result = self
+            // The output lease lives with `admitted` until the pixels are copied out below.
+            let admitted = self
                 .wide
                 .transform(&request, cancel, &mut *self.sink)
-                .map_err(|failure: WideFailure| map_wide(failure.error))?;
+                .map_err(map_admitted)?;
             self.calls += 1;
+            let result = admitted.result();
             merge_clip(&mut self.clip, &result.receipt.clip);
             out.extend(result.pixels.chunks_exact(3).map(|p| [p[0], p[1], p[2]]));
         }
