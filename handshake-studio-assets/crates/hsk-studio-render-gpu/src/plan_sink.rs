@@ -1,26 +1,36 @@
 //! GPU `RenderBackend` for the shared pigment render plan: admission (`admit`, before any device
 //! work), source verification, then bounded `chunk x chunk` execution of one WGSL compute pass per
-//! layer, read back into the caller's `TileSink`.
+//! layer (and per nested-group composite), read back into the caller's `TileSink`.
 //!
-//! Slice 1 scope: a flat plan (root group, or a single leaf) of `Solid` and `Tile` layers with
-//! `Normal`/`Multiply`/`Screen`, opacity and fill opacity, straight alpha, `rgb_f32le` in the
-//! plan's colour tag. Everything else is refused by `admit` as `Unsupported` (typed, before any
-//! upload). There is no CPU fallback: no adapter is `Unavailable`, a lost device is `DeviceLost`.
+//! Scope: `Solid` and `Tile` leaves; every layer-applicable, class-Exact separable blend mode plus
+//! Normal (the list is derived from pigment's mode facts in `kernel.rs`); layer opacity times fill
+//! opacity; coverage masks (`coverage_u8` / `coverage_u16le`, inversion, density 1); isolated
+//! groups (own transparent buffer per nesting level, then composited with the layer's mode,
+//! opacity and mask) and pass-through groups (layers composited onto the parent's running
+//! backdrop). Straight alpha, `rgb_f32le` in the plan's colour tag. Everything else (other modes,
+//! vector, clip-to-base, mask density, pass-through opacity, non-isolated blended groups,
+//! premultiplied alpha) is refused by `admit` or source preparation as `Unsupported`, typed and
+//! before any upload. There is no CPU fallback: no adapter is `Unavailable`, a lost device is
+//! `DeviceLost`.
 //!
 //! Numerics: the shader reproduces `hsk_studio_pigment::blend_math::composite_over` in f32. GPU
-//! fused multiply-add and division may differ from the CPU reference in the last ulps, so the
-//! backend reports class `Fitted` (tolerance-equal, not bit-exact) for the blend operators.
+//! fused multiply-add, division and square root may differ from the CPU reference in the last
+//! ulps, so the backend reports class `Fitted` (tolerance-equal, not bit-exact) for the blend
+//! operators. Mask coverages are computed on the host with render-cpu's exact conversion, so the
+//! mask values the shader multiplies by are bit-identical to the CPU path's.
 use crate::device::{DeviceInfo, DeviceOptions, GpuContext};
 use crate::error::{GpuError, Reason};
-use crate::kernel::{LayerParams, PARAMS_BYTES, ShaderMode, TEXEL_BYTES};
+use crate::kernel::{
+    LayerParams, MASK_TEXEL_BYTES, PARAMS_BYTES, SourceKind, TEXEL_BYTES, gpu_blend_supported,
+};
 use crate::residency::{Residency, ResidentKey};
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BackendIdentity, ColourTag, DeviceClass, Exactness,
-    ExecuteRequest, NoVector, Operator, PlanNode, PlanSources, RenderBackend, RenderPlan,
-    RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink,
-    admit,
+    ExecuteRequest, MaskFormat, NoVector, Operator, PlanNode, PlanSources, RenderBackend,
+    RenderPlan, RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
+    TileSink, admit,
 };
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -31,22 +41,10 @@ pub const RENDERER_VERSION: &str = "0.1";
 const MIN_CHUNK_TEXELS: u64 = 64;
 const DEFAULT_POLL_LIMIT: Duration = Duration::from_secs(60);
 
-/// True for the blend modes the slice-1 shader implements.
-pub fn gpu_blend_supported(mode: StudioBlendMode) -> bool {
-    shader_mode(mode).is_some()
-}
-fn shader_mode(mode: StudioBlendMode) -> Option<ShaderMode> {
-    match mode {
-        StudioBlendMode::Normal => Some(ShaderMode::Normal),
-        StudioBlendMode::Multiply => Some(ShaderMode::Multiply),
-        StudioBlendMode::Screen => Some(ShaderMode::Screen),
-        _ => None,
-    }
-}
-
 /// Counters of one successful execution (device-side detail the shared receipt has no field for).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuStats {
+    /// Tile regions plus mask coverages written to the device.
     pub bytes_uploaded: u64,
     pub bytes_read_back: u64,
     /// Highest simultaneous byte count charged to residency during the call.
@@ -55,24 +53,66 @@ pub struct GpuStats {
     pub dispatches: u64,
     pub chunk_width: u32,
     pub chunk_height: u32,
+    /// Chunk-sized destination buffers alive (1 + isolated-group nesting depth).
+    pub levels: u32,
 }
 
 // ---- prepared (verified) plan -----------------------------------------------------------------
 
-enum Source<'a> {
-    Solid([f32; 4]),
-    Tile(TilePlanes<'a>),
-}
-struct PLayer<'a> {
-    source: Source<'a>,
+#[derive(Clone, Copy)]
+struct MaskView<'a> {
     bounds: Rect,
-    mode: ShaderMode,
+    wide: bool,
+    bytes: &'a [u8],
+    stride: usize,
+    inverted: bool,
+}
+impl MaskView<'_> {
+    /// Same conversion as render-cpu: f64 division, one rounding to f32, inversion in f32.
+    fn coverage(&self, x: i64, y: i64) -> f32 {
+        let row = (y - self.bounds.y) as usize * self.stride;
+        let c = if self.wide {
+            let at = row + (x - self.bounds.x) as usize * 2;
+            (f64::from(u16::from_le_bytes([self.bytes[at], self.bytes[at + 1]])) / 65535.0) as f32
+        } else {
+            (f64::from(self.bytes[row + (x - self.bounds.x) as usize]) / 255.0) as f32
+        };
+        if self.inverted { 1.0 - c } else { c }
+    }
+}
+
+struct PLayer<'a> {
+    input: usize,
+    /// Clipped to the nearest earlier unclipped layer of the group (pigment `BaseAlpha` route).
+    clipped: bool,
+    mode: StudioBlendMode,
     /// `opacity * fill_opacity` (fill folded in as a product, class Approximate, as render-cpu).
     opacity: f32,
+    mask: Option<MaskView<'a>>,
+}
+enum PNode<'a> {
+    Unused,
+    Tile {
+        planes: TilePlanes<'a>,
+        rect: Rect,
+    },
+    Solid {
+        rgba: [f32; 4],
+    },
+    Group {
+        layers: Vec<PLayer<'a>>,
+        isolated: bool,
+    },
 }
 struct Prepared<'a> {
-    layers: Vec<PLayer<'a>>,
-    nodes_executed: u64,
+    nodes: Vec<PNode<'a>>,
+    bounds: Vec<Option<Rect>>,
+    /// Extra destination levels an evaluation of the node needs below its own destination.
+    need: Vec<usize>,
+    root: usize,
+    reachable: u64,
+    has_tiles: bool,
+    has_masks: bool,
 }
 
 fn unsupported(operator: &'static str) -> GpuError {
@@ -86,6 +126,26 @@ fn mismatch(key: SourceKey) -> GpuError {
 }
 fn overflow() -> GpuError {
     GpuError::Backend(BackendError::Overflow)
+}
+fn end(rect: Rect) -> Result<(i64, i64), GpuError> {
+    rect.end().map_err(|_| overflow())
+}
+fn intersect(a: Rect, b: Rect) -> Result<Option<Rect>, GpuError> {
+    a.intersect(b).map_err(|_| overflow())
+}
+fn union(a: Option<Rect>, b: Option<Rect>) -> Result<Option<Rect>, GpuError> {
+    let (Some(a), Some(b)) = (a, b) else {
+        return Ok(a.or(b));
+    };
+    let (ax1, ay1) = end(a)?;
+    let (bx1, by1) = end(b)?;
+    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+    Ok(Some(Rect {
+        x,
+        y,
+        width: u32::try_from(ax1.max(bx1) - x).map_err(|_| overflow())?,
+        height: u32::try_from(ay1.max(by1) - y).map_err(|_| overflow())?,
+    }))
 }
 fn f32_at(bytes: &[u8], at: usize) -> f32 {
     f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
@@ -158,35 +218,6 @@ fn verify_tile(
     Ok(())
 }
 
-fn leaf<'a>(
-    plan: &RenderPlan<NoVector>,
-    index: usize,
-    sources: &'a dyn PlanSources,
-) -> Result<(Source<'a>, Rect), GpuError> {
-    match &plan.nodes[index] {
-        PlanNode::Tile(t) => {
-            let planes = sources
-                .tile(t.key)
-                .ok_or(GpuError::Backend(BackendError::UnresolvedSource(t.key)))?;
-            verify_tile(t, &planes, plan.target.space)?;
-            t.placement.end().map_err(|_| overflow())?;
-            Ok((Source::Tile(planes), t.placement))
-        }
-        PlanNode::Solid { rect, rgba } => {
-            if !rgba
-                .iter()
-                .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
-            {
-                return Err(unsupported("sample_range_outside_unit"));
-            }
-            rect.end().map_err(|_| overflow())?;
-            Ok((Source::Solid(*rgba), *rect))
-        }
-        PlanNode::Vector(never) => match *never {},
-        PlanNode::Group(_) => Err(unsupported("group_nested")),
-    }
-}
-
 fn prepare<'a>(
     plan: &RenderPlan<NoVector>,
     sources: &'a dyn PlanSources,
@@ -198,43 +229,180 @@ fn prepare<'a>(
     if target.format != SampleFormat::RgbF32Le {
         return Err(unsupported("sample_format"));
     }
+    let n = plan.nodes.len();
     let root = plan.root.0 as usize;
-    let mut layers = Vec::new();
-    let mut inputs: Vec<usize> = Vec::new();
-    match &plan.nodes[root] {
-        PlanNode::Group(group) => {
-            for l in &group.layers {
-                let mode = shader_mode(l.mode).ok_or_else(|| unsupported("blend_mode"))?;
-                if l.mask.is_some() {
-                    return Err(unsupported("mask"));
-                }
-                let index = l.input.0 as usize;
-                let (source, bounds) = leaf(plan, index, sources)?;
-                if !inputs.contains(&index) {
-                    inputs.push(index);
-                }
-                layers.push(PLayer {
-                    source,
-                    bounds,
-                    mode,
-                    opacity: l.opacity * l.fill_opacity,
-                });
+    let mut reach = vec![false; n];
+    reach[root] = true;
+    for i in (0..n).rev() {
+        if reach[i]
+            && let PlanNode::Group(g) = &plan.nodes[i]
+        {
+            for l in &g.layers {
+                reach[l.input.0 as usize] = true;
             }
         }
-        _ => {
-            // A leaf root is one Normal, opacity-1 layer over transparent black.
-            let (source, bounds) = leaf(plan, root, sources)?;
-            layers.push(PLayer {
-                source,
-                bounds,
-                mode: ShaderMode::Normal,
-                opacity: 1.0,
-            });
+    }
+    let mut nodes: Vec<PNode<'a>> = Vec::with_capacity(n);
+    let mut bounds: Vec<Option<Rect>> = Vec::with_capacity(n);
+    let mut need: Vec<usize> = Vec::with_capacity(n);
+    let (mut has_tiles, mut has_masks) = (false, false);
+    for (i, node) in plan.nodes.iter().enumerate() {
+        if !reach[i] {
+            nodes.push(PNode::Unused);
+            bounds.push(None);
+            need.push(0);
+            continue;
         }
+        let (pnode, node_bounds, node_need) = match node {
+            PlanNode::Tile(t) => {
+                let planes = sources
+                    .tile(t.key)
+                    .ok_or(GpuError::Backend(BackendError::UnresolvedSource(t.key)))?;
+                verify_tile(t, &planes, target.space)?;
+                end(t.placement)?;
+                has_tiles = true;
+                (
+                    PNode::Tile {
+                        planes,
+                        rect: t.placement,
+                    },
+                    Some(t.placement),
+                    0,
+                )
+            }
+            PlanNode::Solid { rect, rgba } => {
+                if !rgba
+                    .iter()
+                    .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
+                {
+                    return Err(unsupported("sample_range_outside_unit"));
+                }
+                end(*rect)?;
+                (PNode::Solid { rgba: *rgba }, Some(*rect), 0)
+            }
+            PlanNode::Vector(never) => match *never {},
+            PlanNode::Group(g) => {
+                let mut layers = Vec::with_capacity(g.layers.len());
+                let mut group_bounds = None;
+                let mut group_need = 0;
+                for l in &g.layers {
+                    let input = l.input.0 as usize;
+                    let pass_through = l.mode == StudioBlendMode::PassThrough;
+                    let child_isolated = match &plan.nodes[input] {
+                        PlanNode::Group(c) => Some(c.isolated),
+                        _ => None,
+                    };
+                    // Structural validation already guaranteed pass_through <-> non-isolated group.
+                    if pass_through && (l.opacity < 1.0 || l.fill_opacity < 1.0) {
+                        return Err(unsupported("group_pass_through_opacity"));
+                    }
+                    if !pass_through {
+                        if child_isolated == Some(false) {
+                            return Err(unsupported("group_non_isolated_blended"));
+                        }
+                        if !gpu_blend_supported(l.mode) {
+                            return Err(unsupported("blend_mode"));
+                        }
+                    }
+                    let clipped = l.mask.as_ref().is_some_and(|m| m.is_clip_to_base());
+                    let mask = match &l.mask {
+                        None => None,
+                        // Clip-to-base carries no plane: the coverage is the base alpha.
+                        Some(m) if m.is_clip_to_base() => None,
+                        Some(m) => {
+                            if m.density != 1.0 {
+                                return Err(unsupported("mask_density"));
+                            }
+                            if pass_through {
+                                return Err(unsupported("mask_on_pass_through"));
+                            }
+                            let wide = match m.format {
+                                MaskFormat::CoverageU8 => false,
+                                MaskFormat::CoverageU16Le => true,
+                                _ => return Err(unsupported("mask_format")),
+                            };
+                            let plane = sources
+                                .mask(m.key)
+                                .ok_or(GpuError::Backend(BackendError::UnresolvedSource(m.key)))?;
+                            if plane.sample_format != m.format.key()
+                                || plane.sha256 != m.sha256
+                                || plane.bounds != m.placement
+                                || plane.validate(plane.bounds).is_err()
+                            {
+                                return Err(mismatch(m.key));
+                            }
+                            if let Some(region) = bounds[input]
+                                .and_then(|b| intersect(b, target.extent).ok().flatten())
+                                && !plane.bounds.contains(region).map_err(|_| overflow())?
+                            {
+                                return Err(mismatch(m.key));
+                            }
+                            has_masks = true;
+                            Some(MaskView {
+                                bounds: plane.bounds,
+                                wide,
+                                bytes: plane.bytes,
+                                stride: plane.stride_bytes as usize,
+                                inverted: m.inverted,
+                            })
+                        }
+                    };
+                    group_bounds = union(group_bounds, bounds[input])?;
+                    layers.push(PLayer {
+                        input,
+                        clipped,
+                        mode: l.mode,
+                        opacity: l.opacity * l.fill_opacity,
+                        mask,
+                    });
+                }
+                // Destination levels below this group's own: a plain layer needs its isolated child's
+                // buffer (1 + the child's need); a clipping run needs the run buffer G (1) plus,
+                // below G, each member's isolated child.
+                let child_depth = |k: usize| match &plan.nodes[layers[k].input] {
+                    PlanNode::Group(c) if c.isolated => 1 + need[layers[k].input],
+                    PlanNode::Group(_) => need[layers[k].input],
+                    _ => 0,
+                };
+                let mut i = 0;
+                while i < layers.len() {
+                    let mut j = i + 1;
+                    while j < layers.len() && layers[j].clipped {
+                        j += 1;
+                    }
+                    if j == i + 1 {
+                        group_need = group_need.max(child_depth(i));
+                    } else {
+                        if layers[i].mode == StudioBlendMode::PassThrough {
+                            return Err(unsupported("clip_base_pass_through"));
+                        }
+                        group_need =
+                            group_need.max((i..j).map(|k| 1 + child_depth(k)).max().unwrap_or(1));
+                    }
+                    i = j;
+                }
+                (
+                    PNode::Group {
+                        layers,
+                        isolated: g.isolated,
+                    },
+                    group_bounds,
+                    group_need,
+                )
+            }
+        };
+        nodes.push(pnode);
+        bounds.push(node_bounds);
+        need.push(node_need);
     }
     Ok(Prepared {
-        layers,
-        nodes_executed: 1 + inputs.len() as u64,
+        nodes,
+        bounds,
+        need,
+        root,
+        reachable: reach.iter().filter(|r| **r).count() as u64,
+        has_tiles,
+        has_masks,
     })
 }
 
@@ -437,7 +605,7 @@ impl GpuBackend {
             target: plan.target,
             exactness: ledger,
             chunks,
-            nodes_executed: prepared.nodes_executed,
+            nodes_executed: prepared.reachable,
             peak_working_bytes: stats.peak_resident_bytes,
         };
         inner.stats = Some(stats);
@@ -469,14 +637,28 @@ impl RenderBackend<NoVector> for GpuBackend {
     }
     fn exactness(&self, operator: Operator) -> Exactness {
         match operator {
-            // Pure data movement: f32 bits survive upload and read-back unchanged.
-            Operator::Tile | Operator::Solid => Exactness::Exact,
+            // Pure data movement and structure: f32 bits survive upload and read-back unchanged,
+            // group nesting and mask coverage conversion add no arithmetic of their own (the
+            // blend operators carry the arithmetic class).
+            Operator::Tile
+            | Operator::Solid
+            | Operator::IsolatedGroup
+            | Operator::PassThroughGroup
+            | Operator::Mask(MaskFormat::CoverageU8 | MaskFormat::CoverageU16Le) => {
+                Exactness::Exact
+            }
             // Same published formula as pigment; f32 GPU arithmetic is tolerance-equal, not
             // bit-exact (fused multiply-add, division rounding).
             Operator::Blend(mode) if gpu_blend_supported(mode) => Exactness::Fitted,
             Operator::FillOpacity => Exactness::Approximate,
+            // Pigment's documented clipping rule (unverified against Photoshop) as written; the
+            // operator's intrinsic class is Approximate, which is what the receipt carries.
+            Operator::Mask(MaskFormat::BaseAlpha) => Exactness::Approximate,
             _ => Exactness::Unsupported,
         }
+    }
+    fn supports_clip_to_base(&self) -> bool {
+        true
     }
     fn execute(
         &self,
@@ -517,6 +699,319 @@ fn texel_bytes(width: u32, height: u32) -> u64 {
     u64::from(width) * u64::from(height) * TEXEL_BYTES
 }
 
+/// Where one composite pass reads its source texels.
+enum Src<'x, 'a> {
+    Solid([f32; 4]),
+    Tile(&'x TilePlanes<'a>, Rect),
+    /// The finished group buffer of the next nesting level.
+    Chunk,
+}
+
+/// Device buffers and bind groups of one execution plus the state the layer recursion shares.
+struct Exec<'e> {
+    ctx: &'e GpuContext,
+    cancel: &'e CancellationToken,
+    deadline: Option<Instant>,
+    /// Chunk-sized destinations; `levels[0]` is the root destination that is read back.
+    levels: Vec<wgpu::Buffer>,
+    src: wgpu::Buffer,
+    mask: wgpu::Buffer,
+    params: wgpu::Buffer,
+    /// `binds_tile[l]`: dst = `levels[l]`, src = the upload buffer (also used for solid fills).
+    binds_tile: Vec<wgpu::BindGroup>,
+    /// `binds_chunk[l]`: dst = `levels[l]`, src = `levels[l + 1]` (an isolated group's result).
+    binds_chunk: Vec<wgpu::BindGroup>,
+    upload: Vec<u8>,
+    mask_upload: Vec<u8>,
+    stats: &'e mut GpuStats,
+}
+
+impl Exec<'_> {
+    fn check(&self) -> Result<(), GpuError> {
+        self.cancel
+            .check()
+            .map_err(|_| GpuError::Backend(BackendError::Canceled))?;
+        if self.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(GpuError::Backend(BackendError::DeadlineExceeded));
+        }
+        self.ctx.check_alive()
+    }
+
+    /// Make the first `bytes` of a level fully transparent.
+    fn clear(&self, level: usize, bytes: u64) {
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu clear"),
+            });
+        encoder.clear_buffer(&self.levels[level], 0, Some(bytes));
+        self.ctx.queue.submit(Some(encoder.finish()));
+    }
+
+    /// Composite `source` over `region` (chunk-clipped) into `levels[level]` with `mode`, `opacity`
+    /// and `mask`. One upload (tile region, mask coverage) plus one dispatch. `pass` selects the
+    /// plain composite, the clip-run base initialisation or a clipped-layer composite.
+    #[allow(clippy::too_many_arguments)]
+    fn composite(
+        &mut self,
+        mode: StudioBlendMode,
+        opacity: f32,
+        mask: Option<&MaskView<'_>>,
+        pass: Pass,
+        region: Rect,
+        chunk: Rect,
+        level: usize,
+        source: Src<'_, '_>,
+    ) -> Result<(), GpuError> {
+        let ctx = self.ctx;
+        let kind = match source {
+            Src::Solid(rgba) => SourceKind::Solid(rgba),
+            Src::Chunk => SourceKind::Chunk,
+            Src::Tile(planes, placement) => {
+                self.upload.clear();
+                for y in 0..i64::from(region.height) {
+                    for x in 0..i64::from(region.width) {
+                        let px = (region.x + x - placement.x) as u32;
+                        let py = (region.y + y - placement.y) as u32;
+                        for v in tile_pixel(planes, px, py) {
+                            self.upload.extend_from_slice(&v.to_ne_bytes());
+                        }
+                    }
+                }
+                ctx.queue.write_buffer(&self.src, 0, &self.upload);
+                self.stats.bytes_uploaded += self.upload.len() as u64;
+                SourceKind::Region
+            }
+        };
+        if let Some(mask) = mask {
+            self.mask_upload.clear();
+            for y in 0..i64::from(region.height) {
+                for x in 0..i64::from(region.width) {
+                    let c = mask.coverage(region.x + x, region.y + y);
+                    self.mask_upload.extend_from_slice(&c.to_ne_bytes());
+                }
+            }
+            ctx.queue.write_buffer(&self.mask, 0, &self.mask_upload);
+            self.stats.bytes_uploaded += self.mask_upload.len() as u64;
+        }
+        let params = LayerParams {
+            chunk_w: chunk.width,
+            chunk_h: chunk.height,
+            region: [
+                (region.x - chunk.x) as u32,
+                (region.y - chunk.y) as u32,
+                region.width,
+                region.height,
+            ],
+            mode,
+            source: kind,
+            has_mask: mask.is_some(),
+            opacity,
+            replace: pass == Pass::Replace,
+            clip: pass == Pass::Clip,
+        };
+        ctx.queue.write_buffer(&self.params, 0, &params.to_bytes());
+        let bind = match kind {
+            SourceKind::Chunk => &self.binds_chunk[level],
+            _ => &self.binds_tile[level],
+        };
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hsk-studio-render-gpu layer"),
+            });
+        ctx.kernel
+            .dispatch(&mut encoder, bind, region.width, region.height);
+        ctx.queue.submit(Some(encoder.finish()));
+        self.stats.dispatches += 1;
+        Ok(())
+    }
+}
+
+/// Which shader path a composite takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Normal,
+    /// Initialise a cleared clip-run buffer from the base content (mask only; no opacity/mode).
+    Replace,
+    /// A clipped layer inside a run: source alpha times the run's alpha, alpha held.
+    Clip,
+}
+
+/// Layers of group `idx`, bottom-first, composited into `levels[level]`. A layer followed by
+/// clipped layers starts a clipping run, evaluated as one isolated unit.
+fn eval_group(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    idx: usize,
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    let PNode::Group { layers, .. } = &prep.nodes[idx] else {
+        return Err(unsupported("plan_shape"));
+    };
+    let mut i = 0;
+    while i < layers.len() {
+        let mut j = i + 1;
+        while j < layers.len() && layers[j].clipped {
+            j += 1;
+        }
+        if j == i + 1 {
+            eval_layer(ex, prep, &layers[i], chunk, level)?;
+        } else {
+            eval_clip_run(ex, prep, &layers[i..j], chunk, level)?;
+        }
+        i = j;
+    }
+    Ok(())
+}
+
+/// Composite one layer's source (leaf or finished isolated group) into `levels[level]`.
+fn source_pass(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    pass: Pass,
+    region: Rect,
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    let mask = if pass == Pass::Clip {
+        None
+    } else {
+        layer.mask.as_ref()
+    };
+    match &prep.nodes[layer.input] {
+        // Isolated: own transparent buffer one level down, then composited as a source.
+        PNode::Group { isolated: true, .. } => {
+            ex.clear(level + 1, texel_bytes(chunk.width, chunk.height));
+            eval_group(ex, prep, layer.input, chunk, level + 1)?;
+            ex.composite(
+                layer.mode,
+                layer.opacity,
+                mask,
+                pass,
+                region,
+                chunk,
+                level,
+                Src::Chunk,
+            )
+        }
+        PNode::Tile { planes, rect } => ex.composite(
+            layer.mode,
+            layer.opacity,
+            mask,
+            pass,
+            region,
+            chunk,
+            level,
+            Src::Tile(planes, *rect),
+        ),
+        PNode::Solid { rgba } if rgba[3] <= 0.0 => Ok(()),
+        PNode::Solid { rgba } => ex.composite(
+            layer.mode,
+            layer.opacity,
+            mask,
+            pass,
+            region,
+            chunk,
+            level,
+            Src::Solid(*rgba),
+        ),
+        // Pass-through groups are handled by the caller; a clipped or base layer never has one.
+        PNode::Group {
+            isolated: false, ..
+        }
+        | PNode::Unused => Err(unsupported("plan_shape")),
+    }
+}
+
+fn eval_layer(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    layer: &PLayer<'_>,
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    ex.check()?;
+    if layer.opacity <= 0.0 {
+        return Ok(());
+    }
+    let Some(region) = prep.bounds[layer.input]
+        .map(|b| intersect(b, chunk))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+    // Pass-through: the child's layers composite onto this level's running backdrop.
+    if matches!(
+        prep.nodes[layer.input],
+        PNode::Group {
+            isolated: false,
+            ..
+        }
+    ) {
+        return eval_group(ex, prep, layer.input, chunk, level);
+    }
+    source_pass(ex, prep, layer, Pass::Normal, region, chunk, level)
+}
+
+/// `run = [base, clipped...]` evaluated as an isolated unit G one level down (pigment
+/// `MaskFormat::BaseAlpha`): G starts as the base content with the base's own mask; each clipped
+/// layer composites onto G with its own mode/opacity/fill, its source alpha multiplied by the base
+/// alpha, and G's alpha is held at the base alpha; G then composites onto this level with the
+/// BASE layer's mode, opacity and fill.
+fn eval_clip_run(
+    ex: &mut Exec<'_>,
+    prep: &Prepared<'_>,
+    run: &[PLayer<'_>],
+    chunk: Rect,
+    level: usize,
+) -> Result<(), GpuError> {
+    ex.check()?;
+    let base = &run[0];
+    if base.opacity <= 0.0 {
+        return Ok(());
+    }
+    let Some(base_region) = prep.bounds[base.input]
+        .map(|b| intersect(b, chunk))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(());
+    };
+    let g = level + 1;
+    ex.clear(g, texel_bytes(chunk.width, chunk.height));
+    source_pass(ex, prep, base, Pass::Replace, base_region, chunk, g)?;
+    for clipped in &run[1..] {
+        ex.check()?;
+        if clipped.opacity <= 0.0 {
+            continue;
+        }
+        // Content outside the base has zero alpha in G, so only the overlap can change.
+        let Some(region) = prep.bounds[clipped.input]
+            .map(|b| intersect(b, base_region))
+            .transpose()?
+            .flatten()
+        else {
+            continue;
+        };
+        source_pass(ex, prep, clipped, Pass::Clip, region, chunk, g)?;
+    }
+    ex.composite(
+        base.mode,
+        base.opacity,
+        None,
+        Pass::Normal,
+        base_region,
+        chunk,
+        level,
+        Src::Chunk,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run(
     ctx: &GpuContext,
@@ -529,20 +1024,26 @@ fn run(
     sink: &mut dyn TileSink,
     stats: &mut GpuStats,
 ) -> Result<u64, GpuError> {
-    let canceled = || GpuError::Backend(BackendError::Canceled);
-    let deadline = || GpuError::Backend(BackendError::DeadlineExceeded);
     ctx.check_alive()?;
     let _ = ctx.take_fault();
 
     // ---- bounded sizing: the chunk shrinks until every device buffer fits both budgets ----
     let extent = plan.target.extent;
-    let (extent_x1, extent_y1) = extent.end().map_err(|_| overflow())?;
-    let has_tiles = prepared
-        .layers
-        .iter()
-        .any(|l| matches!(l.source, Source::Tile(_)));
-    let per_texel = TEXEL_BYTES * if has_tiles { 3 } else { 2 };
-    let fixed = PARAMS_BYTES + if has_tiles { 0 } else { TEXEL_BYTES };
+    let (extent_x1, extent_y1) = end(extent)?;
+    let level_count = prepared.need[prepared.root] + 1;
+    let per_texel = TEXEL_BYTES * (level_count as u64 + 1 + u64::from(prepared.has_tiles))
+        + if prepared.has_masks {
+            MASK_TEXEL_BYTES
+        } else {
+            0
+        };
+    let fixed = PARAMS_BYTES
+        + if prepared.has_tiles { 0 } else { TEXEL_BYTES }
+        + if prepared.has_masks {
+            0
+        } else {
+            MASK_TEXEL_BYTES
+        };
     let limit = request.max_working_bytes.min(residency.budget_bytes());
     let by_budget = limit.saturating_sub(fixed) / per_texel;
     let by_buffer = ctx.max_buffer_bytes / TEXEL_BYTES;
@@ -560,58 +1061,111 @@ fn run(
     let chunk_w = side.min(extent.width);
     let chunk_h = side.min(extent.height);
     let chunk_bytes = texel_bytes(chunk_w, chunk_h);
-    let src_bytes = if has_tiles { chunk_bytes } else { TEXEL_BYTES };
+    let src_bytes = if prepared.has_tiles {
+        chunk_bytes
+    } else {
+        TEXEL_BYTES
+    };
+    let mask_bytes = if prepared.has_masks {
+        u64::from(chunk_w) * u64::from(chunk_h) * MASK_TEXEL_BYTES
+    } else {
+        MASK_TEXEL_BYTES
+    };
     stats.chunk_width = chunk_w;
     stats.chunk_height = chunk_h;
+    stats.levels = level_count as u32;
 
     // ---- charge residency first, then create the buffers ----
+    for level in 0..level_count {
+        residency.reserve(ResidentKey::Level(level as u32), chunk_bytes)?;
+    }
     for (name, bytes) in [
-        ("dst", chunk_bytes),
         ("staging", chunk_bytes),
         ("src", src_bytes),
+        ("mask", mask_bytes),
         ("params", PARAMS_BYTES),
     ] {
         residency.reserve(ResidentKey::Scratch(name), bytes)?;
     }
-    let total = 2 * chunk_bytes + src_bytes + PARAMS_BYTES;
+    let total = chunk_bytes * (level_count as u64 + 1) + src_bytes + mask_bytes + PARAMS_BYTES;
     let device = &ctx.device;
     let queue = &ctx.queue;
-    let (dst, staging, src, params, bind) = scoped(device, total, limit, || {
-        let buffer = |label, size, usage| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage,
-                mapped_at_creation: false,
-            })
-        };
-        let dst = buffer(
-            "hsk-studio-render-gpu dst",
-            chunk_bytes,
-            wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        );
-        let staging = buffer(
-            "hsk-studio-render-gpu staging",
-            chunk_bytes,
-            wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        );
-        let src = buffer(
-            "hsk-studio-render-gpu src",
-            src_bytes,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        );
-        let params = buffer(
-            "hsk-studio-render-gpu params",
-            PARAMS_BYTES,
-            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        );
-        let bind = ctx.kernel.bind(device, &params, &src, &dst);
-        (dst, staging, src, params, bind)
-    })?;
+    let (levels, staging, src, mask, params, binds_tile, binds_chunk) =
+        scoped(device, total, limit, || {
+            let buffer = |label, size, usage| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    size,
+                    usage,
+                    mapped_at_creation: false,
+                })
+            };
+            let levels: Vec<wgpu::Buffer> = (0..level_count)
+                .map(|_| {
+                    buffer(
+                        "hsk-studio-render-gpu level",
+                        chunk_bytes,
+                        wgpu::BufferUsages::STORAGE
+                            | wgpu::BufferUsages::COPY_SRC
+                            | wgpu::BufferUsages::COPY_DST,
+                    )
+                })
+                .collect();
+            let staging = buffer(
+                "hsk-studio-render-gpu staging",
+                chunk_bytes,
+                wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            );
+            let src = buffer(
+                "hsk-studio-render-gpu src",
+                src_bytes,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            );
+            let mask = buffer(
+                "hsk-studio-render-gpu mask",
+                mask_bytes,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            );
+            let params = buffer(
+                "hsk-studio-render-gpu params",
+                PARAMS_BYTES,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            );
+            let binds_tile: Vec<wgpu::BindGroup> = levels
+                .iter()
+                .map(|dst| ctx.kernel.bind(device, &params, &src, &mask, dst))
+                .collect();
+            let binds_chunk: Vec<wgpu::BindGroup> = (0..level_count - 1)
+                .map(|l| {
+                    ctx.kernel
+                        .bind(device, &params, &levels[l + 1], &mask, &levels[l])
+                })
+                .collect();
+            (levels, staging, src, mask, params, binds_tile, binds_chunk)
+        })?;
 
-    let mut upload: Vec<u8> = Vec::new();
+    let mut ex = Exec {
+        ctx,
+        cancel,
+        deadline: request.deadline,
+        levels,
+        src,
+        mask,
+        params,
+        binds_tile,
+        binds_chunk,
+        upload: Vec::new(),
+        mask_upload: Vec::new(),
+        stats,
+    };
+    // A leaf root is one Normal, opacity-1 layer over transparent black.
+    let root_layer = PLayer {
+        input: prepared.root,
+        clipped: false,
+        mode: StudioBlendMode::Normal,
+        opacity: 1.0,
+        mask: None,
+    };
     let mut colour: Vec<u8> = Vec::new();
     let mut alpha: Vec<u8> = Vec::new();
     let mut chunks = 0_u64;
@@ -621,11 +1175,7 @@ fn run(
     while cy < extent_y1 {
         let mut cx = extent.x;
         while cx < extent_x1 {
-            cancel.check().map_err(|_| canceled())?;
-            if request.deadline.is_some_and(|d| Instant::now() >= d) {
-                return Err(deadline());
-            }
-            ctx.check_alive()?;
+            ex.check()?;
             let rect = Rect {
                 x: cx,
                 y: cy,
@@ -634,68 +1184,20 @@ fn run(
             };
             let count = texel_bytes(rect.width, rect.height);
 
-            // Transparent backdrop for this chunk.
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("hsk-studio-render-gpu clear"),
-            });
-            encoder.clear_buffer(&dst, 0, Some(count));
-            queue.submit(Some(encoder.finish()));
-
-            for layer in &prepared.layers {
-                cancel.check().map_err(|_| canceled())?;
-                if layer.opacity <= 0.0 {
-                    continue;
-                }
-                let solid = match &layer.source {
-                    Source::Solid(rgba) if rgba[3] <= 0.0 => continue,
-                    Source::Solid(rgba) => Some(*rgba),
-                    Source::Tile(_) => None,
-                };
-                let Some(region) = layer.bounds.intersect(rect).map_err(|_| overflow())? else {
-                    continue;
-                };
-                if let Source::Tile(planes) = &layer.source {
-                    upload.clear();
-                    for y in 0..region.height {
-                        for x in 0..region.width {
-                            let px = (region.x + i64::from(x) - layer.bounds.x) as u32;
-                            let py = (region.y + i64::from(y) - layer.bounds.y) as u32;
-                            for v in tile_pixel(planes, px, py) {
-                                upload.extend_from_slice(&v.to_ne_bytes());
-                            }
-                        }
-                    }
-                    queue.write_buffer(&src, 0, &upload);
-                    stats.bytes_uploaded += upload.len() as u64;
-                }
-                let layer_params = LayerParams {
-                    chunk_w: rect.width,
-                    chunk_h: rect.height,
-                    region: [
-                        (region.x - rect.x) as u32,
-                        (region.y - rect.y) as u32,
-                        region.width,
-                        region.height,
-                    ],
-                    mode: layer.mode,
-                    solid,
-                    opacity: layer.opacity,
-                };
-                queue.write_buffer(&params, 0, &layer_params.to_bytes());
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("hsk-studio-render-gpu layer"),
-                });
-                ctx.kernel
-                    .dispatch(&mut encoder, &bind, region.width, region.height);
-                queue.submit(Some(encoder.finish()));
-                stats.dispatches += 1;
+            // Transparent backdrop for this chunk, then the root group (transparent backdrop, so
+            // isolated and not are the same here) or the single leaf.
+            ex.clear(0, count);
+            if matches!(prepared.nodes[prepared.root], PNode::Group { .. }) {
+                eval_group(&mut ex, prepared, prepared.root, rect, 0)?;
+            } else {
+                eval_layer(&mut ex, prepared, &root_layer, rect, 0)?;
             }
 
             // Read the finished chunk back.
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hsk-studio-render-gpu readback"),
             });
-            encoder.copy_buffer_to_buffer(&dst, 0, &staging, 0, count);
+            encoder.copy_buffer_to_buffer(&ex.levels[0], 0, &staging, 0, count);
             queue.submit(Some(encoder.finish()));
             let (tx, rx) = std::sync::mpsc::channel();
             staging
@@ -714,7 +1216,7 @@ fn run(
             ctx.check_alive()?;
             if polled.is_err() {
                 return Err(if request.deadline.is_some_and(|d| Instant::now() >= d) {
-                    deadline()
+                    GpuError::Backend(BackendError::DeadlineExceeded)
                 } else {
                     GpuError::Gpu("device_timeout")
                 });
@@ -737,7 +1239,7 @@ fn run(
                 }
             }
             staging.unmap();
-            stats.bytes_read_back += count;
+            ex.stats.bytes_read_back += count;
             if ctx.take_fault() {
                 return Err(GpuError::Gpu("device_fault"));
             }

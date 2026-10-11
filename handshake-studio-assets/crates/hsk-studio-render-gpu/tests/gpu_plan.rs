@@ -1,10 +1,11 @@
-//! Focused proofs for the GPU backend (MT-35546 cases). Everything except the GPU-execution test
-//! (`gpu_blend_parity_vs_pigment_blend_math`) is hardware-independent and must pass on a machine
-//! without an adapter. The GPU-execution test asserts the typed `Unavailable` and prints
-//! `NOT_PROVEN` when no adapter exists: it never claims a GPU proof it did not run. Device
-//! creation is serialised by `DEVICE_LOCK` (one device at a time in this process).
+//! Focused proofs for the GPU backend (MT-35546 cases). Everything except the two GPU-execution
+//! tests (`gpu_blend_parity_vs_pigment_blend_math`, `gpu_modes_masks_groups_clip_parity`) is
+//! hardware-independent and must pass on a machine without an adapter. The GPU-execution tests
+//! assert the typed `Unavailable` and print `NOT_PROVEN` when no adapter exists: they never claim
+//! a GPU proof they did not run. Device creation is serialised by `DEVICE_LOCK` and the two GPU
+//! tests share one lazily created backend.
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_pigment::blend_math::{PixelSite, Rgba, composite_over};
+use hsk_studio_pigment::blend_math::{MODES, PixelSite, Rgba, composite_over};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, BackendError, BlendSpace, ColourTag, Exactness, ExecuteRequest, Group, Layer,
     MaskFormat, MaskInput, NoVector, OutputTarget, PlanError, PlanNode, PlanNodeId, PlanSources,
@@ -14,9 +15,9 @@ use hsk_studio_pigment::render_plan::{
 use hsk_studio_pigment::{Mask, Rect};
 use hsk_studio_render_gpu::{
     BackendChoice, DeviceInfo, DeviceOptions, GpuBackend, GpuContext, GpuError, Reason, Residency,
-    ResidentKey,
+    ResidentKey, gpu_blend_qualifies, gpu_blend_supported,
 };
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 static DEVICE_LOCK: Mutex<()> = Mutex::new(());
 fn device_lock() -> MutexGuard<'static, ()> {
@@ -83,6 +84,7 @@ fn solid(r: Rect, rgba: [f32; 4]) -> PlanNode<NoVector> {
     PlanNode::Solid { rect: r, rgba }
 }
 
+#[derive(Clone)]
 struct OwnedTile {
     width: u32,
     height: u32,
@@ -142,11 +144,95 @@ impl OwnedTile {
         ]
     }
 }
+/// A coverage plane (`coverage_u8` or `coverage_u16le`) with deterministic pseudo-random samples
+/// including exact 0 and full-scale values.
+struct OwnedMask {
+    bounds: Rect,
+    format: MaskFormat,
+    bytes: Vec<u8>,
+    sha: [u8; 32],
+}
+impl OwnedMask {
+    fn random(bounds: Rect, format: MaskFormat, seed: u32) -> Self {
+        let wide = format == MaskFormat::CoverageU16Le;
+        let mut state = seed.wrapping_mul(2_246_822_519).wrapping_add(3_266_489_917);
+        let mut bytes = Vec::new();
+        for _ in 0..bounds.width * bounds.height {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let v = match (state >> 24) % 9 {
+                0 => 0_u16,
+                1 => {
+                    if wide {
+                        u16::MAX
+                    } else {
+                        255
+                    }
+                }
+                _ => {
+                    let r = (state >> 8) as u16;
+                    if wide { r } else { r & 0xff }
+                }
+            };
+            if wide {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            } else {
+                bytes.push(v as u8);
+            }
+        }
+        Self {
+            bounds,
+            format,
+            sha: hsk_studio_prism::profile_hash(&bytes),
+            bytes,
+        }
+    }
+    fn input(&self, key: u32, inverted: bool) -> MaskInput {
+        MaskInput {
+            key: SourceKey(key),
+            placement: self.bounds,
+            format: self.format,
+            sha256: self.sha,
+            inverted,
+            density: 1.0,
+        }
+    }
+    fn stride(&self) -> u64 {
+        u64::from(self.bounds.width)
+            * if self.format == MaskFormat::CoverageU16Le {
+                2
+            } else {
+                1
+            }
+    }
+    /// Independent conversion (f64 division, one f32 rounding), inversion in f32.
+    fn coverage(&self, x: i64, y: i64, inverted: bool) -> f32 {
+        let (lx, ly) = ((x - self.bounds.x) as usize, (y - self.bounds.y) as usize);
+        let c = if self.format == MaskFormat::CoverageU16Le {
+            let at = ly * self.stride() as usize + lx * 2;
+            (f64::from(u16::from_le_bytes([self.bytes[at], self.bytes[at + 1]])) / 65535.0) as f32
+        } else {
+            (f64::from(self.bytes[ly * self.stride() as usize + lx]) / 255.0) as f32
+        };
+        if inverted { 1.0 - c } else { c }
+    }
+}
+
 #[derive(Default)]
-struct Sources(Vec<(u32, OwnedTile)>);
+struct Sources {
+    tiles: Vec<(u32, OwnedTile)>,
+    masks: Vec<(u32, OwnedMask)>,
+}
+impl Sources {
+    fn with_tiles(tiles: Vec<(u32, OwnedTile)>) -> Self {
+        Self {
+            tiles,
+            masks: Vec::new(),
+        }
+    }
+}
 impl PlanSources for Sources {
     fn tile(&self, key: SourceKey) -> Option<TilePlanes<'_>> {
-        let (_, t) = self.0.iter().find(|(k, _)| *k == key.0)?;
+        let (_, t) = self.tiles.iter().find(|(k, _)| *k == key.0)?;
         Some(TilePlanes {
             width: t.width,
             height: t.height,
@@ -161,8 +247,15 @@ impl PlanSources for Sources {
             space: tag(),
         })
     }
-    fn mask(&self, _key: SourceKey) -> Option<Mask<'_>> {
-        None
+    fn mask(&self, key: SourceKey) -> Option<Mask<'_>> {
+        let (_, m) = self.masks.iter().find(|(k, _)| *k == key.0)?;
+        Some(Mask {
+            bounds: m.bounds,
+            sample_format: m.format.key(),
+            bytes: &m.bytes,
+            stride_bytes: m.stride(),
+            sha256: m.sha,
+        })
     }
 }
 
@@ -220,6 +313,18 @@ fn backend_from_env() -> BackendChoice {
         _ => BackendChoice::Auto,
     }
 }
+/// One backend for the GPU-execution tests (acquiring a device takes seconds). Created on first
+/// use while the caller holds `DEVICE_LOCK`.
+fn shared_backend() -> &'static GpuBackend {
+    static SHARED: OnceLock<GpuBackend> = OnceLock::new();
+    SHARED.get_or_init(|| {
+        GpuBackend::new(DeviceOptions {
+            chunk_side: 16,
+            backend: backend_from_env(),
+            ..DeviceOptions::default()
+        })
+    })
+}
 fn no_adapter() -> DeviceOptions {
     DeviceOptions {
         backend: BackendChoice::None,
@@ -266,18 +371,39 @@ fn admission_refusals_run_without_adapter() {
             found: 5
         })
     );
-    // a mode the slice-1 shader does not implement is refused at admission, naming the operator
-    let overlay = run(
-        &backend,
-        &base(StudioBlendMode::Overlay),
-        &request(5, Exactness::Approximate),
-        &sources,
-        &mut sink,
-    );
-    assert!(matches!(
-        overlay,
-        Err(BackendError::Unsupported { operator, .. }) if operator == StudioBlendMode::Overlay.key()
-    ));
+    // modes the shader does not implement (Approximate separable, non-separable) are refused at
+    // admission, naming the operator
+    for mode in [StudioBlendMode::LinearBurn, StudioBlendMode::Hue] {
+        let refused = run(
+            &backend,
+            &base(mode),
+            &request(5, Exactness::Approximate),
+            &sources,
+            &mut sink,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(BackendError::Unsupported { operator, .. }) if operator == mode.key()
+            ),
+            "{mode:?}: {refused:?}"
+        );
+    }
+    // the supported list is derived from pigment's facts: no drift between the two predicates
+    // (a qualifying mode without a WGSL body would fail here until it gets one)
+    for facts in &MODES {
+        assert_eq!(
+            gpu_blend_supported(facts.mode),
+            gpu_blend_qualifies(facts.mode),
+            "{} qualifies by pigment facts but has no WGSL formula (or vice versa)",
+            facts.key
+        );
+    }
+    assert!(gpu_blend_supported(StudioBlendMode::Normal));
+    assert!(gpu_blend_supported(StudioBlendMode::Overlay));
+    assert!(!gpu_blend_supported(StudioBlendMode::LinearBurn));
+    assert!(!gpu_blend_supported(StudioBlendMode::Hue));
+    assert!(!gpu_blend_supported(StudioBlendMode::PassThrough));
     // GPU blend operators are class Fitted: an export floor of Exact refuses them (by design)
     let exact_floor = run(
         &backend,
@@ -312,27 +438,130 @@ fn admission_refusals_run_without_adapter() {
             PlanError::ForwardReference { .. }
         ))
     ));
-    // masks are not implemented: Unsupported, not silently ignored
-    let mut masked = base(StudioBlendMode::Normal);
-    if let PlanNode::Group(g) = masked.nodes.last_mut().expect("group") {
-        g.layers[0].mask = Some(MaskInput {
-            key: SourceKey(9),
-            placement: extent,
-            format: MaskFormat::CoverageU8,
-            sha256: [0; 32],
-            inverted: false,
-            density: 1.0,
-        });
-    }
-    assert!(matches!(
+    // masks are implemented, so an unresolved mask source is the typed refusal (not "unsupported")
+    let mask_input = |format, density| MaskInput {
+        key: SourceKey(9),
+        placement: extent,
+        format,
+        sha256: [0; 32],
+        inverted: false,
+        density,
+    };
+    let with_mask = |mask: MaskInput| {
+        let mut plan = base(StudioBlendMode::Normal);
+        if let PlanNode::Group(g) = plan.nodes.last_mut().expect("group") {
+            g.layers[0].mask = Some(mask);
+        }
+        plan
+    };
+    assert_eq!(
         run(
             &backend,
-            &masked,
-            &request(5, Exactness::Exact),
+            &with_mask(mask_input(MaskFormat::CoverageU8, 1.0)),
+            &request(5, Exactness::Fitted),
             &sources,
             &mut sink
         ),
-        Err(BackendError::Unsupported { .. })
+        Err(BackendError::UnresolvedSource(SourceKey(9)))
+    );
+    // mask density other than 1 has no verified semantics: refused, never approximated
+    assert!(matches!(
+        run(
+            &backend,
+            &with_mask(mask_input(MaskFormat::CoverageU16Le, 0.5)),
+            &request(5, Exactness::Fitted),
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unsupported {
+            operator: "mask_density",
+            ..
+        })
+    ));
+    // group shapes this backend does not implement stay refused at admission
+    let group_plan = |child_isolated: bool, mode: StudioBlendMode, opacity: f32| {
+        let mut nodes = vec![solid(extent, [0.5, 0.5, 0.5, 1.0])];
+        nodes.push(PlanNode::Group(Group {
+            isolated: child_isolated,
+            layers: vec![layer(0, StudioBlendMode::Normal, 1.0, 1.0)],
+        }));
+        plan_of(5, extent, nodes, vec![layer(1, mode, opacity, 1.0)])
+    };
+    let approx = request(5, Exactness::Approximate);
+    assert!(matches!(
+        run(
+            &backend,
+            &group_plan(false, StudioBlendMode::Multiply, 1.0),
+            &approx,
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unsupported {
+            operator: "group_non_isolated_blended",
+            ..
+        })
+    ));
+    assert!(matches!(
+        run(
+            &backend,
+            &group_plan(false, StudioBlendMode::PassThrough, 0.5),
+            &approx,
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unsupported {
+            operator: "group_pass_through_opacity",
+            ..
+        })
+    ));
+    // an isolated group and a pass-through group are accepted by admission: the only remaining
+    // refusal for these valid plans is the missing device
+    for plan in [
+        group_plan(true, StudioBlendMode::Multiply, 0.5),
+        group_plan(false, StudioBlendMode::PassThrough, 1.0),
+    ] {
+        assert_eq!(
+            run(
+                &backend,
+                &plan,
+                &request(5, Exactness::Fitted),
+                &sources,
+                &mut sink
+            ),
+            Err(BackendError::Unavailable("no_adapter"))
+        );
+    }
+    // clip-to-base is implemented: a valid clipped plan is admitted (then Unavailable here)...
+    let clip_plan = |clipped_first: bool| {
+        let mut layers = vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            layer(0, StudioBlendMode::Multiply, 0.5, 1.0),
+        ];
+        layers[usize::from(!clipped_first)].mask = Some(MaskInput::clip_to_base());
+        plan_of(5, extent, vec![solid(extent, [0.5, 0.5, 0.5, 1.0])], layers)
+    };
+    assert_eq!(
+        run(&backend, &clip_plan(false), &approx, &sources, &mut sink),
+        Err(BackendError::Unavailable("no_adapter"))
+    );
+    // ...at class Approximate (pigment's rule is unverified), so a Fitted floor refuses it...
+    assert!(matches!(
+        run(
+            &backend,
+            &clip_plan(false),
+            &request(5, Exactness::Fitted),
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::Unsupported {
+            operator: "clip_to_base",
+            exactness: Exactness::Approximate
+        })
+    ));
+    // ...and a clipped layer with no base is pigment's structural refusal
+    assert!(matches!(
+        run(&backend, &clip_plan(true), &approx, &sources, &mut sink),
+        Err(BackendError::InvalidPlan(PlanError::ClipWithoutBase { .. }))
     ));
     // canceled token wins over everything
     let token = CancellationToken::default();
@@ -368,7 +597,7 @@ fn admission_refusals_run_without_adapter() {
     );
     let mut bad = OwnedTile::random(4, 4, 1);
     bad.colour[0] ^= 0x01; // bytes no longer match the declared hash
-    let bad_sources = Sources(vec![(1, bad)]);
+    let bad_sources = Sources::with_tiles(vec![(1, bad)]);
     assert_eq!(
         run(
             &backend,
@@ -404,10 +633,32 @@ fn admission_refusals_run_without_adapter() {
     );
     assert_eq!(
         backend.exactness(Operator::Blend(StudioBlendMode::SoftLight)),
+        Exactness::Fitted
+    );
+    assert_eq!(
+        backend.exactness(Operator::Blend(StudioBlendMode::Hue)),
+        Exactness::Unsupported
+    );
+    assert_eq!(backend.exactness(Operator::IsolatedGroup), Exactness::Exact);
+    assert_eq!(
+        backend.exactness(Operator::PassThroughGroup),
+        Exactness::Exact
+    );
+    assert_eq!(
+        backend.exactness(Operator::Mask(MaskFormat::CoverageU8)),
+        Exactness::Exact
+    );
+    assert_eq!(
+        backend.exactness(Operator::Mask(MaskFormat::BaseAlpha)),
+        Exactness::Approximate
+    );
+    assert!(backend.supports_clip_to_base());
+    assert_eq!(
+        backend.exactness(Operator::NonIsolatedBlendedGroup),
         Exactness::Unsupported
     );
     assert_eq!(
-        backend.exactness(Operator::IsolatedGroup),
+        backend.exactness(Operator::PassThroughOpacity),
         Exactness::Unsupported
     );
 }
@@ -463,6 +714,48 @@ fn device_loss_and_unavailable_are_explicit() {
         Err(BackendError::DeviceLost { generation: 7 })
     );
     assert_eq!((sink.accepted, lost.resident_bytes()), (0, 0));
+
+    // Real device (only when an adapter exists): destroy it through wgpu, observe
+    // DeviceLost{generation}, then an explicit re-acquire bumps the generation and the backend
+    // executes again. Own backend: the shared GPU-test backend must stay alive.
+    let _guard = device_lock();
+    let live = GpuBackend::new(DeviceOptions {
+        backend: backend_from_env(),
+        ..DeviceOptions::default()
+    });
+    let Some(info) = live.device_info() else {
+        eprintln!(
+            "NOT_PROVEN: no adapter ({:?}); real device-loss path not exercised",
+            live.unavailable_reason()
+        );
+        return;
+    };
+    let first = info.generation;
+    assert_eq!(first, 1);
+    assert!(live.simulate_device_loss());
+    assert_eq!(
+        run(
+            &live,
+            &plan,
+            &request(1, Exactness::Fitted),
+            &sources,
+            &mut sink
+        ),
+        Err(BackendError::DeviceLost { generation: first })
+    );
+    assert!(live.device_info().is_none());
+    let second = live.reacquire(&token).expect("re-acquire after loss");
+    assert!(second > first);
+    let receipt = run(
+        &live,
+        &plan,
+        &request(1, Exactness::Fitted),
+        &sources,
+        &mut sink,
+    )
+    .expect("execute on the successor device");
+    assert_eq!(receipt.backend.generation, second);
+    assert_eq!(live.resident_bytes(), 0);
 }
 
 #[test]
@@ -540,6 +833,7 @@ fn no_wgpu_types_in_public_api() {
     let sources = [
         ("lib.rs", include_str!("../src/lib.rs")),
         ("device.rs", include_str!("../src/device.rs")),
+        ("kernel.rs", include_str!("../src/kernel.rs")),
         ("error.rs", include_str!("../src/error.rs")),
         ("plan_sink.rs", include_str!("../src/plan_sink.rs")),
         ("report.rs", include_str!("../src/report.rs")),
@@ -594,12 +888,7 @@ fn reference(layers: &[RefLayer], x: i64, y: i64) -> [f32; 4] {
 fn gpu_blend_parity_vs_pigment_blend_math() {
     const TOL_PER_LAYER: f32 = 1.0e-6;
     let _guard = device_lock();
-    let options = DeviceOptions {
-        chunk_side: 16,
-        backend: backend_from_env(),
-        ..DeviceOptions::default()
-    };
-    let backend = GpuBackend::new(options);
+    let backend = shared_backend();
     let sources0 = Sources::default();
     let tiny = rect(0, 0, 1, 1);
     let tiny_plan = plan_of(
@@ -618,7 +907,7 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
         ));
         let mut sink = Image::new(tiny);
         let refused = run(
-            &backend,
+            backend,
             &tiny_plan,
             &request(1, Exactness::Fitted),
             &sources0,
@@ -654,7 +943,7 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
         );
         let mut sink = Image::new(tiny);
         let receipt = run(
-            &backend,
+            backend,
             &plan,
             &request(1, Exactness::Fitted),
             &sources0,
@@ -710,10 +999,10 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
             layer(2, StudioBlendMode::Multiply, 1.0, 1.0),
         ],
     );
-    let sources = Sources(vec![(1, t0), (2, t1)]);
+    let sources = Sources::with_tiles(vec![(1, t0), (2, t1)]);
     let mut sink = Image::new(extent);
     let receipt = run(
-        &backend,
+        backend,
         &plan,
         &request(9, Exactness::Approximate),
         &sources,
@@ -722,7 +1011,7 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
     .expect("randomised plan executes on the device");
     let tile_fn = |idx: u32, p: Rect| -> SourceFn {
         let src = sources
-            .0
+            .tiles
             .iter()
             .find(|(k, _)| *k == idx)
             .map(|(_, t)| OwnedTile {
@@ -796,7 +1085,8 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
     assert_eq!((stats.chunk_width, stats.chunk_height), (16, 16));
     assert_eq!(stats.bytes_read_back, 37 * 29 * 16);
     assert!(stats.bytes_uploaded > 0 && stats.dispatches >= 5);
-    assert_eq!(receipt.peak_working_bytes, 3 * 16 * 16 * 16 + 64);
+    // dst + staging + upload chunk buffers, 64-byte params, minimal 4-byte mask binding
+    assert_eq!(receipt.peak_working_bytes, 3 * 16 * 16 * 16 + 64 + 4);
     assert_eq!(backend.resident_bytes(), 0);
 
     // (c) sink rejection mid-read-back and an impossible budget both release residency and
@@ -805,7 +1095,7 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
     reject.reject_at = Some(2);
     assert_eq!(
         run(
-            &backend,
+            backend,
             &plan,
             &request(9, Exactness::Approximate),
             &sources,
@@ -818,13 +1108,13 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
     starved.max_working_bytes = 1000;
     let mut none = Image::new(extent);
     assert!(matches!(
-        run(&backend, &plan, &starved, &sources, &mut none),
+        run(backend, &plan, &starved, &sources, &mut none),
         Err(BackendError::BudgetExceeded { limit: 1000, .. })
     ));
     assert_eq!((none.accepted, backend.resident_bytes()), (0, 0));
     let mut again = Image::new(extent);
     run(
-        &backend,
+        backend,
         &plan,
         &request(9, Exactness::Approximate),
         &sources,
@@ -832,37 +1122,521 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
     )
     .expect("backend still usable after refusals");
     assert_eq!(again.px, sink.px);
+}
 
-    // (d) real device loss on this same device: destroy it through wgpu, observe
-    // DeviceLost{generation}, then an explicit re-acquire bumps the generation and the backend
-    // executes again (the hardware-free half of this contract is in
-    // `device_loss_and_unavailable_are_explicit`).
-    let first = info.generation;
-    assert!(backend.simulate_device_loss());
-    let mut lost_sink = Image::new(tiny);
-    assert_eq!(
-        run(
-            &backend,
-            &tiny_plan,
-            &request(1, Exactness::Fitted),
-            &sources0,
-            &mut lost_sink
-        ),
-        Err(BackendError::DeviceLost { generation: first })
-    );
-    assert!(backend.device_info().is_none());
-    let second = backend
-        .reacquire(&CancellationToken::default())
-        .expect("re-acquire after loss");
-    assert!(second > first);
-    let receipt = run(
-        &backend,
-        &tiny_plan,
-        &request(1, Exactness::Fitted),
-        &sources0,
-        &mut lost_sink,
+// ---- slice 2: independent CPU reference of the plan semantics (pigment blend_math only) -------
+
+fn inside(r: Rect, x: i64, y: i64) -> bool {
+    x >= r.x && y >= r.y && x < r.x + i64::from(r.width) && y < r.y + i64::from(r.height)
+}
+/// Source-over with blend into `dst` using the executor's skip rules.
+fn over(dst: &mut [f32; 4], mode: StudioBlendMode, s: [f32; 4], opacity: f32) {
+    if opacity <= 0.0 || s[3] <= 0.0 {
+        return;
+    }
+    let out = composite_over(
+        mode,
+        Rgba::new([dst[0], dst[1], dst[2]], dst[3]),
+        Rgba::new([s[0], s[1], s[2]], s[3]),
+        opacity,
+        PixelSite::default(),
     )
-    .expect("execute on the successor device");
-    assert_eq!(receipt.backend.generation, second);
+    .expect("reference blend");
+    *dst = [out.rgb[0], out.rgb[1], out.rgb[2], out.a.min(1.0)];
+}
+
+/// Per-pixel evaluation of a plan: layers bottom-first, masks, opacity * fill, isolated groups
+/// (own transparent result), pass-through groups (onto the running backdrop) and pigment's
+/// documented clip-to-base rule (`MaskFormat::BaseAlpha`).
+struct Reference<'a> {
+    plan: &'a RenderPlan<NoVector>,
+    sources: &'a Sources,
+}
+impl Reference<'_> {
+    fn leaf(&self, idx: usize, x: i64, y: i64) -> Option<[f32; 4]> {
+        match &self.plan.nodes[idx] {
+            PlanNode::Solid { rect, rgba } => inside(*rect, x, y).then_some(*rgba),
+            PlanNode::Tile(t) => {
+                if !inside(t.placement, x, y) {
+                    return None;
+                }
+                let (_, tile) = self.sources.tiles.iter().find(|(k, _)| *k == t.key.0)?;
+                Some(tile.pixel((x - t.placement.x) as u32, (y - t.placement.y) as u32))
+            }
+            _ => None,
+        }
+    }
+    fn mask(&self, m: &MaskInput, x: i64, y: i64) -> f32 {
+        let (_, plane) = self
+            .sources
+            .masks
+            .iter()
+            .find(|(k, _)| *k == m.key.0)
+            .expect("mask plane");
+        plane.coverage(x, y, m.inverted)
+    }
+    /// A layer's source texel: a leaf pixel, or the result of an isolated child group.
+    fn source(&self, l: &Layer, x: i64, y: i64) -> Option<[f32; 4]> {
+        let idx = l.input.0 as usize;
+        match &self.plan.nodes[idx] {
+            PlanNode::Group(_) => {
+                let mut sub = [0.0; 4];
+                self.group(idx, x, y, &mut sub);
+                Some(sub)
+            }
+            _ => self.leaf(idx, x, y),
+        }
+    }
+    fn group(&self, idx: usize, x: i64, y: i64, dst: &mut [f32; 4]) {
+        let PlanNode::Group(g) = &self.plan.nodes[idx] else {
+            panic!("not a group");
+        };
+        let clipped = |l: &Layer| l.mask.as_ref().is_some_and(MaskInput::is_clip_to_base);
+        let mut i = 0;
+        while i < g.layers.len() {
+            let mut j = i + 1;
+            while j < g.layers.len() && clipped(&g.layers[j]) {
+                j += 1;
+            }
+            if j == i + 1 {
+                self.layer(&g.layers[i], x, y, dst);
+            } else {
+                self.run(&g.layers[i..j], x, y, dst);
+            }
+            i = j;
+        }
+    }
+    fn layer(&self, l: &Layer, x: i64, y: i64, dst: &mut [f32; 4]) {
+        if let PlanNode::Group(c) = &self.plan.nodes[l.input.0 as usize]
+            && !c.isolated
+        {
+            self.group(l.input.0 as usize, x, y, dst);
+            return;
+        }
+        let Some(s) = self.source(l, x, y) else {
+            return;
+        };
+        let m = l.mask.as_ref().map_or(1.0, |m| self.mask(m, x, y));
+        over(dst, l.mode, s, l.opacity * l.fill_opacity * m);
+    }
+    /// `run = [base, clipped...]`: G = base content with the base's mask; each clipped layer is
+    /// composited onto G with its source alpha times the base alpha and G's alpha held at the base
+    /// alpha; G goes onto `dst` with the BASE layer's mode, opacity and fill.
+    fn run(&self, run: &[Layer], x: i64, y: i64, dst: &mut [f32; 4]) {
+        let base = &run[0];
+        let mut g = [0.0_f32; 4];
+        if let Some(s) = self.source(base, x, y) {
+            let m = base.mask.as_ref().map_or(1.0, |m| self.mask(m, x, y));
+            let a = s[3] * m;
+            if a > 0.0 {
+                g = [s[0], s[1], s[2], a];
+            }
+        }
+        let a_base = g[3];
+        for c in &run[1..] {
+            let Some(s) = self.source(c, x, y) else {
+                continue;
+            };
+            let opacity = c.opacity * c.fill_opacity;
+            let clipped_alpha = s[3] * a_base;
+            if opacity <= 0.0 || clipped_alpha <= 0.0 {
+                continue;
+            }
+            let out = composite_over(
+                c.mode,
+                Rgba::new([g[0], g[1], g[2]], g[3]),
+                Rgba::new([s[0], s[1], s[2]], clipped_alpha),
+                opacity,
+                PixelSite::default(),
+            )
+            .expect("reference clip blend");
+            g = [out.rgb[0], out.rgb[1], out.rgb[2], a_base];
+        }
+        over(dst, base.mode, g, base.opacity * base.fill_opacity);
+    }
+}
+
+fn layer_records(plan: &RenderPlan<NoVector>) -> usize {
+    plan.nodes
+        .iter()
+        .map(|n| match n {
+            PlanNode::Group(g) => g.layers.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Execute `plan` on the device and return (max abs error vs the reference, worst pixel, receipt).
+fn gpu_vs_reference(
+    backend: &GpuBackend,
+    plan: &RenderPlan<NoVector>,
+    sources: &Sources,
+    floor: Exactness,
+) -> (
+    f32,
+    (i64, i64),
+    hsk_studio_pigment::render_plan::RenderReceipt,
+) {
+    let extent = plan.target.extent;
+    let mut sink = Image::new(extent);
+    let receipt = run(
+        backend,
+        plan,
+        &request(plan.revision, floor),
+        sources,
+        &mut sink,
+    )
+    .expect("plan executes on the device");
+    let reference = Reference { plan, sources };
+    let (mut max_err, mut worst) = (0.0_f32, (0, 0));
+    let mut worst_values = ([0.0_f32; 4], [0.0_f32; 4]);
+    for y in 0..i64::from(extent.height) {
+        for x in 0..i64::from(extent.width) {
+            let mut want = [0.0_f32; 4];
+            reference.group(plan.root.0 as usize, extent.x + x, extent.y + y, &mut want);
+            let got = sink.px[(y * i64::from(extent.width) + x) as usize];
+            for c in 0..4 {
+                let e = (got[c] - want[c]).abs();
+                assert!(e.is_finite(), "non-finite output at ({x},{y})");
+                if e > max_err {
+                    max_err = e;
+                    worst = (x, y);
+                    worst_values = (got, want);
+                }
+            }
+        }
+    }
+    if max_err > 1.0e-5 {
+        eprintln!(
+            "WORST_PIXEL {worst:?}: got {:?} want {:?}",
+            worst_values.0, worst_values.1
+        );
+    }
+    (max_err, worst, receipt)
+}
+
+#[test]
+fn gpu_modes_masks_groups_clip_parity() {
+    const TOL_PER_LAYER: f32 = 1.0e-6;
+    let _guard = device_lock();
+    let backend = shared_backend();
+    let Some(info) = backend.device_info() else {
+        let reason = backend.unavailable_reason();
+        eprintln!("NOT_PROVEN: no adapter ({reason:?}); slice-2 GPU parity not run");
+        assert!(matches!(
+            reason,
+            Some(Reason::NoAdapter | Reason::NoDevice | Reason::Timeout)
+        ));
+        let extent = rect(0, 0, 2, 2);
+        let plan = plan_of(
+            1,
+            extent,
+            vec![solid(extent, [0.5, 0.5, 0.5, 1.0])],
+            vec![
+                layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+                Layer {
+                    mask: Some(MaskInput::clip_to_base()),
+                    ..layer(0, StudioBlendMode::Multiply, 0.5, 1.0)
+                },
+            ],
+        );
+        let mut sink = Image::new(extent);
+        assert!(matches!(
+            run(
+                backend,
+                &plan,
+                &request(1, Exactness::Approximate),
+                &Sources::default(),
+                &mut sink
+            ),
+            Err(BackendError::Unavailable(_))
+        ));
+        assert_eq!(sink.accepted, 0);
+        return;
+    };
+    eprintln!("GPU_BACKEND: {} (slice 2)", info.text());
+
+    // (A) every mode the supported list (derived from pigment's facts) contains, against
+    // blend_math over random tiles with exact 0/1 samples and varying backdrop alpha.
+    let extent = rect(1, 2, 21, 13);
+    let backdrop = OwnedTile::random(21, 13, 7);
+    let (mut tested, mut worst_mode) = (0, 0.0_f32);
+    for facts in &MODES {
+        let mode = facts.mode;
+        if !gpu_blend_supported(mode) {
+            continue;
+        }
+        let source = OwnedTile::random(21, 13, 100 + u32::from(mode.discriminant()));
+        let plan = plan_of(
+            3,
+            extent,
+            vec![backdrop.input(1, extent), source.input(2, extent)],
+            vec![
+                layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+                layer(1, mode, 0.85, 1.0),
+            ],
+        );
+        let sources = Sources::with_tiles(vec![(1, backdrop.clone()), (2, source)]);
+        let (err, at, receipt) = gpu_vs_reference(backend, &plan, &sources, Exactness::Fitted);
+        eprintln!("MODE {:<17} max_err {err:e} at {at:?}", facts.key);
+        if err > 1.0e-5 {
+            let (px, py) = (at.0 as u32, at.1 as u32);
+            eprintln!(
+                "  inputs at {at:?}: backdrop {:?} source {:?}",
+                backdrop.pixel(px, py),
+                sources.tiles[1].1.pixel(px, py)
+            );
+        }
+        assert!(
+            err <= 2.0 * TOL_PER_LAYER,
+            "{} error {err:e} > {:e}",
+            facts.key,
+            2.0 * TOL_PER_LAYER
+        );
+        assert_eq!(receipt.exactness.lowest, Exactness::Fitted, "{}", facts.key);
+        worst_mode = worst_mode.max(err);
+        tested += 1;
+    }
+    assert!(
+        tested >= 12,
+        "expected Normal + 11 separable modes, got {tested}"
+    );
+    eprintln!("MODES tested {tested}, worst max_err {worst_mode:e}");
+
+    // (B) coverage masks: u8 plane, u16 plane inverted, fill opacity, 2 x 2 chunks.
+    let extent = rect(0, 0, 19, 17);
+    let (t0, t1) = (OwnedTile::random(19, 17, 31), OwnedTile::random(10, 9, 32));
+    let m1 = OwnedMask::random(rect(0, 0, 19, 17), MaskFormat::CoverageU8, 5);
+    let m2 = OwnedMask::random(rect(3, 2, 16, 15), MaskFormat::CoverageU16Le, 6);
+    let plan = plan_of(
+        4,
+        extent,
+        vec![
+            t0.input(1, extent),
+            solid(rect(2, 3, 14, 12), [0.35, 0.8, 0.15, 0.9]),
+            t1.input(2, rect(5, 4, 10, 9)),
+        ],
+        vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            Layer {
+                mask: Some(m1.input(11, false)),
+                ..layer(1, StudioBlendMode::Multiply, 0.9, 0.8)
+            },
+            Layer {
+                mask: Some(m2.input(12, true)),
+                ..layer(2, StudioBlendMode::Screen, 1.0, 1.0)
+            },
+        ],
+    );
+    let sources = Sources {
+        tiles: vec![(1, t0), (2, t1)],
+        masks: vec![(11, m1), (12, m2)],
+    };
+    let (err, at, receipt) = gpu_vs_reference(backend, &plan, &sources, Exactness::Approximate);
+    let tolerance = TOL_PER_LAYER * layer_records(&plan) as f32;
+    eprintln!("MASKS max_err {err:e} at {at:?} (tolerance {tolerance:e})");
+    assert!(err <= tolerance, "mask parity {err:e} > {tolerance:e}");
+    assert_eq!(receipt.chunks, 4);
+    assert_eq!(backend.resident_bytes(), 0);
+
+    // (C) isolated groups (one nested two deep), a pass-through group, a masked group layer.
+    let extent = rect(0, 0, 30, 22);
+    let t_a = OwnedTile::random(30, 22, 41);
+    let t_b = OwnedTile::random(12, 12, 42);
+    let t_c = OwnedTile::random(14, 10, 43);
+    let m3 = OwnedMask::random(rect(0, 0, 30, 22), MaskFormat::CoverageU8, 7);
+    let plan = plan_of(
+        5,
+        extent,
+        vec![
+            t_a.input(1, extent),                            // 0
+            solid(rect(4, 2, 20, 16), [0.7, 0.2, 0.4, 0.8]), // 1
+            t_b.input(2, rect(10, 5, 12, 12)),               // 2
+            solid(rect(8, 6, 12, 12), [0.3, 0.9, 0.6, 0.7]), // 3
+            t_c.input(3, rect(2, 8, 14, 10)),                // 4
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![
+                    layer(2, StudioBlendMode::Normal, 1.0, 1.0),
+                    layer(3, StudioBlendMode::Difference, 0.8, 1.0),
+                ],
+            }), // 5: G2
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![
+                    layer(1, StudioBlendMode::Multiply, 0.9, 1.0),
+                    layer(5, StudioBlendMode::Overlay, 0.6, 1.0),
+                    layer(4, StudioBlendMode::Screen, 0.7, 1.0),
+                ],
+            }), // 6: G1 containing G2
+            PlanNode::Group(Group {
+                isolated: false,
+                layers: vec![
+                    layer(3, StudioBlendMode::Normal, 0.5, 1.0),
+                    layer(2, StudioBlendMode::HardLight, 0.8, 1.0),
+                ],
+            }), // 7: pass-through P
+            solid(rect(0, 0, 30, 22), [0.5, 0.4, 0.9, 0.6]), // 8
+        ],
+        vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            Layer {
+                mask: Some(m3.input(13, false)),
+                ..layer(6, StudioBlendMode::SoftLight, 0.7, 1.0)
+            },
+            layer(7, StudioBlendMode::PassThrough, 1.0, 1.0),
+            layer(8, StudioBlendMode::Exclusion, 0.3, 1.0),
+        ],
+    );
+    let sources = Sources {
+        tiles: vec![(1, t_a), (2, t_b), (3, t_c)],
+        masks: vec![(13, m3)],
+    };
+    let (err, at, receipt) = gpu_vs_reference(backend, &plan, &sources, Exactness::Fitted);
+    let tolerance = TOL_PER_LAYER * layer_records(&plan) as f32;
+    eprintln!("GROUPS max_err {err:e} at {at:?} (tolerance {tolerance:e})");
+    assert!(err <= tolerance, "group parity {err:e} > {tolerance:e}");
+    assert_eq!(receipt.exactness.lowest, Exactness::Fitted);
+    let stats = backend.last_stats().expect("stats");
+    assert_eq!(stats.levels, 3);
+    assert_eq!(receipt.chunks, 4);
+    // 3 destination levels + staging + upload + mask + params, 16 x 16 chunk buffers
+    assert_eq!(
+        receipt.peak_working_bytes,
+        4 * 16 * 16 * 16 + 16 * 16 * 16 + 16 * 16 * 4 + 64
+    );
+    assert_eq!(backend.resident_bytes(), 0);
+
+    // (D) clip-to-base: masked base, three clipped layers (solid beyond the base, tile with fill
+    // opacity, isolated group), then an unclipped layer ends the run.
+    let extent = rect(0, 0, 26, 20);
+    let clip = Some(MaskInput::clip_to_base());
+    let t_a = OwnedTile::random(26, 20, 51);
+    let t_d = OwnedTile::random(20, 16, 52);
+    let t_e = OwnedTile::random(18, 14, 53);
+    let t_f = OwnedTile::random(10, 10, 54);
+    let m4 = OwnedMask::random(rect(2, 1, 22, 18), MaskFormat::CoverageU16Le, 8);
+    let plan = plan_of(
+        6,
+        extent,
+        vec![
+            t_a.input(1, extent),                            // 0
+            t_d.input(2, rect(3, 2, 20, 16)),                // 1: base
+            solid(rect(0, 0, 26, 20), [0.6, 0.3, 0.8, 0.9]), // 2: clipped, beyond the base
+            t_e.input(3, rect(6, 4, 18, 14)),                // 3: clipped
+            t_f.input(4, rect(8, 6, 10, 10)),                // 4
+            solid(rect(9, 7, 12, 8), [0.2, 0.7, 0.5, 0.8]),  // 5
+            PlanNode::Group(Group {
+                isolated: true,
+                layers: vec![
+                    layer(4, StudioBlendMode::Normal, 1.0, 1.0),
+                    layer(5, StudioBlendMode::Difference, 0.7, 1.0),
+                ],
+            }), // 6: clipped isolated group
+            solid(rect(0, 0, 26, 20), [0.4, 0.5, 0.1, 0.7]), // 7
+        ],
+        vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            Layer {
+                mask: Some(m4.input(14, false)),
+                ..layer(1, StudioBlendMode::SoftLight, 0.8, 0.9)
+            },
+            Layer {
+                mask: clip,
+                ..layer(2, StudioBlendMode::Multiply, 0.7, 1.0)
+            },
+            Layer {
+                mask: clip,
+                ..layer(3, StudioBlendMode::Screen, 0.9, 0.5)
+            },
+            Layer {
+                mask: clip,
+                ..layer(6, StudioBlendMode::Overlay, 0.6, 1.0)
+            },
+            layer(7, StudioBlendMode::Normal, 0.2, 1.0),
+        ],
+    );
+    let sources = Sources {
+        tiles: vec![(1, t_a), (2, t_d), (3, t_e), (4, t_f)],
+        masks: vec![(14, m4)],
+    };
+    let (err, at, receipt) = gpu_vs_reference(backend, &plan, &sources, Exactness::Approximate);
+    let tolerance = TOL_PER_LAYER * layer_records(&plan) as f32;
+    eprintln!("CLIP max_err {err:e} at {at:?} (tolerance {tolerance:e})");
+    assert!(err <= tolerance, "clip parity {err:e} > {tolerance:e}");
+    assert_eq!(receipt.exactness.lowest, Exactness::Approximate);
+    assert!(
+        receipt
+            .exactness
+            .operators
+            .iter()
+            .any(|o| o.key == "clip_to_base")
+    );
+    assert_eq!(backend.last_stats().expect("stats").levels, 3);
+    assert_eq!(backend.resident_bytes(), 0);
+
+    // (E) hand-derived two-layer clip on a 2 x 1 target. Backdrop (0.5,0.5,0.5,1). Base (0.8,0.4,
+    // 0.2) alpha 0.5 covers pixel 0 only; the clipped layer (0.2,0.6,1.0,1.0) Multiply at opacity
+    // 0.5 covers both pixels. Pixel 0: source alpha 1.0 * base alpha 0.5 = 0.5, a_s = 0.25 over G
+    // (a_b = 0.5): a_o = 0.625, B = (0.16,0.24,0.2), Cs' = 0.5*Cs + 0.5*B = (0.18,0.42,0.6),
+    // Co = 0.25*Cs' + 0.75*0.5*Cb = (0.345,0.255,0.225), G = Co / 0.625 = (0.552,0.408,0.36) with
+    // alpha held at 0.5. G over the backdrop (Normal, opacity 1): 0.5*G + 0.5*0.5 =
+    // (0.526,0.454,0.43), alpha 1. Pixel 1 has no base: clipped content never extends beyond it,
+    // so the backdrop is untouched.
+    let extent = rect(0, 0, 2, 1);
+    let plan = plan_of(
+        7,
+        extent,
+        vec![
+            solid(extent, [0.5, 0.5, 0.5, 1.0]),
+            solid(rect(0, 0, 1, 1), [0.8, 0.4, 0.2, 0.5]),
+            solid(extent, [0.2, 0.6, 1.0, 1.0]),
+        ],
+        vec![
+            layer(0, StudioBlendMode::Normal, 1.0, 1.0),
+            layer(1, StudioBlendMode::Normal, 1.0, 1.0),
+            Layer {
+                mask: clip,
+                ..layer(2, StudioBlendMode::Multiply, 0.5, 1.0)
+            },
+        ],
+    );
+    let none = Sources::default();
+    let mut sink = Image::new(extent);
+    let receipt = run(
+        backend,
+        &plan,
+        &request(7, Exactness::Approximate),
+        &none,
+        &mut sink,
+    )
+    .expect("hand-derived clip plan executes");
+    let expect = [[0.526_f32, 0.454, 0.43, 1.0], [0.5, 0.5, 0.5, 1.0]];
+    for (got, want) in sink.px.iter().zip(expect) {
+        let err = got
+            .iter()
+            .zip(want)
+            .map(|(g, e)| (g - e).abs())
+            .fold(0.0_f32, f32::max);
+        eprintln!("CLIP_HAND got {got:?} want {want:?} max_err {err:e}");
+        assert!(err <= 2.0 * TOL_PER_LAYER, "clip hand oracle {err:e}");
+    }
+    // the CPU reference agrees with the hand derivation too (so it is a usable oracle above)
+    let reference = Reference {
+        plan: &plan,
+        sources: &none,
+    };
+    for (x, want) in expect.iter().enumerate() {
+        let mut got = [0.0_f32; 4];
+        reference.group(plan.root.0 as usize, x as i64, 0, &mut got);
+        let err = got
+            .iter()
+            .zip(want)
+            .map(|(g, e)| (g - e).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(err <= 2.0 * TOL_PER_LAYER, "reference vs hand {err:e}");
+    }
+    assert_eq!(receipt.exactness.lowest, Exactness::Approximate);
+    assert_eq!(backend.last_stats().expect("stats").levels, 2);
     assert_eq!(backend.resident_bytes(), 0);
 }

@@ -10,8 +10,10 @@ use hsk_studio_pigment::Rect;
 pub enum ResidentKey {
     /// A source tile in plan pixel space (`source` = plan `SourceKey`).
     Tile { source: u32, bounds: Rect },
-    /// A transient working buffer (destination chunk, staging, parameters, upload scratch).
+    /// A transient working buffer (staging, parameters, upload scratch).
     Scratch(&'static str),
+    /// The chunk-sized destination of group nesting level `n` (0 = the root destination).
+    Level(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
