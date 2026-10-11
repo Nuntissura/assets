@@ -27,6 +27,8 @@ pub enum WorkerTestFault {
     /// Every decoded FRAME is answered 2 pixels narrower and 2 pixels lower than decoded (zeroed
     /// planes): a legal picture, because the declared size is the sequence maximum.
     UndersizePicture,
+    /// OPEN: answer with a well-formed FRAME (2x2 mono, inside any declared size) instead of OPENED.
+    FrameOnOpen,
 }
 
 impl WorkerTestFault {
@@ -43,6 +45,7 @@ impl WorkerTestFault {
             Self::StallHello => Some("stall_hello"),
             Self::OversizePicture => Some("oversize_picture"),
             Self::UndersizePicture => Some("undersize_picture"),
+            Self::FrameOnOpen => Some("frame_on_open"),
         }
     }
 
@@ -57,6 +60,7 @@ impl WorkerTestFault {
             Ok("stall_hello") => Self::StallHello,
             Ok("oversize_picture") => Self::OversizePicture,
             Ok("undersize_picture") => Self::UndersizePicture,
+            Ok("frame_on_open") => Self::FrameOnOpen,
             _ => Self::None,
         }
     }

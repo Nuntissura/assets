@@ -67,6 +67,13 @@ impl Faults {
         }
     }
 
+    /// OPEN: answers with a FRAME instead of OPENED. Returns `Some(alive)` when the fault replaced the
+    /// normal answer, `None` when the request must be served normally.
+    fn on_open(&self, out: &mut impl Write, id: u64) -> Option<bool> {
+        (self.fault == WorkerTestFault::FrameOnOpen)
+            .then(|| reply(out, &wire::encode_tiny_frame(id)))
+    }
+
     /// Answers a decoded picture with another size (zeroed planes) for the picture-size faults; every
     /// other fault leaves the picture as decoded. Sizes use saturating arithmetic (the hook must not panic).
     fn reshape(&self, mut frame: WireFrame) -> WireFrame {
@@ -118,7 +125,8 @@ impl Faults {
             | WorkerTestFault::ExitOnOpen
             | WorkerTestFault::StallHello
             | WorkerTestFault::OversizePicture
-            | WorkerTestFault::UndersizePicture => None,
+            | WorkerTestFault::UndersizePicture
+            | WorkerTestFault::FrameOnOpen => None,
         }
     }
 }
@@ -187,6 +195,15 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
                 decoder = None;
                 #[cfg(feature = "test-faults")]
                 faults.exit_on_open();
+                #[cfg(feature = "test-faults")]
+                {
+                    if let Some(alive) = faults.on_open(&mut out, id) {
+                        if !alive {
+                            return 1;
+                        }
+                        continue;
+                    }
+                }
                 match open_decoder(&open) {
                     Ok(opened) => {
                         decoder = Some(opened);

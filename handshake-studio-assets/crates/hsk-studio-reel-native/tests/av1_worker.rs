@@ -587,6 +587,75 @@ fn exact_and_smaller_pictures_than_declared_are_accepted() {
     });
 }
 
+/// Lead decision after R8 review B (PLR-055, same class): OPEN is answered by OPENED alone, so a FRAME (here a
+/// well-formed 2x2 picture, inside any declared size) answering OPEN is the worker breaking the protocol. The
+/// host classifies it as a worker protocol fault like every other lying reply: counted in `protocol_faults`,
+/// the worker is killed, typed `worker_protocol`, and no picture reaches the sink.
+#[test]
+fn frame_reply_to_open_is_a_protocol_fault() {
+    bounded_case("frame_reply_to_open_is_a_protocol_fault", || {
+        let limits = Limits::default();
+        let liar = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::FrameOnOpen,
+            ..Av1WorkerOptions::default()
+        });
+        for (round, (name, bytes)) in [("mp4", MP4), ("mkv", MKV)].into_iter().enumerate() {
+            let mut sink = Collect::default();
+            let error = liar
+                .decode_av1(
+                    &mut Cursor::new(bytes.to_vec()),
+                    &request(AV1_PROVIDER_ID, bytes, 0, 3),
+                    &limits,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap_err();
+            assert_eq!(error, Av1Error::Worker(Av1WorkerFault::Protocol), "{name}");
+            assert_eq!(error.code(), "worker_protocol", "{name}");
+            assert!(sink.chunks.is_empty(), "{name}: a picture reached the sink");
+            let stats = liar.stats();
+            assert_eq!(
+                (
+                    stats.protocol_faults,
+                    stats.killed_oversize,
+                    stats.crashed,
+                    stats.alive
+                ),
+                (round as u64 + 1, 0, 0, 0),
+                "{name}: {stats:?}"
+            );
+        }
+
+        // Behind reel's registry route (an ordinary untrusted decode): reel's distinct decoder fault, and the
+        // fault is counted just the same.
+        let registry = Registry::standard().with_video_decoder(Arc::new(liar.clone()));
+        let mut sink = Collect::default();
+        let error = registry
+            .decode_segment(
+                &mut Cursor::new(MP4.to_vec()),
+                None,
+                &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ReelError::DecoderFault {
+                fault: DecoderFault::Protocol
+            }
+        );
+        assert!(sink.chunks.is_empty());
+        let stats = liar.stats();
+        assert_eq!(
+            (stats.protocol_faults, stats.killed_oversize, stats.alive),
+            (3, 0, 0),
+            "{stats:?}"
+        );
+    });
+}
+
 /// R7 review B (PLR-035, uncancellable HELLO wait): a worker that stalls before its HELLO (here 30 s, with a
 /// 30 s spawn timeout) must not hold a canceled call. The wait is polled, the starting worker is killed and
 /// reaped, and the call answers Canceled within a few hundred ms; without a cancel `spawn_timeout` still

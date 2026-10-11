@@ -432,6 +432,33 @@ pub(crate) fn encode_oversize_frame(id: u64, filler: usize) -> Vec<u8> {
     out.0
 }
 
+/// A well-formed FRAME (2x2 mono 8-bit, inside any declared size): the worker's frame-on-OPEN test fault.
+#[cfg(all(feature = "av1-worker", feature = "test-faults"))]
+pub(crate) fn encode_tiny_frame(id: u64) -> Vec<u8> {
+    let format = VideoFormat {
+        width: 2,
+        height: 2,
+        bit_depth: 8,
+        chroma: ChromaFormat::Mono,
+        color: ColorInfo {
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+            full_range: false,
+            origin: ColorOrigin::SequenceHeader,
+        },
+    };
+    encode_frame(
+        id,
+        &WireFrame {
+            tag: 0,
+            format,
+            film_grain_applied: false,
+            planes: vec![vec![0_u8; 4]],
+        },
+    )
+}
+
 /// A frame of an unknown kind: the worker's protocol-garbage test fault.
 #[cfg(all(feature = "av1-worker", feature = "test-faults"))]
 pub(crate) fn encode_garbage() -> Vec<u8> {

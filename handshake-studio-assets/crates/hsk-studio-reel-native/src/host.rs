@@ -24,6 +24,10 @@
 //!   counted in `protocol_faults`, the worker is killed, `worker_protocol`, and the picture is not handed
 //!   to reel (test `oversize_picture_under_the_reply_cap_is_a_protocol_fault`; smaller pictures are
 //!   accepted: test `exact_and_smaller_pictures_than_declared_are_accepted`). Reel repeats the check on its side;
+//! * protocol: a reply the request does not allow is a worker protocol fault (counted in `protocol_faults`, the
+//!   worker is killed, `worker_protocol`), for example a frame of unknown kind (test
+//!   `supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn`) or a FRAME answering OPEN
+//!   (test `frame_reply_to_open_is_a_protocol_fault`);
 //! * crash: end of stream (abort, native crash, external kill) returns `decoder_crashed` with the exit
 //!   code and the worker is reaped. The provider stays usable; the next call starts a fresh worker, but
 //!   at most `max_spawns` workers start per `spawn_window` (`worker_respawn_limited` beyond that).
@@ -738,7 +742,9 @@ impl Pool {
                 }
             };
             match wire::decode_reply(&bytes, id) {
-                Ok(Reply::Frame(picture)) => {
+                // A FRAME belongs to a batch reply only. A FRAME answering OPEN falls to the catch-all arm
+                // below: `Failure::Protocol`, counted (test `frame_reply_to_open_is_a_protocol_fault`).
+                Ok(Reply::Frame(picture)) if want == Want::BatchEnd => {
                     frames = frames.saturating_add(1);
                     if frames > wire::MAX_FRAMES_PER_BATCH
                         || !within_declared_size(&picture.format, declared)
@@ -1069,7 +1075,9 @@ impl WorkerAv1Provider {
             Err(error) => return Err(WorkerSession::convert(worker.faults.as_ref(), error)),
         }
         let id = pool.next_id();
-        // OPEN is answered by OPENED alone: a picture here is the worker breaking the protocol.
+        // OPEN is answered by OPENED alone: a picture here is the worker breaking the protocol, which
+        // `exchange` classifies as `Failure::Protocol` (counted) before `on_frame` could be called; the
+        // closure refuses a picture on its own as well, so none is ever accepted at this stage.
         worker.request(
             wire::encode_open(id, &open),
             id,
