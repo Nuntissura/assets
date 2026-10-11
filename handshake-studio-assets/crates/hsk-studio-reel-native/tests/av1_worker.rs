@@ -473,6 +473,120 @@ fn supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn() {
     });
 }
 
+/// R8 review B (PLR-055): a worker picture larger than the container-declared size (here 18x16 against the
+/// 16x16 the fixtures declare) but far under the reply cap (the cap is the declared 384 bytes plus 512 of
+/// slack; the picture is 483 bytes on the wire) is a lying worker. The host classifies it as a worker
+/// protocol fault BEFORE reel's route sees it: counted in `protocol_faults`, the worker is killed, no
+/// picture reaches the sink, and it is not the output-cap kill (`killed_oversize` stays 0).
+#[test]
+fn oversize_picture_under_the_reply_cap_is_a_protocol_fault() {
+    bounded_case("oversize_picture_under_the_reply_cap", || {
+        let limits = Limits::default();
+        let liar = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::OversizePicture,
+            ..Av1WorkerOptions::default()
+        });
+        for (round, (name, bytes)) in [("mp4", MP4), ("mkv", MKV)].into_iter().enumerate() {
+            let mut sink = Collect::default();
+            let error = liar
+                .decode_av1(
+                    &mut Cursor::new(bytes.to_vec()),
+                    &request(AV1_PROVIDER_ID, bytes, 0, 3),
+                    &limits,
+                    &CancellationToken::default(),
+                    &mut sink,
+                )
+                .unwrap_err();
+            assert_eq!(error, Av1Error::Worker(Av1WorkerFault::Protocol), "{name}");
+            assert_eq!(error.code(), "worker_protocol", "{name}");
+            assert!(sink.chunks.is_empty(), "{name}: a picture reached the sink");
+            let stats = liar.stats();
+            assert_eq!(
+                (
+                    stats.protocol_faults,
+                    stats.killed_oversize,
+                    stats.crashed,
+                    stats.alive
+                ),
+                (round as u64 + 1, 0, 0, 0),
+                "{name}: {stats:?}"
+            );
+        }
+
+        // The same worker behind reel's registry route (an ordinary untrusted decode): reel's vocabulary
+        // is the distinct decoder fault, and the fault is counted just the same.
+        let registry = Registry::standard().with_video_decoder(Arc::new(liar.clone()));
+        let mut sink = Collect::default();
+        let error = registry
+            .decode_segment(
+                &mut Cursor::new(MP4.to_vec()),
+                None,
+                &request(ISOBMFF_PROVIDER_ID, MP4, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ReelError::DecoderFault {
+                fault: DecoderFault::Protocol
+            }
+        );
+        assert!(sink.chunks.is_empty());
+        let stats = liar.stats();
+        assert_eq!(
+            (stats.protocol_faults, stats.killed_oversize, stats.alive),
+            (3, 0, 0),
+            "{stats:?}"
+        );
+    });
+}
+
+/// R8 review B (PLR-055): the declared size is the sequence maximum (AV1-ISOBMFF 2.2.4), so a picture of
+/// exactly that size and a smaller one (14x14 against 16x16) are legal: both decode, nothing is counted
+/// as a fault, and the worker stays alive for the next call.
+#[test]
+fn exact_and_smaller_pictures_than_declared_are_accepted() {
+    bounded_case("exact_and_smaller_pictures_than_declared", || {
+        let limits = Limits::default();
+        let exact = provider(Av1WorkerOptions::default());
+        let smaller = provider(Av1WorkerOptions {
+            test_fault: WorkerTestFault::UndersizePicture,
+            ..Av1WorkerOptions::default()
+        });
+        for (name, bytes) in [("mp4", MP4), ("mkv", MKV)] {
+            let (receipt, sink) = via_worker(&exact, bytes, 0, 3, &limits).unwrap();
+            assert!(receipt.complete, "{name} exact");
+            assert_eq!(sink.chunks.len(), 3, "{name} exact");
+            for chunk in &sink.chunks {
+                assert_eq!(chunk.bytes.len(), 16 * 16 + 2 * 8 * 8, "{name} exact");
+            }
+
+            let (receipt, sink) = via_worker(&smaller, bytes, 0, 3, &limits).unwrap();
+            assert!(receipt.complete, "{name} smaller");
+            assert_eq!(sink.chunks.len(), 3, "{name} smaller");
+            for chunk in &sink.chunks {
+                assert_eq!(chunk.bytes.len(), 14 * 14 + 2 * 7 * 7, "{name} smaller");
+            }
+        }
+        for (name, provider) in [("exact", &exact), ("smaller", &smaller)] {
+            let stats = provider.stats();
+            assert_eq!(
+                (
+                    stats.spawned,
+                    stats.protocol_faults,
+                    stats.killed_oversize,
+                    stats.crashed,
+                    stats.alive
+                ),
+                (1, 0, 0, 0, 1),
+                "{name}: {stats:?}"
+            );
+        }
+    });
+}
+
 /// R7 review B (PLR-035, uncancellable HELLO wait): a worker that stalls before its HELLO (here 30 s, with a
 /// 30 s spawn timeout) must not hold a canceled call. The wait is polled, the starting worker is killed and
 /// reaped, and the call answers Canceled within a few hundred ms; without a cancel `spawn_timeout` still

@@ -19,6 +19,11 @@
 //! * output cap: a reply frame above the cap derived from the DECLARED picture dimensions (container
 //!   track size and `av1C` chroma/bit depth, never above `Limits::max_chunk_bytes`) kills the worker,
 //!   `decoder_output_too_large`; the same declared size bounds the decoder's own allocation;
+//! * declared size: a reply picture wider or taller than the container-declared size (the AV1 sequence
+//!   maximum, so a smaller picture is legal) but under the output cap is a worker protocol fault:
+//!   counted in `protocol_faults`, the worker is killed, `worker_protocol`, and the picture is not handed
+//!   to reel (test `oversize_picture_under_the_reply_cap_is_a_protocol_fault`; smaller pictures are
+//!   accepted: test `exact_and_smaller_pictures_than_declared_are_accepted`). Reel repeats the check on its side;
 //! * crash: end of stream (abort, native crash, external kill) returns `decoder_crashed` with the exit
 //!   code and the worker is reaped. The provider stays usable; the next call starts a fresh worker, but
 //!   at most `max_spawns` workers start per `spawn_window` (`worker_respawn_limited` beyond that).
@@ -48,8 +53,8 @@ use hsk_studio_reel::{
     Av1Config, ChunkSink, CodecDescriptor, DecodedPicture, DecoderFault, DecoderIdentity,
     ExternalVideoDecoder, ISOBMFF_PROVIDER_ID, IsobmffProvider, Limits, MATROSKA_PROVIDER_ID,
     MatroskaProvider, MediaProvider, OutputMode, PictureSink, ReadSeek, ReelError, SegmentReceipt,
-    SegmentRequest, StreamLayout, VideoCodec, VideoDecodeError, VideoDecodeSession, VideoRoute,
-    VideoStreamSpec, av1_descriptor, detect_type, parse_av1c,
+    SegmentRequest, StreamLayout, VideoCodec, VideoDecodeError, VideoDecodeSession, VideoFormat,
+    VideoRoute, VideoStreamSpec, av1_descriptor, detect_type, parse_av1c,
 };
 use std::{
     collections::VecDeque,
@@ -491,6 +496,9 @@ struct Call {
     frame: Vec<u8>,
     cap: usize,
     want: Want,
+    /// `(width, height)` the container declares for the track (0 = that side is not declared): a reply
+    /// picture above it is a worker protocol fault (`within_declared_size`).
+    declared: (u32, u32),
 }
 
 /// Per-segment time and cancel context shared by every request of the segment.
@@ -706,6 +714,7 @@ impl Pool {
             frame,
             cap,
             want,
+            declared,
         } = call;
         let wall = deadline_after(self.batch_deadline).min(clock.segment_wall);
         if session.jobs.send(Job { frame, cap }).is_err() {
@@ -731,7 +740,11 @@ impl Pool {
             match wire::decode_reply(&bytes, id) {
                 Ok(Reply::Frame(picture)) => {
                     frames = frames.saturating_add(1);
-                    if frames > wire::MAX_FRAMES_PER_BATCH {
+                    if frames > wire::MAX_FRAMES_PER_BATCH
+                        || !within_declared_size(&picture.format, declared)
+                    {
+                        // A lying worker: classified here, before reel's route sees the picture (the
+                        // route refuses it too, but as a sink error that would not be counted).
                         return Err(self.fail(session, Failure::Protocol));
                     }
                     if let Err(error) = on_frame(picture) {
@@ -774,6 +787,8 @@ struct WorkerSession {
     segment_wall: Instant,
     reply_cap: usize,
     max_packet_bytes: usize,
+    /// Container-declared `(width, height)` of the stream (the spec's, 0 = not declared).
+    declared: (u32, u32),
     faults: Option<FaultSlot>,
 }
 
@@ -817,6 +832,7 @@ impl WorkerSession {
             frame,
             cap: self.reply_cap,
             want,
+            declared: self.declared,
         };
         let clock = Clock {
             cancel,
@@ -1045,6 +1061,7 @@ impl WorkerAv1Provider {
             segment_wall: deadline_after(pool.segment_deadline),
             reply_cap: frame_cap.saturating_add(wire::REPLY_SLACK),
             max_packet_bytes: spec.limits.max_chunk_bytes.min(MAX_PACKET_BYTES),
+            declared: (spec.width, spec.height),
             faults,
         };
         match pool.checkout(cancel) {
@@ -1165,6 +1182,16 @@ fn declared_frame_cap(
         .min(limits.max_chunk_bytes))
 }
 
+/// True when a worker picture does not exceed the size the container declares for the track. A side
+/// declared as 0 is not declared and is not checked. The declared size is the SEQUENCE MAXIMUM
+/// (AV1-ISOBMFF 2.2.4 sample entry width/height, Matroska `V_AV1` PixelWidth/PixelHeight), so a smaller
+/// picture is legal and a larger one cannot come from a conformant stream. Same rule as reel's
+/// `Forward` sink check, which stays as defence in depth.
+fn within_declared_size(format: &VideoFormat, (declared_w, declared_h): (u32, u32)) -> bool {
+    (declared_w == 0 || format.width <= declared_w)
+        && (declared_h == 0 || format.height <= declared_h)
+}
+
 /// The decoder-side picture bound sent to the worker: rav1d's pixel limit is this divided by six (the
 /// worst packed bytes per pixel), so a stream that declares more pixels than its container is refused
 /// by the decoder before it allocates the picture. Overflow is `LimitExceeded` as above.
@@ -1222,7 +1249,55 @@ impl MediaProvider for WorkerAv1Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hsk_studio_reel::{ChromaFormat, ColorInfo, ColorOrigin};
     use std::fs;
+
+    fn picture(width: u32, height: u32) -> VideoFormat {
+        VideoFormat {
+            width,
+            height,
+            bit_depth: 8,
+            chroma: ChromaFormat::Yuv420,
+            color: ColorInfo {
+                primaries: 1,
+                transfer: 1,
+                matrix: 1,
+                full_range: false,
+                origin: ColorOrigin::SequenceHeader,
+            },
+        }
+    }
+
+    /// PLR-055: the declared size is the sequence maximum, so exact and smaller pictures pass and a
+    /// picture above it on either side does not; a side declared as 0 is not checked.
+    #[test]
+    fn declared_size_is_a_maximum_checked_per_side() {
+        let declared = (16, 16);
+        for (width, height) in [(16, 16), (15, 16), (16, 15), (2, 2), (1, 1)] {
+            assert!(
+                within_declared_size(&picture(width, height), declared),
+                "{width}x{height} must be accepted against 16x16"
+            );
+        }
+        for (width, height) in [
+            (17, 16),
+            (16, 17),
+            (17, 17),
+            (32, 8),
+            (8, 32),
+            (u32::MAX, 1),
+        ] {
+            assert!(
+                !within_declared_size(&picture(width, height), declared),
+                "{width}x{height} must be refused against 16x16"
+            );
+        }
+        assert!(within_declared_size(&picture(u32::MAX, u32::MAX), (0, 0)));
+        assert!(within_declared_size(&picture(16, u32::MAX), (16, 0)));
+        assert!(!within_declared_size(&picture(17, 1), (16, 0)));
+        assert!(within_declared_size(&picture(u32::MAX, 16), (0, 16)));
+        assert!(!within_declared_size(&picture(1, 17), (0, 16)));
+    }
 
     /// Removes the scratch directory this test made (it lives under the TMP root of the cargo env).
     struct Scratch(PathBuf);

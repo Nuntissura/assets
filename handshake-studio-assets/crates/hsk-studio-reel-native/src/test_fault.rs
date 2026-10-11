@@ -21,6 +21,12 @@ pub enum WorkerTestFault {
     GarbageReply,
     /// Before HELLO: sleep (no HELLO) so the host's spawn wait has to be cancelled or time out.
     StallHello,
+    /// Every decoded FRAME is answered 2 pixels wider than decoded (same height, zeroed planes): above
+    /// the container-declared size but far under the reply cap, so only the declared-size check sees it.
+    OversizePicture,
+    /// Every decoded FRAME is answered 2 pixels narrower and 2 pixels lower than decoded (zeroed
+    /// planes): a legal picture, because the declared size is the sequence maximum.
+    UndersizePicture,
 }
 
 impl WorkerTestFault {
@@ -35,6 +41,8 @@ impl WorkerTestFault {
             Self::OversizeFrame => Some("oversize_frame"),
             Self::GarbageReply => Some("garbage_reply"),
             Self::StallHello => Some("stall_hello"),
+            Self::OversizePicture => Some("oversize_picture"),
+            Self::UndersizePicture => Some("undersize_picture"),
         }
     }
 
@@ -47,6 +55,8 @@ impl WorkerTestFault {
             Ok("oversize_frame") => Self::OversizeFrame,
             Ok("garbage_reply") => Self::GarbageReply,
             Ok("stall_hello") => Self::StallHello,
+            Ok("oversize_picture") => Self::OversizePicture,
+            Ok("undersize_picture") => Self::UndersizePicture,
             _ => Self::None,
         }
     }

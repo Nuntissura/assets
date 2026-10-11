@@ -67,6 +67,36 @@ impl Faults {
         }
     }
 
+    /// Answers a decoded picture with another size (zeroed planes) for the picture-size faults; every
+    /// other fault leaves the picture as decoded. Sizes use saturating arithmetic (the hook must not panic).
+    fn reshape(&self, mut frame: WireFrame) -> WireFrame {
+        let (width, height) = match self.fault {
+            WorkerTestFault::OversizePicture => {
+                (frame.format.width.saturating_add(2), frame.format.height)
+            }
+            WorkerTestFault::UndersizePicture => (
+                frame.format.width.saturating_sub(2).max(1),
+                frame.format.height.saturating_sub(2).max(1),
+            ),
+            _ => return frame,
+        };
+        frame.format.width = width;
+        frame.format.height = height;
+        let bytes_per_sample = frame.format.bytes_per_sample();
+        frame.planes = frame
+            .format
+            .plane_dims()
+            .into_iter()
+            .map(|(w, h)| {
+                let samples = usize::try_from(w)
+                    .unwrap_or(0)
+                    .saturating_mul(usize::try_from(h).unwrap_or(0));
+                vec![0_u8; samples.saturating_mul(bytes_per_sample)]
+            })
+            .collect();
+        frame
+    }
+
     /// Injects the fault on the first PACKET. Returns `Some(alive)` when the fault replaced the
     /// normal answer, `None` when the packet must be decoded normally.
     fn on_packet(&mut self, out: &mut impl Write, id: u64) -> Option<bool> {
@@ -84,9 +114,11 @@ impl Faults {
                 Some(reply(out, &wire::encode_oversize_frame(id, 2 << 20)))
             }
             WorkerTestFault::GarbageReply => Some(reply(out, &wire::encode_garbage())),
-            WorkerTestFault::None | WorkerTestFault::ExitOnOpen | WorkerTestFault::StallHello => {
-                None
-            }
+            WorkerTestFault::None
+            | WorkerTestFault::ExitOnOpen
+            | WorkerTestFault::StallHello
+            | WorkerTestFault::OversizePicture
+            | WorkerTestFault::UndersizePicture => None,
         }
     }
 }
@@ -110,10 +142,18 @@ fn open_decoder(open: &OpenRequest) -> Result<Av1Decoder, ReelError> {
 
 /// Writes every frame the decoder is holding, then the batch terminator. Returns false when the host
 /// is gone (a write failed).
-fn flush_batch(out: &mut impl Write, id: u64, decoder: &mut Av1Decoder) -> bool {
+fn flush_batch(
+    out: &mut impl Write,
+    id: u64,
+    decoder: &mut Av1Decoder,
+    #[cfg(feature = "test-faults")] faults: &Faults,
+) -> bool {
     let mut count = 0_u32;
     while let Some(frame) = decoder.next_frame() {
-        let encoded = wire::encode_frame(id, &to_wire(frame));
+        let wire_frame = to_wire(frame);
+        #[cfg(feature = "test-faults")]
+        let wire_frame = faults.reshape(wire_frame);
+        let encoded = wire::encode_frame(id, &wire_frame);
         if wire::write_frame(out, &encoded).is_err() {
             return false;
         }
@@ -176,7 +216,13 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
                         ),
                     ),
                     Some(active) => match active.send(&bytes, tag) {
-                        Ok(()) => flush_batch(&mut out, id, active),
+                        Ok(()) => flush_batch(
+                            &mut out,
+                            id,
+                            active,
+                            #[cfg(feature = "test-faults")]
+                            &faults,
+                        ),
                         Err(error) => {
                             decoder = None;
                             reply(&mut out, &wire::encode_error(id, &error))
@@ -195,7 +241,13 @@ fn serve(requests: &mpsc::Receiver<Vec<u8>>) -> i32 {
                     ),
                 ),
                 Some(mut active) => match active.finish() {
-                    Ok(()) => flush_batch(&mut out, id, &mut active),
+                    Ok(()) => flush_batch(
+                        &mut out,
+                        id,
+                        &mut active,
+                        #[cfg(feature = "test-faults")]
+                        &faults,
+                    ),
                     Err(error) => reply(&mut out, &wire::encode_error(id, &error)),
                 },
             },
