@@ -11,6 +11,7 @@ use std::sync::Arc;
 mod admitted;
 pub use admitted::*;
 mod bpc;
+mod icc_eval;
 mod wide;
 mod wide_plan;
 pub use wide::*;

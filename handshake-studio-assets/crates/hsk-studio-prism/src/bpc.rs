@@ -20,90 +20,61 @@
 //!    so white is fixed and the source black lands on the destination black. (Prism's legs carry
 //!    the PCS as `XYZ / D50`, where the same map reads `n' = scale * n + (1 - scale)`.)
 //! 6. moxcms's own black-point scaling (RGB v4, perceptual or saturation, only where a table is
-//!    involved) never runs: every leg touches the version-2.1 companion. When moxcms would have
-//!    applied it, the receipt says `engine_builtin_suppressed`, and Prism applies exactly one
+//!    involved) never runs: the wide path evaluates every stage in Prism (`icc_eval.rs`). When moxcms
+//!    would have applied it, the receipt says `engine_builtin_suppressed`, and Prism applies exactly one
 //!    compensation, or none when the flag is off.
-use crate::wide::{BpcReport, DeviceSpace, PcsMap, ProfileKind, WideError, WideProfileDescriptor, leg};
+//! 7. Every probe (vertices, local black, ramp) runs through the exact Prism stages, never a re-baked
+//!    grid (SMB-PRISM-ENG-6: the 17^4 bake moved the CMYK local black by 0.08 L*).
 use crate::Intent;
+use crate::icc_eval::{self, FromPcs, ToPcs};
+use crate::wide::{BpcReport, DeviceSpace, PcsMap, ProfileKind, WideError, WideProfileDescriptor};
 use hsk_studio_accord::CancellationToken;
-use moxcms::{ColorProfile, TransformF32Executor};
-use std::sync::Arc;
+use moxcms::ColorProfile;
 
-pub(crate) const D50: [f64; 3] = [0.9642, 1.0, 0.8249];
+pub(crate) use icc_eval::{D50, lab_to_xyz, xyz_to_lab};
 const RAMP: usize = 256;
 
 pub(crate) fn y_of_l(l: f64) -> f64 {
     if l > 8.0 {
-        ((l + 16.0) / 116.0).powi(3)
+        let t = (l + 16.0) / 116.0;
+        t * t * t
     } else {
         l * 27.0 / 24389.0
     }
 }
 pub(crate) fn l_of_y(y: f64) -> f64 {
     if y > 216.0 / 24389.0 {
-        116.0 * y.cbrt() - 16.0
+        116.0 * icc_eval::cbrt(y) - 16.0
     } else {
         24389.0 / 27.0 * y
     }
 }
-pub(crate) fn lab_to_xyz(l: f64, a: f64, b: f64) -> [f64; 3] {
-    let fy = (l + 16.0) / 116.0;
-    let (fx, fz) = (fy + a / 500.0, fy - b / 200.0);
-    let inv = |t: f64| {
-        if t > 6.0 / 29.0 {
-            t * t * t
-        } else {
-            3.0 * (6.0f64 / 29.0).powi(2) * (t - 4.0 / 29.0)
-        }
-    };
-    [D50[0] * inv(fx), D50[1] * inv(fy), D50[2] * inv(fz)]
-}
-fn xyz_to_lab(xyz: [f64; 3]) -> [f64; 3] {
-    let f = |t: f64| {
-        if t > 216.0 / 24389.0 {
-            t.cbrt()
-        } else {
-            (24389.0 / 27.0 * t + 16.0) / 116.0
-        }
-    };
-    let (fx, fy, fz) = (f(xyz[0] / D50[0]), f(xyz[1] / D50[1]), f(xyz[2] / D50[2]));
-    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
-}
 
-struct Probe {
-    exec: Arc<TransformF32Executor>,
-    in_channels: usize,
-    out_channels: usize,
+/// L* of one device pixel through a device -> PCS stage.
+fn lstar(stage: &ToPcs, device: &[f32]) -> Result<f64, WideError> {
+    let n = stage.eval(device);
+    if n.iter().any(|v| !v.is_finite()) {
+        return Err(WideError::NonfiniteOutput);
+    }
+    Ok(l_of_y(n[1]))
 }
-impl Probe {
-    fn new(exec: Arc<TransformF32Executor>, in_channels: usize, out_channels: usize) -> Self {
-        Self {
-            exec,
-            in_channels,
-            out_channels,
-        }
+/// Device values of one normalised PCS colour through a PCS -> device stage.
+fn device_of(stage: &FromPcs, channels: usize, n: [f64; 3]) -> Result<Vec<f32>, WideError> {
+    let mut out = vec![0.0f32; channels];
+    stage.eval(n, &mut out);
+    if out.iter().any(|v| !v.is_finite()) {
+        return Err(WideError::NonfiniteOutput);
     }
-    /// Evaluate whole pixels (`input.len()` is a multiple of the input channel count).
-    fn eval(&self, input: &[f32]) -> Result<Vec<f32>, WideError> {
-        let mut out = vec![0.0f32; self.out_channels * (input.len() / self.in_channels)];
-        self.exec
-            .transform(input, &mut out)
-            .map_err(|_| WideError::EngineFailure)?;
-        if out.iter().any(|v| !v.is_finite()) {
-            return Err(WideError::NonfiniteOutput);
-        }
-        Ok(out)
-    }
+    Ok(out)
 }
 
 pub(crate) struct BpcInputs<'a> {
-    pub companion: &'a ColorProfile,
     /// `None` for a Lab source: its black point is L* 0 (ISO 18619 step 3).
     pub source: Option<(&'a ColorProfile, &'a WideProfileDescriptor)>,
     pub destination: (&'a ColorProfile, &'a WideProfileDescriptor),
     pub intent: Intent,
-    pub to_pcs: Option<&'a Arc<TransformF32Executor>>,
-    pub from_pcs: &'a Arc<TransformF32Executor>,
+    pub to_pcs: Option<&'a ToPcs>,
+    pub from_pcs: &'a FromPcs,
 }
 
 fn vertices(space: DeviceSpace) -> Vec<Vec<f32>> {
@@ -119,11 +90,10 @@ fn vertices(space: DeviceSpace) -> Vec<Vec<f32>> {
     }
 }
 /// Lowest L* among the darkest-candidate device vertices.
-fn darkest_l(to_xyz: &Probe, space: DeviceSpace) -> Result<f64, WideError> {
+fn darkest_l(to_xyz: &ToPcs, space: DeviceSpace) -> Result<f64, WideError> {
     let mut best = f64::INFINITY;
     for v in vertices(space) {
-        let xyz = to_xyz.eval(&v)?;
-        best = best.min(l_of_y(f64::from(xyz[1])));
+        best = best.min(lstar(to_xyz, &v)?);
     }
     Ok(best)
 }
@@ -180,19 +150,13 @@ pub(crate) fn compute(
     let canceled = || cancel.check().map_err(|_| WideError::Canceled);
     // Source black.
     let source_l = match (c.source, c.to_pcs) {
-        (Some((sp, sd)), Some(to_pcs)) => {
-            let src_to_xyz = Probe::new(to_pcs.clone(), sd.device.channels(), 3);
+        (Some((sp, sd)), Some(src_to_xyz)) => {
             if sd.device == DeviceSpace::Cmyk && sd.pcs_to_device.perceptual {
-                let b2a0 = Probe::new(
-                    leg(c.companion, DeviceSpace::Rgb, sp, DeviceSpace::Cmyk, Intent::Perceptual)?,
-                    3,
-                    4,
-                );
-                let local = b2a0.eval(&[0.0, 0.0, 0.0])?;
-                let xyz = src_to_xyz.eval(&local)?;
-                l_of_y(f64::from(xyz[1]))
+                let b2a0 = icc_eval::from_pcs(sp, sd, Intent::Perceptual)?;
+                let local = device_of(&b2a0, 4, [0.0; 3])?;
+                lstar(src_to_xyz, &local)?
             } else {
-                darkest_l(&src_to_xyz, sd.device)?
+                darkest_l(src_to_xyz, sd.device)?
             }
             .min(50.0)
         }
@@ -203,78 +167,46 @@ pub(crate) fn compute(
     let table_based = matches!(dd.kind, ProfileKind::LegacyLut | ProfileKind::MultiDimensional)
         && (dd.pcs_to_device.colorimetric || dd.pcs_to_device.perceptual || dd.pcs_to_device.saturation);
     let dst_out = dd.device.channels();
-    let dst_to_xyz_intent = Probe::new(
-        leg(dp, dd.device, c.companion, DeviceSpace::Rgb, c.intent)?,
-        dst_out,
-        3,
-    );
+    let dst_to_xyz_intent = icc_eval::to_pcs(dp, dd, c.intent)?;
     let dest_l = if !table_based {
         darkest_l(&dst_to_xyz_intent, dd.device)?.min(50.0)
     } else {
-        if !dd.device_to_pcs.colorimetric {
-            return Err(WideError::MissingIntentTable);
-        }
+        // Relative device -> PCS of the destination (ICC 8.10.2 precedence: A2B1, else A2B0).
+        let dst_to_xyz_rel = icc_eval::to_pcs(dp, dd, Intent::RelativeColorimetric)?;
         let relative = c.intent == Intent::RelativeColorimetric;
-        let dst_to_xyz_rel = Probe::new(
-            leg(dp, dd.device, c.companion, DeviceSpace::Rgb, Intent::RelativeColorimetric)?,
-            dst_out,
-            3,
-        );
         let mut initial = [0.0f64; 3];
         if relative {
             let local: Vec<f32> = if dd.device == DeviceSpace::Cmyk && dd.pcs_to_device.perceptual {
-                Probe::new(
-                    leg(c.companion, DeviceSpace::Rgb, dp, dd.device, Intent::Perceptual)?,
-                    3,
-                    dst_out,
-                )
-                .eval(&[0.0, 0.0, 0.0])?
+                device_of(&icc_eval::from_pcs(dp, dd, Intent::Perceptual)?, dst_out, [0.0; 3])?
             } else {
                 // Darkest vertex by L* at the request intent.
                 let mut best: Option<(f64, Vec<f32>)> = None;
                 for v in vertices(dd.device) {
-                    let l = l_of_y(f64::from(dst_to_xyz_intent.eval(&v)?[1]));
+                    let l = lstar(&dst_to_xyz_intent, &v)?;
                     if best.as_ref().is_none_or(|(b, _)| l < *b) {
                         best = Some((l, v));
                     }
                 }
                 best.map(|(_, v)| v).unwrap_or_default()
             };
-            let xyz = dst_to_xyz_rel.eval(&local)?;
-            initial = xyz_to_lab([
-                f64::from(xyz[0]) * D50[0],
-                f64::from(xyz[1]) * D50[1],
-                f64::from(xyz[2]) * D50[2],
-            ]);
+            let n = dst_to_xyz_rel.eval(&local);
+            initial = xyz_to_lab([n[0] * D50[0], n[1] * D50[1], n[2] * D50[2]]);
             if dd.device == DeviceSpace::Cmyk {
                 initial = [initial[0].min(50.0), 0.0, 0.0];
             }
         }
         let (ka, kb) = (initial[1].clamp(-50.0, 50.0), initial[2].clamp(-50.0, 50.0));
         let mut in_l = [0.0f64; RAMP];
-        let mut xyz_in = Vec::with_capacity(RAMP * 3);
+        let mut out_l = vec![0.0f64; RAMP];
         for (i, slot) in in_l.iter_mut().enumerate() {
             let t = i as f64 / (RAMP - 1) as f64;
             *slot = t * 100.0;
-            // Legs speak the D50-normalised PCS (rgb = XYZ / D50).
-            for (v, white) in lab_to_xyz(*slot, ka * (1.0 - t), kb * (1.0 - t)).into_iter().zip(D50) {
-                xyz_in.push((v / white) as f32);
-            }
+            // Stages speak the D50-normalised PCS (XYZ / D50).
+            let xyz = lab_to_xyz(*slot, ka * (1.0 - t), kb * (1.0 - t));
+            let device = device_of(c.from_pcs, dst_out, [xyz[0] / D50[0], xyz[1] / D50[1], xyz[2] / D50[2]])?;
+            out_l[i] = lstar(&dst_to_xyz_rel, &device)?;
         }
-        let mut device = vec![0.0f32; RAMP * dst_out];
-        c.from_pcs
-            .transform(&xyz_in, &mut device)
-            .map_err(|_| WideError::EngineFailure)?;
         canceled()?;
-        let mut back = vec![0.0f32; RAMP * 3];
-        dst_to_xyz_rel
-            .exec
-            .transform(&device, &mut back)
-            .map_err(|_| WideError::EngineFailure)?;
-        if back.iter().any(|v| !v.is_finite()) {
-            return Err(WideError::NonfiniteOutput);
-        }
-        let mut out_l: Vec<f64> = back.chunks_exact(3).map(|p| l_of_y(f64::from(p[1]))).collect();
         for i in (0..RAMP - 1).rev() {
             out_l[i] = out_l[i].min(out_l[i + 1]);
         }

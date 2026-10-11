@@ -4,23 +4,23 @@
 //! and `AdmittedPrism` are untouched. This path admits ICC v2/v4 matrix/TRC, `mAB ` and `mft1/mft2`
 //! profiles for Gray, RGB and CMYK devices with an XYZ or Lab PCS, up to `MAX_WIDE_PROFILE_BYTES`.
 //!
-//! Conversion is two moxcms legs joined by a Prism-owned PCS stage: `source -> PCS-XYZ companion`
-//! then `PCS-XYZ companion -> destination`. The companion is an identity-colourant, linear,
-//! version-2.1 matrix profile (rgb = XYZ-D50); because moxcms only applies its hard-coded
-//! black-point scaling to profiles of version 4.0 or later, no leg can apply it, so every PCS
-//! adjustment (black point compensation, absolute media-white scaling) is applied exactly once, by
-//! Prism, between the legs.
-use crate::{
-    EvaluationOptions, Intent, ProfileInput, ENGINE_NAME, ENGINE_VERSION, profile_hash,
-};
+//! Conversion is a Prism-evaluated source stage (device -> PCS XYZ / D50, f64, unclamped), the
+//! Prism PCS stage (black point compensation or absolute media-white scaling, applied exactly once)
+//! and a Prism-evaluated destination stage. moxcms 0.9.1 parses the profiles; it runs no transform on
+//! this path (SMB-PRISM-ENG-6, `icc_eval.rs`, diagnostics/prism-eng6.md). Matrix/TRC and Gray pairs
+//! fuse both matrices and the PCS map into one affine 3x3 between the curves.
+use crate::icc_eval::{FromPcs, Fused, ToPcs};
+use crate::{EvaluationOptions, Intent, ProfileInput, profile_hash};
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_observe::{Budget, FailureCode, Observation, Observe, Outcome, SinkPort};
-use moxcms::{
-    BarycentricWeightScale, ColorProfile, DataColorSpace, InterpolationMethod, Layout,
-    ParsingOptions, ProfileClass, RenderingIntent, TransformF32Executor, TransformOptions,
-};
+use moxcms::{ColorProfile, DataColorSpace, ParsingOptions, ProfileClass};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+
+/// Numeric engine of the wide path, carried by every `WideReceipt` (the legacy path keeps
+/// `ENGINE_NAME`/`ENGINE_VERSION`, moxcms). Version bumps whenever the arithmetic changes.
+pub const WIDE_ENGINE_NAME: &str = "hsk-studio-prism-icc";
+pub const WIDE_ENGINE_VERSION: &str = "1";
 
 /// Upper bound for the wide path: real CMYK profiles are 0.56-0.72 MB and Adobe's HLG video profile
 /// is 0.97 MB; 2 MiB leaves headroom without admitting unbounded input. The legacy path keeps
@@ -48,13 +48,6 @@ impl DeviceSpace {
             Self::Gray => 1,
             Self::Rgb => 3,
             Self::Cmyk => 4,
-        }
-    }
-    const fn layout(self) -> Layout {
-        match self {
-            Self::Gray => Layout::Gray,
-            Self::Rgb => Layout::Rgb,
-            Self::Cmyk => Layout::Rgba,
         }
     }
     pub const fn code(self) -> &'static str {
@@ -424,69 +417,19 @@ pub(crate) fn admit(
     Ok((profile, descriptor))
 }
 
-fn push_u32(out: &mut Vec<u8>, v: u32) {
-    out.extend_from_slice(&v.to_be_bytes());
-}
-fn push_s15(out: &mut Vec<u8>, v: f64) {
-    out.extend_from_slice(&((v * 65536.0).round() as i32).to_be_bytes());
-}
-/// Linear version-2.1 matrix profile whose colourants are the diagonal of the D50 white, so
-/// `rgb = XYZ / D50` (white = 1,1,1; a gray source maps to equal channels = a D50 neutral). Version
-/// 2.1 keeps moxcms's built-in black-point scaling (version 4.0+ only) from ever applying in a leg.
-pub(crate) fn pcs_companion_bytes() -> Vec<u8> {
-    let xyz = |x: f64, y: f64, z: f64| {
-        let mut t = b"XYZ \0\0\0\0".to_vec();
-        push_s15(&mut t, x);
-        push_s15(&mut t, y);
-        push_s15(&mut t, z);
-        t
-    };
-    let mut curve = b"para\0\0\0\0\0\0\0\0".to_vec();
-    push_s15(&mut curve, 1.0);
-    let datas: [(&[u8; 4], Vec<u8>); 7] = [
-        (b"wtpt", xyz(0.9642, 1.0, 0.8249)),
-        (b"rXYZ", xyz(0.9642, 0.0, 0.0)),
-        (b"gXYZ", xyz(0.0, 1.0, 0.0)),
-        (b"bXYZ", xyz(0.0, 0.0, 0.8249)),
-        (b"rTRC", curve.clone()),
-        (b"gTRC", curve.clone()),
-        (b"bTRC", curve),
-    ];
-    let mut out = vec![0u8; 128];
-    out[8..12].copy_from_slice(&0x0210_0000u32.to_be_bytes());
-    out[12..16].copy_from_slice(b"mntr");
-    out[16..20].copy_from_slice(b"RGB ");
-    out[20..24].copy_from_slice(b"XYZ ");
-    out[36..40].copy_from_slice(b"acsp");
-    for (i, v) in [0.9642, 1.0, 0.8249].into_iter().enumerate() {
-        out[68 + i * 4..72 + i * 4].copy_from_slice(&((v * 65536.0_f64).round() as i32).to_be_bytes());
-    }
-    push_u32(&mut out, datas.len() as u32);
-    let mut offset = 132 + datas.len() * 12;
-    for (sig, data) in &datas {
-        out.extend_from_slice(*sig);
-        push_u32(&mut out, offset as u32);
-        push_u32(&mut out, data.len() as u32);
-        offset += data.len();
-    }
-    for (_, data) in &datas {
-        out.extend_from_slice(data);
-    }
-    let len = out.len() as u32;
-    out[..4].copy_from_slice(&len.to_be_bytes());
-    out
-}
-
 /// Engine identity carried by every wide receipt: what was compiled and what the numeric path is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EngineBuild {
+    /// moxcms features compiled in (moxcms parses the profiles; it runs no wide-path transform).
     pub features: &'static str,
     /// moxcms SIMD feature flags are all off (`default-features = false`).
     pub simd: bool,
-    /// moxcms switches to fused multiply-add when compiled with fma/neon target features, which
-    /// changes low result bits between builds; true marks the numeric path as build-dependent.
+    /// True when the wide-path arithmetic could contract to fused multiply-add. The Prism evaluator is
+    /// plain f64 Rust (no `mul_add`, no fast-math), which never contracts: always false.
     pub fma_contraction: bool,
+    /// CLUT interpolation: tetrahedral for 3 inputs, linear in the first input over 3D tetrahedral for 4.
     pub interpolation: &'static str,
+    /// `exact_f64`: interpolation weights are the exact f64 fractions (no binned weights, no re-baked grid).
     pub barycentric_weights: &'static str,
     pub fixed_point: bool,
 }
@@ -494,9 +437,9 @@ pub const fn engine_build() -> EngineBuild {
     EngineBuild {
         features: "extended_range+lut+options",
         simd: false,
-        fma_contraction: cfg!(any(target_feature = "fma", target_feature = "neon")),
+        fma_contraction: false,
         interpolation: "tetrahedral",
-        barycentric_weights: "binned_65536",
+        barycentric_weights: "exact_f64",
         fixed_point: false,
     }
 }
@@ -541,68 +484,74 @@ pub struct ClipReport {
     pub max_overshoot: f64,
 }
 
-/// How the destination's out-of-range values are detected before encoding (SMB-PRISM-ENG-2).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ClipPlan {
-    /// Table-based destination: its clamped output cannot reveal clipping.
-    Unavailable,
-    /// Matrix/TRC destination: linear device value = (inverse colorant matrix * diag(D50)) times the
-    /// normalised PCS, checked against 0..1 (exact, independent of any TRC clamping).
-    Rgb([[f64; 3]; 3]),
-    /// Gray TRC destination: relative luminance Y checked against 0..1.
-    Gray,
-}
-
-/// Immutable plan: two moxcms legs and the Prism PCS stage between them. `to_pcs` is `None` for a
-/// Lab source, whose pixels are converted to PCS XYZ directly.
+/// Immutable plan: the Prism source stage (`None` for a Lab source, whose pixels convert to PCS XYZ
+/// directly), the Prism PCS map and the destination stage; `fused` replaces all three for matrix/TRC
+/// and Gray pairs. Clip detection (SMB-PRISM-ENG-2) scans the linear destination values of matrix/Gray
+/// destinations before their curves (exact, independent of any TRC clamping); table destinations
+/// cannot reveal clipping from their clamped output.
 pub(crate) struct Plan {
-    pub(crate) to_pcs: Option<Arc<TransformF32Executor>>,
-    pub(crate) from_pcs: Arc<TransformF32Executor>,
+    pub(crate) source: Option<ToPcs>,
+    pub(crate) dest: FromPcs,
     pub(crate) map: PcsMap,
+    pub(crate) fused: Option<Fused>,
     pub(crate) bpc: BpcReport,
     pub(crate) absolute: AbsoluteReport,
-    pub(crate) clip: ClipPlan,
 }
 impl Plan {
     fn clip_method(&self) -> ClipMethod {
-        match self.clip {
-            ClipPlan::Unavailable => ClipMethod::Unavailable,
-            ClipPlan::Rgb(_) | ClipPlan::Gray => ClipMethod::LinearDevice,
+        match self.dest {
+            FromPcs::Table { .. } => ClipMethod::Unavailable,
+            FromPcs::Matrix { .. } | FromPcs::Gray(_) => ClipMethod::LinearDevice,
         }
     }
-    /// Count linear destination values outside 0..1 for the PCS XYZ pixels of one chunk.
-    fn scan_clip(&self, xyz: &[f32], report: &mut ClipReport) {
-        // Values within 1e-3 of 0 or 1 are rounding noise (16.16 colorants, f32), not clipping.
+    /// Count the linear destination values of one pixel outside 0..1.
+    fn scan_clip(lin: [f64; 3], channels: usize, report: &mut ClipReport) {
+        // Values within 1e-3 of 0 or 1 are rounding noise (16.16 colorants), not clipping.
         const EPS: f64 = 1e-3;
-        let mut note = |ch: usize, v: f64, any: &mut bool| {
-            let over = if v < -EPS {
+        let mut any = false;
+        for (ch, v) in lin.iter().take(channels).enumerate() {
+            let over = if *v < -EPS {
                 -v
-            } else if v > 1.0 + EPS {
+            } else if *v > 1.0 + EPS {
                 v - 1.0
             } else {
-                return;
+                continue;
             };
-            *any = true;
+            any = true;
             report.channels_clipped[ch] += 1;
             report.max_overshoot = report.max_overshoot.max(over);
-        };
-        for p in xyz.chunks_exact(3) {
-            let mut any = false;
-            match self.clip {
-                ClipPlan::Unavailable => return,
-                ClipPlan::Gray => note(0, f64::from(p[1]), &mut any),
-                ClipPlan::Rgb(inv) => {
-                    let v = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
-                    for (ch, row) in inv.iter().enumerate() {
-                        note(ch, row[0] * v[0] + row[1] * v[1] + row[2] * v[2], &mut any);
-                    }
-                }
+        }
+        report.pixels_clipped += u64::from(any);
+    }
+    /// Convert one pixel into `out`; returns the linear destination values when clip detection applies.
+    fn pixel(&self, px: &[f32], lab: bool, out: &mut [f32]) -> Option<[f64; 3]> {
+        if let Some(f) = &self.fused {
+            let lin = f.linear(px);
+            f.encode(lin, out);
+            return Some(lin);
+        }
+        let n = match &self.source {
+            Some(s) => s.eval(px),
+            None => {
+                debug_assert!(lab);
+                let v = crate::icc_eval::lab_to_xyz(f64::from(px[0]), f64::from(px[1]), f64::from(px[2]));
+                [v[0] / crate::icc_eval::D50[0], v[1] / crate::icc_eval::D50[1], v[2] / crate::icc_eval::D50[2]]
             }
-            report.pixels_clipped += u64::from(any);
+        };
+        let n = self.map.apply(n);
+        match self.dest.linear(n) {
+            Some(lin) => {
+                self.dest.encode_linear(lin, out);
+                Some(lin)
+            }
+            None => {
+                self.dest.eval(n, out);
+                None
+            }
         }
     }
 }
-/// Prism-owned adjustment of PCS XYZ between the legs.
+/// Prism-owned adjustment of PCS XYZ between the stages.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PcsMap {
     Identity,
@@ -612,57 +561,21 @@ pub(crate) enum PcsMap {
     Scale([f64; 3]),
 }
 impl PcsMap {
-    fn apply(&self, xyz: &mut [f32]) {
+    /// The map as `n' = k * n + o` (component-wise).
+    pub(crate) fn affine(&self) -> ([f64; 3], [f64; 3]) {
         match *self {
-            Self::Identity => {}
-            Self::Affine { scale, offset } => {
-                for p in xyz.chunks_exact_mut(3) {
-                    for (v, o) in p.iter_mut().zip(offset) {
-                        *v = (scale * f64::from(*v) + o) as f32;
-                    }
-                }
-            }
-            Self::Scale(s) => {
-                for p in xyz.chunks_exact_mut(3) {
-                    for (v, k) in p.iter_mut().zip(s) {
-                        *v = (f64::from(*v) * k) as f32;
-                    }
-                }
-            }
+            Self::Identity => ([1.0; 3], [0.0; 3]),
+            Self::Affine { scale, offset } => ([scale; 3], offset),
+            Self::Scale(k) => (k, [0.0; 3]),
         }
     }
-}
-
-pub(crate) fn mox_intent(intent: Intent) -> RenderingIntent {
-    match intent {
-        Intent::RelativeColorimetric | Intent::AbsoluteColorimetric => {
-            RenderingIntent::RelativeColorimetric
+    fn apply(&self, n: [f64; 3]) -> [f64; 3] {
+        match *self {
+            Self::Identity => n,
+            Self::Affine { scale, offset } => [scale * n[0] + offset[0], scale * n[1] + offset[1], scale * n[2] + offset[2]],
+            Self::Scale(k) => [n[0] * k[0], n[1] * k[1], n[2] * k[2]],
         }
-        Intent::Perceptual => RenderingIntent::Perceptual,
-        Intent::Saturation => RenderingIntent::Saturation,
     }
-}
-pub(crate) fn options(intent: Intent) -> TransformOptions {
-    TransformOptions {
-        rendering_intent: mox_intent(intent),
-        allow_use_cicp_transfer: false,
-        prefer_fixed_point: false,
-        allow_extended_range_rgb_xyz: true,
-        // moxcms's default (`Linear` with `Low` weights) quantises float LUT inputs to 256 bins; the
-        // declared path is tetrahedral with 65536-bin weights.
-        interpolation_method: InterpolationMethod::Tetrahedral,
-        barycentric_weight_scale: BarycentricWeightScale::High,
-    }
-}
-pub(crate) fn leg(
-    from: &ColorProfile,
-    from_space: DeviceSpace,
-    to: &ColorProfile,
-    to_space: DeviceSpace,
-    intent: Intent,
-) -> Result<Arc<TransformF32Executor>, WideError> {
-    from.create_transform_f32(from_space.layout(), to, to_space.layout(), options(intent))
-        .map_err(|_| WideError::EngineFailure)
 }
 
 /// Where the pixels come from: an admitted device profile, or ICC PCS Lab (D50, floats) directly.
@@ -759,7 +672,7 @@ pub struct WideEngine {
     capacity: usize,
     cache: Vec<Entry>,
     stats: WideCacheStats,
-    companion: ColorProfile,
+    fusion: bool,
 }
 struct ForwardSink<'a>(&'a mut dyn SinkPort);
 impl SinkPort for ForwardSink<'_> {
@@ -787,8 +700,6 @@ impl WideEngine {
         if cache_entries == 0 || cache_entries > crate::MAX_CACHE_ENTRIES {
             return Err(WideError::InvalidBudget);
         }
-        let companion = ColorProfile::new_from_slice(&pcs_companion_bytes())
-            .map_err(|_| WideError::EngineFailure)?;
         Ok(Self {
             actor,
             capacity: cache_entries,
@@ -800,8 +711,20 @@ impl WideEngine {
                 rejected: 0,
                 parses: 0,
             },
-            companion,
+            fusion: true,
         })
+    }
+    /// Matrix/TRC and Gray pairs run as one fused affine 3x3 between the curves (default on). Off
+    /// keeps the staged source -> PCS map -> destination evaluation (same arithmetic up to f64
+    /// rounding; used to prove the fusion). Changing the setting clears the plan cache.
+    pub fn set_matrix_fusion(&mut self, enabled: bool) {
+        if self.fusion != enabled {
+            self.fusion = enabled;
+            self.clear_cache();
+        }
+    }
+    pub fn matrix_fusion(&self) -> bool {
+        self.fusion
     }
     pub fn cache_stats(&self) -> WideCacheStats {
         self.stats
@@ -869,11 +792,11 @@ impl WideEngine {
         }
         let source_desc = source.as_ref().map(|(_, d)| d.clone());
         let plan = Arc::new(crate::wide_plan::build(
-            &self.companion,
             source.as_ref().map(|(p, d)| (p, d)),
             (&destination, &destination_desc),
             r.intent,
             r.black_point_compensation,
+            self.fusion,
             cancel,
         )?);
         canceled(cancel)?;
@@ -928,46 +851,30 @@ impl WideEngine {
                 return Err(WideError::ChannelRange);
             }
         }
-        let mut output = Vec::with_capacity(count * out_ch);
+        let mut output = vec![0.0f32; count * out_ch];
         let mut clip = ClipReport {
             method: plan.clip_method(),
             ..Default::default()
         };
+        let lab = source_desc.is_none();
+        let clip_channels = if clip.method == ClipMethod::LinearDevice { out_ch } else { 0 };
         let mut hasher = Sha256::new();
-        for chunk in r.pixels.chunks(CHUNK_PIXELS * in_ch) {
+        let mut bytes = Vec::with_capacity(CHUNK_PIXELS * out_ch * 4);
+        for (px_chunk, out_chunk) in r.pixels.chunks(CHUNK_PIXELS * in_ch).zip(output.chunks_mut(CHUNK_PIXELS * out_ch)) {
             canceled(cancel)?;
-            let n = chunk.len() / in_ch;
-            let mut xyz = vec![0.0f32; n * 3];
-            match &plan.to_pcs {
-                Some(to_pcs) => to_pcs
-                    .transform(chunk, &mut xyz)
-                    .map_err(|_| WideError::EngineFailure)?,
-                None => {
-                    for (lab, out) in chunk.chunks_exact(3).zip(xyz.chunks_exact_mut(3)) {
-                        let v = crate::bpc::lab_to_xyz(
-                            f64::from(lab[0]),
-                            f64::from(lab[1]),
-                            f64::from(lab[2]),
-                        );
-                        for ((o, c), white) in out.iter_mut().zip(v).zip(crate::bpc::D50) {
-                            *o = (c / white) as f32;
-                        }
-                    }
+            for (px, out) in px_chunk.chunks_exact(in_ch).zip(out_chunk.chunks_exact_mut(out_ch)) {
+                if let Some(lin) = plan.pixel(px, lab, out) {
+                    Plan::scan_clip(lin, clip_channels, &mut clip);
                 }
             }
-            plan.map.apply(&mut xyz);
-            plan.scan_clip(&xyz, &mut clip);
-            let mut out = vec![0.0f32; n * out_ch];
-            plan.from_pcs
-                .transform(&xyz, &mut out)
-                .map_err(|_| WideError::EngineFailure)?;
-            if out.iter().any(|v| !v.is_finite()) {
+            if out_chunk.iter().any(|v| !v.is_finite()) {
                 return Err(WideError::NonfiniteOutput);
             }
-            for v in &out {
-                hasher.update(v.to_le_bytes());
+            bytes.clear();
+            for v in out_chunk.iter() {
+                bytes.extend_from_slice(&v.to_le_bytes());
             }
-            output.extend_from_slice(&out);
+            hasher.update(&bytes);
         }
         canceled(cancel)?;
         let (source_profile_id, source_sha256) = match r.source {
@@ -985,8 +892,8 @@ impl WideEngine {
             destination_sha256: r.destination.expected_sha256,
             destination_kind: destination_desc.kind,
             destination_space: destination_desc.device,
-            engine_name: ENGINE_NAME,
-            engine_version: ENGINE_VERSION,
+            engine_name: WIDE_ENGINE_NAME,
+            engine_version: WIDE_ENGINE_VERSION,
             engine_build: engine_build(),
             intent: r.intent,
             options: EvaluationOptions {
@@ -1091,18 +998,6 @@ impl crate::Prism {
     }
 }
 
-pub(crate) fn intent_table_check(
-    intent: Intent,
-    source: Option<&WideProfileDescriptor>,
-    destination: &WideProfileDescriptor,
-) -> Result<(), WideError> {
-    if source.is_some_and(|s| !s.device_to_pcs.has(intent)) || !destination.pcs_to_device.has(intent)
-    {
-        return Err(WideError::MissingIntentTable);
-    }
-    Ok(())
-}
-
 /// Same descriptor for models, the human manual and Argus adapters; describes the wide path only
 /// (`DESCRIPTOR` keeps describing the legacy matrix-only path).
-pub const WIDE_DESCRIPTOR: &str = r##"{"module":"STUDIO-MODULE-PRISM","path":"wide","descriptor_version":1,"api":"WideEngine::new(actor, cache_entries); inspect_profile(ProfileInput, &CancellationToken) -> WideProfileDescriptor; transform(&WideTransformRequest, &CancellationToken, &mut dyn SinkPort) -> WideTransformResult | WideFailure. Prism::inspect_wide_profile is the same admission. Legacy Prism, ColorEngine and AdmittedPrism are unchanged","inputs":{"source":"WideSource::Profile(ProfileInput) with interleaved device pixels (Gray 1, RGB 3, CMYK 4 channels, 0..1, CMYK 1.0 = full ink) or WideSource::Lab (PCS Lab D50, L 0..100, a/b -128..128, 3 channels, no profile)","destination":"ProfileInput; Gray, RGB or CMYK device","intent":"relative_colorimetric | perceptual | saturation | absolute_colorimetric","black_point_compensation":"independent boolean; ignored for absolute colorimetric","pixels_per_request":2097152,"profile_bytes":2097152},"profiles":{"families":"ICC v2/v4 RGB matrix/TRC (para or curv), Gray kTRC, mAB/mBA multi-dimensional, mft1/mft2 legacy tables; XYZ or Lab PCS; classes scnr, mntr, prtr, spac","refused":"typed: version other than 2 or 4, link/abst/nmcl classes, device spaces other than Gray/RGB/CMYK, PCS other than XYZ/Lab, D2B/B2D multi-process tags, tags of unsupported type, CMYK without tables, missing intent table, absolute without wtpt, singular matrix, malformed framing","intent_tables":"perceptual A2B0/B2A0, relative and absolute A2B1/B2A1, saturation A2B2/B2A2; matrix and Gray profiles serve every intent; a missing table is refused (MissingIntentTable), never silently substituted"},"model":{"legs":"source -> PCS companion, Prism PCS stage, PCS companion -> destination, each a moxcms 0.9.1 f32 transform (features extended_range, lut, options; no SIMD feature); the companion is a version-2.1 linear matrix profile with rgb = XYZ/D50 so no leg can apply moxcms's own black-point scaling","interpolation":"tetrahedral with 65536-bin weights (the moxcms default quantises float LUT inputs to 256 bins)","bpc":"ISO 18619 per bpc.rs: source/destination black L* (darkest vertex, CMYK B2A local black, round-trip ramp for table destinations), XYZ' = scale*XYZ + (1-scale)*D50 with scale=(1-Yd)/(1-Ys); one application; receipt names the rule and whether moxcms's own scaling was suppressed","absolute":"PCS XYZ scaled by wtpt_src / wtpt_dst (Lab source = D50); BPC ignored","clip":"matrix/TRC destinations: linear values outside 0..1 counted exactly (tolerance 0.001), output left unclamped; table destinations: method unavailable, stated in the receipt","cache":"plans keyed by (source sha256, destination sha256, intent, bpc flag) within one engine; a hit re-proves id, size and sha256 and parses nothing (WideCacheStats.parses); capacity 1..8","determinism":"scalar arithmetic; receipt carries engine name/version/build (simd=false, fma_contraction, interpolation, weights) and output_sha256 over the f32 bits; build with fma/neon target features is flagged"},"output":"interleaved destination device values as f32 (unclamped for matrix/TRC destinations) plus WideReceipt (source/destination ids and hashes, kinds, spaces, engine build, bpc, absolute, clip, cache_hit, revision, correlation_id, pixel_count, output_sha256) and the Observe delivery receipt","recovery":"unsupported_*: choose a supported profile; missing_intent_table: pick an intent the profile carries; missing_media_white: use another intent or a profile with wtpt; channel_count/channel_range/nonfinite_channel: fix the pixel buffer; pixel_limit: split into requests of at most 2097152 pixels; cache_full: clear_cache or use a larger engine; revision_mismatch/context_mismatch: reload; canceled: nothing was produced; delivery_failed: reconcile through the sink owner before retry","privacy":"profile bytes, pixels and ids never enter telemetry; the Observe frame carries only the outcome","not_in_scope":["OCIO","device-link and named-colour profiles","D2B/B2D multi-process elements","gamut check for table destinations","ink limit and black preservation","Lab as a device profile","caller memory-ledger admission of the wide path (bounded by profile size, pixel limit and cache capacity)"],"manual_route":"same descriptor","argus_route":"same descriptor plus WideReceipt, cache_stats and diagnostic_state"}"##;
+pub const WIDE_DESCRIPTOR: &str = r##"{"module":"STUDIO-MODULE-PRISM","path":"wide","descriptor_version":1,"api":"WideEngine::new(actor, cache_entries); inspect_profile(ProfileInput, &CancellationToken) -> WideProfileDescriptor; transform(&WideTransformRequest, &CancellationToken, &mut dyn SinkPort) -> WideTransformResult | WideFailure. Prism::inspect_wide_profile is the same admission. Legacy Prism, ColorEngine and AdmittedPrism are unchanged","inputs":{"source":"WideSource::Profile(ProfileInput) with interleaved device pixels (Gray 1, RGB 3, CMYK 4 channels, 0..1, CMYK 1.0 = full ink) or WideSource::Lab (PCS Lab D50, L 0..100, a/b -128..128, 3 channels, no profile)","destination":"ProfileInput; Gray, RGB or CMYK device","intent":"relative_colorimetric | perceptual | saturation | absolute_colorimetric","black_point_compensation":"independent boolean; ignored for absolute colorimetric","pixels_per_request":2097152,"profile_bytes":2097152},"profiles":{"families":"ICC v2/v4 RGB matrix/TRC (para or curv), Gray kTRC, mAB/mBA multi-dimensional, mft1/mft2 legacy tables; XYZ or Lab PCS; classes scnr, mntr, prtr, spac","refused":"typed: version other than 2 or 4, link/abst/nmcl classes, device spaces other than Gray/RGB/CMYK, PCS other than XYZ/Lab, D2B/B2D multi-process tags, tags of unsupported type, CMYK without tables, missing intent table, absolute without wtpt, singular matrix, malformed framing","intent_tables":"ICC.1:2022 8.10.2 precedence: the intent's table (perceptual A2B0/B2A0, relative and absolute A2B1/B2A1, saturation A2B2/B2A2), else table 0 (A2B0/B2A0), else matrix/TRC; MissingIntentTable only when none exists; WideProfileDescriptor.device_to_pcs/pcs_to_device show which tables exist"},"model":{"stages":"Prism-evaluated source stage (device -> PCS XYZ/D50, f64, unclamped), Prism PCS stage, Prism-evaluated destination stage; moxcms 0.9.1 only parses (no moxcms transform, so its own black-point scaling never runs); curves: curv identity/gamma/table (linear interpolation), para types 0-4; mft1/mft2 matrix + input tables + CLUT + output tables; mAB A/CLUT/M/matrix+offset/B, mBA reverse; table curves and CLUT inputs clamp to 0..1, parametric curves unbounded (HDR PCS above 1 kept); destination matrix/Gray curves inverted exactly and extended sign-preserving outside 0..1","fusion":"matrix/TRC and Gray pairs: one affine 3x3 (destination inverse matrix x PCS map x source matrix) between the curves, identity curves skipped; WideEngine::set_matrix_fusion(false) keeps the staged path","interpolation":"CLUT: 1 input linear, 2 bilinear, 3 tetrahedral, 4 linear in the first input over 3D tetrahedral; exact f64 weights, no re-baked grid","bpc":"ISO 18619 per bpc.rs: source/destination black L* (darkest vertex, CMYK B2A local black, round-trip ramp for table destinations), XYZ' = scale*XYZ + (1-scale)*D50 with scale=(1-Yd)/(1-Ys); one application; receipt names the rule and whether moxcms's own scaling was suppressed","absolute":"PCS XYZ scaled by wtpt_src / wtpt_dst (Lab source = D50); BPC ignored","clip":"matrix/TRC destinations: linear values outside 0..1 counted exactly (tolerance 0.001), output left unclamped; table destinations: method unavailable, stated in the receipt","cache":"plans keyed by (source sha256, destination sha256, intent, bpc flag) within one engine; a hit re-proves id, size and sha256 and parses nothing (WideCacheStats.parses); capacity 1..8","determinism":"f64 from IEEE basic operations only (own ln/exp/pow, no libm, no fused multiply-add); receipt carries engine name/version (WIDE_ENGINE_NAME/WIDE_ENGINE_VERSION) and build (simd=false, fma_contraction=false, interpolation, weights=exact_f64) and output_sha256 over the f32 bits"},"output":"interleaved destination device values as f32 (unclamped for matrix/TRC destinations) plus WideReceipt (source/destination ids and hashes, kinds, spaces, engine build, bpc, absolute, clip, cache_hit, revision, correlation_id, pixel_count, output_sha256) and the Observe delivery receipt","recovery":"unsupported_*: choose a supported profile; missing_intent_table: the profile has neither the intent's table, table 0 nor matrix/TRC tags, choose another profile; missing_media_white: use another intent or a profile with wtpt; channel_count/channel_range/nonfinite_channel: fix the pixel buffer; pixel_limit: split into requests of at most 2097152 pixels; cache_full: clear_cache or use a larger engine; revision_mismatch/context_mismatch: reload; canceled: nothing was produced; delivery_failed: reconcile through the sink owner before retry","privacy":"profile bytes, pixels and ids never enter telemetry; the Observe frame carries only the outcome","not_in_scope":["OCIO","device-link and named-colour profiles","D2B/B2D multi-process elements","gamut check for table destinations","ink limit and black preservation","Lab as a device profile","caller memory-ledger admission of the wide path (bounded by profile size, pixel limit and cache capacity)"],"manual_route":"same descriptor","argus_route":"same descriptor plus WideReceipt, cache_stats and diagnostic_state"}"##;
