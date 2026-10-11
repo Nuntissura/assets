@@ -687,6 +687,39 @@ fn chunk_boundary_equals_independent_reference() {
             assert_eq!(renderer.live_scratch_bytes(), 0);
         }
 
+        // Parallel chunks: same bytes, same row-major sink order, charge grows with the workers.
+        let sequential_rects = {
+            let mut sink = Collect::new(extent);
+            run(
+                &Renderer::new(2).unwrap(),
+                &p,
+                Exactness::Approximate,
+                &sources,
+                &mut sink,
+            )
+            .unwrap();
+            sink.rects
+        };
+        assert_eq!(sequential_rects.len(), 6);
+        for threads in [2_usize, 3, 8] {
+            let renderer = Renderer::with_threads(2, threads).unwrap();
+            let mut sink = Collect::new(extent);
+            let receipt = run(&renderer, &p, Exactness::Approximate, &sources, &mut sink).unwrap();
+            assert_eq!(receipt.chunks, 6, "{threads} threads");
+            assert_eq!(sink.colour, want_colour, "colour plane, {threads} threads");
+            assert_eq!(sink.alpha, want_alpha, "alpha plane, {threads} threads");
+            assert_eq!(
+                sink.rects, sequential_rects,
+                "row-major delivery, {threads} threads"
+            );
+            // 2x2 chunks, one isolated-group level, workers = min(threads, 6 chunks).
+            assert_eq!(
+                Some(receipt.peak_working_bytes),
+                Renderer::scratch_bytes(4, 1, threads.min(6) as u64)
+            );
+            assert_eq!(renderer.live_scratch_bytes(), 0);
+        }
+
         // Pigment canonical tile through its own adapter (`ResolvedTile::planes`).
         let px_colour: Vec<u8> = [
             [0.5_f32, 0.25, 0.125],
@@ -895,6 +928,51 @@ fn sink_error_cancel_releases_bytes() {
         assert_eq!(deep.live_scratch_bytes(), 0);
         assert_eq!(sink.pixel(4, 2), [0.5, 0.5, 0.5, 1.0]);
 
+        // Parallel run (4 workers over 6 chunks): the same observable behaviour, deterministically.
+        let par = Renderer::with_threads(2, 4).unwrap();
+        let mut sink = Collect::new(extent);
+        sink.fail_at = Some(1);
+        assert_eq!(
+            go(&par, &req(Exactness::Exact), &token, &mut sink).unwrap_err(),
+            BackendError::Sink(SinkError::Rejected)
+        );
+        assert_eq!(sink.calls, 2, "aborted at the failing chunk, in order");
+        assert_eq!(par.live_scratch_bytes(), 0);
+        let mid = CancellationToken::default();
+        let mut sink = Collect::new(extent);
+        sink.cancel_at = Some((1, mid.clone()));
+        assert_eq!(
+            go(&par, &req(Exactness::Exact), &mid, &mut sink).unwrap_err(),
+            BackendError::Canceled
+        );
+        assert_eq!(sink.calls, 2, "cancel observed before the next delivery");
+        assert_eq!(par.live_scratch_bytes(), 0);
+        let mut sink = Collect::new(extent);
+        assert_eq!(
+            go(&par, &late, &token, &mut sink).unwrap_err(),
+            BackendError::DeadlineExceeded
+        );
+        assert_eq!(sink.calls, 0);
+        // 4 workers x 4 px x 32 B + 2*4 in-flight chunks x 4 px x 16 B = 1024.
+        let mut small = req(Exactness::Exact);
+        small.max_working_bytes = 1023;
+        let mut sink = Collect::new(extent);
+        assert_eq!(
+            go(&par, &small, &token, &mut sink).unwrap_err(),
+            BackendError::BudgetExceeded {
+                requested: 1024,
+                limit: 1023
+            }
+        );
+        assert_eq!((sink.calls, par.live_scratch_bytes()), (0, 0));
+        assert_eq!(
+            Renderer::with_threads(2, 0).err(),
+            Some(RenderError::InvalidConfig("threads"))
+        );
+        assert_eq!(
+            Renderer::with_threads(2, MAX_THREADS + 1).err(),
+            Some(RenderError::InvalidConfig("threads"))
+        );
         assert_eq!(
             Renderer::new(0).err(),
             Some(RenderError::InvalidConfig("chunk"))
@@ -1500,6 +1578,7 @@ fn receipt_binds_revision_profile_and_observe() {
         );
         assert_eq!(descriptor["limits"]["path_elements"], MAX_PATH_ELEMENTS);
         assert_eq!(descriptor["limits"]["chunk_side_max"], MAX_CHUNK_SIDE);
+        assert_eq!(descriptor["limits"]["threads_max"], MAX_THREADS);
         assert_eq!(
             descriptor["limits"]["default_chunk_side"],
             DEFAULT_CHUNK_SIDE

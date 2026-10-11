@@ -18,13 +18,16 @@ use hsk_studio_pigment::render_plan::{
     admit,
 };
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 pub const RENDERER_NAME: &str = "hsk-studio-render-cpu";
 pub const RENDERER_VERSION: &str = "0.1";
 pub use hsk_studio_nib::MAX_PATH_ELEMENTS;
 pub const MAX_CHUNK_SIDE: u32 = 4096;
+pub const MAX_THREADS: usize = 64;
 pub const DEFAULT_CHUNK_SIDE: u32 = 64;
 /// Scratch charged per chunk pixel: 16 working (RGBA f32) + 12 colour out + 4 alpha out.
 pub const SCRATCH_BYTES_PER_PIXEL: u64 = 32;
@@ -125,6 +128,7 @@ pub fn blend_supported(mode: StudioBlendMode) -> bool {
 /// no render runs.
 pub struct Renderer {
     chunk: u32,
+    threads: usize,
     live: AtomicU64,
     peak: AtomicU64,
 }
@@ -614,22 +618,159 @@ impl Eval<'_, '_> {
     }
 }
 
+/// Per-worker buffers for one chunk: working RGBA, one buffer per level of isolated-group nesting,
+/// and the two output planes.
+struct Scratch {
+    work: Vec<[f32; 4]>,
+    spare: Vec<Vec<[f32; 4]>>,
+    colour: Vec<u8>,
+    alpha: Vec<u8>,
+}
+impl Scratch {
+    fn new(pixels: usize, depth: usize) -> Self {
+        Self {
+            work: vec![[0.0; 4]; pixels],
+            spare: (0..depth).map(|_| vec![[0.0; 4]; pixels]).collect(),
+            colour: Vec::with_capacity(pixels * 12),
+            alpha: Vec::with_capacity(pixels * 4),
+        }
+    }
+}
+
+/// Where chunk `index` (row-major) sits in the extent.
+#[derive(Clone, Copy)]
+struct Geometry {
+    extent: Rect,
+    side: i64,
+    columns: usize,
+    total: usize,
+}
+impl Geometry {
+    fn new(extent: Rect, side: u32) -> Result<Self, RenderError> {
+        let side = i64::from(side);
+        let columns = usize::try_from((i64::from(extent.width) + side - 1) / side)
+            .map_err(|_| BackendError::Overflow)?;
+        let rows = usize::try_from((i64::from(extent.height) + side - 1) / side)
+            .map_err(|_| BackendError::Overflow)?;
+        Ok(Self {
+            extent,
+            side,
+            columns,
+            total: columns.checked_mul(rows).ok_or(BackendError::Overflow)?,
+        })
+    }
+    fn rect(&self, index: usize) -> Rect {
+        let (column, row) = ((index % self.columns) as i64, (index / self.columns) as i64);
+        let (x, y) = (
+            self.extent.x + column * self.side,
+            self.extent.y + row * self.side,
+        );
+        let right = self.extent.x + i64::from(self.extent.width);
+        let bottom = self.extent.y + i64::from(self.extent.height);
+        Rect {
+            x,
+            y,
+            width: self.side.min(right - x) as u32,
+            height: self.side.min(bottom - y) as u32,
+        }
+    }
+}
+
+/// Evaluate the plan for one chunk into `scratch.colour` / `scratch.alpha`.
+fn compute_chunk(
+    eval: &Eval<'_, '_>,
+    rect: Rect,
+    scratch: &mut Scratch,
+) -> Result<(), RenderError> {
+    let prepared = eval.prepared;
+    let count = rect.width as usize * rect.height as usize;
+    scratch.work[..count].fill([0.0; 4]);
+    if matches!(prepared.nodes[prepared.root], PNode::Group { .. }) {
+        // The root backdrop is transparent, so isolated and not are the same here.
+        eval.group(
+            prepared.root,
+            rect,
+            &mut scratch.work[..count],
+            &mut scratch.spare,
+        )?;
+    } else {
+        // A leaf root is one Normal, opacity-1 layer over transparent black.
+        let root_layer = PLayer {
+            input: prepared.root,
+            mode: StudioBlendMode::Normal,
+            opacity: 1.0,
+            mask: None,
+        };
+        eval.layer(
+            &root_layer,
+            rect,
+            &mut scratch.work[..count],
+            &mut scratch.spare,
+        )?;
+    }
+    scratch.colour.clear();
+    scratch.alpha.clear();
+    for [r, g, b, a] in &scratch.work[..count] {
+        scratch.colour.extend_from_slice(&r.to_le_bytes());
+        scratch.colour.extend_from_slice(&g.to_le_bytes());
+        scratch.colour.extend_from_slice(&b.to_le_bytes());
+        scratch.alpha.extend_from_slice(&a.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// Cancel, then deadline, as observed before every chunk.
+fn between_chunks(
+    cancel: &CancellationToken,
+    deadline: Option<Instant>,
+) -> Result<(), BackendError> {
+    cancel.check().map_err(|_| BackendError::Canceled)?;
+    if deadline.is_some_and(|d| Instant::now() >= d) {
+        return Err(BackendError::DeadlineExceeded);
+    }
+    Ok(())
+}
+
+enum Message {
+    Chunk(usize, Vec<u8>, Vec<u8>),
+    Failed(RenderError),
+}
+
 impl Renderer {
     pub fn new(chunk: u32) -> Result<Self, RenderError> {
+        Self::with_threads(chunk, 1)
+    }
+    /// `threads > 1` evaluates chunks on that many scoped worker threads. Output bytes and the
+    /// sink call order (row-major chunks, cancel and deadline observed before each delivery) are
+    /// identical to the single-threaded run; only the scratch charge grows (see
+    /// [`Renderer::scratch_bytes`]).
+    pub fn with_threads(chunk: u32, threads: usize) -> Result<Self, RenderError> {
         if chunk == 0 || chunk > MAX_CHUNK_SIDE {
             return Err(RenderError::InvalidConfig("chunk"));
         }
-        Ok(Self::with_chunk(chunk))
+        if threads == 0 || threads > MAX_THREADS {
+            return Err(RenderError::InvalidConfig("threads"));
+        }
+        Ok(Self {
+            chunk,
+            threads,
+            live: AtomicU64::new(0),
+            peak: AtomicU64::new(0),
+        })
     }
     fn with_chunk(chunk: u32) -> Self {
         Self {
             chunk,
+            threads: 1,
             live: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         }
     }
     pub fn chunk(&self) -> u32 {
         self.chunk
+    }
+    pub fn threads(&self) -> usize {
+        self.threads
     }
     /// Scratch bytes currently charged; 0 when no render is running.
     pub fn live_scratch_bytes(&self) -> u64 {
@@ -638,6 +779,15 @@ impl Renderer {
     /// Highest simultaneous charge over this renderer's lifetime.
     pub fn peak_scratch_bytes(&self) -> u64 {
         self.peak.load(Ordering::Acquire)
+    }
+    /// Scratch charged for chunks of at most `pixels` pixels, isolated-group nesting `depth` and
+    /// `workers` workers: every worker owns `32 + 16 * depth` bytes per pixel, and a parallel run
+    /// also holds up to `2 * workers` finished chunks (`16` bytes per pixel) awaiting in-order
+    /// delivery.
+    pub fn scratch_bytes(pixels: u64, depth: u64, workers: u64) -> Option<u64> {
+        let per_worker = SCRATCH_BYTES_PER_PIXEL + GROUP_SCRATCH_BYTES_PER_PIXEL * depth;
+        let in_flight = if workers > 1 { 2 * workers * 16 } else { 0 };
+        pixels.checked_mul(workers.checked_mul(per_worker)?.checked_add(in_flight)?)
     }
 
     fn reserve(&self, bytes: u64, limit: u64) -> Result<ScratchLease<'_>, RenderError> {
@@ -672,69 +822,42 @@ impl Renderer {
             .map_err(|_| BackendError::Unavailable("plan_digest"))?;
 
         let extent = plan.target.extent;
-        let (extent_x1, extent_y1) = end(extent)?;
-        let side = i64::from(self.chunk);
+        end(extent)?;
+        let geometry = Geometry::new(extent, self.chunk)?;
+        let workers = self.threads.min(geometry.total);
         let max_pixels =
             u64::from(self.chunk.min(extent.width)) * u64::from(self.chunk.min(extent.height));
-        let depth = prepared.need[prepared.root] as u64;
-        let scratch_bytes = max_pixels
-            .checked_mul(SCRATCH_BYTES_PER_PIXEL + GROUP_SCRATCH_BYTES_PER_PIXEL * depth)
+        let depth = prepared.need[prepared.root];
+        let scratch_bytes = Self::scratch_bytes(max_pixels, depth as u64, workers as u64)
             .ok_or(BackendError::Overflow)?;
         let _lease = self.reserve(scratch_bytes, request.max_working_bytes)?;
-        let pixels = max_pixels as usize;
-        let mut work: Vec<[f32; 4]> = vec![[0.0; 4]; pixels];
-        let mut spare: Vec<Vec<[f32; 4]>> = (0..depth).map(|_| vec![[0.0; 4]; pixels]).collect();
-        let mut colour: Vec<u8> = Vec::with_capacity(pixels * 12);
-        let mut alpha: Vec<u8> = Vec::with_capacity(pixels * 4);
         let eval = Eval {
             prepared: &prepared,
         };
-        // A leaf root is one Normal, opacity-1 layer over transparent black.
-        let root_layer = PLayer {
-            input: prepared.root,
-            mode: StudioBlendMode::Normal,
-            opacity: 1.0,
-            mask: None,
-        };
+        let pixels = max_pixels as usize;
 
-        let mut chunks = 0_u64;
-        let mut cy = extent.y;
-        while cy < extent_y1 {
-            let mut cx = extent.x;
-            while cx < extent_x1 {
-                cancel.check().map_err(|_| BackendError::Canceled)?;
-                if request.deadline.is_some_and(|d| Instant::now() >= d) {
-                    return Err(BackendError::DeadlineExceeded.into());
-                }
-                let rect = Rect {
-                    x: cx,
-                    y: cy,
-                    width: side.min(extent_x1 - cx) as u32,
-                    height: side.min(extent_y1 - cy) as u32,
-                };
-                let count = rect.width as usize * rect.height as usize;
-                work[..count].fill([0.0; 4]);
-                if matches!(prepared.nodes[prepared.root], PNode::Group { .. }) {
-                    // The root backdrop is transparent, so isolated and not are the same here.
-                    eval.group(prepared.root, rect, &mut work[..count], &mut spare)?;
-                } else {
-                    eval.layer(&root_layer, rect, &mut work[..count], &mut spare)?;
-                }
-                colour.clear();
-                alpha.clear();
-                for [r, g, b, a] in &work[..count] {
-                    colour.extend_from_slice(&r.to_le_bytes());
-                    colour.extend_from_slice(&g.to_le_bytes());
-                    colour.extend_from_slice(&b.to_le_bytes());
-                    alpha.extend_from_slice(&a.to_le_bytes());
-                }
-                sink.accept(rect, &colour, &alpha)
+        let chunks = if workers == 1 {
+            let mut scratch = Scratch::new(pixels, depth);
+            for index in 0..geometry.total {
+                between_chunks(cancel, request.deadline)?;
+                let rect = geometry.rect(index);
+                compute_chunk(&eval, rect, &mut scratch)?;
+                sink.accept(rect, &scratch.colour, &scratch.alpha)
                     .map_err(BackendError::Sink)?;
-                chunks += 1;
-                cx += side;
             }
-            cy += side;
-        }
+            geometry.total as u64
+        } else {
+            run_parallel(
+                &eval,
+                geometry,
+                workers,
+                pixels,
+                depth,
+                request.deadline,
+                cancel,
+                sink,
+            )?
+        };
         Ok(RenderReceipt {
             plan_revision: plan.revision,
             plan_digest: digest,
@@ -747,6 +870,101 @@ impl Renderer {
             peak_working_bytes: scratch_bytes,
         })
     }
+}
+
+/// Workers claim chunk indices in increasing order and may run at most `2 * workers` chunks ahead
+/// of delivery; the calling thread reorders results and is the only one that touches `sink`, so the
+/// sink sees row-major chunks exactly as in the single-threaded run.
+#[allow(clippy::too_many_arguments)]
+fn run_parallel(
+    eval: &Eval<'_, '_>,
+    geometry: Geometry,
+    workers: usize,
+    pixels: usize,
+    depth: usize,
+    deadline: Option<Instant>,
+    cancel: &CancellationToken,
+    sink: &mut dyn TileSink,
+) -> Result<u64, RenderError> {
+    let window = 2 * workers;
+    let next = AtomicUsize::new(0);
+    let abort = AtomicBool::new(false);
+    let gate = (Mutex::new(0_usize), Condvar::new());
+    let (tx, rx) = mpsc::channel::<Message>();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let (next, abort, gate) = (&next, &abort, &gate);
+            scope.spawn(move || {
+                let mut scratch = Scratch::new(pixels, depth);
+                loop {
+                    let index = next.fetch_add(1, Ordering::AcqRel);
+                    if index >= geometry.total || abort.load(Ordering::Acquire) {
+                        return;
+                    }
+                    // Stay within the reorder window of the delivered prefix.
+                    {
+                        let (delivered, wake) = gate;
+                        let mut guard = delivered.lock().unwrap_or_else(PoisonError::into_inner);
+                        while index >= *guard + window && !abort.load(Ordering::Acquire) {
+                            guard = wake
+                                .wait_timeout(guard, Duration::from_millis(20))
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .0;
+                        }
+                    }
+                    if abort.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let outcome = between_chunks(cancel, deadline)
+                        .map_err(RenderError::from)
+                        .and_then(|()| compute_chunk(eval, geometry.rect(index), &mut scratch));
+                    let message = match outcome {
+                        Ok(()) => Message::Chunk(
+                            index,
+                            std::mem::replace(&mut scratch.colour, Vec::with_capacity(pixels * 12)),
+                            std::mem::replace(&mut scratch.alpha, Vec::with_capacity(pixels * 4)),
+                        ),
+                        Err(error) => Message::Failed(error),
+                    };
+                    let failed = matches!(message, Message::Failed(_));
+                    if tx.send(message).is_err() || failed {
+                        return;
+                    }
+                }
+            });
+        }
+        drop(tx);
+
+        let mut pending: BTreeMap<usize, (Vec<u8>, Vec<u8>)> = BTreeMap::new();
+        let mut delivered = 0_usize;
+        let result = 'deliver: loop {
+            if delivered == geometry.total {
+                break Ok(delivered as u64);
+            }
+            match rx.recv() {
+                Ok(Message::Chunk(index, colour, alpha)) => {
+                    pending.insert(index, (colour, alpha));
+                    while let Some((colour, alpha)) = pending.remove(&delivered) {
+                        if let Err(error) = between_chunks(cancel, deadline) {
+                            break 'deliver Err(error.into());
+                        }
+                        if let Err(error) = sink.accept(geometry.rect(delivered), &colour, &alpha) {
+                            break 'deliver Err(BackendError::Sink(error).into());
+                        }
+                        delivered += 1;
+                        *gate.0.lock().unwrap_or_else(PoisonError::into_inner) = delivered;
+                        gate.1.notify_all();
+                    }
+                }
+                Ok(Message::Failed(error)) => break Err(error),
+                Err(_) => break Err(BackendError::Unavailable("worker_lost").into()),
+            }
+        };
+        abort.store(true, Ordering::Release);
+        gate.1.notify_all();
+        result
+    })
 }
 
 fn identity() -> BackendIdentity {
