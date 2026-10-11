@@ -470,8 +470,8 @@ fn mxf_op1a_variable_index_matches_ffprobe_positions_and_decodes_order() {
 }
 
 #[test]
-fn mxf_opatom_constant_size_clip_wrapped_offsets_match_ffprobe() {
-    bounded_case("mxf_opatom_constant_size", || {
+fn mxf_constant_size_clip_wrapped_offsets_match_ffprobe_and_multi_partition_synthetic_file() {
+    bounded_case("mxf_constant_size", || {
         let index = index_of(ATOM).unwrap();
         assert_eq!(index.operational_pattern[12], 0x10, "OP-Atom label");
         let kinds: Vec<_> = index
@@ -594,6 +594,151 @@ fn mxf_opatom_constant_size_clip_wrapped_offsets_match_ffprobe() {
         )
         .unwrap_err();
         assert!(matches!(err, ReelError::CodecUnavailable { .. }));
+
+        // Synthetic frame wrapped file, constant edit unit size, essence split over two body partitions
+        // of the same BodySID (BodyOffset 360 for the second) and one footer index segment, laid out
+        // from ST 377-1 7.1 / 11.2.3. No ffprobe oracle: the expected offsets are computed from the
+        // layout below, which this test builds independently of the reader.
+        const UNIT: usize = 100;
+        let ber = |n: usize| vec![0x83, (n >> 16) as u8, (n >> 8) as u8, n as u8];
+        let klv = |key: [u8; 16], value: &[u8]| {
+            let mut out = key.to_vec();
+            out.extend(ber(value.len()));
+            out.extend_from_slice(value);
+            out
+        };
+        let pack_key = |kind: u8| [6u8, 14, 43, 52, 2, 5, 1, 1, 13, 1, 2, 1, 1, kind, 4, 0];
+        let pack = |kind: u8,
+                    this: u64,
+                    prev: u64,
+                    footer: u64,
+                    ibc: u64,
+                    isid: u32,
+                    boff: u64,
+                    bsid: u32| {
+            let mut v = Vec::new();
+            v.extend_from_slice(&1u16.to_be_bytes());
+            v.extend_from_slice(&3u16.to_be_bytes());
+            v.extend_from_slice(&1u32.to_be_bytes()); // KAG: no grid
+            for n in [this, prev, footer, 0, ibc] {
+                v.extend_from_slice(&n.to_be_bytes());
+            }
+            v.extend_from_slice(&isid.to_be_bytes());
+            v.extend_from_slice(&boff.to_be_bytes());
+            v.extend_from_slice(&bsid.to_be_bytes());
+            v.extend_from_slice(&[6, 14, 43, 52, 4, 1, 1, 1, 13, 1, 2, 1, 1, 1, 9, 0]);
+            v.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 16]); // empty essence container batch
+            klv(pack_key(kind), &v)
+        };
+        let element = |n: usize| {
+            klv(
+                [6, 14, 43, 52, 1, 2, 1, 1, 13, 1, 3, 1, 0x15, 1, 5, 0],
+                &[n as u8; UNIT],
+            )
+        };
+        let unit_bytes = element(0).len(); // 16 + 4 + 100
+        let pack_len = pack(2, 0, 0, 0, 0, 0, 0, 0).len();
+        let b1 = pack_len;
+        let b2 = b1 + pack_len + 3 * unit_bytes;
+        let footer = b2 + pack_len + 2 * unit_bytes;
+        let mut index_set = Vec::new();
+        for (tag, value) in [
+            (
+                0x3F0Bu16,
+                [25u32.to_be_bytes(), 1u32.to_be_bytes()].concat(),
+            ),
+            (0x3F0C, 0u64.to_be_bytes().to_vec()),
+            (0x3F0D, 5u64.to_be_bytes().to_vec()),
+            (0x3F05, (unit_bytes as u32).to_be_bytes().to_vec()),
+            (0x3F06, 2u32.to_be_bytes().to_vec()),
+            (0x3F07, 1u32.to_be_bytes().to_vec()),
+            (0x3F08, vec![0]),
+        ] {
+            index_set.extend_from_slice(&tag.to_be_bytes());
+            index_set.extend_from_slice(&(value.len() as u16).to_be_bytes());
+            index_set.extend_from_slice(&value);
+        }
+        let index_klv = klv(
+            [6, 14, 43, 52, 2, 0x53, 1, 1, 13, 1, 2, 1, 1, 0x10, 1, 0],
+            &index_set,
+        );
+        let mut file = pack(2, 0, 0, footer as u64, 0, 0, 0, 0);
+        file.extend(pack(3, b1 as u64, 0, footer as u64, 0, 0, 0, 1));
+        (0..3).for_each(|n| file.extend(element(n)));
+        file.extend(pack(
+            3,
+            b2 as u64,
+            b1 as u64,
+            footer as u64,
+            0,
+            0,
+            3 * unit_bytes as u64,
+            1,
+        ));
+        (3..5).for_each(|n| file.extend(element(n)));
+        file.extend(pack(
+            4,
+            footer as u64,
+            b2 as u64,
+            footer as u64,
+            index_klv.len() as u64,
+            2,
+            0,
+            0,
+        ));
+        file.extend(index_klv);
+        let synthetic = index_of(&file).unwrap();
+        assert_eq!(synthetic.partitions.len(), 4);
+        assert!(!synthetic.truncated_tail && !synthetic.header_metadata_complete);
+        assert_eq!(
+            synthetic.wrapping_of(synthetic.index_table(2).unwrap()),
+            MxfWrapping::Frame
+        );
+        assert_eq!(synthetic.index_table(2).unwrap().indexed_units(), Some(5));
+        for n in 0..5u64 {
+            // Units 0-2 sit in the first body partition, 3-4 in the second, `unit_bytes` apart.
+            let (partition, within) = if n < 3 { (b1, n) } else { (b2, n - 3) };
+            let expected = (partition + pack_len) as u64 + within * unit_bytes as u64;
+            let unit = synthetic.locate(2, n).unwrap();
+            assert_eq!(
+                (unit.file_offset, unit.stream_offset),
+                (expected, n * unit_bytes as u64),
+                "unit {n}"
+            );
+            let el = synthetic
+                .edit_unit_element(
+                    &mut Cursor::new(file.clone()),
+                    &unit,
+                    0x1501_0500,
+                    &Limits::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                (el.key_offset, el.value_len),
+                (expected, UNIT as u64),
+                "unit {n}"
+            );
+            assert_eq!(klv_value(&file, expected), &[n as u8; UNIT][..]);
+        }
+        assert!(matches!(
+            synthetic.locate(2, 5),
+            Err(ReelError::OutOfRange { .. })
+        ));
+        // The scan fallback (no footer pointer in any pack) finds the same four partitions.
+        let mut scanned = file.clone();
+        for at in [20 + 24, b1 + 20 + 24, b2 + 20 + 24, footer + 20 + 24] {
+            scanned[at..at + 8].copy_from_slice(&[0u8; 8]);
+        }
+        let again = index_of(&scanned).unwrap();
+        assert_eq!(
+            again
+                .partitions
+                .iter()
+                .map(|p| p.offset)
+                .collect::<Vec<_>>(),
+            [0, b1 as u64, b2 as u64, footer as u64]
+        );
+        assert_eq!(again.index_tables, synthetic.index_tables);
     });
 }
 
