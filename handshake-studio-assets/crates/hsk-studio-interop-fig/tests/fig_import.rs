@@ -141,6 +141,22 @@ fn canvas(prelude: &[u8; 8], version: u32, nodes: &[(u32, u32, u32, &str)]) -> V
     canvas_with_message(prelude, version, &message_bytes(nodes))
 }
 
+fn put_u16(bytes: &mut [u8], at: usize, v: u16) {
+    bytes[at..at + 2].copy_from_slice(&v.to_le_bytes());
+}
+fn put_u32(bytes: &mut [u8], at: usize, v: u32) {
+    bytes[at..at + 4].copy_from_slice(&v.to_le_bytes());
+}
+/// Offsets of every occurrence of a 4-byte ZIP signature.
+fn find_all(bytes: &[u8], sig: [u8; 4]) -> Vec<usize> {
+    bytes
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == sig)
+        .map(|(i, _)| i)
+        .collect()
+}
+
 fn crc32(data: &[u8]) -> u32 {
     !data.iter().fold(!0u32, |mut c, b| {
         c ^= u32::from(*b);
@@ -473,6 +489,81 @@ fn unsupported_version_duplicate_key_bomb_cancel() {
     let at = crc_bad.windows(6).position(|w| w == b"canvas").unwrap() + 20; // inside stored data
     crc_bad[at] ^= 0xff;
     assert_eq!(code(&crc_bad), "zip_invalid");
+
+    // Local headers must agree with the central directory (a reader that trusts the local header
+    // would otherwise see a different entry): each mismatch is refused with its own typed reason.
+    let base = zip(&[
+        ("canvas.fig", &canvas_ok, false),
+        ("meta.json", br#"{"a":1}"#, true),
+    ]);
+    let locals = find_all(&base, [0x50, 0x4b, 3, 4]);
+    assert_eq!(locals.len(), 2, "fixture has exactly two local headers");
+    let patched = |entry: usize, edit: &dyn Fn(&mut [u8], usize)| {
+        let mut bytes = base.clone();
+        edit(&mut bytes, locals[entry]);
+        open_fig(&bytes, &limits, &live)
+    };
+    let zip_err = FigError::Zip;
+    // Local header fields: flags +6, method +8, crc +14, compressed +18, uncompressed +22.
+    assert_eq!(
+        patched(0, &|b, at| put_u16(b, at + 8, 8)).unwrap_err(),
+        zip_err("local_method_mismatch")
+    );
+    assert_eq!(
+        patched(1, &|b, at| put_u16(b, at + 8, 0)).unwrap_err(),
+        zip_err("local_method_mismatch")
+    );
+    assert_eq!(
+        patched(0, &|b, at| b[at + 14] ^= 1).unwrap_err(),
+        zip_err("local_header_mismatch")
+    );
+    assert_eq!(
+        patched(0, &|b, at| b[at + 18] ^= 1).unwrap_err(),
+        zip_err("local_header_mismatch")
+    );
+    assert_eq!(
+        patched(1, &|b, at| b[at + 22] ^= 1).unwrap_err(),
+        zip_err("local_header_mismatch")
+    );
+    assert_eq!(
+        patched(0, &|b, at| put_u16(b, at + 6, 1)).unwrap_err(),
+        zip_err("encrypted")
+    );
+    // A data descriptor (flag bit 3) may defer CRC and sizes: all-zero local fields are accepted and
+    // the central values are used; a descriptor flag with wrong non-zero values is still a mismatch.
+    let defer = |b: &mut [u8], at: usize| {
+        put_u16(b, at + 6, 8);
+        b[at + 14..at + 26].fill(0);
+    };
+    let reference = open_fig(&base, &limits, &live).unwrap();
+    assert_eq!(patched(0, &defer).unwrap().parts, reference.parts);
+    assert_eq!(
+        patched(1, &|b, at| {
+            put_u16(b, at + 6, 8);
+            b[at + 14] ^= 1;
+        })
+        .unwrap_err(),
+        zip_err("local_header_mismatch")
+    );
+
+    // u32::MAX sizes and offsets are typed refusals, never wrapped arithmetic.
+    let centrals = find_all(&base, [0x50, 0x4b, 1, 2]);
+    assert_eq!(centrals.len(), 2);
+    for field in [20, 24, 42] {
+        let mut bytes = base.clone();
+        put_u32(&mut bytes, centrals[0] + field, u32::MAX);
+        assert_eq!(
+            open_fig(&bytes, &limits, &live).unwrap_err(),
+            zip_err("zip64_unsupported"),
+            "central field +{field} = u32::MAX"
+        );
+    }
+    let mut chunk_max = canvas_ok.clone();
+    put_u32(&mut chunk_max, 12, u32::MAX);
+    assert_eq!(
+        code(&zip(&[("canvas.fig", &chunk_max, false)])),
+        "chunk_overflow"
+    );
     assert_eq!(code(&zip(&[("meta.json", b"{}", false)])), "not_fig");
 
     // Kiwi decode failures never yield a partial census: a message the schema cannot walk (unknown
@@ -630,13 +721,20 @@ fn actual_fig_instance_variable_prototype_edit_reopen() {
     // When the operator drops Figma-authored files at tests/fixtures/*.fig, they must open, their
     // real version must be recorded in version_map.rs, and editability stays NOT_PROVEN.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in read
+    let fixtures: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "fig"))
-    {
+        .collect();
+    if fixtures.is_empty() {
+        // Not a pass of the real-file proof: counted as NOT_PROVEN (V4-03). Only the blocked-decoder
+        // assertion above ran.
+        eprintln!(
+            "NOT_PROVEN: actual_fig_instance_variable_prototype_edit_reopen reason=no_figma_authored_fixture (tests/fixtures/*.fig absent; D17); original-produced semantic/render proof missing, editable status NOT_PROVEN"
+        );
+    }
+    for entry in fixtures {
         let bytes = std::fs::read(entry.path()).unwrap();
         let c = open_fig(&bytes, &Limits::default(), &CancellationToken::default())
             .unwrap_or_else(|e| panic!("real fixture {:?} must open: {e}", entry.path()));

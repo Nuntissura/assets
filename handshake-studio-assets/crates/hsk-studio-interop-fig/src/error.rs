@@ -1,4 +1,4 @@
-//! Typed failures of .fig interchange. A failure never carries project text, part names or ids.
+//! Typed failures of .fig interchange. A failure carries only static codes: no project text, part names or ids.
 use crate::container::FigKind;
 use hsk_studio_observe::FailureCode;
 use std::fmt;
@@ -29,7 +29,7 @@ pub enum FigError {
     SchemaInvalid(&'static str),
     /// The Kiwi message chunk does not match the schema (`what` names the check).
     MessageInvalid(&'static str),
-    /// A decode stage is not available in this build or for this input (never a partial census).
+    /// A decode stage is not available in this build or for this input (no census exists for a partly decoded message).
     DecoderUnavailable { stage: &'static str },
     /// Editable decoding is blocked until original-produced semantic/render proof exists (STU-IO-186).
     EditableDecoderBlocked { reason: &'static str },

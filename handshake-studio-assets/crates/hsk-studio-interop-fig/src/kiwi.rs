@@ -7,7 +7,9 @@
 //! repeated (varuint field value, payload) terminated by 0; struct = fields in order; enum = varuint.
 //!
 //! Nothing is guessed: an unknown field id, a truncated value or a bound hit is a typed error, and a
-//! census is produced only when the entire message decodes (never partial).
+//! census is produced only when the entire message decodes (test: unsupported_version_duplicate_key_bomb_cancel
+//! asserts no census for an unknown field id and a truncated message).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::container::{CANVAS_PART, FigContainer, Limits};
 use crate::import::{
     Census, DefinitionSummary, FieldSummary, LossEntry, LossKind, SchemaSummary, SourceId,
@@ -84,7 +86,7 @@ impl<'a> Reader<'a> {
     }
     fn byte(&mut self) -> R<u8> {
         let b = *self.data.get(self.at).ok_or("truncated")?;
-        self.at += 1;
+        self.at = self.at.checked_add(1).ok_or("truncated")?;
         Ok(b)
     }
     fn skip(&mut self, n: usize) -> R<()> {
@@ -101,7 +103,7 @@ impl<'a> Reader<'a> {
             if b & 128 == 0 {
                 return Ok(value);
             }
-            shift += 7;
+            shift = shift.saturating_add(7);
             if shift >= 35 {
                 return Err("varint_too_long");
             }
@@ -109,7 +111,7 @@ impl<'a> Reader<'a> {
     }
     fn var_int(&mut self) -> R<i32> {
         let u = self.var_uint()?;
-        Ok(((u >> 1) as i32) ^ -((u & 1) as i32))
+        Ok(((u >> 1) as i32) ^ ((u & 1) as i32).wrapping_neg())
     }
     /// 64-bit varuint/varint is only skipped: 7-bit groups for 8 bytes, a full 9th byte.
     fn skip_var64(&mut self) -> R<()> {
@@ -132,7 +134,10 @@ impl<'a> Reader<'a> {
     fn skip_string(&mut self) -> R<()> {
         let rest = &self.data[self.at..];
         let n = rest.iter().position(|b| *b == 0).ok_or("truncated")?;
-        self.at += n + 1;
+        self.at = n
+            .checked_add(1)
+            .and_then(|k| self.at.checked_add(k))
+            .ok_or("truncated")?;
         Ok(())
     }
     /// NUL-terminated UTF-8 schema name, at most 1 KiB.
@@ -145,7 +150,10 @@ impl<'a> Reader<'a> {
         let s = std::str::from_utf8(&rest[..n])
             .map_err(|_| "name_encoding")?
             .to_owned();
-        self.at += n + 1;
+        self.at = n
+            .checked_add(1)
+            .and_then(|k| self.at.checked_add(k))
+            .ok_or("truncated")?;
         Ok(s)
     }
 }
@@ -283,7 +291,7 @@ struct Work<'a> {
 
 impl Work<'_> {
     fn tick(&mut self) -> Result<()> {
-        self.values += 1;
+        self.values = self.values.saturating_add(1);
         if self.values > self.max {
             return Err(FigError::BudgetExceeded("values"));
         }
@@ -333,13 +341,13 @@ impl Walker<'_> {
                         .map_err(FigError::MessageInvalid),
                     Kind::Struct => {
                         for f in &d.fields {
-                            self.skip_field(f, depth + 1)?;
+                            self.skip_field(f, depth.saturating_add(1))?;
                         }
                         Ok(())
                     }
                     Kind::Message => {
                         while let Some(f) = self.next_field(d)? {
-                            self.skip_field(f, depth + 1)?;
+                            self.skip_field(f, depth.saturating_add(1))?;
                         }
                         Ok(())
                     }
@@ -382,7 +390,7 @@ fn find_field<'d>(d: &'d Def, name: &str) -> Option<&'d Field> {
 /// Walks the whole message once and counts `nodeChanges` elements by their `type` enum name; ids are
 /// the `guid` struct's `sessionID`/`localID` verbatim. Root ids are the nodes whose type name is
 /// `DOCUMENT`. Field names are the community-documented ones (UNVERIFIED against a real file): when
-/// the schema lacks them the result is a typed `MessageInvalid`, never a guess.
+/// the schema lacks them the result is a typed `MessageInvalid`.
 pub(crate) fn census(
     schema: &Schema,
     message: &[u8],
@@ -480,7 +488,8 @@ pub(crate) fn census(
             {
                 roots.push(id);
             }
-            *histogram.entry(name).or_insert(0) += 1;
+            let slot = histogram.entry(name).or_insert(0u32);
+            *slot = slot.saturating_add(1);
         }
     }
     if w.r.at != message.len() {
@@ -540,7 +549,7 @@ fn zstd_decode(data: &[u8], cap: usize, cancel: &CancellationToken) -> Result<Ve
         if n == 0 {
             return Ok(out);
         }
-        if out.len() + n > cap {
+        if out.len().saturating_add(n) > cap {
             return Err(FigError::BudgetExceeded("message_bytes"));
         }
         out.extend_from_slice(&buf[..n]);
@@ -602,7 +611,7 @@ pub(crate) fn decode_canvas(
         });
     };
     let summary = schema.summary(schema_index, container.chunks[schema_index].sha256);
-    let message_index = schema_index + 1;
+    let message_index = schema_index.saturating_add(1);
     for c in &container.chunks {
         let code = if c.index == schema_index {
             "schema_chunk_summarized"

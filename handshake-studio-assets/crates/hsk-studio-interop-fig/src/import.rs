@@ -37,7 +37,7 @@ pub struct LossEntry {
     pub code: &'static str,
 }
 
-/// Source-qualified node id, preserved verbatim from the file and never reminted: `"session:local"`.
+/// Source-qualified node id, preserved verbatim from the file, not reminted (test: fig_container_bounded_identity_loss): `"session:local"`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceId {
     pub session: u32,
@@ -50,7 +50,8 @@ impl std::fmt::Display for SourceId {
     }
 }
 
-/// A fully decoded census of the Kiwi message (never partial). Not an editable document.
+/// A census of a fully decoded Kiwi message (no census exists for a partly decoded one; test:
+/// unsupported_version_duplicate_key_bomb_cancel). Not an editable document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Census {
     pub node_type_histogram: std::collections::BTreeMap<String, u32>,

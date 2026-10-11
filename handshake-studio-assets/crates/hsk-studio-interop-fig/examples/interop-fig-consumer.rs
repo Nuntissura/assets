@@ -2,7 +2,7 @@
 //! container (bounded, opaque preservation) and prints identity, parts, chunks, the Kiwi schema
 //! summary, the census and the loss list. Inspection admits the file's own (kind, version) so a
 //! newly supplied real file can be examined; that is NOT a recorded observed version. A refusal
-//! prints a stable error code on stderr and exits 2. Nothing is written. Editable support is always
+//! prints a stable error code on stderr and exits 2. Nothing is written. Editable support is reported
 //! NOT_PROVEN.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_interop_fig::{

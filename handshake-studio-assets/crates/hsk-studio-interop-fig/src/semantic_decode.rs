@@ -1,6 +1,6 @@
 //! Editable semantic decode: BLOCKED. Parser success, self-render and original-byte preservation are
 //! not editable-parity proof (STU-IO-186); the decoder stays blocked until Figma-produced local files
-//! with original semantic/render snapshots exist. SVG, PNG, tokens and API output never substitute.
+//! with original semantic/render snapshots exist. SVG, PNG, tokens and API output do not substitute (STU-IO-186).
 use crate::container::FigContainer;
 use crate::{FigError, Result};
 
@@ -16,7 +16,7 @@ impl EditableStatus {
     }
 }
 
-/// Never produces a document: always `EditableDecoderBlocked`.
+/// Produces no document: returns `EditableDecoderBlocked` (test: actual_fig_instance_variable_prototype_edit_reopen).
 pub fn decode_semantic(_container: &FigContainer) -> Result<std::convert::Infallible> {
     Err(FigError::EditableDecoderBlocked {
         reason: "NOT_PROVEN: needs original-produced semantic/render proof",

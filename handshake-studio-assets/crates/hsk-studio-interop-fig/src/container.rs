@@ -4,13 +4,15 @@
 //! (opaque preservation is the default); chunks are recorded as ranges of the canvas part.
 //!
 //! Format facts come from public community sources, not an official spec, and are UNVERIFIED against
-//! a Figma-authored file (none exists on this machine). The reader never decides what a version
-//! means: that is `version_map`.
+//! a Figma-authored file (none exists on this machine). The reader does not decide what a version
+//! means: that is `version_map` (test: unsupported_version_duplicate_key_bomb_cancel opens version 99).
 //!
 //! ZIP rules: bounded entry count, entry size, total inflated size and expansion ratio; exact and
 //! case-folded duplicate names, traversal/absolute/backslash/drive/control names refused; local
-//! headers cross-checked against the central directory; overlapping entry data refused; CRC-32
-//! verified; STORE and DEFLATE only (no ZIP64, encryption or multi-disk). Never touches the file system.
+//! headers cross-checked against the central directory (encryption flags, method, CRC and sizes; a data
+//! descriptor may defer CRC and sizes with all-zero local fields; test:
+//! unsupported_version_duplicate_key_bomb_cancel); overlapping entry data refused; CRC-32 verified; STORE and DEFLATE only (no ZIP64, encryption or multi-disk). Uses no file system access (no `std::fs` in this crate).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::{FigError, Result};
 use hsk_studio_accord::CancellationToken;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
@@ -34,7 +36,7 @@ pub fn hex(digest: &Sha256Bytes) -> String {
 }
 
 /// Product family named by the 8-byte `canvas.fig` prelude. Only the three preludes seen in public
-/// community notes are classified; anything else is `Unknown`, never guessed.
+/// community notes are classified; anything else is `Unknown` (test: legacy_bare_and_foreign_kinds).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FigKind {
     /// `fig-kiwi`
@@ -201,20 +203,20 @@ const PRELUDE_AND_VERSION: usize = 12;
 
 const fn crc_table() -> [u32; 256] {
     let mut table = [0u32; 256];
-    let mut i = 0;
+    let mut i = 0usize;
     while i < 256 {
         let mut c = i as u32;
-        let mut k = 0;
+        let mut k = 0u8;
         while k < 8 {
             c = if c & 1 != 0 {
                 0xEDB8_8320 ^ (c >> 1)
             } else {
                 c >> 1
             };
-            k += 1;
+            k = k.wrapping_add(1);
         }
         table[i] = c;
-        i += 1;
+        i = i.wrapping_add(1);
     }
     table
 }
@@ -226,17 +228,22 @@ pub(crate) fn crc32(data: &[u8]) -> u32 {
     })
 }
 
-fn take(bytes: &[u8], at: usize, len: usize) -> Result<&[u8]> {
-    at.checked_add(len)
-        .and_then(|end| bytes.get(at..end))
-        .ok_or(FigError::Zip("truncated"))
+/// `bytes[at + delta .. at + delta + len]`, every sum checked.
+fn take(bytes: &[u8], at: usize, delta: usize, len: usize) -> Result<&[u8]> {
+    let start = at.checked_add(delta);
+    let end = start.and_then(|s| s.checked_add(len));
+    match (start, end) {
+        (Some(s), Some(e)) => bytes.get(s..e),
+        _ => None,
+    }
+    .ok_or(FigError::Zip("truncated"))
 }
-fn le16(bytes: &[u8], at: usize) -> Result<u16> {
-    let s = take(bytes, at, 2)?;
+fn u16_at(bytes: &[u8], at: usize, delta: usize) -> Result<u16> {
+    let s = take(bytes, at, delta, 2)?;
     Ok(u16::from_le_bytes([s[0], s[1]]))
 }
-fn le32(bytes: &[u8], at: usize) -> Result<u32> {
-    let s = take(bytes, at, 4)?;
+fn u32_at(bytes: &[u8], at: usize, delta: usize) -> Result<u32> {
+    let s = take(bytes, at, delta, 4)?;
     Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
@@ -261,20 +268,25 @@ struct Central {
     local: usize,
 }
 
+/// End-of-central-directory record: the last position whose comment length reaches the file end.
 fn find_eocd(bytes: &[u8]) -> Result<usize> {
-    let lowest = bytes.len().saturating_sub(22 + usize::from(u16::MAX));
-    let mut pos = bytes.len() - 22;
+    let last = bytes
+        .len()
+        .checked_sub(22)
+        .ok_or(FigError::Zip("too_short"))?;
+    let lowest = last.saturating_sub(usize::from(u16::MAX));
+    let mut pos = last;
     loop {
-        if le32(bytes, pos)? == SIG_EOCD {
-            let comment = usize::from(le16(bytes, pos + 20)?);
-            if pos + 22 + comment == bytes.len() {
+        if u32_at(bytes, pos, 0)? == SIG_EOCD {
+            let comment = usize::from(u16_at(bytes, pos, 20)?);
+            if pos.checked_add(22).and_then(|p| p.checked_add(comment)) == Some(bytes.len()) {
                 return Ok(pos);
             }
         }
         if pos == lowest {
             return Err(FigError::Zip("eocd_missing"));
         }
-        pos -= 1;
+        pos = pos.checked_sub(1).ok_or(FigError::Zip("eocd_missing"))?;
     }
 }
 
@@ -288,24 +300,24 @@ fn read_zip(
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> Result<Vec<(String, Vec<u8>)>> {
-    if bytes.len() < 22 {
-        return Err(FigError::Zip("too_short"));
-    }
+    let bounds = FigError::Zip("central_directory_bounds");
     let eocd = find_eocd(bytes)?;
-    if le16(bytes, eocd + 4)? != 0 || le16(bytes, eocd + 6)? != 0 {
+    if u16_at(bytes, eocd, 4)? != 0 || u16_at(bytes, eocd, 6)? != 0 {
         return Err(FigError::Zip("multi_disk"));
     }
-    let (n_disk, n_total) = (le16(bytes, eocd + 8)?, le16(bytes, eocd + 10)?);
-    let (cd_size, cd_off) = (le32(bytes, eocd + 12)?, le32(bytes, eocd + 16)?);
+    let (n_disk, n_total) = (u16_at(bytes, eocd, 8)?, u16_at(bytes, eocd, 10)?);
+    let (cd_size, cd_off) = (u32_at(bytes, eocd, 12)?, u32_at(bytes, eocd, 16)?);
     if n_total == u16::MAX || cd_size == u32::MAX || cd_off == u32::MAX {
         return Err(FigError::Zip("zip64_unsupported"));
     }
     if n_disk != n_total {
         return Err(FigError::Zip("multi_disk"));
     }
-    let (cd_size, cd_off) = (cd_size as usize, cd_off as usize);
+    let to_usize =
+        |v: u32| usize::try_from(v).map_err(|_| FigError::Zip("central_directory_bounds"));
+    let (cd_size, cd_off) = (to_usize(cd_size)?, to_usize(cd_off)?);
     if cd_off.checked_add(cd_size) != Some(eocd) {
-        return Err(FigError::Zip("central_directory_bounds"));
+        return Err(bounds);
     }
     if usize::from(n_total) > limits.max_entries {
         return Err(FigError::BudgetExceeded("entries"));
@@ -316,36 +328,41 @@ fn read_zip(
     let mut seen = BTreeSet::new();
     for _ in 0..n_total {
         check(cancel)?;
-        if le32(bytes, at)? != SIG_CENTRAL {
+        if u32_at(bytes, at, 0)? != SIG_CENTRAL {
             return Err(FigError::Zip("central_signature"));
         }
-        let flags = le16(bytes, at + 8)?;
+        let flags = u16_at(bytes, at, 8)?;
         if flags & (1 | 0x40 | 0x2000) != 0 {
             return Err(FigError::Zip("encrypted"));
         }
-        let method = le16(bytes, at + 10)?;
+        let method = u16_at(bytes, at, 10)?;
         let (crc, comp, uncomp) = (
-            le32(bytes, at + 16)?,
-            le32(bytes, at + 20)?,
-            le32(bytes, at + 24)?,
+            u32_at(bytes, at, 16)?,
+            u32_at(bytes, at, 20)?,
+            u32_at(bytes, at, 24)?,
         );
         let (n, m, k) = (
-            usize::from(le16(bytes, at + 28)?),
-            usize::from(le16(bytes, at + 30)?),
-            usize::from(le16(bytes, at + 32)?),
+            usize::from(u16_at(bytes, at, 28)?),
+            usize::from(u16_at(bytes, at, 30)?),
+            usize::from(u16_at(bytes, at, 32)?),
         );
-        let local = le32(bytes, at + 42)?;
+        let local = u32_at(bytes, at, 42)?;
         if comp == u32::MAX || uncomp == u32::MAX || local == u32::MAX {
             return Err(FigError::Zip("zip64_unsupported"));
         }
-        if le16(bytes, at + 34)? != 0 {
+        if u16_at(bytes, at, 34)? != 0 {
             return Err(FigError::Zip("multi_disk"));
         }
-        let name = std::str::from_utf8(take(bytes, at + 46, n)?)
+        let name = std::str::from_utf8(take(bytes, at, 46, n)?)
             .map_err(|_| FigError::Zip("name_encoding"))?
             .to_owned();
+        // n, m and k are u16 values: the saturating sums cannot wrap, and the end is bounds-checked.
+        let entry_len = 46usize
+            .saturating_add(n)
+            .saturating_add(m)
+            .saturating_add(k);
         at = at
-            .checked_add(46 + n + m + k)
+            .checked_add(entry_len)
             .filter(|end| *end <= eocd)
             .ok_or(FigError::Zip("central_directory_bounds"))?;
         if !safe_name(&name) {
@@ -383,41 +400,68 @@ fn read_zip(
             crc,
             comp,
             uncomp,
-            local: local as usize,
+            local: to_usize(local)?,
         });
     }
     if at != eocd {
-        return Err(FigError::Zip("central_directory_bounds"));
+        return Err(bounds);
     }
 
+    let entry_bounds = || FigError::Zip("entry_bounds");
     let mut spans: Vec<(usize, usize)> = Vec::with_capacity(entries.len());
     let mut out = Vec::with_capacity(entries.len());
     for e in &entries {
         check(cancel)?;
-        if le32(bytes, e.local)? != SIG_LOCAL {
+        if u32_at(bytes, e.local, 0)? != SIG_LOCAL {
             return Err(FigError::Zip("local_signature"));
         }
         let (n, m) = (
-            usize::from(le16(bytes, e.local + 26)?),
-            usize::from(le16(bytes, e.local + 28)?),
+            usize::from(u16_at(bytes, e.local, 26)?),
+            usize::from(u16_at(bytes, e.local, 28)?),
         );
-        if take(bytes, e.local + 30, n)? != e.name.as_bytes() {
+        if take(bytes, e.local, 30, n)? != e.name.as_bytes() {
             return Err(FigError::Zip("local_name_mismatch"));
         }
-        let start = e.local + 30 + n + m;
+        // A reader that trusts the local header must see the same entry as the central directory:
+        // same encryption flags, method, CRC and sizes. A data descriptor (flag bit 3) may defer the
+        // CRC and sizes, in which case the local fields are all zero and the central values rule.
+        let flags = u16_at(bytes, e.local, 6)?;
+        if flags & (1 | 0x40 | 0x2000) != 0 {
+            return Err(FigError::Zip("encrypted"));
+        }
+        if u16_at(bytes, e.local, 8)? != e.method {
+            return Err(FigError::Zip("local_method_mismatch"));
+        }
+        let (crc, comp, uncomp) = (
+            u32_at(bytes, e.local, 14)?,
+            u32_at(bytes, e.local, 18)?,
+            u32_at(bytes, e.local, 22)?,
+        );
+        let deferred = flags & 8 != 0 && (crc, comp, uncomp) == (0, 0, 0);
+        if !deferred && (crc, u64::from(comp), u64::from(uncomp)) != (e.crc, e.comp, e.uncomp) {
+            return Err(FigError::Zip("local_header_mismatch"));
+        }
+        let comp_len = usize::try_from(e.comp).map_err(|_| entry_bounds())?;
+        let start = e
+            .local
+            .checked_add(30)
+            .and_then(|s| s.checked_add(n))
+            .and_then(|s| s.checked_add(m))
+            .ok_or_else(entry_bounds)?;
         let end = start
-            .checked_add(e.comp as usize)
+            .checked_add(comp_len)
             .filter(|end| *end <= cd_off)
-            .ok_or(FigError::Zip("entry_bounds"))?;
+            .ok_or_else(entry_bounds)?;
         spans.push((e.local, end));
-        let data = take(bytes, start, e.comp as usize)?;
+        let data = take(bytes, start, 0, comp_len)?;
         let content = if e.method == 0 {
             data.to_vec()
         } else {
-            decompress_to_vec_with_limit(data, e.uncomp as usize)
+            let cap = usize::try_from(e.uncomp).map_err(|_| entry_bounds())?;
+            decompress_to_vec_with_limit(data, cap)
                 .map_err(|_| FigError::Zip("inflate_failed_or_size_mismatch"))?
         };
-        if content.len() as u64 != e.uncomp {
+        if u64::try_from(content.len()).ok() != Some(e.uncomp) {
             return Err(FigError::Zip("size_mismatch"));
         }
         if crc32(&content) != e.crc {
@@ -448,9 +492,15 @@ fn parse_canvas(canvas: &[u8], limits: &Limits) -> Result<(FigKind, u32, Vec<Fig
     }
     let mut at = PRELUDE_AND_VERSION;
     while at < canvas.len() {
-        let header = canvas.get(at..at + 4).ok_or(FigError::ChunkOverflow)?;
-        let len = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
-        let start = at + 4;
+        let header = at
+            .checked_add(4)
+            .and_then(|end| canvas.get(at..end))
+            .ok_or(FigError::ChunkOverflow)?;
+        let len = usize::try_from(u32::from_le_bytes([
+            header[0], header[1], header[2], header[3],
+        ]))
+        .map_err(|_| FigError::ChunkOverflow)?;
+        let start = at.checked_add(4).ok_or(FigError::ChunkOverflow)?;
         let end = start
             .checked_add(len)
             .filter(|end| *end <= canvas.len())

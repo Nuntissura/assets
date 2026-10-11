@@ -1,5 +1,5 @@
 //! Version policy: which (kind, version) pairs a caller admits for decoding. The container reader
-//! never judges versions. The default policy admits NOTHING: no Figma-authored file exists on this
+//! does not judge versions (test: unsupported_version_duplicate_key_bomb_cancel). The default policy admits NOTHING: no Figma-authored file exists on this
 //! machine, so no real version value has been observed; a version is added only from a file that was
 //! actually read (record it in `OBSERVED_VERSIONS` with its provenance). Callers and synthetic tests
 //! opt in explicitly through [`VersionPolicy::with_supported`].
@@ -38,7 +38,7 @@ impl VersionPolicy {
 }
 
 /// `Err(UnsupportedVersion)` unless the container's (kind, version) is admitted. An unclassified
-/// kind is never admitted. The caller keeps the container opaque-preserved: nothing is decoded and
+/// kind is not admitted (test: legacy_bare_and_foreign_kinds). The caller keeps the container opaque-preserved: nothing is decoded and
 /// no partial import exists.
 pub fn check_version(container: &FigContainer, policy: &VersionPolicy) -> Result<()> {
     if policy.admits(container.kind, container.version) {

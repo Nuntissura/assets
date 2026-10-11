@@ -4,7 +4,7 @@
 //! interchange does not replace required editable .fig import.
 //!
 //! Foundation slice: bounded container, identity, opaque preservation, loss receipts and version
-//! rejection only. Editable support is NOT_PROVEN and never claimed.
+//! rejection only. Editable support is reported NOT_PROVEN on every import (`FigImport::editable`; test: fig_container_bounded_identity_loss).
 #![forbid(unsafe_code)]
 
 mod container;
