@@ -5,12 +5,13 @@ use crate::error::SessionError;
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{self as folio, ContentDigest, Payload, Resolver, Snapshot};
 use hsk_studio_package::{
-    ASSET_PREFIX, AssetError, AssetSource, EntryKind, EntryMeta, Limits, LossNote, LossReason,
-    MANIFEST_NAME, Manifest, PackageError, PackageReader, Quarantined, sha256_hex_of,
+    ASSET_PREFIX, AssetError, AssetReader, AssetSource, AssetStream, Codec, EntryKind, EntryMeta,
+    Limits, LossNote, LossReason, MANIFEST_NAME, Manifest, PackageError, PackageReader,
+    Quarantined, sha256_hex_of,
 };
 use std::{
     collections::BTreeSet,
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, Cursor, Read, Seek, SeekFrom},
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
@@ -53,8 +54,12 @@ impl Handle {
         )
     }
 
-    pub(crate) fn single(source: SourceBox, bytes_read: Arc<AtomicU64>) -> Handle {
-        Handle::pair(source, bytes_read).0
+    /// Another independent cursor over the same stream, positioned at the start.
+    pub(crate) fn fork(&self) -> Handle {
+        Handle {
+            shared: Arc::clone(&self.shared),
+            pos: 0,
+        }
     }
 }
 
@@ -247,10 +252,15 @@ pub(crate) fn load_parts(
 }
 
 /// Asset bytes pulled from the source package on demand, one asset per call, bounded by the
-/// writer's `max` and hash-verified by the package reader. The real cause of a failed read
-/// (cancel, hash mismatch, I/O) is kept so the caller can report it instead of `asset_absent`.
+/// writer's `max`. `read` (buffered export) is hash-verified by the package reader; `open`
+/// (streaming save) hands the writer a bounded reader over the stored bytes, which the writer
+/// holds to the declared length and the SHA-256 identity while it copies. The real cause of a
+/// failed read (cancel, hash mismatch, I/O) is kept so the caller can report it instead of
+/// `asset_absent`.
 pub(crate) struct LazyAssets<'a> {
     reader: &'a Mutex<PackageReader<Handle>>,
+    /// A cursor over the same stream as `reader`, forked for each raw asset range.
+    raw: &'a Handle,
     cancel: &'a CancellationToken,
     failure: Mutex<Option<PackageError>>,
 }
@@ -258,13 +268,20 @@ pub(crate) struct LazyAssets<'a> {
 impl<'a> LazyAssets<'a> {
     pub(crate) fn new(
         reader: &'a Mutex<PackageReader<Handle>>,
+        raw: &'a Handle,
         cancel: &'a CancellationToken,
     ) -> Self {
         Self {
             reader,
+            raw,
             cancel,
             failure: Mutex::new(None),
         }
+    }
+
+    fn fail(&self, error: PackageError) -> AssetError {
+        *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+        AssetError::Absent
     }
 
     pub(crate) fn take_failure(&self) -> Option<PackageError> {
@@ -295,9 +312,54 @@ impl AssetSource for LazyAssets<'_> {
         }
         reader
             .read_asset(&digest.digest, self.cancel)
-            .map_err(|error| {
-                *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
-                AssetError::Absent
-            })
+            .map_err(|error| self.fail(error))
+    }
+}
+
+impl AssetStream for LazyAssets<'_> {
+    /// A raw asset streams straight from its byte range in the source (constant memory); a
+    /// zstd or shuffle_zstd asset is decoded and verified as one blob. Repeatable: the writer
+    /// opens a codec asset once to plan and once to write, and only one reader is open at a time.
+    fn open(&self, digest: &ContentDigest, max: u64) -> Result<AssetReader<'_>, AssetError> {
+        if digest.algorithm != "sha256" {
+            return Err(AssetError::Absent);
+        }
+        let name = format!("{ASSET_PREFIX}{}", digest.digest);
+        let mut reader = self.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some((codec, stored, declared)) = reader
+            .manifest()
+            .entries
+            .iter()
+            .find(|e| e.kind == EntryKind::Asset && e.name == name)
+            .map(|e| (e.codec, e.len, e.raw_len.unwrap_or(e.len)))
+        else {
+            return Err(AssetError::Absent);
+        };
+        if declared > max {
+            return Err(AssetError::TooLarge);
+        }
+        if codec == Codec::Raw {
+            let Some(meta) = reader.entries().iter().find(|m| m.name == name) else {
+                return Err(self.fail(PackageError::MissingEntry));
+            };
+            if meta.size != stored {
+                return Err(self.fail(PackageError::LengthMismatch));
+            }
+            let mut range = self.raw.fork();
+            if let Err(error) = range.seek(SeekFrom::Start(meta.data_offset())) {
+                return Err(self.fail(PackageError::Io(error.kind())));
+            }
+            return Ok(AssetReader {
+                len: stored,
+                reader: Box::new(range.take(stored)),
+            });
+        }
+        match reader.read_asset(&digest.digest, self.cancel) {
+            Ok(bytes) => Ok(AssetReader {
+                len: bytes.len() as u64,
+                reader: Box::new(Cursor::new(bytes)),
+            }),
+            Err(error) => Err(self.fail(error)),
+        }
     }
 }

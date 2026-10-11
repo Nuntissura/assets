@@ -23,8 +23,8 @@ use hsk_studio_folio::{
 use hsk_studio_observe::{Budget as ObserveBudget, Observation, Observe, Outcome, SinkPort};
 use hsk_studio_package::{
     Codec, Extras, Limits, LossNote, Manifest, PackageError, PackageReader, PreviewImage,
-    PreviewRef, Quarantined, WriteOptions, WriteReceipt, read_package, save_atomic, sha256_hex_of,
-    write_package_with,
+    PreviewRef, Quarantined, StreamSave, WriteOptions, WriteReceipt, read_package,
+    save_atomic_streaming, sha256_hex_of, write_package_with,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -306,6 +306,8 @@ pub struct Session {
     /// The package the session was opened from (or last saved to), read on demand: asset and
     /// preview bodies are never held between operations.
     source: Mutex<PackageReader<Handle>>,
+    /// A second cursor over the same stream as `source`, forked to stream raw asset ranges.
+    raw: Handle,
     source_bytes: Arc<AtomicU64>,
     quarantined: Vec<Quarantined>,
     loss: Vec<LossNote>,
@@ -572,6 +574,7 @@ impl Session {
                     snapshot: parts.snapshot,
                     preview_refs: reader.previews(),
                     source: Mutex::new(reader),
+                    raw,
                     source_bytes,
                     quarantined: parts.quarantined,
                     loss: parts.loss,
@@ -1153,11 +1156,13 @@ impl Session {
         self.settle(result, |receipt, report| receipt.report = report)
     }
 
-    /// Serializes the current revision. Asset bodies (and source previews) are pulled from the
-    /// source package one at a time while the writer needs them; only previews that describe
-    /// the revision being written are included: host-supplied ones for this revision replace the
-    /// source's, anything rendered for another revision is dropped and counted.
-    fn build_package(&self, cancel: &CancellationToken) -> Result<Built, SessionError> {
+    /// The previews to write: only those that describe the revision being written. Host-supplied
+    /// ones for this revision replace the source's; anything rendered for another revision is
+    /// dropped and counted (second value).
+    fn gather_previews(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<(Vec<PreviewImage>, usize), SessionError> {
         let revision = self.snapshot.document().revision;
         let mut images: Vec<PreviewImage> = Vec::new();
         let mut dropped = 0usize;
@@ -1182,35 +1187,46 @@ impl Session {
                 }
             }
         }
-        let assets = LazyAssets::new(&self.source, cancel);
+        Ok((images, dropped))
+    }
+
+    /// The writer only knows "asset absent"; the source knows why.
+    fn writer_cause(assets: &LazyAssets<'_>, error: PackageError) -> SessionError {
+        let cause = if matches!(error, PackageError::Asset(_)) {
+            assets.take_failure().unwrap_or(error)
+        } else {
+            error
+        };
+        SessionError::from_package(cause)
+    }
+
+    fn write_options(&self) -> WriteOptions {
+        WriteOptions {
+            asset_codec: self.asset_codec,
+            ..WriteOptions::default()
+        }
+    }
+
+    /// Serializes the current revision into memory (export only: a checkpoint is an in-memory
+    /// package by contract). Asset bodies are pulled from the source package one at a time while
+    /// the writer needs them.
+    fn build_package(&self, cancel: &CancellationToken) -> Result<Built, SessionError> {
+        let (images, dropped) = self.gather_previews(cancel)?;
+        let assets = LazyAssets::new(&self.source, &self.raw, cancel);
         let mut bytes = Vec::new();
-        let written = write_package_with(
+        let receipt = write_package_with(
             &self.snapshot,
             &assets,
             &Extras {
                 quarantined: &self.quarantined,
                 previews: &images,
             },
-            &WriteOptions {
-                asset_codec: self.asset_codec,
-                ..WriteOptions::default()
-            },
+            &self.write_options(),
             &self.config.budgets.limits,
             cancel,
             &mut bytes,
-        );
-        let receipt = match written {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                // The writer only knows "asset absent"; the source knows why.
-                let cause = if matches!(error, PackageError::Asset(_)) {
-                    assets.take_failure().unwrap_or(error)
-                } else {
-                    error
-                };
-                return Err(SessionError::from_package(cause));
-            }
-        };
+        )
+        .map_err(|error| Self::writer_cause(&assets, error))?;
         Ok(Built {
             bytes,
             receipt,
@@ -1297,14 +1313,35 @@ impl Session {
         cancel.check().map_err(|_| SessionError::Canceled)?;
         self.check_grant(Action::Save)?;
         let limits = self.config.budgets.limits;
-        let built = self.build_package(cancel)?;
-        save_atomic(path, &built.bytes, &limits, cancel).map_err(SessionError::from_package)?;
+        let (images, previews_dropped) = self.gather_previews(cancel)?;
+        // Streamed: raw assets flow from the source file into the temp file through one bounded
+        // chunk (hash- and length-verified on the way), so peak memory does not grow with the
+        // assets. The package re-verifies the finished temp from disk before the atomic replace.
+        let assets = LazyAssets::new(&self.source, &self.raw, cancel);
+        let written = save_atomic_streaming(
+            path,
+            &StreamSave {
+                doc: &self.snapshot,
+                assets: &assets,
+                extras: Extras {
+                    quarantined: &self.quarantined,
+                    previews: &images,
+                },
+                options: self.write_options(),
+            },
+            &limits,
+            cancel,
+        )
+        .map_err(|error| Self::writer_cause(&assets, error))?;
         let revision = self.snapshot.document().revision;
-        let landed = File::open(path)
+        let (landed, landed_raw) = File::open(path)
             .map_err(|e| SessionError::Io(e.kind()))
             .and_then(|file| {
-                let handle = Handle::single(Box::new(file), Arc::clone(&self.source_bytes));
-                PackageReader::open(handle, &limits, cancel).map_err(SessionError::from_package)
+                let (for_reader, raw) =
+                    Handle::pair(Box::new(file), Arc::clone(&self.source_bytes));
+                PackageReader::open(for_reader, &limits, cancel)
+                    .map(|reader| (reader, raw))
+                    .map_err(SessionError::from_package)
             })?;
         if landed.manifest().revision != revision
             || landed.manifest().document_id != self.snapshot.document().document_id
@@ -1320,15 +1357,16 @@ impl Session {
             .source
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner) = landed;
+        self.raw = landed_raw;
         self.saved_revision = Some(revision);
         self.origin = Some(path.to_path_buf());
         Ok(SaveReceipt {
             revision,
-            entries: built.receipt.entries,
-            bytes_written: built.receipt.bytes_written,
+            entries: written.entries,
+            bytes_written: written.bytes_written,
             quarantined_preserved: self.quarantined.len(),
-            previews_preserved: built.previews_written,
-            previews_dropped: built.previews_dropped,
+            previews_preserved: images.len(),
+            previews_dropped,
             report: ReportStatus::Unaddressed,
         })
     }

@@ -6,7 +6,7 @@ use hsk_studio_chronicle::{
 use hsk_studio_folio::{self as folio, NodeKind, NodeRef, Snapshot};
 use hsk_studio_observe::{DeliveryClass, DeliveryError, FailureCode, Outcome, SinkPort};
 use hsk_studio_package::{
-    AssetSource, Extras, Limits, MemoryAssetSource, PixelFormat, PreviewImage, PreviewInfo,
+    AssetSource, Codec, Extras, Limits, MemoryAssetSource, PixelFormat, PreviewImage, PreviewInfo,
     Quarantined, WriteOptions, list_previews, read_package, read_preview, sha256_hex_of,
     write_package_with,
 };
@@ -1692,10 +1692,10 @@ fn lazy_source_holds_no_assets_and_save_streams_them_on_demand() {
             save_read <= BIG as u64 + total + 64 * 1024,
             "asset once + one verification pass, read {save_read}"
         );
-        // Package's writer collects every asset before writing and save_atomic takes whole
-        // bytes (output buffer + read-back), so one save costs a few copies of the package
-        // (measured 4.1x here). That is the ceiling: the session itself adds none at rest.
-        assert!(save_peak <= 5 * BIG, "save peak {save_peak}");
+        // The save streams: raw assets flow from the source file to the temp file through fixed
+        // chunks, so the peak sits far below even one copy of the asset (the buffered save cost
+        // 4.25x here); `save_peak_memory_does_not_grow_with_asset_size` shows it is size-free.
+        assert!(save_peak < BIG / 2, "save peak {save_peak}");
         assert!(save_retained < BIG / 16, "save retained {save_retained}");
         assert_eq!(
             (
@@ -1726,6 +1726,114 @@ fn lazy_source_holds_no_assets_and_save_streams_them_on_demand() {
         assert_eq!(fs::read(&copy_a).unwrap(), fs::read(&copy_b).unwrap());
         assert_eq!(session.origin(), Some(copy_b.as_path()));
         assert_eq!(frames.count() as u64, session.operations());
+    });
+}
+
+/// Incompressible synthetic bytes (a fixed LCG), `size` long.
+fn synthetic_blob(size: usize) -> Vec<u8> {
+    let mut x: u32 = 99;
+    (0..size)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+#[test]
+fn save_peak_memory_does_not_grow_with_asset_size() {
+    bounded_case("save_peak_independent_of_asset_size", || {
+        // Each fixture writes its package under the test temp root (TMP; the Studio env points it
+        // at the artifact root on D:) and removes it on drop. The allocator counts only the
+        // measured thread, from `probe()` to the end of the save.
+        const SMALL: usize = 1 << 20;
+        const LARGE: usize = 16 << 20;
+        let measure = |size: usize| {
+            let blob = synthetic_blob(size);
+            let fixture = Fixture::with_blob(&format!("stream-{size}"), blob.clone());
+            let frames = Frames::default();
+            let mut session = open(&fixture, &frames);
+            let params = json_bytes(&rename_patch(1, "layer-1", "edited", 0, "edit-1"));
+            session.submit(ID, &params, 7, &token()).unwrap();
+            let before = session.source_bytes_read();
+            let mark = probe();
+            let saved = session.save(&token()).unwrap();
+            let (peak, retained) = (mark.peak(), mark.retained());
+            assert!(
+                session.source_bytes_read() - before >= size as u64,
+                "the asset was streamed from the source"
+            );
+            assert_eq!((saved.revision, saved.quarantined_preserved), (8, 1));
+            // Independent oracle: the package reader, not the session.
+            let opened = independent(&fixture.path);
+            assert_eq!(
+                opened.snapshot().unwrap().document().layers[0].name,
+                "edited"
+            );
+            assert_eq!(opened.assets.get(&sha256_hex_of(&blob)), Some(&blob));
+            (peak, retained)
+        };
+        let (small_peak, small_retained) = measure(SMALL);
+        let (large_peak, large_retained) = measure(LARGE);
+        eprintln!(
+            "measured: save peak {small_peak} at {SMALL} B asset, {large_peak} at {LARGE} B asset; retained {small_retained}/{large_retained}"
+        );
+        // The old buffered save held several copies of the package (about 4x the asset: 64 MiB
+        // here); streaming holds a few fixed chunks whatever the asset size.
+        assert!(
+            large_peak < LARGE / 3,
+            "save peak {large_peak} for a {LARGE} B asset"
+        );
+        assert!(
+            large_peak <= small_peak + (1 << 20),
+            "peak grew with the asset: {small_peak} -> {large_peak}"
+        );
+        assert!(small_retained < 256 * 1024 && large_retained < 256 * 1024);
+    });
+}
+
+#[test]
+fn compressed_source_assets_stream_through_save_and_round_trip() {
+    bounded_case("compressed_source_assets_stream", || {
+        // Highly compressible, so zstd is chosen per blob and the entry is stored smaller.
+        let blob: Vec<u8> = (0..(256 * 1024usize)).map(|i| (i / 64) as u8).collect();
+        let fixture = Fixture::with_blob("codec", blob.clone());
+        let frames = Frames::default();
+        let mut config = SessionConfig::new(actor_context());
+        config.asset_codec = Some(Codec::Zstd);
+        let mut session =
+            Session::open_path(&fixture.path, config, ports(&frames), &token()).unwrap();
+
+        // Raw source entry, zstd requested: the writer plans and writes from two opens of the
+        // same bytes.
+        let compressed = fixture.dir.join("zstd.handshake");
+        session.save_to(&compressed, &token()).unwrap();
+        let opened = independent(&compressed);
+        assert_eq!(opened.assets.get(&sha256_hex_of(&blob)), Some(&blob));
+        let entry = opened
+            .manifest
+            .entries
+            .iter()
+            .find(|e| e.name.starts_with("assets/"))
+            .unwrap();
+        assert_eq!(entry.codec, Codec::Zstd);
+        assert!(entry.len < blob.len() as u64 / 4, "stored {} B", entry.len);
+
+        // Zstd source entry: decoded and verified as one blob, then written again.
+        let mut again = Session::open_path(
+            &compressed,
+            SessionConfig::new(actor_context()),
+            ports(&Frames::default()),
+            &token(),
+        )
+        .unwrap();
+        let second = fixture.dir.join("zstd-again.handshake");
+        again.save_to(&second, &token()).unwrap();
+        assert_eq!(fs::read(&compressed).unwrap(), fs::read(&second).unwrap());
+        assert_eq!(
+            independent(&second).assets.get(&sha256_hex_of(&blob)),
+            Some(&blob)
+        );
     });
 }
 
