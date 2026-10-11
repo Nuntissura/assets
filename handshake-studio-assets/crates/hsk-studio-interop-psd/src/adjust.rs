@@ -372,6 +372,10 @@ fn blend_range(channel: StudioBlendChannel, source: [u8; 4], destination: [u8; 4
 /// (UNVERIFIED against a Photoshop-authored file).
 pub(crate) fn advanced_blending(layer: &PsdLayer) -> std::result::Result<Option<Mapped<StudioAdvancedBlending>>, Reason> {
     let ranges = layer.blend_ranges();
+    if ranges.is_none() && !layer.blending_ranges_raw.is_empty() {
+        // Present but shorter than the composite gray source and destination (8 bytes).
+        return Err("blend_ranges_malformed");
+    }
     let knockout_raw = layer.block(b"knko").and_then(|b| b.data.first().copied());
     let interior = layer.blend_interior_elements();
     let clipped = layer.blend_clipped_elements();
