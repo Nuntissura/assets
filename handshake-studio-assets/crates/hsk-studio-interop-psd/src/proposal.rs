@@ -8,9 +8,16 @@
 //! quantized to 8 bits). With a [`IccConverter`] and an embedded profile the converter accepts, RGB
 //! 8/16-bit pixels are converted through it into its working space; otherwise sRGB is assumed
 //! (8/16-bit) or the floats are taken as already linear (32-bit), and the loss report says so.
-//! CMYK and Lab documents keep their hierarchy and report raster layers as unmapped (no display
-//! conversion exists yet: dependency on lane SMB-PRISM-ENG-3). Opacity, fill opacity, blend mode,
-//! clipping, group isolation and the mask reference are written to the Folio layer.
+//!
+//! CMYK (8/16-bit) with an embedded ICC profile (res 1039), Lab (8/16-bit, PCS-native, no profile)
+//! and gray (8/16-bit) with a `kTRC` profile are display-converted through the converter's wide
+//! path into the same linear working RGB tiles. This is a PROJECTION: the layer channels in the
+//! [`PsdDocument`] are never rewritten, an unedited export is byte-identical, and tile edits on a
+//! projected layer are a typed loss at export. The converter output is unclamped; every clamp to
+//! `0..=1` is counted (`Provenance::display`) and reported as a loss entry. CMYK without a usable
+//! profile stays an unmapped raster layer with a typed reason (no default CMYK profile is
+//! invented). Opacity, fill opacity, blend mode, clipping, group isolation and the mask reference
+//! are written to the Folio layer.
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, Inspection, Resolver, Snapshot, inspect_bytes};
@@ -19,13 +26,17 @@ use hsk_studio_prism::{hash_hex, profile_hash};
 use serde_json::{Value, json};
 
 use crate::blend::StudioBlendMode;
-use crate::convert::{IccConverter, refusal_code};
+use crate::convert::{
+    ClipSummary, IccConverter, IccRefusal, ProfileDevice, ProfileFacts, RenderingIntent, WIDE_UNAVAILABLE, WideConvertRequest,
+    WideConvertSource, refusal_code,
+};
 use crate::document::{PsdDocument, TreeNode};
 use crate::error::{PsdError, Result};
 use crate::header::ColorMode;
 use crate::layers::{GroupRole, PsdLayer};
 use crate::limits::Limits;
 use crate::loss::{LossKind, LossReport, key_text};
+use crate::pixels::Plane;
 use crate::resources::{RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED};
 use crate::samples::{SixteenBitScale, srgb_to_linear};
 
@@ -77,13 +88,33 @@ pub struct ProposalConfig<'a> {
     pub resolver: &'a dyn Resolver,
     /// Interpretation of 16-bit samples (UNVERIFIED which one Photoshop uses; default full range).
     pub scale: SixteenBitScale,
+    /// Rendering intent for CMYK/Lab/gray display conversion. No PSD image resource carries a
+    /// display intent (Adobe file-format resource table checked 2026-10-11: 0x043A Print
+    /// Information is a print descriptor, not parsed here), so `None` means perceptual and the
+    /// loss report records that as an assumption.
+    pub rendering_intent: Option<RenderingIntent>,
+    /// Black point compensation for display conversion. `None` means on (Photoshop's Color
+    /// Settings default) and is recorded as an assumption.
+    pub black_point_compensation: Option<bool>,
 }
 
 impl<'a> ProposalConfig<'a> {
     pub fn new(limits: &'a Limits, budget: Budget, resolver: &'a dyn Resolver) -> Self {
-        Self { limits, budget, resolver, scale: SixteenBitScale::default() }
+        Self {
+            limits,
+            budget,
+            resolver,
+            scale: SixteenBitScale::default(),
+            rendering_intent: None,
+            black_point_compensation: None,
+        }
     }
 }
+
+/// Linear-light overshoot beyond `0..=1` above which a clamp is reported as a gamut loss. It matches
+/// Prism's clip tolerance: smaller excursions are rounding noise (16.16 colorants, f32), are still
+/// clamped and counted, and are reported under their own code.
+pub const GAMUT_CLAMP_TOLERANCE: f32 = 1e-3;
 
 /// One tile's pixels: a linear-light `rgb_f32le` colour plane and a separate straight `f32le`
 /// alpha plane (the Pigment tile contract), one full grid cell.
@@ -139,7 +170,35 @@ pub struct LayerMapEntry {
     pub psd_index: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a CMYK, Lab or gray (profile) display conversion did. The layer channels stay as read; the
+/// tiles are this projection of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayConversion {
+    /// `cmyk`, `lab` or `gray`.
+    pub source_space: &'static str,
+    pub intent: RenderingIntent,
+    /// No intent was configured: perceptual was assumed.
+    pub intent_assumed: bool,
+    pub black_point_compensation: bool,
+    /// No setting was configured: black point compensation on was assumed.
+    pub black_point_compensation_assumed: bool,
+    /// Pixels with alpha above zero that went through the converter.
+    pub pixels_converted: u64,
+    /// Of those, pixels with any channel clamped to `0..=1` (any amount).
+    pub pixels_clamped: u64,
+    /// Of those, pixels whose overshoot exceeded [`GAMUT_CLAMP_TOLERANCE`] (a gamut clip).
+    pub pixels_out_of_gamut: u64,
+    /// Clamped channel values per working-RGB channel.
+    pub channels_clamped: [u64; 3],
+    /// Largest linear-light overshoot that was clamped.
+    pub max_overshoot: f64,
+    /// Input samples left their valid range (16-bit scale 32768 can exceed 1.0) and were clamped.
+    pub input_range_clamped: bool,
+    /// The converter's own clip report over every converted pixel (transparent ones included).
+    pub converter_clip: ClipSummary,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Provenance {
     pub source_sha256_hex: String,
     pub byte_len: usize,
@@ -153,6 +212,8 @@ pub struct Provenance {
     pub icc_converted: bool,
     pub icc_sha256_hex: Option<String>,
     pub sixteen_bit_scale: SixteenBitScale,
+    /// Present when CMYK, Lab or gray pixels were display-converted (the tiles are a projection).
+    pub display: Option<DisplayConversion>,
 }
 
 #[derive(Clone, Debug)]
@@ -253,6 +314,51 @@ pub(crate) fn imported_look(layer: &PsdLayer, is_group: bool) -> ImportedLook {
     }
 }
 
+/// Source of a wide display conversion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WideKind {
+    Cmyk,
+    Lab,
+    Gray,
+}
+
+impl WideKind {
+    fn channels(self) -> usize {
+        match self {
+            Self::Cmyk => 4,
+            Self::Lab => 3,
+            Self::Gray => 1,
+        }
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Self::Cmyk => "cmyk",
+            Self::Lab => "lab",
+            Self::Gray => "gray",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WideRoute {
+    kind: WideKind,
+    intent: RenderingIntent,
+    bpc: bool,
+}
+
+#[derive(Default)]
+struct DisplayStats {
+    calls: u64,
+    pixels_converted: u64,
+    pixels_clamped: u64,
+    pixels_out_of_gamut: u64,
+    channels_clamped: [u64; 3],
+    max_overshoot: f64,
+    input_range_clamped: bool,
+    clip: ClipSummary,
+}
+
 struct Builder<'a, 'm, 'c> {
     doc: &'a PsdDocument,
     cfg: &'a ProposalConfig<'a>,
@@ -263,6 +369,8 @@ struct Builder<'a, 'm, 'c> {
     pixels_mapped: bool,
     unmapped_reason: &'static str,
     icc_active: bool,
+    wide: Option<WideRoute>,
+    stats: DisplayStats,
     icc_range_clamped: bool,
     layers: Vec<Value>,
     operations: Vec<Value>,
@@ -546,6 +654,97 @@ impl Builder<'_, '_, '_> {
         Ok(Some(json!({"tiles": refs, "enabled": enabled, "linked": linked})))
     }
 
+    /// Display-converts one batch of document samples (`raw`: unit samples in channel order) to
+    /// linear working RGB. The input mapping is explicit and recorded, never implied:
+    /// CMYK ink = `1 - stored` (PSD stores CMYK inverted, 255 = no ink; UNVERIFIED against a
+    /// Photoshop fixture), Lab `L = unit * 100`, `a`/`b = unit * 255 - 128` (8-bit ICC legacy
+    /// encoding; 16-bit keeps the same mapping per scale, `* 256` for the 32768 scale so the
+    /// neutral axis sits at raw 16384; UNVERIFIED), gray as stored. The converter output is
+    /// clamped to `0..=1` here and every clamp is counted for alpha-visible pixels.
+    fn convert_wide_pixels(&mut self, route: WideRoute, raw: &[[f32; 4]], alphas: &[f32]) -> Result<Vec<[f32; 3]>> {
+        let doc = self.doc;
+        let header = &doc.header;
+        let mut ranged = false;
+        let mut limit = |v: f32, lo: f32, hi: f32| {
+            if (lo..=hi).contains(&v) {
+                v
+            } else {
+                ranged = true;
+                v.clamp(lo, hi)
+            }
+        };
+        let ab_scale = if header.depth == 16 && self.cfg.scale == SixteenBitScale::Photoshop32768 { 256.0 } else { 255.0 };
+        let mut input: Vec<f32> = Vec::with_capacity(raw.len() * route.kind.channels());
+        for p in raw {
+            match route.kind {
+                WideKind::Cmyk => {
+                    for &stored in p {
+                        input.push(limit(1.0 - stored, 0.0, 1.0));
+                    }
+                }
+                WideKind::Gray => input.push(limit(p[0], 0.0, 1.0)),
+                WideKind::Lab => {
+                    input.push(limit((f64::from(p[0]) * 100.0) as f32, 0.0, 100.0));
+                    for &unit in &p[1..3] {
+                        input.push(limit((f64::from(unit) * ab_scale - 128.0) as f32, -128.0, 128.0));
+                    }
+                }
+            }
+        }
+        self.stats.input_range_clamped |= ranged;
+        let source = match route.kind {
+            WideKind::Lab => WideConvertSource::Lab,
+            _ => WideConvertSource::Profile(doc.resources.icc_profile().unwrap_or_default()),
+        };
+        let converter = self.converter.as_deref_mut().ok_or(PsdError::Proposal("icc_converter_missing"))?;
+        let request = WideConvertRequest {
+            source,
+            pixels: &input,
+            intent: route.intent,
+            black_point_compensation: route.bpc,
+        };
+        let converted = converter.convert_wide(&request, self.cancel).map_err(refusal_error)?;
+        if converted.pixels.len() != raw.len() {
+            return Err(PsdError::Proposal("icc_conversion_failed"));
+        }
+        let stats = &mut self.stats;
+        stats.clip.absorb(&converted.clip, stats.calls == 0);
+        stats.calls += 1;
+        let mut out = converted.pixels;
+        for (px, &alpha) in out.iter_mut().zip(alphas) {
+            let visible = alpha > 0.0;
+            let mut hit = false;
+            let mut worst = 0.0f32;
+            for (k, v) in px.iter_mut().enumerate() {
+                if !v.is_finite() {
+                    return Err(PsdError::Proposal("icc_conversion_failed"));
+                }
+                let over = if *v < 0.0 {
+                    -*v
+                } else if *v > 1.0 {
+                    *v - 1.0
+                } else {
+                    continue;
+                };
+                *v = v.clamp(0.0, 1.0);
+                if visible {
+                    hit = true;
+                    worst = worst.max(over);
+                    stats.channels_clamped[k] += 1;
+                }
+            }
+            if visible {
+                stats.pixels_converted += 1;
+                if hit {
+                    stats.pixels_clamped += 1;
+                    stats.pixels_out_of_gamut += u64::from(worst > GAMUT_CLAMP_TOLERANCE);
+                    stats.max_overshoot = stats.max_overshoot.max(f64::from(worst));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn tiles_for(&mut self, index: usize, layer: &PsdLayer, layer_id: &str) -> Result<Vec<Value>> {
         let rect = layer.rect;
         if rect.area() == 0 || layer.pixel_data_irrelevant() {
@@ -555,8 +754,13 @@ impl Builder<'_, '_, '_> {
         let header = &doc.header;
         let depth = header.depth;
         let scale = self.cfg.scale;
-        let colour_ids: &[i16] = if header.color_mode == ColorMode::Rgb { &[0, 1, 2] } else { &[0] };
-        let mut planes = Vec::with_capacity(3);
+        let colour_ids: &[i16] = match header.color_mode {
+            ColorMode::Rgb | ColorMode::Lab => &[0, 1, 2],
+            ColorMode::Cmyk => &[0, 1, 2, 3],
+            _ => &[0],
+        };
+        let wide = self.wide;
+        let mut planes = Vec::with_capacity(colour_ids.len());
         for &id in colour_ids {
             match layer.decode_channel(id, header, self.cfg.limits, self.cancel)? {
                 Some(p) => planes.push(p),
@@ -582,19 +786,18 @@ impl Builder<'_, '_, '_> {
                 let x1 = (bounds.x + i64::from(bounds.width)).min(right);
                 let y0 = bounds.y.max(top);
                 let y1 = (bounds.y + i64::from(bounds.height)).min(bottom);
-                let mut encoded: Vec<[f32; 3]> = Vec::new();
+                let mut raw: Vec<[f32; 4]> = Vec::new();
                 let mut alphas: Vec<f32> = Vec::new();
                 let mut destinations: Vec<usize> = Vec::new();
                 for y in y0..y1 {
                     for x in x0..x1 {
                         let src = (y - top) as usize * width + (x - left) as usize;
-                        let channel = |p: &crate::pixels::Plane| p.unit_at(src, scale).ok_or(PsdError::ChannelSize);
-                        let rgb = match planes.as_slice() {
-                            [g] => [channel(g)?; 3],
-                            [r, g, b] => [channel(r)?, channel(g)?, channel(b)?],
-                            _ => return Err(PsdError::ChannelSize),
-                        };
-                        encoded.push(rgb);
+                        let channel = |p: &Plane| p.unit_at(src, scale).ok_or(PsdError::ChannelSize);
+                        let mut samples = [0.0f32; 4];
+                        for (slot, plane) in samples.iter_mut().zip(&planes) {
+                            *slot = channel(plane)?;
+                        }
+                        raw.push(samples);
                         let a = match &alpha {
                             Some(p) => channel(p)?,
                             None => 1.0,
@@ -606,26 +809,37 @@ impl Builder<'_, '_, '_> {
                 if !alphas.iter().any(|&a| a > 0.0) {
                     continue;
                 }
-                let linear: Vec<[f32; 3]> = if self.icc_active {
-                    let mut ranged = encoded;
-                    for px in &mut ranged {
-                        for v in px.iter_mut() {
-                            if !(0.0..=1.0).contains(v) {
-                                self.icc_range_clamped = true;
-                                *v = v.clamp(0.0, 1.0);
+                let linear: Vec<[f32; 3]> = if let Some(route) = wide {
+                    self.convert_wide_pixels(route, &raw, &alphas)?
+                } else {
+                    let encoded: Vec<[f32; 3]> = raw
+                        .iter()
+                        .map(|p| if planes.len() == 1 { [p[0]; 3] } else { [p[0], p[1], p[2]] })
+                        .collect();
+                    if self.icc_active {
+                        let mut ranged = encoded;
+                        for px in &mut ranged {
+                            for v in px.iter_mut() {
+                                if !(0.0..=1.0).contains(v) {
+                                    self.icc_range_clamped = true;
+                                    *v = v.clamp(0.0, 1.0);
+                                }
                             }
                         }
+                        let icc = doc.resources.icc_profile().unwrap_or_default();
+                        let converter =
+                            self.converter.as_deref_mut().ok_or(PsdError::Proposal("icc_converter_missing"))?;
+                        let converted = converter.convert_rgb(icc, &ranged, self.cancel).map_err(refusal_error)?;
+                        // A short or long answer would leave pixels unconverted without a trace.
+                        if converted.len() != ranged.len() {
+                            return Err(PsdError::Proposal("icc_conversion_failed"));
+                        }
+                        converted
+                    } else if depth == 32 {
+                        encoded
+                    } else {
+                        encoded.into_iter().map(|p| p.map(srgb_to_linear)).collect()
                     }
-                    let icc = doc.resources.icc_profile().unwrap_or_default();
-                    let converter = self.converter.as_deref_mut().ok_or(PsdError::Proposal("icc_converter_missing"))?;
-                    let result = converter.convert_rgb(icc, &ranged, self.cancel);
-                    result.map_err(|r| {
-                        if r.0 == "canceled" { PsdError::Canceled } else { PsdError::Proposal("icc_conversion_failed") }
-                    })?
-                } else if depth == 32 {
-                    encoded
-                } else {
-                    encoded.into_iter().map(|p| p.map(srgb_to_linear)).collect()
                 };
                 let mut colour = vec![0u8; cell * 12];
                 let mut alpha_plane = vec![0u8; cell * 4];
@@ -668,32 +882,122 @@ impl Builder<'_, '_, '_> {
     }
 }
 
+fn refusal_error(refusal: IccRefusal) -> PsdError {
+    if refusal.0 == "canceled" { PsdError::Canceled } else { PsdError::Proposal("icc_conversion_failed") }
+}
+
 /// How the document's pixels reach the tiles.
 struct Routing {
     pixels_mapped: bool,
     unmapped_reason: &'static str,
+    /// Legacy three-channel RGB path through `convert_rgb`.
     icc_active: bool,
+    /// n-channel display conversion (CMYK, Lab, gray profile) through `convert_wide`.
+    wide: Option<WideRoute>,
+    intent_assumed: bool,
+    bpc_assumed: bool,
+    /// Black point compensation was configured or assumed on (before any per-source skip).
+    bpc_requested: bool,
     /// (path, kind, code) entries decided before layers are walked.
     notes: Vec<(&'static str, LossKind, &'static str)>,
 }
 
+/// `Ok(Err(refusal))` is the converter's typed refusal of this profile; `Err` is cancellation.
+fn wide_device(
+    converter: Option<&mut (dyn IccConverter + '_)>,
+    icc: &[u8],
+    cancel: &CancellationToken,
+) -> Result<std::result::Result<ProfileFacts, IccRefusal>> {
+    let Some(converter) = converter else {
+        return Ok(Err(IccRefusal(WIDE_UNAVAILABLE)));
+    };
+    match converter.inspect_wide(icc, cancel) {
+        Err(refusal) if refusal.0 == "canceled" => Err(PsdError::Canceled),
+        other => Ok(other),
+    }
+}
+
 /// Decides whether and how pixels map, consulting the converter about the embedded profile.
+///
+/// CMYK needs an embedded profile the wide path accepts as a CMYK device (no default profile is
+/// invented); Lab is PCS-native and needs only a wide-capable converter; gray uses a `kTRC`
+/// profile when one is embedded and accepted, otherwise the recorded sRGB assumption stays. Every
+/// other outcome is a typed unmapped reason plus a loss note.
 fn route(
     doc: &PsdDocument,
-    converter: Option<&mut (dyn IccConverter + '_)>,
+    mut converter: Option<&mut (dyn IccConverter + '_)>,
     cancel: &CancellationToken,
+    cfg: &ProposalConfig<'_>,
 ) -> Result<Routing> {
     let header = &doc.header;
     let icc = doc.resources.icc_profile();
-    let mapped_mode = matches!(header.color_mode, ColorMode::Rgb | ColorMode::Grayscale)
-        && matches!(header.depth, 8 | 16 | 32);
+    let mode = header.color_mode;
+    let wide_depth = matches!(header.depth, 8 | 16);
+    let mapped_mode = matches!(mode, ColorMode::Rgb | ColorMode::Grayscale) && matches!(header.depth, 8 | 16 | 32);
+    let wide_capable = converter.as_deref().is_some_and(|c| c.wide_available());
+    let (intent, intent_assumed) = match cfg.rendering_intent {
+        Some(intent) => (intent, false),
+        None => (RenderingIntent::Perceptual, true),
+    };
+    let (bpc, bpc_assumed) = match cfg.black_point_compensation {
+        Some(flag) => (flag, false),
+        None => (true, true),
+    };
     let mut routing = Routing {
         pixels_mapped: mapped_mode,
         unmapped_reason: "color_mode_or_depth_unmapped",
         icc_active: false,
+        wide: None,
+        intent_assumed,
+        bpc_assumed,
+        bpc_requested: bpc,
         notes: Vec::new(),
     };
-    match header.color_mode {
+    // A gray `kTRC` source has black Y = 0 by definition and the destination is a matrix profile
+    // (black 0), so black point compensation is the identity for gray (ISO 18619 scale = 1). It is
+    // not sent: Prism's gray `kTRC` black detection (hsk-studio-prism wide path, BPC on) reads a
+    // garbage source black for some gammas (measured: L* -3613 at gamma 2.0) and would distort the
+    // image. The skip is recorded (`black_point_compensation_skipped_gray`).
+    let wide_route = |kind: WideKind| Some(WideRoute { kind, intent, bpc: bpc && kind != WideKind::Gray });
+    let mut wide_attempted = false;
+    match mode {
+        ColorMode::Cmyk if wide_depth => {
+            wide_attempted = wide_capable;
+            routing.pixels_mapped = false;
+            if !wide_capable {
+                routing.unmapped_reason = "cmyk_display_conversion_unavailable";
+                routing.notes.push(("document/color_mode", LossKind::Unsupported, "cmyk_display_conversion_unavailable"));
+                if icc.is_none() {
+                    routing.notes.push(("document/profile", LossKind::Unsupported, "cmyk_profile_missing"));
+                }
+            } else if let Some(icc) = icc {
+                match wide_device(converter.as_deref_mut(), icc, cancel)? {
+                    Ok(facts) if facts.device == ProfileDevice::Cmyk && facts.supports(intent) => {
+                        routing.wide = wide_route(WideKind::Cmyk);
+                    }
+                    Ok(facts) if facts.device == ProfileDevice::Cmyk => {
+                        // The chosen intent has no table in this profile; no other intent is substituted.
+                        routing.unmapped_reason = "cmyk_intent_table_missing";
+                        routing.notes.push((
+                            "document/rendering_intent",
+                            LossKind::Unsupported,
+                            "icc_refused_missing_intent_table",
+                        ));
+                    }
+                    Ok(_) => {
+                        routing.unmapped_reason = "cmyk_profile_space_mismatch";
+                        routing.notes.push(("document/profile", LossKind::Unsupported, "icc_profile_space_mismatch"));
+                    }
+                    Err(refusal) => {
+                        routing.unmapped_reason = "cmyk_profile_refused";
+                        routing.notes.push(("document/profile", LossKind::Unsupported, refusal_code(refusal)));
+                    }
+                }
+            } else {
+                routing.unmapped_reason = "cmyk_profile_missing";
+                routing.notes.push(("document/profile", LossKind::Unsupported, "cmyk_profile_missing"));
+            }
+        }
         ColorMode::Cmyk => {
             routing.unmapped_reason = "cmyk_display_conversion_unavailable";
             routing.notes.push(("document/color_mode", LossKind::Unsupported, "cmyk_display_conversion_unavailable"));
@@ -701,13 +1005,45 @@ fn route(
                 routing.notes.push(("document/profile", LossKind::Unsupported, "cmyk_profile_missing"));
             }
         }
+        ColorMode::Lab if wide_depth => {
+            wide_attempted = wide_capable;
+            routing.pixels_mapped = false;
+            if wide_capable {
+                routing.wide = wide_route(WideKind::Lab);
+                if icc.is_some() {
+                    routing.notes.push(("document/profile", LossKind::PreservedOpaque, "icc_profile_not_applied_for_mode"));
+                }
+            } else {
+                routing.unmapped_reason = "lab_display_conversion_unavailable";
+                routing.notes.push(("document/color_mode", LossKind::Unsupported, "lab_display_conversion_unavailable"));
+            }
+        }
         ColorMode::Lab => {
             routing.unmapped_reason = "lab_display_conversion_unavailable";
             routing.notes.push(("document/color_mode", LossKind::Unsupported, "lab_display_conversion_unavailable"));
         }
+        ColorMode::Grayscale if wide_depth && wide_capable && icc.is_some() => {
+            wide_attempted = true;
+            let icc = icc.unwrap_or_default();
+            match wide_device(converter.as_deref_mut(), icc, cancel)? {
+                Ok(facts) if facts.device == ProfileDevice::Gray && facts.supports(intent) => {
+                    routing.wide = wide_route(WideKind::Gray);
+                }
+                Ok(facts) if facts.device == ProfileDevice::Gray => routing.notes.push((
+                    "document/rendering_intent",
+                    LossKind::Transformed,
+                    "icc_refused_missing_intent_table",
+                )),
+                Ok(_) => routing.notes.push(("document/profile", LossKind::PreservedOpaque, "icc_profile_space_mismatch")),
+                Err(refusal) => routing.notes.push(("document/profile", LossKind::Transformed, refusal_code(refusal))),
+            }
+        }
         _ => {}
     }
-    if let (Some(icc), Some(converter)) = (icc, converter) {
+    if routing.wide.is_some() {
+        routing.pixels_mapped = true;
+    }
+    if !wide_attempted && let (Some(icc), Some(converter)) = (icc, converter) {
         match converter.inspect(icc, cancel) {
             Err(refusal) if refusal.0 == "canceled" => return Err(PsdError::Canceled),
             Err(refusal) => {
@@ -715,7 +1051,7 @@ fn route(
                 routing.notes.push(("document/profile", kind, refusal_code(refusal)));
             }
             Ok(()) => {
-                if header.color_mode == ColorMode::Rgb && matches!(header.depth, 8 | 16) {
+                if mode == ColorMode::Rgb && wide_depth {
                     routing.icc_active = true;
                 } else {
                     routing.notes.push(("document/profile", LossKind::PreservedOpaque, "icc_profile_not_applied_for_mode"));
@@ -739,8 +1075,8 @@ pub fn to_proposal(
     cancel.check()?;
     let header = &doc.header;
     let tree = doc.tree(cfg.limits)?;
-    let routing = route(doc, converter.as_deref_mut(), cancel)?;
-    let profile_id = match (routing.icc_active, converter.as_deref()) {
+    let routing = route(doc, converter.as_deref_mut(), cancel, cfg)?;
+    let profile_id = match (routing.icc_active || routing.wide.is_some(), converter.as_deref()) {
         (true, Some(converter)) => converter.destination_profile_id(),
         _ => mint.linear_working_profile_id(),
     };
@@ -754,6 +1090,8 @@ pub fn to_proposal(
         pixels_mapped: routing.pixels_mapped,
         unmapped_reason: routing.unmapped_reason,
         icc_active: routing.icc_active,
+        wide: routing.wide,
+        stats: DisplayStats::default(),
         icc_range_clamped: false,
         layers: Vec::new(),
         operations: Vec::new(),
@@ -772,7 +1110,7 @@ pub fn to_proposal(
 
     let icc = doc.resources.icc_profile();
     let pixels_mapped = routing.pixels_mapped;
-    let assumed_profile = pixels_mapped && !routing.icc_active;
+    let assumed_profile = pixels_mapped && !routing.icc_active && routing.wide.is_none();
     for (path, kind, code) in &routing.notes {
         b.note((*path).into(), *kind, code);
     }
@@ -783,6 +1121,68 @@ pub fn to_proposal(
         }
         // The embedded profile was applied; the base report's "not applied" entry is stale.
         b.loss.entries.retain(|e| e.code != "icc_profile_not_applied");
+    }
+    let mut display = None;
+    if let Some(wide) = routing.wide {
+        match wide.kind {
+            WideKind::Cmyk => {
+                b.note("document/color_mode".into(), LossKind::Transformed, "cmyk_channels_assumed_inverted");
+            }
+            WideKind::Lab => {
+                b.note("document/color_mode".into(), LossKind::Transformed, "lab_channels_assumed_icc_encoding");
+            }
+            WideKind::Gray => {}
+        }
+        if wide.kind != WideKind::Lab {
+            b.note("document/profile".into(), LossKind::Preserved, "icc_profile_applied_by_converter");
+            b.loss.entries.retain(|e| e.code != "icc_profile_not_applied");
+        }
+        if routing.intent_assumed {
+            b.note("document/rendering_intent".into(), LossKind::Transformed, "rendering_intent_assumed_perceptual");
+        }
+        if routing.bpc_assumed {
+            b.note(
+                "document/black_point_compensation".into(),
+                LossKind::Transformed,
+                "black_point_compensation_assumed_on",
+            );
+        }
+        if wide.kind == WideKind::Gray && routing.bpc_requested {
+            b.note(
+                "document/black_point_compensation".into(),
+                LossKind::PreservedOpaque,
+                "black_point_compensation_skipped_gray",
+            );
+        }
+        if b.stats.input_range_clamped {
+            let code = if wide.kind == WideKind::Lab { "lab_input_range_clamped" } else { "icc_input_range_clamped" };
+            b.note("document/profile".into(), LossKind::Transformed, code);
+        }
+        // Any clamp to 0..=1 is reported: a gamut clip beyond the tolerance, otherwise rounding noise.
+        if b.stats.pixels_out_of_gamut > 0 {
+            b.note("document/display".into(), LossKind::Transformed, "display_out_of_gamut_clamped");
+        } else if b.stats.pixels_clamped > 0 {
+            b.note("document/display".into(), LossKind::Transformed, "display_rounding_noise_clamped");
+        }
+        let stats = &b.stats;
+        display = Some(DisplayConversion {
+            source_space: wide.kind.code(),
+            intent: wide.intent,
+            intent_assumed: routing.intent_assumed,
+            black_point_compensation: wide.bpc,
+            black_point_compensation_assumed: routing.bpc_assumed,
+            pixels_converted: stats.pixels_converted,
+            pixels_clamped: stats.pixels_clamped,
+            pixels_out_of_gamut: stats.pixels_out_of_gamut,
+            channels_clamped: stats.channels_clamped,
+            max_overshoot: stats.max_overshoot,
+            input_range_clamped: stats.input_range_clamped,
+            converter_clip: stats.clip,
+        });
+    }
+    if pixels_mapped {
+        // The base report describes the file; these two are resolved by the mapping above.
+        b.loss.entries.retain(|e| !matches!(e.code, "color_mode_unmapped" | "bit_depth_unmapped"));
     }
     if assumed_profile {
         let code = if header.depth == 32 { "float32_assumed_linear_light" } else { "profile_assumed_srgb" };
@@ -853,9 +1253,10 @@ pub fn to_proposal(
             height: header.height,
             depth: header.depth,
             assumed_profile,
-            icc_converted: routing.icc_active,
+            icc_converted: routing.icc_active || routing.wide.is_some_and(|w| w.kind != WideKind::Lab),
             icc_sha256_hex: icc.map(|bytes| hash_hex(&profile_hash(bytes))),
             sixteen_bit_scale: cfg.scale,
+            display,
         },
     })
 }

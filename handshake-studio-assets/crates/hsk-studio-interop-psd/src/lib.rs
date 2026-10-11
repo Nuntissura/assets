@@ -29,7 +29,10 @@ pub use compression::{
     COMPRESSION_RAW, COMPRESSION_RLE, COMPRESSION_ZIP, COMPRESSION_ZIP_PREDICTION, PlaneGeometry, decode as decode_samples,
     encode_rle, pack_row, row_bytes,
 };
-pub use convert::{IccConverter, IccRefusal, PrismConverter, PrismRoute, refusal_code};
+pub use convert::{
+    ClipMethodKind, ClipSummary, IccConverter, IccRefusal, PrismConverter, PrismRoute, ProfileDevice, ProfileFacts, RenderingIntent,
+    WIDE_UNAVAILABLE, WideConvertRequest, WideConvertSource, WideConverted, refusal_code,
+};
 pub use document::{
     ImageData, LayerInfo, LayerInfoLocation, LayerSection, MergedImage, MergedStatus, PsdDocument, TreeNode, read_psd,
 };
@@ -41,8 +44,8 @@ pub use limits::Limits;
 pub use loss::{LossEntry, LossKind, LossReport, key_text};
 pub use pixels::Plane;
 pub use proposal::{
-    IdMint, ImportProposal, LayerExtras, LayerMapEntry, MaskTileBlob, ProposalConfig, Provenance, SourceIdentity, TILE_EDGE,
-    TileBlob, to_proposal,
+    DisplayConversion, GAMUT_CLAMP_TOLERANCE, IdMint, ImportProposal, LayerExtras, LayerMapEntry, MaskTileBlob,
+    ProposalConfig, Provenance, SourceIdentity, TILE_EDGE, TileBlob, to_proposal,
 };
 pub use report::{ReportContext, outcome_of, report};
 pub use samples::{SixteenBitScale, linear_to_srgb, sample_to_unit, srgb_to_linear, unit_to_sample};
@@ -62,11 +65,13 @@ pub const DESCRIPTOR: &str = concat!(
     "\"api\":\"read_psd / write_psd / to_proposal / export_psd / apply_edits / report; PsdDocument::{tree,loss_report,decode_merged,merged_oracle_rgba8}\",",
     "\"capabilities\":[\"layer_records_groups_resources\",\"byte_exact_rewrite\",\"typed_loss_report\",",
     "\"folio_proposal_hierarchy_appearance_masks\",\"pigment_tiles_8_16_32_bit_full_precision\",\"embedded_icc_rgb_via_converter_when_accepted\",",
-    "\"observe_terminal_frame\",\"export_edited_folio_layer_properties_preserving_original_bytes\"],",
+    "\"observe_terminal_frame\",\"export_edited_folio_layer_properties_preserving_original_bytes\",",
+    "\"cmyk_embedded_icc_display_conversion_8_16_bit\",\"lab_pcs_native_display_conversion_8_16_bit\",\"gray_ktrc_icc_display_conversion_8_16_bit\"],",
+    "\"display_conversion\":\"projection_only_original_channels_byte_preserved;wide_prism_path;intent_perceptual_assumed_unless_configured;bpc_on_assumed_unless_configured;unclamped_output_clamped_with_counts_and_loss_entry;cmyk_without_embedded_profile_is_typed_loss_cmyk_profile_missing_no_default_profile\",",
     "\"blend\":\"psd_key_table_to_pigment_StudioBlendMode;unknown_key_typed_loss_never_normal;pass_is_group_flag\",",
     "\"unknown_bytes\":\"preserved_byte_exact\",",
     "\"oracle\":\"merged_image_only_when_hasRealMergedData\",",
-    "\"pending\":[\"photoshop_authored_oracle_fixtures\",\"cmyk_lab_gray_icc_display_conversion_dependency_SMB-PRISM-ENG-3\",",
+    "\"pending\":[\"photoshop_authored_oracle_fixtures\",\"cmyk_inverted_storage_and_lab_16_bit_encoding_verification\",\"rgb_v2_and_lut_profiles_via_wide_path\",",
     "\"vector_mask_and_layer_effect_rendering\",\"text_smart_object_editing\",\"mask_density_feather\",",
     "\"sixteen_bit_scale_and_float32_transfer_verification\"]}"
 );

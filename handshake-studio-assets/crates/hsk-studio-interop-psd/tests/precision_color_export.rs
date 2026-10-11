@@ -155,7 +155,8 @@ fn sixteen_and_thirty_two_bit_tiles_keep_full_precision_and_round_trip() {
             tiles[0].colour[4..8].copy_from_slice(&(eotf(0.25) as f32).to_le_bytes());
             let opts = ExportOptions { limits: &limits, tiles: Some(&tiles) };
             let (out, report) = export_psd(&doc, &p, &p.snapshot, &opts).expect("export");
-            assert!(report.was_applied("pixels") && report.loss.entries.is_empty());
+            assert!(report.was_applied("pixels"));
+            assert_eq!(report.loss.entries.iter().map(|e| e.code).collect::<Vec<_>>(), ["merged_composite_stale"], "a pixel edit makes the stored composite stale");
             let back = read(&out);
             let channel = |id: i16| -> Vec<u16> {
                 let plane = back.layers()[0].decode_channel(id, &back.header, &limits, &cancel).unwrap().unwrap();
@@ -268,22 +269,31 @@ fn embedded_profiles_go_through_prism_and_refusals_are_typed_losses() {
         assert!(p.loss.has_code("icc_refused_profile_limit") && p.provenance.assumed_profile && !p.provenance.icc_converted);
         expect_assumed(&p);
 
-        // CMYK: Prism has no 4-channel path; with or without a profile the layers are unmapped
+        // CMYK: a profile the wide path refuses (here malformed) or no profile at all leaves the
+        // layers unmapped with a typed reason; no default CMYK profile is invented
         let planes: Vec<Vec<u8>> = (0..4u8).map(|c| vec![c * 10 + 1, c * 10 + 2]).collect();
         let cmyk = |icc: Option<&[u8]>| {
             let resources = icc.map_or_else(Vec::new, |bytes| resource(1039, "", bytes));
             flat_doc(4, 4, 8, (1, 2), resources, planes.iter().cloned().enumerate().map(|(i, d)| (i as i16, d)).collect(), planes.concat())
         };
         let (p, _) = with_prism(&cmyk(Some(&vec![7u8; 70_000])));
-        assert!(p.loss.has_code("cmyk_display_conversion_unavailable") && p.loss.has_code("icc_refused_profile_limit"));
-        assert_eq!(reason_of(&p), "cmyk_display_conversion_unavailable");
+        assert!(p.loss.has_code("icc_refused_malformed_profile") && !p.loss.has_code("cmyk_display_conversion_unavailable"));
+        assert_eq!(reason_of(&p), "cmyk_profile_refused");
         assert!(p.tiles.is_empty() && p.snapshot.document().colour_mode == 3);
         let (p, _) = with_prism(&cmyk(None));
+        assert!(p.loss.has_code("cmyk_profile_missing") && !p.loss.has_code("cmyk_display_conversion_unavailable"));
+        assert_eq!(reason_of(&p), "cmyk_profile_missing");
+        // without any converter the conversion itself is unavailable
+        let (_, p) = proposal_of(&cmyk(None), SixteenBitScale::default(), None);
         assert!(p.loss.has_code("cmyk_profile_missing") && p.loss.has_code("cmyk_display_conversion_unavailable"));
+        assert_eq!(reason_of(&p), "cmyk_display_conversion_unavailable");
 
-        // Lab has no display conversion either
+        // Lab is PCS-native: it maps through the converter, and stays unmapped without one
         let lab = flat_doc(9, 3, 8, (1, 2), Vec::new(), (0..3i16).map(|i| (i, vec![100, 128])).collect(), vec![100, 128, 100, 128, 100, 128]);
         let (p, _) = with_prism(&lab);
+        assert!(p.loss.has_code("lab_channels_assumed_icc_encoding") && !p.loss.has_code("lab_display_conversion_unavailable"));
+        assert!(!p.tiles.is_empty() && p.provenance.display.is_some());
+        let (_, p) = proposal_of(&lab, SixteenBitScale::default(), None);
         assert!(p.loss.has_code("lab_display_conversion_unavailable"));
         assert_eq!(reason_of(&p), "lab_display_conversion_unavailable");
 
@@ -394,7 +404,7 @@ fn export_of_an_edited_folio_document_round_trips_supported_fields_and_preserves
             assert!(report.was_applied(field), "{field} was written back");
         }
         let lost: Vec<(&str, &str)> = report.loss.entries.iter().map(|e| (e.path.as_str(), e.code)).collect();
-        assert_eq!(lost, [("layer[3]/blend", "blend_mode_not_representable_in_psd")]);
+        assert_eq!(lost, [("layer[3]/blend", "blend_mode_not_representable_in_psd"), ("merged_image", "merged_composite_stale")]);
 
         // import the exported file again: supported fields equal the edit
         let (back, p2) = proposal_of(&out, SixteenBitScale::default(), None);
@@ -422,8 +432,348 @@ fn export_of_an_edited_folio_document_round_trips_supported_fields_and_preserves
         assert_eq!(new[3].mask().unwrap().flags, 0x02, "disabled, not linked");
         assert_eq!((new[0].blend_key, new[0].clipping, new[0].opacity, new[0].fill_opacity()), (*b"scrn", 1, 102, Some(128)));
         assert_eq!((new[4].blend_key, new[4].group_blend_key()), (*b"mul ", Some(*b"mul ")));
-        assert_eq!(back.resources, doc.resources, "ICC profile and every other resource");
+        assert_eq!(doc.merged_status(&Limits::default()), MergedStatus::Real);
+        assert_eq!(back.merged_status(&Limits::default()), MergedStatus::Placeholder, "the edit made the stored composite stale");
+        let mut stale_cleared = doc.resources.clone();
+        stale_cleared.blocks.iter_mut().find(|b| b.id == RESOURCE_VERSION_INFO).unwrap().data[4] = 0;
+        assert_eq!(back.resources, stale_cleared, "ICC profile and every other resource; only hasRealMergedData changed");
         assert_eq!(back.image_data, doc.image_data);
         assert_eq!(back.layer_section.blocks, doc.layer_section.blocks);
+    });
+}
+
+// ---- CMYK / Lab / gray display conversion through the Prism wide path -------------------------
+
+/// Imports through a Prism-backed converter with explicit display settings.
+fn prism_import(bytes: &[u8], scale: SixteenBitScale, intent: Option<RenderingIntent>, bpc: Option<bool>) -> (PsdDocument, ImportProposal) {
+    let limits = Limits::default();
+    let doc = read(bytes);
+    let mut cfg = ProposalConfig::new(&limits, budget(), &Open);
+    cfg.scale = scale;
+    cfg.rendering_intent = intent;
+    cfg.black_point_compensation = bpc;
+    let route = prism_route();
+    let prism = Prism::new(route.actor.clone(), 4).unwrap();
+    let mut sink = Frames::default();
+    let mut converter = PrismConverter::new(prism, route, &mut sink);
+    let proposal = to_proposal(&doc, &SourceIdentity::of(bytes), &cfg, &mut Mint(0), Some(&mut converter), &CancellationToken::default())
+        .expect("proposal");
+    (doc, proposal)
+}
+const RELATIVE: Option<RenderingIntent> = Some(RenderingIntent::RelativeColorimetric);
+fn assert_tile_matches(tile: &TileBlob, pixel: usize, want: [f64; 3], tolerance: f64, what: &str) {
+    for (k, w) in want.iter().enumerate() {
+        let got = f32_at(&tile.colour, pixel * 3 + k);
+        assert!((f64::from(got) - w.clamp(0.0, 1.0)).abs() <= tolerance, "{what} px{pixel} ch{k}: {got} vs {}", w.clamp(0.0, 1.0));
+        assert!((0.0..=1.0).contains(&got), "{what} px{pixel} ch{k} leaves 0..=1 after the recorded clamp");
+    }
+}
+fn channel_plane(doc: &PsdDocument, id: i16) -> Vec<u8> {
+    doc.layers()[0].decode_channel(id, &doc.header, &Limits::default(), &CancellationToken::default()).unwrap().unwrap().bytes
+}
+/// Unedited export is byte-identical; an edited projection tile is a typed loss and the original
+/// channel bytes survive.
+fn assert_projection_survives_export(doc: &PsdDocument, p: &ImportProposal, original: &[u8], loss_code: &str) {
+    let limits = Limits::default();
+    let same = ExportOptions { limits: &limits, tiles: Some(&p.tiles) };
+    assert_eq!(export_psd(doc, p, &p.snapshot, &same).unwrap().0, original, "unedited export is byte-identical");
+    let mut edited = p.tiles.clone();
+    edited[0].colour[0..4].copy_from_slice(&0.123f32.to_le_bytes());
+    let (out, report) = export_psd(doc, p, &p.snapshot, &ExportOptions { limits: &limits, tiles: Some(&edited) }).unwrap();
+    assert_eq!(out, original, "a display projection is not a rewrite: original channels stay as read");
+    assert!(report.loss.has_code(loss_code) && !report.was_applied("pixels"));
+}
+
+/// CMYK with an embedded profile: inverted storage is undone, the output is checked against the
+/// closed form of the synthetic printer, out-of-gamut values are clamped with counts and loss entries,
+/// intent and black point compensation are recorded as assumptions unless configured, and the
+/// original channels are never rewritten.
+#[test]
+fn cmyk_display_conversion_is_a_clamped_projection_and_keeps_the_original_channels() {
+    bounded_case("cmyk_display_conversion_is_a_clamped_projection_and_keeps_the_original_channels", || {
+        let profile = icc::cmyk_profile(&[b"A2B0", b"A2B1", b"A2B2"]);
+        // inks (c, m, y, k): white, K only, cyan only, cyan+magenta; stored inverted (255 = no ink)
+        let inks: [[f64; 4]; 4] = [[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]];
+        let planes: Vec<Vec<u8>> = (0..4).map(|c| inks.iter().map(|ink| (255.0 * (1.0 - ink[c])).round() as u8).collect()).collect();
+        let bytes = flat_doc(4, 4, 8, (4, 1), resource(1039, "", &profile), planes.iter().cloned().enumerate().map(|(i, d)| (i as i16, d)).collect(), planes.concat());
+
+        // configured relative colorimetric, no BPC: closed form
+        let (doc, p) = prism_import(&bytes, SixteenBitScale::default(), RELATIVE, Some(false));
+        let tile = &p.tiles[0];
+        let wants: Vec<[f64; 3]> = inks
+            .iter()
+            .map(|i| {
+                let (l, a, b) = icc::printer_lab(i[0], i[1], i[2], i[3]);
+                icc::lab_to_linear_srgb(l, a, b)
+            })
+            .collect();
+        for (i, want) in wants.iter().enumerate() {
+            assert_tile_matches(tile, i, *want, 4e-3, "cmyk");
+        }
+        let d = p.provenance.display.as_ref().expect("display conversion record");
+        assert_eq!((d.source_space, d.intent, d.intent_assumed), ("cmyk", RenderingIntent::RelativeColorimetric, false));
+        assert_eq!((d.black_point_compensation, d.black_point_compensation_assumed, d.pixels_converted), (false, false, 4));
+        let overshoot = |w: &[f64; 3]| w.iter().map(|v| (-v).max(v - 1.0).max(0.0)).fold(0.0, f64::max);
+        let expected_clipped = wants.iter().filter(|w| overshoot(w) > f64::from(GAMUT_CLAMP_TOLERANCE)).count() as u64;
+        assert!(expected_clipped >= 2, "cyan and cyan+magenta are outside sRGB by construction");
+        assert_eq!(d.pixels_out_of_gamut, expected_clipped);
+        assert!(d.pixels_clamped >= d.pixels_out_of_gamut && d.channels_clamped[0] >= 1);
+        assert!((d.max_overshoot - wants.iter().map(overshoot).fold(0.0, f64::max)).abs() < 5e-3);
+        assert_eq!((d.converter_clip.method, d.converter_clip.pixels_clipped), (ClipMethodKind::LinearDevice, expected_clipped));
+        assert!(p.provenance.icc_converted && !p.provenance.assumed_profile);
+        for code in ["cmyk_channels_assumed_inverted", "icc_profile_applied_by_converter", "display_out_of_gamut_clamped"] {
+            assert!(p.loss.has_code(code), "{code}");
+        }
+        for code in ["color_mode_unmapped", "bit_depth_unmapped", "rendering_intent_assumed_perceptual", "black_point_compensation_assumed_on", "icc_profile_not_applied"] {
+            assert!(!p.loss.has_code(code), "{code}");
+        }
+        assert!(matches!(p.snapshot.document().layers[0].payload, Payload::Raster { .. }));
+        assert_eq!(channel_plane(&doc, 3), planes[3], "stored (inverted) K plane is untouched");
+        assert_projection_survives_export(&doc, &p, &bytes, "pixel_export_after_icc_conversion_unsupported");
+
+        // defaults: perceptual and BPC on are ASSUMED and recorded; BPC deepens K-only black, white stays
+        let (_, q) = prism_import(&bytes, SixteenBitScale::default(), None, None);
+        let d = q.provenance.display.as_ref().unwrap();
+        assert_eq!((d.intent, d.intent_assumed, d.black_point_compensation, d.black_point_compensation_assumed), (RenderingIntent::Perceptual, true, true, true));
+        assert!(q.loss.has_code("rendering_intent_assumed_perceptual") && q.loss.has_code("black_point_compensation_assumed_on"));
+        for k in 0..3 {
+            assert!(close(f32_at(&q.tiles[0].colour, k), 1.0, 3e-3), "white stays white with BPC");
+        }
+        // ISO 18619 on a matrix destination: source black = darkest vertex (all inks, L* 5), destination black 0,
+        // so Y' = 1 - (1 - Y) / (1 - Y(5)); the K-only black (L* 40) is neutral and lands on that value
+        let (y_source_black, y_k) = (5.0 * 27.0 / 24389.0, (56.0f64 / 116.0).powi(3));
+        let with_bpc = 1.0 - (1.0 - y_k) / (1.0 - y_source_black);
+        for k in 3..6 {
+            assert!(close(f32_at(&q.tiles[0].colour, k), with_bpc, 1.5e-3), "BPC is applied exactly once: ch{k} {} vs {with_bpc}", f32_at(&q.tiles[0].colour, k));
+        }
+        assert!(with_bpc < y_k - 4e-3, "the compensation is measurable at this fixture's black depth");
+    });
+}
+
+/// 16-bit CMYK honours the configured 16-bit scale and clamps inputs that leave range (recorded);
+/// Lab (8 and 16 bit) needs no profile and maps through the PCS-native path with explicit decode.
+#[test]
+fn sixteen_bit_cmyk_and_lab_use_the_scale_and_the_pcs_native_path() {
+    bounded_case("sixteen_bit_cmyk_and_lab_use_the_scale_and_the_pcs_native_path", || {
+        // CMYK 16-bit, scale 32768: raw 32768 = no ink, raw 16384 = half ink; raw 40000 exceeds 1.0
+        let profile = icc::cmyk_profile(&[b"A2B0", b"A2B1", b"A2B2"]);
+        let (c, m, y, k) = ([32768u16; 3], [32768u16; 3], [32768u16; 3], [16384u16, 32768, 40000]);
+        let planes = [be16s(&c), be16s(&m), be16s(&y), be16s(&k)];
+        let bytes = flat_doc(4, 4, 16, (3, 1), resource(1039, "", &profile), planes.iter().cloned().enumerate().map(|(i, d)| (i as i16, d)).collect(), planes.concat());
+        let (doc, p) = prism_import(&bytes, SixteenBitScale::Photoshop32768, RELATIVE, Some(false));
+        let lab_srgb = |(l, a, b): (f64, f64, f64)| icc::lab_to_linear_srgb(l, a, b);
+        let half_k = lab_srgb(icc::printer_lab(0.0, 0.0, 0.0, 0.5));
+        let paper = lab_srgb(icc::printer_lab(0.0, 0.0, 0.0, 0.0));
+        assert_tile_matches(&p.tiles[0], 0, half_k, 4e-3, "cmyk16 half K");
+        assert_tile_matches(&p.tiles[0], 1, paper, 4e-3, "cmyk16 paper");
+        assert_tile_matches(&p.tiles[0], 2, paper, 4e-3, "cmyk16 over-range ink clamps to no ink");
+        assert!(p.loss.has_code("sixteen_bit_scale_assumed_32768") && p.loss.has_code("icc_input_range_clamped"));
+        assert!(p.provenance.display.as_ref().unwrap().input_range_clamped);
+        assert_eq!(channel_plane(&doc, 3), planes[3], "16-bit K plane bytes are untouched");
+        assert_projection_survives_export(&doc, &p, &bytes, "pixel_export_after_icc_conversion_unsupported");
+
+        // Lab 16-bit (full scale): L = raw/65535*100, a/b = raw/65535*255 - 128; raw 32896 is the neutral axis
+        let lab_raw = |l: f64, a: f64, b: f64| [(l / 100.0 * 65535.0).round() as u16, ((a + 128.0) * 257.0) as u16, ((b + 128.0) * 257.0) as u16];
+        let px16 = [lab_raw(100.0, 0.0, 0.0), lab_raw(0.0, 0.0, 0.0), lab_raw(60.0, 20.0, -25.0)];
+        let lab_planes: Vec<Vec<u8>> = (0..3).map(|c| be16s(&px16.map(|p| p[c]))).collect();
+        let bytes16 = flat_doc(9, 3, 16, (3, 1), Vec::new(), lab_planes.iter().cloned().enumerate().map(|(i, d)| (i as i16, d)).collect(), lab_planes.concat());
+        let (doc16, p16) = prism_import(&bytes16, SixteenBitScale::Full65535, None, None);
+        for (i, raw) in px16.iter().enumerate() {
+            let (l, a, b) = (f64::from(raw[0]) / 65535.0 * 100.0, f64::from(raw[1]) / 65535.0 * 255.0 - 128.0, f64::from(raw[2]) / 65535.0 * 255.0 - 128.0);
+            assert_tile_matches(&p16.tiles[0], i, icc::lab_to_linear_srgb(l, a, b), 3e-3, "lab16");
+        }
+        let d = p16.provenance.display.as_ref().unwrap();
+        assert_eq!((d.source_space, d.pixels_converted), ("lab", 3));
+        assert!(!p16.provenance.icc_converted && !p16.provenance.assumed_profile, "PCS-native: no profile, no sRGB assumption");
+        assert!(p16.loss.has_code("lab_channels_assumed_icc_encoding") && !p16.loss.has_code("profile_assumed_srgb"));
+        assert_projection_survives_export(&doc16, &p16, &bytes16, "pixel_export_after_display_conversion_unsupported");
+
+        // Lab 8-bit: L = v*100/255, a/b = v - 128
+        let px8 = [[255u8, 128, 128], [0, 128, 128], [128, 168, 88]];
+        let planes8: Vec<Vec<u8>> = (0..3).map(|c| px8.iter().map(|p| p[c]).collect()).collect();
+        let bytes8 = flat_doc(9, 3, 8, (3, 1), Vec::new(), planes8.iter().cloned().enumerate().map(|(i, d)| (i as i16, d)).collect(), planes8.concat());
+        let (_, p8) = prism_import(&bytes8, SixteenBitScale::default(), None, None);
+        for (i, raw) in px8.iter().enumerate() {
+            let lab = (f64::from(raw[0]) * 100.0 / 255.0, f64::from(raw[1]) - 128.0, f64::from(raw[2]) - 128.0);
+            assert_tile_matches(&p8.tiles[0], i, icc::lab_to_linear_srgb(lab.0, lab.1, lab.2), 3e-3, "lab8");
+        }
+    });
+}
+
+/// Gray with a `kTRC` profile converts through the wide path (gamma 2 here, closed form); a gray
+/// document without a profile keeps its recorded sRGB assumption and a profile of the wrong device
+/// space is a typed note.
+#[test]
+fn gray_ktrc_profile_converts_and_other_gray_cases_stay_typed() {
+    bounded_case("gray_ktrc_profile_converts_and_other_gray_cases_stay_typed", || {
+        let profile = icc::gray_profile(2.0);
+        let g8 = [0u8, 64, 200, 255];
+        let bytes = flat_doc(1, 1, 8, (4, 1), resource(1039, "", &profile), vec![(0, g8.to_vec())], g8.to_vec());
+        let (doc, p) = prism_import(&bytes, SixteenBitScale::default(), None, None);
+        for (i, raw) in g8.iter().enumerate() {
+            let v = (f64::from(*raw) / 255.0).powi(2);
+            assert_tile_matches(&p.tiles[0], i, [v; 3], 3e-3, "gray8");
+        }
+        let d = p.provenance.display.as_ref().unwrap();
+        assert_eq!((d.source_space, d.intent_assumed), ("gray", true));
+        assert!(p.provenance.icc_converted && !p.provenance.assumed_profile);
+        assert!(p.loss.has_code("icc_profile_applied_by_converter") && p.loss.has_code("gray_replicated_to_rgb"));
+        assert!(!p.loss.has_code("profile_assumed_srgb") && !p.loss.has_code("icc_profile_not_applied"));
+        assert_eq!(channel_plane(&doc, 0), g8.to_vec());
+        assert_projection_survives_export(&doc, &p, &bytes, "pixel_export_after_icc_conversion_unsupported");
+
+        // 16-bit gray, full scale
+        let g16 = [0u16, 16384, 65535];
+        let bytes16 = flat_doc(1, 1, 16, (3, 1), resource(1039, "", &profile), vec![(0, be16s(&g16))], be16s(&g16));
+        let (_, p16) = prism_import(&bytes16, SixteenBitScale::Full65535, None, None);
+        for (i, raw) in g16.iter().enumerate() {
+            assert_tile_matches(&p16.tiles[0], i, [(f64::from(*raw) / 65535.0).powi(2); 3], 3e-3, "gray16");
+        }
+
+        // no profile: unchanged recorded assumption (sRGB), no display conversion record
+        let bare = flat_doc(1, 1, 8, (4, 1), Vec::new(), vec![(0, g8.to_vec())], g8.to_vec());
+        let (_, p) = prism_import(&bare, SixteenBitScale::default(), None, None);
+        assert!(p.loss.has_code("profile_assumed_srgb") && p.provenance.display.is_none() && p.provenance.assumed_profile);
+        assert!(close(f32_at(&p.tiles[0].colour, 3), eotf(64.0 / 255.0), 1e-6));
+
+        // an RGB profile on a gray document does not apply: typed note, assumption stays
+        let rgb_on_gray = flat_doc(1, 1, 8, (4, 1), resource(1039, "", SRGB_V4), vec![(0, g8.to_vec())], g8.to_vec());
+        let (_, p) = prism_import(&rgb_on_gray, SixteenBitScale::default(), None, None);
+        assert!(p.loss.has_code("icc_profile_space_mismatch") && p.loss.has_code("profile_assumed_srgb") && p.provenance.display.is_none());
+    });
+}
+
+/// Every way CMYK cannot be displayed is a typed unmapped layer with a specific reason: wrong device
+/// space, a profile lacking the chosen intent's table (no other intent is substituted), and a
+/// converter without a wide path. No default CMYK profile is ever used.
+#[test]
+fn cmyk_without_a_usable_profile_is_a_typed_unmapped_layer_never_defaulted() {
+    bounded_case("cmyk_without_a_usable_profile_is_a_typed_unmapped_layer_never_defaulted", || {
+        let planes: Vec<Vec<u8>> = (0..4u8).map(|c| vec![200 - c, 100 + c]).collect();
+        let doc_with = |icc: &[u8]| {
+            flat_doc(4, 4, 8, (2, 1), resource(1039, "", icc), planes.iter().cloned().enumerate().map(|(i, d)| (i as i16, d)).collect(), planes.concat())
+        };
+        // RGB profile on a CMYK document
+        let (_, p) = prism_import(&doc_with(SRGB_V4), SixteenBitScale::default(), None, None);
+        assert_eq!(reason_of(&p), "cmyk_profile_space_mismatch");
+        assert!(p.loss.has_code("icc_profile_space_mismatch") && p.tiles.is_empty() && p.provenance.display.is_none());
+        // a colorimetric-only printer profile cannot serve the assumed perceptual intent
+        let colorimetric_only = icc::cmyk_profile(&[b"A2B1"]);
+        let (_, p) = prism_import(&doc_with(&colorimetric_only), SixteenBitScale::default(), None, None);
+        assert_eq!(reason_of(&p), "cmyk_intent_table_missing");
+        assert!(p.loss.has_code("icc_refused_missing_intent_table") && p.tiles.is_empty());
+        // ...but it maps once the colorimetric intent is configured
+        let (_, p) = prism_import(&doc_with(&colorimetric_only), SixteenBitScale::default(), RELATIVE, None);
+        assert!(!p.tiles.is_empty() && p.provenance.display.is_some() && !p.loss.has_code("rendering_intent_assumed_perceptual"));
+        // a converter without a wide path: conversion unavailable, legacy refusal still recorded
+        struct LegacyOnly;
+        impl IccConverter for LegacyOnly {
+            fn destination_profile_id(&self) -> String {
+                "SCPF-019abcde-0000-7000-8000-0000000000aa".into()
+            }
+            fn inspect(&mut self, _: &[u8], _: &CancellationToken) -> std::result::Result<(), IccRefusal> {
+                Err(IccRefusal("unsupported_profile"))
+            }
+            fn convert_rgb(&mut self, _: &[u8], _: &[[f32; 3]], _: &CancellationToken) -> std::result::Result<Vec<[f32; 3]>, IccRefusal> {
+                Err(IccRefusal("unsupported_profile"))
+            }
+        }
+        let bytes = doc_with(&icc::cmyk_profile(&[b"A2B0", b"A2B1", b"A2B2"]));
+        let (_, p) = proposal_of(&bytes, SixteenBitScale::default(), Some(&mut LegacyOnly));
+        assert_eq!(reason_of(&p), "cmyk_display_conversion_unavailable");
+        assert!(p.loss.has_code("cmyk_display_conversion_unavailable") && p.loss.has_code("icc_refused_unsupported_profile"));
+    });
+}
+
+// ---- R3 review regressions (CONFIRMED findings) ------------------------------------------------
+
+fn edited_snapshot(p: &ImportProposal, edit: impl Fn(&mut hsk_studio_folio::StudioLayer)) -> hsk_studio_folio::Snapshot {
+    let mut d = p.snapshot.document().clone();
+    d.revision = 2;
+    for l in &mut d.layers {
+        edit(l);
+    }
+    validate_document(d, budget(), &CancellationToken::default(), &Open).expect("the edit is a valid Folio document")
+}
+
+/// R3 finding 1: tile blobs are caller data (public fields). A truncated, emptied or oversized blob is
+/// a typed error from the public export, never an out-of-bounds panic; intact blobs still export.
+#[test]
+fn export_with_malformed_tile_blobs_is_a_typed_error_never_a_panic() {
+    bounded_case("export_with_malformed_tile_blobs_is_a_typed_error_never_a_panic", || {
+        let limits = Limits::default();
+        let bytes = export_fixture();
+        let (doc, p) = proposal_of(&bytes, SixteenBitScale::default(), None);
+        assert!(!p.tiles.is_empty());
+        for damage in 0..5 {
+            let mut tiles = p.tiles.clone();
+            match damage {
+                0 => tiles[0].colour.truncate(4),
+                1 => tiles[0].alpha.truncate(3),
+                2 => tiles[0].colour.clear(),
+                3 => tiles[0].alpha.clear(),
+                _ => tiles[0].colour.push(0),
+            }
+            let result = export_psd(&doc, &p, &p.snapshot, &ExportOptions { limits: &limits, tiles: Some(&tiles) });
+            assert_eq!(result.unwrap_err(), PsdError::Encode("tile_blob_size"), "damage {damage}");
+        }
+        let mut edited = p.tiles.clone();
+        edited[0].colour[0..4].copy_from_slice(&0.5f32.to_le_bytes());
+        let (_, report) = export_psd(&doc, &p, &p.snapshot, &ExportOptions { limits: &limits, tiles: Some(&edited) }).unwrap();
+        assert!(report.was_applied("pixels"), "a well-formed edit still exports");
+    });
+}
+
+/// R3 finding 2: after an edit that changes the picture the stored merged composite no longer matches
+/// the layers. It is never left marked real: `hasRealMergedData` is cleared (no oracle is served) and
+/// `merged_composite_stale` is reported; its bytes stay as read. A name-only edit changes nothing.
+#[test]
+fn edits_that_change_the_picture_mark_the_stored_composite_stale_and_name_edits_do_not() {
+    bounded_case("edits_that_change_the_picture_mark_the_stored_composite_stale_and_name_edits_do_not", || {
+        let limits = Limits::default();
+        let cancel = CancellationToken::default();
+        let opts = ExportOptions { limits: &limits, tiles: None };
+        let bytes = export_fixture();
+        let (doc, p) = proposal_of(&bytes, SixteenBitScale::default(), None);
+        assert_eq!(doc.merged_status(&limits), MergedStatus::Real);
+        assert!(doc.merged_oracle_rgba8(&limits, &cancel).unwrap().is_some(), "the unedited composite is a usable oracle");
+
+        // name only: the picture is unchanged, the flag stays
+        let renamed = edited_snapshot(&p, |l| {
+            if l.name == "base" {
+                l.name = "renamed".into();
+            }
+        });
+        let (out, report) = export_psd(&doc, &p, &renamed, &opts).unwrap();
+        assert!(report.was_applied("name") && !report.loss.has_code("merged_composite_stale"));
+        let back = read(&out);
+        assert_eq!(back.merged_status(&limits), MergedStatus::Real);
+        assert!(back.merged_oracle_rgba8(&limits, &cancel).unwrap().is_some());
+
+        // visibility (or any appearance or pixel edit): stale
+        let hidden = edited_snapshot(&p, |l| {
+            if l.name == "base" {
+                l.visible = false;
+            }
+        });
+        let (out, report) = export_psd(&doc, &p, &hidden, &opts).unwrap();
+        assert!(report.loss.has_code("merged_composite_stale"));
+        assert!(report.applied.iter().any(|(path, field)| path == "resource[1057]" && *field == "has_real_merged_data_cleared"));
+        let back = read(&out);
+        assert_eq!(back.merged_status(&limits), MergedStatus::Placeholder);
+        assert_eq!(back.merged_oracle_rgba8(&limits, &cancel).unwrap(), None, "a stale composite is never served as an oracle");
+        assert_eq!(back.image_data, doc.image_data, "the composite bytes themselves are untouched");
+        assert!(back.decode_merged(&limits, &cancel).unwrap().is_some());
+
+        // a file that never said (no resource 1057) still reports the staleness
+        let bare = flat_doc(3, 3, 8, (2, 1), Vec::new(), vec![(0, vec![10, 20]), (1, vec![30, 40]), (2, vec![50, 60])], vec![10, 20, 30, 40, 50, 60]);
+        let (bare_doc, bare_p) = proposal_of(&bare, SixteenBitScale::default(), None);
+        let hidden = edited_snapshot(&bare_p, |l| l.visible = false);
+        let (_, report) = export_psd(&bare_doc, &bare_p, &hidden, &opts).unwrap();
+        assert!(report.loss.has_code("merged_composite_stale") && !report.applied.iter().any(|(path, _)| path == "resource[1057]"));
+        // nothing applied, nothing stale
+        let (same, report) = export_psd(&bare_doc, &bare_p, &bare_p.snapshot, &opts).unwrap();
+        assert_eq!(same, bare);
+        assert!(report.loss.entries.is_empty());
     });
 }

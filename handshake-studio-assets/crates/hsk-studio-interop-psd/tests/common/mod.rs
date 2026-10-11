@@ -23,6 +23,8 @@ pub fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
     }
 }
 
+pub mod icc;
+
 // ---- independent byte assembly -------------------------------------------------------------
 
 pub fn be16(v: u16) -> Vec<u8> {

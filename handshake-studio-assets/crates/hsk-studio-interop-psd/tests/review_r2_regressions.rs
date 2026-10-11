@@ -146,9 +146,10 @@ fn descriptor_is_valid_json_and_does_not_list_shipped_work_as_pending() {
         let d: serde_json::Value = serde_json::from_str(DESCRIPTOR).expect("DESCRIPTOR is JSON");
         let pending: Vec<&str> = d["pending"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
         assert!(!pending.contains(&"proposal_mapping"), "to_proposal ships");
-        assert!(pending.iter().any(|p| p.contains("SMB-PRISM-ENG-3")), "the Prism dependency is recorded");
+        assert!(!pending.iter().any(|p| p.contains("SMB-PRISM-ENG-3")), "the Prism n-channel path shipped; the dependency is no longer pending");
+        assert!(pending.iter().any(|p| p.contains("inverted_storage")), "unverified CMYK/Lab encodings are recorded as pending verification");
         let caps = d["capabilities"].to_string();
-        assert!(caps.contains("folio_proposal") && caps.contains("pigment_tiles_8_16_32_bit"));
+        assert!(caps.contains("folio_proposal") && caps.contains("pigment_tiles_8_16_32_bit") && caps.contains("cmyk_embedded_icc_display_conversion"));
         assert!(d["api"].as_str().unwrap().contains("to_proposal"));
         assert_eq!(d["limits"]["max_layers"], 8192);
     });

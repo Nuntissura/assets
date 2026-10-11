@@ -8,7 +8,11 @@
 //! `pass`) and the mask enabled/linked flags. Layer colour and alpha are re-encoded from edited
 //! tiles only when the caller supplies tiles whose digests differ from the imported ones. Edits
 //! that PSD cannot take (blend members without a PSD key, added or removed layers or masks, mask
-//! pixel edits, pixels after an ICC conversion) are reported as typed losses and left out.
+//! pixel edits, pixels after an ICC or CMYK/Lab display conversion) are reported as typed losses
+//! and left out; display-converted tiles are a projection, so the original channel bytes of CMYK,
+//! Lab and gray-profile layers always survive export unchanged. Any applied edit other than a name
+//! makes the stored merged composite stale: `hasRealMergedData` is cleared and `merged_composite_stale`
+//! is reported (no renderer here to regenerate it). Malformed tile blobs are a typed error.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +26,7 @@ use crate::layers::{KEY_SECTION_DIVIDER, KEY_SECTION_DIVIDER_NESTED, PsdChannel,
 use crate::limits::Limits;
 use crate::loss::{LossEntry, LossKind, LossReport};
 use crate::proposal::{ImportProposal, TILE_EDGE, TileBlob, floor_div, imported_look};
+use crate::resources::{ImageResources, RESOURCE_VERSION_INFO};
 use crate::samples::{SixteenBitScale, linear_to_srgb, unit_to_sample};
 use crate::writer::write_psd;
 
@@ -78,6 +83,23 @@ fn mask_digests(snapshot: &Snapshot, layer_id: &str) -> Vec<String> {
         .and_then(|a| a.mask.as_ref())
         .map(|m| m.tiles.iter().map(|t| format!("{}:{}", t.object_key, t.content_digest.digest)).collect())
         .unwrap_or_default()
+}
+
+/// After any edit that changes what the file displays, the stored merged composite no longer
+/// matches the layers. This crate has no renderer to regenerate it, so resource 1057
+/// `hasRealMergedData` is cleared (readers then refuse it as an oracle) and the staleness is a typed
+/// loss. The composite bytes themselves stay as read. Name-only edits do not change the picture and
+/// never call this.
+fn mark_merged_stale(resources: &mut ImageResources, report: &mut ExportReport) {
+    // Resource 1057 data: u32 version, then the u8 `hasRealMergedData`.
+    if let Some(block) = resources.blocks.iter_mut().find(|b| b.id == RESOURCE_VERSION_INFO)
+        && block.data.len() > 4
+        && block.data[4] != 0
+    {
+        block.data[4] = 0;
+        report.applied("resource[1057]", "has_real_merged_data_cleared");
+    }
+    report.lost("merged_image", LossKind::Transformed, "merged_composite_stale");
 }
 
 /// Applies the edits in `edited` onto `doc` (which must be the document `proposal` was made from).
@@ -190,12 +212,18 @@ pub fn apply_edits(
             if bytes_of(&edited_tiles) != bytes_of(&original) {
                 if proposal.provenance.icc_converted {
                     report.lost(&format!("{path}/pixels"), LossKind::Unsupported, "pixel_export_after_icc_conversion_unsupported");
+                } else if proposal.provenance.display.is_some() {
+                    // CMYK/Lab tiles are a display projection: the original channels stay as read.
+                    report.lost(&format!("{path}/pixels"), LossKind::Unsupported, "pixel_export_after_display_conversion_unsupported");
                 } else {
                     encode_layer_pixels(layer, &header, &edited_tiles, proposal.provenance.sixteen_bit_scale)?;
                     report.applied(&path, "pixels");
                 }
             }
         }
+    }
+    if report.applied.iter().any(|(_, field)| *field != "name") {
+        mark_merged_stale(&mut doc.resources, &mut report);
     }
     Ok(report)
 }
@@ -228,6 +256,12 @@ fn encode_layer_pixels(layer: &mut PsdLayer, header: &Header, tiles: &[&TileBlob
     let depth = header.depth;
     if !matches!(depth, 8 | 16 | 32) || !matches!(header.color_mode, ColorMode::Rgb | ColorMode::Grayscale) {
         return Err(PsdError::UnsupportedMode("pixel_export_mode"));
+    }
+    // Tile blobs are caller data (public fields): a blob that is not exactly one cell is a typed
+    // error here, never an out-of-bounds index below.
+    let cell = (TILE_EDGE as usize) * (TILE_EDGE as usize);
+    if tiles.iter().any(|t| t.colour.len() != cell * 12 || t.alpha.len() != cell * 4) {
+        return Err(PsdError::Encode("tile_blob_size"));
     }
     let rect = layer.rect;
     let (width, height) = (rect.width() as usize, rect.height() as usize);
