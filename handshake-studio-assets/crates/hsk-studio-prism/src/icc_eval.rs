@@ -31,9 +31,10 @@ pub(crate) const D50: [f64; 3] = [0.9642, 1.0, 0.8249];
 // ------------------------------------------------------------------ deterministic elementary functions
 // Table-driven ln / exp. Every table is computed by const evaluation (IEEE-exact, same on every host)
 // from slowly converging but exact series; the run-time polynomials are evaluated in a fixed order.
-const LN2_HI: f64 = 6.931_471_803_691_238_164_90e-1; // low 32 bits zero: n * LN2_HI is exact for |n| < 2^20
-const LN2_LO: f64 = 1.908_214_929_270_587_700_02e-10;
-const LOG2E: f64 = 1.442_695_040_888_963_407_4;
+/// ln 2 split (fdlibm): the high part has 21 trailing zero bits, so `n * LN2_HI` is exact for |n| < 2^21.
+const LN2_HI: f64 = f64::from_bits(0x3fe6_2e42_fee0_0000);
+const LN2_LO: f64 = f64::from_bits(0x3dea_39ef_3579_3c76);
+const LOG2E: f64 = std::f64::consts::LOG2_E;
 const TAB: usize = 256;
 
 /// ln(c) for c in [1, 2) by the atanh series (|s| <= 1/3, 40 terms: truncation < 1e-40).
@@ -387,6 +388,7 @@ fn locate(v: f64, n: usize) -> (usize, f64) {
     (i, pos - i as f64)
 }
 
+#[allow(clippy::needless_range_loop)] // k indexes the output and the CLUT node offset together
 impl Clut {
     fn new(store: &LutStore, grid: &[usize], outputs: usize) -> Result<Self, WideError> {
         let inputs = grid.len();
@@ -780,7 +782,7 @@ fn table_index(intent: Intent) -> usize {
         Intent::Saturation => 2,
     }
 }
-fn pick<'a>(tables: [&'a Option<LutWarehouse>; 3], intent: Intent) -> Option<&'a LutWarehouse> {
+fn pick(tables: [&Option<LutWarehouse>; 3], intent: Intent) -> Option<&LutWarehouse> {
     tables[table_index(intent)].as_ref().or(tables[0].as_ref())
 }
 fn encoding(w: &LutWarehouse, pcs: DataColorSpace) -> PcsEncoding {

@@ -31,12 +31,15 @@ fn gray_profile(gamma: f64, white: [f64; 3]) -> Vec<u8> {
     assemble(0x0210_0000, b"mntr", b"GRAY", b"XYZ ", &[xyz_tag(white), curv(Some(gamma))], &[(b"wtpt", 0), (b"kTRC", 1)])
 }
 
+/// (name, source, destination, source channels, intent, BPC).
+type Case<'a> = (&'static str, &'a [u8], &'a [u8], usize, Intent, bool);
+
 #[test]
 fn fused_matrix_pairs_match_the_staged_path() {
     let ctx = Ctx::new();
     let gamma18 = matrix_v2(1.8);
     let gray = gray_profile(2.2, [0.9505, 1.0, 1.089]);
-    let cases: [(&str, &[u8], &[u8], usize, Intent, bool); 7] = [
+    let cases: [Case<'_>; 7] = [
         ("linear_srgb_to_linear_p3", SRGB_LINEAR, P3_LINEAR, 3, Intent::RelativeColorimetric, false),
         ("srgb_to_p3", SRGB, P3, 3, Intent::RelativeColorimetric, false),
         ("srgb_to_p3_bpc", SRGB, P3, 3, Intent::Perceptual, true),
