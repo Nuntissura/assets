@@ -1,11 +1,13 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-007-core-model-v1
-generation: 3
+generation: 5
 phase: active
 owner: coder_01
 changed_files:
+- README.md
 - product/Cargo.lock
 - product/Cargo.toml
+- product/README.md
 - product/kumihimo-core/Cargo.toml
 - product/kumihimo-core/examples/workspace.rs
 - product/kumihimo-core/src/command.rs
@@ -15,12 +17,27 @@ changed_files:
 - product/kumihimo-core/src/model.rs
 - product/kumihimo-core/src/mutation.rs
 - product/kumihimo-core/tests/contracts.rs
-- product/README.md
-- README.md
 - repo-governance/codex/build-rules/current/build-rules.yaml
-- repo-governance/topology/product.yaml
-- repo-governance/topology/links.yaml
+- repo-governance/registry/work-packets.yaml
+- repo-governance/sessions/SESSION-KUM-2026-10-11-v1-diagnostics.yaml
 - repo-governance/sessions/current.yaml
+- repo-governance/specification/current/INDEX.json
+- repo-governance/specification/current/primitive-feature-mix-matrix.json
+- repo-governance/specification/current/primitive-list.json
+- repo-governance/specification/current/spec-modules/master-spec.md
+- repo-governance/specification/current/spec-modules/roadmap.md
+- repo-governance/specification/current/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v5-r5-a004dbd4c655/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v5-r5-a004dbd4c655/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v5-r5-a004dbd4c655/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v5-r5-a004dbd4c655/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v5-r5-a004dbd4c655/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v5-r5-a004dbd4c655/specification.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/topology/links.yaml
+- repo-governance/topology/product.yaml
+- repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-evaluation.yaml
+- repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-state.yaml
 proof:
 - kind: published_predecessor
   observed: c78de3ae9b58cd467225583dee9d63f0ad8961a2 independently matches remote; WP006 specification/contract
@@ -30,5 +47,26 @@ proof:
     replay risk
 - kind: source_review
   observed: EVAL-KUM-007-v1 inspected candidate; no blocking scoped source finding; runtime proof pending
+- kind: compile
+  source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  observed: Locked offline all-targets check passed; stable rustc 1.91.1 Windows x64 MSVC
+- kind: behavior
+  source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  observed: 9 external contracts and 1 private counter-exhaustion test passed; no failures
+- kind: consumer_example
+  source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  observed: Console example passed; generation8, frame2+frame4, view7/resource6; warm Cargo dev profile 0.01s
+- kind: candidate_binding
+  source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  observed: 12-file product hash 4cbeb27c039c2402d962fed8c52e8a6fa533848eafa1b48ec105e384bb838e0f unchanged through
+    runtime proof; later manual-only result paragraph does not invalidate source proof
+- kind: independent_evaluation
+  observed: EVAL-KUM-007-v1 PASS_SCOPED_RUNTIME; saved outputs and unchanged runtime inputs independently inspected
+- kind: specification_status
+  observed: Spec6 records five partial areas; all99 accepted requirements preserved; exact six-file published v5
+    archived
+- kind: focused_governance
+  observed: sync.py --check and git diff --check passed after affected specification/status edits
 blockers: []
-next_action: Publish candidate with phase active; lead runs admitted serial focused proof
+next_action: Publish verified outcome, independently read remote, then close WP007 and increment coder rotation
+  count

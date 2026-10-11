@@ -2,8 +2,9 @@ schema_version: kumihimo.wp-evaluation.v1
 evaluation_id: EVAL-KUM-007-v1
 wp_id: WP-KUM-007-core-model-v1
 evaluator: ROLE-KUM-EVALUATION
-phase: concrete_source_review_complete
-verdict: PENDING_RUNTIME_PROOF
+phase: observed_runtime_evaluation_complete
+verdict: PASS_SCOPED_RUNTIME
+outcome_publication: PENDING_FINAL_REMOTE_READ
 scope: Portable in-memory core only; coder owns product tests and serial Cargo proof
 acceptance_scenarios:
   - case_id: EVAL-KUM-007-001
@@ -62,26 +63,50 @@ COUNTERFACTUAL_CHECKS:
   - If core.rs execute checked expected_generation before retained complete-envelope lookup, replay after another successful mutation would incorrectly reject; actual lookup precedes that check.
   - If model.rs derived an unrestricted Default again, ordinary Core construction would implicitly bypass aggregate admission; the explicit finite Default and unbounded opt-in are inspected.
 BOUNDARY_PROBES:
-  - Inspected public consumer contracts.rs against exported commands/snapshot rather than private storage; pre/post snapshots and next generated ID against a control expose rejection side effects. Runtime execution pending.
+  - Inspected public consumer contracts.rs against exported commands/snapshot rather than private storage; pre/post snapshots and next generated ID against a control expose rejection side effects. Directly opened saved test output showing every external case passed on the bound candidate.
   - Compared complete retained Envelope equality with actor/operation/generation/command definitions and public replay assertions; original outcome generation is intentionally distinct from current snapshot generation.
 NEGATIVE_PATH_CHECKS:
-  - Opened cycle/missing/duplicate-child/invalid-index/sharing/stale/budget rejection assertions and private counter-exhaustion assertions; these preserve full model snapshots and test allocation where accessible. Execution pending.
-  - Opened zero/changed-envelope/evicted/capacity-zero/final-sequence assertions; they target explicit denial rather than successful re-execution. Execution pending.
+  - Opened cycle/missing/duplicate-child/invalid-index/sharing/stale/budget rejection assertions and private counter-exhaustion assertions; these preserve full model snapshots and test allocation where accessible. Saved log records their owning tests passed.
+  - Opened zero/changed-envelope/evicted/capacity-zero/final-sequence assertions; they target explicit denial rather than successful re-execution. Saved log records the replay test passed.
 INDEPENDENT_FINDINGS: []
 resolved_findings:
   - Initial all-None Limits::default() replaced by max_records=16_384; explicit Limits::unbounded() and host-owned byte/input responsibilities documented.
 conclusions:
   source_alignment: No blocking scoped contract gap found in the concrete source/public assertions/manual read.
-  compile_tests_example: Not yet observed; source and unexecuted assertions do not prove runtime acceptance.
+  compile_tests_example: Independently opened saved check/test/example logs and lead command results; all three exit 0, one private and nine external tests pass, example returns the expected identities at generation 8.
   platform: No ARM64 execution, WASM, GUI, native popout or performance claim accepted.
-  final_decision: Pending direct runtime proof from the serial Cargo owner; evaluator has run no Cargo.
+  final_decision: PASS for the admitted portable in-memory core on the observed Windows x64 host; evaluator reused exact-candidate proof and ran no Cargo. Final outcome publication remains separately pending.
 candidate_binding:
+  published_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  remote_command: git ls-remote origin refs/heads/codex/handpick
+  independently_observed_remote_revision: a004dbd4c655d6d193e288d21e37dc9987095353
   product_file_count: 12
   product_manifest_sha256: 4cbeb27c039c2402d962fed8c52e8a6fa533848eafa1b48ec105e384bb838e0f
-  algorithm: SHA256 of newline-joined sorted product-path:SHA256(file-bytes) entries, with product-relative-to-project path names and no trailing newline.
+  algorithm: SHA256 of newline-joined product-path:SHA256(file-bytes) entries sorted in case-insensitive path order, with project-relative POSIX paths and no trailing newline; bytes taken from the published candidate.
   observed_public_test_functions: 9
   observed_private_exhaustion_tests: 1
+  subsequent_changes: Independently compared current files against published candidate; only product/README.md proof paragraph changed after runtime proof. Source/tests/manifests/lockfile/example inputs are unchanged; no Cargo rerun is needed.
+runtime_evidence:
+  producer: Dev-lead serial Cargo lane; exact command outputs independently opened from the lead chat and saved logs
+  host: x86_64-pc-windows-msvc
+  rustc: 1.91.1 (ed61e7d7e 2025-11-07)
+  target_directory: .local/cargo-target
+  configuration: locked, offline, jobs=2, sccache wrapper, CARGO_INCREMENTAL=0; gameplan PASS 10/10 before each command
+  check:
+    command: cargo check --manifest-path product/Cargo.toml --all-targets --locked --offline -j 2
+    log_ref: ../.local/kumihimo-core/proof/check-a004dbd.log
+    observed: Exit 0; dev profile completed in 11.47s
+  tests:
+    command: cargo test --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core -j 2
+    log_ref: ../.local/kumihimo-core/proof/test-a004dbd.log
+    observed: Exit 0; one private exhaustion and nine external contract tests passed, none failed; external cases finished in 0.28s; zero doc tests
+  example:
+    command: cargo run --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core --example workspace -j 2
+    log_ref: ../.local/kumihimo-core/proof/example-a004dbd.log
+    observed: Exit 0; generation=8 root_frames=[FrameId(2), FrameId(4)] view=ViewId(7) resource=ResourceId(6)
+  timing_scope: Cargo/test timings are observed run metadata, not a throughput benchmark or general performance guarantee.
 RESIDUAL_UNCERTAINTY:
-  - Compile, behavioral test and example proof remain pending; this source review is not a PASS.
+  - Final outcome/evaluation/status publication has not yet been independently read; candidate publication is proven separately.
+  - GUI, geometry, persistence, native popouts, actual provider lifecycle, Windows ARM64, WASM and other platforms are outside this proof.
   - Snapshot/ledger cloning and host-provided string sizes are not memory ceilings; no throughput or worst-case benchmark is claimed.
-next_action: Inspect direct check/test/example output and bind it to the exact unchanged product candidate; reuse green unaffected proof without independent Cargo duplication.
+next_action: Dev lead synchronizes only verified bounded scope and publishes outcome; independently read final remote revision without rerunning unchanged runtime proof.

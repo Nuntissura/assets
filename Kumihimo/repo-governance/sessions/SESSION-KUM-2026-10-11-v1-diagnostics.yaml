@@ -19,9 +19,9 @@ observations:
         version: 0.18.0
         available: true
         cache_backend: local disk
-        cache_location: '%LOCALAPPDATA%/Mozilla/sccache/cache'
+        historical_cache_location_at_first_snapshot: '%LOCALAPPDATA%/Mozilla/sccache/cache'
         maximum_size: 10 GiB
-        compile_requests_reported: 0
+        historical_compile_requests_reported_at_first_snapshot: 0
   process_snapshots:
     - observed: An intervening snapshot showed one rustup -> cargo -> cargo-nextest process tree; its command lines did not reference Kumihimo.
       action: No process was interrupted.
@@ -34,8 +34,9 @@ observations:
     free_memory_gib: 60.1
     limitation: Memory is an instantaneous snapshot; no sustained CPU or memory pressure measurement was taken.
   build_readiness:
+    observed_at_utc: '2026-10-11T20:47:51Z'
     kumihimo_cargo_build_started: false
-    reason: WP-KUM-006 is publishing the implementation plan; product manifest is absent and no build was dispatched.
+    reason: Historical pre-WP007 observation; product manifest was absent and no build had been dispatched.
     sccache_configured_for_cargo: false
   candidate_readiness:
     verified_at_utc: '2026-10-11T21:09:25Z'
@@ -80,10 +81,10 @@ recommendation:
   shared_pc_contention: If another Rust compile or test run is active and resource contention is material, defer the Cargo run, recheck process and available-memory snapshots, and continue non-build work. Never stop another project's process.
   sccache: Dev-lead commands will set RUSTC_WRAPPER=sccache process-locally. Reuse the available sccache installation and cache; never stop an unowned server or delete the cache as a coordination mechanism.
   incremental_compilation: Set CARGO_INCREMENTAL=0 process-locally for the std-only core while using sccache. sccache's Rust support rejects incremental rustc invocations, so disabling incremental compilation makes eligible invocations cacheable. The tradeoff is loss of rustc's per-crate incremental reuse for changed crates; stable target reuse can retain unchanged Cargo artifacts, but it does not restore that incremental state. sccache only caches eligible invocations with matching inputs and flags, and some crate/linker invocations are unsupported, so no speedup is promised.
-  initial_jobs: 'Resource snapshot supports one serial -j 2 Cargo run: 32 logical processors, 68.9 GiB free memory, 3,079.1 GiB free on D:, 35% CPU load, and no matching Cargo, rustc, sccache, rustup, nextest, or linker processes. This is a conservative starting cap, not a measured optimum; observe peak resource use before increasing it.'
-  lane_admission: Resource gate is clear for one serial -j 2 run; no Rust build contention was observed. At the snapshot, current.yaml assigned the lane to the dev lead in candidate_publication phase, so this report does not authorize starting a command before the dev lead dispatches the lane.
-  proof_boundary: These are environment observations and recommendations only; no Kumihimo compile or runtime behavior has been proven.
-  build_lane_configuration: Process-local CARGO_TARGET_DIR and RUSTC_WRAPPER settings are planned for dev-lead commands; no build was run to verify their runtime effect.
+  initial_jobs: 'Keep the first owned Cargo lane at -j 2. The latest snapshot showed 57% CPU load and active rustup, cargo, and rustc processes whose command lines did not reference Kumihimo; defer any new Cargo run until they clear. The sample is instantaneous and does not identify those processes’ owners.'
+  lane_admission: Contention is present in the latest snapshot; defer another Cargo run while the observed Rust processes remain active. Do not stop them. The dev lead retains lane ownership.
+  proof_boundary: WP007 check, test, and example outputs are recorded in runtime_observations. The example's 0.01-second dev-profile duration is a single warm run observation, not a benchmark or speedup claim.
+  build_lane_configuration: Runtime outcomes are verified from saved logs; the exact process-local Cargo environment values are not recorded in those logs.
 resource_snapshots:
   - observed_at_utc: '2026-10-11T20:55:37Z'
     cpu_load_percent: 1
@@ -125,6 +126,53 @@ resource_snapshots:
     matching_build_processes: []
     process_filter: cargo, cargo-nextest, rustc, rustup, sccache, link, lld-link, rust-lld, clang, cl
     limitations: CPU load is a single instantaneous WMI sample; no sustained load or build peak was measured.
+  - snapshot_id: SNAP-KUM-2026-10-11T211652Z
+    observed_at_utc: '2026-10-11T21:16:52Z'
+    purpose: Final post-runtime resource and process observation
+    cpu_load_percent: 57
+    cpu_sample_count: 1
+    logical_processors: 32
+    free_memory_gib: 70.1
+    total_memory_gib: 127.9
+    target_volume: 'D:'
+    free_disk_gib: 3078.9
+    total_disk_gib: 14902.0
+    matching_processes:
+    - sccache.exe; command line did not reference Kumihimo
+    - rustup.exe; command line did not reference Kumihimo
+    - cargo.exe; command line did not reference Kumihimo
+    - rustc.exe; command line did not reference Kumihimo
+    process_filter: cargo, cargo-nextest, rustc, rustup, sccache, link, lld-link, rust-lld, clang, cl
+    limitations: CPU load is a single instantaneous WMI sample; process ownership was not determined.
+runtime_observations:
+  candidate_revision: a004dbd
+  toolchain: stable rustc/cargo 1.91.1; x86_64-pc-windows-msvc
+  proof_logs:
+    check:
+      git_root_relative_file: .local/kumihimo-core/proof/check-a004dbd.log
+      observed: Cargo dev profile finished in 11.47s.
+    test:
+      git_root_relative_file: .local/kumihimo-core/proof/test-a004dbd.log
+      observed: 1 private exhaustion test passed; 9 contract tests passed; 0 failed; doc-test target had 0 tests.
+    example:
+      git_root_relative_file: .local/kumihimo-core/proof/example-a004dbd.log
+      observed: Cargo dev profile finished in 0.01s; reported warm.
+      limit: One recorded warm invocation; not a benchmark, comparative result, or speedup claim.
+  sccache:
+    executable: '%USERPROFILE%/.cargo/bin/sccache.exe'
+    version: 0.18.0
+    current_cache: Non-default local cache under another Handshake team's configurable artifact area; exact path omitted.
+    query: Read-only cumulative statistics; no server or cache settings were changed.
+    cumulative_statistics:
+      compile_requests: 369
+      compile_requests_executed: 74
+      cache_hits: 60
+      cache_misses: 14
+      reported_hit_rate_percent: 81.08
+      timeouts: 0
+      cache_errors: 0
+      compilation_failures: 0
+    attribution_limit: Shared cumulative counters are not attributable to Kumihimo; do not infer its cache hit rate or speedup.
 research_sources:
   - title: Cargo Book, Build Cache
     url: https://doc.rust-lang.org/cargo/reference/build-cache.html

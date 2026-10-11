@@ -30,7 +30,7 @@ The console example creates nested ownership, registers a host resource, creates
 
 To consume the library, add a path dependency on `product/kumihimo-core` from your application's Cargo manifest, relative to that manifest. `src/lib.rs` exports the API; `src/model.rs` defines records/policy; `src/command.rs` defines envelopes/results; `src/core.rs` owns replay; `src/mutation.rs` validates and applies mutations. `tests/contracts.rs` demonstrates consumer use without access to private model storage.
 
-Compile/test/example evidence is pending until the dev lead runs the admitted candidate. No Windows ARM64, WASM, native GUI or cross-platform runtime proof is claimed by source availability.
+Observed on 2026-10-11 for candidate `a004dbd4c655d6d193e288d21e37dc9987095353`, using stable rustc 1.91.1 on Windows x64 MSVC: the all-targets check passed, one private exhaustion test and nine external contract tests passed, and the console example returned `generation=8 root_frames=[FrameId(2), FrameId(4)] view=ViewId(7) resource=ResourceId(6)`. This proves the admitted in-memory core on that host. Windows ARM64, WASM, native GUI, cross-platform runtime and performance remain unproven.
 
 </topic>
 

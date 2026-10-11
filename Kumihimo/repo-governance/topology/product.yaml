@@ -1,9 +1,9 @@
 kind: product_topology
-implementation_status: core_candidate_pending_runtime_proof
+implementation_status: first_core_packet_proven
 nodes:
 - id: KUM-PRODUCT
   path: product/
-  status: candidate
+  status: core_implemented_adapters_planned
 - id: KUM-CORE
   manifest_ref: product/kumihimo-core/Cargo.toml
   entrypoint: product/kumihimo-core/src/lib.rs

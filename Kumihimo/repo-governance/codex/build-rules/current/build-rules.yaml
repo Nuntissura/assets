@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 25
+  version: 26
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -23,7 +23,7 @@ project_profile:
   - aarch64 Windows development host
   product_workspace:
     manifest_file: product/Cargo.toml
-  implementation_status: core_in_progress
+  implementation_status: first_core_packet_proven
   gui_applicability: planned
   test_entrypoint: product/Cargo.toml
   build_environment:
@@ -38,11 +38,32 @@ canonical_commands:
   rust_check: cargo check --manifest-path product/Cargo.toml --all-targets --locked --offline -j 2
   rust_test: cargo test --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core -j 2
   gui_check: null
+  rust_example: cargo run --manifest-path product/Cargo.toml --locked --offline -p kumihimo-core --example workspace
+    -j 2
 rule_sets: {}
 build_matrix:
   matrix_id: BM-KUMIHIMO-001
-  revision: 1
-  entries: []
+  revision: 2
+  entries:
+  - entry_id: BM-KUM-CORE-WINX64-001
+    wp_ref: WP-KUM-007-core-model-v1
+    source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+    package_manifest: product/kumihimo-core/Cargo.toml
+    observed_target: x86_64-pc-windows-msvc
+    rustc_version: 1.91.1
+    proof:
+      all_targets_check: passed
+      public_contract_tests: 9 passed
+      private_exhaustion_tests: 1 passed
+      console_example: passed; generation=8; root frames 2,4; view7 references resource6
+    not_proven:
+    - ARM64 execution
+    - WASM
+    - GUI
+    - native popouts
+    - performance
+    - persistent recovery
+    - provider engines
   policy: Record only actual implemented feature proof; no mandatory pillar universe
 dependency_policy: {}
 rules:

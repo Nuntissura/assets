@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 5
+revision: 6
 title: Kumihimo master specification
 updated_at: '2026-10-11'
 ---
@@ -33,7 +33,7 @@ content_blocks:
 
 Kumihimo holds and arranges content supplied by a host app: editors, browsers, media, tools and graphics. It targets reusable Rust logic with separate desktop and web presentation adapters.
 
-The baseline reflects the clarified intent: recursively nested windows and tabs without a fixed count. The following topics expand that behavior. All product features are planned; initialization and a checked specification do not prove a working GUI, rendering speed or browser compatibility.
+The baseline reflects the clarified intent: recursively nested windows and tabs without a fixed count. The following topics expand that behavior. The first portable ownership core has passed a focused Windows x64 compile, consumer tests and console example. That proof covers in-memory containment, views/groups, validated moves, host admission and bounded operation replay; the complete feature areas remain partial or planned. It does not prove a working GUI, rendering speed or browser compatibility.
 
 Read the explanation at the start of each topic for the plain-language intent. The structured block records the corresponding requirements and focused acceptance scenarios. Optional field-inspired ideas live in the research note and are not required features.
 
@@ -3504,7 +3504,9 @@ Library selection needs a small real sample of the affected boundary: variable c
 
 Optional research proposals include scrolling workspaces inspired by Niri, a zoomed workspace overview, auto-hide edge trays, layout undo, saved named arrangements and snapping hysteresis. They are not accepted features or required gates in this revision. Preserve them in the research note for later operator decisions.
 
-Implementation starts with one small portable core package for typed identities, in-memory recursive containment, content/view references and deterministic validated operations. The first packet avoids GUI/browser/rendering dependencies and native effects. Geometry, persistent snapshots and concrete adapters are subsequent bounded packets. Flat canonical records and iterative ancestry checks avoid making recursive model depth depend on the call stack. No toolkit is selected by this choice.
+The first implemented packet is one small portable core package for typed identities, in-memory recursive containment, content/view references and deterministic validated operations. The first packet avoids GUI/browser/rendering dependencies and native effects. Geometry, persistent snapshots and concrete adapters are subsequent bounded packets. Flat canonical records and iterative ancestry checks avoid making recursive model depth depend on the call stack. No toolkit is selected by this choice.
+
+The verified core uses flat typed records, frame-owned child workspaces and distinct view/resource identities. Practical admission defaults to 16,384 total records, with an explicit host-selected unrestricted policy and optional depth/per-frame view limits. Lowering limits preserves existing records and permits recovery moves. Record counts are not byte or live-engine memory ceilings. Complete-envelope replay is retained within a configured receipt count; expired operation sequences reject rather than repeat effects. This synchronous in-memory boundary provides no file recovery or cross-restart deduplication. Windows x64 MSVC with Rust 1.91.1 is the observed proof; ARM64 and WASM execution remain unverified.
 ```
 
 ```yaml

@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 5
+revision: 6
 title: Kumihimo roadmap
 updated_at: '2026-10-11'
 ---
@@ -25,7 +25,7 @@ content_blocks:
 ```markdown
 # Planned
 
-All product features below remain planned. Completed repository initialization and specification work are separate from product implementation.
+Five feature areas now have partial core implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.
 
 A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 
@@ -35,9 +35,9 @@ Verification stays focused on the behavior a work packet changes. A real rendere
 
 ## Implemented
 
-No product features implemented yet.
+WP-KUM-007 implements the first in-memory ownership core. The Windows x64 MSVC all-target compile check, nine public consumer tests, one private counter-exhaustion test and console example passed at source revision a004dbd4c655d6d193e288d21e37dc9987095353. Functional scenarios include variable 20-by-30 counts and 1,024 nested frame levels; they are not performance benchmarks. No complete future feature area is marked implemented.
 
-Current work remains preparation only. The accepted organization is three logical submodules (core, optional GUI adapters, host-content integration), implemented later through small cohesive packages with independently selected adapters; no fixed crate count is prescribed. Navigation presentation is host-selectable: scrollbar, permanent minimap, both, or a temporary minimap during scrubbing.
+Current implementation covers portable identity, containment, lightweight content references, view/group order, validated commands, admission and bounded replay. Geometry, docking controls, persistence, GUI adapters, provider lifecycle and browser/renderer integrations remain subsequent work. The accepted organization is three logical submodules (core, optional GUI adapters, host-content integration), implemented later through small cohesive packages with independently selected adapters; no fixed crate count is prescribed. Navigation presentation is host-selectable: scrollbar, permanent minimap, both, or a temporary minimap during scrubbing.
 ```
 
 ```yaml
@@ -46,7 +46,7 @@ roadmap:
   source_topic_refs:
   - TOPIC-KUM-WORKSPACE
   overview_summary: Reusable window and frame workspace
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-WORKSPACE-001
@@ -55,14 +55,16 @@ roadmap:
   - REQ-KUM-WORKSPACE-004
   - REQ-KUM-WORKSPACE-005
   - REQ-KUM-WORKSPACE-006
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  verification_summary: 'Partial: recursive in-memory frame/view ownership proven; resizing, docking, floating/native
+    windows, lifecycle and adapters remain open.'
+  matrix_entry_refs:
+  - BM-KUM-CORE-WINX64-001
 - item_ref: FEAT-KUM-BOUNDARIES
   source_topic_refs:
   - TOPIC-KUM-BOUNDARIES
   overview_summary: Windows, frames and host content
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-BOUNDARIES-001
@@ -72,14 +74,16 @@ roadmap:
   - REQ-KUM-BOUNDARIES-005
   - REQ-KUM-BOUNDARIES-006
   - REQ-KUM-BOUNDARIES-007
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  verification_summary: 'Partial: cohesive std-only core, distinct frame/view/resource/provider references and host-owned
+    engines proven; concrete adapters and remaining integration contracts are open.'
+  matrix_entry_refs:
+  - BM-KUM-CORE-WINX64-001
 - item_ref: FEAT-KUM-LAYOUT
   source_topic_refs:
   - TOPIC-KUM-LAYOUT
   overview_summary: Nested windows, alignment and resizing
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-LAYOUT-001
@@ -89,14 +93,16 @@ roadmap:
   - REQ-KUM-LAYOUT-005
   - REQ-KUM-LAYOUT-006
   - REQ-KUM-LAYOUT-007
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  verification_summary: 'Partial: frame-owned nested workspaces and identity-preserving validated moves proven;
+    geometric layouts, resizing, snapping, floats and tool docking remain open.'
+  matrix_entry_refs:
+  - BM-KUM-CORE-WINX64-001
 - item_ref: FEAT-KUM-TABS
   source_topic_refs:
   - TOPIC-KUM-TABS
   overview_summary: Tabs, named groups and color labels
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-TABS-001
@@ -105,9 +111,11 @@ roadmap:
   - REQ-KUM-TABS-004
   - REQ-KUM-TABS-005
   - REQ-KUM-TABS-006
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  verification_summary: 'Partial: ordered views, selected view, frame-local labels/colors and declared sharing proven;
+    closing/reopening, group moves and visible overflow controls remain open.'
+  matrix_entry_refs:
+  - BM-KUM-CORE-WINX64-001
 - item_ref: FEAT-KUM-POPOUTS
   source_topic_refs:
   - TOPIC-KUM-POPOUTS
@@ -296,7 +304,7 @@ roadmap:
   source_topic_refs:
   - TOPIC-KUM-MODEL
   overview_summary: Model operation, diagnostics and the built-in manual
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-MODEL-001
@@ -304,9 +312,11 @@ roadmap:
   - REQ-KUM-MODEL-003
   - REQ-KUM-MODEL-004
   - REQ-KUM-MODEL-005
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: a004dbd4c655d6d193e288d21e37dc9987095353
+  verification_summary: 'Partial: attributable generation-checked commands, structured rejection, bounded complete-envelope
+    replay and inspection snapshots proven; complete model-operation surfaces remain open.'
+  matrix_entry_refs:
+  - BM-KUM-CORE-WINX64-001
 - item_ref: FEAT-KUM-PLATFORMS
   source_topic_refs:
   - TOPIC-KUM-PLATFORMS

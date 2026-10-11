@@ -10,7 +10,7 @@ updated_at: '2026-10-11'
 
 A reusable Rust window/frame asset for desktop and web apps: grids, tabs, grouped tabs, docking, popouts and configurable surrounding controls. Hosts provide the actual editors, browsers, media and graphics.
 
-The first Rust ownership core is written and awaiting compile, test and example proof. It manages nested frames, ordered views, groups and host resource references. Working GUI adapters remain planned. The researched spec covers 18 feature areas with explicit host ownership and focused acceptance scenarios.
+The first Rust ownership core passed its Windows x64 compile check, ten focused tests and console example. It manages nested frames, ordered views, groups, host resource references, validated moves and bounded command replay. Working GUI adapters remain planned. The researched spec covers 18 feature areas with explicit host ownership and focused acceptance scenarios.
 
 </topic>
 

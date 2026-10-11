@@ -52,7 +52,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-state.yaml
-  next_action: Publish candidate with phase active; lead runs admitted serial focused proof
+  next_action: Publish verified outcome, independently read remote, then close WP007 and increment coder rotation
+    count
   blockers: []
 - wp_id: WP-KUM-008-layout-and-tool-docking-v1
   title: Implement geometry and scoped docking
