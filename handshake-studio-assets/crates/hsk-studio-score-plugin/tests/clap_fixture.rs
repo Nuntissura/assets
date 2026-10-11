@@ -4,21 +4,27 @@
 //! 0.2.0 stereo gain of exactly 0.5 with no parameters), built OUTSIDE the Studio workspace into its own
 //! target directory; its source defines the expected output independently of the host code under test.
 //!
-//! Build the fixture and point the test at the library (paths are the caller's; nothing is scanned):
-//!   cd tests/fixtures/clap-gain && cargo build            (target dir under the artifact root, not C:)
-//!   HSK_SCORE_PLUGIN_CLAP_FIXTURE=<target>/debug/hsk_score_plugin_clap_gain_fixture.dll
-//! Without the variable each test prints a line starting `NOT_PROVEN:` and returns (V4-03: the round
-//! counts such a test as NOT_PROVEN, never PASS): CLAP stays NOT_PROVEN until it has run green.
+//! Where the library comes from (no env var is required): the oracle corpus convention of the workspace.
+//! `.config/oracle-corpus.toml` (plain `key = value` lines) names the corpus `search` path; walk up from the
+//! workspace root (at most `max-ancestors` parents) to the first ancestor that holds it, then read
+//! `<corpus>/score-plugin/clap-gain/MANIFEST.json` (written by `tools/run-round.sh` from
+//! `.config/oracle-fixtures.toml`, which builds `tests/fixtures/clap-gain` offline and locked). The test pins
+//! the library by the manifest `sha256` and binds it to the current fixture source by `source_sha256`
+//! (sha256 of the sorted `"<sha256>  <relpath>\n"` lines of `tests/fixtures/clap-gain/src`). The variable
+//! `HSK_SCORE_PLUGIN_CLAP_FIXTURE` (a path to a locally built library) remains only as an optional local
+//! override; it is never required.
+//! When the corpus root, the manifest, the library, or a hash is absent or different, each test prints a line
+//! `NOT_PROVEN: <test> <case> reason=...` and returns (V4-03: the round counts it as NOT_PROVEN, never PASS).
 //!
 //! Not proven even when green: latency, state capture, audio-port discovery and thread affinity of real
 //! plugins (see the `clap_backend` module docs); only a gain plugin without parameters was run.
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_score::{
-    BlockSpec, ChannelLayout, Engine, InputBlock, OutputBlock, RequestContext, sha256,
+    BlockSpec, ChannelLayout, Engine, InputBlock, OutputBlock, RequestContext, sha256, to_hex,
 };
 use hsk_studio_score_plugin::*;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU32, Ordering},
     time::Duration,
 };
@@ -56,17 +62,115 @@ fn actor() -> ActorContext {
     .unwrap()
 }
 
-/// The built fixture library, or `None` after printing the `NOT_PROVEN:` line the round counts (V4-03:
-/// a test that cannot prove its claim must never be a silent green).
-fn fixture_path() -> Option<PathBuf> {
-    let path = std::env::var_os("HSK_SCORE_PLUGIN_CLAP_FIXTURE");
-    if path.is_none() {
-        println!(
-            "NOT_PROVEN: native CLAP path not run; set HSK_SCORE_PLUGIN_CLAP_FIXTURE to the built \
-             fixture library (cd tests/fixtures/clap-gain && cargo build; see this file's header)"
+const CORPUS_CONFIG: &str = ".config/oracle-corpus.toml";
+const FIXTURE_DEST: &str = "score-plugin/clap-gain";
+const FIXTURE_SOURCE: &str = "tests/fixtures/clap-gain/src";
+
+/// Value of a plain `key = value` line (quotes stripped, `#` comment lines ignored).
+fn config_value(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key && !line.trim_start().starts_with('#'))
+            .then(|| value.trim().trim_matches('"').to_owned())
+    })
+}
+
+/// String value of `"key": "value"` in a small JSON object (the manifest is machine-written, flat).
+fn json_string(text: &str, key: &str) -> Option<String> {
+    let at = text.find(&format!("\"{key}\""))?;
+    let rest = text[at + key.len() + 2..].trim_start().strip_prefix(':')?;
+    let rest = rest.trim_start().strip_prefix('"')?;
+    Some(rest[..rest.find('"')?].to_owned())
+}
+
+/// Corpus root by the workspace convention: start at the workspace root (two levels above this crate),
+/// walk up at most `max-ancestors` parents, first ancestor holding the `search` directory.
+fn corpus_root() -> Result<PathBuf, String> {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("workspace root not found")?;
+    let config = std::fs::read_to_string(workspace.join(CORPUS_CONFIG))
+        .map_err(|_| format!("{CORPUS_CONFIG} unreadable"))?;
+    let search = config_value(&config, "search").ok_or("corpus config has no search key")?;
+    let ancestors: usize = config_value(&config, "max-ancestors")
+        .and_then(|v| v.parse().ok())
+        .ok_or("corpus config has no max-ancestors key")?;
+    workspace
+        .ancestors()
+        .take(ancestors.saturating_add(1))
+        .map(|dir| dir.join(&search))
+        .find(|dir| dir.is_dir())
+        .ok_or_else(|| format!("no ancestor holds the corpus root within {ancestors} parents"))
+}
+
+/// sha256 over the sorted `"<sha256>  <relpath>\n"` lines of every file under `dir` (the steward's
+/// `source_sha256` recipe).
+fn tree_sha(dir: &Path) -> Option<String> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Option<()> {
+        for entry in std::fs::read_dir(dir).ok()? {
+            let path = entry.ok()?.path();
+            if path.is_dir() {
+                walk(base, &path, out)?;
+            } else {
+                let rel = path
+                    .strip_prefix(base)
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((rel, to_hex(&sha256(&std::fs::read(&path).ok()?))));
+            }
+        }
+        Some(())
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files)?;
+    files.sort();
+    let lines: String = files
+        .iter()
+        .map(|(rel, hex)| format!("{hex}  {rel}\n"))
+        .collect();
+    Some(to_hex(&sha256(lines.as_bytes())))
+}
+
+/// The fixture library resolved from the corpus manifest and verified, or a reason it cannot be proven.
+fn corpus_fixture() -> Result<PathBuf, String> {
+    let dir = corpus_root()?.join(FIXTURE_DEST);
+    let manifest = std::fs::read_to_string(dir.join("MANIFEST.json"))
+        .map_err(|_| format!("{FIXTURE_DEST}/MANIFEST.json absent"))?;
+    let library = json_string(&manifest, "library").ok_or("manifest has no library")?;
+    let pinned = json_string(&manifest, "sha256").ok_or("manifest has no sha256")?;
+    let source_pinned =
+        json_string(&manifest, "source_sha256").ok_or("manifest has no source_sha256")?;
+    let path = dir.join(&library);
+    let bytes = std::fs::read(&path).map_err(|_| format!("library {library} absent"))?;
+    if to_hex(&sha256(&bytes)) != pinned {
+        return Err(format!(
+            "library {library} differs from the manifest sha256"
+        ));
+    }
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_SOURCE);
+    if tree_sha(&source).as_deref() != Some(source_pinned.as_str()) {
+        return Err(
+            "fixture source differs from the manifest source_sha256 (stale library)".to_owned(),
         );
     }
-    path.map(PathBuf::from)
+    Ok(path)
+}
+
+/// The fixture library, or `None` after printing the `NOT_PROVEN:` line the round counts (V4-03: a test
+/// that cannot prove its claim must never be a silent green). `case` names the claim in that line.
+fn fixture_path(test: &str, case: &str) -> Option<PathBuf> {
+    if let Some(local) = std::env::var_os("HSK_SCORE_PLUGIN_CLAP_FIXTURE") {
+        return Some(PathBuf::from(local)); // optional local override, never required
+    }
+    match corpus_fixture() {
+        Ok(path) => Some(path),
+        Err(reason) => {
+            println!("NOT_PROVEN: {test} {case} reason={reason}");
+            None
+        }
+    }
 }
 
 fn approved(path: PathBuf, content_sha256: [u8; 32]) -> ApprovedPlugin {
@@ -156,7 +260,7 @@ impl Drop for Scratch {
 #[test]
 fn clap_fixture_gain_runs_in_the_worker() {
     bounded_case("clap_fixture_gain_runs_in_the_worker", || {
-        let Some(path) = fixture_path() else {
+        let Some(path) = fixture_path("clap_fixture_gain_runs_in_the_worker", "clap-gain") else {
             return;
         };
         let bytes = std::fs::read(&path).expect("fixture library readable");
@@ -294,7 +398,8 @@ fn clap_fixture_gain_runs_in_the_worker() {
 #[test]
 fn clap_refuses_tampered_and_non_library_files() {
     bounded_case("clap_refuses_tampered_and_non_library_files", || {
-        let Some(path) = fixture_path() else {
+        let Some(path) = fixture_path("clap_refuses_tampered_and_non_library_files", "clap-gain")
+        else {
             return;
         };
         let mut bytes = std::fs::read(&path).expect("fixture library readable");
