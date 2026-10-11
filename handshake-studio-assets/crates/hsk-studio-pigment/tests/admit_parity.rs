@@ -405,17 +405,16 @@ fn premultiplied_alpha_is_a_declared_capability() {
             (refusal("alpha_premultiplied", Exactness::Unsupported), 0)
         );
     }
-    // A tile that no layer reaches still declares the convention (shared admission reads every
-    // node, as it does for a Solid colour outside the unit range).
+    // A tile that no layer reaches is never read by a backend (both skip unreachable nodes before
+    // verify_tile), so it declares nothing: admission follows the backends, reachable nodes only
+    // (SMB-PARITY-FOLLOWUP; the premultiplied target above is always executed and still counts).
     let unreachable_tile = plan(vec![
         tile(AlphaConvention::Premultiplied),
         solid([0.2, 0.4, 0.6, 1.0]),
         group(true, vec![layer(1, StudioBlendMode::Normal)]),
     ]);
-    assert_eq!(
-        v1(&unreachable_tile, &undeclared, Exactness::Approximate).map(|_| ()),
-        refusal("alpha_premultiplied", Exactness::Unsupported)
-    );
+    assert!(!unreachable_tile.uses_premultiplied_alpha());
+    assert!(v1(&unreachable_tile, &undeclared, Exactness::Approximate).is_ok());
     // Counterfactual: a straight plan does not ask for the capability at all.
     let ledger = v1(&straight, &undeclared, Exactness::Approximate).unwrap();
     assert!(ledger.operators.iter().all(|o| o.key != "alpha_premultiplied"));
@@ -502,6 +501,153 @@ fn leaf_root_normal_class_is_decided_at_admission() {
         ..Claims::all(Exactness::Exact)
     };
     assert!(v1(&group_root, &none, Exactness::Approximate).is_ok());
+}
+
+/// Lane SMB-PARITY-FOLLOWUP (R8-review-a CONFIRMED): both backends execute only the nodes
+/// reachable from the root (render-cpu and render-gpu `prepare`: `reach`, unreachable nodes are
+/// skipped before `verify_tile` and before any layer check), so the two predicates that read
+/// nodes decide on the same set. Before, a masked pass-through layer or a premultiplied tile that
+/// only an unreachable node held was refused here although the backends executed the plan.
+#[test]
+fn unreachable_nodes_are_not_counted_like_the_backends() {
+    let m = mask(MaskFormat::CoverageU8, false, 1.0);
+    let undeclared = Claims {
+        alpha: Exactness::Unsupported,
+        ..Claims::all(Exactness::Exact)
+    };
+    let pt_key = "mask_on_pass_through";
+    let alpha_key = "alpha_premultiplied";
+
+    // Nodes: 0 solid | 1 non-isolated group {0} | 2 isolated group {pass-through over 1, masked}
+    // | 3 solid | 4 root {Normal over 3}. Node 2 is referenced by nobody: unreachable.
+    let unreachable_masked = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![masked(1, StudioBlendMode::PassThrough, m)]),
+        solid([0.1, 0.2, 0.3, 1.0]),
+        group(true, vec![layer(3, StudioBlendMode::Normal)]),
+    ]);
+    assert!(unreachable_masked.validate(&PlanLimits::default()).is_ok());
+    assert!(!unreachable_masked.has_pass_through_mask());
+    for backend in all_backends() {
+        assert!(v1(&unreachable_masked, &backend, Exactness::Approximate).is_ok());
+        assert!(
+            extended(
+                &unreachable_masked,
+                &PlanExtensions::default(),
+                &backend,
+                Exactness::Approximate
+            )
+            .is_ok()
+        );
+        // Admitted, so the backend double runs (one chunk), like the real backends do.
+        assert_eq!(
+            executes(&unreachable_masked, &backend),
+            (refusal_unavailable(), 1)
+        );
+    }
+
+    // Counterfactuals: the same masked layer is refused when the root reaches it, directly and
+    // through a chain of groups.
+    // direct nodes:  0 solid | 1 non-isolated {0} | 2 isolated {masked pass-through over 1} |
+    //                3 root {Normal over 2}.
+    // chained nodes: the same, then 3 isolated {Normal over 2} | 4 root {Normal over 3}.
+    let direct = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![masked(1, StudioBlendMode::PassThrough, m)]),
+        group(true, vec![layer(2, StudioBlendMode::Normal)]),
+    ]);
+    let chained = plan(vec![
+        solid([0.2, 0.4, 0.6, 1.0]),
+        group(false, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![masked(1, StudioBlendMode::PassThrough, m)]),
+        group(true, vec![layer(2, StudioBlendMode::Normal)]),
+        group(true, vec![layer(3, StudioBlendMode::Normal)]),
+    ]);
+    for (what, p) in [("direct", &direct), ("chained", &chained)] {
+        assert!(p.has_pass_through_mask(), "{what}");
+        for backend in all_backends() {
+            assert_eq!(
+                v1(p, &backend, Exactness::Approximate).map(|_| ()),
+                refusal(pt_key, Exactness::Unsupported),
+                "{what}"
+            );
+            assert_eq!(
+                executes(p, &backend),
+                (refusal(pt_key, Exactness::Unsupported), 0),
+                "{what}"
+            );
+        }
+    }
+
+    // A premultiplied tile that no layer reaches declares nothing; a reachable one (directly or
+    // through a chain of groups) does; so does the target, which is always executed.
+    // Nodes: 0 premultiplied tile | 1 straight tile | 2 root {Normal over 1}.
+    let unreachable_tile = plan(vec![
+        tile(AlphaConvention::Premultiplied),
+        tile(AlphaConvention::Straight),
+        group(true, vec![layer(1, StudioBlendMode::Normal)]),
+    ]);
+    assert!(!unreachable_tile.uses_premultiplied_alpha());
+    assert!(v1(&unreachable_tile, &undeclared, Exactness::Approximate).is_ok());
+    assert!(
+        extended(
+            &unreachable_tile,
+            &PlanExtensions::default(),
+            &undeclared,
+            Exactness::Approximate
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        executes(&unreachable_tile, &undeclared),
+        (refusal_unavailable(), 1)
+    );
+    // Nodes: 0 premultiplied tile | 1 isolated {Normal over 0} | 2 root {Normal over 1}.
+    let chained_tile = plan(vec![
+        tile(AlphaConvention::Premultiplied),
+        group(true, vec![layer(0, StudioBlendMode::Normal)]),
+        group(true, vec![layer(1, StudioBlendMode::Normal)]),
+    ]);
+    let target_only = plan_with(
+        AlphaConvention::Premultiplied,
+        vec![
+            tile(AlphaConvention::Straight),
+            group(true, vec![layer(0, StudioBlendMode::Normal)]),
+        ],
+    );
+    for (what, p) in [("chained tile", &chained_tile), ("target", &target_only)] {
+        assert!(p.uses_premultiplied_alpha(), "{what}");
+        assert_eq!(
+            v1(p, &undeclared, Exactness::Approximate).map(|_| ()),
+            refusal(alpha_key, Exactness::Unsupported),
+            "{what}"
+        );
+        assert_eq!(
+            executes(p, &undeclared),
+            (refusal(alpha_key, Exactness::Unsupported), 0),
+            "{what}"
+        );
+    }
+
+    // Hostile indexes never panic the predicates: a root outside the plan reaches nothing
+    // (validate refuses the plan first), a layer input outside the plan is ignored.
+    let mut bad_root = plan(vec![
+        tile(AlphaConvention::Premultiplied),
+        group(true, vec![layer(0, StudioBlendMode::Normal)]),
+    ]);
+    bad_root.root = PlanNodeId(7);
+    assert!(!bad_root.has_pass_through_mask() && !bad_root.uses_premultiplied_alpha());
+    assert_eq!(
+        v1(&bad_root, &undeclared, Exactness::Approximate).map(|_| ()),
+        Err(BackendError::InvalidPlan(PlanError::RootOutOfRange))
+    );
+    let bad_input = plan(vec![
+        tile(AlphaConvention::Premultiplied),
+        group(true, vec![layer(9, StudioBlendMode::Normal)]),
+    ]);
+    assert!(!bad_input.has_pass_through_mask() && !bad_input.uses_premultiplied_alpha());
 }
 
 /// Evidence for the GPU's `effect_size` refusal being unreachable after admission: the widest
