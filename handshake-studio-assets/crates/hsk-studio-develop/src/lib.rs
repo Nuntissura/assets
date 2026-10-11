@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod color;
+pub mod convert;
 pub mod curves;
 pub mod dng;
 pub mod pipeline;
@@ -18,11 +19,13 @@ use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, SinkPort};
 
 pub use color::{CameraSolution, DngColor};
+pub use convert::{IccProfile, PRISM_CHUNK, PrismContext, PrismConverter, ProfileConverter};
 pub use curves::{Curve, PreparedCurve};
 pub use dng::{ActiveArea, BaselineExposure, DngRaw, PlaneWindow, RangePolicy, WindowReport};
 pub use pipeline::{
     Bayer, Cfa, CfaPattern, CfaPlane, DevelopReceipt, DevelopRequest, DevelopedTile,
     DevelopedImage, ExecutionHint, Limits, PlaneInit, SinkError, demosaic_normalized, develop,
+    develop_with,
     develop_to_image,
 };
 pub use recipe::{
@@ -47,6 +50,8 @@ pub enum DevelopError {
     UnsupportedActiveArea,
     UnsupportedIlluminant,
     UnsupportedContribution(&'static str),
+    /// Prism admitted-route refusal; carries Prism's stable error code.
+    Prism(&'static str),
     MissingColourData,
     ColorNoConvergence,
     NonFinite,
@@ -96,6 +101,7 @@ impl DevelopError {
             Self::MissingColourData => "missing_colour_data",
             Self::ColorNoConvergence => "color_no_convergence",
             Self::UnsupportedContribution(_) => "unsupported_contribution",
+            Self::Prism(_) => "prism_refused",
             Self::NonFinite => "non_finite",
             Self::NotInvertibleMatrix => "not_invertible_matrix",
             Self::InvalidProfile => "invalid_profile",
@@ -127,9 +133,15 @@ impl DevelopError {
 
     /// Observe outcome class: unsupported -> Unsupported, missing decoder -> Unavailable,
     /// cancellation is its own outcome, everything else is validation.
-    pub const fn outcome(self) -> Outcome {
+    pub fn outcome(self) -> Outcome {
         match self {
             Self::Canceled => Outcome::Canceled,
+            Self::Prism(code) if code.starts_with("unsupported") => {
+                Outcome::Failure(FailureCode::Unsupported)
+            }
+            Self::Prism("admission_denied" | "retirement_unavailable") => {
+                Outcome::Failure(FailureCode::Unavailable)
+            }
             Self::UnsupportedProcessVersion
             | Self::UnsupportedMathToken
             | Self::UnsupportedDemosaic
@@ -156,6 +168,7 @@ impl std::fmt::Display for DevelopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnsupportedContribution(name) => write!(f, "unsupported_contribution:{name}"),
+            Self::Prism(code) => write!(f, "prism_refused:{code}"),
             other => f.write_str(other.code()),
         }
     }
@@ -212,4 +225,4 @@ pub fn report(
     )
 }
 
-pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-develop","module":"develop","slice":1,"scope":"source-only decoded-CFA develop over caller-granted bytes plus an own DNG reader (classic TIFF, uncompressed 8/16-bit or lossless JPEG, strips or tiles, ColorMatrix/ForwardMatrix); no catalog, no persistence, no host wiring","process_version":"1.0","engine_version":"1.0","math_token":"native_cfa_bilinear_hermite_v1","demosaic_algorithm":"bilinear_reflect_native_v1","cfa":["RGGB","BGGR","GRBG","GBRG","xtrans_6x6"],"white_balance_modes":["as_shot"],"profile_transform":"identity_only_working_equals_output","curves":"monotone_hermite_2_to_32_points_linear_output_domain","execution":{"supported":["scalar","auto"],"auto_route":"scalar","unsupported":["sse2"]},"limits":{"spec_v1":{"side_min_bayer":2,"side_min_xtrans":6,"side_max":256,"stride_max_bytes":1024,"plane_max_bytes":262144,"tile_edge_max":64,"tiles_max":16,"output_max_bytes":16777216}},"output":{"colour":"rgb_f32le linear_light","alpha":"f32le straight, 1.0 inside crop only","coverage":"coverage_u8"},"supported_enables":["enable_tone_curve"],"refusals":"typed, stable snake_case codes; nothing clipped, defaulted or silently zeroed","pending":["SIMD route","prism profile transform","host grants and publication","DNG compressions other than none and lossless JPEG (deflate, lossy JPEG)","proprietary RAW containers (decoder_unavailable)"]}"#;
+pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-develop","module":"develop","slice":1,"scope":"source-only decoded-CFA develop over caller-granted bytes plus an own DNG reader (classic TIFF, uncompressed 8/16-bit or lossless JPEG, strips or tiles, ColorMatrix/ForwardMatrix); no catalog, no persistence, no host wiring","process_version":"1.0","engine_version":"1.0","math_token":"native_cfa_bilinear_hermite_v1","demosaic_algorithm":"bilinear_reflect_native_v1","cfa":["RGGB","BGGR","GRBG","GBRG","xtrans_6x6"],"white_balance_modes":["as_shot"],"profile_transform":{"identity":"working equals output (inspected when a converter is supplied)","prism_admitted":"develop_with + PrismConverter; linear-light RGB profiles only; chunks of 64 pixels; working RGB must be finite in 0..1 else prism refuses (never clipped); relative colorimetric, depth 32, BPC off; exposure and curves run after conversion"},"curves":"monotone_hermite_2_to_32_points_linear_output_domain","execution":{"supported":["scalar","auto"],"auto_route":"scalar","unsupported":["sse2"]},"limits":{"spec_v1":{"side_min_bayer":2,"side_min_xtrans":6,"side_max":256,"stride_max_bytes":1024,"plane_max_bytes":262144,"tile_edge_max":64,"tiles_max":16,"output_max_bytes":16777216}},"output":{"colour":"rgb_f32le linear_light","alpha":"f32le straight, 1.0 inside crop only","coverage":"coverage_u8"},"supported_enables":["enable_tone_curve"],"refusals":"typed, stable snake_case codes; nothing clipped, defaulted or silently zeroed","pending":["SIMD route","non-linear (encoded) profiles and BPC in Prism","host grants and publication","DNG compressions other than none and lossless JPEG (deflate, lossy JPEG)","proprietary RAW containers (decoder_unavailable)"]}"#;

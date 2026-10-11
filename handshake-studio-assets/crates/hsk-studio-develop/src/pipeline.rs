@@ -1,6 +1,7 @@
 //! Decoded-CFA source plane, normalisation, bilinear reflect demosaic and the develop stages
 //! (STU-CON-043..045). Scalar oracle only: written products, no FMA, checked arithmetic.
 use crate::DevelopError;
+use crate::convert::ProfileConverter;
 use crate::recipe::{
     DEMOSAIC_ALGORITHM, DevelopRecipe, ENGINE_VERSION, MATH_TOKEN, PROCESS_VERSION,
     PreparedRecipe,
@@ -433,6 +434,11 @@ pub struct DevelopReceipt {
     pub requested_hint: ExecutionHint,
     /// Actual route; never claims SIMD.
     pub route: &'static str,
+    /// "identity_uninspected" (no converter, profiles equal), "identity_inspected" (converter
+    /// inspected both, equal) or "prism_admitted" (converted through the admitted Prism route).
+    pub profile_route: &'static str,
+    /// Number of converter calls (Prism transforms of at most 64 pixels each).
+    pub profile_calls: u32,
     pub limits: &'static str,
     pub source_bounds: (u32, u32, u32, u32),
     pub output: Rect,
@@ -473,7 +479,8 @@ fn to_f32_checked(value: f64) -> Result<f32, DevelopError> {
     Ok(rounded)
 }
 
-fn pixel(
+/// Stage A: demosaiced sample -> as-shot gain -> calibration matrix -> working-profile RGB (f32).
+fn working_pixel(
     plane: &CfaPlane,
     norm: &[f32],
     prepared: &PreparedRecipe,
@@ -494,9 +501,14 @@ fn pixel(
         let sum = (p0 + p1) + p2;
         working[row] = to_f32_checked(sum)?;
     }
+    Ok(working)
+}
+
+/// Stage C (after any working -> output profile conversion): exposure, then curves, one f32 round.
+fn finish_pixel(prepared: &PreparedRecipe, converted: [f32; 3]) -> Result<[f32; 3], DevelopError> {
     let mut out = [0.0f32; 3];
     for channel in 0..3 {
-        let mut v = mul_checked(f64::from(working[channel]), prepared.exposure_gain)?;
+        let mut v = mul_checked(f64::from(converted[channel]), prepared.exposure_gain)?;
         if let Some(curve) = &prepared.curves[0] {
             v = curve.eval(v)?;
         }
@@ -519,6 +531,19 @@ pub fn develop(
     cancel: &CancellationToken,
     sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
 ) -> Result<DevelopReceipt, DevelopError> {
+    develop_with(request, None, cancel, sink)
+}
+
+/// [`develop`] with an optional working -> output profile converter (Prism admitted route).
+/// A recipe whose working and output profiles differ requires a converter whose bindings match
+/// the recipe exactly; with a converter, both profiles are inspected (admitted, linear-light)
+/// before any pixel is computed, and identical profiles skip the transform only after that.
+pub fn develop_with(
+    request: &DevelopRequest<'_>,
+    mut converter: Option<&mut dyn ProfileConverter>,
+    cancel: &CancellationToken,
+    sink: &mut dyn FnMut(DevelopedTile) -> Result<(), SinkError>,
+) -> Result<DevelopReceipt, DevelopError> {
     cancel.check()?;
     let plane = request.plane;
     if plane.source_revision != request.expected_source_revision {
@@ -528,6 +553,23 @@ pub fn develop(
     if request.execution_hint == ExecutionHint::Sse2 {
         return Err(DevelopError::UnsupportedExecution);
     }
+    let profile_route = match converter.as_deref_mut() {
+        None if !prepared.profile_transform => "identity_uninspected",
+        None => return Err(DevelopError::UnsupportedProfileTransform),
+        Some(c) => {
+            if c.source() != &request.recipe.working_profile
+                || c.destination() != &request.recipe.output_profile
+            {
+                return Err(DevelopError::InvalidProfile);
+            }
+            c.inspect(cancel)?;
+            if prepared.profile_transform {
+                "prism_admitted"
+            } else {
+                "identity_inspected"
+            }
+        }
+    };
     let limits = plane.limits;
     let (x0, y0, x1, y1) = request
         .recipe
@@ -581,23 +623,34 @@ pub fn develop(
             let mut colour = vec![0u8; tile_pixels * 12];
             let mut alpha = vec![0u8; tile_pixels * 4];
             let mut coverage = vec![0u8; tile_pixels];
+            // Stage A for the whole developed region (row-major), then the optional conversion.
+            let mut working =
+                Vec::with_capacity(developed.width as usize * developed.height as usize);
             for dy in 0..developed.height {
                 for dx in 0..developed.width {
-                    let doc_x = developed.x + i64::from(dx);
-                    let doc_y = developed.y + i64::from(dy);
-                    let sx = x0 as usize + (doc_x - ox) as usize;
-                    let sy = y0 as usize + (doc_y - oy) as usize;
-                    let rgb = pixel(plane, &norm, &prepared, sx, sy)?;
-                    let tx = (doc_x - bounds.x) as usize;
-                    let ty = (doc_y - bounds.y) as usize;
-                    let index = ty * grid.tile_width as usize + tx;
-                    for (c, value) in rgb.iter().enumerate() {
-                        colour[index * 12 + c * 4..index * 12 + c * 4 + 4]
-                            .copy_from_slice(&value.to_le_bytes());
-                    }
-                    alpha[index * 4..index * 4 + 4].copy_from_slice(&1.0f32.to_le_bytes());
-                    coverage[index] = 255;
+                    let sx = x0 as usize + (developed.x + i64::from(dx) - ox) as usize;
+                    let sy = y0 as usize + (developed.y + i64::from(dy) - oy) as usize;
+                    working.push(working_pixel(plane, &norm, &prepared, sx, sy)?);
                 }
+            }
+            if prepared.profile_transform
+                && let Some(c) = converter.as_deref_mut()
+            {
+                working = c.convert(&working, cancel)?;
+            }
+            for (i, w) in working.iter().enumerate() {
+                let dx = (i % developed.width as usize) as i64;
+                let dy = (i / developed.width as usize) as i64;
+                let rgb = finish_pixel(&prepared, *w)?;
+                let tx = (developed.x + dx - bounds.x) as usize;
+                let ty = (developed.y + dy - bounds.y) as usize;
+                let index = ty * grid.tile_width as usize + tx;
+                for (c, value) in rgb.iter().enumerate() {
+                    colour[index * 12 + c * 4..index * 12 + c * 4 + 4]
+                        .copy_from_slice(&value.to_le_bytes());
+                }
+                alpha[index * 4..index * 4 + 4].copy_from_slice(&1.0f32.to_le_bytes());
+                coverage[index] = 255;
             }
             tiles.push(DevelopedTile {
                 bounds,
@@ -624,6 +677,8 @@ pub fn develop(
         demosaic_algorithm: DEMOSAIC_ALGORITHM,
         requested_hint: request.execution_hint,
         route: "scalar",
+        profile_route,
+        profile_calls: converter.as_deref().map_or(0, |c| c.calls()),
         limits: limits.name(),
         source_bounds: (x0, y0, x1, y1),
         output,

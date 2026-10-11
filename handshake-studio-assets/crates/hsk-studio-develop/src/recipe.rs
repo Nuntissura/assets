@@ -229,6 +229,8 @@ pub(crate) struct PreparedRecipe {
     pub matrix: [f64; 9],
     /// composite, red, green, blue; `None` per role means "skip" (disabled or identity).
     pub curves: [Option<PreparedCurve>; 4],
+    /// Working and output profiles differ: a converter (Prism admitted route) is required.
+    pub profile_transform: bool,
 }
 
 impl DevelopRecipe {
@@ -286,9 +288,6 @@ impl DevelopRecipe {
                 return Err(DevelopError::InvalidProfile);
             }
         }
-        if self.working_profile != self.output_profile {
-            return Err(DevelopError::UnsupportedProfileTransform);
-        }
 
         let gain = as_shot_gain(self.as_shot_neutral)?;
 
@@ -330,6 +329,7 @@ impl DevelopRecipe {
             exposure_gain,
             matrix: *c,
             curves,
+            profile_transform: self.working_profile != self.output_profile,
         })
     }
 }
