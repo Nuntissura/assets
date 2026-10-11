@@ -1157,3 +1157,41 @@ fn text_fields_refusals_bounds_and_atomicity() {
     let r = doc.redact_text_fields(&needle, &policy, &token()).unwrap();
     assert_eq!(r.outcomes.iter().map(|o| o.object.num).collect::<Vec<_>>(), vec![11, 12]);
 }
+
+// ------------------------------------------------------------ remediation R5
+
+/// A removed string stored in a stream the verifier cannot decode (unimplemented filter) is
+/// invisible to the byte scan; `is_proven` and `region_cleared` must not claim it is absent.
+#[test]
+fn undecodable_stream_never_reads_as_proven() {
+    let deflate = |d: &[u8]| miniz_oxide::deflate::compress_to_vec_zlib(d, 6);
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let run = |hidden: bool| {
+        let mut objs = base_objs(CONTENT.as_bytes(), "<< /Title (T) >>");
+        if hidden {
+            // Reachable from the catalog; zlib bytes under a filter this crate does not implement.
+            objs[0].1 = b"<< /Type /Catalog /Pages 2 0 R /Hidden 20 0 R >>".to_vec();
+            objs.push((20, stream_body("/Filter /JBIG2Decode", &deflate(b"stash SECRET-ALPHA stash"))));
+        }
+        let mut doc = open(&build(&objs, "/Info 7 0 R", b""));
+        redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap()
+    };
+
+    // Control: the same document without the stream is proven (the only blocker below is the stream).
+    let clean = run(false);
+    assert!(clean.proof.fully_decoded() && clean.proof.is_clean() && clean.region_cleared() && clean.is_proven());
+
+    let out = run(true);
+    assert_eq!(out.reports[0].removed_text, vec![b"SECRET-ALPHA".to_vec()]);
+    assert_eq!(out.residual_in_region, 0);
+    // The byte scan finds nothing, because the needle is only present in encoded form ...
+    assert!(out.proof.hits.is_empty());
+    // ... but an independent inflate of the saved file shows it is still there.
+    assert!(independent_streams(&out.bytes).iter().any(|s| find(s, b"SECRET-ALPHA").is_some()), "the needle survives in the saved bytes");
+    // So nothing may read as proven, and the blocker is named.
+    assert_eq!(out.proof.streams_not_decodable, vec![(20u32, "JBIG2Decode".to_string())]);
+    assert!(!out.proof.fully_decoded() && !out.proof.is_clean());
+    assert!(!out.region_cleared() && !out.is_proven());
+    let again = verify_payload_absent(&out.bytes, &[b"SECRET-ALPHA".to_vec()], &Limits::default(), &token()).unwrap();
+    assert!(again.hits.is_empty() && !again.is_clean());
+}

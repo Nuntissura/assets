@@ -69,9 +69,16 @@ pub struct PayloadProof {
 
 impl PayloadProof {
     /// No needle found anywhere scanned, a single xref section, no unreachable or unlisted
-    /// objects.
+    /// objects, AND every stream decoded and scanned. A stream the verifier cannot decode (a filter
+    /// this crate does not implement, or a decode error) is only scanned as raw bytes, which says
+    /// nothing about a needle stored in its encoded form, so a document holding one is never
+    /// reported clean: see `streams_not_decodable` for which streams block the claim.
     pub fn is_clean(&self) -> bool {
-        self.hits.is_empty() && self.xref_sections <= 1 && self.unreachable_objects.is_empty() && self.unlisted_object_markers == 0
+        self.hits.is_empty()
+            && self.xref_sections <= 1
+            && self.unreachable_objects.is_empty()
+            && self.unlisted_object_markers == 0
+            && self.fully_decoded()
     }
     /// Every stream was decoded and scanned (otherwise see `streams_not_decodable`).
     pub fn fully_decoded(&self) -> bool {
@@ -356,15 +363,18 @@ impl RedactedOutput {
     }
 
     /// The regions themselves are proven clear: every mark removed, a fresh pass over the saved
-    /// bytes selects nothing, one xref section, no unreachable or unlisted objects. Says nothing
-    /// about the same words legitimately living elsewhere (outline titles, metadata); `is_proven`
-    /// also requires `proof.hits` to be empty.
+    /// bytes selects nothing, one xref section, no unreachable or unlisted objects, and every
+    /// stream of the saved file was decoded (an undecodable stream can still hold a removed string
+    /// in its encoded form, so the structural claim is withheld: `proof.streams_not_decodable`
+    /// names the blockers). Says nothing about the same words legitimately living elsewhere
+    /// (outline titles, metadata); `is_proven` also requires `proof.hits` to be empty.
     pub fn region_cleared(&self) -> bool {
         self.reports.iter().all(|r| r.complete)
             && self.residual_in_region == 0
             && self.proof.xref_sections <= 1
             && self.proof.unreachable_objects.is_empty()
             && self.proof.unlisted_object_markers == 0
+            && self.proof.fully_decoded()
     }
 }
 
