@@ -149,6 +149,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsk-studio-components"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-composite"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-controls"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-develop"
+version = "0.1.0"
+
+[[package]]
 name = "hsk-studio-folio"
 version = "0.1.0"
 dependencies = [
@@ -157,6 +173,50 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "hsk-studio-harness"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-interop-fig"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-interop-layout"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-interop-lrcat"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-interop-media"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-interop-psd"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-interop-vector"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-kernel-bindings"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-layout"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-motion"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-motion-js"
+version = "0.1.0"
 
 [[package]]
 name = "hsk-studio-nib"
@@ -176,6 +236,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsk-studio-package"
+version = "0.1.0"
+
+[[package]]
 name = "hsk-studio-pigment"
 version = "0.1.0"
 dependencies = [
@@ -188,6 +252,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hsk-studio-press"
+version = "0.1.0"
+
+[[package]]
 name = "hsk-studio-prism"
 version = "0.1.0"
 dependencies = [
@@ -196,6 +264,42 @@ dependencies = [
  "moxcms",
  "sha2 0.11.0",
 ]
+
+[[package]]
+name = "hsk-studio-pulse"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-reel"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-reel-native"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-render-cpu"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-render-gpu"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-score"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-score-device"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-score-plugin"
+version = "0.1.0"
+
+[[package]]
+name = "hsk-studio-session"
+version = "0.1.0"
 
 [[package]]
 name = "hsk-studio-type"
@@ -212,6 +316,10 @@ dependencies = [
  "unicode-properties",
  "unicode-script",
 ]
+
+[[package]]
+name = "hsk-studio-web"
+version = "0.1.0"
 
 [[package]]
 name = "hybrid-array"

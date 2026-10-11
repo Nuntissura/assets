@@ -1,6 +1,42 @@
 [workspace]
 resolver = "3"
-members = ["crates/hsk-studio-accord", "crates/hsk-studio-observe", "crates/hsk-studio-folio", "crates/hsk-studio-prism", "crates/hsk-studio-chronicle", "crates/hsk-studio-pigment", "crates/hsk-studio-nib", "crates/hsk-studio-type"]
+members = [
+  "crates/hsk-studio-accord",
+  "crates/hsk-studio-observe",
+  "crates/hsk-studio-folio",
+  "crates/hsk-studio-chronicle",
+  "crates/hsk-studio-prism",
+  "crates/hsk-studio-pigment",
+  "crates/hsk-studio-nib",
+  "crates/hsk-studio-type",
+  "crates/hsk-studio-layout",
+  "crates/hsk-studio-develop",
+  "crates/hsk-studio-components",
+  "crates/hsk-studio-pulse",
+  "crates/hsk-studio-score",
+  "crates/hsk-studio-reel",
+  "crates/hsk-studio-motion",
+  "crates/hsk-studio-composite",
+  "crates/hsk-studio-render-cpu",
+  "crates/hsk-studio-render-gpu",
+  "crates/hsk-studio-package",
+  "crates/hsk-studio-interop-psd",
+  "crates/hsk-studio-interop-vector",
+  "crates/hsk-studio-interop-fig",
+  "crates/hsk-studio-interop-layout",
+  "crates/hsk-studio-interop-media",
+  "crates/hsk-studio-controls",
+  "crates/hsk-studio-session",
+  "crates/hsk-studio-harness",
+  "crates/hsk-studio-kernel-bindings",
+  "crates/hsk-studio-press",
+  "crates/hsk-studio-web",
+  "crates/hsk-studio-score-device",
+  "crates/hsk-studio-score-plugin",
+  "crates/hsk-studio-reel-native",
+  "crates/hsk-studio-interop-lrcat",
+  "crates/hsk-studio-motion-js",
+]
 
 [workspace.package]
 version = "0.1.0"
