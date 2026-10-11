@@ -1,8 +1,10 @@
 //! Pigment source-local CPU masked replacement. Host acceptance and richer raster work remain pending.
 #![forbid(unsafe_code)]
+pub mod adjust_math;
 pub mod allocation;
 pub mod blend_math;
 pub mod caller;
+pub mod coverage_math;
 pub mod masked_patch;
 pub mod render_plan;
 pub mod tile;
