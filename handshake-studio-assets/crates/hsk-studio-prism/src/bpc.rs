@@ -17,7 +17,8 @@
 //!    the shadow samples (needs at least 3 samples, ISO text; lcms2 needs 4) clamped to 0..50.
 //! 5. `Y(L)` is the CIE inverse (`((L+16)/116)^3`, `L * 27/24389` for L <= 8). With
 //!    `scale = (1 - Y_dst) / (1 - Y_src)` the PCS map is `XYZ' = scale * XYZ + (1 - scale) * D50`,
-//!    so white is fixed and the source black lands on the destination black.
+//!    so white is fixed and the source black lands on the destination black. (Prism's legs carry
+//!    the PCS as `XYZ / D50`, where the same map reads `n' = scale * n + (1 - scale)`.)
 //! 6. moxcms's own black-point scaling (RGB v4, perceptual or saturation, only where a table is
 //!    involved) never runs: every leg touches the version-2.1 companion. When moxcms would have
 //!    applied it, the receipt says `engine_builtin_suppressed`, and Prism applies exactly one
@@ -28,7 +29,7 @@ use hsk_studio_accord::CancellationToken;
 use moxcms::{ColorProfile, TransformF32Executor};
 use std::sync::Arc;
 
-const D50: [f64; 3] = [0.9642, 1.0, 0.8249];
+pub(crate) const D50: [f64; 3] = [0.9642, 1.0, 0.8249];
 const RAMP: usize = 256;
 
 pub(crate) fn y_of_l(l: f64) -> f64 {
@@ -45,7 +46,7 @@ pub(crate) fn l_of_y(y: f64) -> f64 {
         24389.0 / 27.0 * y
     }
 }
-fn lab_to_xyz(l: f64, a: f64, b: f64) -> [f64; 3] {
+pub(crate) fn lab_to_xyz(l: f64, a: f64, b: f64) -> [f64; 3] {
     let fy = (l + 16.0) / 116.0;
     let (fx, fz) = (fy + a / 500.0, fy - b / 200.0);
     let inv = |t: f64| {
@@ -97,10 +98,11 @@ impl Probe {
 
 pub(crate) struct BpcInputs<'a> {
     pub companion: &'a ColorProfile,
-    pub source: (&'a ColorProfile, &'a WideProfileDescriptor),
+    /// `None` for a Lab source: its black point is L* 0 (ISO 18619 step 3).
+    pub source: Option<(&'a ColorProfile, &'a WideProfileDescriptor)>,
     pub destination: (&'a ColorProfile, &'a WideProfileDescriptor),
     pub intent: Intent,
-    pub to_pcs: &'a Arc<TransformF32Executor>,
+    pub to_pcs: Option<&'a Arc<TransformF32Executor>>,
     pub from_pcs: &'a Arc<TransformF32Executor>,
 }
 
@@ -174,23 +176,28 @@ pub(crate) fn compute(
     c: &BpcInputs<'_>,
     cancel: &CancellationToken,
 ) -> Result<(PcsMap, BpcReport), WideError> {
-    let ((sp, sd), (dp, dd)) = (c.source, c.destination);
+    let (dp, dd) = c.destination;
     let canceled = || cancel.check().map_err(|_| WideError::Canceled);
-    let src_to_xyz = Probe::new(c.to_pcs.clone(), sd.device.channels(), 3);
     // Source black.
-    let source_l = if sd.device == DeviceSpace::Cmyk && sd.pcs_to_device.perceptual {
-        let b2a0 = Probe::new(
-            leg(c.companion, DeviceSpace::Rgb, sp, DeviceSpace::Cmyk, Intent::Perceptual)?,
-            3,
-            4,
-        );
-        let local = b2a0.eval(&[0.0, 0.0, 0.0])?;
-        let xyz = src_to_xyz.eval(&local)?;
-        l_of_y(f64::from(xyz[1]))
-    } else {
-        darkest_l(&src_to_xyz, sd.device)?
-    }
-    .min(50.0);
+    let source_l = match (c.source, c.to_pcs) {
+        (Some((sp, sd)), Some(to_pcs)) => {
+            let src_to_xyz = Probe::new(to_pcs.clone(), sd.device.channels(), 3);
+            if sd.device == DeviceSpace::Cmyk && sd.pcs_to_device.perceptual {
+                let b2a0 = Probe::new(
+                    leg(c.companion, DeviceSpace::Rgb, sp, DeviceSpace::Cmyk, Intent::Perceptual)?,
+                    3,
+                    4,
+                );
+                let local = b2a0.eval(&[0.0, 0.0, 0.0])?;
+                let xyz = src_to_xyz.eval(&local)?;
+                l_of_y(f64::from(xyz[1]))
+            } else {
+                darkest_l(&src_to_xyz, sd.device)?
+            }
+            .min(50.0)
+        }
+        _ => 0.0,
+    };
     canceled()?;
     // Destination black.
     let table_based = matches!(dd.kind, ProfileKind::LegacyLut | ProfileKind::MultiDimensional)
@@ -234,7 +241,11 @@ pub(crate) fn compute(
                 best.map(|(_, v)| v).unwrap_or_default()
             };
             let xyz = dst_to_xyz_rel.eval(&local)?;
-            initial = xyz_to_lab([f64::from(xyz[0]), f64::from(xyz[1]), f64::from(xyz[2])]);
+            initial = xyz_to_lab([
+                f64::from(xyz[0]) * D50[0],
+                f64::from(xyz[1]) * D50[1],
+                f64::from(xyz[2]) * D50[2],
+            ]);
             if dd.device == DeviceSpace::Cmyk {
                 initial = [initial[0].min(50.0), 0.0, 0.0];
             }
@@ -245,8 +256,9 @@ pub(crate) fn compute(
         for (i, slot) in in_l.iter_mut().enumerate() {
             let t = i as f64 / (RAMP - 1) as f64;
             *slot = t * 100.0;
-            for v in lab_to_xyz(*slot, ka * (1.0 - t), kb * (1.0 - t)) {
-                xyz_in.push(v as f32);
+            // Legs speak the D50-normalised PCS (rgb = XYZ / D50).
+            for (v, white) in lab_to_xyz(*slot, ka * (1.0 - t), kb * (1.0 - t)).into_iter().zip(D50) {
+                xyz_in.push((v / white) as f32);
             }
         }
         let mut device = vec![0.0f32; RAMP * dst_out];
@@ -301,7 +313,7 @@ pub(crate) fn compute(
     } else {
         PcsMap::Affine {
             scale,
-            offset: [(1.0 - scale) * D50[0], (1.0 - scale) * D50[1], (1.0 - scale) * D50[2]],
+            offset: [1.0 - scale; 3],
         }
     };
     Ok((map, report))

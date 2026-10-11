@@ -319,17 +319,29 @@ impl Prism {
                 }
             }
         }
-        let source = parse_profile(r.source)?;
-        canceled(cancel)?;
-        let destination = parse_profile(r.destination)?;
-        canceled(cancel)?;
         let hit = self.cache.iter().position(|e| {
             e.source == r.source.expected_sha256 && e.destination == r.destination.expected_sha256
         });
-        let executor = if let Some(i) = hit {
+        // A hit was created from bytes with exactly these hashes, so only identity, size and hash are
+        // re-proved; parsing (the expensive step) happens on a miss, in the original order.
+        let parsed = if hit.is_some() {
+            verify_profile(r.source)?;
+            canceled(cancel)?;
+            verify_profile(r.destination)?;
+            canceled(cancel)?;
+            None
+        } else {
+            let source = parse_profile(r.source)?;
+            canceled(cancel)?;
+            let destination = parse_profile(r.destination)?;
+            canceled(cancel)?;
+            Some((source, destination))
+        };
+        let executor = if let (Some(i), None) = (hit, &parsed) {
             self.stats.hits = self.stats.hits.saturating_add(1);
             self.cache[i].executor.clone()
         } else {
+            let (source, destination) = parsed.expect("miss parses both profiles");
             if self.cache.len() >= self.capacity {
                 return Err(Error::CacheFull);
             }
@@ -375,7 +387,8 @@ impl Prism {
 fn canceled(token: &CancellationToken) -> Result<(), Error> {
     token.check().map_err(|_| Error::Canceled)
 }
-fn parse_profile(input: ProfileInput<'_>) -> Result<ColorProfile, Error> {
+/// The identity, size and exact-bytes checks that open `parse_profile`.
+fn verify_profile(input: ProfileInput<'_>) -> Result<(), Error> {
     if input.profile_id.prefix() != "SCPF" {
         return Err(Error::InvalidProfileId);
     }
@@ -385,6 +398,10 @@ fn parse_profile(input: ProfileInput<'_>) -> Result<ColorProfile, Error> {
     if profile_hash(input.bytes) != input.expected_sha256 {
         return Err(Error::HashMismatch);
     }
+    Ok(())
+}
+fn parse_profile(input: ProfileInput<'_>) -> Result<ColorProfile, Error> {
+    verify_profile(input)?;
     // Outer framing only. All ICC tag interpretation belongs to moxcms.
     if input.bytes.len() < 132
         || u32::from_be_bytes(input.bytes[..4].try_into().unwrap()) as usize != input.bytes.len()

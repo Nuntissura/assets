@@ -262,7 +262,7 @@ impl Ctx {
         bpc: bool,
     ) -> WideTransformRequest<'a> {
         WideTransformRequest {
-            source: self.input(&self.source, source),
+            source: WideSource::Profile(self.input(&self.source, source)),
             destination: self.input(&self.destination, destination),
             pixels,
             intent,
@@ -322,4 +322,17 @@ pub fn cmyk_k_profile(grid: u8, intents: usize, black_l: f64) -> Vec<u8> {
     let a2b = cmyk_a2b(grid, |_, _, _, k| (100.0 - span * k, 0.0, 0.0));
     let b2a = cmyk_b2a(6, |l, _, _| [0.0, 0.0, 0.0, (100.0 - l) / span]);
     cmyk_profile(a2b, Some(b2a), intents, D50)
+}
+/// Lab source request: PCS Lab triples to `destination`.
+pub fn run_lab(
+    engine: &mut WideEngine,
+    ctx: &Ctx,
+    destination: &[u8],
+    lab: &[f32],
+    intent: Intent,
+    bpc: bool,
+) -> Result<WideTransformResult, WideFailure> {
+    let mut request = ctx.request(SRGB, destination, lab, intent, bpc);
+    request.source = WideSource::Lab;
+    engine.transform(&request, &CancellationToken::default(), &mut Collect(Vec::new()))
 }

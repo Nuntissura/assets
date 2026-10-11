@@ -111,8 +111,8 @@ fn cmyk_to_srgb_k_ramp_matches_lab_definition_and_missing_table_is_typed() {
             }
         }
         let r = &result.receipt;
-        assert_eq!((r.source_kind, r.destination_kind), (ProfileKind::LegacyLut, ProfileKind::MatrixTrc));
-        assert_eq!((r.source_space, r.destination_space), (DeviceSpace::Cmyk, DeviceSpace::Rgb));
+        assert_eq!((r.source_kind, r.destination_kind), (Some(ProfileKind::LegacyLut), ProfileKind::MatrixTrc));
+        assert_eq!((r.source_space, r.destination_space), (SourceSpace::Device(DeviceSpace::Cmyk), DeviceSpace::Rgb));
         assert!(!r.engine_build.simd && r.engine_build.interpolation == "tetrahedral" && !r.options.prefer_fixed_point);
         assert_eq!(result.delivery.outcome, Outcome::Success);
         // Deterministic and cached: same bits, same digest, second call is a cache hit.

@@ -31,7 +31,9 @@ pub const MAX_WIDE_CLUT_ENTRIES: usize = 1_048_576;
 /// Largest `curv` table accepted at parse time.
 pub const MAX_WIDE_TRC_ENTRIES: usize = 65_536;
 pub const MAX_WIDE_TAGS: usize = 512;
-pub const MAX_WIDE_PIXELS: usize = 262_144;
+/// Pixels per request: large enough to convert a frame in a few calls (24 MP = 12 calls), bounded so
+/// one call holds at most about 25 MB of output.
+pub const MAX_WIDE_PIXELS: usize = 1 << 21;
 const CHUNK_PIXELS: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,19 +272,24 @@ fn frame(b: &[u8]) -> Result<Vec<Tag>, WideError> {
 
 /// Pure admission: bounded framing checks, typed refusal of everything outside the supported
 /// families, then moxcms parsing. No transform, cache entry or telemetry.
-pub(crate) fn admit(
-    input: ProfileInput<'_>,
-) -> Result<(ColorProfile, WideProfileDescriptor), WideError> {
+/// Identity, size and exact-bytes checks only (no parsing): everything a cache hit must re-prove.
+pub(crate) fn verify(input: ProfileInput<'_>) -> Result<(), WideError> {
     if input.profile_id.prefix() != "SCPF" {
         return Err(WideError::InvalidProfileId);
     }
-    let b = input.bytes;
-    if b.len() > MAX_WIDE_PROFILE_BYTES {
+    if input.bytes.len() > MAX_WIDE_PROFILE_BYTES {
         return Err(WideError::ProfileLimit);
     }
-    if profile_hash(b) != input.expected_sha256 {
+    if profile_hash(input.bytes) != input.expected_sha256 {
         return Err(WideError::HashMismatch);
     }
+    Ok(())
+}
+pub(crate) fn admit(
+    input: ProfileInput<'_>,
+) -> Result<(ColorProfile, WideProfileDescriptor), WideError> {
+    verify(input)?;
+    let b = input.bytes;
     let tags = frame(b)?;
     let major = b[8];
     if major != 2 && major != 4 {
@@ -423,8 +430,9 @@ fn push_u32(out: &mut Vec<u8>, v: u32) {
 fn push_s15(out: &mut Vec<u8>, v: f64) {
     out.extend_from_slice(&((v * 65536.0).round() as i32).to_be_bytes());
 }
-/// Identity-colourant linear version-2.1 matrix profile: `rgb` equals PCS XYZ (D50). Version 2.1 keeps
-/// moxcms's built-in black-point scaling (version 4.0+ only) from ever applying in a Prism leg.
+/// Linear version-2.1 matrix profile whose colourants are the diagonal of the D50 white, so
+/// `rgb = XYZ / D50` (white = 1,1,1; a gray source maps to equal channels = a D50 neutral). Version
+/// 2.1 keeps moxcms's built-in black-point scaling (version 4.0+ only) from ever applying in a leg.
 pub(crate) fn pcs_companion_bytes() -> Vec<u8> {
     let xyz = |x: f64, y: f64, z: f64| {
         let mut t = b"XYZ \0\0\0\0".to_vec();
@@ -437,9 +445,9 @@ pub(crate) fn pcs_companion_bytes() -> Vec<u8> {
     push_s15(&mut curve, 1.0);
     let datas: [(&[u8; 4], Vec<u8>); 7] = [
         (b"wtpt", xyz(0.9642, 1.0, 0.8249)),
-        (b"rXYZ", xyz(1.0, 0.0, 0.0)),
+        (b"rXYZ", xyz(0.9642, 0.0, 0.0)),
         (b"gXYZ", xyz(0.0, 1.0, 0.0)),
-        (b"bXYZ", xyz(0.0, 0.0, 1.0)),
+        (b"bXYZ", xyz(0.0, 0.0, 0.8249)),
         (b"rTRC", curve.clone()),
         (b"gTRC", curve.clone()),
         (b"bTRC", curve),
@@ -533,23 +541,72 @@ pub struct ClipReport {
     pub max_overshoot: f64,
 }
 
-/// Immutable plan: two moxcms legs and the Prism PCS stage between them.
+/// How the destination's out-of-range values are detected before encoding (SMB-PRISM-ENG-2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ClipPlan {
+    /// Table-based destination: its clamped output cannot reveal clipping.
+    Unavailable,
+    /// Matrix/TRC destination: linear device value = (inverse colorant matrix * diag(D50)) times the
+    /// normalised PCS, checked against 0..1 (exact, independent of any TRC clamping).
+    Rgb([[f64; 3]; 3]),
+    /// Gray TRC destination: relative luminance Y checked against 0..1.
+    Gray,
+}
+
+/// Immutable plan: two moxcms legs and the Prism PCS stage between them. `to_pcs` is `None` for a
+/// Lab source, whose pixels are converted to PCS XYZ directly.
 pub(crate) struct Plan {
-    pub(crate) to_pcs: Arc<TransformF32Executor>,
+    pub(crate) to_pcs: Option<Arc<TransformF32Executor>>,
     pub(crate) from_pcs: Arc<TransformF32Executor>,
     pub(crate) map: PcsMap,
     pub(crate) bpc: BpcReport,
     pub(crate) absolute: AbsoluteReport,
-    #[allow(dead_code)] // read by the clip report (SMB-PRISM-ENG-2)
-    pub(crate) clip_executor: Option<Arc<TransformF32Executor>>,
-    pub(crate) clip_method: ClipMethod,
+    pub(crate) clip: ClipPlan,
+}
+impl Plan {
+    fn clip_method(&self) -> ClipMethod {
+        match self.clip {
+            ClipPlan::Unavailable => ClipMethod::Unavailable,
+            ClipPlan::Rgb(_) | ClipPlan::Gray => ClipMethod::LinearDevice,
+        }
+    }
+    /// Count linear destination values outside 0..1 for the PCS XYZ pixels of one chunk.
+    fn scan_clip(&self, xyz: &[f32], report: &mut ClipReport) {
+        // Values within 1e-3 of 0 or 1 are rounding noise (16.16 colorants, f32), not clipping.
+        const EPS: f64 = 1e-3;
+        let mut note = |ch: usize, v: f64, any: &mut bool| {
+            let over = if v < -EPS {
+                -v
+            } else if v > 1.0 + EPS {
+                v - 1.0
+            } else {
+                return;
+            };
+            *any = true;
+            report.channels_clipped[ch] += 1;
+            report.max_overshoot = report.max_overshoot.max(over);
+        };
+        for p in xyz.chunks_exact(3) {
+            let mut any = false;
+            match self.clip {
+                ClipPlan::Unavailable => return,
+                ClipPlan::Gray => note(0, f64::from(p[1]), &mut any),
+                ClipPlan::Rgb(inv) => {
+                    let v = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
+                    for (ch, row) in inv.iter().enumerate() {
+                        note(ch, row[0] * v[0] + row[1] * v[1] + row[2] * v[2], &mut any);
+                    }
+                }
+            }
+            report.pixels_clipped += u64::from(any);
+        }
+    }
 }
 /// Prism-owned adjustment of PCS XYZ between the legs.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(dead_code)] // `Affine` (ENG-1) and `Scale` (ENG-2) are constructed by their lanes
 pub(crate) enum PcsMap {
     Identity,
-    /// `xyz * scale + offset` (BPC: uniform scale, offset = (1 - scale) * D50 white).
+    /// `n * scale + offset` on the D50-normalised PCS (BPC: uniform scale, offset = 1 - scale).
     Affine { scale: f64, offset: [f64; 3] },
     /// Component-wise scale (absolute colorimetric media white ratio).
     Scale([f64; 3]),
@@ -595,7 +652,6 @@ pub(crate) fn options(intent: Intent) -> TransformOptions {
         // declared path is tetrahedral with 65536-bin weights.
         interpolation_method: InterpolationMethod::Tetrahedral,
         barycentric_weight_scale: BarycentricWeightScale::High,
-        ..Default::default()
     }
 }
 pub(crate) fn leg(
@@ -609,10 +665,24 @@ pub(crate) fn leg(
         .map_err(|_| WideError::EngineFailure)
 }
 
-/// Caller-scoped request for the wide path. `pixels` are interleaved device values in 0..1
-/// (CMYK: 1.0 is full ink, ICC convention) with the source profile's channel count.
+/// Where the pixels come from: an admitted device profile, or ICC PCS Lab (D50, floats) directly.
+#[derive(Clone, Copy)]
+pub enum WideSource<'a> {
+    Profile(ProfileInput<'a>),
+    /// `L*` 0..100, `a*`/`b*` -128..128, three interleaved channels; no profile involved.
+    Lab,
+}
+/// What the source pixels were, as recorded in the receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceSpace {
+    Device(DeviceSpace),
+    Lab,
+}
+
+/// Caller-scoped request for the wide path. `pixels` are interleaved: device values in 0..1 with the
+/// source profile's channel count (CMYK: 1.0 is full ink, ICC convention), or Lab triples.
 pub struct WideTransformRequest<'a> {
-    pub source: ProfileInput<'a>,
+    pub source: WideSource<'a>,
     pub destination: ProfileInput<'a>,
     pub pixels: &'a [f32],
     pub intent: Intent,
@@ -625,13 +695,14 @@ pub struct WideTransformRequest<'a> {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct WideReceipt {
-    pub source_profile_id: DomainId,
+    /// `None` for a Lab source.
+    pub source_profile_id: Option<DomainId>,
+    pub source_sha256: Option<[u8; 32]>,
+    pub source_kind: Option<ProfileKind>,
+    pub source_space: SourceSpace,
     pub destination_profile_id: DomainId,
-    pub source_sha256: [u8; 32],
     pub destination_sha256: [u8; 32],
-    pub source_kind: ProfileKind,
     pub destination_kind: ProfileKind,
-    pub source_space: DeviceSpace,
     pub destination_space: DeviceSpace,
     pub engine_name: &'static str,
     pub engine_version: &'static str,
@@ -669,14 +740,16 @@ pub struct WideCacheStats {
     pub hits: u64,
     pub misses: u64,
     pub rejected: u64,
+    /// Profile parses performed (a cache hit parses nothing).
+    pub parses: u64,
 }
 struct Entry {
-    source: [u8; 32],
+    source: Option<[u8; 32]>,
     destination: [u8; 32],
     intent: Intent,
     bpc: bool,
     plan: Arc<Plan>,
-    source_desc: WideProfileDescriptor,
+    source_desc: Option<WideProfileDescriptor>,
     destination_desc: WideProfileDescriptor,
 }
 
@@ -702,6 +775,13 @@ fn canceled(token: &CancellationToken) -> Result<(), WideError> {
     token.check().map_err(|_| WideError::Canceled)
 }
 
+type Planned = (
+    Arc<Plan>,
+    Option<WideProfileDescriptor>,
+    WideProfileDescriptor,
+    bool,
+);
+
 impl WideEngine {
     pub fn new(actor: ActorContext, cache_entries: usize) -> Result<Self, WideError> {
         if cache_entries == 0 || cache_entries > crate::MAX_CACHE_ENTRIES {
@@ -718,6 +798,7 @@ impl WideEngine {
                 hits: 0,
                 misses: 0,
                 rejected: 0,
+                parses: 0,
             },
             companion,
         })
@@ -745,36 +826,51 @@ impl WideEngine {
         &mut self,
         r: &WideTransformRequest<'_>,
         cancel: &CancellationToken,
-    ) -> Result<(Arc<Plan>, WideProfileDescriptor, WideProfileDescriptor, bool), WideError> {
-        canceled(cancel)?;
-        if r.actor != &self.actor {
-            return Err(WideError::ContextMismatch);
-        }
-        if r.revision != r.expected_revision {
-            return Err(WideError::RevisionMismatch);
-        }
+    ) -> Result<Planned, WideError> {
+        let source_hash = match r.source {
+            WideSource::Profile(p) => Some(p.expected_sha256),
+            WideSource::Lab => None,
+        };
         let hit = self.cache.iter().position(|e| {
-            e.source == r.source.expected_sha256
+            e.source == source_hash
                 && e.destination == r.destination.expected_sha256
                 && e.intent == r.intent
                 && e.bpc == r.black_point_compensation
         });
-        // Identity and exact bytes are verified on every call, hit or miss.
-        let (source, source_desc) = admit(r.source)?;
-        canceled(cancel)?;
-        let (destination, destination_desc) = admit(r.destination)?;
-        canceled(cancel)?;
         if let Some(i) = hit {
+            // A hit re-proves identity and exact bytes (hash) but parses nothing.
+            if let WideSource::Profile(p) = r.source {
+                verify(p)?;
+            }
+            canceled(cancel)?;
+            verify(r.destination)?;
             self.stats.hits = self.stats.hits.saturating_add(1);
             let e = &self.cache[i];
-            return Ok((e.plan.clone(), e.source_desc.clone(), e.destination_desc.clone(), true));
+            return Ok((
+                e.plan.clone(),
+                e.source_desc.clone(),
+                e.destination_desc.clone(),
+                true,
+            ));
         }
+        let source = match r.source {
+            WideSource::Profile(p) => {
+                self.stats.parses += 1;
+                Some(admit(p)?)
+            }
+            WideSource::Lab => None,
+        };
+        canceled(cancel)?;
+        self.stats.parses += 1;
+        let (destination, destination_desc) = admit(r.destination)?;
+        canceled(cancel)?;
         if self.cache.len() >= self.capacity {
             return Err(WideError::CacheFull);
         }
+        let source_desc = source.as_ref().map(|(_, d)| d.clone());
         let plan = Arc::new(crate::wide_plan::build(
             &self.companion,
-            (&source, &source_desc),
+            source.as_ref().map(|(p, d)| (p, d)),
             (&destination, &destination_desc),
             r.intent,
             r.black_point_compensation,
@@ -782,7 +878,7 @@ impl WideEngine {
         )?);
         canceled(cancel)?;
         self.cache.push(Entry {
-            source: r.source.expected_sha256,
+            source: source_hash,
             destination: r.destination.expected_sha256,
             intent: r.intent,
             bpc: r.black_point_compensation,
@@ -808,7 +904,8 @@ impl WideEngine {
             return Err(WideError::RevisionMismatch);
         }
         let (plan, source_desc, destination_desc, cache_hit) = self.plan(r, cancel)?;
-        let (in_ch, out_ch) = (source_desc.device.channels(), destination_desc.device.channels());
+        let in_ch = source_desc.as_ref().map_or(3, |d| d.device.channels());
+        let out_ch = destination_desc.device.channels();
         if r.pixels.is_empty() || !r.pixels.len().is_multiple_of(in_ch) {
             return Err(WideError::ChannelCount);
         }
@@ -816,17 +913,24 @@ impl WideEngine {
         if count > MAX_WIDE_PIXELS {
             return Err(WideError::PixelLimit);
         }
-        for v in r.pixels {
+        for (i, v) in r.pixels.iter().enumerate() {
             if !v.is_finite() {
                 return Err(WideError::NonfiniteChannel);
             }
-            if !(0.0..=1.0).contains(v) {
+            let range = if source_desc.is_some() {
+                0.0..=1.0
+            } else if i % 3 == 0 {
+                0.0..=100.0
+            } else {
+                -128.0..=128.0
+            };
+            if !range.contains(v) {
                 return Err(WideError::ChannelRange);
             }
         }
         let mut output = Vec::with_capacity(count * out_ch);
         let mut clip = ClipReport {
-            method: plan.clip_method,
+            method: plan.clip_method(),
             ..Default::default()
         };
         let mut hasher = Sha256::new();
@@ -834,10 +938,25 @@ impl WideEngine {
             canceled(cancel)?;
             let n = chunk.len() / in_ch;
             let mut xyz = vec![0.0f32; n * 3];
-            plan.to_pcs
-                .transform(chunk, &mut xyz)
-                .map_err(|_| WideError::EngineFailure)?;
+            match &plan.to_pcs {
+                Some(to_pcs) => to_pcs
+                    .transform(chunk, &mut xyz)
+                    .map_err(|_| WideError::EngineFailure)?,
+                None => {
+                    for (lab, out) in chunk.chunks_exact(3).zip(xyz.chunks_exact_mut(3)) {
+                        let v = crate::bpc::lab_to_xyz(
+                            f64::from(lab[0]),
+                            f64::from(lab[1]),
+                            f64::from(lab[2]),
+                        );
+                        for ((o, c), white) in out.iter_mut().zip(v).zip(crate::bpc::D50) {
+                            *o = (c / white) as f32;
+                        }
+                    }
+                }
+            }
             plan.map.apply(&mut xyz);
+            plan.scan_clip(&xyz, &mut clip);
             let mut out = vec![0.0f32; n * out_ch];
             plan.from_pcs
                 .transform(&xyz, &mut out)
@@ -845,21 +964,26 @@ impl WideEngine {
             if out.iter().any(|v| !v.is_finite()) {
                 return Err(WideError::NonfiniteOutput);
             }
-            crate::wide_plan::clip_scan(&plan, &xyz, out_ch, &mut clip)?;
             for v in &out {
                 hasher.update(v.to_le_bytes());
             }
             output.extend_from_slice(&out);
         }
         canceled(cancel)?;
+        let (source_profile_id, source_sha256) = match r.source {
+            WideSource::Profile(p) => (Some(p.profile_id.clone()), Some(p.expected_sha256)),
+            WideSource::Lab => (None, None),
+        };
         let receipt = WideReceipt {
-            source_profile_id: r.source.profile_id.clone(),
+            source_profile_id,
+            source_sha256,
+            source_kind: source_desc.as_ref().map(|d| d.kind),
+            source_space: source_desc
+                .as_ref()
+                .map_or(SourceSpace::Lab, |d| SourceSpace::Device(d.device)),
             destination_profile_id: r.destination.profile_id.clone(),
-            source_sha256: r.source.expected_sha256,
             destination_sha256: r.destination.expected_sha256,
-            source_kind: source_desc.kind,
             destination_kind: destination_desc.kind,
-            source_space: source_desc.device,
             destination_space: destination_desc.device,
             engine_name: ENGINE_NAME,
             engine_version: ENGINE_VERSION,
@@ -884,8 +1008,8 @@ impl WideEngine {
         Ok((output, receipt))
     }
 
-    /// Convert interleaved device pixels through the two-leg plan and deliver one terminal
-    /// outcome to the caller's sink. Numeric output is withheld when delivery fails.
+    /// Convert interleaved pixels (device values or Lab) through the two-leg plan and deliver one
+    /// terminal outcome to the caller's sink. Numeric output is withheld when delivery fails.
     pub fn transform(
         &mut self,
         r: &WideTransformRequest<'_>,
@@ -969,10 +1093,11 @@ impl crate::Prism {
 
 pub(crate) fn intent_table_check(
     intent: Intent,
-    source: &WideProfileDescriptor,
+    source: Option<&WideProfileDescriptor>,
     destination: &WideProfileDescriptor,
 ) -> Result<(), WideError> {
-    if !source.device_to_pcs.has(intent) || !destination.pcs_to_device.has(intent) {
+    if source.is_some_and(|s| !s.device_to_pcs.has(intent)) || !destination.pcs_to_device.has(intent)
+    {
         return Err(WideError::MissingIntentTable);
     }
     Ok(())
