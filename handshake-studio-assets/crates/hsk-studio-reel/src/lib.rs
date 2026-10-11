@@ -13,6 +13,7 @@
 mod cache;
 mod error;
 pub mod fixtures;
+mod identity;
 mod isobmff;
 mod model;
 mod registry;
@@ -23,6 +24,10 @@ mod y4m;
 
 pub use cache::{CacheStats, IndexCache};
 pub use error::ReelError;
+pub use identity::{
+    IdentityParams, RelinkConfidence, RelinkMatch, RelinkOutcome, RelinkQuery, SourceIdentity,
+    full_digest, hex, relink, sampled_identity,
+};
 pub use isobmff::{
     AudioFormat, ColorTag, EditSegment, ISOBMFF_PROVIDER_ID, IsobmffProvider, LpcmDescription,
     MediaIndex, PcmFormat, PcmStream, PcmWindow, PresentedSample, SampleEntry, SeekDisposition,
