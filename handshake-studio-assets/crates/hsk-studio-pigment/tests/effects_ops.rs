@@ -286,7 +286,10 @@ fn effects_with_blend_if_is_refused_for_every_backend_before_the_sink() {
 }
 
 /// Nodes: 0 solid | 1 inner group {0} | 2 outer group {layer 0: node 1} | 3 outer group of a
-/// chain {layer 0: node 2} | 4 sibling group {layer 0: node 1, layer 1: node 0}.
+/// chain {layer 0: node 2} | 4 sibling group {layer 0: node 1, layer 1: node 0} | 5 the root, whose
+/// layers reference nodes 2, 3 and 4, so every group is reached from the root (the envelope
+/// entries of a group no layer reaches ask nothing of a backend, PLR-069; this fixture's root was
+/// node 4 before that rule, so nodes 2 and 3 were never reached).
 fn nested() -> RenderPlan {
     plan(vec![
         solid(),
@@ -294,6 +297,7 @@ fn nested() -> RenderPlan {
         group(vec![layer(1)]),
         group(vec![layer(2)]),
         group(vec![layer(1), layer(0)]),
+        group(vec![layer(2), layer(3), layer(4)]),
     ])
 }
 

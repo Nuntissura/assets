@@ -119,7 +119,9 @@ impl LayerExtension {
     }
 }
 
-/// The envelope: at most one entry per `(group, layer)`. Empty = the plain v1 plan.
+/// The envelope: at most one entry per `(group, layer)`. Empty = the plain v1 plan. An entry
+/// addressed to a group no layer reaches from the root is validated but asks nothing of a backend
+/// ([`PlanExtensions::validate`]).
 #[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct PlanExtensions {
@@ -240,12 +242,18 @@ impl PlanExtensions {
 
     /// `flags[n]`: node `n` is a group holding, directly or through the inputs of its layers, a
     /// layer that carries effects in this envelope. Nodes are index-ordered (an input is an
-    /// earlier node), so one forward pass suffices; empty when no layer has effects.
-    fn nodes_holding_effects<V>(&self, plan: &RenderPlan<V>) -> Vec<bool> {
+    /// earlier node), so one forward pass suffices; empty when no layer has effects. Only entries
+    /// addressed to a group in `reachable` count (the set of
+    /// [`RenderPlan::reachable_nodes`]): an entry on an unreachable group is not executed, and
+    /// every input of a reachable group is reachable too, so the flags a reachable entry reads do
+    /// not depend on the entries that are skipped.
+    fn nodes_holding_effects<V>(&self, plan: &RenderPlan<V>, reachable: &[bool]) -> Vec<bool> {
         let with_effects: BTreeSet<(u32, u32)> = self
             .layers
             .iter()
-            .filter(|e| !e.effects.is_empty())
+            .filter(|e| {
+                !e.effects.is_empty() && reachable.get(e.group.0 as usize).copied().unwrap_or(false)
+            })
             .map(|e| (e.group.0, e.layer))
             .collect();
         if with_effects.is_empty() {
@@ -265,20 +273,39 @@ impl PlanExtensions {
         flags
     }
 
-    /// Structural validation of the envelope against its plan (run after `plan.validate`).
-    /// Returns the distinct envelope operators in first-use order.
+    /// Validation of the envelope against its plan (run after `plan.validate`), in the two parts of
+    /// [`RenderPlan::validate`]. STRUCTURE is checked on EVERY entry, reachable or not: the target
+    /// group and layer, duplicates, the adjustment input and parameters, mode applicability,
+    /// clipping-run and pass-through rules, effect parameters and budgets, Blend-If ranges, feather
+    /// range. A knockout, an adjustment kind or an effect feature that pigment itself refuses
+    /// (`PlanError::KnockoutUnsupported`, `AdjustmentUnsupported`, `EffectUnsupported`) is a typed
+    /// error on every entry too: no backend could run it, so it is not a capability a backend
+    /// declares (test `tests/plan_followups.rs` `intrinsic_envelope_refusals_stay_on_every_entry`).
+    ///
+    /// CAPABILITY is collected over the entries addressed to a group REACHABLE from the root only,
+    /// like the operators of [`RenderPlan::validate`] and like both backends, which never look at
+    /// an entry of a group no layer reaches (render-cpu prepares reachable entries only,
+    /// render-gpu looks an entry up per executed layer). Returns the distinct envelope operators of
+    /// those entries in first-use order; an operator used only by an entry on an unreachable group
+    /// is not reported, so a backend that refuses it still admits the plan, and the same entry on
+    /// a reachable group is refused with the same key (test `tests/plan_followups.rs`
+    /// `unreachable_envelope_entry_asks_for_nothing_reachable_one_is_refused`).
     pub fn validate<V>(&self, plan: &RenderPlan<V>) -> Result<Vec<ExtOperator>, PlanError> {
         let mut ops: Vec<ExtOperator> = Vec::new();
-        let mut add = |op: ExtOperator| {
-            if !ops.contains(&op) {
-                ops.push(op);
-            }
-        };
         let mut seen = BTreeSet::new();
         let mut total_effects = 0usize;
-        let holding_effects = self.nodes_holding_effects(plan);
+        let reachable = plan.reachable_nodes();
+        let holding_effects = self.nodes_holding_effects(plan, &reachable);
         for e in &self.layers {
             let node = e.group.0;
+            // Whether the operators of this entry count (the group is reachable); the structure
+            // below is checked either way.
+            let counts = reachable.get(node as usize).copied().unwrap_or(false);
+            let mut add = |op: ExtOperator| {
+                if counts && !ops.contains(&op) {
+                    ops.push(op);
+                }
+            };
             let Some(PlanNode::Group(g)) = plan.nodes.get(node as usize) else {
                 return Err(PlanError::ExtensionTarget { node });
             };
@@ -415,17 +442,37 @@ impl PlanExtensions {
                 add(ExtOperator::MaskFeather);
             }
         }
-        if plan.has_mask_density() {
-            add(ExtOperator::MaskDensity);
+        // Reachable groups only, like every other predicate (`RenderPlan::has_mask_density`).
+        if plan.has_mask_density() && !ops.contains(&ExtOperator::MaskDensity) {
+            ops.push(ExtOperator::MaskDensity);
         }
         Ok(ops)
     }
 
-    /// The distinct blend modes the envelope's effects composite with, in first-use order
-    /// ([`admit_extended`] asks the backend for each mode's v1 [`Operator::Blend`] class).
+    /// The distinct blend modes the effects of EVERY entry composite with, in first-use order.
+    /// [`admit_extended`] asks the backend for the modes of the entries a backend executes only
+    /// ([`PlanExtensions::effect_modes_in`]).
     pub fn effect_modes(&self) -> Vec<StudioBlendMode> {
+        Self::modes_of(self.layers.iter())
+    }
+
+    /// [`PlanExtensions::effect_modes`] over the entries addressed to a group of `plan` reachable
+    /// from the root: the modes [`admit_extended`] asks the backend for (its v1
+    /// [`Operator::Blend`] class), so an effect on a group no layer reaches asks for nothing (test
+    /// `tests/plan_followups.rs` `unreachable_envelope_entry_asks_for_nothing_reachable_one_is_refused`,
+    /// case "effect blend mode").
+    pub fn effect_modes_in<V>(&self, plan: &RenderPlan<V>) -> Vec<StudioBlendMode> {
+        let reachable = plan.reachable_nodes();
+        Self::modes_of(
+            self.layers
+                .iter()
+                .filter(|e| reachable.get(e.group.0 as usize).copied().unwrap_or(false)),
+        )
+    }
+
+    fn modes_of<'a>(entries: impl Iterator<Item = &'a LayerExtension>) -> Vec<StudioBlendMode> {
         let mut modes: Vec<StudioBlendMode> = Vec::new();
-        for effect in self.layers.iter().flat_map(|e| e.effects.iter()) {
+        for effect in entries.flat_map(|e| e.effects.iter()) {
             if !modes.contains(&effect.mode()) {
                 modes.push(effect.mode());
             }
@@ -520,7 +567,7 @@ pub fn admit_extended_with_limits<V, B: RenderBackend<V> + ?Sized>(
     // An effect composites with its own blend mode: the backend's v1 class for that mode applies
     // (an effect is refused when its mode is: `tests/effects.rs`
     // `effect_without_backend_support_is_refused_before_the_sink`).
-    for mode in extensions.effect_modes() {
+    for mode in extensions.effect_modes_in(plan) {
         let op = Operator::Blend(mode);
         let class = op.intrinsic().lowest_of(backend.exactness(op));
         if class == Exactness::Unsupported || class.rank() > request.min_exactness.rank() {
