@@ -232,6 +232,13 @@ fn quota_fuel_and_deadline_accounting() {
         assert_eq!(eval_with(&provider, "slow:2000;num:1"), budget);
         assert_eq!(provider.stats().denied(BudgetKind::Deadline), 1);
 
+        // R7 class "input-caused engine error classified as Internal/poisoning": a malformed command
+        // argument is a typed Parse refusal of that call, never an adapter invariant failure.
+        let refused = Err(ExprError::at(ExprErrorCode::Parse, 1, 1));
+        assert_eq!(eval_with(&provider, "alloc:abc"), refused);
+        assert_eq!(eval_with(&provider, "slow:abc"), refused);
+        assert!(!provider.is_poisoned());
+
         // Host reads: nested reads charge the SAME Fuel (host charges 1 each); quota is 2 reads.
         let mut fuel = Fuel::new(10);
         assert_eq!(call(&provider, "readsum:comp/a,comp/b", 1, &host, &mut fuel, &cancel), Ok(vec![5.0]));

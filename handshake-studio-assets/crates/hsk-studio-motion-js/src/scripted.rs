@@ -46,8 +46,14 @@ fn span(text: &str) -> Option<SourceSpan> {
     Some(SourceSpan { line: line.parse().ok()?, column: column.parse().ok()? })
 }
 
+/// A malformed command argument is a refusal of this call (`Parse`), like an unknown command word:
+/// the scripted "source" is caller input, so it must never read as an adapter invariant failure.
+fn malformed() -> EngineFailure {
+    EngineFailure::Parse(Some(SourceSpan { line: 1, column: 1 }))
+}
+
 fn number(text: &str) -> Result<f64, EngineFailure> {
-    text.trim().parse().map_err(|_| EngineFailure::Parse(Some(SourceSpan { line: 1, column: 1 })))
+    text.trim().parse().map_err(|_| malformed())
 }
 
 impl ScriptedEngine {
@@ -109,14 +115,14 @@ impl ScriptedEngine {
                     return Err(EngineFailure::Internal);
                 }
                 "alloc" => {
-                    let bytes = arg.parse::<u64>().map_err(|_| EngineFailure::Internal)?;
+                    let bytes = arg.parse::<u64>().map_err(|_| malformed())?;
                     if bytes > job.limits.memory_bytes {
                         return Err(EngineFailure::Budget(BudgetKind::Memory));
                     }
                     JsValue::Undefined
                 }
                 "slow" => {
-                    self.clock.advance_ms(arg.parse().map_err(|_| EngineFailure::Internal)?);
+                    self.clock.advance_ms(arg.parse().map_err(|_| malformed())?);
                     host.checkpoint()?;
                     value
                 }
@@ -140,7 +146,7 @@ impl ScriptedEngine {
                 }),
                 "internal" => return Err(EngineFailure::Internal),
                 "panic" => panic!("scripted engine panic"),
-                _ => return Err(EngineFailure::Parse(Some(SourceSpan { line: 1, column: 1 }))),
+                _ => return Err(malformed()),
             };
         }
         Ok(value)
