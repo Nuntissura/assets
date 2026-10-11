@@ -233,8 +233,9 @@ impl<'a> Iterator for Elems<'a> {
     }
 }
 
-/// A declared `PixelWidth` / `PixelHeight`: bounded, never truncated (a value above u32::MAX used to
-/// become 0, "undeclared").
+/// A declared `PixelWidth` / `PixelHeight`: bounded; above the bound it is a typed error, not a truncated
+/// value (a value above u32::MAX used to become 0, "undeclared"; test
+/// `r5_matroska_declared_video_dimensions_are_bounded_at_the_source`).
 fn video_dimension(value: u64) -> Result<u32, ReelError> {
     if value > MAX_VIDEO_DIMENSION {
         return Err(ReelError::LimitExceeded {
@@ -607,7 +608,7 @@ fn first_child_timecode(
     }
 }
 
-/// Read headers, Info, Tracks, Cues and the cluster table. Never reads frame payloads.
+/// Read headers, Info, Tracks, Cues and the cluster table. Does not read frame payloads.
 pub fn read_layout(
     src: &mut dyn ReadSeek,
     file_len: u64,

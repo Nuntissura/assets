@@ -5,14 +5,14 @@
 //! 2026-10-11): `A_PCM/INT/LIT` and `A_PCM/INT/BIG` are integer PCM, little/big endian, signed except at
 //! bit depth 8 where samples MUST be read as unsigned; `A_PCM/FLOAT/IEEE` is IEEE 754 float, stored
 //! little-endian. `BitDepth`, `Channels` and `SamplingFrequency` of the Audio element define the layout and
-//! are checked, never guessed.
+//! are checked and refused when unsupported.
 //!
 //! Timing: a PCM stream is continuous, so the position of a frame is the running count of frames, not the
 //! Block timestamp (muxers round block times to the TimestampScale: 1024 frames at 48 kHz is 21.33 ms).
 //! The Block timestamps are only used as a consistency check: a block that starts more than one
 //! TimestampScale unit away from where the running count says it should start is a discontinuity
-//! (dropped or repeated audio) and makes the track refuse to decode (`Unsupported`), never silently
-//! shifts samples. All arithmetic is checked (V4-01).
+//! (dropped or repeated audio) and makes the track refuse to decode (`Unsupported`); samples are not shifted
+//! silently (test `matroska_pcm_and_content_encoding_hostile_inputs_refuse_cleanly`). All arithmetic is checked (V4-01).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::ReelError;
 use crate::isobmff::{PcmFormat, PcmStream, PcmWindow, SampleEntry};

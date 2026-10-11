@@ -1,9 +1,9 @@
 //! Uncompressed PCM audio in MOV/MP4 (`twos`, `sowt`, `in24`, `in32`, `fl32`, `fl64`, `raw `, `lpcm`) and
 //! in Matroska (`A_PCM/INT/LIT`, `A_PCM/INT/BIG`, `A_PCM/FLOAT/IEEE`).
 //!
-//! A regular PCM track (constant `stsz`, one `stts` run, no `ctts`/`stss`) is NEVER expanded per audio
+//! A regular PCM track (constant `stsz`, one `stts` run, no `ctts`/`stss`) is not expanded per audio
 //! frame: it is kept as chunk runs (`stsc` + `stco`/`co64`), so hours of 48 kHz audio index in O(chunks).
-//! Decoded output is always interleaved little-endian (`PcmFormat::output_name`), delivered in bounded
+//! Decoded output is interleaved little-endian (`PcmFormat::output_name`), delivered in bounded
 //! slices that may span chunk runs. Timing is exact: ticks per audio frame must divide the tick rate.
 //! Delivery (`deliver_pcm_stream`) is shared by every container that builds a `PcmStream`.
 //!
@@ -46,7 +46,7 @@ impl PcmFormat {
     }
 
     /// The one admission rule for a PCM layout (shared by every container): bit depth, channel count
-    /// and rate are checked here, never guessed. 8-bit integer PCM is unsigned (`signed == false`).
+    /// and rate are checked here and refused with a typed error when unsupported. 8-bit integer PCM is unsigned (`signed == false`).
     pub(crate) fn validated(
         bits: u16,
         float: bool,
@@ -89,7 +89,7 @@ impl PcmFormat {
 }
 
 /// Interpret a sample entry as PCM. `Ok(None)`: not a PCM FourCC (compressed or unknown).
-/// `Err`: a PCM FourCC whose layout this reader cannot honour (never guessed).
+/// `Err`: a PCM FourCC whose layout this reader cannot honour (refused, not guessed).
 pub fn pcm_format(
     codec: [u8; 4],
     audio: Option<&AudioFormat>,

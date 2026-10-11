@@ -11,11 +11,12 @@
 //! deprecated, 3 header stripping) and ContentCompSettings 0x4255 (for header stripping: the octets removed
 //! from the start of every frame), ContentEncryption 0x5035 with ContentEncAlgo 0x47E1.
 //!
-//! Lacing data is never encoded: a laced block is split first and each frame is decoded on its own.
+//! Scope 0x1 excludes lacing data: a laced block is split first and each frame is decoded on its own.
 //!
 //! Hostile input: the number of encodings, the stripped-header size and every decoded frame are bounded;
 //! zlib output is capped (`decompress_to_vec_zlib_with_limit`) so a decompression bomb is a typed
-//! `LimitExceeded`, never an unbounded allocation. All arithmetic is checked (V4-01).
+//! `LimitExceeded` (test `matroska_pcm_and_content_encoding_hostile_inputs_refuse_cleanly`, bomb case).
+//! Arithmetic is checked (V4-01).
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::ReelError;
 use crate::matroska::{elems, uint};
@@ -52,7 +53,7 @@ pub enum MkvCompression {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MkvEncodingKind {
     Compression(MkvCompression),
-    /// ContentEncodingType 1; `algo` is ContentEncAlgo (5 = AES). Never undone here.
+    /// ContentEncodingType 1; `algo` is ContentEncAlgo (5 = AES). Not undone here.
     Encryption {
         algo: u64,
     },
@@ -238,8 +239,8 @@ impl ContentPlan {
         !self.private.is_empty()
     }
 
-    /// Undo the frame-scope encodings in place. `scratch` is reused between calls; the decoded frame never
-    /// exceeds `max` bytes (`LimitExceeded`), a damaged stream is `Corrupt`.
+    /// Undo the frame-scope encodings in place. `scratch` is reused between calls; the decoded frame is capped
+    /// at `max` bytes (`LimitExceeded`), a damaged stream is `Corrupt`.
     pub(crate) fn decode_frame(
         &self,
         data: &mut Vec<u8>,
