@@ -5,8 +5,8 @@
 //! profiles for Gray, RGB and CMYK devices with an XYZ or Lab PCS, up to `MAX_WIDE_PROFILE_BYTES`.
 //!
 //! Conversion is a Prism-evaluated source stage (device -> PCS XYZ / D50, f64, unclamped), the
-//! Prism PCS stage (black point compensation or absolute media-white scaling, applied exactly once)
-//! and a Prism-evaluated destination stage. moxcms 0.9.1 parses the profiles; it runs no transform on
+//! Prism PCS stage (black point compensation or absolute media-white scaling, applied exactly once: tests/wide_bpc.rs
+//! matrix_destination_black_maps_exactly_once, tests/wide_absolute.rs) and a Prism-evaluated destination stage. moxcms 0.9.1 parses the profiles; it runs no transform on
 //! this path (SMB-PRISM-ENG-6, `icc_eval.rs`, diagnostics/prism-eng6.md). Matrix/TRC and Gray pairs
 //! fuse both matrices and the PCS map into one affine 3x3 between the curves.
 #![deny(clippy::arithmetic_side_effects)] // V4-01: hostile sizes, explicit checked/saturating/wrapping math
@@ -573,7 +573,8 @@ pub struct BpcReport {
     pub destination_black_lstar: Option<f64>,
     pub scale: Option<f64>,
     /// moxcms would have applied its own hard-coded black-point scaling to this pair (RGB v4 tables,
-    /// perceptual or saturation); Prism's legs bypass it, so it never double-applies.
+    /// perceptual or saturation); Prism's legs bypass it, so it never double-applies (tests/wide_bpc.rs
+    /// engine_builtin_black_scaling_is_suppressed_never_doubled).
     pub engine_builtin_suppressed: bool,
 }
 /// The one media-white rule of the wide path: the `wtpt` tag of every profile is used as written (a Lab source

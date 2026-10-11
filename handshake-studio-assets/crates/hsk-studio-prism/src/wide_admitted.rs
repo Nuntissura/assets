@@ -69,7 +69,9 @@ fn mul(a: u64, b: u64) -> Result<u64, Error> {
 
 /// Refusal of the admitted wide route: the ledger or a request precondition (nothing parsed, nothing
 /// delivered), a typed wide refusal found from the framing before the engine ran (nothing parsed, nothing
-/// delivered), or the wide engine's own failure with its delivery outcome.
+/// delivered; counted with a recording sink in tests/wide_doc_claims.rs
+/// admitted_refusals_found_before_the_engine_ran_deliver_nothing), or the wide engine's own failure with its
+/// delivery outcome.
 #[derive(Debug)]
 pub enum AdmittedWideError {
     Admission(Error),
@@ -113,7 +115,8 @@ fn stored_tag_bytes(input: ProfileInput<'_>) -> Result<u64, AdmittedWideError> {
         .try_fold(input.bytes.len() as u64, |acc, t| acc.checked_add(t.size as u64))
         .ok_or(AdmittedWideError::Admission(Error::InvalidBudget))
 }
-/// A refusal found before the engine ran (framing, identity, hash, cache capacity): nothing delivered.
+/// A refusal found before the engine ran (framing, identity, hash, cache capacity): nothing delivered
+/// (tests/wide_doc_claims.rs admitted_refusals_found_before_the_engine_ran_deliver_nothing).
 fn wide_refusal(error: WideError) -> AdmittedWideError {
     AdmittedWideError::Refused(error)
 }
@@ -238,7 +241,9 @@ impl<A: ProviderAdmission> AdmittedWideEngine<A> {
     /// a work lease (band table, request strings, Observe frame; released by `finish` or drop), a receipt lease
     /// (profile ids of the descriptors and the receipt; travels with the finished result) and, on a cache miss,
     /// the plan lease (kept with the cached plan) and a transient build lease. Band conversion allocates nothing
-    /// and charges nothing, so the ledger trace is the same for every thread count. Refusals before the engine ran
+    /// and charges nothing (tests/wide_chunks.rs chunk_accounting_is_bounded_deterministic_and_allocation_free,
+    /// admitted_transform_and_job_report_their_chunks), so the ledger trace is the same for every thread count
+    /// (tests/wide_job.rs admitted_job_charges_everything_before_the_bands_for_every_thread_count). Refusals before the engine ran
     /// (layout, revision, framing, capacity, plan errors) are `Refused` and deliver nothing; `finish` delivers.
     pub fn prepare_job(
         &mut self,

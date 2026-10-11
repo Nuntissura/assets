@@ -13,7 +13,9 @@
 //!   equal those of a serial request holding exactly that band's pixels, whatever the thread count or schedule
 //!   (tests/wide_job.rs: job_bands_are_bit_identical_to_the_serial_path_for_every_thread_count).
 //! * Allocation: band conversion writes only into caller buffers and uses stack scratch (digest staging, one
-//!   pixel copy for in-place work); everything the job owns is allocated by `prepare_job`. The admitted route
+//!   pixel copy for in-place work) and makes no heap allocation (counted per thread for both entry points in
+//!   tests/wide_chunks.rs: chunk_accounting_is_bounded_deterministic_and_allocation_free); everything the job owns
+//!   is allocated by `prepare_job`. The admitted route
 //!   charges it all before the job exists, so its ledger trace does not depend on the thread count
 //!   (tests/wide_job.rs: admitted_job_charges_everything_before_the_bands_for_every_thread_count).
 //! * Chunks (STU-CON-044, "bounded chunks of at most 64 pixels ... accounted lifetime"): a band is evaluated in
@@ -233,7 +235,9 @@ impl WideEngine {
     /// Resolve the plan for a job (cache hit or build, as `transform`) and return the shareable job. Nothing is
     /// delivered to a sink here; `WideJob::finish` delivers the job's single terminal observation. Every
     /// fallible step runs before the plan is resolved, so a refusal never leaves a newly cached plan behind
-    /// unless the plan itself was built (the admitted route relies on this).
+    /// unless the plan itself was built (the admitted route relies on this; refused jobs leave the cache empty in
+    /// tests/wide_r6_plausibles.rs non_invertible_destination_is_refused_before_any_charge_is_kept_and_for_jobs and
+    /// tests/wide_eng8_monotonic.rs non_monotonic_destination_is_refused_on_the_job_and_admitted_routes_before_any_charge_is_kept).
     pub fn prepare_job(&mut self, r: &WideJobRequest<'_>, cancel: &CancellationToken) -> Result<WideJob<'_>, WideError> {
         let prepared = self.prepare_parts(r, cancel);
         if prepared.is_err() {
