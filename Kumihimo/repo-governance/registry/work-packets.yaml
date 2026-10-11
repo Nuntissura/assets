@@ -32,3 +32,11 @@ work_packets:
   next_action: Await further prep discussion; recursive composition and four host navigation modes are specified,
     all runtime features remain planned
   blockers: []
+- wp_id: WP-KUM-005-modularity-and-technical-research-v1
+  title: Record modular boundaries and research technical gaps
+  phase: active
+  contract_ref: repo-governance/work-packets/active/WP-KUM-005-modularity-and-technical-research-v1/WP-KUM-005-modularity-and-technical-research-v1-contract.yaml
+  state_ref: repo-governance/work-packets/active/WP-KUM-005-modularity-and-technical-research-v1/WP-KUM-005-modularity-and-technical-research-v1-state.yaml
+  next_action: Commit and push owned modularity/spec/research changes; verify exact remote revision before settling
+    WP status
+  blockers: []

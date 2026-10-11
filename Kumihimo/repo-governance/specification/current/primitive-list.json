@@ -1,6 +1,6 @@
 {
   "kind": "derived_primitive_list",
-  "spec_revision": 3,
+  "spec_revision": 4,
   "primitives": [
     {
       "primitive_id": "PRIM-KUM-WORKSPACE",
@@ -10,7 +10,7 @@
     {
       "primitive_id": "PRIM-KUM-BOUNDARIES",
       "title": "Windows, frames and host content",
-      "contract": "Stable arrangement identities and host-owned content references; platform and content adapters own external effects."
+      "contract": "Stable arrangement identities and host-owned content references; platform and content adapters own external effects. The core is presentation-independent; optional GUI and host-content adapters remain separately selectable."
     },
     {
       "primitive_id": "PRIM-KUM-LAYOUT",

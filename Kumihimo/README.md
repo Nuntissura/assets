@@ -34,6 +34,18 @@ Start with the [master spec](repo-governance/specification/current/spec-modules/
 
 </topic>
 
+<topic id="module-boundaries">
+
+## Three reusable parts
+
+The core holds nested window/tab state, layout calculations and commands without requiring a GUI. Optional GUI adapters supply reusable controls and connect platform input, focus and accessibility. Host-content integration supplies contracts and adapters for content size, rendering, input and lifecycle; the host owns the actual editor, browser, media or graphics engine.
+
+Hosts can use the supplied controls, replace selected controls, or supply their own presentation. Keep Rust code in small cohesive modules and packages, bundling only responsibilities that belong together. Three logical submodules do not prescribe a fixed number of crates; backend integrations remain independently selectable.
+
+The [technical gap research](repo-governance/docs/research/modularity-and-technical-gaps.md) records proposed contract details and useful extensions from the three-agent review. Those additional ideas remain discussion material.
+
+</topic>
+
 <topic id="model-workflow">
 
 ## Model workflow

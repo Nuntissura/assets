@@ -1,0 +1,44 @@
+schema_version: kumihimo.wp-contract.v1
+wp_id: WP-KUM-005-modularity-and-technical-research-v1
+title: Record modular boundaries and research technical gaps
+scope:
+- Record the accepted core-behavior, optional GUI-adapter and host-content-integration boundaries in the current
+  self-contained spec
+- 'Record modular Rust organization: small cohesive packages, optional dependency selection and no large all-purpose
+  crate'
+- Run three read-only research agents to identify technical gaps, reuse opportunities and useful concept extensions;
+  distinguish existing requirements from new proposals
+- Keep unaccepted agent proposals in a concise research note; preserve previous specifications and unrelated topics
+files:
+- README.md
+- repo-governance/specification/current/
+- repo-governance/specification/spec-archive/
+- repo-governance/docs/research/
+- repo-governance/work-packets/active/WP-KUM-005-modularity-and-technical-research-v1/
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/registry/
+dependencies:
+- WP-KUM-004-spec-clarifications-v1
+spec_refs:
+- TOPIC-KUM-BOUNDARIES
+- TOPIC-KUM-CHOICES
+- TOPIC-KUM-ROADMAP
+requirements:
+- Three logical submodules need not mean exactly three crates; split by responsibility and dependency boundaries,
+  bundle cohesive behavior
+- Host-content integration supplies contracts and adapters; host applications retain actual editor/browser/media/scene
+  engines
+- 'Prep only: no Rust implementation, dependency adoption, builds, long tests or compulsory enrichment'
+- Do not adopt new agent ideas as requirements without operator acceptance; preserve speculative options clearly
+acceptance:
+- Accepted modularity and three-part boundaries are fully stated in current spec and readable README guidance
+- Three agent reports are reconciled against current spec and source-level primary evidence; gaps, useful additions,
+  risks, mitigations and focused future proof are recorded
+- Prior current spec is preserved; unaffected topics remain unchanged; product features remain planned
+- Owned changes are committed/pushed and exact remote revision independently verified
+proof:
+- python repo-governance/repo-scripts/sync.py --check
+- Inspect current spec changes and research source citations; compare untouched topics and preserved prior bundle
+- git diff --check
+- git ls-remote origin refs/heads/codex/handpick
+status_ref: repo-governance/work-packets/active/WP-KUM-005-modularity-and-technical-research-v1/WP-KUM-005-modularity-and-technical-research-v1-state.yaml

@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 3
-  revision: 3
+  version: 4
+  revision: 4
   status: accepted_direction_implementation_planned
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 3
-    digest: sha256:629546ab0b4e27a7c14418a53dea838140245cba1bac44e8efe9f5778e57fc12
+    revision: 4
+    digest: sha256:f5a39a886ec1095fdabc4cf2e6568d17d504677107103658c095d0fb05ce4f14
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -57,10 +57,16 @@ storage:
     - REQ-KUM-BOUNDARIES-002
     - REQ-KUM-BOUNDARIES-003
     - REQ-KUM-BOUNDARIES-004
+    - REQ-KUM-BOUNDARIES-005
+    - REQ-KUM-BOUNDARIES-006
+    - REQ-KUM-BOUNDARIES-007
     - ACC-KUM-BOUNDARIES-001
     - ACC-KUM-BOUNDARIES-002
     - ACC-KUM-BOUNDARIES-003
     - ACC-KUM-BOUNDARIES-004
+    - ACC-KUM-BOUNDARIES-005
+    - ACC-KUM-BOUNDARIES-006
+    - ACC-KUM-BOUNDARIES-007
     - FEAT-KUM-BOUNDARIES
     - PRIM-KUM-BOUNDARIES
     - REL-KUM-BOUNDARIES
@@ -321,8 +327,8 @@ storage:
     - DEC-KUM-OPTIONAL-IDEAS
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
-    revision: 3
-    digest: sha256:abb337217796851844b9eb3225265f73953fa8a2ac39fc1a8df387f0ff52036a
+    revision: 4
+    digest: sha256:89201a10f2307c6ff6ac79d3e6b4634812ed7fd2ab62a4fb7c4dbb39e92db960
     semantic_entity_refs:
     - TOPIC-KUM-ROADMAP
   document_record_required_fields:
@@ -539,6 +545,14 @@ change_history:
   - TOPIC-KUM-NAVIGATION
   - TOPIC-KUM-TABS
   - TOPIC-KUM-WORKSPACE
+  - TOPIC-KUM-ROADMAP
+- revision: 4
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v3-r3-03372861dae4
+  changed_anchor_ids:
+  - TOPIC-KUM-BOUNDARIES
+  - TOPIC-KUM-CHOICES
   - TOPIC-KUM-ROADMAP
 design_status:
   accepted: Complete declared core behavior and ownership boundaries; all product features remain planned.

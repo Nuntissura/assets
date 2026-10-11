@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 3
+revision: 4
 title: Kumihimo master specification
 updated_at: '2026-10-11'
 ---
@@ -229,6 +229,9 @@ content_blocks:
   - REQ-KUM-BOUNDARIES-002
   - REQ-KUM-BOUNDARIES-003
   - REQ-KUM-BOUNDARIES-004
+  - REQ-KUM-BOUNDARIES-005
+  - REQ-KUM-BOUNDARIES-006
+  - REQ-KUM-BOUNDARIES-007
 - block_id: contract
   kind: structured_contract
   language: yaml
@@ -242,7 +245,15 @@ The native window is the box your operating system moves, minimizes and places o
 
 Kumihimo owns arrangement, frame controls and the contract with content. Its platform adapter connects to operating-system window behavior. Editors own text layout; browsers own pages; graphics engines own scenes. Nesting a frame does not create process isolation or make a plugin trusted.
 
-A large reusable module remains manageable if these boundaries stay replaceable.
+## Three logical submodules
+
+The core owns recursive window/tab state, arrangement calculations, commands and shared identities. It can operate without displaying a GUI. Optional GUI adapters present the controls and connect platform input, focus and accessibility; native-window effects belong behind their platform boundary. Host-content integration supplies contracts and adapters for content size, rendering handoff, input, identity and lifecycle. The host retains actual editors, browser/media engines and 2D/3D scenes.
+
+A host can use supplied GUI controls, replace selected controls, or supply its own presentation while retaining core behavior. Shared interaction behavior remains reusable; appearance and toolkit dependencies stay replaceable. Content integration does not turn Kumihimo into an editor, browser or universal renderer.
+
+These are three logical submodules, not a requirement for exactly three crates. Keep code in small, cohesive modules and packages. Bundle state, geometry and commands when they form one independently usable core; split a backend or integration when it has different dependencies, platform support or lifecycle. Avoid one large crate that pulls every adapter into every app, and avoid a separate crate for each tiny helper.
+
+The portable core and shared contracts do not expose a chosen toolkit's widgets, native handles, GPU objects or Servo types as mandatory public inputs. Concrete adapters translate at the boundary. Optional adapters remain independently selectable so an app only brings in the integrations it uses.
 ```
 
 ```yaml
@@ -303,6 +314,53 @@ requirements:
   - FEAT-KUM-BOUNDARIES
   primitive_refs:
   - PRIM-KUM-BOUNDARIES
+- requirement_id: REQ-KUM-BOUNDARIES-005
+  anchor_refs:
+  - TOPIC-KUM-BOUNDARIES
+  statement: 'Organize Kumihimo into three logical submodules: portable core behavior, optional GUI adapters and
+    host-content integration contracts/adapters; keep actual editor, browser, media and scene engines host-owned,
+    with native-window effects behind a platform adapter.'
+  rationale: Make the accepted three-part boundary explicit without prescribing a fixed crate count or embedding
+    content engines.
+  acceptance_refs:
+  - ACC-KUM-BOUNDARIES-005
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-BOUNDARIES
+  primitive_refs:
+  - PRIM-KUM-BOUNDARIES
+- requirement_id: REQ-KUM-BOUNDARIES-006
+  anchor_refs:
+  - TOPIC-KUM-BOUNDARIES
+  statement: Keep the core usable without GUI/GPU/browser dependencies or mandatory toolkit/native/GPU/Servo types
+    in its public contracts; offer optional reusable GUI controls that hosts may theme, replace individually or
+    replace with their own presentation while preserving shared commands and state.
+  rationale: Reuse stock interaction behavior while allowing different host appearance and rendering stacks.
+  acceptance_refs:
+  - ACC-KUM-BOUNDARIES-006
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-BOUNDARIES
+  primitive_refs:
+  - PRIM-KUM-BOUNDARIES
+- requirement_id: REQ-KUM-BOUNDARIES-007
+  anchor_refs:
+  - TOPIC-KUM-BOUNDARIES
+  statement: Keep Rust code in small cohesive modules and independently selectable packages; bundle only responsibilities
+    that share a usable purpose and compatible dependencies, split substantial backend/platform integrations, and
+    avoid a large all-purpose crate or compulsory adapter bundle; logical submodule count shall not fix physical
+    crate count.
+  rationale: Support modular reuse and bounded maintenance without introducing helper-crate fragmentation.
+  acceptance_refs:
+  - ACC-KUM-BOUNDARIES-007
+  conditions: []
+  exceptions: []
+  feature_refs:
+  - FEAT-KUM-BOUNDARIES
+  primitive_refs:
+  - PRIM-KUM-BOUNDARIES
 acceptance:
 - acceptance_id: ACC-KUM-BOUNDARIES-001
   requirement_refs:
@@ -325,6 +383,27 @@ acceptance:
   - REQ-KUM-BOUNDARIES-004
   method: Use a provider that vetoes close and records callbacks.
   expected_result: The veto is preserved, events target the correct owner and unrelated views remain untouched.
+- acceptance_id: ACC-KUM-BOUNDARIES-005
+  requirement_refs:
+  - REQ-KUM-BOUNDARIES-005
+  method: Inspect future package dependency direction and attach unrelated content providers through supplied and
+    host-owned presentation paths.
+  expected_result: Each responsibility has an explicit owner; adapters translate external effects and engine-specific
+    interfaces without creating reverse core dependencies.
+- acceptance_id: ACC-KUM-BOUNDARIES-006
+  requirement_refs:
+  - REQ-KUM-BOUNDARIES-006
+  method: Inspect the future minimal core dependency graph and API, then exercise the same layout commands through
+    a supplied control and a host-supplied control.
+  expected_result: Core state and commands work independently of presentation; replacing controls preserves shared
+    behavior and does not force unrelated engines into the core.
+- acceptance_id: ACC-KUM-BOUNDARIES-007
+  requirement_refs:
+  - REQ-KUM-BOUNDARIES-007
+  method: Inspect the future package/module graph and declared responsibilities; compare a minimal consumer with
+    consumers selecting individual implemented adapters.
+  expected_result: Each package has a cohesive responsibility and dependency rationale; consumers select needed
+    integrations without an all-adapters dependency path, and internal source organization stays modular.
 features:
 - feature_id: FEAT-KUM-BOUNDARIES
   title: Windows, frames and host content
@@ -333,13 +412,16 @@ features:
   - REQ-KUM-BOUNDARIES-002
   - REQ-KUM-BOUNDARIES-003
   - REQ-KUM-BOUNDARIES-004
+  - REQ-KUM-BOUNDARIES-005
+  - REQ-KUM-BOUNDARIES-006
+  - REQ-KUM-BOUNDARIES-007
   primitive_refs:
   - PRIM-KUM-BOUNDARIES
 primitives:
 - primitive_id: PRIM-KUM-BOUNDARIES
   title: Windows, frames and host content
   contract: Stable arrangement identities and host-owned content references; platform and content adapters own external
-    effects.
+    effects. The core is presentation-independent; optional GUI and host-content adapters remain separately selectable.
 primitive_feature_relations:
 - relation_id: REL-KUM-BOUNDARIES
   primitive_ref: PRIM-KUM-BOUNDARIES
@@ -359,6 +441,9 @@ gui_design:
   - ACC-KUM-BOUNDARIES-002
   - ACC-KUM-BOUNDARIES-003
   - ACC-KUM-BOUNDARIES-004
+  - ACC-KUM-BOUNDARIES-005
+  - ACC-KUM-BOUNDARIES-006
+  - ACC-KUM-BOUNDARIES-007
 decisions:
 - decision_id: DEC-KUM-BOUNDARIES
   anchor_refs:
@@ -369,6 +454,8 @@ decisions:
   research_source_refs:
   - https://dockview.dev/docs/core/overview/
   - https://zed.dev/docs/development/glossary
+  - https://github.com/DioxusLabs/taffy
+  - https://doc.rust-lang.org/cargo/reference/features.html
   supersedes: []
 ```
 
@@ -3171,7 +3258,7 @@ content_blocks:
 ```markdown
 ## Decisions still open
 
-The accepted direction is a portable Rust arrangement core with replaceable desktop/web presentation and content adapters. No UI or graphics library is selected by this specification revision.
+The accepted direction has three logical submodules: portable core behavior, optional replaceable GUI adapters, and host-content integration contracts/adapters. Actual content engines remain host-owned. Rust code stays modular in small cohesive packages; bundle only responsibilities that belong together. The number of logical submodules does not prescribe a crate count. No UI or graphics library is selected by this specification revision.
 
 Compare egui_tiles for flexible grids, egui_dock for docking/tab integration, and a native adapter using winit with an appropriate renderer. Dockview is a web candidate and a reference for panel identities, groups and handoff recovery. Its commercial additions must be distinguished from its MIT core. GPUI and Dear ImGui provide architectural precedents rather than automatic dependencies.
 
@@ -3185,8 +3272,10 @@ decisions:
 - decision_id: DEC-KUM-ARCHITECTURE
   anchor_refs:
   - TOPIC-KUM-CHOICES
-  decision: Adopt a portable Rust arrangement/state core with separate platform, content, rendering and persistence
-    boundaries; dependency selection remains open.
+  decision: 'Adopt three logical submodules: portable core behavior, optional replaceable GUI adapters and host-content
+    integration contracts/adapters; organize them as small cohesive Rust modules/packages with independently selectable
+    backend integrations, explicit dependency direction and host-owned content engines, retaining separate platform,
+    content, rendering and persistence boundaries. Physical crate count and dependency selection remain open.'
   rationale: Preserve reusable desktop/web behavior and keep expensive browser/rendering integrations independently
     selectable.
   research_source_refs:
@@ -3194,6 +3283,8 @@ decisions:
   - https://github.com/anhosh/egui_dock
   - https://dockview.dev/docs/core/overview/
   - https://github.com/ocornut/imgui/blob/master/docs/BACKENDS.md
+  - https://github.com/DioxusLabs/taffy
+  - https://doc.rust-lang.org/cargo/reference/features.html
   supersedes: []
 - decision_id: DEC-KUM-OPTIONAL-IDEAS
   anchor_refs:

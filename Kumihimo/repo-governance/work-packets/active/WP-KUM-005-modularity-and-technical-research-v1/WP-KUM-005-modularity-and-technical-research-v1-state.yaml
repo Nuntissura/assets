@@ -1,0 +1,47 @@
+schema_version: kumihimo.wp-state.v1
+wp_id: WP-KUM-005-modularity-and-technical-research-v1
+generation: 2
+phase: active
+owner: model_maintainer
+changed_files:
+- README.md
+- repo-governance/docs/research/modularity-and-technical-gaps.md
+- repo-governance/registry/ids.yaml
+- repo-governance/registry/work-packets.yaml
+- repo-governance/specification/current/INDEX.json
+- repo-governance/specification/current/primitive-feature-mix-matrix.json
+- repo-governance/specification/current/primitive-list.json
+- repo-governance/specification/current/spec-modules/master-spec.md
+- repo-governance/specification/current/spec-modules/roadmap.md
+- repo-governance/specification/current/specification.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v3-r3-03372861dae4/INDEX.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v3-r3-03372861dae4/primitive-feature-mix-matrix.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v3-r3-03372861dae4/primitive-list.json
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v3-r3-03372861dae4/spec-modules/master-spec.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v3-r3-03372861dae4/spec-modules/roadmap.md
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v3-r3-03372861dae4/specification.yaml
+- repo-governance/taskboard/taskboard.yaml
+- repo-governance/work-packets/active/WP-KUM-005-modularity-and-technical-research-v1/WP-KUM-005-modularity-and-technical-research-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-005-modularity-and-technical-research-v1/WP-KUM-005-modularity-and-technical-research-v1-state.yaml
+proof:
+- kind: agent_research
+  observed: modular_core_research, gui_adapter_research and host_integration_research completed read-only primary-source
+    reviews; reports reconciled against existing requirements into 16 explicitly proposed technical ideas
+- kind: operator_intent
+  observed: 'Inspected README and spec diff: accepted three logical submodules, optional replaceable GUI, host-owned
+    engines and modular cohesive Rust packages; physical crate count and dependencies remain open'
+- kind: canonical_preservation
+  observed: All 6 v3-r3-03372861dae4 archive files independently match git show fbcad42cf7290c0011b78c5fbbc1adf9c082bace;
+    17 unrelated topics and all 87 prior requirement records unchanged
+- kind: research_document
+  observed: Inspected complete note; 6 flat topics, 16 unique idea IDs, valid local links and existing spec references;
+    each proposed gap includes source/reuse, risk controls and focused future proof
+- kind: structural_proof
+  observed: python Kumihimo/repo-governance/repo-scripts/sync.py --check passed with 20 topics, 90 requirements,
+    18 planned features and no stale projections; git diff --check -- Kumihimo passed
+- kind: prep_only
+  observed: All 18 roadmap features remain planned; product and tracked repo scripts unchanged; no build, GUI implementation
+    or library adoption
+blockers: []
+next_action: Commit and push owned modularity/spec/research changes; verify exact remote revision before settling
+  WP status

@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 3
+revision: 4
 title: Kumihimo roadmap
 updated_at: '2026-10-11'
 ---
@@ -37,7 +37,7 @@ Verification stays focused on the behavior a work packet changes. A real rendere
 
 No product features implemented yet.
 
-Current work remains preparation only. Navigation presentation is host-selectable: scrollbar, permanent minimap, both, or a temporary minimap during scrubbing.
+Current work remains preparation only. The accepted organization is three logical submodules (core, optional GUI adapters, host-content integration), implemented later through small cohesive packages with independently selected adapters; no fixed crate count is prescribed. Navigation presentation is host-selectable: scrollbar, permanent minimap, both, or a temporary minimap during scrubbing.
 ```
 
 ```yaml
@@ -69,6 +69,9 @@ roadmap:
   - REQ-KUM-BOUNDARIES-002
   - REQ-KUM-BOUNDARIES-003
   - REQ-KUM-BOUNDARIES-004
+  - REQ-KUM-BOUNDARIES-005
+  - REQ-KUM-BOUNDARIES-006
+  - REQ-KUM-BOUNDARIES-007
   implementation_source_revision: null
   verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
   matrix_entry_refs: []
