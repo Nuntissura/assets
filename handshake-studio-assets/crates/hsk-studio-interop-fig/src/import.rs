@@ -4,6 +4,7 @@ use crate::container::{
     CANVAS_PART, FigContainer, FigKind, IMAGES_PREFIX, Limits, META_PART, MetaKeys, Sha256Bytes,
     THUMBNAIL_PART, open_with_hash, sha256,
 };
+use crate::kiwi::decode_canvas;
 use crate::semantic_decode::EditableStatus;
 use crate::version_map::{VersionPolicy, check_version};
 use crate::{FigError, Result};
@@ -194,7 +195,9 @@ pub fn import_fig(
             error,
         });
     }
-    let loss = base_loss(&container);
+    let mut loss = base_loss(&container);
+    let decoded = decode_canvas(&container, limits, cancel)?;
+    loss.extend(decoded.loss);
     let parts_sha256 = container
         .parts
         .iter()
@@ -205,8 +208,8 @@ pub fn import_fig(
         version: container.version,
         source_sha256,
         parts_sha256,
-        schema_summary: None,
-        census: None,
+        schema_summary: decoded.schema,
+        census: decoded.census,
         loss,
         editable: EditableStatus::NotProven,
         container,

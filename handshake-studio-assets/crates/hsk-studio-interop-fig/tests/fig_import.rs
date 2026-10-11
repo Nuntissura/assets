@@ -121,8 +121,9 @@ fn chunk(out: &mut Vec<u8>, data: &[u8]) {
     out.extend_from_slice(data);
 }
 
-/// Synthetic `canvas.fig`: prelude + version + raw-deflate schema chunk + zstd message chunk.
-fn canvas(prelude: &[u8; 8], version: u32, nodes: &[(u32, u32, u32, &str)]) -> Vec<u8> {
+/// Synthetic `canvas.fig` around raw message bytes: prelude + version + raw-deflate schema chunk +
+/// zstd message chunk.
+fn canvas_with_message(prelude: &[u8; 8], version: u32, message: &[u8]) -> Vec<u8> {
     let mut out = prelude.to_vec();
     out.extend_from_slice(&version.to_le_bytes());
     chunk(
@@ -131,12 +132,13 @@ fn canvas(prelude: &[u8; 8], version: u32, nodes: &[(u32, u32, u32, &str)]) -> V
     );
     chunk(
         &mut out,
-        &ruzstd::encoding::compress_to_vec(
-            message_bytes(nodes).as_slice(),
-            ruzstd::encoding::CompressionLevel::Fastest,
-        ),
+        &ruzstd::encoding::compress_to_vec(message, ruzstd::encoding::CompressionLevel::Fastest),
     );
     out
+}
+
+fn canvas(prelude: &[u8; 8], version: u32, nodes: &[(u32, u32, u32, &str)]) -> Vec<u8> {
+    canvas_with_message(prelude, version, &message_bytes(nodes))
 }
 
 fn crc32(data: &[u8]) -> u32 {
@@ -215,6 +217,7 @@ fn nodes() -> Vec<(u32, u32, u32, &'static str)> {
         (0, 1, 2, "Page 1"),
         (3, 42, 3, "Frame"),
         (3, 43, 3, "Frame 2"),
+        (u32::MAX, 70_000, 1, "Second document"),
     ]
 }
 
@@ -322,6 +325,61 @@ fn fig_container_bounded_identity_loss() {
     );
     assert_eq!(i.editable, EditableStatus::NotProven);
     assert_eq!(i.editable.label(), "NOT_PROVEN");
+
+    // Kiwi schema + census: ids are the file's own values, formatted "session:local", never reminted.
+    let schema = i.schema_summary.as_ref().expect("schema summary");
+    assert_eq!(schema.chunk_index, 0);
+    assert_eq!(schema.chunk_sha256, i.container.chunks[0].sha256);
+    let names: Vec<_> = schema
+        .definitions
+        .iter()
+        .map(|d| (d.name.as_str(), d.kind))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("NodeType", "enum"),
+            ("GUID", "struct"),
+            ("NodeChange", "message"),
+            ("Message", "message")
+        ]
+    );
+    let node_changes = &schema.definitions[3].fields[0];
+    assert_eq!(
+        (
+            node_changes.name.as_str(),
+            node_changes.id,
+            node_changes.type_name.as_str(),
+            node_changes.is_array
+        ),
+        ("nodeChanges", 1, "NodeChange", true)
+    );
+    let census = i.census.as_ref().expect("census");
+    assert_eq!(census.node_count, 5);
+    assert_eq!(
+        census
+            .node_type_histogram
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect::<Vec<_>>(),
+        [("CANVAS", 1), ("DOCUMENT", 2), ("FRAME", 2)]
+    );
+    assert_eq!(
+        census
+            .root_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["0:0", "4294967295:70000"]
+    );
+    assert_eq!(
+        loss("canvas.fig#chunk0"),
+        Some((LossKind::PreservedOpaque, "schema_chunk_summarized"))
+    );
+    assert_eq!(
+        loss("canvas.fig#chunk1"),
+        Some((LossKind::PreservedOpaque, "message_chunk_census_only"))
+    );
 }
 
 #[test]
@@ -416,6 +474,74 @@ fn unsupported_version_duplicate_key_bomb_cancel() {
     crc_bad[at] ^= 0xff;
     assert_eq!(code(&crc_bad), "zip_invalid");
     assert_eq!(code(&zip(&[("meta.json", b"{}", false)])), "not_fig");
+
+    // Kiwi decode failures never yield a partial census: a message the schema cannot walk (unknown
+    // field id) is a soft loss entry on an otherwise safe import; a bound hit is a hard error.
+    let bad_message = canvas_with_message(b"fig-kiwi", SYNTH_VERSION, &[9, 0]);
+    let soft = imported(&zip(&[("canvas.fig", &bad_message, false)]));
+    assert!(soft.schema_summary.is_some() && soft.census.is_none());
+    assert!(soft.loss.iter().any(|l| l.part == "canvas.fig"
+        && l.kind == LossKind::Unsupported
+        && l.code == "unknown_field_id"));
+    let truncated = canvas_with_message(b"fig-kiwi", SYNTH_VERSION, &message_bytes(&nodes())[..9]);
+    let soft = imported(&zip(&[("canvas.fig", &truncated, false)]));
+    assert!(soft.census.is_none());
+    let hard =
+        |l: &Limits| import_fig(&fig_zip(SYNTH_VERSION), l, &policy(), None, &live).unwrap_err();
+    assert_eq!(
+        hard(&Limits {
+            max_message_bytes: 16,
+            ..Limits::default()
+        }),
+        FigError::BudgetExceeded("message_bytes")
+    );
+    assert_eq!(
+        hard(&Limits {
+            max_schema_bytes: 8,
+            ..Limits::default()
+        }),
+        FigError::BudgetExceeded("schema_bytes")
+    );
+    assert_eq!(
+        hard(&Limits {
+            max_nodes: 2,
+            ..Limits::default()
+        }),
+        FigError::BudgetExceeded("nodes")
+    );
+    assert_eq!(
+        hard(&Limits {
+            max_values: 3,
+            ..Limits::default()
+        }),
+        FigError::BudgetExceeded("values")
+    );
+    assert_eq!(
+        hard(&Limits {
+            max_definitions: 2,
+            ..Limits::default()
+        }),
+        FigError::BudgetExceeded("definitions")
+    );
+    // A schema whose type index is out of range is a soft, typed loss.
+    let mut bad_schema = vec![1u8];
+    bad_schema.extend_from_slice(b"M\0");
+    bad_schema.extend_from_slice(&[2, 1]);
+    bad_schema.extend_from_slice(b"f\0");
+    bad_schema.extend_from_slice(&[10, 0, 1]); // zigzag(5) = definition 5 of 1
+    let mut canvas_bad_schema = b"fig-kiwi".to_vec();
+    canvas_bad_schema.extend_from_slice(&SYNTH_VERSION.to_le_bytes());
+    chunk(
+        &mut canvas_bad_schema,
+        &miniz_oxide::deflate::compress_to_vec(&bad_schema, 6),
+    );
+    let soft = imported(&zip(&[("canvas.fig", &canvas_bad_schema, false)]));
+    assert!(soft.schema_summary.is_none() && soft.census.is_none());
+    assert!(
+        soft.loss
+            .iter()
+            .any(|l| l.part == "canvas.fig" && l.code == "type_out_of_range")
+    );
 
     // Pre-cancelled: nothing is produced.
     let dead = CancellationToken::default();

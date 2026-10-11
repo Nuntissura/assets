@@ -11,6 +11,7 @@ mod container;
 mod descriptor;
 mod error;
 mod import;
+mod kiwi;
 mod semantic_decode;
 mod version_map;
 
