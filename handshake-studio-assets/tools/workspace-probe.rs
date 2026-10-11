@@ -490,6 +490,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-interop-vector", &["roxmltree", "svgtypes"]),
     ("hsk-studio-controls", &["egui", "serde", "serde_json"]),
     ("hsk-studio-session", &["serde_json"]),
+    ("hsk-studio-kernel-bindings", &["serde", "serde_json"]),
     ("hsk-studio-press", &["miniz_oxide", "sha2"]),
     ("hsk-studio-motion-js", &["rquickjs"]),
 ];

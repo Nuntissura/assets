@@ -631,6 +631,7 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "hsk-studio-accord",
+ "hsk-studio-observe",
  "serde",
  "serde_json",
 ]
@@ -709,6 +710,14 @@ dependencies = [
 [[package]]
 name = "hsk-studio-kernel-bindings"
 version = "0.1.0"
+dependencies = [
+ "hsk-studio-accord",
+ "hsk-studio-folio",
+ "hsk-studio-observe",
+ "hsk-studio-session",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "hsk-studio-layout"
