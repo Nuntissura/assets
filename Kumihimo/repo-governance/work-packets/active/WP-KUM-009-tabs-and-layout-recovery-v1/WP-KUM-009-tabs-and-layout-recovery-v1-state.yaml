@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
-generation: 13
-phase: active
-owner: coder_02
+generation: 14
+phase: done
+owner: dev_lead
 changed_files:
 - product/Cargo.lock
 - product/Cargo.toml
@@ -132,6 +132,9 @@ proof:
 - kind: architecture_decision_status
   observed: Spec11 aligns remaining DEC-KUM-ARCHITECTURE future-packet wording with proven009 Core/optionalJSON
     scope; exactv10 six-file bundle archived; all99 requirement records unchanged
+- kind: published_outcome_containment
+  source_revision: 5530761457ab5b56ae73567baef2d9273209464d
+  observed: Root and evaluator independently matched exact origin revision; all30runtime inputs equal testedc387;
+    README proof only,Spec11 retains99records/eightpartialareas and byte-exactv9/v10 archives; PASS_SCOPED_RUNTIME49tests/checks/examples
 blockers: []
-next_action: Publish evaluated009 outcome and verify exact remote/source containment; then settle done state and
-  prepare010
+next_action: Prepare WP010 full contract/current research and frozen evaluation before coding admission

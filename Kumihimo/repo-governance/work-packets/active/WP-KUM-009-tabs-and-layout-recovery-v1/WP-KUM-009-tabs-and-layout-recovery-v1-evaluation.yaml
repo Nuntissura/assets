@@ -737,6 +737,32 @@ runtime_evaluation:
   boundary_limit: Headless command/semantic/codec/stamp proof on the dispatched Windows host; no actual host-store, GUI, engine, ARM/WASM or performance
     acceptance claim
 outcome_publication:
-  status: pending_lead_publication_and_independent_readback
+  status: independently_verified
+  revision: 5530761457ab5b56ae73567baef2d9273209464d
+  observed_at: '2026-10-12'
   tested_candidate: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
-  requirement: Bind published outcome docs/spec/state to unchanged tested runtime inputs; preserve full feature partial/open boundaries
+  remote_command: git ls-remote origin refs/heads/codex/handpick
+  expected: Exact outcome publication on remote/current HEAD; retained tested runtime inputs; honest documentation and partial specification acceptance
+  observed: Remote/current HEAD exactly5530761457ab5b56ae73567baef2d9273209464d; all31 current product bytes equal published Git blobs; onlyREADME
+    differs from tested candidate; all30 nonREADME product blobs unchanged
+  product_file_count: 31
+  product_manifest_sha256: 2b87480f6444e92ea08d2895da9ad570bb8493bf0d28f3eac004be3b33ee7838
+  unchanged_runtime_file_count: 30
+  runtime_manifest_sha256_excluding_readme: cbac1b23203fc440f012d8512b67a601864b0bcae98c96d121ac179fe2b8c529
+  manifest_algorithm: SHA256 of ordinal-sorted lowercase POSIX product/path plus colon plus lowercase SHA256 of raw file bytes, joined with LF
+    and no final LF
+  document_boundary: ExactREADMEdiff updates only pending-proof paragraph to verified49tests/both examples/default-core unchanged-inputreuse,
+    preserving actual hostIO/GUI/engine/platform/performance limitations; matrixBM-KUM-RECOVERY-WINX64-001 published/currentbytes equal and bind
+    actualC387/default505reuse
+  specification_boundary: Current/published six-file spec11 bundle equal; all99 parsed requirement records identical to spec9; eight
+    feature areas remain partially implemented and every implemented_requirement_refs list remains empty; future architecture wording aligns with
+    verified009 without closing fullfeature acceptance
+  archives:
+  - path: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v9-r9-c387f9e4f6d3
+    files: 6
+    verified: Every file equals spec9 atc387f9e4 and exact outcome publication blob
+  - path: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0
+    files: 6
+    verified: Every file equals spec10 at8387dd939bf0 and exact outcome publication blob
+  proof_limit: Compact canonical publication/blob/document read only; runtime proof retained without Cargo or source reaudit; WPphase remains
+    active until lead settlement

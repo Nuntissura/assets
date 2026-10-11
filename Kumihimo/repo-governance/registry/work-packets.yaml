@@ -63,11 +63,10 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
   title: Implement tab semantics and versioned arrangement recovery
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-009-tabs-and-layout-recovery-v1/WP-KUM-009-tabs-and-layout-recovery-v1-state.yaml
-  next_action: Publish evaluated009 outcome and verify exact remote/source containment; then settle done state and
-    prepare010
+  next_action: Prepare WP010 full contract/current research and frozen evaluation before coding admission
   blockers: []
 - wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
   title: Implement replaceable content and lifecycle contracts
