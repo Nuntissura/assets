@@ -184,8 +184,10 @@ impl OwnedPath {
         !self.elements.is_empty() && !drawn
     }
 
-    /// Lossless conversion to a kurbo path (one element each).
-    pub fn to_kurbo(&self) -> BezPath {
+    /// Lossless conversion to a kurbo path (one element each). The path is validated with the
+    /// default limits first, because kurbo debug-asserts on paths that do not begin with `MoveTo`.
+    pub fn to_kurbo(&self) -> Result<BezPath, Error> {
+        self.validate(&PathLimits::default())?;
         let mut path = BezPath::new();
         for element in &self.elements {
             match *element {
@@ -196,7 +198,7 @@ impl OwnedPath {
                 PathElement::Close => path.close_path(),
             }
         }
-        path
+        Ok(path)
     }
 
     /// Lossless conversion from a kurbo path; the result is validated with `limits`.
@@ -256,7 +258,8 @@ impl OwnedPath {
             Ok(PathPoint::new(convert(p.x)?, convert(p.y)?))
         };
         let mut path = Self::new(fill_rule);
-        path.elements.push(PathElement::MoveTo(to(anchors[0].position)?));
+        path.elements
+            .push(PathElement::MoveTo(to(anchors[0].position)?));
         let segments = if closed {
             anchors.len()
         } else {
@@ -267,16 +270,18 @@ impl OwnedPath {
             let b = &anchors[(i + 1) % anchors.len()];
             let (pa, pb) = (to(a.position)?, to(b.position)?);
             let (out, inc) = (to(a.outgoing)?, to(b.incoming)?);
-            path.elements
-                .push(if out.x == 0.0 && out.y == 0.0 && inc.x == 0.0 && inc.y == 0.0 {
-                    PathElement::LineTo(pb)
-                } else {
-                    PathElement::CubicTo(
-                        PathPoint::new(pa.x + out.x, pa.y + out.y),
-                        PathPoint::new(pb.x + inc.x, pb.y + inc.y),
-                        pb,
-                    )
-                });
+            if out.x == 0.0 && out.y == 0.0 && inc.x == 0.0 && inc.y == 0.0 {
+                // The straight closing segment is the implicit one of `Close`.
+                if !(closed && i + 1 == segments) {
+                    path.elements.push(PathElement::LineTo(pb));
+                }
+            } else {
+                path.elements.push(PathElement::CubicTo(
+                    PathPoint::new(pa.x + out.x, pa.y + out.y),
+                    PathPoint::new(pb.x + inc.x, pb.y + inc.y),
+                    pb,
+                ));
+            }
         }
         if closed {
             path.elements.push(PathElement::Close);
@@ -331,7 +336,9 @@ impl OwnedPath {
             let key = p.string()?;
             p.expect(b':')?;
             match key {
-                "fill_rule" if fill_rule.is_none() => fill_rule = Some(FillRule::parse(p.string()?)?),
+                "fill_rule" if fill_rule.is_none() => {
+                    fill_rule = Some(FillRule::parse(p.string()?)?)
+                }
                 "elements" if elements.is_none() => elements = Some(p.elements(limits)?),
                 _ => return Err(Error::InvalidEncoding),
             }
