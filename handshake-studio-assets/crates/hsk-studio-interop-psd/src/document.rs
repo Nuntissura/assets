@@ -170,6 +170,27 @@ impl PsdDocument {
         if stack.is_empty() { Ok(root) } else { Err(PsdError::GroupUnbalanced) }
     }
 
+    /// RGBA8 `(width, height, pixels)` of the merged image for use as a recomposition oracle.
+    /// `Ok(None)` when the file says the merged image is a placeholder (`hasRealMergedData` = 0),
+    /// when there is none, or when the colour mode or depth has no 8-bit conversion here.
+    pub fn merged_oracle_rgba8(
+        &self,
+        limits: &Limits,
+        cancel: &CancellationToken,
+    ) -> Result<Option<(u32, u32, Vec<u8>)>> {
+        if self.merged_status(limits) == MergedStatus::Placeholder {
+            return Ok(None);
+        }
+        let Some(image) = self.decode_merged(limits, cancel)? else {
+            return Ok(None);
+        };
+        match image.to_rgba8() {
+            Ok(pixels) => Ok(Some((image.width, image.height, pixels))),
+            Err(PsdError::UnsupportedMode(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Decodes the merged image (the Image Data section). `Ok(None)` when the file has none.
     pub fn decode_merged(&self, limits: &Limits, cancel: &CancellationToken) -> Result<Option<MergedImage>> {
         let Some(image) = &self.image_data else {

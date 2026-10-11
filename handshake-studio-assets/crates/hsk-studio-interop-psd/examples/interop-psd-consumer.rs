@@ -1,5 +1,5 @@
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_interop_psd::{DESCRIPTOR, Limits, read_psd};
+use hsk_studio_interop_psd::{DESCRIPTOR, Limits, MergedStatus, read_psd};
 use std::{env, fs};
 
 fn run() -> Result<(), String> {
@@ -18,12 +18,17 @@ fn run() -> Result<(), String> {
     let limits = Limits::default();
     let doc = read_psd(&bytes, &limits, &CancellationToken::default()).map_err(|e| e.code().to_string())?;
     println!(
-        "{{\"version\":{},\"width\":{},\"height\":{},\"depth\":{},\"layers\":{},\"loss\":{}}}",
+        "{{\"version\":{},\"width\":{},\"height\":{},\"depth\":{},\"layers\":{},\"merged\":\"{}\",\"loss\":{}}}",
         doc.header.version,
         doc.header.width,
         doc.header.height,
         doc.header.depth,
         doc.layers().len(),
+        match doc.merged_status(&limits) {
+            MergedStatus::Real => "real",
+            MergedStatus::Placeholder => "placeholder",
+            MergedStatus::Unknown => "unknown",
+        },
         doc.loss_report(&limits).to_json()
     );
     Ok(())

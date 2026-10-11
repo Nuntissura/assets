@@ -412,6 +412,13 @@ fn layers_groups_resources_and_merged_decode() {
         let greens = [1u8, 1, 1, 1, 2, 2, 2, 2];
         let expected: Vec<u8> = (0..8).flat_map(|i| [reds[i], greens[i], 0, 255]).collect();
         assert_eq!(merged.to_rgba8().expect("rgba"), expected);
+        assert_eq!(doc.merged_oracle_rgba8(&limits, &cancel).unwrap(), Some((4, 2, expected)));
+        let mut placeholder = doc.clone();
+        let version_info = placeholder.resources.blocks.iter_mut().find(|b| b.id == RESOURCE_VERSION_INFO).unwrap();
+        version_info.data[4] = 0; // hasRealMergedData = false
+        assert_eq!(placeholder.merged_status(&limits), MergedStatus::Placeholder);
+        assert_eq!(placeholder.merged_oracle_rgba8(&limits, &cancel).unwrap(), None, "a placeholder is never an oracle");
+        assert!(placeholder.loss_report(&limits).has_code("merged_image_placeholder_no_oracle"));
 
         // global block with length excluding its 4-byte alignment
         assert_eq!(doc.layer_section.blocks.len(), 1);
@@ -712,6 +719,10 @@ fn proposal_edit_loop_roundtrip_and_observe() {
         let appearance = |name: &str| proposal.appearance.iter().find(|a| a.layer_id == id_of(name)).unwrap();
         let bg_look = appearance("bg");
         assert_eq!((bg_look.opacity, bg_look.blend_mode, bg_look.clipped), (128, Some(BlendMode::Multiply), false));
+        assert_eq!(bg_look.studio_blend, Some(hsk_studio_pigment::blend_math::StudioBlendMode::Multiply));
+        // every one of the 28 PSD keys has a Studio member, and no two keys share one
+        let studio: std::collections::BTreeSet<u16> = BlendMode::ALL.iter().map(|m| m.studio_mode() as u16).collect();
+        assert_eq!(studio.len(), 28);
         let fg_look = appearance("fg");
         assert_eq!((fg_look.blend_mode, fg_look.clipped), (Some(BlendMode::Screen), true));
         assert_eq!(appearance("Group \u{fc}").blend_mode, Some(BlendMode::PassThrough));

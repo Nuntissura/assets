@@ -2,6 +2,8 @@
 //! is a typed loss: it must never be mapped to Normal. The four-byte key is always kept
 //! verbatim by the layer record.
 
+use hsk_studio_pigment::blend_math::StudioBlendMode;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BlendMode {
     PassThrough,
@@ -134,6 +136,41 @@ impl BlendMode {
             Self::Saturation => "saturation",
             Self::Color => "color",
             Self::Luminosity => "luminosity",
+        }
+    }
+
+    /// The Studio blend member for this PSD key. Pigment owns the enumeration, its facts and the
+    /// per-pixel math; this table is only the PSD key vocabulary.
+    pub fn studio_mode(self) -> StudioBlendMode {
+        match self {
+            Self::PassThrough => StudioBlendMode::PassThrough,
+            Self::Normal => StudioBlendMode::Normal,
+            Self::Dissolve => StudioBlendMode::Dissolve,
+            Self::Darken => StudioBlendMode::Darken,
+            Self::Multiply => StudioBlendMode::Multiply,
+            Self::ColorBurn => StudioBlendMode::ColourBurn,
+            Self::LinearBurn => StudioBlendMode::LinearBurn,
+            Self::DarkerColor => StudioBlendMode::DarkerColour,
+            Self::Lighten => StudioBlendMode::Lighten,
+            Self::Screen => StudioBlendMode::Screen,
+            Self::ColorDodge => StudioBlendMode::ColourDodge,
+            Self::LinearDodge => StudioBlendMode::LinearDodgeAdd,
+            Self::LighterColor => StudioBlendMode::LighterColour,
+            Self::Overlay => StudioBlendMode::Overlay,
+            Self::SoftLight => StudioBlendMode::SoftLight,
+            Self::HardLight => StudioBlendMode::HardLight,
+            Self::VividLight => StudioBlendMode::VividLight,
+            Self::LinearLight => StudioBlendMode::LinearLight,
+            Self::PinLight => StudioBlendMode::PinLight,
+            Self::HardMix => StudioBlendMode::HardMix,
+            Self::Difference => StudioBlendMode::Difference,
+            Self::Exclusion => StudioBlendMode::Exclusion,
+            Self::Subtract => StudioBlendMode::Subtract,
+            Self::Divide => StudioBlendMode::Divide,
+            Self::Hue => StudioBlendMode::Hue,
+            Self::Saturation => StudioBlendMode::Saturation,
+            Self::Color => StudioBlendMode::Colour,
+            Self::Luminosity => StudioBlendMode::Luminosity,
         }
     }
 }

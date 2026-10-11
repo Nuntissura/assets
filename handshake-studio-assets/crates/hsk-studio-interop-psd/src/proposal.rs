@@ -10,6 +10,7 @@
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{Budget, Inspection, Resolver, Snapshot, inspect_bytes};
 use hsk_studio_pigment::Grid;
+use hsk_studio_pigment::blend_math::StudioBlendMode;
 use hsk_studio_prism::{hash_hex, profile_hash};
 use serde_json::{Value, json};
 
@@ -92,6 +93,8 @@ pub struct LayerAppearance {
     pub blend_key: [u8; 4],
     /// `None` for a key outside the 28 known ones (typed loss, never Normal).
     pub blend_mode: Option<BlendMode>,
+    /// The same mode as Pigment's `StudioBlendMode` (single owner of the enumeration).
+    pub studio_blend: Option<StudioBlendMode>,
     pub clipped: bool,
     pub blend_clipped_elements: Option<bool>,
     pub blend_interior_elements: Option<bool>,
@@ -220,6 +223,7 @@ impl Builder<'_, '_> {
             opacity: layer.opacity,
             blend_key: layer.blend_key,
             blend_mode: layer.blend_mode(),
+            studio_blend: layer.blend_mode().map(BlendMode::studio_mode),
             clipped: layer.clipping == 1,
             blend_clipped_elements: layer.blend_clipped_elements(),
             blend_interior_elements: layer.blend_interior_elements(),
