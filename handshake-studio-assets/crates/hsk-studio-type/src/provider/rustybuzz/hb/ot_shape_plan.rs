@@ -54,9 +54,16 @@ impl<'a> hb_ot_shape_plan_t<'a> {
         meter: &Context<'a>,
     ) -> ProviderResult<Self> {
         meter.step()?;
+        // Common plans the default shaper only; both shape entries admit a Common buffer
+        // solely when every scalar is a pinned default-ignorable and no glyph survives.
         if !matches!(
             script,
-            Some(super::script::LATIN | super::script::ARABIC | super::script::HAN)
+            Some(
+                super::script::LATIN
+                    | super::script::ARABIC
+                    | super::script::HAN
+                    | super::script::COMMON
+            )
         ) || !direction.is_horizontal()
             || language.is_none()
         {
