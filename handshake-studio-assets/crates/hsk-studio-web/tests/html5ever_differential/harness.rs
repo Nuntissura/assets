@@ -1,7 +1,7 @@
 //! Runs one input through both parsers, minimises disagreements and reports them with the input printed.
 
-use crate::events::{Category, Ev, first_difference};
-use crate::model::{model_attribute_count, model_events, parse_model};
+use crate::events::{Category, Ev, drop_implied, first_difference};
+use crate::model::{has_skeleton, model_attribute_count, model_events, parse_model};
 use crate::oracle::{Mode, reference_events};
 use hsk_studio_web::LossKind;
 use std::collections::BTreeMap;
@@ -23,16 +23,24 @@ pub enum Outcome {
     Compared(Vec<Disagreement>),
 }
 
-/// Compare the crate's reading of `input` with html5ever's, once per scripting-flag reading.
+/// Compare the crate's reading of `input` with html5ever's, once per scripting-flag reading. The crate reads whole
+/// documents; an input with an authored `html`, `head` or `body` element is compared against a whole-document parse
+/// (the fragment parser's `div` context ignores those start tags). Normalisations N1 (always) and N2 (whole documents)
+/// are documented in `model`.
 pub fn check(input: &str, mode: Mode) -> Outcome {
     let doc = match parse_model(input) {
         Ok(doc) => doc,
         Err(code) => return Outcome::Refused(code),
     };
+    let mode = if mode == Mode::Fragment && has_skeleton(&doc) {
+        Mode::Document
+    } else {
+        mode
+    };
     let mut found = Vec::new();
     for scripting in [true, false] {
-        let expected = reference_events(input, mode, scripting);
-        let actual = model_events(&doc, scripting);
+        let actual = model_events(&doc, scripting, mode == Mode::Document);
+        let expected = drop_implied(&reference_events(input, mode, scripting), &actual);
         if let Some(d) = first_difference(&expected, &actual) {
             found.push(Disagreement {
                 category: d.category,
@@ -66,6 +74,17 @@ pub fn check(input: &str, mode: Mode) -> Outcome {
         }
     }
     Outcome::Compared(found)
+}
+
+/// One input's outcome as a short string: `refused:<code>`, `agrees`, or `disagrees:<CATEGORY>/<signature>`.
+pub fn disposition(input: &str, mode: Mode) -> String {
+    match check(input, mode) {
+        Outcome::Refused(code) => format!("refused:{code}"),
+        Outcome::Compared(found) => match found.first() {
+            None => "agrees".to_owned(),
+            Some(d) => format!("disagrees:{}/{}", d.category, d.sub),
+        },
+    }
 }
 
 fn find(input: &str, mode: Mode, key: (Category, &'static str, bool)) -> Option<Disagreement> {

@@ -319,7 +319,8 @@ pub fn preview_tree(
             infos.push(None);
             continue;
         }
-        let tag = doc.tag_name(id).unwrap_or("").to_ascii_lowercase();
+        // The element a browser creates (`<image>` in HTML content is an `img`).
+        let tag = doc.local_name(id).unwrap_or_default();
         let html_id = attr(doc, id, "id");
         if let Some(v) = &html_id {
             ids.entry(v.clone()).or_insert(id);

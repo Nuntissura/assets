@@ -4,8 +4,6 @@
 //! disagreement is about how bytes are read, not about optional-tag inference.
 
 use crate::corpus::Cases;
-use crate::model::parse_model;
-use hsk_studio_web::{Namespace, NodeKind, decode_entities};
 
 pub struct Rng(u64);
 
@@ -600,8 +598,6 @@ impl Generator {
                 out.push_str(name);
                 self.attrs(out, HTML_ATTRS);
                 out.push('>');
-                // The tree builder drops a newline right after the start tag; keep that rule out of generated bodies.
-                out.push('.');
                 self.items(out, Ctx::Html, depth + 1, in_a);
                 self.close(out, name);
             }
@@ -665,9 +661,6 @@ impl Generator {
                 32..=35 => body.push_str("-->"),
                 _ => body.push_str("<!--"),
             }
-        }
-        if name == "textarea" && body.starts_with(['\n', '&']) {
-            body.insert(0, '.');
         }
         out.push_str(&body);
         if self.rng.pct(3) {
@@ -787,51 +780,14 @@ impl Generator {
     }
 }
 
-/// True when the crate's own tree has an HTML `pre`, `listing` or `textarea` whose content starts with a newline (as text,
-/// raw body or character reference): the tree builder drops it (known product disagreement with its own test,
-/// `leading_newline_after_pre_listing_textarea`), and a mutation can create it by chance. Documents the crate refuses are
-/// never compared, so they need no filtering.
-fn newline_right_after_pre_like_start_tag(doc: &str) -> bool {
-    let Ok(parsed) = parse_model(doc) else {
-        return false;
-    };
-    let rows = parsed.view();
-    rows.windows(2).any(|w| {
-        let (owner, first) = (&w[0], &w[1]);
-        let pre_like = owner.kind == NodeKind::Element
-            && parsed
-                .node(owner.id)
-                .is_some_and(|n| n.namespace == Namespace::Html)
-            && owner.tag.as_deref().is_some_and(|t| {
-                ["pre", "listing", "textarea"]
-                    .iter()
-                    .any(|n| t.eq_ignore_ascii_case(n))
-            });
-        if !pre_like || first.depth != owner.depth + 1 {
-            return false;
-        }
-        let body = first.text.as_deref().unwrap_or_default();
-        match first.kind {
-            NodeKind::Text => body.starts_with(['\n', '\r']),
-            NodeKind::Raw => {
-                decode_entities(body).text.starts_with(['\n', '\r'])
-                    || body.starts_with(['\n', '\r'])
-            }
-            _ => false,
-        }
-    })
-}
-
-/// `count` documents from consecutive seeds (documents rejected by the fuzz-only filter above are skipped, not counted).
+/// `count` documents from consecutive seeds.
 pub fn cases(theme: Theme, first_seed: u64, count: u64) -> Cases {
-    let mut out = Vec::new();
-    let mut seed = first_seed;
-    while (out.len() as u64) < count {
-        let doc = Generator::new(seed, theme).document();
-        if theme != Theme::Fuzz || !newline_right_after_pre_like_start_tag(&doc) {
-            out.push((format!("gen:{theme:?}:{seed}"), doc));
-        }
-        seed += 1;
-    }
-    out
+    (first_seed..first_seed.saturating_add(count))
+        .map(|seed| {
+            (
+                format!("gen:{theme:?}:{seed}"),
+                Generator::new(seed, theme).document(),
+            )
+        })
+        .collect()
 }

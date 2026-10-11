@@ -440,11 +440,12 @@ fn hostile_input_is_bounded_and_typed() {
                 span: 4..9
             }
         );
+        // The second `<li>` start tag is where a browser closes the first one (13.2.6.4.7 "li").
         assert_eq!(
             try_parse("<ul><li>a<li>b</ul>", &limits),
             WebError::Unsupported {
                 kind: UnsupportedKind::ImpliedEndTag,
-                span: 14..19
+                span: 9..13
             }
         );
         assert_eq!(
@@ -1715,8 +1716,15 @@ fn comment_script_and_noscript_states_follow_the_tokenizer() {
             );
             assert_eq!(calls, ["logo.png"]);
             assert_eq!(
-                refused("<noscript><img alt=\"</noscript><img src=//e.invalid/n>\"></noscript>"),
+                refused(
+                    "<div><noscript><img alt=\"</noscript><img src=//e.invalid/n>\"></noscript></div>"
+                ),
                 "scripting_dependent"
+            );
+            // At the document start the noscript is in the (implied) head: with scripting disabled the img leaves it.
+            assert_eq!(
+                refused("<noscript><img alt=\"</noscript><img src=//e.invalid/n>\"></noscript>"),
+                "document_structure"
             );
             assert_eq!(
                 refused("<noscript><style></noscript><img src=//e.invalid/n2></style></noscript>"),

@@ -73,6 +73,64 @@ impl Events {
     }
 }
 
+/// Elements a tree builder inserts without a start tag that the crate documents as normalisation N1 (crate docs, `dom`
+/// module): `html`, `head`, `body` (13.2.6.4.2, .3, .6), `tbody` around a `tr` and `colgroup` around a `col` directly in a
+/// `table` (13.2.6.4.9).
+const IMPLIED: &[&str] = &["html", "head", "body", "tbody", "colgroup"];
+
+/// N1: remove the reference's implied elements and splice their children into their parent. Per name, only as many
+/// attribute-less HTML elements as the reference has more than the model are removed, each one where the model's event
+/// at the same position is something else; text that becomes adjacent merges as in a DOM. An authored element is never
+/// removed (the counts match), so a re-parented authored element still shows as a difference.
+pub fn drop_implied(expected: &[Ev], actual: &[Ev]) -> Vec<Ev> {
+    let count = |evs: &[Ev], n: &str| {
+        evs.iter()
+            .filter(|e| matches!(e, Ev::Open { ns: Ns::Html, name, .. } if name == n))
+            .count()
+    };
+    let mut budget: Vec<(&str, usize)> = IMPLIED
+        .iter()
+        .map(|n| (*n, count(expected, n).saturating_sub(count(actual, n))))
+        .collect();
+    let mut out = Events::default();
+    let mut skipped: Vec<bool> = Vec::new();
+    for ev in expected {
+        match ev {
+            Ev::Open {
+                ns: Ns::Html,
+                name,
+                attrs,
+            } if attrs.is_empty() => {
+                let aligned = actual.get(out.0.len()) == Some(ev);
+                let slot = budget
+                    .iter_mut()
+                    .find(|(n, left)| *n == name.as_str() && *left > 0);
+                match slot {
+                    Some((_, left)) if !aligned => {
+                        *left -= 1;
+                        skipped.push(true);
+                    }
+                    _ => {
+                        skipped.push(false);
+                        out.push(ev.clone());
+                    }
+                }
+            }
+            Ev::Open { .. } => {
+                skipped.push(false);
+                out.push(ev.clone());
+            }
+            Ev::Close => {
+                if skipped.pop() != Some(true) {
+                    out.push(Ev::Close);
+                }
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out.0
+}
+
 /// What differs first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Category {

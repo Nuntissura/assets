@@ -72,7 +72,9 @@ impl MalformedKind {
 /// Valid input outside the documented subset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnsupportedKind {
-    /// Optional end tags (`<p>`, `<li>`, ...) need HTML5 tree construction.
+    /// Optional end tags (`<p>`, `<li>`, ...) need HTML5 tree construction; also a start tag a browser answers by
+    /// closing an open element first (`<p><div>`, `<li><li>`, `<h1><h2>`, `<option><option>`, `<button><button>`, ...),
+    /// which would re-parent the authored element.
     ImpliedEndTag,
     PlaintextElement,
     /// CDATA, processing instructions or bogus markup inside a fragment to be inserted.
@@ -91,6 +93,20 @@ pub enum UnsupportedKind {
     SelectContent,
     /// A `noscript` whose RAWTEXT reading (scripting enabled) ends at an earlier `</noscript` than the markup reading.
     ScriptingDependent,
+    /// A nested `a` or `nobr`: the adoption agency algorithm closes the open one and re-parents content.
+    AdoptionAgency,
+    /// Table content a browser moves (foster parenting: text, elements and foreign content directly in `table`,
+    /// `tbody`, `tr`, ...), wraps in an implied `tr` (`td` directly in `table` or a section), or answers by closing open
+    /// table parts (nested `table`, `tr` in a cell, ...).
+    TableContent,
+    /// A token the tree builder ignores at that position, so an authored node would vanish: `html`, `head`, `body`
+    /// start tags outside their document position, `caption col colgroup frame tbody td tfoot th thead tr` outside a
+    /// table, a nested `form`, a DOCTYPE after the first token.
+    IgnoredToken,
+    /// A browser moves the node to another document-skeleton parent: content other than head elements inside an
+    /// authored `head`, head elements after `</head>`, content after `</body>` or `</html>`, markup inside `noscript` in
+    /// the head (scripting disabled).
+    DocumentStructure,
 }
 impl UnsupportedKind {
     pub const fn code(self) -> &'static str {
@@ -106,6 +122,10 @@ impl UnsupportedKind {
             Self::FramesetDocument => "frameset_document",
             Self::SelectContent => "select_content",
             Self::ScriptingDependent => "scripting_dependent",
+            Self::AdoptionAgency => "adoption_agency",
+            Self::TableContent => "table_content",
+            Self::IgnoredToken => "ignored_token",
+            Self::DocumentStructure => "document_structure",
         }
     }
 }
@@ -268,6 +288,9 @@ pub enum LossKind {
     /// An `svg`/`math` element entered from HTML content: its subtree follows the foreign-content rules (namespace,
     /// self-closing tags, CDATA sections, integration points back to HTML).
     ForeignContent,
+    /// `</image>`: an end tag the tree builder ignores (a start tag `image` in HTML content creates an `img` element, so
+    /// no open element is ever named `image`); kept as an opaque `Unsupported` node, never edited.
+    IgnoredEndTag,
 }
 impl LossKind {
     pub const fn code(self) -> &'static str {
@@ -278,13 +301,14 @@ impl LossKind {
             Self::ProcessingInstruction => "processing_instruction",
             Self::BogusMarkup => "bogus_markup",
             Self::ForeignContent => "foreign_content",
+            Self::IgnoredEndTag => "ignored_end_tag",
         }
     }
     /// True when the finding makes a node opaque (kept verbatim, never patched).
     pub const fn is_opaque(self) -> bool {
         matches!(
             self,
-            Self::Cdata | Self::ProcessingInstruction | Self::BogusMarkup
+            Self::Cdata | Self::ProcessingInstruction | Self::BogusMarkup | Self::IgnoredEndTag
         )
     }
 }

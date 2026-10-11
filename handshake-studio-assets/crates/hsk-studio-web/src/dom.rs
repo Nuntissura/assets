@@ -20,11 +20,31 @@
 //! scripting flag would read the same bytes differently the document is refused typed instead of picking one
 //! reading: HTML start tags that break out of foreign content, a `noscript` whose RAWTEXT reading ends elsewhere,
 //! elements read as raw text or ignored inside `select`, and `frameset` documents.
+//!
+//! Tree construction (`construction`): the tree is the authored tree. A browser's tree for the same bytes (document
+//! parsing, scripting enabled or disabled) equals it after two documented normalisations: (N1) the browser inserts
+//! implied `html`, `head`, `body`, `tbody` (around a `tr` directly in a `table`) and `colgroup` (around a `col` directly
+//! in a `table`) elements that are not in the source; (N2) whitespace-only text at the document skeleton level (before
+//! `<html>`, between `<html>` and `<head>`, after `</body>` and `</html>`) is dropped or moved into the body. Every
+//! input where a browser re-parents, reorders or drops an authored node is refused typed; the detection rule is in
+//! `construction`. The name `image` in HTML content is read as `img` (13.2.6.4.7) and `</image>` is an ignored end tag.
+//!
+//! Spans and decoded values: every node keeps the exact source span of its bytes. Decoded values (`WebDoc::local_name`,
+//! `WebDoc::attr_local_name`, `WebDoc::attr_value`, `ViewRow::text` of text nodes, `WebDoc::text_content`) are what the
+//! tokenizer and tree builder build from those bytes: input-stream preprocessing (CR LF and a lone CR become LF; a
+//! `&#13;` reference stays CR), U+0000 replaced by U+FFFD in tag names, attribute names, attribute values, RCDATA and
+//! foreign-content text and dropped from HTML-content text, character references decoded, names ASCII-lowercased, and
+//! the first LF token after a `pre`, `listing` or `textarea` start tag dropped (also when it is spelled CR, CR LF or as
+//! a character reference). A decoded value therefore has no byte-for-byte position map into its span; edits replace
+//! whole spans (`dom_values_are_decoded_and_spans_keep_the_source_bytes` pins the relation).
 
 #![deny(clippy::arithmetic_side_effects)]
 
+mod construction;
+
 use crate::charref::{Context, decode};
 use crate::error::{LimitKind, LossKind, LossReport, MalformedKind, UnsupportedKind, WebError};
+use construction::Mode;
 use hsk_studio_accord::CancellationToken;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -33,9 +53,11 @@ use std::ops::Range;
 
 pub type NodeId = usize;
 
+/// Elements the tree builder inserts and pops at once (13.2.6.4.4, .7: also `basefont bgsound keygen`), so content after
+/// their start tag is never theirs; `frame` is refused outside a frameset.
 pub(crate) const VOID: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
-    "track", "wbr",
+    "area", "base", "basefont", "bgsound", "br", "col", "embed", "hr", "img", "input", "keygen",
+    "link", "meta", "param", "source", "track", "wbr",
 ];
 pub(crate) const RAWTEXT: &[&str] = &["script", "style", "iframe", "noembed", "noframes", "xmp"];
 const RCDATA: &[&str] = &["textarea", "title"];
@@ -120,6 +142,8 @@ struct Frame {
     annotation_xml: bool,
     /// HTML `noscript`: start of its RAWTEXT reading's close tag (scripting enabled).
     noscript_close: Option<usize>,
+    /// HTML `noscript` inserted by the "in head" mode: with scripting disabled only head content stays inside it.
+    head_noscript: bool,
 }
 
 pub(crate) fn in_set(set: &[&str], name: &str) -> bool {
@@ -128,6 +152,32 @@ pub(crate) fn in_set(set: &[&str], name: &str) -> bool {
 
 pub(crate) fn is_ws(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
+}
+
+/// A tag or attribute name as the tokenizer builds it (13.2.5.8, 13.2.5.33): ASCII-lowercased, U+0000 as U+FFFD.
+pub(crate) fn name_key(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c == '\0' {
+                '\u{fffd}'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
+}
+
+/// `raw` (source spelling) names `wanted` once both are read as the tokenizer reads names.
+pub(crate) fn same_name(raw: &str, wanted: &str) -> bool {
+    let mut w = wanted.chars();
+    for c in raw.chars() {
+        let c = if c == '\0' { '\u{fffd}' } else { c };
+        match w.next() {
+            Some(d) if d.eq_ignore_ascii_case(&c) => {}
+            _ => return false,
+        }
+    }
+    w.next().is_none()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,6 +262,9 @@ pub struct Node {
     pub protected: bool,
     /// Namespace of an element as an HTML parser assigns it; `Html` for every other node kind.
     pub namespace: Namespace,
+    /// Text node whose characters the foreign-content rules insert (13.2.6.5): U+0000 becomes U+FFFD instead of being
+    /// dropped.
+    foreign_text: bool,
 }
 impl Node {
     fn new(kind: NodeKind, span: Range<usize>) -> Self {
@@ -229,6 +282,7 @@ impl Node {
             content: ContentModel::Normal,
             protected: false,
             namespace: Namespace::Html,
+            foreign_text: false,
         }
     }
     /// Bytes between the open and close tag; `None` for void, self-closed and non-element nodes.
@@ -260,10 +314,13 @@ pub struct ViewRow {
     pub id: NodeId,
     pub depth: usize,
     pub kind: NodeKind,
+    /// Element name as the tree builder creates it (`WebDoc::local_name`).
     pub tag: Option<String>,
-    /// Decoded attribute values; `None` for valueless attributes.
+    /// Attribute names as the tokenizer builds them (`WebDoc::attr_local_name`) with decoded values (`None` for
+    /// valueless attributes).
     pub attrs: Vec<(String, Option<String>)>,
-    /// Decoded text for text nodes, raw text for raw nodes, comment body for comments.
+    /// Decoded text for text nodes (`WebDoc` docs: newlines, U+0000, references, first LF in `pre`/`listing`), the
+    /// source slice for raw nodes (decoded RCDATA: `WebDoc::text_content` of the owner), comment body for comments.
     pub text: Option<String>,
     pub span: Range<usize>,
 }
@@ -318,8 +375,10 @@ pub fn parse(
             mathml_text_ip: false,
             annotation_xml: false,
             noscript_close: None,
+            head_noscript: false,
         }],
         selects: 0,
+        mode: Mode::Initial,
         loss: LossReport::default(),
         limits: *limits,
         cancel,
@@ -344,6 +403,8 @@ struct Parser<'a> {
     stack: Vec<Frame>,
     /// Open HTML `select` elements.
     selects: usize,
+    /// Document-skeleton insertion mode (`construction`).
+    mode: Mode,
     loss: LossReport,
     limits: Limits,
     cancel: &'a CancellationToken,
@@ -671,7 +732,14 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        self.push(Node::new(NodeKind::Text, start..i))?;
+        self.tree_text(&(start..i))?;
+        let top = self.top();
+        let mut node = Node::new(NodeKind::Text, start..i);
+        // 13.2.6 dispatcher: character tokens follow the HTML rules at the root, in HTML elements and at (MathML text)
+        // integration points; elsewhere the foreign-content rules insert them (U+0000 becomes U+FFFD).
+        node.foreign_text =
+            top.id != 0 && top.ns != Namespace::Html && !top.html_ip && !top.mathml_text_ip;
+        self.push(node)?;
         self.pos = i;
         Ok(())
     }
@@ -714,7 +782,9 @@ impl<'a> Parser<'a> {
                     span: start..self.b.len(),
                 });
             };
-            self.leaf(NodeKind::Doctype, at(at(start, off), 1))
+            let end = at(at(start, off), 1);
+            self.tree_doctype(&(start..end))?;
+            self.leaf(NodeKind::Doctype, end)
         } else if rest.starts_with(b"<![CDATA[") {
             // A CDATA section exists only where the current node is not an HTML element; in HTML content the same bytes
             // are a bogus comment that ends at the first `>`.
@@ -886,6 +956,12 @@ impl<'a> Parser<'a> {
             top.ns
         };
         let html = ns == Namespace::Html;
+        // 13.2.6.4.7: a start tag `image` under the HTML rules is reprocessed as `img` (void). The span keeps `image`.
+        let name = if html && name.eq_ignore_ascii_case("image") {
+            "img"
+        } else {
+            name
+        };
         if html && name.eq_ignore_ascii_case("plaintext") {
             return Err(WebError::Unsupported {
                 kind: UnsupportedKind::PlaintextElement,
@@ -904,6 +980,8 @@ impl<'a> Parser<'a> {
                 span: start..open_end,
             });
         }
+        // Tree construction: refuse where a browser would re-parent, reorder or drop authored nodes (`construction`).
+        let head_noscript = html_rules && self.tree_start(name, &attrs, &(start..open_end))?;
         let is_void = html && in_set(VOID, name);
         let acknowledged = is_void || !html;
         let empty = is_void || (self_closing && !html);
@@ -915,9 +993,10 @@ impl<'a> Parser<'a> {
             self.loss.push(LossKind::ForeignContent, start..open_end);
         }
         if attrs.len() > 1 {
+            // Names compared as the tokenizer builds them (ASCII-lowercased, U+0000 as U+FFFD).
             let mut seen: HashSet<String> = HashSet::with_capacity(attrs.len());
             for a in &attrs {
-                if !seen.insert(self.src[a.name_span.clone()].to_ascii_lowercase()) {
+                if !seen.insert(name_key(&self.src[a.name_span.clone()])) {
                     self.loss.push(LossKind::DuplicateAttribute, a.span.clone());
                 }
             }
@@ -951,6 +1030,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             },
+            head_noscript,
         };
         let select = html && name.eq_ignore_ascii_case("select");
         let open_span = start..open_end;
@@ -1060,6 +1140,17 @@ impl<'a> Parser<'a> {
                 span: start..end,
             });
         }
+        if name.eq_ignore_ascii_case("image")
+            && !self.stack[1..]
+                .iter()
+                .any(|f| self.name_of(f.id).eq_ignore_ascii_case("image"))
+        {
+            // 13.2.6.4.7 "any other end tag" (13.2.6.5 hands it there from foreign content): no open element is named
+            // `image` (the start tag made an `img`), so the walk reaches a special element and the token is ignored.
+            self.tree_ignored_end(&(start..end))?;
+            self.loss.push(LossKind::IgnoredEndTag, start..end);
+            return self.leaf(NodeKind::Unsupported, end);
+        }
         if top == 0 {
             return Err(WebError::Malformed {
                 kind: MalformedKind::StrayEndTag,
@@ -1098,6 +1189,7 @@ impl<'a> Parser<'a> {
                 span: at..at.saturating_add(10),
             });
         }
+        self.tree_end(&frame, &(start..end))?;
         let select = html && top_name.eq_ignore_ascii_case("select");
         let node = &mut self.nodes[top];
         node.close_span = Some(start..end);
@@ -1158,14 +1250,36 @@ impl WebDoc {
         &self.source[span.clone()]
     }
 
-    /// Tag name with its original case.
+    /// Tag name as written in the source (original case; the span's bytes).
     pub fn tag_name(&self, id: NodeId) -> Option<&str> {
         let node = self.nodes.get(id)?;
         node.name_span.as_ref().map(|s| &self.source[s.clone()])
     }
 
+    /// Element name as the tree builder creates it: the tag name state's result (ASCII-lowercased, U+0000 as U+FFFD,
+    /// 13.2.5.8) and, for an HTML element, `image` read as `img` (13.2.6.4.7). SVG/MathML case adjustment
+    /// (`foreignObject`, `definitionURL`) is not applied. `None` for non-elements.
+    pub fn local_name(&self, id: NodeId) -> Option<String> {
+        let node = self.nodes.get(id)?;
+        if node.kind != NodeKind::Element {
+            return None;
+        }
+        let raw = self.tag_name(id)?;
+        if node.namespace == Namespace::Html && raw.eq_ignore_ascii_case("image") {
+            return Some("img".to_owned());
+        }
+        Some(name_key(raw))
+    }
+
+    /// Attribute name as written in the source (original case; the name span's bytes).
     pub fn attr_name(&self, attr: &Attr) -> &str {
         &self.source[attr.name_span.clone()]
+    }
+
+    /// Attribute name as the tokenizer builds it (13.2.5.33): ASCII-lowercased, U+0000 as U+FFFD. Foreign attribute
+    /// adjustment (`viewBox`, `xlink:href` namespaces) is not applied.
+    pub fn attr_local_name(&self, attr: &Attr) -> String {
+        name_key(self.attr_name(attr))
     }
 
     /// Value decoded as an HTML tokenizer decodes attribute values; `None` for a valueless attribute.
@@ -1175,13 +1289,14 @@ impl WebDoc {
             .map(|s| decode(&self.source[s.clone()], Context::Attribute).text)
     }
 
-    /// First attribute with this name (ASCII case-insensitive); later duplicates are ignored as in HTML.
+    /// First attribute with this name (compared as the tokenizer builds names: ASCII case-insensitive, U+0000 as
+    /// U+FFFD); later duplicates are ignored as in HTML.
     pub fn attribute(&self, id: NodeId, name: &str) -> Option<&Attr> {
         self.nodes
             .get(id)?
             .attrs
             .iter()
-            .find(|a| self.attr_name(a).eq_ignore_ascii_case(name))
+            .find(|a| same_name(self.attr_name(a), name))
     }
 
     pub fn descendants(&self, id: NodeId) -> Descendants<'_> {
@@ -1240,32 +1355,56 @@ impl WebDoc {
         Some(cur)
     }
 
-    /// Decoded text content of a subtree (script/style bodies and comments excluded).
+    /// The character data a browser builds for a text node, or for the body of an RCDATA element (`title`,
+    /// `textarea`); `None` for every other node. See the `WebDoc` docs: newlines normalised, U+0000 dropped in HTML
+    /// content and U+FFFD in foreign content and RCDATA, references decoded, the first LF after a `pre`, `listing` or
+    /// `textarea` start tag dropped.
+    pub(crate) fn text_value(&self, id: NodeId) -> Option<String> {
+        let node = self.nodes.get(id)?;
+        let parent = node.parent.and_then(|p| self.nodes.get(p))?;
+        let context = match node.kind {
+            NodeKind::Text if node.foreign_text => Context::ReplaceNul,
+            NodeKind::Text => Context::Text,
+            NodeKind::Raw if parent.content == ContentModel::Rcdata => Context::ReplaceNul,
+            _ => return None,
+        };
+        let slice = self.slice(&node.span);
+        let mut text = decode(slice, context).text;
+        // 13.2.6.4.7 "pre, listing" / "textarea": if the next token is an LF character token, it is ignored. That token
+        // is the first character after preprocessing (LF, CR, CR LF) or the first code point of a character reference.
+        let after_start_tag = node.index == 0
+            && parent.kind == NodeKind::Element
+            && parent.namespace == Namespace::Html
+            && node
+                .parent
+                .and_then(|p| self.tag_name(p))
+                .is_some_and(|n| in_set(&["pre", "listing", "textarea"], n));
+        let lf_token =
+            slice.starts_with(['\n', '\r']) || (slice.starts_with('&') && text.starts_with('\n'));
+        if after_start_tag && lf_token {
+            text.remove(0);
+        }
+        Some(text)
+    }
+
+    /// Decoded text content of a subtree (script/style bodies and comments excluded): the concatenated character data
+    /// of its text nodes and RCDATA bodies (`text_value`).
     pub fn text_content(&self, id: NodeId) -> String {
         let mut out = String::new();
         for d in self.descendants(id) {
-            let node = &self.nodes[d];
-            match node.kind {
-                NodeKind::Text => out.push_str(&decode(self.slice(&node.span), Context::Text).text),
-                NodeKind::Raw => {
-                    let owner = node.parent.map(|p| self.nodes[p].content);
-                    if owner == Some(ContentModel::Rcdata) {
-                        out.push_str(&decode(self.slice(&node.span), Context::Text).text);
-                    }
-                }
-                _ => {}
+            if let Some(text) = self.text_value(d) {
+                out.push_str(&text);
             }
         }
         out
     }
 
+    /// Elements whose `local_name` equals `tag` (ASCII case-insensitive), in document order.
     pub fn find_by_tag(&self, tag: &str) -> Vec<NodeId> {
         (0..self.nodes.len())
             .filter(|&id| {
-                self.nodes[id].kind == NodeKind::Element
-                    && self
-                        .tag_name(id)
-                        .is_some_and(|n| n.eq_ignore_ascii_case(tag))
+                self.local_name(id)
+                    .is_some_and(|n| n.eq_ignore_ascii_case(tag))
             })
             .collect()
     }
@@ -1289,7 +1428,7 @@ impl WebDoc {
         while let Some((id, depth)) = stack.pop() {
             let node = &self.nodes[id];
             let text = match node.kind {
-                NodeKind::Text => Some(decode(self.slice(&node.span), Context::Text).text),
+                NodeKind::Text => self.text_value(id),
                 NodeKind::Raw | NodeKind::Doctype | NodeKind::Unsupported => {
                     Some(self.slice(&node.span).to_owned())
                 }
@@ -1308,11 +1447,11 @@ impl WebDoc {
                 id,
                 depth,
                 kind: node.kind,
-                tag: self.tag_name(id).map(str::to_owned),
+                tag: self.local_name(id),
                 attrs: node
                     .attrs
                     .iter()
-                    .map(|a| (self.attr_name(a).to_owned(), self.attr_value(a)))
+                    .map(|a| (self.attr_local_name(a), self.attr_value(a)))
                     .collect(),
                 text,
                 span: node.span.clone(),

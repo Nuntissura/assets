@@ -653,8 +653,8 @@ pub fn character_references() -> Cases {
                     String::new()
                 },
             ),
-            // The leading `.` keeps the newline-after-start-tag rule out of this group (own group: `leading_newlines`).
-            ("rcdata-textarea", format!("<textarea>.{r}</textarea>")),
+            // Right after the start tag: a reference that produces LF is the LF token the tree builder drops.
+            ("rcdata-textarea", format!("<textarea>{r}</textarea>")),
             ("rcdata-title", format!("<title>{r}x</title>")),
             ("rawtext-style", format!("<style>{r}</style>")),
             ("script", format!("<script>{r}</script>")),
@@ -973,7 +973,9 @@ pub fn leading_newlines() -> Cases {
     )
 }
 
-/// Whole documents with explicit `html`/`head`/`body` (no implied elements): head insertion modes, `noscript` in head.
+/// Whole documents (13.2.6.4.1-.7, .19, .22): explicit `html`/`head`/`body`, head insertion modes, `noscript` in head, and
+/// documents whose comparison needs the documented normalisations N1 (implied `html`/`head`/`body`) and N2 (whitespace
+/// the skeleton modes drop or move into the body). Documents a browser re-parents are refused typed (counted, not compared).
 pub fn documents() -> Cases {
     labelled(
         "doc",
@@ -990,6 +992,23 @@ pub fn documents() -> Cases {
             "<!DOCTYPE html><html><head></head><body><math><mi><style>&lt;</style></mi></math></body></html>",
             "<!DOCTYPE html><html><head><!-- a --!></head><body></body></html>",
             "<!DOCTYPE html><html><head></head><body><noscript><img src=x></noscript></body></html>",
+            // N2: skeleton whitespace (CR LF, tabs) dropped before head, kept after head, moved into the body after it.
+            "<!DOCTYPE html>\r\n<HTML lang=en>\r\n\t<Head><title>T &amp; Co</title></Head>\r\n\t<BODY class='a b'>\r\n\t\t<p id=p1>Hello &amp; <em>world</em></p>\r\n\t</BODY>\r\n</HTML>\r\n",
+            "\n<!-- c -->\n<html>\n<!-- d -->\n<head>\n<title>t</title>\n</head>\n<body>\n<p>x</p>\n</body>\n<!-- after -->\n</html>\n<!-- end -->\n",
+            "<html>\n<body><p>x</p></body>\n</html>\n",
+            "<head><title>t</title></head>\n<body>x</body>\n",
+            "<html><head></head><div>x</div></html>\n",
+            "<html>  x</html>",
+            "<html><title>t</title> x</html>",
+            // N1 without any skeleton tag: implied html, head (title, meta go there) and body.
+            "\n<title>t</title>\n<meta charset=utf-8>\n<p>x</p>\n",
+            // Refused: the browser moves these nodes to another skeleton parent or drops them.
+            "<html><head></head><title>x</title><body></body></html>",
+            "<html><body></body><p>x</p></html>",
+            "<html><head><p>x</p></head><body></body></html>",
+            "<html><head></head><body></body></html>x",
+            "<!DOCTYPE html><html><head><noscript><img src=x></noscript></head><body></body></html>",
+            "<html><head></head><body></body></html><!DOCTYPE html>",
         ],
     )
 }

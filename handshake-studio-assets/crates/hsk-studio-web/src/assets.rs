@@ -534,8 +534,9 @@ impl Collector<'_> {
     }
 
     /// A style sheet's text: the RAWTEXT body of an HTML `style` (never character-reference decoded), or the child text
-    /// content of a foreign `style` (its text nodes decoded with the text rules and its CDATA sections, concatenated in
-    /// order, as the DOM joins them before CSS sees them; comments and child elements contribute nothing).
+    /// content of a foreign `style` (its text nodes' character data as the foreign-content rules build it, and its CDATA
+    /// sections, concatenated in order, as the DOM joins them before CSS sees them; comments and child elements
+    /// contribute nothing).
     fn style_children(&mut self, id: NodeId) -> Result<(), WebError> {
         let doc = self.doc;
         let Some(node) = doc.node(id) else {
@@ -559,7 +560,7 @@ impl Collector<'_> {
             let raw = doc.slice(&c.span);
             let (piece, origin) = match c.kind {
                 NodeKind::Text => {
-                    let d = decode(raw, Context::Text).text;
+                    let d = doc.text_value(child).unwrap_or_default();
                     let origin = (d == raw).then_some(c.span.start);
                     (d, origin)
                 }
@@ -635,7 +636,8 @@ pub fn collect_assets(
         if node.kind != NodeKind::Element {
             continue;
         }
-        let tag = doc.tag_name(id).unwrap_or("").to_ascii_lowercase();
+        // The element a browser creates (`<image>` in HTML content is an `img`).
+        let tag = doc.local_name(id).unwrap_or_default();
         // The keyword is compared after the same character-reference decoding a browser applies (`&#114efresh`).
         let refresh = tag == "meta"
             && doc

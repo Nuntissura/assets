@@ -10,22 +10,55 @@
 //!   become U+FFFD; 0x80-0x9F map through the windows-1252 table; other values are kept (`&#13;` is CR).
 //! - `&#` / `&#x` without digits stay literal.
 //!
+//! The literal (source) characters between references get the input-stream preprocessing first (13.2.3.5: CR LF and a
+//! lone CR become LF; a reference is decoded after it, so `&#13;` stays CR) and the U+0000 rule of the place the text
+//! sits in: attribute values (13.2.5.36-13.2.5.38), RCDATA (13.2.5.2) and text in foreign content (13.2.6.5) replace it
+//! with U+FFFD; text in HTML content is a NUL character token the "in body" insertion mode ignores (13.2.6.4.7).
+//!
 //! One reference never grows by more than one byte (`nGt;`: 5 bytes in, 6 out), and every growing reference is at
-//! least 5 bytes long, so the output is at most `input.len() + input.len() / 5` bytes (per-entry bound checked over the
-//! whole table by `tests::table_is_sorted_and_complete`). Linear time: each `&` looks at
-//! most `MAX_NAME_LEN + 1` bytes ahead with binary searches over the table.
+//! least 5 bytes long, so in `Context::Text` the output is at most `input.len() + input.len() / 5` bytes (per-entry
+//! bound checked over the whole table by `tests::table_is_sorted_and_complete`). In the contexts that replace U+0000 a
+//! NUL byte becomes the 3 bytes of U+FFFD, so there the output is at most `3 * input.len()` bytes (same test). Linear
+//! time: each `&` looks at most `MAX_NAME_LEN + 1` bytes ahead with binary searches over the table.
 #![deny(clippy::arithmetic_side_effects)]
 
 use crate::entity_table::{MAX_NAME_LEN, NAMED};
 use std::ops::Range;
 
-/// Where the text sits: attribute values have the extra legacy-reference rule.
+/// Where the text sits: attribute values have the extra legacy-reference rule; the U+0000 rule differs per place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Context {
-    /// Data and RCDATA text (text nodes, `title`/`textarea` bodies, foreign-content text).
+    /// Text in HTML content (text nodes whose parent follows the HTML rules): U+0000 is dropped.
     Text,
-    /// Attribute values (all three quoting styles).
+    /// RCDATA bodies (`title`, `textarea`) and text in foreign content: U+0000 becomes U+FFFD.
+    ReplaceNul,
+    /// Attribute values (all three quoting styles): U+0000 becomes U+FFFD.
     Attribute,
+}
+
+/// Append source text after input-stream preprocessing (CR LF and lone CR become LF) with the U+0000 rule of `context`.
+fn push_literal(out: &mut String, s: &str, context: Context) {
+    let b = s.as_bytes();
+    let mut run = 0usize;
+    let mut i = 0usize;
+    while let Some(&c) = b.get(i) {
+        if c != b'\r' && c != 0 {
+            i = i.saturating_add(1);
+            continue;
+        }
+        out.push_str(&s[run..i]);
+        if c == b'\r' {
+            out.push('\n');
+            if b.get(i.saturating_add(1)) == Some(&b'\n') {
+                i = i.saturating_add(1);
+            }
+        } else if context != Context::Text {
+            out.push('\u{fffd}');
+        }
+        i = i.saturating_add(1);
+        run = i;
+    }
+    out.push_str(&s[run..]);
 }
 
 pub(crate) struct Decoded {
@@ -111,7 +144,8 @@ fn push_code_point(out: &mut String, cp: u32) {
     out.push(char::from_u32(cp).unwrap_or('\u{fffd}'));
 }
 
-/// Decode every character reference in `input` read in `context`.
+/// The value a tokenizer builds from source text `input` read in `context`: preprocessed literal characters (newlines,
+/// U+0000) and decoded character references.
 pub(crate) fn decode(input: &str, context: Context) -> Decoded {
     let b = input.as_bytes();
     let mut text = String::with_capacity(input.len());
@@ -148,7 +182,7 @@ pub(crate) fn decode(input: &str, context: Context) -> Decoded {
                 } else {
                     p
                 };
-                text.push_str(&input[last..amp]);
+                push_literal(&mut text, &input[last..amp], context);
                 text.push(numeric_char(value));
                 last = end;
                 i = end;
@@ -164,7 +198,7 @@ pub(crate) fn decode(input: &str, context: Context) -> Decoded {
                         i = end;
                         continue;
                     }
-                    text.push_str(&input[last..amp]);
+                    push_literal(&mut text, &input[last..amp], context);
                     push_code_point(&mut text, first);
                     if second != 0 {
                         push_code_point(&mut text, second);
@@ -187,7 +221,7 @@ pub(crate) fn decode(input: &str, context: Context) -> Decoded {
             _ => i = after,
         }
     }
-    text.push_str(&input[last..]);
+    push_literal(&mut text, &input[last..], context);
     Decoded { text, unresolved }
 }
 
@@ -221,5 +255,24 @@ mod tests {
             decode("&#x80;&#150;&#x81;", Context::Text).text,
             "\u{20ac}\u{2013}\u{81}"
         );
+        // Preprocessing and U+0000 per context; the NUL-replacing bound of the module docs (3 bytes per input byte).
+        let raw = "a\r\nb\rc\0&#13;&#0;\r";
+        assert_eq!(decode(raw, Context::Text).text, "a\nb\nc\r\u{fffd}\n");
+        assert_eq!(
+            decode(raw, Context::ReplaceNul).text,
+            "a\nb\nc\u{fffd}\r\u{fffd}\n"
+        );
+        assert_eq!(
+            decode(raw, Context::Attribute).text,
+            "a\nb\nc\u{fffd}\r\u{fffd}\n"
+        );
+        let nuls = "\0".repeat(64);
+        for context in [Context::ReplaceNul, Context::Attribute] {
+            assert_eq!(
+                decode(&nuls, context).text.len(),
+                nuls.len().saturating_mul(3)
+            );
+        }
+        assert!(decode(&nuls, Context::Text).text.is_empty());
     }
 }

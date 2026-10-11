@@ -13,8 +13,10 @@ pub struct Decoded {
     pub unresolved: Vec<Range<usize>>,
 }
 
-/// Decode the character references of text content (data/RCDATA state) exactly as an HTML tokenizer does.
-/// The output is at most `input.len() + input.len() / 5` bytes (one byte of growth per reference of five or more).
+/// The text a browser builds from source text in HTML content (data state, "in body"): newlines normalised (CR LF and
+/// a lone CR become LF; `&#13;` stays CR), U+0000 dropped, character references decoded exactly as an HTML tokenizer
+/// does. The output is at most `input.len() + input.len() / 5` bytes (one byte of growth per reference of five or
+/// more; `charref::tests::table_is_sorted_and_complete`).
 pub fn decode_entities(input: &str) -> Decoded {
     let d = decode(input, Context::Text);
     Decoded {
@@ -23,7 +25,8 @@ pub fn decode_entities(input: &str) -> Decoded {
     }
 }
 
-/// Escape text node content: `& < >`.
+/// Escape text node content: `& < >`, and CR as `&#13;` (a literal CR would be read as LF). U+0000 has no text form
+/// a parser keeps (dropped in HTML text, U+FFFD elsewhere) and is written unchanged.
 pub fn escape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -31,13 +34,15 @@ pub fn escape_text(s: &str) -> String {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
+            '\r' => out.push_str("&#13;"),
             c => out.push(c),
         }
     }
     out
 }
 
-/// Escape an attribute value for a double-quoted (`quote == '"'`) or single-quoted (`'\''`) context.
+/// Escape an attribute value for a double-quoted (`quote == '"'`) or single-quoted (`'\''`) context; CR is written
+/// as `&#13;` (a literal CR would be read as LF).
 pub fn escape_attr(s: &str, quote: char) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -45,6 +50,7 @@ pub fn escape_attr(s: &str, quote: char) -> String {
             '&' => out.push_str("&amp;"),
             '"' if quote == '"' => out.push_str("&quot;"),
             '\'' if quote == '\'' => out.push_str("&#39;"),
+            '\r' => out.push_str("&#13;"),
             c => out.push(c),
         }
     }

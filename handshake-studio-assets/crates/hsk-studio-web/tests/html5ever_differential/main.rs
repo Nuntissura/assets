@@ -6,19 +6,19 @@
 //! A typed refusal by the crate is not a disagreement (it is counted and printed); anything else that differs fails the
 //! test with the minimised input printed. The crate's public model cannot express some comparisons; see the lane notes.
 //!
-//! Compared: element namespace and ASCII-lowercased name, effective attributes (first duplicate wins; names lowercased,
-//! values as the crate decodes them), decoded text, raw-text / RCDATA / script / `noscript` bodies (source slices are
-//! compared after newline normalisation and, for RCDATA, character-reference decoding), comments, CDATA and bogus
-//! comments. Not expressible through the public model: attribute namespaces and prefixes, SVG tag and attribute case
-//! adjustment (compared lowercase), the markup reading of `noscript` under scripting (compared as the source slice).
+//! Compared: element namespace and name (the crate's `local_name`), effective attributes (first duplicate wins; names as
+//! the tokenizer builds them, values as the crate decodes them), decoded text, RCDATA bodies (the crate's decoded
+//! `text_content`), raw-text / script / `noscript` bodies (source slices compared after newline normalisation and NUL
+//! replacement), comments, CDATA and bogus comments. Not expressible through the public model: attribute namespaces and
+//! prefixes, SVG tag and attribute case adjustment (compared lowercase), the markup reading of `noscript` under scripting
+//! (compared as the source slice). Inputs with an authored `html`, `head` or `body` element are compared against a whole
+//! document parse; the documented normalisations N1 (implied elements) and N2 (skeleton whitespace) are in `model`.
 //! The generator keeps to tags whose tree construction does not restructure well-nested markup (no `p`, tables, forms,
-//! nested `a`, headings, `select`); that area has its own hand-written group.
+//! nested `a`, headings, `select`); that area has its own hand-written group, whose every input is pinned as refused
+//! (with its typed code) or read like a browser by `tree_construction_dispositions_are_pinned`.
 //!
-//! Recorded product disagreements (this lane does not fix product code; see lane SMB-WEB-DIFFTEST notes.disagreements):
-//! `image_start_tag_is_read_as_img`, `null_bytes_and_newline_normalisation`, `generated_null_and_cr_noise`,
-//! `leading_newline_after_pre_listing_textarea` and `tree_construction_restructuring_is_refused_or_read_like_a_browser`
-//! fail until the crate follows the HTML Standard there (or refuses the input typed). Every other test in this target is
-//! expected to pass. `HSK_DIFFTEST_SCALE=<n>` multiplies the generated corpora for soak runs.
+//! The disagreements recorded by lane SMB-WEB-DIFFTEST (D1-D9) are fixed or refused typed by lane SMB-WEB-PARITY; every
+//! test in this target is expected to pass. `HSK_DIFFTEST_SCALE=<n>` multiplies the generated corpora for soak runs.
 
 mod corpus;
 mod events;
@@ -413,6 +413,112 @@ fn tree_construction_restructuring_is_refused_or_read_like_a_browser() {
             )
         },
     );
+}
+
+/// Every input of the tree-construction group with its outcome: refused with the typed code the crate's detection rule
+/// gives it (`dom::construction`), or read like a browser after normalisation N1 (`agrees`). A change in either direction
+/// fails here, so the D9 disposition list cannot drift silently.
+#[test]
+fn tree_construction_dispositions_are_pinned() {
+    bounded_case("tree_construction_dispositions_are_pinned", || {
+        let expected: &[(&str, &str)] = &[
+            ("<p><div>x</div></p>", "refused:implied_end_tag"),
+            ("<p>a<div>x</div>b</p>", "refused:implied_end_tag"),
+            ("<a href=x><a href=y>t</a></a>", "refused:adoption_agency"),
+            ("<a><b></a>t</b>", "refused:misnested_end_tag"),
+            ("<b><i></b>t</i>", "refused:misnested_end_tag"),
+            ("<table><tr><td>x</td></tr></table>", "agrees"),
+            (
+                "<table><tbody><tr><td>x</td></tr></tbody></table>",
+                "agrees",
+            ),
+            (
+                "<table>x<tr><td>y</td></tr></table>",
+                "refused:table_content",
+            ),
+            (
+                "<table><svg><style>&lt;</style></svg></table>",
+                "refused:table_content",
+            ),
+            ("<table><div>x</div></table>", "refused:table_content"),
+            ("<form><form></form></form>", "refused:ignored_token"),
+            (
+                "<button><button></button></button>",
+                "refused:implied_end_tag",
+            ),
+            ("<h1><h2>x</h2></h1>", "refused:implied_end_tag"),
+            ("<select><option>a</option></select>", "agrees"),
+            (
+                "<select><option>a</option><option>b</option></select>",
+                "agrees",
+            ),
+            ("<ul><li>a</li><li>b</li></ul>", "agrees"),
+            ("<dl><dt>a</dt><dd>b</dd></dl>", "agrees"),
+            ("<nobr><nobr>x</nobr></nobr>", "refused:adoption_agency"),
+            ("<div><p>x</p></div>", "agrees"),
+            ("<p>x</p><p>y</p>", "agrees"),
+            ("<li><li></li></li>", "refused:implied_end_tag"),
+            ("<ul><li><ul><li>x</li></ul></li></ul>", "agrees"),
+            ("<math><mi><p>x</p></mi></math>", "agrees"),
+            (
+                "<svg><foreignObject><p>a<p>b</p></p></foreignObject></svg>",
+                "refused:implied_end_tag",
+            ),
+            (
+                "<svg><foreignObject><table><tr><td>x</td></tr></table></foreignObject></svg>",
+                "agrees",
+            ),
+            ("<div><table></table></div>", "agrees"),
+            ("<textarea></textarea><textarea></textarea>", "agrees"),
+            ("<frameset></frameset>", "refused:frameset_document"),
+            ("<body><b>x</b></body>", "agrees"),
+            ("<html><b>x</b></html>", "agrees"),
+            ("<head><title>x</title></head>", "agrees"),
+            ("<caption>x</caption>", "refused:ignored_token"),
+            ("<td>x</td>", "refused:ignored_token"),
+            ("<tr><td>x</td></tr>", "refused:ignored_token"),
+            ("<option>x</option>", "agrees"),
+            ("<optgroup><option>x</option></optgroup>", "agrees"),
+            ("<button>x</button>", "agrees"),
+            ("<fieldset><legend>x</legend></fieldset>", "agrees"),
+            ("<details><summary>x</summary></details>", "agrees"),
+            ("<menu><li>x</li></menu>", "agrees"),
+            ("<dd>x</dd>", "agrees"),
+            ("<h1>x</h1><h2>y</h2>", "agrees"),
+            ("<p><h1>x</h1></p>", "refused:implied_end_tag"),
+            ("<p><ul><li>x</li></ul></p>", "refused:implied_end_tag"),
+            ("<p><svg></svg></p>", "agrees"),
+            ("<p><table></table></p>", "refused:implied_end_tag"),
+            ("<p><pre>x</pre></p>", "refused:implied_end_tag"),
+            ("<p><hr></p>", "refused:implied_end_tag"),
+            ("<p><xmp>x</xmp></p>", "refused:implied_end_tag"),
+            ("<p><textarea>x</textarea></p>", "agrees"),
+            ("<p><button>x</button></p>", "agrees"),
+            ("<p><form></form></p>", "refused:implied_end_tag"),
+            ("<p><address>x</address></p>", "refused:implied_end_tag"),
+            ("<p><center>x</center></p>", "refused:implied_end_tag"),
+            ("<p><section>x</section></p>", "refused:implied_end_tag"),
+            ("<p><div></div></p>", "refused:implied_end_tag"),
+            ("<p><details></details></p>", "refused:implied_end_tag"),
+            ("<p><dl></dl></p>", "refused:implied_end_tag"),
+            ("<p><ol></ol></p>", "refused:implied_end_tag"),
+            (
+                "<p><blockquote></blockquote></p>",
+                "refused:implied_end_tag",
+            ),
+        ];
+        let corpus = corpus::tree_construction_restructuring();
+        assert_eq!(corpus.len(), expected.len(), "every corpus input is pinned");
+        let mut wrong = Vec::new();
+        for ((_, input), (pinned, outcome)) in corpus.iter().zip(expected) {
+            assert_eq!(input, pinned, "pin order follows the corpus");
+            let actual = harness::disposition(input, Mode::Fragment);
+            if actual != *outcome {
+                wrong.push(format!("{input:?}: pinned {outcome}, now {actual}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    });
 }
 
 #[test]
