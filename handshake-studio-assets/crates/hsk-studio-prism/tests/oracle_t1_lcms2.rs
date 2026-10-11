@@ -122,19 +122,31 @@ fn xyz_to_labs(xyz: &[f32]) -> Vec<[f64; 3]> {
 struct Stats {
     mean: f64,
     max: f64,
+    /// Index of the worst patch in the original (unfiltered) patch list.
     worst: usize,
     des: Vec<f64>,
+    /// Original patch index of every entry of `des`.
+    idx: Vec<usize>,
 }
-fn stats(a: &[[f64; 3]], b: &[[f64; 3]]) -> Stats {
+/// Delta E 2000 statistics over `kept` patches (all when `None`): the in-gamut subset for RGB matrix
+/// destinations, whose out-of-gamut device values are a clipping convention rather than a conversion.
+fn stats(a: &[[f64; 3]], b: &[[f64; 3]], kept: Option<&[usize]>) -> Stats {
     assert_eq!(a.len(), b.len());
-    let des: Vec<f64> = a.iter().zip(b).map(|(x, y)| delta_e_2000(*x, *y)).collect();
-    let (mut max, mut worst) = (0.0f64, 0usize);
-    for (i, d) in des.iter().enumerate() {
+    let idx: Vec<usize> = kept.map_or_else(|| (0..a.len()).collect(), <[usize]>::to_vec);
+    let des: Vec<f64> = idx.iter().map(|&i| delta_e_2000(a[i], b[i])).collect();
+    let (mut max, mut worst) = (0.0f64, idx.first().copied().unwrap_or(0));
+    for (k, d) in des.iter().enumerate() {
         if *d > max || d.is_nan() {
-            (max, worst) = (if d.is_nan() { f64::INFINITY } else { *d }, i);
+            (max, worst) = (if d.is_nan() { f64::INFINITY } else { *d }, idx[k]);
         }
     }
-    Stats { mean: des.iter().sum::<f64>() / des.len() as f64, max, worst, des }
+    Stats { mean: des.iter().sum::<f64>() / des.len().max(1) as f64, max, worst, des, idx }
+}
+fn kept_patches(v: &Json) -> Option<Vec<usize>> {
+    match v {
+        Json::Arr(items) => Some(items.iter().map(|i| i.i64() as usize).collect()),
+        _ => None,
+    }
 }
 
 /// Threshold verdict plus the bookkeeping shared by every T1 test.
@@ -185,10 +197,11 @@ fn worst3(s: &Stats, cin: usize, cout: usize, input: &[f32], prism: &[f32], refe
     order
         .iter()
         .take(3)
-        .map(|&i| {
+        .map(|&k| {
+            let i = s.idx[k];
             format!(
                 "#{i} dE {:.3} in {:?} prism {:?} lcms2 {:?}",
-                s.des[i],
+                s.des[k],
                 &input[i * cin..(i + 1) * cin],
                 &prism[i * cout..(i + 1) * cout],
                 &reference[i * cout..(i + 1) * cout]
@@ -223,6 +236,7 @@ fn run_pair(id: &'static str) {
         let mut leg = WideEngine::new(ctx.actor.clone(), 2).unwrap();
         let target = xyz_target();
         let mut judge = Judge::new(&doc, id, class);
+        let kept = kept_patches(pair.get("in_gamut_patches"));
         let combos = pair.get("combos").arr();
         let mut ref_cache: BTreeMap<usize, (Vec<f32>, Vec<[f64; 3]>)> = BTreeMap::new();
         for (ci, combo) in combos.iter().enumerate() {
@@ -246,13 +260,14 @@ fn run_pair(id: &'static str) {
             };
             let prism_lab = device_to_lab(&mut leg, &ctx, dst, &target, &out.pixels);
             let ref_lab_same = device_to_lab(&mut leg, &ctx, dst, &target, ref_out);
-            let main = stats(&prism_lab, &ref_lab_same);
-            let vs_lcms_lab = stats(&prism_lab, ref_lab_lcms);
-            let consistency = stats(&ref_lab_same, ref_lab_lcms);
+            let main = stats(&prism_lab, &ref_lab_same, kept.as_deref());
+            let vs_lcms_lab = stats(&prism_lab, ref_lab_lcms, kept.as_deref());
+            let consistency = stats(&ref_lab_same, ref_lab_lcms, kept.as_deref());
             let clipped = out.pixels.iter().filter(|v| **v < -1e-4 || **v > 1.0001).count();
             let r = out.receipt;
             eprintln!(
-                "ORACLE_T1 {{\"pair\":\"{id}\",\"class\":\"{class}\",\"intent\":\"{iname}\",\"bpc\":{bpc},\"patches\":{n},\"de2000_mean\":{:.4},\"de2000_max\":{:.4},\"worst_patch\":{},\"de_vs_lcms_lab_max\":{:.4},\"ref_consistency_max\":{:.4},\"out_of_range_values\":{clipped},\"bpc_rule\":\"{}\",\"bpc_src_lstar\":{:?},\"bpc_dst_lstar\":{:?},\"bpc_scale\":{:?},\"abs_scale\":{:?},\"verdict\":\"{}\"}}",
+                "ORACLE_T1 {{\"pair\":\"{id}\",\"class\":\"{class}\",\"intent\":\"{iname}\",\"bpc\":{bpc},\"patches\":{n},\"scored_patches\":{},\"de2000_mean\":{:.4},\"de2000_max\":{:.4},\"worst_patch\":{},\"de_vs_lcms_lab_max\":{:.4},\"ref_consistency_max\":{:.4},\"out_of_range_values\":{clipped},\"bpc_rule\":\"{}\",\"bpc_src_lstar\":{:?},\"bpc_dst_lstar\":{:?},\"bpc_scale\":{:?},\"abs_scale\":{:?},\"verdict\":\"{}\"}}",
+                main.idx.len(),
                 main.mean,
                 main.max,
                 main.worst,
@@ -296,7 +311,7 @@ fn run_src_leg(id: &'static str, key: &'static str) {
         let mut judge = Judge::new(&doc, id, leg.get("class").str());
         let out = run(&mut eng, &ctx, &bytes[0], &xyz_target(), &patches, Intent::RelativeColorimetric, false)
             .unwrap_or_else(|f| panic!("{id}: engine refused {:?}", f.error));
-        let s = stats(&xyz_to_labs(&out.pixels), &xyz_to_labs(&reference));
+        let s = stats(&xyz_to_labs(&out.pixels), &xyz_to_labs(&reference), None);
         let max_xyz = out.pixels.iter().zip(&reference).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
         eprintln!(
             "ORACLE_T1 {{\"pair\":\"{id}\",\"class\":\"{}\",\"intent\":\"relative_colorimetric\",\"bpc\":false,\"patches\":{},\"de2000_mean\":{:.4},\"de2000_max\":{:.4},\"worst_patch\":{},\"max_abs_xyz_diff\":{max_xyz:.6},\"verdict\":\"{}\"}}",
@@ -337,6 +352,7 @@ fn run_dst_leg(id: &'static str, key: &'static str) {
         let target = xyz_target();
         let mut judge = Judge::new(&doc, id, leg.get("class").str());
         let combos = leg.get("combos").arr();
+        let kept = kept_patches(leg.get("in_gamut_patches"));
         for (ci, combo) in combos.iter().enumerate() {
             let iname = combo.get("intent").str();
             let entry = if combo.has("same_as") { &combos[combo.get("same_as").i64() as usize] } else { &combos[ci] };
@@ -352,11 +368,13 @@ fn run_dst_leg(id: &'static str, key: &'static str) {
             let s = stats(
                 &device_to_lab(&mut evalr, &ctx, &bytes[0], &target, &out.pixels),
                 &device_to_lab(&mut evalr, &ctx, &bytes[0], &target, &reference),
+                kept.as_deref(),
             );
             let clipped = out.pixels.iter().filter(|v| **v < -1e-4 || **v > 1.0001).count();
             eprintln!(
-                "ORACLE_T1 {{\"pair\":\"{id}\",\"class\":\"{}\",\"intent\":\"{iname}\",\"bpc\":false,\"patches\":{n},\"de2000_mean\":{:.4},\"de2000_max\":{:.4},\"worst_patch\":{},\"out_of_range_values\":{clipped},\"verdict\":\"{}\"}}",
+                "ORACLE_T1 {{\"pair\":\"{id}\",\"class\":\"{}\",\"intent\":\"{iname}\",\"bpc\":false,\"patches\":{n},\"scored_patches\":{},\"de2000_mean\":{:.4},\"de2000_max\":{:.4},\"worst_patch\":{},\"out_of_range_values\":{clipped},\"verdict\":\"{}\"}}",
                 leg.get("class").str(),
+                s.idx.len(),
                 s.mean,
                 s.max,
                 s.worst,
