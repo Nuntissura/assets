@@ -17,6 +17,12 @@ corpus_config = ".config/oracle-corpus.toml"
 "crates/hsk-studio-package/tests/foundation_contract.rs" = 1
 # hostile file:///c:/x link the web source patcher denies (FileScheme)
 "crates/hsk-studio-web/tests/source_dom_patch.rs" = 2
+# CSS escape test input (property name + colon + escaped 'i'), not a host path; lead decision 2026-10-11T16:59Z
+# (c:\\69mage-set, web ca91987)
+"crates/hsk-studio-web/src/cssurl/tests.rs" = 1
+# CSS escape test input (property name + colon + escaped 'i'), not a host path; lead decision 2026-10-11T16:59Z
+# (b:\\69mage-set, web 5e0598b)
+"crates/hsk-studio-web/tests/html5ever_differential/corpus.rs" = 1
 # hostile PDF /Launch action filespec (C:\\Budget Plan\\run.exe) press redacts, and its expected redacted string
 # (steward sync for R7, press 5a91fd7; lead-reviewable)
 "crates/hsk-studio-press/tests/pdf_delivery.rs" = 2
