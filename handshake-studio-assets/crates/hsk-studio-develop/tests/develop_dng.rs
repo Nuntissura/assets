@@ -911,3 +911,100 @@ fn dng_lossless_jpeg() {
         assert_eq!(decode_container(&bytes).err(), Some(DevelopError::InvalidDimensions));
     });
 }
+
+// ---- allocation tracking for the hostile tiny-file case (per thread: tests run in parallel) ----
+mod tracking {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+        static LARGEST: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub fn arm() {
+        LARGEST.with(|largest| largest.set(0));
+        ARMED.with(|armed| armed.set(true));
+    }
+
+    /// Stops tracking and returns the largest single allocation this thread requested since `arm`.
+    pub fn disarm() -> usize {
+        ARMED.with(|armed| armed.set(false));
+        LARGEST.with(Cell::get)
+    }
+
+    fn note(size: usize) {
+        if ARMED.with(Cell::get) {
+            LARGEST.with(|largest| largest.set(largest.get().max(size)));
+        }
+    }
+
+    struct Tracking;
+
+    unsafe impl GlobalAlloc for Tracking {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            note(layout.size());
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            note(layout.size());
+            unsafe { System.alloc_zeroed(layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            note(new_size);
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: Tracking = Tracking;
+}
+
+/// Review R5 (CONFIRMED, group A): a tiny lossless-JPEG DNG whose tile and image dimensions declare
+/// a 2^28-sample frame used to force the 512 MiB frame allocation (the block-size check only covered
+/// uncompressed data). The declared frame must now be refused against the payload before allocating.
+#[test]
+fn dng_lossless_jpeg_declared_frame_cannot_outgrow_the_payload() {
+    bounded_case("dng_lossless_jpeg_declared_frame_cannot_outgrow_the_payload", || {
+        let tiled = build(&Spec { tiles: Some((4, 4)), compression: 7, ..base() });
+        let patch = |bytes: &[u8], tag: u16, value: u32| -> Vec<u8> {
+            let mut out = bytes.to_vec();
+            let n = u16::from_le_bytes([out[tiled.raw_at], out[tiled.raw_at + 1]]) as usize;
+            let mut patched = false;
+            for i in 0..n {
+                let at = tiled.raw_at + 2 + 12 * i;
+                if u16::from_le_bytes([out[at], out[at + 1]]) == tag {
+                    out[at + 8..at + 12].copy_from_slice(&value.to_le_bytes());
+                    patched = true;
+                }
+            }
+            assert!(patched, "tag {tag} not found");
+            out
+        };
+        // ImageWidth, ImageLength, TileWidth, TileLength all 16384: one 16384 x 16384 block (the
+        // pixel cap is exactly 2^28), whose single stream is the original 16-sample one.
+        let mut hostile = tiled.bytes.clone();
+        for tag in [256, 257, 322, 323] {
+            hostile = patch(&hostile, tag, 16_384);
+        }
+        assert!(hostile.len() < 4096, "the hostile file must stay tiny ({} bytes)", hostile.len());
+        // The tracker itself works: a 2 MiB request is seen.
+        tracking::arm();
+        drop(Vec::<u8>::with_capacity(2 << 20));
+        assert!(tracking::disarm() >= 2 << 20, "allocation tracker saw nothing");
+        tracking::arm();
+        let result = decode_container(&hostile);
+        let largest = tracking::disarm();
+        assert_eq!(result.err(), Some(DevelopError::InvalidDimensions));
+        assert!(
+            largest < 1 << 20,
+            "decoding a {}-byte file requested a {largest}-byte allocation",
+            hostile.len()
+        );
+        // The honest file with the same layout still decodes.
+        assert!(decode_container(&tiled.bytes).is_ok());
+    });
+}

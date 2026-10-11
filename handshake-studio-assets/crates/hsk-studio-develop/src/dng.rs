@@ -446,6 +446,21 @@ pub fn decode(bytes: &[u8]) -> Result<DngRaw, DevelopError> {
             }
         }
     }
+    // Lossless JPEG spends at least one bit per sample, so the declared frame must fit in eight
+    // times the payload actually present (capped by the file length, so blocks that all point at
+    // the same bytes add nothing). Without this a ~300-byte file declaring a 2^28-sample frame
+    // forces the 512 MiB allocation below before any stream is decoded (review R5).
+    if lossless_jpeg {
+        let payload = layout
+            .counts
+            .iter()
+            .map(|count| u64::from(*count))
+            .fold(0u64, u64::saturating_add)
+            .min(bytes.len() as u64);
+        if u64::from(width) * u64::from(height) > payload.saturating_mul(8) {
+            return Err(DevelopError::InvalidDimensions);
+        }
+    }
     let mut samples = vec![0u16; width as usize * height as usize];
     for block_row in 0..layout.down {
         for block_col in 0..layout.across {
