@@ -704,3 +704,520 @@ fn hidden_or_empty_clip_base_drops_its_clipped_run_even_when_that_run_is_unavail
         assert_eq!(low.sources.len(), 2);
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Adjustment layers, mask parameters, Blend-If, knockout and effect stacks (lane
+// SMB-COMPOSITE-ADJ-1). Expected values are hand-derived from the fixtures and the brief; the
+// envelope types and operator keys are pigment's, never re-typed here as literals.
+// ---------------------------------------------------------------------------------------------
+use hsk_studio_composite::{
+    EvalReport, ExtendedLowering, LoweredPlan, SourceValue, Step, StepAppearance, eval_outcome,
+    evaluate_extended, lower_to_render_plan_extended,
+};
+use hsk_studio_folio::{Resolution, Resolver, Snapshot, StudioRasterRecords};
+use hsk_studio_observe::{FailureCode, Outcome};
+use hsk_studio_pigment::adjust_math::{AdjustmentKind, AdjustmentOp};
+use hsk_studio_pigment::blend_math::OperatorExactness;
+use hsk_studio_pigment::coverage_math::BlendChannel;
+use hsk_studio_pigment::render_plan::{
+    ExtOperator, Knockout, LayerExtension, PASS_THROUGH_FILL_OPERATOR, admit_extended,
+};
+
+/// Folio resolver that binds the `adjustment` layer kind to its primitive schema.
+struct WithAdjustment;
+impl Resolver for WithAdjustment {
+    fn primitive(&self, _: &str, _: &str) -> Resolution {
+        Resolution::Available
+    }
+    fn profile(&self, _: &str) -> Resolution {
+        Resolution::Available
+    }
+    fn tile(&self, _: &TileRef) -> Resolution {
+        Resolution::Available
+    }
+    fn format_supported(&self, _: &str) -> bool {
+        true
+    }
+    fn primitive_layer_binding(&self, kind: &str, schema_id: &str) -> bool {
+        kind == "adjustment" && schema_id == "hsk.studio.adjustment@1"
+    }
+}
+
+/// A backend double that opts in to every envelope operator (pigment still lowers a class by the
+/// operator's intrinsic class, so knockout stays refused).
+struct ExtBackend;
+impl RenderBackend for ExtBackend {
+    fn identity(&self) -> BackendIdentity {
+        BackendIdentity {
+            name: "composite-test-double",
+            version: "0",
+            device: DeviceClass::Cpu,
+            adapter: String::new(),
+            generation: 0,
+        }
+    }
+    fn exactness(&self, _: Operator) -> Exactness {
+        Exactness::Exact
+    }
+    fn supports_clip_to_base(&self) -> bool {
+        true
+    }
+    fn extension_exactness(&self, _: ExtOperator) -> Exactness {
+        Exactness::Exact
+    }
+    fn execute(
+        &self,
+        _: &RenderPlan,
+        _: &ExecuteRequest,
+        _: &dyn PlanSources,
+        _: &CancellationToken,
+        _: &mut dyn TileSink,
+    ) -> Result<RenderReceipt, BackendError> {
+        Err(BackendError::Unavailable("test_double"))
+    }
+}
+fn request() -> ExecuteRequest {
+    ExecuteRequest {
+        expected_revision: 7,
+        min_exactness: Exactness::Approximate,
+        deadline: None,
+        max_working_bytes: 1 << 20,
+    }
+}
+
+/// Group 1 (root) composites raster 2 (tile t20, 64x64 at 0,0) then raster 4 (tile t40, 32x32 at
+/// 0,0). Adjustment layer 3 lives in the document but, as in Folio today, has no graph operation.
+fn adjusted() -> Value {
+    let mut v = mixed();
+    assign_all_profiles(&mut v);
+    v["layers"] = json!([
+        layer(1, "group", json!({"payload_kind":"group"})),
+        layer(2, "raster", json!({"payload_kind":"raster","tiles":[tile(2,"t20",0,0,64,64)]})),
+        layer(3, "adjustment", json!({"payload_kind":"primitive_reference",
+            "schema_id":"hsk.studio.adjustment@1","object_id":identity("SLYR",3)})),
+        layer(4, "raster", json!({"payload_kind":"raster","tiles":[tile(4,"t40",0,0,32,32)]})),
+    ]);
+    v["graph"] = json!({"schema_id":"hsk.studio.layer_graph@1",
+        "operations":[source(2,"image"),source(4,"image"),composite(1)],
+        "edges":[edge(address(2,"source","out"),address(1,"mix","inputs"),0),
+                 edge(address(4,"source","out"),address(1,"mix","inputs"),1)],
+        "outputs":[address(1,"mix","out")]});
+    v
+}
+fn in_group_1() -> Value {
+    json!({"node_kind":"layer","node_id":identity("SLYR",1)})
+}
+fn records(layers: Value) -> StudioRasterRecords {
+    serde_json::from_value(json!({"schema_id":"hsk.studio.raster_records@1",
+        "document_id":identity("SDOC",1),"layers":layers}))
+    .expect("records shape")
+}
+/// Snapshot, plan and extended evaluation. `with_adjustment_step` splices the adjustment layer
+/// into group 1 between its two rasters, as a graph with an adjustment operation would.
+fn run_ext(
+    v: &Value,
+    recs: &StudioRasterRecords,
+    with_adjustment_step: bool,
+) -> (Snapshot, LoweredPlan, EvalReport) {
+    let snap = open_bytes(&serde_json::to_vec(v).unwrap(), &WithAdjustment);
+    let mut plan = plan_of(&snap);
+    if with_adjustment_step {
+        let at = plan.steps.len() - 1;
+        plan.steps.insert(
+            at,
+            Step::Source {
+                addr: addr(3, "source", "out"),
+                layer_kind: "adjustment".into(),
+                value: SourceValue::Image,
+                visible: true,
+                appearance: StepAppearance::identity(false),
+            },
+        );
+        let Some(Step::Composite { inputs, .. }) = plan.steps.last_mut() else {
+            panic!("group step is last")
+        };
+        inputs.insert(1, addr(3, "source", "out"));
+    }
+    let report = evaluate_extended(&plan, &snap, recs, &CancellationToken::default()).unwrap();
+    (snap, plan, report)
+}
+fn lower_ext(
+    run: &(Snapshot, LoweredPlan, EvalReport),
+    recs: &StudioRasterRecords,
+) -> Result<ExtendedLowering, CompositeError> {
+    lower_to_render_plan_extended(
+        &run.1,
+        &run.2,
+        &run.0,
+        recs,
+        &addr(1, "mix", "out"),
+        target(BlendSpace::Encoded),
+        &Info,
+    )
+}
+fn unavailable_reason(r: Result<ExtendedLowering, CompositeError>) -> String {
+    match r {
+        Err(CompositeError::Unavailable(reason)) => reason,
+        other => panic!("expected Unavailable, got {other:?}"),
+    }
+}
+fn assert_close(actual: f32, expected: f32) {
+    assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+}
+
+#[test]
+fn adjustment_layer_lowers_to_transparent_placeholder_and_envelope_entry() {
+    bounded_case("adjustment_layer_lowers_to_transparent_placeholder_and_envelope_entry", || {
+        let recs = records(json!([{"layer_id":identity("SLYR",3),"adjustment":{"kind":"invert"}}]));
+        let run = run_ext(&adjusted(), &recs, true);
+        let root = addr(1, "mix", "out");
+        let adjustment = run.2.step(&addr(3, "source", "out")).unwrap();
+        assert_eq!((adjustment.status.clone(), adjustment.extent), (StepStatus::Ready, None));
+        // Group extent = union of the 64x64 and 32x32 tiles at the origin = 64x64.
+        let area = Rect { x: 0, y: 0, width: 64, height: 64 };
+        assert_eq!(run.2.step(&root).unwrap().extent, Some(area));
+
+        let low = lower_ext(&run, &recs).unwrap();
+        // Emission order: tile(2) = node 0, tile(4) = node 1, placeholder = node 2, root = node 3.
+        assert_eq!(low.plan.nodes.len(), 4);
+        assert_eq!(low.plan.nodes[2], PlanNode::Solid { rect: area, rgba: [0.0; 4] });
+        let PlanNode::Group(top) = &low.plan.nodes[3] else { panic!("node 3 must be the root") };
+        assert!(top.isolated);
+        assert_eq!(
+            top.layers.iter().map(|l| l.input).collect::<Vec<_>>(),
+            [PlanNodeId(0), PlanNodeId(2), PlanNodeId(1)]
+        );
+        assert_eq!(low.plan.root, PlanNodeId(3));
+        assert_eq!(
+            low.extensions.layers,
+            vec![LayerExtension::new(PlanNodeId(3), 1).with_adjustment(AdjustmentOp::Invert)]
+        );
+        assert_eq!(
+            low.extensions.validate(&low.plan),
+            Ok(vec![ExtOperator::AdjustmentLayer, ExtOperator::Adjustment(AdjustmentKind::Invert)])
+        );
+        assert_eq!(low.sources.len(), 2, "the placeholder has no source");
+        assert_eq!(low.exactness.lowest, Exactness::Approximate);
+        let admitted = admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &CancellationToken::default());
+        assert!(admitted.is_ok(), "{admitted:?}");
+
+        // A pass-through (non-isolated) group acts on the parent backdrop: the placeholder covers
+        // the whole 128x128 target, not just the group's own content.
+        let mut faded = adjusted();
+        faded["layers"][0]["appearance"] = appearance(50.0, 100.0, 1, true);
+        let run_faded = run_ext(&faded, &recs, true);
+        let low = lower_ext(&run_faded, &recs).unwrap();
+        assert_eq!(
+            low.plan.nodes[2],
+            PlanNode::Solid { rect: Rect { x: 0, y: 0, width: 128, height: 128 }, rgba: [0.0; 4] }
+        );
+        assert_eq!(low.extensions.layers[0].group, PlanNodeId(3));
+
+        // Without records the v1 evaluation refuses the adjustment layer, typed, never skipped.
+        let snap = open_bytes(&serde_json::to_vec(&adjusted()).unwrap(), &WithAdjustment);
+        let mut plan = run.1.clone();
+        plan.revision = snap.document().revision;
+        let v1 = evaluate(&plan, &snap, &CancellationToken::default()).unwrap();
+        assert_eq!(
+            v1.step(&addr(3, "source", "out")).unwrap().status,
+            StepStatus::Unavailable("unsupported_payload".into())
+        );
+
+        // A real Folio graph has no operation for the adjustment layer, so no stack position: a
+        // visible adjustment layer contained in the rendered group is refused, never dropped.
+        let mut contained = adjusted();
+        contained["layers"][2]["parent"] = in_group_1();
+        let real = run_ext(&contained, &recs, false);
+        let reason = unavailable_reason(lower_ext(&real, &recs));
+        assert!(reason.ends_with("adjustment_not_in_composition_graph"), "{reason}");
+        assert!(reason.starts_with(&identity("SLYR", 3)), "{reason}");
+
+        // A clipped layer directly above an adjustment layer has no base alpha: refused by
+        // evaluation (parent step + ledger, pigment's code) and by lowering.
+        let mut clipped = adjusted();
+        clipped["layers"][3]["appearance"] = appearance(100.0, 100.0, 2, false);
+        clipped["layers"][3]["appearance"]["clipped"] = json!(true);
+        let run_clipped = run_ext(&clipped, &recs, true);
+        match &run_clipped.2.step(&root).unwrap().status {
+            StepStatus::Unavailable(reason) => assert!(reason.contains("clip_base_adjustment"), "{reason}"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        assert!(run_clipped.2.receipt.exactness.operators.iter().any(|o| o.key
+            == PlanError::AdjustmentClipBase { node: 0 }.code()
+            && o.exactness == Exactness::Unsupported));
+        assert!(unavailable_reason(lower_ext(&run_clipped, &recs)).contains("clip_base_adjustment"));
+    });
+}
+
+#[test]
+fn mask_parameters_lower_to_density_invert_and_feather() {
+    bounded_case("mask_parameters_lower_to_density_invert_and_feather", || {
+        // tiled(): layer 2 (tiles t00, t10) and layer 3 in group 1. Layer 2 gets an enabled mask.
+        let mut v = tiled();
+        v["layers"][1]["appearance"] = appearance(100.0, 100.0, 2, false);
+        v["layers"][1]["appearance"]["mask"] =
+            json!({"tiles":[mask_tile(2, "m0")],"enabled":true,"linked":true});
+        let mut recs = records(json!([{
+            "layer_id":identity("SLYR",2),"mask":{"density":50.0,"feather":4.0,"inverted":true}}]));
+        let snap = open(&v);
+        let token = CancellationToken::default();
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let report = evaluate_extended(&plan, &snap, &recs, &token).unwrap();
+        let root = addr(1, "mix", "out");
+        let go = |recs: &StudioRasterRecords| {
+            lower_to_render_plan_extended(&plan, &report, &snap, recs, &root, target(BlendSpace::Encoded), &Info)
+        };
+        let low = go(&recs).unwrap();
+        // Nodes: tiles 0,1 -> group 2 (layer 2), tile 3 (layer 3), root 4. Density 50 percent is
+        // 0.5, the invert flag is carried, feather 4.0 px rides in the envelope.
+        let PlanNode::Group(top) = &low.plan.nodes[4] else { panic!("node 4 must be the root") };
+        let mask = top.layers[0].mask.expect("enabled mask");
+        assert_eq!((mask.density, mask.inverted), (0.5, true));
+        assert_eq!(mask.format, MaskFormat::CoverageU8);
+        assert_eq!(
+            low.extensions.layers,
+            vec![LayerExtension::new(PlanNodeId(4), 0).with_mask_feather(4.0)]
+        );
+        // Feather is reported before the density capability, which `validate` appends last.
+        assert_eq!(
+            low.extensions.validate(&low.plan),
+            Ok(vec![ExtOperator::MaskFeather, ExtOperator::MaskDensity])
+        );
+        // v1 admission keeps refusing density (its key is the one both backends report); the
+        // envelope path admits it for a backend that opts in.
+        assert_eq!(
+            admit(&low.plan, &ExtBackend, &request(), &token),
+            Err(BackendError::Unsupported { operator: "mask_density", exactness: Exactness::Unsupported })
+        );
+        assert!(admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token).is_ok());
+        assert_eq!(low.exactness.lowest, Exactness::Approximate);
+
+        // The v1 lowering of the same document is unchanged: density 1, not inverted, no envelope.
+        let v1 = lower_to_render_plan(&plan, &report, &snap, &root, target(BlendSpace::Encoded), &Info).unwrap();
+        let PlanNode::Group(v1_top) = &v1.plan.nodes[4] else { panic!("root") };
+        let v1_mask = v1_top.layers[0].mask.unwrap();
+        assert_eq!((v1_mask.density, v1_mask.inverted), (1.0, false));
+
+        // A disabled mask is an authored "no mask": its parameters change nothing.
+        let mut disabled = v.clone();
+        disabled["layers"][1]["appearance"]["mask"]["enabled"] = json!(false);
+        let snap_d = open(&disabled);
+        let plan_d = lower(&snap_d, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let report_d = evaluate_extended(&plan_d, &snap_d, &recs, &token).unwrap();
+        let low_d = lower_to_render_plan_extended(
+            &plan_d, &report_d, &snap_d, &recs, &root, target(BlendSpace::Encoded), &Info,
+        )
+        .unwrap();
+        assert!(low_d.extensions.is_empty() && low_d.mask_sources.is_empty());
+
+        // Records of another document are refused, never applied.
+        recs.document_id = identity("SDOC", 2);
+        assert_eq!(
+            go(&recs).unwrap_err(),
+            CompositeError::UnsupportedDescriptor("raster_records_document_mismatch".into())
+        );
+    });
+}
+
+#[test]
+fn blend_if_ranges_lower_in_pigment_order_and_units() {
+    bounded_case("blend_if_ranges_lower_in_pigment_order_and_units", || {
+        let ranges = json!({"blend_ranges":[
+            {"channel":"gray","source_black":[50.0,100.0],"source_white":[200.0,240.0],
+             "destination_black":[0.0,0.0],"destination_white":[255.0,255.0]},
+            {"channel":"red","source_black":[0.0,0.0],"source_white":[255.0,255.0],
+             "destination_black":[10.0,20.0],"destination_white":[230.0,250.0]},
+            {"channel":"blue","source_black":[0.0,0.0],"source_white":[255.0,255.0],
+             "destination_black":[0.0,0.0],"destination_white":[255.0,255.0]}],
+            "knockout":"disabled","channel_blend":{"red":true,"green":true,"blue":true},
+            "blend_interior_effects":false,"blend_clipped_effects":false,"transparency_shapes_layer":true});
+        // Layer 3 (second input of group 1) carries the ranges; layer 2 carries only identity
+        // ranges, which change nothing and add no entry.
+        let identity_only = json!({"blend_ranges":[
+            {"channel":"gray","source_black":[0.0,0.0],"source_white":[255.0,255.0],
+             "destination_black":[0.0,0.0],"destination_white":[255.0,255.0]}],
+            "knockout":"unknown","channel_blend":{"red":true,"green":true,"blue":true},
+            "blend_interior_effects":false,"blend_clipped_effects":false,"transparency_shapes_layer":true});
+        let recs = records(json!([
+            {"layer_id":identity("SLYR",2),"advanced_blending":identity_only},
+            {"layer_id":identity("SLYR",3),"advanced_blending":ranges}]));
+        let snap = open(&tiled());
+        let token = CancellationToken::default();
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let report = evaluate_extended(&plan, &snap, &recs, &token).unwrap();
+        let low = lower_to_render_plan_extended(
+            &plan, &report, &snap, &recs, &addr(1, "mix", "out"), target(BlendSpace::Encoded), &Info,
+        )
+        .unwrap();
+        // Root group = node 4; layer 3 is its layer 1. Values are level / 255, order
+        // [black_start, black_end, white_start, white_end]; the identity blue entry is dropped.
+        assert_eq!(low.extensions.layers.len(), 1);
+        let e = &low.extensions.layers[0];
+        assert_eq!((e.group, e.layer), (PlanNodeId(4), 1));
+        assert_eq!(e.blend_if.len(), 2);
+        assert_eq!((e.blend_if[0].channel, e.blend_if[1].channel), (BlendChannel::Gray, BlendChannel::Red));
+        let want_source = [0.196_078_4_f32, 0.392_156_9, 0.784_313_7, 0.941_176_5]; // 50 100 200 240 / 255
+        for (got, want) in e.blend_if[0].source.iter().zip(want_source) {
+            assert_close(*got, want);
+        }
+        assert_eq!(e.blend_if[0].destination, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(e.blend_if[1].source, [0.0, 0.0, 1.0, 1.0]);
+        let want_destination = [0.039_215_69_f32, 0.078_431_37, 0.901_960_8, 0.980_392_2]; // 10 20 230 250 / 255
+        for (got, want) in e.blend_if[1].destination.iter().zip(want_destination) {
+            assert_close(*got, want);
+        }
+        assert_eq!(low.extensions.validate(&low.plan), Ok(vec![ExtOperator::BlendIf]));
+        assert!(admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token).is_ok());
+    });
+}
+
+#[test]
+fn knockout_and_effect_stack_are_refused() {
+    bounded_case("knockout_and_effect_stack_are_refused", || {
+        let blending = |knockout: &str| {
+            json!({"blend_ranges":[],"knockout":knockout,
+                "channel_blend":{"red":true,"green":true,"blue":true},
+                "blend_interior_effects":false,"blend_clipped_effects":false,"transparency_shapes_layer":true})
+        };
+        let token = CancellationToken::default();
+        let flow = |v: &Value, recs: &StudioRasterRecords| {
+            let snap = open(v);
+            let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+            let report = evaluate_extended(&plan, &snap, recs, &token).unwrap();
+            let low = lower_to_render_plan_extended(
+                &plan, &report, &snap, recs, &addr(1, "mix", "out"), target(BlendSpace::Encoded), &Info,
+            );
+            (report, low)
+        };
+
+        // Knockout enabled on layer 3 is carried as Shallow; disabled / unknown on others is None.
+        let recs = records(json!([
+            {"layer_id":identity("SLYR",2),"advanced_blending":blending("disabled")},
+            {"layer_id":identity("SLYR",3),"advanced_blending":blending("enabled")}]));
+        let (report, low) = flow(&tiled(), &recs);
+        let low = low.unwrap();
+        assert_eq!(
+            low.extensions.layers,
+            vec![LayerExtension::new(PlanNodeId(4), 1).with_knockout(Knockout::Shallow)]
+        );
+        // Pigment refuses it at admission (typed, before any sink call), never renders without it.
+        assert_eq!(
+            admit_extended(&low.plan, &low.extensions, &ExtBackend, &request(), &token),
+            Err(BackendError::Unsupported { operator: "knockout_shallow", exactness: Exactness::Unsupported })
+        );
+        assert_eq!(low.exactness.lowest, Exactness::Unsupported);
+        // Evaluation says so too: Unsupported in the receipt (the outcome mapping is checked in
+        // `evaluation_ledger_keys_and_classes_are_pigments`, on a document without unrelated
+        // vector/text outputs, which would make this report Unavailable for another reason).
+        assert_eq!(report.receipt.exactness.lowest, Exactness::Unsupported);
+
+        // Inherited resolves through containment: layer 2 inherits from group 1 (enabled), the
+        // group itself composites into nothing but is wrapped so its own entry is kept. Layer 3
+        // (no record) is None. Entries: group node 4 layer 0, wrapper node 5 layer 0.
+        let mut nested = tiled();
+        nested["layers"][1]["parent"] = in_group_1();
+        let recs = records(json!([
+            {"layer_id":identity("SLYR",1),"advanced_blending":blending("enabled")},
+            {"layer_id":identity("SLYR",2),"advanced_blending":blending("inherited")}]));
+        let (_, low) = flow(&nested, &recs);
+        assert_eq!(
+            low.unwrap().extensions.layers,
+            vec![
+                LayerExtension::new(PlanNodeId(4), 0).with_knockout(Knockout::Shallow),
+                LayerExtension::new(PlanNodeId(5), 0).with_knockout(Knockout::Shallow),
+            ]
+        );
+        // Inherited with nothing to inherit from is not enabled.
+        let none = records(json!([{"layer_id":identity("SLYR",2),"advanced_blending":blending("inherited")}]));
+        assert!(flow(&nested, &none).1.unwrap().extensions.is_empty());
+
+        // An enabled effect stack with an enabled instance is refused (effects wave 1 pending);
+        // a disabled stack, or one without enabled instances, is not.
+        let stack = |enabled: bool, instance_enabled: bool| {
+            json!({"effect_stack_id":"SEFX-019abcde-0000-7000-8000-000000000001","enabled":enabled,"scale":100.0,
+                "effects":[{"instance_id":"fx_1","enabled":instance_enabled,"visible_in_editor":true,
+                    "blend_mode":5,"opacity":75.0,"colour":{"r":0.0,"g":0.0,"b":0.0,"colour_profile_id":null},
+                    "anti_alias":false,"noise":0.0,"angle":120.0,"use_global_light":true,
+                    "params":{"effect_kind":"colour_overlay"}}]})
+        };
+        let with = |enabled, instance_enabled| {
+            records(json!([{"layer_id":identity("SLYR",3),"effects":stack(enabled, instance_enabled)}]))
+        };
+        let (report, low) = flow(&tiled(), &with(true, true));
+        let reason = unavailable_reason(low);
+        assert!(reason.ends_with("layer_effects_not_rendered"), "{reason}");
+        assert!(reason.contains(&identity("SLYR", 3)), "{reason}");
+        assert!(matches!(
+            &report.step(&addr(3, "source", "out")).unwrap().status,
+            StepStatus::Unavailable(r) if r == "layer_effects_not_rendered"
+        ));
+        assert!(flow(&tiled(), &with(false, true)).1.is_ok());
+        assert!(flow(&tiled(), &with(true, false)).1.is_ok());
+    });
+}
+
+#[test]
+fn evaluation_ledger_keys_and_classes_are_pigments() {
+    bounded_case("evaluation_ledger_keys_and_classes_are_pigments", || {
+        // One document that uses every envelope operator: adjustment 3 (invert), a masked layer 2
+        // with density 50 and feather 4, and layer 4 with Blend-If and knockout.
+        let mut v = adjusted();
+        v["layers"][1]["appearance"] = appearance(100.0, 100.0, 2, false);
+        v["layers"][1]["appearance"]["mask"] =
+            json!({"tiles":[mask_tile(2, "m0")],"enabled":true,"linked":true});
+        let recs = records(json!([
+            {"layer_id":identity("SLYR",2),"mask":{"density":50.0,"feather":4.0,"inverted":false}},
+            {"layer_id":identity("SLYR",3),"adjustment":{"kind":"invert"}},
+            {"layer_id":identity("SLYR",4),"advanced_blending":{
+                "blend_ranges":[{"channel":"gray","source_black":[50.0,100.0],"source_white":[200.0,240.0],
+                    "destination_black":[0.0,0.0],"destination_white":[255.0,255.0]}],
+                "knockout":"enabled","channel_blend":{"red":true,"green":true,"blue":true},
+                "blend_interior_effects":false,"blend_clipped_effects":false,"transparency_shapes_layer":true}}]));
+        let (_, _, report) = run_ext(&v, &recs, true);
+        let ledger = &report.receipt.exactness;
+        // Grep-free equality against pigment's own constants: key AND class come from the operator.
+        for op in [
+            ExtOperator::AdjustmentLayer,
+            ExtOperator::Adjustment(AdjustmentKind::Invert),
+            ExtOperator::BlendIf,
+            ExtOperator::MaskDensity,
+            ExtOperator::MaskFeather,
+            ExtOperator::Knockout(Knockout::Shallow),
+        ] {
+            let want = OperatorExactness { key: op.key(), exactness: op.intrinsic() };
+            assert!(ledger.operators.contains(&want), "{want:?} missing from {:?}", ledger.operators);
+        }
+        assert_eq!(ledger.lowest, Exactness::Unsupported, "knockout is intrinsically unsupported");
+        assert_eq!(eval_outcome(&Ok(report)), Outcome::Failure(FailureCode::Unsupported));
+
+        // The v1 operators composite used to hand-code are pigment's too: a fill-scaled non-Normal
+        // layer, a pass-through group below full opacity, and a clipped layer.
+        let mut w = tiled();
+        w["layers"][1]["appearance"] = appearance(100.0, 25.0, 5, false);
+        w["layers"][0]["appearance"] = appearance(50.0, 100.0, 1, true);
+        let snap = open(&w);
+        let token = CancellationToken::default();
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let v1 = evaluate(&plan, &snap, &token).unwrap();
+        for op in [Operator::FillOpacity, Operator::PassThroughOpacity] {
+            let want = OperatorExactness { key: op.key(), exactness: op.intrinsic() };
+            assert!(v1.receipt.exactness.operators.contains(&want), "{want:?}");
+        }
+        // A pass-through group with fill below 1 is refused by every backend: pigment's key,
+        // class Unsupported, and the step is Unavailable (no plan is emitted that admit refuses).
+        let mut f = tiled();
+        f["layers"][0]["appearance"] = appearance(100.0, 25.0, 1, true);
+        let snap = open(&f);
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let report = evaluate(&plan, &snap, &token).unwrap();
+        assert!(report.receipt.exactness.operators.contains(&OperatorExactness {
+            key: PASS_THROUGH_FILL_OPERATOR,
+            exactness: Exactness::Unsupported
+        }));
+        assert_eq!(
+            report.step(&addr(1, "mix", "out")).unwrap().status,
+            StepStatus::Unavailable(PASS_THROUGH_FILL_OPERATOR.into())
+        );
+        assert_eq!(plan.lowest_exactness(), Exactness::Unsupported);
+    });
+}
