@@ -91,12 +91,11 @@ struct TestHost {
 impl HostBridge for TestHost {
     fn handle(&self, request: &[u8]) -> Vec<u8> {
         let reply = self.inner.handle(request);
-        if let Ok(envelope) = decode_envelope(request, &Limits::default()) {
-            if matches!(envelope.body, Body::Commit(_)) {
-                if let Some(token) = self.cancel_after_commit.lock().unwrap().as_ref() {
-                    token.cancel();
-                }
-            }
+        if let Ok(envelope) = decode_envelope(request, &Limits::default())
+            && matches!(envelope.body, Body::Commit(_))
+            && let Some(token) = self.cancel_after_commit.lock().unwrap().as_ref()
+        {
+            token.cancel();
         }
         reply
     }

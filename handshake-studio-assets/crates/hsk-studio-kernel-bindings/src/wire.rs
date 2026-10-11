@@ -418,7 +418,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 /// Lowercase hex only (the encoder never produces anything else); bounded by `max_bytes`.
 pub fn hex_decode(text: &str, max_bytes: usize) -> Result<Vec<u8>, WireError> {
     let raw = text.as_bytes();
-    if raw.len() % 2 != 0 {
+    if !raw.len().is_multiple_of(2) {
         return Err(WireError::InvalidHex);
     }
     if raw.len() / 2 > max_bytes {

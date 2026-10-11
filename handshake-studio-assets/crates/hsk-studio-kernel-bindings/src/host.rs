@@ -328,10 +328,10 @@ impl TransientHost {
             }
             state.tokens.remove(&edit_key);
         }
-        if fault == Some(Fault::BumpEpoch) {
-            if let Some(r) = state.resources.get_mut(resource) {
-                r.epoch += 1;
-            }
+        if fault == Some(Fault::BumpEpoch)
+            && let Some(r) = state.resources.get_mut(resource)
+        {
+            r.epoch += 1;
         }
         let reject = |code| (CommitDecision::Rejected { code }, false);
 

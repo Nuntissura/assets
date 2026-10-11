@@ -51,10 +51,10 @@ struct CancelAfterCommit {
 impl HostBridge for CancelAfterCommit {
     fn handle(&self, request: &[u8]) -> Vec<u8> {
         let reply = self.inner.handle(request);
-        if let Ok(envelope) = decode_envelope(request, &Limits::default()) {
-            if matches!(envelope.body, Body::Commit(_)) {
-                self.token.cancel();
-            }
+        if let Ok(envelope) = decode_envelope(request, &Limits::default())
+            && matches!(envelope.body, Body::Commit(_))
+        {
+            self.token.cancel();
         }
         reply
     }
