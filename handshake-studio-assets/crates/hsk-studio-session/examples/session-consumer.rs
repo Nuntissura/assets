@@ -229,11 +229,16 @@ fn edit_and_save(
     let saved = session
         .save_to(output, cancel)
         .map_err(|f| f.code().to_owned())?;
+    // Re-read and verified in memory: the checkpoint proves the exact revision it carries.
+    let checkpoint = session
+        .export_checkpoint(cancel)
+        .map_err(|f| f.code().to_owned())?;
     let frames = frames.0.lock().map_err(|_| "frames")?.len();
     Ok(json!({
         "opened_revision":opened_revision,
         "applied":applied,
-        "saved":{"revision":saved.revision,"entries":saved.entries,"bytes":saved.bytes_written,"quarantined_preserved":saved.quarantined_preserved,"previews_dropped":saved.previews_dropped,"report":report_json(saved.report)},
+        "saved":{"revision":saved.revision,"entries":saved.entries,"bytes":saved.bytes_written,"quarantined_preserved":saved.quarantined_preserved,"previews_preserved":saved.previews_preserved,"previews_dropped":saved.previews_dropped,"report":report_json(saved.report)},
+        "checkpoint":{"revision":checkpoint.revision,"bytes":checkpoint.bytes.len(),"sha256":checkpoint.sha256_hex,"report":report_json(checkpoint.report)},
         "operations":session.operations(),
         "observe_frames":frames,
         "providers":session.providers().ids().collect::<Vec<_>>(),

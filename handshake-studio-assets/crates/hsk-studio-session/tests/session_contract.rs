@@ -1,4 +1,4 @@
-use hsk_studio_accord::{ActorContext, CancellationToken};
+use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_chronicle::{
     self as chronicle, Actor, Patch, Prepared, Property, PropertyAddress, PropertyRead,
     PropertyValue, PropertyWrite, RevisionEntry,
@@ -6,16 +6,20 @@ use hsk_studio_chronicle::{
 use hsk_studio_folio::{self as folio, NodeKind, NodeRef, Snapshot};
 use hsk_studio_observe::{DeliveryClass, DeliveryError, FailureCode, Outcome, SinkPort};
 use hsk_studio_package::{
-    AssetSource, Extras, Limits, MemoryAssetSource, Quarantined, WriteOptions, read_package,
-    sha256_hex_of, write_package_with,
+    AssetSource, Extras, Limits, MemoryAssetSource, PixelFormat, PreviewImage, PreviewInfo,
+    Quarantined, WriteOptions, list_previews, read_package, read_preview, sha256_hex_of,
+    write_package_with,
 };
 use hsk_studio_session::*;
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
@@ -93,6 +97,19 @@ fn token() -> CancellationToken {
 
 const BLOB: [u8; 6] = [9, 8, 7, 6, 5, 4];
 const OPAQUE: [u8; 4] = [1, 2, 3, 4];
+const PREVIEW_PIXELS: [u8; 12] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+
+fn preview_image() -> PreviewImage {
+    PreviewImage {
+        info: PreviewInfo {
+            format: PixelFormat::Rgb8,
+            width: 2,
+            height: 2,
+            color: "srgb".to_owned(),
+        },
+        pixels: PREVIEW_PIXELS.to_vec(),
+    }
+}
 
 /// A real package file in a private temp directory (removed on drop).
 struct Fixture {
@@ -130,7 +147,7 @@ impl Fixture {
             &assets as &dyn AssetSource,
             &Extras {
                 quarantined: &[opaque],
-                previews: &[],
+                previews: &[preview_image()],
             },
             &WriteOptions::default(),
             &Limits::default(),
@@ -754,4 +771,676 @@ fn providers_are_instance_owned_enumerable_and_not_trusted() {
             assert_eq!(b_frames.count(), 2);
         },
     );
+}
+
+// ----- slice 2: injected ports; the doubles really enforce epoch, revision and idempotency --
+
+#[derive(Clone, Default)]
+struct TestClock(Arc<AtomicU64>);
+impl TestClock {
+    fn advance(&self, ms: u64) {
+        self.0.fetch_add(ms, Ordering::SeqCst);
+    }
+}
+impl Clock for TestClock {
+    fn now_ms(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Default)]
+struct GrantState {
+    calls: Vec<Action>,
+    revoked: bool,
+}
+#[derive(Clone, Default)]
+struct Grants(Arc<Mutex<GrantState>>);
+impl Grants {
+    fn calls(&self) -> Vec<Action> {
+        self.0.lock().unwrap().calls.clone()
+    }
+    fn set_revoked(&self, revoked: bool) {
+        self.0.lock().unwrap().revoked = revoked;
+    }
+}
+impl GrantPort for Grants {
+    fn check(
+        &self,
+        actor: &ActorContext,
+        resource: &DomainId,
+        action: Action,
+    ) -> Result<GrantToken, GrantError> {
+        assert_eq!(actor.principal_id(), "principal");
+        assert_eq!(resource.as_str(), identity("SDOC", 1));
+        let mut state = self.0.lock().unwrap();
+        state.calls.push(action);
+        if state.revoked {
+            Err(GrantError::Revoked)
+        } else {
+            Ok(GrantToken(state.calls.len() as u64))
+        }
+    }
+}
+
+#[derive(Default)]
+struct JobState {
+    admitted: u32,
+    released: u32,
+}
+#[derive(Clone, Default)]
+struct Jobs(Arc<Mutex<JobState>>);
+impl Jobs {
+    fn counts(&self) -> (u32, u32) {
+        let state = self.0.lock().unwrap();
+        (state.admitted, state.released)
+    }
+}
+impl JobPort for Jobs {
+    fn admit(&self, scope: &JobScope<'_>, cost: Cost) -> Result<JobTicket, JobRefused> {
+        assert_eq!((scope.action, cost.jobs), (Action::Edit, 1));
+        let mut state = self.0.lock().unwrap();
+        state.admitted += 1;
+        Ok(JobTicket(u64::from(state.admitted)))
+    }
+    fn release(&self, _: JobTicket) {
+        self.0.lock().unwrap().released += 1;
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Normal,
+    /// Commit durably, then answer Unknown (lost acknowledgement). One shot.
+    LoseAck,
+    /// Answer Unknown without committing (request lost). One shot.
+    DropBeforeCommit,
+}
+struct AuthState {
+    revision: u64,
+    epoch: u64,
+    sequence: u64,
+    mode: Mode,
+    receipts: BTreeMap<String, CommitReceipt>,
+    documents: Vec<Vec<u8>>,
+    commit_calls: u32,
+    unreachable: bool,
+    lookup_cost_ms: u64,
+    clock: TestClock,
+    cancel_in_commit: Option<CancellationToken>,
+}
+#[derive(Clone)]
+struct Authority(Arc<Mutex<AuthState>>);
+impl Authority {
+    fn new(revision: u64, epoch: u64, clock: &TestClock) -> Self {
+        Self(Arc::new(Mutex::new(AuthState {
+            revision,
+            epoch,
+            sequence: 0,
+            mode: Mode::Normal,
+            receipts: BTreeMap::new(),
+            documents: Vec::new(),
+            commit_calls: 0,
+            unreachable: false,
+            lookup_cost_ms: 0,
+            clock: clock.clone(),
+            cancel_in_commit: None,
+        })))
+    }
+    fn with<T>(&self, f: impl FnOnce(&mut AuthState) -> T) -> T {
+        f(&mut self.0.lock().unwrap())
+    }
+    /// Durable commits.
+    fn commits(&self) -> usize {
+        self.with(|s| s.documents.len())
+    }
+    fn commit_calls(&self) -> u32 {
+        self.with(|s| s.commit_calls)
+    }
+    fn last_document(&self) -> Vec<u8> {
+        self.with(|s| s.documents.last().cloned().unwrap())
+    }
+}
+impl CommitPort for Authority {
+    fn commit(&self, r: &CommitRequest<'_>) -> CommitOutcome {
+        let mut s = self.0.lock().unwrap();
+        s.commit_calls += 1;
+        if r.epoch != s.epoch {
+            return CommitOutcome::StaleEpoch;
+        }
+        if let Some(existing) = s.receipts.get(r.key.as_str()) {
+            return if existing.binding == r.binding {
+                CommitOutcome::Committed(existing.clone())
+            } else {
+                CommitOutcome::Rejected("idempotency_conflict")
+            };
+        }
+        if r.expected_revision != s.revision {
+            return CommitOutcome::Stale {
+                current_revision: s.revision,
+            };
+        }
+        if s.mode == Mode::DropBeforeCommit {
+            s.mode = Mode::Normal;
+            return CommitOutcome::Unknown;
+        }
+        s.revision = r.successor_revision;
+        s.sequence += 1;
+        let receipt = CommitReceipt {
+            revision: r.successor_revision,
+            sequence: s.sequence,
+            binding: r.binding.to_owned(),
+        };
+        s.receipts
+            .insert(r.key.as_str().to_owned(), receipt.clone());
+        s.documents.push(r.successor_document.to_vec());
+        if let Some(token) = &s.cancel_in_commit {
+            token.cancel();
+        }
+        if s.mode == Mode::LoseAck {
+            s.mode = Mode::Normal;
+            return CommitOutcome::Unknown;
+        }
+        CommitOutcome::Committed(receipt)
+    }
+
+    fn lookup(&self, key: &IdempotencyKey) -> Lookup {
+        let s = self.0.lock().unwrap();
+        s.clock.advance(s.lookup_cost_ms);
+        if s.unreachable {
+            return Lookup::Unknown;
+        }
+        match s.receipts.get(key.as_str()) {
+            Some(receipt) => Lookup::Found(receipt.clone()),
+            None => Lookup::Absent,
+        }
+    }
+}
+
+const ID: &str = CHRONICLE_PROVIDER_ID;
+
+fn key(text: &str) -> IdempotencyKey {
+    IdempotencyKey::parse(text).unwrap()
+}
+
+fn document_of(bytes: &[u8]) -> Snapshot {
+    match folio::inspect_bytes(bytes, folio::Budget::default(), &token(), &Granted).unwrap() {
+        folio::Inspection::Editable(s) => s,
+        folio::Inspection::ReadOnly(_) => panic!("authority document became read-only"),
+    }
+}
+
+struct Rig {
+    fixture: Fixture,
+    frames: Frames,
+    clock: TestClock,
+    grants: Grants,
+    authority: Authority,
+    jobs: Jobs,
+    admission: Admission,
+}
+impl Rig {
+    fn new(name: &str, capacity: u32) -> Self {
+        let clock = TestClock::default();
+        Self {
+            fixture: Fixture::new(name),
+            frames: Frames::default(),
+            grants: Grants::default(),
+            authority: Authority::new(7, 1, &clock),
+            jobs: Jobs::default(),
+            admission: Admission::new(capacity, 1 << 20, 25).unwrap(),
+            clock,
+        }
+    }
+    fn session(&self) -> Session {
+        let mut config = SessionConfig::new(actor_context());
+        config.epoch = 1;
+        let ports = ports(&self.frames)
+            .with_grants(Box::new(self.grants.clone()))
+            .with_commits(Box::new(self.authority.clone()))
+            .with_jobs(Arc::new(self.jobs.clone()))
+            .with_admission(self.admission.clone())
+            .with_clock(Box::new(self.clock.clone()));
+        Session::open_path(&self.fixture.path, config, ports, &token()).unwrap()
+    }
+    /// Observe frames, operations and Job Runtime tickets all balance.
+    fn assert_balanced(&self, session: &Session) {
+        assert_eq!(self.frames.count() as u64, session.operations());
+        let (admitted, released) = self.jobs.counts();
+        assert_eq!(admitted, released, "every admitted job ticket is released");
+        assert_eq!(self.admission.in_flight(), (0, 0));
+    }
+}
+
+#[test]
+fn keyed_submit_replays_the_canonical_receipt_and_rechecks_grants() {
+    bounded_case("keyed_submit_replays_the_canonical_receipt", || {
+        let rig = Rig::new("keyed", 2);
+        let mut session = rig.session();
+        let params = json_bytes(&rename_patch(1, "layer-1", "renamed-layer", 0, "edit-1"));
+        let (k1, k2, k3) = (key("edit-0001"), key("edit-0002"), key("edit-0003"));
+        let mut codes = BTreeSet::new();
+        let mut note = |failed: Failed| {
+            codes.insert(failed.code());
+            failed.error
+        };
+
+        // A commit authority needs a caller-supplied key: this crate never mints identifiers.
+        assert_eq!(
+            note(session.submit(ID, &params, 7, &token()).unwrap_err()),
+            SessionError::KeyRequired
+        );
+        assert_eq!(IdempotencyKey::parse(""), Err(SessionError::InvalidKey));
+        assert_eq!(IdempotencyKey::parse("a\nb"), Err(SessionError::InvalidKey));
+
+        let first = session.submit_keyed(&k1, ID, &params, 7, &token()).unwrap();
+        assert!(!first.replayed && !first.cancel_too_late);
+        assert_eq!((first.previous_revision, first.revision), (7, 8));
+        let receipt = first.commit.clone().unwrap();
+        assert_eq!((receipt.revision, receipt.sequence), (8, 1));
+        // Independent oracle: the authority's own durable copy, parsed by folio.
+        let durable = document_of(&rig.authority.last_document());
+        assert_eq!(durable.document().layers[0].name, "renamed-layer");
+        assert_eq!(durable.document().revision, 8);
+        assert_eq!(durable.encoded_bytes(), session.snapshot().encoded_bytes());
+        assert_eq!(rig.grants.calls(), [Action::Edit]);
+
+        // Identical authorized retry: same canonical receipt, nothing re-applied, fresh grant
+        // check, no admission or job slot consumed.
+        let retry = session.submit_keyed(&k1, ID, &params, 7, &token()).unwrap();
+        assert!(retry.replayed);
+        assert_eq!(retry.commit, first.commit);
+        assert_eq!((retry.revision, session.document_revision()), (8, 8));
+        assert_eq!(rig.authority.commits(), 1);
+        assert_eq!(rig.authority.commit_calls(), 1);
+        assert_eq!(rig.grants.calls(), [Action::Edit, Action::Edit]);
+        assert_eq!(rig.jobs.counts(), (1, 1));
+
+        // Same key, anything else changed: conflict.
+        let other = json_bytes(&rename_patch(1, "layer-1", "other", 0, "edit-1"));
+        assert_eq!(
+            note(
+                session
+                    .submit_keyed(&k1, ID, &other, 7, &token())
+                    .unwrap_err()
+            ),
+            SessionError::IdempotencyConflict
+        );
+        assert_eq!(
+            note(
+                session
+                    .submit_keyed(&k1, ID, &params, 8, &token())
+                    .unwrap_err()
+            ),
+            SessionError::IdempotencyConflict
+        );
+
+        // A receipt does not outlive the grant: revoked on retry means refused.
+        rig.grants.set_revoked(true);
+        assert_eq!(
+            note(
+                session
+                    .submit_keyed(&k1, ID, &params, 7, &token())
+                    .unwrap_err()
+            ),
+            SessionError::GrantRevoked
+        );
+        rig.grants.set_revoked(false);
+
+        // Stale expected revision, and a worker fenced by a newer epoch.
+        assert_eq!(
+            note(
+                session
+                    .submit_keyed(&k2, ID, &params, 7, &token())
+                    .unwrap_err()
+            ),
+            SessionError::StaleRevision {
+                expected: 7,
+                current: 8
+            }
+        );
+        rig.authority.with(|s| s.epoch = 2);
+        let second = json_bytes(&rename_patch(2, "layer-2", "second", 0, "edit-3"));
+        assert_eq!(
+            note(
+                session
+                    .submit_keyed(&k3, ID, &second, 8, &token())
+                    .unwrap_err()
+            ),
+            SessionError::StaleEpoch
+        );
+        assert_eq!(session.document_revision(), 8);
+        assert_eq!(session.snapshot().document().layers[1].name, "layer-2");
+        assert_eq!((rig.authority.commits(), session.receipt_count()), (1, 1));
+        assert_eq!(codes.len(), 5, "distinct stable codes: {codes:?}");
+        rig.assert_balanced(&session);
+    });
+}
+
+#[test]
+fn lost_acknowledgement_is_reconciled_and_applied_exactly_once() {
+    bounded_case("lost_acknowledgement_is_reconciled_exactly_once", || {
+        let rig = Rig::new("reconcile", 2);
+        let mut session = rig.session();
+        let first = json_bytes(&rename_patch(1, "layer-1", "renamed-layer", 0, "edit-1"));
+        let (lost, other, dropped) = (key("edit-lost"), key("edit-other"), key("edit-dropped"));
+
+        // Durable commit, lost acknowledgement.
+        rig.authority.with(|s| s.mode = Mode::LoseAck);
+        let failed = session
+            .submit_keyed(&lost, ID, &first, 7, &token())
+            .unwrap_err();
+        assert_eq!(failed.error, SessionError::OutcomeUnknown);
+        assert_eq!(
+            delivered(failed.report).outcome,
+            Outcome::Failure(FailureCode::Unavailable)
+        );
+        assert_eq!(
+            session.document_revision(),
+            7,
+            "not adopted before the receipt"
+        );
+        assert_eq!(rig.authority.commits(), 1, "the authority did commit");
+        assert_eq!(session.pending(), ["edit-lost"]);
+
+        // Nothing else is submitted on top of an unresolved outcome.
+        let second = json_bytes(&rename_patch(2, "layer-2", "second", 0, "edit-2"));
+        assert_eq!(
+            session
+                .submit_keyed(&other, ID, &second, 7, &token())
+                .unwrap_err()
+                .error,
+            SessionError::ReconciliationRequired
+        );
+        assert_eq!(rig.authority.commit_calls(), 1);
+
+        // Reconcile finds the receipt and adopts it once.
+        let report = session.reconcile(&token()).unwrap();
+        assert_eq!(
+            (
+                report.adopted,
+                report.cleared,
+                report.still_unknown,
+                report.diverged
+            ),
+            (1, 0, 0, 0)
+        );
+        assert_eq!(delivered(report.report).outcome, Outcome::Success);
+        assert_eq!(session.document_revision(), 8);
+        assert_eq!(
+            session.snapshot().document().layers[0].name,
+            "renamed-layer"
+        );
+        assert_eq!(
+            session.snapshot().encoded_bytes(),
+            rig.authority.last_document()
+        );
+        assert!(session.pending().is_empty());
+
+        // Retrying the same key replays the receipt; the authority is not asked again.
+        let retry = session
+            .submit_keyed(&lost, ID, &first, 7, &token())
+            .unwrap();
+        assert!(retry.replayed);
+        assert_eq!(retry.commit.map(|r| r.sequence), Some(1));
+        assert_eq!(
+            (rig.authority.commits(), rig.authority.commit_calls()),
+            (1, 1)
+        );
+
+        // Request lost before the authority saw it: the retry looks it up, finds nothing and
+        // only then commits, once.
+        rig.authority.with(|s| s.mode = Mode::DropBeforeCommit);
+        let failed = session
+            .submit_keyed(&dropped, ID, &second, 8, &token())
+            .unwrap_err();
+        assert_eq!(failed.error, SessionError::OutcomeUnknown);
+        assert_eq!(rig.authority.commits(), 1, "nothing was committed");
+        let retried = session
+            .submit_keyed(&dropped, ID, &second, 8, &token())
+            .unwrap();
+        assert!(!retried.replayed);
+        assert_eq!((retried.previous_revision, retried.revision), (8, 9));
+        assert_eq!(rig.authority.commits(), 2);
+        assert_eq!(
+            session.snapshot().encoded_bytes(),
+            rig.authority.last_document()
+        );
+        assert!(session.pending().is_empty());
+        rig.assert_balanced(&session);
+    });
+}
+
+#[test]
+fn admission_overload_cancel_after_commit_and_shutdown_drain() {
+    bounded_case("admission_overload_cancel_after_commit_drain", || {
+        let rig = Rig::new("drain", 1);
+        let mut session = rig.session();
+        session
+            .providers_mut()
+            .register("test.cancel-after-propose", Box::new(CancelAfterPropose))
+            .unwrap();
+        let first = json_bytes(&rename_patch(1, "layer-1", "renamed-layer", 0, "edit-1"));
+        let second = json_bytes(&rename_patch(2, "layer-2", "second", 0, "edit-2"));
+
+        // Capacity 1 and the slot is held elsewhere: refused at once, nothing started.
+        let held = rig.admission.try_acquire(10).unwrap();
+        let failed = session
+            .submit_keyed(&key("edit-1"), ID, &first, 7, &token())
+            .unwrap_err();
+        assert_eq!(
+            failed.error,
+            SessionError::Overloaded { retry_after_ms: 25 }
+        );
+        assert_eq!(
+            delivered(failed.report).outcome,
+            Outcome::Failure(FailureCode::Unavailable)
+        );
+        assert_eq!(
+            (rig.authority.commit_calls(), rig.jobs.counts()),
+            (0, (0, 0))
+        );
+        drop(held);
+
+        // Released slot: the same key now succeeds (the refusal recorded nothing).
+        session
+            .submit_keyed(&key("edit-1"), ID, &first, 7, &token())
+            .unwrap();
+        assert_eq!(rig.admission.in_flight(), (0, 0));
+
+        // Error and cancel exits release the permit and the job ticket too.
+        let wrong = json_bytes(&rename_patch(1, "not-the-name", "x", 1, "edit-x"));
+        assert_eq!(
+            session
+                .submit_keyed(&key("edit-x"), ID, &wrong, 8, &token())
+                .unwrap_err()
+                .error,
+            SessionError::Provider("value_conflict")
+        );
+        let t = token();
+        let failed = session
+            .submit_keyed(&key("edit-c"), "test.cancel-after-propose", &second, 8, &t)
+            .unwrap_err();
+        assert_eq!(failed.error, SessionError::Canceled);
+        assert_eq!(delivered(failed.report).outcome, Outcome::Canceled);
+        assert_eq!(rig.authority.commit_calls(), 1, "canceled before commit");
+        assert_eq!(rig.admission.in_flight(), (0, 0));
+        assert_eq!(rig.jobs.counts(), (3, 3));
+
+        // Cancel that lands while the authority is committing cannot erase the edit.
+        let late = token();
+        rig.authority
+            .with(|s| s.cancel_in_commit = Some(late.clone()));
+        let applied = session
+            .submit_keyed(&key("edit-late"), ID, &second, 8, &late)
+            .unwrap();
+        rig.authority.with(|s| s.cancel_in_commit = None);
+        assert!(applied.cancel_too_late && applied.commit.is_some());
+        assert_eq!(session.document_revision(), 9);
+        assert_eq!(delivered(applied.report).outcome, Outcome::Success);
+
+        // Shutdown with an unresolved outcome and an unreachable authority: drain closes
+        // admission, stays inside its deadline on the test clock and reports what is left.
+        rig.authority.with(|s| {
+            s.mode = Mode::LoseAck;
+            s.lookup_cost_ms = 1500;
+        });
+        let again = json_bytes(&rename_patch(1, "renamed-layer", "final", 1, "edit-5"));
+        assert_eq!(
+            session
+                .submit_keyed(&key("edit-5"), ID, &again, 9, &token())
+                .unwrap_err()
+                .error,
+            SessionError::OutcomeUnknown
+        );
+        rig.authority.with(|s| s.unreachable = true);
+        let drained = session.drain(2000).unwrap();
+        assert_eq!(drained.abandoned, ["edit-5"]);
+        assert_eq!(
+            (drained.adopted, drained.elapsed_ms, drained.deadline_met),
+            (0, 1500, true)
+        );
+        assert_eq!(
+            delivered(drained.report).outcome,
+            Outcome::Failure(FailureCode::Unavailable)
+        );
+        assert!(session.is_closed());
+        assert_eq!(
+            session
+                .submit_keyed(&key("edit-6"), ID, &again, 9, &token())
+                .unwrap_err()
+                .error,
+            SessionError::Closed
+        );
+
+        // Authority reachable again: reconcile adopts it, the next drain is clean, and a final
+        // save is still allowed on a closed session.
+        rig.authority.with(|s| s.unreachable = false);
+        assert_eq!(session.reconcile(&token()).unwrap().adopted, 1);
+        assert_eq!(session.document_revision(), 10);
+        let drained = session.drain(2000).unwrap();
+        assert!(drained.abandoned.is_empty() && drained.deadline_met);
+        assert_eq!(delivered(drained.report).outcome, Outcome::Success);
+        assert_eq!(session.save(&token()).unwrap().revision, 10);
+        assert_eq!(rig.grants.calls().last(), Some(&Action::Save));
+        rig.assert_balanced(&session);
+
+        // An operation larger than the whole budget is refused outright, not made to wait.
+        let tiny = Admission::new(1, 16, 10).unwrap();
+        let mut small = Session::open_path(
+            &rig.fixture.path,
+            SessionConfig::new(actor_context()),
+            ports(&Frames::default()).with_admission(tiny.clone()),
+            &token(),
+        )
+        .unwrap();
+        assert_eq!(
+            small.submit(ID, &first, 10, &token()).unwrap_err().code(),
+            "cost_exceeds_budget"
+        );
+        assert_eq!(tiny.in_flight(), (0, 0));
+    });
+}
+
+#[test]
+fn export_checkpoint_is_verified_and_previews_follow_the_revision() {
+    bounded_case("export_checkpoint_verified_previews", || {
+        let fixture = Fixture::new("export");
+        let frames = Frames::default();
+        let grants = Grants::default();
+        let mut session = Session::open_path(
+            &fixture.path,
+            SessionConfig::new(actor_context()),
+            ports(&frames).with_grants(Box::new(grants.clone())),
+            &token(),
+        )
+        .unwrap();
+
+        let cp = session.export_checkpoint(&token()).unwrap();
+        assert_eq!(
+            (cp.revision, cp.previews_preserved, cp.previews_dropped),
+            (7, 1, 0)
+        );
+        assert_eq!(cp.sha256_hex, sha256_hex_of(&cp.bytes));
+        let limits = Limits::default();
+        let reread = read_package(
+            &cp.bytes,
+            &limits,
+            folio::Budget::default(),
+            &Granted,
+            &token(),
+        )
+        .unwrap();
+        assert_eq!(reread.snapshot().unwrap().document().revision, 7);
+        assert_eq!(reread.quarantined[0].bytes, OPAQUE);
+        let previews = list_previews(&cp.bytes, &limits, &token()).unwrap();
+        assert_eq!(previews.len(), 1);
+        let image = read_preview(&cp.bytes, &limits, &previews[0].name, &token()).unwrap();
+        assert_eq!(image.pixels, PREVIEW_PIXELS);
+        assert_eq!(image.info, preview_image().info);
+
+        // An unedited save keeps the preview; the file is read back independently.
+        let saved = session.save(&token()).unwrap();
+        assert_eq!((saved.previews_preserved, saved.previews_dropped), (1, 0));
+        let on_disk = fs::read(&fixture.path).unwrap();
+        assert_eq!(list_previews(&on_disk, &limits, &token()).unwrap().len(), 1);
+
+        // After an edit the preview would describe the wrong content: dropped and counted,
+        // while the earlier checkpoint stays the immutable revision 7 it was.
+        let params = json_bytes(&rename_patch(1, "layer-1", "renamed-layer", 0, "edit-1"));
+        session.submit(ID, &params, 7, &token()).unwrap();
+        let later = session.export_checkpoint(&token()).unwrap();
+        assert_eq!(
+            (
+                later.revision,
+                later.previews_preserved,
+                later.previews_dropped
+            ),
+            (8, 0, 1)
+        );
+        assert_ne!(later.sha256_hex, cp.sha256_hex);
+        assert!(
+            list_previews(&later.bytes, &limits, &token())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            read_package(
+                &cp.bytes,
+                &limits,
+                folio::Budget::default(),
+                &Granted,
+                &token()
+            )
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .document()
+            .revision,
+            7
+        );
+
+        // Export and save are granted per operation; a refusal touches nothing.
+        grants.set_revoked(true);
+        assert_eq!(
+            session.export_checkpoint(&token()).unwrap_err().error,
+            SessionError::GrantRevoked
+        );
+        assert_eq!(
+            session.save(&token()).unwrap_err().error,
+            SessionError::GrantRevoked
+        );
+        assert_eq!(fs::read(&fixture.path).unwrap(), on_disk);
+        assert_eq!(
+            grants.calls(),
+            [
+                Action::Export,
+                Action::Save,
+                Action::Edit,
+                Action::Export,
+                Action::Export,
+                Action::Save
+            ]
+        );
+        assert_eq!(frames.count() as u64, session.operations());
+    });
 }
