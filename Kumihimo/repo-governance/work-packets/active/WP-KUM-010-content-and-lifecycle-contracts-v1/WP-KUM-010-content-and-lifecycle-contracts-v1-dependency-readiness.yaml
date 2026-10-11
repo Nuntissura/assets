@@ -1,0 +1,451 @@
+schema_version: kumihimo.dependency-readiness.v1
+kind: dependency_readiness
+wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
+role_id: ROLE-KUM-DEPENDENCIES
+updated_at: '2026-10-12'
+scope: Final dependency and integration readiness for WP010-R001–R023, WP010-A001–A014 and all 21 accepted CONTENT/LIFECYCLE/TEXT/PERFORMANCE
+  requirements.
+verdict: ready_for_publication
+coding_admission:
+  status: not_admitted
+  owner: dev_lead
+  gate: Before coding, publish the full contract, matching Spec12, frozen twelve evaluator cases and readiness report, then verify exact origin readback. After the coder creates the admitted package manifest, the lead alone resolves any changed local workspace lock closure offline and publishes the exact source candidate before compilation or runtime proof.
+baseline:
+  contract:
+    ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
+    kind: full_work_packet_contract
+    requirements: 23
+    acceptance_criteria: 14
+    sha256: 4c737514851004887c786a408aef94ee388e83730459fb1392b1f4a99a1cdcfb
+    requirement_refs:
+    - WP010-R001
+    - WP010-R002
+    - WP010-R003
+    - WP010-R004
+    - WP010-R005
+    - WP010-R006
+    - WP010-R007
+    - WP010-R008
+    - WP010-R009
+    - WP010-R010
+    - WP010-R011
+    - WP010-R012
+    - WP010-R013
+    - WP010-R014
+    - WP010-R015
+    - WP010-R016
+    - WP010-R017
+    - WP010-R018
+    - WP010-R019
+    - WP010-R020
+    - WP010-R021
+    - WP010-R022
+    - WP010-R023
+    acceptance_refs:
+    - WP010-A001
+    - WP010-A002
+    - WP010-A003
+    - WP010-A004
+    - WP010-A005
+    - WP010-A006
+    - WP010-A007
+    - WP010-A008
+    - WP010-A009
+    - WP010-A010
+    - WP010-A011
+    - WP010-A012
+    - WP010-A013
+    - WP010-A014
+    publication_status: local_contract_spec_selected; exact_remote_origin_readback_pending
+  state:
+    ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-state.yaml
+    generation: 3
+    phase: planned
+    owner: dev_lead
+    sha256: 84197a884604e7dac5a2238fbceffc191fac4254fada1eeb6f4163b766c0d51d
+  predecessor:
+    wp_id: WP-KUM-009-tabs-and-layout-recovery-v1
+    settlement_revision: c35af554d2e1710c507b26dc75c3dcdb62263778
+    state: done
+  specification:
+    ref: repo-governance/specification/current/spec-modules/master-spec.md
+    version: 12
+    revision: 12
+    sha256: 046326a0ad1bbadbd244791d5de69d177ff81e2752176ab9d22d69caa7cbfb2a
+    specification_manifest_ref: repo-governance/specification/current/specification.yaml
+    specification_manifest_sha256: de93356bdebb3a1f3bf7147ab461d989ae49516de59ed5478c40c6c7a0d9704f
+    index_ref: repo-governance/specification/current/INDEX.json
+    index_sha256: 8dc4ed7f723e5411b34b7afd7df0225b4f3e8be125f63f2c940d1d750fb526c2
+    roadmap_ref: repo-governance/specification/current/spec-modules/roadmap.md
+    roadmap_revision: 11
+    roadmap_sha256: 552a963ccb244ce9a360fea9db5e4b9e3c8ba633d4c281356585ac85e22dff6a
+    topics:
+    - TOPIC-KUM-CONTENT
+    - TOPIC-KUM-LIFECYCLE
+    - TOPIC-KUM-TEXT
+    - TOPIC-KUM-PERFORMANCE
+    requirement_count: 21
+    requirement_refs:
+    - REQ-KUM-CONTENT-001
+    - REQ-KUM-CONTENT-002
+    - REQ-KUM-CONTENT-003
+    - REQ-KUM-CONTENT-004
+    - REQ-KUM-CONTENT-005
+    - REQ-KUM-CONTENT-006
+    - REQ-KUM-CONTENT-007
+    - REQ-KUM-LIFECYCLE-001
+    - REQ-KUM-LIFECYCLE-002
+    - REQ-KUM-LIFECYCLE-003
+    - REQ-KUM-LIFECYCLE-004
+    - REQ-KUM-LIFECYCLE-005
+    - REQ-KUM-LIFECYCLE-006
+    - REQ-KUM-TEXT-001
+    - REQ-KUM-TEXT-002
+    - REQ-KUM-TEXT-003
+    - REQ-KUM-PERFORMANCE-001
+    - REQ-KUM-PERFORMANCE-002
+    - REQ-KUM-PERFORMANCE-003
+    - REQ-KUM-PERFORMANCE-004
+    - REQ-KUM-PERFORMANCE-005
+    decision_id: DEC-KUM-CONTENT-PROTOCOL-v1
+    decision_status: adopted_in_specification_revision_12
+    preserved_prior_requirement_records: 99
+    archived_prior_bundle:
+      ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v11-r11-c35af554d2e1
+      file_count: 6
+      files:
+      - INDEX.json
+      - primitive-feature-mix-matrix.json
+      - primitive-list.json
+      - specification.yaml
+      - spec-modules/master-spec.md
+      - spec-modules/roadmap.md
+      archived_master_sha256: 275d29ce7d00f9bba8be77d86ab5297503b989bd71c3904d8400d7b6f96fa5bd
+      comparison: Direct YAML-record comparison found 99 requirement records in each master spec with identical IDs and complete
+        records; no additions, removals or changes.
+  evaluator:
+    ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-evaluation.yaml
+    status: PREPARED_NOT_RUNTIME_EVALUATED
+    prepared_cases: 12
+    cases_frozen: true
+    report_frozen_for_publication: true
+    phase: acceptance_cases_prepared
+    observed_spec_revision: 12
+    sha256: da80d918b61df38bf115ed929b90ea601b86277b223f3a8a60644836c03150f0
+    observed_at: '2026-10-12T01:43:55+02:00'
+    reconciliation_status: frozen_case_set_bound_to_contract_spec12; no runtime evaluation; publication and origin readback
+      remain lead-owned
+core_boundary:
+  package: product/kumihimo-core
+  version: 0.3.0
+  observed_sources:
+  - path: product/kumihimo-core/src/core.rs
+    sha256: e5f11e943167ac92bb85a1eac65dcf484deda98cdef4f352f8297940b786a7ad
+  - path: product/kumihimo-core/src/identity.rs
+    sha256: 8df58fab6fadf78677185d0301428535226e4232d117c010ca0dd7f8e845621b
+  - path: product/kumihimo-core/src/command.rs
+    sha256: cfbbccce0dad2119917b5a00db95a90730add6c6fe6d9d4a344336680b5045d7
+  - path: product/kumihimo-core/src/model.rs
+    sha256: b06ed23fd81fdbdf05d86ab8d5a7840f05154992125b50eab94fd546e566a0d9
+  - path: product/kumihimo-core/src/tabs.rs
+    sha256: f09db06480e1a86b1c2e42207d4bbcaff65ce8834a4c791a2ff1dfff69554986
+  - path: product/kumihimo-core/src/tools.rs
+    sha256: 0524fff531c393152414c1f02c309e6f9df288de92e6fba3d0fcd6473df72a69
+  observed_api:
+  - Core::execute is the canonical mutation route; Snapshot is immutable inspection.
+  - Core identity is checked at command boundaries; command outcomes expose generation and replay state.
+  - Successful restore is observable as a canonical transition, including a restore that retains identical entity IDs.
+  - Core generation is global to canonical mutations, so it must not blanket-invalidate unrelated asynchronous acknowledgments.
+  - Core owns arrangement and stable provider/resource/view/tool identities; provider engines, document edits, shared asset
+    resolution, physical resource use and disposal are host-owned.
+  - There is no content attach/input/focus/redraw/lifecycle request and acknowledgment protocol in Core 0.3.
+  - In tabs.rs CloseView ordering is missing-view error, already-closed Unchanged, host approved=false CloseVeto, then pinned
+    deny-close; wrapper prechecks must not alter this ordering.
+research:
+  reviewed_sources:
+  - id: servo-webview
+    url: https://github.com/servo/servo/blob/main/components/servo/webview.rs
+    observed_pattern: Host drives frame readiness, redraw and presentation; input returns an event ID whose result arrives
+      asynchronously; focus is explicit; visibility does not establish disposal; shared rendering-context resize can affect
+      multiple views.
+    use: Model host-executed requests and later correlated acknowledgment; keep view and shared-resource ownership distinct.
+  - id: winit-window-events
+    url: https://docs.rs/winit/latest/winit/window/struct.Window.html
+    supporting_url: https://docs.rs/winit/latest/winit/event/enum.WindowEvent.html
+    observed_pattern: Redraw requests are event-loop work and may coalesce or be delayed; focus, resize and occlusion are
+      separate signals; occlusion is unsupported on some platforms.
+    use: Preserve separate signals and unknown occlusion; do not promise immediate presentation.
+  - id: egui-context-output
+    url: https://docs.rs/egui/latest/egui/struct.Context.html
+    supporting_url: https://docs.rs/egui/latest/egui/output/struct.PlatformOutput.html
+    observed_pattern: Repaint requests and deadlines are backend-mediated; frame output carries platform commands for the
+      backend to execute.
+    use: Keep invalidation, animation deadlines and host effects as separate protocol facts. Current latest egui docs report
+      Rust 1.95, above this project's Rust 1.91; no dependency adoption.
+  - id: chrome-page-lifecycle
+    url: https://developer.chrome.com/docs/web-platform/page-lifecycle-api
+    observed_pattern: Hidden, frozen, terminated and discarded differ; discard may have no observable event, and transition
+      ordering varies.
+    use: Hidden cannot imply unload, suspension or memory release; retain unknown and require reconciliation/restoration-strength
+      reporting.
+  - id: lsp-3.17-cancellation
+    url: https://raw.githubusercontent.com/microsoft/language-server-protocol/gh-pages/_specifications/lsp/3.17/specification.md
+    observed_pattern: Cancellation still receives a response; older results may remain useful; cancel or ignore only when
+      no longer useful.
+    use: Per-request ticket and terminal outcome; avoid global-generation invalidation. This source is the versioned 3.17
+      specification, not a claim about latest LSP.
+  - id: egui-dock-close
+    url: https://docs.rs/egui_dock/latest/src/egui_dock/widgets/tab_viewer.rs.html
+    observed_pattern: Normal close supports veto/ignore, while force-close can bypass the close callback.
+    use: Enforce close approval in the canonical wrapper path, not solely through toolkit callbacks.
+  - id: webview2-suspend
+    url: https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2_3?view=webview2-1.0.4191.47
+    observed_pattern: Suspend is best-effort and asynchronous; success may mean only that the request was sent, and provider
+      behavior can resume automatically.
+    use: Keep requested and confirmed lifecycle state separate and report actual host measurements independently from estimates.
+      Windows adapter evidence only.
+  pattern_summary:
+  - Across the inspected host APIs, the engine executes host commands asynchronously and reports a later result; request identity
+    must survive delay, cancellation and out-of-order replies.
+  - Visibility, focus, occlusion, redraw, suspension, unloading and physical resource release are distinct facts with platform-specific
+    observability.
+  - Toolkit close hooks and successful suspend request submission are insufficient proof of a completed host effect.
+  - A generic engine or UI toolkit dependency would constrain host choice without implementing the accepted host-owned content
+    behavior.
+dependency_decision:
+  status: adopted_by_DEC-KUM-CONTENT-PROTOCOL-v1_and_full_WP010_contract
+  architecture:
+    package: product/kumihimo-content
+    package_version: 0.1.0
+    dependency: local path dependency on kumihimo-core 0.3
+    default_external_dependencies: []
+    default_features: disabled
+    protocol_version: 1.0
+    core_changes: none required for async epochs or protocol state
+    ownership: Companion privately owns Core, exposes immutable inspection, and routes every canonical mutation through execute;
+      it exposes no mutable Core escape and has no independent arrangement model.
+  selected_protocol_direction:
+  - Bind each request and acknowledgment to Core identity, host-supplied fresh controller-session token, ProviderId, ResourceId,
+    ViewId, attachment or instance epoch, channel/request epoch and request ID; the host supplies token uniqueness.
+  - Track per-target geometry revisions separately from Core generation. Global Core generation is attribution/context and
+    does not stale unrelated ACKs by itself.
+  - Observe every canonical mutation through the wrapper. Successful non-replayed relevant transitions invalidate their bound
+    tickets; replayed outcomes do not repeat effects. Restore invalidates tickets even when IDs are identical. Rejected mutations
+    do not advance protocol invalidation state.
+  - Retire a closed/replaced attachment lease in its existing bounded entry. Do not allocate an extra cleanup record; retain
+    unknown reservations until explicit reconciliation or confirmed cleanup permits release.
+  - Keep per-resource engine-instance leases separate from per-view mounts. A shared-resource view detach cannot claim the
+    shared engine was disposed. Drop of protocol metadata does not prove physical engine release.
+  - Keep requested, queued, confirmed, unsupported, rejected, failed and unknown outcomes distinct. Cancellation is intent;
+    accepted requests must reach a terminal result or explicit unknown/reconciliation state.
+  - Bound provider count, mounts, live instances, lease entries, pending and dispatch queues, terminal receipts, payload bytes
+    and cache reservations. Make host defaults explicit and limits configurable. Accounting reservations are not measurements
+    of physical CPU/memory/GPU use; unknown bytes never mean zero.
+  - Coalesce only unsent geometry, focus, visibility and redraw signals with explicit superseded receipts; preserve earliest
+    host-required animation deadlines. Keep dispatched tickets immutable and input, tool, close and lifecycle ordering explicit.
+    Reserve capacity for terminal lifecycle/ack work or expose backpressure before accepting work.
+  - Bind close approval to the current host safety/protection snapshot and consume it once at the actual canonical close.
+    Rejected or replayed Core close commands do not consume approval twice. Unsaved/protection/pin/availability changes stale
+    a close decision; focus or hiding alone never approves disposal.
+  - Keep focus, active tab, visible, minimized and occlusion separate; unavailable occlusion is Unknown. Hiding a control
+    does not prove content freeze, unload or memory release.
+  - Pin tool actions to stable tool target identity and its target epoch. Resolve and validate current Core/provider/resource/view
+    state at invocation; a rebind away and back invalidates a queued action even if final IDs match. Never retarget a pinned
+    tool from current focus.
+  - Route text geometry/reflow to the owning provider with per-view geometry revision and explicit anchor completion; host
+    content owner retains selection and scroll responsibility.
+  - Keep engines, document mutation, shared asset storage/resolution and actual resource policy in the host.
+  selected_contract_defaults:
+    status: contract_locked_configurable_defaults
+    defaults:
+      providers: 1024
+      active_mount_reservations: 256
+      live_instance_reservations: 64
+      lease_entries_including_retired_unknown: 1024
+      ordinary_pending_requests: 1024
+      unsent_queue: 1024
+      terminal_receipts: 1024
+      individual_payload_or_opaque_string_bytes: 65536
+      cache_render_entries: 256
+      cache_declared_reservation_bytes: 67108864
+      aggregate_retained_companion_request_receipt_payload_bytes: 16777216
+      controller_session_token_utf8_bytes: 128
+      ordinary_deadline_ms: 30000
+      dispatched_provider_effects_per_resource_instance: 1
+    semantics: Omitting a limit uses these defaults; explicitly selecting None opts into unrestricted admission for that dimension.
+      Counts and declared reservations bound protocol admission, not physical use; finite byte admission requires known declared
+      bytes and Unknown is never zero. Host supplies monotone millisecond ticks; deadlines and counters are checked for overflow
+      and backward time is rejected.
+  reconciled_contract_decisions:
+    status: adopted_in_full_WP010_contract_and_specification_revision_12
+    replay_and_close_gate:
+    - Delegate the original Core Envelope unchanged whenever identity or expected generation is invalid, operation ID is zero,
+      or operation ID is at/below the ledger high-watermark; preserve Core's exact error and receipt behavior and do not rewrite
+      commands.
+    - Delegate fresh approved=false CloseView unchanged before provider-permit checks, preserving Core's missing/closed/veto
+      outcomes. Provider approval cannot override host veto and is not consumed by this path.
+    - For a fresh otherwise-eligible, host-approved ProviderVeto CloseView only, require the private per-view provider permit.
+      Bind it to the relevant unsaved, pin, protection, availability and attachment revision; HostDecisionOnly uses the original
+      Core host approval without provider permit; consume a provider permit only after successful non-replayed canonical close.
+    - Distinguish HostDecisionOnly from ProviderVeto capability. A close operation does not imply host-instance disposal.
+    - Test close, reopen, then replay the retained old close operation: the historical response is returned and the current
+        mount remains present.
+    lease_recovery:
+    - Reserve one bounded cleanup/reconciliation slot inside each lease entry at admission; ordinary pending and unsent limits
+      cannot consume that slot.
+    - Retire leases in place; recovery records contain fixed typed IDs/state only, no opaque payload. Reuse the slot after
+      an exact terminal acknowledgment, keep it in the finite lease-entry count, and do not grow historical lease count.
+    - Permit ACK, reconciliation, cancellation and freeing existing entries after a configured limit is lowered; keep existing
+      entries and recovery slots while blocking new growth.
+    - Allow at most one immutable dispatched effect per instance. A timeout after dispatch leaves the effect Unknown and reservation
+      held; cleanup waits for explicit reconciliation before another effect can be dispatched.
+    - Every reuse of a pre-reserved cleanup slot gets a fresh checked monotone request/recovery revision; prohibit wrap. A
+      delayed duplicate ACK from an earlier use can only return its historical result and cannot match the new cleanup.
+    queue_and_payload:
+    - Add an aggregate 16777216-byte ceiling for retained companion request/receipt opaque payload only. Count every retained
+      companion copy; exclude Core canonical ledger storage and physical host memory.
+    - Coalesce geometry/focus/signals/invalidation only within a per-instance/mount unsent segment after its latest semantic
+      barrier. Input, tool/asset action, close, lifecycle, attach/detach and anchored-geometry completion are barriers; a
+      later revision cannot coalesce backward through one. Release superseded payload only after its bounded terminal-receipt
+      policy permits it.
+    - Capture required geometry/focus and target revisions on each queued input/tool action. Pull delivery revalidates that
+      captured scope and requires its prerequisite provider acknowledgments before exposing the action; unresolved prerequisites
+      produce observable pending/backpressure, and stale/failed/superseded prerequisites reject dependent work with the terminal
+      cause.
+    - A future queued geometry/focus revision alone does not stale an earlier action protected by its barrier. Do not dispatch
+      later geometry/focus for the same mount past that unresolved action; canonical identity, attachment or tool-target replacement
+      still invalidates immediately. Independent instances remain pullable.
+    - Preserve this case-002 sequence: focus-in/geometry A, action, focus-out/geometry B must deliver/confirm A and focus-in,
+        deliver the action with captured revisions, then deliver B and focus-out; B cannot coalesce backward or overtake the
+        action.
+    - Use atomic checked byte arithmetic and net-size coalescing admission; overflow rejection preserves pending work, queues,
+      receipts, reservations and revisions.
+    - Never mutate dispatched tickets or reorder input, tool, close or lifecycle effects. Keep animation deadlines separate
+      and preserve the earliest host-required deadline.
+    - Treat selected counts and cache byte reservation values as configurable admission defaults; byte reservations are declared
+      accounting, not physical-memory claims.
+    controller_replacement:
+    - Controller Drop releases protocol metadata only. A new controller starting with zero counters is not evidence that old
+      host physical resources were released; reconcile host state under a fresh controller-session token.
+    capability_and_geometry:
+    - Version the companion protocol explicitly; v1.0 negotiation binds canonical ProviderId and fresh connection epoch, intersects
+      typed host/provider capabilities, and still checks host permission per request.
+    - Declare preview, quick-edit, full-editor, embedded-input scope, anchored-reflow support and restoration strength independently.
+      Unsupported capability stays explicit; incompatible/absent providers retain canonical labels and resource restore references
+      with a typed placeholder reason.
+    - Validate finite geometry rectangle, clip and positive scale with a scoped monotone geometry revision. An optional bounded
+      opaque host anchor is echoed only by the matching geometry acknowledgment; the provider owns text layout, selection
+      and scroll.
+    host_assets_and_tools:
+    - Treat host asset references as bounded opaque identity plus revision. Linked-edit, independent-copy and domain-change
+      requests identify the host document/domain undo scope; arrangement movement carries only arrangement meaning and does
+      not mutate assets.
+    - Bind queued tool work to canonical ToolId, current EditingTarget and tool-target epoch. Pull delivery revalidates Core
+      origin/target, provider usability/applicability, exact active attachment and explicit host permission; focus cannot
+      substitute for target.
+    - Keep Core visibility policy and target visibility as explicit checks. Hidden controls do not imply content disposal
+      or tool retargeting.
+    cache_and_diagnostics:
+    - Keep renderer, preview and cache reservations host-owned and tied to exact owner/instance IDs. Sharing requires an explicit
+      grant; releasing one consumer leaves other consumers accounted.
+    - Diagnostics carry typed units and measured/estimated/Unknown provenance, host-supplied tick or duration, bounded counters/reasons/IDs,
+      and no hidden clocks, secrets, or unsupported physical/performance claims.
+    - Use a public recording-host adapter to prove request/ack causality for each of the twelve evaluator cases without claiming
+      an engine integration.
+  rejected_options:
+  - Add a mandatory engine, GUI toolkit, async runtime, serializer or shared-asset-store dependency; these are host-owned
+    and not needed for typed std-only contracts.
+  - Add async identity/epoch state to Core or its persisted DTO; this packet's selected owner is a wrapper that observes the
+    existing canonical mutation route.
+  - Use global Core generation as an equality precondition for all asynchronous ACKs; unrelated metadata/layout changes would
+    incorrectly stale valid requests.
+  - Infer suspension, unloading, physical release or memory savings from hidden state, request submission or metadata Drop.
+  - Treat UI close callbacks as the sole veto or accept tool actions based only on current focus.
+  - Make guessed physical memory ceilings or engine performance claims without a concrete host adapter and measured scenario.
+  gaps_and_controls:
+  - risk: Late, duplicate, foreign-session or provider-mismatched ACK changes current attachment state.
+    control: Validate identity, session token, provider/resource/view, attachment epoch, request/channel epoch and request
+      ID before effects; terminal outcomes are idempotent; reconcile unknown.
+  - risk: Unrelated Core changes blanket-stale valid ACKs or restore/rebind transitions go unnoticed.
+    control: Wrapper routes all execute outcomes, uses scoped transition epochs, and tests metadata-only preservation plus
+      identical-ID restore and away/back rebind invalidation.
+  - risk: Unknown unload or cancellation frees capacity and causes duplicate destructive effects or premature shared disposal.
+    control: Hold bounded reservation until exact reconciliation or confirmed cleanup; separate resource leases from view
+      mounts; never blindly retry.
+  - risk: A close decision becomes stale before execution or is consumed twice through replay.
+    control: Bind approval to host protection snapshot and canonical close ticket; only successful non-replayed execution
+      consumes it.
+  - risk: Queue coalescing drops accepted lifecycle or terminal acknowledgments; slow content blocks frame interaction.
+    control: Pull-based bounded dispatch, explicit backpressure, reserved terminal capacity, documented coalescing classes,
+      immutable dispatched tickets and bounded waits.
+  - risk: UI or OS signals falsely imply content lifecycle or performance state.
+    control: Model signals separately, preserve Unknown, and label estimates separately from measured host diagnostics.
+  validation_basis:
+    contract_acceptance_criteria: 14
+    evaluator_case_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-evaluation.yaml
+    evaluator_case_ids:
+    - EVAL-KUM-010-001
+    - EVAL-KUM-010-002
+    - EVAL-KUM-010-003
+    - EVAL-KUM-010-004
+    - EVAL-KUM-010-005
+    - EVAL-KUM-010-006
+    - EVAL-KUM-010-007
+    - EVAL-KUM-010-008
+    - EVAL-KUM-010-009
+    - EVAL-KUM-010-010
+    - EVAL-KUM-010-011
+    - EVAL-KUM-010-012
+    cases_to_freeze_before_admission:
+    - All 12 prepared evaluator cases cover all 21 referenced requirements; evaluator must freeze after contract/spec alignment.
+    - Successful identical-ID restore invalidates old tickets; rejected/replayed restore causes no second invalidation.
+    - Metadata-only canonical mutation preserves unrelated pending ACKs; Core generation change alone is not invalidation.
+    - Close/reopen, provider replacement, detach/reattach and controller-session replacement invalidate old tickets.
+    - Tool target rebind away and back stales queued action despite equal final IDs; focus change alone does not retarget
+      pinned tools.
+    - Unknown attach/unload retains bounded reservation; confirmed cleanup/reconciliation releases the exact lease once.
+    - A cleanup slot reserved inside each lease survives saturation and lowered limits; existing leases remain reconcilable
+      while new growth is blocked.
+    - Shared resource with multiple mounts remains leased after one view detaches; metadata Drop is not physical disposal
+      proof.
+    - Queue saturation, payload overflow, cancellation, terminal receipt bounds and reserved acknowledgment capacity have
+      deterministic outcomes.
+    - Existing EVAL-KUM-010-002 should distinguish a future queued revision from an intervening confirmed/canonical replacement: retain
+        the earlier action across its barrier, deliver its confirmed prerequisites first, and prevent later same-mount revisions
+        overtaking it.
+    - Net-size coalescing overflow leaves prior pending/queued work, receipt history, reservations and revisions unchanged;
+      retained-byte accounting covers companion copies only.
+    - Reuse a recovered lease slot with a new checked revision; an old duplicate ACK cannot affect the new recovery round.
+      Controller replacement reconciles rather than infers release from reset counters.
+    - Close approval stale after unsaved/protection/pin/availability changes; focus/hide alone cannot approve; replay/rejection
+      cannot consume approval twice.
+    - Fresh approved=false close preserves exact Core close ordering and results without consuming provider approval.
+    - Close, reopen, then replay retained old close operation returns its historical response while current mount remains
+      present.
+    evaluator_readback: Frozen twelve-case evaluation is bound to the full contract and Spec12; cases_frozen and report_frozen_for_publication
+      are true; verdict remains PREPARED_NOT_RUNTIME_EVALUATED. This external report hash is a dated observation, not a live
+      equality gate.
+    proof_limit: Contract/component proof can establish protocol behavior only. No engine integration, platform lifecycle
+      effect, physical resource measurement, or performance improvement is proven until an exact host adapter exists.
+  contract_proof_plan:
+    admission_predecessors:
+    - Freeze all twelve evaluator cases against full contract/spec12 and publish the exact source candidate before coding.
+    - Lead only performs offline local workspace lock resolution before candidate publication; dependency/readiness work does
+      not resolve or edit the lockfile.
+    focused_commands_after_admission:
+    - cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --locked --offline -j 2
+    - cargo test --manifest-path product/Cargo.toml -p kumihimo-content --locked --offline --no-fail-fast -j 2
+    - cargo run --manifest-path product/Cargo.toml -p kumihimo-content --example recording_host --locked --offline -j 2
+    - python repo-governance/repo-scripts/sync.py --check
+    - git diff --check -- Kumihimo
+    - git ls-remote origin refs/heads/codex/handpick
+    proof_ownership: Lead owns serial Cargo lane and exact publication/origin proof. Reuse unaffected WP009 Core/JSON proof
+      only when exact inputs remain unchanged; evaluator performs one stabilized bounded read and publication readback.
+handoff:
+  next_owner: dev_lead
+  next_action: Lead completes governance publication/origin readback and explicitly admits coder02; after package manifest creation, lead resolves any changed local workspace lock closure offline before exact source candidate publication and runtime proof.
+  dependency_readiness_does_not_admit_coding: true
+execution_limits_observed:
+  product_edits: false
+  cargo_or_rustc_runs: false
+  git_commands: false

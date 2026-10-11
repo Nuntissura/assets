@@ -78,7 +78,8 @@ work_packets:
   phase: planned
   contract_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-state.yaml
-  next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+  next_action: Full010 contract/spec selected; dependency/eval final readback/freeze, publication and independent
+    origin proof before coder02 admission
   blockers: []
 - wp_id: WP-KUM-011-navigation-and-media-controls-v1
   title: Implement host-fed navigation and background contracts

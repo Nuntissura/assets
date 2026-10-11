@@ -1,6 +1,6 @@
 {
   "kind": "derived_primitive_list",
-  "spec_revision": 11,
+  "spec_revision": 12,
   "primitives": [
     {
       "primitive_id": "PRIM-KUM-WORKSPACE",

@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 11
+revision: 12
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -3532,6 +3532,9 @@ Equalize resets selected workspace weights to1 while minima still apply; swap af
 
 Saving exposes immutable identity/generation-stamped semantic data/bytes and a current-stamp check. The host protocol serializes writers, validates before publication, rejects stale writes and atomically replaces a complete valid blob or retains recoverable prior/new blobs. The packet proves wire/semantic/stamp behavior; actual filesystem replacement, interrupted-save recovery, monitor effects and content recovery remain host-adapter acceptance. Complete RECOVERY acceptance stays open until those boundaries are proven.
 
+
+The next bounded packet selects the independent std-only kumihimo-content companion described completely below. It coordinates provider requests and later replies while the host runs actual engines and owns edits, assets and resource policy. Its private Core ownership ensures that close/reopen, provider changes and identical-ID layout restore cannot be missed by an observer. A hidden tab is a visibility fact; physical unloading, memory release and restoration strength require explicit host/provider confirmation. These are selected implementation choices, not runtime proof.
+
 ```
 
 ```yaml
@@ -3564,5 +3567,136 @@ decisions:
   research_source_refs:
   - https://niri-wm.github.io/niri/Overview.html
   - https://dockview.dev/docs/overview/licence/
+  supersedes: []
+- decision_id: DEC-KUM-CONTENT-PROTOCOL-v1
+  anchor_refs:
+  - TOPIC-KUM-CONTENT
+  - TOPIC-KUM-LIFECYCLE
+  - TOPIC-KUM-TEXT
+  - TOPIC-KUM-PERFORMANCE
+  - TOPIC-KUM-CHOICES
+  decision: 'Selected complete content companion boundary for WP010; full requirements and host integration acceptance
+    remain preserved/open. [WP010-R002] Add independently selectable kumihimo-content0.1, std-only local path dependency
+    on kumihimo-core0.3 with default features disabled. Use small cohesive private protocol/routing/lifecycle/scheduler/diagnostic
+    modules. Privately own the existing Core; expose read-only Core/Snapshot and routed execute only, no mutable
+    Core escape/extraction API, second arrangement tree, Core epoch fields or schema1 DTO changes. Engines, GUI,
+    document edits, host assets/storage and physical resource management remain host-owned. [WP010-R003] Protocol1.0
+    negotiation requires exact supported major/minor, canonical ProviderId and a fresh connection epoch; intersect
+    typed host/provider capabilities. Declare preview/quick-edit/full-editor, multiple-view/shared-instance eligibility,
+    embedded input scope, anchored reflow, close mode HostDecisionOnly/ProviderVeto and restoration strength independently.
+    Per-request host permission remains required. Missing/failing/incompatible provider produces typed placeholder
+    with canonical labels, position and original recovery refs intact, never opens a URL/file or starts an engine.
+    [WP010-R004] Construct controller with nonempty host-supplied fresh session token, at most128 UTF-8 bytes, plus
+    Core identity. Host guarantees uniqueness across controller lifetimes, no hidden clock/RNG/global counter. Requests/ACKs
+    bind exact session, Core lineage/incarnation, provider/resource/view, connection and instance/mount epoch, request/channel
+    revision and monotone request ID. Check foreign identity/session before bookkeeping. Checked counters never
+    wrap; exhaustion rejects new work atomically while exact existing ACK/recovery remains possible. [WP010-R005]
+    Route every canonical command unchanged through owned Core and observe successful non-replayed transitions only.
+    Successful live Restore invalidates all content bindings even with identical IDs; close/reopen, provider replacement,
+    relevant ownership/availability and tool-target changes stale affected tickets. Rebind away/back must stale
+    queued tools. Rejected/replayed commands cause no extra invalidation. Unrelated metadata/global-generation changes
+    do not alone stale useful ACKs; current relevant canonical eligibility still applies. Retire existing bounded
+    lease entries in place without allocating another record or failing after a committed Core command. [WP010-R006]
+    Separate shared resource-instance leases from per-view mounts. Sharing requires canonical provider capability,
+    negotiated support and explicit host grant; identical ResourceId alone proves neither one engine nor sharing.
+    Count pending, confirmed, retired and Unknown reservations, mounted views and retained leases separately from
+    canonical saved/open/closed records. Attach/creation/detach/disposal are correlated distinct requests; moves
+    change arrangement/attachment geometry, never resource identity/content disposal. Drop frees protocol metadata
+    only; new zero counters do not prove prior host engines released. [WP010-R007] Default configurable admission:
+    providers1024, active mount reservations256, live instance reservations64, retained lease entries1024 including
+    retired/Unknown, ordinary pending requests1024, unsent queue1024, terminal receipts1024, individual payload/opaque
+    string65536 UTF-8 bytes, cache/render entries256 and declared cache/render reservation bytes67108864. Aggregate
+    retained companion opaque request/receipt payload cap16777216 bytes counts every retained copy, excludes Core
+    ledger storage and physical host memory. None is explicit unrestricted opt-in. Checked arithmetic and net-size
+    admission/coalescing reject without changing prior queues, receipts, reservations or revisions. Lowering limits
+    preserves existing obligations and allows unchanged/decreasing recovery, blocks new growth beyond each dimension.
+    [WP010-R008] Use typed bounded pull dispatch and host-delivered acknowledgments, never synchronous provider
+    callbacks, hidden threads, IO or waits on arrangement execution. Distinguish queued, dispatched, confirmed,
+    unsupported, rejected, failed, superseded, cancelled-before-dispatch and Unknown. Structured rejection states
+    its scope/cause. Retained exact duplicate terminal ACK is historical/idempotent; differing duplicate intent/result
+    rejects. Evicted terminal IDs return expired/unknown and never reapply. Never evict unresolved obligations to
+    admit work; bounded receipt eviction applies only terminal history. [WP010-R009] Coalesce only unsent geometry/focus/presentation/invalidation
+    within the segment after the most recent semantic barrier for that mount. Input, tool/asset action, close, lifecycle,
+    attach/detach and anchored geometry form barriers. Actions capture prerequisite geometry/focus/target revisions.
+    Dispatch requires their confirmed prerequisites and current target eligibility; later queued revisions alone
+    do not stale earlier barrier-protected actions and cannot overtake them. Failed/stale/superseded prerequisite
+    rejects dependent work explicitly; independent instances remain pullable. Dispatched tickets are immutable;
+    ordered effects cannot silently change coordinates/focus/target. [WP010-R010] At most one dispatched provider
+    effect per resource instance at a time; shared mounts serialize that instance while independent instances proceed.
+    Lifecycle requested and provider-confirmed visible/background/throttled/frozen/unloaded/restoring/failed remain
+    distinct, unsupported and Unknown explicit. Host supplies monotone millisecond ticks; default ordinary deadline30000ms
+    configurable, checked no-wrap deadlines and backward time rejection. Unsent cancellation can release only uncommitted
+    reservation; timeout, failed ambiguous effect, dispatched cancellation or lost ACK holds reservation Unknown
+    until exact reconciliation. Never blindly resend a destructive effect or infer termination/reversal from cancellation
+    intent. [WP010-R011] Reserve one fixed-size recovery slot inside each lease at admission, inaccessible to ordinary
+    queue/pending budget. Retire in place; exact old cleanup/reconcile may release only its old lease once and never
+    revive/update a replacement. Slot uses fixed typed state/IDs with no opaque payload, fresh checked request/recovery
+    revision on reuse, no delayed duplicate alias. ACK/reconcile/cancel/free work even at saturated/lowered limits;
+    reconciliation of an uncertain dispatched effect precedes another destructive effect. Unknown effects cannot
+    be silently dropped, and no unbounded recovery history is introduced. [WP010-R012] Host provides resource pressure/priority,
+    recency/idle/keep-alive and unsaved/audio/download/protection facts with explicit eligibility revision. Destructive
+    freeze/unload/disposal requires supported capability, current host authorization and recoverable host reference/restoration
+    declaration when needed; aggregate all consumers of a shared instance, so one protected consumer vetoes destruction.
+    Reject stale eligibility and missing recovery. Signal disappearance, hide, close or a failed provider never
+    establishes disposal or physical memory savings. [WP010-R013] Gate provider-veto close at the canonical wrapper
+    route, not toolkit callbacks. Preserve original Core Envelope, exact Core identity/token/receipt/high-water/zero/stale-generation
+    semantics by delegating operations incapable of fresh mutation unchanged. Fresh approved=false, missing/already-closed
+    and pinned-denied close delegate unchanged so existing Core ordering/errors survive. Only otherwise-eligible
+    new host-approved CloseView of ProviderVeto content requires current private provider-approved permit bound
+    view/attachment/provider and unsaved/pin/protection/availability revision. HostDecisionOnly still uses explicit
+    original Core host approval. Consume permit only after successful non-replayed close; veto/reject/replay consumes
+    nothing, does not manufacture rewritten Envelope or reclose a reopened view. Wrapper pre-admission veto is structured
+    and has no Core ledger mutation. Logical close does not unload/dispose a shared instance. [WP010-R014] Report
+    restoration strength layout-only/provider-document-state/page-reload/Unknown independently from requested/confirmed
+    restoring and failure. Preserve unresolved canonical refs/labels and allow compatible renegotiation under fresh
+    binding. Layout restore never promises JavaScript, media/decoder, renderer or document-state restoration. Old
+    ACKs cannot affect the new attachment; exact historical cleanup remains available. [WP010-R015] Geometry carries
+    finite rectangle/clip, positive finite scale, stable view/resource/mount and scoped monotone revision. Validate
+    coherent geometry before queue admission; clipping/input ownership explicit. Optional bounded opaque host anchor
+    is sent only under negotiated support and echoed by its exact matching geometry/reflow ACK. Provider owns wrapping,
+    typography, selection/scroll and inline embeds; ordinary text works without anchor/embed capability. Anchored
+    geometry barriers cannot lose completion through coalescing. [WP010-R016] Route bounded typed/opaque host input
+    with explicit owner/scope and per-delivery host permission. Distinguish frame chrome, content and declared embed
+    recipient; reject unsupported embed routing and stale coordinates/attachment. This boundary does not hit-test
+    arbitrary engines, edit text or capture native focus. Input/tool delivery is a recording-host contract, not
+    proof of actual OS/GUI behavior. [WP010-R017] Represent host asset references as bounded opaque identity/revision
+    plus linked-edit/independent-copy/domain-change mode and explicit host document/domain undo scope. Preview/embed/full-editor
+    views may refer to one host asset only with declared capabilities/grants. Arrangement movement has arrangement-only
+    undo/meaning and never copies asset bytes, changes kanban/domain records or edits documents. Host resolves identity,
+    storage, editing, permissions and cross-module update coordination. [WP010-R018] Queued tool actions bind actual
+    canonical ToolId, exact pinned EditingTarget and target epoch. At pull delivery revalidate current origin/owner/target
+    provider/resource/view, open/availability/effective_tool_presentation, exact active mount, capability/applicability
+    and fresh host permission. Hidden/unavailable/closed/stale targets reject; focus never substitutes or retargets,
+    and rebind-away/back invalidates even if final IDs match. External action already dispatched is not reversed
+    by later canonical change. [WP010-R019] Keep selected tab, pane visibility, focus, minimized and OS occlusion
+    independent; unsupported occlusion is Unknown. Expose invalidation separately from animation demand and host-supplied
+    deadlines; coalesce redundant unsent invalidation but retain earliest required animation deadline. No perpetual
+    static repaint requirement or actual FPS/lag/CPU improvement claim follows from protocol scheduling. Host executes
+    redraw/presentation and observes completion. [WP010-R020] Cache/render/preview reservations are exact host-owned
+    instance/owner/consumer declarations, explicitly shared only by grant. Finite byte admission requires known
+    declared reserved bytes; physical measured/estimated/Unknown is separate and Unknown never equals zero. Releasing
+    one consumer retains other consumer/owner obligations, timeout/late cleanup cannot free another reservation,
+    confirmed exact cleanup frees once. Host owns GPU textures/decoders/cache eviction; record requested versus
+    confirmed release. [WP010-R021] Expose bounded inspectable protocol state/receipts/structured causes and diagnostics
+    with exact identity/provider/resource/view/lease/request revisions. Host timing/resource samples identify units
+    and measured/estimated/Unknown provenance, input/layout/redraw durations and live/pending/cache counts; reject
+    malformed samples and do not log opaque content/secrets. No hidden measurement clocks or physical/performance
+    claims. Stable public IDs and deterministic host commands support quiet no-context/parallel host operation with
+    serialized mutation ownership. [WP010-R022] Provide public recording-host consumers for all twelve frozen cases,
+    including large canonical saved set with small live budget, foreign/duplicate/out-of-order ACKs, identical-ID
+    restore/replay, close-reopen-old-close replay, saturated cleanup, sharing/protection, barrier causality, anchored
+    text contracts, assets/pinned tools and honest diagnostics. Update no-context manual/quiet example/package compatibility/topology/build
+    matrix/status; actual engines, GUI, physical usage and non-observed platforms remain open.'
+  rationale: Keep asynchronous content replaceable, bounded and recoverable while reusing canonical arrangement
+    and preserving host ownership. A barrier prevents resize/focus coalescing from changing queued input meaning;
+    unknown effects retain reservations until reconciliation.
+  research_source_refs:
+  - https://github.com/servo/servo/blob/main/components/servo/webview.rs
+  - https://docs.rs/winit/latest/winit/window/struct.Window.html
+  - https://docs.rs/egui/latest/egui/struct.Context.html
+  - https://developer.chrome.com/docs/web-platform/page-lifecycle-api
+  - https://raw.githubusercontent.com/microsoft/language-server-protocol/gh-pages/_specifications/lsp/3.17/specification.md
+  - https://docs.rs/egui_dock/latest/src/egui_dock/widgets/tab_viewer.rs.html
+  - https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2_3?view=webview2-1.0.4191.47
   supersedes: []
 ```

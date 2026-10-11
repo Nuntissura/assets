@@ -1,9 +1,18 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
-generation: 1
+generation: 3
 phase: planned
-owner: unassigned
-changed_files: []
-proof: []
+owner: dev_lead
+changed_files:
+- repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
+- repo-governance/specification/current/
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v11-r11-c35af554d2e1/
+- repo-governance/work-packets/archive/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-stub.yaml
+proof:
+- kind: predecessor_and_preparation
+  source_revision: c35af554d2e1710c507b26dc75c3dcdb62263778
+  observed: 009done settlement exactoriginread matches;49tests/bothexamples/PASS_SCOPED_RUNTIME; dependency/eval/coder02
+    dispatched whole010 stub/spec11 research/choices preparation only; no010 productcode admission
 blockers: []
-next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+next_action: Full010 contract/spec selected; dependency/eval final readback/freeze, publication and independent
+  origin proof before coder02 admission

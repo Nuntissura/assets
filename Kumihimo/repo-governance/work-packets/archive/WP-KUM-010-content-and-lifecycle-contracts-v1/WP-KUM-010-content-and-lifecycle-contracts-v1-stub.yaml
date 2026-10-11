@@ -1,0 +1,30 @@
+schema_version: kumihimo.wp-contract.v1
+kind: work_packet_stub
+wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
+title: Implement replaceable content and lifecycle contracts
+scope:
+- Capability negotiation, attach/geometry/input/focus/redraw/lifecycle acknowledgment, host asset references and
+  tool targets; engines, document edits and shared asset store remain host-owned
+files:
+- product/
+- repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/
+- repo-governance/specification/current/
+- repo-governance/topology/
+dependencies:
+- WP-KUM-009-tabs-and-layout-recovery-v1
+spec_refs:
+- TOPIC-KUM-CONTENT
+- TOPIC-KUM-LIFECYCLE
+- TOPIC-KUM-TEXT
+- TOPIC-KUM-PERFORMANCE
+requirements:
+- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+  eval before coding
+- Reuse existing core and verified cache; no parallel Cargo or long default suites
+- Preserve host ownership and existing accepted scope; explicit exact platform proof
+acceptance:
+- Malformed/stale/provider-mismatched events rejected; hidden control does not dispose content; close veto and requested-versus-confirmed
+  state remain explicit
+proof:
+- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+status_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-state.yaml
