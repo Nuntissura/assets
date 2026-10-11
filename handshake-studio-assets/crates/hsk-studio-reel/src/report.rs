@@ -13,7 +13,9 @@ pub fn outcome_for(result: &Result<SegmentReceipt, ReelError>) -> Outcome {
         Ok(receipt) if receipt.complete => Outcome::Success,
         Ok(_) => Outcome::Failure(FailureCode::Loss),
         Err(ReelError::Canceled) => Outcome::Canceled,
-        Err(ReelError::Truncated { .. }) => Outcome::Failure(FailureCode::Loss),
+        Err(
+            ReelError::Truncated { .. } | ReelError::NotExact { .. } | ReelError::Incomplete { .. },
+        ) => Outcome::Failure(FailureCode::Loss),
         Err(
             ReelError::CodecUnavailable { .. }
             | ReelError::ImportUnsupported { .. }

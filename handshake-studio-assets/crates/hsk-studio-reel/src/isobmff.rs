@@ -74,6 +74,30 @@ pub enum ColorTag {
     },
 }
 
+/// Field/frame information carried by the sample entry (`fiel`), stored RAW: the two bytes as written,
+/// no interpretation. Apple TN2162 defines `fields` (1 progressive, 2 interlaced) and `detail` (1, 6, 9,
+/// 14 for interlaced), but the direction of detail 9 and 14 is disputed (older QuickTime File Format
+/// text vs TN2162, reported reversed by an Apple engineer), so reel ships no field-order claim: a
+/// consumer that needs one uses the codec's own header first and treats this as a container-level
+/// fallback. Advisory metadata: a malformed or absent box never fails a track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldInfo {
+    pub fields: u8,
+    pub detail: u8,
+}
+
+/// Clean aperture carried by the sample entry (`clap`), stored RAW as (numerator, denominator) pairs,
+/// the eight signed 32-bit fields of the QuickTime File Format clean aperture atom. No division happens
+/// in reel: a zero denominator is stored as read and left to the consumer. Advisory metadata: a
+/// truncated or absent box never fails a track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanAperture {
+    pub width: (i32, i32),
+    pub height: (i32, i32),
+    pub horiz_off: (i32, i32),
+    pub vert_off: (i32, i32),
+}
+
 /// QuickTime sound sample description fields (versions 0, 1 and 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioFormat {
@@ -165,6 +189,10 @@ pub struct TrackIndex {
     /// Codec configuration record of the first sample entry (`av1C` payload); empty when absent or when
     /// the container reader has none.
     pub codec_config: Vec<u8>,
+    /// `fiel` field/frame information of the first sample entry, raw (see `FieldInfo`).
+    pub field_info: Option<FieldInfo>,
+    /// `clap` clean aperture of the first sample entry, raw (see `CleanAperture`).
+    pub clean_aperture: Option<CleanAperture>,
     pub edits: Vec<EditSegment>,
     /// False when any media-time to tick conversion on this track needed rounding.
     pub ticks_exact: bool,
@@ -283,6 +311,8 @@ impl TrackIndex {
             color: ColorTag::Untagged,
             pixel_aspect: None,
             codec_config: Vec::new(),
+            field_info: None,
+            clean_aperture: None,
             edits: Vec::new(),
             ticks_exact: true,
             timecode: None,
@@ -293,7 +323,7 @@ impl TrackIndex {
             sync_points: if all_sync { Vec::new() } else { sync_points },
             all_sync,
         };
-        build_edits(&mut track, &[], 0)?;
+        build_edits(&mut track, &[], 0, false)?;
         build_presentation(&mut track, limits, cancel)?;
         Ok(track)
     }
@@ -664,6 +694,8 @@ struct SampleDescription {
     color: ColorTag,
     pixel_aspect: Option<(u32, u32)>,
     codec_config: Vec<u8>,
+    field_info: Option<FieldInfo>,
+    clean_aperture: Option<CleanAperture>,
     timecode: Option<TimecodeDescription>,
 }
 
@@ -684,10 +716,24 @@ fn be32(bytes: &[u8], at: usize) -> Option<u32> {
         .map(|b| u32::from_be_bytes(*b))
 }
 
-/// Sample-entry child boxes (`colr`, `pasp`, `av1C`). A malformed child ends the scan: metadata is
-/// advisory and must never fail an otherwise indexable track.
-fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>, Vec<u8>) {
-    let (mut color, mut aspect, mut config) = (ColorTag::Untagged, None, Vec::new());
+/// Advisory sample-entry children of a visual sample entry.
+#[derive(Default)]
+struct VisualChildren {
+    color: Option<ColorTag>,
+    pixel_aspect: Option<(u32, u32)>,
+    codec_config: Vec<u8>,
+    field_info: Option<FieldInfo>,
+    clean_aperture: Option<CleanAperture>,
+}
+
+/// Payload bytes of a `clap` box: eight 32-bit fields.
+const CLAP_BYTES: usize = 32;
+
+/// Sample-entry child boxes (`colr`, `pasp`, `av1C`, `fiel`, `clap`). A malformed child ends the scan:
+/// metadata is advisory and must never fail an otherwise indexable track. A `fiel` or `clap` shorter
+/// than its layout is ignored (the field stays `None`), never read past its payload.
+fn parse_visual_children(rest: &[u8]) -> VisualChildren {
+    let mut out = VisualChildren::default();
     for item in boxes(rest) {
         let Ok((kind, payload)) = item else { break };
         match &kind {
@@ -698,19 +744,19 @@ fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>, Vec<u8>)
                     else {
                         break;
                     };
-                    color = ColorTag::Nclx {
+                    out.color = Some(ColorTag::Nclx {
                         primaries,
                         transfer,
                         matrix,
                         full_range: (&payload[..4] == b"nclx" && payload.len() >= 11)
                             .then(|| payload[10] & 0x80 != 0),
-                    };
+                    });
                 }
                 b"prof" | b"rICC" | b"ricc" => {
                     // A profile too large for the u32 size field cannot be a sample-entry child:
                     // left untagged (advisory metadata), never a truncated size.
                     if let Ok(bytes) = u32::try_from(payload.len().saturating_sub(4)) {
-                        color = ColorTag::IccProfile { bytes };
+                        out.color = Some(ColorTag::IccProfile { bytes });
                     }
                 }
                 _ => {}
@@ -721,14 +767,36 @@ fn parse_visual_children(rest: &[u8]) -> (ColorTag, Option<(u32, u32)>, Vec<u8>)
                     break;
                 };
                 if horizontal > 0 && vertical > 0 {
-                    aspect = Some((horizontal, vertical));
+                    out.pixel_aspect = Some((horizontal, vertical));
                 }
             }
-            b"av1C" if payload.len() <= MAX_CODEC_CONFIG => config = payload.to_vec(),
+            b"av1C" if payload.len() <= MAX_CODEC_CONFIG => out.codec_config = payload.to_vec(),
+            b"fiel" if payload.len() >= 2 => {
+                out.field_info = Some(FieldInfo {
+                    fields: payload[0],
+                    detail: payload[1],
+                });
+            }
+            b"clap" if payload.len() >= CLAP_BYTES => {
+                let field = |at: usize| be32(payload, at).map(|v| v as i32);
+                let pair = |at: usize| -> Option<(i32, i32)> {
+                    Some((field(at)?, field(at.checked_add(4)?)?))
+                };
+                if let (Some(width), Some(height), Some(horiz_off), Some(vert_off)) =
+                    (pair(0), pair(8), pair(16), pair(24))
+                {
+                    out.clean_aperture = Some(CleanAperture {
+                        width,
+                        height,
+                        horiz_off,
+                        vert_off,
+                    });
+                }
+            }
             _ => {}
         }
     }
-    (color, aspect, config)
+    out
 }
 
 fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, ReelError> {
@@ -743,6 +811,8 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
             color: ColorTag::Untagged,
             pixel_aspect: None,
             codec_config: Vec::new(),
+            field_info: None,
+            clean_aperture: None,
             timecode: None,
         });
     }
@@ -760,6 +830,7 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
     let (mut width, mut height, mut audio) = (0, 0, None);
     let (mut color, mut pixel_aspect) = (ColorTag::Untagged, None);
     let (mut timecode, mut codec_config) = (None, Vec::new());
+    let (mut field_info, mut clean_aperture) = (None, None);
     match kind {
         TrackKind::Video => {
             e.skip(16)?;
@@ -768,7 +839,10 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
             // hres, vres, reserved, frame_count, compressorname[32], depth, pre_defined
             e.skip(50)?;
             let remaining = e.remaining();
-            (color, pixel_aspect, codec_config) = parse_visual_children(e.take(remaining)?);
+            let children = parse_visual_children(e.take(remaining)?);
+            color = children.color.unwrap_or(ColorTag::Untagged);
+            (pixel_aspect, codec_config) = (children.pixel_aspect, children.codec_config);
+            (field_info, clean_aperture) = (children.field_info, children.clean_aperture);
         }
         TrackKind::Audio => {
             let version = e.u16()?;
@@ -831,6 +905,8 @@ fn parse_stsd(payload: &[u8], kind: TrackKind) -> Result<SampleDescription, Reel
         color,
         pixel_aspect,
         codec_config,
+        field_info,
+        clean_aperture,
         timecode,
     })
 }
@@ -1168,6 +1244,8 @@ fn track_from_tables(
         color: desc.color,
         pixel_aspect: desc.pixel_aspect,
         codec_config: desc.codec_config,
+        field_info: desc.field_info,
+        clean_aperture: desc.clean_aperture,
         edits: Vec::new(),
         ticks_exact: true,
         timecode: desc.timecode,
@@ -1185,10 +1263,11 @@ fn finish_track(
     track: &mut TrackIndex,
     trak: &[u8],
     movie_timescale: u32,
+    fragmented: bool,
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> Result<(), ReelError> {
-    build_edits(track, trak, movie_timescale)?;
+    build_edits(track, trak, movie_timescale, fragmented)?;
     if track.pcm.is_some() {
         pcm::apply_window(track);
         Ok(())
@@ -1197,7 +1276,13 @@ fn finish_track(
     }
 }
 
-fn build_edits(track: &mut TrackIndex, trak: &[u8], movie_timescale: u32) -> Result<(), ReelError> {
+/// `fragmented`: the file has `mvex`. Only there may the last edit carry a zero `segment_duration`.
+fn build_edits(
+    track: &mut TrackIndex,
+    trak: &[u8],
+    movie_timescale: u32,
+    fragmented: bool,
+) -> Result<(), ReelError> {
     let elst = match child(trak, b"edts")? {
         Some(edts) => child(edts, b"elst")?,
         None => None,
@@ -1237,6 +1322,8 @@ fn build_edits(track: &mut TrackIndex, trak: &[u8], movie_timescale: u32) -> Res
         });
     }
     let mut start = 0i64;
+    // Entries read, including a skipped one: the edit-count bound counts what the file declares.
+    let mut seen = 0usize;
     for _ in 0..count {
         let (segment, media_time) = if version == 1 {
             (c.u64()?, c.u64()? as i64)
@@ -1254,19 +1341,43 @@ fn build_edits(track: &mut TrackIndex, trak: &[u8], movie_timescale: u32) -> Res
                 what: "elst-media-time",
             });
         }
-        let seg =
-            i64::try_from(segment).map_err(|_| ReelError::LimitExceeded { what: "tick-range" })?;
-        let duration = media_to_ticks(seg, movie_timescale)?;
-        track.ticks_exact &= duration.exact;
-        track.edits.push(EditSegment {
-            presentation_start: start,
-            duration: duration.value,
-            media_time: (media_time >= 0).then_some(media_time),
-        });
-        start = start
-            .checked_add(duration.value)
-            .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
-        if track.edits.len() > 4096 {
+        // `count` is bounded by the box size, so `seen` cannot reach usize::MAX.
+        seen = seen.saturating_add(1);
+        // `Some((duration in ticks, whether the next edit starts after it))`; `None` = no segment.
+        let segment_ticks = match (segment, media_time) {
+            // An empty edit of no length shifts nothing: it is not a segment.
+            (0, -1) => None,
+            // A zero segment_duration on the LAST edit of a fragmented file is open-ended (the edit
+            // runs to the end of the media, as in a file without an edit list; ISO/IEC 14496-12 as
+            // quoted by W3C bug 26066, secondary source). Anywhere else the length of the edit is
+            // unknown and is not guessed.
+            (0, _) if fragmented && seen == count => Some((i64::MAX, false)),
+            (0, _) => {
+                return Err(ReelError::Unsupported {
+                    what: "elst-zero-duration",
+                });
+            }
+            _ => {
+                let seg = i64::try_from(segment)
+                    .map_err(|_| ReelError::LimitExceeded { what: "tick-range" })?;
+                let duration = media_to_ticks(seg, movie_timescale)?;
+                track.ticks_exact &= duration.exact;
+                Some((duration.value, true))
+            }
+        };
+        if let Some((duration, advances)) = segment_ticks {
+            track.edits.push(EditSegment {
+                presentation_start: start,
+                duration,
+                media_time: (media_time >= 0).then_some(media_time),
+            });
+            if advances {
+                start = start
+                    .checked_add(duration)
+                    .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
+            }
+        }
+        if seen > 4096 {
             return Err(ReelError::LimitExceeded { what: "edit-count" });
         }
     }
@@ -1505,7 +1616,7 @@ pub fn build_index(
     }
     for (track, trak) in tracks.iter_mut().zip(&traks) {
         check_cancel(cancel)?;
-        finish_track(track, trak, movie_timescale, limits, cancel)?;
+        finish_track(track, trak, movie_timescale, fragmented, limits, cancel)?;
     }
     Ok(MediaIndex {
         major_brand: moov_read.brand,
@@ -1784,6 +1895,15 @@ pub(crate) fn deliver_packets(
     sink: &mut dyn ChunkSink,
 ) -> Result<SegmentReceipt, ReelError> {
     let first = track.seek(req.start_pts)?;
+    // Export is exact or it fails, before the first sample is read or the sink is touched: the start
+    // must be a presented sample's own PTS and not inside an edit-trimmed first sample. `nearest` is
+    // that sample's PTS (a negative PTS, which ticks cannot hold, is the same typed refusal a preview
+    // of that sample gets).
+    require_exact_start(
+        req,
+        first.disposition == SeekDisposition::Exact && first.trim_start == 0,
+        || to_ticks(first.target.pts),
+    )?;
     let last_presented = req
         .count
         .checked_sub(1)

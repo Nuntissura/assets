@@ -308,6 +308,8 @@ impl MediaProvider for WavProvider {
                 end: i64::try_from(tick_span(declared, tps)?.value()).unwrap_or(i64::MAX),
             });
         }
+        // Export is exact or it fails, before any sample is read: the start must be a whole sample.
+        require_exact_start(req, aligned, || tick_span(start, tps))?;
         let available = info.available_samples();
         let deliver_end = want_end.min(available);
         let chunk_samples = limits

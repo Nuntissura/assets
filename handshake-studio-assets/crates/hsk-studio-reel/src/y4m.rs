@@ -298,6 +298,8 @@ impl MediaProvider for Y4mProvider {
                 what: "y4m-zero-frame-duration",
             })?;
         let aligned = req.start_pts.value().is_multiple_of(tpf);
+        // Export is exact or it fails, before any frame is read: the start must be a whole frame.
+        require_exact_start(req, aligned, || tick_span(start, tpf))?;
         let want_end = start
             .checked_add(req.count)
             .ok_or(ReelError::LimitExceeded {

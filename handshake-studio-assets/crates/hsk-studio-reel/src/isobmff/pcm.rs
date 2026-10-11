@@ -438,6 +438,15 @@ pub(crate) fn deliver_pcm_stream(
         .checked_add(req.count)
         .filter(|end| *end <= window.frames)
         .ok_or_else(out_of_range)?;
+    // Export is exact or it fails, before any frame is read: the start must be a whole frame.
+    require_exact_start(req, aligned, || {
+        to_ticks(
+            window
+                .presentation_start
+                .checked_add(tick_span(start, tps)?)
+                .ok_or_else(tick_range)?,
+        )
+    })?;
     let chunk_frames = limits.max_chunk_bytes.checked_div(block).unwrap_or(0) as u64;
     if chunk_frames == 0 {
         return Err(ReelError::LimitExceeded {

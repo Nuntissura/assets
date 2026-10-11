@@ -108,6 +108,11 @@ impl MxfProvider {
                 end: i64::try_from(last).unwrap_or(i64::MAX),
             });
         }
+        // Export is exact or it fails, before any essence element is read: the start must be a whole
+        // edit unit.
+        require_exact_start(req, aligned, || {
+            Ok(Ticks::new(units_to_ticks(start, rate)?.0))
+        })?;
         let unit_ticks = units_to_ticks(1, rate)?.0;
         let constant = table.segments.iter().any(|s| s.edit_unit_byte_count != 0);
         let wrapping = index.wrapping_of(table);

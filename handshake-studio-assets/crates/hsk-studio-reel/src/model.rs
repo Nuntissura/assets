@@ -444,6 +444,27 @@ pub(crate) fn verify_grant(
     Ok(len)
 }
 
+/// Export is exact or it fails (STU-ARC-021): a `Purpose::Export` request whose start is not a whole unit
+/// of the source is `NotExact { requested, nearest }`, where `nearest` is the start of the unit a preview
+/// would have delivered (`nearest` is only evaluated for a refusal, so `Purpose::Preview` and an exact
+/// export do no extra work and see no new error). `Purpose::Preview` is never refused here. Every
+/// provider calls this BEFORE its first payload read and before the first `sink.accept`, so a refused
+/// export leaves the sink untouched (test `export_is_exact_or_error_for_every_provider`). Rounding of a
+/// media time to ticks (`ticks_exact == false`) is a receipt flag, not an export refusal.
+pub(crate) fn require_exact_start(
+    req: &SegmentRequest,
+    exact: bool,
+    nearest: impl FnOnce() -> Result<Ticks, ReelError>,
+) -> Result<(), ReelError> {
+    if req.purpose == Purpose::Export && !exact {
+        return Err(ReelError::NotExact {
+            requested: req.start_pts,
+            nearest: nearest()?,
+        });
+    }
+    Ok(())
+}
+
 /// `read_exact` that maps a short read to `Truncated { delivered }`.
 pub(crate) fn read_exact_or_truncated(
     src: &mut dyn ReadSeek,

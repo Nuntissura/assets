@@ -67,6 +67,21 @@ pub enum ReelError {
     DecoderFault {
         fault: DecoderFault,
     },
+    /// `Purpose::Export` asked for a start that is not a whole unit of the source (inside a frame or
+    /// sample, or inside an edit-trimmed first sample): export is exact or it fails, so nothing is
+    /// delivered. `nearest` is the start of the unit that would have been delivered instead
+    /// (test `export_is_exact_or_error_for_every_provider`).
+    NotExact {
+        requested: Ticks,
+        nearest: Ticks,
+    },
+    /// `Purpose::Export` decoded fewer units than `requested`. Units already handed to the sink are
+    /// delivered; this error is the statement that the export must not publish them
+    /// (test `export_refuses_partial_video_decode`).
+    Incomplete {
+        requested: u64,
+        delivered: u64,
+    },
 }
 
 impl ReelError {
@@ -84,6 +99,8 @@ impl ReelError {
             Self::StrictOriginalRequired => "MEDIA_STRICT_ORIGINAL_REQUIRED",
             Self::Io(_) => "MEDIA_IO",
             Self::DecoderFault { .. } => "MEDIA_DECODER_FAULT",
+            Self::NotExact { .. } => "MEDIA_NOT_EXACT",
+            Self::Incomplete { .. } => "MEDIA_INCOMPLETE",
         }
     }
 }
@@ -97,6 +114,21 @@ impl std::fmt::Display for ReelError {
             }
             Self::Truncated { delivered } => write!(f, "{} delivered={delivered}", self.code()),
             Self::DecoderFault { fault } => write!(f, "{} {}", self.code(), fault.code()),
+            Self::NotExact { requested, nearest } => write!(
+                f,
+                "{} requested={} nearest={}",
+                self.code(),
+                requested.value(),
+                nearest.value()
+            ),
+            Self::Incomplete {
+                requested,
+                delivered,
+            } => write!(
+                f,
+                "{} requested={requested} delivered={delivered}",
+                self.code()
+            ),
             Self::Corrupt { what } | Self::LimitExceeded { what } | Self::Unsupported { what } => {
                 write!(f, "{} {what}", self.code())
             }

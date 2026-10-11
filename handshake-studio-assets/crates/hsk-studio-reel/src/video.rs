@@ -509,6 +509,14 @@ pub(crate) fn decode_video_track_with(
     receipt.video = pump.fwd.format;
     receipt.actual.units = pump.fwd.delivered;
     if pump.fwd.delivered < req.count {
+        // A preview reports the shortfall; an export is exact or it fails. Pictures already handed to
+        // the sink stay delivered: the error is the statement that the export must not publish them.
+        if req.purpose == Purpose::Export {
+            return Err(ReelError::Incomplete {
+                requested: req.count,
+                delivered: pump.fwd.delivered,
+            });
+        }
         receipt.disposition = Disposition::Partial;
         receipt.complete = false;
     }
