@@ -717,7 +717,9 @@ use hsk_studio_composite::{
 use hsk_studio_folio::{Resolution, Resolver, Snapshot, StudioRasterRecords};
 use hsk_studio_observe::{FailureCode, Outcome};
 use hsk_studio_pigment::adjust_math::{AdjustmentKind, AdjustmentOp};
-use hsk_studio_pigment::blend_math::OperatorExactness;
+use hsk_studio_pigment::blend_math::{
+    BlendContext, OperatorExactness, PixelSite, Rgba, StackNode, evaluate_stack,
+};
 use hsk_studio_pigment::coverage_math::BlendChannel;
 use hsk_studio_pigment::render_plan::{
     ExtOperator, Knockout, LayerExtension, PASS_THROUGH_FILL_OPERATOR, admit_extended,
@@ -923,8 +925,9 @@ fn adjustment_layer_lowers_to_transparent_placeholder_and_envelope_entry() {
             StepStatus::Unavailable("unsupported_payload".into())
         );
 
-        // A real Folio graph has no operation for the adjustment layer, so no stack position: a
-        // visible adjustment layer contained in the rendered group is refused, never dropped.
+        // An adjustment layer without a graph operation has no stack position (its input_ordinal
+        // would be it): a visible one contained in the rendered group is refused, never dropped.
+        // (With a graph operation it is placed: `adjustment_layer_in_a_real_folio_graph_...`.)
         let mut contained = adjusted();
         contained["layers"][2]["parent"] = in_group_1();
         let real = run_ext(&contained, &recs, false);
@@ -1689,5 +1692,129 @@ fn inner_shadow_and_glows_lower_to_pigment_ops_that_render_as_derived() {
         refused(json!({"range":50.0}), "outer_glow", "glow_range");
         refused(json!({"technique":"precise"}), "inner_glow", "glow_technique_precise");
         refused(json!({"choke":150.0}), "inner_glow", "effect_parameter");
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Folio ENG-6 (0241877): an adjustment layer is a composition-graph source, so a REAL snapshot
+// carries it into the plan at its input_ordinal (no hand-built plan step).
+// ---------------------------------------------------------------------------------------------
+#[test]
+fn adjustment_layer_in_a_real_folio_graph_lowers_at_its_input_ordinal() {
+    bounded_case("adjustment_layer_in_a_real_folio_graph_lowers_at_its_input_ordinal", || {
+        let graph_with = |ordinals: [u64; 3]| {
+            // Group 1 composites layers 2, 3 (the adjustment layer) and 4 at the given ordinals.
+            let mut v = adjusted();
+            v["graph"]["operations"] =
+                json!([source(2, "image"), source(3, "image"), source(4, "image"), composite(1)]);
+            v["graph"]["edges"] = json!([
+                edge(address(2, "source", "out"), address(1, "mix", "inputs"), ordinals[0]),
+                edge(address(3, "source", "out"), address(1, "mix", "inputs"), ordinals[1]),
+                edge(address(4, "source", "out"), address(1, "mix", "inputs"), ordinals[2]),
+            ]);
+            v
+        };
+        let recs = records(json!([{"layer_id":identity("SLYR",3),"adjustment":{"kind":"invert"}}]));
+        let area = Rect { x: 0, y: 0, width: 64, height: 64 };
+
+        // Stack order 2, 3, 4: same plan as the hand-built case, produced by lower() itself.
+        let (report, low) = flow_space(&graph_with([0, 1, 2]), &recs, BlendSpace::Encoded);
+        let adjustment = report.step(&addr(3, "source", "out")).unwrap();
+        assert_eq!((adjustment.status.clone(), adjustment.extent), (StepStatus::Ready, None));
+        let low = low.unwrap();
+        assert_eq!(low.plan.nodes.len(), 4);
+        assert_eq!(low.plan.nodes[2], PlanNode::Solid { rect: area, rgba: [0.0; 4] });
+        let PlanNode::Group(top) = &low.plan.nodes[3] else { panic!("node 3 must be the root") };
+        assert_eq!(
+            top.layers.iter().map(|l| l.input).collect::<Vec<_>>(),
+            [PlanNodeId(0), PlanNodeId(2), PlanNodeId(1)]
+        );
+        assert_eq!(
+            low.extensions.layers,
+            vec![LayerExtension::new(PlanNodeId(3), 1).with_adjustment(AdjustmentOp::Invert)]
+        );
+
+        // The authored input_ordinal is the stack position: ordinal 0 makes it the bottom layer.
+        let (_, low) = flow_space(&graph_with([1, 0, 2]), &recs, BlendSpace::Encoded);
+        let low = low.unwrap();
+        let PlanNode::Group(top) = &low.plan.nodes[3] else { panic!("node 3 must be the root") };
+        assert_eq!(
+            top.layers.iter().map(|l| l.input).collect::<Vec<_>>(),
+            [PlanNodeId(2), PlanNodeId(0), PlanNodeId(1)]
+        );
+        assert_eq!(low.extensions.layers[0].layer, 0);
+
+        // Evaluated against pigment's single-pixel stack oracle: the lowered stack of a pixel
+        // (layer 2 = (0.2, 0.4, 0.6), layer 4 = (0.5, 0.25, 0.0), both opaque Normal) with the
+        // adjustment layer (invert) between them is covered by layer 4 -> (0.5, 0.25, 0.0); with
+        // the adjustment layer on top (ordinals 2, 4, 3) it inverts the result -> (0.5, 0.75, 1.0).
+        let pixel = |ordinals: [u64; 3]| {
+            let (_, low) = flow_space(&graph_with(ordinals), &recs, BlendSpace::Encoded);
+            let low = low.unwrap();
+            let PlanNode::Group(top) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("root") };
+            let colour_of = |key: SourceKey| {
+                let record = &low.sources.iter().find(|(k, _)| *k == key).expect("source key").1;
+                match record.object_key.as_str() {
+                    "t20" => [0.2, 0.4, 0.6],
+                    "t40" => [0.5, 0.25, 0.0],
+                    other => panic!("unexpected tile {other}"),
+                }
+            };
+            let stack: Vec<StackNode> = top
+                .layers
+                .iter()
+                .enumerate()
+                .map(|(i, l)| match &low.plan.nodes[l.input.0 as usize] {
+                    PlanNode::Tile(t) => StackNode::Leaf {
+                        source: Rgba::new(colour_of(t.key), 1.0),
+                        mode: l.mode,
+                        opacity: l.opacity,
+                    },
+                    PlanNode::Solid { .. } => StackNode::Adjustment {
+                        op: low
+                            .extensions
+                            .extension(low.plan.root, u32::try_from(i).unwrap())
+                            .and_then(|e| e.adjustment.clone())
+                            .expect("adjustment entry"),
+                        mode: l.mode,
+                        opacity: l.opacity,
+                    },
+                    other => panic!("unexpected node {other:?}"),
+                })
+                .collect();
+            let ctx = BlendContext { space: BlendSpace::Encoded, site: PixelSite::default() };
+            evaluate_stack(&stack, Rgba::TRANSPARENT, &ctx).unwrap().0
+        };
+        let between = pixel([0, 1, 2]);
+        let on_top = pixel([0, 2, 1]);
+        assert_close(between.a, 1.0);
+        assert_close(on_top.a, 1.0);
+        for (got, want) in between.rgb.iter().zip([0.5, 0.25, 0.0]) {
+            assert_close(*got, want);
+        }
+        for (got, want) in on_top.rgb.iter().zip([0.5, 0.75, 1.0]) {
+            assert_close(*got, want);
+        }
+
+        // Containment plus a graph position is fine (the refusal is only for containment alone).
+        let mut contained = graph_with([0, 1, 2]);
+        contained["layers"][2]["parent"] = in_group_1();
+        assert!(flow_space(&contained, &recs, BlendSpace::Encoded).1.is_ok());
+
+        // Without records the layer is still refused, typed (the v1 evaluation does not know it).
+        let snap = open_bytes(&serde_json::to_vec(&graph_with([0, 1, 2])).unwrap(), &WithAdjustment);
+        let token = CancellationToken::default();
+        let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+        let v1 = evaluate(&plan, &snap, &token).unwrap();
+        assert_eq!(
+            v1.step(&addr(3, "source", "out")).unwrap().status,
+            StepStatus::Unavailable("unsupported_payload".into())
+        );
+        assert!(unavailable_reason(
+            lower_to_render_plan_extended(
+                &plan, &v1, &snap, &recs, &addr(1, "mix", "out"), target(BlendSpace::Encoded), &Info
+            )
+        )
+        .contains("unsupported_payload"));
     });
 }

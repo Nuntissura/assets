@@ -378,9 +378,10 @@ pub fn lower_to_render_plan(
 /// pass-through or clipped layer or on a clip base, hue bands, threshold colours, exposure
 /// `use_legacy`, channel enablement other than
 /// all on, a clipped layer whose base is an adjustment layer, and a visible adjustment layer that
-/// the composition graph does not place in its (rendered) parent group: Folio currently defines no
-/// graph operation for it, so it has no authored stack position and the spec forbids inferring
-/// one from storage order or containment (STU-CMP-092; `adjustment_not_in_composition_graph`).
+/// the composition graph does not place in its (rendered) parent group: an adjustment layer is a
+/// graph source whose `input_ordinal` is its stack position (Folio ENG-6, STU-CMP-092), so one that
+/// is contained in the group but has no graph operation has no authored position, and the spec
+/// forbids inferring one from storage order or containment (`adjustment_not_in_composition_graph`).
 pub fn lower_to_render_plan_extended(
     plan: &LoweredPlan,
     report: &EvalReport,
