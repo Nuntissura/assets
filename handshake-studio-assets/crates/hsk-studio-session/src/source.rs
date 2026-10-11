@@ -3,7 +3,7 @@
 //! reader. At rest the session holds the document, preserved unknown entries and nothing else.
 use crate::error::SessionError;
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_folio::{self as folio, ContentDigest, Payload, Resolver, Snapshot};
+use hsk_studio_folio::{self as folio, ContentDigest, Payload, Resolver, Snapshot, StudioDocument};
 use hsk_studio_package::{
     ASSET_PREFIX, AssetError, AssetReader, AssetSource, AssetStream, Codec, EntryKind, EntryMeta,
     Limits, LossNote, LossReason, MANIFEST_NAME, Manifest, PackageError, PackageReader,
@@ -31,7 +31,8 @@ struct Shared {
 }
 
 /// An independent logical cursor over one shared stream: every call seeks to its own position
-/// first, so two handles never disturb each other, and every byte read is counted.
+/// first, so two handles keep independent positions, and every byte read is counted (test
+/// `lazy_source_holds_no_assets_and_save_streams_them_on_demand` asserts the byte counts).
 pub(crate) struct Handle {
     shared: Arc<Shared>,
     pos: u64,
@@ -72,7 +73,7 @@ impl Read for Handle {
             .unwrap_or_else(PoisonError::into_inner);
         inner.seek(SeekFrom::Start(self.pos))?;
         let n = inner.read(buf)?;
-        self.pos += n as u64;
+        self.pos = self.pos.saturating_add(n as u64);
         self.shared
             .bytes_read
             .fetch_add(n as u64, Ordering::Relaxed);
@@ -114,7 +115,7 @@ fn read_range(
     let mut chunk = vec![0u8; size.min(CHUNK)];
     while out.len() < size {
         cancel.check().map_err(|_| PackageError::Canceled)?;
-        let n = (size - out.len()).min(chunk.len());
+        let n = size.saturating_sub(out.len()).min(chunk.len());
         handle.read_exact(&mut chunk[..n]).map_err(io_error)?;
         out.extend_from_slice(&chunk[..n]);
     }
@@ -130,7 +131,8 @@ pub(crate) struct Parts {
 
 /// Reads the document and the entries that must be preserved verbatim (opaque and unlisted),
 /// verifies them against the manifest, and checks that every raster tile's asset is present in
-/// the manifest. Asset and preview bodies are never read here.
+/// the manifest. Asset and preview bodies are not read here (test
+/// `lazy_source_holds_no_assets_and_save_streams_them_on_demand`: open reads the file once).
 pub(crate) fn load_parts(
     manifest: &Manifest,
     entries: &[EntryMeta],
@@ -226,12 +228,26 @@ pub(crate) fn load_parts(
     if doc.document_id != manifest.document_id || doc.revision != manifest.revision {
         return Err(wrap(PackageError::DocumentMismatch));
     }
+    require_tile_assets(doc, manifest).map_err(wrap)?;
+    Ok(Parts {
+        snapshot,
+        quarantined,
+        loss,
+    })
+}
+
+/// Every raster tile of `doc` names a sha256 asset that the package manifest lists; a document
+/// the source cannot write assets for is refused here instead of failing later at save.
+pub(crate) fn require_tile_assets(
+    doc: &StudioDocument,
+    manifest: &Manifest,
+) -> Result<(), PackageError> {
     for layer in &doc.layers {
         if let Payload::Raster { tiles } = &layer.payload {
             for tile in tiles {
                 let digest = &tile.content_digest;
                 if digest.algorithm != "sha256" {
-                    return Err(wrap(PackageError::InvalidDigest));
+                    return Err(PackageError::InvalidDigest);
                 }
                 let name = format!("{ASSET_PREFIX}{}", digest.digest);
                 let present = manifest
@@ -239,16 +255,12 @@ pub(crate) fn load_parts(
                     .iter()
                     .any(|e| e.kind == EntryKind::Asset && e.name == name);
                 if !present {
-                    return Err(wrap(PackageError::MissingAsset));
+                    return Err(PackageError::MissingAsset);
                 }
             }
         }
     }
-    Ok(Parts {
-        snapshot,
-        quarantined,
-        loss,
-    })
+    Ok(())
 }
 
 /// Asset bytes pulled from the source package on demand, one asset per call, bounded by the

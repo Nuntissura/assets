@@ -1,6 +1,7 @@
-//! Bounded, non-blocking admission: slots AND bytes. `try_acquire` never waits; a `Permit`
-//! releases on drop, so every exit path (success, error, cancel, panic-free early return) frees
-//! it. Cloning an `Admission` shares one budget, so a host can bound several sessions together.
+//! Bounded, non-blocking admission: slots AND bytes. `try_acquire` returns at once instead of
+//! waiting (test `admission_overload_cancel_after_commit_and_shutdown_drain`); a `Permit` releases
+//! on drop, so the success, error and cancel exits free it (same test, `in_flight` is `(0, 0)`).
+//! Cloning an `Admission` shares one budget, so a host can bound several sessions together.
 use crate::{error::SessionError, ports::JobPort, ports::JobTicket};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -52,8 +53,9 @@ impl Admission {
                 retry_after_ms: self.inner.retry_after_ms,
             });
         }
-        used.0 += 1;
-        used.1 += bytes;
+        // `fits` above proved both sums are in range; saturating keeps the lint honest.
+        used.0 = used.0.saturating_add(1);
+        used.1 = used.1.saturating_add(bytes);
         Ok(Permit {
             inner: Arc::clone(&self.inner),
             bytes,

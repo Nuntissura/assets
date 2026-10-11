@@ -1015,6 +1015,8 @@ enum Mode {
     LoseAck,
     /// Answer Unknown without committing (request lost). One shot.
     DropBeforeCommit,
+    /// Commit durably, but record and answer a receipt bound to some other request. One shot.
+    OtherBinding,
 }
 struct AuthState {
     revision: u64,
@@ -1086,10 +1088,16 @@ impl CommitPort for Authority {
         }
         s.revision = r.successor_revision;
         s.sequence += 1;
+        let binding = if s.mode == Mode::OtherBinding {
+            s.mode = Mode::Normal;
+            OTHER_BINDING.to_owned()
+        } else {
+            r.binding.to_owned()
+        };
         let receipt = CommitReceipt {
             revision: r.successor_revision,
             sequence: s.sequence,
-            binding: r.binding.to_owned(),
+            binding,
         };
         s.receipts
             .insert(r.key.as_str().to_owned(), receipt.clone());
@@ -1118,6 +1126,7 @@ impl CommitPort for Authority {
 }
 
 const ID: &str = CHRONICLE_PROVIDER_ID;
+const OTHER_BINDING: &str = "binding-of-another-request";
 
 fn key(text: &str) -> IdempotencyKey {
     IdempotencyKey::parse(text).unwrap()
@@ -1153,8 +1162,12 @@ impl Rig {
         }
     }
     fn session(&self) -> Session {
+        self.session_with(|_| {})
+    }
+    fn session_with(&self, tune: impl FnOnce(&mut SessionConfig)) -> Session {
         let mut config = SessionConfig::new(actor_context());
         config.epoch = 1;
+        tune(&mut config);
         let ports = ports(&self.frames)
             .with_grants(Box::new(self.grants.clone()))
             .with_commits(Box::new(self.authority.clone()))
@@ -2080,5 +2093,768 @@ fn lazy_failures_are_typed_cancel_reads_nothing_and_memory_sessions_work() {
         assert_eq!(opened.assets.get(&sha256_hex_of(&blob)), Some(&blob));
         memory.save(&token()).unwrap();
         assert_eq!(memory.origin(), Some(target.as_path()));
+    });
+}
+
+// ----- receipt eviction, diverged-commit resolution and the negative paths the review listed --
+
+fn edit_key(n: u32) -> IdempotencyKey {
+    key(&format!("edit-{n:04}"))
+}
+
+/// Renames layer 1 from `from` to `to`, quoting property revision `read_revision`.
+fn layer1_rename(from: &str, to: &str, read_revision: u64, n: u32) -> Vec<u8> {
+    json_bytes(&rename_patch(
+        1,
+        from,
+        to,
+        read_revision,
+        &format!("cmd-{n}"),
+    ))
+}
+
+#[test]
+fn receipt_table_is_bounded_and_evicts_only_acknowledged_receipts() {
+    bounded_case("receipt_table_bounded_evicts_acknowledged", || {
+        // Policy EvictAcknowledged (the default): the table never exceeds its bound, the oldest
+        // acknowledged receipt goes first, and every eviction is reported.
+        let rig = Rig::new("evict", 4);
+        let mut session = rig.session_with(|c| c.budgets.max_receipts = 3);
+        assert_eq!(
+            session.receipt_stats().capacity,
+            3,
+            "the configured bound is the table bound"
+        );
+        let (mut revision, mut property_revision, mut name) = (7u64, 0u64, "layer-1".to_owned());
+        let mut params = Vec::new();
+        let mut evicted = Vec::new();
+        for n in 1..=5u32 {
+            let to = format!("name-{n}");
+            let p = layer1_rename(&name, &to, property_revision, n);
+            let applied = session
+                .submit_keyed(&edit_key(n), ID, &p, revision, &token())
+                .unwrap();
+            evicted.push(applied.receipts_evicted);
+            assert!(session.receipt_count() <= 3, "bound held after edit {n}");
+            (revision, property_revision, name) = (applied.revision, property_revision + 1, to);
+            params.push(p);
+        }
+        assert_eq!(evicted, [0, 0, 0, 1, 1]);
+        let stats = session.receipt_stats();
+        assert_eq!(
+            (
+                stats.held,
+                stats.pending,
+                stats.unacknowledged,
+                stats.evicted
+            ),
+            (3, 0, 0, 2)
+        );
+        assert_eq!(rig.authority.commits(), 5, "every edit committed once");
+
+        // The newest receipts still replay; nothing is re-applied.
+        let replay = session
+            .submit_keyed(&edit_key(5), ID, &params[4], 11, &token())
+            .unwrap();
+        assert!(replay.replayed && replay.receipts_evicted == 0);
+        assert_eq!(rig.authority.commit_calls(), 5);
+
+        // The oldest were evicted: they are not held, and replaying one is refused by the
+        // revision check (typed, nothing applied) rather than applied a second time.
+        assert_eq!(
+            session
+                .acknowledge_receipt(&edit_key(1))
+                .unwrap_err()
+                .code(),
+            "receipt_not_held"
+        );
+        assert_eq!(
+            session
+                .submit_keyed(&edit_key(1), ID, &params[0], 7, &token())
+                .unwrap_err()
+                .error,
+            SessionError::StaleRevision {
+                expected: 7,
+                current: 12
+            }
+        );
+        assert_eq!(
+            (rig.authority.commit_calls(), session.document_revision()),
+            (5, 12)
+        );
+        let kept = session.acknowledge_receipt(&edit_key(3)).unwrap();
+        assert!(kept.replayed);
+        assert_eq!(kept.commit.map(|c| c.sequence), Some(3));
+        assert_eq!(session.receipt_stats().evicted, 2, "reads evict nothing");
+        rig.assert_balanced(&session);
+
+        // Policy RefuseWhenFull: a full table refuses a new key typed, evicts nothing, starts
+        // nothing, and still replays the keys it holds.
+        let rig = Rig::new("refuse", 4);
+        let mut session = rig.session_with(|c| {
+            c.budgets.max_receipts = 2;
+            c.budgets.receipt_policy = ReceiptPolicy::RefuseWhenFull;
+        });
+        let (p1, p2) = (
+            layer1_rename("layer-1", "name-1", 0, 1),
+            layer1_rename("name-1", "name-2", 1, 2),
+        );
+        session
+            .submit_keyed(&edit_key(1), ID, &p1, 7, &token())
+            .unwrap();
+        session
+            .submit_keyed(&edit_key(2), ID, &p2, 8, &token())
+            .unwrap();
+        let p3 = layer1_rename("name-2", "name-3", 2, 3);
+        let refused = session
+            .submit_keyed(&edit_key(3), ID, &p3, 9, &token())
+            .unwrap_err();
+        assert_eq!(refused.error, SessionError::ReceiptsFull);
+        assert_eq!(refused.code(), "receipts_full");
+        assert_eq!(
+            delivered(refused.report).outcome,
+            Outcome::Failure(FailureCode::Validation)
+        );
+        assert_eq!(
+            (
+                rig.authority.commit_calls(),
+                session.receipt_count(),
+                session.receipt_stats().evicted
+            ),
+            (2, 2, 0)
+        );
+        assert!(
+            session
+                .submit_keyed(&edit_key(1), ID, &p1, 7, &token())
+                .unwrap()
+                .replayed
+        );
+        rig.assert_balanced(&session);
+    });
+}
+
+#[test]
+fn unacknowledged_and_pending_receipts_are_kept_and_a_full_table_refuses_typed() {
+    bounded_case("unacknowledged_pending_receipts_kept", || {
+        let rig = Rig::new("unacknowledged", 2);
+        let mut session = rig.session_with(|c| c.budgets.max_receipts = 2);
+        let p1 = layer1_rename("layer-1", "name-1", 0, 1);
+        let second = json_bytes(&rename_patch(2, "layer-2", "second", 0, "cmd-2"));
+        let p3 = layer1_rename("name-1", "name-3", 1, 3);
+
+        // A pending receipt is never an eviction victim, and nothing is stored beside it.
+        rig.authority.with(|s| s.mode = Mode::LoseAck);
+        assert_eq!(
+            session
+                .submit_keyed(&edit_key(1), ID, &p1, 7, &token())
+                .unwrap_err()
+                .error,
+            SessionError::OutcomeUnknown
+        );
+        let stats = session.receipt_stats();
+        assert_eq!((stats.held, stats.pending, stats.evicted), (1, 1, 0));
+        assert_eq!(
+            session
+                .submit_keyed(&edit_key(2), ID, &second, 7, &token())
+                .unwrap_err()
+                .error,
+            SessionError::ReconciliationRequired
+        );
+        assert_eq!(session.pending(), ["edit-0001"]);
+        assert_eq!(rig.authority.commit_calls(), 1);
+
+        // Adopted by reconcile: committed, but the caller was never handed it.
+        assert_eq!(session.reconcile(&token()).unwrap().adopted, 1);
+        let stats = session.receipt_stats();
+        assert_eq!((stats.held, stats.pending, stats.unacknowledged), (1, 0, 1));
+        rig.authority.with(|s| s.mode = Mode::LoseAck);
+        assert_eq!(
+            session
+                .submit_keyed(&edit_key(2), ID, &second, 8, &token())
+                .unwrap_err()
+                .error,
+            SessionError::OutcomeUnknown
+        );
+        assert_eq!(session.reconcile(&token()).unwrap().adopted, 1);
+        let stats = session.receipt_stats();
+        assert_eq!((stats.held, stats.unacknowledged, stats.evicted), (2, 2, 0));
+
+        // Full of receipts the caller has not seen: a new key is refused typed, nothing started,
+        // nothing evicted.
+        let calls = rig.authority.commit_calls();
+        let refused = session
+            .submit_keyed(&edit_key(3), ID, &p3, 9, &token())
+            .unwrap_err();
+        assert_eq!(refused.error, SessionError::ReceiptsFull);
+        assert_eq!(rig.authority.commit_calls(), calls);
+        assert_eq!(session.receipt_stats().evicted, 0);
+        assert_eq!(session.document_revision(), 9);
+
+        // Acknowledging the first makes only that one evictable.
+        let handed = session.acknowledge_receipt(&edit_key(1)).unwrap();
+        assert!(handed.replayed);
+        assert_eq!(
+            handed.commit.map(|c| (c.revision, c.sequence)),
+            Some((8, 1))
+        );
+        assert_eq!(session.receipt_stats().unacknowledged, 1);
+        let applied = session
+            .submit_keyed(&edit_key(3), ID, &p3, 9, &token())
+            .unwrap();
+        assert_eq!(applied.receipts_evicted, 1);
+        assert_eq!(
+            session
+                .acknowledge_receipt(&edit_key(1))
+                .unwrap_err()
+                .code(),
+            "receipt_not_held"
+        );
+        let stats = session.receipt_stats();
+        assert_eq!(
+            (stats.held, stats.unacknowledged, stats.evicted),
+            (2, 1, 1),
+            "the receipt adopted for edit-0002 is still held and still unacknowledged"
+        );
+        rig.assert_balanced(&session);
+    });
+}
+
+/// The authority's own document: the session's current document with a revision and a layer
+/// name of the authority's choosing.
+fn authority_document(base: &Value, revision: u64, layer_name: &str) -> Vec<u8> {
+    let mut value = base.clone();
+    value["revision"] = json!(revision);
+    value["layers"][0]["name"] = json!(layer_name);
+    serde_json::to_vec(&value).unwrap()
+}
+
+#[test]
+fn diverged_pending_commit_is_resolved_only_by_the_operator_discard_or_resync() {
+    bounded_case("diverged_commit_operator_resolution", || {
+        // ---- discard path ---------------------------------------------------------------
+        let rig = Rig::new("diverged-discard", 2);
+        let mut session = rig.session();
+        let first = layer1_rename("layer-1", "name-1", 0, 1);
+        let second = json_bytes(&rename_patch(2, "layer-2", "second", 0, "cmd-2"));
+        let (k_a, k_b, k_c) = (edit_key(1), edit_key(2), edit_key(3));
+
+        // A pending key whose receipt agrees (or is a committed key) is not diverged: the
+        // operator commands refuse it and leave everything as it is.
+        rig.authority.with(|s| s.mode = Mode::LoseAck);
+        assert_eq!(
+            session
+                .submit_keyed(&k_a, ID, &first, 7, &token())
+                .unwrap_err()
+                .error,
+            SessionError::OutcomeUnknown
+        );
+        assert_eq!(
+            session.discard_diverged(&k_a, &token()).unwrap_err().error,
+            SessionError::NotDiverged
+        );
+        assert_eq!(session.pending(), ["edit-0001"]);
+        assert_eq!(session.reconcile(&token()).unwrap().adopted, 1);
+        assert_eq!(
+            session.discard_diverged(&k_a, &token()).unwrap_err().code(),
+            "not_diverged"
+        );
+
+        // The authority answers with a receipt bound to another request: refused, kept pending.
+        rig.authority.with(|s| s.mode = Mode::OtherBinding);
+        let failed = session
+            .submit_keyed(&k_b, ID, &second, 8, &token())
+            .unwrap_err();
+        assert_eq!(failed.error, SessionError::ReceiptMismatch);
+        assert_eq!(
+            delivered(failed.report).outcome,
+            Outcome::Failure(FailureCode::Validation)
+        );
+        assert_eq!(session.pending(), ["edit-0002"]);
+        assert_eq!(session.diverged(), ["edit-0002"]);
+        assert_eq!(session.document_revision(), 8, "not adopted");
+
+        // Reconcile and retries never resolve it: a person decides.
+        let report = session.reconcile(&token()).unwrap();
+        assert_eq!(
+            (
+                report.adopted,
+                report.cleared,
+                report.still_unknown,
+                report.diverged
+            ),
+            (0, 0, 0, 1)
+        );
+        assert_eq!(report.diverged_keys, ["edit-0002"]);
+        assert_eq!(
+            delivered(report.report).outcome,
+            Outcome::Failure(FailureCode::Unavailable)
+        );
+        assert_eq!(
+            session
+                .submit_keyed(&k_b, ID, &second, 8, &token())
+                .unwrap_err()
+                .error,
+            SessionError::ReceiptMismatch
+        );
+        let other = layer1_rename("name-1", "name-9", 1, 9);
+        assert_eq!(
+            session
+                .submit_keyed(&k_c, ID, &other, 8, &token())
+                .unwrap_err()
+                .error,
+            SessionError::ReconciliationRequired
+        );
+        assert_eq!(
+            session.acknowledge_receipt(&k_b).unwrap_err().error,
+            SessionError::ReceiptMismatch
+        );
+        assert_eq!(
+            (rig.authority.commit_calls(), session.document_revision()),
+            (2, 8)
+        );
+
+        // Typed refusals of the command itself change nothing.
+        assert_eq!(
+            session
+                .discard_diverged(&edit_key(77), &token())
+                .unwrap_err()
+                .error,
+            SessionError::ReceiptNotHeld
+        );
+        rig.grants.set_revoked(true);
+        assert_eq!(
+            session.discard_diverged(&k_b, &token()).unwrap_err().error,
+            SessionError::GrantRevoked
+        );
+        rig.grants.set_revoked(false);
+        rig.authority.with(|s| s.unreachable = true);
+        assert_eq!(
+            session.discard_diverged(&k_b, &token()).unwrap_err().error,
+            SessionError::OutcomeUnknown
+        );
+        rig.authority.with(|s| s.unreachable = false);
+        let canceled = token();
+        canceled.cancel();
+        assert_eq!(
+            session.discard_diverged(&k_b, &canceled).unwrap_err().error,
+            SessionError::Canceled
+        );
+        assert_eq!(session.diverged(), ["edit-0002"]);
+
+        // Discard: the pending commit is dropped, the document is untouched, submits are open.
+        let before = session.snapshot().encoded_bytes().to_vec();
+        let done = session.discard_diverged(&k_b, &token()).unwrap();
+        assert_eq!(
+            (
+                done.resolution,
+                done.revision_before,
+                done.revision_after,
+                done.draft_revision
+            ),
+            (Divergence::Discarded, 8, 8, 9)
+        );
+        assert_eq!(done.authority.binding, OTHER_BINDING);
+        assert_eq!(
+            done.disagreement,
+            Disagreement {
+                binding: true,
+                revision: false,
+                base: false
+            }
+        );
+        assert_eq!(delivered(done.report).outcome, Outcome::Success);
+        assert_eq!(session.snapshot().encoded_bytes(), before.as_slice());
+        assert!(session.pending().is_empty() && session.diverged().is_empty());
+        assert_eq!(
+            session.discard_diverged(&k_b, &token()).unwrap_err().error,
+            SessionError::ReceiptNotHeld
+        );
+        // The authority did commit that other request (revision 9), so the discarded session is
+        // behind it and says so, typed, instead of pretending to be in sync.
+        assert_eq!(
+            session
+                .submit_keyed(&k_c, ID, &other, 8, &token())
+                .unwrap_err()
+                .error,
+            SessionError::StaleRevision {
+                expected: 8,
+                current: 9
+            }
+        );
+        rig.assert_balanced(&session);
+
+        // ---- resync path ----------------------------------------------------------------
+        let rig = Rig::new("diverged-resync", 2);
+        // Folio node budget exactly the fixture's (1 artboard + 2 layers + 2 operations).
+        let mut session = rig.session_with(|c| c.budgets.chronicle.folio.nodes = 5);
+        let base: Value = serde_json::from_slice(session.snapshot().encoded_bytes()).unwrap();
+        rig.authority.with(|s| s.mode = Mode::OtherBinding);
+        let failed = session
+            .submit_keyed(&k_a, ID, &first, 7, &token())
+            .unwrap_err();
+        assert_eq!(failed.error, SessionError::ReceiptMismatch);
+        let untouched = session.snapshot().encoded_bytes().to_vec();
+        let revisions = session.revisions().to_vec();
+
+        let mut foreign = base.clone();
+        foreign["document_id"] = json!(identity("SDOC", 2));
+        foreign["revision"] = json!(8);
+        let mut over_budget = base.clone();
+        over_budget["revision"] = json!(8);
+        over_budget["artboards"].as_array_mut().unwrap().push(json!({
+            "schema_id":"hsk.studio.artboard@1","artboard_id":identity("SART",2),"name":"extra","parent":null,
+            "bounds":base["artboards"][0]["bounds"].clone()
+        }));
+        let mut missing_asset = base.clone();
+        missing_asset["revision"] = json!(8);
+        missing_asset["layers"][1]["payload"]["tiles"][0]["content_digest"]["digest"] =
+            json!(sha256_hex_of(b"an asset the source package does not hold"));
+        let refusals: [(Vec<u8>, &str); 7] = [
+            (
+                serde_json::to_vec(&foreign).unwrap(),
+                "authority_document_wrong_document",
+            ),
+            (
+                authority_document(&base, 9, "x"),
+                "authority_document_wrong_revision",
+            ),
+            (b"{not json".to_vec(), "authority_document_invalid"),
+            (Vec::new(), "authority_document_invalid"),
+            (vec![b' '; 1 << 21], "authority_document_too_large"),
+            (
+                serde_json::to_vec(&over_budget).unwrap(),
+                "authority_document_too_large",
+            ),
+            (
+                serde_json::to_vec(&missing_asset).unwrap(),
+                "authority_document_missing_asset",
+            ),
+        ];
+        for (bytes, code) in &refusals {
+            let failed = session.resync_diverged(&k_a, bytes, &token()).unwrap_err();
+            assert_eq!(failed.code(), *code);
+            assert_eq!(
+                failed.error.outcome(),
+                Outcome::Failure(FailureCode::Validation)
+            );
+            // Nothing changed: still pending, still diverged, document and vector untouched.
+            assert_eq!(session.diverged(), ["edit-0001"], "{code}");
+            assert_eq!(session.snapshot().encoded_bytes(), untouched.as_slice());
+            assert_eq!(session.revisions(), revisions.as_slice());
+            assert_eq!(session.receipt_count(), 1);
+        }
+
+        // The authority's document at the receipt's revision replaces the session's.
+        let done = session
+            .resync_diverged(
+                &k_a,
+                &authority_document(&base, 8, "authority-name"),
+                &token(),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                done.resolution,
+                done.revision_before,
+                done.revision_after,
+                done.authority.revision
+            ),
+            (Divergence::Resynced, 7, 8, 8)
+        );
+        assert_eq!(delivered(done.report).outcome, Outcome::Success);
+        assert_eq!(session.document_revision(), 8);
+        assert_eq!(
+            session.snapshot().document().layers[0].name,
+            "authority-name"
+        );
+        assert!(session.revisions().iter().all(|e| e.revision == 0));
+        assert!(session.pending().is_empty() && session.diverged().is_empty());
+        assert_eq!(session.receipt_count(), 0, "the divergent receipt is gone");
+        assert!(session.is_dirty());
+
+        // In sync again: the next edit commits on top of the authority's document.
+        let applied = session
+            .submit_keyed(&k_b, ID, &second, 8, &token())
+            .unwrap();
+        assert_eq!((applied.previous_revision, applied.revision), (8, 9));
+        let durable = document_of(&rig.authority.last_document());
+        assert_eq!(durable.document().layers[0].name, "authority-name");
+        assert_eq!(durable.document().layers[1].name, "second");
+        assert_eq!(durable.encoded_bytes(), session.snapshot().encoded_bytes());
+        rig.assert_balanced(&session);
+    });
+}
+
+/// Prepares a transaction against a snapshot whose document id is not the session's.
+struct ForeignDocument;
+impl ProposalProvider for ForeignDocument {
+    fn propose(&self, request: &ProposalRequest<'_>) -> Result<Prepared, ProviderError> {
+        let mut foreign = request.snapshot.document().clone();
+        foreign.document_id = identity("SDOC", 2);
+        let base = folio::validate_document(
+            foreign,
+            request.budget.folio,
+            request.cancel,
+            request.resolver,
+        )
+        .map_err(|_| ProviderError::Rejected("forge_failed"))?;
+        let mut patch = rename_patch(1, "layer-1", "foreign", 0, "foreign-doc");
+        patch.document_id = identity("SDOC", 2);
+        chronicle::prepare(
+            &patch,
+            &base,
+            request.revisions,
+            request.budget,
+            request.cancel,
+            request.resolver,
+        )
+        .map_err(provider_error)
+    }
+}
+
+/// Prepares against its own property revision vector (layer 1 name at revision 5), not the
+/// session's (revision 0).
+struct ForgedPropertyRevision;
+impl ProposalProvider for ForgedPropertyRevision {
+    fn propose(&self, request: &ProposalRequest<'_>) -> Result<Prepared, ProviderError> {
+        let mut own = request.revisions.to_vec();
+        for entry in &mut own {
+            if entry.address == name_address(1) {
+                entry.revision = 5;
+            }
+        }
+        let patch = rename_patch(1, "layer-1", "forged", 5, "forged-revision");
+        chronicle::prepare(
+            &patch,
+            request.snapshot,
+            &own,
+            request.budget,
+            request.cancel,
+            request.resolver,
+        )
+        .map_err(provider_error)
+    }
+}
+
+#[test]
+fn inconsistent_proposals_are_refused_and_a_zero_deadline_drain_reports_what_it_left() {
+    bounded_case("proposal_inconsistent_and_zero_deadline_drain", || {
+        let rig = Rig::new("inconsistent", 2);
+        let mut session = rig.session();
+        let providers: [(&str, Box<dyn ProposalProvider>); 2] = [
+            ("test.foreign-document", Box::new(ForeignDocument)),
+            ("test.forged-revision", Box::new(ForgedPropertyRevision)),
+        ];
+        for (id, provider) in providers {
+            session.providers_mut().register(id, provider).unwrap();
+        }
+        let before = session.snapshot().encoded_bytes().to_vec();
+        let revisions = session.revisions().to_vec();
+
+        // Wrong document, and a property revision the session vector does not hold: both are
+        // proposals the session refuses before any commit authority is asked.
+        for (n, id) in ["test.foreign-document", "test.forged-revision"]
+            .into_iter()
+            .enumerate()
+        {
+            let refused = session
+                .submit_keyed(&edit_key(n as u32 + 1), id, b"", 7, &token())
+                .unwrap_err();
+            assert_eq!(refused.error, SessionError::ProposalInconsistent, "{id}");
+            assert_eq!(refused.code(), "proposal_inconsistent");
+            assert_eq!(
+                delivered(refused.report).outcome,
+                Outcome::Failure(FailureCode::Validation)
+            );
+            assert_eq!(session.snapshot().encoded_bytes(), before.as_slice());
+            assert_eq!(session.revisions(), revisions.as_slice());
+            assert_eq!(
+                (rig.authority.commit_calls(), session.receipt_count()),
+                (0, 0)
+            );
+        }
+        rig.assert_balanced(&session);
+
+        // A zero deadline looks nothing up: the pending key is reported abandoned, not dropped,
+        // even though the authority is reachable; a later drain with time resolves it.
+        let p1 = layer1_rename("layer-1", "name-1", 0, 1);
+        rig.authority.with(|s| s.mode = Mode::LoseAck);
+        assert_eq!(
+            session
+                .submit_keyed(&edit_key(9), ID, &p1, 7, &token())
+                .unwrap_err()
+                .error,
+            SessionError::OutcomeUnknown
+        );
+        let drained = session.drain(0).unwrap();
+        assert_eq!(drained.abandoned, ["edit-0009"]);
+        assert_eq!(
+            (
+                drained.adopted,
+                drained.cleared,
+                drained.elapsed_ms,
+                drained.deadline_met
+            ),
+            (0, 0, 0, true)
+        );
+        assert_eq!(
+            delivered(drained.report).outcome,
+            Outcome::Failure(FailureCode::Unavailable)
+        );
+        assert_eq!(session.pending(), ["edit-0009"]);
+        assert_eq!(session.document_revision(), 7);
+        let drained = session.drain(2000).unwrap();
+        assert!(drained.abandoned.is_empty());
+        assert_eq!((drained.adopted, session.document_revision()), (1, 8));
+        rig.assert_balanced(&session);
+    });
+}
+
+#[test]
+fn chronicle_property_table_matches_the_session_seed() {
+    bounded_case("chronicle_property_table_matches_session_seed", || {
+        // A document with every node kind chronicle can address, plus a layer it cannot.
+        let mut assets = MemoryAssetSource::new();
+        let digest = assets.insert(BLOB.to_vec());
+        let mut doc = document_json(&digest.digest);
+        let bounds = doc["artboards"][0]["bounds"].clone();
+        doc["page_spreads"] = json!([{"schema_id":"hsk.studio.page_spread@1","page_spread_id":identity("SPGS",1),"name":"spread","parent":null,"bounds":bounds}]);
+        doc["layers"].as_array_mut().unwrap().push(json!({
+            "schema_id":"hsk.studio.layer@1","layer_id":identity("SLYR",3),"name":"opaque","parent":null,
+            "kind":"vendor-thing","visible":true,
+            "payload":{"payload_kind":"unsupported","kind":"vendor-thing","schema_id":"vendor.thing@1","encoded_bytes":[1,2,3],"reason":"preserved"}
+        }));
+        let snapshot = match folio::inspect_bytes(
+            &serde_json::to_vec(&doc).unwrap(),
+            folio::Budget::default(),
+            &token(),
+            &Granted,
+        )
+        .unwrap()
+        {
+            folio::Inspection::Editable(s) => s,
+            folio::Inspection::ReadOnly(_) => panic!("fixture became read-only"),
+        };
+        let mut bytes = Vec::new();
+        write_package_with(
+            &snapshot,
+            &assets as &dyn AssetSource,
+            &Extras {
+                quarantined: &[],
+                previews: &[],
+            },
+            &WriteOptions::default(),
+            &Limits::default(),
+            &token(),
+            &mut bytes,
+        )
+        .unwrap();
+        let session = Session::open_bytes(
+            &bytes,
+            SessionConfig::new(actor_context()),
+            ports(&Frames::default()),
+            &token(),
+        )
+        .unwrap();
+        let seeded: Vec<PropertyAddress> = session
+            .revisions()
+            .iter()
+            .map(|e| e.address.clone())
+            .collect();
+
+        // Every (node, property) pair: chronicle itself decides whether it can address it.
+        let nodes: Vec<(NodeKind, String, String, bool)> = doc["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    NodeKind::Layer,
+                    l["layer_id"].as_str().unwrap().to_owned(),
+                    l["name"].as_str().unwrap().to_owned(),
+                    l["visible"].as_bool().unwrap(),
+                )
+            })
+            .chain([(
+                NodeKind::Artboard,
+                identity("SART", 1),
+                "board".to_owned(),
+                true,
+            )])
+            .chain([(
+                NodeKind::PageSpread,
+                identity("SPGS", 1),
+                "spread".to_owned(),
+                true,
+            )])
+            .collect();
+        let mut every_pair = Vec::new();
+        for (kind, id, _, _) in &nodes {
+            for property in [Property::Name, Property::Visible] {
+                every_pair.push(RevisionEntry {
+                    address: PropertyAddress {
+                        target: NodeRef {
+                            node_kind: kind.clone(),
+                            node_id: id.clone(),
+                        },
+                        property,
+                    },
+                    revision: 0,
+                });
+            }
+        }
+        let mut accepted = 0usize;
+        for entry in &every_pair {
+            let (_, _, name, visible) = nodes
+                .iter()
+                .find(|n| n.1 == entry.address.target.node_id)
+                .unwrap();
+            let (current, written) = match entry.address.property {
+                Property::Name => (
+                    PropertyValue::String(name.clone()),
+                    PropertyValue::String("probe".into()),
+                ),
+                Property::Visible => (PropertyValue::Bool(*visible), PropertyValue::Bool(!visible)),
+            };
+            let patch = Patch {
+                transport_version: 1,
+                document_id: identity("SDOC", 1),
+                base_revision: 7,
+                command_id: "probe".into(),
+                correlation_id: 1,
+                actor: patch_actor(),
+                reads: vec![PropertyRead {
+                    address: entry.address.clone(),
+                    expected_revision: 0,
+                    expected_value: current,
+                }],
+                writes: vec![PropertyWrite {
+                    address: entry.address.clone(),
+                    value: written,
+                }],
+            };
+            // The vector holds only the pair under test: chronicle validates every entry of a
+            // vector it is given, so a vector of all pairs would refuse the unaddressable ones.
+            let verdict = chronicle::prepare(
+                &patch,
+                &snapshot,
+                std::slice::from_ref(entry),
+                chronicle::Budget::default(),
+                &token(),
+                &Granted,
+            );
+            let chronicle_accepts = verdict.is_ok();
+            assert_eq!(
+                seeded.contains(&entry.address),
+                chronicle_accepts,
+                "session seed and chronicle disagree on {:?}: {:?}",
+                entry.address,
+                verdict.err()
+            );
+            accepted += usize::from(chronicle_accepts);
+        }
+        // Layers 1 and 2 (name, visible), the artboard and the page spread (name); the
+        // unsupported layer is addressable by neither.
+        assert_eq!((accepted, seeded.len()), (6, 6));
     });
 }

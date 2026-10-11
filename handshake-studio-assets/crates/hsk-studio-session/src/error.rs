@@ -1,5 +1,5 @@
-//! Typed, content-free errors: stable snake_case codes only, never paths, layer names or document
-//! text. `SessionError::outcome` maps every failure onto the closed Observe outcome vocabulary.
+//! Typed, content-free errors: stable snake_case codes only, carrying no paths, layer names or
+//! document text. `SessionError::outcome` maps every failure onto the closed Observe outcome vocabulary.
 use hsk_studio_observe::{Error as ObserveError, FailureCode, Outcome, Receipt};
 use hsk_studio_package::PackageError;
 use std::fmt;
@@ -70,7 +70,7 @@ pub enum SessionError {
     /// Idempotency key is empty, longer than 128 bytes or contains control characters.
     InvalidKey,
     /// A commit authority is injected, so every submit must carry a caller-supplied key (this
-    /// crate never mints identifiers).
+    /// crate takes keys from the caller and mints none).
     KeyRequired,
     /// The grant port reports the grant revoked (checked afresh on every submit and retry).
     GrantRevoked,
@@ -88,7 +88,8 @@ pub enum SessionError {
     Closed,
     /// The commit authority did not say whether the transaction was committed. The transaction
     /// is pending under its key: `reconcile` (or a retry with the same key) looks it up and
-    /// adopts it exactly once or clears it; it is never blindly re-applied.
+    /// adopts it exactly once or clears it, and does not blindly re-apply it (test
+    /// `lost_acknowledgement_is_reconciled_and_applied_exactly_once`).
     OutcomeUnknown,
     /// An unresolved pending outcome exists; resolve it before submitting anything else.
     ReconciliationRequired,
@@ -98,8 +99,48 @@ pub enum SessionError {
     CommitRejected(&'static str),
     /// The authority's receipt does not match the revision or binding the session sent.
     ReceiptMismatch,
-    /// The idempotency table is full (`Budgets::max_receipts`).
+    /// The idempotency table is full (`Budgets::max_receipts`) and no receipt may be evicted:
+    /// under `ReceiptPolicy::RefuseWhenFull`, or under `EvictAcknowledged` when every held
+    /// receipt is pending or not yet acknowledged. Nothing was started.
     ReceiptsFull,
+    /// The operator command named a key whose pending outcome is not diverged (it is committed,
+    /// or the authority has no receipt for it, or the receipt agrees: `reconcile` handles those).
+    NotDiverged,
+    /// No receipt is held under that key: it was never submitted, or it was evicted after the
+    /// caller acknowledged it (`ReceiptPolicy::EvictAcknowledged`).
+    ReceiptNotHeld,
+    /// The authority document supplied to `resync_diverged` was refused; nothing changed.
+    AuthorityDocument(AuthorityFault),
+}
+
+/// Why `resync_diverged` refused the authority document it was given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthorityFault {
+    /// Larger than the session's folio input budget (or over another folio budget).
+    TooLarge,
+    /// Not a valid document under folio.
+    Invalid,
+    /// Folio accepts it only as a read-only inspection (unknown schema): it cannot be edited.
+    ReadOnly,
+    /// Names another document than the one this session owns.
+    WrongDocument,
+    /// Its revision is not the revision the authority's receipt names.
+    WrongRevision,
+    /// A raster tile names an asset the session's source package does not hold.
+    MissingAsset,
+}
+
+impl AuthorityFault {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::TooLarge => "authority_document_too_large",
+            Self::Invalid => "authority_document_invalid",
+            Self::ReadOnly => "authority_document_read_only",
+            Self::WrongDocument => "authority_document_wrong_document",
+            Self::WrongRevision => "authority_document_wrong_revision",
+            Self::MissingAsset => "authority_document_missing_asset",
+        }
+    }
 }
 
 impl SessionError {
@@ -131,6 +172,9 @@ impl SessionError {
             Self::CommitRejected(code) => code,
             Self::ReceiptMismatch => "receipt_mismatch",
             Self::ReceiptsFull => "receipts_full",
+            Self::NotDiverged => "not_diverged",
+            Self::ReceiptNotHeld => "receipt_not_held",
+            Self::AuthorityDocument(fault) => fault.code(),
         }
     }
 
@@ -163,7 +207,10 @@ impl SessionError {
             | Self::StaleEpoch
             | Self::CommitRejected(_)
             | Self::ReceiptMismatch
-            | Self::ReceiptsFull => Outcome::Failure(FailureCode::Validation),
+            | Self::ReceiptsFull
+            | Self::NotDiverged
+            | Self::ReceiptNotHeld
+            | Self::AuthorityDocument(_) => Outcome::Failure(FailureCode::Validation),
         }
     }
 

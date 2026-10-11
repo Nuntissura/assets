@@ -5,13 +5,13 @@
 //! and the session adopts a transaction locally only after the authority's receipt.
 use crate::{
     admission::{Admission, JobGuard},
-    error::{Failed, ReportStatus, SessionError},
+    error::{AuthorityFault, Failed, ReportStatus, SessionError},
     ports::{
         Action, Clock, CommitOutcome, CommitPort, CommitReceipt, CommitRequest, Cost, GrantError,
         GrantPort, GrantToken, IdempotencyKey, JobPort, JobScope, Lookup, MonotonicClock,
     },
     registry::{ProposalRequest, ProviderRegistry},
-    source::{Handle, LazyAssets, SourceBox, load_parts},
+    source::{Handle, LazyAssets, SourceBox, load_parts, require_tile_assets},
 };
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
 use hsk_studio_chronicle::{
@@ -40,15 +40,34 @@ use std::{
 /// Most preview images a host may supply at once.
 pub const MAX_SUPPLIED_PREVIEWS: usize = 16;
 
+/// What the idempotency table does when it holds `Budgets::max_receipts` receipts and a new key
+/// arrives. A receipt is acknowledged once the caller holds it: a committed `submit_keyed`
+/// result, a replay of the key, or `Session::acknowledge_receipt`. A pending receipt (outcome
+/// unknown) and a committed receipt adopted by `reconcile` or `drain` that no result has handed
+/// to the caller yet are unacknowledged. Test:
+/// `receipt_table_is_bounded_and_evicts_only_acknowledged_receipts` and
+/// `unacknowledged_and_pending_receipts_are_kept_and_a_full_table_refuses_typed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiptPolicy {
+    /// Refuse the new key with `receipts_full`; every held receipt stays.
+    RefuseWhenFull,
+    /// Evict the oldest acknowledged committed receipt to admit the new key, and report it
+    /// (`Applied::receipts_evicted`, `ReceiptStats::evicted`). When none qualifies the new key
+    /// is refused with `receipts_full`. Replaying an evicted key is not a replay: the session
+    /// is at a later revision, so the retry is refused `stale_revision` and applies nothing.
+    EvictAcknowledged,
+}
+
 /// Bounds for every operation: package container limits, chronicle (which carries folio) budgets
 /// and the idempotency table. Cancellation is the accord `CancellationToken` passed to each call.
 #[derive(Clone, Copy, Debug)]
 pub struct Budgets {
     pub limits: Limits,
     pub chronicle: chronicle::Budget,
-    /// Idempotency receipts (committed and pending) a session keeps; further new keys are
-    /// refused with `receipts_full` rather than evicting a receipt exactly-once depends on.
+    /// Idempotency receipts (committed and pending) a session keeps at once; `receipt_policy`
+    /// decides what happens to a new key when the table is full.
     pub max_receipts: usize,
+    pub receipt_policy: ReceiptPolicy,
 }
 
 impl Default for Budgets {
@@ -57,6 +76,7 @@ impl Default for Budgets {
             limits: Limits::default(),
             chronicle: chronicle::Budget::default(),
             max_receipts: 1024,
+            receipt_policy: ReceiptPolicy::EvictAcknowledged,
         }
     }
 }
@@ -196,6 +216,66 @@ pub struct Applied {
     pub replayed: bool,
     /// The token was canceled while the commit was already happening: the edit stands.
     pub cancel_too_late: bool,
+    /// Acknowledged receipts evicted from the idempotency table to admit this submit's key
+    /// (`ReceiptPolicy::EvictAcknowledged`); zero for a replay.
+    pub receipts_evicted: u32,
+    pub report: ReportStatus,
+}
+
+/// A snapshot of the idempotency table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReceiptStats {
+    /// Receipts held now (committed and pending); at most `capacity` (test
+    /// `receipt_table_is_bounded_and_evicts_only_acknowledged_receipts`).
+    pub held: usize,
+    pub capacity: usize,
+    /// Pending receipts (commit outcome unknown or diverged).
+    pub pending: usize,
+    /// Committed receipts the caller has not been handed yet (adopted by `reconcile`/`drain`).
+    pub unacknowledged: usize,
+    /// Acknowledged receipts evicted since open.
+    pub evicted: u64,
+}
+
+/// How a pending commit disagrees with the authority's receipt for its key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Disagreement {
+    /// The receipt's binding is not the binding of the request this session sent.
+    pub binding: bool,
+    /// The receipt names another revision than the pending transaction's successor.
+    pub revision: bool,
+    /// The session's document is no longer at the pending transaction's base revision.
+    pub base: bool,
+}
+
+impl Disagreement {
+    pub const fn any(self) -> bool {
+        self.binding || self.revision || self.base
+    }
+}
+
+/// The operator's decision for a diverged pending commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Divergence {
+    /// The pending transaction was dropped; the session's document is unchanged and may now be
+    /// behind the authority (the next commit then answers `stale_revision`).
+    Discarded,
+    /// The session's document was replaced by the authority's document at the receipt revision.
+    Resynced,
+}
+
+/// Outcome of [`Session::discard_diverged`] / [`Session::resync_diverged`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DivergenceReport {
+    pub key: String,
+    pub resolution: Divergence,
+    pub revision_before: u64,
+    pub revision_after: u64,
+    /// The revision the dropped pending transaction would have produced.
+    pub draft_revision: u64,
+    /// The authority's receipt that disagreed.
+    pub authority: CommitReceipt,
+    pub disagreement: Disagreement,
     pub report: ReportStatus,
 }
 
@@ -244,8 +324,12 @@ pub struct ReconcileReport {
     pub cleared: u32,
     /// Authority unreachable: still pending.
     pub still_unknown: u32,
-    /// Authority receipt disagrees with the pending transaction: still pending, needs a human.
+    /// Authority receipt disagrees with the pending transaction: still pending, needs a human
+    /// (`discard_diverged` or `resync_diverged`); not resolved automatically (test
+    /// `diverged_pending_commit_is_resolved_only_by_the_operator_discard_or_resync`).
     pub diverged: u32,
+    /// Keys counted in `diverged`.
+    pub diverged_keys: Vec<String>,
     pub report: ReportStatus,
 }
 
@@ -268,6 +352,10 @@ enum EntryState {
 struct Entry {
     binding: String,
     state: EntryState,
+    /// Insertion order: eviction takes the oldest acknowledged receipt first.
+    seq: u64,
+    /// The caller holds this receipt (see `ReceiptPolicy`); only acknowledged receipts evict.
+    acknowledged: bool,
 }
 
 struct PendingCommit {
@@ -275,6 +363,8 @@ struct PendingCommit {
     successor: Snapshot,
     slots: Vec<(usize, u64)>,
     draft: Applied,
+    /// Set when the authority's receipt for this key disagreed (only an operator command clears it; same test).
+    diverged: Option<(CommitReceipt, Disagreement)>,
 }
 
 enum Resolution {
@@ -282,6 +372,21 @@ enum Resolution {
     Cleared,
     StillUnknown,
     Diverged,
+}
+
+/// Counts of `resolve_all`.
+#[derive(Default)]
+struct Tally {
+    adopted: u32,
+    cleared: u32,
+    unknown: u32,
+    diverged: u32,
+}
+
+impl Tally {
+    fn bump(counter: &mut u32) {
+        *counter = counter.saturating_add(1);
+    }
 }
 
 struct Proposed {
@@ -304,7 +409,8 @@ pub struct Session {
     snapshot: Snapshot,
     revisions: Vec<RevisionEntry>,
     /// The package the session was opened from (or last saved to), read on demand: asset and
-    /// preview bodies are never held between operations.
+    /// preview bodies are not held between operations (test
+    /// `lazy_source_holds_no_assets_and_save_streams_them_on_demand`).
     source: Mutex<PackageReader<Handle>>,
     /// A second cursor over the same stream as `source`, forked to stream raw asset ranges.
     raw: Handle,
@@ -321,6 +427,8 @@ pub struct Session {
     origin: Option<PathBuf>,
     saved_revision: Option<u64>,
     receipts: BTreeMap<String, Entry>,
+    receipt_seq: u64,
+    receipts_evicted: u64,
     closed: bool,
     operations: u64,
     last_report: ReportStatus,
@@ -372,51 +480,57 @@ fn emit_report(
     }
 }
 
+/// Every chronicle property. Mirrored here because chronicle exports no property table; drift
+/// is caught by `chronicle_property_table_matches_the_session_seed`, and `addressable` below
+/// stops compiling when chronicle or folio gain a property or node kind.
+const PROPERTIES: [chronicle::Property; 2] =
+    [chronicle::Property::Name, chronicle::Property::Visible];
+
+/// Whether chronicle can address `property` on a `kind` node. Exhaustive over node kind x
+/// property on purpose: a new variant on either side is a compile error here, not a silent
+/// fall-through.
+fn addressable(kind: &NodeKind, property: chronicle::Property) -> bool {
+    match (kind, property) {
+        (NodeKind::Layer, chronicle::Property::Name | chronicle::Property::Visible)
+        | (NodeKind::Artboard | NodeKind::PageSpread, chronicle::Property::Name) => true,
+        (NodeKind::Artboard | NodeKind::PageSpread, chronicle::Property::Visible) => false,
+    }
+}
+
 fn seed_revisions(document: &StudioDocument) -> Vec<RevisionEntry> {
-    let entry = |node_kind: NodeKind, node_id: &str, property: chronicle::Property| RevisionEntry {
-        address: chronicle::PropertyAddress {
-            target: NodeRef {
-                node_kind,
-                node_id: node_id.to_owned(),
-            },
-            property,
-        },
-        revision: 0,
-    };
     let mut vector = Vec::new();
+    let mut seed = |node_kind: NodeKind, node_id: &str| {
+        for property in PROPERTIES {
+            if addressable(&node_kind, property) {
+                vector.push(RevisionEntry {
+                    address: chronicle::PropertyAddress {
+                        target: NodeRef {
+                            node_kind: node_kind.clone(),
+                            node_id: node_id.to_owned(),
+                        },
+                        property,
+                    },
+                    revision: 0,
+                });
+            }
+        }
+    };
     for layer in &document.layers {
         if !matches!(layer.payload, Payload::Unsupported { .. }) {
-            vector.push(entry(
-                NodeKind::Layer,
-                &layer.layer_id,
-                chronicle::Property::Name,
-            ));
-            vector.push(entry(
-                NodeKind::Layer,
-                &layer.layer_id,
-                chronicle::Property::Visible,
-            ));
+            seed(NodeKind::Layer, &layer.layer_id);
         }
     }
     for artboard in &document.artboards {
-        vector.push(entry(
-            NodeKind::Artboard,
-            &artboard.artboard_id,
-            chronicle::Property::Name,
-        ));
+        seed(NodeKind::Artboard, &artboard.artboard_id);
     }
     for spread in &document.page_spreads {
-        vector.push(entry(
-            NodeKind::PageSpread,
-            &spread.page_spread_id,
-            chronicle::Property::Name,
-        ));
+        seed(NodeKind::PageSpread, &spread.page_spread_id);
     }
     vector
 }
 
 /// Sets the addressed property to a neutral value so two documents can be compared without it.
-/// False when the address names no such node or property (chronicle's addressable table).
+/// False when the address names no such node or property. Exhaustive like `addressable`.
 fn mask_property(document: &mut StudioDocument, address: &chronicle::PropertyAddress) -> bool {
     let id = address.target.node_id.as_str();
     match (&address.target.node_kind, address.property) {
@@ -444,7 +558,7 @@ fn mask_property(document: &mut StudioDocument, address: &chronicle::PropertyAdd
             .find(|spread| spread.page_spread_id == id)
             .map(|spread| spread.name.clear())
             .is_some(),
-        _ => false,
+        (&NodeKind::Artboard | &NodeKind::PageSpread, chronicle::Property::Visible) => false,
     }
 }
 
@@ -583,6 +697,8 @@ impl Session {
                     origin,
                     saved_revision: Some(revision),
                     receipts: BTreeMap::new(),
+                    receipt_seq: 0,
+                    receipts_evicted: 0,
                     closed: false,
                     operations: 1,
                     last_report: report,
@@ -624,7 +740,8 @@ impl Session {
     /// resource, action, provider, payload hash and expected revision) returns the stored
     /// receipt after a fresh grant check and applies nothing; the same key with anything else
     /// changed is `idempotency_conflict`. With a commit authority, an unknown outcome is kept
-    /// pending and resolved by lookup, never by blind re-application.
+    /// pending and resolved by lookup, not by blind re-application (test
+    /// `lost_acknowledgement_is_reconciled_and_applied_exactly_once`).
     pub fn submit_keyed(
         &mut self,
         key: &IdempotencyKey,
@@ -718,13 +835,14 @@ impl Session {
                     Resolution::Diverged => return Err(SessionError::ReceiptMismatch),
                 }
             }
-            if let Some(Entry {
-                state: EntryState::Committed(applied),
-                ..
-            }) = self.receipts.get(key.as_str())
+            if let Some(entry) = self.receipts.get_mut(key.as_str())
+                && let EntryState::Committed(applied) = &entry.state
             {
+                // Handing the receipt back is the acknowledgement: it becomes evictable.
+                entry.acknowledged = true;
                 let mut replay = Applied::clone(applied);
                 replay.replayed = true;
+                replay.receipts_evicted = 0;
                 return Ok(replay);
             }
             // Cleared: the authority never saw it; fall through to a fresh, safe attempt.
@@ -740,8 +858,10 @@ impl Session {
         if expected != current {
             return Err(SessionError::StaleRevision { expected, current });
         }
-        if key.is_some() && self.receipts.len() >= self.config.budgets.max_receipts {
-            return Err(SessionError::ReceiptsFull);
+        if key.is_some() {
+            // Room is established before any work starts; the eviction itself happens only when
+            // the new receipt is stored, so a submit that fails evicts nothing.
+            self.ensure_receipt_room()?;
         }
         // Admission is acquired after the grant and released on every exit (RAII); it is not
         // held while a pending outcome is resolved (that path ran above, before this point).
@@ -757,14 +877,10 @@ impl Session {
         } = self.propose_checked(provider_id, params, current, cancel)?;
         let Some(successor) = successor else {
             // No-change: nothing to commit anywhere; the receipt is still stored under the key.
+            let mut applied = applied;
             if let (Some(key), Some(binding)) = (key, binding) {
-                self.receipts.insert(
-                    key.as_str().to_owned(),
-                    Entry {
-                        binding,
-                        state: EntryState::Committed(Box::new(applied.clone())),
-                    },
-                );
+                let stored = EntryState::Committed(Box::new(applied.clone()));
+                applied.receipts_evicted = self.insert_receipt(key, binding, stored, true);
             }
             return Ok(applied);
         };
@@ -788,7 +904,21 @@ impl Session {
                 None => {}
                 Some(CommitOutcome::Committed(receipt)) => {
                     if receipt.revision != applied.revision || receipt.binding != binding {
-                        self.store_pending(key, binding, current, successor, slots, applied);
+                        // The authority answered with a receipt for something else: keep the
+                        // transaction pending and diverged for an operator decision.
+                        let disagreement = Disagreement {
+                            binding: receipt.binding != binding,
+                            revision: receipt.revision != applied.revision,
+                            base: false,
+                        };
+                        let pending = PendingCommit {
+                            base_revision: current,
+                            successor,
+                            slots,
+                            draft: applied,
+                            diverged: Some((receipt, disagreement)),
+                        };
+                        self.store_pending(key, binding, pending);
                         return Err(SessionError::ReceiptMismatch);
                     }
                     applied.commit = Some(receipt);
@@ -804,24 +934,89 @@ impl Session {
                 }
                 Some(CommitOutcome::StaleEpoch) => return Err(SessionError::StaleEpoch),
                 Some(CommitOutcome::Unknown) => {
-                    self.store_pending(key, binding, current, successor, slots, applied);
+                    let pending = PendingCommit {
+                        base_revision: current,
+                        successor,
+                        slots,
+                        draft: applied,
+                        diverged: None,
+                    };
+                    self.store_pending(key, binding, pending);
                     return Err(SessionError::OutcomeUnknown);
                 }
             }
         }
         self.publish(successor, &slots);
-        // A cancel that arrived while the commit was happening cannot erase the edit.
+        // A cancel that arrived while the commit was happening does not erase the edit (test
+        // `admission_overload_cancel_after_commit_and_shutdown_drain`).
         applied.cancel_too_late = cancel.check().is_err();
         if let (Some(key), Some(binding)) = (key, binding) {
-            self.receipts.insert(
-                key.as_str().to_owned(),
-                Entry {
-                    binding,
-                    state: EntryState::Committed(Box::new(applied.clone())),
-                },
-            );
+            let stored = EntryState::Committed(Box::new(applied.clone()));
+            applied.receipts_evicted = self.insert_receipt(key, binding, stored, true);
         }
         Ok(applied)
+    }
+
+    // ----- the idempotency table ---------------------------------------------------------
+
+    /// The oldest committed receipt the caller already holds.
+    fn oldest_evictable(&self) -> Option<String> {
+        self.receipts
+            .iter()
+            .filter(|(_, entry)| {
+                entry.acknowledged && matches!(entry.state, EntryState::Committed(_))
+            })
+            .min_by_key(|(_, entry)| entry.seq)
+            .map(|(key, _)| key.clone())
+    }
+
+    /// Whether a new key can be stored without exceeding `max_receipts`.
+    fn ensure_receipt_room(&self) -> Result<(), SessionError> {
+        let budgets = &self.config.budgets;
+        if self.receipts.len() < budgets.max_receipts {
+            return Ok(());
+        }
+        match budgets.receipt_policy {
+            ReceiptPolicy::RefuseWhenFull => Err(SessionError::ReceiptsFull),
+            ReceiptPolicy::EvictAcknowledged => self
+                .oldest_evictable()
+                .map(|_| ())
+                .ok_or(SessionError::ReceiptsFull),
+        }
+    }
+
+    /// Stores a receipt under `key`, evicting acknowledged receipts first when the table is full
+    /// and the policy allows it. Returns how many were evicted. `ensure_receipt_room` ran before
+    /// the work this receipt records, so a victim exists whenever one is needed here.
+    fn insert_receipt(
+        &mut self,
+        key: &IdempotencyKey,
+        binding: String,
+        state: EntryState,
+        acknowledged: bool,
+    ) -> u32 {
+        let mut evicted = 0u32;
+        while self.receipts.len() >= self.config.budgets.max_receipts
+            && self.config.budgets.receipt_policy == ReceiptPolicy::EvictAcknowledged
+        {
+            let Some(victim) = self.oldest_evictable() else {
+                break;
+            };
+            self.receipts.remove(&victim);
+            evicted = evicted.saturating_add(1);
+            self.receipts_evicted = self.receipts_evicted.saturating_add(1);
+        }
+        self.receipt_seq = self.receipt_seq.saturating_add(1);
+        self.receipts.insert(
+            key.as_str().to_owned(),
+            Entry {
+                binding,
+                state,
+                seq: self.receipt_seq,
+                acknowledged,
+            },
+        );
+        evicted
     }
 
     /// Runs the provider and checks everything about its proposal without publishing anything.
@@ -945,6 +1140,7 @@ impl Session {
                 commit: None,
                 replayed: false,
                 cancel_too_late: false,
+                receipts_evicted: 0,
                 report: ReportStatus::Unaddressed,
             },
             successor: successor_snapshot,
@@ -960,27 +1156,24 @@ impl Session {
         self.snapshot = successor;
     }
 
-    fn store_pending(
-        &mut self,
-        key: &IdempotencyKey,
+    fn store_pending(&mut self, key: &IdempotencyKey, binding: &str, pending: PendingCommit) {
+        // A pending receipt is unacknowledged by definition and is not an eviction victim; room
+        // for it was established by `ensure_receipt_room` before the commit was sent.
+        let state = EntryState::Pending(Box::new(pending));
+        self.insert_receipt(key, binding.to_owned(), state, false);
+    }
+
+    fn disagreement(
+        &self,
+        receipt: &CommitReceipt,
         binding: &str,
-        base_revision: u64,
-        successor: Snapshot,
-        slots: Vec<(usize, u64)>,
-        draft: Applied,
-    ) {
-        self.receipts.insert(
-            key.as_str().to_owned(),
-            Entry {
-                binding: binding.to_owned(),
-                state: EntryState::Pending(Box::new(PendingCommit {
-                    base_revision,
-                    successor,
-                    slots,
-                    draft,
-                })),
-            },
-        );
+        pending: &PendingCommit,
+    ) -> Disagreement {
+        Disagreement {
+            binding: receipt.binding != binding,
+            revision: receipt.revision != pending.draft.revision,
+            base: pending.base_revision != self.snapshot.document().revision,
+        }
     }
 
     // ----- reconcile and drain -----------------------------------------------------------
@@ -1000,21 +1193,36 @@ impl Session {
                 let Some(entry) = self.receipts.remove(key) else {
                     return Resolution::StillUnknown;
                 };
-                let Entry { binding, state } = entry;
-                let EntryState::Pending(pending) = state else {
-                    self.receipts
-                        .insert(key.to_owned(), Entry { binding, state });
+                let Entry {
+                    binding,
+                    state,
+                    seq,
+                    acknowledged,
+                } = entry;
+                let EntryState::Pending(mut pending) = state else {
+                    self.receipts.insert(
+                        key.to_owned(),
+                        Entry {
+                            binding,
+                            state,
+                            seq,
+                            acknowledged,
+                        },
+                    );
                     return Resolution::StillUnknown;
                 };
-                let consistent = receipt.binding == binding
-                    && receipt.revision == pending.draft.revision
-                    && pending.base_revision == self.snapshot.document().revision;
-                if !consistent {
+                let disagreement = self.disagreement(&receipt, &binding, &pending);
+                if disagreement.any() {
+                    // Never resolved here: it stays pending and is listed by `diverged()`
+                    // until an operator calls `discard_diverged` or `resync_diverged`.
+                    pending.diverged = Some((receipt, disagreement));
                     self.receipts.insert(
                         key.to_owned(),
                         Entry {
                             binding,
                             state: EntryState::Pending(pending),
+                            seq,
+                            acknowledged,
                         },
                     );
                     return Resolution::Diverged;
@@ -1027,11 +1235,16 @@ impl Session {
                 } = *pending;
                 self.publish(successor, &slots);
                 draft.commit = Some(receipt);
+                // Adopted here, not handed to the caller: unacknowledged until a replay of the
+                // key or `acknowledge_receipt` returns it, so eviction does not take it (test
+                // `unacknowledged_and_pending_receipts_are_kept_and_a_full_table_refuses_typed`).
                 self.receipts.insert(
                     key.to_owned(),
                     Entry {
                         binding,
                         state: EntryState::Committed(Box::new(draft)),
+                        seq,
+                        acknowledged: false,
                     },
                 );
                 Resolution::Adopted
@@ -1049,45 +1262,47 @@ impl Session {
 
     /// Resolves every pending commit by lookup. With `deadline`, entries not reached before the
     /// deadline are left pending (and counted as unknown).
-    fn resolve_all(&mut self, deadline: Option<(u64, u64)>) -> [u32; 4] {
-        let mut tally = [0u32; 4];
+    fn resolve_all(&mut self, deadline: Option<(u64, u64)>) -> Tally {
+        let mut tally = Tally::default();
         for key in self.pending_keys() {
             if let Some((start, limit)) = deadline
                 && self.ports.clock.now_ms().saturating_sub(start) >= limit
             {
-                tally[2] += 1;
+                Tally::bump(&mut tally.unknown);
                 continue;
             }
             match self.resolve_pending(&key) {
-                Resolution::Adopted => tally[0] += 1,
-                Resolution::Cleared => tally[1] += 1,
-                Resolution::StillUnknown => tally[2] += 1,
-                Resolution::Diverged => tally[3] += 1,
+                Resolution::Adopted => Tally::bump(&mut tally.adopted),
+                Resolution::Cleared => Tally::bump(&mut tally.cleared),
+                Resolution::StillUnknown => Tally::bump(&mut tally.unknown),
+                Resolution::Diverged => Tally::bump(&mut tally.diverged),
             }
         }
         tally
     }
 
     /// Looks up every pending commit: found -> adopted exactly once, absent -> cleared (the
-    /// caller may retry it with the same key), unreachable -> still pending.
+    /// caller may retry it with the same key), unreachable -> still pending, a receipt that
+    /// disagrees -> still pending and listed in `diverged_keys` for an operator decision.
     pub fn reconcile(&mut self, cancel: &CancellationToken) -> Result<ReconcileReport, Failed> {
         let result = cancel
             .check()
             .map_err(|_| SessionError::Canceled)
             .map(|()| {
-                let [adopted, cleared, still_unknown, diverged] = self.resolve_all(None);
+                let tally = self.resolve_all(None);
                 ReconcileReport {
-                    adopted,
-                    cleared,
-                    still_unknown,
-                    diverged,
+                    adopted: tally.adopted,
+                    cleared: tally.cleared,
+                    still_unknown: tally.unknown,
+                    diverged: tally.diverged,
+                    diverged_keys: self.diverged(),
                     report: ReportStatus::Unaddressed,
                 }
             });
         self.settle_with(
             result,
             |r| {
-                if r.still_unknown + r.diverged > 0 {
+                if r.still_unknown > 0 || r.diverged > 0 {
                     Outcome::Failure(hsk_studio_observe::FailureCode::Unavailable)
                 } else {
                     Outcome::Success
@@ -1103,15 +1318,17 @@ impl Session {
     }
 
     /// Shutdown: closes admission, resolves pending commits until `deadline_ms` on the injected
-    /// clock, and reports (never drops) whatever is still unresolved.
+    /// clock, and reports whatever is still unresolved instead of dropping it (tests
+    /// `admission_overload_cancel_after_commit_and_shutdown_drain`,
+    /// `inconsistent_proposals_are_refused_and_a_zero_deadline_drain_reports_what_it_left`).
     pub fn drain(&mut self, deadline_ms: u64) -> Result<DrainReport, Failed> {
         self.closed = true;
         let start = self.ports.clock.now_ms();
-        let [adopted, cleared, _, _] = self.resolve_all(Some((start, deadline_ms)));
+        let tally = self.resolve_all(Some((start, deadline_ms)));
         let elapsed_ms = self.ports.clock.now_ms().saturating_sub(start);
         let result = Ok(DrainReport {
-            adopted,
-            cleared,
+            adopted: tally.adopted,
+            cleared: tally.cleared,
             abandoned: self.pending_keys(),
             elapsed_ms,
             deadline_met: elapsed_ms <= deadline_ms,
@@ -1128,6 +1345,210 @@ impl Session {
             },
             |r, report| r.report = report,
         )
+    }
+
+    // ----- receipts and the operator's decision on a diverged commit -----------------------
+
+    /// Keys of pending commits whose authority receipt disagreed with the transaction the
+    /// session sent. They stay pending, and block every later submit with
+    /// `reconciliation_required`, until `discard_diverged` or `resync_diverged` resolves them.
+    pub fn diverged(&self) -> Vec<String> {
+        self.receipts
+            .iter()
+            .filter(
+                |(_, entry)| matches!(&entry.state, EntryState::Pending(p) if p.diverged.is_some()),
+            )
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    /// A snapshot of the idempotency table: size, bound, pending and unacknowledged receipts
+    /// and the eviction count.
+    pub fn receipt_stats(&self) -> ReceiptStats {
+        let count =
+            |keep: &dyn Fn(&Entry) -> bool| self.receipts.values().filter(|e| keep(e)).count();
+        ReceiptStats {
+            held: self.receipts.len(),
+            capacity: self.config.budgets.max_receipts,
+            pending: count(&|e| matches!(e.state, EntryState::Pending(_))),
+            unacknowledged: count(&|e| {
+                !e.acknowledged && matches!(e.state, EntryState::Committed(_))
+            }),
+            evicted: self.receipts_evicted,
+        }
+    }
+
+    /// Hands the caller the committed receipt held under `key` (as a replay) and marks it
+    /// acknowledged, which makes it evictable. A pending key answers `outcome_unknown` (or
+    /// `receipt_mismatch` when diverged); a key that is not held answers `receipt_not_held`.
+    /// Grants are checked afresh, like any replay.
+    pub fn acknowledge_receipt(&mut self, key: &IdempotencyKey) -> Result<Applied, Failed> {
+        let result = self.acknowledge_inner(key);
+        self.settle(result, |applied, report| applied.report = report)
+    }
+
+    fn acknowledge_inner(&mut self, key: &IdempotencyKey) -> Result<Applied, SessionError> {
+        self.check_grant(Action::Edit)?;
+        let Some(entry) = self.receipts.get_mut(key.as_str()) else {
+            return Err(SessionError::ReceiptNotHeld);
+        };
+        match &entry.state {
+            EntryState::Pending(pending) if pending.diverged.is_some() => {
+                Err(SessionError::ReceiptMismatch)
+            }
+            EntryState::Pending(_) => Err(SessionError::OutcomeUnknown),
+            EntryState::Committed(applied) => {
+                entry.acknowledged = true;
+                let mut replay = Applied::clone(applied);
+                replay.replayed = true;
+                replay.receipts_evicted = 0;
+                Ok(replay)
+            }
+        }
+    }
+
+    /// Operator decision: drop a diverged pending commit. The session's document is untouched
+    /// (it may now be behind the authority; the next commit then answers `stale_revision`) and
+    /// the key stops blocking submits. The command looks the authority up again first, so it
+    /// acts on the receipt as it is now: `not_diverged` when the key is not held pending
+    /// diverged, `outcome_unknown` when the authority cannot be asked; nothing changes then.
+    pub fn discard_diverged(
+        &mut self,
+        key: &IdempotencyKey,
+        cancel: &CancellationToken,
+    ) -> Result<DivergenceReport, Failed> {
+        let result = self.discard_inner(key, cancel);
+        self.settle(result, |report, status| report.report = status)
+    }
+
+    fn discard_inner(
+        &mut self,
+        key: &IdempotencyKey,
+        cancel: &CancellationToken,
+    ) -> Result<DivergenceReport, SessionError> {
+        let (authority, disagreement, draft_revision) = self.diverged_precondition(key, cancel)?;
+        self.receipts.remove(key.as_str());
+        let revision = self.snapshot.document().revision;
+        Ok(DivergenceReport {
+            key: key.as_str().to_owned(),
+            resolution: Divergence::Discarded,
+            revision_before: revision,
+            revision_after: revision,
+            draft_revision,
+            authority,
+            disagreement,
+            report: ReportStatus::Unaddressed,
+        })
+    }
+
+    /// Operator decision: replace the session's document with `authority_document`, the
+    /// authority's own document at the revision its receipt names, and drop the diverged
+    /// pending commit. The bytes are untrusted: they are bounded by the folio input budget,
+    /// parsed by folio under the session budgets, and must name this session's document at the
+    /// receipt's revision with every raster asset present in the source package; otherwise
+    /// `authority_document_*` and nothing changes. The property revision vector restarts at 0,
+    /// as after an open. Same lookup preconditions as [`Session::discard_diverged`].
+    pub fn resync_diverged(
+        &mut self,
+        key: &IdempotencyKey,
+        authority_document: &[u8],
+        cancel: &CancellationToken,
+    ) -> Result<DivergenceReport, Failed> {
+        let result = self.resync_inner(key, authority_document, cancel);
+        self.settle(result, |report, status| report.report = status)
+    }
+
+    fn resync_inner(
+        &mut self,
+        key: &IdempotencyKey,
+        authority_document: &[u8],
+        cancel: &CancellationToken,
+    ) -> Result<DivergenceReport, SessionError> {
+        let (authority, disagreement, draft_revision) = self.diverged_precondition(key, cancel)?;
+        let snapshot =
+            self.inspect_authority_document(authority_document, authority.revision, cancel)?;
+        let revision_before = self.snapshot.document().revision;
+        let revision_after = snapshot.document().revision;
+        self.revisions = seed_revisions(snapshot.document());
+        self.snapshot = snapshot;
+        self.receipts.remove(key.as_str());
+        Ok(DivergenceReport {
+            key: key.as_str().to_owned(),
+            resolution: Divergence::Resynced,
+            revision_before,
+            revision_after,
+            draft_revision,
+            authority,
+            disagreement,
+            report: ReportStatus::Unaddressed,
+        })
+    }
+
+    /// Both operator commands act only on a pending key whose receipt, looked up now, still
+    /// disagrees. Returns that receipt, how it disagrees and the revision the dropped commit
+    /// would have produced.
+    fn diverged_precondition(
+        &self,
+        key: &IdempotencyKey,
+        cancel: &CancellationToken,
+    ) -> Result<(CommitReceipt, Disagreement, u64), SessionError> {
+        cancel.check().map_err(|_| SessionError::Canceled)?;
+        self.check_grant(Action::Edit)?;
+        let Some(entry) = self.receipts.get(key.as_str()) else {
+            return Err(SessionError::ReceiptNotHeld);
+        };
+        let (EntryState::Pending(pending), Some(port)) = (&entry.state, &self.ports.commits) else {
+            return Err(SessionError::NotDiverged);
+        };
+        let receipt = match port.lookup(key) {
+            Lookup::Unknown => return Err(SessionError::OutcomeUnknown),
+            Lookup::Absent => return Err(SessionError::NotDiverged),
+            Lookup::Found(receipt) => receipt,
+        };
+        let disagreement = self.disagreement(&receipt, &entry.binding, pending);
+        if !disagreement.any() {
+            return Err(SessionError::NotDiverged);
+        }
+        Ok((receipt, disagreement, pending.draft.revision))
+    }
+
+    /// Parses the authority's document under the session budgets and checks it is this
+    /// session's document at `receipt_revision` and writable from the source package.
+    fn inspect_authority_document(
+        &self,
+        bytes: &[u8],
+        receipt_revision: u64,
+        cancel: &CancellationToken,
+    ) -> Result<Snapshot, SessionError> {
+        let fault = SessionError::AuthorityDocument;
+        let budget = self.config.budgets.folio();
+        if bytes.len() > budget.input_bytes {
+            return Err(fault(AuthorityFault::TooLarge));
+        }
+        let inspection = folio::inspect_bytes(bytes, budget, cancel, &*self.ports.resolver)
+            .map_err(|diagnostic| match diagnostic.code {
+                folio::Code::Canceled => SessionError::Canceled,
+                folio::Code::BudgetExceeded => fault(AuthorityFault::TooLarge),
+                _ => fault(AuthorityFault::Invalid),
+            })?;
+        let snapshot = match inspection {
+            folio::Inspection::Editable(snapshot) => snapshot,
+            folio::Inspection::ReadOnly(_) => return Err(fault(AuthorityFault::ReadOnly)),
+        };
+        let document = snapshot.document();
+        if document.document_id != self.snapshot.document().document_id {
+            return Err(fault(AuthorityFault::WrongDocument));
+        }
+        if document.revision != receipt_revision {
+            return Err(fault(AuthorityFault::WrongRevision));
+        }
+        let source = self.source.lock().unwrap_or_else(PoisonError::into_inner);
+        require_tile_assets(document, source.manifest()).map_err(|error| match error {
+            PackageError::InvalidDigest => fault(AuthorityFault::Invalid),
+            _ => fault(AuthorityFault::MissingAsset),
+        })?;
+        drop(source);
+        Ok(snapshot)
     }
 
     // ----- save and export ---------------------------------------------------------------
@@ -1172,18 +1593,18 @@ impl Session {
                 images.extend(supplied.iter().cloned());
                 replaced = true;
             } else {
-                dropped += supplied.len();
+                dropped = dropped.saturating_add(supplied.len());
             }
         }
         if replaced || self.preview_revision != revision {
-            dropped += self.preview_refs.len();
+            dropped = dropped.saturating_add(self.preview_refs.len());
         } else {
             let mut reader = self.source.lock().unwrap_or_else(PoisonError::into_inner);
             for declared in &self.preview_refs {
                 match reader.read_preview(&declared.name, cancel) {
                     Ok(image) => images.push(image),
                     Err(PackageError::Canceled) => return Err(SessionError::Canceled),
-                    Err(_) => dropped += 1,
+                    Err(_) => dropped = dropped.saturating_add(1),
                 }
             }
         }
@@ -1290,10 +1711,11 @@ impl Session {
             {
                 return Err(mismatch());
             }
-            total += expected;
-            if total > limits.max_entry_bytes {
-                return Err(SessionError::Package(PackageError::TotalTooLarge));
-            }
+            // The running aggregate is checked as it grows, before anything is kept.
+            total = total
+                .checked_add(expected)
+                .filter(|sum| *sum <= limits.max_entry_bytes)
+                .ok_or(SessionError::Package(PackageError::TotalTooLarge))?;
         }
         let accepted = images.len();
         self.supplied_previews = Some((current, images));
@@ -1372,7 +1794,8 @@ impl Session {
     }
 
     /// Writes the current revision to memory and re-reads it with the package reader before
-    /// returning it, so the receipt proves the exact immutable revision it carries.
+    /// returning it, so the receipt names the exact immutable revision it carries (test
+    /// `export_checkpoint_is_verified_and_previews_follow_the_revision`).
     pub fn export_checkpoint(&mut self, cancel: &CancellationToken) -> Result<Checkpoint, Failed> {
         let result = self.export_inner(cancel);
         self.settle(result, |checkpoint, report| checkpoint.report = report)
@@ -1429,7 +1852,7 @@ impl Session {
         ok_outcome: impl FnOnce(&T) -> Outcome,
         attach: impl FnOnce(&mut T, ReportStatus),
     ) -> Result<T, Failed> {
-        self.operations += 1;
+        self.operations = self.operations.saturating_add(1);
         let outcome = match &result {
             Ok(value) => ok_outcome(value),
             Err(error) => error.outcome(),
@@ -1524,7 +1947,8 @@ impl Session {
     }
 
     /// Bytes the session itself keeps resident: the document, preserved unknown entries and
-    /// host-supplied previews. Asset and source preview bodies are never part of it.
+    /// host-supplied previews. Asset and source preview bodies are not part of it (test
+    /// `lazy_source_holds_no_assets_and_save_streams_them_on_demand`).
     pub fn resident_bytes(&self) -> u64 {
         let quarantined: usize = self.quarantined.iter().map(|q| q.bytes.len()).sum();
         let supplied: usize = self
@@ -1533,6 +1957,8 @@ impl Session {
             .flat_map(|(_, images)| images)
             .map(|image| image.pixels.len())
             .sum();
-        (self.snapshot.encoded_bytes().len() + quarantined + supplied) as u64
+        (self.snapshot.encoded_bytes().len())
+            .saturating_add(quarantined)
+            .saturating_add(supplied) as u64
     }
 }
