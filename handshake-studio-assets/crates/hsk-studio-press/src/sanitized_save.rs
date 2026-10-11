@@ -37,7 +37,7 @@ use crate::content::{Op, parse_content_ext};
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
 use crate::pdf_edit::PdfDoc;
-use crate::raster::{InlineClass, RASTER_CLASS, classify_inline, decode_prefix, hidden_zlib, raster_tail};
+use crate::raster::{InlineClass, RASTER_CLASS, classify_inline, codec_signature, decode_prefix, hidden_zlib, raster_tail};
 use crate::reader::{check_cancel, find, parse_document};
 use crate::redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
 use crate::show_text::{FontCache, FontText, Role, Walker, content_role_streams, fonts_in, is_show, pages, show_strings};
@@ -458,6 +458,8 @@ fn inline_dict(operands: &[Object]) -> Dict {
             let key: &[u8] = match k.as_slice() {
                 b"F" => b"Filter",
                 b"DP" => b"DecodeParms",
+                b"W" => b"Width",
+                b"H" => b"Height",
                 other => other,
             };
             d.set_key(key, v.clone());
@@ -520,11 +522,15 @@ fn inline_images(
                             }
                             push_hits(proof, &inner, vars, cancel, at)?;
                         }
+                        // PLR-040: only data with the codec's own structure is raster.
+                        match codec_signature(&filter, &d.data, &image.dict) {
+                            Ok(()) => proof.raster_streams.push(RasterStream { object: num, class: RASTER_CLASS, filter, inline: true }),
+                            Err(why) => proof.streams_not_decodable.push((num, format!("inline:{filter}:{why}"))),
+                        }
                     }
                     Err(e @ (PressError::InputLimit(_) | PressError::Canceled)) => return Err(e),
                     Err(_) => proof.streams_not_decodable.push((num, "inline:decode_error".into())),
                 }
-                proof.raster_streams.push(RasterStream { object: num, class: RASTER_CLASS, filter, inline: true });
             }
             InlineClass::Blocking(f) => proof.streams_not_decodable.push((num, format!("inline:{f}"))),
         }
@@ -706,7 +712,13 @@ pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &L
                             }
                             push_hits(&mut proof, &inner, &vars, cancel, |offset| PayloadLocation::DecodedStream { object: *num, offset })?;
                         }
-                        proof.raster_streams.push(RasterStream { object: *num, class: RASTER_CLASS, filter, inline: false });
+                        // PLR-040 (fail closed): the codec name alone does not make pixels; data
+                        // without the codec's structure blocks as undecodable (test
+                        // raster_names_need_codec_structure).
+                        match codec_signature(&filter, &d.data, &s.dict) {
+                            Ok(()) => proof.raster_streams.push(RasterStream { object: *num, class: RASTER_CLASS, filter, inline: false }),
+                            Err(why) => proof.streams_not_decodable.push((*num, format!("{filter}:{why}"))),
+                        }
                         raster_objects.insert(*num);
                     }
                     None => proof.streams_decoded = proof.streams_decoded.saturating_add(1),

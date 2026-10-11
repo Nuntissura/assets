@@ -1489,9 +1489,10 @@ fn raster_class_is_listed_and_region_images_are_removed() {
     assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 8, .. })));
     assert!(!out.is_proven());
 
-    // Every other codec of the class is listed under its own name and does not block.
-    for codec in ["DCTDecode", "JPXDecode", "CCITTFaxDecode", "JBIG2Decode"] {
-        let pdf = raster_doc(&format!("/Filter /{codec}"), b"codestream bytes", &outside);
+    // Every other codec of the class is listed under its own name and does not block, when its data
+    // has that codec's structure (lead decision PLR-040; test raster_names_need_codec_structure).
+    for (codec, data, parms) in r7_codec_samples() {
+        let pdf = raster_doc(&format!("/Filter /{codec} {parms}"), &data, &outside);
         let proof = verify_payload_absent(&pdf, &[b"zzzzzz".to_vec()], &Limits::default(), &token()).unwrap();
         assert_eq!(proof.raster_streams.iter().map(|r| r.filter.as_str()).collect::<Vec<_>>(), vec![codec]);
         assert!(proof.fully_decoded() && proof.is_clean(), "{codec}: {proof:?}");
@@ -1542,20 +1543,25 @@ fn raster_class_is_listed_and_region_images_are_removed() {
     assert!(removed.proof.raster_streams.is_empty());
     assert_eq!(independent_streams(&removed.bytes).iter().map(|s| count(s, b"/Im1 Do")).sum::<usize>(), 0);
 
-    // Inline images: same class and same rules.
+    // Inline images: same class and same rules (the data is a JPEG: PLR-040).
     let inline = |at: &str, filter: &str| {
-        format!("{TEXT_IN_REGION}\nq 50 0 0 50 {at} cm BI /W 1 /H 1 /CS /G /BPC 8 /F /{filter} ID XXJPEGDATAXX\nEI Q")
+        let mut c = format!("{TEXT_IN_REGION}\nq 50 0 0 50 {at} cm BI /W 1 /H 1 /CS /G /BPC 8 /F /{filter} ID ").into_bytes();
+        c.extend_from_slice(&jpeg(b"XXJPEGDATAXX"));
+        c.extend_from_slice(b"\nEI Q");
+        let mut objs = base_objs(&c, "<< /Title (T) >>");
+        objs[7].1 = stream_body(&format!("{IMG} "), b"x");
+        build(&objs, "/Info 7 0 R", b"")
     };
-    let out = run(&raster_doc("", b"x", &inline("300 300", "DCT")), UnsupportedPolicy::Refuse).unwrap();
+    let out = run(&inline("300 300", "DCT"), UnsupportedPolicy::Refuse).unwrap();
     assert!(out.proof.raster_streams.iter().any(|r| r.inline && r.filter == "DCT" && r.class == RASTER_CLASS));
     assert!(out.is_proven(), "{:?}", out.proof);
-    let near = raster_doc("", b"x", &inline("80 660", "DCT"));
+    let near = inline("80 660", "DCT");
     assert_eq!(run(&near, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::InlineImage));
     let removed = run(&near, UnsupportedPolicy::RemoveImages).unwrap();
     assert_eq!(removed.reports[0].inline_images_removed, 1);
     assert!(removed.is_proven() && independent_streams(&removed.bytes).iter().all(|s| find(s, b"XXJPEGDATAXX").is_none()));
     // An inline image with an unknown filter blocks, like a stream would.
-    let out = run(&raster_doc("", b"x", &inline("300 300", "Foo")), UnsupportedPolicy::Refuse).unwrap();
+    let out = run(&inline("300 300", "Foo"), UnsupportedPolicy::Refuse).unwrap();
     assert!(out.proof.streams_not_decodable.iter().any(|(_, f)| f == "inline:Foo") && !out.is_proven());
 }
 
@@ -2313,7 +2319,9 @@ fn stray_streams_and_hidden_payloads_are_not_kept_text() {
             "{codec}: {:?}",
             out.proof.hits
         );
-        assert!(!out.is_proven() && out.proof.raster_streams.len() == 1, "{codec}");
+        // PLR-040: a zlib stream is not that codec's data, so the stream is not raster at all.
+        assert!(!out.is_proven() && out.proof.raster_streams.is_empty(), "{codec}");
+        assert!(out.proof.streams_not_decodable.iter().any(|(n, why)| *n == 8 && why.starts_with(codec)), "{codec}: {:?}", out.proof.streams_not_decodable);
     }
     // ... and a zlib bomb behind a raster filter name is refused like any bomb.
     let bomb = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0u8; 8 << 20], 6);
@@ -2680,4 +2688,64 @@ fn listed_but_undrawn_forms_are_not_kept_text() {
     // Control: drawn by the page, the same form is kept text (a collision, not a leak).
     let out = r7_run(&doc(&format!("{page}\nq /Fm9 Do Q"), "/Fm9 20 0 R", vec![(20, form(secret, ""))]));
     assert!(out.is_proven() && out.proof.kept_text_collisions.iter().any(|c| c.object == 20), "{:?}", out.proof);
+}
+
+/// Smallest data with each raster codec's structure: (codec, data, extra dictionary entries).
+fn r7_codec_samples() -> Vec<(&'static str, Vec<u8>, &'static str)> {
+    vec![
+        ("DCTDecode", jpeg(b"c"), ""),
+        ("JPXDecode", vec![0xFF, 0x4F, 0xFF, 0x51, 0, 0, 0xFF, 0xD9], ""),
+        // T.6: one white row (V0), EOFB.
+        ("CCITTFaxDecode", vec![0x80, 0x08, 0x00, 0x80], "/DecodeParms << /K -1 /Columns 1 /Rows 1 >>"),
+        // T.4 one-dimensional: white run 1.
+        ("CCITTFaxDecode", vec![0x1C], "/DecodeParms << /K 0 /Columns 1 /Rows 1 >>"),
+        // One end-of-page segment (type 49), page 1, no data.
+        ("JBIG2Decode", vec![0, 0, 0, 1, 0x31, 0, 1, 0, 0, 0, 0], ""),
+    ]
+}
+
+/// PLR-040 (lead decision, fail closed): a raster codec NAME does not make a stream pixels. Data
+/// without the codec's structure (raw deflate, zlib after a junk byte, LZW, ASCII85, a JPEG with
+/// bytes after EOI, a JBIG2 file header, CCITT rows that do not decode to /Width) is undecodable
+/// and blocks. At 0e48167 every such stream was listed as raster and the proof read clean.
+#[test]
+fn raster_names_need_codec_structure() {
+    let page = r7_page();
+    let text = b"hidden SECRET-ALPHA payload";
+    let payloads: Vec<(&str, Vec<u8>)> = vec![
+        ("raw deflate", miniz_oxide::deflate::compress_to_vec(text, 6)),
+        ("junk + zlib", [b"J".to_vec(), zl(text)].concat()),
+        ("lzw", lzw_encode(text)),
+        ("ascii85", a85(text)),
+    ];
+    let ccitt = "/DecodeParms << /K -1 /Columns 1 /Rows 1 >>";
+    for codec in ["DCTDecode", "JPXDecode", "CCITTFaxDecode", "JBIG2Decode"] {
+        for (what, data) in &payloads {
+            let parms = if codec == "CCITTFaxDecode" { ccitt } else { "" };
+            let p = r7_verify(&raster_doc(&format!("/Filter /{codec} {parms}"), data, &page));
+            assert!(!p.is_clean() && p.raster_streams.is_empty(), "{codec} / {what}: {p:?}");
+            assert!(p.streams_not_decodable.iter().any(|(n, why)| *n == 8 && why.starts_with(codec)), "{codec} / {what}: {:?}", p.streams_not_decodable);
+        }
+    }
+    // Structure violations of otherwise plausible data.
+    let mut after_eoi = jpeg(b"c");
+    after_eoi.extend_from_slice(b"SECRET");
+    let mut jbig2_file = vec![0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0, 0, 0, 1];
+    jbig2_file.extend_from_slice(&[0, 0, 0, 1, 0x31, 0, 1, 0, 0, 0, 0]);
+    for (codec, data, parms) in [
+        ("DCTDecode", after_eoi, ""),
+        ("JBIG2Decode", jbig2_file, ""),
+        ("JPXDecode", vec![0xFF, 0x4F, 0xFF, 0x51, 0, 0], ""),
+        ("CCITTFaxDecode", vec![0x80, 0x08, 0x00, 0x80], "/DecodeParms << /K -1 /Columns 2 /Rows 1 >>"),
+        ("CCITTFaxDecode", vec![0x80, 0x08, 0x00, 0x80], "/DecodeParms << /K 1 /Columns 1 /Rows 1 >>"),
+        ("CCITTFaxDecode", vec![0x80, 0x08, 0x00, 0x80, b'X'], "/DecodeParms << /K -1 /Columns 1 /Rows 1 >>"),
+    ] {
+        let p = r7_verify(&raster_doc(&format!("/Filter /{codec} {parms}"), &data, &page));
+        assert!(!p.is_clean() && p.raster_streams.is_empty(), "{codec} {parms}: {p:?}");
+    }
+    // Control: the smallest well-formed data of each codec is raster and does not block.
+    for (codec, data, parms) in r7_codec_samples() {
+        let p = r7_verify(&raster_doc(&format!("/Filter /{codec} {parms}"), &data, &page));
+        assert!(p.is_clean() && p.raster_streams.len() == 1, "{codec} {parms}: {p:?}");
+    }
 }
