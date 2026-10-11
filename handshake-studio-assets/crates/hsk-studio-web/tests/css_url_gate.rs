@@ -1402,3 +1402,52 @@ fn r12_p3_link_load_context_follows_rel_and_as() {
         }
     });
 }
+
+/// The three R12 pre-review payloads, one assertion group each (the red proof names them one by one).
+#[test]
+fn r12_prereview_f1_payload_data_css_in_script_src_and_svg_script_href() {
+    bounded_case(
+        "r12_prereview_f1_payload_data_css_in_script_src_and_svg_script_href",
+        || {
+            let url = "data:text/css,fetch('https://evil.example/x')";
+            assert_only(
+                &format!("<script src=\"{url}\"></script>"),
+                url,
+                INLINE_DOCUMENT,
+            );
+            assert_only(
+                &format!("<svg><script href=\"{url}\"/></svg>"),
+                url,
+                INLINE_DOCUMENT,
+            );
+        },
+    );
+}
+
+#[test]
+fn r12_prereview_f2_payload_self_reference_from_link_import_and_script() {
+    bounded_case(
+        "r12_prereview_f2_payload_self_reference_from_link_import_and_script",
+        || {
+            // The quirks-mode reading of this document is `<link ...><p>` (an invalid rule), `{}`, then a valid rule that
+            // loads the image from the text of the paragraph.
+            let doc =
+                format!("<link rel=stylesheet href=\"#\"><p>{{}}*{{background:url({EVIL})}}</p>");
+            assert_only(&doc, "#", SELF_REFERENCE);
+            assert_only("<style>@import \"#\";</style>", "#", SELF_REFERENCE);
+            assert_only("<script src=\"#\"></script>", "#", SELF_REFERENCE);
+        },
+    );
+}
+
+#[test]
+fn r12_prereview_f3_payload_nbsp_value_is_a_relative_reference() {
+    bounded_case(
+        "r12_prereview_f3_payload_nbsp_value_is_a_relative_reference",
+        || {
+            let (seen, calls) = scan("<img src=\"&nbsp;\">").unwrap();
+            assert_eq!(seen, [("\u{a0}".to_owned(), UNAVAILABLE.to_owned())]);
+            assert_eq!(calls, ["\u{a0}"]);
+        },
+    );
+}
