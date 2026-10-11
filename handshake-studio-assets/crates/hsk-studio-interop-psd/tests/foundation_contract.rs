@@ -567,6 +567,12 @@ fn hostile_inputs_are_rejected_with_distinct_codes() {
         let section_len_at = 26 + 4 + 4 + u32::from_be_bytes([good[30], good[31], good[32], good[33]]) as usize;
         check(&patch(section_len_at, &[0xFF, 0xFF, 0xFF, 0xFF]), &limits, "psd_truncated");
 
+        // PSB: a channel length of u64::MAX is refused before any allocation; PSD dimension ceiling
+        let mut wide = psb_fixture();
+        wide[92..100].copy_from_slice(&[0xFF; 8]);
+        check(&wide, &limits, "psd_overflow");
+        check(&patch(14, &30_001u32.to_be_bytes()), &limits, "psd_bad_dimensions");
+
         // codec failures
         let cancel = CancellationToken::default();
         let geo = PlaneGeometry { width: 4, height: 1, depth: 8, planes: 1, psb: false };
@@ -595,48 +601,213 @@ fn hostile_inputs_are_rejected_with_distinct_codes() {
         let token = CancellationToken::default();
         token.cancel();
         assert_eq!(read_psd(&good, &limits, &token).unwrap_err().code(), "psd_canceled");
-        assert!(codes.len() >= 11, "codes are distinct per cause: {codes:?}");
+        assert!(codes.len() >= 12, "codes are distinct per cause: {codes:?}");
     });
 }
 
+// ---- proposal, edit loop, observe ----------------------------------------------------------
+
+use hsk_studio_folio::{Budget, Parent, Payload, Resolution, Resolver};
+use hsk_studio_observe::{DeliveryClass, DeliveryError, FailureCode, Outcome, SinkPort};
+
+struct Mint(u64);
+impl Mint {
+    fn next(&mut self, prefix: &str) -> String {
+        self.0 += 1;
+        format!("{prefix}-019abcde-0000-7000-8000-{:012x}", self.0)
+    }
+}
+impl IdMint for Mint {
+    fn document_id(&mut self) -> String {
+        self.next("SDOC")
+    }
+    fn artboard_id(&mut self) -> String {
+        self.next("SART")
+    }
+    fn layer_id(&mut self) -> String {
+        self.next("SLYR")
+    }
+    fn linear_working_profile_id(&mut self) -> String {
+        self.next("SCPF")
+    }
+    fn tile_manifest_id(&mut self, layer_id: &str, object_key: &str) -> String {
+        format!("manifest/{layer_id}/{object_key}")
+    }
+}
+struct Open;
+impl Resolver for Open {
+    fn primitive(&self, _: &str, _: &str) -> Resolution {
+        Resolution::Available
+    }
+    fn profile(&self, _: &str) -> Resolution {
+        Resolution::Available
+    }
+    fn tile(&self, _: &hsk_studio_folio::TileRef) -> Resolution {
+        Resolution::Available
+    }
+    fn format_supported(&self, format: &str) -> bool {
+        format == "rgb_f32le"
+    }
+    fn primitive_layer_binding(&self, _: &str, _: &str) -> bool {
+        false
+    }
+}
+#[derive(Default)]
+struct Frames(Vec<(DeliveryClass, usize)>);
+impl SinkPort for Frames {
+    fn try_send(&mut self, class: DeliveryClass, bytes: &[u8]) -> std::result::Result<(), DeliveryError> {
+        self.0.push((class, bytes.len()));
+        Ok(())
+    }
+}
+fn f32_at(bytes: &[u8], index: usize) -> f32 {
+    f32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
+}
+fn srgb_to_linear(v: u8) -> f64 {
+    let c = f64::from(v) / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
 #[test]
-fn unmodified_roundtrip_is_byte_identical_and_rename_touches_only_the_name() {
-    bounded_case("unmodified_roundtrip_is_byte_identical_and_rename_touches_only_the_name", || {
+fn proposal_edit_loop_roundtrip_and_observe() {
+    bounded_case("proposal_edit_loop_roundtrip_and_observe", || {
         let limits = Limits::default();
-        for original in [fixture(), psb_fixture()] {
-            let doc = read(&original);
-            assert_eq!(write_psd(&doc, &limits).expect("write"), original, "unmodified re-emission is exact");
+        let cancel = CancellationToken::default();
+        let original = fixture();
+
+        // unmodified documents re-emit byte-identically (PSD and PSB/Lr16)
+        for bytes in [original.clone(), psb_fixture()] {
+            assert_eq!(write_psd(&read(&bytes), &limits).expect("write"), bytes);
         }
 
-        let original = fixture();
+        // proposal: valid Folio snapshot, hierarchy, tiles, sidecar, loss, provenance
         let doc = read(&original);
-        let mut edited = doc.clone();
-        {
-            let layers = &mut edited.layer_section.layer_info.as_mut().expect("layers").layers;
-            layers[5].name = "Folder \u{4e2d}".to_owned(); // has luni: replaced
-            layers[2].name = "caf\u{e9}\u{4e2d}".to_owned(); // no luni: added, Pascal falls back to Latin-1
+        let source = SourceIdentity::of(&original);
+        let budget = Budget { input_bytes: 8 << 20, payload_bytes: 4 << 20, ..Budget::default() };
+        let cfg = ProposalConfig { limits: &limits, budget, resolver: &Open };
+        let proposal = to_proposal(&doc, &source, &cfg, &mut Mint(0), &cancel).expect("proposal");
+        let folio_doc = proposal.snapshot.document();
+        let names: Vec<&str> = folio_doc.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Group \u{fc}", "zip", "fg", "bg", "base"], "dividers are structure, not layers");
+        let group_id = folio_doc.layers[0].layer_id.clone();
+        assert!(matches!(folio_doc.layers[0].parent, Parent::Root(())));
+        for l in &folio_doc.layers[1..4] {
+            assert!(matches!(&l.parent, Parent::Node(n) if n.node_id == group_id));
         }
-        let bytes = write_psd(&edited, &limits).expect("write edited");
+        assert!(matches!(folio_doc.layers[4].parent, Parent::Root(())));
+        assert!(!folio_doc.layers[2].visible, "fg is hidden in the file");
+        assert_eq!(folio_doc.colour_mode, 2);
+        assert_eq!(folio_doc.artboards.len(), 1);
+        assert_eq!(folio_doc.graph.outputs.len(), 2);
+        let into_group: Vec<&str> = folio_doc
+            .graph
+            .edges
+            .iter()
+            .filter(|e| e.target.layer_id == group_id)
+            .map(|e| e.source.layer_id.as_str())
+            .collect();
+        let id_of = |name: &str| folio_doc.layers.iter().find(|l| l.name == name).unwrap().layer_id.as_str();
+        assert_eq!(into_group, [id_of("bg"), id_of("fg"), id_of("zip")], "ordinal 0 is the bottom-most child");
+
+        let appearance = |name: &str| proposal.appearance.iter().find(|a| a.layer_id == id_of(name)).unwrap();
+        let bg_look = appearance("bg");
+        assert_eq!((bg_look.opacity, bg_look.blend_mode, bg_look.clipped), (128, Some(BlendMode::Multiply), false));
+        let fg_look = appearance("fg");
+        assert_eq!((fg_look.blend_mode, fg_look.clipped), (Some(BlendMode::Screen), true));
+        assert_eq!(appearance("Group \u{fc}").blend_mode, Some(BlendMode::PassThrough));
+
+        assert_eq!(proposal.tiles.len(), 4);
+        let bg = proposal.tiles.iter().find(|t| t.layer_id == id_of("bg")).unwrap();
+        assert_eq!((bg.column, bg.row), (0, 0));
+        assert_eq!(bg.colour.len(), 256 * 256 * 12);
+        assert_eq!(bg.alpha.len(), 256 * 256 * 4);
+        assert!((f64::from(f32_at(&bg.colour, 0)) - srgb_to_linear(1)).abs() < 1e-6, "R=1 uses the linear toe");
+        assert_eq!(f32_at(&bg.alpha, 0), 1.0);
+        assert_eq!(f32_at(&bg.alpha, 2), 0.0, "alpha channel is straight and per pixel");
+        assert_eq!(f32_at(&bg.alpha, 4), 0.0, "outside the layer rectangle is transparent");
+        assert_eq!(f32_at(&bg.colour, 4 * 3), 0.0);
+        let base = proposal.tiles.iter().find(|t| t.layer_id == id_of("base")).unwrap();
+        assert!((f64::from(f32_at(&base.colour, 0)) - srgb_to_linear(200)).abs() < 1e-6);
+        let zip = proposal.tiles.iter().find(|t| t.layer_id == id_of("zip")).unwrap();
+        assert_eq!(f32_at(&zip.colour, 2), 0.0, "sRGB 0 maps to 0.0");
+        assert_eq!(f32_at(&zip.alpha, 0), 1.0);
+        let Payload::Raster { tiles } = &folio_doc.layers.iter().find(|l| l.name == "bg").unwrap().payload else {
+            panic!("bg is raster")
+        };
+        assert_eq!(tiles[0].content_digest.digest, bg.content_sha256_hex);
+        assert_eq!(tiles[0].format, "rgb_f32le");
+
+        assert!(proposal.loss.has_code("icc_profile_not_applied"));
+        assert!(proposal.loss.has_code("profile_assumed_srgb"));
+        assert!(proposal.loss.has_code("opacity_blend_clipping_sidecar_only"));
+        assert_eq!(proposal.provenance.byte_len, original.len());
+        assert_eq!(proposal.provenance.source_sha256_hex.len(), 64);
+        assert!(proposal.provenance.assumed_profile && proposal.provenance.icc_sha256_hex.is_some());
+
+        // edit loop: Folio rename -> apply onto the PSD model -> write -> read
+        let edited = proposal
+            .snapshot
+            .rename(id_of("fg"), "Foreground".to_owned(), 1, 2, budget, &cancel, &Open)
+            .expect("folio rename");
+        let mut working = doc.clone();
+        assert_eq!(proposal.apply_to_document(&mut working, &edited), 1);
+        let bytes = write_psd(&working, &limits).expect("write edited");
         let back = read(&bytes);
+        assert_eq!(back.layers()[3].name, "Foreground");
+        assert_eq!(back.layers()[3].channels, doc.layers()[3].channels, "pixel payloads untouched");
+        assert_eq!(back.layers()[3].blend_key, *b"scrn");
+        assert!(back.layers()[3].hidden());
+        for i in [0usize, 1, 2, 4, 5] {
+            assert_eq!(back.layers()[i], doc.layers()[i], "layer {i} unchanged");
+        }
+        assert_eq!(back.resources, doc.resources);
+        assert_eq!(back.image_data, doc.image_data);
+        assert_eq!(back.layer_section.blocks, doc.layer_section.blocks);
+        assert_eq!(write_psd(&back, &limits).expect("rewrite"), bytes, "the edit is stable");
+
+        // a direct model edit regenerates luni (replace or add) and the Latin-1 Pascal fallback
+        let mut direct = doc.clone();
+        {
+            let layers = &mut direct.layer_section.layer_info.as_mut().expect("layers").layers;
+            layers[5].name = "Folder \u{4e2d}".to_owned();
+            layers[2].name = "caf\u{e9}\u{4e2d}".to_owned();
+        }
+        let back = read(&write_psd(&direct, &limits).expect("write direct"));
         assert_eq!(back.layers()[5].name, "Folder \u{4e2d}");
         assert_eq!(back.layers()[2].name, "caf\u{e9}\u{4e2d}");
         assert_eq!(back.layers()[2].name_pascal, b"caf\xe9?");
         assert_eq!(back.layers()[5].group_role(), GroupRole::OpenFolder, "lsct untouched");
 
-        // everything else is identical: other layers, channel payloads, resources, merged image, global blocks
-        for i in [0usize, 1, 3, 4] {
-            assert_eq!(back.layers()[i], doc.layers()[i]);
-        }
-        for i in [2usize, 5] {
-            assert_eq!(back.layers()[i].channels, doc.layers()[i].channels);
-            assert_eq!(back.layers()[i].rect, doc.layers()[i].rect);
-            assert_eq!(back.layers()[i].blend_key, doc.layers()[i].blend_key);
-            assert_eq!(back.layers()[i].opacity, doc.layers()[i].opacity);
-        }
-        assert_eq!(back.resources, doc.resources);
-        assert_eq!(back.image_data, doc.image_data);
-        assert_eq!(back.layer_section.blocks, doc.layer_section.blocks);
-        // the edit is stable: re-reading and re-writing changes nothing further
-        assert_eq!(write_psd(&back, &limits).expect("rewrite"), bytes);
+        // observe: exactly one terminal frame per outcome
+        let actor = hsk_studio_accord::ActorContext::new("a", "b", "c", "d", "e", "f").expect("actor");
+        let resource = hsk_studio_accord::DomainId::parse(&Mint(40).document_id()).expect("resource id");
+        let context = ReportContext { correlation_id: 7, revision: 1, loss_is_error: false };
+        let fresh = || {
+            hsk_studio_observe::Observe::new(
+                7,
+                1,
+                resource.clone(),
+                actor.clone(),
+                hsk_studio_observe::Budget::new(4, 4096).expect("budget"),
+            )
+        };
+        let (mut sink, mut observe) = (Frames::default(), fresh());
+        let receipt = report(&Ok(proposal), &context, &cancel, &mut observe, &mut sink).expect("success frame");
+        assert_eq!(receipt.outcome, Outcome::Success);
+        assert_eq!(sink.0.len(), 1);
+        assert_eq!(sink.0[0].0, DeliveryClass::Terminal);
+        let (mut sink, mut observe) = (Frames::default(), fresh());
+        let bad = Err(PsdError::BadSignature);
+        let receipt = report(&bad, &context, &cancel, &mut observe, &mut sink).expect("failure frame");
+        assert_eq!(receipt.outcome, Outcome::Failure(FailureCode::Validation));
+        assert_eq!(sink.0.len(), 1);
+        let (mut sink, mut observe) = (Frames::default(), fresh());
+        let stopped = CancellationToken::default();
+        stopped.cancel();
+        let receipt = report(&bad, &context, &stopped, &mut observe, &mut sink).expect("canceled frame");
+        assert_eq!(receipt.outcome, Outcome::Canceled);
+        assert_eq!(sink.0.len(), 1);
+        // a pre-cancelled proposal stops before any work
+        assert_eq!(to_proposal(&doc, &source, &cfg, &mut Mint(0), &stopped).err().map(PsdError::code), Some("psd_canceled"));
     });
 }

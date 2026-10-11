@@ -15,7 +15,9 @@ mod layers;
 mod limits;
 mod loss;
 mod pixels;
+mod proposal;
 mod reader;
+mod report;
 mod resources;
 mod writer;
 
@@ -33,6 +35,11 @@ pub use layers::{BlendRanges, GroupRole, LayerMask, PsdChannel, PsdLayer, Rect, 
 pub use limits::Limits;
 pub use loss::{LossEntry, LossKind, LossReport, key_text};
 pub use pixels::Plane;
+pub use proposal::{
+    IdMint, ImportProposal, LayerAppearance, LayerMapEntry, ProposalConfig, Provenance, SourceIdentity, TILE_EDGE, TileBlob,
+    to_proposal,
+};
+pub use report::{ReportContext, outcome_of, report};
 pub use writer::write_psd;
 pub use resources::{
     ImageResource, ImageResources, RESOURCE_ICC_PROFILE, RESOURCE_ICC_UNTAGGED, RESOURCE_VERSION_INFO, VersionInfo,

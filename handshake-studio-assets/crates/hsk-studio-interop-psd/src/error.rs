@@ -34,6 +34,7 @@ pub enum PsdError {
     Overflow,
     UnsupportedMode(&'static str),
     Encode(&'static str),
+    Proposal(&'static str),
 }
 
 impl PsdError {
@@ -69,6 +70,7 @@ impl PsdError {
             Self::Overflow => "psd_overflow",
             Self::UnsupportedMode(_) => "psd_unsupported_mode",
             Self::Encode(_) => "psd_encode",
+            Self::Proposal(_) => "psd_proposal",
         }
     }
 }
@@ -76,7 +78,11 @@ impl PsdError {
 impl fmt::Display for PsdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Truncated(w) | Self::SectionLength(w) | Self::UnsupportedMode(w) | Self::Encode(w) => {
+            Self::Truncated(w)
+            | Self::SectionLength(w)
+            | Self::UnsupportedMode(w)
+            | Self::Encode(w)
+            | Self::Proposal(w) => {
                 write!(f, "{} ({w})", self.code())
             }
             Self::UnsupportedVersion(v) => write!(f, "{} ({v})", self.code()),
