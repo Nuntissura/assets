@@ -203,36 +203,38 @@ impl Run {
         let mut classes: Vec<&Class> = self.classes.values().collect();
         classes.sort_by(|a, b| (a.category, a.sub, b.count).cmp(&(b.category, b.sub, a.count)));
         summary.push('\n');
-        // One representative (the shortest input) per category and signature.
+        // The three shortest distinct inputs per category and signature, with the total count of inputs and variants.
         let mut shown = std::collections::BTreeSet::new();
         for c in classes.iter() {
             if !shown.insert((c.category, c.sub)) {
                 continue;
             }
-            let others: Vec<&&Class> = classes
+            let mut others: Vec<&Class> = classes
                 .iter()
+                .copied()
                 .filter(|o| (o.category, o.sub) == (c.category, c.sub))
                 .collect();
             let inputs: usize = others.iter().map(|o| o.count).sum();
-            let best = others
-                .iter()
-                .min_by_key(|o| o.minimal.len())
-                .copied()
-                .copied()
-                .unwrap_or(c);
-            let _ = writeln!(
-                summary,
-                "  [{}/{}] mode={:?} scripting={:?} inputs={} variants={} first={}\n      input: {:?}\n{}",
-                best.category,
-                best.sub,
-                best.mode,
-                best.scripting,
-                inputs,
-                others.len(),
-                best.first_label,
-                best.minimal,
-                best.detail
-            );
+            let variants = others.len();
+            others.sort_by_key(|o| o.minimal.len());
+            for (rank, best) in others.iter().take(3).enumerate() {
+                let head = if rank == 0 {
+                    format!("inputs={inputs} variants={variants} ")
+                } else {
+                    String::new()
+                };
+                let _ = writeln!(
+                    summary,
+                    "  [{}/{}] mode={:?} scripting={:?} {head}first={}\n      input: {:?}\n{}",
+                    best.category,
+                    best.sub,
+                    best.mode,
+                    best.scripting,
+                    best.first_label,
+                    best.minimal,
+                    best.detail
+                );
+            }
         }
         if self.unminimised > 0 {
             let _ = writeln!(
