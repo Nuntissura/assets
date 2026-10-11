@@ -69,6 +69,12 @@ fn layer(input: u32, mode: StudioBlendMode, opacity: f32) -> Layer {
         mask: None,
     }
 }
+/// A layer clipped to the nearest earlier unclipped layer of its group (pigment clip-to-base).
+fn clipped(input: u32, mode: StudioBlendMode, opacity: f32) -> Layer {
+    let mut l = layer(input, mode, opacity);
+    l.mask = Some(MaskInput::clip_to_base());
+    l
+}
 fn group<V>(isolated: bool, layers: Vec<Layer>) -> PlanNode<V> {
     PlanNode::Group(Group { isolated, layers })
 }
@@ -1591,5 +1597,267 @@ fn receipt_binds_revision_profile_and_observe() {
             descriptor["limits"]["scratch_bytes_per_isolated_group_depth_pixel"],
             plan_sink::GROUP_SCRATCH_BYTES_PER_PIXEL
         );
+    });
+}
+
+// ---- clip-to-base ----------------------------------------------------------------------------
+// Rule under test: pigment `MaskFormat::BaseAlpha` run semantics (Approximate, Photoshop rule
+// UNVERIFIED). Expected pixels are folded by hand from the W3C source-over in `composite_over`.
+
+#[test]
+fn clip_to_base_two_layer_run() {
+    bounded_case("clip_to_base_two_layer_run", || {
+        // Row x = 0..3: gray backdrop; base tile at x = 1 (alpha 1) and x = 2 (alpha .5); a full-row
+        // red layer clipped to it, Normal, opacity .5. Red may not appear at x = 0 and x = 3.
+        let extent = rect(0, 0, 4, 1);
+        let base = TileData::new(2, 1, |x, _| {
+            if x == 0 {
+                [0.0, 1.0, 0.0, 1.0]
+            } else {
+                [0.0, 0.5, 1.0, 0.5]
+            }
+        });
+        let p: RenderPlan = plan(
+            extent,
+            vec![
+                solid(extent, [0.5, 0.5, 0.5, 1.0]),
+                PlanNode::Tile(base.input(1, 1, 0)),
+                solid(extent, [1.0, 0.0, 0.0, 1.0]),
+                group(
+                    true,
+                    vec![
+                        layer(0, StudioBlendMode::Normal, 1.0),
+                        layer(1, StudioBlendMode::Normal, 1.0),
+                        clipped(2, StudioBlendMode::Normal, 0.5),
+                    ],
+                ),
+            ],
+            3,
+        );
+        let sources = one(base.planes());
+        // x = 1: A_b = 1, red source alpha 1*1, opacity .5 -> G = .5 red + .5 green = (.5, .5, 0).
+        // x = 2: A_b = .5, source alpha .5, a_s = .25; a_o = .25 + .5*.75 = .625; co = .25 red +
+        // .75*.5*(0, .5, 1) = (.25, .1875, .375) -> G = (.4, .3, .6) with alpha HELD at .5; over the
+        // gray backdrop: .5*G + .5*gray = (.45, .4, .55).
+        let want = [
+            [0.5, 0.5, 0.5, 1.0],
+            [0.5, 0.5, 0.0, 1.0],
+            [0.45, 0.4, 0.55, 1.0],
+            [0.5, 0.5, 0.5, 1.0],
+        ];
+        let reference = render(&p, 64, &sources);
+        for (x, w) in want.into_iter().enumerate() {
+            close(reference.pixel(x as i64, 0), w);
+        }
+        for chunk in [1_u32, 2, 3] {
+            let sink = render(&p, chunk, &sources);
+            assert_eq!(sink.colour, reference.colour, "colour, chunk {chunk}");
+            assert_eq!(sink.alpha, reference.alpha, "alpha, chunk {chunk}");
+        }
+
+        // Backend opt-in, Approximate class in the receipt, refused when Exact is demanded.
+        let renderer = Renderer::new(2).unwrap();
+        assert!(RenderBackend::<NoVector>::supports_clip_to_base(&renderer));
+        let mut sink = Collect::new(extent);
+        let receipt = run(&renderer, &p, Exactness::Approximate, &sources, &mut sink).unwrap();
+        assert_eq!(receipt.exactness.lowest, Exactness::Approximate);
+        assert!(receipt.exactness.operators.contains(&OperatorExactness {
+            key: "clip_to_base",
+            exactness: Exactness::Approximate
+        }));
+        let mut refused = Collect::new(extent);
+        let error = run(&renderer, &p, Exactness::Exact, &sources, &mut refused).unwrap_err();
+        assert!(matches!(
+            error,
+            BackendError::Unsupported {
+                operator: "clip_to_base",
+                ..
+            }
+        ));
+        assert_eq!(refused.calls, 0);
+    });
+}
+
+#[test]
+fn clip_to_base_multi_layer_runs_chunk_and_thread_deterministic() {
+    bounded_case("clip_to_base_multi_layer_runs", || {
+        // Extent x = 0..4. Backdrop gray (.5). Run 1: base B1 = yellow solid x = 0..2 (Multiply,
+        // opacity .5) with its OWN mask (0 at x = 2); clipped c1 = full-row (.5, .5, 1) Multiply
+        // .5; clipped c2 = isolated group of (0, 0, 1, .5) over x = 1..3, Normal. Run 2: base B2 =
+        // red vector x in [3.5, 5] (coverage .5 at x = 3, 1 at x = 4), Normal; clipped c3 = full-row
+        // blue Normal. c3 clips to B2 only (nearest earlier unclipped layer), never to B1.
+        let extent = rect(0, 0, 5, 1);
+        let mask = MaskData::u8(extent, |x, _| if x == 2 { 0 } else { 255 });
+        let mut b1 = layer(1, StudioBlendMode::Multiply, 0.5);
+        b1.mask = Some(mask.input(9, false));
+        let p: RenderPlan<VectorFill> = plan(
+            extent,
+            vec![
+                solid(extent, [0.5, 0.5, 0.5, 1.0]),
+                solid(rect(0, 0, 3, 1), [1.0, 1.0, 0.0, 1.0]),
+                solid(extent, [0.5, 0.5, 1.0, 1.0]),
+                solid(rect(1, 0, 3, 1), [0.0, 0.0, 1.0, 0.5]),
+                group(true, vec![layer(3, StudioBlendMode::Normal, 1.0)]),
+                vector(
+                    &[(3.5, 0.0), (5.0, 0.0), (5.0, 1.0), (3.5, 1.0)],
+                    Winding::NonZero,
+                    4,
+                ),
+                solid(extent, [0.0, 0.0, 1.0, 1.0]),
+                group(
+                    true,
+                    vec![
+                        layer(0, StudioBlendMode::Normal, 1.0),
+                        b1,
+                        clipped(2, StudioBlendMode::Multiply, 0.5),
+                        clipped(4, StudioBlendMode::Normal, 1.0),
+                        layer(5, StudioBlendMode::Normal, 1.0),
+                        clipped(6, StudioBlendMode::Normal, 1.0),
+                    ],
+                ),
+            ],
+            7,
+        );
+        let sources = Sources {
+            tiles: vec![],
+            masks: vec![(9, &mask)],
+        };
+        // x = 0: G = yellow; c1 Multiply: B = (.5, .5, 0), a_s = .5 -> .5 B + .5 yellow = (.75, .75, 0);
+        //   c2 absent; G over gray, Multiply .5: .5*(.375, .375, 0) + .5*gray = (.4375, .4375, .25).
+        // x = 1: same G after c1; c2 = (0, 0, 1) alpha .5 -> .5 blue + .5 (.75, .75, 0) = (.375, .375,
+        //   .5); over gray, Multiply .5: .5*(.1875, .1875, .25) + .5*gray = (.34375, .34375, .375).
+        // x = 2: B1 mask 0 -> empty run: c1 and c2 cover x = 2 but contribute nothing (gray).
+        // x = 3: B2 coverage .5 -> G = (red, .5); c3: alpha .5, a_o = .75, co = (.25, 0, .5) ->
+        //   G = (1/3, 0, 2/3) alpha held .5; over gray: .5*G + .5*gray = (5/12, 1/4, 7/12). B1's run
+        //   (x = 0..2 only) and c1/c2 do not reach x = 3.
+        // x = 4: B2 coverage 1 -> c3 (blue) fully covers it -> blue.
+        let want = [
+            [0.4375, 0.4375, 0.25, 1.0],
+            [0.34375, 0.34375, 0.375, 1.0],
+            [0.5, 0.5, 0.5, 1.0],
+            [5.0 / 12.0, 0.25, 7.0 / 12.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ];
+        let reference = render(&p, 64, &sources);
+        for (x, w) in want.into_iter().enumerate() {
+            close(reference.pixel(x as i64, 0), w);
+        }
+
+        // Chunk sizes never change a pixel; threads never change bytes or sink order.
+        let sequential = {
+            let mut sink = Collect::new(extent);
+            run(
+                &Renderer::new(2).unwrap(),
+                &p,
+                Exactness::Approximate,
+                &sources,
+                &mut sink,
+            )
+            .unwrap();
+            sink
+        };
+        for chunk in [1_u32, 2, 3, 4] {
+            let sink = render(&p, chunk, &sources);
+            assert_eq!(sink.colour, reference.colour, "colour, chunk {chunk}");
+            assert_eq!(sink.alpha, reference.alpha, "alpha, chunk {chunk}");
+        }
+        for threads in [2_usize, 3, 8] {
+            let renderer = Renderer::with_threads(2, threads).unwrap();
+            let mut sink = Collect::new(extent);
+            let receipt = run(&renderer, &p, Exactness::Approximate, &sources, &mut sink).unwrap();
+            assert_eq!(sink.colour, reference.colour, "colour, {threads} threads");
+            assert_eq!(sink.alpha, reference.alpha, "alpha, {threads} threads");
+            assert_eq!(
+                sink.rects, sequential.rects,
+                "row-major delivery, {threads} threads"
+            );
+            // Run 1 needs the run buffer plus one level for the isolated clipped group: depth 2.
+            assert_eq!(
+                Some(receipt.peak_working_bytes),
+                Renderer::scratch_bytes(2, 2, threads.min(3) as u64)
+            );
+            assert_eq!(renderer.live_scratch_bytes(), 0);
+        }
+    });
+}
+
+#[test]
+fn clip_to_base_hidden_base_lowering_shape_and_refusals() {
+    bounded_case("clip_to_base_hidden_base_shape", || {
+        // Folio [A visible, B hidden (unclipped), C clipped to B, D visible, E clipped to D] lowers
+        // (composite 26f835e) to [A, D, E clipped]: a hidden base takes its clipped layers with it,
+        // E clips to D (not A). Extent x = 0..3: A gray full row; D green x = 1..2, Normal, opacity
+        // .5; E red full row. Red covers D completely, so G = red and the run lands at D's opacity:
+        // .5 red + .5 gray = (.75, .25, .25); x = 0 and x = 3 are the untouched backdrop.
+        let extent = rect(0, 0, 4, 1);
+        let p: RenderPlan = plan(
+            extent,
+            vec![
+                solid(extent, [0.5, 0.5, 0.5, 1.0]),
+                solid(rect(1, 0, 2, 1), [0.0, 1.0, 0.0, 1.0]),
+                solid(extent, [1.0, 0.0, 0.0, 1.0]),
+                group(
+                    true,
+                    vec![
+                        layer(0, StudioBlendMode::Normal, 1.0),
+                        layer(1, StudioBlendMode::Normal, 0.5),
+                        clipped(2, StudioBlendMode::Normal, 1.0),
+                    ],
+                ),
+            ],
+            3,
+        );
+        let sink = render(&p, 3, &Sources::default());
+        for (x, w) in [
+            [0.5, 0.5, 0.5, 1.0],
+            [0.75, 0.25, 0.25, 1.0],
+            [0.75, 0.25, 0.25, 1.0],
+            [0.5, 0.5, 0.5, 1.0],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            close(sink.pixel(x as i64, 0), w);
+        }
+
+        // A pass-through group has no isolated content to take a base alpha from: typed refusal,
+        // before the first sink call, nothing charged.
+        let pass_through: RenderPlan = plan(
+            extent,
+            vec![
+                solid(extent, [0.5, 0.5, 0.5, 1.0]),
+                solid(extent, [0.0, 1.0, 0.0, 1.0]),
+                group(false, vec![layer(1, StudioBlendMode::Normal, 1.0)]),
+                solid(extent, [1.0, 0.0, 0.0, 1.0]),
+                group(
+                    true,
+                    vec![
+                        layer(0, StudioBlendMode::Normal, 1.0),
+                        layer(2, StudioBlendMode::PassThrough, 1.0),
+                        clipped(3, StudioBlendMode::Normal, 1.0),
+                    ],
+                ),
+            ],
+            4,
+        );
+        let renderer = Renderer::new(2).unwrap();
+        let mut refused = Collect::new(extent);
+        let error = run(
+            &renderer,
+            &pass_through,
+            Exactness::Approximate,
+            &Sources::default(),
+            &mut refused,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            BackendError::Unsupported {
+                operator: "clip_base_pass_through",
+                ..
+            }
+        ));
+        assert_eq!(refused.calls, 0);
+        assert_eq!(renderer.live_scratch_bytes(), 0);
     });
 }

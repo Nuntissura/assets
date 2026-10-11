@@ -5,6 +5,14 @@
 //! (STU-COL-163): it never resolves a profile, converts a space or calls a colour engine. Blend
 //! arithmetic is the single pigment owner `blend_math::composite_over`; this module adds chunking,
 //! groups, masks, vector coverage, budgets and cancellation around it.
+//!
+//! Clip-to-base (`MaskFormat::BaseAlpha`, pigment's documented run semantics, exactness
+//! Approximate, Photoshop rule UNVERIFIED): a run `[base, c1..cn]` is evaluated per chunk as an
+//! isolated unit `G` held in one scratch buffer. `G` = base content with the base's own mask (no
+//! opacity, fill or mode); each `ci` is blended onto `G` with its own mode, opacity and fill and a
+//! source alpha multiplied by the base alpha, then `G`'s alpha is held at the base alpha; `G` is
+//! composited onto the running backdrop with the BASE layer's mode, opacity and fill. The base
+//! alpha is `G`'s own alpha (it never changes during the run), so a clipped layer needs no plane.
 use crate::coverage::PreparedPath;
 use crate::vector::VectorSource;
 use hsk_studio_accord::CancellationToken;
@@ -13,9 +21,9 @@ use hsk_studio_pigment::Rect;
 use hsk_studio_pigment::blend_math::{BlendError, PixelSite, Rgba, composite_over};
 use hsk_studio_pigment::render_plan::{
     AlphaConvention, Applicability, BackendError, BackendIdentity, DeviceClass, Exactness,
-    ExecuteRequest, MaskFormat, Operator, PlanNode, PlanSources, RenderBackend, RenderPlan,
-    RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes, TileSink,
-    admit,
+    ExecuteRequest, Layer, MaskFormat, MaskInput, Operator, PlanNode, PlanSources, RenderBackend,
+    RenderPlan, RenderReceipt, SampleFormat, SourceKey, StudioBlendMode, TileInput, TilePlanes,
+    TileSink, admit,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -178,6 +186,11 @@ struct PLayer<'a> {
     /// `Operator::FillOpacity`) until the Photoshop fill oracle exists.
     opacity: f32,
     mask: Option<MaskView<'a>>,
+    /// Clip-to-base layer: its coverage is the alpha of the run's base (no plane, `mask` is None).
+    clipped: bool,
+}
+fn is_clipped(layer: &Layer) -> bool {
+    layer.mask.as_ref().is_some_and(MaskInput::is_clip_to_base)
 }
 enum PNode<'a> {
     Unused,
@@ -398,10 +411,19 @@ fn prepare<'a, V: VectorSource>(
                 let mut layers = Vec::with_capacity(g.layers.len());
                 let mut group_bounds = None;
                 let mut group_need = 0;
-                for l in &g.layers {
+                // Scratch beneath the compositing buffer of the clip run being read (None outside
+                // a run): the base evaluates straight into the run buffer, clipped members after.
+                let mut run_need: Option<usize> = None;
+                for (li, l) in g.layers.iter().enumerate() {
                     let input = l.input.0 as usize;
                     let child = &plan.nodes[input];
                     let pass_through = l.mode == StudioBlendMode::PassThrough;
+                    let clipped = is_clipped(l);
+                    let starts_run = !clipped && g.layers.get(li + 1).is_some_and(is_clipped);
+                    // A pass-through group has no isolated content to take a base alpha from.
+                    if starts_run && pass_through {
+                        return Err(unsupported("clip_base_pass_through"));
+                    }
                     let child_isolated = match child {
                         PlanNode::Group(c) => Some(c.isolated),
                         _ => None,
@@ -420,6 +442,8 @@ fn prepare<'a, V: VectorSource>(
                     }
                     let mask = match &l.mask {
                         None => None,
+                        // Canonical clip-to-base encoding (pigment validated): no plane to resolve.
+                        Some(_) if clipped => None,
                         Some(m) => {
                             if m.density != 1.0 {
                                 return Err(unsupported("mask_density"));
@@ -469,17 +493,34 @@ fn prepare<'a, V: VectorSource>(
                             })
                         }
                     };
-                    group_bounds = union(group_bounds, bounds[input])?;
-                    group_need = group_need.max(match child_isolated {
+                    let child_need = match child_isolated {
                         Some(true) => 1 + need[input],
                         _ => need[input],
-                    });
+                    };
+                    if clipped {
+                        // Clipped content never extends beyond its base: no group extent.
+                        run_need = Some(run_need.map_or(child_need, |r| r.max(child_need)));
+                    } else {
+                        if let Some(r) = run_need.take() {
+                            group_need = group_need.max(1 + r);
+                        }
+                        group_bounds = union(group_bounds, bounds[input])?;
+                        if starts_run {
+                            run_need = Some(need[input]);
+                        } else {
+                            group_need = group_need.max(child_need);
+                        }
+                    }
                     layers.push(PLayer {
                         input,
                         mode: l.mode,
                         opacity: l.opacity * l.fill_opacity,
                         mask,
+                        clipped,
                     });
+                }
+                if let Some(r) = run_need {
+                    group_need = group_need.max(1 + r);
                 }
                 (
                     PNode::Group {
@@ -524,8 +565,190 @@ impl Eval<'_, '_> {
         let PNode::Group { layers, .. } = &self.prepared.nodes[idx] else {
             return Err(unsupported("plan_shape"));
         };
-        for layer in layers {
-            self.layer(layer, chunk, dst, spare)?;
+        let mut at = 0;
+        while at < layers.len() {
+            let base = &layers[at];
+            // Pigment validation guarantees a clipped layer follows an unclipped one.
+            if base.clipped {
+                return Err(unsupported("plan_shape"));
+            }
+            let clipped = layers[at + 1..].iter().take_while(|l| l.clipped).count();
+            if clipped == 0 {
+                self.layer(base, chunk, dst, spare)?;
+            } else {
+                self.clip_run(base, &layers[at + 1..=at + clipped], chunk, dst, spare)?;
+            }
+            at += 1 + clipped;
+        }
+        Ok(())
+    }
+
+    /// One clipping run: `base` plus the layers clipped to it, through the run buffer `G` (see the
+    /// module docs). Everything is per pixel, so the result is independent of chunking.
+    fn clip_run(
+        &self,
+        base: &PLayer<'_>,
+        clipped: &[PLayer<'_>],
+        chunk: Rect,
+        dst: &mut [[f32; 4]],
+        spare: &mut [Vec<[f32; 4]>],
+    ) -> Result<(), RenderError> {
+        // Outside the base nothing of the run is visible.
+        let Some(region) = self.prepared.bounds[base.input]
+            .map(|b| intersect(b, chunk))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(());
+        };
+        let count = chunk.width as usize * chunk.height as usize;
+        let (buffer, deeper) = spare
+            .split_first_mut()
+            .ok_or(BackendError::Unavailable("group_scratch"))?;
+        let run = &mut buffer[..count];
+        run.fill([0.0; 4]);
+        self.clip_base(base, region, chunk, run, deeper)?;
+        for layer in clipped {
+            self.clip_layer(layer, chunk, run, deeper)?;
+        }
+        // The base's own mask is already in `G`; opacity, fill and mode are the base layer's.
+        let group = PLayer {
+            input: base.input,
+            mode: base.mode,
+            opacity: base.opacity,
+            mask: None,
+            clipped: false,
+        };
+        let result: &[[f32; 4]] = run;
+        self.composite(&group, region, chunk, dst, |_, _, at| (result[at], 1.0))
+    }
+
+    /// `G` := base content with the base's own mask (alpha scaled), without opacity, fill or mode.
+    fn clip_base(
+        &self,
+        base: &PLayer<'_>,
+        region: Rect,
+        chunk: Rect,
+        run: &mut [[f32; 4]],
+        deeper: &mut [Vec<[f32; 4]>],
+    ) -> Result<(), RenderError> {
+        match &self.prepared.nodes[base.input] {
+            PNode::Group { isolated: true, .. } => {
+                self.group(base.input, chunk, run, deeper)?;
+                seal_base(base, region, chunk, run, |_, _, current| (current, 1.0));
+            }
+            PNode::Tile { planes, rect } => seal_base(base, region, chunk, run, |x, y, _| {
+                (
+                    tile_pixel(planes, (x - rect.x) as u32, (y - rect.y) as u32),
+                    1.0,
+                )
+            }),
+            PNode::Solid { rgba } => seal_base(base, region, chunk, run, |_, _, _| (*rgba, 1.0)),
+            PNode::Vector { path, rgba } => {
+                seal_base(base, region, chunk, run, |x, y, _| {
+                    (*rgba, path.coverage(x, y))
+                });
+            }
+            // A pass-through base is refused by `prepare`.
+            PNode::Group {
+                isolated: false, ..
+            }
+            | PNode::Unused => return Err(unsupported("plan_shape")),
+        }
+        Ok(())
+    }
+
+    /// Blend one clipped layer onto `G`.
+    fn clip_layer(
+        &self,
+        layer: &PLayer<'_>,
+        chunk: Rect,
+        run: &mut [[f32; 4]],
+        spare: &mut [Vec<[f32; 4]>],
+    ) -> Result<(), RenderError> {
+        let Some(region) = self.prepared.bounds[layer.input]
+            .map(|b| intersect(b, chunk))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(());
+        };
+        match &self.prepared.nodes[layer.input] {
+            PNode::Group { isolated: true, .. } => {
+                let count = chunk.width as usize * chunk.height as usize;
+                let (buffer, deeper) = spare
+                    .split_first_mut()
+                    .ok_or(BackendError::Unavailable("group_scratch"))?;
+                let buffer = &mut buffer[..count];
+                buffer.fill([0.0; 4]);
+                self.group(layer.input, chunk, buffer, deeper)?;
+                let result: &[[f32; 4]] = buffer;
+                self.composite_clipped(layer, region, chunk, run, |_, _, at| (result[at], 1.0))
+            }
+            PNode::Tile { planes, rect } => {
+                self.composite_clipped(layer, region, chunk, run, |x, y, _| {
+                    (
+                        tile_pixel(planes, (x - rect.x) as u32, (y - rect.y) as u32),
+                        1.0,
+                    )
+                })
+            }
+            PNode::Solid { rgba } => {
+                self.composite_clipped(layer, region, chunk, run, |_, _, _| (*rgba, 1.0))
+            }
+            PNode::Vector { path, rgba } => {
+                self.composite_clipped(layer, region, chunk, run, |x, y, _| {
+                    (*rgba, path.coverage(x, y))
+                })
+            }
+            // Pass-through clipped layers are refused by pigment validation, non-isolated
+            // blended groups by `prepare`.
+            PNode::Group {
+                isolated: false, ..
+            }
+            | PNode::Unused => Err(unsupported("plan_shape")),
+        }
+    }
+
+    /// Like [`Eval::composite`] for a clipped layer onto `G`: the source alpha is multiplied by the
+    /// base alpha (`G`'s own alpha), and `G`'s alpha is held at the base alpha afterwards.
+    fn composite_clipped(
+        &self,
+        layer: &PLayer<'_>,
+        region: Rect,
+        chunk: Rect,
+        run: &mut [[f32; 4]],
+        mut source: impl FnMut(i64, i64, usize) -> ([f32; 4], f32),
+    ) -> Result<(), RenderError> {
+        let width = chunk.width as usize;
+        for y in region.y..region.y + i64::from(region.height) {
+            for x in region.x..region.x + i64::from(region.width) {
+                let at = (y - chunk.y) as usize * width + (x - chunk.x) as usize;
+                let b = run[at];
+                let base_alpha = b[3];
+                if base_alpha <= 0.0 {
+                    continue;
+                }
+                let (rgba, coverage) = source(x, y, at);
+                let opacity = layer.opacity * coverage;
+                let source_alpha = rgba[3] * base_alpha;
+                if opacity <= 0.0 || source_alpha <= 0.0 {
+                    continue;
+                }
+                let out = composite_over(
+                    layer.mode,
+                    Rgba::new([b[0], b[1], b[2]], base_alpha),
+                    Rgba::new([rgba[0], rgba[1], rgba[2]], source_alpha),
+                    opacity,
+                    PixelSite {
+                        x,
+                        y,
+                        seed: self.prepared.seed,
+                    },
+                )
+                .map_err(blend_error)?;
+                run[at] = [out.rgb[0], out.rgb[1], out.rgb[2], base_alpha];
+            }
         }
         Ok(())
     }
@@ -618,6 +841,32 @@ impl Eval<'_, '_> {
     }
 }
 
+/// Write the clip base into `run` over `region`: `source(x, y, current)` gives the straight RGBA
+/// and coverage (`current` is what `run` already holds, for an isolated-group base); the base's
+/// own mask scales the alpha. Fully transparent pixels are stored as `[0; 4]`.
+fn seal_base(
+    base: &PLayer<'_>,
+    region: Rect,
+    chunk: Rect,
+    run: &mut [[f32; 4]],
+    source: impl Fn(i64, i64, [f32; 4]) -> ([f32; 4], f32),
+) {
+    let width = chunk.width as usize;
+    for y in region.y..region.y + i64::from(region.height) {
+        for x in region.x..region.x + i64::from(region.width) {
+            let at = (y - chunk.y) as usize * width + (x - chunk.x) as usize;
+            let mask = base.mask.map_or(1.0, |m| m.coverage(x, y));
+            let (rgba, coverage) = source(x, y, run[at]);
+            let alpha = rgba[3] * coverage * mask;
+            run[at] = if alpha > 0.0 {
+                [rgba[0], rgba[1], rgba[2], alpha]
+            } else {
+                [0.0; 4]
+            };
+        }
+    }
+}
+
 /// Per-worker buffers for one chunk: working RGBA, one buffer per level of isolated-group nesting,
 /// and the two output planes.
 struct Scratch {
@@ -700,6 +949,7 @@ fn compute_chunk(
             mode: StudioBlendMode::Normal,
             opacity: 1.0,
             mask: None,
+            clipped: false,
         };
         eval.layer(
             &root_layer,
@@ -983,6 +1233,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
     }
     fn exactness(&self, operator: Operator) -> Exactness {
         match operator {
+            // Pigment's run semantics are implemented as documented; the Photoshop rule is
+            // UNVERIFIED, so the class stays Approximate.
+            Operator::Mask(MaskFormat::BaseAlpha) => Exactness::Approximate,
             Operator::Tile
             | Operator::Solid
             | Operator::IsolatedGroup
@@ -1001,6 +1254,9 @@ impl<V: VectorSource + Serialize + Send + Sync> RenderBackend<V> for Renderer {
                 Exactness::Unsupported
             }
         }
+    }
+    fn supports_clip_to_base(&self) -> bool {
+        true
     }
     fn execute(
         &self,
