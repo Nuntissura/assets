@@ -16,6 +16,8 @@ use crate::pdf_edit::PdfDoc;
 use crate::reader::{check_cancel, find, parse_document};
 use crate::redaction::{RedactionRegion, RedactionReport, UnsupportedPolicy};
 use crate::syntax::{Dict, Object};
+use crate::text_codec::{Enc, decode_text, pdfdoc_byte, utf16be_bytes};
+use crate::text_fields::{TextFieldPolicy, TextFieldReport, appearance_stream_nums};
 use crate::writer::{reachable, trailer_roots, write_document};
 use hsk_studio_accord::CancellationToken;
 use std::collections::{BTreeMap, BTreeSet};
@@ -77,14 +79,16 @@ impl PayloadProof {
     }
 }
 
-/// A search pattern: the needle bytes (or their UTF-16BE spelling) and whether the whole-token
+/// A search pattern: the needle bytes (or a spelling of them) and whether the whole-token
 /// boundary rule applies.
-struct Variant {
-    needle_index: usize,
-    bytes: Vec<u8>,
-    token: bool,
+pub(crate) struct Variant {
+    pub(crate) needle_index: usize,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) token: bool,
 }
 
+/// Raw-byte needles: the bytes as given, plus (for PDFDocEncoding-readable needles) their
+/// UTF-16BE spelling, which is how outline titles and annotation text are usually stored.
 fn variants(needles: &[Vec<u8>]) -> Vec<Variant> {
     let mut out = Vec::new();
     for (i, n) in needles.iter().enumerate() {
@@ -92,13 +96,36 @@ fn variants(needles: &[Vec<u8>]) -> Vec<Variant> {
             continue;
         }
         out.push(Variant { needle_index: i, bytes: n.clone(), token: true });
-        if n.is_ascii() {
-            let mut u = Vec::with_capacity(n.len() * 2);
-            for b in n {
-                u.extend_from_slice(&[0, *b]);
+        let (chars, enc) = decode_text(n);
+        if enc == Enc::PdfDoc {
+            let u = utf16be_bytes(&chars);
+            if u != *n {
+                out.push(Variant { needle_index: i, bytes: u, token: false });
             }
-            out.push(Variant { needle_index: i, bytes: u, token: false });
         }
+    }
+    out
+}
+
+/// Unicode needles: ASCII needles by bytes and UTF-16BE; other needles by PDFDocEncoding (when
+/// every char has a code), UTF-8 and UTF-16BE spellings. Hit indices refer to `needles`.
+pub(crate) fn variants_text(needles: &[String]) -> Vec<Variant> {
+    let mut out = Vec::new();
+    for (i, s) in needles.iter().enumerate() {
+        let t = s.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = t.chars().collect();
+        if t.is_ascii() {
+            out.push(Variant { needle_index: i, bytes: t.as_bytes().to_vec(), token: true });
+        } else {
+            if let Some(b) = chars.iter().map(|c| pdfdoc_byte(*c)).collect::<Option<Vec<u8>>>() {
+                out.push(Variant { needle_index: i, bytes: b, token: true });
+            }
+            out.push(Variant { needle_index: i, bytes: t.as_bytes().to_vec(), token: true });
+        }
+        out.push(Variant { needle_index: i, bytes: utf16be_bytes(&chars), token: false });
     }
     out
 }
@@ -179,7 +206,10 @@ pub fn verify_payload_absent(
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> Result<PayloadProof> {
-    let vars = variants(needles);
+    verify_with_variants(output, variants(needles), limits, cancel)
+}
+
+pub(crate) fn verify_with_variants(output: &[u8], vars: Vec<Variant>, limits: &Limits, cancel: &CancellationToken) -> Result<PayloadProof> {
     let parsed = parse_document(output, limits, cancel)?;
     let mut proof = PayloadProof {
         raw_bytes_scanned: output.len(),
@@ -199,6 +229,9 @@ pub fn verify_payload_absent(
     let listed = parsed.objects.values().filter(|e| e.span.is_some()).count();
     proof.unlisted_object_markers = markers.saturating_sub(listed) as u32;
 
+    // Annotation appearance streams hold annotation text, not kept page text: a needle in their
+    // show operands is a leak (hit), never a kept-text collision.
+    let ap_streams = appearance_stream_nums(&parsed.objects);
     // Raw spans of streams that decode successfully: their bytes are judged in decoded context.
     let mut covered: Vec<(usize, usize)> = Vec::new();
     let mut collisions: BTreeMap<(usize, u32), u32> = BTreeMap::new();
@@ -244,8 +277,12 @@ pub fn verify_payload_absent(
                 }
                 let ops = if looks_like_content(&s.dict) { parse_content(&bytes, limits).ok() } else { None };
                 let is_show = |name: &[u8]| matches!(name, b"Tj" | b"TJ" | b"'" | b"\"");
-                let show_spans: Vec<(usize, usize)> =
-                    ops.iter().flatten().filter(|op| is_show(&op.name)).map(|op| (op.start, op.end)).collect();
+                let is_ap = ap_streams.contains(num);
+                let show_spans: Vec<(usize, usize)> = if is_ap {
+                    Vec::new()
+                } else {
+                    ops.iter().flatten().filter(|op| is_show(&op.name)).map(|op| (op.start, op.end)).collect()
+                };
                 for (needle, offset) in scan(&bytes, &vars) {
                     if !show_spans.iter().any(|(a, b)| offset >= *a && offset < *b) {
                         proof.hits.push(PayloadHit { needle, location: PayloadLocation::DecodedStream { object: *num, offset } });
@@ -258,7 +295,7 @@ pub fn verify_payload_absent(
                         match o {
                             Object::Str(x) => {
                                 if let Some(needle) = contains(x, &vars) {
-                                    if show {
+                                    if show && !is_ap {
                                         *collisions.entry((needle, *num)).or_default() += 1;
                                     } else {
                                         proof.hits.push(PayloadHit { needle, location: PayloadLocation::ContentString { object: *num } });
@@ -305,6 +342,9 @@ pub struct RedactedOutput {
     /// Text strings, annotations and unsupported marks a fresh redaction pass over the SAVED
     /// bytes still finds in the regions (0 = the saved bytes hold nothing the region test selects).
     pub residual_in_region: u32,
+    /// Outline/annotation text redaction of the removed strings (`redact_and_save_with` with a
+    /// text policy); `None` when it was not requested.
+    pub text_fields: Option<TextFieldReport>,
 }
 
 impl RedactedOutput {
@@ -339,16 +379,36 @@ pub fn redact_and_save(
     policy: UnsupportedPolicy,
     cancel: &CancellationToken,
 ) -> Result<RedactedOutput> {
+    redact_and_save_with(doc, regions, policy, None, cancel)
+}
+
+/// [`redact_and_save`], and with `text` also redacts the distinctive removed strings from outline
+/// titles and annotation text (slice 3) before the full save, so the same words no longer survive
+/// as leaks there. `RedactedOutput::text_fields` carries the per-object outcomes.
+pub fn redact_and_save_with(
+    doc: &mut PdfDoc,
+    regions: &[RedactionRegion],
+    policy: UnsupportedPolicy,
+    text: Option<&TextFieldPolicy>,
+    cancel: &CancellationToken,
+) -> Result<RedactedOutput> {
     let backup = doc.objects.clone();
     let result = (|| -> Result<RedactedOutput> {
         let mut reports = Vec::with_capacity(regions.len());
         for region in regions {
             reports.push(doc.redact_region(region, policy, cancel)?);
         }
-        let bytes = doc.save_full(cancel)?;
         let all: Vec<Vec<u8>> = reports.iter().flat_map(|r| r.removed_text.iter().cloned()).collect();
         let needles: Vec<Vec<u8>> = all.iter().filter(|n| n.len() >= MIN_DISTINCTIVE_NEEDLE).cloned().collect();
         let short_needles = (all.len() - needles.len()) as u32;
+        let text_fields = match text {
+            Some(tp) => {
+                let strings: Vec<String> = needles.iter().map(|n| decode_text(n).0.into_iter().collect()).collect();
+                Some(doc.redact_text_fields(&strings, tp, cancel)?)
+            }
+            None => None,
+        };
+        let bytes = doc.save_full(cancel)?;
         let proof = verify_payload_absent(&bytes, &needles, &doc.limits, cancel)?;
         // Fresh re-open of the saved bytes: the region test must now select nothing.
         let mut saved = PdfDoc::open(&bytes, &doc.limits, cancel)?;
@@ -360,7 +420,7 @@ pub fn redact_and_save(
                 .saturating_add(again.annotations_removed.len() as u32)
                 .saturating_add(again.unredacted.len() as u32);
         }
-        Ok(RedactedOutput { bytes, reports, proof, short_needles, residual_in_region: residual })
+        Ok(RedactedOutput { bytes, reports, proof, short_needles, residual_in_region: residual, text_fields })
     })();
     if result.is_err() {
         doc.objects = backup;

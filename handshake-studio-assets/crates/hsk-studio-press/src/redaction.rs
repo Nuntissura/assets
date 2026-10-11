@@ -606,7 +606,7 @@ fn write_name_bytes(name: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(&tmp[1..]); // drop the leading '/', already written by the caller
 }
 
-fn res<'a>(m: &'a BTreeMap<u32, Entry>, mut o: &'a Object) -> &'a Object {
+pub(crate) fn res<'a>(m: &'a BTreeMap<u32, Entry>, mut o: &'a Object) -> &'a Object {
     static NULL: Object = Object::Null;
     for _ in 0..16 {
         match o {

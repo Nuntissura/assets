@@ -45,6 +45,9 @@ impl Dict {
             self.entries.push((key.as_bytes().to_vec(), value));
         }
     }
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Object> {
+        self.entries.iter_mut().find(|(k, _)| k == key.as_bytes()).map(|(_, v)| v)
+    }
     pub fn get_key(&self, key: &[u8]) -> Option<&Object> {
         self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
     }

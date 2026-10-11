@@ -687,3 +687,473 @@ fn proof_context_rule_kept_text_collision_is_not_a_leak() {
     assert!(leak.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::ContentString { .. })));
     assert!(leak.proof.kept_text_collisions.is_empty() && !leak.is_proven());
 }
+
+// ----------------------------------------------------------------- slice 3
+// Outline titles and annotation text. Oracles do not use the crate parser: a test-side string
+// extractor (literal + hex strings, escapes, UTF-16BE) over the raw bytes and over every
+// independently inflated stream body.
+
+use hsk_studio_press::{TextFieldPolicy, TextMode, TextOutcomeKind, TextRole, redact_and_save_with, redact_text_fields_and_save};
+
+/// UTF-16BE hex string `<FEFF....>`.
+fn u16hex(s: &str) -> String {
+    let mut h = String::from("<FEFF");
+    for u in s.encode_utf16() {
+        h.push_str(&format!("{u:04X}"));
+    }
+    h.push('>');
+    h
+}
+
+fn decode_pdf_text(raw: &[u8]) -> String {
+    let s = if raw.starts_with(&[0xFE, 0xFF]) {
+        String::from_utf16_lossy(&raw[2..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>())
+    } else {
+        raw.iter().map(|b| char::from(*b)).collect()
+    };
+    s.to_lowercase()
+}
+
+/// Decoded, lowercased text of every `( )` and `< >` string in `bytes`.
+fn strings_of(bytes: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                let (mut raw, mut depth) = (Vec::new(), 1);
+                i += 1;
+                while i < bytes.len() && depth > 0 {
+                    match bytes[i] {
+                        b'\\' => {
+                            i += 1;
+                            match bytes.get(i) {
+                                Some(b'n') => raw.push(b'\n'),
+                                Some(b'r') => raw.push(b'\r'),
+                                Some(b't') => raw.push(b'\t'),
+                                Some(d @ b'0'..=b'7') => {
+                                    let mut v = u32::from(d - b'0');
+                                    for _ in 0..2 {
+                                        if let Some(n @ b'0'..=b'7') = bytes.get(i + 1) {
+                                            v = v * 8 + u32::from(n - b'0');
+                                            i += 1;
+                                        }
+                                    }
+                                    raw.push(v as u8);
+                                }
+                                Some(b'\n' | b'\r') | None => {}
+                                Some(o) => raw.push(*o),
+                            }
+                        }
+                        b'(' => {
+                            depth += 1;
+                            raw.push(b'(');
+                        }
+                        b')' => {
+                            depth -= 1;
+                            if depth > 0 {
+                                raw.push(b')');
+                            }
+                        }
+                        b => raw.push(b),
+                    }
+                    i += 1;
+                }
+                out.push(decode_pdf_text(&raw));
+            }
+            b'<' if bytes.get(i + 1) == Some(&b'<') => i += 2,
+            b'<' => {
+                let (mut j, mut hex) = (i + 1, Vec::new());
+                while j < bytes.len() && (bytes[j].is_ascii_hexdigit() || bytes[j].is_ascii_whitespace()) {
+                    if bytes[j].is_ascii_hexdigit() {
+                        hex.push(bytes[j]);
+                    }
+                    j += 1;
+                }
+                if bytes.get(j) == Some(&b'>') && !hex.is_empty() {
+                    if hex.len() % 2 == 1 {
+                        hex.push(b'0');
+                    }
+                    let raw: Vec<u8> = hex.chunks(2).map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap()).collect();
+                    out.push(decode_pdf_text(&raw));
+                    i = j + 1;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Strings of the file and of every inflated stream body.
+fn all_strings(bytes: &[u8]) -> Vec<String> {
+    let mut v = strings_of(bytes);
+    for s in independent_streams(bytes) {
+        v.extend(strings_of(&s));
+    }
+    v
+}
+
+/// `needle` (case-insensitive) present in any spelling: raw bytes or decoded strings, in the file
+/// or in any inflated stream.
+fn leaks(bytes: &[u8], needle: &str) -> bool {
+    let n = needle.to_lowercase();
+    std::iter::once(bytes.to_vec())
+        .chain(independent_streams(bytes))
+        .any(|v| String::from_utf8_lossy(&v).to_lowercase().contains(&n) || strings_of(&v).iter().any(|s| s.contains(&n)))
+}
+
+fn outline_doc() -> Vec<u8> {
+    let objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >>".to_vec()),
+        (4, stream_body("", b"q Q")),
+        (10, b"<< /Type /Outlines /First 11 0 R /Last 14 0 R /Count 5 >>".to_vec()),
+        (11, b"<< /Title (Budget Plan overview) /Parent 10 0 R /Next 12 0 R /Dest [3 0 R /Fit] >>".to_vec()),
+        (
+            12,
+            format!(
+                "<< /Title {} /Parent 10 0 R /Prev 11 0 R /Next 13 0 R /First 15 0 R /Last 15 0 R /Count 1 >>",
+                u16hex("Online Retrieval of BUDGET PLAN")
+            )
+            .into_bytes(),
+        ),
+        (13, b"<< /Title 20 0 R /Parent 10 0 R /Prev 12 0 R /Next 14 0 R >>".to_vec()),
+        (14, b"<< /Title (Glossary) /Parent 10 0 R /Prev 13 0 R >>".to_vec()),
+        (15, format!("<< /Title {} /Parent 12 0 R >>", u16hex("Plan Caf\u{e9} Budget Plan \u{3a9}mega")).into_bytes()),
+        (20, b"(Appendix: budget plan)".to_vec()),
+    ];
+    build(&objs, "", b"")
+}
+
+type Seen = (u32, TextRole, TextOutcomeKind, u32);
+
+#[test]
+fn outline_titles_redacted_in_every_encoding() {
+    let input = outline_doc();
+    let needle = ["Budget Plan".to_string()];
+    assert!(leaks(&input, "budget plan"));
+    assert!(strings_of(&input).iter().any(|s| s == "online retrieval of budget plan"), "the oracle decodes UTF-16BE hex strings");
+    let before = verify_payload_absent(&input, &[b"Budget Plan".to_vec()], &Limits::default(), &token()).unwrap();
+    assert!(!before.hits.is_empty(), "non-vacuous: the input holds the text in outline titles");
+
+    let mut doc = open(&input);
+    let out = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    let seen: Vec<Seen> = out.report.outcomes.iter().map(|o| (o.object.num, o.role, o.kind, o.matches)).collect();
+    let item = |n| (n, TextRole::OutlineTitle, TextOutcomeKind::Replaced, 1);
+    assert_eq!(seen, vec![item(11), item(12), item(13), item(15)]);
+    assert!(out.report.complete && out.report.kept_by_policy == 0 && out.report.matches_redacted == 4);
+    assert_eq!((out.report.outline_items_scanned, out.report.annotations_scanned, out.report.fields_scanned), (6, 0, 0));
+    assert!(out.is_proven(), "{:?}", out.proof);
+
+    // Independent oracle: no spelling of the text survives anywhere; replaced text is as expected.
+    assert!(!leaks(&out.bytes, "budget plan"));
+    let strings = all_strings(&out.bytes);
+    for expect in ["[redacted] overview", "online retrieval of [redacted]", "appendix: [redacted]", "plan caf\u{e9} [redacted] \u{3c9}mega", "glossary"] {
+        assert!(strings.iter().any(|s| s == expect), "missing {expect:?} in {strings:?}");
+    }
+    // Structure intact, untouched item verbatim, UTF-16BE stays UTF-16BE, shared string dropped.
+    assert!(find(&out.bytes, b"/Next 12 0 R").is_some() && find(&out.bytes, b"/First 15 0 R").is_some());
+    assert!(find(&out.bytes, &obj_bytes(14, b"<< /Title (Glossary) /Parent 10 0 R /Prev 13 0 R >>")).is_some());
+    assert!(find(&out.bytes, b"\\376\\377\\000O\\000n\\000l\\000i\\000n\\000e").is_some());
+    assert_eq!(count(&out.bytes, b"Appendix"), 1, "object 20 is unreachable once /Title holds a direct string");
+    assert_eq!(open(&out.bytes).inspect().page_count, 1);
+
+    // Remove mode deletes the spans.
+    let mut doc = open(&input);
+    let removing = TextFieldPolicy { mode: TextMode::Remove, ..TextFieldPolicy::default() };
+    let out = redact_text_fields_and_save(&mut doc, &needle, &removing, &token()).unwrap();
+    assert!(out.report.outcomes.iter().all(|o| o.kind == TextOutcomeKind::Removed) && out.is_proven());
+    let strings = all_strings(&out.bytes);
+    assert!(strings.iter().any(|s| s == " overview") && strings.iter().any(|s| s == "appendix: "));
+    assert!(!leaks(&out.bytes, "budget plan") && !strings.iter().any(|s| s.contains("redacted")));
+
+    // Proof-aligned options: exact case + whole token leaves other-case titles (the proof is
+    // case-sensitive, so it agrees), and rewrites only the exact-case ones.
+    let mut doc = open(&input);
+    let exact = TextFieldPolicy { case_insensitive: false, whole_token: true, ..TextFieldPolicy::default() };
+    let out = redact_text_fields_and_save(&mut doc, &needle, &exact, &token()).unwrap();
+    assert_eq!(out.report.outcomes.iter().map(|o| o.object.num).collect::<Vec<_>>(), vec![11, 15]);
+    assert!(out.is_proven() && leaks(&out.bytes, "budget plan"), "BUDGET PLAN / budget plan titles are other spellings");
+}
+
+#[test]
+fn annotation_text_slots_and_appearance_redacted() {
+    let deflate = |d: &[u8]| miniz_oxide::deflate::compress_to_vec_zlib(d, 6);
+    let rc = "<?xml version=\"1.0\"?><body xmlns=\"http://www.w3.org/1999/xhtml\"><p>Meeting about the Bud<b>get</b> <i>Plan</i></p></body>";
+    let clean = b"<< /Type /Annot /Subtype /Text /Rect [10 100 30 120] /Contents (Nothing sensitive) /T (Alice) /AP << /N 14 0 R >> >>".to_vec();
+    let objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> /Annots [5 0 R 6 0 R 7 0 R << /Subtype /Text /Rect [1 1 2 2] /Contents (direct Budget Plan note) >>] >>"
+                .to_vec(),
+        ),
+        (4, stream_body("", b"q Q")),
+        (
+            5,
+            format!(
+                "<< /Type /Annot /Subtype /Text /Rect [10 10 30 30] /Contents (Meeting about the Budget Plan) /T {} /Subj (re: budget plan) /RC 9 0 R /AP << /N 12 0 R >> /P 3 0 R >>",
+                u16hex("Budget Plan Owner")
+            )
+            .into_bytes(),
+        ),
+        (6, b"<< /Type /Annot /Subtype /FreeText /Rect [100 300 300 340] /Contents 20 0 R /DA (0 g /Helv 12 Tf) /AP << /N 13 0 R >> >>".to_vec()),
+        (7, clean.clone()),
+        (9, stream_body("", rc.as_bytes())),
+        (12, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 20 20]", b"0 0 1 rg 0 0 20 20 re f")),
+        (
+            13,
+            stream_body(
+                "/Type /XObject /Subtype /Form /BBox [0 0 200 40] /Filter /FlateDecode",
+                &deflate(b"BT /Helv 12 Tf 2 10 Td (Budget Plan: draft) Tj ET"),
+            ),
+        ),
+        (14, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 200 40]", b"BT /Helv 12 Tf 2 10 Td (Nothing sensitive) Tj ET")),
+        (20, b"(Budget Plan: draft)".to_vec()),
+    ];
+    let input = build(&objs, "", b"");
+    let needle = ["Budget Plan".to_string()];
+
+    // The proof treats annotation appearance text as annotation text: a hit, not a kept-text collision.
+    let before = verify_payload_absent(&input, &[b"Budget Plan".to_vec()], &Limits::default(), &token()).unwrap();
+    assert!(before.hits.iter().any(|h| matches!(h.location, PayloadLocation::ContentString { object: 13 })));
+    assert!(before.kept_text_collisions.is_empty());
+
+    let mut doc = open(&input);
+    let out = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    use TextOutcomeKind::{Dropped, Replaced};
+    use TextRole::{AnnotContents, AnnotRichText, AnnotSubject, AnnotTitle, Appearance};
+    let seen: Vec<(u32, bool, TextRole, TextOutcomeKind, u32)> =
+        out.report.outcomes.iter().map(|o| (o.object.num, o.direct, o.role, o.kind, o.matches)).collect();
+    assert_eq!(
+        seen,
+        vec![
+            (5, false, AnnotContents, Replaced, 1),
+            (5, false, AnnotSubject, Replaced, 1),
+            (5, false, AnnotRichText, Dropped, 1),
+            (5, false, AnnotTitle, Replaced, 1),
+            (6, false, AnnotContents, Replaced, 1),
+            (6, false, Appearance, Dropped, 1),
+            (3, true, AnnotContents, Replaced, 1),
+        ]
+    );
+    assert_eq!((out.report.annotations_scanned, out.report.matches_redacted), (4, 7));
+    assert!(out.is_proven() && out.proof.kept_text_collisions.is_empty(), "{:?}", out.proof);
+
+    // Independent oracle over raw bytes, strings and inflated streams.
+    assert!(!leaks(&out.bytes, "budget plan"));
+    assert!(find(&out.bytes, b"<?xml").is_none(), "the dropped rich text stream is unreachable");
+    let strings = all_strings(&out.bytes);
+    for expect in ["meeting about the [redacted]", "[redacted] owner", "re: [redacted]", "[redacted]: draft", "direct [redacted] note", "nothing sensitive", "alice"] {
+        assert!(strings.iter().any(|s| s == expect), "missing {expect:?} in {strings:?}");
+    }
+    // The clean annotation and its appearance are byte-identical; the icon appearance stays; the
+    // FreeText appearance is gone.
+    assert!(find(&out.bytes, &obj_bytes(7, &clean)).is_some());
+    assert_eq!(independent_streams(&out.bytes).iter().filter(|s| find(s, b"(Nothing sensitive) Tj").is_some()).count(), 1);
+    assert!(find(&out.bytes, b"/AP << /N 12 0 R >>").is_some() && find(&out.bytes, b"/N 13 0 R").is_none());
+    assert_eq!(open(&out.bytes).inspect().page_count, 1);
+}
+
+#[test]
+fn widget_values_are_an_explicit_option_and_kept_text_is_reported() {
+    let objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [30 0 R 31 0 R] >> >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> /Annots [30 0 R 31 0 R] >>".to_vec()),
+        (4, stream_body("", b"q Q")),
+        (
+            30,
+            b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (Notes Budget Plan) /V (Budget Plan Q3) /DV (Budget Plan default) /Rect [10 10 200 30] /AP << /N 32 0 R >> /P 3 0 R >>"
+                .to_vec(),
+        ),
+        (31, b"<< /Type /Annot /Subtype /Widget /FT /Ch /T (choice) /V [(Budget Plan A) (other)] /Rect [10 40 200 60] /P 3 0 R >>".to_vec()),
+        (32, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 190 20]", b"BT /Helv 12 Tf 2 5 Td (Budget Plan Q3) Tj ET")),
+    ];
+    let input = build(&objs, "", b"");
+    let needle = ["Budget Plan".to_string()];
+    use TextOutcomeKind::{Dropped, KeptByPolicy, Replaced};
+    use TextRole::{Appearance, FieldDefaultValue, FieldName, FieldValue};
+    let tuples = |r: &hsk_studio_press::TextFieldReport| -> Vec<Seen> { r.outcomes.iter().map(|o| (o.object.num, o.role, o.kind, o.matches)).collect() };
+
+    // Default: nothing in widgets is rewritten, everything that matches is reported as kept, and
+    // the independent proof agrees (hits in the field strings and the widget appearance).
+    let mut doc = open(&input);
+    let out = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(
+        tuples(&out.report),
+        vec![
+            (30, FieldName, KeptByPolicy, 1),
+            (30, FieldValue, KeptByPolicy, 1),
+            (30, FieldDefaultValue, KeptByPolicy, 1),
+            (30, Appearance, KeptByPolicy, 1),
+            (31, FieldValue, KeptByPolicy, 1),
+        ]
+    );
+    assert!(!out.report.complete && out.report.kept_by_policy == 5 && out.report.matches_redacted == 0 && !out.is_proven());
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 30 })));
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 31 })));
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::ContentString { object: 32 })));
+    assert!(leaks(&out.bytes, "budget plan q3"));
+
+    // Explicit option: values, defaults and the widget appearance are redacted; the field NAME is
+    // never rewritten, stays reported, and stays a proof hit.
+    let mut doc = open(&input);
+    let on = TextFieldPolicy { widget_values: true, ..TextFieldPolicy::default() };
+    let out = redact_text_fields_and_save(&mut doc, &needle, &on, &token()).unwrap();
+    assert_eq!(
+        tuples(&out.report),
+        vec![
+            (30, FieldName, KeptByPolicy, 1),
+            (30, FieldValue, Replaced, 1),
+            (30, FieldDefaultValue, Replaced, 1),
+            (30, Appearance, Dropped, 1),
+            (31, FieldValue, Replaced, 1),
+        ]
+    );
+    assert!(!out.report.complete && out.report.kept_by_policy == 1 && out.report.matches_redacted == 4 && !out.is_proven());
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 30 })));
+    assert!(out.proof.hits.iter().all(|h| matches!(h.location, PayloadLocation::StringObject { object: 30 } | PayloadLocation::RawBytes { .. })));
+    let strings = all_strings(&out.bytes);
+    assert_eq!(strings.iter().filter(|s| s.contains("budget plan")).collect::<Vec<_>>(), vec!["notes budget plan"]);
+    for expect in ["[redacted] q3", "[redacted] default", "[redacted] a", "other"] {
+        assert!(strings.iter().any(|s| s == expect), "missing {expect:?} in {strings:?}");
+    }
+    assert!(find(&out.bytes, b"/N 32 0 R").is_none());
+    assert_eq!(open(&out.bytes).proposal(&token()).unwrap().form_fields.len(), 2);
+}
+
+#[test]
+fn region_redaction_with_text_fields_closes_outline_and_annotation_leaks() {
+    let objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> /Annots [5 0 R] >>".to_vec(),
+        ),
+        (
+            4,
+            stream_body("", b"BT /F1 12 Tf 72 700 Td (Budget Plan) Tj ET\nBT /F1 12 Tf 72 400 Td (the Budget Plan is on page two) Tj ET"),
+        ),
+        (5, b"<< /Type /Annot /Subtype /FreeText /Rect [100 300 300 340] /Contents (Budget Plan note) /AP << /N 13 0 R >> >>".to_vec()),
+        (6, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec()),
+        (10, b"<< /Type /Outlines /First 11 0 R /Last 11 0 R /Count 1 >>".to_vec()),
+        (11, format!("<< /Title {} /Parent 10 0 R >>", u16hex("Online Retrieval Budget Plan")).into_bytes()),
+        (13, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 200 40]", b"BT /Helv 12 Tf 2 10 Td (Budget Plan note) Tj ET")),
+    ];
+    let pdf = build(&objs, "", b"");
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let run = |text: Option<&TextFieldPolicy>| {
+        let mut doc = open(&pdf);
+        redact_and_save_with(&mut doc, &[region], UnsupportedPolicy::Refuse, text, &token()).unwrap()
+    };
+
+    // Slice 2 behaviour: the region is clear, but the words survive in the bookmark and in the
+    // annotation (its appearance is annotation text, so a hit, not a collision).
+    let plain = run(None);
+    assert!(plain.region_cleared() && !plain.is_proven() && plain.text_fields.is_none());
+    assert!(plain.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 11 })));
+    assert!(plain.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::ContentString { object: 13 })));
+    assert_eq!(plain.proof.kept_text_collisions.len(), 1, "only the kept page text collides");
+
+    // Slice 3: the same call with a text policy redacts both; the kept page text is still a collision.
+    let fixed = run(Some(&TextFieldPolicy::default()));
+    assert!(fixed.region_cleared() && fixed.is_proven(), "{:?}", fixed.proof);
+    assert_eq!(fixed.proof.kept_text_collisions.len(), 1);
+    let tf = fixed.text_fields.as_ref().expect("text fields requested");
+    let seen: Vec<Seen> = tf.outcomes.iter().map(|o| (o.object.num, o.role, o.kind, o.matches)).collect();
+    assert_eq!(
+        seen,
+        vec![
+            (5, TextRole::AnnotContents, TextOutcomeKind::Replaced, 1),
+            (5, TextRole::Appearance, TextOutcomeKind::Dropped, 1),
+            (11, TextRole::OutlineTitle, TextOutcomeKind::Replaced, 1),
+        ]
+    );
+    let strings = all_strings(&fixed.bytes);
+    assert_eq!(strings.iter().filter(|s| s.contains("budget plan")).collect::<Vec<_>>(), vec!["the budget plan is on page two"]);
+    assert!(strings.iter().any(|s| s == "online retrieval [redacted]") && strings.iter().any(|s| s == "[redacted] note"));
+}
+
+#[test]
+fn text_fields_refusals_bounds_and_atomicity() {
+    let needle = vec!["Budget Plan".to_string()];
+    let policy = TextFieldPolicy::default();
+    let input = outline_doc();
+    let mut doc = open(&input);
+    let before = doc.save_full(&token()).unwrap();
+
+    // Nothing to do: empty report, complete, bytes unchanged.
+    let none = doc.redact_text_fields(&["no such words".to_string()], &policy, &token()).unwrap();
+    assert!(none.outcomes.is_empty() && none.complete && none.matches_redacted == 0);
+    assert_eq!(doc.save_full(&token()).unwrap(), before);
+
+    // Typed refusals; the document is untouched after each.
+    let bad_marker = TextFieldPolicy { mode: TextMode::Replace("xbudget planx".into()), ..policy.clone() };
+    assert_eq!(doc.redact_text_fields(&needle, &bad_marker, &token()), Err(PressError::Malformed("text_marker_matches_needle")));
+    let many: Vec<String> = (0..4097).map(|i| format!("n{i}")).collect();
+    assert_eq!(doc.redact_text_fields(&many, &policy, &token()), Err(PressError::InputLimit("needles")));
+    let cancelled = token();
+    cancelled.cancel();
+    assert_eq!(doc.redact_text_fields(&needle, &policy, &cancelled), Err(PressError::Canceled));
+    assert_eq!(doc.save_full(&token()).unwrap(), before);
+    let mut signed_objs = base_objs(CONTENT.as_bytes(), "<< /Title (T) >>");
+    signed_objs[0].1 = b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /SigFlags 3 /Fields [9 0 R] >> >>".to_vec();
+    signed_objs.push((9, b"<< /FT /Sig /T (Sig1) /V << /Type /Sig /ByteRange [0 10 20 30] /Contents <00112233> >> >>".to_vec()));
+    let mut signed = open(&build(&signed_objs, "/Info 7 0 R", b""));
+    assert_eq!(signed.redact_text_fields(&needle, &policy, &token()), Err(PressError::SignedDocument));
+
+    // Atomic: annotation 5 would be rewritten, annotation 6 hits the decoded-size bound -> error,
+    // and nothing of 5's rewrite is visible.
+    let bomb = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0u8; 8 << 20], 6);
+    let objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> /Annots [5 0 R 6 0 R] >>".to_vec()),
+        (4, stream_body("", b"q Q")),
+        (5, b"<< /Type /Annot /Subtype /Text /Rect [1 1 2 2] /Contents (Budget Plan x) >>".to_vec()),
+        (6, b"<< /Type /Annot /Subtype /FreeText /Rect [5 5 9 9] /Contents (fine) /AP << /N 7 0 R >> >>".to_vec()),
+        (7, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode", &bomb)),
+    ];
+    let limits = Limits { max_decoded_bytes: 1 << 20, ..Limits::default() };
+    let mut doc = PdfDoc::open(&build(&objs, "", b""), &limits, &token()).unwrap();
+    let saved = doc.save_full(&token()).unwrap();
+    assert_eq!(doc.redact_text_fields(&needle, &policy, &token()), Err(PressError::InputLimit("decoded_bytes")));
+    assert_eq!(doc.save_full(&token()).unwrap(), saved);
+
+    // Unreadable rich text (filter not implemented) is dropped fail-closed and reported as such.
+    let objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> /Annots [5 0 R] >>".to_vec()),
+        (4, stream_body("", b"q Q")),
+        (5, b"<< /Type /Annot /Subtype /Text /Rect [1 1 2 2] /Contents (fine) /RC 9 0 R >>".to_vec()),
+        (9, stream_body("/Filter /DCTDecode", b"junk")),
+    ];
+    let mut doc = open(&build(&objs, "", b""));
+    let r = doc.redact_text_fields(&needle, &policy, &token()).unwrap();
+    assert_eq!(r.outcomes.len(), 1);
+    let o = r.outcomes[0];
+    assert_eq!((o.object.num, o.role, o.kind, o.matches, o.unreadable), (5, TextRole::AnnotRichText, TextOutcomeKind::Dropped, 0, true));
+    assert!(find(&doc.save_full(&token()).unwrap(), b"/RC").is_none());
+
+    // A cyclic outline (Next loop) terminates and every linked item is judged once.
+    let objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >>".to_vec()),
+        (4, stream_body("", b"q Q")),
+        (10, b"<< /Type /Outlines /First 11 0 R /Last 12 0 R >>".to_vec()),
+        (11, b"<< /Title (a Budget Plan) /Parent 10 0 R /Next 12 0 R >>".to_vec()),
+        (12, b"<< /Title (b budget plan) /Parent 10 0 R /Prev 11 0 R /Next 11 0 R >>".to_vec()),
+    ];
+    let mut doc = open(&build(&objs, "", b""));
+    let r = doc.redact_text_fields(&needle, &policy, &token()).unwrap();
+    assert_eq!(r.outcomes.iter().map(|o| o.object.num).collect::<Vec<_>>(), vec![11, 12]);
+}

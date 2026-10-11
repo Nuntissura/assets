@@ -126,14 +126,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn text_string(bytes: &[u8]) -> String {
-    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        let units = rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]]));
-        char::decode_utf16(units).map(|r| r.unwrap_or('\u{FFFD}')).collect()
-    } else if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        String::from_utf8_lossy(rest).into_owned()
-    } else {
-        bytes.iter().map(|b| char::from(*b)).collect()
-    }
+    crate::text_codec::decode_text(bytes).0.into_iter().collect()
 }
 
 fn encode_text(s: &str) -> Vec<u8> {
