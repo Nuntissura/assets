@@ -3,8 +3,7 @@ kind: derived_taskboard
 project_id: KUMIHIMO
 source: WP contracts and state
 counts:
-  done: 6
-  active: 1
+  done: 7
   planned: 7
 work_packets:
 - wp_id: WP-KUM-001-init-v1
@@ -55,11 +54,10 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-007-core-model-v1
   title: Implement the portable workspace identity and containment core
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-007-core-model-v1/WP-KUM-007-core-model-v1-state.yaml
-  next_action: Publish verified outcome, independently read remote, then close WP007 and increment coder rotation
-    count
+  next_action: WP007 complete; promote WP008 geometry/tool-docking contract before next coding admission
   blockers: []
 - wp_id: WP-KUM-008-layout-and-tool-docking-v1
   title: Implement geometry and scoped docking

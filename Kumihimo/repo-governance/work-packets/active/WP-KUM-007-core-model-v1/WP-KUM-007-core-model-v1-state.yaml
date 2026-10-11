@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-007-core-model-v1
-generation: 5
-phase: active
+generation: 6
+phase: done
 owner: coder_01
 changed_files:
 - README.md
@@ -67,6 +67,11 @@ proof:
     archived
 - kind: focused_governance
   observed: sync.py --check and git diff --check passed after affected specification/status edits
+- kind: outcome_publication
+  expected_revision: 97fc02a566630331adcc3abfa366817e05de5407
+  observed_revision: 97fc02a566630331adcc3abfa366817e05de5407
+  command: git ls-remote origin refs/heads/codex/handpick
+  observed: Exact published outcome contains verified source, spec6, independent runtime evaluation, manual and
+    topology; final status settlement follows
 blockers: []
-next_action: Publish verified outcome, independently read remote, then close WP007 and increment coder rotation
-  count
+next_action: WP007 complete; promote WP008 geometry/tool-docking contract before next coding admission

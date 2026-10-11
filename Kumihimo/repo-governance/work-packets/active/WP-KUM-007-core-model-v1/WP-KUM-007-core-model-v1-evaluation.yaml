@@ -4,7 +4,14 @@ wp_id: WP-KUM-007-core-model-v1
 evaluator: ROLE-KUM-EVALUATION
 phase: observed_runtime_evaluation_complete
 verdict: PASS_SCOPED_RUNTIME
-outcome_publication: PENDING_FINAL_REMOTE_READ
+outcome_publication:
+  verdict: PASS
+  command: git ls-remote origin refs/heads/codex/handpick
+  expected_revision: 97fc02a566630331adcc3abfa366817e05de5407
+  observed_revision: 97fc02a566630331adcc3abfa366817e05de5407
+  runtime_preservation: Independently compared both published Git trees; all eleven runtime input files match a004dbd4c655d6d193e288d21e37dc9987095353 byte-for-byte and product membership is unchanged.
+  product_delta: Only product/README.md proof paragraph changed; exact scoped evidence and remaining platform limits inspected.
+  effect: Supersedes historical pending-outcome-publication statements below; unchanged runtime proof remains valid without reruns.
 scope: Portable in-memory core only; coder owns product tests and serial Cargo proof
 acceptance_scenarios:
   - case_id: EVAL-KUM-007-001

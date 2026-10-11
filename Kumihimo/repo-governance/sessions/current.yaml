@@ -7,7 +7,7 @@ git:
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: WP-KUM-007-core-model-v1
+active_wp: null
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
@@ -37,9 +37,10 @@ roles:
     thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
     model: gpt-6.1-sol
     reasoning: high
-    completed_implementation_wps: []
+    completed_implementation_wps:
+    - WP-KUM-007-core-model-v1
     rotate_after: 2
-    assignment: Implement WP007 after verified predecessor/readiness; no Cargo without build lane
+    assignment: Await WP008 full published contract and readiness; one of two implementation WPs completed
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -57,5 +58,6 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Complete independent WP007 evaluation and outcome publication; then promote WP008 within current session
-  scope
+next_action: Promote WP008 geometry/tool-docking from its stub; publish full bounded contract and dependency/eval
+  preparation before coding
+next_wp: WP-KUM-008-layout-and-tool-docking-v1
