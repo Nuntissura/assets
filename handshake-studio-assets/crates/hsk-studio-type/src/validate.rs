@@ -40,9 +40,12 @@ fn tag(value: [u8; 4]) -> ProviderResult<()> {
     }
     Ok(())
 }
+/// `any_script`: the SMB-TYPE-ENG-1 spike provider accepts any well-formed ISO 15924 tag; the
+/// vendored provider keeps the selected Latn/Arab/Hani/Zyyy profile.
 pub(crate) fn validate<'a>(
     request: &Request<'a>,
     ctx: &Context<'a>,
+    any_script: bool,
 ) -> ProviderResult<ChargedVec<'a, u32>> {
     ctx.step()?;
     let l = request.limits;
@@ -135,7 +138,11 @@ pub(crate) fn validate<'a>(
         if !style.font_size_pt.is_finite() || style.font_size_pt <= 0.0 {
             return Err(Error::InvalidInput);
         }
-        if !matches!(&style.script, b"Latn" | b"Arab" | b"Hani" | b"Zyyy") {
+        let iso15924 = style.script[0].is_ascii_uppercase()
+            && style.script[1..].iter().all(u8::is_ascii_lowercase);
+        if !(matches!(&style.script, b"Latn" | b"Arab" | b"Hani" | b"Zyyy")
+            || (any_script && iso15924))
+        {
             return Err(Error::UnsupportedProfile);
         }
         if style.language.is_empty()

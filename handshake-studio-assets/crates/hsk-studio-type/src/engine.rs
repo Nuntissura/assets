@@ -101,7 +101,12 @@ impl TextEngine {
         {
             return Err(Error::LeaseUnavailable);
         }
-        let order = crate::validate::validate(&request, &ctx)?;
+        let any_script = match provider {
+            Provider::Vendored => false,
+            #[cfg(feature = "harfrust")]
+            Provider::Harfrust => true,
+        };
+        let order = crate::validate::validate(&request, &ctx, any_script)?;
         crate::readset::verify(&request, ports, &ctx)?;
         for _ in request.text_utf8.chars() {
             ctx.step()?;

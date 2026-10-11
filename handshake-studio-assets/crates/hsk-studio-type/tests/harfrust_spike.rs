@@ -165,6 +165,10 @@ pub fn harfrust_spike_parity_and_coverage() {
             true,
         );
         lines.push(serde_json::json!({"case": name, "vendored": v, "harfrust": h}));
+        for line in &lines {
+            println!("SPIKE {line}");
+        }
+        let reported = lines.len();
         // Coverage gain: scripts the vendored subset refuses (no pinned reference exists).
         for (name, text, font, script, language, direction) in [
             ("devanagari_hindi", "\u{939}\u{93f}\u{928}\u{94d}\u{926}\u{940}", 4, "Deva", "hi", "ltr"),
@@ -177,13 +181,12 @@ pub fn harfrust_spike_parity_and_coverage() {
                 "text_utf8_hex": text.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>(),
             });
             let (v, h) = compare_case(&fonts, &case, None, None, false);
+            println!("SPIKE {}", serde_json::json!({"case": name, "vendored": v, "harfrust": h}));
             assert_eq!(v["status"], "refused UnsupportedProfile", "{name} vendored");
             assert_eq!(h["status"], "shaped", "{name} harfrust");
             assert!(h["glyphs"].as_u64().unwrap() > 0, "{name} harfrust glyphs");
             lines.push(serde_json::json!({"case": name, "vendored": v, "harfrust": h}));
         }
-        for line in &lines {
-            println!("SPIKE {line}");
-        }
+        assert_eq!(lines.len(), reported + 2, "every coverage case reported");
     });
 }
