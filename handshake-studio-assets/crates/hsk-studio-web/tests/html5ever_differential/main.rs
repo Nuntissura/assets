@@ -1,0 +1,494 @@
+//! Differential check: hsk-studio-web's reading of HTML against html5ever (dev-dependency oracle, servo).
+//!
+//! Inputs are hand-written adversarial documents plus a small deterministic generator. Each one is parsed by html5ever
+//! (fragment parsing with a `div` context, or a whole document) and by `hsk_studio_web::parse`; both results are reduced
+//! to one event list (element namespace and name, effective attributes with decoded values, text, comments) and compared.
+//! A typed refusal by the crate is not a disagreement (it is counted and printed); anything else that differs fails the
+//! test with the minimised input printed. The crate's public model cannot express some comparisons; see the lane notes.
+//!
+//! Compared: element namespace and ASCII-lowercased name, effective attributes (first duplicate wins; names lowercased,
+//! values as the crate decodes them), decoded text, raw-text / RCDATA / script / `noscript` bodies (source slices are
+//! compared after newline normalisation and, for RCDATA, character-reference decoding), comments, CDATA and bogus
+//! comments. Not expressible through the public model: attribute namespaces and prefixes, SVG tag and attribute case
+//! adjustment (compared lowercase), the markup reading of `noscript` under scripting (compared as the source slice),
+//! optional-tag inference (the crate refuses it typed), tree-construction reparenting (tables, forms, adoption agency).
+//!
+//! Recorded product disagreements (this lane does not fix product code; see lane SMB-WEB-DIFFTEST notes.disagreements):
+//! `image_start_tag_is_read_as_img`, `null_bytes_and_newline_normalisation`, `generated_null_and_cr_noise` and
+//! `leading_newline_after_pre_listing_textarea` fail until the crate follows the HTML Standard there. Every other test
+//! in this target is expected to pass. `HSK_DIFFTEST_SCALE=<n>` multiplies the generated corpora for soak runs.
+
+mod corpus;
+mod events;
+mod generator;
+mod harness;
+mod model;
+mod oracle;
+
+use events::{Category, Ev, Ns, first_difference};
+use generator::Theme;
+use harness::Run;
+use oracle::{Mode, reference_events};
+
+/// Soak multiplier for the generated corpora (`HSK_DIFFTEST_SCALE=10`: ten times the seeds and ten times the deadline).
+/// Default 1; the floors and the committed seeds do not change.
+fn soak_scale() -> u64 {
+    std::env::var("HSK_DIFFTEST_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(1, |n| n.clamp(1, 50))
+}
+
+// Each canonical test case owns its deadline; panic payloads reach the Cargo harness.
+fn bounded_case(name: &'static str, body: impl FnOnce() + Send + 'static) {
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+        sync::mpsc,
+        time::Duration,
+    };
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let outcome = catch_unwind(AssertUnwindSafe(body));
+        let _ = sender.send(outcome);
+    });
+    match receiver.recv_timeout(Duration::from_secs(45 * soak_scale())) {
+        Ok(Ok(())) => {}
+        Ok(Err(payload)) => resume_unwind(payload),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            panic!("case {name} exceeded its declared deadline (45 s x soak scale)")
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("case {name} lost its deadline worker result")
+        }
+    }
+}
+
+fn run_cases(name: &'static str, cases: Vec<(String, String)>, mode: Mode, min_compared: usize) {
+    let mut run = Run::new(name);
+    for (label, input) in &cases {
+        run.feed(label, input, mode);
+    }
+    run.finish(min_compared);
+}
+
+fn open(ns: Ns, name: &str, attrs: &[(&str, &str)]) -> Ev {
+    Ev::Open {
+        ns,
+        name: name.to_owned(),
+        attrs: attrs
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+            .collect(),
+    }
+}
+
+/// The reference sink is the oracle for everything below; these cases pin its behaviour on well-known inputs (tree
+/// construction results from the HTML Standard) so a sink bug cannot show up as a product disagreement.
+#[test]
+fn oracle_sink_self_check() {
+    bounded_case("oracle_sink_self_check", || {
+        let t = |s: &str, scripting: bool| reference_events(s, Mode::Fragment, scripting);
+        // Namespaces and integration points.
+        assert_eq!(
+            t(
+                "<svg><foreignObject><style>&lt;</style></foreignObject></svg>",
+                true
+            ),
+            vec![
+                open(Ns::Svg, "svg", &[]),
+                open(Ns::Svg, "foreignobject", &[]),
+                open(Ns::Html, "style", &[]),
+                Ev::Text("&lt;".into()),
+                Ev::Close,
+                Ev::Close,
+                Ev::Close,
+            ]
+        );
+        assert_eq!(
+            t("<svg><style>&lt;</style></svg>", true),
+            vec![
+                open(Ns::Svg, "svg", &[]),
+                open(Ns::Svg, "style", &[]),
+                Ev::Text("<".into()),
+                Ev::Close,
+                Ev::Close
+            ]
+        );
+        assert_eq!(
+            t(
+                "<math><annotation-xml encoding=TEXT/HTML><style>&lt;</style></annotation-xml></math>",
+                true
+            ),
+            vec![
+                open(Ns::MathMl, "math", &[]),
+                open(Ns::MathMl, "annotation-xml", &[("encoding", "TEXT/HTML")]),
+                open(Ns::Html, "style", &[]),
+                Ev::Text("&lt;".into()),
+                Ev::Close,
+                Ev::Close,
+                Ev::Close,
+            ]
+        );
+        // Duplicate attributes: the first wins.
+        assert_eq!(
+            t("<b id=a ID=b id=c>", true),
+            vec![open(Ns::Html, "b", &[("id", "a")]), Ev::Close]
+        );
+        // Character references: a legacy name without a semicolon decodes in text; in an attribute value it stays literal
+        // when `=` or an alphanumeric follows (13.2.5.73), and decodes otherwise.
+        assert_eq!(
+            t("&quot&notit;", true),
+            vec![Ev::Text("\"\u{ac}it;".into())]
+        );
+        assert_eq!(
+            t(
+                "<b title=\"&quot&not=\" alt='&notit;' lang=\"&not;&not-\">",
+                true
+            ),
+            vec![
+                open(
+                    Ns::Html,
+                    "b",
+                    &[
+                        ("title", "\"&not="),
+                        ("alt", "&notit;"),
+                        ("lang", "\u{ac}\u{ac}-")
+                    ]
+                ),
+                Ev::Close
+            ]
+        );
+        // Scripting flag: noscript is raw text with it, a normal tree without it.
+        assert_eq!(
+            t("<noscript><b>x</b></noscript>", true),
+            vec![
+                open(Ns::Html, "noscript", &[]),
+                Ev::Text("<b>x</b>".into()),
+                Ev::Close
+            ]
+        );
+        assert_eq!(
+            t("<noscript><b>x</b></noscript>", false),
+            vec![
+                open(Ns::Html, "noscript", &[]),
+                open(Ns::Html, "b", &[]),
+                Ev::Text("x".into()),
+                Ev::Close,
+                Ev::Close
+            ]
+        );
+        // Tree construction the crate refuses rather than guesses: implied end tags and the textarea / pre newline rule.
+        assert_eq!(
+            t("<p>a<div>b</div>", true),
+            vec![
+                open(Ns::Html, "p", &[]),
+                Ev::Text("a".into()),
+                Ev::Close,
+                open(Ns::Html, "div", &[]),
+                Ev::Text("b".into()),
+                Ev::Close
+            ]
+        );
+        assert_eq!(
+            t("<textarea>\nx</textarea>", true),
+            vec![
+                open(Ns::Html, "textarea", &[]),
+                Ev::Text("x".into()),
+                Ev::Close
+            ]
+        );
+        // Comments end at `--!>`; NUL becomes U+FFFD in attribute values; CRLF is normalised.
+        assert_eq!(
+            t("<!-- a --!>b", true),
+            vec![Ev::Comment(" a ".into()), Ev::Text("b".into())]
+        );
+        assert_eq!(
+            t("<b title=\"a\0b\r\nc\">", true),
+            vec![
+                open(Ns::Html, "b", &[("title", "a\u{fffd}b\nc")]),
+                Ev::Close
+            ]
+        );
+        // Whole-document parsing keeps explicit structure and drops the doctype.
+        assert_eq!(
+            reference_events(
+                "<!DOCTYPE html><html><head></head><body>x</body></html>",
+                Mode::Document,
+                true
+            ),
+            vec![
+                open(Ns::Html, "html", &[]),
+                open(Ns::Html, "head", &[]),
+                Ev::Close,
+                open(Ns::Html, "body", &[]),
+                Ev::Text("x".into()),
+                Ev::Close,
+                Ev::Close
+            ]
+        );
+    });
+}
+
+/// The comparator has teeth: every mutation of a reference event list is reported, with the intended category.
+#[test]
+fn comparator_self_check() {
+    bounded_case("comparator_self_check", || {
+        let base = reference_events(
+            "<svg><desc><style>a&amp;b</style></desc></svg><textarea>x</textarea><b id=1>t</b><!--c-->",
+            Mode::Fragment,
+            true,
+        );
+        assert!(first_difference(&base, &base).is_none());
+        let category_of = |mutate: &dyn Fn(&mut Vec<Ev>)| {
+            let mut changed = base.clone();
+            mutate(&mut changed);
+            first_difference(&base, &changed).map(|d| d.category)
+        };
+        let position =
+            |pred: &dyn Fn(&Ev) -> bool| base.iter().position(pred).expect("event present");
+        let svg = position(&|e| matches!(e, Ev::Open { name, .. } if name == "svg"));
+        let style_text = position(&|e| matches!(e, Ev::Text(t) if t == "a&amp;b"));
+        let b = position(&|e| matches!(e, Ev::Open { name, .. } if name == "b"));
+        let b_text = position(&|e| matches!(e, Ev::Text(t) if t == "t"));
+        let comment = position(&|e| matches!(e, Ev::Comment(_)));
+        assert_eq!(
+            category_of(&|v| {
+                if let Ev::Open { ns, .. } = &mut v[svg] {
+                    *ns = Ns::Html;
+                }
+            }),
+            Some(Category::Namespace)
+        );
+        assert_eq!(
+            category_of(&|v| {
+                if let Ev::Open { name, .. } = &mut v[b] {
+                    name.push('x');
+                }
+            }),
+            Some(Category::ElementName)
+        );
+        assert_eq!(
+            category_of(&|v| {
+                if let Ev::Open { attrs, .. } = &mut v[b] {
+                    attrs[0].1 = "2".into();
+                }
+            }),
+            Some(Category::Attribute)
+        );
+        assert_eq!(
+            category_of(&|v| v[style_text] = Ev::Text("a&b".into())),
+            Some(Category::RawText)
+        );
+        assert_eq!(
+            category_of(&|v| v[b_text] = Ev::Text("u".into())),
+            Some(Category::Text)
+        );
+        assert_eq!(
+            category_of(&|v| v[comment] = Ev::Comment("d".into())),
+            Some(Category::Comment)
+        );
+        assert_eq!(
+            category_of(&|v| drop(v.remove(b_text))),
+            Some(Category::Structure)
+        );
+        assert_eq!(
+            category_of(&|v| v.push(Ev::Close)),
+            Some(Category::Structure)
+        );
+        assert_eq!(
+            category_of(&|v| v.truncate(v.len() - 1)),
+            Some(Category::Structure)
+        );
+        // Fine-grained signatures used to keep different defects apart.
+        let sub =
+            |expected: Ev, actual: Ev| first_difference(&[expected], &[actual]).map(|d| d.sub);
+        assert_eq!(
+            sub(Ev::Text("a".into()), Ev::Text("a\0".into())),
+            Some("nul-not-replaced-or-dropped")
+        );
+        assert_eq!(
+            sub(Ev::Text("a\n".into()), Ev::Text("a\r".into())),
+            Some("cr-not-normalised")
+        );
+        assert_eq!(
+            sub(Ev::Text("a".into()), Ev::Text("\na".into())),
+            Some("leading-lf-not-dropped")
+        );
+        assert_eq!(
+            sub(
+                open(Ns::Html, "b", &[("t", "\u{fffd}")]),
+                open(Ns::Html, "b", &[("t", "\0")])
+            ),
+            Some("value-nul-not-replaced")
+        );
+    });
+}
+
+#[test]
+fn namespaces_and_integration_points() {
+    bounded_case("namespaces_and_integration_points", || {
+        run_cases("namespaces", corpus::namespaces(), Mode::Fragment, 70)
+    });
+}
+
+#[test]
+fn raw_text_rcdata_and_script_data_boundaries() {
+    bounded_case("raw_text_rcdata_and_script_data_boundaries", || {
+        run_cases("raw_text", corpus::raw_text(), Mode::Fragment, 180)
+    });
+}
+
+#[test]
+fn comments_declarations_and_cdata() {
+    bounded_case("comments_declarations_and_cdata", || {
+        run_cases(
+            "comments",
+            corpus::comments_and_declarations(),
+            Mode::Fragment,
+            60,
+        )
+    });
+}
+
+#[test]
+fn character_references_in_text_and_attributes() {
+    bounded_case("character_references_in_text_and_attributes", || {
+        run_cases(
+            "character_references",
+            corpus::character_references(),
+            Mode::Fragment,
+            5000,
+        )
+    });
+}
+
+#[test]
+fn tag_and_attribute_tokenization() {
+    bounded_case("tag_and_attribute_tokenization", || {
+        run_cases(
+            "tag_attr_syntax",
+            corpus::tag_and_attribute_syntax(),
+            Mode::Fragment,
+            55,
+        )
+    });
+}
+
+#[test]
+fn duplicate_attributes_first_wins() {
+    bounded_case("duplicate_attributes_first_wins", || {
+        run_cases(
+            "duplicate_attributes",
+            corpus::duplicate_attributes(),
+            Mode::Fragment,
+            35,
+        )
+    });
+}
+
+#[test]
+fn null_bytes_and_newline_normalisation() {
+    bounded_case("null_bytes_and_newline_normalisation", || {
+        run_cases(
+            "nulls_and_newlines",
+            corpus::nulls_and_newlines(),
+            Mode::Fragment,
+            50,
+        )
+    });
+}
+
+#[test]
+fn image_start_tag_is_read_as_img() {
+    bounded_case("image_start_tag_is_read_as_img", || {
+        run_cases(
+            "image_start_tag",
+            corpus::image_start_tag(),
+            Mode::Fragment,
+            6,
+        )
+    });
+}
+
+#[test]
+fn leading_newline_after_pre_listing_textarea() {
+    bounded_case("leading_newline_after_pre_listing_textarea", || {
+        run_cases(
+            "leading_newlines",
+            corpus::leading_newlines(),
+            Mode::Fragment,
+            12,
+        )
+    });
+}
+
+fn generated(name: &'static str, theme: Theme, first_seed: u64, count: u64, min_compared: usize) {
+    run_cases(
+        name,
+        generator::cases(theme, first_seed, count * soak_scale()),
+        Mode::Fragment,
+        min_compared,
+    );
+}
+
+#[test]
+fn generated_mixed() {
+    bounded_case("generated_mixed", || {
+        generated("generated_mixed", Theme::Mixed, 1, 3000, 2000)
+    });
+}
+
+#[test]
+fn generated_namespaces() {
+    bounded_case("generated_namespaces", || {
+        generated(
+            "generated_namespaces",
+            Theme::Namespaces,
+            10_001,
+            2500,
+            1600,
+        )
+    });
+}
+
+#[test]
+fn generated_raw_text_boundaries() {
+    bounded_case("generated_raw_text_boundaries", || {
+        generated("generated_raw_text", Theme::RawText, 20_001, 2500, 1700)
+    });
+}
+
+#[test]
+fn generated_character_references() {
+    bounded_case("generated_character_references", || {
+        generated("generated_char_refs", Theme::CharRefs, 30_001, 2500, 1800)
+    });
+}
+
+#[test]
+fn generated_duplicate_attributes() {
+    bounded_case("generated_duplicate_attributes", || {
+        generated("generated_dup_attrs", Theme::DupAttrs, 40_001, 1500, 1000)
+    });
+}
+
+#[test]
+fn generated_malformed_markup_by_mutation() {
+    bounded_case("generated_malformed_markup_by_mutation", || {
+        generated("generated_fuzz", Theme::Fuzz, 60_001, 4000, 1000)
+    });
+}
+
+#[test]
+fn generated_null_and_cr_noise() {
+    bounded_case("generated_null_and_cr_noise", || {
+        generated("generated_noise", Theme::Noise, 50_001, 1000, 700)
+    });
+}
+
+#[test]
+fn whole_documents_with_explicit_structure() {
+    bounded_case("whole_documents_with_explicit_structure", || {
+        run_cases("documents", corpus::documents(), Mode::Document, 12)
+    });
+}
