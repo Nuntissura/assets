@@ -221,7 +221,6 @@ impl MediaIndex {
 }
 
 /// Track header facts supplied by a container reader other than ISOBMFF.
-#[allow(dead_code)] // consumed by the Matroska reader (slice 3)
 pub(crate) struct ExternalTrack {
     pub track_id: u32,
     pub kind: TrackKind,
@@ -237,7 +236,6 @@ pub(crate) struct ExternalTrack {
 impl TrackIndex {
     /// Assemble a track from samples produced by another container reader (Matroska). The timeline is
     /// the identity timeline (no edit list) and `dts` is whatever the reader could know (often `pts`).
-    #[allow(dead_code)] // consumed by the Matroska reader (slice 3)
     pub(crate) fn from_external_samples(
         parts: ExternalTrack,
         samples: Vec<SampleEntry>,

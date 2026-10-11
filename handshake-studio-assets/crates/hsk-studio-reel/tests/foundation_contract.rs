@@ -632,14 +632,14 @@ fn registry_is_enumerable_instance_owned_and_reports() {
     bounded_case("registry_is_enumerable_instance_owned_and_reports", || {
         let registry = Registry::standard();
         let ids: Vec<&str> = registry.descriptors().iter().map(|d| d.id).collect();
-        assert_eq!(ids, ["wav-pcm", "y4m", "isobmff"]);
+        assert_eq!(ids, ["wav-pcm", "y4m", "isobmff", "matroska"]);
         assert!(registry.descriptors_json().contains("\"id\":\"y4m\""));
         // Two registries share nothing; registering twice in one is rejected.
         let mut lone = Registry::new();
         lone.register(Box::new(WavProvider)).unwrap();
         assert!(lone.register(Box::new(WavProvider)).is_err());
         assert_eq!(lone.descriptors().len(), 1);
-        assert_eq!(registry.descriptors().len(), 3);
+        assert_eq!(registry.descriptors().len(), 4);
 
         let missing = registry
             .resolve_id("h264")
@@ -661,12 +661,12 @@ fn registry_is_enumerable_instance_owned_and_reports() {
             let found = registry.detect(&mut Cursor::new(bytes.clone())).unwrap();
             assert_eq!(found.descriptor().id, id);
         }
-        let mkv = vec![0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0];
-        let err = registry.detect(&mut Cursor::new(mkv)).err().unwrap();
+        let ogg = b"OggS\0\0\0\0".to_vec();
+        let err = registry.detect(&mut Cursor::new(ogg)).err().unwrap();
         assert_eq!(
             err,
             ReelError::ImportUnsupported {
-                detected: "matroska-webm".into()
+                detected: "ogg".into()
             }
         );
         assert_eq!(err.code(), "MEDIA_IMPORT_UNSUPPORTED");

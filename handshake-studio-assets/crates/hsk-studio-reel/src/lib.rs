@@ -15,6 +15,7 @@ mod error;
 pub mod fixtures;
 mod identity;
 mod isobmff;
+mod matroska;
 mod model;
 mod registry;
 mod report;
@@ -35,10 +36,14 @@ pub use isobmff::{
     TrackIndex, TrackKind, build_index, fourcc_string, pcm_format, read_sample,
     read_timecode_start,
 };
+pub use matroska::{
+    ClusterRef, CuePoint, CuePosition, CuedSeek, MATROSKA_PROVIDER_ID, MatroskaProvider, MkvIndex,
+    MkvLayout, MkvTrack, MkvTrackInfo, build_matroska_index, cued_seek, read_layout,
+};
 pub use model::*;
 pub use registry::{ProxySource, Registry, detect_type};
 pub use report::{outcome_for, report};
 pub use wav::{WAV_PROVIDER_ID, WavProvider};
 pub use y4m::{Y4M_PROVIDER_ID, Y4mProvider};
 
-pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-reel","module":"reel","wave":1,"providers":["wav-pcm","y4m","isobmff"],"registry":"instance-owned, enumerable via Registry::descriptors(); no global factory","default_closure":"pure Rust, accord+observe only, forbid(unsafe_code)","limits":{"max_probe_bytes":67108864,"max_chunk_bytes":8388608,"max_samples":4000000,"max_tracks":64,"max_edit_entries":4096},"errors":["MEDIA_CODEC_UNAVAILABLE","MEDIA_IMPORT_UNSUPPORTED","MEDIA_CORRUPT","MEDIA_TRUNCATED","MEDIA_LIMIT_EXCEEDED","MEDIA_CANCELED","MEDIA_STALE_GRANT","MEDIA_UNSUPPORTED","MEDIA_OUT_OF_RANGE","MEDIA_STRICT_ORIGINAL_REQUIRED","MEDIA_IO"],"time":"Pulse ticks (accord TICKS_PER_SECOND); non-divisible timescales round to nearest with an explicit ticks_exact receipt flag","slice2":["pcm-in-mov decode (twos/sowt/in24/in32/fl32/fl64/raw/lpcm v2) to little-endian","tmcd raw timecode fields + start sample","fragmented mp4 index (moof/traf/tfhd/tfdt/trun, sidx)","IndexCache keyed by content id + revision + limits"],"not_implemented":["compressed video/audio decode","encode beyond wav/y4m","timecode labels (pulse owns)","mxf","matroska","GOP cache","relink","native codecs (hsk-studio-reel-native)"]}"#;
+pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-reel","module":"reel","wave":1,"providers":["wav-pcm","y4m","isobmff","matroska"],"registry":"instance-owned, enumerable via Registry::descriptors(); no global factory","default_closure":"pure Rust, accord+observe only, forbid(unsafe_code)","limits":{"max_probe_bytes":67108864,"max_chunk_bytes":8388608,"max_samples":4000000,"max_tracks":64,"max_edit_entries":4096},"errors":["MEDIA_CODEC_UNAVAILABLE","MEDIA_IMPORT_UNSUPPORTED","MEDIA_CORRUPT","MEDIA_TRUNCATED","MEDIA_LIMIT_EXCEEDED","MEDIA_CANCELED","MEDIA_STALE_GRANT","MEDIA_UNSUPPORTED","MEDIA_OUT_OF_RANGE","MEDIA_STRICT_ORIGINAL_REQUIRED","MEDIA_IO"],"time":"Pulse ticks (accord TICKS_PER_SECOND); non-divisible timescales round to nearest with an explicit ticks_exact receipt flag","slice3":["matroska/webm EBML index (Segment/Info/Tracks/Cluster/SimpleBlock/BlockGroup/Cues, xiph/ebml/fixed lacing, unknown sizes)","cue-based frame-accurate seek","sampled source identity (SHA-256 windows) + relink with confidence and ambiguity"],"slice2":["pcm-in-mov decode (twos/sowt/in24/in32/fl32/fl64/raw/lpcm v2) to little-endian","tmcd raw timecode fields + start sample","fragmented mp4 index (moof/traf/tfhd/tfdt/trun, sidx)","IndexCache keyed by content id + revision + limits"],"not_implemented":["compressed video/audio decode","encode beyond wav/y4m","timecode labels (pulse owns)","mxf","matroska content encodings","GOP cache","native codecs (hsk-studio-reel-native)"]}"#;

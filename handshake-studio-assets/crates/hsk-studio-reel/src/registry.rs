@@ -2,6 +2,7 @@
 //! There is no process-global factory: two registries never share providers.
 use crate::error::{ReelError, check_cancel};
 use crate::isobmff::IsobmffProvider;
+use crate::matroska::MatroskaProvider;
 use crate::model::*;
 use crate::wav::WavProvider;
 use crate::y4m::Y4mProvider;
@@ -39,6 +40,7 @@ impl Registry {
             Box::new(WavProvider) as Box<dyn MediaProvider>,
             Box::new(Y4mProvider),
             Box::new(IsobmffProvider),
+            Box::new(MatroskaProvider),
         ] {
             registry
                 .register(provider)
