@@ -9,8 +9,21 @@
 //! grammar plus self-closing tags. Unsupported tokens (CDATA, processing instructions, bogus markup) stay
 //! as opaque `Unsupported` nodes with a loss entry. Optional end tags, misnesting and unterminated
 //! constructs are typed errors; the tree is never guessed or re-nested.
+//!
+//! Inside the subset the scanner reads bytes the way an HTML parser does (HTML Standard 13.2): the comment end
+//! states (`-->`, `--!>`), script data with its escaped and double-escaped states, RAWTEXT/RCDATA end tags, CDATA
+//! sections only where the current node is not an HTML element (elsewhere a bogus comment ending at the first `>`),
+//! and the tree-construction dispatcher that decides which rules a start tag follows: every element carries its
+//! namespace; HTML integration points (SVG `foreignObject desc title`, MathML `annotation-xml` with an HTML
+//! `encoding`) and MathML text integration points (`mi mo mn ms mtext`) switch back to HTML rules, so a `style`
+//! there is RAWTEXT; inside foreign content a start tag takes the namespace of its parent. Where engines or the
+//! scripting flag would read the same bytes differently the document is refused typed instead of picking one
+//! reading: HTML start tags that break out of foreign content, a `noscript` whose RAWTEXT reading ends elsewhere,
+//! elements read as raw text or ignored inside `select`, and `frameset` documents.
 
-use crate::entity::decode_entities;
+#![deny(clippy::arithmetic_side_effects)]
+
+use crate::charref::{Context, decode};
 use crate::error::{LimitKind, LossKind, LossReport, MalformedKind, UnsupportedKind, WebError};
 use hsk_studio_accord::CancellationToken;
 use sha2::{Digest, Sha256};
@@ -32,6 +45,38 @@ const OPTIONAL_END: &[&str] = &[
 ];
 /// STU-WEB-020 protected contents: a formatter must keep these verbatim.
 const PROTECTED: &[&str] = &["pre", "script", "style", "textarea"];
+/// HTML start tags that pop foreign content (HTML Standard 13.2.6.5); `font` only with `color`, `face` or `size`.
+const BREAKOUT: &[&str] = &[
+    "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5",
+    "h6", "head", "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small", "span",
+    "strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var",
+];
+/// Read as raw text by parsers following the current `select` content model, ignored (so their content becomes markup)
+/// by the older "in select" insertion mode: refused inside `select`.
+const SELECT_DIVERGENT: &[&str] = &["style", "xmp", "iframe", "noembed", "noframes", "noscript", "title", "svg", "math"];
+
+/// Namespace an HTML parser gives an element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Namespace {
+    Html,
+    Svg,
+    MathMl,
+}
+
+/// One open element with the parser state its namespace and position imply.
+#[derive(Clone, Copy)]
+struct Frame {
+    id: NodeId,
+    ns: Namespace,
+    /// SVG `foreignObject desc title`, MathML `annotation-xml` with an HTML `encoding`.
+    html_ip: bool,
+    /// MathML `mi mo mn ms mtext`.
+    mathml_text_ip: bool,
+    /// MathML `annotation-xml` (an `svg` start tag below it follows the HTML rules).
+    annotation_xml: bool,
+    /// HTML `noscript`: start of its RAWTEXT reading's close tag (scripting enabled).
+    noscript_close: Option<usize>,
+}
 
 pub(crate) fn in_set(set: &[&str], name: &str) -> bool {
     set.iter().any(|s| name.eq_ignore_ascii_case(s))
@@ -114,6 +159,8 @@ pub struct Node {
     pub self_closing: bool,
     pub content: ContentModel,
     pub protected: bool,
+    /// Namespace of an element as an HTML parser assigns it; `Html` for every other node kind.
+    pub namespace: Namespace,
 }
 impl Node {
     fn new(kind: NodeKind, span: Range<usize>) -> Self {
@@ -130,6 +177,7 @@ impl Node {
             self_closing: false,
             content: ContentModel::Normal,
             protected: false,
+            namespace: Namespace::Html,
         }
     }
     /// Bytes between the open and close tag; `None` for void, self-closed and non-element nodes.
@@ -204,8 +252,8 @@ pub fn parse(src: &str, revision: u64, limits: &Limits, cancel: &CancellationTok
         b: src.as_bytes(),
         pos: 0,
         nodes: vec![root],
-        stack: vec![0],
-        foreign: 0,
+        stack: vec![Frame { id: 0, ns: Namespace::Html, html_ip: false, mathml_text_ip: false, annotation_xml: false, noscript_close: None }],
+        selects: 0,
         loss: LossReport::default(),
         limits: *limits,
         cancel,
@@ -227,8 +275,9 @@ struct Parser<'a> {
     b: &'a [u8],
     pos: usize,
     nodes: Vec<Node>,
-    stack: Vec<NodeId>,
-    foreign: usize,
+    stack: Vec<Frame>,
+    /// Open HTML `select` elements.
+    selects: usize,
     loss: LossReport,
     limits: Limits,
     cancel: &'a CancellationToken,
@@ -239,26 +288,187 @@ pub(crate) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
+/// `i + n`, saturating (positions never exceed the input length, which is far below `usize::MAX`).
+const fn at(i: usize, n: usize) -> usize {
+    i.saturating_add(n)
+}
+
+/// End of a comment whose `<!--` starts at `start` (comment start, end and end-bang states): `<!-->`, `<!--->`, or the
+/// first `--` followed by more `-`, then `>` or `!>`.
+fn comment_end(b: &[u8], start: usize) -> Option<usize> {
+    let body = at(start, 4);
+    match b.get(body) {
+        Some(b'>') => return Some(at(body, 1)),
+        Some(b'-') if b.get(at(body, 1)) == Some(&b'>') => return Some(at(body, 2)),
+        _ => {}
+    }
+    let mut i = body;
+    while let Some(off) = find(b.get(i..)?, b"--") {
+        let mut q = at(at(i, off), 2);
+        while b.get(q) == Some(&b'-') {
+            q = at(q, 1);
+        }
+        match b.get(q) {
+            Some(b'>') => return Some(at(q, 1)),
+            Some(b'!') if b.get(at(q, 1)) == Some(&b'>') => return Some(at(q, 2)),
+            _ => i = at(at(i, off), 1),
+        }
+    }
+    None
+}
+
+/// Length of the ASCII-alpha run at `i` and whether it equals `name` (ASCII case-insensitive) and is followed by
+/// whitespace, `/` or `>` (an appropriate end tag, or the double-escape keyword).
+fn keyword_at(b: &[u8], i: usize, name: &[u8]) -> (usize, bool) {
+    let run = b.get(i..).map_or(0, |r| r.iter().take_while(|c| c.is_ascii_alphabetic()).count());
+    let hit = run == name.len()
+        && b.get(i..at(i, run)).is_some_and(|w| w.eq_ignore_ascii_case(name))
+        && b.get(at(i, run)).is_some_and(|&c| is_ws(c) || c == b'/' || c == b'>');
+    (run, hit)
+}
+
+fn tag_terminator(b: &[u8], i: usize) -> bool {
+    b.get(i).is_some_and(|&t| is_ws(t) || t == b'/' || t == b'>')
+}
+
+/// Start of the `</script` that ends script data begun at `from` (HTML Standard 13.2.5.4-13.2.5.31: escaped `<!--`
+/// sections and double-escaped `<script>` inside them, where `</script>` does not end the element).
+pub(crate) fn find_script_close(b: &[u8], from: usize) -> Option<usize> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum S {
+        Data,
+        Escaped,
+        EscapedDash,
+        EscapedDashDash,
+        Double,
+        DoubleDash,
+        DoubleDashDash,
+    }
+    const SCRIPT: &[u8] = b"script";
+    let mut s = S::Data;
+    let mut i = from;
+    while let Some(&c) = b.get(i) {
+        match s {
+            S::Data => {
+                if c == b'<' {
+                    if b.get(at(i, 1)) == Some(&b'/') {
+                        let (run, hit) = keyword_at(b, at(i, 2), SCRIPT);
+                        if hit {
+                            return Some(i);
+                        }
+                        i = at(at(i, 2), run);
+                        continue;
+                    }
+                    if b.get(at(i, 1)..at(i, 4)) == Some(b"!--".as_slice()) {
+                        s = S::EscapedDashDash;
+                        i = at(i, 4);
+                        continue;
+                    }
+                }
+                i = at(i, 1);
+            }
+            S::Escaped | S::EscapedDash | S::EscapedDashDash => match c {
+                b'-' => {
+                    s = if s == S::Escaped { S::EscapedDash } else { S::EscapedDashDash };
+                    i = at(i, 1);
+                }
+                b'<' => {
+                    s = S::Escaped;
+                    match b.get(at(i, 1)) {
+                        Some(b'/') => {
+                            let (run, hit) = keyword_at(b, at(i, 2), SCRIPT);
+                            if hit {
+                                return Some(i);
+                            }
+                            i = at(at(i, 2), run);
+                        }
+                        Some(a) if a.is_ascii_alphabetic() => {
+                            // Double escape start: the run and its terminator are consumed either way.
+                            let (run, hit) = keyword_at(b, at(i, 1), SCRIPT);
+                            let terminated = tag_terminator(b, at(at(i, 1), run));
+                            if hit {
+                                s = S::Double;
+                            }
+                            i = at(at(at(i, 1), run), usize::from(terminated));
+                        }
+                        _ => i = at(i, 1),
+                    }
+                }
+                b'>' if s == S::EscapedDashDash => {
+                    s = S::Data;
+                    i = at(i, 1);
+                }
+                _ => {
+                    s = S::Escaped;
+                    i = at(i, 1);
+                }
+            },
+            S::Double | S::DoubleDash | S::DoubleDashDash => match c {
+                b'-' => {
+                    s = if s == S::Double { S::DoubleDash } else { S::DoubleDashDash };
+                    i = at(i, 1);
+                }
+                b'<' => {
+                    s = S::Double;
+                    if b.get(at(i, 1)) == Some(&b'/') {
+                        // Double escape end: `</script` + terminator returns to the escaped state.
+                        let (run, hit) = keyword_at(b, at(i, 2), SCRIPT);
+                        let terminated = tag_terminator(b, at(at(i, 2), run));
+                        if hit {
+                            s = S::Escaped;
+                        }
+                        i = at(at(at(i, 2), run), usize::from(terminated));
+                    } else {
+                        i = at(i, 1);
+                    }
+                }
+                b'>' if s == S::DoubleDashDash => {
+                    s = S::Data;
+                    i = at(i, 1);
+                }
+                _ => {
+                    s = S::Double;
+                    i = at(i, 1);
+                }
+            },
+        }
+    }
+    None
+}
+
+/// Start of the close tag of raw text named `name` begun at `from`: script data rules for `script`, the RAWTEXT /
+/// RCDATA appropriate end tag otherwise.
+pub(crate) fn find_raw_text_close(b: &[u8], from: usize, name: &str) -> Option<usize> {
+    if name.eq_ignore_ascii_case("script") { find_script_close(b, from) } else { find_raw_close(b, from, name.as_bytes()) }
+}
+
+fn is_html_integration_point(ns: Namespace, name: &str, encoding: Option<&str>) -> bool {
+    match ns {
+        Namespace::Svg => ["foreignObject", "desc", "title"].iter().any(|n| name.eq_ignore_ascii_case(n)),
+        Namespace::MathMl => {
+            name.eq_ignore_ascii_case("annotation-xml")
+                && encoding.is_some_and(|e| e.eq_ignore_ascii_case("text/html") || e.eq_ignore_ascii_case("application/xhtml+xml"))
+        }
+        Namespace::Html => false,
+    }
+}
+
 fn markup_start(next: Option<u8>) -> bool {
     matches!(next, Some(c) if c.is_ascii_alphabetic() || matches!(c, b'/' | b'!' | b'?'))
 }
 
-/// Position of `</name` (ASCII case-insensitive) followed by whitespace, `/` or `>`.
+/// Position of `</name` (ASCII case-insensitive) followed by whitespace, `/` or `>` (RAWTEXT/RCDATA appropriate end tag).
 fn find_raw_close(b: &[u8], from: usize, name: &[u8]) -> Option<usize> {
     let mut i = from;
-    while let Some(off) = b[i..].iter().position(|&c| c == b'<') {
-        let p = i + off;
-        if b.get(p + 1) == Some(&b'/') {
-            let end = p + 2 + name.len();
-            if end <= b.len()
-                && b[p + 2..end].eq_ignore_ascii_case(name)
-                && let Some(&c) = b.get(end)
-                && (is_ws(c) || c == b'/' || c == b'>')
-            {
+    while let Some(off) = b.get(i..)?.iter().position(|&c| c == b'<') {
+        let p = at(i, off);
+        if b.get(at(p, 1)) == Some(&b'/') {
+            let (_, hit) = keyword_at(b, at(p, 2), name);
+            if hit {
                 return Some(p);
             }
         }
-        i = p + 1;
+        i = at(p, 1);
     }
     None
 }
@@ -273,7 +483,7 @@ impl<'a> Parser<'a> {
     }
 
     fn char_end(&self, i: usize) -> usize {
-        self.src[i..].chars().next().map_or(i + 1, |c| i + c.len_utf8())
+        self.src[i..].chars().next().map_or(at(i, 1), |c| at(i, c.len_utf8()))
     }
 
     fn push_under(&mut self, parent: NodeId, mut node: Node) -> Result<NodeId, WebError> {
@@ -289,8 +499,13 @@ impl<'a> Parser<'a> {
     }
 
     fn push(&mut self, node: Node) -> Result<NodeId, WebError> {
-        let parent = *self.stack.last().expect("root stays on the stack");
+        let parent = self.top().id;
         self.push_under(parent, node)
+    }
+
+    /// The current node (adjusted current node: no fragment parsing here).
+    fn top(&self) -> Frame {
+        *self.stack.last().expect("root stays on the stack")
     }
 
     fn name_of(&self, id: NodeId) -> &'a str {
@@ -303,10 +518,10 @@ impl<'a> Parser<'a> {
         while self.pos < len {
             self.tick()?;
             if self.b[self.pos] == b'<' {
-                match self.b.get(self.pos + 1).copied() {
+                match self.b.get(at(self.pos, 1)).copied() {
                     Some(b'!') => self.bang()?,
                     Some(b'?') => self.bogus(LossKind::ProcessingInstruction)?,
-                    Some(b'/') => match self.b.get(self.pos + 2).copied() {
+                    Some(b'/') => match self.b.get(at(self.pos, 2)).copied() {
                         Some(c) if c.is_ascii_alphabetic() => self.end_tag()?,
                         None => self.text()?,
                         _ => self.bogus(LossKind::BogusMarkup)?,
@@ -319,7 +534,7 @@ impl<'a> Parser<'a> {
             }
         }
         if self.stack.len() > 1 {
-            let id = *self.stack.last().expect("non-empty");
+            let id = self.top().id;
             let open = self.nodes[id].open_span.clone().expect("element has an open tag");
             return Err(if in_set(OPTIONAL_END, self.name_of(id)) {
                 WebError::Unsupported { kind: UnsupportedKind::ImpliedEndTag, span: open }
@@ -333,7 +548,7 @@ impl<'a> Parser<'a> {
     fn text(&mut self) -> Result<(), WebError> {
         let start = self.pos;
         let len = self.b.len();
-        let mut i = start + 1;
+        let mut i = at(start, 1);
         loop {
             match self.b[i..].iter().position(|&c| c == b'<') {
                 None => {
@@ -341,12 +556,12 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some(off) => {
-                    let p = i + off;
-                    if markup_start(self.b.get(p + 1).copied()) {
+                    let p = at(i, off);
+                    if markup_start(self.b.get(at(p, 1)).copied()) {
                         i = p;
                         break;
                     }
-                    i = p + 1;
+                    i = at(p, 1);
                 }
             }
         }
@@ -364,10 +579,10 @@ impl<'a> Parser<'a> {
 
     fn bogus(&mut self, loss: LossKind) -> Result<(), WebError> {
         let start = self.pos;
-        let Some(off) = self.b[start + 2..].iter().position(|&c| c == b'>') else {
+        let Some(off) = self.b[at(start, 2)..].iter().position(|&c| c == b'>') else {
             return Err(WebError::Malformed { kind: MalformedKind::UnterminatedMarkup, span: start..self.b.len() });
         };
-        let end = start + 2 + off + 1;
+        let end = at(at(start, 2), at(off, 1));
         self.loss.push(loss, start..end);
         self.leaf(NodeKind::Unsupported, end)
     }
@@ -376,29 +591,26 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let rest = &self.b[start..];
         if rest.starts_with(b"<!--") {
-            let end = if rest[4..].starts_with(b">") {
-                start + 5
-            } else if rest[4..].starts_with(b"->") {
-                start + 6
-            } else {
-                match find(&rest[4..], b"-->") {
-                    Some(off) => start + 4 + off + 3,
-                    None => {
-                        return Err(WebError::Malformed { kind: MalformedKind::UnterminatedComment, span: start..self.b.len() });
-                    }
-                }
+            let Some(end) = comment_end(self.b, start) else {
+                return Err(WebError::Malformed { kind: MalformedKind::UnterminatedComment, span: start..self.b.len() });
             };
             self.leaf(NodeKind::Comment, end)
         } else if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case(b"<!doctype") {
             let Some(off) = rest.iter().position(|&c| c == b'>') else {
                 return Err(WebError::Malformed { kind: MalformedKind::UnterminatedMarkup, span: start..self.b.len() });
             };
-            self.leaf(NodeKind::Doctype, start + off + 1)
+            self.leaf(NodeKind::Doctype, at(at(start, off), 1))
         } else if rest.starts_with(b"<![CDATA[") {
-            let Some(off) = find(&rest[9..], b"]]>") else {
+            // A CDATA section exists only where the current node is not an HTML element; in HTML content the same bytes
+            // are a bogus comment that ends at the first `>`.
+            let end = if self.top().id != 0 && self.top().ns != Namespace::Html {
+                find(&rest[9..], b"]]>").map(|off| at(at(start, 9), at(off, 3)))
+            } else {
+                rest.iter().position(|&c| c == b'>').map(|off| at(at(start, off), 1))
+            };
+            let Some(end) = end else {
                 return Err(WebError::Malformed { kind: MalformedKind::UnterminatedMarkup, span: start..self.b.len() });
             };
-            let end = start + 9 + off + 3;
             self.loss.push(LossKind::Cdata, start..end);
             self.leaf(NodeKind::Unsupported, end)
         } else {
@@ -410,31 +622,31 @@ impl<'a> Parser<'a> {
         let b = self.b;
         let len = b.len();
         let start = self.pos;
-        let name_start = start + 1;
+        let name_start = at(start, 1);
         let mut i = name_start;
         while i < len && !is_ws(b[i]) && b[i] != b'/' && b[i] != b'>' {
-            i += 1;
+            i = at(i, 1);
         }
         let name_span = name_start..i;
         let mut attrs: Vec<Attr> = Vec::new();
         let (open_end, self_closing) = loop {
             while i < len && is_ws(b[i]) {
-                i += 1;
+                i = at(i, 1);
             }
             if i >= len {
                 return Err(WebError::Malformed { kind: MalformedKind::UnterminatedTag, span: start..len });
             }
             match b[i] {
-                b'>' => break (i + 1, false),
+                b'>' => break (at(i, 1), false),
                 b'/' => {
-                    if b.get(i + 1) == Some(&b'>') {
-                        break (i + 2, true);
+                    if b.get(at(i, 1)) == Some(&b'>') {
+                        break (at(i, 2), true);
                     }
-                    i += 1;
+                    i = at(i, 1);
                     continue;
                 }
                 b'=' => {
-                    return Err(WebError::Malformed { kind: MalformedKind::InvalidAttribute, span: i..i + 1 });
+                    return Err(WebError::Malformed { kind: MalformedKind::InvalidAttribute, span: i..at(i, 1) });
                 }
                 _ => {}
             }
@@ -444,43 +656,43 @@ impl<'a> Parser<'a> {
             self.tick()?;
             let a_start = i;
             while i < len && !is_ws(b[i]) && !matches!(b[i], b'/' | b'>' | b'=') {
-                i += 1;
+                i = at(i, 1);
             }
             let a_name = a_start..i;
             let mut j = i;
             while j < len && is_ws(b[j]) {
-                j += 1;
+                j = at(j, 1);
             }
             if j < len && b[j] == b'=' {
-                j += 1;
+                j = at(j, 1);
                 while j < len && is_ws(b[j]) {
-                    j += 1;
+                    j = at(j, 1);
                 }
                 if j >= len {
                     return Err(WebError::Malformed { kind: MalformedKind::UnterminatedTag, span: start..len });
                 }
                 match b[j] {
                     q @ (b'"' | b'\'') => {
-                        let vs = j + 1;
+                        let vs = at(j, 1);
                         let Some(off) = b[vs..].iter().position(|&c| c == q) else {
                             return Err(WebError::Malformed { kind: MalformedKind::UnterminatedValue, span: j..len });
                         };
-                        let ve = vs + off;
+                        let ve = at(vs, off);
                         attrs.push(Attr {
-                            span: a_start..ve + 1,
+                            span: a_start..at(ve, 1),
                             name_span: a_name,
                             value_span: Some(vs..ve),
                             quote: if q == b'"' { Quote::Double } else { Quote::Single },
                         });
-                        i = ve + 1;
+                        i = at(ve, 1);
                     }
                     b'>' => {
-                        return Err(WebError::Malformed { kind: MalformedKind::InvalidAttribute, span: a_start..j + 1 });
+                        return Err(WebError::Malformed { kind: MalformedKind::InvalidAttribute, span: a_start..at(j, 1) });
                     }
                     _ => {
                         let mut k = j;
                         while k < len && !is_ws(b[k]) && b[k] != b'>' {
-                            k += 1;
+                            k = at(k, 1);
                         }
                         attrs.push(Attr { span: a_start..k, name_span: a_name, value_span: Some(j..k), quote: Quote::Unquoted });
                         i = k;
@@ -492,18 +704,47 @@ impl<'a> Parser<'a> {
         };
 
         let name = &self.src[name_span.clone()];
-        let is_void = in_set(VOID, name);
-        let svg_like = name.eq_ignore_ascii_case("svg") || name.eq_ignore_ascii_case("math");
-        let in_foreign = self.foreign > 0;
-        let acknowledged = is_void || in_foreign || svg_like;
-        let empty = is_void || (self_closing && acknowledged);
-        if name.eq_ignore_ascii_case("plaintext") {
+        // Tree-construction dispatcher (HTML Standard 13.2.6): which rules this start tag follows.
+        let top = self.top();
+        let html_rules = top.id == 0
+            || top.ns == Namespace::Html
+            || top.html_ip
+            || (top.mathml_text_ip && !in_set(&["mglyph", "malignmark"], name))
+            || (top.annotation_xml && name.eq_ignore_ascii_case("svg"));
+        let ns = if html_rules {
+            if name.eq_ignore_ascii_case("svg") {
+                Namespace::Svg
+            } else if name.eq_ignore_ascii_case("math") {
+                Namespace::MathMl
+            } else {
+                Namespace::Html
+            }
+        } else {
+            let font_breakout = name.eq_ignore_ascii_case("font")
+                && attrs.iter().any(|a| in_set(&["color", "face", "size"], &self.src[a.name_span.clone()]));
+            if in_set(BREAKOUT, name) || font_breakout {
+                // A browser pops the foreign elements and re-nests this element; the crate never re-nests.
+                return Err(WebError::Unsupported { kind: UnsupportedKind::ForeignBreakout, span: start..open_end });
+            }
+            top.ns
+        };
+        let html = ns == Namespace::Html;
+        if html && name.eq_ignore_ascii_case("plaintext") {
             return Err(WebError::Unsupported { kind: UnsupportedKind::PlaintextElement, span: start..open_end });
         }
+        if html && name.eq_ignore_ascii_case("frameset") {
+            return Err(WebError::Unsupported { kind: UnsupportedKind::FramesetDocument, span: start..open_end });
+        }
+        if self.selects > 0 && html_rules && in_set(SELECT_DIVERGENT, name) {
+            return Err(WebError::Unsupported { kind: UnsupportedKind::SelectContent, span: start..open_end });
+        }
+        let is_void = html && in_set(VOID, name);
+        let acknowledged = is_void || !html;
+        let empty = is_void || (self_closing && !html);
         if self_closing && !acknowledged {
             self.loss.push(LossKind::SelfClosingIgnored, start..open_end);
         }
-        if svg_like {
+        if html_rules && !html {
             self.loss.push(LossKind::ForeignContent, start..open_end);
         }
         if attrs.len() > 1 {
@@ -516,13 +757,30 @@ impl<'a> Parser<'a> {
         }
         let content = if empty {
             ContentModel::Empty
-        } else if !in_foreign && !svg_like && in_set(RAWTEXT, name) {
+        } else if html && in_set(RAWTEXT, name) {
             ContentModel::RawText
-        } else if !in_foreign && !svg_like && in_set(RCDATA, name) {
+        } else if html && in_set(RCDATA, name) {
             ContentModel::Rcdata
         } else {
             ContentModel::Normal
         };
+        // The first `encoding` attribute (later duplicates are dropped by the tokenizer), decoded like any value.
+        let encoding = attrs
+            .iter()
+            .find(|a| self.src[a.name_span.clone()].eq_ignore_ascii_case("encoding"))
+            .and_then(|a| a.value_span.clone())
+            .map(|s| decode(&self.src[s], Context::Attribute).text);
+        let noscript = html && name.eq_ignore_ascii_case("noscript");
+        let frame_base = Frame {
+            id: 0,
+            ns,
+            html_ip: is_html_integration_point(ns, name, encoding.as_deref()),
+            mathml_text_ip: ns == Namespace::MathMl && in_set(&["mi", "mo", "mn", "ms", "mtext"], name),
+            annotation_xml: ns == Namespace::MathMl && name.eq_ignore_ascii_case("annotation-xml"),
+            // With scripting enabled a browser reads `noscript` as RAWTEXT; both readings must end at the same tag.
+            noscript_close: if noscript { find_raw_close(b, open_end, b"noscript") } else { None },
+        };
+        let select = html && name.eq_ignore_ascii_case("select");
         let open_span = start..open_end;
         let mut node = Node::new(NodeKind::Element, open_span.clone());
         node.name_span = Some(name_span);
@@ -531,6 +789,7 @@ impl<'a> Parser<'a> {
         node.self_closing = self_closing;
         node.content = content;
         node.protected = in_set(PROTECTED, name);
+        node.namespace = ns;
         let name_owned = name.to_owned();
         let id = self.push(node)?;
         self.pos = open_end;
@@ -540,9 +799,9 @@ impl<'a> Parser<'a> {
                 if self.stack.len() > self.limits.max_depth {
                     return Err(WebError::LimitExceeded { limit: LimitKind::Depth, span: start..open_end });
                 }
-                self.stack.push(id);
-                if svg_like {
-                    self.foreign += 1;
+                self.stack.push(Frame { id, ..frame_base });
+                if select {
+                    self.selects = self.selects.saturating_add(1);
                 }
             }
             ContentModel::RawText | ContentModel::Rcdata => self.raw_body(id, &name_owned)?,
@@ -554,18 +813,18 @@ impl<'a> Parser<'a> {
         let b = self.b;
         let content_start = self.pos;
         let open = self.nodes[id].open_span.clone().expect("element has an open tag");
-        let Some(close) = find_raw_close(b, content_start, name.as_bytes()) else {
+        let Some(close) = find_raw_text_close(b, content_start, name) else {
             return Err(WebError::Malformed { kind: MalformedKind::UnterminatedRawText, span: open });
         };
-        let mut j = close + 2 + name.len();
+        let mut j = at(at(close, 2), name.len());
         while j < b.len() && is_ws(b[j]) {
-            j += 1;
+            j = at(j, 1);
         }
         if j >= b.len() || b[j] != b'>' {
             let end = if j < b.len() { self.char_end(j) } else { b.len() };
             return Err(WebError::Malformed { kind: MalformedKind::InvalidEndTag, span: close..end });
         }
-        let end = j + 1;
+        let end = at(j, 1);
         if close > content_start {
             self.push_under(id, Node::new(NodeKind::Raw, content_start..close))?;
         }
@@ -579,14 +838,14 @@ impl<'a> Parser<'a> {
         let b = self.b;
         let len = b.len();
         let start = self.pos;
-        let name_start = start + 2;
+        let name_start = at(start, 2);
         let mut i = name_start;
         while i < len && !is_ws(b[i]) && b[i] != b'/' && b[i] != b'>' {
-            i += 1;
+            i = at(i, 1);
         }
         let name_end = i;
         while i < len && is_ws(b[i]) {
-            i += 1;
+            i = at(i, 1);
         }
         if i >= len {
             return Err(WebError::Malformed { kind: MalformedKind::UnterminatedTag, span: start..len });
@@ -594,18 +853,21 @@ impl<'a> Parser<'a> {
         if b[i] != b'>' {
             return Err(WebError::Malformed { kind: MalformedKind::InvalidEndTag, span: start..self.char_end(i) });
         }
-        let end = i + 1;
+        let end = i.saturating_add(1);
         let name = &self.src[name_start..name_end];
-        if in_set(VOID, name) {
+        let frame = self.top();
+        let top = frame.id;
+        // A foreign element named like an HTML void element (`<svg><source></source>`) has content and an end tag.
+        let foreign_match = top != 0 && frame.ns != Namespace::Html && self.name_of(top).eq_ignore_ascii_case(name);
+        if !foreign_match && in_set(VOID, name) {
             return Err(WebError::Malformed { kind: MalformedKind::VoidEndTag, span: start..end });
         }
-        let top = *self.stack.last().expect("root stays on the stack");
         if top == 0 {
             return Err(WebError::Malformed { kind: MalformedKind::StrayEndTag, span: start..end });
         }
         let top_name = self.name_of(top);
         if !top_name.eq_ignore_ascii_case(name) {
-            let ancestor = self.stack[1..].iter().any(|&id| self.name_of(id).eq_ignore_ascii_case(name));
+            let ancestor = self.stack[1..].iter().any(|f| self.name_of(f.id).eq_ignore_ascii_case(name));
             return Err(if !ancestor {
                 WebError::Malformed { kind: MalformedKind::StrayEndTag, span: start..end }
             } else if in_set(OPTIONAL_END, top_name) {
@@ -614,13 +876,19 @@ impl<'a> Parser<'a> {
                 WebError::Malformed { kind: MalformedKind::MisnestedEndTag, span: start..end }
             });
         }
-        let svg_like = top_name.eq_ignore_ascii_case("svg") || top_name.eq_ignore_ascii_case("math");
+        let html = frame.ns == Namespace::Html;
+        if html && top_name.eq_ignore_ascii_case("noscript") && frame.noscript_close != Some(start) {
+            // Scripting enabled, the RAWTEXT reading ends at an earlier `</noscript`; the two readings disagree.
+            let at = frame.noscript_close.unwrap_or(start);
+            return Err(WebError::Unsupported { kind: UnsupportedKind::ScriptingDependent, span: at..at.saturating_add(10) });
+        }
+        let select = html && top_name.eq_ignore_ascii_case("select");
         let node = &mut self.nodes[top];
         node.close_span = Some(start..end);
         node.span.end = end;
         self.stack.pop();
-        if svg_like {
-            self.foreign -= 1;
+        if select {
+            self.selects = self.selects.saturating_sub(1);
         }
         self.pos = end;
         Ok(())
@@ -683,9 +951,9 @@ impl WebDoc {
         &self.source[attr.name_span.clone()]
     }
 
-    /// Decoded value; `None` for a valueless attribute.
+    /// Value decoded as an HTML tokenizer decodes attribute values; `None` for a valueless attribute.
     pub fn attr_value(&self, attr: &Attr) -> Option<String> {
-        attr.value_span.as_ref().map(|s| decode_entities(&self.source[s.clone()]).text)
+        attr.value_span.as_ref().map(|s| decode(&self.source[s.clone()], Context::Attribute).text)
     }
 
     /// First attribute with this name (ASCII case-insensitive); later duplicates are ignored as in HTML.
@@ -748,11 +1016,11 @@ impl WebDoc {
         for d in self.descendants(id) {
             let node = &self.nodes[d];
             match node.kind {
-                NodeKind::Text => out.push_str(&decode_entities(self.slice(&node.span)).text),
+                NodeKind::Text => out.push_str(&decode(self.slice(&node.span), Context::Text).text),
                 NodeKind::Raw => {
                     let owner = node.parent.map(|p| self.nodes[p].content);
                     if owner == Some(ContentModel::Rcdata) {
-                        out.push_str(&decode_entities(self.slice(&node.span)).text);
+                        out.push_str(&decode(self.slice(&node.span), Context::Text).text);
                     }
                 }
                 _ => {}
@@ -782,7 +1050,7 @@ impl WebDoc {
         while let Some((id, depth)) = stack.pop() {
             let node = &self.nodes[id];
             let text = match node.kind {
-                NodeKind::Text => Some(decode_entities(self.slice(&node.span)).text),
+                NodeKind::Text => Some(decode(self.slice(&node.span), Context::Text).text),
                 NodeKind::Raw | NodeKind::Doctype | NodeKind::Unsupported => Some(self.slice(&node.span).to_owned()),
                 NodeKind::Comment => {
                     let s = self.slice(&node.span);
@@ -800,7 +1068,7 @@ impl WebDoc {
                 span: node.span.clone(),
             });
             for &child in node.children.iter().rev() {
-                stack.push((child, depth + 1));
+                stack.push((child, at(depth, 1)));
             }
         }
         rows

@@ -257,7 +257,7 @@ fn entities_decode_the_common_set_and_report_the_rest() {
         let decoded = decode_entities(input);
         assert_eq!(
             decoded.text,
-            "a & b <> \"q\" ABC \u{a0}\u{a9} &bogus; &amp \u{fffd} \u{fffd} \u{fffd} AT&T; x"
+            "a & b <> \"q\" ABC \u{a0}\u{a9} &bogus; & \u{fffd} \u{fffd} \u{fffd} AT&T; x"
         );
         let spans: Vec<&str> = decoded.unresolved.iter().map(|r| &input[r.clone()]).collect();
         assert_eq!(spans, ["&bogus;", "&T;"]);
@@ -737,12 +737,16 @@ fn character_references_cannot_hide_schemes() {
                 ("http://e.invalid/4", EXTERNAL),
                 ("//e.invalid/5", PROTOCOL_RELATIVE),
                 ("ht\ttp://e.invalid/6", EXTERNAL),
-                ("&notarealname;logo.png", "Denied(UndecodableReference)"),
+                ("&notarealname;logo.png", NOT_GRANTED),
                 ("logo.png?x=1&y=2&copy=3", GRANTED),
                 ("//e.invalid/7", PROTOCOL_RELATIVE),
             ])
         );
-        assert_eq!(calls, ["logo.png?x=1&y=2&copy=3"], "a reference this crate cannot decode is refused before the port");
+        assert_eq!(
+            calls,
+            ["&notarealname;logo.png", "logo.png?x=1&y=2&copy=3"],
+            "unknown names and legacy names before an alphanumeric or `=` stay literal in attributes, as in a browser"
+        );
     });
 }
 
@@ -859,5 +863,243 @@ fn ambiguous_relative_paths_never_reach_the_port() {
             ])
         );
         assert_eq!(calls, ["../ok/logo.png", "logo.png", "logo.png?next=..%2f..%2fx", "sub/%20name.png"]);
+    });
+}
+
+// ---- R6 group B remediation: the crate reads the bytes the way an HTML parser does, or refuses the document ----
+// Each test pins the browser reading (WHATWG HTML 13.2: character reference states, tokenizer states, tree-construction
+// dispatcher). Expectations use only the public API that existed before the fix, so the same file proves red on bd8533f.
+
+/// `scan`, but a parse refusal comes back as its error code.
+fn scan_or_refuse(html: &str) -> Result<(Seen, Vec<String>), String> {
+    let doc = parse(html, 0, &Limits::default(), &CancellationToken::default()).map_err(|e| e.code().to_owned())?;
+    let spy = Spy { calls: Mutex::new(Vec::new()) };
+    let found = collect_assets(&doc, &spy, &CancellationToken::default()).unwrap();
+    let seen = found.iter().map(|a| (a.reference.clone(), format!("{:?}", a.outcome))).collect();
+    Ok((seen, spy.calls.into_inner().unwrap()))
+}
+
+fn refused(html: &str) -> String {
+    match scan_or_refuse(html) {
+        Err(code) => code,
+        Ok(found) => panic!("expected a typed refusal, got {found:?}"),
+    }
+}
+
+#[test]
+fn legacy_named_reference_without_semicolon_in_attribute() {
+    bounded_case("legacy_named_reference_without_semicolon_in_attribute", || {
+        // R6 finding 1 payload: `&quot` (no `;`) followed by a space decodes to `"` in an attribute value, which closes the
+        // CSS string, so the browser fetches the url(). Same with the upper-case legacy name and a newline after it.
+        let html = "<p style='font-family:\"a&quot ;background-image:url(https://evil.example/b.png)'>x</p>\
+            <p style='a:\"&QUOT ;b:url(//e.invalid/u)'>y</p>\
+            <p style='a:\"&quot\nb:url(//e.invalid/n)'>z</p>\
+            <img src=\"logo.png&quot\">";
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("https://evil.example/b.png", EXTERNAL),
+                ("//e.invalid/u", PROTOCOL_RELATIVE),
+                ("//e.invalid/n", PROTOCOL_RELATIVE),
+                ("logo.png\"", GRANTED),
+            ])
+        );
+        assert_eq!(calls, ["logo.png\""]);
+    });
+}
+
+#[test]
+fn legacy_reference_attribute_exceptions_and_longest_match() {
+    bounded_case("legacy_reference_attribute_exceptions_and_longest_match", || {
+        // In an attribute a legacy name followed by `=` or an alphanumeric stays literal (`&quot=`, `&quotx`, `&notify`,
+        // `&ampx`), so those strings close normally and the url() is fetched. The longest table name wins (`&not/` decodes,
+        // `&amp;` decodes). `url(&quot//e.invalid/w&quot)` is a quoted protocol-relative url for a browser: the port must
+        // never see it (before the fix it was offered to the port as a relative path).
+        let html = "<p style='a:\"&quot=\";b:url(//e.invalid/eq)'>1</p>\
+            <p style='a:\"&quotx\";b:url(//e.invalid/ax)'>2</p>\
+            <img src=\"logo.png?a=1&notify=2&ampx=3&amp;y\">\
+            <img src=\"logo.png&not/x\">\
+            <div style='background:url(&quot//e.invalid/w&quot)'>3</div>";
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("//e.invalid/eq", PROTOCOL_RELATIVE),
+                ("//e.invalid/ax", PROTOCOL_RELATIVE),
+                ("logo.png?a=1&notify=2&ampx=3&y", GRANTED),
+                ("logo.png\u{ac}/x", GRANTED),
+                ("//e.invalid/w", PROTOCOL_RELATIVE),
+            ])
+        );
+        assert_eq!(calls, ["logo.png?a=1&notify=2&ampx=3&y", "logo.png\u{ac}/x"]);
+    });
+}
+
+#[test]
+fn legacy_references_in_foreign_style_text_follow_the_data_state() {
+    bounded_case("legacy_references_in_foreign_style_text_follow_the_data_state", || {
+        // Text (not attribute) context: `&quot` decodes before any character, `=` included. Decoy: `"&quot=x"` closes the
+        // string early, the rest becomes an unterminated string, so that url() is not fetched and not reported. Numeric
+        // references in 0x80-0x9F map through windows-1252 (`&#x80;` is the euro sign, not a control character).
+        let html = "<svg><style>a{x:\"&quot }b{background:url(//e.invalid/t)}</style>\
+            <style>a{x:\"&quot=x\"}b{background:url(//e.invalid/decoy)}</style>\
+            <style>.d{background:url(logo.png&#x80;)}</style></svg>";
+        let (seen, calls) = scan(html);
+        assert_eq!(seen, pairs(&[("//e.invalid/t", PROTOCOL_RELATIVE), ("logo.png\u{20ac}", GRANTED)]));
+        assert_eq!(calls, ["logo.png\u{20ac}"]);
+    });
+}
+
+#[test]
+fn svg_html_integration_points_read_style_as_raw_text() {
+    bounded_case("svg_html_integration_points_read_style_as_raw_text", || {
+        // R6 finding 2 payload, then desc and title (the other SVG HTML integration points), an HTML element inside
+        // foreignObject, and an svg nested inside it again (foreign: decoded). Decoy: plain svg style is foreign text, so
+        // `"&quot;"` decodes to three quotes and hides the url() from the browser.
+        let html = "<svg><foreignObject><style>a{x:&quot;}b{background:url(https://evil.example/x.png)}</style></foreignObject></svg>\
+            <svg><desc><style>a{x:\"&quot;\"}b{background:url(//e.invalid/d)}</style></desc></svg>\
+            <svg><TITLE><style>a{x:\"&quot;\"}b{background:url(//e.invalid/t)}</style></TITLE></svg>\
+            <svg><foreignobject><section><style>a{x:\"&quot;\"}b{background:url(//e.invalid/f)}</style></section></foreignobject></svg>\
+            <svg><foreignObject><svg><style>a{x:\"&quot }b{background:url(//e.invalid/f2)}</style></svg></foreignObject></svg>\
+            <svg><style>a{x:\"&quot;\"}b{background:url(//e.invalid/decoy)}</style></svg>";
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("https://evil.example/x.png", EXTERNAL),
+                ("//e.invalid/d", PROTOCOL_RELATIVE),
+                ("//e.invalid/t", PROTOCOL_RELATIVE),
+                ("//e.invalid/f", PROTOCOL_RELATIVE),
+                ("//e.invalid/f2", PROTOCOL_RELATIVE),
+            ])
+        );
+        assert!(calls.is_empty());
+    });
+}
+
+#[test]
+fn mathml_integration_points_and_nested_namespaces() {
+    bounded_case("mathml_integration_points_and_nested_namespaces", || {
+        // MathML text integration points (mi, mtext) and annotation-xml with an HTML encoding (any case, also spelled with
+        // a character reference) read style as RAWTEXT. annotation-xml without it, mglyph under mi, and math inside svg
+        // (an SVG element named math, so its mi is no integration point) stay foreign: their style text is decoded.
+        let raw = |u: &str| format!("<style>a{{x:\"&quot;\"}}b{{background:url({u})}}</style>");
+        let decoded = |u: &str| format!("<style>a{{x:\"&quot }}b{{background:url({u})}}</style>");
+        let html = [
+            format!("<math><mi>{}</mi></math>", raw("//e.invalid/mi")),
+            format!("<math><mtext>{}</mtext></math>", raw("//e.invalid/mt")),
+            format!("<math><annotation-xml encoding=\"TEXT/HTML\">{}</annotation-xml></math>", raw("//e.invalid/ax")),
+            format!("<math><annotation-xml encoding=\"text&sol;html\">{}</annotation-xml></math>", raw("//e.invalid/ax2")),
+            format!("<math><annotation-xml>{}</annotation-xml></math>", decoded("//e.invalid/an")),
+            format!("<math><mi><mglyph>{}</mglyph></mi></math>", decoded("//e.invalid/mg")),
+            format!("<svg><math><mi>{}</mi></math></svg>", decoded("//e.invalid/sm")),
+        ]
+        .concat();
+        let (seen, calls) = scan(&html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("//e.invalid/mi", PROTOCOL_RELATIVE),
+                ("//e.invalid/mt", PROTOCOL_RELATIVE),
+                ("//e.invalid/ax", PROTOCOL_RELATIVE),
+                ("//e.invalid/ax2", PROTOCOL_RELATIVE),
+                ("//e.invalid/an", PROTOCOL_RELATIVE),
+                ("//e.invalid/mg", PROTOCOL_RELATIVE),
+                ("//e.invalid/sm", PROTOCOL_RELATIVE),
+            ])
+        );
+        assert!(calls.is_empty());
+    });
+}
+
+#[test]
+fn foreign_breakout_and_cdata_follow_the_tree_builder() {
+    bounded_case("foreign_breakout_and_cdata_follow_the_tree_builder", || {
+        // An HTML start tag from the breakout list pops svg/math in a browser (the later style is then HTML RAWTEXT); the
+        // crate never re-nests, it refuses. `font` breaks out only with color/face/size.
+        let hidden = "<svg><p>x</p><style>a{x:\"&quot;\"}b{background:url(//e.invalid/b)}</style></svg>";
+        assert_eq!(refused(hidden), "foreign_breakout");
+        assert_eq!(refused("<svg><font color=red>x</font></svg>"), "foreign_breakout");
+        assert_eq!(refused("<math><mrow><DIV></DIV></mrow></math>"), "foreign_breakout");
+        assert!(scan_or_refuse("<svg><font>x</font><source>t</source></svg>").is_ok());
+        // `<![CDATA[` is a CDATA section only under a foreign current node (foreignObject itself counts); in HTML content
+        // it is a bogus comment that ends at the first `>`.
+        let html = "<div><![CDATA[ x > <img src=\"//e.invalid/c\"> ]]></div>\
+            <svg><![CDATA[ x > <img src=\"//e.invalid/no1\"> ]]></svg>\
+            <svg><foreignObject><![CDATA[ > <img src=\"//e.invalid/no2\"> ]]></foreignObject></svg>\
+            <svg><foreignObject><div><![CDATA[ > <img src=\"//e.invalid/c4\"> ]]></div></foreignObject></svg>";
+        let (seen, calls) = scan(html);
+        assert_eq!(seen, pairs(&[("//e.invalid/c", PROTOCOL_RELATIVE), ("//e.invalid/c4", PROTOCOL_RELATIVE)]));
+        assert!(calls.is_empty());
+    });
+}
+
+#[test]
+fn comment_script_and_noscript_states_follow_the_tokenizer() {
+    bounded_case("comment_script_and_noscript_states_follow_the_tokenizer", || {
+        // `--!>` ends a comment; `--!->` does not. In script data, `<!--<script>` makes the next `</script>` part of the
+        // script, so the element ends inside the alt value and the image after it is real. With scripting enabled
+        // `noscript` is RAWTEXT: when that reading ends before the markup reading, the document is refused.
+        let html = "<p><!-- a --!><img src=\"//e.invalid/c1\"><!-- --></p>\
+            <!----!><img src=\"//e.invalid/c2\">\
+            <!-- --!-><img src=\"//e.invalid/no\"> -->\
+            <script><!--<script></script><img alt=\"</script><img src=//e.invalid/s>\">\
+            <noscript><img src=\"logo.png\"></noscript>";
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("//e.invalid/c1", PROTOCOL_RELATIVE),
+                ("//e.invalid/c2", PROTOCOL_RELATIVE),
+                ("//e.invalid/s", PROTOCOL_RELATIVE),
+                ("logo.png", GRANTED),
+            ])
+        );
+        assert_eq!(calls, ["logo.png"]);
+        assert_eq!(refused("<noscript><img alt=\"</noscript><img src=//e.invalid/n>\"></noscript>"), "scripting_dependent");
+        assert_eq!(refused("<noscript><style></noscript><img src=//e.invalid/n2></style></noscript>"), "scripting_dependent");
+    });
+}
+
+#[test]
+fn select_and_frameset_contexts_are_refused() {
+    bounded_case("select_and_frameset_contexts_are_refused", || {
+        // Older "in select" parsers ignore a style start tag (its content becomes markup), current ones read RAWTEXT: two
+        // readings, refused. script and textarea read the same in both and stay accepted. A frameset document ignores
+        // every start tag except frame/frameset/noframes, so a frame inside "style" text is real there: refused.
+        assert_eq!(refused("<select><style></select><img src=//e.invalid/sel></style></select>"), "select_content");
+        assert_eq!(refused("<select><svg><foreignObject><style></style></foreignObject></svg></select>"), "select_content");
+        assert!(scan_or_refuse("<select><option>a</option><script>x</script><textarea>t</textarea></select>").is_ok());
+        assert_eq!(refused("<frameset><style><frame src=//e.invalid/fr></style></frameset>"), "frameset_document");
+    });
+}
+
+#[test]
+fn svg_animation_of_href_is_scanned() {
+    bounded_case("svg_animation_of_href_is_scanned", || {
+        // R6 PLAUSIBLE: set/animate write to/from/by/values into the attribute named by attributeName; an animated href
+        // (or src, or a url()-bearing presentation attribute) loads those values. Other targets are not URLs.
+        let html = "<svg><image href=\"logo.png\">\
+            <set attributeName=\"href\" to=\"https://e.invalid/a.png\"/>\
+            <animate attributeName=\"xlink:href\" values=\"logo.png; //e.invalid/b.png ;\" dur=\"1s\"/>\
+            <animate attributeName=\"fill\" from=\"url(#g)\" to=\"url(http://e.invalid/f)\"/>\
+            <set attributeName=\"src\" to=\"//e.invalid/src\"/>\
+            <animate attributeName=\"width\" to=\"//e.invalid/not-a-url\"/>\
+            </image></svg>";
+        let (seen, calls) = scan(html);
+        assert_eq!(
+            seen,
+            pairs(&[
+                ("logo.png", GRANTED),
+                ("https://e.invalid/a.png", EXTERNAL),
+                ("logo.png", GRANTED),
+                ("//e.invalid/b.png", PROTOCOL_RELATIVE),
+                ("#g", "SameDocument"),
+                ("http://e.invalid/f", EXTERNAL),
+                ("//e.invalid/src", PROTOCOL_RELATIVE),
+            ])
+        );
+        assert_eq!(calls, ["logo.png", "logo.png"]);
     });
 }

@@ -1,5 +1,7 @@
 //! Typed errors and typed loss/unsupported reports. No source text is carried, only kinds and byte spans.
 
+#![deny(clippy::arithmetic_side_effects)]
+
 use hsk_studio_observe::{FailureCode, Outcome};
 use std::fmt;
 use std::ops::Range;
@@ -79,6 +81,16 @@ pub enum UnsupportedKind {
     MediaFeature,
     MediaUnit,
     MediaSyntax,
+    /// An HTML start tag (`div`, `p`, `img`, `font color`, ...) inside `svg`/`math` content: a browser pops the foreign
+    /// elements and re-nests it.
+    ForeignBreakout,
+    /// `frameset` documents ignore every start tag except `frame`, `frameset` and `noframes`.
+    FramesetDocument,
+    /// Inside `select`, engines that implement the current content model read `style xmp iframe noembed noframes
+    /// noscript title svg math` as elements, older "in select" parsers ignore them (their content becomes markup).
+    SelectContent,
+    /// A `noscript` whose RAWTEXT reading (scripting enabled) ends at an earlier `</noscript` than the markup reading.
+    ScriptingDependent,
 }
 impl UnsupportedKind {
     pub const fn code(self) -> &'static str {
@@ -90,6 +102,10 @@ impl UnsupportedKind {
             Self::MediaFeature => "media_feature",
             Self::MediaUnit => "media_unit",
             Self::MediaSyntax => "media_syntax",
+            Self::ForeignBreakout => "foreign_breakout",
+            Self::FramesetDocument => "frameset_document",
+            Self::SelectContent => "select_content",
+            Self::ScriptingDependent => "scripting_dependent",
         }
     }
 }
@@ -193,7 +209,7 @@ impl WebError {
             | Self::Malformed { span, .. }
             | Self::Unsupported { span, .. }
             | Self::InvalidSpan { span }
-            | Self::Conflict { span } => *span = span.start + by..span.end + by,
+            | Self::Conflict { span } => *span = span.start.saturating_add(by)..span.end.saturating_add(by),
             _ => {}
         }
         self
@@ -221,11 +237,13 @@ pub enum LossKind {
     SelfClosingIgnored,
     /// Second and later occurrences of an attribute name are ignored by HTML; the first wins.
     DuplicateAttribute,
-    /// Kept as an opaque `Unsupported` node, never edited.
+    /// `<![CDATA[`: a CDATA section to `]]>` inside foreign content, a bogus comment to the first `>` in HTML content;
+    /// kept as an opaque `Unsupported` node, never edited.
     Cdata,
     ProcessingInstruction,
     BogusMarkup,
-    /// `svg`/`math` content is parsed with the HTML subset grammar only (self-closing allowed, no CDATA).
+    /// An `svg`/`math` element entered from HTML content: its subtree follows the foreign-content rules (namespace,
+    /// self-closing tags, CDATA sections, integration points back to HTML).
     ForeignContent,
 }
 impl LossKind {
@@ -276,7 +294,7 @@ impl LossReport {
         if self.entries.len() < MAX_LOSS_ENTRIES {
             self.entries.push(LossEntry { kind, span });
         } else {
-            self.dropped += 1;
+            self.dropped = self.dropped.saturating_add(1);
         }
     }
 }

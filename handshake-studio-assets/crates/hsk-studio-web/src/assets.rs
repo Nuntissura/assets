@@ -4,17 +4,19 @@
 //! without the port being consulted (tests: `external_asset_denial_cancel_stale` plus the R5 regressions
 //! `css_escapes_cannot_hide_external_urls`, `css_decoys_case_and_whitespace_follow_the_tokenizer`,
 //! `character_references_cannot_hide_schemes`, `base_href_re_targets_every_relative_reference`,
-//! `more_url_attributes_and_foreign_content_are_scanned`, `ambiguous_relative_paths_never_reach_the_port`).
+//! `more_url_attributes_and_foreign_content_are_scanned`, `ambiguous_relative_paths_never_reach_the_port`, and the R6
+//! regressions listed in `DESCRIPTOR` assets.proof).
 //!
-//! Values are decoded the way a browser reads them before they are classified: HTML character references
-//! (`charref`) for attribute values and foreign-content text, then CSS escapes (`cssurl`, CSS Syntax Level 3
-//! tokenization) for style text. A value that still holds a reference this crate cannot decode is
-//! `Denied(UndecodableReference)`.
+//! Values are read the way a browser reads them before they are classified. The document comes from `dom::parse`,
+//! whose tokenizer states and tree-construction context follow the HTML parser (or refuse the document typed), so
+//! every `style` is RAWTEXT exactly where a browser makes it RAWTEXT. Attribute values are decoded with the exact
+//! attribute-value character-reference rules (`charref`, complete WHATWG table), foreign-content style text with the
+//! text rules; style text is then tokenized per CSS Syntax Level 3 (`cssurl`).
 #![deny(clippy::arithmetic_side_effects)]
 
-use crate::charref::decode_value;
+use crate::charref::{Context, decode};
 use crate::cssurl::css_references;
-use crate::dom::{NodeId, NodeKind, WebDoc};
+use crate::dom::{ContentModel, NodeId, NodeKind, WebDoc};
 use crate::error::{LimitKind, WebError};
 use hsk_studio_accord::CancellationToken;
 use std::ops::Range;
@@ -53,8 +55,6 @@ pub enum DenyReason {
     /// A relative path with a backslash or a percent-encoded dot, slash or backslash: browsers and file-system ports
     /// disagree on what it means.
     AmbiguousPath,
-    /// A well-formed `&name;` character reference this crate cannot decode, so the value cannot be classified.
-    UndecodableReference,
 }
 impl DenyReason {
     pub const fn code(self) -> &'static str {
@@ -67,7 +67,6 @@ impl DenyReason {
             Self::BaseHref => "base_href",
             Self::InlineDocument => "inline_document",
             Self::AmbiguousPath => "ambiguous_path",
-            Self::UndecodableReference => "undecodable_reference",
         }
     }
 }
@@ -117,6 +116,8 @@ enum Kind {
     Css,
     /// `<meta http-equiv=refresh content="N; url=...">`.
     Refresh,
+    /// `;`-separated URLs (SVG animation `values` of an animated `href`).
+    UrlValues,
     /// Inline HTML document (`srcdoc`).
     InlineDoc,
 }
@@ -383,11 +384,8 @@ impl Collector<'_> {
 
     fn attribute(&mut self, node: NodeId, kind: Kind, name: &str, value_span: Range<usize>) -> Result<(), WebError> {
         let raw = self.doc.slice(&value_span);
-        let decoded = decode_value(raw);
+        let decoded = decode(raw, Context::Attribute);
         let source = if name == "style" { AssetSource::InlineStyle } else { AssetSource::Attribute(name.to_owned()) };
-        if decoded.undecodable {
-            return self.push(node, source, decoded.text, value_span, AssetOutcome::Denied(DenyReason::UndecodableReference));
-        }
         let text = decoded.text.as_str();
         let exact = text == raw;
         let sub = |r: &Range<usize>| {
@@ -406,6 +404,19 @@ impl Collector<'_> {
                         _ => AssetOutcome::Denied(DenyReason::BaseHref),
                     };
                     self.push(node, source, text.to_owned(), value_span.clone(), outcome)?;
+                }
+            }
+            Kind::UrlValues => {
+                let mut from = 0usize;
+                for part in text.split(';') {
+                    let start = from;
+                    from = from.saturating_add(part.len()).saturating_add(1);
+                    let lead = part.len().saturating_sub(part.trim_start().len());
+                    let item = part.trim();
+                    if !item.is_empty() {
+                        let r = start.saturating_add(lead)..start.saturating_add(lead).saturating_add(item.len());
+                        self.reference(node, source.clone(), item, false, sub(&r))?;
+                    }
                 }
             }
             Kind::UrlList => {
@@ -433,34 +444,65 @@ impl Collector<'_> {
         Ok(())
     }
 
-    /// `<style>` content: raw text (HTML), text nodes and CDATA sections (foreign content).
+    /// A style sheet's text: the RAWTEXT body of an HTML `style` (never character-reference decoded), or the child text
+    /// content of a foreign `style` (its text nodes decoded with the text rules and its CDATA sections, concatenated in
+    /// order, as the DOM joins them before CSS sees them; comments and child elements contribute nothing).
     fn style_children(&mut self, id: NodeId) -> Result<(), WebError> {
         let doc = self.doc;
         let Some(node) = doc.node(id) else { return Ok(()) };
+        let source = AssetSource::StyleBody;
+        if node.content == ContentModel::RawText {
+            for &child in &node.children {
+                if let Some(c) = doc.node(child).filter(|c| c.kind == NodeKind::Raw) {
+                    self.css(id, &source, doc.slice(&c.span), c.span.start, true, &c.span)?;
+                }
+            }
+            return Ok(());
+        }
+        const OPEN: &str = "<![CDATA[";
+        let mut text = String::new();
+        let mut parts = 0usize;
+        let mut exact_origin: Option<usize> = None;
         for &child in &node.children {
             let Some(c) = doc.node(child) else { continue };
-            let text = doc.slice(&c.span);
-            let source = AssetSource::StyleBody;
-            match c.kind {
-                NodeKind::Raw => self.css(id, &source, text, c.span.start, true, &c.span)?,
+            let raw = doc.slice(&c.span);
+            let (piece, origin) = match c.kind {
                 NodeKind::Text => {
-                    let decoded = decode_value(text);
-                    if decoded.undecodable {
-                        self.push(id, source, decoded.text, c.span.clone(), AssetOutcome::Denied(DenyReason::UndecodableReference))?;
-                    } else {
-                        self.css(id, &source, &decoded.text, c.span.start, decoded.text == text, &c.span)?;
-                    }
+                    let d = decode(raw, Context::Text).text;
+                    let origin = (d == raw).then_some(c.span.start);
+                    (d, origin)
                 }
-                NodeKind::Unsupported => {
-                    const OPEN: &str = "<![CDATA[";
-                    if let Some(inner) = text.strip_prefix(OPEN).and_then(|t| t.strip_suffix("]]>")) {
-                        self.css(id, &source, inner, c.span.start.saturating_add(OPEN.len()), true, &c.span)?;
-                    }
-                }
-                _ => {}
-            }
+                NodeKind::Unsupported => match raw.strip_prefix(OPEN).and_then(|t| t.strip_suffix("]]>")) {
+                    Some(inner) => (inner.to_owned(), Some(c.span.start.saturating_add(OPEN.len()))),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            parts = parts.saturating_add(1);
+            exact_origin = origin;
+            text.push_str(&piece);
         }
-        Ok(())
+        if text.is_empty() {
+            return Ok(());
+        }
+        let whole = node.content_span().unwrap_or_else(|| node.span.clone());
+        match (parts, exact_origin) {
+            (1, Some(origin)) => self.css(id, &source, &text, origin, true, &whole),
+            _ => self.css(id, &source, &text, whole.start, false, &whole),
+        }
+    }
+}
+
+/// The URL kind an SVG animation element (`set`, `animate`) writes into its target attribute (`attributeName`).
+fn animated_kind(doc: &WebDoc, id: NodeId) -> Option<Kind> {
+    let target = doc.attribute(id, "attributename").and_then(|a| doc.attr_value(a))?.trim().to_ascii_lowercase();
+    if target == "src" {
+        return Some(Kind::Url);
+    }
+    match attr_kind("", &target)? {
+        Kind::Url => Some(Kind::Url),
+        Kind::Css => Some(Kind::Css),
+        _ => None,
     }
 }
 
@@ -469,8 +511,10 @@ impl Collector<'_> {
 /// script`, `poster`, `object data/codebase/classid/archive`, `form action`, `formaction`, `cite`, `ping`,
 /// `srcset`/`imagesrcset` candidates, obsolete `background longdesc lowsrc manifest`, `<meta http-equiv=refresh>`
 /// URL), `<base href>`, `iframe srcdoc` (reported denied), CSS `url(...)` / `@import "..."` in `style`
-/// attributes, SVG presentation attributes (`fill stroke clip-path cursor filter mask marker-*`) and `<style>`
-/// contents. `image-set()`/`src()` string arguments, `data:` payloads and `srcdoc` contents are not scanned.
+/// attributes, SVG presentation attributes (`fill stroke clip-path cursor filter mask marker-*`), `to from by
+/// values` of SVG `set`/`animate` whose `attributeName` is `href`, `xlink:href`, `src` or one of those presentation
+/// attributes, and `<style>` contents. `image-set()`/`src()` string arguments, `data:` payloads and `srcdoc` contents
+/// are not scanned.
 pub fn collect_assets(doc: &WebDoc, port: &dyn AssetPort, cancel: &CancellationToken) -> Result<Vec<AssetRef>, WebError> {
     let mut c = Collector { doc, port, base_blocks: has_base_href(doc, cancel)?, limit: doc.limits().max_nodes, out: Vec::new() };
     for id in 0..doc.len() {
@@ -486,14 +530,18 @@ pub fn collect_assets(doc: &WebDoc, port: &dyn AssetPort, cancel: &CancellationT
         let refresh = tag == "meta"
             && doc
                 .attribute(id, "http-equiv")
-                .and_then(|a| a.value_span.as_ref())
-                .is_some_and(|s| decode_value(doc.slice(s)).text.trim().eq_ignore_ascii_case("refresh"));
+                .and_then(|a| doc.attr_value(a))
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("refresh"));
+        // SVG animation of an href (or of a url()-bearing presentation attribute) loads the values it animates to.
+        let animated = if matches!(tag.as_str(), "set" | "animate") { animated_kind(doc, id) } else { None };
         for attr in &node.attrs {
             let name = doc.attr_name(attr).to_ascii_lowercase();
             let kind = if tag == "base" && name == "href" {
                 Some(Kind::Base)
             } else if refresh && name == "content" {
                 Some(Kind::Refresh)
+            } else if let Some(kind) = animated.filter(|_| matches!(name.as_str(), "to" | "from" | "by" | "values")) {
+                Some(if kind == Kind::Url && name == "values" { Kind::UrlValues } else { kind })
             } else {
                 attr_kind(&tag, &name)
             };

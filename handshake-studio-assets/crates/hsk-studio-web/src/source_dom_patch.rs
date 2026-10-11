@@ -3,7 +3,9 @@
 //! tag case, comments, opaque constructs) stay identical. Patches are bound to one source revision and
 //! its SHA-256; applying one to any other revision is a typed `StaleRevision` or `Conflict`.
 
-use crate::dom::{ContentModel, NodeId, NodeKey, NodeKind, Quote, RAWTEXT, VOID, WebDoc, in_set, parse, sha256_hex};
+#![deny(clippy::arithmetic_side_effects)]
+
+use crate::dom::{ContentModel, NodeId, NodeKey, NodeKind, Quote, RAWTEXT, VOID, WebDoc, find_raw_text_close, in_set, parse, sha256_hex};
 use crate::entity::{escape_attr, escape_text};
 use crate::error::{EditRefusal, LimitKind, LossKind, MalformedKind, UnsupportedKind, WebError};
 use hsk_studio_accord::CancellationToken;
@@ -182,14 +184,17 @@ pub fn remove_attribute(doc: &WebDoc, key: &NodeKey, name: &str) -> Result<Sourc
     let from = if position == 0 {
         node.name_span.as_ref().map(|s| s.end).ok_or(WebError::NoSuchNode)?
     } else {
-        node.attrs[position - 1].span.end
+        node.attrs[position.saturating_sub(1)].span.end
     };
     Ok(SourcePatch::new(doc, vec![TextEdit { span: from..attr.span.end, replacement: String::new() }]))
 }
 
+/// True when `text` as the body of raw-text element `name` would not end exactly at the element's own close tag: an
+/// earlier appropriate end tag, or (script data) an unfinished double-escaped `<!--<script>` section that makes the
+/// close tag part of the script.
 fn closes_raw(text: &str, name: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains(&format!("</{}", name.to_ascii_lowercase()))
+    let body = format!("{text}</{name}>");
+    find_raw_text_close(body.as_bytes(), 0, name) != Some(text.len())
 }
 
 /// Set the text of a text node, or the text content of an element that has only text children. Text is
