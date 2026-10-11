@@ -1,8 +1,10 @@
 //! Pigment source-local CPU masked replacement. Host acceptance and richer raster work remain pending.
 #![forbid(unsafe_code)]
 pub mod allocation;
+pub mod blend_math;
 pub mod caller;
 pub mod masked_patch;
+pub mod render_plan;
 pub mod tile;
 pub mod wire;
 use hsk_studio_observe::ResourceCode;
