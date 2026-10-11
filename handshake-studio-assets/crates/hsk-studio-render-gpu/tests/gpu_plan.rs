@@ -209,6 +209,17 @@ impl TileSink for Image {
     }
 }
 
+/// `HSK_STUDIO_TEST_GPU_BACKEND=none|vulkan|dx12|metal|auto` selects the backend of the GPU test:
+/// `none` reproduces a machine without an adapter, the others qualify the proof per backend.
+fn backend_from_env() -> BackendChoice {
+    match std::env::var("HSK_STUDIO_TEST_GPU_BACKEND").as_deref() {
+        Ok("none") => BackendChoice::None,
+        Ok("vulkan") => BackendChoice::Vulkan,
+        Ok("dx12") => BackendChoice::Dx12,
+        Ok("metal") => BackendChoice::Metal,
+        _ => BackendChoice::Auto,
+    }
+}
 fn no_adapter() -> DeviceOptions {
     DeviceOptions {
         backend: BackendChoice::None,
@@ -452,44 +463,6 @@ fn device_loss_and_unavailable_are_explicit() {
         Err(BackendError::DeviceLost { generation: 7 })
     );
     assert_eq!((sink.accepted, lost.resident_bytes()), (0, 0));
-
-    // Real device (only when an adapter exists): destroy through wgpu, observe DeviceLost, then
-    // re-acquire must bump the generation and execute again.
-    let _guard = device_lock();
-    let live = GpuBackend::new(DeviceOptions::default());
-    let Some(info) = live.device_info() else {
-        eprintln!(
-            "NOT_PROVEN: no adapter ({:?}); real device-loss path not exercised",
-            live.unavailable_reason()
-        );
-        return;
-    };
-    let first = info.generation;
-    assert_eq!(first, 1);
-    assert!(live.simulate_device_loss());
-    assert_eq!(
-        run(
-            &live,
-            &plan,
-            &request(1, Exactness::Fitted),
-            &sources,
-            &mut sink
-        ),
-        Err(BackendError::DeviceLost { generation: first })
-    );
-    assert!(live.device_info().is_none());
-    let second = live.reacquire(&token).expect("re-acquire after loss");
-    assert!(second > first);
-    let receipt = run(
-        &live,
-        &plan,
-        &request(1, Exactness::Fitted),
-        &sources,
-        &mut sink,
-    )
-    .expect("execute on the successor device");
-    assert_eq!(receipt.backend.generation, second);
-    assert_eq!(live.resident_bytes(), 0);
 }
 
 #[test]
@@ -623,6 +596,7 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
     let _guard = device_lock();
     let options = DeviceOptions {
         chunk_side: 16,
+        backend: backend_from_env(),
         ..DeviceOptions::default()
     };
     let backend = GpuBackend::new(options);
@@ -858,4 +832,37 @@ fn gpu_blend_parity_vs_pigment_blend_math() {
     )
     .expect("backend still usable after refusals");
     assert_eq!(again.px, sink.px);
+
+    // (d) real device loss on this same device: destroy it through wgpu, observe
+    // DeviceLost{generation}, then an explicit re-acquire bumps the generation and the backend
+    // executes again (the hardware-free half of this contract is in
+    // `device_loss_and_unavailable_are_explicit`).
+    let first = info.generation;
+    assert!(backend.simulate_device_loss());
+    let mut lost_sink = Image::new(tiny);
+    assert_eq!(
+        run(
+            &backend,
+            &tiny_plan,
+            &request(1, Exactness::Fitted),
+            &sources0,
+            &mut lost_sink
+        ),
+        Err(BackendError::DeviceLost { generation: first })
+    );
+    assert!(backend.device_info().is_none());
+    let second = backend
+        .reacquire(&CancellationToken::default())
+        .expect("re-acquire after loss");
+    assert!(second > first);
+    let receipt = run(
+        &backend,
+        &tiny_plan,
+        &request(1, Exactness::Fitted),
+        &sources0,
+        &mut lost_sink,
+    )
+    .expect("execute on the successor device");
+    assert_eq!(receipt.backend.generation, second);
+    assert_eq!(backend.resident_bytes(), 0);
 }

@@ -31,7 +31,7 @@ pub(crate) fn block_on_bounded<F: Future>(future: F, limit: Option<Duration>) ->
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendChoice {
-    /// Any platform-primary backend (Vulkan, DX12, Metal).
+    /// Platform-preferred order: Windows DX12 then Vulkan; Apple Metal; elsewhere Vulkan.
     Auto,
     Vulkan,
     Dx12,
@@ -150,29 +150,44 @@ impl GpuContext {
     ) -> Result<Self, GpuError> {
         let canceled = |_| GpuError::Backend(BackendError::Canceled);
         cancel.check().map_err(canceled)?;
-        let backends = match options.backend {
+        let candidates: &[wgpu::Backends] = match options.backend {
             BackendChoice::None => return Err(GpuError::Unavailable(Reason::NoAdapter)),
-            BackendChoice::Auto => wgpu::Backends::PRIMARY,
-            BackendChoice::Vulkan => wgpu::Backends::VULKAN,
-            BackendChoice::Dx12 => wgpu::Backends::DX12,
-            BackendChoice::Metal => wgpu::Backends::METAL,
+            // Platform-preferred order, one backend per instance: a single-backend instance
+            // initialises in a fraction of the time of a multi-backend one.
+            BackendChoice::Auto if cfg!(windows) => &[wgpu::Backends::DX12, wgpu::Backends::VULKAN],
+            BackendChoice::Auto if cfg!(target_vendor = "apple") => &[wgpu::Backends::METAL],
+            BackendChoice::Auto => &[wgpu::Backends::VULKAN],
+            BackendChoice::Vulkan => &[wgpu::Backends::VULKAN],
+            BackendChoice::Dx12 => &[wgpu::Backends::DX12],
+            BackendChoice::Metal => &[wgpu::Backends::METAL],
         };
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends,
-            // No validation layers or debug overlays: quiet, deterministic headless operation.
-            flags: wgpu::InstanceFlags::empty(),
-            ..wgpu::InstanceDescriptor::default()
-        });
-        let adapter = block_on_bounded(
-            instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
-            }),
-            Some(options.acquire_timeout),
-        )
-        .ok_or(GpuError::Unavailable(Reason::Timeout))?
-        .map_err(|_| GpuError::Unavailable(Reason::NoAdapter))?;
+        let mut failure = Reason::NoAdapter;
+        let mut found = None;
+        for &backends in candidates {
+            cancel.check().map_err(canceled)?;
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends,
+                // No validation layers or debug overlays: quiet, deterministic headless operation.
+                flags: wgpu::InstanceFlags::empty(),
+                ..wgpu::InstanceDescriptor::default()
+            });
+            match block_on_bounded(
+                instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    force_fallback_adapter: false,
+                    compatible_surface: None,
+                }),
+                Some(options.acquire_timeout),
+            ) {
+                Some(Ok(adapter)) => {
+                    found = Some(adapter);
+                    break;
+                }
+                Some(Err(_)) => failure = Reason::NoAdapter,
+                None => failure = Reason::Timeout,
+            }
+        }
+        let adapter = found.ok_or(GpuError::Unavailable(failure))?;
         cancel.check().map_err(canceled)?;
 
         let limits = wgpu::Limits::downlevel_defaults();

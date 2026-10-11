@@ -1,5 +1,5 @@
 //! Render-gpu consumer (headless: no window, no surface, no focus).
-//! `--descriptor` prints the module descriptor. `--probe` acquires a device and prints one JSON
+//! `--descriptor` prints the module descriptor. `--probe [auto|vulkan|dx12|metal|none]` acquires a device and prints one JSON
 //! line with the backend/adapter kind/generation, or the typed unavailable reason (exit 3).
 //! `--selftest` renders the hand-computed oracle (backdrop 0.2/0.4/0.6, red source at opacity 0.5;
 //! Normal, Multiply, Screen) on the device and fails (exit 1) on mismatch; with no adapter it
@@ -11,7 +11,7 @@ use hsk_studio_pigment::render_plan::{
     OutputTarget, PlanNode, PlanNodeId, PlanSources, RenderBackend, RenderPlan, SampleFormat,
     SinkError, SourceKey, StudioBlendMode, TilePlanes, TileSink,
 };
-use hsk_studio_render_gpu::{DESCRIPTOR, DeviceOptions, GpuBackend};
+use hsk_studio_render_gpu::{BackendChoice, DESCRIPTOR, DeviceOptions, GpuBackend};
 use std::env;
 use std::process::ExitCode;
 
@@ -43,8 +43,19 @@ fn json_text(text: &str) -> String {
         .collect()
 }
 
-fn probe() -> ExitCode {
-    let backend = GpuBackend::new(DeviceOptions::default());
+fn probe(choice: Option<&str>) -> ExitCode {
+    let backend = match choice {
+        None | Some("auto") => BackendChoice::Auto,
+        Some("vulkan") => BackendChoice::Vulkan,
+        Some("dx12") => BackendChoice::Dx12,
+        Some("metal") => BackendChoice::Metal,
+        Some("none") => BackendChoice::None,
+        Some(_) => return ExitCode::from(2),
+    };
+    let backend = GpuBackend::new(DeviceOptions {
+        backend,
+        ..DeviceOptions::default()
+    });
     match (backend.device_info(), backend.unavailable_reason()) {
         (Some(info), _) => {
             println!(
@@ -162,7 +173,7 @@ fn main() -> ExitCode {
             println!("{DESCRIPTOR}");
             ExitCode::SUCCESS
         }
-        Some("--probe") => probe(),
+        Some("--probe") => probe(env::args().nth(2).as_deref()),
         Some("--selftest") => selftest(),
         _ => {
             eprintln!("usage: render-gpu-consumer --descriptor | --probe | --selftest");
