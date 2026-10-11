@@ -1,6 +1,7 @@
 //! Threaded-frame reflow: one story flows through an ordered chain of text frames (STU-LAY-018,
 //! STU-LAY-122). Text that does not fit the last frame is reported as `overset`, never truncated.
-//! The result is a revision-bound placement proposal in points; nothing is mutated.
+//! The result is a revision-bound placement proposal in points; nothing is mutated. The pages, the
+//! frames, the thread and the story are read from Folio (`folio_input`).
 //!
 //! Conventions (documented, not spec-derived): lines are left-aligned and not justified; a line
 //! slot is a baseline whose line box `[baseline - ascent, baseline + descent]` lies inside the
@@ -9,11 +10,11 @@
 //! trailing whitespace is part of the line's glyph range but not of `width_pt`; an empty
 //! paragraph occupies one empty line; paragraphs have no space before or after.
 use crate::breaker::{Composer, Sums, first_fit, knuth_plass, line_start};
-use crate::geometry::{Spread, TextFrame};
+use crate::folio_input::{Frame, FrameObstacles, resolve};
 use crate::paragraph::{ShapedParagraph, SpaceParams, build_items};
 use crate::{LayoutError, SourceSpan};
 use hsk_studio_accord::CancellationToken;
-use std::collections::BTreeSet;
+use hsk_studio_folio::{StudioDocument, StudioTextStory};
 use std::ops::Range;
 
 const EPS: f64 = 1e-9;
@@ -35,19 +36,22 @@ impl Default for Limits {
     }
 }
 
-/// Everything `reflow` reads. `paragraphs` are in story order and `thread` lists indices into
-/// `frames` in flow order; `text` is the story text all byte offsets refer to.
+/// Everything `reflow` reads. The thread is the chain of frame layers of `document` whose text
+/// payload names `story`; `paragraphs` are the Type-shaped paragraphs of that story in order, with
+/// byte offsets into the story text. The current revision is `document.revision`.
 #[derive(Clone, Copy, Debug)]
 pub struct ReflowRequest<'a> {
-    pub text: &'a str,
+    pub document: &'a StudioDocument,
+    pub story: &'a StudioTextStory,
+    /// The bytes of a `StoryContent::Stored` story, resolved by the caller (exactly `byte_len`
+    /// bytes). Must be `None` for inline content.
+    pub resolved_text: Option<&'a str>,
     pub paragraphs: &'a [ShapedParagraph],
-    pub spreads: &'a [Spread],
-    pub frames: &'a [TextFrame],
-    pub thread: &'a [usize],
+    /// Text-wrap obstacles per frame layer (Folio stores none); entries for other frames are ignored.
+    pub obstacles: &'a [FrameObstacles],
     pub composer: Composer,
     pub space: SpaceParams,
     pub expected_revision: u64,
-    pub current_revision: u64,
     pub limits: Limits,
 }
 
@@ -72,7 +76,9 @@ pub struct Line {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FramePlacement {
+    /// `layer_id` of the frame layer.
     pub frame_id: String,
+    /// Index of the frame layer in `StudioDocument::layers`.
     pub frame_index: usize,
     pub spread: usize,
     pub page: usize,
@@ -105,8 +111,8 @@ struct Slot {
 }
 
 /// Widest gap of the frame's inset width left by obstacles that overlap the line box.
-fn free_interval(f: &TextFrame, top: f64, bottom: f64) -> (f64, f64) {
-    let (lo, hi) = (f.inset_pt, f.width_pt - f.inset_pt);
+fn free_interval(f: &Frame<'_>, top: f64, bottom: f64) -> (f64, f64) {
+    let (lo, hi) = (f.inset_left_pt, f.width_pt - f.inset_right_pt);
     let mut blocked: Vec<(f64, f64)> = f
         .obstacles
         .iter()
@@ -135,7 +141,7 @@ fn free_interval(f: &TextFrame, top: f64, bottom: f64) -> (f64, f64) {
 
 #[allow(clippy::too_many_arguments)]
 fn next_slot(
-    thread: &[&TextFrame],
+    thread: &[Frame<'_>],
     mut cur: Cursor,
     height: f64,
     ascent: f64,
@@ -153,7 +159,7 @@ fn next_slot(
             cancel.check().map_err(|_| LayoutError::Canceled)?;
         }
         let baseline = f.first_baseline_pt + cur.line as f64 * height;
-        if baseline + descent > f.height_pt - f.inset_pt + EPS {
+        if baseline + descent > f.height_pt - f.inset_bottom_pt + EPS {
             cur = Cursor {
                 pos: cur.pos + 1,
                 line: 0,
@@ -188,26 +194,20 @@ pub fn reflow(
     cancel: &CancellationToken,
 ) -> Result<LayoutProposal, LayoutError> {
     canceled(cancel)?;
-    if req.expected_revision != req.current_revision {
+    if req.expected_revision != req.document.revision {
         return Err(LayoutError::StaleRevision {
             expected: req.expected_revision,
-            current: req.current_revision,
+            current: req.document.revision,
         });
     }
-    let mut seen = BTreeSet::new();
-    let mut thread = Vec::with_capacity(req.thread.len());
-    for &index in req.thread {
-        let frame = req.frames.get(index).ok_or(LayoutError::InvalidInput)?;
-        if !seen.insert(index) {
-            return Err(LayoutError::CyclicThread);
-        }
-        thread.push(frame);
-    }
-    for spread in req.spreads {
-        spread.validate()?;
-    }
-    for frame in &thread {
-        frame.validate(req.spreads)?;
+    let input = resolve(req.document, req.story, req.resolved_text, req.obstacles)?;
+    let (text, thread) = (input.text, input.frames);
+    if req
+        .paragraphs
+        .iter()
+        .any(|p| p.source.end > req.story.byte_len())
+    {
+        return Err(LayoutError::InvalidInput);
     }
     let limits = req.limits;
     if req.paragraphs.len() > limits.max_paragraphs
@@ -235,25 +235,21 @@ pub fn reflow(
     }
     let mut frames: Vec<FramePlacement> = thread
         .iter()
-        .zip(req.thread)
-        .map(|(f, &index)| {
-            let (x, y) = f.origin_in_spread(req.spreads).unwrap_or((0.0, 0.0));
-            FramePlacement {
-                frame_id: f.id.clone(),
-                frame_index: index,
-                spread: f.spread,
-                page: f.page,
-                origin_x_pt: x,
-                origin_y_pt: y,
-                lines: Vec::new(),
-            }
+        .map(|f| FramePlacement {
+            frame_id: f.id.to_owned(),
+            frame_index: f.layer_index,
+            spread: f.spread,
+            page: f.page,
+            origin_x_pt: f.origin_x_pt,
+            origin_y_pt: f.origin_y_pt,
+            lines: Vec::new(),
         })
         .collect();
     let story_end = req.paragraphs.last().map_or(0, |p| p.source.end);
     let (mut cursor, mut placed, mut overset) = (Cursor { pos: 0, line: 0 }, 0usize, None);
     for (pi, p) in req.paragraphs.iter().enumerate() {
         canceled(cancel)?;
-        let items = build_items(p, req.text, req.space)?;
+        let items = build_items(p, text, req.space)?;
         let sums = Sums::new(&items);
         let remaining = limits.max_lines.saturating_sub(placed);
         let slot_cap = items.len().min(remaining.saturating_add(1));
@@ -363,7 +359,7 @@ pub fn reflow(
         cursor = slots[used - 1].next;
     }
     Ok(LayoutProposal {
-        base_revision: req.current_revision,
+        base_revision: req.document.revision,
         frames,
         overset,
     })
