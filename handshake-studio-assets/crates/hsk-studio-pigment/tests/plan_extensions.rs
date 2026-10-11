@@ -57,12 +57,9 @@ fn plan() -> RenderPlan {
 }
 
 fn adjustment(op: AdjustmentOp) -> PlanExtensions {
-    PlanExtensions {
-        layers: vec![LayerExtension {
-            adjustment: Some(op),
-            ..LayerExtension::new(PlanNodeId(2), 1)
-        }],
-    }
+    PlanExtensions::from_layers(vec![
+        LayerExtension::new(PlanNodeId(2), 1).with_adjustment(op),
+    ])
 }
 
 struct Fake {
@@ -156,38 +153,29 @@ fn envelope_validation_rules() {
     assert_eq!(PlanExtensions::default().validate(&p), Ok(vec![]));
 
     // Node 0 is a Solid, not a group; layer 5 of group 2 does not exist.
-    let target = PlanExtensions {
-        layers: vec![LayerExtension::new(PlanNodeId(0), 0)],
-    };
+    let target = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(0), 0)]);
     assert_eq!(
         target.validate(&p),
         Err(PlanError::ExtensionTarget { node: 0 })
     );
-    let index = PlanExtensions {
-        layers: vec![LayerExtension::new(PlanNodeId(2), 5)],
-    };
+    let index = PlanExtensions::from_layers(vec![LayerExtension::new(PlanNodeId(2), 5)]);
     assert_eq!(
         index.validate(&p),
         Err(PlanError::ExtensionTarget { node: 2 })
     );
-    let dup = PlanExtensions {
-        layers: vec![
-            LayerExtension::new(PlanNodeId(2), 0),
-            LayerExtension::new(PlanNodeId(2), 0),
-        ],
-    };
+    let dup = PlanExtensions::from_layers(vec![
+        LayerExtension::new(PlanNodeId(2), 0),
+        LayerExtension::new(PlanNodeId(2), 0),
+    ]);
     assert_eq!(
         dup.validate(&p),
         Err(PlanError::ExtensionDuplicate { node: 2 })
     );
 
     // Layer 0's input (node 0) is opaque, not the transparent placeholder.
-    let input = PlanExtensions {
-        layers: vec![LayerExtension {
-            adjustment: Some(AdjustmentOp::Invert),
-            ..LayerExtension::new(PlanNodeId(2), 0)
-        }],
-    };
+    let input = PlanExtensions::from_layers(vec![
+        LayerExtension::new(PlanNodeId(2), 0).with_adjustment(AdjustmentOp::Invert),
+    ]);
     assert_eq!(
         input.validate(&p),
         Err(PlanError::AdjustmentInput { node: 2 })
@@ -210,12 +198,9 @@ fn envelope_validation_rules() {
         Err(PlanError::AdjustmentParameter { node: 2 })
     );
 
-    let deep = PlanExtensions {
-        layers: vec![LayerExtension {
-            knockout: Knockout::Deep,
-            ..LayerExtension::new(PlanNodeId(2), 0)
-        }],
-    };
+    let deep = PlanExtensions::from_layers(vec![
+        LayerExtension::new(PlanNodeId(2), 0).with_knockout(Knockout::Deep),
+    ]);
     assert_eq!(
         deep.validate(&p),
         Err(PlanError::KnockoutUnsupported {
@@ -224,12 +209,9 @@ fn envelope_validation_rules() {
         })
     );
 
-    let feather = PlanExtensions {
-        layers: vec![LayerExtension {
-            mask_feather_px: 4.0,
-            ..LayerExtension::new(PlanNodeId(2), 0)
-        }],
-    };
+    let feather = PlanExtensions::from_layers(vec![
+        LayerExtension::new(PlanNodeId(2), 0).with_mask_feather(4.0),
+    ]);
     assert_eq!(
         feather.validate(&p),
         Err(PlanError::FeatherWithoutMask { node: 2 })
@@ -240,11 +222,10 @@ fn envelope_validation_rules() {
         source,
         destination: IDENTITY_RANGE,
     };
-    let blend_if = |entries: Vec<BlendRangeEntry>| PlanExtensions {
-        layers: vec![LayerExtension {
-            blend_if: entries,
-            ..LayerExtension::new(PlanNodeId(2), 0)
-        }],
+    let blend_if = |entries: Vec<BlendRangeEntry>| {
+        PlanExtensions::from_layers(vec![
+            LayerExtension::new(PlanNodeId(2), 0).with_blend_if(entries),
+        ])
     };
     assert_eq!(
         blend_if(vec![entry([0.2, 0.4, 0.6, 1.0])]).validate(&p),
@@ -313,12 +294,9 @@ fn envelope_admission_and_default_route() {
             exactness: Exactness::Approximate
         })
     );
-    let deep = PlanExtensions {
-        layers: vec![LayerExtension {
-            knockout: Knockout::Deep,
-            ..LayerExtension::new(PlanNodeId(2), 0)
-        }],
-    };
+    let deep = PlanExtensions::from_layers(vec![
+        LayerExtension::new(PlanNodeId(2), 0).with_knockout(Knockout::Deep),
+    ]);
     assert_eq!(
         admit_extended(&p, &deep, &full, &req(Exactness::Approximate), &cancel),
         Err(BackendError::Unsupported {

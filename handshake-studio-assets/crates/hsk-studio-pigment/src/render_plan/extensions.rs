@@ -53,6 +53,10 @@ impl Knockout {
 /// - `mask_feather_px`: Gaussian feather radius of the layer's coverage mask
 ///   ([`crate::coverage_math::feather_kernel`], applied before density); `0` = none.
 /// - `knockout`: only `Knockout::None` is admitted.
+///
+/// `#[non_exhaustive]` so later envelope fields (effects wave) stay additive: build it with
+/// [`LayerExtension::new`] and the `with_*` methods or field assignment.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LayerExtension {
     pub group: PlanNodeId,
@@ -74,9 +78,26 @@ impl LayerExtension {
             knockout: Knockout::None,
         }
     }
+    pub fn with_adjustment(mut self, op: AdjustmentOp) -> Self {
+        self.adjustment = Some(op);
+        self
+    }
+    pub fn with_blend_if(mut self, entries: Vec<BlendRangeEntry>) -> Self {
+        self.blend_if = entries;
+        self
+    }
+    pub fn with_mask_feather(mut self, px: f32) -> Self {
+        self.mask_feather_px = px;
+        self
+    }
+    pub fn with_knockout(mut self, knockout: Knockout) -> Self {
+        self.knockout = knockout;
+        self
+    }
 }
 
 /// The envelope: at most one entry per `(group, layer)`. Empty = the plain v1 plan.
+#[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct PlanExtensions {
     pub layers: Vec<LayerExtension>,
@@ -129,6 +150,10 @@ fn is_clip(l: &super::Layer) -> bool {
 }
 
 impl PlanExtensions {
+    /// An envelope holding `layers` (validated by [`PlanExtensions::validate`]).
+    pub fn from_layers(layers: Vec<LayerExtension>) -> Self {
+        Self { layers }
+    }
     pub fn is_empty(&self) -> bool {
         self.layers.is_empty()
     }

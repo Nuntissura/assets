@@ -312,6 +312,8 @@ pub struct Exposure {
 }
 
 /// One adjustment with its parameters, as carried by the render-plan extension envelope.
+/// `#[non_exhaustive]`: further STU-RAS-151 kinds are added without breaking consumers.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum AdjustmentOp {
     Levels(Levels),
