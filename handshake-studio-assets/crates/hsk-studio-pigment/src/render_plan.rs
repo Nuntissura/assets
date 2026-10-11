@@ -53,7 +53,8 @@ pub enum MaskFormat {
     /// alpha multiplied by the base alpha, and `G`'s alpha is then held at the base alpha (clipped
     /// content never extends beyond the base). `G` is composited onto the parent's running backdrop
     /// with the BASE layer's mode, opacity and fill. A clipped layer cannot also carry its own
-    /// coverage mask (one mask slot), and cannot reference a pass-through group.
+    /// coverage mask (one mask slot), cannot reference a pass-through group, and its base cannot
+    /// be one either ([`PlanError::ClipBasePassThrough`]).
     ///
     /// A backend must opt in through [`RenderBackend::supports_clip_to_base`]; [`admit`] refuses
     /// the plan as `Unsupported { operator: "clip_to_base" }` otherwise, so it is never ignored.
@@ -244,6 +245,10 @@ pub enum PlanError {
     ClipFields { node: u32 },
     /// A clipped layer references a pass-through group (no isolation to clip within).
     ClipPassThrough { node: u32 },
+    /// The base of a clipping run (nearest earlier unclipped layer) composites with the
+    /// PassThrough mode: a pass-through group has no isolated content to take a base alpha from,
+    /// and the run is composited with the BASE layer's mode, which is undefined for PassThrough.
+    ClipBasePassThrough { node: u32 },
 }
 impl PlanError {
     pub const fn code(self) -> &'static str {
@@ -261,6 +266,7 @@ impl PlanError {
             Self::ClipWithoutBase { .. } => "plan_clip_without_base",
             Self::ClipFields { .. } => "plan_clip_fields",
             Self::ClipPassThrough { .. } => "plan_clip_pass_through",
+            Self::ClipBasePassThrough { .. } => "plan_clip_base_pass_through",
         }
     }
 }
@@ -380,14 +386,19 @@ impl<V> RenderPlan<V> {
                             if *m != MaskInput::clip_to_base() {
                                 return Err(PlanError::ClipFields { node: n });
                             }
-                            let has_base = g.layers[..li]
+                            let Some(base) = g.layers[..li]
                                 .iter()
-                                .any(|b| !b.mask.as_ref().is_some_and(MaskInput::is_clip_to_base));
-                            if !has_base {
+                                .rposition(|b| !b.mask.as_ref().is_some_and(MaskInput::is_clip_to_base))
+                            else {
                                 return Err(PlanError::ClipWithoutBase { node: n });
-                            }
+                            };
                             if facts.applicability == Applicability::GroupOnly {
                                 return Err(PlanError::ClipPassThrough { node: n });
+                            }
+                            // The run is composited with the BASE layer's mode, undefined for the
+                            // group-only PassThrough mode (no isolated content to clip within).
+                            if g.layers[base].mode.facts().applicability == Applicability::GroupOnly {
+                                return Err(PlanError::ClipBasePassThrough { node: n });
                             }
                             add(Operator::Mask(MaskFormat::BaseAlpha));
                         } else if let Some(m) = &l.mask {
@@ -652,4 +663,4 @@ pub fn admit<V>(
     Ok(ledger)
 }
 
-pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pending":["STU-CMP-020 members without discriminant","STU-CMP-020a stencil/silhouette node kinds","knockout, blend-if, effects, mattes, time","clipped layer with its own mask"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;
+pub const DESCRIPTOR: &str = r#"{"module":"STUDIO-MODULE-PIGMENT","surface":"render_plan","version":1,"role":"shared static render-plan IR + backend port; composite builds, render-cpu/render-gpu implement RenderBackend","nodes":["tile","solid","vector(V)","group{isolated,layers bottom-first}"],"layer":["input","mode StudioBlendMode 1..=35","opacity","fill_opacity","mask"],"space":"ColourTag{profile_sha256, blend_space linear_light|encoded}; never converted by a backend","alpha":"straight|premultiplied declared","exactness":["exact","fitted","approximate","unsupported"],"admission":"cancel, stale revision, validate, per-operator min(intrinsic, backend) vs min_exactness; refusal before any sink call","receipt":["plan_revision","plan_digest","backend","region","target","exactness","chunks","nodes_executed","peak_working_bytes"],"persistence":"none; Serialize only for digest","clip_to_base":"Layer.mask = MaskInput::clip_to_base() (MaskFormat::BaseAlpha): coverage is the alpha of the nearest earlier unclipped layer of the group; validate enforces a base, canonical fields, no pass-through reference, no pass-through base; Approximate (Photoshop rule UNVERIFIED); backends opt in via supports_clip_to_base, admit refuses otherwise","pending":["STU-CMP-020 members without discriminant","STU-CMP-020a stencil/silhouette node kinds","knockout, blend-if, effects, mattes, time","clipped layer with its own mask"],"blend_math":"pigment::blend_math owns StudioBlendMode facts, exactness classes and the scalar reference blend/source-over/group oracle"}"#;

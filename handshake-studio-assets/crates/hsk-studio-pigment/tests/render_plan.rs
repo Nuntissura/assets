@@ -537,3 +537,73 @@ fn clip_to_base_is_validated_refused_without_opt_in_and_approximate() {
         assert!(admit(&plan(StudioBlendMode::Multiply), &Probe, &request(Exactness::Exact), &cancel).is_ok());
     });
 }
+
+/// R3 finding: a pass-through group serving as the clip base was admitted (only the backends
+/// refused it, at execute). `validate` and therefore `admit` now refuse it, uniformly.
+#[test]
+fn clip_base_pass_through_is_refused_by_validate_and_admit() {
+    bounded_case(|| {
+        let limits = PlanLimits::default();
+        // Nodes: 0, 1 solids; 2 isolated group; 3 NON-isolated group (the PassThrough target);
+        // 4 isolated group whose first layer is the pass-through base.
+        let with_group_4 = |layers: Vec<Layer>| {
+            let mut p = group_plan(vec![layer(0, StudioBlendMode::Normal)]);
+            p.nodes.push(PlanNode::Group(Group {
+                isolated: false,
+                layers: vec![layer(1, StudioBlendMode::Normal)],
+            }));
+            p.nodes.push(PlanNode::Group(Group { isolated: true, layers }));
+            p.root = PlanNodeId(4);
+            p
+        };
+        let pass_base = layer(3, StudioBlendMode::PassThrough);
+        // [pass-through base, clipped Normal] -> refused, node = the group holding the run (4).
+        let bad = with_group_4(vec![pass_base, clipped_layer(0, StudioBlendMode::Normal)]);
+        assert_eq!(
+            bad.validate(&limits),
+            Err(PlanError::ClipBasePassThrough { node: 4 })
+        );
+        assert_eq!(
+            PlanError::ClipBasePassThrough { node: 4 }.code(),
+            "plan_clip_base_pass_through"
+        );
+        // Every clipped layer of the run shares that base, so a longer run is refused too.
+        let long = with_group_4(vec![
+            pass_base,
+            clipped_layer(0, StudioBlendMode::Multiply),
+            clipped_layer(0, StudioBlendMode::Screen),
+        ]);
+        assert_eq!(
+            long.validate(&limits),
+            Err(PlanError::ClipBasePassThrough { node: 4 })
+        );
+        // Admission carries the same typed refusal, even for a backend that opted in and is Exact.
+        let cancel = CancellationToken::default();
+        let request = ExecuteRequest {
+            expected_revision: 9,
+            min_exactness: Exactness::Approximate,
+            deadline: None,
+            max_working_bytes: 1 << 20,
+        };
+        assert_eq!(
+            admit(&bad, &ClipProbe, &request, &cancel),
+            Err(BackendError::InvalidPlan(PlanError::ClipBasePassThrough { node: 4 }))
+        );
+        // Controls: a pass-through layer that is NOT the base of a run stays valid -- unclipped
+        // (no run at all), or followed by a Normal unclipped layer that starts the clipped run.
+        let lone = with_group_4(vec![pass_base, layer(0, StudioBlendMode::Normal)]);
+        assert!(lone.validate(&limits).is_ok());
+        let before_base = with_group_4(vec![
+            pass_base,
+            layer(0, StudioBlendMode::Normal),
+            clipped_layer(0, StudioBlendMode::Normal),
+        ]);
+        assert!(before_base.validate(&limits).is_ok());
+        // And the same run over a Normal base is valid.
+        let normal_base = with_group_4(vec![
+            layer(0, StudioBlendMode::Normal),
+            clipped_layer(0, StudioBlendMode::Normal),
+        ]);
+        assert!(normal_base.validate(&limits).is_ok());
+    });
+}
