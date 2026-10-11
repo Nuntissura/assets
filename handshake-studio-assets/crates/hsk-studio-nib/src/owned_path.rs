@@ -83,10 +83,20 @@ impl Default for PathLimits {
         }
     }
 }
+/// Longest number text the canonical writer emits: plain decimal when it fits, else exponent form
+/// (`1.2345678901234567e-308` is 24 bytes, the longest exponent form of a finite `f64`).
+const MAX_NUMBER_TEXT: usize = 24;
+/// Canonical bytes budgeted per element: `["C"` + six `,number` + `]` + the element separator.
+const ELEMENT_BUDGET_BYTES: usize = 160;
+const _: () = assert!(4 + 6 * (1 + MAX_NUMBER_TEXT) + 2 <= ELEMENT_BUDGET_BYTES);
+
 impl PathLimits {
-    /// Largest canonical JSON text accepted by `from_canonical_json`.
+    /// Largest canonical JSON text accepted by `from_canonical_json`; every valid path with at
+    /// most `max_elements` elements serializes within it (see `MAX_NUMBER_TEXT`).
     pub fn max_input_bytes(&self) -> usize {
-        self.max_elements.saturating_mul(160).saturating_add(256)
+        self.max_elements
+            .saturating_mul(ELEMENT_BUDGET_BYTES)
+            .saturating_add(256)
     }
 }
 
@@ -129,28 +139,42 @@ impl OwnedPath {
         if self.elements.len() > limits.max_elements {
             return Err(Error::BudgetExceeded);
         }
+        self.check_structure(limits.require_closed, true)
+    }
+
+    /// True when the path has elements and every subpath ends with `Close`. Authoritative
+    /// definition: the structural state machine of [`OwnedPath::validate`] with `require_closed`
+    /// (coordinate values and budgets aside), so a lone `MoveTo`, a trailing `MoveTo` and a
+    /// `MoveTo` directly followed by `Close` are not closed.
+    pub fn is_closed(&self) -> bool {
+        !self.elements.is_empty() && self.check_structure(true, false).is_ok()
+    }
+
+    /// The one subpath state machine behind `validate` and `is_closed`.
+    fn check_structure(&self, require_closed: bool, check_coordinates: bool) -> Result<(), Error> {
+        let coordinates = |ok: bool| !check_coordinates || ok;
         // 0 = no open subpath (start or just closed), 1 = MoveTo seen, 2 = drawn since MoveTo.
         let mut state = 0_u8;
         for element in &self.elements {
             let ok = match *element {
                 PathElement::MoveTo(p) => {
-                    if limits.require_closed && state != 0 {
+                    if require_closed && state != 0 {
                         return Err(Error::InvalidGeometry);
                     }
                     state = 1;
-                    finite(p)
+                    coordinates(finite(p))
                 }
                 PathElement::LineTo(p) => {
                     draw(&mut state)?;
-                    finite(p)
+                    coordinates(finite(p))
                 }
                 PathElement::QuadTo(a, b) => {
                     draw(&mut state)?;
-                    finite(a) && finite(b)
+                    coordinates(finite(a) && finite(b))
                 }
                 PathElement::CubicTo(a, b, c) => {
                     draw(&mut state)?;
-                    finite(a) && finite(b) && finite(c)
+                    coordinates(finite(a) && finite(b) && finite(c))
                 }
                 PathElement::Close => {
                     if state != 2 {
@@ -164,24 +188,10 @@ impl OwnedPath {
                 return Err(Error::InvalidGeometry);
             }
         }
-        if limits.require_closed && state != 0 {
+        if require_closed && state != 0 {
             return Err(Error::InvalidGeometry);
         }
         Ok(())
-    }
-
-    /// True when the path has elements and every subpath ends with `Close`.
-    pub fn is_closed(&self) -> bool {
-        let mut drawn = false;
-        for element in &self.elements {
-            match element {
-                PathElement::MoveTo(_) if drawn => return false,
-                PathElement::MoveTo(_) => {}
-                PathElement::Close => drawn = false,
-                _ => drawn = true,
-            }
-        }
-        !self.elements.is_empty() && !drawn
     }
 
     /// Lossless conversion to a kurbo path (one element each). The path is validated with the
@@ -291,8 +301,8 @@ impl OwnedPath {
     }
 
     /// Deterministic JSON text: `{"fill_rule":"nonzero","elements":[["M",x,y],["L",x,y],
-    /// ["Q",x1,y1,x,y],["C",x1,y1,x2,y2,x,y],["Z"]]}`. Numbers use the shortest round-trip decimal
-    /// form; negative zero is written `0`. Validate first: non-finite values are not encodable.
+    /// ["Q",x1,y1,x,y],["C",x1,y1,x2,y2,x,y],["Z"]]}`. Numbers use the shortest round-trip digits
+    /// (plain decimal, exponent form beyond 24 bytes); negative zero is written `0`. Validate first: non-finite values are not encodable.
     pub fn to_canonical_json(&self) -> String {
         let mut out = String::with_capacity(48 + self.elements.len() * 40);
         out.push_str("{\"fill_rule\":\"");
@@ -375,11 +385,25 @@ fn write_element(out: &mut String, verb: &str, points: &[PathPoint]) {
     out.push('"');
     for p in points {
         out.push(',');
-        out.push_str(&normalise(p.x).to_string());
+        write_number(out, p.x);
         out.push(',');
-        out.push_str(&normalise(p.y).to_string());
+        write_number(out, p.y);
     }
     out.push(']');
+}
+
+/// Shortest round-trip decimal digits (negative zero as `0`). Plain decimal text is kept while it
+/// is at most `MAX_NUMBER_TEXT` bytes; longer values (`f64` Display never switches to an exponent,
+/// so `5e-324` would take 326 bytes) use the exponent form, which parses back to the same bits.
+fn write_number(out: &mut String, value: f64) {
+    use std::fmt::Write;
+    let value = normalise(value);
+    let start = out.len();
+    let _ = write!(out, "{value}");
+    if out.len() - start > MAX_NUMBER_TEXT {
+        out.truncate(start);
+        let _ = write!(out, "{value:e}");
+    }
 }
 
 struct Cursor<'a> {

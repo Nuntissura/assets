@@ -313,3 +313,191 @@ fn kurbo_and_anchor_conversion() {
         );
     }
 }
+
+/// Deterministic xorshift64* so the round-trip property test needs no external crate.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    /// Any finite `f64` within `COORDINATE_LIMIT`, subnormals and both signs included: random
+    /// mantissa bits under a random binary exponent.
+    fn coordinate(&mut self) -> f64 {
+        loop {
+            let bits = self.next();
+            let exponent = (self.next() % (1023 + 30)) << 52;
+            let value = f64::from_bits((bits & (1 << 63)) | exponent | (bits & ((1 << 52) - 1)));
+            if value.abs() <= COORDINATE_LIMIT {
+                return value;
+            }
+        }
+    }
+    fn point(&mut self) -> PathPoint {
+        PathPoint::new(self.coordinate(), self.coordinate())
+    }
+}
+
+#[test]
+fn canonical_json_round_trips_every_valid_path_within_budget() {
+    // R3 finding: f64 Display never uses an exponent, so [MoveTo(5e-324, 5e-324)] serialized to
+    // ~700 bytes against a 416 byte budget and the reader refused its own output.
+    let tiny = path(
+        FillRule::NonZero,
+        vec![PathElement::MoveTo(p(5e-324, -5e-324))],
+    );
+    let exact = PathLimits {
+        max_elements: 1,
+        ..PathLimits::default()
+    };
+    tiny.validate(&exact).unwrap();
+    let json = tiny.to_canonical_json();
+    assert!(
+        json.len() <= exact.max_input_bytes(),
+        "{} bytes",
+        json.len()
+    );
+    assert_eq!(
+        json,
+        r#"{"fill_rule":"nonzero","elements":[["M",5e-324,-5e-324]]}"#
+    );
+    assert_eq!(OwnedPath::from_canonical_json(&json, &exact).unwrap(), tiny);
+
+    // Worst-case number width: 17 digits, negative, three-digit negative exponent, in every slot
+    // of a full-budget cubic path.
+    let wide = -1.234_567_890_123_456_7e-300;
+    let cubic = PathElement::CubicTo(p(wide, wide), p(wide, wide), p(wide, wide));
+    let full = path(
+        FillRule::EvenOdd,
+        [
+            PathElement::MoveTo(p(wide, wide)),
+            cubic,
+            cubic,
+            cubic,
+            cubic,
+        ]
+        .to_vec(),
+    );
+    let limits = PathLimits {
+        max_elements: 5,
+        ..PathLimits::default()
+    };
+    let json = full.to_canonical_json();
+    assert!(
+        json.len() <= limits.max_input_bytes(),
+        "{} bytes",
+        json.len()
+    );
+    assert_eq!(
+        OwnedPath::from_canonical_json(&json, &limits).unwrap(),
+        full
+    );
+
+    // Short values keep their plain decimal text (hashes of ordinary paths are unchanged).
+    let plain = path(
+        FillRule::NonZero,
+        vec![PathElement::MoveTo(p(1.0e-7, 123_456_789.123))],
+    );
+    assert_eq!(
+        plain.to_canonical_json(),
+        r#"{"fill_rule":"nonzero","elements":[["M",0.0000001,123456789.123]]}"#
+    );
+
+    // Property: random valid paths of every element kind (subnormals through 1e9, both signs)
+    // round-trip bit-exactly within the budget of exactly their own element count.
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    for case in 0_u32..400 {
+        let mut elements = Vec::new();
+        for _ in 0..=rng.next() % 4 {
+            elements.push(PathElement::MoveTo(rng.point()));
+            for _ in 0..=rng.next() % 3 {
+                elements.push(match rng.next() % 3 {
+                    0 => PathElement::LineTo(rng.point()),
+                    1 => PathElement::QuadTo(rng.point(), rng.point()),
+                    _ => PathElement::CubicTo(rng.point(), rng.point(), rng.point()),
+                });
+            }
+            if rng.next().is_multiple_of(2) {
+                elements.push(PathElement::Close);
+            }
+        }
+        let rule = if case.is_multiple_of(2) {
+            FillRule::NonZero
+        } else {
+            FillRule::EvenOdd
+        };
+        let candidate = path(rule, elements);
+        let limits = PathLimits {
+            max_elements: candidate.elements.len(),
+            ..PathLimits::default()
+        };
+        candidate.validate(&limits).unwrap();
+        let json = candidate.to_canonical_json();
+        assert!(
+            json.len() <= limits.max_input_bytes(),
+            "case {case}: {} bytes > {}",
+            json.len(),
+            limits.max_input_bytes()
+        );
+        let back = OwnedPath::from_canonical_json(&json, &limits)
+            .unwrap_or_else(|error| panic!("case {case}: {error:?} for {json}"));
+        assert_eq!(back, candidate, "case {case}");
+        assert_eq!(
+            back.to_canonical_json(),
+            json,
+            "case {case}: canonical text"
+        );
+        assert_eq!(back.content_sha256(), candidate.content_sha256());
+    }
+}
+
+#[test]
+fn is_closed_agrees_with_require_closed_validation() {
+    // R3 finding: [MoveTo] and [M, L, Z, M] reported closed while validate(require_closed)
+    // refused them. One definition: closed == non-empty and the strict state machine accepts.
+    let (m, l, z) = (
+        PathElement::MoveTo(p(0.0, 0.0)),
+        PathElement::LineTo(p(1.0, 1.0)),
+        PathElement::Close,
+    );
+    for lone in [vec![m], vec![m, l, z, m], vec![m, z], vec![m, l], vec![]] {
+        assert!(
+            !path(FillRule::NonZero, lone.clone()).is_closed(),
+            "{lone:?}"
+        );
+    }
+    assert!(path(FillRule::NonZero, vec![m, l, z]).is_closed());
+    assert!(path(FillRule::NonZero, vec![m, l, z, m, l, z]).is_closed());
+
+    // Exhaustive over every verb sequence up to length 7: is_closed() equals the strict verdict.
+    let strict = PathLimits {
+        require_closed: true,
+        ..PathLimits::default()
+    };
+    let verbs = [
+        m,
+        l,
+        PathElement::QuadTo(p(1.0, 0.0), p(2.0, 0.0)),
+        PathElement::CubicTo(p(1.0, 0.0), p(2.0, 0.0), p(3.0, 0.0)),
+        z,
+    ];
+    let mut checked = 0_usize;
+    for len in 0..=7_u32 {
+        for code in 0..(verbs.len() as u32).pow(len) {
+            let elements: Vec<_> = (0..len)
+                .map(|i| verbs[(code / (verbs.len() as u32).pow(i)) as usize % verbs.len()])
+                .collect();
+            let candidate = path(FillRule::NonZero, elements);
+            assert_eq!(
+                candidate.is_closed(),
+                !candidate.elements.is_empty() && candidate.validate(&strict).is_ok(),
+                "{:?}",
+                candidate.elements
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 97_656);
+}
