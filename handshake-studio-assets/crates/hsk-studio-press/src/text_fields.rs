@@ -30,8 +30,14 @@
 //! every file specification (`/AF`, file attachment `/FS`, the `/Names /EmbeddedFiles` tree whose
 //! keys are renamed to opaque names), and `/Metadata` streams of pages, images and forms (a match
 //! drops the stream). Matching ignores case, white-space runs and zero-width characters.
-//! Not covered (the payload proof still reports them as hits): other name trees, structure elements
-//! that are direct dictionaries without `/P`, `SubmitForm /Fields`, embedded file CONTENT.
+//! Slice 6 adds the keys of every other `/Names` tree (JavaScript, AP, Pages, Templates, IDS, URLS,
+//! AlternatePresentations, Renditions, ...; renamed like the embedded-file names; the VALUES, e.g.
+//! script code, are not text slots), the strings of `SubmitForm`/`ResetForm` `/Fields`, and embedded
+//! file CONTENT (an attachment whose decoded bytes hold a match loses its `/EF`/`/RF` entries; the
+//! stream leaves the file when nothing else uses it). Test
+//! `name_trees_submit_fields_and_embedded_content_redacted`.
+//! Not covered (the payload proof still reports them as hits): structure elements that are direct
+//! dictionaries without `/P`, field `/TM` and `/MK` captions, script code in name-tree values.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
@@ -87,6 +93,11 @@ pub struct TextFieldPolicy {
     /// File targets: `GoToR`/`GoToE`/`Launch`/`ImportData`/`SubmitForm` actions, file
     /// specifications (names and descriptions) and embedded-file names.
     pub file_targets: bool,
+    /// Keys of the `/Names` trees other than `/Dests` and `/EmbeddedFiles` (renamed to opaque names).
+    pub name_trees: bool,
+    /// Embedded file content: an attachment whose decoded bytes hold a match loses its `/EF`
+    /// (and `/RF`); an attachment that cannot be decoded is reported `Unverifiable`.
+    pub embedded_content: bool,
     pub mode: TextMode,
     /// Simple case folding (one lowercase char per char). Default true (fail closed).
     pub case_insensitive: bool,
@@ -107,6 +118,8 @@ impl Default for TextFieldPolicy {
             structure_text: true,
             info_fields: true,
             file_targets: true,
+            name_trees: true,
+            embedded_content: true,
             mode: TextMode::Replace("[REDACTED]".into()),
             case_insensitive: true,
             whole_token: false,
@@ -153,6 +166,12 @@ pub enum TextRole {
     LaunchWin,
     /// A key of the `/Names /EmbeddedFiles` tree.
     EmbeddedFileName,
+    /// A key of a `/Names` tree other than `/Dests` and `/EmbeddedFiles`.
+    NameTreeKey,
+    /// A string of the `/Fields` array of a `SubmitForm` or `ResetForm` action.
+    ActionFields,
+    /// The decoded bytes of an embedded file (`/EF`).
+    EmbeddedFileContent,
 }
 
 impl TextRole {
@@ -181,6 +200,9 @@ impl TextRole {
             Self::RemoteDest => "D",
             Self::LaunchWin => "Win",
             Self::EmbeddedFileName => "EmbeddedFiles",
+            Self::NameTreeKey => "Names",
+            Self::ActionFields => "Fields",
+            Self::EmbeddedFileContent => "EF",
         }
     }
 }
@@ -908,7 +930,61 @@ impl Ctx<'_> {
             let s = Slot::new(key, role, SlotKind::Plain, enabled);
             changed |= matches!(self.slot(objs, d, &s, loc, out)?, Applied::Edited);
         }
+        changed |= self.embedded_content(objs, d, loc, out)?;
         Ok(changed)
+    }
+
+    /// Matches in the decoded bytes of an embedded file, read as UTF-8 (byte-order marks decide) and
+    /// as Latin-1, in overlapping windows so a large attachment does not multiply its size in memory.
+    fn embedded_matches(&self, data: &[u8]) -> u32 {
+        const WINDOW: usize = 1 << 20;
+        const OVERLAP: usize = 4 * MAX_NEEDLE_CHARS;
+        let (mut total, mut start) = (0u32, 0usize);
+        while start < data.len() {
+            let end = start.saturating_add(WINDOW).saturating_add(OVERLAP).min(data.len());
+            let window = data.get(start..end).unwrap_or(&[]);
+            let utf8 = self.matcher.find(&decode_rich(window)).len();
+            let latin1: Vec<char> = window.iter().map(|b| char::from(*b)).collect();
+            total = total.saturating_add(count_u32(utf8.max(self.matcher.find(&latin1).len())));
+            start = start.saturating_add(WINDOW);
+        }
+        total
+    }
+
+    /// Embedded file streams (`/EF`) of a file specification. An attachment is not text we can edit:
+    /// when its decoded bytes hold a match the `/EF` and `/RF` entries go (the stream leaves the file
+    /// when nothing else uses it); one that cannot be decoded is `Unverifiable` and stays.
+    fn embedded_content(&mut self, objs: &Objs, d: &mut Dict, loc: Loc, out: &mut Vec<TextFieldOutcome>) -> Result<bool> {
+        let (mut matches, mut unreadable) = (0u32, false);
+        {
+            let Some(efd) = d.get("EF").map(|e| res(objs, e)).and_then(Object::as_dict) else { return Ok(false) };
+            for (_, v) in &efd.entries {
+                if let Object::Stream(st) = res(objs, v) {
+                    match self.stream_bytes(st)? {
+                        None => unreadable = true,
+                        Some(data) => matches = matches.saturating_add(self.embedded_matches(&data)),
+                    }
+                }
+            }
+        }
+        if matches == 0 && !unreadable {
+            return Ok(false);
+        }
+        let mut push = |kind| out.push(TextFieldOutcome { object: loc.holder, direct: loc.direct, role: TextRole::EmbeddedFileContent, kind, matches, unreadable });
+        if !self.policy.embedded_content {
+            if matches > 0 {
+                push(TextOutcomeKind::KeptByPolicy);
+            }
+            return Ok(false);
+        }
+        if matches == 0 {
+            push(TextOutcomeKind::Unverifiable);
+            return Ok(false);
+        }
+        d.remove("EF");
+        d.remove("RF");
+        push(TextOutcomeKind::Dropped);
+        Ok(true)
     }
 
     /// Slice 4/5 sweep over one reachable dictionary: destination references, URI actions, the
@@ -949,6 +1025,10 @@ impl Ctx<'_> {
         // a file attachment annotation or `/AF`.
         if typed_filespec(d) || (!loc.direct && st.fs.contains(&loc.holder.num)) {
             changed |= self.filespec(objs, d, loc, out)?;
+        }
+        if matches!(s_name.as_deref(), Some(b"SubmitForm" | b"ResetForm")) {
+            let s = Slot::new("Fields", TextRole::ActionFields, SlotKind::Multi, p.form_labels);
+            changed |= matches!(self.slot(objs, d, &s, loc, out)?, Applied::Edited);
         }
         let remote = matches!(s_name.as_deref(), Some(b"GoToR" | b"GoToE" | b"Launch" | b"ImportData" | b"SubmitForm"));
         if remote {
@@ -1113,8 +1193,8 @@ fn read_legacy_dests(objs: &Objs, root_num: u32) -> Option<(u32, NamePairs)> {
 }
 
 /// One name tree under the catalog `/Names` dictionary.
-struct TreeSpec {
-    key: &'static str,
+struct TreeSpec<'a> {
+    key: &'a str,
     role: TextRole,
     enabled: bool,
 }
@@ -1124,7 +1204,7 @@ fn tree_pass(
     ctx: &Ctx,
     staged: &mut Objs,
     root_num: u32,
-    spec: &TreeSpec,
+    spec: &TreeSpec<'_>,
     tree: Option<(u32, NamePairs)>,
     rn: &mut DestRename,
     out: &mut Vec<TextFieldOutcome>,
@@ -1166,7 +1246,28 @@ fn redact_name_trees(ctx: &Ctx, staged: &mut Objs, root_num: u32, rn: &mut DestR
     let dests = read_name_tree(staged, root_num, "Dests", max)?;
     let files = read_name_tree(staged, root_num, "EmbeddedFiles", max)?;
     let legacy = read_legacy_dests(staged, root_num);
-    for (_, pairs) in dests.iter().chain(files.iter()) {
+    // Every other tree under the catalog /Names dictionary (JavaScript, AP, Pages, Templates, IDS, URLS, ...).
+    let other_keys: Vec<String> = staged
+        .get(&root_num)
+        .and_then(|e| e.obj.as_dict())
+        .and_then(|c| c.get("Names"))
+        .map(|n| res(staged, n))
+        .and_then(Object::as_dict)
+        .map(|n| {
+            n.entries
+                .iter()
+                .filter_map(|(k, _)| std::str::from_utf8(k).ok())
+                .filter(|k| !matches!(*k, "Dests" | "EmbeddedFiles"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut others: Vec<(String, Option<(u32, NamePairs)>)> = Vec::new();
+    for key in other_keys {
+        let tree = read_name_tree(staged, root_num, &key, max)?;
+        others.push((key, tree));
+    }
+    for (_, pairs) in dests.iter().chain(files.iter()).chain(others.iter().filter_map(|(_, t)| t.as_ref())) {
         rn.taken.extend(pairs.iter().map(|(k, _)| k.clone()));
     }
     if let Some((_, entries)) = &legacy {
@@ -1183,6 +1284,9 @@ fn redact_name_trees(ctx: &Ctx, staged: &mut Objs, root_num: u32, rn: &mut DestR
         rn,
         out,
     );
+    for (key, tree) in others {
+        tree_pass(ctx, staged, root_num, &TreeSpec { key: &key, role: TextRole::NameTreeKey, enabled: ctx.policy.name_trees }, tree, rn, out);
+    }
     if let Some((holder, entries)) = legacy {
         let count = |bytes: &[u8]| count_u32(ctx.matcher.find(&name_text(bytes, true)).len());
         let hits = entries.iter().fold(0u32, |a, (k, _)| a.saturating_add(count(k)));
@@ -1351,7 +1455,7 @@ impl PdfDoc {
             let mut stack: Vec<(u32, usize)> = roots.iter().filter_map(Object::as_ref).map(|r| (r.num, 1)).collect();
             let mut seen = BTreeSet::new();
             while let Some((n, depth)) = stack.pop() {
-                if depth > self.limits.max_depth {
+                if depth > self.limits.depth_cap() {
                     return Err(PressError::InputLimit("depth"));
                 }
                 if !seen.insert(n) {

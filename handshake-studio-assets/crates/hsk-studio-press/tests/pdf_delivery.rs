@@ -2343,3 +2343,77 @@ fn stray_streams_and_hidden_payloads_are_not_kept_text() {
     assert_eq!(raw, vec![edge - 9], "{:?}", proof.hits);
     assert_eq!(find(&pdf, needle), Some(edge - 9));
 }
+
+// ------------------------------------------------- redaction gaps (slice 6)
+
+#[test]
+fn name_trees_submit_fields_and_embedded_content_redacted() {
+    let catalog = "/Names << /JavaScript 30 0 R /Templates << /Names [(Budget Plan template) 33 0 R (other template) 34 0 R] >> \
+                   /AP << /Kids [32 0 R] >> /EmbeddedFiles 40 0 R >> /OpenAction 35 0 R";
+    let build_doc = |attachment: Vec<u8>| {
+        let mut objs = minimal_objs(catalog, "20 0 R");
+        objs.extend([
+            (20, b"<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /ResetForm /Fields [(budget plan x)] >> >>".to_vec()),
+            (30, b"<< /Names [(Budget Plan script) 31 0 R (keep script) 36 0 R] >>".to_vec()),
+            (31, b"<< /S /JavaScript /JS (var a = 1;) >>".to_vec()),
+            (32, b"<< /Limits [(a) (z)] /Names [(Budget Plan ap) 37 0 R] >>".to_vec()),
+            (33, b"<< /Note (t) >>".to_vec()),
+            (34, b"<< /Note (u) >>".to_vec()),
+            (35, b"<< /S /SubmitForm /F (http://example.org/in) /Fields [(Budget Plan total) (other) 38 0 R] /Flags 4 >>".to_vec()),
+            (36, b"<< /S /JavaScript /JS (var b = 2;) >>".to_vec()),
+            (37, b"<< /Note (v) >>".to_vec()),
+            (38, b"<< /FT /Tx /T (kept) >>".to_vec()),
+            (40, b"<< /Names [(notes.txt) 41 0 R (clean.txt) 44 0 R] >>".to_vec()),
+            (41, b"<< /Type /Filespec /F (notes.txt) /EF << /F 42 0 R >> >>".to_vec()),
+            (
+                42,
+                stream_body(
+                    "/Type /EmbeddedFile /Filter /FlateDecode",
+                    &miniz_oxide::deflate::compress_to_vec_zlib(b"Confidential: the BUDGET PLAN for 2027", 6),
+                ),
+            ),
+            (44, b"<< /Type /Filespec /F (clean.txt) /EF << /F 45 0 R >> >>".to_vec()),
+            (45, attachment),
+        ]);
+        build(&objs, "", b"")
+    };
+    let needle = ["Budget Plan".to_string()];
+    use TextOutcomeKind::{Dropped, KeptByPolicy, Replaced, Unverifiable};
+    let plain = build_doc(stream_body("/Type /EmbeddedFile", b"nothing here"));
+
+    let mut doc = open(&plain);
+    let out = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(rows(&out.report, TextRole::NameTreeKey), vec![(1, false, Replaced, 1), (1, false, Replaced, 1), (30, false, Replaced, 1)]);
+    assert_eq!(rows(&out.report, TextRole::ActionFields), vec![(20, true, Replaced, 1), (35, false, Replaced, 1)]);
+    assert_eq!(rows(&out.report, TextRole::EmbeddedFileContent), vec![(41, false, Dropped, 1)]);
+    assert!(out.report.complete && out.is_proven(), "{:?} {:?}", out.report, out.proof);
+    assert!(find(&out.bytes.to_ascii_lowercase(), b"budget plan").is_none());
+    assert!(independent_streams(&out.bytes).iter().all(|s| find(&s.to_ascii_lowercase(), b"budget plan").is_none()));
+    // The clean attachment, the unrelated tree keys and the reference inside /Fields stay; the
+    // matching attachment left the file; names read as opaque keys and marked strings.
+    assert!(find(&out.bytes, b"nothing here").is_some() && find(&out.bytes, b"Confidential").is_none());
+    let strings = all_strings(&out.bytes);
+    for expect in ["keep script", "other template", "[redacted] total", "other", "[redacted] x", "clean.txt"] {
+        assert!(strings.iter().any(|s| s == expect), "missing {expect:?} in {strings:?}");
+    }
+    assert!(strings.iter().filter(|s| s.starts_with("hskrd")).count() >= 3, "{strings:?}");
+    let again = open(&out.bytes);
+    assert_eq!(again.inspect().page_count, 1);
+
+    // Every class has its policy flag; a disabled class is reported kept and the text stays.
+    let off = TextFieldPolicy { name_trees: false, embedded_content: false, form_labels: false, ..TextFieldPolicy::default() };
+    let mut doc = open(&plain);
+    let kept = redact_text_fields_and_save(&mut doc, &needle, &off, &token()).unwrap();
+    assert_eq!((kept.report.kept_by_policy, kept.report.complete), (6, false));
+    assert!(rows(&kept.report, TextRole::NameTreeKey).iter().all(|r| r.2 == KeptByPolicy));
+    assert_eq!(rows(&kept.report, TextRole::EmbeddedFileContent), vec![(41, false, KeptByPolicy, 1)]);
+    assert!(!kept.is_proven() && leaks(&kept.bytes, "budget plan"));
+
+    // An attachment that cannot be decoded cannot be judged: reported Unverifiable and kept.
+    let undecodable = build_doc(stream_body("/Type /EmbeddedFile /Filter /JBIG2Decode", b"xx"));
+    let mut doc = open(&undecodable);
+    let unsure = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(rows(&unsure.report, TextRole::EmbeddedFileContent), vec![(41, false, Dropped, 1), (44, false, Unverifiable, 0)]);
+    assert_eq!((unsure.report.unverifiable, unsure.report.complete), (1, false));
+    assert!(!unsure.is_proven());
+}
