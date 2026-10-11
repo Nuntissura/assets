@@ -2,7 +2,9 @@
 //! shortest round-trip decimal form (never exponent notation) and attributes have a fixed order.
 //! Paint, stroke and appearance rows are read from Folio design records: each vector layer's
 //! `StudioNodeDesign.style_refs[LAYER_STYLE_REF]` names a `PAINT` style, validated by Folio before
-//! it is read.
+//! it is read. `export_proposal` also writes the Folio vector records (`records`): patterns,
+//! clips and masks become `<pattern>`, `<clipPath>` and `<mask>` definitions in `<defs>`, and the
+//! clip/mask attachment of a layer becomes its `clip-path` and `mask` attributes.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{Result, VectorError};
 use crate::model::*;
@@ -10,12 +12,16 @@ use hsk_studio_accord::{CancellationToken, Length as AccordLength, Unit};
 use hsk_studio_folio::{
     BLEND_NORMAL, BLEND_PASS_THROUGH, Budget, GeometryUnit, GradientInterpolation, GradientSpread,
     Length as FolioLength, Parent, Payload, ProfileBinding, Resolution, StrokeAlign, StrokeCap,
-    StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords, StudioGradient,
-    StudioGradientGeometry, StudioLayer, StudioNodeDesign, StudioPaint, StudioPaintStyle,
-    StudioStrokeStyle, Unresolved, validate_paint_style,
+    StrokeJoin, StudioAppearanceRow, StudioColor, StudioDesignRecords, StudioDocument,
+    StudioGradient, StudioGradientGeometry, StudioLayer, StudioMaskAttachment, StudioNodeDesign,
+    StudioPaint, StudioPaintStyle, StudioPattern, StudioStrokeStyle, StudioVectorClip,
+    StudioVectorMask, StudioVectorRecords, Unresolved, validate_paint_style,
+    validate_vector_records,
 };
 use hsk_studio_nib::Winding;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+mod records;
 
 fn num(v: f64) -> String {
     if v == 0.0 { "0".into() } else { format!("{v}") }
@@ -255,9 +261,24 @@ struct Defs {
     working_assigned: bool,
     ids: BTreeMap<String, String>,
     text: String,
+    /// Ids already taken by layer names (written as `id`) and by earlier definitions.
+    taken: BTreeSet<String>,
+    counters: BTreeMap<&'static str, usize>,
 }
 
 impl Defs {
+    /// A definition id `<prefix><n>` that no layer name or earlier definition uses.
+    fn fresh(&mut self, prefix: &'static str) -> String {
+        loop {
+            let n = self.counters.entry(prefix).or_insert(0);
+            *n = n.saturating_add(1);
+            let id = format!("{prefix}{n}");
+            if self.taken.insert(id.clone()) {
+                return id;
+            }
+        }
+    }
+
     /// Paint attribute value of one paint (the row opacity is a separate attribute).
     fn paint(&mut self, paint: &StudioPaint, label: &str, loss: &mut Vec<LossEntry>) -> String {
         match paint {
@@ -296,7 +317,7 @@ impl Defs {
                 if let Some(id) = self.ids.get(&key) {
                     return format!("url(#{id})");
                 }
-                let id = format!("g{}", self.ids.len().saturating_add(1));
+                let id = self.fresh("g");
                 self.write_gradient(&id, gradient, label, loss);
                 self.ids.insert(key, id.clone());
                 format!("url(#{id})")
@@ -387,31 +408,39 @@ enum Row<'a> {
     Fill {
         paint: &'a StudioPaint,
         opacity: f64,
+        /// Id of the `<pattern>` this row paints with; `paint` is then its fallback colour.
+        pattern: Option<String>,
     },
     Stroke {
         paint: &'a StudioPaint,
         stroke: &'a StudioStrokeStyle,
         opacity: f64,
+        pattern: Option<String>,
     },
 }
 
-type FillRow<'a> = Option<(&'a StudioPaint, f64)>;
-type StrokeRow<'a> = Option<(&'a StudioPaint, &'a StudioStrokeStyle, f64)>;
+type FillRow<'a> = Option<(&'a StudioPaint, f64, Option<&'a str>)>;
+type StrokeRow<'a> = Option<(&'a StudioPaint, &'a StudioStrokeStyle, f64, Option<&'a str>)>;
 
-fn fill_of<'r>(row: &Row<'r>) -> FillRow<'r> {
+fn fill_of<'r>(row: &'r Row<'_>) -> FillRow<'r> {
     match row {
-        Row::Fill { paint, opacity } => Some((*paint, *opacity)),
+        Row::Fill {
+            paint,
+            opacity,
+            pattern,
+        } => Some((*paint, *opacity, pattern.as_deref())),
         Row::Stroke { .. } => None,
     }
 }
 
-fn stroke_of<'r>(row: &Row<'r>) -> StrokeRow<'r> {
+fn stroke_of<'r>(row: &'r Row<'_>) -> StrokeRow<'r> {
     match row {
         Row::Stroke {
             paint,
             stroke,
             opacity,
-        } => Some((*paint, *stroke, *opacity)),
+            pattern,
+        } => Some((*paint, *stroke, *opacity, pattern.as_deref())),
         Row::Fill { .. } => None,
     }
 }
@@ -425,6 +454,25 @@ struct Emit<'e> {
     label: &'e str,
 }
 
+/// The Folio vector records of the exported document, indexed for the writer.
+struct Recs<'a> {
+    clips: BTreeMap<&'a str, &'a StudioVectorClip>,
+    masks: BTreeMap<&'a str, &'a StudioVectorMask>,
+    patterns: BTreeMap<&'a str, &'a StudioPattern>,
+    /// Pattern binding by `(style id, row)`.
+    paints: BTreeMap<(&'a str, u32), &'a hsk_studio_folio::StudioPatternPaint>,
+    attach: BTreeMap<&'a str, &'a StudioMaskAttachment>,
+    /// Points per document unit (matrix translations are in the document unit).
+    unit_pt: f64,
+}
+
+/// A definition whose element is written after the body, in `<defs>`.
+enum Pending<'a> {
+    Clip(&'a StudioVectorClip, String),
+    Mask(&'a StudioVectorMask, String),
+    Pattern(&'a StudioPattern, String, [f64; 6]),
+}
+
 struct Writer<'a> {
     k: f64,
     /// Pixels per inch of the export, for pixel-unit Folio lengths.
@@ -435,9 +483,42 @@ struct Writer<'a> {
     checked: BTreeSet<&'a str>,
     defs: Defs,
     loss: Vec<LossEntry>,
+    recs: Option<Recs<'a>>,
+    /// Definitions referenced so far and not yet written (first referenced, first written).
+    pending: VecDeque<Pending<'a>>,
+    clip_ids: BTreeMap<&'a str, String>,
+    /// `None`: the mask cannot be written (reported once), its layers stay unmasked.
+    mask_ids: BTreeMap<&'a str, Option<String>>,
+    pattern_ids: BTreeMap<(&'a str, [u64; 6]), String>,
+    /// Layer names already written as `id`; definition content skips a name used before.
+    emitted: BTreeSet<String>,
+    in_def: bool,
 }
 
 impl<'a> Writer<'a> {
+    /// A fill or stroke paint value. A row bound to a pattern writes `url(#pattern)` followed by
+    /// its own solid colour as the SVG fallback.
+    fn paint_value(&mut self, paint: &StudioPaint, pattern: Option<&str>, label: &str) -> String {
+        let Some(id) = pattern else {
+            return self.defs.paint(paint, label, &mut self.loss);
+        };
+        match paint {
+            StudioPaint::Solid { colour } => {
+                note_profiles([colour], self.defs.working_assigned, label, &mut self.loss);
+                format!("url(#{id}) {}", hex(colour, label, &mut self.loss))
+            }
+            StudioPaint::Gradient { .. } => {
+                note(
+                    &mut self.loss,
+                    label,
+                    LossKind::Ignored,
+                    "pattern_stand_in_gradient_not_exported",
+                );
+                format!("url(#{id})")
+            }
+        }
+    }
+
     /// Paint attributes of one element: an optional fill row, an optional stroke row.
     fn attrs(
         &mut self,
@@ -449,8 +530,8 @@ impl<'a> Writer<'a> {
         let mut out = String::new();
         match fill {
             None => out.push_str(" fill=\"none\""),
-            Some((paint, opacity)) => {
-                let value = self.defs.paint(paint, label, &mut self.loss);
+            Some((paint, opacity, pattern)) => {
+                let value = self.paint_value(paint, pattern, label);
                 out.push_str(&format!(" fill=\"{value}\""));
                 if opacity < 100.0 {
                     out.push_str(&format!(" fill-opacity=\"{}\"", num(opacity / 100.0)));
@@ -460,8 +541,8 @@ impl<'a> Writer<'a> {
                 }
             }
         }
-        if let Some((paint, st, opacity)) = stroke {
-            let value = self.defs.paint(paint, label, &mut self.loss);
+        if let Some((paint, st, opacity, pattern)) = stroke {
+            let value = self.paint_value(paint, pattern, label);
             let width = to_pt(&st.weight, self.ppi)?;
             out.push_str(&format!(
                 " stroke=\"{value}\" stroke-width=\"{}\"",
@@ -577,7 +658,7 @@ impl<'a> Writer<'a> {
         &mut self,
         out: &mut String,
         depth: usize,
-        group: &[(&VectorPath, Vec<Seg>)],
+        group: &[(&VectorPath, &[Seg])],
         extra: &str,
         label: &str,
     ) -> Result<()> {
@@ -601,7 +682,7 @@ impl<'a> Writer<'a> {
         let mut rows: Vec<Row> = Vec::new();
         let mut dropped_fill = false;
         if let Some(style) = style {
-            for row in &style.rows {
+            for (index, row) in style.rows.iter().enumerate() {
                 let (visible, blend_mode) = match row {
                     StudioAppearanceRow::Fill {
                         visible,
@@ -633,9 +714,11 @@ impl<'a> Writer<'a> {
                 }
                 match row {
                     StudioAppearanceRow::Fill { paint, opacity, .. } if filled => {
+                        let pattern = self.ref_pattern(&style.style_id, index, label);
                         rows.push(Row::Fill {
                             paint,
                             opacity: *opacity,
+                            pattern,
                         });
                     }
                     StudioAppearanceRow::Fill { .. } => dropped_fill = true,
@@ -644,11 +727,15 @@ impl<'a> Writer<'a> {
                         stroke,
                         opacity,
                         ..
-                    } => rows.push(Row::Stroke {
-                        paint,
-                        stroke,
-                        opacity: *opacity,
-                    }),
+                    } => {
+                        let pattern = self.ref_pattern(&style.style_id, index, label);
+                        rows.push(Row::Stroke {
+                            paint,
+                            stroke,
+                            opacity: *opacity,
+                            pattern,
+                        });
+                    }
                 }
             }
         } else if filled {
@@ -656,6 +743,7 @@ impl<'a> Writer<'a> {
             rows.push(Row::Fill {
                 paint: &default_fill,
                 opacity: 100.0,
+                pattern: None,
             });
         }
         if dropped_fill {
@@ -783,15 +871,70 @@ fn writer(
             working_assigned,
             ids: BTreeMap::new(),
             text: String::new(),
+            taken: BTreeSet::new(),
+            counters: BTreeMap::new(),
         },
         loss: Vec::new(),
+        recs: None,
+        pending: VecDeque::new(),
+        clip_ids: BTreeMap::new(),
+        mask_ids: BTreeMap::new(),
+        pattern_ids: BTreeMap::new(),
+        emitted: BTreeSet::new(),
+        in_def: false,
+    }
+}
+
+/// The layers of an exported document with the geometry of their paths, for the writer.
+struct Tree<'a> {
+    doc: &'a StudioDocument,
+    paths: &'a [VectorPath],
+    segs: Vec<Vec<Seg>>,
+    /// Indices into `paths` per layer id.
+    by_layer: BTreeMap<&'a str, Vec<usize>>,
+    /// Indices into `doc.layers` per parent layer id (`None`: artboard or root), document order.
+    children: BTreeMap<Option<&'a str>, Vec<usize>>,
+    /// Layer id -> index into `doc.layers`.
+    index: BTreeMap<&'a str, usize>,
+}
+
+impl<'a> Tree<'a> {
+    fn new(doc: &'a StudioDocument, paths: &'a [VectorPath]) -> Result<Self> {
+        let segs = paths.iter().map(convert).collect::<Result<Vec<_>>>()?;
+        let mut by_layer: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for (i, p) in paths.iter().enumerate() {
+            by_layer.entry(p.layer_id.as_str()).or_default().push(i);
+        }
+        let mut children: BTreeMap<Option<&str>, Vec<usize>> = BTreeMap::new();
+        let mut index = BTreeMap::new();
+        for (i, layer) in doc.layers.iter().enumerate() {
+            let parent = match &layer.parent {
+                Parent::Node(n) if n.node_kind == hsk_studio_folio::NodeKind::Layer => {
+                    Some(n.node_id.as_str())
+                }
+                _ => None,
+            };
+            children.entry(parent).or_default().push(i);
+            index.insert(layer.layer_id.as_str(), i);
+        }
+        Ok(Self {
+            doc,
+            paths,
+            segs,
+            by_layer,
+            children,
+            index,
+        })
     }
 }
 
 /// Flat export: one element per layer (consecutive paths sharing a `layer_id` form one compound
 /// `d`), absolute `M`/`L`/`C`/`Z` data, gradients in `<defs>`, `viewBox="0 0 W H"` in px. Paint,
 /// stroke and appearance rows come from the Folio `design` records. Group structure, names,
-/// visibility and element opacity live in the Folio document; use [`export_proposal`] to keep them.
+/// visibility and element opacity live in the Folio document; use [`export_proposal`] to keep
+/// them. This function has no document and no vector records: the paths of a proposal that holds
+/// patterns, clips or masks include the hidden geometry of their source layers, which a flat
+/// export draws as ordinary paths; export such a proposal with [`export_proposal`].
 pub fn export_svg(
     paths: &[VectorPath],
     design: &StudioDesignRecords,
@@ -810,13 +953,13 @@ pub fn export_svg_with_loss(
     let (k, open) = header(opts, extent(converted.iter()))?;
     let mut w = writer(k, opts.pixels_per_inch, design, false);
     let mut body = String::new();
-    let mut items = paths.iter().zip(converted).peekable();
+    let mut items = paths.iter().zip(converted.iter()).peekable();
     let mut ordinal = 0usize;
     while let Some(first) = items.next() {
         let layer = &first.0.layer_id;
-        let mut group = vec![first];
+        let mut group: Vec<(&VectorPath, &[Seg])> = vec![(first.0, first.1.as_slice())];
         while let Some(next) = items.next_if(|(p, _)| &p.layer_id == layer) {
-            group.push(next);
+            group.push((next.0, next.1.as_slice()));
         }
         ordinal = ordinal.saturating_add(1);
         w.layer_paths(&mut body, 1, &group, "", &format!("/layer[{ordinal}]"))?;
@@ -834,19 +977,41 @@ pub fn export_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> Resul
 }
 
 /// [`export_proposal`] plus the losses the export took.
+///
+/// The vector records of the proposal are validated by Folio first (a record set that does not
+/// match the document, a dangling reference or a reference loop is `VectorError::Folio`). Each
+/// pattern, clip and mask a layer or paint row uses is written once to `<defs>` as
+/// `<pattern>`, `<clipPath>` and `<mask>` with `userSpaceOnUse` units in the export's pixel
+/// space; the hidden source layers of those records are not written as elements of their own.
 pub fn export_proposal_with_loss(
     proposal: &VectorProposal,
     opts: &ExportOptions,
 ) -> Result<SvgExport> {
     let doc = proposal.snapshot.document();
-    let mut by_layer: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-    for (i, p) in proposal.paths.iter().enumerate() {
-        by_layer.entry(p.layer_id.as_str()).or_default().push(i);
+    let records = &proposal.vector_records;
+    let record_count = records
+        .patterns
+        .len()
+        .saturating_add(records.pattern_paints.len())
+        .saturating_add(records.clips.len())
+        .saturating_add(records.masks.len())
+        .saturating_add(records.attachments.len());
+    if record_count > 0 {
+        let default = Budget::default();
+        let budget = Budget {
+            nodes: record_count.saturating_add(8).max(default.nodes),
+            ..default
+        };
+        validate_vector_records(
+            records,
+            doc,
+            Some(&proposal.design),
+            budget,
+            &CancellationToken::default(),
+        )
+        .map_err(|d| VectorError::Folio(d.code))?;
     }
-    let mut converted: Vec<Option<Vec<Seg>>> = Vec::with_capacity(proposal.paths.len());
-    for p in &proposal.paths {
-        converted.push(Some(convert(p)?));
-    }
+    let tree = Tree::new(doc, &proposal.paths)?;
     let artboard_pt = doc.artboards.first().and_then(|a| {
         let pt = |l: &hsk_studio_folio::Length| (l.unit == GeometryUnit::Pt).then_some(l.value);
         match (pt(&a.bounds.width), pt(&a.bounds.height)) {
@@ -858,88 +1023,23 @@ pub fn export_proposal_with_loss(
         artboard_pt: opts.artboard_pt.or(artboard_pt),
         ..*opts
     };
-    let (k, open) = header(&opts, extent(converted.iter().flatten()))?;
+    let (k, open) = header(&opts, extent(tree.segs.iter()))?;
     let working_assigned = matches!(doc.working_space_rgb, ProfileBinding::Assigned(_));
     let mut w = writer(k, opts.pixels_per_inch, &proposal.design, working_assigned);
+    w.defs.taken = doc.layers.iter().map(|l| l.name.clone()).collect();
+    let mut skip = BTreeSet::new();
+    if record_count > 0 {
+        let unit = FolioLength {
+            value: 1.0,
+            unit: doc.geometry_unit,
+        };
+        w.recs = Some(records::recs_of(records, to_pt(&unit, opts.pixels_per_inch)?));
+        skip = records::definition_roots(&tree, records);
+    }
     let mut body = String::new();
-    // Children per parent layer id (None = artboard or root), in document order.
-    let mut children: BTreeMap<Option<&str>, Vec<usize>> = BTreeMap::new();
-    for (i, layer) in doc.layers.iter().enumerate() {
-        let parent = match &layer.parent {
-            Parent::Node(n) if n.node_kind == hsk_studio_folio::NodeKind::Layer => {
-                Some(n.node_id.as_str())
-            }
-            _ => None,
-        };
-        children.entry(parent).or_default().push(i);
-    }
-    // Iterative walk (no recursion): (layer index, entering).
-    let mut stack: Vec<(usize, bool)> = children
-        .get(&None)
-        .into_iter()
-        .flatten()
-        .rev()
-        .map(|&i| (i, true))
-        .collect();
-    let mut depth = 1usize;
-    while let Some((i, entering)) = stack.pop() {
-        let layer = &doc.layers[i];
-        if !entering {
-            depth = depth.saturating_sub(1);
-            body.push_str(&"  ".repeat(depth));
-            body.push_str("</g>\n");
-            continue;
-        }
-        let tag = if matches!(layer.payload, Payload::Group) {
-            "g"
-        } else {
-            "path"
-        };
-        let mut extra = String::new();
-        if layer.name != tag && !layer.name.is_empty() {
-            extra.push_str(&format!(" id=\"{}\"", attr_text(&layer.name)));
-        }
-        if let Some(a) = &layer.appearance
-            && a.opacity < 100.0
-        {
-            extra.push_str(&format!(" opacity=\"{}\"", num(a.opacity / 100.0)));
-        }
-        if !layer.visible {
-            extra.push_str(" display=\"none\"");
-        }
-        match &layer.payload {
-            Payload::Group => {
-                let label = format!("/layer[{}]", i.saturating_add(1));
-                appearance_losses(layer, &label, &mut w.loss);
-                body.push_str(&"  ".repeat(depth));
-                body.push_str(&format!("<g{extra}>\n"));
-                depth = depth.saturating_add(1);
-                stack.push((i, false));
-                for &c in children
-                    .get(&Some(layer.layer_id.as_str()))
-                    .into_iter()
-                    .flatten()
-                    .rev()
-                {
-                    stack.push((c, true));
-                }
-            }
-            Payload::Vector { .. } => {
-                let Some(indices) = by_layer.get(layer.layer_id.as_str()) else {
-                    continue;
-                };
-                let group: Vec<(&VectorPath, Vec<Seg>)> = indices
-                    .iter()
-                    .filter_map(|&j| converted[j].take().map(|segs| (&proposal.paths[j], segs)))
-                    .collect();
-                if !group.is_empty() {
-                    let label = format!("/layer[{}]", i.saturating_add(1));
-                    appearance_losses(layer, &label, &mut w.loss);
-                    w.layer_paths(&mut body, depth, &group, &extra, &label)?;
-                }
-            }
-            _ => {}
-        }
-    }
+    let roots = tree.children.get(&None).cloned().unwrap_or_default();
+    w.write_layers(&tree, &roots, 1, None, &skip, &mut body)?;
+    w.drain_defs(&tree, &skip)?;
     Ok(finish(open, w, &body))
 }
+

@@ -1,8 +1,9 @@
-//! Slice 3 contract: pattern paints, clip paths and masks. Folio stores no pattern paint kind, no
-//! vector clip and no vector mask, so every use resolves to an exact result (a no-op clip or mask
-//! is dropped, an empty one hides the element, a zero-size pattern paints nothing) or to a typed
-//! loss with a specific code. Synthetic SVGs only; coordinates are chosen so each expected result
-//! follows from the rectangles in the comments. The viewBox equals the size, so 1 px = 0.75 pt.
+//! Slice 3 contract: pattern paints, clip paths and masks resolve to an exact result (a no-op clip
+//! or mask is dropped, an empty one hides the element, a zero-size pattern paints nothing), to a
+//! Folio vector record (slice 4, `tests/vector_records_roundtrip.rs`: anything that restricts the
+//! element and is representable is stored and attached) or to a typed loss with a specific code.
+//! Synthetic SVGs only; coordinates are chosen so each expected result follows from the rectangles
+//! in the comments. The viewBox equals the size, so 1 px = 0.75 pt.
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_folio::{
     Budget, Isolation, LayerAppearance, ProfileBinding, StudioAppearanceRow, StudioColor,
@@ -136,19 +137,24 @@ fn clip_path_exact_or_typed_loss() {
         same_geometry(&p.paths, &q.paths);
         assert!(!q.loss.iter().any(|l| l.code.contains("clip")), "{:?}", q.loss);
 
-        // Hanging out of the clip (x 90..120 against 0..100): not provable, typed, still drawn.
+        // Hanging out of the clip (x 90..120 against 0..100): not provable as a no-op, so the clip
+        // is stored in the Folio vector records (a hidden group with the clip rectangle, one
+        // attachment on the group) and nothing is lost; the element path plus the clip path.
         let p = import(&doc(
             SQUARE_CLIP,
             r##"<g id="a" clip-path="url(#c)"><rect x="90" y="10" width="30" height="30"/></g>"##,
         ));
-        assert!(at(&p, "/svg[1]/g[1]", LossKind::Unsupported, "clip_path_not_representable"));
-        assert!(layer(&p, "a").visible && p.paths.len() == 1);
+        assert!(!has(&p, LossKind::Unsupported, "clip_path_not_representable"), "{:?}", p.loss);
+        assert!(layer(&p, "a").visible && p.paths.len() == 2);
+        assert_eq!((p.vector_records.clips.len(), p.vector_records.attachments.len()), (1, 1));
+        assert!(p.vector_records.attachment(&layer(&p, "a").layer_id).is_some_and(|a| a.clip_id.is_some()));
 
         // The stroke counts: a 10 px miter stroke reaches 20 px past the edge in the worst case
-        // (limit 4), so the 0..100 clip does not contain it and a 25 px margin does.
+        // (limit 4), so the 0..100 clip does not contain it (stored) and a 25 px margin does.
         let stroked = r##"<rect id="s" width="100" height="100" fill="none" stroke="#000" stroke-width="10" clip-path="url(#X)"/>"##;
         let tight = import(&doc(SQUARE_CLIP, &stroked.replace("#X", "#c")));
-        assert!(has(&tight, LossKind::Unsupported, "clip_path_not_representable"));
+        assert!(!has(&tight, LossKind::Unsupported, "clip_path_not_representable"));
+        assert_eq!(tight.vector_records.clips.len(), 1);
         let wide = r##"<clipPath id="w"><rect x="-25" y="-25" width="150" height="150"/></clipPath>"##;
         let loose = import(&doc(wide, &stroked.replace("#X", "#w")));
         assert!(has(&loose, LossKind::Ignored, "clip_path_noop_dropped"), "{:?}", loose.loss);
@@ -170,13 +176,29 @@ fn clip_path_exact_or_typed_loss() {
         }
 
         // clipPathUnits: objectBoundingBox 0..1 is the element's own box (contains it exactly);
-        // half of it does not; a `transform` on the clipPath makes the order undecided.
+        // half of it does not (stored, converted with the box); a `transform` on the clipPath
+        // makes the order undecided (typed).
         let obb = |rect: &str, extra: &str| {
             let defs = format!(r##"<clipPath id="o" clipPathUnits="objectBoundingBox"{extra}>{rect}</clipPath>"##);
             import(&doc(&defs, &format!(r##"<g id="g" clip-path="url(#o)">{INNER}</g>"##)))
         };
         assert!(has(&obb(r##"<rect width="1" height="1"/>"##, ""), LossKind::Ignored, "clip_path_noop_dropped"));
-        assert!(has(&obb(r##"<rect width="0.5" height="1"/>"##, ""), LossKind::Unsupported, "clip_path_not_representable"));
+        let half = obb(r##"<rect width="0.5" height="1"/>"##, "");
+        assert!(!has(&half, LossKind::Unsupported, "clip_path_not_representable"));
+        // The box of INNER is 10..40 px: the stored clip is its left half, 10..25 px = 7.5..18.75 pt.
+        let member = &half.vector_records.clips[0].source_layer_id;
+        let xs: Vec<f64> = half
+            .paths
+            .iter()
+            .filter(|path| {
+                half.snapshot.document().layers.iter().any(|l| {
+                    l.layer_id == path.layer_id
+                        && matches!(&l.parent, hsk_studio_folio::Parent::Node(n) if &n.node_id == member)
+                })
+            })
+            .flat_map(|path| path.anchors.iter().map(|a| a.position.x.value()))
+            .collect();
+        assert!(xs.iter().all(|x| (x - 7.5).abs() < 1e-9 || (x - 18.75).abs() < 1e-9), "{xs:?}");
         assert!(has(
             &obb(r##"<rect width="1" height="1"/>"##, r##" transform="translate(0.001 0)""##),
             LossKind::Unsupported,
@@ -188,9 +210,11 @@ fn clip_path_exact_or_typed_loss() {
         let p = import(&doc(defs, r##"<rect id="r" x="10" y="10" width="30" height="30" clip-path="url(#u)"/>"##));
         assert!(has(&p, LossKind::Ignored, "clip_path_noop_dropped"), "{:?}", p.loss);
         let p = import(&doc(defs, r##"<rect id="r" x="0" y="10" width="30" height="30" clip-path="url(#u)"/>"##));
-        assert!(has(&p, LossKind::Unsupported, "clip_path_not_representable"));
+        assert!(!has(&p, LossKind::Unsupported, "clip_path_not_representable"), "{:?}", p.loss);
+        assert_eq!(p.vector_records.clips.len(), 1, "the `use` member is stored with its shift");
 
-        // Nested clip-path: the intersection must not restrict either (50x50 inner clip).
+        // Nested clip-path: the intersection must not restrict either (50x50 inner clip); when it
+        // does, both are stored (the nested one as a clip of the member or of the clipPath).
         let nested = r##"<clipPath id="n3"><rect width="50" height="50"/></clipPath>
             <clipPath id="n2" clip-path="url(#n3)"><rect width="100" height="100"/></clipPath>
             <clipPath id="n4"><rect width="100" height="100" clip-path="url(#n3)"/></clipPath>
@@ -198,21 +222,32 @@ fn clip_path_exact_or_typed_loss() {
         for (id, w, free) in [("n2", 30, true), ("n2", 60, false), ("n4", 30, true), ("n4", 60, false), ("n5", 60, true)] {
             let body = format!(r##"<rect x="10" y="10" width="{w}" height="30" clip-path="url(#{id})"/>"##);
             let p = import(&doc(nested, &body));
-            let (kind, code) = if free {
-                (LossKind::Ignored, "clip_path_noop_dropped")
+            if free {
+                assert!(has(&p, LossKind::Ignored, "clip_path_noop_dropped"), "{id} width {w}: {:?}", p.loss);
+                assert!(p.vector_records.clips.is_empty());
             } else {
-                (LossKind::Unsupported, "clip_path_not_representable")
-            };
-            assert!(has(&p, kind, code), "{id} width {w}: {:?}", p.loss);
+                assert!(!has(&p, LossKind::Unsupported, "clip_path_not_representable"), "{id} width {w}: {:?}", p.loss);
+                // The clipPath and the intersecting clip are two records, each attached once.
+                assert_eq!(p.vector_records.clips.len(), 2, "{id} width {w}: {:?}", p.loss);
+                assert_eq!(p.vector_records.attachments.len(), 2, "{id} width {w}");
+            }
         }
 
-        // clip-rule only matters for shapes that are not analysed; it is reported with them.
+        // clip-rule only matters for shapes that are not analysed; it is stored with them (it was
+        // a typed loss before the vector records existed).
         let tri = |rule: &str| {
             let defs = format!(r##"<clipPath id="p"><path d="M0 0L10 0L10 10Z" {rule}/></clipPath>"##);
             import(&doc(&defs, r##"<rect x="1" y="1" width="2" height="2" clip-path="url(#p)"/>"##))
         };
-        assert!(has(&tri(r##"clip-rule="evenodd""##), LossKind::Unsupported, "clip_rule_evenodd"));
-        assert!(!has(&tri(r##"clip-rule="nonzero""##), LossKind::Unsupported, "clip_rule_evenodd"));
+        for (rule, want) in [
+            (r##"clip-rule="evenodd""##, hsk_studio_folio::StudioClipRule::EvenOdd),
+            (r##"clip-rule="nonzero""##, hsk_studio_folio::StudioClipRule::NonZero),
+        ] {
+            let p = tri(rule);
+            assert!(!has(&p, LossKind::Unsupported, "clip_rule_evenodd"));
+            assert_eq!(p.vector_records.clips.len(), 1, "{rule}: {:?}", p.loss);
+            assert_eq!(p.vector_records.clips[0].clip_rule, want);
+        }
 
         // Invalid references clip nothing; a basic shape and a file are reported, never followed.
         for (value, kind, code) in [
@@ -272,6 +307,13 @@ fn mask_exact_or_typed_loss() {
         let masked = |defs: &str| import(&doc(defs, &format!(r##"<g id="a" mask="url(#m)">{INNER}</g>"##)));
         let no_op = |p: &VectorProposal| at(p, "/svg[1]/g[1]", LossKind::Ignored, "mask_noop_dropped");
         let open = |p: &VectorProposal| at(p, "/svg[1]/g[1]", LossKind::Unsupported, "mask_not_representable");
+        // A mask that restricts the element is stored in the vector records (one record, one
+        // attachment on the group) and is no longer a loss.
+        let stored = |p: &VectorProposal| {
+            p.vector_records.masks.len() == 1
+                && p.vector_records.attachments.len() == 1
+                && !p.loss.iter().any(|l| l.code == "mask_not_representable")
+        };
         let user = r##"maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100""##;
 
         // Figma style: alpha mask, grey rect over the whole canvas -> value 1 everywhere.
@@ -279,10 +321,11 @@ fn mask_exact_or_typed_loss() {
         assert!(no_op(&p), "{:?}", p.loss);
         assert!(at(&p, "/svg[1]/defs[1]/mask[1]", LossKind::Ignored, "mask_definition_not_stored"));
         assert!(p.loss.iter().all(|l| l.kind != LossKind::Unsupported), "{:?}", p.loss);
-        // The same grey is luminance 0.85 for the default type: a real mask, reported with its type.
+        // The same grey is luminance 0.85 for the default type: a real mask, stored with its mode.
         let p = masked(&format!(r##"<mask id="m" {user}><rect width="100" height="100" fill="#D9D9D9"/></mask>"##));
-        assert!(open(&p) && has(&p, LossKind::Unsupported, "mask_type_luminance"), "{:?}", p.loss);
-        assert!(!has(&p, LossKind::Unsupported, "mask_type_alpha"));
+        assert!(stored(&p), "{:?}", p.loss);
+        assert_eq!(p.vector_records.masks[0].mode, hsk_studio_folio::StudioMaskMode::Luminance);
+        assert!(p.loss.iter().all(|l| l.kind != LossKind::Unsupported), "{:?}", p.loss);
         // White is 1 in either type; the property name and keyword are case-insensitive CSS.
         for white in ["white", "#FFFFFF", "rgb(255,255,255)"] {
             let p = masked(&format!(r##"<mask id="m" {user}><rect width="100" height="100" fill="{white}"/></mask>"##));
@@ -292,31 +335,32 @@ fn mask_exact_or_typed_loss() {
             let p = masked(&format!(r##"<mask id="m" {ty} {user}><rect width="100" height="100" fill="#808080"/></mask>"##));
             assert!(no_op(&p), "{ty}: {:?}", p.loss);
         }
-        // An unusable mask-type is not guessed.
+        // An unusable mask-type is not guessed: typed, not stored, no type code.
         let p = masked(&format!(r##"<mask id="m" mask-type="bogus" {user}><rect width="100" height="100" fill="white"/></mask>"##));
         assert!(open(&p) && !has(&p, LossKind::Unsupported, "mask_type_alpha") && !has(&p, LossKind::Unsupported, "mask_type_luminance"));
+        assert!(p.vector_records.masks.is_empty() && has(&p, LossKind::Unsupported, "mask_type_unusable"));
 
         // Default region -10%/-10%/120%/120% of the box (30 px -> 3 px margin): contains the
         // element; a stroke reaches further (8 px * 0.5 * 4) and a userSpaceOnUse region can
-        // start after the element.
+        // start after the element: both stored.
         let white = r##"<rect width="100" height="100" fill="white"/>"##;
         assert!(no_op(&masked(&format!(r##"<mask id="m">{white}</mask>"##))));
         let stroked = import(&doc(
             &format!(r##"<mask id="m">{white}</mask>"##),
             r##"<g id="a" mask="url(#m)"><rect x="10" y="10" width="30" height="30" fill="none" stroke="#000" stroke-width="8"/></g>"##,
         ));
-        assert!(open(&stroked), "{:?}", stroked.loss);
+        assert!(stored(&stroked), "{:?}", stroked.loss);
         let late = masked(&format!(r##"<mask id="m" maskUnits="userSpaceOnUse" x="20" y="0" width="80" height="100">{white}</mask>"##));
-        assert!(open(&late), "{:?}", late.loss);
+        assert!(stored(&late), "{:?}", late.loss);
 
         // maskContentUnits=objectBoundingBox: 0..1 is the element's box; half of it is not enough.
         assert!(no_op(&masked(r##"<mask id="m" maskContentUnits="objectBoundingBox"><rect width="1" height="1" fill="white"/></mask>"##)));
-        assert!(open(&masked(r##"<mask id="m" maskContentUnits="objectBoundingBox"><rect width="0.5" height="1" fill="white"/></mask>"##)));
+        assert!(stored(&masked(r##"<mask id="m" maskContentUnits="objectBoundingBox"><rect width="0.5" height="1" fill="white"/></mask>"##)));
 
         // Only the topmost child decides; it must be opaque, unstroked and unfiltered.
         let small = r##"<rect width="5" height="5" fill="white"/>"##;
         assert!(no_op(&masked(&format!(r##"<mask id="m" {user}>{small}{white}</mask>"##))));
-        assert!(open(&masked(&format!(r##"<mask id="m" {user}>{white}{small}</mask>"##))));
+        assert!(stored(&masked(&format!(r##"<mask id="m" {user}>{white}{small}</mask>"##))));
         for top in [
             r##"<rect width="100" height="100" fill="white" fill-opacity="0.5"/>"##,
             r##"<rect width="100" height="100" fill="white" opacity="0.99"/>"##,
@@ -327,8 +371,16 @@ fn mask_exact_or_typed_loss() {
             r##"<path d="M0 0H100V100H0Z" fill="white"/>"##,
             r##"<rect width="100" height="100" fill="url(#g)"/>"##,
         ] {
-            assert!(open(&masked(&format!(r##"<mask id="m" {user}>{top}</mask>"##))), "{top}");
+            // Stored, with the content's own losses reported where they are (a mask that uses
+            // itself is a reported loop for the inner use only).
+            let p = masked(&format!(r##"<mask id="m" {user}>{top}</mask>"##));
+            assert!(
+                p.vector_records.masks.len() == 1 && p.vector_records.attachments.len() == 1,
+                "{top}: {:?}",
+                p.loss
+            );
         }
+        // A reference on the mask element itself is not stored.
         assert!(open(&masked(&format!(r##"<mask id="m" mask="url(#m)" {user}>{white}</mask>"##))));
 
         // Exact hides: zero region, no content, hidden content, invalid reference (transparent
@@ -394,15 +446,22 @@ fn pattern_paint_exact_or_typed_loss() {
   <rect id="r_missing" width="10" height="10" fill="url(#nowhere) #778899"/>"##;
         let p = import(&doc(defs, body));
 
-        // Real tilings (base, through xlink:href, through href over a cyclic xlink:href, stroke).
-        assert_eq!(count(&p, "pattern_paint_not_representable"), 5, "{:?}", p.loss);
+        // Real tilings (base, through xlink:href, through href over a cyclic xlink:href, stroke)
+        // are stored in the vector records; only the unparsable `patternUnits` is a loss. A tiling
+        // without a fallback colour stands in with the first solid colour of its tile (the
+        // default black fill of the circle here), reported.
+        assert_eq!(count(&p, "pattern_paint_not_representable"), 1, "{:?}", p.loss);
+        assert_eq!(p.vector_records.patterns.len(), 3, "base, child, both: {:?}", p.loss);
+        assert_eq!(p.vector_records.pattern_paints.len(), 4, "fills of base, child, both and the stroke");
         for name in ["r_base", "r_both"] {
-            assert!(style_of(&p, name).is_none(), "{name} has no stand-in paint");
+            assert_eq!(fill_of(style_of(&p, name).unwrap()), Some(&solid(0, 0, 0)), "{name}");
         }
+        assert_eq!(count(&p, "pattern_stand_in_derived"), 3);
         assert_eq!(fill_of(style_of(&p, "r_child").unwrap()), Some(&solid(0, 255, 0)));
         assert!(has(&p, LossKind::Approximated, "pattern_fallback_color_used"));
         assert_eq!(count(&p, "pattern_fallback_color_used"), 1);
-        assert!(style_of(&p, "r_stroke").is_none());
+        assert_eq!(stroke_of(style_of(&p, "r_stroke").unwrap()), Some(&solid(0, 0, 0)));
+        assert!(style_of(&p, "r_units").is_none());
         // Exact "paints nothing" results: no stand-in, no representability loss.
         assert!(has(&p, LossKind::Ignored, "pattern_zero_size_no_paint"));
         assert!(has(&p, LossKind::Ignored, "pattern_empty_no_paint"));
@@ -421,8 +480,9 @@ fn pattern_paint_exact_or_typed_loss() {
         // A missing id is not a pattern: the generic paint server loss and the fallback.
         assert!(has(&p, LossKind::Unsupported, "unsupported_paint_server"));
         assert_eq!(fill_of(style_of(&p, "r_missing").unwrap()), Some(&solid(0x77, 0x88, 0x99)));
-        // Every definition is reported once, none is carried over.
-        assert_eq!(count(&p, "pattern_definition_not_stored"), 10);
+        // A definition that no use stored is reported once: the seven that were zero, empty,
+        // looping, negative, singular, with unparsable units or never reached.
+        assert_eq!(count(&p, "pattern_definition_not_stored"), 7, "{:?}", p.loss);
         assert!(p.design.paint_styles.iter().all(|s| s.rows.iter().all(|r| match r {
             StudioAppearanceRow::Fill { paint, .. } | StudioAppearanceRow::Stroke { paint, .. } =>
                 matches!(paint, StudioPaint::Solid { .. }),
@@ -458,7 +518,8 @@ fn pattern_paint_exact_or_typed_loss() {
                 .collect::<String>(),
             r##"<rect width="9" height="9" fill="url(#t0)"/>"##,
         ));
-        assert!(has(&short, LossKind::Unsupported, "pattern_paint_not_representable"));
+        assert!(!has(&short, LossKind::Unsupported, "pattern_paint_not_representable"), "{:?}", short.loss);
+        assert_eq!(short.vector_records.patterns.len(), 1);
         assert!(!has(&short, LossKind::Unsupported, "pattern_href_chain_too_long"));
     });
 }
@@ -511,9 +572,12 @@ fn hostile_references_are_bounded() {
         small.limits.max_segments = 1_000;
         assert_eq!(import_with(&svg, &small).unwrap_err(), VectorError::BudgetExceeded("reference_work"));
         // The default budget (32 units per node and segment of the limits) lets the same file
-        // through, as a typed loss: the cap is the budget, not a refusal of the structure.
+        // through: the cap is the budget, not a refusal of the structure. The five clipPaths are
+        // stored once each (identical uses share a record, so the fan-out of 8 per level does
+        // not multiply the records).
         let p = import(&svg);
-        assert!(has(&p, LossKind::Unsupported, "clip_path_not_representable"));
+        assert!(!has(&p, LossKind::Unsupported, "clip_path_not_representable"), "{:?}", p.loss);
+        assert_eq!(p.vector_records.clips.len(), 5, "{:?}", p.loss);
 
         // Many children are examined only up to a cap: 70 non-containing rects ahead of the one
         // that contains are not provable, never an error.

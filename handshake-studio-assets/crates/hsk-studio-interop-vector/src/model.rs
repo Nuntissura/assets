@@ -1,7 +1,7 @@
 //! Neutral proposal model of vector import. Plain data: it is a proposal for the host to adopt,
 //! never a private vector or style store (ENG-DAG-FORBID-003).
 use crate::error::{Result, VectorError};
-use hsk_studio_folio::{Snapshot, StudioDesignRecords, StudioPaintStyle};
+use hsk_studio_folio::{Snapshot, StudioDesignRecords, StudioPaintStyle, StudioVectorRecords};
 use hsk_studio_nib::{Anchor, OwnedPath as GeometryPath, PathLimits, Winding};
 
 /// Hostile-input budgets, all checked before the corresponding work is done.
@@ -10,7 +10,10 @@ pub struct Limits {
     pub max_bytes: usize,
     /// XML nodes, and also the element budget of the walk. The Folio design records an import
     /// keeps (styles, rows, gradient stops, dash pairs, node entries) are capped at 16 per node
-    /// (`BudgetExceeded("design_records")`).
+    /// (`BudgetExceeded("design_records")`). The content of the clip, mask and pattern
+    /// definitions built for references has an allowance of the same size on top (and
+    /// `max_segments` segments): running out of it leaves that reference a typed loss
+    /// (`definition_budget`), it does not fail the import.
     pub max_nodes: u32,
     pub max_depth: usize,
     /// Path segments and shape anchors summed over the document.
@@ -188,6 +191,14 @@ pub struct VectorProposal {
     /// `StudioNodeDesign.style_refs[`[`LAYER_STYLE_REF`]`]` names its style. This is the single
     /// source of paint, stroke and appearance data; the proposal creates no style registry.
     pub design: StudioDesignRecords,
+    /// Folio vector records of the document (`hsk.studio.vector_records@1`), validated by
+    /// `validate_vector_records` against the snapshot and `design`: the patterns, clips and masks
+    /// that SVG `<pattern>`, `<clipPath>` and `<mask>` references resolved to, and the clip/mask
+    /// attachment of each layer that uses one. Their geometry is baked into document points
+    /// (SVG `objectBoundingBox` units and every `transform` are resolved on import). The source
+    /// layers of these records (clip geometry, mask content, pattern tile artwork) are hidden
+    /// group layers directly under the artboard; their paths are part of [`Self::paths`].
+    pub vector_records: StudioVectorRecords,
     /// SVG gradient units per gradient row (provenance Folio has no member for).
     pub gradient_provenance: Vec<GradientProvenance>,
     pub loss: Vec<LossEntry>,

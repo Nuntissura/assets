@@ -292,12 +292,18 @@ fn unit_loss_stale_profile() {
         let end = xy(anchors.last().unwrap())[0];
         assert!((end.0 - 15.0).abs() < 1e-9 && end.1.abs() < 1e-9);
 
-        // A pattern paint server and a filter: reported, never silently dropped.
+        // A pattern paint server and a filter: the pattern is stored in the Folio vector records
+        // (its definition and paint are no longer losses; the stand-in colour taken from the tile
+        // is reported), the filter is reported, never silently dropped.
         let gradient = r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><pattern id="p" width="2" height="2"><rect width="1" height="1"/></pattern></defs><rect width="10" height="10" fill="url(#p)" filter="url(#f)"/></svg>"##;
         let p = import(gradient).unwrap();
-        for code in ["pattern_definition_not_stored", "pattern_paint_not_representable", "unsupported_filter"] {
+        for code in ["pattern_stand_in_derived", "unsupported_filter"] {
             assert!(p.has_loss_code(code), "missing {code}: {:?}", p.loss);
         }
+        for code in ["pattern_definition_not_stored", "pattern_paint_not_representable"] {
+            assert!(!p.has_loss_code(code), "unexpected {code}: {:?}", p.loss);
+        }
+        assert_eq!(p.vector_records.patterns.len(), 1);
 
         // Geometry outside 1e9 or non-finite after the transform is typed InvalidGeometry.
         let huge = r#"<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 L2e9 5"/></svg>"#;

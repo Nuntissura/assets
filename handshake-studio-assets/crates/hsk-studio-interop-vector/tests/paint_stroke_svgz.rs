@@ -465,13 +465,17 @@ fn design_records_are_the_single_source() {
         assert_eq!(p.design.document_id, doc.document_id);
 
         // Two identical stacks share one PAINT style; each vector layer names it through its design
-        // entry. The pattern fill is a typed loss and leaves its layer without a style.
-        assert_eq!(p.design.paint_styles.len(), 1);
+        // entry. The pattern fill is stored in the vector records: its layer has a style of its
+        // own (the stand-in paint, bound to the pattern) and so has the tile artwork's layer.
+        assert_eq!(p.design.paint_styles.len(), 3);
         let style = style_of(&p, "a").unwrap();
         assert_eq!(style_of(&p, "b").unwrap().style_id, style.style_id);
-        assert!(style_of(&p, "pat").is_none());
-        assert!(p.has_loss_code("pattern_definition_not_stored") && p.has_loss_code("pattern_paint_not_representable"));
-        assert_eq!(p.design.nodes.len(), 2);
+        let stand_in = style_of(&p, "pat").unwrap();
+        assert_ne!(stand_in.style_id, style.style_id);
+        assert!(p.vector_records.pattern_paint(&stand_in.style_id, 0).is_some());
+        assert!(p.has_loss_code("pattern_stand_in_derived") && !p.has_loss_code("pattern_paint_not_representable"));
+        assert_eq!(p.vector_records.patterns.len(), 1);
+        assert_eq!(p.design.nodes.len(), 4);
         assert_eq!(style.rows.len(), 2);
 
         // Alpha is row opacity (percent, free of binary noise): fill 0.3 -> 30, stroke 0.5 -> 50.
@@ -535,8 +539,16 @@ fn design_records_are_the_single_source() {
         );
 
         // A style reference the set does not hold is reported and falls back to the SVG default.
+        // The vector records bind a pattern to one of those styles, so they would dangle too and
+        // the export refuses them (Folio `DanglingReference`); with the records emptied (the
+        // pattern layer stays as a hidden group) the fallback applies.
         let mut dangling = p.clone();
         dangling.design.paint_styles.clear();
+        assert_eq!(
+            export_proposal_with_loss(&dangling, &opts).unwrap_err(),
+            VectorError::Folio(hsk_studio_folio::Code::DanglingReference)
+        );
+        dangling.vector_records = hsk_studio_folio::StudioVectorRecords::new(dangling.design.document_id.clone());
         let out = export_proposal_with_loss(&dangling, &opts).unwrap();
         assert!(out.loss.iter().any(|l| l.code == "style_ref_unresolved"));
     });

@@ -4,13 +4,14 @@
 //! invalid `clip-path` reference clips nothing, 6.1 an empty `clipPath` clips everything, 7.1 an
 //! invalid `mask` reference is a transparent black layer, 9.2 `mask-type`).
 //!
-//! Folio stores no pattern paint kind, no vector clip and no vector mask (its `StudioMask` is
-//! raster coverage tiles; STU-VEC-017, STU-VEC-053 and STU-VEC-138 name the missing records), so
-//! a definition is never carried over. Each use resolves to exactly one of
+//! Each use resolves to exactly one of
 //! - an exact result that needs no record: the clip contains everything the element paints, or the
 //!   mask is the identity over it (`*_noop_dropped`, Ignored), an empty clip or mask or a
 //!   zero-region mask hides the element (the layer is hidden, Approximated), a pattern with a
 //!   zero tile, a singular transform or no content paints nothing (Ignored);
+//! - a Folio vector record (`defs`: `StudioVectorClip`, `StudioVectorMask`, `StudioPattern` and
+//!   the attachment or paint binding that uses it), when the reference restricts or replaces what
+//!   the element paints and its definition is representable;
 //! - a typed loss with a specific code (Unsupported), the element staying as drawn without the
 //!   reference.
 //!
@@ -23,23 +24,39 @@ use super::*;
 use roxmltree::NodeId;
 
 /// Deepest reference nesting followed (pattern `href` chains, `clip-path` inside `clipPath`).
-const MAX_REFERENCE_DEPTH: usize = 8;
-/// Children of one `clipPath` or `mask` examined; more makes the result "not provable".
-const MAX_CLIP_CHILDREN: usize = 64;
+pub(super) const MAX_REFERENCE_DEPTH: usize = 8;
+/// Children of one `clipPath` or `mask` examined; more makes the result "not provable" and a
+/// clipPath with more members is not stored.
+pub(super) const MAX_CLIP_CHILDREN: usize = 64;
 /// Reference work units allowed per unit of `max_segments + max_nodes`.
 pub(super) const REFERENCE_WORK_FACTOR: usize = 32;
 
 /// Geometry an element paints, in document points, and its largest stroke outset.
 pub(super) struct Content {
-    subs: Vec<RawSubpath>,
-    outset: f64,
+    pub(super) subs: Vec<RawSubpath>,
+    pub(super) outset: f64,
 }
 
-/// Where the result of a reference lands: the layer to hide (none for the root `svg`) and the
-/// first entry of `Importer::paths` the element contributed.
+/// Where the result of a reference lands: the layer to hide or attach to (none for the root
+/// `svg`) and the first entry of `Importer::paths` the element contributed.
 pub(super) struct Target {
     pub layer: Option<usize>,
     pub first_path: usize,
+    /// Element depth of the referencing element; definitions built for it continue from there.
+    pub depth: usize,
+}
+
+/// What a `clip-path` or `mask` reference came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Applied {
+    /// Stored as a Folio clip or mask and attached to the layer.
+    Attached,
+    /// Restricts nothing, dropped.
+    Dropped,
+    /// The element paints nothing (its layer is hidden).
+    Hidden,
+    /// Kept as a typed loss; the element stays as drawn.
+    Typed,
 }
 
 /// The element a reference applies to: its user space as a map into document points, its object
@@ -94,18 +111,41 @@ struct ClipRect<'d> {
     via_use: bool,
 }
 
+/// A pattern with the attributes and content the `href` chain resolved to (SVG 1.1 13.3).
+pub(super) struct PatternSpec<'d> {
+    /// First element of the chain (the one the paint names).
+    pub(super) first: Node<'d, 'd>,
+    /// Element whose children are the tile content (first in the chain that has any).
+    pub(super) owner: Node<'d, 'd>,
+    /// Every element of the chain; a template pattern is used through the ones that inherit it.
+    pub(super) chain: Vec<u32>,
+    pub(super) units_obb: bool,
+    pub(super) content_obb: bool,
+    pub(super) x: Option<&'d str>,
+    pub(super) y: Option<&'d str>,
+    pub(super) width: Option<&'d str>,
+    pub(super) height: Option<&'d str>,
+    pub(super) view_box: Option<&'d str>,
+    pub(super) aspect: Option<&'d str>,
+    pub(super) transform: Affine,
+    /// `overflow` is not `visible`/`auto`: content outside the tile is clipped (the default).
+    pub(super) clipped: bool,
+}
+
 /// Outcome of a pattern paint reference.
-pub(super) enum PatternPaint {
+pub(super) enum PatternPaint<'d> {
     /// Paints nothing (exact).
     NoPaint,
-    /// A real tiling that Folio cannot store.
+    /// A real tiling that cannot be stored (reported by the caller).
     NotRepresentable,
     /// The reference is invalid (SVG 2 painting 13.2: the fallback applies).
     Invalid,
+    /// A tiling with these parameters.
+    Tiling(Box<PatternSpec<'d>>),
 }
 
 /// The last non-`none` value of a property given as attribute or in `style`.
-fn non_none_prop(el: Node, name: &str) -> Option<String> {
+pub(super) fn non_none_prop(el: Node, name: &str) -> Option<String> {
     collect_props(el)
         .into_iter()
         .rev()
@@ -116,7 +156,7 @@ fn non_none_prop(el: Node, name: &str) -> Option<String> {
 
 /// `mask-type` of a `mask` element: `Some(true)` alpha, `Some(false)` luminance (the initial
 /// value), `None` for an unusable value (CSS Masking 9.2).
-fn mask_alpha(mask: Node) -> Option<bool> {
+pub(super) fn mask_alpha(mask: Node) -> Option<bool> {
     let value = collect_props(mask)
         .into_iter()
         .rev()
@@ -132,7 +172,7 @@ fn mask_alpha(mask: Node) -> Option<bool> {
 
 /// A length of a rectangle in user units; an absent attribute is 0, a font-relative or
 /// percentage length is not analysed.
-fn user_len(el: Node, name: &str) -> Option<f64> {
+pub(super) fn user_len(el: Node, name: &str) -> Option<f64> {
     match plain_attr(el, name) {
         None => Some(0.0),
         Some(text) => svgtypes::Length::from_str(text.trim())
@@ -146,7 +186,7 @@ fn user_len(el: Node, name: &str) -> Option<f64> {
 /// everything the subject paints, strokes included? The content is mapped into the rectangle's
 /// space, where its tight bounding box is compared exactly; the stroke outset is added in that
 /// space. A singular map proves nothing.
-fn rect_contains(content: &Content, local_to_doc: Affine, rect: [f64; 4]) -> bool {
+pub(super) fn rect_contains(content: &Content, local_to_doc: Affine, rect: [f64; 4]) -> bool {
     let Some(inverse) = local_to_doc.inverse() else {
         return false;
     };
@@ -181,20 +221,37 @@ impl<'d> Importer<'_, 'd> {
         Ok(())
     }
 
-    /// The loss entry of a `pattern`, `clipPath` or `mask` definition. Definitions paint nothing
-    /// by themselves and Folio has no record for them; what a use of one means is reported where
-    /// it is used.
-    pub(super) fn definition_note(&mut self, tag: &str, loc: &str) {
-        let code = match tag {
+    /// Remembers a `pattern`, `clipPath` or `mask` definition. Definitions paint nothing by
+    /// themselves; one that no use stored in the vector records is reported once, at the end of
+    /// the import (`finish_definitions`). What a use of one means is reported where it is used.
+    pub(super) fn definition_note(&mut self, el: Node, loc: &str) {
+        let code = match el.tag_name().name() {
             "pattern" => "pattern_definition_not_stored",
             "clipPath" => "clip_path_definition_not_stored",
             _ => "mask_definition_not_stored",
         };
-        self.note(loc, LossKind::Ignored, code);
+        self.definitions
+            .entry(el.id().get())
+            .or_insert_with(|| (loc.to_owned(), code));
+    }
+
+    /// Reports every definition that no use stored (see `definition_note`).
+    pub(super) fn finish_definitions(&mut self) {
+        let stored: BTreeSet<u32> = self.def_cache.keys().map(defs::DefKey::node).collect();
+        let definitions = std::mem::take(&mut self.definitions);
+        for (id, (loc, code)) in definitions {
+            if !stored.contains(&id) {
+                self.loss.push(LossEntry {
+                    path: loc,
+                    kind: LossKind::Ignored,
+                    code,
+                });
+            }
+        }
     }
 
     /// Properties of `node` as inherited from the document root down (no loss entries).
-    fn style_at(&mut self, node: Node<'d, 'd>) -> Result<(Inherited, Local)> {
+    pub(super) fn style_at(&mut self, node: Node<'d, 'd>) -> Result<(Inherited, Local)> {
         let mut chain: Vec<Node<'d, 'd>> = node.ancestors().filter(Node::is_element).collect();
         chain.reverse();
         self.spend_ref(chain.len())?;
@@ -209,7 +266,7 @@ impl<'d> Importer<'_, 'd> {
     }
 
     /// Everything painted since `first`, rebuilt from the emitted anchors.
-    fn content_since(&mut self, first: usize) -> Result<Content> {
+    pub(super) fn content_since(&mut self, first: usize) -> Result<Content> {
         let points = self.paths.get(first..).map_or(0, |paths| {
             paths
                 .iter()
@@ -257,13 +314,23 @@ impl<'d> Importer<'_, 'd> {
 
     /// Hides the target layer (an exact result: the element paints nothing); the root `svg` has
     /// no layer and reports the plain loss instead.
-    fn hide(&mut self, target: &Target, loc: &str, code: &'static str, root_code: &'static str) {
+    fn hide(
+        &mut self,
+        target: &Target,
+        loc: &str,
+        code: &'static str,
+        root_code: &'static str,
+    ) -> Applied {
         match target.layer.and_then(|i| self.layers.get_mut(i)) {
             Some(layer) => {
                 layer.visible = false;
                 self.note(loc, LossKind::Approximated, code);
+                Applied::Hidden
             }
-            None => self.note(loc, LossKind::Unsupported, root_code),
+            None => {
+                self.note(loc, LossKind::Unsupported, root_code);
+                Applied::Typed
+            }
         }
     }
 
@@ -289,33 +356,33 @@ impl<'d> Importer<'_, 'd> {
         Ok(())
     }
 
-    fn clip_property(
+    pub(super) fn clip_property(
         &mut self,
         value: &str,
         m: Affine,
         target: &Target,
         cache: &mut Option<Content>,
         loc: &str,
-    ) -> Result<()> {
+    ) -> Result<Applied> {
         let id = match css::url_function(value) {
             None => {
                 // A basic shape or other <clip-source>: not stored.
                 self.note(loc, LossKind::Unsupported, "unsupported_clip_path");
-                return Ok(());
+                return Ok(Applied::Typed);
             }
             Some(f) if !f.rest.is_empty() => {
                 self.note(loc, LossKind::Unsupported, "clip_path_value_unparsed");
-                return Ok(());
+                return Ok(Applied::Typed);
             }
             Some(f) => match f.target {
                 UrlTarget::Local(id) => id,
                 UrlTarget::External => {
                     self.note(loc, LossKind::ExternalDenied, "external_clip_path_denied");
-                    return Ok(());
+                    return Ok(Applied::Typed);
                 }
                 UrlTarget::Malformed => {
                     self.note(loc, LossKind::Unsupported, "clip_path_value_unparsed");
-                    return Ok(());
+                    return Ok(Applied::Typed);
                 }
             },
         };
@@ -327,12 +394,12 @@ impl<'d> Importer<'_, 'd> {
         else {
             // CSS Masking 5.1: an invalid reference clips nothing.
             self.note(loc, LossKind::Ignored, "clip_path_reference_invalid");
-            return Ok(());
+            return Ok(Applied::Dropped);
         };
         let content = self.cached(cache, target.first_path)?;
         if content.subs.is_empty() {
             self.note(loc, LossKind::Ignored, "clip_path_noop_dropped");
-            return Ok(());
+            return Ok(Applied::Dropped);
         }
         let obb = m.inverse().and_then(|inv| bbox_of(&content.subs, inv));
         let subject = Subject {
@@ -342,24 +409,66 @@ impl<'d> Importer<'_, 'd> {
         };
         let mut seen = Seen::default();
         let verdict = self.clip_contains(clip, &subject, 0, &mut Vec::new(), &mut seen)?;
-        match verdict {
-            Verdict::Free => self.note(loc, LossKind::Ignored, "clip_path_noop_dropped"),
-            Verdict::Empty => self.hide(
+        let empty = |imp: &mut Self| {
+            imp.hide(
                 target,
                 loc,
                 "clip_path_empty_hides_element",
                 "clip_path_not_representable",
-            ),
-            Verdict::Cycle => self.note(loc, LossKind::Unsupported, "clip_path_reference_cycle"),
-            Verdict::TooDeep => self.note(loc, LossKind::Unsupported, "clip_path_depth_exceeded"),
+            )
+        };
+        Ok(match verdict {
+            Verdict::Free => {
+                self.note(loc, LossKind::Ignored, "clip_path_noop_dropped");
+                Applied::Dropped
+            }
+            Verdict::Empty => empty(self),
+            Verdict::Cycle => {
+                self.note(loc, LossKind::Unsupported, "clip_path_reference_cycle");
+                Applied::Typed
+            }
+            Verdict::TooDeep => {
+                self.note(loc, LossKind::Unsupported, "clip_path_depth_exceeded");
+                Applied::Typed
+            }
             Verdict::Open => {
-                self.note(loc, LossKind::Unsupported, "clip_path_not_representable");
-                if seen.evenodd {
-                    self.note(loc, LossKind::Unsupported, "clip_rule_evenodd");
+                // The clip restricts the element: store it as a Folio vector clip when the
+                // element has a layer to attach it to and the clipPath is representable.
+                let stored = if target.layer.is_some() {
+                    self.store_clip(clip, m, obb, target.depth)?
+                } else {
+                    defs::Stored::Refused("clip_path_root_element")
+                };
+                match stored {
+                    defs::Stored::Id(clip_id) => {
+                        self.attach(target, Some(clip_id), None);
+                        Applied::Attached
+                    }
+                    defs::Stored::Empty => empty(self),
+                    defs::Stored::Refused(code) => {
+                        self.clip_refused(loc, code, seen.evenodd);
+                        Applied::Typed
+                    }
                 }
             }
+        })
+    }
+
+    /// The typed loss of a `clip-path` that could not be stored. A loop or a nesting that is too
+    /// deep is reported as itself, everything else as `clip_path_not_representable` plus its
+    /// reason. `evenodd` says an unanalysed member used `clip-rule: evenodd`.
+    pub(super) fn clip_refused(&mut self, loc: &str, code: &'static str, evenodd: bool) {
+        if matches!(code, "clip_path_reference_cycle" | "clip_path_depth_exceeded") {
+            self.note(loc, LossKind::Unsupported, code);
+            return;
         }
-        Ok(())
+        self.note(loc, LossKind::Unsupported, "clip_path_not_representable");
+        if code != "clip_path_root_element" {
+            self.note(loc, LossKind::Unsupported, code);
+        }
+        if evenodd {
+            self.note(loc, LossKind::Unsupported, "clip_rule_evenodd");
+        }
     }
 
     fn mask_property(
@@ -369,25 +478,25 @@ impl<'d> Importer<'_, 'd> {
         target: &Target,
         cache: &mut Option<Content>,
         loc: &str,
-    ) -> Result<()> {
+    ) -> Result<Applied> {
         let id = match css::url_function(value) {
             None => {
                 self.note(loc, LossKind::Unsupported, "unsupported_mask");
-                return Ok(());
+                return Ok(Applied::Typed);
             }
             Some(f) if !f.rest.is_empty() => {
                 self.note(loc, LossKind::Unsupported, "mask_value_unparsed");
-                return Ok(());
+                return Ok(Applied::Typed);
             }
             Some(f) => match f.target {
                 UrlTarget::Local(id) => id,
                 UrlTarget::External => {
                     self.note(loc, LossKind::ExternalDenied, "external_mask_denied");
-                    return Ok(());
+                    return Ok(Applied::Typed);
                 }
                 UrlTarget::Malformed => {
                     self.note(loc, LossKind::Unsupported, "mask_value_unparsed");
-                    return Ok(());
+                    return Ok(Applied::Typed);
                 }
             },
         };
@@ -398,18 +507,17 @@ impl<'d> Importer<'_, 'd> {
             .filter(|n| n.tag_name().name() == "mask")
         else {
             // CSS Masking 7.1: an invalid reference is a transparent black layer.
-            self.hide(
+            return Ok(self.hide(
                 target,
                 loc,
                 "mask_reference_invalid_hidden",
                 "mask_not_representable",
-            );
-            return Ok(());
+            ));
         };
         let content = self.cached(cache, target.first_path)?;
         if content.subs.is_empty() {
             self.note(loc, LossKind::Ignored, "mask_noop_dropped");
-            return Ok(());
+            return Ok(Applied::Dropped);
         }
         let obb = m.inverse().and_then(|inv| bbox_of(&content.subs, inv));
         let subject = Subject {
@@ -418,8 +526,11 @@ impl<'d> Importer<'_, 'd> {
             content,
         };
         let mut seen = Seen::default();
-        match self.mask_verdict(mask, &subject, &mut seen)? {
-            Verdict::Free => self.note(loc, LossKind::Ignored, "mask_noop_dropped"),
+        Ok(match self.mask_verdict(mask, &subject, &mut seen)? {
+            Verdict::Free => {
+                self.note(loc, LossKind::Ignored, "mask_noop_dropped");
+                Applied::Dropped
+            }
             Verdict::Empty => self.hide(
                 target,
                 loc,
@@ -427,15 +538,39 @@ impl<'d> Importer<'_, 'd> {
                 "mask_not_representable",
             ),
             _ => {
-                self.note(loc, LossKind::Unsupported, "mask_not_representable");
-                match mask_alpha(mask) {
-                    Some(true) => self.note(loc, LossKind::Unsupported, "mask_type_alpha"),
-                    Some(false) => self.note(loc, LossKind::Unsupported, "mask_type_luminance"),
-                    None => {}
+                let stored = if target.layer.is_some() {
+                    self.store_mask(mask, m, obb, target.depth)?
+                } else {
+                    defs::Stored::Refused("mask_root_element")
+                };
+                match stored {
+                    defs::Stored::Id(mask_id) => {
+                        self.attach(target, None, Some(mask_id));
+                        Applied::Attached
+                    }
+                    defs::Stored::Empty => self.hide(
+                        target,
+                        loc,
+                        "mask_empty_hides_element",
+                        "mask_not_representable",
+                    ),
+                    defs::Stored::Refused(code) => {
+                        self.note(loc, LossKind::Unsupported, "mask_not_representable");
+                        if !matches!(code, "mask_root_element") {
+                            self.note(loc, LossKind::Unsupported, code);
+                        }
+                        match mask_alpha(mask) {
+                            Some(true) => self.note(loc, LossKind::Unsupported, "mask_type_alpha"),
+                            Some(false) => {
+                                self.note(loc, LossKind::Unsupported, "mask_type_luminance");
+                            }
+                            None => {}
+                        }
+                        Applied::Typed
+                    }
                 }
             }
-        }
-        Ok(())
+        })
     }
 
     /// Does `clip` restrict what the subject paints? Evaluated lazily and bounded: `stack` holds
@@ -672,6 +807,34 @@ impl<'d> Importer<'_, 'd> {
         }))
     }
 
+    /// `x, y, width, height` of a mask as written: fractions of the object box for
+    /// `maskUnits="objectBoundingBox"`, user units otherwise (percentages are shares of the
+    /// viewport there). Defaults are -10%, -10%, 120%, 120%. `None` for a value that is not
+    /// understood (a font-relative length, a unit with box units, not finite).
+    pub(super) fn mask_region_raw(&self, mask: Node, region_obb: bool) -> Option<[f64; 4]> {
+        let view = self.user_viewport;
+        let one = |name: &str, default_percent: f64, axis: usize| -> Option<f64> {
+            let basis = if region_obb { 1.0 } else { view[axis] };
+            let Some(text) = plain_attr(mask, name) else {
+                return Some(default_percent / 100.0 * basis);
+            };
+            let l = svgtypes::Length::from_str(text.trim()).ok()?;
+            let v = match (l.unit, region_obb) {
+                (svgtypes::LengthUnit::Percent, _) => l.number / 100.0 * basis,
+                (svgtypes::LengthUnit::None, true) => l.number,
+                (_, true) => return None,
+                (_, false) => unit_to_user(l)?,
+            };
+            v.is_finite().then_some(v)
+        };
+        Some([
+            one("x", -10.0, 0)?,
+            one("y", -10.0, 1)?,
+            one("width", 120.0, 0)?,
+            one("height", 120.0, 1)?,
+        ])
+    }
+
     /// Does `mask` leave everything the subject paints untouched? Only the plain case is
     /// proven: the region covers the subject and the topmost child is an opaque rectangle (white
     /// for a luminance mask) that covers it.
@@ -702,27 +865,7 @@ impl<'d> Importer<'_, 'd> {
         let Some(alpha) = mask_alpha(mask) else {
             return Ok(Verdict::Open);
         };
-        let view = self.user_viewport;
-        let region = |name: &str, default_percent: f64, axis: usize| -> Option<f64> {
-            let basis = if region_obb { 1.0 } else { view[axis] };
-            let Some(text) = plain_attr(mask, name) else {
-                return Some(default_percent / 100.0 * basis);
-            };
-            let l = svgtypes::Length::from_str(text.trim()).ok()?;
-            let v = match (l.unit, region_obb) {
-                (svgtypes::LengthUnit::Percent, _) => l.number / 100.0 * basis,
-                (svgtypes::LengthUnit::None, true) => l.number,
-                (_, true) => return None,
-                (_, false) => unit_to_user(l)?,
-            };
-            v.is_finite().then_some(v)
-        };
-        let (Some(x), Some(y), Some(w), Some(h)) = (
-            region("x", -10.0, 0),
-            region("y", -10.0, 1),
-            region("width", 120.0, 0),
-            region("height", 120.0, 1),
-        ) else {
+        let Some([x, y, w, h]) = self.mask_region_raw(mask, region_obb) else {
             return Ok(Verdict::Open);
         };
         if w < 0.0 || h < 0.0 {
@@ -815,7 +958,7 @@ impl<'d> Importer<'_, 'd> {
     /// `href` template chain (SVG 2: `href` over `xlink:href`), inherits attributes and content as
     /// the spec defines, and decides what Folio can hold: nothing but the exact "paints nothing"
     /// results.
-    pub(super) fn pattern_paint(&mut self, id: &str, loc: &str) -> Result<PatternPaint> {
+    pub(super) fn pattern_paint(&mut self, id: &str, loc: &str) -> Result<PatternPaint<'d>> {
         let Some(first) = self
             .ids
             .get(id)
@@ -851,19 +994,26 @@ impl<'d> Importer<'_, 'd> {
             chain.push(next);
         }
         let attr = |name: &str| chain.iter().find_map(|n| plain_attr(*n, name));
+        let mut units_bad = false;
         for name in ["patternUnits", "patternContentUnits"] {
             if !matches!(attr(name), None | Some("userSpaceOnUse" | "objectBoundingBox")) {
                 self.note(loc, LossKind::Unsupported, "pattern_units_unparsed");
+                units_bad = true;
             }
         }
+        let mut transform = Affine::IDENTITY;
+        let mut transform_bad = false;
         if let Some(text) = attr("patternTransform") {
             match parse_transform(text) {
-                None => self.note(loc, LossKind::Unsupported, "pattern_transform_unparsed"),
+                None => {
+                    self.note(loc, LossKind::Unsupported, "pattern_transform_unparsed");
+                    transform_bad = true;
+                }
                 Some(m) if m.inverse().is_none() => {
                     self.note(loc, LossKind::Ignored, "pattern_transform_singular_no_paint");
                     return Ok(PatternPaint::NoPaint);
                 }
-                Some(_) => {}
+                Some(m) => transform = m,
             }
         }
         // Zero disables rendering and is also the default; a negative value is an error.
@@ -889,17 +1039,40 @@ impl<'d> Importer<'_, 'd> {
                 return Ok(PatternPaint::NotRepresentable);
             }
         }
-        let has_content = chain.iter().any(|n| {
+        let owner = chain.iter().copied().find(|n| {
             n.children().any(|c| {
                 c.is_element()
                     && c.tag_name().namespace() == Some(SVG_NS)
                     && !matches!(c.tag_name().name(), "title" | "desc" | "metadata")
             })
         });
-        if !has_content {
+        let Some(owner) = owner else {
             self.note(loc, LossKind::Ignored, "pattern_empty_no_paint");
             return Ok(PatternPaint::NoPaint);
+        };
+        // A pattern whose units or transform are not understood is a real tiling that is not
+        // stored: reported by the caller together with the codes above.
+        if units_bad || transform_bad {
+            return Ok(PatternPaint::NotRepresentable);
         }
-        Ok(PatternPaint::NotRepresentable)
+        let overflow = chain
+            .iter()
+            .find_map(|n| non_none_prop(*n, "overflow"))
+            .map(|v| v.to_ascii_lowercase());
+        Ok(PatternPaint::Tiling(Box::new(PatternSpec {
+            first,
+            owner,
+            chain: chain.iter().map(|n| n.id().get()).collect(),
+            units_obb: !matches!(attr("patternUnits"), Some("userSpaceOnUse")),
+            content_obb: matches!(attr("patternContentUnits"), Some("objectBoundingBox")),
+            x: attr("x"),
+            y: attr("y"),
+            width: attr("width"),
+            height: attr("height"),
+            view_box: attr("viewBox"),
+            aspect: attr("preserveAspectRatio"),
+            transform,
+            clipped: !matches!(overflow.as_deref(), Some("visible" | "auto")),
+        })))
     }
 }

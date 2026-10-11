@@ -47,7 +47,9 @@ fn main() -> ExitCode {
         }
     };
     if args.iter().any(|a| a == "--export") {
-        match export_svg(&proposal.paths, &proposal.design, &ExportOptions::default()) {
+        // The hierarchical export also writes the vector records (patterns, clips, masks); the
+        // flat `export_svg` would draw their hidden source geometry.
+        match export_proposal(&proposal, &ExportOptions::default()) {
             Ok(text) => print!("{text}"),
             Err(e) => {
                 eprintln!("{}", e.code());

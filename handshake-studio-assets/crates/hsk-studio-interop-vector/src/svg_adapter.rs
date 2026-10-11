@@ -14,9 +14,10 @@ use hsk_studio_folio::{
     Payload, ProfileBinding, Resolution, Resolver, StrokeAlign, StrokeCap, StrokeJoin,
     StudioAppearanceRow, StudioArtboard, StudioColor, StudioDesignRecords, StudioDocument,
     StudioGradient, StudioGradientGeometry, StudioGradientStop, StudioLayer, StudioLayerGraph,
-    StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPublishing, StudioStrokeStyle,
-    StyleKind, StyleRegistrySchema, TileRef, Unresolved, validate_design_records,
-    validate_document,
+    StudioMaskAttachment, StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPattern,
+    StudioPatternPaint, StudioPublishing, StudioStrokeStyle, StudioVectorClip, StudioVectorMask,
+    StudioVectorRecords, StyleKind, StyleRegistrySchema, TileRef, Unresolved,
+    validate_design_records, validate_document, validate_vector_records,
 };
 use hsk_studio_nib::{Anchor, Mirroring, Point, Winding};
 use roxmltree::{Document, Node, ParsingOptions};
@@ -25,6 +26,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 
 mod css;
+mod defs;
 mod masking;
 
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
@@ -514,6 +516,37 @@ struct Importer<'a, 'd> {
     ref_budget: usize,
     /// Stroke outset in points of each entry of `paths` (0 without a stroke).
     outsets: Vec<f64>,
+    /// Points per source pixel.
+    px_to_pt: f64,
+    artboard_id: String,
+    /// Vector records under construction (see `defs`).
+    records: defs::Records,
+    /// Hidden definition groups (clip geometry, mask content, pattern tiles) and their content.
+    def_layers: Vec<StudioLayer>,
+    def_paths: Vec<VectorPath>,
+    /// Open definition frames; 0 while the document itself is walked.
+    frames: usize,
+    /// Definitions being built, innermost last (reference loops).
+    ref_stack: Vec<u32>,
+    inst_elements: u32,
+    inst_segments: usize,
+    /// Clip rule of the clipPath member shapes being walked (geometry only, no paint).
+    clip_rule: Option<Winding>,
+    def_cache: BTreeMap<defs::DefKey, String>,
+    def_cache_log: Vec<defs::DefKey>,
+    /// Tile colour a pattern stands in with, by set-local pattern id.
+    pattern_samples: BTreeMap<String, Option<StudioColor>>,
+    /// `pattern`, `clipPath` and `mask` elements seen: node id -> (locator, loss code).
+    definitions: BTreeMap<u32, (String, &'static str)>,
+    /// Element locators by node id.
+    locators: BTreeMap<u32, String>,
+    /// Notes already reported from inside definition frames (a definition built twice reports once).
+    frame_notes: BTreeSet<(String, LossKind, &'static str)>,
+    attach_index: BTreeMap<String, usize>,
+    /// Set-local ordinal of clip, mask and pattern ids.
+    ordinal: usize,
+    /// Element depth of the shape whose paint is being resolved.
+    cur_depth: usize,
 }
 
 /// Imports an SVG into a Folio proposal (nodes) plus nib anchor geometry, with a typed loss report.
@@ -627,9 +660,29 @@ pub fn import_svg(
             .saturating_add(policy.limits.max_nodes as usize)
             .saturating_mul(masking::REFERENCE_WORK_FACTOR),
         outsets: Vec::new(),
+        px_to_pt,
+        artboard_id: String::new(),
+        records: defs::Records::default(),
+        def_layers: Vec::new(),
+        def_paths: Vec::new(),
+        frames: 0,
+        ref_stack: Vec::new(),
+        inst_elements: 0,
+        inst_segments: 0,
+        clip_rule: None,
+        def_cache: BTreeMap::new(),
+        def_cache_log: Vec::new(),
+        pattern_samples: BTreeMap::new(),
+        definitions: BTreeMap::new(),
+        locators: BTreeMap::new(),
+        frame_notes: BTreeSet::new(),
+        attach_index: BTreeMap::new(),
+        ordinal: 0,
+        cur_depth: 0,
     };
     let document_id = imp.mint_id("SDOC")?;
     let artboard_id = imp.mint_id("SART")?;
+    imp.artboard_id.clone_from(&artboard_id);
     let root_loc = "/svg[1]";
     imp.check_href(root, root_loc);
 
@@ -667,28 +720,7 @@ pub fn import_svg(
         if par.slice && par.align != svgtypes::Align::None {
             imp.note(root_loc, LossKind::Approximated, "slice_viewport_not_clipped");
         }
-        let (sx, sy) = (vw / vb.w, vh / vb.h);
-        let view = if par.align == svgtypes::Align::None {
-            Affine::scale(sx, sy).then(Affine::translate(-vb.x, -vb.y))
-        } else {
-            let s = if par.slice { sx.max(sy) } else { sx.min(sy) };
-            use svgtypes::Align as A;
-            let (fx, fy) = match par.align {
-                A::XMinYMin => (0.0, 0.0),
-                A::XMidYMin => (0.5, 0.0),
-                A::XMaxYMin => (1.0, 0.0),
-                A::XMinYMid => (0.0, 0.5),
-                A::XMidYMid | A::None => (0.5, 0.5),
-                A::XMaxYMid => (1.0, 0.5),
-                A::XMinYMax => (0.0, 1.0),
-                A::XMidYMax => (0.5, 1.0),
-                A::XMaxYMax => (1.0, 1.0),
-            };
-            Affine::translate((vw - vb.w * s) * fx, (vh - vb.h * s) * fy)
-                .then(Affine::scale(s, s))
-                .then(Affine::translate(-vb.x, -vb.y))
-        };
-        base = base.then(view);
+        base = base.then(fit_view_box(vb, par, vw, vh));
     }
     let mut ctx = Ctx {
         matrix: base,
@@ -713,19 +745,28 @@ pub fn import_svg(
         masking::Target {
             layer: None,
             first_path: 0,
+            depth: 0,
         },
         root_loc,
     )?;
+    imp.finish_definitions();
 
     let Importer {
         loss,
-        layers,
-        paths,
+        mut layers,
+        mut paths,
         styles,
         nodes,
         gradient_provenance,
+        records,
+        def_layers,
+        def_paths,
         ..
     } = imp;
+    // Definition groups (clip geometry, mask content, pattern tiles) come after the document
+    // layers; they are hidden and parented to the artboard.
+    layers.extend(def_layers);
+    paths.extend(def_paths);
     let artboard = StudioArtboard {
         schema_id: ArtboardSchema::V1,
         artboard_id: artboard_id.clone(),
@@ -764,7 +805,10 @@ pub fn import_svg(
         },
         sequences: Vec::new(),
     };
-    let nodes = policy.limits.max_nodes as usize;
+    // Layers: the walk is capped at `max_nodes` elements and the definitions built from
+    // references at the same number again (`Importer::spend_element`), so the document holds at
+    // most that many plus one group per definition; the budget follows the layers actually built.
+    let nodes = (policy.limits.max_nodes as usize).max(document.layers.len());
     let budget = Budget {
         input_bytes: nodes.saturating_mul(2048).max(1 << 20),
         nodes: nodes.saturating_add(8),
@@ -794,10 +838,35 @@ pub fn import_svg(
     if !issues.is_empty() {
         return Err(VectorError::Folio(hsk_studio_folio::Code::DanglingReference));
     }
+    // The vector records are Folio's too: validated against the same document and design records.
+    let vector_records = records.into_folio(snapshot.document().document_id.clone());
+    let record_count = vector_records
+        .patterns
+        .len()
+        .saturating_add(vector_records.pattern_paints.len())
+        .saturating_add(vector_records.clips.len())
+        .saturating_add(vector_records.masks.len())
+        .saturating_add(vector_records.attachments.len());
+    if record_count > 0 {
+        let record_budget = Budget {
+            nodes: record_count.saturating_add(8),
+            edges: 0,
+            ..budget
+        };
+        validate_vector_records(
+            &vector_records,
+            snapshot.document(),
+            Some(&design),
+            record_budget,
+            cancel,
+        )
+        .map_err(folio_error)?;
+    }
     Ok(crate::model::VectorProposal {
         snapshot,
         paths,
         design,
+        vector_records,
         gradient_provenance,
         loss,
         provenance: Provenance {
@@ -818,6 +887,32 @@ fn folio_error(d: hsk_studio_folio::Diagnostic) -> VectorError {
         VectorError::Canceled
     } else {
         VectorError::Folio(d.code)
+    }
+}
+
+/// The map that fits `vb` into a `vw` x `vh` viewport at the origin per `preserveAspectRatio`
+/// (SVG 1.1 7.8). Used for the root `viewBox` and for a pattern `viewBox`.
+fn fit_view_box(vb: svgtypes::ViewBox, par: svgtypes::AspectRatio, vw: f64, vh: f64) -> Affine {
+    let (sx, sy) = (vw / vb.w, vh / vb.h);
+    if par.align == svgtypes::Align::None {
+        Affine::scale(sx, sy).then(Affine::translate(-vb.x, -vb.y))
+    } else {
+        let s = if par.slice { sx.max(sy) } else { sx.min(sy) };
+        use svgtypes::Align as A;
+        let (fx, fy) = match par.align {
+            A::XMinYMin => (0.0, 0.0),
+            A::XMidYMin => (0.5, 0.0),
+            A::XMaxYMin => (1.0, 0.0),
+            A::XMinYMid => (0.0, 0.5),
+            A::XMidYMid | A::None => (0.5, 0.5),
+            A::XMaxYMid => (1.0, 0.5),
+            A::XMinYMax => (0.0, 1.0),
+            A::XMidYMax => (0.5, 1.0),
+            A::XMaxYMax => (1.0, 1.0),
+        };
+        Affine::translate((vw - vb.w * s) * fx, (vh - vb.h * s) * fy)
+            .then(Affine::scale(s, s))
+            .then(Affine::translate(-vb.x, -vb.y))
     }
 }
 
@@ -842,6 +937,10 @@ fn pt(value: f64) -> FolioLength {
 
 impl<'d> Importer<'_, 'd> {
     fn note(&mut self, loc: &str, kind: LossKind, code: &'static str) {
+        // A definition built for several uses reports each of its own losses once.
+        if self.frames > 0 && !self.frame_notes.insert((loc.to_owned(), kind, code)) {
+            return;
+        }
         self.loss.push(LossEntry {
             path: loc.to_owned(),
             kind,
@@ -861,7 +960,33 @@ impl<'d> Importer<'_, 'd> {
         self.cancel.check().map_err(|_| VectorError::Canceled)
     }
 
+    /// Counts one element of the walk. Inside a definition frame the element is charged to the
+    /// separate allowance of definition content, so a file that merely uses a definition many
+    /// times cannot exhaust the budget of its own elements; running out there is a soft failure
+    /// of that definition (`defs::soft`), not of the import.
+    fn spend_element(&mut self) -> Result<()> {
+        if self.frames > 0 {
+            self.inst_elements = self.inst_elements.saturating_add(1);
+            if self.inst_elements > self.limits.max_nodes {
+                return Err(VectorError::BudgetExceeded("definition_elements"));
+            }
+        } else {
+            self.elements = self.elements.saturating_add(1);
+            if self.elements > self.limits.max_nodes {
+                return Err(VectorError::BudgetExceeded("nodes"));
+            }
+        }
+        Ok(())
+    }
+
     fn spend_segments(&mut self, n: usize) -> Result<()> {
+        if self.frames > 0 {
+            self.inst_segments = self.inst_segments.saturating_add(n);
+            if self.inst_segments > self.limits.max_segments {
+                return Err(VectorError::BudgetExceeded("definition_segments"));
+            }
+            return Ok(());
+        }
         self.segments = self.segments.saturating_add(n);
         if self.segments > self.limits.max_segments {
             return Err(VectorError::BudgetExceeded("segments"));
@@ -892,10 +1017,7 @@ impl<'d> Importer<'_, 'd> {
         let mut counts: BTreeMap<&str, u32> = BTreeMap::new();
         for child in node.children().filter(Node::is_element) {
             self.checkpoint()?;
-            self.elements = self.elements.saturating_add(1);
-            if self.elements > self.limits.max_nodes {
-                return Err(VectorError::BudgetExceeded("nodes"));
-            }
+            self.spend_element()?;
             let tag = child.tag_name().name();
             let n = counts.entry(tag).or_insert(0);
             *n = n.saturating_add(1);
@@ -921,7 +1043,7 @@ impl<'d> Importer<'_, 'd> {
             "linearGradient" | "radialGradient" => Ok(()),
             // Resolved where they are used (see `masking`).
             "pattern" | "clipPath" | "mask" => {
-                self.definition_note(el.tag_name().name(), loc);
+                self.definition_note(el, loc);
                 Ok(())
             }
             "title" | "desc" | "metadata" => {
@@ -945,10 +1067,7 @@ impl<'d> Importer<'_, 'd> {
         let mut counts: BTreeMap<&str, u32> = BTreeMap::new();
         for child in el.children().filter(Node::is_element) {
             self.checkpoint()?;
-            self.elements = self.elements.saturating_add(1);
-            if self.elements > self.limits.max_nodes {
-                return Err(VectorError::BudgetExceeded("nodes"));
-            }
+            self.spend_element()?;
             let tag = child.tag_name().name();
             let n = counts.entry(tag).or_insert(0);
             *n = n.saturating_add(1);
@@ -963,7 +1082,7 @@ impl<'d> Importer<'_, 'd> {
             } else if matches!(tag, "title" | "desc" | "metadata") {
                 self.note(&child_loc, LossKind::Ignored, "metadata");
             } else if matches!(tag, "pattern" | "clipPath" | "mask") {
-                self.definition_note(tag, &child_loc);
+                self.definition_note(child, &child_loc);
             } else {
                 self.note(&child_loc, LossKind::Unsupported, unsupported_code(tag));
             }
@@ -1062,7 +1181,8 @@ impl<'d> Importer<'_, 'd> {
                 Some(w) if w >= 0.0 && w.is_finite() => st.stroke_width = w,
                 _ => self.note(loc, LossKind::Unsupported, "stroke_width_unparsed"),
             },
-            "fill-rule" => match value {
+            // Keywords are ASCII case-insensitive in CSS.
+            "fill-rule" => match value.to_ascii_lowercase().as_str() {
                 "nonzero" => st.fill_rule = Winding::NonZero,
                 "evenodd" => st.fill_rule = Winding::EvenOdd,
                 "inherit" => {}
@@ -1142,7 +1262,7 @@ impl<'d> Importer<'_, 'd> {
             "clip-path" => {
                 local.clip_path = (!value.eq_ignore_ascii_case("none")).then(|| value.to_owned());
             }
-            "clip-rule" => match value {
+            "clip-rule" => match value.to_ascii_lowercase().as_str() {
                 "nonzero" => st.clip_rule = Winding::NonZero,
                 "evenodd" => st.clip_rule = Winding::EvenOdd,
                 "inherit" => {}
@@ -1247,6 +1367,7 @@ impl<'d> Importer<'_, 'd> {
             masking::Target {
                 layer: Some(layer_index),
                 first_path,
+                depth: ctx.depth,
             },
             loc,
         )
@@ -1416,15 +1537,73 @@ impl<'d> Importer<'_, 'd> {
                     match self.pattern_paint(id, loc)? {
                         masking::PatternPaint::NoPaint => GradientOutcome::Nothing,
                         masking::PatternPaint::NotRepresentable => {
-                            // A real tiling Folio has no paint kind for (STU-VEC-017): typed
-                            // loss; the author's fallback colour, if any, stands in for it.
-                            self.note(loc, LossKind::Unsupported, "pattern_paint_not_representable");
-                            if matches!(fallback, Fallback::Color(..) | Fallback::Current) {
-                                self.note(loc, LossKind::Approximated, "pattern_fallback_color_used");
-                            }
+                            self.pattern_refused(loc, None, fallback);
                             GradientOutcome::Missing
                         }
                         masking::PatternPaint::Invalid => GradientOutcome::Missing,
+                        masking::PatternPaint::Tiling(spec) => {
+                            let at = defs::Use {
+                                m,
+                                bbox,
+                                depth: self.cur_depth,
+                            };
+                            match self.store_pattern(&spec, &at)? {
+                                defs::PatternStored::Refused(code) => {
+                                    self.pattern_refused(loc, Some(code), fallback);
+                                    GradientOutcome::Missing
+                                }
+                                defs::PatternStored::Placed {
+                                    pattern_id,
+                                    matrix,
+                                    sample,
+                                } => {
+                                    let stand_in = match fallback {
+                                        Fallback::Color(r, g, b, a) => {
+                                            self.note(
+                                                loc,
+                                                LossKind::Approximated,
+                                                "pattern_fallback_color_used",
+                                            );
+                                            ResolvedPaint::solid((*r, *g, *b), (*a * opacity).clamp(0.0, 1.0))
+                                        }
+                                        Fallback::Current => {
+                                            self.note(
+                                                loc,
+                                                LossKind::Approximated,
+                                                "pattern_fallback_color_used",
+                                            );
+                                            ResolvedPaint::solid(
+                                                (st.color.0, st.color.1, st.color.2),
+                                                (st.color.3 * opacity).clamp(0.0, 1.0),
+                                            )
+                                        }
+                                        Fallback::None | Fallback::Unspecified => {
+                                            self.note(
+                                                loc,
+                                                LossKind::Approximated,
+                                                "pattern_stand_in_derived",
+                                            );
+                                            let colour = sample.unwrap_or(StudioColor {
+                                                r: 0.0,
+                                                g: 0.0,
+                                                b: 0.0,
+                                                colour_profile_id: ProfileBinding::Unassigned(()),
+                                            });
+                                            ResolvedPaint {
+                                                paint: StudioPaint::Solid { colour },
+                                                opacity: clean(opacity * 100.0).clamp(0.0, 100.0),
+                                                units: None,
+                                                binding: None,
+                                            }
+                                        }
+                                    };
+                                    GradientOutcome::Paint(Box::new(ResolvedPaint {
+                                        binding: Some(PatternBinding { pattern_id, matrix }),
+                                        ..stand_in
+                                    }))
+                                }
+                            }
+                        }
                     }
                 } else if self
                     .ids
@@ -1436,7 +1615,7 @@ impl<'d> Importer<'_, 'd> {
                     GradientOutcome::Missing
                 };
                 match outcome {
-                    GradientOutcome::Paint(p) => Some(p),
+                    GradientOutcome::Paint(p) => Some(*p),
                     GradientOutcome::Nothing => None,
                     GradientOutcome::Missing => {
                         if !is_pattern {
@@ -1538,7 +1717,7 @@ impl<'d> Importer<'_, 'd> {
             return Ok(GradientOutcome::Nothing);
         };
         if stops.len() == 1 {
-            return Ok(GradientOutcome::Paint(last.solid()));
+            return Ok(GradientOutcome::Paint(Box::new(last.solid())));
         }
         let view = self.user_viewport;
         let coord = |imp: &mut Self, name: &str, default_percent: f64, axis: usize| -> f64 {
@@ -1557,7 +1736,7 @@ impl<'d> Importer<'_, 'd> {
                 coord(self, "y2", 0.0, 1),
             ];
             if g[0] == g[2] && g[1] == g[3] {
-                return Ok(GradientOutcome::Paint(last.solid()));
+                return Ok(GradientOutcome::Paint(Box::new(last.solid())));
             }
             Geometry::Linear(g)
         } else {
@@ -1571,7 +1750,7 @@ impl<'d> Importer<'_, 'd> {
                 return Ok(GradientOutcome::Nothing);
             }
             if r == 0.0 {
-                return Ok(GradientOutcome::Paint(last.solid()));
+                return Ok(GradientOutcome::Paint(Box::new(last.solid())));
             }
             if (fx - cx).hypot(fy - cy) > r + 1e-12 {
                 self.note(loc, LossKind::Approximated, "radial_focal_outside_circle");
@@ -1611,7 +1790,7 @@ impl<'d> Importer<'_, 'd> {
                 fr,
             },
         };
-        Ok(GradientOutcome::Paint(ResolvedPaint {
+        Ok(GradientOutcome::Paint(Box::new(ResolvedPaint {
             paint: StudioPaint::Gradient {
                 gradient: StudioGradient {
                     geometry,
@@ -1624,7 +1803,8 @@ impl<'d> Importer<'_, 'd> {
             },
             opacity: 100.0,
             units: Some(units),
-        }))
+            binding: None,
+        })))
     }
 
     /// A gradient coordinate in the gradient's own space. Percentages are fractions for
@@ -1725,8 +1905,9 @@ impl<'d> Importer<'_, 'd> {
         &mut self,
         rows: Vec<StudioAppearanceRow>,
         units: Vec<(usize, GradientUnits)>,
+        bindings: Vec<(usize, PatternBinding)>,
     ) -> Result<String> {
-        let key = format!("{rows:?}{units:?}");
+        let key = format!("{rows:?}{units:?}{bindings:?}");
         if let Some(&i) = self.style_index.get(&key) {
             return Ok(self.styles[i].style_id.clone());
         }
@@ -1735,6 +1916,19 @@ impl<'d> Importer<'_, 'd> {
         let style_id = self.mint_id("SSTY")?;
         let ordinal = self.styles.len().saturating_add(1);
         self.style_index.insert(key, self.styles.len());
+        // A pattern row is bound in the vector records together with its style (a style that
+        // exists always has its bindings: rollbacks cut both).
+        for (row, binding) in bindings {
+            let row = u32::try_from(row).map_err(|_| VectorError::InvalidGeometry)?;
+            self.records.pattern_paints.push(StudioPatternPaint {
+                style_id: style_id.clone(),
+                row,
+                pattern_id: binding.pattern_id,
+                placement: hsk_studio_folio::StudioPatternPlacement::Matrix {
+                    matrix: binding.matrix,
+                },
+            });
+        }
         self.gradient_provenance
             .extend(units.into_iter().map(|(row, units)| GradientProvenance {
                 style_id: style_id.clone(),
@@ -1767,12 +1961,16 @@ impl<'d> Importer<'_, 'd> {
         no_fill: bool,
         loc: &str,
     ) -> Result<()> {
+        if let Some(rule) = self.clip_rule {
+            return self.emit_clip_shape(el, ctx, local, subpaths, rule, loc);
+        }
         let m = ctx.matrix;
         if !m.uniform() {
             self.note(loc, LossKind::Approximated, "stroke_width_nonuniform_scale");
         }
         let bbox = user_bbox(&subpaths);
         let st = &ctx.st;
+        self.cur_depth = ctx.depth;
         let fill = if no_fill {
             None
         } else {
@@ -1823,8 +2021,8 @@ impl<'d> Importer<'_, 'd> {
                         .collect::<Result<_>>()?,
                     dash_offset: length(st.dash_offset * scale)?,
                 };
-                let units = paint.units;
-                Ok((paint.stroke_row(style), units))
+                let (units, binding) = (paint.units, paint.binding.clone());
+                Ok((paint.stroke_row(style), units, binding))
             })
             .transpose()?;
         let winding = if fill.is_some() {
@@ -1833,8 +2031,8 @@ impl<'d> Importer<'_, 'd> {
             Winding::None
         };
         let fill_row = fill.map(|paint| {
-            let units = paint.units;
-            (paint.fill_row(), units)
+            let (units, binding) = (paint.units, paint.binding.clone());
+            (paint.fill_row(), units, binding)
         });
         let mut ordered = Vec::with_capacity(2);
         if st.stroke_first {
@@ -1846,45 +2044,20 @@ impl<'d> Importer<'_, 'd> {
         }
         let mut rows = Vec::with_capacity(ordered.len());
         let mut units = Vec::new();
-        for (index, (row, row_units)) in ordered.into_iter().enumerate() {
+        let mut bindings = Vec::new();
+        for (index, (row, row_units, binding)) in ordered.into_iter().enumerate() {
             rows.push(row);
             units.extend(row_units.map(|u| (index, u)));
+            bindings.extend(binding.map(|b| (index, b)));
         }
         let style_id = if rows.is_empty() {
             None
         } else {
-            Some(self.style_id(rows, units)?)
+            Some(self.style_id(rows, units, bindings)?)
         };
         let layer_id = self.mint_id("SLYR")?;
         let first_path = self.paths.len();
-        let mut path_ids = Vec::with_capacity(subpaths.len());
-        for sub in subpaths {
-            let mut anchors = Vec::with_capacity(sub.anchors.len());
-            for a in &sub.anchors {
-                let (pos, cin, cout) = (m.apply(a.pos), m.apply(a.cin), m.apply(a.cout));
-                for v in [pos, cin, cout].iter().flatten() {
-                    if !v.is_finite() || v.abs() > COORDINATE_LIMIT {
-                        return Err(VectorError::InvalidGeometry);
-                    }
-                }
-                anchors.push(Anchor {
-                    position: point(pos)?,
-                    incoming: point([cin[0] - pos[0], cin[1] - pos[1]])?,
-                    outgoing: point([cout[0] - pos[0], cout[1] - pos[1]])?,
-                    handle_mirroring: Mirroring::None,
-                });
-            }
-            let path_id = self.mint_id("SVPT")?;
-            path_ids.push(path_id.clone());
-            self.outsets.push(outset);
-            self.paths.push(VectorPath {
-                path_id,
-                layer_id: layer_id.clone(),
-                closed: sub.closed,
-                anchors,
-                winding,
-            });
-        }
+        let path_ids = self.push_subpaths(subpaths, m, winding, &layer_id, outset)?;
         if let Some(style_id) = style_id {
             self.spend_design(1)?;
             self.nodes.push(StudioNodeDesign {
@@ -1920,9 +2093,97 @@ impl<'d> Importer<'_, 'd> {
             masking::Target {
                 layer: Some(layer_index),
                 first_path,
+                depth: ctx.depth,
             },
             loc,
         )
+    }
+
+    /// Converts subpaths to document-point `VectorPath`s of `layer_id` (coordinates beyond the
+    /// cap or not finite are `InvalidGeometry`) and returns their ids.
+    fn push_subpaths(
+        &mut self,
+        subpaths: Vec<RawSubpath>,
+        m: Affine,
+        winding: Winding,
+        layer_id: &str,
+        outset: f64,
+    ) -> Result<Vec<String>> {
+        let mut path_ids = Vec::with_capacity(subpaths.len());
+        for sub in subpaths {
+            let mut anchors = Vec::with_capacity(sub.anchors.len());
+            for a in &sub.anchors {
+                let (pos, cin, cout) = (m.apply(a.pos), m.apply(a.cin), m.apply(a.cout));
+                for v in [pos, cin, cout].iter().flatten() {
+                    if !v.is_finite() || v.abs() > COORDINATE_LIMIT {
+                        return Err(VectorError::InvalidGeometry);
+                    }
+                }
+                anchors.push(Anchor {
+                    position: point(pos)?,
+                    incoming: point([cin[0] - pos[0], cin[1] - pos[1]])?,
+                    outgoing: point([cout[0] - pos[0], cout[1] - pos[1]])?,
+                    handle_mirroring: Mirroring::None,
+                });
+            }
+            let path_id = self.mint_id("SVPT")?;
+            path_ids.push(path_id.clone());
+            self.outsets.push(outset);
+            self.paths.push(VectorPath {
+                path_id,
+                layer_id: layer_id.to_owned(),
+                closed: sub.closed,
+                anchors,
+                winding,
+            });
+        }
+        Ok(path_ids)
+    }
+
+    /// A member shape of a `clipPath`: geometry only (the clip rule is its winding), no paint and
+    /// no style. A `clip-path` on the member intersects it; `mask`, `filter` and `opacity` do not
+    /// apply inside a clip (CSS Masking 1 5.1).
+    fn emit_clip_shape(
+        &mut self,
+        el: Node,
+        ctx: &Ctx,
+        local: &Local,
+        subpaths: Vec<RawSubpath>,
+        rule: Winding,
+        loc: &str,
+    ) -> Result<()> {
+        let layer_id = self.mint_id("SLYR")?;
+        let first_path = self.paths.len();
+        let path_ids = self.push_subpaths(subpaths, ctx.matrix, rule, &layer_id, 0.0)?;
+        let layer_index = self.layers.len();
+        self.layers.push(StudioLayer {
+            schema_id: LayerSchema::V1,
+            layer_id,
+            name: Self::layer_name(el),
+            parent: ctx.parent.clone(),
+            kind: "vector".into(),
+            payload: Payload::Vector { path_ids },
+            visible: true,
+            appearance: None,
+            text_frame: None,
+        });
+        if let Some(value) = &local.clip_path {
+            let only = Local {
+                clip_path: Some(value.clone()),
+                ..Local::new()
+            };
+            self.masking(
+                &only,
+                ctx.matrix,
+                masking::Target {
+                    layer: Some(layer_index),
+                    first_path,
+                    depth: ctx.depth,
+                },
+                loc,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -1958,6 +2219,17 @@ struct ResolvedPaint {
     opacity: f64,
     /// SVG gradient units, when the paint is a gradient.
     units: Option<GradientUnits>,
+    /// The pattern this row paints with; `paint` is then the stand-in for readers of the design
+    /// records alone (the author's fallback colour, or a colour derived from the tile).
+    binding: Option<PatternBinding>,
+}
+
+/// A pattern placed on a style row (`StudioPatternPaint` once the style id is known).
+#[derive(Clone, Debug, PartialEq)]
+struct PatternBinding {
+    pattern_id: String,
+    /// Tile space (points, tile origin at the top-left of the tile cell) -> document points.
+    matrix: [f64; 6],
 }
 
 impl ResolvedPaint {
@@ -1968,6 +2240,7 @@ impl ResolvedPaint {
             },
             opacity: clean(alpha * 100.0).clamp(0.0, 100.0),
             units: None,
+            binding: None,
         }
     }
 
@@ -2020,7 +2293,7 @@ fn row_weight(row: &StudioAppearanceRow) -> usize {
 }
 
 enum GradientOutcome {
-    Paint(ResolvedPaint),
+    Paint(Box<ResolvedPaint>),
     /// The reference resolves but paints nothing (no stops, degenerate); already reported.
     Nothing,
     /// No gradient has this id.
