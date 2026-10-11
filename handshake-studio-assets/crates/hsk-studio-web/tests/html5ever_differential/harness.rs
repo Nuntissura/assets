@@ -3,7 +3,7 @@
 use crate::events::{Category, Ev, drop_implied, first_difference};
 use crate::model::{has_skeleton, model_attribute_count, model_events, parse_model};
 use crate::oracle::{Mode, reference_events};
-use hsk_studio_web::{LossKind, NodeKind, WebDoc};
+use hsk_studio_web::{LossKind, Namespace, NodeKind, WebDoc};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -30,13 +30,28 @@ pub enum Outcome {
 /// `</>` (13.2.5.7, U+003E: a parse error, then the data state) and 13.2.6.4.7 ignores the next LF token. The reference is
 /// therefore given the input without each `</>` the crate reads as such (no token) that directly follows a `>` or starts
 /// the input: there the tokenizer is in the data state with nothing pending, so removing it changes no token. Every other
-/// `</>` (after `<` or `&`, where removal would change tokens) is left in place.
-fn oracle_input(doc: &WebDoc, input: &str) -> String {
+/// `</>` (after `<` or `&`, where removal would change tokens) is left in place, and so is one inside an HTML `noscript`
+/// for the scripting-enabled reading (there the content is RAWTEXT and `</>` is text).
+fn oracle_input(doc: &WebDoc, input: &str, scripting: bool) -> String {
     let b = input.as_bytes();
+    let in_noscript = |mut id: usize| {
+        while let Some(p) = doc.node(id).and_then(|n| n.parent) {
+            if doc.node(p).is_some_and(|n| n.namespace == Namespace::Html)
+                && doc.local_name(p).as_deref() == Some("noscript")
+            {
+                return true;
+            }
+            id = p;
+        }
+        false
+    };
     let mut cut: Vec<std::ops::Range<usize>> = (0..doc.len())
-        .filter_map(|id| doc.node(id))
-        .filter(|n| n.kind == NodeKind::Unsupported && doc.slice(&n.span) == "</>")
-        .map(|n| n.span.clone())
+        .filter(|&id| {
+            doc.node(id)
+                .is_some_and(|n| n.kind == NodeKind::Unsupported && doc.slice(&n.span) == "</>")
+                && !(scripting && in_noscript(id))
+        })
+        .filter_map(|id| doc.node(id).map(|n| n.span.clone()))
         .collect();
     cut.sort_by_key(|s| s.start);
     let mut out = String::with_capacity(input.len());
@@ -66,10 +81,10 @@ pub fn check(input: &str, mode: Mode) -> Outcome {
     } else {
         mode
     };
-    let reference_input = oracle_input(&doc, input);
     let mut found = Vec::new();
     for scripting in [true, false] {
         let actual = model_events(&doc, scripting, mode == Mode::Document);
+        let reference_input = oracle_input(&doc, input, scripting);
         let expected = drop_implied(
             &reference_events(&reference_input, mode, scripting),
             &actual,
