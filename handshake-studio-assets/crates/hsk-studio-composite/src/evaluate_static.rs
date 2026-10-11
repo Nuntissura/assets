@@ -30,6 +30,14 @@ pub struct StepEval {
     pub status: StepStatus,
 }
 
+impl StepEval {
+    /// A step that evaluated fine and contributes nothing (an empty group, a raster without
+    /// tiles). An unavailable step is NOT empty: it blocks its parent instead of vanishing.
+    pub(crate) fn is_ready_and_empty(&self) -> bool {
+        self.status == StepStatus::Ready && self.extent.is_none()
+    }
+}
+
 /// A document-level or step-level reason the render cannot be complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unavailable {
@@ -291,6 +299,9 @@ pub fn evaluate(
                 let mut have_base = false;
                 // The current clip base is a rendered (visible, non-empty) pass-through group.
                 let mut pass_through_base = false;
+                // The current clip base is hidden or empty: its clipped run is dropped with it
+                // (the lowering rule), so those layers neither block the parent nor count.
+                let mut base_dropped = false;
                 for input in inputs {
                     let Some(&i) = seen.get(input) else {
                         return Err(if all.contains(input) {
@@ -317,6 +328,11 @@ pub fn evaluate(
                     if !clipped {
                         pass_through_base =
                             rendered && plan.steps[i].appearance().mode == StudioBlendMode::PassThrough;
+                        base_dropped = !child.visible || child.is_ready_and_empty();
+                    } else if base_dropped {
+                        // Dropped with its hidden or empty base: not refused, not unavailable, no
+                        // extent (R3: it used to block the parent through the status match below).
+                        continue;
                     } else if pass_through_base && rendered {
                         ledger.record("clip_base_pass_through", Exactness::Unsupported);
                         blocked.get_or_insert_with(|| {

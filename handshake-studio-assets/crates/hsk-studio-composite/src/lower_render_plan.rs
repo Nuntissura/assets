@@ -14,7 +14,8 @@
 //!
 //! Clipping (Folio `clipped`): a clipped layer clips to the nearest unclipped layer below it in
 //! the same group and lowers to pigment's clip-to-base route (`MaskInput::clip_to_base`, Approximate:
-//! the Photoshop rule is UNVERIFIED). Hidden base = clipped layers dropped with it. Never silently
+//! the Photoshop rule is UNVERIFIED). A hidden or empty base drops its clipped layers with it, in
+//! evaluation too (they neither block the parent nor add extent). Never silently
 //! ignored: a clipped layer with no base, with its own mask (one mask slot) or referencing a
 //! pass-through group, a pass-through group serving as the clip base (`clip_base_pass_through`,
 //! Unsupported in the evaluation ledger, consistent with the backends; Photoshop's semantics for it
@@ -237,7 +238,10 @@ pub fn lower_to_render_plan(
             continue;
         }
         if let Step::Composite { inputs, .. } = &plan.steps[i] {
-            let mut base_visible: Option<bool> = None;
+            // Is the nearest unclipped input below a live base? (`None`: no unclipped input yet.)
+            // A hidden or empty base takes its clipped layers with it, so they are not part of
+            // the render and their own status is not checked (the evaluation rule).
+            let mut base_live: Option<bool> = None;
             for input in inputs {
                 let child = *index
                     .get(input)
@@ -247,7 +251,7 @@ pub fn lower_to_render_plan(
                 }
                 let step = &plan.steps[child];
                 if step.appearance().clipped {
-                    match base_visible {
+                    match base_live {
                         None => {
                             return Err(CompositeError::Unavailable(format!(
                                 "{}:clip_without_base",
@@ -258,7 +262,7 @@ pub fn lower_to_render_plan(
                         Some(true) => {}
                     }
                 } else {
-                    base_visible = Some(step.visible());
+                    base_live = Some(step.visible() && !report.steps[child].is_ready_and_empty());
                 }
                 if step.visible() {
                     stack.push(child);

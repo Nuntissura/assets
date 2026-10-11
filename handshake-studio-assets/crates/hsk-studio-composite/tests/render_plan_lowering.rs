@@ -592,3 +592,115 @@ fn pass_through_group_as_clip_base_is_unavailable_and_unsupported_in_the_ledger(
         assert_eq!(top.layers[1].mask, Some(MaskInput::clip_to_base()));
     });
 }
+
+#[test]
+fn hidden_or_empty_clip_base_drops_its_clipped_run_even_when_that_run_is_unavailable() {
+    bounded_case("hidden_or_empty_clip_base_drops_its_clipped_run", || {
+        // R3: "a hidden or empty base drops its clipped layers" held for lowering but not for
+        // evaluation: a clipped layer that is itself Unavailable (here: clipped AND carrying its own
+        // mask, one mask slot) blocked the parent although the run is dropped with its base.
+        let root = addr(1, "mix", "out");
+        let token = CancellationToken::default();
+        let clip = |v: &mut Value, i: usize, mask: Option<Value>| {
+            v["layers"][i]["appearance"] = appearance(100.0, 100.0, 2, false);
+            v["layers"][i]["appearance"]["clipped"] = json!(true);
+            if let Some(m) = mask {
+                v["layers"][i]["appearance"]["mask"] = m;
+            }
+        };
+        let own_mask = |n: u8, key: &str| json!({"tiles":[mask_tile(n, key)],"enabled":true,"linked":true});
+        let reason_of = |step: &hsk_studio_composite::StepEval| match &step.status {
+            StepStatus::Unavailable(r) => r.clone(),
+            StepStatus::Ready => String::new(),
+        };
+        let eval = |v: &Value| {
+            let snap = open(v);
+            let plan = lower(&snap, 7, BlendSpace::Encoded, &Limits::default(), &token).unwrap();
+            let report = evaluate(&plan, &snap, &token).unwrap();
+            (plan, report)
+        };
+
+        // Hidden base (raster 2), clipped raster 3 with its own mask: the run is dropped.
+        let mut hidden = tiled();
+        hidden["layers"][1]["visible"] = json!(false);
+        clip(&mut hidden, 2, Some(own_mask(3, "m3")));
+        let (_, report) = eval(&hidden);
+        // The clipped layer itself is honestly Unavailable, but the parent is not blocked by it
+        // and, with every unclipped input hidden, has no extent.
+        assert_eq!(
+            reason_of(report.step(&addr(3, "source", "out")).unwrap()),
+            "clipped_with_mask_unsupported"
+        );
+        let parent = report.step(&root).unwrap();
+        assert_eq!(parent.status, StepStatus::Ready);
+        assert_eq!(parent.extent, None);
+        let low = lowered(&hidden, BlendSpace::Encoded, &root).unwrap();
+        let PlanNode::Group(top) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("root") };
+        assert!(top.layers.is_empty());
+        assert!(low.sources.is_empty());
+
+        // Empty base (visible raster 2 without tiles): the same rule, evaluation and lowering.
+        let mut empty = tiled();
+        empty["layers"][1]["payload"] = json!({"payload_kind":"raster","tiles":[]});
+        clip(&mut empty, 2, Some(own_mask(3, "m3")));
+        let (_, report) = eval(&empty);
+        assert_eq!(report.step(&addr(2, "source", "out")).unwrap().status, StepStatus::Ready);
+        assert_eq!(report.step(&addr(2, "source", "out")).unwrap().extent, None);
+        assert_eq!(report.step(&root).unwrap().status, StepStatus::Ready);
+        assert_eq!(report.step(&root).unwrap().extent, None);
+        let low = lowered(&empty, BlendSpace::Encoded, &root).unwrap();
+        let PlanNode::Group(top) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("root") };
+        assert!(top.layers.is_empty());
+
+        // Control: a visible, non-empty base keeps the refusal -- the unavailable clipped layer
+        // blocks the parent (typed), in evaluation and in lowering.
+        let mut live = tiled();
+        clip(&mut live, 2, Some(own_mask(3, "m3")));
+        let (_, report) = eval(&live);
+        let reason = reason_of(report.step(&root).unwrap());
+        assert!(reason.starts_with("input_unavailable:") && reason.contains(&identity("SLYR", 3)), "{reason}");
+        match lowered(&live, BlendSpace::Encoded, &root) {
+            Err(CompositeError::Unavailable(r)) => assert!(r.contains("clipped_with_mask_unsupported"), "{r}"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+
+        // A later unclipped input starts a new run: [hidden base 2, clipped 3 (unavailable, dropped),
+        // visible base 6, clipped 7]. Layer 7 clipped to base 6 is live again.
+        let four = |y_mask: Option<Value>| {
+            let mut v = tiled();
+            v["layers"][1]["visible"] = json!(false);
+            clip(&mut v, 2, Some(own_mask(3, "m3")));
+            for (n, key, edge_n) in [(6u8, "t60", 2u64), (7, "t70", 3)] {
+                v["layers"].as_array_mut().unwrap().push(layer(
+                    n,
+                    "raster",
+                    json!({"payload_kind":"raster","tiles":[tile(n, key, 0, 0, 16, 16)]}),
+                ));
+                v["graph"]["operations"].as_array_mut().unwrap().push(source(n, "image"));
+                v["graph"]["edges"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(edge(address(n, "source", "out"), address(1, "mix", "inputs"), edge_n));
+            }
+            clip(&mut v, 6, y_mask);
+            v
+        };
+        // Y (layer 7) with its own mask is Unavailable and its base (layer 6) is live: blocks.
+        let (_, report) = eval(&four(Some(own_mask(7, "m7"))));
+        let reason = reason_of(report.step(&root).unwrap());
+        assert!(reason.contains(&identity("SLYR", 7)) && !reason.contains(&identity("SLYR", 3)), "{reason}");
+        // Y without a mask: root Ready with the extent of base 6 only (clipped layers add none and
+        // hidden base 2 adds none); lowering keeps [base 6, clipped 7] and drops the clipped 3.
+        let v = four(None);
+        let (_, report) = eval(&v);
+        let parent = report.step(&root).unwrap();
+        assert_eq!(parent.status, StepStatus::Ready);
+        assert_eq!(parent.extent, Some(Rect { x: 0, y: 0, width: 16, height: 16 }));
+        let low = lowered(&v, BlendSpace::Encoded, &root).unwrap();
+        let PlanNode::Group(top) = &low.plan.nodes[low.plan.root.0 as usize] else { panic!("root") };
+        assert_eq!(top.layers.len(), 2);
+        assert!(top.layers[0].mask.is_none());
+        assert_eq!(top.layers[1].mask, Some(MaskInput::clip_to_base()));
+        assert_eq!(low.sources.len(), 2);
+    });
+}
