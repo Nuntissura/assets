@@ -1,3 +1,9 @@
+//! Region selector. `redact_and_save` runs it and then FLATTENS every page carrying a region (Operator
+//! decision D27, `flatten.rs`): the page becomes its raster with the regions painted opaque, so painted
+//! classes the selector does not remove (images, vectors, shadings, inline images) are painted over
+//! (`RedactionReport::painted_over`) instead of refused. The selector's own job is the needles of the
+//! second check: the strings drawn in the region. Below, the selector alone (`PdfDoc::redact_region`).
+//!
 //! Irreversible region redaction for content that can be proven removed:
 //! text-showing operators whose glyph run may touch the region are deleted from the page content
 //! stream (the page then points at a NEW stream object; the old stream is unreachable and dropped

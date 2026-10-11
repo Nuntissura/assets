@@ -110,8 +110,9 @@ fn token() -> CancellationToken {
 
 /// Default limits, with a 36 dpi flattening raster (Operator decision D27): these tests read structure
 /// and text, not pixels, and a debug build draws and proves a 150 dpi page in about two seconds.
+#[allow(clippy::field_reassign_with_default)]
 fn limits() -> Limits {
-    #[allow(unused_mut, clippy::field_reassign_with_default)]
+    #[allow(unused_mut)]
     let mut l = Limits::default();
     l.flatten_dpi = 36; // D27-new-api
     l
@@ -2541,7 +2542,9 @@ fn stray_streams_and_hidden_payloads_are_not_kept_text() {
     // NaN) reads as touching the region, so the string is removed instead of silently kept.
     let scale = format!("1{} 0 0 1{} 0 0 cm\n", "0".repeat(38), "0".repeat(38));
     let nan_page = format!("{}{TEXT_IN_REGION}", scale.repeat(9));
-    let out = run(&build(&base_objs(nan_page.as_bytes(), "<< /Title (T) >>"), "/Info 7 0 R", b""));
+    // (Not split: the region text is the last line of this page.)
+    let mut doc = open(&build(&base_objs(nan_page.as_bytes(), "<< /Title (T) >>"), "/Info 7 0 R", b""));
+    let out = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
     assert!(independent_streams(&out.bytes).iter().all(|s| find(s, b"SECRET-ALPHA").is_none()), "the unlocatable string was kept");
     assert!(out.reports[0].removed_text.iter().any(|t| find(t, b"SECRET-ALPHA").is_some()), "{:?}", out.reports[0]);
 

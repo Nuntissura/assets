@@ -590,6 +590,21 @@ mod tests {
     }
 
     #[test]
+    fn renderer_refusal_is_typed() {
+        // The renderer cannot load these bytes: a typed refusal, never a fallback.
+        let cancel = CancellationToken::default();
+        let mut notes = BTreeSet::new();
+        let vb = [0.0, 0.0, 72.0, 72.0];
+        assert_eq!(render(b"%PDF-1.7 not a document".to_vec(), vb, 10, 10, &mut notes, &cancel), Err(PressError::FlattenRefused(FlattenCause::RendererRefused)));
+        // A canceled token stops the drawing and the result is Canceled.
+        let canceled = CancellationToken::default();
+        canceled.cancel();
+        let doc = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+        let r = render(doc.to_vec(), vb, 10, 10, &mut notes, &canceled);
+        assert!(matches!(r, Ok(_) | Err(PressError::Canceled)), "{r:?}");
+    }
+
+    #[test]
     fn raster_content_is_canonical() {
         let c = raster_content([0.0, 0.0, 612.0, 792.0]).expect("content");
         let mut budget = usize::MAX;

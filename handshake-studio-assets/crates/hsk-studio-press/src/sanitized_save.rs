@@ -1,5 +1,13 @@
 //! Sanitized full save and the independent "full reachable payload" proof.
 //!
+//! NARROWED CLAIM (Operator decision D27, "Flatten + narrow"): a redaction clears its regions by
+//! flattening (`flatten.rs`: every page carrying a region becomes its raster); the payload proof below
+//! is the SECOND check, verified against Studio's own strict PDF reading: it reads the saved file as
+//! this crate's reader does and says nothing about a viewer that reads the same bytes differently.
+//! Anything outside the supported profile (DESCRIPTOR `proof.supported_profile`) is NotProven by
+//! default; known viewer-differential classes are listed in DESCRIPTOR `proof.limitations` with their
+//! pre-review ids (test `descriptor_states_the_narrowed_claim_and_its_limitations`).
+//!
 //! `verify_payload_absent` re-opens the OUTPUT bytes with the bounded reader (it shares no state
 //! with the redaction code) and looks for the removed strings. Sound by construction: every place
 //! is scanned and only positive evidence exempts a match.
@@ -128,7 +136,9 @@ pub struct RasterStream {
 }
 
 /// Why a result does not read as proven. Typed so a consumer can tell "a needle was found" from
-/// "some text could not be checked".
+/// "some text could not be checked". Every reason is judged by Studio's own strict PDF reading (module
+/// docs, narrowed claim): proven means "verified against that reading", not "no viewer can show it"; a
+/// redaction's regions are cleared by flattening, not by this check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotProven {
     /// A needle was found outside kept text (`hits`).
@@ -1316,8 +1326,21 @@ impl RedactedOutput {
         v
     }
 
-    /// The regions themselves are proven clear: every mark removed (an image under a region is
-    /// removed only with `UnsupportedPolicy::RemoveImages`, otherwise the region is incomplete), no
+    /// Every page carrying a region was flattened (Operator decision D27) and the SAVED bytes hold, for
+    /// each, exactly the raster page with every pixel of every region the fill colour
+    /// (`flatten::check_flattened`; `residual_in_region == 0`), in a file with one xref section and no
+    /// unreachable or unlisted objects. This is the by-construction claim; it does not depend on the
+    /// needle search (tests `prereview_region_pages_are_flattened`,
+    /// `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`).
+    pub fn region_flattened(&self) -> bool {
+        let pages: BTreeSet<u32> = self.reports.iter().map(|r| r.page_index).collect();
+        let flat: BTreeSet<u32> = self.flattened.iter().map(|f| f.page_index).collect();
+        pages == flat && self.residual_in_region == 0 && !self.proof.structural_reasons(false).contains(&NotProven::Structure)
+    }
+
+    /// The regions themselves are proven clear: every region page flattened and verified on the saved
+    /// bytes (`region_flattened`), every text the selector found in the regions placed (painted classes
+    /// do not count, `RedactionReport::painted_over`), no
     /// text whose geometry is not computed on a region's page (`region_undetermined`), a fresh pass over
     /// the saved bytes selects nothing, one xref section, no unreachable or unlisted objects, every
     /// stream of the saved file decoded (`proof.streams_not_decodable` names the blockers; raster-class

@@ -62,8 +62,9 @@ fn token() -> CancellationToken {
 
 /// Default limits at a 36 dpi raster: the structural checks need no detail, and a debug build draws and
 /// proves a 150 dpi page in about two seconds.
+#[allow(clippy::field_reassign_with_default)]
 fn quick() -> Limits {
-    #[allow(unused_mut, clippy::field_reassign_with_default)]
+    #[allow(unused_mut)]
     let mut l = Limits::default();
     l.flatten_dpi = 36; // D27-new-api
     l
