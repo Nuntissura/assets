@@ -1,8 +1,8 @@
 //! How an instance sits in the Folio document: one layer of kind `component_instance` whose payload
 //! is a `PrimitiveReference` to the `SCIN-*` instance record. Folio stays the single document; the
 //! instance record, definitions and variables are plain values owned by the host (STU-CON-008).
-use crate::instance_resolution::check_id;
 use crate::R;
+use crate::instance_resolution::check_id;
 use hsk_studio_accord::SCHEMA_STUDIO_COMPONENT_INSTANCE;
 use hsk_studio_folio::{LayerSchema, Parent, Payload, StudioLayer};
 

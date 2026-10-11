@@ -1,10 +1,14 @@
-//! Responsive constraints (STU-DS-151/152): `MIN | CENTER | MAX | STRETCH | SCALE` on both axes.
+//! Responsive constraints (STU-DS-151/152): `MIN | CENTER | MAX | STRETCH | SCALE` on both axes,
+//! read from Folio's `StudioConstraint` records.
 //!
-//! All values are points in the parent's local coordinate space. Resizing is a pure function of the
-//! old rectangle, the old parent size and the new parent size, so it is deterministic and composes
-//! down a hierarchy: a child's new size is the parent size for its own children.
-use crate::{ComponentDef, ComponentsError as E, R};
+//! All values are in the parent's local coordinate space and in the document's geometry unit
+//! (points for a `pt` document). Resizing is a pure function of the old rectangle, the old parent
+//! size and the new parent size, so it is deterministic and composes down a hierarchy: a child's new
+//! size is the parent size for its own children.
+use super::design::Design;
+use crate::{ComponentsError as E, R};
 use hsk_studio_accord::CancellationToken;
+use hsk_studio_folio::{ConstraintType, StudioConstraint};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,40 +24,6 @@ pub struct SizePt {
     pub h: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ConstraintKind {
-    /// Pin to left / top.
-    Min,
-    /// Keep centred, preserve size.
-    Center,
-    /// Pin to right / bottom.
-    Max,
-    /// Pin both edges, resize.
-    Stretch,
-    /// Keep position and size as the same fraction of the parent.
-    Scale,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Constraints {
-    pub horizontal: ConstraintKind,
-    pub vertical: ConstraintKind,
-}
-impl Default for Constraints {
-    /// STU-DS-152 default: top-left.
-    fn default() -> Self {
-        Self {
-            horizontal: ConstraintKind::Min,
-            vertical: ConstraintKind::Min,
-        }
-    }
-}
-
-/// Rectangle (parent-local, at the component's authored size) plus its constraints.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NodeGeometry {
-    pub rect: RectPt,
-    pub constraints: Constraints,
-}
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedNode {
     pub node_id: String,
@@ -65,22 +35,16 @@ fn finite_size(s: f64) -> bool {
 }
 
 /// One axis: `(position, size)` of the child after the parent goes from `old` to `new` points.
-fn axis(
-    pos: f64,
-    size: f64,
-    old: f64,
-    new: f64,
-    kind: ConstraintKind,
-) -> Result<(f64, f64), E> {
+fn axis(pos: f64, size: f64, old: f64, new: f64, kind: ConstraintType) -> Result<(f64, f64), E> {
     let (p, s) = match kind {
-        ConstraintKind::Min => (pos, size),
+        ConstraintType::Min => (pos, size),
         // Distance to the far edge is kept: pos' = new - (old - pos - size) - size.
-        ConstraintKind::Max => (pos + (new - old), size),
+        ConstraintType::Max => (pos + (new - old), size),
         // Offset of the centre from the parent centre is kept: pos' = pos + (new - old) / 2.
-        ConstraintKind::Center => (pos + (new - old) / 2.0, size),
+        ConstraintType::Center => (pos + (new - old) / 2.0, size),
         // Both edge offsets are kept: size' = size + (new - old).
-        ConstraintKind::Stretch => (pos, size + (new - old)),
-        ConstraintKind::Scale => {
+        ConstraintType::Stretch => (pos, size + (new - old)),
+        ConstraintType::Scale => {
             if old <= 0.0 {
                 return Err(E::InvalidGeometry);
             }
@@ -99,7 +63,7 @@ pub fn apply_constraints(
     child: RectPt,
     old_parent: SizePt,
     new_parent: SizePt,
-    c: Constraints,
+    c: &StudioConstraint,
 ) -> R<RectPt> {
     if !(child.x.is_finite() && child.y.is_finite())
         || !finite_size(child.w)
@@ -116,38 +80,60 @@ pub fn apply_constraints(
     Ok(RectPt { x, y, w, h })
 }
 
-/// Resizes the component definition to `new_size` and places every node that carries geometry
-/// (definition order, parents before children). The definition is never changed. A node whose
-/// parent has no geometry, or a definition without `size`, is refused.
+/// Resizes the component definition `component_id` (a set id names its default variant) to
+/// `new_size` and places every definition node that carries an authored rectangle (document order,
+/// parents before children). A node's constraint is its Folio `StudioConstraint` record, else the
+/// STU-DS-152 default (top-left). Nothing is changed. A definition whose container layer has no
+/// rectangle (the component size), or a node whose parent has none, is refused.
 pub fn resize_component(
-    def: &ComponentDef,
+    design: &Design,
+    component_id: &str,
     new_size: SizePt,
     cancel: &CancellationToken,
 ) -> R<Vec<PlacedNode>> {
-    let root = def.size.ok_or(E::InvalidGeometry)?;
+    let component = design
+        .component(component_id)
+        .ok_or_else(|| E::NoSuchComponent(component_id.to_owned()))?;
+    let root = design
+        .local()
+        .nodes
+        .get(&component.layer_id)
+        .and_then(|n| n.rect)
+        .map(|r| SizePt { w: r.w, h: r.h })
+        .ok_or(E::InvalidGeometry)?;
+    let default = StudioConstraint::top_left();
     let mut done: BTreeMap<&str, (SizePt, SizePt)> = BTreeMap::new();
     let mut out = Vec::new();
-    for n in &def.nodes {
+    for n in design.definition_nodes(component) {
         cancel.check().map_err(|_| E::Canceled)?;
-        let Some(g) = n.geometry else { continue };
-        let (old_parent, new_parent) = match &n.parent {
-            None => (root, new_size),
-            Some(p) => *done.get(p.as_str()).ok_or(E::InvalidGeometry)?,
+        let Some(rect) = n.local.and_then(|l| l.rect) else {
+            continue;
         };
-        let rect = apply_constraints(g.rect, old_parent, new_parent, g.constraints)?;
+        let constraint = n
+            .design
+            .and_then(|d| d.constraints.as_ref())
+            .unwrap_or(&default);
+        let (old_parent, new_parent) = match n.parent {
+            None => (root, new_size),
+            Some(p) => *done.get(p).ok_or(E::InvalidGeometry)?,
+        };
+        let placed = apply_constraints(rect, old_parent, new_parent, constraint)?;
         done.insert(
-            n.node_id.as_str(),
+            n.node_id,
             (
                 SizePt {
-                    w: g.rect.w,
-                    h: g.rect.h,
+                    w: rect.w,
+                    h: rect.h,
                 },
-                SizePt { w: rect.w, h: rect.h },
+                SizePt {
+                    w: placed.w,
+                    h: placed.h,
+                },
             ),
         );
         out.push(PlacedNode {
-            node_id: n.node_id.clone(),
-            rect,
+            node_id: n.node_id.to_owned(),
+            rect: placed,
         });
     }
     Ok(out)

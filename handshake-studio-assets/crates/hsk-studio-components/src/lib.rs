@@ -1,39 +1,35 @@
 //! Components, variables, responsive constraints, prototype actions within same document; no
 //! separate Figma-like app.
 //!
-//! Slice 1: component definitions and variant sets, instances with property-granular overrides,
-//! variables with collections, modes and alias chains, constraint-based resize, and a prototype
-//! action graph validated against the Folio document's frames. Everything is a pure function over
-//! borrowed values; results are proposals and typed refusals, never mutations of the inputs.
+//! The design records are Folio's: `hsk_studio_folio::StudioDesignRecords` (components, component
+//! sets, instances, variable collections and variables, per-node auto layout, child layout, size
+//! clamps, constraints, reactions and component property references), validated by
+//! `folio::validate_design_records`. This crate keeps no copy of them; it evaluates them: component
+//! definitions and variant sets, instances with property-granular overrides, variables with
+//! collections, modes and alias chains, constraint-based resize, auto layout, and a prototype action
+//! graph validated against the Folio document's frames. A [`Design`] indexes a Folio document, its
+//! record set and the [`LocalContent`] that Folio has no home for (definition-field literals,
+//! variable bindings, authored layer rectangles). Everything is a pure function over borrowed
+//! values; results are proposals and typed refusals, never mutations of the inputs.
 #![forbid(unsafe_code)]
 
 mod auto_layout;
 mod constraints;
+mod design;
 mod folio_bridge;
 mod instance_resolution;
 mod prototype;
 
-pub use auto_layout::{
-    AlignContent, AutoLayout, AutoLayoutResult, AxisSizing, ChildAlign, ChildSizing, CounterAlign,
-    LayoutLimits, LayoutMode, LayoutNode, PlacedBox, Placement, Positioning, PrimaryAlign,
-    SizeClamps, WrapMode, solve_auto_layout,
-};
-pub use constraints::{
-    ConstraintKind, Constraints, NodeGeometry, PlacedNode, RectPt, SizePt, apply_constraints,
-    resize_component,
-};
+pub use auto_layout::{AutoLayoutResult, LayoutLimits, PlacedBox, solve_auto_layout};
+pub use constraints::{PlacedNode, RectPt, SizePt, apply_constraints, resize_component};
+pub use design::{Design, LocalContent, NodeLocal};
 pub use folio_bridge::{INSTANCE_LAYER_BINDING, instance_layer};
 pub use instance_resolution::{
-    Collection, ComponentDef, ComponentSet, DefNode, DefRegistry, DroppedOverride, Instance,
-    InstanceProp, Limits, Mode, OVERRIDABLE_FIELDS, OverrideEdit, OverrideProposal, OverrideRecord,
-    PropType, PropertyDef, Resolution, ResolvedField, ResolvedVariable, Source, Value, VarEntry,
-    VarRegistry, VarType, Variable, check_footprint, is_overridable, propose_overrides,
+    DroppedOverride, Limits, OverrideEdit, OverrideProposal, Resolution, ResolvedField,
+    ResolvedVariable, Source, VariableTable, check_footprint, is_overridable, propose_overrides,
     rematch_overrides, resolve_instance, resolve_variable, swap_component, switch_variant,
 };
-pub use prototype::{
-    Action, FlowLimits, FlowReport, FlowWarning, Navigation, PrototypeFlow, Reaction, Trigger,
-    validate_flow,
-};
+pub use prototype::{FlowLimits, FlowReport, FlowWarning, PrototypeFlow, validate_flow};
 
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_observe::{FailureCode, Observation, Observe, Outcome, Receipt, SinkPort};
@@ -95,8 +91,28 @@ pub enum ComponentsError {
     /// A prototype destination or start frame is not a frame of the document.
     PrototypeTarget(String),
     UnsupportedPrototype(String),
+    /// A Folio validator refusal that has no more specific variant here (`validate_design_records`
+    /// reports the code and the offending record or field path, never document text).
+    Folio(hsk_studio_folio::Diagnostic),
     BudgetExceeded,
     Canceled,
+}
+impl From<hsk_studio_folio::Diagnostic> for ComponentsError {
+    /// Folio codes that name the same refusal keep their variant (variant completeness and
+    /// uniqueness, alias cycle, duplicate identity, budget, cancellation); the rest stays a
+    /// `Folio` refusal with Folio's code and target.
+    fn from(d: hsk_studio_folio::Diagnostic) -> Self {
+        use hsk_studio_folio::Code;
+        match d.code {
+            Code::Canceled => Self::Canceled,
+            Code::BudgetExceeded => Self::BudgetExceeded,
+            Code::VariantAssignmentIncomplete => Self::VariantAssignmentIncomplete(d.target),
+            Code::VariantAssignmentDuplicate => Self::VariantAssignmentDuplicate(d.target),
+            Code::VariableAliasCycle => Self::AliasCycle(d.target),
+            Code::DuplicateIdentity => Self::Duplicate(d.target),
+            _ => Self::Folio(d),
+        }
+    }
 }
 impl ComponentsError {
     pub fn code(&self) -> &'static str {
@@ -126,6 +142,7 @@ impl ComponentsError {
             Self::UnsupportedLayout(_) => "unsupported_layout",
             Self::PrototypeTarget(_) => "prototype_target",
             Self::UnsupportedPrototype(_) => "unsupported_prototype",
+            Self::Folio(_) => "folio_validation",
             Self::BudgetExceeded => "budget_exceeded",
             Self::Canceled => "canceled",
         }
@@ -177,4 +194,4 @@ pub fn report<T>(
     )
 }
 
-pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-COMPONENTS","version":1,"operation":"resolve_instance / propose_overrides / resolve_variable / apply_constraints / resize_component / validate_flow / solve_auto_layout: component definitions and variant sets, instances with property-granular overrides, variables with collections, modes and alias chains, constraint-based resize and a prototype action graph, all as pure values and revision-footprint proposals","operator":{"intent":"See exactly which value an instance field gets and from where, change one property without disturbing others, resize a component and see where children land, and check that prototype clicks lead to real frames","result":"Resolution {component_id, fields[{node_id, field, value, source, reads}]}, OverrideProposal {instance, resolution, write_footprint, read_footprint}, PlacedNode[] in points, FlowReport {reachable_frames, warnings} or a typed refusal","recovery":"alias_cycle/type_mismatch: fix the variable definitions; missing_mode_value: give every collection mode a value; unsupported_property: define the component property first; field_not_overridable: only the STU-DS-115 fields can be overridden; ambiguous_source: remove the duplicate literal/variable binding or duplicate override; stale_property: re-read the instance and re-propose; invalid_geometry: use finite non-negative point sizes and a parent large enough for stretched children; prototype_target: point actions at an existing artboard; canceled: nothing was produced"},"model":{"precedence":"STU-DS-116: local override, then instance component property (else the property default), then the definition literal, then the definition variable binding; exactly one source per field","variants":"instance of a set resolves to default_variant_id; VARIANT-type instance properties re-select the member; completeness and duplicate assignments are refused when the set is registered","variables":"collection modes (min 1), exactly one value per mode, alias chains walked with cycle and type checks, mode chosen per collection (default mode otherwise); a missing mode value is an error, never zero","overrides":"STU-DS-117 shape plus a values map on each record (spec gap: value location is unspecified); never a flattened subtree copy; base definitions are never mutated","constraints":"MIN/CENTER/MAX/STRETCH/SCALE per axis in points, default MIN/MIN; a stretched child that would collapse below zero is refused, not clamped","auto_layout":"STU-DS-144..149 subset in f64 points: horizontal/vertical flow, wrap, gaps (negative legal), padding, primary/counter alignment, SPACE_BETWEEN, fixed/hug/fill with min/max clamps and equal-share grow, absolute children placed by constraints, nesting; container AUTO/FIXED and child HUG/FILL/layout_grow/layout_align must agree (inconsistent_sizing); GRID, BASELINE, strokes_included_in_layout, hug with wrap or space-between are refused as unsupported_layout; taffy not adopted (f32/negative-gap behaviour UNVERIFIED)","prototype":"reactions {node_id, trigger|null, actions[]}; NAVIGATE/OVERLAY/SWAP destinations must be artboards of the Folio document; reachability from the start frame; actions after a navigation are warnings","footprints":"proposal footprint = written (node, field) keys plus the definition/variable record keys they read; drift outside it is admissible, drift inside it is stale_property (STU-ARC-011, STU-DS-163)"},"limits":{"max_nodes":4096,"max_fields":65536,"max_alias_depth":32,"max_layout_nodes":4096,"max_layout_depth":32,"max_reactions":4096,"max_actions":16384},"cancel":"CancellationToken is checked at entry, per node and per alias hop","argus":{"inspect":"all result types are plain data","action":"the same call with the same token","capture":"caller captures the result and the Observe frame bytes under a fresh grant"},"diagnostics":"report() emits one Observe terminal outcome; no ids, names or values are serialized by this crate","authority":"Folio has no design-frame, component, instance-record, variable or reaction type: records stay crate-local values and an instance is a Folio layer of kind component_instance referencing SCIN-*; host grants, history and acceptance remain pending"}"#;
+pub const DESCRIPTOR: &str = r#"{"owner":"STUDIO-MODULE-COMPONENTS","version":1,"operation":"resolve_instance / propose_overrides / resolve_variable / apply_constraints / resize_component / validate_flow / solve_auto_layout over Folio design records (StudioDesignRecords): component definitions and variant sets, instances with property-granular overrides, variables with collections, modes and alias chains, constraint-based resize, auto layout and a prototype action graph, all as pure values and revision-footprint proposals","operator":{"intent":"See exactly which value an instance field gets and from where, change one property without disturbing others, resize a component and see where children land, and check that prototype clicks lead to real frames","result":"Resolution {component_id, fields[{node_id, field, value, source, reads}]}, OverrideProposal {instance, resolution, write_footprint, read_footprint} whose successor instance validates in Folio, PlacedNode[] and PlacedBox[] in the document geometry unit, FlowReport {reachable_frames, warnings} or a typed refusal","recovery":"folio_validation: Folio refused a record, correct the record its code and path name; alias_cycle/type_mismatch: fix the variable definitions; missing_mode_value: give every collection mode a value; unsupported_property: define the component property first; field_not_overridable: only the STU-DS-115 fields can be overridden; ambiguous_source: remove the duplicate literal/variable binding or duplicate override; stale_property: re-read the instance and re-propose; invalid_geometry: use finite non-negative sizes and a parent large enough for stretched children; invalid_layout/inconsistent_sizing: give every node an authored rectangle and make container AUTO/FIXED agree with child HUG/FILL/FIXED, grow and align; prototype_target: point actions at an existing artboard; canceled: nothing was produced"},"model":{"records":"Folio owns the records (StudioDesignRecords hsk.studio.design_records@1: components, component sets, instances, variable collections, variables, and per node auto layout, child layout, size clamps, constraints, reactions, component property references), validated by folio::validate_design_records; Design::validate runs it and then the crate rules: two or more members per set, SLOT refused, one source per field, a container rectangle for any definition geometry; a definition's nodes are the document layers under the component's container layer","local":"LocalContent per layer, kept here because Folio has no home for it: literal field values of definition nodes, variable bindings of definition fields, and the authored rectangle (numbers in the document geometry unit); PrototypeFlow wraps only the start frame because Folio has no flow container","precedence":"STU-DS-116: local override, then instance component property (else the property default), then the definition literal, then the definition variable binding; exactly one source per field","variants":"an instance of a set or of a member resolves to the member its VARIANT properties select, default_variant_id for a set; completeness and duplicate assignments are Folio refusals (variant_assignment_incomplete/duplicate)","variables":"collection modes (min 1), exactly one value per mode, alias chains walked with cycle and type checks, mode chosen per collection (default mode otherwise); a missing mode value is an error, never zero","overrides":"STU-DS-117 shape; the value of each overridden field is in the record values map (a VARIABLE_ALIAS value resolves through its variable); never a flattened subtree copy; base definitions are never mutated","constraints":"MIN/CENTER/MAX/STRETCH/SCALE per axis from StudioConstraint, default MIN/MIN; a stretched child that would collapse below zero is refused, not clamped","auto_layout":"STU-DS-144..149 subset in f64: horizontal/vertical flow, wrap, gaps (negative legal), padding, primary/counter alignment, SPACE_BETWEEN, fixed/hug/fill with min/max clamps and equal-share grow, absolute children placed by constraints, nesting; container AUTO/FIXED and child HUG/FILL/layout_grow/layout_align must agree (inconsistent_sizing, Folio enforces neither); GRID, BASELINE, strokes_included_in_layout, hug with wrap or space-between are refused as unsupported_layout; taffy not adopted (f32/negative-gap behaviour UNVERIFIED)","prototype":"reactions are the StudioReaction records of the per-node design entries; NAVIGATE/OVERLAY/SWAP destinations must be artboards of the Folio document; reachability from the start frame through armed triggers; actions after a NODE, BACK or CLOSE are warnings (STU-PRO-104)","footprints":"proposal footprint = written (node, field) keys plus the definition/variable record keys they read; drift outside it is admissible, drift inside it is stale_property (STU-ARC-011, STU-DS-163)"},"limits":{"max_nodes":4096,"max_fields":65536,"max_alias_depth":32,"max_layout_nodes":4096,"max_layout_depth":32,"max_reactions":4096,"max_actions":16384},"cancel":"CancellationToken is checked at entry, per node and per alias hop","argus":{"inspect":"all result types are plain data","action":"the same call with the same token","capture":"caller captures the result and the Observe frame bytes under a fresh grant"},"diagnostics":"report() emits one Observe terminal outcome; no ids, names or values are serialized by this crate","authority":"Folio is the single authority for the design records and their validation; an instance is a Folio layer of kind component_instance referencing SCIN-* and names a component (a set id is accepted by the evaluator but a proposal naming one is refused by Folio); host grants, history and acceptance remain pending"}"#;

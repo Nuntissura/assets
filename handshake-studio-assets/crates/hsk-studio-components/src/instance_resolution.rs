@@ -1,42 +1,39 @@
-//! Component definitions, variant sets, instances with property-granular overrides, and variables
-//! with collections, modes and alias chains (STU-DS-102..129), resolved into plain values with the
-//! source of every field. Every input is borrowed; nothing is mutated, a base definition is never
-//! rewritten by an instance, and a failure never yields a partial result.
+//! Instances of Folio components resolved into plain values with the source of every field, and
+//! variables resolved through modes and alias chains (STU-DS-102..129). The records are Folio's
+//! (`StudioComponent`, `StudioComponentSet`, `StudioComponentInstance`, `StudioVariable`,
+//! `StudioVariableCollection`, `StudioValue`) read through a [`Design`]; this module only evaluates
+//! them. Every input is borrowed; nothing is mutated, a base definition is never rewritten by an
+//! instance, and a failure never yields a partial result.
 //!
 //! Decisions recorded for the lane (spec gaps, not source-derived):
-//! * STU-DS-117 gives `overridden_node_id` + `overridden_fields[]` but no place for the VALUES. Each
-//!   [`OverrideRecord`] carries a `values` map keyed by field name whose key set must equal
-//!   `overridden_fields` exactly. Values stay on the instance record; the subtree is never copied.
-//! * STU-DS-116 requires "exactly one source" per field. A definition field that has both a literal
-//!   value and a variable binding, a field listed twice in overrides, or two override records for one
-//!   node/field are the ambiguous double-source (`AmbiguousSource`). Local override > component
+//! * STU-DS-117 gives `overridden_node_id` + `overridden_fields[]`; Folio stores the values in the
+//!   record's optional `values` map. Every overridden field must carry a value here (a missing one is
+//!   `InvalidValue`), and `values` may not hold a field that is not listed. A value may be a
+//!   `VARIABLE_ALIAS`; it resolves like any bound variable and its chain joins the read footprint.
+//! * STU-DS-116 requires "exactly one source" per field. A definition field with both a literal and a
+//!   variable binding, a field listed twice in overrides, or two override records for one node/field
+//!   are the ambiguous double-source (`AmbiguousSource`), as is an instance property that names two
+//!   different variables (`bound_variable_id` and an alias value). Local override > component
 //!   property > definition literal > variable binding is the precedence among distinct tiers.
-use crate::constraints::{NodeGeometry, SizePt};
+//! * STU-DS-113 shows the `component_property_references` spelling only by example (`showIcon#12:3`)
+//!   and Folio stores it as an opaque label. This crate matches the label to `property_name`
+//!   exactly; a label that names no property is `UnsupportedProperty` at resolution.
+//! * An instance may name a set (it resolves to `default_variant_id`, STU-DS-104). Folio's validator
+//!   accepts only a component as `main_component_id`, so a proposal whose successor names a set is
+//!   refused by `validate_with_instance` (`Folio`, invalid field); name the default member instead.
+use super::design::{DefNode, Design};
 use crate::{ComponentsError as E, R};
 use hsk_studio_accord::{CancellationToken, DomainId};
+use hsk_studio_folio::{
+    ComponentPropertyType as PropType, StudioComponent, StudioComponentInstance,
+    StudioComponentProperty, StudioComponentSet, StudioInstanceProperty, StudioOverrideRecord,
+    StudioPropertyValue, StudioValue, StudioVariable, StudioVariableCollection,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// STU-DS-115 closed overridable field set (corner radius family per STU-DS-130 node fields).
-pub const OVERRIDABLE_FIELDS: [&str; 16] = [
-    "characters",
-    "fills",
-    "strokes",
-    "stroke_weight",
-    "effects",
-    "visible",
-    "main_component_id",
-    "component_properties",
-    "opacity",
-    "corner_radius",
-    "top_left_radius",
-    "top_right_radius",
-    "bottom_left_radius",
-    "bottom_right_radius",
-    "layout_sizing_horizontal",
-    "layout_sizing_vertical",
-];
+/// STU-DS-115 closed overridable field set: Folio's `OVERRIDABLE_FIELDS`.
 pub fn is_overridable(field: &str) -> bool {
-    OVERRIDABLE_FIELDS.contains(&field)
+    hsk_studio_folio::OVERRIDABLE_FIELDS.contains(&field)
 }
 
 const MAX_TEXT: usize = 65_536;
@@ -55,168 +52,72 @@ pub(crate) fn check_key(s: &str) -> R<()> {
     }
     Ok(())
 }
-
-/// STU-DS-125 resolved variable type enumeration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum VarType {
-    Boolean,
-    Color,
-    Easing,
-    Float,
-    String,
-    Timing,
-}
-
-/// A literal value. Colour is straight RGBA channels (finite; range is not interpreted here).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Value {
-    Boolean(bool),
-    Color([f64; 4]),
-    Easing(String),
-    Float(f64),
-    String(String),
-    Timing(f64),
-}
-impl Value {
-    pub fn var_type(&self) -> VarType {
-        match self {
-            Self::Boolean(_) => VarType::Boolean,
-            Self::Color(_) => VarType::Color,
-            Self::Easing(_) => VarType::Easing,
-            Self::Float(_) => VarType::Float,
-            Self::String(_) => VarType::String,
-            Self::Timing(_) => VarType::Timing,
+/// Guard for values that did not pass through Folio's validator (local literals, override values
+/// of an instance that is not in the record set): finite numbers, bounded text, one easing function.
+/// Colour ranges and easing bounds are Folio's to enforce. `alias_ok` admits a `VARIABLE_ALIAS`.
+pub(crate) fn check_value(v: &StudioValue, target: &str, alias_ok: bool) -> R<()> {
+    let ok = match v {
+        StudioValue::Boolean { .. } => true,
+        StudioValue::Color { value } => [value.r, value.g, value.b, value.a]
+            .iter()
+            .all(|c| c.is_finite()),
+        StudioValue::Easing { value } => match (
+            &value.easing_function_cubic_bezier,
+            &value.easing_function_spring,
+        ) {
+            (Some(b), None) => [b.x1, b.y1, b.x2, b.y2].iter().all(|n| n.is_finite()),
+            (None, Some(s)) => [s.mass, s.stiffness, s.damping, s.initial_velocity]
+                .iter()
+                .all(|n| n.is_finite()),
+            _ => false,
+        },
+        StudioValue::Float { value } => value.is_finite(),
+        StudioValue::Timing { value } => value.is_finite() && *value >= 0.0,
+        StudioValue::String { value } => value.len() <= MAX_TEXT,
+        StudioValue::VariableAlias { id, .. } => {
+            if !alias_ok {
+                false
+            } else {
+                return check_id(id, "SVAR");
+            }
         }
-    }
-    fn validate(&self, target: &str) -> R<()> {
-        let ok = match self {
-            Self::Boolean(_) => true,
-            Self::Color(c) => c.iter().all(|v| v.is_finite()),
-            Self::Float(v) => v.is_finite(),
-            Self::Timing(v) => v.is_finite() && *v >= 0.0,
-            Self::Easing(s) | Self::String(s) => s.len() <= MAX_TEXT,
-        };
-        if ok {
-            Ok(())
-        } else {
-            Err(E::InvalidValue(target.to_owned()))
-        }
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(E::InvalidValue(target.to_owned()))
     }
 }
 
 // ----------------------------------------------------------------------------------------------
 // Variables
 
-/// A stored per-mode value: a literal, or an alias to another variable (STU-DS-126).
-#[derive(Clone, Debug, PartialEq)]
-pub enum VarEntry {
-    Literal(Value),
-    Alias(String),
+/// Borrowed lookup over Folio variable collections and variables. Built from the record vectors
+/// directly so an evaluator can be run (and refuse typed) on a set that Folio's validator rejects.
+#[derive(Clone, Debug, Default)]
+pub struct VariableTable<'a> {
+    collections: BTreeMap<&'a str, &'a StudioVariableCollection>,
+    variables: BTreeMap<&'a str, &'a StudioVariable>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Mode {
-    pub mode_id: String,
-    pub name: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Collection {
-    pub collection_id: String,
-    pub modes: Vec<Mode>,
-    pub default_mode_id: String,
-}
-#[derive(Clone, Debug, PartialEq)]
-pub struct Variable {
-    pub variable_id: String,
-    pub collection_id: String,
-    pub resolved_type: VarType,
-    /// Exactly one entry per mode of the owning collection (STU-DS-121); checked by
-    /// [`VarRegistry::validate`] and at every read.
-    pub values_by_mode: BTreeMap<String, VarEntry>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct VarRegistry {
-    collections: BTreeMap<String, Collection>,
-    variables: BTreeMap<String, Variable>,
-}
-impl VarRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn add_collection(&mut self, c: Collection) -> R<()> {
-        check_id(&c.collection_id, "SVCL")?;
-        if c.modes.is_empty() {
-            return Err(E::InvalidValue(c.collection_id));
-        }
-        let mut seen = BTreeSet::new();
-        for m in &c.modes {
-            check_key(&m.mode_id)?;
-            if !seen.insert(m.mode_id.as_str()) {
-                return Err(E::Duplicate(m.mode_id.clone()));
-            }
-        }
-        if !seen.contains(c.default_mode_id.as_str()) {
-            return Err(E::NoSuchMode {
-                collection_id: c.collection_id,
-                mode_id: c.default_mode_id,
-            });
-        }
-        if self.collections.contains_key(&c.collection_id) {
-            return Err(E::Duplicate(c.collection_id));
-        }
-        self.collections.insert(c.collection_id.clone(), c);
-        Ok(())
-    }
-    pub fn add_variable(&mut self, v: Variable) -> R<()> {
-        check_id(&v.variable_id, "SVAR")?;
-        check_id(&v.collection_id, "SVCL")?;
-        for (mode, entry) in &v.values_by_mode {
-            check_key(mode)?;
-            match entry {
-                VarEntry::Literal(val) => {
-                    val.validate(&v.variable_id)?;
-                    if val.var_type() != v.resolved_type {
-                        return Err(E::TypeMismatch(v.variable_id.clone()));
-                    }
-                }
-                VarEntry::Alias(target) => check_id(target, "SVAR")?,
-            }
-        }
-        if self.variables.contains_key(&v.variable_id) {
-            return Err(E::Duplicate(v.variable_id));
-        }
-        self.variables.insert(v.variable_id.clone(), v);
-        Ok(())
-    }
-    /// Cross-record check: every variable's collection exists and its `values_by_mode` key set is
-    /// exactly the collection's mode set.
-    pub fn validate(&self) -> R<()> {
-        for v in self.variables.values() {
-            let c = self
+impl<'a> VariableTable<'a> {
+    pub fn new(
+        collections: &'a [StudioVariableCollection],
+        variables: &'a [StudioVariable],
+    ) -> Self {
+        let mut table = Self::default();
+        for c in collections {
+            table
                 .collections
-                .get(&v.collection_id)
-                .ok_or_else(|| E::NoSuchCollection(v.collection_id.clone()))?;
-            for m in &c.modes {
-                if !v.values_by_mode.contains_key(&m.mode_id) {
-                    return Err(E::MissingModeValue {
-                        variable_id: v.variable_id.clone(),
-                        mode_id: m.mode_id.clone(),
-                    });
-                }
-            }
-            for k in v.values_by_mode.keys() {
-                if !c.modes.iter().any(|m| &m.mode_id == k) {
-                    return Err(E::NoSuchMode {
-                        collection_id: c.collection_id.clone(),
-                        mode_id: k.clone(),
-                    });
-                }
-            }
+                .entry(c.collection_id.as_str())
+                .or_insert(c);
         }
-        Ok(())
+        for v in variables {
+            table.variables.entry(v.variable_id.as_str()).or_insert(v);
+        }
+        table
     }
-    pub fn variable(&self, id: &str) -> Option<&Variable> {
-        self.variables.get(id)
+    pub fn variable(&self, id: &str) -> Option<&'a StudioVariable> {
+        self.variables.get(id).copied()
     }
 }
 
@@ -238,7 +139,8 @@ impl Default for Limits {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedVariable {
-    pub value: Value,
+    /// Never a `VARIABLE_ALIAS`: the literal at the end of the chain.
+    pub value: StudioValue,
     /// Collection and mode used for the variable that was asked for (aliases use their own).
     pub collection_id: String,
     pub mode_id: String,
@@ -250,13 +152,13 @@ pub struct ResolvedVariable {
 /// entry selects the collection's default mode. An alias chain is a single path, so the walk is the
 /// white/grey/black traversal reduced to a visited list: revisiting a variable is `AliasCycle`.
 pub fn resolve_variable(
-    vars: &VarRegistry,
+    vars: &VariableTable,
     variable_id: &str,
     modes: &BTreeMap<String, String>,
     limits: &Limits,
     cancel: &CancellationToken,
 ) -> R<ResolvedVariable> {
-    let mut cur = vars
+    let mut cur = *vars
         .variables
         .get(variable_id)
         .ok_or_else(|| E::NoSuchVariable(variable_id.to_owned()))?;
@@ -274,8 +176,8 @@ pub fn resolve_variable(
         }
         let coll = vars
             .collections
-            .get(&cur.collection_id)
-            .ok_or_else(|| E::NoSuchCollection(cur.collection_id.clone()))?;
+            .get(cur.variable_collection_id.as_str())
+            .ok_or_else(|| E::NoSuchCollection(cur.variable_collection_id.clone()))?;
         let mode = modes
             .get(&coll.collection_id)
             .map_or(coll.default_mode_id.as_str(), String::as_str);
@@ -293,10 +195,27 @@ pub fn resolve_variable(
                     mode_id: mode.to_owned(),
                 });
             }
-            Some(VarEntry::Literal(v)) => {
-                if v.var_type() != wanted {
+            Some(StudioValue::VariableAlias {
+                id: target,
+                resolved_type,
+            }) => {
+                if *resolved_type != wanted {
                     return Err(E::TypeMismatch(cur.variable_id.clone()));
                 }
+                let next = *vars
+                    .variables
+                    .get(target.as_str())
+                    .ok_or_else(|| E::NoSuchVariable(target.clone()))?;
+                if next.resolved_type != wanted {
+                    return Err(E::TypeMismatch(target.clone()));
+                }
+                cur = next;
+            }
+            Some(v) => {
+                if v.resolved_type() != wanted {
+                    return Err(E::TypeMismatch(cur.variable_id.clone()));
+                }
+                check_value(v, &cur.variable_id, false)?;
                 let (collection_id, mode_id) = first.unwrap_or_default();
                 return Ok(ResolvedVariable {
                     value: v.clone(),
@@ -305,284 +224,55 @@ pub fn resolve_variable(
                     chain,
                 });
             }
-            Some(VarEntry::Alias(target)) => {
-                let next = vars
-                    .variables
-                    .get(target)
-                    .ok_or_else(|| E::NoSuchVariable(target.clone()))?;
-                if next.resolved_type != wanted {
-                    return Err(E::TypeMismatch(target.clone()));
-                }
-                cur = next;
-            }
         }
     }
 }
 
 // ----------------------------------------------------------------------------------------------
-// Definitions
+// Property values
 
-/// STU-DS-110 component-property types. `Slot` is recognised and refused in this slice.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PropType {
-    Boolean,
-    Text,
-    InstanceSwap,
-    Variant,
-    Slot,
-}
-fn prop_value_ok(ty: PropType, v: &Value) -> bool {
+/// A value fits a component-property type: BOOLEAN takes booleans; TEXT, INSTANCE_SWAP and VARIANT
+/// take strings; SLOT takes nothing (refused in this slice).
+fn prop_value_ok(ty: PropType, v: &StudioValue) -> bool {
     match ty {
-        PropType::Boolean => matches!(v, Value::Boolean(_)),
+        PropType::Boolean => matches!(v.resolved_type(), hsk_studio_folio::VariableType::Boolean),
         PropType::Text | PropType::InstanceSwap | PropType::Variant => {
-            matches!(v, Value::String(_))
+            matches!(v.resolved_type(), hsk_studio_folio::VariableType::String)
         }
         PropType::Slot => false,
     }
 }
-#[derive(Clone, Debug, PartialEq)]
-pub struct PropertyDef {
-    pub name: String,
-    pub ty: PropType,
-    pub default_value: Value,
-}
-
-/// A layer inside a component definition, in hierarchy order (parents before children).
-#[derive(Clone, Debug, PartialEq)]
-pub struct DefNode {
-    pub node_id: String,
-    pub name: String,
-    pub parent: Option<String>,
-    /// Literal field values (tier 3).
-    pub fields: BTreeMap<String, Value>,
-    /// STU-DS-113: field name -> component property name that drives it (tier 2).
-    pub property_references: BTreeMap<String, String>,
-    /// Field name -> variable id bound on the definition (tier 4).
-    pub variable_bindings: BTreeMap<String, String>,
-    pub geometry: Option<NodeGeometry>,
-}
-impl DefNode {
-    pub fn new(node_id: &str, name: &str, parent: Option<&str>) -> Self {
-        Self {
-            node_id: node_id.to_owned(),
-            name: name.to_owned(),
-            parent: parent.map(str::to_owned),
-            fields: BTreeMap::new(),
-            property_references: BTreeMap::new(),
-            variable_bindings: BTreeMap::new(),
-            geometry: None,
-        }
+/// A literal property value as a value; `None` for an alias.
+fn literal(v: &StudioPropertyValue) -> Option<StudioValue> {
+    match v {
+        StudioPropertyValue::Boolean(b) => Some(StudioValue::Boolean { value: *b }),
+        StudioPropertyValue::Text(s) => Some(StudioValue::String { value: s.clone() }),
+        StudioPropertyValue::Alias(_) => None,
     }
 }
-/// One `component` node (STU-DS-103).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ComponentDef {
-    pub component_id: String,
-    /// `Some` only for a variant-set member: this member's property=value assignment.
-    pub variant_properties: Option<BTreeMap<String, String>>,
-    pub property_definitions: Vec<PropertyDef>,
-    pub nodes: Vec<DefNode>,
-    /// Authored size in points; required when any node carries geometry.
-    pub size: Option<SizePt>,
-}
-/// One `component_set` node (STU-DS-104).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ComponentSet {
-    pub component_id: String,
-    pub default_variant_id: String,
-    /// Ordered declared values per variant property (order is authority, STU-DS-108).
-    pub variant_group_properties: BTreeMap<String, Vec<String>>,
-    pub property_definitions: Vec<PropertyDef>,
-    pub members: Vec<ComponentDef>,
-}
-
-fn validate_props(defs: &[PropertyDef]) -> R<()> {
-    let mut names = BTreeSet::new();
-    for d in defs {
-        check_key(&d.name)?;
-        if !names.insert(d.name.as_str()) {
-            return Err(E::Duplicate(d.name.clone()));
-        }
-        if d.ty == PropType::Slot {
-            return Err(E::UnsupportedProperty(d.name.clone()));
-        }
-        d.default_value.validate(&d.name)?;
-        if !prop_value_ok(d.ty, &d.default_value) {
-            return Err(E::TypeMismatch(d.name.clone()));
-        }
-    }
-    Ok(())
-}
-fn validate_def(def: &ComponentDef, member: bool) -> R<()> {
-    check_id(&def.component_id, "SCMP")?;
-    if def.variant_properties.is_some() != member {
-        return Err(E::InvalidValue(def.component_id.clone()));
-    }
-    validate_props(&def.property_definitions)?;
-    if let Some(s) = def.size
-        && (!s.w.is_finite() || !s.h.is_finite() || s.w < 0.0 || s.h < 0.0)
-    {
-        return Err(E::InvalidGeometry);
-    }
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    for n in &def.nodes {
-        check_id(&n.node_id, "SLYR")?;
-        if let Some(p) = &n.parent
-            && !seen.contains(p.as_str())
-        {
-            return Err(E::NoSuchNode(p.clone()));
-        }
-        if !seen.insert(n.node_id.as_str()) {
-            return Err(E::Duplicate(n.node_id.clone()));
-        }
-        for (f, v) in &n.fields {
-            check_key(f)?;
-            v.validate(&n.node_id)?;
-        }
-        for (f, p) in &n.property_references {
-            check_key(f)?;
-            check_key(p)?;
-        }
-        for (f, v) in &n.variable_bindings {
-            check_key(f)?;
-            check_id(v, "SVAR")?;
-            if n.fields.contains_key(f) {
-                return Err(E::AmbiguousSource {
-                    node_id: n.node_id.clone(),
-                    field: f.clone(),
-                });
-            }
-        }
-        if n.geometry.is_some() && def.size.is_none() {
-            return Err(E::InvalidGeometry);
-        }
-    }
-    Ok(())
-}
-fn validate_set(s: &ComponentSet) -> R<()> {
-    check_id(&s.component_id, "SCMP")?;
-    validate_props(&s.property_definitions)?;
-    if s.members.len() < 2 || !s.members.iter().any(|m| m.component_id == s.default_variant_id) {
-        return Err(E::NoSuchVariant);
-    }
-    for (name, values) in &s.variant_group_properties {
-        check_key(name)?;
-        let mut u = BTreeSet::new();
-        for v in values {
-            check_key(v)?;
-            if !u.insert(v.as_str()) {
-                return Err(E::Duplicate(v.clone()));
-            }
-        }
-        if values.is_empty() {
-            return Err(E::InvalidValue(name.clone()));
-        }
-    }
-    let mut assignments: BTreeSet<&BTreeMap<String, String>> = BTreeSet::new();
-    // One id names one definition: `component()` finds a member by id, so two members (or a member
-    // and the set) sharing an id would let a variant selection pick the one the lookup hides.
-    let mut ids: BTreeSet<&str> = BTreeSet::from([s.component_id.as_str()]);
-    for m in &s.members {
-        validate_def(m, true)?;
-        if !ids.insert(m.component_id.as_str()) {
-            return Err(E::Duplicate(m.component_id.clone()));
-        }
-        let a = m.variant_properties.as_ref().ok_or(E::NoSuchVariant)?;
-        for (prop, declared) in &s.variant_group_properties {
-            match a.get(prop) {
-                None => return Err(E::VariantAssignmentIncomplete(m.component_id.clone())),
-                Some(v) if !declared.contains(v) => {
-                    return Err(E::UnknownVariantValue {
-                        property: prop.clone(),
-                        value: v.clone(),
-                    });
-                }
-                Some(_) => {}
-            }
-        }
-        if let Some(extra) = a.keys().find(|k| !s.variant_group_properties.contains_key(*k)) {
-            return Err(E::UnknownVariantValue {
-                property: extra.clone(),
-                value: a[extra].clone(),
-            });
-        }
-        if !assignments.insert(a) {
-            return Err(E::VariantAssignmentDuplicate(m.component_id.clone()));
-        }
-    }
-    Ok(())
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DefRegistry {
-    components: BTreeMap<String, ComponentDef>,
-    sets: BTreeMap<String, ComponentSet>,
-    /// member component id -> set id
-    members: BTreeMap<String, String>,
-}
-impl DefRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    fn taken(&self, id: &str) -> bool {
-        self.components.contains_key(id) || self.sets.contains_key(id) || self.members.contains_key(id)
-    }
-    pub fn add_component(&mut self, c: ComponentDef) -> R<()> {
-        validate_def(&c, false)?;
-        if self.taken(&c.component_id) {
-            return Err(E::Duplicate(c.component_id));
-        }
-        self.components.insert(c.component_id.clone(), c);
-        Ok(())
-    }
-    pub fn add_set(&mut self, s: ComponentSet) -> R<()> {
-        validate_set(&s)?;
-        if self.taken(&s.component_id) || s.members.iter().any(|m| self.taken(&m.component_id)) {
-            return Err(E::Duplicate(s.component_id));
-        }
-        for m in &s.members {
-            self.members.insert(m.component_id.clone(), s.component_id.clone());
-        }
-        self.sets.insert(s.component_id.clone(), s);
-        Ok(())
-    }
-    /// The component definition `id` names: a plain component, a set's default member, or a member.
-    pub fn component(&self, id: &str) -> Option<&ComponentDef> {
-        if let Some(c) = self.components.get(id) {
-            return Some(c);
-        }
-        let set = self.sets.get(id).or_else(|| self.sets.get(self.members.get(id)?))?;
-        let want = if set.component_id == id { &set.default_variant_id } else { id };
-        set.members.iter().find(|m| m.component_id == *want)
+/// The variable a property value or binding names, when it names one. Both spellings naming
+/// different variables is a double source.
+fn property_variable<'p>(
+    instance_id: &str,
+    name: &str,
+    p: &'p StudioInstanceProperty,
+) -> R<Option<&'p str>> {
+    let alias = match &p.value {
+        StudioPropertyValue::Alias(a) => Some(a.id.as_str()),
+        _ => None,
+    };
+    match (p.bound_variable_id.as_deref(), alias) {
+        (Some(a), Some(b)) if a != b => Err(E::AmbiguousSource {
+            node_id: instance_id.to_owned(),
+            field: format!("property/{name}"),
+        }),
+        (Some(v), _) | (None, Some(v)) => Ok(Some(v)),
+        (None, None) => Ok(None),
     }
 }
 
 // ----------------------------------------------------------------------------------------------
 // Instances
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct InstanceProp {
-    pub ty: PropType,
-    pub value: Value,
-    /// When set the value comes from this variable (alias to a variable of the matching type).
-    pub bound_variable_id: Option<String>,
-}
-/// STU-DS-117 record: node inside the instance, fields drawn from STU-DS-115, plus the values
-/// (crate decision, see module docs).
-#[derive(Clone, Debug, PartialEq)]
-pub struct OverrideRecord {
-    pub overridden_node_id: String,
-    pub overridden_fields: Vec<String>,
-    pub values: BTreeMap<String, Value>,
-}
-#[derive(Clone, Debug, PartialEq)]
-pub struct Instance {
-    pub instance_id: String,
-    /// `None` is the deleted-main state (STU-DS-003a): resolution refuses it.
-    pub main_component_id: Option<String>,
-    pub component_properties: BTreeMap<String, InstanceProp>,
-    pub overrides: Vec<OverrideRecord>,
-}
 
 /// Where a resolved field came from (STU-DS-116 tiers).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -601,7 +291,8 @@ pub enum Source {
 pub struct ResolvedField {
     pub node_id: String,
     pub field: String,
-    pub value: Value,
+    /// Never a `VARIABLE_ALIAS`.
+    pub value: StudioValue,
     pub source: Source,
     /// Footprint keys this value depended on: `(component_id, "")` and `(variable_id, "")` record
     /// level keys (STU-DS-163) and `(instance_id, "property/<name>")`.
@@ -624,33 +315,29 @@ impl Resolution {
 }
 
 fn select_member<'a>(
-    inst: &Instance,
-    defs: &'a DefRegistry,
-) -> R<(&'a ComponentDef, Option<&'a ComponentSet>)> {
+    inst: &StudioComponentInstance,
+    design: &Design<'a>,
+) -> R<(&'a StudioComponent, Option<&'a StudioComponentSet>)> {
     let main = inst
         .main_component_id
         .as_deref()
         .ok_or_else(|| E::NoSuchComponent("deleted-main".to_owned()))?;
-    let start = defs
+    let start = design
         .component(main)
         .ok_or_else(|| E::NoSuchComponent(main.to_owned()))?;
-    let set = defs
-        .sets
-        .get(main)
-        .or_else(|| defs.members.get(main).and_then(|s| defs.sets.get(s)));
-    let Some(set) = set else {
+    let Some(set) = design.set_of(main) else {
         return Ok((start, None));
     };
     let mut want = start.variant_properties.clone().unwrap_or_default();
     for (name, p) in &inst.component_properties {
-        if p.ty != PropType::Variant {
+        if p.property_type != PropType::Variant {
             continue;
         }
         let declared = set
             .variant_group_properties
             .get(name)
             .ok_or_else(|| E::UnsupportedProperty(name.clone()))?;
-        let Value::String(v) = &p.value else {
+        let StudioPropertyValue::Text(v) = &p.value else {
             return Err(E::TypeMismatch(name.clone()));
         };
         if !declared.contains(v) {
@@ -661,44 +348,46 @@ fn select_member<'a>(
         }
         want.insert(name.clone(), v.clone());
     }
-    let m = set
-        .members
-        .iter()
+    let m = design
+        .members(set)
+        .into_iter()
         .find(|m| m.variant_properties.as_ref() == Some(&want))
         .ok_or(E::NoSuchVariant)?;
     Ok((m, Some(set)))
 }
 
-type Overrides<'a> = BTreeMap<(&'a str, &'a str), &'a Value>;
-type PropDefs<'a> = BTreeMap<&'a str, &'a PropertyDef>;
-
-/// Property definitions in force for a member: the member's win over its set's.
-fn prop_defs_of<'a>(member: &'a ComponentDef, set: Option<&'a ComponentSet>) -> PropDefs<'a> {
-    let mut defs: PropDefs = BTreeMap::new();
-    for d in set.iter().flat_map(|s| s.property_definitions.iter()) {
-        defs.insert(d.name.as_str(), d);
-    }
-    for d in &member.property_definitions {
-        defs.insert(d.name.as_str(), d);
-    }
-    defs
-}
+type Overrides<'a> = BTreeMap<(&'a str, &'a str), &'a StudioValue>;
+type PropDefs<'a> = BTreeMap<&'a str, &'a StudioComponentProperty>;
 
 /// Checks an instance property against its definition. `true`: it carries a value to use;
 /// `false`: a VARIANT property, which only selects the member and is legal only on a set.
-fn check_property(name: &str, p: &InstanceProp, defs: &PropDefs, in_set: bool) -> R<bool> {
-    if p.ty == PropType::Variant {
-        return if in_set { Ok(false) } else { Err(E::UnsupportedProperty(name.to_owned())) };
+fn check_property(
+    name: &str,
+    p: &StudioInstanceProperty,
+    defs: &PropDefs,
+    in_set: bool,
+) -> R<bool> {
+    if p.property_type == PropType::Variant {
+        return if in_set {
+            Ok(false)
+        } else {
+            Err(E::UnsupportedProperty(name.to_owned()))
+        };
     }
-    let def = defs.get(name).ok_or_else(|| E::UnsupportedProperty(name.to_owned()))?;
-    if p.ty != def.ty {
+    let def = defs
+        .get(name)
+        .ok_or_else(|| E::UnsupportedProperty(name.to_owned()))?;
+    if def.property_type == PropType::Slot {
+        return Err(E::UnsupportedProperty(name.to_owned()));
+    }
+    if p.property_type != def.property_type {
         return Err(E::TypeMismatch(name.to_owned()));
     }
     Ok(true)
 }
 
-fn check_property_value(name: &str, ty: PropType, value: &Value) -> R<()> {
-    value.validate(name)?;
+fn check_property_value(name: &str, ty: PropType, value: &StudioValue) -> R<()> {
+    check_value(value, name, false)?;
     if !prop_value_ok(ty, value) {
         return Err(E::TypeMismatch(name.to_owned()));
     }
@@ -709,16 +398,15 @@ fn check_property_value(name: &str, ty: PropType, value: &Value) -> R<()> {
 /// a definition literal, the referenced component property, the bound variable. `vars` is `None`
 /// where no registry is at hand (swap and variant switch), which skips only the variable check.
 fn build_overrides<'a>(
-    inst: &'a Instance,
-    member: &'a ComponentDef,
+    inst: &'a StudioComponentInstance,
+    nodes: &[DefNode<'a>],
     prop_defs: &PropDefs,
-    vars: Option<&VarRegistry>,
+    vars: Option<&VariableTable>,
 ) -> R<Overrides<'a>> {
-    let nodes: BTreeMap<&str, &DefNode> =
-        member.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
+    let by_id: BTreeMap<&str, &DefNode> = nodes.iter().map(|n| (n.node_id, n)).collect();
     let mut out: Overrides = BTreeMap::new();
     for rec in &inst.overrides {
-        let node = nodes
+        let node = by_id
             .get(rec.overridden_node_id.as_str())
             .ok_or_else(|| E::NoSuchNode(rec.overridden_node_id.clone()))?;
         for f in &rec.overridden_fields {
@@ -728,22 +416,28 @@ fn build_overrides<'a>(
                     field: f.clone(),
                 });
             }
-            let v = rec.values.get(f).ok_or_else(|| E::InvalidValue(f.clone()))?;
-            v.validate(f)?;
-            let literal_clash = node.fields.get(f).is_some_and(|lit| lit.var_type() != v.var_type());
-            let property_clash = node
-                .property_references
+            let v = rec
+                .values
                 .get(f)
+                .ok_or_else(|| E::InvalidValue(f.clone()))?;
+            check_value(v, f, true)?;
+            let literal_clash = node
+                .local
+                .and_then(|l| l.fields.get(f))
+                .is_some_and(|lit| lit.resolved_type() != v.resolved_type());
+            let property_clash = node
+                .design
+                .and_then(|d| d.component_property_references.get(f))
                 .and_then(|pname| prop_defs.get(pname.as_str()))
-                .is_some_and(|def| !prop_value_ok(def.ty, v));
+                .is_some_and(|def| !prop_value_ok(def.property_type, v));
             let variable_clash = vars
-                .zip(node.variable_bindings.get(f))
-                .and_then(|(registry, vid)| registry.variable(vid))
-                .is_some_and(|var| var.resolved_type != v.var_type());
+                .zip(node.local.and_then(|l| l.variable_bindings.get(f)))
+                .and_then(|(table, vid)| table.variable(vid))
+                .is_some_and(|var| var.resolved_type != v.resolved_type());
             if literal_clash || property_clash || variable_clash {
                 return Err(E::TypeMismatch(f.clone()));
             }
-            if out.insert((node.node_id.as_str(), f.as_str()), v).is_some() {
+            if out.insert((node.node_id, f.as_str()), v).is_some() {
                 return Err(E::AmbiguousSource {
                     node_id: rec.overridden_node_id.clone(),
                     field: f.clone(),
@@ -760,15 +454,23 @@ fn build_overrides<'a>(
 /// What `resolve_instance` can decide without variables or modes: every property is defined by the
 /// member (or its set) with the right type and value type, and every override fits its node.
 /// Swap and variant switch run it so they never return an instance that cannot resolve.
-fn check_shape(inst: &Instance, member: &ComponentDef, set: Option<&ComponentSet>) -> R<()> {
-    let prop_defs = prop_defs_of(member, set);
+fn check_shape<'a>(
+    inst: &'a StudioComponentInstance,
+    member: &'a StudioComponent,
+    set: Option<&'a StudioComponentSet>,
+    design: &Design<'a>,
+) -> R<()> {
+    let prop_defs = design.property_definitions(member, set);
     for (name, p) in &inst.component_properties {
         check_key(name)?;
-        if check_property(name, p, &prop_defs, set.is_some())? && p.bound_variable_id.is_none() {
-            check_property_value(name, p.ty, &p.value)?;
+        if check_property(name, p, &prop_defs, set.is_some())?
+            && property_variable(&inst.instance_id, name, p)?.is_none()
+            && let Some(value) = literal(&p.value)
+        {
+            check_property_value(name, p.property_type, &value)?;
         }
     }
-    build_overrides(inst, member, &prop_defs, None)?;
+    build_overrides(inst, &design.definition_nodes(member), &prop_defs, None)?;
     Ok(())
 }
 
@@ -776,12 +478,32 @@ fn record_keys(out: &mut Vec<(String, String)>, ids: &[String]) {
     out.extend(ids.iter().map(|v| (v.clone(), String::new())));
 }
 
+/// An override or binding value as a literal: an alias resolves through the variables (its chain
+/// joins `reads`) and must land on the type it declares.
+fn materialize(
+    v: &StudioValue,
+    design: &Design,
+    modes: &BTreeMap<String, String>,
+    limits: &Limits,
+    cancel: &CancellationToken,
+    reads: &mut Vec<(String, String)>,
+) -> R<StudioValue> {
+    let StudioValue::VariableAlias { id, resolved_type } = v else {
+        return Ok(v.clone());
+    };
+    let r = resolve_variable(design.variables(), id, modes, limits, cancel)?;
+    if r.value.resolved_type() != *resolved_type {
+        return Err(E::TypeMismatch(id.clone()));
+    }
+    record_keys(reads, &r.chain);
+    Ok(r.value)
+}
+
 /// Resolves every field of every node of the instance's component through the STU-DS-116 tiers.
 /// `modes` selects a mode per variable collection (unselected collections use their default).
 pub fn resolve_instance(
-    inst: &Instance,
-    defs: &DefRegistry,
-    vars: &VarRegistry,
+    inst: &StudioComponentInstance,
+    design: &Design,
     modes: &BTreeMap<String, String>,
     base_revision: u64,
     limits: &Limits,
@@ -789,51 +511,58 @@ pub fn resolve_instance(
 ) -> R<Resolution> {
     check_id(&inst.instance_id, "SCIN")?;
     cancel.check().map_err(|_| E::Canceled)?;
-    let (member, set) = select_member(inst, defs)?;
-    if member.nodes.len() > limits.max_nodes {
+    let (member, set) = select_member(inst, design)?;
+    let nodes = design.definition_nodes(member);
+    if nodes.len() > limits.max_nodes {
         return Err(E::BudgetExceeded);
     }
     // Property definitions: the member's win over the set's; every instance property must be known.
-    let prop_defs = prop_defs_of(member, set);
-    let mut given: BTreeMap<&str, (Value, Footprint)> = BTreeMap::new();
+    let prop_defs = design.property_definitions(member, set);
+    let mut given: BTreeMap<&str, (StudioValue, Footprint)> = BTreeMap::new();
     for (name, p) in &inst.component_properties {
         check_key(name)?;
         if !check_property(name, p, &prop_defs, set.is_some())? {
             continue; // VARIANT: it selected the member above
         }
         let mut reads = vec![(inst.instance_id.clone(), format!("property/{name}"))];
-        let value = if let Some(vid) = &p.bound_variable_id {
-            let r = resolve_variable(vars, vid, modes, limits, cancel)?;
+        let value = if let Some(vid) = property_variable(&inst.instance_id, name, p)? {
+            let r = resolve_variable(design.variables(), vid, modes, limits, cancel)?;
             record_keys(&mut reads, &r.chain);
             r.value
         } else {
-            p.value.clone()
+            literal(&p.value).ok_or_else(|| E::TypeMismatch(name.clone()))?
         };
-        check_property_value(name, p.ty, &value)?;
+        check_property_value(name, p.property_type, &value)?;
         given.insert(name.as_str(), (value, reads));
     }
-    let overrides = build_overrides(inst, member, &prop_defs, Some(vars))?;
+    let overrides = build_overrides(inst, &nodes, &prop_defs, Some(design.variables()))?;
     let mut ov_by_node: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (n, f) in overrides.keys() {
         ov_by_node.entry(n).or_default().push(f);
     }
 
     let mut fields = Vec::new();
-    for node in &member.nodes {
+    for node in &nodes {
         cancel.check().map_err(|_| E::Canceled)?;
+        let refs = node.design.map(|d| &d.component_property_references);
         let mut names: BTreeSet<&str> = BTreeSet::new();
-        names.extend(node.fields.keys().map(String::as_str));
-        names.extend(node.property_references.keys().map(String::as_str));
-        names.extend(node.variable_bindings.keys().map(String::as_str));
-        names.extend(ov_by_node.get(node.node_id.as_str()).into_iter().flatten().copied());
+        if let Some(l) = node.local {
+            names.extend(l.fields.keys().map(String::as_str));
+            names.extend(l.variable_bindings.keys().map(String::as_str));
+        }
+        names.extend(refs.into_iter().flat_map(|r| r.keys().map(String::as_str)));
+        names.extend(ov_by_node.get(node.node_id).into_iter().flatten().copied());
         for f in names {
             if fields.len() >= limits.max_fields {
                 return Err(E::BudgetExceeded);
             }
             let mut reads = vec![(member.component_id.clone(), String::new())];
-            let (value, source) = if let Some(v) = overrides.get(&(node.node_id.as_str(), f)) {
-                ((*v).clone(), Source::Override)
-            } else if let Some(pname) = node.property_references.get(f) {
+            let (value, source) = if let Some(v) = overrides.get(&(node.node_id, f)) {
+                (
+                    materialize(v, design, modes, limits, cancel, &mut reads)?,
+                    Source::Override,
+                )
+            } else if let Some(pname) = refs.and_then(|r| r.get(f)) {
                 if let Some((v, r)) = given.get(pname.as_str()) {
                     reads.extend(r.iter().cloned());
                     (v.clone(), Source::ComponentProperty(pname.clone()))
@@ -841,12 +570,22 @@ pub fn resolve_instance(
                     let d = prop_defs
                         .get(pname.as_str())
                         .ok_or_else(|| E::UnsupportedProperty(pname.clone()))?;
-                    (d.default_value.clone(), Source::PropertyDefault(pname.clone()))
+                    let value = match &d.default_value {
+                        StudioPropertyValue::Alias(a) => {
+                            let r =
+                                resolve_variable(design.variables(), &a.id, modes, limits, cancel)?;
+                            record_keys(&mut reads, &r.chain);
+                            check_property_value(pname, d.property_type, &r.value)?;
+                            r.value
+                        }
+                        lit => literal(lit).ok_or_else(|| E::TypeMismatch(pname.clone()))?,
+                    };
+                    (value, Source::PropertyDefault(pname.clone()))
                 }
-            } else if let Some(v) = node.fields.get(f) {
+            } else if let Some(v) = node.local.and_then(|l| l.fields.get(f)) {
                 (v.clone(), Source::Definition)
-            } else if let Some(vid) = node.variable_bindings.get(f) {
-                let r = resolve_variable(vars, vid, modes, limits, cancel)?;
+            } else if let Some(vid) = node.local.and_then(|l| l.variable_bindings.get(f)) {
+                let r = resolve_variable(design.variables(), vid, modes, limits, cancel)?;
                 record_keys(&mut reads, &r.chain);
                 (
                     r.value,
@@ -862,7 +601,7 @@ pub fn resolve_instance(
             reads.sort();
             reads.dedup();
             fields.push(ResolvedField {
-                node_id: node.node_id.clone(),
+                node_id: node.node_id.to_owned(),
                 field: f.to_owned(),
                 value,
                 source,
@@ -889,16 +628,19 @@ pub struct DroppedOverride {
 
 type NodePath = Vec<(String, usize)>;
 /// Per node: the chain of `(layer name, ordinal among its siblings)` from the root.
-fn node_paths(def: &ComponentDef) -> BTreeMap<&str, NodePath> {
+fn node_paths<'a>(nodes: &[DefNode<'a>]) -> BTreeMap<&'a str, NodePath> {
     let mut paths: BTreeMap<&str, NodePath> = BTreeMap::new();
     let mut counts: BTreeMap<Option<&str>, usize> = BTreeMap::new();
-    for n in &def.nodes {
-        let parent = n.parent.as_deref();
-        let ord = counts.entry(parent).or_default();
-        let mut path = parent.and_then(|p| paths.get(p)).cloned().unwrap_or_default();
-        path.push((n.name.clone(), *ord));
+    for n in nodes {
+        let ord = counts.entry(n.parent).or_default();
+        let mut path = n
+            .parent
+            .and_then(|p| paths.get(p))
+            .cloned()
+            .unwrap_or_default();
+        path.push((n.name.to_owned(), *ord));
         *ord += 1;
-        paths.insert(n.node_id.as_str(), path);
+        paths.insert(n.node_id, path);
     }
     paths
 }
@@ -906,12 +648,13 @@ fn node_paths(def: &ComponentDef) -> BTreeMap<&str, NodePath> {
 /// Re-matches override records from definition `from` to `to` by (layer name, position in the child
 /// hierarchy). A record whose node has no counterpart is dropped and listed.
 pub fn rematch_overrides(
-    inst: &Instance,
-    from: &ComponentDef,
-    to: &ComponentDef,
-) -> R<(Vec<OverrideRecord>, Vec<DroppedOverride>)> {
-    let from_paths = node_paths(from);
-    let to_by_path: BTreeMap<NodePath, &str> = node_paths(to)
+    inst: &StudioComponentInstance,
+    design: &Design,
+    from: &StudioComponent,
+    to: &StudioComponent,
+) -> R<(Vec<StudioOverrideRecord>, Vec<DroppedOverride>)> {
+    let from_paths = node_paths(&design.definition_nodes(from));
+    let to_by_path: BTreeMap<NodePath, &str> = node_paths(&design.definition_nodes(to))
         .into_iter()
         .map(|(id, p)| (p, id))
         .collect();
@@ -922,7 +665,7 @@ pub fn rematch_overrides(
             .get(rec.overridden_node_id.as_str())
             .ok_or_else(|| E::NoSuchNode(rec.overridden_node_id.clone()))?;
         match to_by_path.get(path) {
-            Some(target) => kept.push(OverrideRecord {
+            Some(target) => kept.push(StudioOverrideRecord {
                 overridden_node_id: (*target).to_owned(),
                 ..rec.clone()
             }),
@@ -938,43 +681,43 @@ pub fn rematch_overrides(
 /// `instance.swap_component`: points the instance at `new_main`, carrying matched overrides. The
 /// result is checked against the new definition (properties, value types), never returned unresolvable.
 pub fn swap_component(
-    inst: &Instance,
-    defs: &DefRegistry,
+    inst: &StudioComponentInstance,
+    design: &Design,
     new_main: &str,
-) -> R<(Instance, Vec<DroppedOverride>)> {
-    let (from, _) = select_member(inst, defs)?;
+) -> R<(StudioComponentInstance, Vec<DroppedOverride>)> {
+    let (from, _) = select_member(inst, design)?;
     let mut next = inst.clone();
     next.main_component_id = Some(new_main.to_owned());
-    let (to, set) = select_member(&next, defs)?;
-    let (overrides, dropped) = rematch_overrides(inst, from, to)?;
+    let (to, set) = select_member(&next, design)?;
+    let (overrides, dropped) = rematch_overrides(inst, design, from, to)?;
     next.overrides = overrides;
-    check_shape(&next, to, set)?;
+    check_shape(&next, to, set, design)?;
     Ok((next, dropped))
 }
 
 /// Variant switch in place: sets the VARIANT property `property` to `value` and re-matches overrides.
 /// The result is checked against the new member, so `Ok` is never an instance that cannot resolve.
 pub fn switch_variant(
-    inst: &Instance,
-    defs: &DefRegistry,
+    inst: &StudioComponentInstance,
+    design: &Design,
     property: &str,
     value: &str,
-) -> R<(Instance, Vec<DroppedOverride>)> {
-    let (from, _) = select_member(inst, defs)?;
+) -> R<(StudioComponentInstance, Vec<DroppedOverride>)> {
+    let (from, _) = select_member(inst, design)?;
     let mut next = inst.clone();
     next.component_properties.insert(
         property.to_owned(),
-        InstanceProp {
-            ty: PropType::Variant,
-            value: Value::String(value.to_owned()),
+        StudioInstanceProperty {
+            property_type: PropType::Variant,
+            value: StudioPropertyValue::Text(value.to_owned()),
             bound_variable_id: None,
         },
     );
     // A plain (non-set) instance has no variant to switch: `check_shape` refuses the VARIANT property.
-    let (to, set) = select_member(&next, defs)?;
-    let (overrides, dropped) = rematch_overrides(inst, from, to)?;
+    let (to, set) = select_member(&next, design)?;
+    let (overrides, dropped) = rematch_overrides(inst, design, from, to)?;
     next.overrides = overrides;
-    check_shape(&next, to, set)?;
+    check_shape(&next, to, set, design)?;
     Ok((next, dropped))
 }
 
@@ -985,14 +728,15 @@ pub fn switch_variant(
 pub struct OverrideEdit {
     pub node_id: String,
     pub field: String,
-    pub value: Value,
+    pub value: StudioValue,
 }
-/// A successor instance value, produced only after the full instance resolves. The caller's
-/// instance is untouched; acceptance (revision check, grants, commit) stays with the host.
+/// A successor instance value, produced only after the full instance resolves and the record set
+/// with the successor validates in Folio. The caller's instance is untouched; acceptance (revision
+/// check, grants, commit) stays with the host.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OverrideProposal {
     pub base_revision: u64,
-    pub instance: Instance,
+    pub instance: StudioComponentInstance,
     pub resolution: Resolution,
     pub write_footprint: Vec<(String, String)>,
     /// Keys the edited fields' values depend on (definition record, variables, properties).
@@ -1021,10 +765,9 @@ impl OverrideProposal {
 
 #[allow(clippy::too_many_arguments)]
 pub fn propose_overrides(
-    inst: &Instance,
+    inst: &StudioComponentInstance,
     edits: &[OverrideEdit],
-    defs: &DefRegistry,
-    vars: &VarRegistry,
+    design: &Design,
     modes: &BTreeMap<String, String>,
     base_revision: u64,
     limits: &Limits,
@@ -1048,7 +791,7 @@ pub fn propose_overrides(
         {
             Some(i) => i,
             None => {
-                next.overrides.push(OverrideRecord {
+                next.overrides.push(StudioOverrideRecord {
                     overridden_node_id: e.node_id.clone(),
                     overridden_fields: Vec::new(),
                     values: BTreeMap::new(),
@@ -1062,7 +805,8 @@ pub fn propose_overrides(
         }
         rec.values.insert(e.field.clone(), e.value.clone());
     }
-    let resolution = resolve_instance(&next, defs, vars, modes, base_revision, limits, cancel)?;
+    let resolution = resolve_instance(&next, design, modes, base_revision, limits, cancel)?;
+    design.validate_with_instance(&next, limits, cancel)?;
     let write: BTreeSet<(String, String)> = edits
         .iter()
         .map(|e| (e.node_id.clone(), e.field.clone()))
