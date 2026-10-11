@@ -1,14 +1,16 @@
 //! Neutral proposal model of vector import. Plain data: it is a proposal for the host to adopt,
 //! never a private vector or style store (ENG-DAG-FORBID-003).
 use crate::error::{Result, VectorError};
-use hsk_studio_folio::Snapshot;
+use hsk_studio_folio::{Snapshot, StudioDesignRecords, StudioPaintStyle};
 use hsk_studio_nib::{Anchor, OwnedPath as GeometryPath, PathLimits, Winding};
 
 /// Hostile-input budgets, all checked before the corresponding work is done.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub max_bytes: usize,
-    /// XML nodes, and also the element budget of the walk.
+    /// XML nodes, and also the element budget of the walk. The Folio design records an import
+    /// keeps (styles, rows, gradient stops, dash pairs, node entries) are capped at 16 per node
+    /// (`BudgetExceeded("design_records")`).
     pub max_nodes: u32,
     pub max_depth: usize,
     /// Path segments and shape anchors summed over the document.
@@ -96,179 +98,28 @@ pub struct LossEntry {
     pub code: &'static str,
 }
 
-/// Straight-alpha colour; `a` is the combined colour alpha and fill or stroke opacity, `0.0..=1.0`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rgba {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: f64,
-}
-
-/// `stroke_cap` wire values 1..3 (STU-VEC-143); SVG `square` is `Projecting`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StrokeCap {
-    Butt,
-    Round,
-    Projecting,
-}
-
-impl StrokeCap {
-    pub const fn wire(self) -> u8 {
-        match self {
-            Self::Butt => 1,
-            Self::Round => 2,
-            Self::Projecting => 3,
-        }
-    }
-}
-
-/// `stroke_join` wire values 1..3 (STU-VEC-143).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StrokeJoin {
-    Miter,
-    Round,
-    Bevel,
-}
-
-impl StrokeJoin {
-    pub const fn wire(self) -> u8 {
-        match self {
-            Self::Miter => 1,
-            Self::Round => 2,
-            Self::Bevel => 3,
-        }
-    }
-}
-
-/// Stroke geometry attributes; lengths are points after transform and unit conversion.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StrokeStyle {
-    pub width_pt: f64,
-    pub cap: StrokeCap,
-    pub join: StrokeJoin,
-    /// Ratio, `1.0..=500.0` (STU-VEC-144); SVG default 4.
-    pub miter_limit: f64,
-    /// Alternating dash and gap lengths (STU-VEC-145); empty is a solid line. An odd SVG list is
-    /// repeated once, which is what SVG defines.
-    pub dash_pt: Vec<f64>,
-    /// SVG `stroke-dashoffset`. UNVERIFIED: STU-VEC-145 lists no dash phase.
-    pub dash_offset_pt: f64,
-}
-
-impl StrokeStyle {
-    pub fn solid(width_pt: f64) -> Self {
-        Self {
-            width_pt,
-            cap: StrokeCap::Butt,
-            join: StrokeJoin::Miter,
-            miter_limit: 4.0,
-            dash_pt: Vec::new(),
-            dash_offset_pt: 0.0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SpreadMethod {
-    Pad,
-    Reflect,
-    Repeat,
-}
-
-/// How the gradient geometry numbers were authored. The proposal's `transform` already includes
-/// the bounding-box mapping, so this is provenance, not an extra input to rendering.
+/// How the gradient geometry numbers were authored. Folio's gradient record has no member for it:
+/// the record's `transform` already includes the bounding-box mapping, so this is provenance, not
+/// an input to rendering (see [`VectorProposal::gradient_units`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GradientUnits {
     ObjectBoundingBox,
     UserSpaceOnUse,
 }
 
-/// Straight-alpha stop; `offset` is `0.0..=1.0` and non-decreasing along the list. The colour
-/// alpha already includes `stop-opacity` and the fill or stroke opacity of the painted element.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GradientStop {
-    pub offset: f64,
-    pub color: Rgba,
-}
-
-/// Linear gradient from `(x1, y1)` to `(x2, y2)` in gradient space; `transform`
-/// (`[a, b, c, d, e, f]`, point = `[a c e; b d f] * [x y 1]`) maps gradient space to document points.
-#[derive(Clone, Debug, PartialEq)]
-pub struct LinearGradient {
-    pub x1: f64,
-    pub y1: f64,
-    pub x2: f64,
-    pub y2: f64,
-    pub units: GradientUnits,
-    pub transform: [f64; 6],
-    pub spread: SpreadMethod,
-    pub stops: Vec<GradientStop>,
-}
-
-/// Radial gradient: circle `(cx, cy, r)` with focal circle `(fx, fy, fr)` in gradient space;
-/// `transform` maps gradient space to document points.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RadialGradient {
-    pub cx: f64,
-    pub cy: f64,
-    pub r: f64,
-    pub fx: f64,
-    pub fy: f64,
-    pub fr: f64,
-    pub units: GradientUnits,
-    pub transform: [f64; 6],
-    pub spread: SpreadMethod,
-    pub stops: Vec<GradientStop>,
-}
-
-/// Crate-local typed paint until Folio and the PAINT owner carry paint types (`StudioGradient`,
-/// STU-RAS-160; fill kinds STU-VEC-134). Pattern paints are reported as losses.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Paint {
-    Solid(Rgba),
-    Linear(LinearGradient),
-    Radial(RadialGradient),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StrokeAppearance {
-    pub paint: Paint,
-    pub style: StrokeStyle,
-}
-
-/// One row of the appearance stack (STU-VEC-022).
-#[derive(Clone, Debug, PartialEq)]
-pub enum AppearanceItem {
-    Fill(Paint),
-    Stroke(StrokeAppearance),
-}
-
-/// Plain style data proposed for the PAINT style owner. The id is a proposed `SSTY` id that
-/// [`VectorPath::fill_style_id`] refers to; it creates no style primitive. `items` is the
-/// appearance stack from bottom to top: SVG expresses one fill and one stroke in either order
-/// (`paint-order`); longer stacks come from callers and export as one path element per row.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StyleProposal {
+/// Provenance of one gradient row of a paint style: the SVG `gradientUnits` it was authored with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GradientProvenance {
+    /// `SSTY` id of the style in [`VectorProposal::design`].
     pub style_id: String,
-    pub items: Vec<AppearanceItem>,
+    /// Index into that style's `rows`.
+    pub row: usize,
+    pub units: GradientUnits,
 }
 
-impl StyleProposal {
-    pub fn fills(&self) -> impl Iterator<Item = &Paint> {
-        self.items.iter().filter_map(|i| match i {
-            AppearanceItem::Fill(p) => Some(p),
-            AppearanceItem::Stroke(_) => None,
-        })
-    }
-
-    pub fn strokes(&self) -> impl Iterator<Item = &StrokeAppearance> {
-        self.items.iter().filter_map(|i| match i {
-            AppearanceItem::Stroke(s) => Some(s),
-            AppearanceItem::Fill(_) => None,
-        })
-    }
-}
+/// Style-reference field of a vector layer (STU-DS-136) that names the `PAINT` style holding the
+/// layer's whole appearance stack (fill and stroke rows, bottom to top). One style per layer.
+pub const LAYER_STYLE_REF: &str = "fill_style_id";
 
 /// One subpath in the `hsk.studio.vector_path@1` shape: points are lengths in points, handles are
 /// vectors relative to their anchor. A compound SVG path becomes several `VectorPath`s that share
@@ -283,13 +134,14 @@ pub struct VectorPath {
     pub anchors: Vec<Anchor>,
     /// `Winding::None` means the path has no fill.
     pub winding: Winding,
-    /// Proposed `SSTY` id, if the source styled the shape.
-    pub fill_style_id: Option<String>,
 }
 
 impl VectorPath {
     /// Geometry in points as Nib's owned path (fill rule `NonZero` when the path has no fill).
-    pub fn to_geometry(&self, limits: &PathLimits) -> std::result::Result<GeometryPath, VectorError> {
+    pub fn to_geometry(
+        &self,
+        limits: &PathLimits,
+    ) -> std::result::Result<GeometryPath, VectorError> {
         let winding = if self.winding == Winding::None {
             Winding::NonZero
         } else {
@@ -330,7 +182,14 @@ pub struct VectorProposal {
     /// Folio document (revision 1) with one artboard, group layers and vector layers.
     pub snapshot: Snapshot,
     pub paths: Vec<VectorPath>,
-    pub styles: Vec<StyleProposal>,
+    /// Folio design records of the document (`document_id` equals the snapshot's), validated by
+    /// `validate_design_records`: `paint_styles` hold the appearance stacks (ordered fill and
+    /// stroke rows with solid or gradient paint and stroke properties) and each vector layer's
+    /// `StudioNodeDesign.style_refs[`[`LAYER_STYLE_REF`]`]` names its style. This is the single
+    /// source of paint, stroke and appearance data; the proposal creates no style registry.
+    pub design: StudioDesignRecords,
+    /// SVG gradient units per gradient row (provenance Folio has no member for).
+    pub gradient_provenance: Vec<GradientProvenance>,
     pub loss: Vec<LossEntry>,
     pub provenance: Provenance,
 }
@@ -342,6 +201,29 @@ impl VectorProposal {
     pub fn has_loss_code(&self, code: &str) -> bool {
         self.loss.iter().any(|l| l.code == code)
     }
+    /// The paint style of a vector layer, through its design entry.
+    pub fn layer_style(&self, layer_id: &str) -> Option<&StudioPaintStyle> {
+        layer_style(&self.design, layer_id)
+    }
+    /// How SVG authored the gradient of row `row` of style `style_id`, when that row is a gradient.
+    pub fn gradient_units(&self, style_id: &str, row: usize) -> Option<GradientUnits> {
+        self.gradient_provenance
+            .iter()
+            .find(|g| g.style_id == style_id && g.row == row)
+            .map(|g| g.units)
+    }
+}
+
+/// The paint style a layer names through [`LAYER_STYLE_REF`], when the record set holds it.
+pub fn layer_style<'a>(
+    design: &'a StudioDesignRecords,
+    layer_id: &str,
+) -> Option<&'a StudioPaintStyle> {
+    let id = design
+        .node_design(layer_id)?
+        .style_refs
+        .get(LAYER_STYLE_REF)?;
+    design.paint_styles.iter().find(|s| &s.style_id == id)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

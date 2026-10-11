@@ -7,10 +7,15 @@ use crate::ids::IdMint;
 use crate::model::*;
 use hsk_studio_accord::{CancellationToken, DomainId, Length as AccordLength, Unit};
 use hsk_studio_folio::{
-    ArtboardSchema, Bounds, Budget, DocumentSchema, GeometryUnit, GraphSchema, Isolation,
-    LayerAppearance, LayerSchema, Length as FolioLength, NodeKind, NodeRef, Parent, Payload,
-    ProfileBinding, Resolution, Resolver, StudioArtboard,
-    StudioDocument, StudioLayer, StudioLayerGraph, TileRef, validate_document,
+    ArtboardSchema, BLEND_NORMAL, Bounds, Budget, DocumentSchema, GeometryUnit,
+    GradientInterpolation, GradientSpread, GraphSchema, Isolation, LayerAppearance, LayerSchema,
+    Length as FolioLength, MAX_DASH_ENTRIES, MAX_GRADIENT_STOPS, NodeKind, NodeRef, Parent,
+    Payload, ProfileBinding, Resolution, Resolver, StrokeAlign, StrokeCap, StrokeJoin,
+    StudioAppearanceRow, StudioArtboard, StudioColor, StudioDesignRecords, StudioDocument,
+    StudioGradient, StudioGradientGeometry, StudioGradientStop, StudioLayer, StudioLayerGraph,
+    StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioPublishing, StudioStrokeStyle,
+    StyleKind, StyleRegistrySchema, TileRef, Unresolved, validate_design_records,
+    validate_document,
 };
 use hsk_studio_nib::{Anchor, Mirroring, Point, Winding};
 use roxmltree::{Document, Node, ParsingOptions};
@@ -23,7 +28,6 @@ const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
 /// Cubic Bezier control distance for a quarter ellipse: `4/3 * (sqrt(2) - 1)`.
 const KAPPA: f64 = 0.552_284_749_830_793_4;
 
-const BLEND_NORMAL: u16 = 2;
 /// Default viewport (CSS replaced-element size) when neither size nor `viewBox` is given.
 const DEFAULT_VIEWPORT: [f64; 2] = [300.0, 150.0];
 
@@ -397,9 +401,13 @@ struct Importer<'a, 'd> {
     loss: Vec<LossEntry>,
     layers: Vec<StudioLayer>,
     paths: Vec<VectorPath>,
-    styles: Vec<StyleProposal>,
-    /// Canonical text of an item list -> index into `styles` (dedupe).
+    styles: Vec<StudioPaintStyle>,
+    /// Canonical text of a row list -> index into `styles` (dedupe).
     style_index: BTreeMap<String, usize>,
+    nodes: Vec<StudioNodeDesign>,
+    gradient_provenance: Vec<GradientProvenance>,
+    /// Records retained so far, counted the way Folio meters them (`Budget::nodes`).
+    design_units: usize,
     segments: usize,
     elements: u32,
     /// Gradient elements by id (first wins), found by one pass before the walk.
@@ -491,6 +499,9 @@ pub fn import_svg(
         paths: Vec::new(),
         styles: Vec::new(),
         style_index: BTreeMap::new(),
+        nodes: Vec::new(),
+        gradient_provenance: Vec::new(),
+        design_units: 0,
         segments: 0,
         elements: 1,
         gradients,
@@ -581,6 +592,8 @@ pub fn import_svg(
         layers,
         paths,
         styles,
+        nodes,
+        gradient_provenance,
         ..
     } = imp;
     let artboard = StudioArtboard {
@@ -595,6 +608,9 @@ pub fn import_svg(
             height: pt(vh * px_to_pt),
         },
     };
+    let mut design = StudioDesignRecords::new(document_id.clone());
+    design.paint_styles = styles;
+    design.nodes = nodes;
     let document = StudioDocument {
         schema_id: DocumentSchema::V1,
         document_id,
@@ -628,18 +644,31 @@ pub fn import_svg(
     };
     let known: BTreeSet<&str> = paths.iter().map(|p| p.path_id.as_str()).collect();
     let snapshot = validate_document(document, budget, cancel, &LocalResolver { paths: &known })
-        .map_err(|d| {
-            if d.code == hsk_studio_folio::Code::Canceled {
-                VectorError::Canceled
-            } else {
-                VectorError::Folio(d.code)
-            }
-        })?;
+        .map_err(folio_error)?;
     drop(known);
+    // The design records are Folio's: validated here against the validated document, with the
+    // record budget the importer already enforced (`Importer::spend_design`).
+    let design_budget = Budget {
+        nodes: design_unit_cap(&policy.limits).saturating_add(8),
+        edges: 0,
+        ..budget
+    };
+    let issues = validate_design_records(
+        &design,
+        snapshot.document(),
+        design_budget,
+        cancel,
+        &Unresolved,
+    )
+    .map_err(folio_error)?;
+    if !issues.is_empty() {
+        return Err(VectorError::Folio(hsk_studio_folio::Code::DanglingReference));
+    }
     Ok(crate::model::VectorProposal {
         snapshot,
         paths,
-        styles,
+        design,
+        gradient_provenance,
         loss,
         provenance: Provenance {
             source_format,
@@ -652,6 +681,19 @@ pub fn import_svg(
             viewport_px: [vw, vh],
         },
     })
+}
+
+fn folio_error(d: hsk_studio_folio::Diagnostic) -> VectorError {
+    if d.code == hsk_studio_folio::Code::Canceled {
+        VectorError::Canceled
+    } else {
+        VectorError::Folio(d.code)
+    }
+}
+
+/// Most design records (styles, rows, gradient stops, dash pairs, node entries) one import keeps.
+fn design_unit_cap(limits: &Limits) -> usize {
+    (limits.max_nodes as usize).saturating_mul(16)
 }
 
 /// Attribute without a namespace; `foo:d` never stands in for `d`.
@@ -1000,6 +1042,10 @@ impl<'d> Importer<'_, 'd> {
         if list.len() % 2 == 1 {
             list.extend_from_within(..);
         }
+        if list.len() > MAX_DASH_ENTRIES {
+            self.note(loc, LossKind::Unsupported, "stroke_dasharray_too_long");
+            return;
+        }
         st.dash = list;
     }
 
@@ -1178,8 +1224,9 @@ impl<'d> Importer<'_, 'd> {
         Ok(())
     }
 
-    /// Resolves a computed paint to a typed proposal paint. `opacity` is the element's fill or
-    /// stroke opacity, folded into every alpha (exact: opacity multiplies the interpolated colour).
+    /// Resolves a computed paint to a Folio paint plus the row opacity it needs. `opacity` is the
+    /// element's fill or stroke opacity: a solid paint carries it as the row opacity, a gradient
+    /// folds it into every stop opacity (exact: opacity multiplies the interpolated colour).
     fn resolve_paint(
         &mut self,
         pv: &PaintValue,
@@ -1188,14 +1235,12 @@ impl<'d> Importer<'_, 'd> {
         bbox: Option<[f64; 4]>,
         m: Affine,
         loc: &str,
-    ) -> Result<Option<Paint>> {
+    ) -> Result<Option<ResolvedPaint>> {
         let solid = |(r, g, b, a): (u8, u8, u8, f64)| {
-            Some(Paint::Solid(Rgba {
-                r,
-                g,
-                b,
-                a: (a * opacity).clamp(0.0, 1.0),
-            }))
+            Some(ResolvedPaint::solid(
+                (r, g, b),
+                (a * opacity).clamp(0.0, 1.0),
+            ))
         };
         Ok(match pv {
             PaintValue::None => None,
@@ -1262,12 +1307,12 @@ impl<'d> Importer<'_, 'd> {
             _ => GradientUnits::ObjectBoundingBox,
         };
         let spread = match attr("spreadMethod", false) {
-            None | Some("pad") => SpreadMethod::Pad,
-            Some("reflect") => SpreadMethod::Reflect,
-            Some("repeat") => SpreadMethod::Repeat,
+            None | Some("pad") => GradientSpread::Pad,
+            Some("reflect") => GradientSpread::Reflect,
+            Some("repeat") => GradientSpread::Repeat,
             Some(_) => {
                 self.note(loc, LossKind::Unsupported, "gradient_spread_unparsed");
-                SpreadMethod::Pad
+                GradientSpread::Pad
             }
         };
         let transform = match attr("gradientTransform", false).map(svgtypes::Transform::from_str) {
@@ -1301,7 +1346,7 @@ impl<'d> Importer<'_, 'd> {
             return Ok(GradientOutcome::Nothing);
         };
         if stops.len() == 1 {
-            return Ok(GradientOutcome::Paint(Paint::Solid(last.color)));
+            return Ok(GradientOutcome::Paint(last.solid()));
         }
         let view = self.user_viewport;
         let coord = |imp: &mut Self, name: &str, default_percent: f64, axis: usize| -> f64 {
@@ -1320,7 +1365,7 @@ impl<'d> Importer<'_, 'd> {
                 coord(self, "y2", 0.0, 1),
             ];
             if g[0] == g[2] && g[1] == g[3] {
-                return Ok(GradientOutcome::Paint(Paint::Solid(last.color)));
+                return Ok(GradientOutcome::Paint(last.solid()));
             }
             Geometry::Linear(g)
         } else {
@@ -1334,7 +1379,7 @@ impl<'d> Importer<'_, 'd> {
                 return Ok(GradientOutcome::Nothing);
             }
             if r == 0.0 {
-                return Ok(GradientOutcome::Paint(Paint::Solid(last.color)));
+                return Ok(GradientOutcome::Paint(last.solid()));
             }
             if (fx - cx).hypot(fy - cy) > r + 1e-12 {
                 self.note(loc, LossKind::Approximated, "radial_focal_outside_circle");
@@ -1363,30 +1408,30 @@ impl<'d> Importer<'_, 'd> {
             self.note(loc, LossKind::Unsupported, "gradient_singular_transform");
             return Ok(GradientOutcome::Nothing);
         }
-        let transform = [full.a, full.b, full.c, full.d, full.e, full.f];
-        Ok(GradientOutcome::Paint(match geometry {
-            Geometry::Linear([x1, y1, x2, y2]) => Paint::Linear(LinearGradient {
-                x1,
-                y1,
-                x2,
-                y2,
-                units,
-                transform,
-                spread,
-                stops,
-            }),
-            Geometry::Radial([cx, cy, r, fx, fy, fr]) => Paint::Radial(RadialGradient {
+        let geometry = match geometry {
+            Geometry::Linear([x1, y1, x2, y2]) => StudioGradientGeometry::Linear { x1, y1, x2, y2 },
+            Geometry::Radial([cx, cy, r, fx, fy, fr]) => StudioGradientGeometry::Radial {
                 cx,
                 cy,
                 r,
                 fx,
                 fy,
                 fr,
-                units,
-                transform,
-                spread,
-                stops,
-            }),
+            },
+        };
+        Ok(GradientOutcome::Paint(ResolvedPaint {
+            paint: StudioPaint::Gradient {
+                gradient: StudioGradient {
+                    geometry,
+                    transform: [full.a, full.b, full.c, full.d, full.e, full.f],
+                    spread,
+                    interpolation: GradientInterpolation::Classic,
+                    dither: false,
+                    stops: stops.iter().map(Stop::record).collect(),
+                },
+            },
+            opacity: 100.0,
+            units: Some(units),
         }))
     }
 
@@ -1429,7 +1474,7 @@ impl<'d> Importer<'_, 'd> {
 
     /// Stops of one gradient element: offsets clamped to `0..=1` and made non-decreasing, colour
     /// alpha folded with `stop-opacity` and the painted element's opacity.
-    fn stops(&mut self, owner: Node, opacity: f64, loc: &str) -> Result<Vec<GradientStop>> {
+    fn stops(&mut self, owner: Node, opacity: f64, loc: &str) -> Result<Vec<Stop>> {
         let mut out = Vec::new();
         let mut previous = 0.0_f64;
         for stop in owner.children().filter(|c| is_svg_stop(*c)) {
@@ -1463,30 +1508,59 @@ impl<'d> Importer<'_, 'd> {
                     _ => {}
                 }
             }
-            out.push(GradientStop {
+            out.push(Stop {
                 offset,
-                color: Rgba {
-                    r: color.0,
-                    g: color.1,
-                    b: color.2,
-                    a: (color.3 * stop_opacity * opacity).clamp(0.0, 1.0),
-                },
+                rgb: (color.0, color.1, color.2),
+                alpha: (color.3 * stop_opacity * opacity).clamp(0.0, 1.0),
             });
         }
         Ok(out)
     }
 
-    /// Stores an appearance stack once; identical stacks share one proposed style id.
-    fn style_id(&mut self, items: Vec<AppearanceItem>) -> Result<String> {
-        let key = format!("{items:?}");
+    /// Charges `n` records against the design budget (Folio's `Budget::nodes` units).
+    fn spend_design(&mut self, n: usize) -> Result<()> {
+        self.design_units = self.design_units.saturating_add(n);
+        if self.design_units > design_unit_cap(&self.limits) {
+            return Err(VectorError::BudgetExceeded("design_records"));
+        }
+        Ok(())
+    }
+
+    /// Stores an appearance stack once as a Folio `PAINT` style; identical stacks (and identical
+    /// gradient provenance) share one style id.
+    fn style_id(
+        &mut self,
+        rows: Vec<StudioAppearanceRow>,
+        units: Vec<(usize, GradientUnits)>,
+    ) -> Result<String> {
+        let key = format!("{rows:?}{units:?}");
         if let Some(&i) = self.style_index.get(&key) {
             return Ok(self.styles[i].style_id.clone());
         }
+        let cost = rows.iter().fold(1, |n, row| n + 1 + row_weight(row));
+        self.spend_design(cost)?;
         let style_id = self.mint_id("SSTY")?;
+        let ordinal = self.styles.len() + 1;
         self.style_index.insert(key, self.styles.len());
-        self.styles.push(StyleProposal {
+        self.gradient_provenance
+            .extend(units.into_iter().map(|(row, units)| GradientProvenance {
+                style_id: style_id.clone(),
+                row,
+                units,
+            }));
+        self.styles.push(StudioPaintStyle {
+            schema_id: StyleRegistrySchema::V1,
             style_id: style_id.clone(),
-            items,
+            kind: StyleKind::Paint,
+            name: format!("svg/{ordinal}"),
+            publishing: StudioPublishing {
+                description: String::new(),
+                description_markdown: String::new(),
+                documentation_links: Vec::new(),
+                publish_key: format!("svg-import/{ordinal}"),
+                is_remote: false,
+            },
+            rows,
         });
         Ok(style_id)
     }
@@ -1517,37 +1591,59 @@ impl<'d> Importer<'_, 'd> {
             None
         };
         let scale = m.mean_scale();
-        let stroke_item = stroke.map(|paint| {
-            AppearanceItem::Stroke(StrokeAppearance {
-                paint,
-                style: StrokeStyle {
-                    width_pt: st.stroke_width * scale,
+        let stroke_row = stroke
+            .map(|paint| -> Result<_> {
+                let length = |v: f64| -> Result<FolioLength> {
+                    if v.is_finite() {
+                        Ok(pt(v))
+                    } else {
+                        Err(VectorError::InvalidGeometry)
+                    }
+                };
+                let style = StudioStrokeStyle {
+                    weight: length(st.stroke_width * scale)?,
                     cap: st.cap,
                     join: st.join,
+                    align: StrokeAlign::Center,
                     miter_limit: st.miter_limit,
-                    dash_pt: st.dash.iter().map(|d| d * scale).collect(),
-                    dash_offset_pt: st.dash_offset * scale,
-                },
+                    dash: st
+                        .dash
+                        .iter()
+                        .map(|d| length(d * scale))
+                        .collect::<Result<_>>()?,
+                    dash_offset: length(st.dash_offset * scale)?,
+                };
+                let units = paint.units;
+                Ok((paint.stroke_row(style), units))
             })
-        });
+            .transpose()?;
         let winding = if fill.is_some() {
             st.fill_rule
         } else {
             Winding::None
         };
-        let fill_item = fill.map(AppearanceItem::Fill);
-        let mut items = Vec::with_capacity(2);
+        let fill_row = fill.map(|paint| {
+            let units = paint.units;
+            (paint.fill_row(), units)
+        });
+        let mut ordered = Vec::with_capacity(2);
         if st.stroke_first {
-            items.extend(stroke_item);
-            items.extend(fill_item);
+            ordered.extend(stroke_row);
+            ordered.extend(fill_row);
         } else {
-            items.extend(fill_item);
-            items.extend(stroke_item);
+            ordered.extend(fill_row);
+            ordered.extend(stroke_row);
         }
-        let style_id = if items.is_empty() {
+        let mut rows = Vec::with_capacity(ordered.len());
+        let mut units = Vec::new();
+        for (index, (row, row_units)) in ordered.into_iter().enumerate() {
+            rows.push(row);
+            units.extend(row_units.map(|u| (index, u)));
+        }
+        let style_id = if rows.is_empty() {
             None
         } else {
-            Some(self.style_id(items)?)
+            Some(self.style_id(rows, units)?)
         };
         let layer_id = self.mint_id("SLYR")?;
         let mut path_ids = Vec::with_capacity(subpaths.len());
@@ -1575,7 +1671,23 @@ impl<'d> Importer<'_, 'd> {
                 closed: sub.closed,
                 anchors,
                 winding,
-                fill_style_id: style_id.clone(),
+            });
+        }
+        if let Some(style_id) = style_id {
+            self.spend_design(1)?;
+            self.nodes.push(StudioNodeDesign {
+                node: NodeRef {
+                    node_kind: NodeKind::Layer,
+                    node_id: layer_id.clone(),
+                },
+                auto_layout: None,
+                child_layout: None,
+                size_clamps: None,
+                constraints: None,
+                reactions: Vec::new(),
+                component_property_references: BTreeMap::new(),
+                explicit_variable_modes: BTreeMap::new(),
+                style_refs: BTreeMap::from([(LAYER_STYLE_REF.to_owned(), style_id)]),
             });
         }
         self.layers.push(StudioLayer {
@@ -1593,8 +1705,102 @@ impl<'d> Importer<'_, 'd> {
     }
 }
 
+/// A gradient stop before it becomes a Folio record: offset `0..=1`, straight alpha `0..=1`.
+#[derive(Clone, Copy, Debug)]
+struct Stop {
+    offset: f64,
+    rgb: (u8, u8, u8),
+    alpha: f64,
+}
+
+impl Stop {
+    fn record(&self) -> StudioGradientStop {
+        StudioGradientStop {
+            position: clean(self.offset * 100.0).clamp(0.0, 100.0),
+            midpoint: None,
+            opacity: clean(self.alpha * 100.0).clamp(0.0, 100.0),
+            colour: colour(self.rgb),
+        }
+    }
+
+    /// A one-stop gradient is that colour.
+    fn solid(&self) -> ResolvedPaint {
+        ResolvedPaint::solid(self.rgb, self.alpha)
+    }
+}
+
+/// A paint ready for a Folio appearance row. A gradient keeps the element opacity in its stops, so
+/// its row opacity is 100; a solid paint carries it as the row opacity.
+struct ResolvedPaint {
+    paint: StudioPaint,
+    /// Row opacity, percent.
+    opacity: f64,
+    /// SVG gradient units, when the paint is a gradient.
+    units: Option<GradientUnits>,
+}
+
+impl ResolvedPaint {
+    fn solid(rgb: (u8, u8, u8), alpha: f64) -> Self {
+        Self {
+            paint: StudioPaint::Solid {
+                colour: colour(rgb),
+            },
+            opacity: clean(alpha * 100.0).clamp(0.0, 100.0),
+            units: None,
+        }
+    }
+
+    fn fill_row(self) -> StudioAppearanceRow {
+        StudioAppearanceRow::Fill {
+            paint: self.paint,
+            opacity: self.opacity,
+            blend_mode: BLEND_NORMAL,
+            visible: true,
+        }
+    }
+
+    fn stroke_row(self, stroke: StudioStrokeStyle) -> StudioAppearanceRow {
+        StudioAppearanceRow::Stroke {
+            paint: self.paint,
+            stroke,
+            opacity: self.opacity,
+            blend_mode: BLEND_NORMAL,
+            visible: true,
+        }
+    }
+}
+
+/// An sRGB-intent channel triple as an opaque Folio colour in the document working space.
+fn colour((r, g, b): (u8, u8, u8)) -> StudioColor {
+    StudioColor {
+        r: f64::from(r) / 255.0,
+        g: f64::from(g) / 255.0,
+        b: f64::from(b) / 255.0,
+        colour_profile_id: ProfileBinding::Unassigned(()),
+    }
+}
+
+/// Rounds away the binary noise of `fraction * 100` (to 1e-10), so a percent re-divided by 100 on
+/// export reads back as the same value and the round trip is a fixed point. Monotonic.
+fn clean(v: f64) -> f64 {
+    (v * 1e10).round() / 1e10
+}
+
+/// Folio meters one record per gradient stop and one per dash/gap pair of a row.
+fn row_weight(row: &StudioAppearanceRow) -> usize {
+    let (paint, dashes) = match row {
+        StudioAppearanceRow::Fill { paint, .. } => (paint, 0),
+        StudioAppearanceRow::Stroke { paint, stroke, .. } => (paint, stroke.dash.len() / 2),
+    };
+    dashes
+        + match paint {
+            StudioPaint::Solid { .. } => 0,
+            StudioPaint::Gradient { gradient } => gradient.stops.len(),
+        }
+}
+
 enum GradientOutcome {
-    Paint(Paint),
+    Paint(ResolvedPaint),
     /// The reference resolves but paints nothing (no stops, degenerate); already reported.
     Nothing,
     /// No gradient has this id.
@@ -1602,9 +1808,7 @@ enum GradientOutcome {
 }
 
 const MITER_LIMIT_MAX: f64 = 500.0;
-const MAX_DASH_ENTRIES: usize = 256;
 const MAX_GRADIENT_CHAIN: usize = 8;
-const MAX_GRADIENT_STOPS: usize = 1024;
 
 fn is_svg_stop(n: Node) -> bool {
     n.is_element() && n.tag_name().namespace() == Some(SVG_NS) && n.tag_name().name() == "stop"

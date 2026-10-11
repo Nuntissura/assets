@@ -1,22 +1,47 @@
 //! Deterministic SVG 1.1 export of the supported subset. Same input, same text: numbers use the
 //! shortest round-trip decimal form (never exponent notation) and attributes have a fixed order.
+//! Paint, stroke and appearance rows are read from Folio design records: each vector layer's
+//! `StudioNodeDesign.style_refs[LAYER_STYLE_REF]` names a `PAINT` style, validated by Folio before
+//! it is read.
 use crate::error::{Result, VectorError};
 use crate::model::*;
-use hsk_studio_accord::{Length as AccordLength, Unit};
-use hsk_studio_folio::{GeometryUnit, Parent, Payload};
+use hsk_studio_accord::{CancellationToken, Length as AccordLength, Unit};
+use hsk_studio_folio::{
+    BLEND_NORMAL, Budget, GeometryUnit, GradientInterpolation, GradientSpread,
+    Length as FolioLength, Parent, Payload, StrokeAlign, StrokeCap, StrokeJoin,
+    StudioAppearanceRow, StudioColor, StudioDesignRecords, StudioGradient, StudioGradientGeometry,
+    StudioNodeDesign, StudioPaint, StudioPaintStyle, StudioStrokeStyle, Unresolved,
+    validate_paint_style,
+};
 use hsk_studio_nib::Winding;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn num(v: f64) -> String {
-    if v == 0.0 {
-        "0".into()
-    } else {
-        format!("{v}")
-    }
+    if v == 0.0 { "0".into() } else { format!("{v}") }
 }
 
-fn hex(c: Rgba) -> String {
-    format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
+/// 8-bit channel of a `0..=1` value, and whether the value was already on the 8-bit grid.
+fn channel(v: f64) -> (u8, bool) {
+    let scaled = v * 255.0;
+    let rounded = scaled.round();
+    (
+        rounded.clamp(0.0, 255.0) as u8,
+        (scaled - rounded).abs() <= 1e-6,
+    )
+}
+
+/// `#rrggbb` of a Folio colour (SVG colours are 8-bit sRGB); a value off the 8-bit grid is
+/// quantized and reported. The colour-profile binding is not interpreted.
+fn hex(c: &StudioColor, label: &str, loss: &mut Vec<LossEntry>) -> String {
+    let ((r, rx), (g, gx), (b, bx)) = (channel(c.r), channel(c.g), channel(c.b));
+    if !(rx && gx && bx) {
+        loss.push(LossEntry {
+            path: label.to_owned(),
+            kind: LossKind::Approximated,
+            code: "color_quantized_8bit",
+        });
+    }
+    format!("#{r:02x}{g:02x}{b:02x}")
 }
 
 /// Escapes text for a double-quoted XML attribute value; control characters become `_`.
@@ -34,6 +59,25 @@ fn attr_text(text: &str) -> String {
         }
     }
     out
+}
+
+/// A Folio length in points (`ppi` resolves pixel lengths); finite and within the coordinate cap.
+fn to_pt(l: &FolioLength, ppi: f64) -> Result<f64> {
+    let unit = match l.unit {
+        GeometryUnit::Mm => Unit::Millimetres,
+        GeometryUnit::In => Unit::Inches,
+        GeometryUnit::Px => Unit::Pixels,
+        GeometryUnit::Pt => Unit::Points,
+    };
+    let v = AccordLength::new(l.value, unit)
+        .and_then(|a| a.convert(Unit::Points, Some(ppi)))
+        .map_err(|_| VectorError::InvalidGeometry)?
+        .value();
+    if v.is_finite() && v.abs() <= COORDINATE_LIMIT {
+        Ok(v)
+    } else {
+        Err(VectorError::InvalidGeometry)
+    }
 }
 
 /// Absolute control points of one anchor, in points.
@@ -104,6 +148,14 @@ pub struct SvgExport {
     pub loss: Vec<LossEntry>,
 }
 
+fn note(loss: &mut Vec<LossEntry>, label: &str, kind: LossKind, code: &'static str) {
+    loss.push(LossEntry {
+        path: label.to_owned(),
+        kind,
+        code,
+    });
+}
+
 /// Gradient definitions collected while writing; identical gradients share one definition.
 struct Defs {
     k: f64,
@@ -112,57 +164,86 @@ struct Defs {
 }
 
 impl Defs {
-    /// Paint attribute value and the separate opacity attribute a solid colour needs.
-    fn paint(&mut self, paint: &Paint) -> (String, Option<f64>) {
+    /// Paint attribute value of one paint (the row opacity is a separate attribute).
+    fn paint(&mut self, paint: &StudioPaint, label: &str, loss: &mut Vec<LossEntry>) -> String {
         match paint {
-            Paint::Solid(c) => (hex(*c), (c.a < 1.0).then_some(c.a)),
-            Paint::Linear(_) | Paint::Radial(_) => {
-                let key = format!("{paint:?}");
+            StudioPaint::Solid { colour } => hex(colour, label, loss),
+            StudioPaint::Gradient { gradient } => {
+                if gradient.stops.iter().any(|s| s.midpoint.is_some()) {
+                    note(
+                        loss,
+                        label,
+                        LossKind::Approximated,
+                        "gradient_midpoint_dropped",
+                    );
+                }
+                if gradient.interpolation != GradientInterpolation::Classic {
+                    note(
+                        loss,
+                        label,
+                        LossKind::Approximated,
+                        "gradient_interpolation_classic_assumed",
+                    );
+                }
+                if gradient.dither {
+                    note(loss, label, LossKind::Ignored, "gradient_dither_dropped");
+                }
+                let key = format!("{gradient:?}");
                 if let Some(id) = self.ids.get(&key) {
-                    return (format!("url(#{id})"), None);
+                    return format!("url(#{id})");
                 }
                 let id = format!("g{}", self.ids.len() + 1);
-                self.write_gradient(&id, paint);
+                self.write_gradient(&id, gradient, label, loss);
                 self.ids.insert(key, id.clone());
-                (format!("url(#{id})"), None)
+                format!("url(#{id})")
             }
         }
     }
 
-    fn write_gradient(&mut self, id: &str, paint: &Paint) {
-        let (tag, geometry, transform, spread, stops) = match paint {
-            Paint::Linear(g) => (
+    fn write_gradient(
+        &mut self,
+        id: &str,
+        g: &StudioGradient,
+        label: &str,
+        loss: &mut Vec<LossEntry>,
+    ) {
+        let (tag, geometry) = match &g.geometry {
+            StudioGradientGeometry::Linear { x1, y1, x2, y2 } => (
                 "linearGradient",
                 format!(
                     "x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"",
-                    num(g.x1),
-                    num(g.y1),
-                    num(g.x2),
-                    num(g.y2)
+                    num(*x1),
+                    num(*y1),
+                    num(*x2),
+                    num(*y2)
                 ),
-                g.transform,
-                g.spread,
-                &g.stops,
             ),
-            Paint::Radial(g) => {
+            StudioGradientGeometry::Radial {
+                cx,
+                cy,
+                r,
+                fx,
+                fy,
+                fr,
+            } => {
                 let mut geometry = format!(
                     "cx=\"{}\" cy=\"{}\" r=\"{}\" fx=\"{}\" fy=\"{}\"",
-                    num(g.cx),
-                    num(g.cy),
-                    num(g.r),
-                    num(g.fx),
-                    num(g.fy)
+                    num(*cx),
+                    num(*cy),
+                    num(*r),
+                    num(*fx),
+                    num(*fy)
                 );
-                if g.fr != 0.0 {
-                    geometry.push_str(&format!(" fr=\"{}\"", num(g.fr)));
+                if *fr != 0.0 {
+                    geometry.push_str(&format!(" fr=\"{}\"", num(*fr)));
                 }
-                ("radialGradient", geometry, g.transform, g.spread, &g.stops)
+                ("radialGradient", geometry)
             }
-            Paint::Solid(_) => return,
         };
         // Gradient space -> points -> px: scaling every matrix entry by `k` applies `scale(k)`.
-        let [a, b, c, d, e, f] = transform.map(|v| v * self.k);
-        let mut open = format!("    <{tag} id=\"{id}\" gradientUnits=\"userSpaceOnUse\" {geometry}");
+        let [a, b, c, d, e, f] = g.transform.map(|v| v * self.k);
+        let mut open =
+            format!("    <{tag} id=\"{id}\" gradientUnits=\"userSpaceOnUse\" {geometry}");
         if [a, b, c, d, e, f] != [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
             open.push_str(&format!(
                 " gradientTransform=\"matrix({} {} {} {} {} {})\"",
@@ -174,22 +255,22 @@ impl Defs {
                 num(f)
             ));
         }
-        match spread {
-            SpreadMethod::Pad => {}
-            SpreadMethod::Reflect => open.push_str(" spreadMethod=\"reflect\""),
-            SpreadMethod::Repeat => open.push_str(" spreadMethod=\"repeat\""),
+        match g.spread {
+            GradientSpread::Pad => {}
+            GradientSpread::Reflect => open.push_str(" spreadMethod=\"reflect\""),
+            GradientSpread::Repeat => open.push_str(" spreadMethod=\"repeat\""),
         }
         self.text.push_str(&open);
         self.text.push_str(">\n");
-        for s in stops {
+        for s in &g.stops {
             self.text.push_str(&format!(
                 "      <stop offset=\"{}\" stop-color=\"{}\"",
-                num(s.offset),
-                hex(s.color)
+                num(s.position / 100.0),
+                hex(&s.colour, label, loss)
             ));
-            if s.color.a < 1.0 {
+            if s.opacity < 100.0 {
                 self.text
-                    .push_str(&format!(" stop-opacity=\"{}\"", num(s.color.a)));
+                    .push_str(&format!(" stop-opacity=\"{}\"", num(s.opacity / 100.0)));
             }
             self.text.push_str("/>\n");
         }
@@ -197,56 +278,93 @@ impl Defs {
     }
 }
 
+/// One visible appearance row, borrowed from a Folio style (or the SVG default fill).
 enum Row<'a> {
-    Fill(&'a Paint),
-    Stroke(&'a StrokeAppearance),
+    Fill {
+        paint: &'a StudioPaint,
+        opacity: f64,
+    },
+    Stroke {
+        paint: &'a StudioPaint,
+        stroke: &'a StudioStrokeStyle,
+        opacity: f64,
+    },
 }
 
-const DEFAULT_FILL: Paint = Paint::Solid(Rgba {
-    r: 0,
-    g: 0,
-    b: 0,
-    a: 1.0,
-});
+type FillRow<'a> = Option<(&'a StudioPaint, f64)>;
+type StrokeRow<'a> = Option<(&'a StudioPaint, &'a StudioStrokeStyle, f64)>;
+
+fn fill_of<'r>(row: &Row<'r>) -> FillRow<'r> {
+    match row {
+        Row::Fill { paint, opacity } => Some((*paint, *opacity)),
+        Row::Stroke { .. } => None,
+    }
+}
+
+fn stroke_of<'r>(row: &Row<'r>) -> StrokeRow<'r> {
+    match row {
+        Row::Stroke {
+            paint,
+            stroke,
+            opacity,
+        } => Some((*paint, *stroke, *opacity)),
+        Row::Fill { .. } => None,
+    }
+}
+
+/// Where and how one `<path>` element is written.
+#[derive(Clone, Copy)]
+struct Emit<'e> {
+    pad: &'e str,
+    d: &'e str,
+    rule: Winding,
+    label: &'e str,
+}
 
 struct Writer<'a> {
     k: f64,
-    styles: BTreeMap<&'a str, &'a StyleProposal>,
+    /// Pixels per inch of the export, for pixel-unit Folio lengths.
+    ppi: f64,
+    nodes: BTreeMap<&'a str, &'a StudioNodeDesign>,
+    styles: BTreeMap<&'a str, &'a StudioPaintStyle>,
+    /// Styles Folio has validated for this export.
+    checked: BTreeSet<&'a str>,
     defs: Defs,
     loss: Vec<LossEntry>,
 }
 
-impl Writer<'_> {
+impl<'a> Writer<'a> {
     /// Paint attributes of one element: an optional fill row, an optional stroke row.
     fn attrs(
         &mut self,
-        fill: Option<&Paint>,
-        stroke: Option<&StrokeAppearance>,
+        fill: FillRow<'_>,
+        stroke: StrokeRow<'_>,
         rule: Winding,
-    ) -> String {
+        label: &str,
+    ) -> Result<String> {
         let mut out = String::new();
         match fill {
             None => out.push_str(" fill=\"none\""),
-            Some(paint) => {
-                let (value, opacity) = self.defs.paint(paint);
+            Some((paint, opacity)) => {
+                let value = self.defs.paint(paint, label, &mut self.loss);
                 out.push_str(&format!(" fill=\"{value}\""));
-                if let Some(a) = opacity {
-                    out.push_str(&format!(" fill-opacity=\"{}\"", num(a)));
+                if opacity < 100.0 {
+                    out.push_str(&format!(" fill-opacity=\"{}\"", num(opacity / 100.0)));
                 }
                 if rule == Winding::EvenOdd {
                     out.push_str(" fill-rule=\"evenodd\"");
                 }
             }
         }
-        if let Some(s) = stroke {
-            let (value, opacity) = self.defs.paint(&s.paint);
-            let st = &s.style;
+        if let Some((paint, st, opacity)) = stroke {
+            let value = self.defs.paint(paint, label, &mut self.loss);
+            let width = to_pt(&st.weight, self.ppi)?;
             out.push_str(&format!(
                 " stroke=\"{value}\" stroke-width=\"{}\"",
-                num(st.width_pt * self.k)
+                num(width * self.k)
             ));
-            if let Some(a) = opacity {
-                out.push_str(&format!(" stroke-opacity=\"{}\"", num(a)));
+            if opacity < 100.0 {
+                out.push_str(&format!(" stroke-opacity=\"{}\"", num(opacity / 100.0)));
             }
             match st.cap {
                 StrokeCap::Butt => {}
@@ -261,31 +379,79 @@ impl Writer<'_> {
             if st.miter_limit != 4.0 {
                 out.push_str(&format!(" stroke-miterlimit=\"{}\"", num(st.miter_limit)));
             }
-            if !st.dash_pt.is_empty() {
-                let list: Vec<String> = st.dash_pt.iter().map(|d| num(d * self.k)).collect();
+            if !st.dash.is_empty() {
+                let list = st
+                    .dash
+                    .iter()
+                    .map(|d| to_pt(d, self.ppi).map(|v| num(v * self.k)))
+                    .collect::<Result<Vec<_>>>()?;
                 out.push_str(&format!(" stroke-dasharray=\"{}\"", list.join(" ")));
-                if st.dash_offset_pt != 0.0 {
-                    out.push_str(&format!(
-                        " stroke-dashoffset=\"{}\"",
-                        num(st.dash_offset_pt * self.k)
-                    ));
+                let offset = to_pt(&st.dash_offset, self.ppi)?;
+                if offset != 0.0 {
+                    out.push_str(&format!(" stroke-dashoffset=\"{}\"", num(offset * self.k)));
                 }
             }
+            if st.align != StrokeAlign::Center {
+                note(
+                    &mut self.loss,
+                    label,
+                    LossKind::Approximated,
+                    "stroke_align_center_assumed",
+                );
+            }
         }
-        out
+        Ok(out)
     }
 
     fn element(
         &mut self,
         out: &mut String,
-        pad: &str,
-        d: &str,
-        rule: Winding,
-        rows: (Option<&Paint>, Option<&StrokeAppearance>),
+        at: Emit<'_>,
+        rows: (FillRow<'_>, StrokeRow<'_>),
         tail: &str,
-    ) {
-        let attrs = self.attrs(rows.0, rows.1, rule);
+    ) -> Result<()> {
+        let attrs = self.attrs(rows.0, rows.1, at.rule, at.label)?;
+        let (pad, d) = (at.pad, at.d);
         out.push_str(&format!("{pad}<path d=\"{d}\"{attrs}{tail}/>\n"));
+        Ok(())
+    }
+
+    /// The style a layer names, validated by Folio on first use. A reference to a style the
+    /// record set does not hold is reported and the layer falls back to the SVG default.
+    fn style_of(&mut self, layer_id: &str, label: &str) -> Result<Option<&'a StudioPaintStyle>> {
+        let Some(&node) = self.nodes.get(layer_id) else {
+            return Ok(None);
+        };
+        if node.style_refs.keys().any(|k| k != LAYER_STYLE_REF) {
+            note(
+                &mut self.loss,
+                label,
+                LossKind::Ignored,
+                "style_ref_not_exported",
+            );
+        }
+        let Some(id) = node.style_refs.get(LAYER_STYLE_REF) else {
+            return Ok(None);
+        };
+        let Some(&style) = self.styles.get(id.as_str()) else {
+            note(
+                &mut self.loss,
+                label,
+                LossKind::Unsupported,
+                "style_ref_unresolved",
+            );
+            return Ok(None);
+        };
+        if self.checked.insert(style.style_id.as_str()) {
+            validate_paint_style(
+                style,
+                Budget::default(),
+                &CancellationToken::default(),
+                &Unresolved,
+            )
+            .map_err(|d| VectorError::Folio(d.code))?;
+        }
+        Ok(Some(style))
     }
 
     /// All subpaths of one layer as `<path>` elements (the first path carries style and winding).
@@ -298,7 +464,7 @@ impl Writer<'_> {
         group: &[(&VectorPath, Vec<Seg>)],
         extra: &str,
         label: &str,
-    ) {
+    ) -> Result<()> {
         let first = group[0].0;
         let rule = first.winding;
         let d = group
@@ -306,50 +472,109 @@ impl Writer<'_> {
             .map(|(p, segs)| path_data(p, segs, self.k))
             .collect::<Vec<_>>()
             .join(" ");
-        let style = first
-            .fill_style_id
-            .as_deref()
-            .and_then(|id| self.styles.get(id).copied());
+        let style = self.style_of(&first.layer_id, label)?;
         let filled = rule != Winding::None;
+        let default_fill = StudioPaint::Solid {
+            colour: StudioColor {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                colour_profile_id: hsk_studio_folio::ProfileBinding::Unassigned(()),
+            },
+        };
         let mut rows: Vec<Row> = Vec::new();
         let mut dropped_fill = false;
         if let Some(style) = style {
-            for item in &style.items {
-                match item {
-                    AppearanceItem::Fill(p) if filled => rows.push(Row::Fill(p)),
-                    AppearanceItem::Fill(_) => dropped_fill = true,
-                    AppearanceItem::Stroke(s) => rows.push(Row::Stroke(s)),
+            for row in &style.rows {
+                let (visible, blend_mode) = match row {
+                    StudioAppearanceRow::Fill {
+                        visible,
+                        blend_mode,
+                        ..
+                    }
+                    | StudioAppearanceRow::Stroke {
+                        visible,
+                        blend_mode,
+                        ..
+                    } => (*visible, *blend_mode),
+                };
+                if !visible {
+                    note(
+                        &mut self.loss,
+                        label,
+                        LossKind::Ignored,
+                        "appearance_row_hidden_dropped",
+                    );
+                    continue;
+                }
+                if blend_mode != BLEND_NORMAL {
+                    note(
+                        &mut self.loss,
+                        label,
+                        LossKind::Unsupported,
+                        "appearance_row_blend_mode_dropped",
+                    );
+                }
+                match row {
+                    StudioAppearanceRow::Fill { paint, opacity, .. } if filled => {
+                        rows.push(Row::Fill {
+                            paint,
+                            opacity: *opacity,
+                        });
+                    }
+                    StudioAppearanceRow::Fill { .. } => dropped_fill = true,
+                    StudioAppearanceRow::Stroke {
+                        paint,
+                        stroke,
+                        opacity,
+                        ..
+                    } => rows.push(Row::Stroke {
+                        paint,
+                        stroke,
+                        opacity: *opacity,
+                    }),
                 }
             }
         } else if filled {
             // No style: the SVG default fill.
-            rows.push(Row::Fill(&DEFAULT_FILL));
-        }
-        if dropped_fill {
-            self.loss.push(LossEntry {
-                path: label.to_owned(),
-                kind: LossKind::Ignored,
-                code: "fill_ignored_winding_none",
+            rows.push(Row::Fill {
+                paint: &default_fill,
+                opacity: 100.0,
             });
         }
+        if dropped_fill {
+            note(
+                &mut self.loss,
+                label,
+                LossKind::Ignored,
+                "fill_ignored_winding_none",
+            );
+        }
         let pad = "  ".repeat(depth);
+        let at = Emit {
+            pad: &pad,
+            d: &d,
+            rule,
+            label,
+        };
         match rows.as_slice() {
-            [] => self.element(out, &pad, &d, rule, (None, None), extra),
-            [Row::Fill(f)] => self.element(out, &pad, &d, rule, (Some(f), None), extra),
-            [Row::Stroke(s)] => self.element(out, &pad, &d, rule, (None, Some(s)), extra),
-            [Row::Fill(f), Row::Stroke(s)] => {
-                self.element(out, &pad, &d, rule, (Some(f), Some(s)), extra);
+            [] => self.element(out, at, (None, None), extra)?,
+            [f @ Row::Fill { .. }] => self.element(out, at, (fill_of(f), None), extra)?,
+            [s @ Row::Stroke { .. }] => self.element(out, at, (None, stroke_of(s)), extra)?,
+            [f @ Row::Fill { .. }, s @ Row::Stroke { .. }] => {
+                self.element(out, at, (fill_of(f), stroke_of(s)), extra)?;
             }
-            [Row::Stroke(s), Row::Fill(f)] => {
+            [s @ Row::Stroke { .. }, f @ Row::Fill { .. }] => {
                 let tail = format!(" paint-order=\"stroke\"{extra}");
-                self.element(out, &pad, &d, rule, (Some(f), Some(s)), &tail);
+                self.element(out, at, (fill_of(f), stroke_of(s)), &tail)?;
             }
             _ => {
-                self.loss.push(LossEntry {
-                    path: label.to_owned(),
-                    kind: LossKind::Approximated,
-                    code: "appearance_stack_duplicated",
-                });
+                note(
+                    &mut self.loss,
+                    label,
+                    LossKind::Approximated,
+                    "appearance_stack_duplicated",
+                );
                 let wrap = !extra.is_empty();
                 let inner = if wrap {
                     out.push_str(&format!("{pad}<g{extra}>\n"));
@@ -357,17 +582,16 @@ impl Writer<'_> {
                 } else {
                     pad.clone()
                 };
+                let at = Emit { pad: &inner, ..at };
                 for row in &rows {
-                    match row {
-                        Row::Fill(f) => self.element(out, &inner, &d, rule, (Some(f), None), ""),
-                        Row::Stroke(s) => self.element(out, &inner, &d, rule, (None, Some(s)), ""),
-                    }
+                    self.element(out, at, (fill_of(row), stroke_of(row)), "")?;
                 }
                 if wrap {
                     out.push_str(&format!("{pad}</g>\n"));
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -418,10 +642,21 @@ fn finish(open: String, writer: Writer<'_>, body: &str) -> SvgExport {
     }
 }
 
-fn writer(k: f64, styles: &[StyleProposal]) -> Writer<'_> {
+fn writer(k: f64, ppi: f64, design: &StudioDesignRecords) -> Writer<'_> {
     Writer {
         k,
-        styles: styles.iter().map(|s| (s.style_id.as_str(), s)).collect(),
+        ppi,
+        nodes: design
+            .nodes
+            .iter()
+            .map(|n| (n.node.node_id.as_str(), n))
+            .collect(),
+        styles: design
+            .paint_styles
+            .iter()
+            .map(|s| (s.style_id.as_str(), s))
+            .collect(),
+        checked: BTreeSet::new(),
         defs: Defs {
             k,
             ids: BTreeMap::new(),
@@ -432,26 +667,26 @@ fn writer(k: f64, styles: &[StyleProposal]) -> Writer<'_> {
 }
 
 /// Flat export: one element per layer (consecutive paths sharing a `layer_id` form one compound
-/// `d`), absolute `M`/`L`/`C`/`Z` data, gradients in `<defs>`, `viewBox="0 0 W H"` in px.
-/// Group structure, names, visibility and element opacity live in the Folio document; use
-/// [`export_proposal`] to keep them.
+/// `d`), absolute `M`/`L`/`C`/`Z` data, gradients in `<defs>`, `viewBox="0 0 W H"` in px. Paint,
+/// stroke and appearance rows come from the Folio `design` records. Group structure, names,
+/// visibility and element opacity live in the Folio document; use [`export_proposal`] to keep them.
 pub fn export_svg(
     paths: &[VectorPath],
-    styles: &[StyleProposal],
+    design: &StudioDesignRecords,
     opts: &ExportOptions,
 ) -> Result<String> {
-    export_svg_with_loss(paths, styles, opts).map(|e| e.text)
+    export_svg_with_loss(paths, design, opts).map(|e| e.text)
 }
 
 /// [`export_svg`] plus the losses the export took.
 pub fn export_svg_with_loss(
     paths: &[VectorPath],
-    styles: &[StyleProposal],
+    design: &StudioDesignRecords,
     opts: &ExportOptions,
 ) -> Result<SvgExport> {
     let converted = paths.iter().map(convert).collect::<Result<Vec<_>>>()?;
     let (k, open) = header(opts, extent(converted.iter()))?;
-    let mut w = writer(k, styles);
+    let mut w = writer(k, opts.pixels_per_inch, design);
     let mut body = String::new();
     let mut items = paths.iter().zip(converted).peekable();
     let mut ordinal = 0usize;
@@ -462,12 +697,12 @@ pub fn export_svg_with_loss(
             group.push(next);
         }
         ordinal += 1;
-        w.layer_paths(&mut body, 1, &group, "", &format!("/layer[{ordinal}]"));
+        w.layer_paths(&mut body, 1, &group, "", &format!("/layer[{ordinal}]"))?;
     }
     Ok(finish(open, w, &body))
 }
 
-/// Hierarchical export of a proposal (or an edited copy of its `paths` and `styles`): the Folio
+/// Hierarchical export of a proposal (or an edited copy of its `paths` and `design`): the Folio
 /// layers become `<g>` and `<path>` elements in document order, with `id` (when the layer name
 /// differs from the element name), `opacity` from the layer appearance and `display="none"` for
 /// hidden layers. Only paths whose `layer_id` names a vector layer of the snapshot are written.
@@ -502,7 +737,7 @@ pub fn export_proposal_with_loss(
         ..*opts
     };
     let (k, open) = header(&opts, extent(converted.iter().flatten()))?;
-    let mut w = writer(k, &proposal.styles);
+    let mut w = writer(k, opts.pixels_per_inch, &proposal.design);
     let mut body = String::new();
     // Children per parent layer id (None = artboard or root), in document order.
     let mut children: BTreeMap<Option<&str>, Vec<usize>> = BTreeMap::new();
@@ -574,7 +809,7 @@ pub fn export_proposal_with_loss(
                     .collect();
                 if !group.is_empty() {
                     let label = format!("/layer[{}]", i + 1);
-                    w.layer_paths(&mut body, depth, &group, &extra, &label);
+                    w.layer_paths(&mut body, depth, &group, &extra, &label)?;
                 }
             }
             _ => {}

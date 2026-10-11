@@ -1,7 +1,10 @@
 //! Foundation contract of the vector interop adapter (MT-35549 case names). Every SVG is a
 //! synthetic string; every expected number is computed by hand in the comments.
 use hsk_studio_accord::{CancellationToken, DomainId};
-use hsk_studio_folio::{Budget, Payload, Unresolved, validate_document};
+use hsk_studio_folio::{
+    BLEND_NORMAL, Budget, GeometryUnit, Length, Payload, ProfileBinding, StudioAppearanceRow,
+    StudioColor, StudioPaint, Unresolved, validate_design_records, validate_document,
+};
 use hsk_studio_interop_vector::*;
 use hsk_studio_nib::{Anchor, PathElement, PathLimits, PathPoint, Point, Winding};
 use std::collections::BTreeSet;
@@ -34,6 +37,24 @@ fn import_with(svg: &str, policy: &ImportPolicy) -> Result<VectorProposal> {
         &mut SequentialIdMint::new(7),
         &CancellationToken::default(),
     )
+}
+
+fn solid(r: u8, g: u8, b: u8) -> StudioPaint {
+    StudioPaint::Solid {
+        colour: StudioColor {
+            r: f64::from(r) / 255.0,
+            g: f64::from(g) / 255.0,
+            b: f64::from(b) / 255.0,
+            colour_profile_id: ProfileBinding::Unassigned(()),
+        },
+    }
+}
+
+fn pt(value: f64) -> Length {
+    Length {
+        value,
+        unit: GeometryUnit::Pt,
+    }
 }
 
 fn xy(a: &Anchor) -> [(f64, f64); 3] {
@@ -104,34 +125,47 @@ fn svg_edit_transform_style_reopen_twice() {
             vec![(82.5, 15.0), (112.5, 15.0), (112.5, 30.0), (82.5, 30.0)]
         );
         // Style: red fill + blue stroke 4 px = 3 pt, and a stroke-only style for the rect.
-        assert_eq!(one.styles.len(), 2);
-        let red = one.styles.iter().find(|s| s.fills().next().is_some()).unwrap();
-        assert_eq!(red.fills().next().unwrap(), &Paint::Solid(Rgba { r: 255, g: 0, b: 0, a: 1.0 }));
-        let stroke = red.strokes().next().unwrap();
-        assert_eq!(stroke.paint, Paint::Solid(Rgba { r: 0, g: 0, b: 255, a: 1.0 }));
-        assert_eq!(stroke.style.width_pt, 3.0);
+        assert_eq!(one.design.paint_styles.len(), 2);
+        let red = one
+            .design
+            .paint_styles
+            .iter()
+            .find(|s| s.rows.iter().any(|r| matches!(r, StudioAppearanceRow::Fill { .. })))
+            .unwrap();
+        let [
+            StudioAppearanceRow::Fill { paint: fill, opacity: fill_opacity, blend_mode: fill_blend, visible: fill_visible },
+            StudioAppearanceRow::Stroke { paint: stroke_paint, stroke, opacity: stroke_opacity, .. },
+        ] = red.rows.as_slice()
+        else {
+            panic!("expected fill then stroke: {:?}", red.rows);
+        };
+        assert_eq!(fill, &solid(255, 0, 0));
+        assert_eq!((*fill_opacity, *fill_blend, *fill_visible), (100.0, BLEND_NORMAL, true));
+        assert_eq!(stroke_paint, &solid(0, 0, 255));
+        assert_eq!(*stroke_opacity, 100.0);
+        assert_eq!(stroke.weight, pt(3.0));
 
         // Export is deterministic; reopen twice keeps geometry, style and winding.
-        let text = export_svg(&one.paths, &one.styles, &opts).unwrap();
-        assert_eq!(text, export_svg(&one.paths, &one.styles, &opts).unwrap());
+        let text = export_svg(&one.paths, &one.design, &opts).unwrap();
+        assert_eq!(text, export_svg(&one.paths, &one.design, &opts).unwrap());
         assert!(text.contains("fill-rule=\"evenodd\"") && text.contains("fill=\"none\""));
         let two = import(&text).unwrap();
-        let three = import(&export_svg(&two.paths, &two.styles, &opts).unwrap()).unwrap();
+        let three = import(&export_svg(&two.paths, &two.design, &opts).unwrap()).unwrap();
         assert_same_geometry(&one.paths, &two.paths);
         assert_same_geometry(&two.paths, &three.paths);
         assert!(!two.has_loss(LossKind::TransformBaked));
         assert_eq!(kinds(&two), kinds(&three));
-        let (s2, s3) = (&two.styles, &three.styles);
+        let (s2, s3) = (&two.design.paint_styles, &three.design.paint_styles);
         assert_eq!(s2.len(), s3.len());
         for (a, b) in s2.iter().zip(s3) {
-            assert_eq!(a.items, b.items);
+            assert_eq!(a.rows, b.rows);
         }
 
         // An edit (move the middle anchor 6 pt right) survives export and reopen.
         let mut edited = two.paths.clone();
         let a = edited[0].anchors[1];
         edited[0].anchors[1].position = Point::pt(a.position.x.value() + 6.0, a.position.y.value()).unwrap();
-        let reopened = import(&export_svg(&edited, &two.styles, &opts).unwrap()).unwrap();
+        let reopened = import(&export_svg(&edited, &two.design, &opts).unwrap()).unwrap();
         assert_anchor(&reopened.paths[0].anchors[1], [(43.5, 15.0), (0.0, 30.0), (0.0, 0.0)]);
         assert_anchor(&reopened.paths[0].anchors[0], xy(&two.paths[0].anchors[0]));
         assert_anchor(&reopened.paths[0].anchors[2], xy(&two.paths[0].anchors[2]));
@@ -308,6 +342,16 @@ fn folio_vector_layer_validates() {
         // Independent re-validation of the proposal's document with a different resolver.
         let doc = p.snapshot.document().clone();
         validate_document(doc.clone(), Budget::default(), &CancellationToken::default(), &Unresolved).unwrap();
+        // Folio also accepts the design records against that document, and every styled layer
+        // names a style the set holds.
+        let issues =
+            validate_design_records(&p.design, &doc, Budget::default(), &CancellationToken::default(), &Unresolved)
+                .unwrap();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(p.design.document_id, doc.document_id);
+        for path in &p.paths {
+            assert!(p.layer_style(&path.layer_id).is_some(), "layer without its style");
+        }
 
         let mut layer_paths = BTreeSet::new();
         for layer in &doc.layers {

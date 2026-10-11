@@ -47,7 +47,7 @@ fn main() -> ExitCode {
         }
     };
     if args.iter().any(|a| a == "--export") {
-        match export_svg(&proposal.paths, &proposal.styles, &ExportOptions::default()) {
+        match export_svg(&proposal.paths, &proposal.design, &ExportOptions::default()) {
             Ok(text) => print!("{text}"),
             Err(e) => {
                 eprintln!("{}", e.code());
@@ -60,7 +60,7 @@ fn main() -> ExitCode {
         "paths={} layers={} styles={} viewport_px={:?}",
         proposal.paths.len(),
         proposal.snapshot.document().layers.len(),
-        proposal.styles.len(),
+        proposal.design.paint_styles.len(),
         proposal.provenance.viewport_px
     );
     for l in &proposal.loss {
