@@ -53,6 +53,8 @@ mod components;
 pub use components::*;
 mod records;
 pub use records::*;
+mod identity;
+pub use identity::{check_identity_uniqueness, check_variable_identity_uniqueness};
 mod raster;
 pub use raster::*;
 mod vector;
@@ -574,30 +576,23 @@ fn validate(
         }
     }
     let mut nodes = BTreeMap::<String, (NodeKind, bool, &Parent)>::new();
+    let mut ids = identity::Namespaces::default();
     for a in &d.artboards {
         canceled(token)?;
         id(&a.artboard_id, "SART", &a.artboard_id)?;
         bounds(&a.bounds, d.geometry_unit, &a.artboard_id)?;
-        if nodes
-            .insert(a.artboard_id.clone(), (NodeKind::Artboard, true, &a.parent))
-            .is_some()
-        {
-            return Err(err(Code::DuplicateIdentity, &a.artboard_id));
-        }
+        ids.node(&a.artboard_id)?;
+        nodes.insert(a.artboard_id.clone(), (NodeKind::Artboard, true, &a.parent));
     }
     for a in &d.page_spreads {
         canceled(token)?;
         id(&a.page_spread_id, "SPGS", &a.page_spread_id)?;
         bounds(&a.bounds, d.geometry_unit, &a.page_spread_id)?;
-        if nodes
-            .insert(
-                a.page_spread_id.clone(),
-                (NodeKind::PageSpread, true, &a.parent),
-            )
-            .is_some()
-        {
-            return Err(err(Code::DuplicateIdentity, &a.page_spread_id));
-        }
+        ids.node(&a.page_spread_id)?;
+        nodes.insert(
+            a.page_spread_id.clone(),
+            (NodeKind::PageSpread, true, &a.parent),
+        );
     }
     let mut payload_size = 0usize;
     for l in &d.layers {
@@ -614,12 +609,8 @@ fn validate(
             return Err(err(Code::PayloadMismatch, &l.layer_id));
         }
         let group = l.kind == "group" && matches!(l.payload, Payload::Group);
-        if nodes
-            .insert(l.layer_id.clone(), (NodeKind::Layer, group, &l.parent))
-            .is_some()
-        {
-            return Err(err(Code::DuplicateIdentity, &l.layer_id));
-        }
+        ids.node(&l.layer_id)?;
+        nodes.insert(l.layer_id.clone(), (NodeKind::Layer, group, &l.parent));
         let owned_bytes = match &l.payload {
             Payload::Group => 0,
             Payload::Raster { tiles } => tiles

@@ -38,6 +38,7 @@ use super::{
         validate_variable,
     },
     err, id,
+    identity::Namespaces,
     paint::{STYLE_REF_FIELDS, StudioPaintStyle, validate_style},
     reactions::{StudioReaction, validate_reactions},
     values::{Ctx, VariableType, label},
@@ -201,14 +202,6 @@ fn inside(nodes: &BTreeMap<&str, DocNode<'_>>, node: &str, ancestor: &str) -> bo
         }
     }
     false
-}
-
-fn unique<'a>(seen: &mut BTreeSet<&'a str>, key: &'a str, target: &str) -> Result<()> {
-    if seen.insert(key) {
-        Ok(())
-    } else {
-        Err(err(Code::DuplicateIdentity, target))
-    }
 }
 
 /// The union alias graph of all variables; returns a variable on a cycle.
@@ -475,13 +468,13 @@ fn check_instances(
     Ok(())
 }
 
-fn check_nodes(
-    r: &StudioDesignRecords,
+fn check_nodes<'a>(
+    r: &'a StudioDesignRecords,
     nodes: &BTreeMap<&str, DocNode<'_>>,
     refs: &Refs,
+    ids: &mut Namespaces<'a>,
     c: &mut Ctx,
 ) -> Result<()> {
-    let mut seen = BTreeSet::new();
     let mut flow: BTreeSet<&str> = BTreeSet::new();
     for n in &r.nodes {
         if n.auto_layout
@@ -505,7 +498,7 @@ fn check_nodes(
             .get(nid)
             .filter(|d| d.kind == n.node.node_kind)
             .ok_or_else(|| err(Code::DanglingReference, nid))?;
-        unique(&mut seen, nid, nid)?;
+        ids.entry(nid)?;
         c.nodes(1, nid)?;
         let in_flow = found.parent.is_some_and(|p| flow.contains(p));
         if let Some(a) = &n.auto_layout {
@@ -613,37 +606,30 @@ pub fn validate_design_records(
     if r.document_id != d.document_id {
         return Err(err(Code::InvalidField, "document_id"));
     }
-    let mut components = BTreeSet::new();
-    let mut layers = BTreeSet::new();
+    let mut ids = Namespaces::default();
     for k in &r.components {
         validate_component(k, &mut c)?;
-        unique(&mut components, &k.component_id, &k.component_id)?;
-        unique(&mut layers, &k.layer_id, &k.component_id)?;
+        ids.definition(&k.component_id, &k.layer_id)?;
     }
     for s in &r.component_sets {
         validate_set(s, &mut c)?;
-        unique(&mut components, &s.component_id, &s.component_id)?;
-        unique(&mut layers, &s.layer_id, &s.component_id)?;
+        ids.definition(&s.component_id, &s.layer_id)?;
     }
-    let mut ids = BTreeSet::new();
     for i in &r.component_instances {
         validate_instance(i, &mut c)?;
-        unique(&mut ids, &i.instance_id, &i.instance_id)?;
+        ids.instance(&i.instance_id)?;
     }
-    let mut ids = BTreeSet::new();
     for k in &r.variable_collections {
         validate_collection(k, &mut c)?;
-        unique(&mut ids, &k.collection_id, &k.collection_id)?;
+        ids.collection(&k.collection_id)?;
     }
-    let mut ids = BTreeSet::new();
     for v in &r.variables {
         validate_variable(v, &mut c)?;
-        unique(&mut ids, &v.variable_id, &v.variable_id)?;
+        ids.variable(&v.variable_id)?;
     }
-    let mut ids = BTreeSet::new();
     for s in &r.paint_styles {
         validate_style(s, &mut c)?;
-        unique(&mut ids, &s.style_id, &s.style_id)?;
+        ids.style(&s.style_id)?;
     }
     let nodes = index(d);
     let refs = Refs {
@@ -662,7 +648,7 @@ pub fn validate_design_records(
     check_variables(r, &refs, &mut c)?;
     check_components(r, &nodes, &mut c)?;
     check_instances(r, &nodes, &refs, &mut c)?;
-    check_nodes(r, &nodes, &refs, &mut c)?;
+    check_nodes(r, &nodes, &refs, &mut ids, &mut c)?;
     c.tick()?;
     Ok(c.issues)
 }

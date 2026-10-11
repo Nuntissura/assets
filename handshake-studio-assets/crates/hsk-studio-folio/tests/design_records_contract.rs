@@ -1171,3 +1171,222 @@ fn variables_modes_aliases_and_publishing_are_validated() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Identity uniqueness pass (PLR-049: one owner for the namespaces, consumers call it)
+
+fn parsed_document(v: &Value) -> StudioDocument {
+    serde_json::from_value(v.clone()).expect("document parses")
+}
+fn parsed_records(v: &Value) -> StudioDesignRecords {
+    serde_json::from_value(v.clone()).expect("records parse")
+}
+fn repeat_of(target: String) -> Diagnostic {
+    Diagnostic {
+        code: Code::DuplicateIdentity,
+        target,
+    }
+}
+/// Appends a copy of `v[array][index]` to `v[array]`.
+fn push_copy(v: &mut Value, array: &str, index: usize) {
+    let copy = v[array][index].clone();
+    v[array].as_array_mut().expect("array").push(copy);
+}
+fn page_spread(n: u32) -> Value {
+    json!({"schema_id": "hsk.studio.page_spread@1", "page_spread_id": identity("SPGS", n),
+        "name": format!("spread {n}"), "parent": null, "bounds": bounds(100.0, 100.0)})
+}
+
+#[test]
+fn identity_uniqueness_pass_names_each_namespace_and_agrees_with_the_validators() {
+    bounded_case("identity_uniqueness", || {
+        let valid_document = parsed_document(&document());
+        let valid_records = parsed_records(&records());
+        assert_eq!(
+            check_identity_uniqueness(&valid_document, &valid_records),
+            Ok(())
+        );
+        assert_eq!(
+            check_variable_identity_uniqueness(
+                &valid_records.variable_collections,
+                &valid_records.variables
+            ),
+            Ok(())
+        );
+
+        // Record namespaces: (label, edit, reported target, is a variable-slice case). The design
+        // record validator reports the same diagnostic for each (it claims the ids through the same
+        // code), and the variable-only entry point sees the collection and variable repeats.
+        type Edit = fn(&mut Value);
+        let cases: [(&str, Edit, String, bool); 9] = [
+            (
+                "two design entries for one node",
+                |v| set(v, "/nodes/4/node", node("layer", identity("SLYR", 2))),
+                identity("SLYR", 2),
+                false,
+            ),
+            (
+                "component id twice",
+                |v| set(v, "/components/1/component_id", json!(identity("SCMP", 2))),
+                identity("SCMP", 2),
+                false,
+            ),
+            (
+                "set reuses a component id (one namespace)",
+                |v| {
+                    set(
+                        v,
+                        "/component_sets/0/component_id",
+                        json!(identity("SCMP", 2)),
+                    )
+                },
+                identity("SCMP", 2),
+                false,
+            ),
+            (
+                "two components on one container layer (reported with the second component)",
+                |v| set(v, "/components/1/layer_id", json!(identity("SLYR", 11))),
+                identity("SCMP", 3),
+                false,
+            ),
+            (
+                "set on a component's container layer (reported with the set)",
+                |v| set(v, "/component_sets/0/layer_id", json!(identity("SLYR", 11))),
+                identity("SCMP", 1),
+                false,
+            ),
+            (
+                "instance id twice",
+                |v| push_copy(v, "component_instances", 0),
+                identity("SCIN", 1),
+                false,
+            ),
+            (
+                "collection id twice",
+                |v| push_copy(v, "variable_collections", 0),
+                identity("SVCL", 1),
+                true,
+            ),
+            (
+                "variable id twice",
+                |v| push_copy(v, "variables", 0),
+                identity("SVAR", 1),
+                true,
+            ),
+            (
+                "paint style id twice",
+                |v| push_copy(v, "paint_styles", 0),
+                identity("SSTY", 1),
+                false,
+            ),
+        ];
+        for (label, edit, target, variable_case) in cases {
+            let mut v = records();
+            edit(&mut v);
+            let r = parsed_records(&v);
+            let expected = repeat_of(target);
+            assert_eq!(
+                check_identity_uniqueness(&valid_document, &r),
+                Err(expected.clone()),
+                "{label}"
+            );
+            assert_eq!(
+                result(&v, &Caller(Resolution::Available)).err(),
+                Some(expected.clone()),
+                "{label}: validator"
+            );
+            assert_eq!(
+                check_variable_identity_uniqueness(&r.variable_collections, &r.variables),
+                if variable_case { Err(expected) } else { Ok(()) },
+                "{label}: variable slice"
+            );
+        }
+
+        // Document namespace: artboards, page spreads and layers share one set. The document
+        // validator reports a repeat the same way when the id grammar holds.
+        let validated = |d: &Value| {
+            validate_document(
+                parsed_document(d),
+                Budget::default(),
+                &CancellationToken::default(),
+                &Caller(Resolution::Available),
+            )
+            .err()
+        };
+        let document_cases: [(&str, Edit, String); 3] = [
+            (
+                "artboard id twice",
+                |d| push_copy(d, "artboards", 0),
+                identity("SART", 1),
+            ),
+            (
+                "layer id twice",
+                |d| push_copy(d, "layers", 2),
+                identity("SLYR", 3),
+            ),
+            (
+                "page spread id twice",
+                |d| {
+                    d["page_spreads"] = json!([page_spread(1), page_spread(1)]);
+                },
+                identity("SPGS", 1),
+            ),
+        ];
+        for (label, edit, target) in document_cases {
+            let mut d = document();
+            edit(&mut d);
+            let expected = repeat_of(target);
+            assert_eq!(
+                check_identity_uniqueness(&parsed_document(&d), &valid_records),
+                Err(expected.clone()),
+                "{label}"
+            );
+            assert_eq!(validated(&d), Some(expected), "{label}: validator");
+        }
+        // One namespace across kinds: a layer carrying an artboard's id, and a page spread carrying
+        // a layer's id, are repeats (the validator refuses these ids on grammar first).
+        let mut d = document();
+        set(&mut d, "/layers/2/layer_id", json!(identity("SART", 1)));
+        assert_eq!(
+            check_identity_uniqueness(&parsed_document(&d), &valid_records),
+            Err(repeat_of(identity("SART", 1)))
+        );
+        let mut d = document();
+        d["page_spreads"] = json!([page_spread(1)]);
+        set(
+            &mut d,
+            "/page_spreads/0/page_spread_id",
+            json!(identity("SLYR", 3)),
+        );
+        assert_eq!(
+            check_identity_uniqueness(&parsed_document(&d), &valid_records),
+            Err(repeat_of(identity("SLYR", 3)))
+        );
+
+        // Documented precedence of the pass (it keeps the order consumers relied on): document
+        // nodes, design entries, definitions, collections, variables, instances, paint styles.
+        let mut d = document();
+        push_copy(&mut d, "layers", 2);
+        let mut v = records();
+        set(&mut v, "/nodes/4/node", node("layer", identity("SLYR", 2)));
+        assert_eq!(
+            check_identity_uniqueness(&parsed_document(&d), &parsed_records(&v)),
+            Err(repeat_of(identity("SLYR", 3))),
+            "document before records"
+        );
+        let mut v = records();
+        push_copy(&mut v, "component_instances", 0);
+        push_copy(&mut v, "variables", 0);
+        assert_eq!(
+            check_identity_uniqueness(&valid_document, &parsed_records(&v)),
+            Err(repeat_of(identity("SVAR", 1))),
+            "variables before instances"
+        );
+        // The validator keeps its per-record order (instances are validated before variables).
+        assert_eq!(
+            result(&v, &Caller(Resolution::Available)).err(),
+            Some(repeat_of(identity("SCIN", 1))),
+            "validator order is unchanged"
+        );
+    });
+}
