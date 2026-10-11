@@ -9,7 +9,7 @@
 //! [`RenderBackend::extension_exactness`] (default: nothing supported).
 use super::{
     Applicability, BackendError, ClipRole, ExactnessLedger, ExecuteRequest, MaskFormat, Operator,
-    PlanError, PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core,
+    PlanError, PlanNode, PlanNodeId, RenderBackend, RenderPlan, admit_core, admit_plan_rules,
 };
 use crate::adjust_math::{ADJUSTMENT_LAYER_EXACTNESS, AdjustError, AdjustmentKind, AdjustmentOp};
 use crate::blend_math::{Exactness, StudioBlendMode};
@@ -157,6 +157,17 @@ pub enum ExtOperator {
     /// through [`RenderBackend::extension_exactness`], and [`admit_extended`] refuses a backend
     /// that reports it `Unsupported` before any sink call (`tests/effects_ops.rs`).
     EffectsNested,
+    /// A premultiplied alpha convention at the target or on a tile input
+    /// ([`super::RenderPlan::uses_premultiplied_alpha`]). STU-CMP-022 defines internal compositing
+    /// on one declared convention (pigment's maths is straight) with a conversion at the boundary,
+    /// so the semantics exist and each backend declares whether it converts through
+    /// [`RenderBackend::extension_exactness`]; undeclared is `Unsupported` (what render-cpu and
+    /// render-gpu do today). Intrinsic `Approximate` ([`ALPHA_BOUNDARY_EXACTNESS`]): the
+    /// unpremultiply discards the colour of a zero-alpha pixel, which is a Studio rule rather than
+    /// a published formula. It is checked by shared admission of the v1 plan ([`super::admit`]) and
+    /// of the envelope path ([`admit_extended`]); [`PlanExtensions::validate`] does not report it
+    /// (it describes the envelope, and the convention is declared by the plan alone).
+    AlphaPremultiplied,
     /// A coverage mask with `density < 1` (the v1 path keeps today's backend refusal).
     MaskDensity,
     MaskFeather,
@@ -179,6 +190,7 @@ impl ExtOperator {
             Self::BlendIfClippedLayer => "blend_if_clipped_layer",
             Self::EffectsWithBlendIf => "effects_with_blend_if",
             Self::EffectsNested => "effects_nested",
+            Self::AlphaPremultiplied => "alpha_premultiplied",
             Self::MaskDensity => "mask_density",
             Self::MaskFeather => "mask_feather",
             Self::Knockout(k) => k.key(),
@@ -197,9 +209,12 @@ impl ExtOperator {
             Self::Knockout(Knockout::None) => Exactness::Exact,
             Self::Knockout(_) => Exactness::Unsupported,
             Self::Effect(_) | Self::EffectsNested => EFFECT_EXACTNESS,
+            Self::AlphaPremultiplied => ALPHA_BOUNDARY_EXACTNESS,
         }
     }
 }
+/// Class of the premultiplied-alpha boundary conversion ([`ExtOperator::AlphaPremultiplied`]).
+pub const ALPHA_BOUNDARY_EXACTNESS: Exactness = Exactness::Approximate;
 
 fn is_clip(l: &super::Layer) -> bool {
     l.mask
@@ -436,7 +451,9 @@ impl PlanExtensions {
 /// validation, then per envelope operator class = intrinsic lowered by
 /// [`RenderBackend::extension_exactness`]; refuses Unsupported or below `min_exactness` before any
 /// sink call. Knockout and refused adjustment features map to `BackendError::Unsupported` naming
-/// the feature; other envelope defects map to `BackendError::InvalidPlan`.
+/// the feature; other envelope defects map to `BackendError::InvalidPlan`. The plan-level parity
+/// rules of [`super::admit`] (mask on a pass-through layer, premultiplied alpha, leaf-root Normal
+/// class) run last here too.
 pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
     plan: &RenderPlan<V>,
     extensions: &PlanExtensions,
@@ -484,5 +501,7 @@ pub fn admit_extended<V, B: RenderBackend<V> + ?Sized>(
         }
         ledger.record(op.key(), class);
     }
+    // Plan-level parity rules, last so every earlier refusal keeps its key (see `admit_plan_rules`).
+    admit_plan_rules(plan, backend, request, &mut ledger)?;
     Ok(ledger)
 }
