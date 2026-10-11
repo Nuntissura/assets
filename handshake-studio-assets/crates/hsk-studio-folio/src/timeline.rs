@@ -69,8 +69,8 @@ pub struct SequenceFrameRate {
     pub ticks_per_frame: u64,
 }
 impl SequenceFrameRate {
-    /// Accord's canonical frame rate when the value is a canonical table entry. Frames-per-second
-    /// fractions and every other frame-rate conversion are Pulse's (`hsk_studio_pulse::fps_fraction_of`).
+    /// Accord's canonical frame rate when the value is a canonical table entry. The frames-per-second
+    /// fraction is Accord's `FrameRate::fps_fraction`; other frame-rate conversions are Pulse's.
     pub fn accord(&self) -> Option<AccordFrameRate> {
         match AccordFrameRate::from_import(self.ticks_per_frame) {
             Ok((rate, normalization)) if !normalization.changed => Some(rate),
