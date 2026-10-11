@@ -1138,6 +1138,8 @@ pub fn css_urls() -> Cases {
             "<svg><path clip-path=\"url( &quot;//evil.example/cp&quot; )\" filter=\"url(f.svg#f)\" marker-start=\"url(#m)\"/></svg>",
             "<div style=\"b:url(&quot;//evil.example/q&quot;);c:url(\\&quot;x)\"></div>",
             "<div style=\"b:image-set(] 'a.png' } ) 'b.png'\"></div>",
+            "<div style=\"a:url(x \\);b:url(//evil.example/gecko)\"></div>",
+            "<style>.a{a:URL(x\n\\);b:url(//evil.example/gecko-sheet)}</style>",
             "<style>/* url(//decoy.example/c) */ .a{b:'url(//decoy.example/s)'} .c{d:url/**/(//decoy.example/l)}</style>",
         ],
     )

@@ -12,7 +12,10 @@ use super::*;
 /// Compact rendering of the token stream: `ident:x fn:x @x #id:x #u:x str:x bad-str url:x bad-url delim:x num:R/i|n
 /// pct:R/i|n dim:R/i|n:unit urange:S-E ws <!-- --> : ; , [ ] ( ) { }` (`<eof>` after a string or url ended by EOF).
 fn render(css: &str, non_ascii: NonAscii, unicode_ranges: bool) -> String {
-    let mut t = Tokenizer::new(css, non_ascii, unicode_ranges);
+    render_with(Tokenizer::new(css, non_ascii, unicode_ranges), css)
+}
+
+fn render_with(mut t: Tokenizer<'_>, css: &str) -> String {
     let mut out = Vec::new();
     let flag = |integer: bool| if integer { "i" } else { "n" };
     let eof = |eof: bool| if eof { "<eof>" } else { "" };
@@ -234,6 +237,39 @@ fn url_tokens_whitespace_quotes_and_remnants() {
         ("url(ht\\74p://x)", "url:http://x"),
         ("url(a\\a b)", "url:a\nb"),
     ]);
+}
+
+/// The Gecko reading of 4.3.6 after whitespace (module docs): cssparser 0.38 `consume_url_end` consumes the code point
+/// after the whitespace before `consume_bad_url`, so `\)` there ends the bad url; the specification (and Blink/WebKit)
+/// start the remnants at the backslash, so `\)` is an escape and the remnants run to the next `)`.
+#[test]
+fn gecko_bad_url_after_whitespace() {
+    let css = "url(a \\);b:url(x)";
+    assert_eq!(render(css, NonAscii::Engines, false), "bad-url");
+    let gecko = Tokenizer::new(css, NonAscii::Engines, false).gecko_bad_url();
+    assert_eq!(render_with(gecko, css), "bad-url ; ident:b : url:x");
+    // Same reading where the code point after the whitespace is anything but a backslash (escape, decoy, case).
+    for css in [
+        "url(a b\\);c:url(x)",
+        "url(a /*);c:url(x)",
+        "URL(a\n\tB);c:url(x)",
+    ] {
+        let gecko = Tokenizer::new(css, NonAscii::Engines, false).gecko_bad_url();
+        assert_eq!(
+            render_with(gecko, css),
+            render(css, NonAscii::Engines, false),
+            "{css:?}"
+        );
+    }
+    // The gate reports the union: the URL Gecko loads after the shortened bad url is reported.
+    assert_eq!(
+        refs("a:url(a \\);b:url(https://e.invalid/g)"),
+        [b("a"), u("https://e.invalid/g")]
+    );
+    assert_eq!(
+        refs("a:URL(a\n\\);b:url(https://e.invalid/h)"),
+        [b("a"), u("https://e.invalid/h")]
+    );
 }
 
 // ----- 4.3.7 escaped code points --------------------------------------------------------------------------------------

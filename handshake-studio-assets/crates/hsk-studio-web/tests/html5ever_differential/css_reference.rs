@@ -6,7 +6,9 @@
 //! docs): url tokens; strings whose nearest enclosing function is url, src, image-set, -webkit-image-set, image,
 //! cross-fade or -webkit-cross-fade, or that follow `@import`; bad-url tokens and bad strings in those places as bad;
 //! inside a URL function, the first function outside the value-function list as computed; empty URLs skipped; the union
-//! of the specification's and the engines' non-ASCII ident readings.
+//! of three readings: the specification's, the engines' non-ASCII ident code points (>= U+0080), and Gecko's (engines'
+//! code points, and after whitespace in an unquoted url the next code point is consumed before the bad-url remnants, as
+//! Servo cssparser 0.38 `consume_url_end` does).
 
 use std::collections::BTreeSet;
 
@@ -14,6 +16,7 @@ use std::collections::BTreeSet;
 pub enum Reading {
     Spec,
     Engines,
+    Gecko,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -82,7 +85,7 @@ impl Lexer {
     }
     fn non_ascii_ident(&self, c: char) -> bool {
         match self.reading {
-            Reading::Engines => c as u32 >= 0x80,
+            Reading::Engines | Reading::Gecko => c as u32 >= 0x80,
             Reading::Spec => {
                 let v = c as u32;
                 v == 0xb7
@@ -236,6 +239,9 @@ impl Lexer {
                     if self.at(0) == Some(')') {
                         self.i += 1;
                         return T::Url { value, at };
+                    }
+                    if self.reading == Reading::Gecko {
+                        self.i += 1;
                     }
                     self.remnants();
                     return T::BadUrl { partial: value, at };
@@ -567,11 +573,12 @@ fn read(src: &str, reading: Reading) -> Vec<RefUrl> {
     walk.out
 }
 
-/// The URLs in `src` under both readings (union), ordered by source offset.
+/// The URLs in `src` under all three readings (union, always all three), ordered by source offset.
 pub fn urls(src: &str) -> Vec<RefUrl> {
     let set: BTreeSet<RefUrl> = read(src, Reading::Spec)
         .into_iter()
         .chain(read(src, Reading::Engines))
+        .chain(read(src, Reading::Gecko))
         .collect();
     set.into_iter().collect()
 }

@@ -11,10 +11,15 @@
 //! only before a digit), 4.3.14 (unicode-range) and 4.3.15 (bad-url remnants). Proof: `cssurl::tests` (one group per
 //! algorithm, the CC0 css-parsing-tests corpus) and the gate tests in `tests/css_url_gate.rs`.
 //!
-//! Two readings of "non-ASCII ident code point" exist: the 2026 specification text (4.2: the ranges allowed in HTML custom
-//! element names) and the engines (Blink `css_parser_idioms.h` IsNameStartCodePoint, WebKit `CSSParserIdioms.h`
-//! isNameStartCodePoint and Servo/Gecko cssparser `consume_name` treat every code point >= U+0080 as a name code point).
-//! `css_references` scans the text under both and reports the union, so a URL either reading loads is reported.
+//! Where engines read CSS differently from the specification text, `css_references` scans every reading and reports the
+//! union, so a URL any of them loads is reported:
+//! - "non-ASCII ident code point": the 2026 specification text (4.2: the ranges allowed in HTML custom element names)
+//!   against the engines (Blink `css_parser_idioms.h` IsNameStartCodePoint, WebKit `CSSParserIdioms.h`
+//!   isNameStartCodePoint and Servo/Gecko cssparser `consume_name` treat every code point >= U+0080 as a name code point);
+//! - bad-url remnants after whitespace: Servo/Gecko cssparser 0.38 `consume_url_end` consumes the code point after the
+//!   whitespace before `consume_bad_url`, so a `\` there escapes nothing and a following `)` ends the bad url; 4.3.6 (and
+//!   Blink/WebKit `ConsumeUrlToken`) start the remnants at that code point, where `\)` is an escape. Found by the
+//!   scratch differential against cssparser (lane notes); test `gecko_bad_url_reading_is_scanned`.
 //!
 //! URL rules on the token stream (the block structure is CSS Syntax 3 5.4: `(`, `[`, `{` and functions nest, and only the
 //! matching closer ends a block):
@@ -172,6 +177,9 @@ pub(crate) struct Tokenizer<'a> {
     non_ascii: NonAscii,
     /// 4.3.1 "unicode ranges allowed" (only the unicode-range descriptor's value is tokenized with it, 5.5.11).
     unicode_ranges: bool,
+    /// Gecko's reading of 4.3.6 after whitespace (module docs): the code point after the whitespace is consumed before the
+    /// bad-url remnants.
+    gecko_bad_url: bool,
 }
 
 impl<'a> Tokenizer<'a> {
@@ -181,7 +189,14 @@ impl<'a> Tokenizer<'a> {
             pos: 0,
             non_ascii,
             unicode_ranges,
+            gecko_bad_url: false,
         }
+    }
+
+    /// The Servo/Gecko cssparser reading of bad-url remnants after whitespace (module docs).
+    pub(crate) fn gecko_bad_url(mut self) -> Self {
+        self.gecko_bad_url = true;
+        self
     }
 
     /// 3.3 filter code points: the code point a CSS parser sees at byte `at`, and how many source bytes it stands for
@@ -496,7 +511,13 @@ impl<'a> Tokenizer<'a> {
                             inner: start..at,
                             eof: true,
                         },
-                        Some(_) => self.bad_url(value, start..at),
+                        Some(_) => {
+                            if self.gecko_bad_url {
+                                // Gecko: `consume_known_byte` before `consume_bad_url` (module docs).
+                                self.bump();
+                            }
+                            self.bad_url(value, start..at)
+                        }
                     };
                 }
                 Some('"' | '\'' | '(') => return self.bad_url(value, start..at),
@@ -740,9 +761,9 @@ struct Frame {
     computed: Option<usize>,
 }
 
-/// The references one reading of `css` holds, at most `limit`; `Err(span)` when blocks nest deeper than `MAX_NESTING`.
-fn scan(css: &str, non_ascii: NonAscii, limit: usize) -> Result<Vec<CssRef>, Range<usize>> {
-    let mut tokens = Tokenizer::new(css, non_ascii, false);
+/// The references one reading (`tokens` over `css`) holds, at most `limit`; `Err(span)` when blocks nest deeper than
+/// `MAX_NESTING`.
+fn scan(mut tokens: Tokenizer<'_>, css: &str, limit: usize) -> Result<Vec<CssRef>, Range<usize>> {
     let mut out: Vec<CssRef> = Vec::new();
     let mut frames: Vec<Frame> = Vec::new();
     let mut url_functions = 0usize;
@@ -860,19 +881,29 @@ fn scan(css: &str, non_ascii: NonAscii, limit: usize) -> Result<Vec<CssRef>, Ran
 
 /// References found in `css` (at most `limit`), in source order: url tokens, bad-url tokens, URL strings of `url()`,
 /// `src()`, `image-set()`, `-webkit-image-set()`, `image()`, `cross-fade()` and `@import`, and computed URLs (see the
-/// module docs). When `css` holds a code point the two non-ASCII readings disagree on, both readings are scanned and the
-/// union is reported. `Err(span)`: blocks nest deeper than `MAX_NESTING`.
+/// module docs). Readings scanned, union reported: the specification text; the engines' non-ASCII reading when `css` holds
+/// a code point the two disagree on; Gecko's bad-url reading when `css` holds a backslash (the only code point whose
+/// consumption before the remnants changes them). `Err(span)`: blocks nest deeper than `MAX_NESTING`.
 pub(crate) fn css_references(css: &str, limit: usize) -> Result<Vec<CssRef>, Range<usize>> {
-    let mut out = scan(css, NonAscii::Spec, limit)?;
+    let mut out = scan(Tokenizer::new(css, NonAscii::Spec, false), css, limit)?;
+    let mut others = Vec::new();
     if css
         .chars()
         .any(|c| !c.is_ascii() && !spec_non_ascii_ident(c))
     {
+        others.push(Tokenizer::new(css, NonAscii::Engines, false));
+    }
+    if css.contains('\\') {
+        others.push(Tokenizer::new(css, NonAscii::Engines, false).gecko_bad_url());
+    }
+    if !others.is_empty() {
         let key = |r: &CssRef| (r.span.start, r.span.end, r.kind, r.value.clone());
         let mut seen: BTreeSet<(usize, usize, RefKind, String)> = out.iter().map(key).collect();
-        for r in scan(css, NonAscii::Engines, limit)? {
-            if seen.insert(key(&r)) {
-                out.push(r);
+        for reading in others {
+            for r in scan(reading, css, limit)? {
+                if seen.insert(key(&r)) {
+                    out.push(r);
+                }
             }
         }
         out.sort_by_key(|r| (r.span.start, r.span.end, r.kind));

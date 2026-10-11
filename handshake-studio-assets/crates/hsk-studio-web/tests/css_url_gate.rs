@@ -347,6 +347,26 @@ fn both_non_ascii_ident_readings_are_scanned() {
     });
 }
 
+/// Gecko's reading of bad-url remnants after whitespace (Servo cssparser 0.38 `consume_url_end` consumes the code point
+/// after the whitespace before `consume_bad_url`): in Firefox `url(x \)` ends at that `)`, so a later url() loads, while
+/// CSS Syntax 3 4.3.6 (and Blink/WebKit) read `\)` as an escape inside the remnants. The gate scans both readings.
+#[test]
+fn gecko_bad_url_reading_is_scanned() {
+    bounded_case("gecko_bad_url_reading_is_scanned", || {
+        let real = format!("url({EVIL})");
+        for decoy in [
+            "url(x \\)",
+            "url(x  \\)",
+            "URL(x\n\\)",
+            "url(x\t\\)",
+            "u\\72l(x \\)",
+            "1.url(x \\)",
+        ] {
+            reports_after(decoy, &real, EVIL, EXTERNAL);
+        }
+    });
+}
+
 /// Blocks nested deeper than the scan tracks refuse the whole scan typed instead of reading on without structure.
 #[test]
 fn css_nesting_beyond_the_limit_is_refused_typed() {
