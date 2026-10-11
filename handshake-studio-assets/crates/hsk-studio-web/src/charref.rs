@@ -11,7 +11,8 @@
 //! - `&#` / `&#x` without digits stay literal.
 //!
 //! One reference never grows by more than one byte (`nGt;`: 5 bytes in, 6 out), and every growing reference is at
-//! least 5 bytes long, so the output is at most `input.len() + input.len() / 5` bytes. Linear time: each `&` looks at
+//! least 5 bytes long, so the output is at most `input.len() + input.len() / 5` bytes (per-entry bound checked over the
+//! whole table by `tests::table_is_sorted_and_complete`). Linear time: each `&` looks at
 //! most `MAX_NAME_LEN + 1` bytes ahead with binary searches over the table.
 #![deny(clippy::arithmetic_side_effects)]
 
@@ -178,6 +179,15 @@ mod tests {
         let names: Vec<&str> = crate::entity_table::NAMED.iter().map(|e| e.0).collect();
         assert!(names.windows(2).all(|w| w[0].as_bytes() < w[1].as_bytes()));
         assert_eq!(names.iter().filter(|n| !n.ends_with(';')).count(), 106);
+        // Growth bound stated in the module docs: a named reference grows by at most one byte, and only references of
+        // five or more bytes grow (numeric references never grow: a 4-byte character needs at least `&#65536`).
+        let utf8 = |cp: u32| char::from_u32(cp).map_or(0, char::len_utf8);
+        for (name, first, second) in crate::entity_table::NAMED.iter() {
+            let reference = name.len().saturating_add(1);
+            let out = utf8(*first).saturating_add(if *second == 0 { 0 } else { utf8(*second) });
+            assert!(out <= reference.saturating_add(1), "{name}");
+            assert!(out <= reference || reference >= 5, "{name}");
+        }
         assert_eq!(decode("&notit; &notin; &CounterClockwiseContourIntegral;", Context::Text).text, "\u{ac}it; \u{2209} \u{2233}");
         assert_eq!(decode("&#x80;&#150;&#x81;", Context::Text).text, "\u{20ac}\u{2013}\u{81}");
     }
