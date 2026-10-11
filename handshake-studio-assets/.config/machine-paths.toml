@@ -17,6 +17,9 @@ corpus_config = ".config/oracle-corpus.toml"
 "crates/hsk-studio-package/tests/foundation_contract.rs" = 1
 # hostile file:///c:/x link the web source patcher denies (FileScheme)
 "crates/hsk-studio-web/tests/source_dom_patch.rs" = 2
+# hostile PDF /Launch action filespec (C:\\Budget Plan\\run.exe) press redacts, and its expected redacted string
+# (steward sync for R7, press 5a91fd7; lead-reviewable)
+"crates/hsk-studio-press/tests/pdf_delivery.rs" = 2
 # synthetic Lightroom catalog: root-folder values (absolute by Lightroom's format)
 "crates/hsk-studio-interop-lrcat/tests/fixtures/synthetic-main.expected.tsv" = 300
 "crates/hsk-studio-interop-lrcat/tests/fixtures/synthetic-wal.expected.tsv" = 301

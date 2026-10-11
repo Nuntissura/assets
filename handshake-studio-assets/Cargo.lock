@@ -1043,6 +1043,7 @@ dependencies = [
  "hsk-studio-accord",
  "hsk-studio-observe",
  "libc",
+ "miniz_oxide",
  "rav1d",
  "sha2 0.10.9",
 ]

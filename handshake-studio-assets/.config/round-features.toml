@@ -13,5 +13,5 @@ per-test-timeout-s = 120
 hsk-studio-type = [["harfrust"]]
 hsk-studio-motion-js = [["quickjs"], ["quickjs", "test-faults"]]
 hsk-studio-reel = [["av1"]]
-hsk-studio-reel-native = [["av1"]]
+hsk-studio-reel-native = [["av1-worker"], ["av1-worker", "test-faults"]]
 hsk-studio-score-plugin = [["test-faults"], ["clap", "test-faults"]]

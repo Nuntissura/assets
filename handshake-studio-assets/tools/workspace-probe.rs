@@ -406,6 +406,10 @@ struct Inputs {
 }
 impl Inputs {
     fn load(&mut self, root: &Path, path: &str) -> Result<Document> {
+        // A package inspected again (its feature set grew) parses the bytes read the first time.
+        if let Some(bytes) = self.bytes.get(path) {
+            return doc(bytes);
+        }
         if self.bytes.len() >= MAX_FILES {
             return Err("file_count_limit".into());
         }
@@ -482,7 +486,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-layout", &["unicode-linebreak"]),
     ("hsk-studio-develop", &["sha2"]),
     ("hsk-studio-score", &["rubato"]),
-    ("hsk-studio-reel", &["libc", "rav1d", "sha2"]),
+    ("hsk-studio-reel", &["libc", "miniz_oxide", "rav1d", "sha2"]),
     ("hsk-studio-composite", &["serde_json"]),
     ("hsk-studio-render-cpu", &["kurbo", "serde", "serde_json"]),
     ("hsk-studio-render-gpu", &["wgpu"]),
@@ -852,6 +856,13 @@ fn inspect(args: &[String]) -> Result<String> {
     let mut graph = BTreeMap::<String, BTreeSet<String>>::new();
     let mut pending = selected.clone();
     let mut visited = BTreeSet::new();
+    // Requested features per package: the explicit selection plus features forwarded by dependents through
+    // `dep/feature` (weak `dep?/feature`) selectors and path-dependency `features` lists (Cargo feature
+    // unification). A package is inspected again when its requested set grows; sets only grow and every
+    // name must exist in that package's [features], so the walk is bounded.
+    let mut wanted = features.clone();
+    let mut inspected = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut inspections = 0usize;
     let mut locked = BTreeMap::new();
     let mut registry_observed = BTreeSet::new();
     for (section, table) in &lock.tables {
@@ -867,9 +878,16 @@ fn inspect(args: &[String]) -> Result<String> {
         }
     }
     while let Some(package) = pending.pop() {
-        if !visited.insert(package.clone()) {
+        let requested = wanted.get(&package).cloned().unwrap_or_default();
+        if inspected.get(&package) == Some(&requested) {
             continue;
         }
+        inspections += 1;
+        if inspections > 35 * 257 {
+            return Err("feature_unification_limit".into());
+        }
+        inspected.insert(package.clone(), requested.clone());
+        visited.insert(package.clone());
         if visited.len() > 35 {
             return Err("closure_limit".into());
         }
@@ -885,7 +903,6 @@ fn inspect(args: &[String]) -> Result<String> {
         if !locked.contains_key(&(package.clone(), version.to_owned())) {
             return Err("selected_package_not_locked".into());
         }
-        let requested = features.get(&package).cloned().unwrap_or_default();
         let ft = d
             .tables
             .iter()
@@ -894,6 +911,10 @@ fn inspect(args: &[String]) -> Result<String> {
         let mut active = requested.clone();
         let mut queue: Vec<String> = requested.into_iter().collect();
         let mut dep_features = BTreeSet::new();
+        // `dep/feature` activates optional `dep` (not for weak `dep?/feature`) and enables `feature` on it.
+        // Only path (Studio) dependencies take selectors: registry pins carry exact feature sets.
+        let mut forwarded = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut selectors = 0usize;
         while let Some(f) = queue.pop() {
             let entries = ft
                 .and_then(|t| t.get(&f))
@@ -902,16 +923,33 @@ fn inspect(args: &[String]) -> Result<String> {
             for entry in entries {
                 if let Some(dep) = entry.strip_prefix("dep:") {
                     dep_features.insert(dep.to_owned());
-                } else if entry.contains('/') {
-                    return Err("unsupported_dependency_feature_selector".into());
+                } else if let Some((dep, feature)) = entry.split_once('/') {
+                    let (dep, weak) = match dep.strip_suffix('?') {
+                        Some(dep) => (dep, true),
+                        None => (dep, false),
+                    };
+                    if dep.is_empty() || dep.contains('?') || feature.is_empty() || feature.contains('/') {
+                        return Err("invalid_dependency_feature_selector".into());
+                    }
+                    if !weak {
+                        dep_features.insert(dep.to_owned());
+                    }
+                    if forwarded
+                        .entry(dep.to_owned())
+                        .or_default()
+                        .insert(feature.to_owned())
+                    {
+                        selectors += 1;
+                    }
                 } else if active.insert(entry.clone()) {
                     queue.push(entry)
                 }
-                if active.len() + dep_features.len() > 256 {
+                if active.len() + dep_features.len() + selectors > 256 {
                     return Err("feature_limit".into());
                 }
             }
         }
+        let mut selector_targets = BTreeSet::new();
         let allowed = list(
             &manifest,
             &format!("workspace.metadata.studio.dependencies.{package}"),
@@ -973,6 +1011,12 @@ fn inspect(args: &[String]) -> Result<String> {
                     {
                         return Err("forbidden_dependency_edge".into());
                     }
+                    if forwarded.contains_key(alias) {
+                        if path.is_none() {
+                            return Err("unsupported_dependency_feature_selector".into());
+                        }
+                        selector_targets.insert(alias.clone());
+                    }
                     if optional && !dep_features.contains(alias) && !active.contains(alias) {
                         continue;
                     }
@@ -992,6 +1036,13 @@ fn inspect(args: &[String]) -> Result<String> {
                         if actual != inside(&root, expected)? || !allowed.iter().any(|s| s == dep) {
                             return Err("dependency_outside_declared_dag".into());
                         }
+                        let mut forward = forwarded.get(alias).cloned().unwrap_or_default();
+                        if let Value::Map(m) = &spec
+                            && let Some(listed) = m.get("features")
+                        {
+                            forward.extend(listed.list()?);
+                        }
+                        wanted.entry(dep.to_owned()).or_default().extend(forward);
                         graph.entry(package.clone()).or_default().insert(dep.into());
                         pending.push(dep.into());
                     } else {
@@ -1015,6 +1066,9 @@ fn inspect(args: &[String]) -> Result<String> {
             {
                 return Err("dependency_subtables_require_inline_contract".into());
             }
+        }
+        if forwarded.keys().any(|alias| !selector_targets.contains(alias)) {
+            return Err("unknown_dependency_feature_selector".into());
         }
     }
     let files = provenance.table("files")?;
@@ -1074,13 +1128,20 @@ fn inspect(args: &[String]) -> Result<String> {
         .map(|(p, h)| format!("{}:{}", quoted(p), quoted(h)))
         .collect::<Vec<_>>()
         .join(",");
+    let closure_features = inspected
+        .iter()
+        .filter(|(_, f)| !f.is_empty())
+        .map(|(p, f)| format!("{}:{}", quoted(p), strings(f.iter().cloned())))
+        .collect::<Vec<_>>()
+        .join(",");
     Ok(format!(
-        "{{\"schema\":\"hsk.studio.workspace-inspection@1\",\"status\":\"accepted\",\"proof_kind\":\"input_selection_only\",\"compiled_packages\":false,\"revision\":{},\"tree\":{},\"toolchain\":{},\"selected\":{},\"closure\":{},\"registry_closure\":{},\"declared_count\":{},\"materialized_member_count\":{},\"provenance_sha256\":{},\"inputs_sha256\":{{{}}}}}",
+        "{{\"schema\":\"hsk.studio.workspace-inspection@1\",\"status\":\"accepted\",\"proof_kind\":\"input_selection_only\",\"compiled_packages\":false,\"revision\":{},\"tree\":{},\"toolchain\":{},\"selected\":{},\"closure\":{},\"closure_features\":{{{}}},\"registry_closure\":{},\"declared_count\":{},\"materialized_member_count\":{},\"provenance_sha256\":{},\"inputs_sha256\":{{{}}}}}",
         quoted(revision),
         quoted(tree),
         quoted(TOOLCHAIN),
         strings(selected),
         strings(visited),
+        closure_features,
         strings(registry_observed),
         declared.len(),
         members.len(),
@@ -1088,7 +1149,7 @@ fn inspect(args: &[String]) -> Result<String> {
         hashes
     ))
 }
-const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example, bin, test and bench targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","selection":"Explicit registered packages only, no implicit default features. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only owner/library pairs in the APPROVED table (generated from workspace.metadata.studio.registry.OWNER.direct by the steward registry sync tool) are approved exact inline direct registry pins, with explicit no defaults and exact feature sets. Native policy: -sys/_sys records only in native provider owners render-gpu, score-device, score-plugin, reel-native, motion-js and labelled kind=native-ffi; wgpu only in render-gpu, egui only in controls, ffmpeg-sys-next only in reel-native; handshake_core, handshake_native, surrealdb, rocksdb, eframe, image, libsqlite3-sys always reject. Metadata workspace.metadata.studio.registry.OWNER has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust|native-ffi) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":35,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
+const HELP: &str = r#"{"schema":"hsk.studio.workspace-command@1","owner":"STUDIO-WORKSPACE","command":"workspace-probe","version":1,"operation":"Read-only bounded workspace selection and provenance inspection","usage":"workspace-probe --root SUBTREE --provenance FILE --revision GIT40 --tree GIT40 [--package NAME]* [--feature PACKAGE/NAME]* [--provider none]","bootstrap":"Compile tools/workspace-probe.rs directly with rustc +1.97.1; no Cargo member is needed. Parent selects an external output path. Empty selection validates real manifest, toolchain, lock and provenance inputs; it never proves crate compilation.","inputs":"UTF-8 bounded TOML subset: single-line quoted strings, arrays, inline tables, bool/integer atoms; dotted table headers and array-of-table lock packages/Cargo example, bin, test and bench targets. Unsupported syntax rejects. Provenance has [source] repository, subtree, revision, tree strings and [files] quoted relative paths to exact SHA-256. Include Cargo.toml, Cargo.lock, rust-toolchain.toml and every selected closure manifest; independently reconcile revision/tree and these hashes to canonical Git before acceptance.","selection":"Explicit registered packages only, no implicit default features. Feature selectors: dep:x activates optional x; x/f (weak x?/f) forwards feature f to path dependency x (Cargo unification: x activated unless weak, f must exist in x, path-dependency features lists forward the same way, a package is inspected again when its feature set grows; closure_features in the result); selectors naming a registry or undeclared dependency reject. Selected path dependencies must be registered, contained, locked and allowed by the manifest DAG. Unselected planned siblings need not exist. Only owner/library pairs in the APPROVED table (generated from workspace.metadata.studio.registry.OWNER.direct by the steward registry sync tool) are approved exact inline direct registry pins, with explicit no defaults and exact feature sets. Native policy: -sys/_sys records only in native provider owners render-gpu, score-device, score-plugin, reel-native, motion-js and labelled kind=native-ffi; wgpu only in render-gpu, egui only in controls, ffmpeg-sys-next only in reel-native; handshake_core, handshake_native, surrealdb, rocksdb, eframe, image, libsqlite3-sys always reject. Metadata workspace.metadata.studio.registry.OWNER has direct inline maps by library (version,features,default-features=false), and locked inline maps keyed name@version (source,checksum,kind=pure-rust|native-ffi) covering the actual selected transitive lock closure, maximum256records. Source is exactly registry+https://github.com/rust-lang/crates.io-index; lock checksum must be64hex and match independently pinned policy. Git/alternate registries, implicit defaults, unapproved native/host dependencies, ambiguous identities and missing transitive pins reject; no network. Metadata pure classification is an owner-approved selection policy, not independent crate implementation review or compiler feature proof. Host paths and pure-leaf GPU edges still reject.","outputs":"One JSON result on stdout, accepted exit 0; rejection exit 2 with code and recovery. No file writes, network, child processes or foreground UI.","limits":{"file_bytes":1048576,"files":256,"closure_packages":35,"value_depth":16,"array_items":256},"recovery":"Repair only the named malformed/stale selection, file, toolchain, lock or provenance input; repin/reconcile candidate identity independently, then retry affected inspection. Registration/lock updates happen when actual crates materialize. Runtime/embedding/GUI/native proof stays pending.","argus":{"inspect":"same immutable JSON inputs/result","action":"invoke this read-only command with an explicit selection","state":"result includes selected closure and immutable input SHA-256","capture":"caller captures stdout in its granted owner artifact root"},"diagnostics":"Bounded error codes exclude paths and source bytes; accepted results include explicitly inspected relative input paths. Caller owns account/Principal/AccessSpace attribution, grant enforcement and Flight Recorder/internal diagnostics/Palmistry delivery; this local tool does not assert host authorization."}"#;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = if args == ["--help"] || args == ["--descriptor"] {
