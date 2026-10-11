@@ -264,9 +264,26 @@ fn run_pair(id: &'static str) {
             let vs_lcms_lab = stats(&prism_lab, ref_lab_lcms, kept.as_deref());
             let consistency = stats(&ref_lab_same, ref_lab_lcms, kept.as_deref());
             let clipped = out.pixels.iter().filter(|v| **v < -1e-4 || **v > 1.0001).count();
+            // Absolute colorimetric attribution: lcms2 reads the wtpt of a v2 display profile as D50. Re-run the
+            // engine with wtpt forced to D50 on such profiles; agreement then names the media-white convention.
+            let abs_d50 = if iname == "absolute_colorimetric" && !bpc {
+                let patch = |key: &str, b: &Vec<u8>| {
+                    let v2_display = doc.get("profiles").get(key).get("icc_version").str().starts_with('2')
+                        && doc.get("profiles").get(key).get("class").str() == "mntr";
+                    if v2_display { with_d50_wtpt(b).unwrap_or_else(|| b.clone()) } else { b.clone() }
+                };
+                let (ps, pd) = (patch(src_key, src), patch(dst_key, dst));
+                run(&mut eng, &ctx, &ps, &pd, &patches, Intent::AbsoluteColorimetric, false).ok().map(|o| {
+                    let lab = device_to_lab(&mut leg, &ctx, dst, &target, &o.pixels);
+                    let st = stats(&lab, &ref_lab_same, kept.as_deref());
+                    (st.mean, st.max)
+                })
+            } else {
+                None
+            };
             let r = out.receipt;
             eprintln!(
-                "ORACLE_T1 {{\"pair\":\"{id}\",\"class\":\"{class}\",\"intent\":\"{iname}\",\"bpc\":{bpc},\"patches\":{n},\"scored_patches\":{},\"de2000_mean\":{:.4},\"de2000_max\":{:.4},\"worst_patch\":{},\"de_vs_lcms_lab_max\":{:.4},\"ref_consistency_max\":{:.4},\"out_of_range_values\":{clipped},\"bpc_rule\":\"{}\",\"bpc_src_lstar\":{:?},\"bpc_dst_lstar\":{:?},\"bpc_scale\":{:?},\"abs_scale\":{:?},\"verdict\":\"{}\"}}",
+                "ORACLE_T1 {{\"pair\":\"{id}\",\"class\":\"{class}\",\"intent\":\"{iname}\",\"bpc\":{bpc},\"patches\":{n},\"scored_patches\":{},\"de2000_mean\":{:.4},\"de2000_max\":{:.4},\"worst_patch\":{},\"de_vs_lcms_lab_max\":{:.4},\"ref_consistency_max\":{:.4},\"out_of_range_values\":{clipped},\"bpc_rule\":\"{}\",\"bpc_src_lstar\":{:?},\"bpc_dst_lstar\":{:?},\"bpc_scale\":{:?},\"abs_scale\":{:?},\"abs_with_d50_wtpt\":{:?},\"verdict\":\"{}\"}}",
                 main.idx.len(),
                 main.mean,
                 main.max,
@@ -278,6 +295,7 @@ fn run_pair(id: &'static str) {
                 r.bpc.destination_black_lstar,
                 r.bpc.scale,
                 r.absolute.scale,
+                abs_d50,
                 if judge.broken(&main) { "EXCEEDS" } else { "ok" }
             );
             if judge.broken(&main) {
@@ -324,6 +342,11 @@ fn run_src_leg(id: &'static str, key: &'static str) {
         );
         if judge.broken(&s) {
             eprintln!("ORACLE_T1_WORST {id} relative_colorimetric bpc=false: {}", worst3(&s, cin, 3, &patches, &out.pixels, &reference));
+            if cin == 3 {
+                // Neutral ramp (patches 0..=16 are k/16): PCS Y of the engine against lcms2.
+                let ramp: Vec<String> = (0..17).map(|k| format!("{:.3}/{:.3}", out.pixels[k * 3 + 1], reference[k * 3 + 1])).collect();
+                eprintln!("ORACLE_T1_RAMP {id} neutral Y prism/lcms2: {}", ramp.join(" "));
+            }
         }
         judge.record("relative_colorimetric", false, &s);
         judge.finish();
@@ -344,7 +367,7 @@ fn run_dst_leg(id: &'static str, key: &'static str) {
                 return;
             }
         };
-        let lab = to_f32(&doc.get("lab_patch_set").get("values").f64s());
+        let lab = to_f32(&if leg.has("lab_patches") { leg.get("lab_patches") } else { doc.get("lab_patch_set").get("values") }.f64s());
         let (n, cout) = (lab.len() / 3, leg.get("channels").i64() as usize);
         let ctx = Ctx::new();
         let mut eng = WideEngine::new(ctx.actor.clone(), 8).unwrap();

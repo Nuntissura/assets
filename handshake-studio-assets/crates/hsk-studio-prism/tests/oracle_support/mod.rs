@@ -303,6 +303,24 @@ pub fn read_xyz_tag(bytes: &[u8], sig: &[u8; 4]) -> Option<[f64; 3]> {
     None
 }
 
+/// Copy of an ICC profile with its `wtpt` tag set to the PCS D50 white (63190, 65536, 54061 as s15Fixed16).
+/// Used to attribute absolute-colorimetric differences to the media white point a CMM reads (diagnostic only).
+pub fn with_d50_wtpt(bytes: &[u8]) -> Option<Vec<u8>> {
+    let n = u32::from_be_bytes(bytes.get(128..132)?.try_into().ok()?) as usize;
+    for i in 0..n {
+        let e = 132 + i * 12;
+        if &bytes[e..e + 4] == b"wtpt" {
+            let off = u32::from_be_bytes(bytes[e + 4..e + 8].try_into().ok()?) as usize;
+            let mut out = bytes.to_vec();
+            for (k, v) in [63190i32, 65536, 54061].into_iter().enumerate() {
+                out[off + 8 + k * 4..off + 12 + k * 4].copy_from_slice(&v.to_be_bytes());
+            }
+            return Some(out);
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------------------------
 // Color math (f64): XYZ <-> Lab (ICC PCS illuminant) and CIEDE2000 (Sharma, Wu, Dalal 2005)
 // ---------------------------------------------------------------------------------------------
