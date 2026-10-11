@@ -14,6 +14,7 @@ clack-host = { version = "=0.2.0", default-features = false, features = ["libloa
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 hsk-studio-score = { path = "../hsk-studio-score", version = "=0.1.0", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false, features = ["force-soft"] }
 
 [lib]
 path = "src/lib.rs"

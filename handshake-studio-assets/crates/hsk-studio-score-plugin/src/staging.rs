@@ -14,17 +14,15 @@
 //!   Another process of the same user could still replace the directory contents: NOT_PROVEN against
 //!   such a process (it already runs with the plugin's privileges); the original path is out of the
 //!   loader's reach in every case (test: `tests::tampering_after_staging_cannot_reach_the_copy`).
-//! * Memory: SHA-256 is the one-shot `hsk_studio_score::sha256`, so the file is held in one buffer of at
-//!   most the file size (the host charges that size to its admission budget before it spawns the
-//!   worker). A streaming hasher over a fixed buffer is NOT_PROVEN/absent until `hsk-studio-score`
-//!   exports its streaming `Sha256` (it is `pub(crate)` there).
+//! * Memory: the file is hashed and copied in one pass through one fixed 64 KiB buffer (`hashing.rs`), so
+//!   peak memory does not depend on the file size (test: `tests::large_file_is_staged_in_bounded_memory`).
 //! * A plugin that needs sibling files (resources, helper libraries next to the library) does not work
 //!   from a lone staged file; that is deliberate, since siblings carry no approved hash.
 #![deny(clippy::arithmetic_side_effects)]
-use hsk_studio_score::sha256;
+use crate::hashing;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -110,20 +108,6 @@ pub(crate) fn stage_verified(
     if meta.len() > max_bytes {
         return Err(StageError::Budget);
     }
-    let mut bytes =
-        Vec::with_capacity(usize::try_from(meta.len()).map_err(|_| StageError::Budget)?);
-    (&mut original)
-        .take(max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| StageError::Unavailable)?;
-    drop(original);
-    if u64::try_from(bytes.len()).map_or(true, |len| len > max_bytes) {
-        return Err(StageError::Budget);
-    }
-    if &sha256(&bytes) != expected {
-        return Err(StageError::Hash);
-    }
-
     let name = source
         .file_name()
         .filter(|n| !n.is_empty())
@@ -135,30 +119,41 @@ pub(crate) fn stage_verified(
         dir,
         hold: None,
     };
+    // One pass over the original handle: every chunk is hashed and written to the copy in the same
+    // order, through one fixed buffer, so the copy holds exactly the hashed bytes and no whole-file
+    // buffer exists. A mismatch removes the copy again (the guard): nothing unapproved stays on disk.
     {
         let mut writer = create_exclusive(&staged.path).map_err(|_| StageError::Unavailable)?;
-        writer
-            .write_all(&bytes)
-            .and_then(|()| writer.flush())
-            .map_err(|_| StageError::Unavailable)?;
+        let (digest, _) = hashing::stream_sha256(&mut original, Some(&mut writer), max_bytes)
+            .map_err(stage_error)?;
+        writer.flush().map_err(|_| StageError::Unavailable)?;
+        if &digest != expected {
+            return Err(StageError::Hash);
+        }
     }
+    drop(original);
     // Verify the COPY, through the handle that stays open until the loader is done with it.
     let mut hold = open_read_held(&staged.path).map_err(|_| StageError::Unavailable)?;
-    bytes.clear();
-    (&mut hold)
-        .take(max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| StageError::Unavailable)?;
-    if &sha256(&bytes) != expected {
+    let (copy_digest, _) =
+        hashing::stream_sha256(&mut hold, None, max_bytes).map_err(stage_error)?;
+    if &copy_digest != expected {
         return Err(StageError::Hash);
     }
     staged.hold = Some(hold);
     Ok(staged)
 }
 
+fn stage_error(error: hashing::HashError) -> StageError {
+    match error {
+        hashing::HashError::TooLarge => StageError::Budget,
+        hashing::HashError::Io => StageError::Unavailable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hsk_studio_score::sha256;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A scratch directory under the test temp dir, removed on drop.
@@ -275,5 +270,51 @@ mod tests {
         assert_eq!(fs::read(first.path()).unwrap(), PAYLOAD);
         drop(first);
         assert_eq!(leftovers(), 0, "dropping the guard removes its directory");
+    }
+
+    #[test]
+    fn large_file_is_staged_in_bounded_memory() {
+        // R6: the worker used to read the whole approved file into a buffer to hash it, then write it.
+        // 48 MiB is hashed and copied in one pass through one buffer; the oracle is score's one-shot
+        // SHA-256 over the same bytes, computed OUTSIDE the metered window.
+        let work = Dir::new();
+        let stage = work.0.join("stage");
+        fs::create_dir(&stage).unwrap();
+        let len = 48_usize << 20;
+        let bytes: Vec<u8> = (0..len)
+            .map(|i| u8::try_from((i.wrapping_mul(131) ^ (i >> 9)) % 253).unwrap_or(0))
+            .collect();
+        let expected = sha256(&bytes);
+        let original = source(&work, &bytes);
+        drop(bytes);
+
+        let (result, peak) = crate::hashing::meter::peak_of(|| {
+            stage_verified(&original, &expected, 1 << 30, &stage, 1)
+        });
+        let staged = result.unwrap();
+        assert!(
+            peak < 4 << 20,
+            "peak {peak} bytes while staging {len} bytes (buffer is {})",
+            crate::hashing::BUFFER_BYTES
+        );
+        assert_eq!(
+            fs::metadata(staged.path()).unwrap().len(),
+            u64::try_from(len).unwrap()
+        );
+        // The copy hashes to the approved digest (one-shot, again outside the window).
+        assert_eq!(sha256(&fs::read(staged.path()).unwrap()), expected);
+        // A different approval is refused with the same bounded memory and leaves nothing behind.
+        let (refused, peak) = crate::hashing::meter::peak_of(|| {
+            stage_verified(&original, &sha256(b"other"), 1 << 30, &stage, 2).err()
+        });
+        assert_eq!(refused, Some(StageError::Hash));
+        assert!(peak < 4 << 20, "peak {peak} on the refusal path");
+        assert_eq!(
+            fs::read_dir(&stage).unwrap().count(),
+            1,
+            "only the first copy exists"
+        );
+        drop(staged);
+        assert_eq!(fs::read_dir(&stage).unwrap().count(), 0);
     }
 }

@@ -620,96 +620,74 @@ fn host_limits_are_bounded_at_admission() {
 }
 
 #[test]
-fn plugin_file_size_is_charged_to_the_budget() {
-    bounded_case("plugin_file_size_is_charged_to_the_budget", || {
-        // R6: the host hashes the approved file through one buffer of up to max_plugin_file_bytes
-        // (default 512 MiB) that no budget saw. The file size is now reserved with the permit
-        // BEFORE the file is read. (A streaming hash over a fixed buffer needs hsk-studio-score to
-        // export its streaming Sha256: NOT_PROVEN, see DESCRIPTOR.)
-        let bytes = vec![0x5A_u8; 1000];
-        let sha = sha256(&bytes);
-        let file = PluginFile::with_bytes(&bytes);
-        let cancel = CancellationToken::default();
-        let grant = PluginGrant {
-            actor: actor(),
-            content_sha256: sha,
-        };
-        let config = ProcessConfig {
-            plugin: file.approved_with(sha),
-            grant: Some(grant.clone()),
-            sample_rate_hz: 48_000,
-            layout: ChannelLayout::stereo(),
-            max_block_frames: 256,
-            parameters: Vec::new(),
-            max_state_bytes: 64,
-        };
-        // Without the file an instance reserves 2 x (256 frames x 2 channels x 4) + 64 = 4160 bytes.
-        let buffers = 4160_u64;
-        let tight = host_with(
-            HostLimits {
-                max_in_flight_bytes: buffers,
-                ..HostLimits::default()
-            },
-            0,
-        );
-        assert_eq!(
-            tight
-                .activate_isolated(&config, &cancel, DEADLINE)
-                .unwrap_err(),
-            PluginError::BudgetExceeded
-        );
-        assert_eq!(
-            (tight.stats().spawned, tight.stats().in_flight_bytes),
-            (0, 0)
-        );
-
-        let exact = host_with(
-            HostLimits {
-                max_in_flight_bytes: buffers + 1000,
-                ..HostLimits::default()
-            },
-            0,
-        );
-        let mut instance = exact.activate_isolated(&config, &cancel, DEADLINE).unwrap();
-        assert_eq!(exact.stats().in_flight_bytes, buffers + 1000);
-        let report = instance.retire_in_place();
-        assert_eq!(report.released_bytes, buffers + 1000);
-        assert_eq!(exact.stats().in_flight_bytes, 0);
-
-        // Probe: 64 KiB of probe buffers plus the file.
-        let probe_bytes = 64_u64 << 10;
-        for (limit, ok) in [(probe_bytes + 999, false), (probe_bytes + 1000, true)] {
-            let host = host_with(
-                HostLimits {
-                    max_in_flight_bytes: limit,
-                    ..HostLimits::default()
-                },
-                0,
+fn plugin_file_bound_applies_and_its_size_is_not_charged() {
+    bounded_case(
+        "plugin_file_bound_applies_and_its_size_is_not_charged",
+        || {
+            // The approved file is streamed over one fixed buffer (tests/hash_memory.rs proves the memory), so
+            // its size is neither buffered nor charged to the admission budget: a 1000-byte and a 3-byte
+            // plugin reserve exactly the same. The per-file bound still applies, before any process exists.
+            let bytes = vec![0x5A_u8; 1000];
+            let sha = sha256(&bytes);
+            let big = PluginFile::with_bytes(&bytes);
+            let small = PluginFile::new();
+            let cancel = CancellationToken::default();
+            let big_config = ProcessConfig {
+                plugin: big.approved_with(sha),
+                grant: Some(PluginGrant {
+                    actor: actor(),
+                    content_sha256: sha,
+                }),
+                sample_rate_hz: 48_000,
+                layout: ChannelLayout::stereo(),
+                max_block_frames: 256,
+                parameters: Vec::new(),
+                max_state_bytes: 64,
+            };
+            let host = host();
+            let mut a = host
+                .activate_isolated(&big_config, &cancel, DEADLINE)
+                .unwrap();
+            let with_big = host.stats().in_flight_bytes;
+            a.retire_in_place();
+            let mut b = host
+                .activate_isolated(&config(&small, 0.5), &cancel, DEADLINE)
+                .unwrap();
+            assert_eq!(
+                host.stats().in_flight_bytes,
+                with_big,
+                "the file size is not part of the reservation"
             );
-            let result = host.probe(&file.approved_with(sha), Some(&grant), &cancel, DEADLINE);
-            assert_eq!(result.is_ok(), ok, "limit {limit}: {result:?}");
-            if !ok {
-                assert_eq!(result.unwrap_err(), PluginError::BudgetExceeded);
-                assert_eq!(host.stats().spawned, 0);
-            }
-        }
+            b.retire_in_place();
+            assert_eq!(host.stats().in_flight_bytes, 0);
 
-        // The per-file bound still applies.
-        let small = host_with(
-            HostLimits {
-                max_plugin_file_bytes: 999,
-                ..HostLimits::default()
-            },
-            0,
-        );
-        assert_eq!(
-            small
-                .probe(&file.approved_with(sha), Some(&grant), &cancel, DEADLINE)
-                .unwrap_err(),
-            PluginError::BudgetExceeded
-        );
-        assert_eq!(small.stats().spawned, 0);
-    });
+            // The bound: one byte under the file is refused as budget_exceeded with no process; at the file
+            // size the same plugin is accepted.
+            for (limit, ok) in [(999_u64, false), (1000, true)] {
+                let host = host_with(
+                    HostLimits {
+                        max_plugin_file_bytes: limit,
+                        ..HostLimits::default()
+                    },
+                    0,
+                );
+                let result = host.probe(
+                    &big.approved_with(sha),
+                    Some(&PluginGrant {
+                        actor: actor(),
+                        content_sha256: sha,
+                    }),
+                    &cancel,
+                    DEADLINE,
+                );
+                assert_eq!(result.is_ok(), ok, "limit {limit}: {result:?}");
+                if !ok {
+                    assert_eq!(result.unwrap_err(), PluginError::BudgetExceeded);
+                    assert_eq!(host.stats().spawned, 0);
+                }
+            }
+        },
+    );
 }
 
 fn entries(dir: &Path) -> Vec<PathBuf> {

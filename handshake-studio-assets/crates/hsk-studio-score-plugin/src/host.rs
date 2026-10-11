@@ -12,6 +12,7 @@
 //! plugin data (test: `tests/fault_injection.rs::process_faults_are_contained`) and the instance is `Draining`: only `retire` is legal.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::error::{PluginError, ProtocolFault};
+use crate::hashing;
 use crate::stage_root::StageRoot;
 use crate::supervisor::{
     Classified, Failure, Permit, ReadFailure, SpawnError, SpawnRequest, Supervisor,
@@ -26,9 +27,8 @@ use crate::types::{
 use crate::wire::{self, ConfigureSpec, Frame, Hello, PluginSpec, Reply, WireError};
 use crate::worker::{BACKEND_UNAVAILABLE_EXIT_CODE, WORKER_PROGRAM};
 use hsk_studio_accord::CancellationToken;
-use hsk_studio_score::{ChannelLayout, InputBlock, OutputBlock, sha256};
+use hsk_studio_score::{ChannelLayout, InputBlock, OutputBlock};
 use std::{
-    io::Read,
     path::PathBuf,
     process::ChildStdout,
     sync::{
@@ -47,13 +47,12 @@ const PROBE_BYTES: u64 = 64 << 10;
 pub struct HostLimits {
     /// Most worker processes alive at once (probes included); a call beyond that is refused at once.
     pub max_workers: usize,
-    /// Most bytes reserved across all live workers: block and state buffers plus, per worker, the
-    /// size of the approved plugin file (the host reads it into one buffer to hash it).
+    /// Most bytes reserved across all live workers: block and state buffers plus a fixed 64 KiB hashing
+    /// buffer per instance (the plugin file is streamed, its size is not charged).
     pub max_in_flight_bytes: u64,
     /// Largest frame either side accepts; bounds `max_block_frames * channels * 4`.
     pub max_frame_bytes: u32,
-    /// Largest approved plugin file the host will hash. The file size is also charged to
-    /// `max_in_flight_bytes`, so the buffer is bounded by the budget whatever this is set to.
+    /// Largest approved plugin file the host will hash (streamed over a fixed buffer).
     pub max_plugin_file_bytes: u64,
     /// Time a new worker gets to complete its HELLO handshake (1 ms ..= [`MAX_DEADLINE`]).
     pub spawn_timeout: Duration,
@@ -276,9 +275,9 @@ fn authorize(plugin: &ApprovedPlugin, grant: Option<&PluginGrant>) -> Result<Str
     Ok(grant.actor.session_id().to_owned())
 }
 
-/// Size of the approved file, checked against the per-file bound. The caller charges it to the
-/// admission budget BEFORE the file is read (the read buffer is that large).
-fn plugin_file_len(plugin: &ApprovedPlugin, max_bytes: u64) -> Result<u64, PluginError> {
+/// Checks the approved file against the per-file bound (a regular file no larger than
+/// `max_bytes`) and returns the bound to read it under.
+fn plugin_file_bound(plugin: &ApprovedPlugin, max_bytes: u64) -> Result<u64, PluginError> {
     let meta = std::fs::metadata(&plugin.path).map_err(|_| PluginError::Unavailable)?;
     if !meta.is_file() {
         return Err(PluginError::Unavailable);
@@ -286,24 +285,21 @@ fn plugin_file_len(plugin: &ApprovedPlugin, max_bytes: u64) -> Result<u64, Plugi
     if meta.len() > max_bytes {
         return Err(PluginError::BudgetExceeded);
     }
-    Ok(meta.len())
+    Ok(max_bytes)
 }
 
-/// Reads the approved file (at most the `charged` bytes the caller reserved) and compares its SHA-256
-/// with the approval. This is a read, not a load: the host does not map or execute the file. It is an
-/// early refusal only; the worker hashes the bytes it will actually load (see `staging.rs`). A file
-/// that grew past the charged size is refused, not read further.
-fn verify_content(plugin: &ApprovedPlugin, charged: u64) -> Result<(), PluginError> {
-    let file = std::fs::File::open(&plugin.path).map_err(|_| PluginError::Unavailable)?;
-    let mut bytes =
-        Vec::with_capacity(usize::try_from(charged).map_err(|_| PluginError::BudgetExceeded)?);
-    file.take(charged.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| PluginError::Unavailable)?;
-    if u64::try_from(bytes.len()).map_or(true, |len| len > charged) {
-        return Err(PluginError::BudgetExceeded);
-    }
-    if sha256(&bytes) == plugin.content_sha256 {
+/// Streams the approved file through SHA-256 over one fixed buffer (`hashing::BUFFER_BYTES`, never the
+/// whole file) and compares the digest with the approval. This is a read, not a load: the host does not
+/// map or execute the file. It is an early refusal only; the worker hashes the bytes it will actually
+/// load (see `staging.rs`). A file that grows past `max_bytes` while it is read is refused.
+fn verify_content(plugin: &ApprovedPlugin, max_bytes: u64) -> Result<(), PluginError> {
+    let mut file = std::fs::File::open(&plugin.path).map_err(|_| PluginError::Unavailable)?;
+    let (digest, _) =
+        hashing::stream_sha256(&mut file, None, max_bytes).map_err(|error| match error {
+            hashing::HashError::TooLarge => PluginError::BudgetExceeded,
+            hashing::HashError::Io => PluginError::Unavailable,
+        })?;
+    if digest == plugin.content_sha256 {
         Ok(())
     } else {
         Err(PluginError::HashMismatch)
@@ -427,20 +423,20 @@ impl IsolatedHost {
         {
             return Err(PluginError::BudgetExceeded);
         }
-        // Request and reply buffers, the largest state blob and the plugin-file hashing buffer stay
-        // reserved until the reap.
-        let file_len = plugin_file_len(&config.plugin, limits.max_plugin_file_bytes)?;
+        // Request and reply buffers, the largest state blob and the fixed plugin-file hashing buffer
+        // stay reserved until the reap. The plugin file itself is streamed: its size is not charged.
+        let file_bound = plugin_file_bound(&config.plugin, limits.max_plugin_file_bytes)?;
         let reserved = block_bytes
             .checked_mul(2)
             .and_then(|n| n.checked_add(u64::from(config.max_state_bytes)))
-            .and_then(|n| n.checked_add(file_len))
+            .and_then(|n| n.checked_add(hashing::BUFFER_BYTES as u64))
             .ok_or(PluginError::BudgetExceeded)?;
         let permit = self
             .shared
             .supervisor
             .admit(reserved)
             .map_err(|_| PluginError::BudgetExceeded)?;
-        verify_content(&config.plugin, file_len)?;
+        verify_content(&config.plugin, file_bound)?;
         let spec = spec_of(&config.plugin)?;
         let Started { mut session, .. } = start_worker(
             &self.shared,
@@ -518,13 +514,13 @@ impl PluginProvider for IsolatedHost {
         check_deadline(deadline)?;
         let owner = authorize(plugin, grant)?;
         let limits = &self.shared.limits;
-        let file_len = plugin_file_len(plugin, limits.max_plugin_file_bytes)?;
+        let file_bound = plugin_file_bound(plugin, limits.max_plugin_file_bytes)?;
         let permit = self
             .shared
             .supervisor
-            .admit(PROBE_BYTES.saturating_add(file_len))
+            .admit(PROBE_BYTES)
             .map_err(|_| PluginError::BudgetExceeded)?;
-        verify_content(plugin, file_len)?;
+        verify_content(plugin, file_bound)?;
         let spec = spec_of(plugin)?;
         let Started { mut session, hello } =
             start_worker(&self.shared, permit, &owner, plugin.abi_version, cancel)?;

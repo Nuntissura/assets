@@ -145,9 +145,15 @@ mod tests {
         // The host handle is gone but a live worker guard keeps the directory.
         let w3 = a.worker_dir().unwrap();
         drop(a);
-        assert!(root_path.exists(), "the host directory outlives its handle while a worker guard lives");
+        assert!(
+            root_path.exists(),
+            "the host directory outlives its handle while a worker guard lives"
+        );
         drop(w3);
-        assert!(!root_path.exists(), "the host directory goes with the last guard");
+        assert!(
+            !root_path.exists(),
+            "the host directory goes with the last guard"
+        );
         drop(b);
     }
 }

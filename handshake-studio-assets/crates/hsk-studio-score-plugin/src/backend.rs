@@ -5,6 +5,7 @@
 //! load or run the approved plugin file (it only verifies its SHA-256). The native CLAP backend
 //! (feature `clap`, `clap_backend.rs`) is the only code that loads foreign plugin code.
 #![deny(clippy::arithmetic_side_effects)]
+use crate::hashing;
 #[cfg(feature = "clap")]
 use crate::staging::StageError;
 use crate::types::{Arch, Completeness, PluginFormat, SUPPORTED_CLAP_ABI};
@@ -12,7 +13,7 @@ use crate::wire::{
     ConfigureSpec, E_ABI, E_BUDGET, E_CONFIG, E_HASH, E_NOT_CONFIGURED, E_STALE, E_UNAVAILABLE,
     PluginSpec,
 };
-use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ, sha256};
+use hsk_studio_score::{MAX_BLOCK_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ};
 
 /// Identity the reference backend reports in HELLO and receipts.
 pub const REFERENCE_IDENTITY: &str = "reference-gain-delay@1";
@@ -77,16 +78,18 @@ pub(crate) fn check_supported(spec: &PluginSpec) -> Result<(), Refusal> {
 }
 
 /// The gate plus the content hash check of the REFERENCE backend, which only verifies the file and
-/// never loads or executes it (so no staging copy is needed there). One read of the whole file: a
-/// streaming hash over a fixed buffer needs `hsk-studio-score` to export its streaming `Sha256`.
+/// never loads or executes it (so no staging copy is needed there). The file is streamed over one fixed
+/// buffer (`hashing.rs`), not read whole.
 pub(crate) fn verify_file(spec: &PluginSpec) -> Result<(), Refusal> {
     check_supported(spec)?;
-    let meta = std::fs::metadata(&spec.path).map_err(|_| (E_UNAVAILABLE, 0))?;
+    let mut file = std::fs::File::open(&spec.path).map_err(|_| (E_UNAVAILABLE, 0))?;
+    let meta = file.metadata().map_err(|_| (E_UNAVAILABLE, 0))?;
     if !meta.is_file() || meta.len() > MAX_PLUGIN_FILE_BYTES {
         return Err((E_UNAVAILABLE, 0));
     }
-    let bytes = std::fs::read(&spec.path).map_err(|_| (E_UNAVAILABLE, 0))?;
-    if sha256(&bytes) == spec.sha {
+    let (digest, _) = hashing::stream_sha256(&mut file, None, MAX_PLUGIN_FILE_BYTES)
+        .map_err(|_| (E_UNAVAILABLE, 0))?;
+    if digest == spec.sha {
         Ok(())
     } else {
         Err((E_HASH, 0))
@@ -284,5 +287,42 @@ impl Backend for Reference {
             completeness,
             bytes,
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)] // test code
+mod tests {
+    use super::*;
+    use hsk_studio_score::sha256;
+
+    #[test]
+    fn reference_verify_streams_a_large_file_in_bounded_memory() {
+        let len = 48_usize << 20;
+        let bytes: Vec<u8> = (0..len)
+            .map(|i| u8::try_from((i.wrapping_mul(97) ^ (i >> 11)) % 251).unwrap_or(0))
+            .collect();
+        let path = std::env::temp_dir().join(format!(
+            "hsk-score-plugin-backend-{}.bin",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let spec = |sha: [u8; 32]| PluginSpec {
+            format: PluginFormat::Clap.wire(),
+            arch: Arch::host().map_or(0, Arch::wire),
+            abi: SUPPORTED_CLAP_ABI,
+            sha,
+            path: path.to_str().unwrap().to_owned(),
+        };
+        let honest = spec(sha256(&bytes));
+        let wrong = spec(sha256(b"other"));
+        drop(bytes);
+        let (ok, peak) = crate::hashing::meter::peak_of(|| verify_file(&honest));
+        let (bad, bad_peak) = crate::hashing::meter::peak_of(|| verify_file(&wrong));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(ok, Ok(()));
+        assert_eq!(bad, Err((E_HASH, 0)));
+        assert!(peak < 4 << 20, "peak {peak} bytes for a {len} byte file");
+        assert!(bad_peak < 4 << 20, "peak {bad_peak} on the mismatch path");
     }
 }
