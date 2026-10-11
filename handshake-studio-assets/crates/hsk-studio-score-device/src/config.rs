@@ -18,6 +18,9 @@ pub struct Limits {
     pub max_ring_blocks: u32,
     /// Streams that may be open at once through one provider admission.
     pub max_open_streams: u32,
+    /// Ring bytes (plus any loopback recorder) that may be held at once through one provider
+    /// admission; checked together with `max_open_streams` when a permit is taken.
+    pub max_bytes_in_flight: usize,
 }
 
 impl Default for Limits {
@@ -27,6 +30,7 @@ impl Default for Limits {
             max_block_frames: 16_384,
             max_ring_blocks: 256,
             max_open_streams: 4,
+            max_bytes_in_flight: 16 * 1024 * 1024,
         }
     }
 }

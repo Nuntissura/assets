@@ -57,8 +57,12 @@ fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 }
 /// Pushes `count` ramp blocks, retrying on `Full`; returns blocks accepted (independent tally).
 fn push_blocks(stream: &mut OutputStream, count: u64, next: &mut f32) -> u64 {
+    push_blocks_counting(stream, count, next).0
+}
+/// Same, also returning how many `Full` refusals the test itself saw (independent tally).
+fn push_blocks_counting(stream: &mut OutputStream, count: u64, next: &mut f32) -> (u64, u64) {
     let samples = stream.producer().block_samples();
-    let mut accepted = 0;
+    let (mut accepted, mut refused) = (0, 0);
     while accepted < count {
         let block = ramp(*next, samples);
         match stream.producer().try_push_block(&block) {
@@ -66,11 +70,14 @@ fn push_blocks(stream: &mut OutputStream, count: u64, next: &mut f32) -> u64 {
                 accepted += 1;
                 *next += samples as f32;
             }
-            Err(PushError::Full) => std::thread::sleep(Duration::from_millis(1)),
+            Err(PushError::Full) => {
+                refused += 1;
+                std::thread::sleep(Duration::from_millis(1));
+            }
             Err(e) => panic!("unexpected push error {e}"),
         }
     }
-    accepted
+    (accepted, refused)
 }
 
 struct FrameSink(Vec<DeliveryClass>);
@@ -97,11 +104,15 @@ fn ring_fill_and_overflow_discontinuity() {
             produced.extend_from_slice(&block);
             next += 16.0;
         }
-        // capacity + 1: refused, nothing written, exactly one overrun and one discontinuity.
+        // capacity + 1: refused (backpressure), nothing written and nothing lost: one refused
+        // offer, no overrun, no discontinuity, no dropped frame.
         let extra = vec![9999.0_f32; 16];
         assert_eq!(producer.try_push_block(&extra), Err(PushError::Full));
         let c = counters.snapshot();
-        assert_eq!((c.overruns, c.discontinuities, c.dropped_frames, c.submitted_frames), (1, 1, 0, 32));
+        assert_eq!(
+            (c.overruns, c.discontinuities, c.dropped_frames, c.refused_offers, c.submitted_frames),
+            (0, 0, 0, 1, 32)
+        );
         // A wrong-length offer is a typed refusal that counts nothing.
         assert_eq!(producer.try_push_block(&extra[..15]), Err(PushError::WrongLength));
         assert_eq!(counters.snapshot(), c);
@@ -133,7 +144,17 @@ fn ring_fill_and_overflow_discontinuity() {
         let c = counters.snapshot();
         assert_eq!((c.submitted_frames, c.consumed_frames), (48, 48));
         assert_eq!((producer.accepted_frames(), consumer.popped_frames()), (48, 48));
-        assert_eq!((c.overruns, c.discontinuities), (2, 2));
+        // Two refusals, still no loss: the delivered stream is contiguous (equal above).
+        assert_eq!((c.overruns, c.discontinuities, c.dropped_frames, c.refused_offers), (0, 0, 0, 2));
+
+        // The explicit producer drop policy IS a loss: one overrun, one discontinuity and the
+        // block's 8 frames dropped; nothing is written, so the accounting stays equal.
+        assert_eq!(producer.drop_block(), 8);
+        let c = counters.snapshot();
+        assert_eq!(
+            (c.overruns, c.discontinuities, c.dropped_frames, c.refused_offers, c.submitted_frames),
+            (1, 1, 8, 2, 48)
+        );
 
         // Capture direction: 40 offered frames into a 32-frame ring keep the first 32 in order
         // and record the 8 lost frames as one overrun plus one discontinuity.
@@ -149,6 +170,106 @@ fn ring_fill_and_overflow_discontinuity() {
         let mut kept = vec![0.0_f32; 64];
         assert_eq!(cap_c.pop_into(&mut kept), 64);
         assert_eq!(bits(&kept), bits(&input[..64]));
+    });
+}
+
+#[test]
+fn backpressured_stream_with_retries_is_lossless() {
+    bounded_case("backpressured_stream_with_retries_is_lossless", || {
+        // Ring level, deterministic: the producer is always ahead of the consumer, hits Full
+        // many times, retries after each drain and delivers every block in order.
+        let g = config(8, 2).validate(&Limits::default()).unwrap();
+        let counters = Arc::new(Counters::default());
+        let (mut producer, mut consumer) = ring(&g, Arc::clone(&counters));
+        let (mut next, mut produced, mut consumed) = (1.0_f32, Vec::new(), Vec::new());
+        let (mut refused, mut chunk) = (0_u64, [0.0_f32; 16]);
+        for _ in 0..20 {
+            let block = ramp(next, 16);
+            loop {
+                match producer.try_push_block(&block) {
+                    Ok(()) => break,
+                    Err(PushError::Full) => {
+                        refused += 1;
+                        assert_eq!(consumer.pop_into(&mut chunk), 16);
+                        consumed.extend_from_slice(&chunk);
+                    }
+                    Err(e) => panic!("unexpected push error {e}"),
+                }
+            }
+            produced.extend_from_slice(&block);
+            next += 16.0;
+        }
+        loop {
+            let n = consumer.pop_into(&mut chunk);
+            if n == 0 {
+                break;
+            }
+            consumed.extend_from_slice(&chunk[..n]);
+        }
+        assert_eq!(refused, 18, "blocks 3..20 each hit Full once");
+        assert_eq!(bits(&consumed), bits(&produced));
+        let c = counters.snapshot();
+        assert_eq!((c.overruns, c.discontinuities, c.dropped_frames), (0, 0, 0));
+        assert_eq!(c.refused_offers, refused);
+        assert_eq!((c.submitted_frames, c.consumed_frames), (160, 160));
+
+        // Stream level: a clocked software device behind a 2-block ring (85 ms blocks) forces
+        // the producer to retry; the stream ends with no overrun, no discontinuity, no dropped
+        // frame, and the outcome is Success. The refused-offer counter equals the Full returns
+        // this test saw itself, whatever the scheduler did.
+        let provider = SoftwareProvider::new(Limits::default());
+        let out_grant = grant(&[Direction::Output]);
+        let out_dev = DeviceId::parse(SOFTWARE_OUTPUT_DEVICE).unwrap();
+        let mut stream = provider
+            .open_output(&out_dev, &config(4096, 2), Some(&out_grant), &CancellationToken::default())
+            .unwrap();
+        let mut next = 1.0_f32;
+        let (accepted, seen_full) = push_blocks_counting(&mut stream, 6, &mut next);
+        assert_eq!(accepted, 6);
+        wait_for("ring drain", || stream.counters().consumed_frames() == 6 * 4096);
+        stream.stop();
+        wait_for("stop acknowledgement", || stream.stop_acknowledged());
+        let report = stream.close();
+        assert_eq!(report.refused_offers, seen_full, "{report:?}");
+        assert_eq!((report.overruns, report.discontinuities, report.dropped_frames), (0, 0, 0));
+        assert_eq!((report.frames_submitted, report.frames_consumed), (6 * 4096, 6 * 4096));
+        assert!(report.is_clean(), "{report:?}");
+        assert_eq!(outcome_of(&Ok(report)), Outcome::Success);
+    });
+}
+
+#[test]
+fn admission_bounds_streams_and_bytes() {
+    bounded_case("admission_bounds_streams_and_bytes", || {
+        // A 64-frame stereo ring of 4 blocks is 2048 bytes; the byte bound admits exactly two.
+        let limits = Limits {
+            max_bytes_in_flight: 4096,
+            ..Limits::default()
+        };
+        let provider = SoftwareProvider::new(limits);
+        let admission = provider.admission().clone();
+        let out_grant = grant(&[Direction::Output]);
+        let out_dev = DeviceId::parse(SOFTWARE_OUTPUT_DEVICE).unwrap();
+        let cancel = CancellationToken::default();
+        let good = config(64, 4);
+        let first = provider.open_output(&out_dev, &good, Some(&out_grant), &cancel).unwrap();
+        let second = provider.open_output(&out_dev, &good, Some(&out_grant), &cancel).unwrap();
+        assert_eq!((admission.open_streams(), admission.bytes_in_flight()), (2, 4096));
+        // Stream slots remain (limit 4) but the byte bound refuses, taking nothing.
+        assert_eq!(
+            provider.open_output(&out_dev, &good, Some(&out_grant), &cancel).err(),
+            Some(DeviceError::AdmissionDenied)
+        );
+        assert_eq!((admission.open_streams(), admission.bytes_in_flight()), (2, 4096));
+        // Releasing one stream frees its bytes; the refused open now succeeds.
+        assert!(first.close().is_clean());
+        assert_eq!((admission.open_streams(), admission.bytes_in_flight()), (1, 2048));
+        let third = provider.open_output(&out_dev, &good, Some(&out_grant), &cancel).unwrap();
+        assert!(second.close().is_clean() && third.close().is_clean());
+        assert_eq!((admission.open_streams(), admission.bytes_in_flight()), (0, 0));
+        // Size arithmetic cannot overflow the bound: a huge request is a refusal, not a panic.
+        assert!(admission.acquire(usize::MAX).is_err());
+        assert_eq!((admission.open_streams(), admission.bytes_in_flight()), (0, 0));
     });
 }
 
@@ -279,6 +400,8 @@ fn software_device_lifecycle_and_loss() {
         assert!(report_c.reconciles() && report_c.thread_joined && report_c.permits_released);
         assert_eq!((report_c.frames_submitted, report_c.frames_consumed, report_c.residual_frames), (256, 256, 0));
         assert!(report_c.overruns >= 1 && report_c.discontinuities == report_c.overruns);
+        assert!(!report_c.is_clean(), "dropped capture frames are not a clean close");
+        assert_eq!(report_c.refused_offers, 0);
         assert_eq!(report_c.dropped_frames, (report_c.callbacks - 4) * 64);
         assert_eq!(report_c.frames_submitted + report_c.dropped_frames, report_c.callbacks * 64);
         assert_eq!(outcome_of(&Ok(report_c)), Outcome::Failure(FailureCode::Loss));

@@ -90,7 +90,7 @@ fn drive(
         "proof_class={} outcome={:?} pushed_blocks={pushed} full_waits={full_waits} \
          clean={} reconciles={} permits_released={} thread_joined={} device_lost={} callbacks={} \
          frames_submitted={} frames_consumed={} residual_frames={} underruns={} underrun_frames={} \
-         overruns={} discontinuities={} loopback_samples={}",
+         overruns={} discontinuities={} refused_offers={} loopback_samples={}",
         if silence { "native_smoke_not_loopback_oracle" } else { "software_lifecycle_not_native" },
         outcome_of(&closed),
         close.is_clean(),
@@ -106,6 +106,7 @@ fn drive(
         close.underrun_frames,
         close.overruns,
         close.discontinuities,
+        close.refused_offers,
         close.loopback_samples.len(),
     );
     Ok(())

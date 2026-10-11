@@ -14,6 +14,7 @@ use crate::config::{
 };
 use crate::counters::Counters;
 use crate::error::DeviceError;
+use crate::open_wait::wait_ready;
 use crate::provider::{
     Admission, CloseReport, DeviceProvider, InputStream, OutputStream, Permit, StreamBackend,
 };
@@ -355,13 +356,12 @@ impl DeviceProvider for CpalProvider {
             counters,
             thread: Some(handle),
         };
-        // On a refusal or timeout `backend` drops: stop, wake and join (the owner thread holds
-        // and releases the permit, so admission is only freed once the stream is gone).
-        match ready_rx.recv_timeout(OPEN_WAIT) {
-            Ok(Ok(())) => Ok(OutputStream::new(producer, Box::new(backend), config.clone())),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(DeviceError::Unavailable),
-        }
+        // On a refusal, cancel or timeout `backend` drops: stop, wake and join (the owner thread
+        // holds and releases the permit, so admission is only freed once the stream is gone).
+        // The wait polls `cancel` every POLL; the join after a cancel is bounded by cpal's own
+        // BUILD_TIMEOUT for a build that never returns (not provable without a hanging device).
+        wait_ready(&ready_rx, cancel, OPEN_WAIT, POLL)?;
+        Ok(OutputStream::new(producer, Box::new(backend), config.clone()))
     }
 
     fn open_input(

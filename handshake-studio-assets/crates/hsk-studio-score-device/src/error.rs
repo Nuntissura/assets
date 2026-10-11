@@ -22,11 +22,12 @@ pub enum DeviceError {
     UnknownDevice,
     /// The provider or device cannot serve the request (no device, unsupported sample format).
     Unavailable,
-    /// Bounded admission (open streams) is exhausted.
+    /// Bounded admission is exhausted: open streams or ring bytes in flight.
     AdmissionDenied,
     /// The device was lost after it was opened.
     DeviceLost,
-    /// Cancellation was observed before any resource was created.
+    /// Cancellation was observed before the stream was ready; no resource stays open (a backend
+    /// that already started is stopped and joined before this is returned).
     Canceled,
 }
 
@@ -79,7 +80,8 @@ impl std::error::Error for DeviceError {}
 /// Why the control side could not hand a block to the ring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PushError {
-    /// Not enough free space for the whole block; the caller keeps the block (no silent drop).
+    /// Not enough free space for the whole block. Backpressure: the caller keeps the block and
+    /// may retry; nothing is dropped and no loss is counted (only `refused_offers`).
     Full,
     /// The block length is not exactly `block_frames * channels` samples.
     WrongLength,

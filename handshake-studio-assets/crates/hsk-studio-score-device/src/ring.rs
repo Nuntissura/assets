@@ -122,9 +122,10 @@ impl Producer {
         shared.counters.add_submitted(frames);
     }
 
-    /// Offers exactly one block. `Full` is a refusal: the caller keeps the block, nothing is
-    /// dropped silently, and one overrun plus one discontinuity are counted for the refused
-    /// offer. `DeviceLost` is checked first and counts nothing.
+    /// Offers exactly one block. `Full` is backpressure: the caller keeps the block and may
+    /// retry, nothing is dropped, so only `refused_offers` is counted, not an overrun or a
+    /// discontinuity (those mean data was really lost; see [`Self::drop_block`]).
+    /// `DeviceLost` is checked first and counts nothing.
     pub fn try_push_block(&mut self, block: &[f32]) -> Result<(), PushError> {
         if self.shared.counters.is_device_lost() {
             return Err(PushError::DeviceLost);
@@ -133,11 +134,20 @@ impl Producer {
             return Err(PushError::WrongLength);
         }
         if self.free_samples() < block.len() {
-            self.shared.counters.add_overrun(0);
+            self.shared.counters.add_refused_offer();
             return Err(PushError::Full);
         }
         self.write(block);
         Ok(())
+    }
+
+    /// Explicit producer-side drop policy (for replaceable previews only; committed output must
+    /// retry instead): the producer gives up on one block it could not place. Counts one overrun,
+    /// one discontinuity and the block's frames as dropped, and returns those frames.
+    pub fn drop_block(&mut self) -> u64 {
+        let frames = (self.block_samples / self.shared.channels) as u64;
+        self.shared.counters.add_overrun(frames);
+        frames
     }
 
     /// Capture path: pushes as many whole frames of `input` as fit and returns the frames

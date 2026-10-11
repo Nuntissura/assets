@@ -3,13 +3,25 @@ use crate::counters::{CounterSnapshot, Counters};
 use crate::error::DeviceError;
 use crate::ring::{Consumer, Producer};
 use hsk_studio_accord::CancellationToken;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+struct Held {
+    open_streams: u32,
+    bytes_in_flight: usize,
+}
 
 struct AdmissionState {
     limits: Limits,
-    open_streams: AtomicU32,
-    bytes_in_flight: AtomicUsize,
+    held: Mutex<Held>,
+}
+
+impl AdmissionState {
+    /// Admission runs off the realtime path, so a plain lock keeps both bounds exact under
+    /// concurrent acquires; a poisoned lock still holds consistent counters (each update is a
+    /// single assignment).
+    fn held(&self) -> MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// Bounded admission for one provider: open streams and ring bytes in flight. A [`Permit`] is
@@ -24,8 +36,10 @@ impl Admission {
         Self {
             state: Arc::new(AdmissionState {
                 limits,
-                open_streams: AtomicU32::new(0),
-                bytes_in_flight: AtomicUsize::new(0),
+                held: Mutex::new(Held {
+                    open_streams: 0,
+                    bytes_in_flight: 0,
+                }),
             }),
         }
     }
@@ -33,23 +47,28 @@ impl Admission {
         &self.state.limits
     }
     pub fn open_streams(&self) -> u32 {
-        self.state.open_streams.load(Ordering::Acquire)
+        self.state.held().open_streams
     }
     pub fn bytes_in_flight(&self) -> usize {
-        self.state.bytes_in_flight.load(Ordering::Acquire)
+        self.state.held().bytes_in_flight
     }
-    /// Takes one stream slot and `ring_bytes` of ring budget, or refuses with `AdmissionDenied`.
+    /// Takes one stream slot and `ring_bytes` of ring budget, or refuses with `AdmissionDenied`
+    /// when either `Limits::max_open_streams` or `Limits::max_bytes_in_flight` would be
+    /// exceeded. Nothing is taken on a refusal.
     pub fn acquire(&self, ring_bytes: usize) -> Result<Permit, DeviceError> {
-        let max = self.state.limits.max_open_streams;
-        self.state
-            .open_streams
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < max).then_some(n + 1)
-            })
-            .map_err(|_| DeviceError::AdmissionDenied)?;
-        self.state
+        let mut held = self.state.held();
+        let bytes = held
             .bytes_in_flight
-            .fetch_add(ring_bytes, Ordering::AcqRel);
+            .checked_add(ring_bytes)
+            .filter(|total| *total <= self.state.limits.max_bytes_in_flight);
+        match bytes {
+            Some(total) if held.open_streams < self.state.limits.max_open_streams => {
+                held.open_streams += 1;
+                held.bytes_in_flight = total;
+            }
+            _ => return Err(DeviceError::AdmissionDenied),
+        }
+        drop(held);
         Ok(Permit {
             state: Some(Arc::clone(&self.state)),
             ring_bytes,
@@ -68,10 +87,9 @@ impl Permit {
     pub fn release(&mut self) -> bool {
         match self.state.take() {
             Some(state) => {
-                state
-                    .bytes_in_flight
-                    .fetch_sub(self.ring_bytes, Ordering::AcqRel);
-                state.open_streams.fetch_sub(1, Ordering::AcqRel);
+                let mut held = state.held();
+                held.bytes_in_flight = held.bytes_in_flight.saturating_sub(self.ring_bytes);
+                held.open_streams = held.open_streams.saturating_sub(1);
                 true
             }
             None => false,
@@ -104,6 +122,10 @@ pub struct CloseReport {
     pub overruns: u64,
     pub dropped_frames: u64,
     pub discontinuities: u64,
+    /// Offers the ring refused for lack of space (backpressure; the producer kept the block).
+    /// Not a loss: they do not count into `overruns`, `discontinuities` or `dropped_frames`
+    /// (test `backpressured_stream_with_retries_is_lossless`).
+    pub refused_offers: u64,
     /// Interleaved samples the software device handed to its fake hardware, in callback order,
     /// including underrun silence; empty for backends without a loopback recorder.
     pub loopback_samples: Vec<f32>,
@@ -130,6 +152,7 @@ impl CloseReport {
             overruns: c.overruns,
             dropped_frames: c.dropped_frames,
             discontinuities: c.discontinuities,
+            refused_offers: c.refused_offers,
             loopback_samples,
         }
     }
@@ -138,9 +161,14 @@ impl CloseReport {
     pub fn reconciles(&self) -> bool {
         self.frames_submitted == self.frames_consumed + self.residual_frames
     }
-    /// A clean close: backend quiescent, permit released, nothing lost.
+    /// A clean close: backend quiescent, permit released, nothing lost (no device loss and no
+    /// dropped frames; refused offers are backpressure, not loss).
     pub fn is_clean(&self) -> bool {
-        self.thread_joined && self.permits_released && !self.device_lost && self.reconciles()
+        self.thread_joined
+            && self.permits_released
+            && !self.device_lost
+            && self.dropped_frames == 0
+            && self.reconciles()
     }
 }
 
