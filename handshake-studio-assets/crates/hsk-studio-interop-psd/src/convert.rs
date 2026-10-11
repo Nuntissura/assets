@@ -15,6 +15,12 @@
 //!
 //! Wide output is the converter's working RGB (linear light) and is UNCLAMPED: out-of-gamut values
 //! lie below 0 or above 1. Clamping is the caller's job and is recorded (see `proposal`).
+//!
+//! The wide receipt fields that describe the conversion's outcome travel with the pixels: the clip report
+//! (`ClipSummary`), the absolute colorimetric report (`AbsoluteSummary`: media-white rule, scale, registered
+//! divergence), the black point compensation outcome (`BpcSummary`) and the engine identity and evaluation
+//! options (`EngineSummary`). `proposal` records them in `DisplayConversion` and turns a divergence into a
+//! loss entry (test `absolute_report_is_carried_to_the_receipt_and_a_divergence_becomes_a_loss_entry`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::{ActorContext, CancellationToken, DomainId};
@@ -174,12 +180,81 @@ impl ClipSummary {
     }
 }
 
+/// The converter's absolute colorimetric report (Prism `AbsoluteReport`): whether media-white scaling ran, the
+/// media whites and scale it used, the media-white rule, and the registered divergence from LittleCMS 2 when
+/// the pair involves a v2 display profile whose `wtpt` the two readings take differently
+/// (`DIV-ABS-V2-DISPLAY-WTPT-001`; Photoshop's normative reading is Operator decision D15). `Default` is
+/// "absolute colorimetric not applied". A divergence on any call of an import is kept; every call of one
+/// import converts through the same profile pair and intent, so the other fields come from the first call
+/// (test `absolute_report_is_carried_to_the_receipt_and_a_divergence_becomes_a_loss_entry`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AbsoluteSummary {
+    pub applied: bool,
+    pub source_media_white: Option<[f64; 3]>,
+    pub destination_media_white: Option<[f64; 3]>,
+    pub scale: Option<[f64; 3]>,
+    /// The media-white rule that produced `scale`; empty when absolute colorimetric was not applied.
+    pub media_white_rule: &'static str,
+    /// Registry id of the divergence (`DIV-...`), `None` when the readings agree or absolute colorimetric
+    /// was not applied.
+    pub divergence: Option<&'static str>,
+}
+
+impl AbsoluteSummary {
+    pub(crate) fn absorb(&mut self, other: &AbsoluteSummary, first: bool) {
+        let divergence = self.divergence.or(other.divergence);
+        if first {
+            *self = *other;
+        }
+        self.divergence = divergence;
+    }
+}
+
+/// The converter's black point compensation outcome (Prism `BpcReport`): what was requested, whether
+/// anything was applied, the rule that decided it and the measured black points. `Default` is "not
+/// requested". Taken from the first call of an import (one profile pair, one intent).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BpcSummary {
+    pub requested: bool,
+    pub applied: bool,
+    /// Why nothing was applied, or the rule that was.
+    pub rule: &'static str,
+    pub source_black_lstar: Option<f64>,
+    pub destination_black_lstar: Option<f64>,
+    pub scale: Option<f64>,
+    /// The engine would have applied its own black point scaling to this pair; the converter bypassed it.
+    pub engine_builtin_suppressed: bool,
+}
+
+/// Which engine and numeric path produced the pixels (Prism `WideReceipt` engine name, version, build and
+/// evaluation options), taken from the first call of an import. `clamped_output` says whether the engine
+/// clamped its output: the importer's gamut-clamp counts assume it did not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EngineSummary {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub features: &'static str,
+    pub simd: bool,
+    pub fma_contraction: bool,
+    pub interpolation: &'static str,
+    pub barycentric_weights: &'static str,
+    pub fixed_point: bool,
+    pub allow_use_cicp_transfer: bool,
+    pub prefer_fixed_point: bool,
+    pub allow_extended_range_rgb_xyz: bool,
+    pub precision_bits: u8,
+    pub clamped_output: bool,
+}
+
 /// Result of [`IccConverter::convert_wide`]: working-RGB (linear light) triples, one per input
 /// pixel, NOT clamped.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WideConverted {
     pub pixels: Vec<[f32; 3]>,
     pub clip: ClipSummary,
+    pub absolute: AbsoluteSummary,
+    pub bpc: BpcSummary,
+    pub engine: EngineSummary,
 }
 
 pub trait IccConverter {
@@ -367,6 +442,9 @@ impl IccConverter for PrismConverter<'_> {
         };
         let mut out = Vec::with_capacity(request.pixels.len().checked_div(channels).unwrap_or(0));
         let mut clip = ClipSummary::default();
+        let mut absolute = AbsoluteSummary::default();
+        let mut bpc = BpcSummary::default();
+        let mut engine_summary = EngineSummary::default();
         for (n, chunk) in request.pixels.chunks(MAX_WIDE_PIXELS.saturating_mul(channels)).enumerate() {
             let source = match (request.source, source_sha256) {
                 (WideConvertSource::Profile(icc), Some(hash)) => WideSource::Profile(ProfileInput {
@@ -410,8 +488,46 @@ impl IccConverter for PrismConverter<'_> {
                 },
                 n == 0,
             );
+            let receipt = &result.receipt;
+            absolute.absorb(
+                &AbsoluteSummary {
+                    applied: receipt.absolute.applied,
+                    source_media_white: receipt.absolute.source_media_white,
+                    destination_media_white: receipt.absolute.destination_media_white,
+                    scale: receipt.absolute.scale,
+                    media_white_rule: receipt.absolute.media_white_rule,
+                    divergence: receipt.absolute.divergence,
+                },
+                n == 0,
+            );
+            if n == 0 {
+                bpc = BpcSummary {
+                    requested: receipt.bpc.requested,
+                    applied: receipt.bpc.applied,
+                    rule: receipt.bpc.rule,
+                    source_black_lstar: receipt.bpc.source_black_lstar,
+                    destination_black_lstar: receipt.bpc.destination_black_lstar,
+                    scale: receipt.bpc.scale,
+                    engine_builtin_suppressed: receipt.bpc.engine_builtin_suppressed,
+                };
+                engine_summary = EngineSummary {
+                    name: receipt.engine_name,
+                    version: receipt.engine_version,
+                    features: receipt.engine_build.features,
+                    simd: receipt.engine_build.simd,
+                    fma_contraction: receipt.engine_build.fma_contraction,
+                    interpolation: receipt.engine_build.interpolation,
+                    barycentric_weights: receipt.engine_build.barycentric_weights,
+                    fixed_point: receipt.engine_build.fixed_point,
+                    allow_use_cicp_transfer: receipt.options.allow_use_cicp_transfer,
+                    prefer_fixed_point: receipt.options.prefer_fixed_point,
+                    allow_extended_range_rgb_xyz: receipt.options.allow_extended_range_rgb_xyz,
+                    precision_bits: receipt.options.precision_bits,
+                    clamped_output: receipt.options.clamped_output,
+                };
+            }
         }
-        Ok(WideConverted { pixels: out, clip })
+        Ok(WideConverted { pixels: out, clip, absolute, bpc, engine: engine_summary })
     }
 }
 

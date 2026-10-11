@@ -908,6 +908,145 @@ fn rgb_intent_and_black_point_compensation_reach_prism_or_are_recorded() {
     });
 }
 
+/// Registry id of the media-white divergence, written out here so a rename in Prism fails this test.
+const DIV_ABS_V2_DISPLAY_WTPT: &str = "DIV-ABS-V2-DISPLAY-WTPT-001";
+const SRGB_D50_MEDIA_WHITE: [f64; 3] = [63190.0 / 65536.0, 1.0, 54061.0 / 65536.0];
+
+/// A 300 x 1 RGB layer (two tile columns, so two converter calls) of uniform gray 128 with an embedded profile.
+fn gray_128_strip(profile: &[u8]) -> Vec<u8> {
+    let plane = vec![128u8; 300];
+    flat_doc(3, 3, 8, (300, 1), resource(1039, "", profile), (0..3i16).map(|c| (c, plane.clone())).collect(), plane.repeat(3))
+}
+fn display_of(p: &ImportProposal) -> &DisplayConversion {
+    p.provenance.display.as_ref().expect("display record")
+}
+fn entries_with<'a>(p: &'a ImportProposal, code: &str) -> Vec<&'a LossEntry> {
+    p.loss.entries.iter().filter(|e| e.code == code).collect()
+}
+fn near3(got: [f64; 3], want: [f64; 3], tolerance: f64, what: &str) {
+    for k in 0..3 {
+        assert!((got[k] - want[k]).abs() <= tolerance, "{what} ch{k}: {} vs {}", got[k], want[k]);
+    }
+}
+/// Linear destination values of a neutral gamma-2 source pixel under absolute colorimetric, from the closed
+/// form: XYZ = lin * (sum of the D50-adapted sRGB colorants), scaled per component by source white over
+/// destination white, then Lindbloom's D50 XYZ-to-linear-sRGB matrix (the destination profile is linear sRGB).
+fn absolute_gamma2_neutral(raw: u8, source_white: [f64; 3], destination_white: [f64; 3]) -> [f64; 3] {
+    let lin = (f64::from(raw) / 255.0).powi(2);
+    let xyz = [0.4360747 + 0.3850649 + 0.1430804, 0.2225045 + 0.7168786 + 0.0606169, 0.0139322 + 0.0971045 + 0.7141733];
+    let scaled: Vec<f64> = (0..3).map(|k| lin * xyz[k] * source_white[k] / destination_white[k]).collect();
+    let m = [[3.1338561, -1.6168667, -0.4906146], [-0.9787684, 1.9161415, 0.0334540], [0.0719453, -0.2289914, 1.4052427]];
+    m.map(|r| r[0] * scaled[0] + r[1] * scaled[1] + r[2] * scaled[2])
+}
+
+/// prism e26f623 puts an `AbsoluteReport` in every wide receipt. The importer used to keep only the clip report.
+/// A v2 display profile whose `wtpt` is D65 (the media white LittleCMS 2 would read as D50) converted with
+/// absolute colorimetric: the converter's report reaches `DisplayConversion`, the divergence is ONE loss entry
+/// (not one per converter call) naming DIV-ABS-V2-DISPLAY-WTPT-001 as its code and the media-white rule in its
+/// path, and the pixels are the media-white-scaled ones, so the report describes what was actually done.
+/// The same receipt carries the black point compensation outcome and the engine identity.
+#[test]
+fn absolute_report_is_carried_to_the_receipt_and_a_divergence_becomes_a_loss_entry() {
+    bounded_case("absolute_report_is_carried_to_the_receipt_and_a_divergence_becomes_a_loss_entry", || {
+        let v2_d65 = gray_128_strip(&icc::rgb_profile_media(0x0210_0000, b"mntr", &icc::curv(2.0), icc::D65_ADAPTED));
+        let absolute = Some(RenderingIntent::AbsoluteColorimetric);
+
+        // BPC configured off: nothing about compensation is requested
+        let (_, p) = prism_import(&v2_d65, SixteenBitScale::default(), absolute, Some(false));
+        assert_eq!(p.tiles.len(), 2, "two tile columns: two converter calls");
+        let d = display_of(&p);
+        assert_eq!((d.intent, d.pixels_converted), (RenderingIntent::AbsoluteColorimetric, 300));
+        let a = d.converter_absolute;
+        assert!(a.applied);
+        assert_eq!(a.media_white_rule, "wtpt_as_written");
+        assert_eq!(a.divergence, Some(DIV_ABS_V2_DISPLAY_WTPT));
+        near3(a.source_media_white.expect("source white"), icc::D65_ADAPTED, 1e-4, "source media white");
+        near3(a.destination_media_white.expect("destination white"), SRGB_D50_MEDIA_WHITE, 1e-4, "destination media white");
+        let scale = a.scale.expect("scale");
+        near3(scale, [0.9505 / SRGB_D50_MEDIA_WHITE[0], 1.0, 1.0891 / SRGB_D50_MEDIA_WHITE[2]], 1e-4, "scale = source white / destination white");
+
+        // the divergence: exactly one entry, the registry id as its code, the rule in its path
+        let found = entries_with(&p, DIV_ABS_V2_DISPLAY_WTPT);
+        assert_eq!(found.len(), 1, "one entry for the import, not one per converter call: {found:?}");
+        assert_eq!(found[0].kind, LossKind::Transformed);
+        assert_eq!(found[0].path, "document/display/absolute_colorimetric/wtpt_as_written");
+        assert!(p.loss.to_json().contains(DIV_ABS_V2_DISPLAY_WTPT), "the registry id survives the JSON projection");
+        // the pixels are the scaled ones (relative colorimetric would give 0.25197 on every channel)
+        let want = absolute_gamma2_neutral(128, icc::D65_ADAPTED, SRGB_D50_MEDIA_WHITE);
+        assert!((want[0] - 0.2520).abs() > 0.03, "the oracle separates absolute from relative: {want:?}");
+        for tile in &p.tiles {
+            assert_tile_matches(tile, 0, want, 3e-3, "absolute v2 D65 display profile");
+        }
+
+        // BPC requested is ignored by absolute colorimetric: the receipt says so, and so does a loss entry
+        let bpc = d.converter_bpc;
+        assert_eq!((bpc.requested, bpc.applied, bpc.rule), (false, false, "not_requested"));
+        assert!(entries_with(&p, "black_point_compensation_ignored_for_absolute_colorimetric").is_empty());
+        let (_, assumed) = prism_import(&v2_d65, SixteenBitScale::default(), absolute, None);
+        let bpc = display_of(&assumed).converter_bpc;
+        assert_eq!((bpc.requested, bpc.applied, bpc.rule), (true, false, "absolute_ignores_bpc"));
+        let ignored = entries_with(&assumed, "black_point_compensation_ignored_for_absolute_colorimetric");
+        assert_eq!(ignored.len(), 1);
+        assert_eq!((ignored[0].kind, ignored[0].path.as_str()), (LossKind::Transformed, "document/black_point_compensation"));
+        assert!(assumed.loss.has_code("black_point_compensation_assumed_on"), "the assumption entry stays");
+        assert_eq!(entries_with(&assumed, DIV_ABS_V2_DISPLAY_WTPT).len(), 1);
+        assert_eq!(display_of(&assumed).converter_absolute, a, "same pair and intent: same absolute record");
+
+        // engine identity and options: the importer's gamut counts assume an unclamped engine output
+        let e = d.converter_engine;
+        assert!(!e.name.is_empty() && !e.version.is_empty() && !e.interpolation.is_empty());
+        assert!(!e.clamped_output && !e.simd && !e.fma_contraction, "unclamped, scalar, no contraction: {e:?}");
+    });
+}
+
+/// The other half of the contract: no divergence, no divergence entry. The media-white rule and scale are still
+/// recorded for every absolute conversion, and every other intent leaves the absolute record empty.
+#[test]
+fn absolute_report_without_divergence_adds_no_divergence_entry() {
+    bounded_case("absolute_report_without_divergence_adds_no_divergence_entry", || {
+        let absolute = Some(RenderingIntent::AbsoluteColorimetric);
+        let no_entry = |p: &ImportProposal, what: &str| {
+            assert!(entries_with(p, DIV_ABS_V2_DISPLAY_WTPT).is_empty(), "{what}: divergence entry present: {:?}", p.loss.entries);
+            assert!(!p.loss.entries.iter().any(|e| e.path.starts_with("document/display/absolute_colorimetric")), "{what}");
+        };
+
+        // ICC v4 display profile with a D65 white: both readings of the media white use the tag
+        let v4_d65 = gray_128_strip(&icc::rgb_profile_media(0x0420_0000, b"mntr", &icc::curv(2.0), icc::D65_ADAPTED));
+        let (_, p) = prism_import(&v4_d65, SixteenBitScale::default(), absolute, Some(false));
+        let a = display_of(&p).converter_absolute;
+        assert!(a.applied && a.divergence.is_none() && a.media_white_rule == "wtpt_as_written");
+        let scale = a.scale.expect("scale");
+        assert!((scale[0] - 1.0).abs() > 0.01 && (scale[2] - 1.0).abs() > 0.1, "the white really is scaled: {scale:?}");
+        no_entry(&p, "v4 display, D65 white");
+        let want = absolute_gamma2_neutral(128, icc::D65_ADAPTED, SRGB_D50_MEDIA_WHITE);
+        assert_tile_matches(&p.tiles[0], 0, want, 3e-3, "absolute v4 D65 display profile");
+
+        // ICC v2 display profile whose white is D50: nothing to scale, nothing to flag
+        let v2_d50 = gray_128_strip(&icc::rgb_profile(0x0210_0000, &icc::curv(2.0)));
+        let (_, p) = prism_import(&v2_d50, SixteenBitScale::default(), absolute, Some(false));
+        let a = display_of(&p).converter_absolute;
+        assert!(a.applied && a.divergence.is_none());
+        near3(a.scale.expect("scale"), [1.0; 3], 1e-3, "D50 over D50");
+        no_entry(&p, "v2 display, D50 white");
+
+        // ICC v2 profile that is not a display class (scanner): both readings use the tag
+        let v2_scanner = gray_128_strip(&icc::rgb_profile_media(0x0210_0000, b"scnr", &icc::curv(2.0), icc::D65_ADAPTED));
+        let (_, p) = prism_import(&v2_scanner, SixteenBitScale::default(), absolute, Some(false));
+        let a = display_of(&p).converter_absolute;
+        assert!(a.applied && a.divergence.is_none());
+        no_entry(&p, "v2 scanner, D65 white");
+
+        // every other intent through the v2 D65 display profile: the absolute record is empty, nothing is flagged
+        let v2_d65 = gray_128_strip(&icc::rgb_profile_media(0x0210_0000, b"mntr", &icc::curv(2.0), icc::D65_ADAPTED));
+        for intent in [RenderingIntent::RelativeColorimetric, RenderingIntent::Perceptual, RenderingIntent::Saturation] {
+            let (_, p) = prism_import(&v2_d65, SixteenBitScale::default(), Some(intent), Some(true));
+            assert_eq!(display_of(&p).converter_absolute, AbsoluteSummary::default(), "{intent:?}");
+            no_entry(&p, "non-absolute intent");
+            assert!(!p.loss.has_code("black_point_compensation_ignored_for_absolute_colorimetric"), "{intent:?}");
+        }
+    });
+}
+
 /// R5 carried PLAUSIBLE items on the export path. `apply_edits` is all-or-nothing (a later layer's error
 /// leaves the caller's document untouched); colour under alpha 0 in a cell that never had a tile survives a
 /// pixel export (only a cell the caller removed is erased); non-finite tile values are a typed error; an

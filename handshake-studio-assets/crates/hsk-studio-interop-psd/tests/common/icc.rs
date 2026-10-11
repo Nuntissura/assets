@@ -133,8 +133,15 @@ pub fn gray_profile_table(entries: &[u16]) -> Vec<u8> {
 /// ICC RGB matrix/TRC profile with the sRGB primaries adapted to D50 and one `trc` blob (any `curv`) on
 /// all three channels. `version` is the header word (`0x0210_0000` for v2.1, `0x0430_0000` for v4.3).
 pub fn rgb_profile(version: u32, trc: &[u8]) -> Vec<u8> {
+    rgb_profile_media(version, b"mntr", trc, D50)
+}
+/// Media white `wtpt` of an ICC profile whose colorants are D50-adapted but whose measured white is D65 (the
+/// value an ICC v2 display profile may carry; `[0.9505, 1.0, 1.0891]` is D65 adapted to the D50 PCS scale).
+pub const D65_ADAPTED: [f64; 3] = [0.9505, 1.0, 1.0891];
+/// [`rgb_profile`] with an explicit profile class and `wtpt` (the media white that absolute colorimetric scales by).
+pub fn rgb_profile_media(version: u32, class: &[u8; 4], trc: &[u8], white: [f64; 3]) -> Vec<u8> {
     let blobs = vec![
-        xyz_tag(D50),
+        xyz_tag(white),
         xyz_tag([0.4360747, 0.2225045, 0.0139322]),
         xyz_tag([0.3850649, 0.7168786, 0.0971045]),
         xyz_tag([0.1430804, 0.0606169, 0.7141733]),
@@ -144,7 +151,7 @@ pub fn rgb_profile(version: u32, trc: &[u8]) -> Vec<u8> {
     ];
     assemble(
         version,
-        b"mntr",
+        class,
         b"RGB ",
         b"XYZ ",
         &blobs,

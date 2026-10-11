@@ -47,8 +47,8 @@ use crate::adjust;
 use crate::blend::StudioBlendMode;
 use crate::effects;
 use crate::convert::{
-    ClipSummary, IccConverter, IccRefusal, ProfileDevice, ProfileFacts, RenderingIntent, WIDE_UNAVAILABLE, WideConvertRequest,
-    WideConvertSource, refusal_code,
+    AbsoluteSummary, BpcSummary, ClipSummary, EngineSummary, IccConverter, IccRefusal, ProfileDevice, ProfileFacts,
+    RenderingIntent, WIDE_UNAVAILABLE, WideConvertRequest, WideConvertSource, refusal_code,
 };
 use crate::document::{PsdDocument, TreeNode};
 use crate::error::{PsdError, Result};
@@ -245,6 +245,13 @@ pub struct DisplayConversion {
     pub input_range_clamped: bool,
     /// The converter's own clip report over every converted pixel (transparent ones included).
     pub converter_clip: ClipSummary,
+    /// The converter's absolute colorimetric report (media-white rule, scale, registered divergence).
+    /// `Default` when the intent was not absolute colorimetric.
+    pub converter_absolute: AbsoluteSummary,
+    /// The converter's black point compensation outcome (requested versus applied, with the rule).
+    pub converter_bpc: BpcSummary,
+    /// The engine and numeric path that produced the pixels.
+    pub converter_engine: EngineSummary,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -413,6 +420,9 @@ struct DisplayStats {
     max_overshoot: f64,
     input_range_clamped: bool,
     clip: ClipSummary,
+    absolute: AbsoluteSummary,
+    bpc: BpcSummary,
+    engine: EngineSummary,
 }
 
 struct Builder<'a, 'm, 'c> {
@@ -993,6 +1003,11 @@ impl Builder<'_, '_, '_> {
         }
         let stats = &mut self.stats;
         stats.clip.absorb(&converted.clip, stats.calls == 0);
+        stats.absolute.absorb(&converted.absolute, stats.calls == 0);
+        if stats.calls == 0 {
+            stats.bpc = converted.bpc;
+            stats.engine = converted.engine;
+        }
         stats.calls = stats.calls.saturating_add(1);
         let mut out = converted.pixels;
         for (px, &alpha) in out.iter_mut().zip(alphas) {
@@ -1492,6 +1507,23 @@ pub fn to_proposal(
         } else if b.stats.pixels_clamped > 0 {
             b.note("document/display".into(), LossKind::Transformed, "display_rounding_noise_clamped");
         }
+        // The converter's absolute colorimetric report. A divergence from the other reading of the media
+        // white is an open Operator decision (D15): the entry carries the registry id the converter gave
+        // (as the code) and the media-white rule that produced these pixels (as the last path segment).
+        let absolute = b.stats.absolute;
+        if let Some(divergence) = absolute.divergence {
+            let rule = if absolute.media_white_rule.is_empty() { "media_white_rule_unnamed" } else { absolute.media_white_rule };
+            b.note(format!("document/display/absolute_colorimetric/{rule}"), LossKind::Transformed, divergence);
+        }
+        // Absolute colorimetric takes no black point compensation: when one was configured or assumed, the
+        // report says it was requested and not applied, so the assumption entry above is not the whole story.
+        if absolute.applied && b.stats.bpc.requested && !b.stats.bpc.applied {
+            b.note(
+                "document/black_point_compensation".into(),
+                LossKind::Transformed,
+                "black_point_compensation_ignored_for_absolute_colorimetric",
+            );
+        }
         let stats = &b.stats;
         display = Some(DisplayConversion {
             source_space: wide.kind.code(),
@@ -1506,6 +1538,9 @@ pub fn to_proposal(
             max_overshoot: stats.max_overshoot,
             input_range_clamped: stats.input_range_clamped,
             converter_clip: stats.clip,
+            converter_absolute: stats.absolute,
+            converter_bpc: stats.bpc,
+            converter_engine: stats.engine,
         });
     }
     if pixels_mapped {

@@ -33,8 +33,9 @@ pub use compression::{
     encode_rle, pack_row, row_bytes,
 };
 pub use convert::{
-    ClipMethodKind, ClipSummary, IccConverter, IccRefusal, PrismConverter, PrismRoute, ProfileDevice, ProfileFacts, RenderingIntent,
-    WIDE_UNAVAILABLE, WideConvertRequest, WideConvertSource, WideConverted, refusal_code,
+    AbsoluteSummary, BpcSummary, ClipMethodKind, ClipSummary, EngineSummary, IccConverter, IccRefusal, PrismConverter, PrismRoute,
+    ProfileDevice, ProfileFacts, RenderingIntent, WIDE_UNAVAILABLE, WideConvertRequest, WideConvertSource, WideConverted,
+    refusal_code,
 };
 pub use document::{
     ImageData, LayerInfo, LayerInfoLocation, LayerSection, MergedImage, MergedStatus, PsdDocument, TreeNode, read_psd,
@@ -72,7 +73,8 @@ pub const DESCRIPTOR: &str = concat!(
     "\"cmyk_embedded_icc_display_conversion_8_16_bit\",\"lab_pcs_native_display_conversion_8_16_bit\",\"gray_ktrc_icc_display_conversion_8_16_bit\",",
     "\"raster_records_adjustments_levels_curves_hue_saturation_brightness_contrast_exposure_invert_threshold_posterize\",",
     "\"raster_records_blend_if_mask_density_feather_knockout_blend_toggles\",\"raster_records_lfx2_effect_stack_not_rendered\",",
-    "\"adjustment_layers_as_graph_sources_with_input_ordinal\",\"layer_clipped_to_adjustment_unclipped_with_typed_loss\"],",
+    "\"adjustment_layers_as_graph_sources_with_input_ordinal\",\"layer_clipped_to_adjustment_unclipped_with_typed_loss\",",
+    "\"converter_absolute_bpc_engine_report_in_display_receipt\",\"absolute_media_white_divergence_as_transformed_loss_entry\"],",
     "\"raster_records\":\"ImportProposal::raster_records (folio StudioRasterRecords) validated by validate_raster_records; records only, nothing applied or rendered; unreadable or out-of-range record keeps the layer a typed unsupported layer; IdMint::effect_stack_id defaults to None (effects preserved and reported)\",",
     "\"display_conversion\":\"projection_only_original_channels_byte_preserved;wide_prism_path_for_rgb_gray_cmyk_lab;intent_perceptual_assumed_unless_configured;bpc_on_assumed_unless_configured_and_sent_to_prism_for_every_source_kind;legacy_rgb_converter_records_intent_and_bpc_not_applied;unclamped_output_clamped_with_counts_and_loss_entry;cmyk_without_embedded_profile_is_typed_loss_cmyk_profile_missing_no_default_profile\",",
     "\"blend\":\"psd_key_table_to_pigment_StudioBlendMode;unknown_key_typed_loss_never_normal;pass_is_group_flag\",",
