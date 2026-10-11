@@ -549,14 +549,19 @@ fn hostile_descriptor_and_adjustment_sizes_are_typed_refusals() {
         let mut unknown_type = be32(1);
         unknown_type.extend(ds_key("k"));
         unknown_type.extend(b"zzzz");
+        let mut cut_short = be32(1);
+        cut_short.extend(ds_key("k"));
+        cut_short.extend(b"long");
+        cut_short.extend([0, 0]); // half of the i32
         for (tail, reason) in [
             (count_max, "descriptor_item_limit"),
+            (be32(1), "descriptor_item_limit"), // one item declared, no bytes left to hold it
             (key_max, "descriptor_key_limit"),
             (text_max, "descriptor_string_limit"),
             (nested, "descriptor_depth"),
             (aggregate, "descriptor_item_limit"),
             (unknown_type, "descriptor_type_unsupported"),
-            (be32(1), "descriptor_truncated"),
+            (cut_short, "descriptor_truncated"),
         ] {
             let (p, codes) = lfx2_codes(&root_with(tail));
             assert!(codes.contains(&reason), "{reason}: {codes:?}");
