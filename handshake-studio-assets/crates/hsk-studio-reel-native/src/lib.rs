@@ -5,21 +5,23 @@
 //! process boundary for AV1 decode:
 //! * `reel-native-av1-worker` (binary) hosts reel's rav1d decoder (`hsk_studio_reel::av1::Av1Decoder`)
 //!   in its own process;
-//! * `WorkerAv1Provider` is a reel `MediaProvider` (id `av1`) that indexes and demuxes the container
-//!   through reel's own providers, sends the codec configuration and temporal units to a worker over a
-//!   versioned length-prefixed stdin/stdout protocol, and delivers the returned pictures and receipts
-//!   with the same vocabulary as the in-process decoder.
+//! * `WorkerAv1Provider` is reel's `ExternalVideoDecoder`: register it with
+//!   `Registry::with_video_decoder(Arc::new(provider))` and every UNTRUSTED `isobmff`/`matroska` decode
+//!   request for AV1 reaches the worker (reel's route does the container work and the receipts). It also
+//!   is a `MediaProvider` (id `av1`, `decode_av1` for the typed `Av1Error`): the same path on an
+//!   untrusted route whose only decoder is the worker. The codec configuration and temporal units travel
+//!   over a versioned length-prefixed stdin/stdout protocol.
 //!
 //! Reason (reel lane SMB-REEL-ENG-3): rav1d 1.1.0 aborts the whole process on a few percent of corrupted
 //! bitstreams (an uncatchable `unwrap` inside an `extern "C"` function), so untrusted AV1 must never be
 //! decoded in the caller's process. A worker crash, hang, protocol violation or oversize reply becomes a
-//! typed `Av1WorkerFault` (`decoder_crashed`, `decoder_deadline`, ...) and the provider stays usable with
-//! bounded respawn.
+//! typed `Av1WorkerFault` (`decoder_crashed`, `decoder_deadline`, ...; reel's `ReelError::DecoderFault` for
+//! crash, deadline and protocol faults) and the provider stays usable with bounded respawn.
 //!
 //! NOTE for integrators: Cargo features are per package, so `av1` also links reel's in-process `av1`
-//! feature into the host image (it is never called by this crate). Reel's providers still decode `av01`
-//! in-process when asked for `OutputMode::Decoded` through the `isobmff`/`matroska` ids; route untrusted
-//! AV1 only through the `av1` id of this provider (see lane notes for the requested reel hook).
+//! feature into the host image (it is never called by this crate: its routes are untrusted). Reel decodes
+//! AV1 in-process only for sources the caller marks `SourceTrust::Trusted`; everything else goes to the
+//! registered worker or is `CodecUnavailable`.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "av1")]
@@ -37,4 +39,4 @@ pub use host::{
 #[cfg(feature = "av1")]
 pub use worker::{PANIC_EXIT_CODE, WorkerTestFault, worker_main};
 
-pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-reel-native","module":"reel_native","default_closure":"empty, pure Rust, forbid(unsafe_code), no dependencies","features":{"av1":"optional, default off: AV1 decode in an isolated worker process (reel-native-av1-worker hosting rav1d via hsk-studio-reel) behind WorkerAv1Provider, provider id av1"},"isolation":{"model":"one request per packet over versioned length-prefixed stdin/stdout, host owns and reaps the child, no in-process fallback","spawn":"CREATE_NO_WINDOW on Windows, empty environment, null stderr","bounds":["max_workers","bounded respawn per window","per-request batch deadline","per-segment deadline","reply cap derived from declared picture dimensions","decoder pixel limit derived from declared dimensions","cancel kills the worker"],"faults":["decoder_crashed","decoder_deadline","decoder_output_too_large","worker_protocol","worker_version_mismatch","worker_spawn_failed","worker_respawn_limited","worker_pool_busy"]},"decoder":{"id":"rav1d","license":"BSD-2-Clause","operator_decision_ref":"START_LOG 2026-10-11T03:30:19Z AV1 lead decision (isolated worker required for untrusted input)"},"not_proven":["operating-system memory or CPU cap for the worker (Windows Job Object needs unsafe FFI)","crash reporter behaviour on aborts that do not reach the Rust panic hook","worker executable packaging next to the host (START_LOG D14)"]}"#;
+pub const DESCRIPTOR: &str = r#"{"crate":"hsk-studio-reel-native","module":"reel_native","default_closure":"empty, pure Rust, forbid(unsafe_code), no dependencies","features":{"av1":"optional, default off: AV1 decode in an isolated worker process (reel-native-av1-worker hosting rav1d via hsk-studio-reel) behind WorkerAv1Provider: reel ExternalVideoDecoder (Registry::with_video_decoder) and provider id av1"},"isolation":{"model":"one request per packet over versioned length-prefixed stdin/stdout, host owns and reaps the child, no in-process fallback","spawn":"CREATE_NO_WINDOW on Windows, empty environment, null stderr","bounds":["max_workers","bounded respawn per window","per-request batch deadline","per-segment deadline","reply cap derived from declared picture dimensions","decoder pixel limit derived from declared dimensions","cancel kills the worker"],"reel_mapping":{"decoder_crashed":"ReelError::DecoderFault{Crashed}","decoder_deadline":"ReelError::DecoderFault{Deadline}","worker_protocol":"ReelError::DecoderFault{Protocol}"},"faults":["decoder_crashed","decoder_deadline","decoder_output_too_large","worker_protocol","worker_version_mismatch","worker_spawn_failed","worker_respawn_limited","worker_pool_busy"]},"decoder":{"id":"rav1d","license":"BSD-2-Clause","operator_decision_ref":"START_LOG 2026-10-11T03:30:19Z AV1 lead decision (isolated worker required for untrusted input)"},"not_proven":["operating-system memory or CPU cap for the worker (Windows Job Object needs unsafe FFI)","crash reporter behaviour on aborts that do not reach the Rust panic hook","worker executable packaging next to the host (START_LOG D14)"]}"#;

@@ -14,6 +14,7 @@ use hsk_studio_reel::*;
 use hsk_studio_reel_native::*;
 use std::{
     io::Cursor,
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -109,7 +110,8 @@ fn provider(options: Av1WorkerOptions) -> WorkerAv1Provider {
     WorkerAv1Provider::new(options.with_worker_program(WORKER)).unwrap()
 }
 
-/// reel's in-process decode (container provider id, `OutputMode::Decoded`) for a TRUSTED stream only.
+/// reel's in-process decode (container provider id, `OutputMode::Decoded`) for a TRUSTED stream only: the
+/// route runs rav1d in this process only when the caller says so (these are reel's own fixtures).
 fn in_process(
     registry: &Registry,
     bytes: &[u8],
@@ -120,13 +122,14 @@ fn in_process(
     let id = registry.detect(&mut src).unwrap().descriptor().id;
     let mut sink = Collect::default();
     let receipt = registry
-        .decode_segment(
+        .decode_segment_routed(
             &mut src,
             None,
             &request(id, bytes, start, count),
             &Limits::default(),
             &CancellationToken::default(),
             &mut sink,
+            SourceTrust::Trusted,
         )
         .unwrap();
     (receipt, sink)
@@ -313,7 +316,7 @@ fn hostile_aborting_mutations_end_as_typed_errors_and_the_host_survives() {
             );
             assert_eq!(error.code(), "decoder_crashed");
         }
-        // Through the reel port the same fault is a typed ReelError (MEDIA_CORRUPT, what=decoder_crashed).
+        // Through the reel port the same fault is reel's distinct ReelError::DecoderFault (not Corrupt).
         let mut sink = Collect::default();
         let ported = worker
             .decode_segment(
@@ -326,10 +329,11 @@ fn hostile_aborting_mutations_end_as_typed_errors_and_the_host_survives() {
             .unwrap_err();
         assert_eq!(
             ported,
-            ReelError::Corrupt {
-                what: "decoder_crashed"
+            ReelError::DecoderFault {
+                fault: DecoderFault::Crashed
             }
         );
+        assert_eq!(ported.code(), "MEDIA_DECODER_FAULT");
         let crashes = aborting.len() as u64 + 1;
         let elapsed = started.elapsed();
 
@@ -466,5 +470,87 @@ fn supervision_kills_on_deadline_cancel_oversize_garbage_and_bounds_respawn() {
             .unwrap_err();
         assert_eq!(error, Av1Error::Reel(ReelError::Canceled));
         assert_eq!(stuck.stats().spawned, 1);
+    });
+}
+
+#[test]
+fn untrusted_decode_through_a_registry_is_routed_to_the_worker_and_survives_aborting_input() {
+    bounded_case("untrusted_registry_routing", || {
+        let worker = provider(Av1WorkerOptions {
+            max_spawns: 64,
+            spawn_window: Duration::from_secs(600),
+            ..Av1WorkerOptions::default()
+        });
+        // The worker is registered as the registry's VIDEO DECODER (not as a provider): ordinary
+        // isobmff/matroska calls, untrusted by default, reach it.
+        let registry = Registry::standard().with_video_decoder(Arc::new(worker.clone()));
+        assert_eq!(
+            registry
+                .video_decoder_identity()
+                .map(|identity| identity.id),
+            Some("rav1d")
+        );
+        let limits = Limits::default();
+        let decode = |registry: &Registry, bytes: &[u8], container: &str| {
+            let mut sink = Collect::default();
+            let result = registry.decode_segment(
+                &mut Cursor::new(bytes.to_vec()),
+                None,
+                &request(container, bytes, 0, 3),
+                &limits,
+                &CancellationToken::default(),
+                &mut sink,
+            );
+            (result, sink)
+        };
+
+        for (bytes, container) in [(MP4, ISOBMFF_PROVIDER_ID), (MKV, MATROSKA_PROVIDER_ID)] {
+            let before = worker.stats().requests;
+            let (receipt, sink) = decode(&registry, bytes, container);
+            let receipt = receipt.unwrap();
+            // OPEN + three PACKETs + FINISH went to the worker process, and the output is bit-exact
+            // with the dav1d oracle and equal (chunks and whole receipt) to the trusted in-process decode.
+            assert!(worker.stats().requests >= before + 5, "{container}");
+            assert_eq!(digests(&sink), ORACLE, "{container}");
+            let (expected_receipt, expected) = in_process(&registry, bytes, 0, 3);
+            assert_eq!(receipt, expected_receipt, "{container}");
+            assert_eq!(sink, expected, "{container}");
+            assert_eq!(receipt.decoder_id, "rav1d");
+        }
+        assert_eq!(
+            worker.stats().spawned,
+            1,
+            "one worker served both containers"
+        );
+
+        // A byte replacement that ABORTS the in-process decoder, through the same plain registry call:
+        // this test process is still alive to assert, and the answer is reel's distinct decoder fault.
+        let mut hostile = MP4.to_vec();
+        hostile[826] = 0;
+        let (result, _) = decode(&registry, &hostile, ISOBMFF_PROVIDER_ID);
+        let error = result.unwrap_err();
+        assert_eq!(
+            error,
+            ReelError::DecoderFault {
+                fault: DecoderFault::Crashed
+            }
+        );
+        assert_eq!(error.code(), "MEDIA_DECODER_FAULT");
+        assert_eq!(worker.stats().crashed, 1);
+        // The pool recovered: the next untrusted call starts a fresh worker and decodes correctly.
+        let (receipt, sink) = decode(&registry, MP4, ISOBMFF_PROVIDER_ID);
+        assert!(receipt.unwrap().complete);
+        assert_eq!(digests(&sink), ORACLE);
+        assert_eq!(worker.stats().spawned, 2);
+
+        // Without a registered worker the same untrusted call is CodecUnavailable: never in-process.
+        let (result, sink) = decode(&Registry::standard(), MP4, ISOBMFF_PROVIDER_ID);
+        assert_eq!(
+            result.unwrap_err(),
+            ReelError::CodecUnavailable {
+                codec: "av01".to_owned()
+            }
+        );
+        assert!(sink.chunks.is_empty());
     });
 }

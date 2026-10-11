@@ -1,12 +1,13 @@
 //! Host side: `WorkerAv1Provider`, a reel `MediaProvider` (id `av1`) that decodes AV1 in a pool of
 //! `reel-native-av1-worker` child processes instead of inside the caller's process.
 //!
-//! Flow of one segment: the container (ISOBMFF or Matroska) is indexed and delivered by reel's own
-//! provider in `OutputMode::Packets` (frame-accurate start, pre-roll from the nearest sync sample); the
-//! provider validates the `av1C` record, sends OPEN (configuration + bounds) and then one PACKET per
-//! temporal unit to the worker, forwards the pictures it returns to the caller's sink exactly as reel's
-//! in-process decoder does, and ends with FINISH. Receipts name the decoder (`rav1d` + version) and are
-//! equal to the in-process receipts for the same segment.
+//! Routing: `WorkerAv1Provider` implements reel's `ExternalVideoDecoder`. Registered on a reel `Registry`
+//! (`Registry::with_video_decoder(Arc::new(provider))`) it receives the AV1 of every UNTRUSTED source that
+//! the `isobmff`/`matroska` providers are asked to decode; reel's packet pump does the container work
+//! (index, frame-accurate start, pre-roll from the nearest sync sample), picture matching, format-change
+//! refusal and receipt fields, so receipts are equal to the in-process receipts for the same segment. This
+//! side only runs the worker session: OPEN (configuration + bounds), one PACKET per temporal unit,
+//! FINISH. `decode_av1` (provider id `av1`) is the same path with the typed `Av1Error` result.
 //!
 //! Supervision (one request = one write + replies read on a per-worker I/O thread, the calling thread only
 //! waits on a channel), in order of precedence:
@@ -30,13 +31,14 @@
 //! wall-clock kill are the enforced bounds.
 use crate::wire::{self, OpenRequest, Reply, WireError, WireFrame};
 use crate::worker::WorkerTestFault;
-use hsk_studio_accord::{CancellationToken, Ticks};
+use hsk_studio_accord::CancellationToken;
 use hsk_studio_reel::av1::{self, Av1Config, DECODER_ID, decoder_version, parse_av1c};
 use hsk_studio_reel::{
-    Chunk, ChunkKind, ChunkSink, CodecDescriptor, ColorTag, Disposition, ISOBMFF_PROVIDER_ID,
-    IsobmffProvider, Limits, MATROSKA_PROVIDER_ID, MatroskaProvider, MediaIndex, MediaProvider,
-    MkvIndex, OutputMode, ReadSeek, ReelError, SegmentReceipt, SegmentRequest, StreamLayout,
-    VideoFormat, build_index, build_matroska_index, detect_type, fourcc_string,
+    ChunkSink, CodecDescriptor, DecodedPicture, DecoderFault, DecoderIdentity,
+    ExternalVideoDecoder, ISOBMFF_PROVIDER_ID, IsobmffProvider, Limits, MATROSKA_PROVIDER_ID,
+    MatroskaProvider, MediaProvider, OutputMode, PictureSink, ReadSeek, ReelError, SegmentReceipt,
+    SegmentRequest, StreamLayout, VideoCodec, VideoDecodeError, VideoDecodeSession, VideoRoute,
+    VideoStreamSpec, detect_type,
 };
 use std::{
     collections::VecDeque,
@@ -181,25 +183,34 @@ impl Av1Error {
         }
     }
 
-    /// The reel-vocabulary form used by the `MediaProvider` port (reel's `ReelError` is closed, so a
-    /// worker fault travels as a class plus its stable fault code in `what`). UNVERIFIED mapping: the
-    /// reel owner has not named a variant for contained worker faults.
+    /// The reel-vocabulary form used by the `MediaProvider` port: process and protocol faults are reel's
+    /// `ReelError::DecoderFault` (`Crashed`, `Deadline`, `Protocol`); the other contained faults are
+    /// resource or availability statements (see `Av1WorkerFault::into_decode_error`).
     pub fn into_reel(self) -> ReelError {
         match self {
             Self::Reel(error) => error,
-            Self::Worker(fault) => match fault {
-                Av1WorkerFault::DecoderCrashed { .. } | Av1WorkerFault::Protocol => {
-                    ReelError::Corrupt { what: fault.code() }
-                }
-                Av1WorkerFault::VersionMismatch => ReelError::Unsupported { what: fault.code() },
-                Av1WorkerFault::SpawnFailed => ReelError::CodecUnavailable {
-                    codec: AV1_PROVIDER_ID.to_owned(),
-                },
-                Av1WorkerFault::DecoderDeadline
-                | Av1WorkerFault::OutputTooLarge
-                | Av1WorkerFault::RespawnLimited
-                | Av1WorkerFault::PoolBusy => ReelError::LimitExceeded { what: fault.code() },
-            },
+            Self::Worker(fault) => fault.into_decode_error().into_reel(),
+        }
+    }
+}
+
+impl Av1WorkerFault {
+    /// Reel's error vocabulary for a contained worker fault: a crashed, hung or protocol-breaking worker
+    /// is a `DecoderFault` (says nothing about the media); an oversize reply, respawn bound or busy pool
+    /// is a limit; a version mismatch is unsupported; a worker that cannot start is an unavailable codec.
+    fn into_decode_error(self) -> VideoDecodeError {
+        match self {
+            Self::DecoderCrashed { .. } => DecoderFault::Crashed.into(),
+            Self::DecoderDeadline => DecoderFault::Deadline.into(),
+            Self::Protocol => DecoderFault::Protocol.into(),
+            Self::VersionMismatch => ReelError::Unsupported { what: self.code() }.into(),
+            Self::SpawnFailed => ReelError::CodecUnavailable {
+                codec: AV1_PROVIDER_ID.to_owned(),
+            }
+            .into(),
+            Self::OutputTooLarge | Self::RespawnLimited | Self::PoolBusy => {
+                ReelError::LimitExceeded { what: self.code() }.into()
+            }
         }
     }
 }
@@ -658,17 +669,148 @@ impl Pool {
     }
 }
 
-/// Returns a session to the idle pool when the segment ends, unless a failure made it unusable.
-struct Lease<'a> {
-    pool: &'a Pool,
-    session: Option<Session>,
+/// Worker fault behind the error the route saw, for the typed `decode_av1` result (reel's error
+/// vocabulary is closed, so the exit code of a crash would otherwise be lost on the way up).
+type FaultSlot = Arc<Mutex<Option<Av1WorkerFault>>>;
+
+fn to_picture(frame: WireFrame) -> DecodedPicture {
+    DecodedPicture {
+        tag: frame.tag,
+        format: frame.format,
+        film_grain_applied: frame.film_grain_applied,
+        planes: frame.planes,
+    }
 }
 
-impl Drop for Lease<'_> {
+/// One open decode on a pooled worker, driven by reel's packet pump as a `VideoDecodeSession`. Returns the
+/// worker to the idle pool when dropped, unless a failure made it unusable.
+struct WorkerSession {
+    pool: Arc<Pool>,
+    session: Option<Session>,
+    segment_wall: Instant,
+    reply_cap: usize,
+    max_packet_bytes: usize,
+    faults: Option<FaultSlot>,
+}
+
+impl Drop for WorkerSession {
     fn drop(&mut self) {
         if let Some(session) = self.session.take() {
             self.pool.checkin(session);
         }
+    }
+}
+
+impl WorkerSession {
+    fn convert(faults: Option<&FaultSlot>, error: Av1Error) -> VideoDecodeError {
+        match error {
+            Av1Error::Reel(error) => error.into(),
+            Av1Error::Worker(fault) => {
+                if let Some(slot) = faults {
+                    *lock(slot) = Some(fault);
+                }
+                fault.into_decode_error()
+            }
+        }
+    }
+
+    fn request(
+        &mut self,
+        frame: Vec<u8>,
+        id: u64,
+        want: Want,
+        cancel: &CancellationToken,
+        on_frame: &mut dyn FnMut(WireFrame) -> Result<(), ReelError>,
+    ) -> Result<(), VideoDecodeError> {
+        let Some(session) = self.session.as_mut().filter(|session| session.usable) else {
+            return Err(ReelError::Unsupported {
+                what: "av1-worker-session-ended",
+            }
+            .into());
+        };
+        let call = Call {
+            id,
+            frame,
+            cap: self.reply_cap,
+            want,
+        };
+        let clock = Clock {
+            cancel,
+            segment_wall: self.segment_wall,
+        };
+        self.pool
+            .exchange(session, call, &clock, on_frame)
+            .map_err(|error| Self::convert(self.faults.as_ref(), error))
+    }
+}
+
+impl VideoDecodeSession for WorkerSession {
+    fn send(
+        &mut self,
+        packet: &[u8],
+        tag: u64,
+        cancel: &CancellationToken,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), VideoDecodeError> {
+        if packet.len() > self.max_packet_bytes {
+            return Err(ReelError::LimitExceeded {
+                what: "av1-packet-bytes",
+            }
+            .into());
+        }
+        if packet.is_empty() {
+            return Ok(()); // an empty unit decodes to nothing, as in-process
+        }
+        let id = self.pool.next_id();
+        self.request(
+            wire::encode_packet(id, tag, packet),
+            id,
+            Want::BatchEnd,
+            cancel,
+            &mut |frame| out.accept(to_picture(frame)),
+        )
+    }
+
+    fn finish(
+        &mut self,
+        cancel: &CancellationToken,
+        out: &mut dyn PictureSink,
+    ) -> Result<(), VideoDecodeError> {
+        let id = self.pool.next_id();
+        self.request(
+            wire::encode_finish(id),
+            id,
+            Want::BatchEnd,
+            cancel,
+            &mut |frame| out.accept(to_picture(frame)),
+        )
+    }
+}
+
+/// `decode_av1`'s view of the provider: the same decoder, plus a slot that keeps the worker fault.
+struct Tracked<'a> {
+    provider: &'a WorkerAv1Provider,
+    faults: FaultSlot,
+}
+
+impl ExternalVideoDecoder for Tracked<'_> {
+    fn identity(&self) -> DecoderIdentity {
+        self.provider.identity()
+    }
+
+    fn supports(&self, codec: VideoCodec) -> bool {
+        self.provider.supports(codec)
+    }
+
+    fn open(
+        &self,
+        spec: &VideoStreamSpec<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<Box<dyn VideoDecodeSession>, VideoDecodeError> {
+        let session = self
+            .provider
+            .open_session(spec, cancel, Some(Arc::clone(&self.faults)))?;
+        Ok(Box::new(session))
     }
 }
 
@@ -733,8 +875,10 @@ impl WorkerAv1Provider {
 
     /// Decodes one AV1 segment in a worker process. Same request, sink and receipt vocabulary as reel's
     /// in-process decode (`req.codec` is `"av1"`, `req.output` is `Decoded`); the typed result keeps the
-    /// contained worker faults distinct from media errors. Pictures already handed to `sink` before an
-    /// error stay delivered: an `Err` means the segment is incomplete.
+    /// contained worker faults distinct from media errors. The container is demuxed by reel's providers
+    /// on an UNTRUSTED route whose only decoder is this provider, so nothing here can reach the
+    /// in-process decoder. Pictures already handed to `sink` before an error stay delivered: an `Err`
+    /// means the segment is incomplete.
     pub fn decode_av1(
         &self,
         src: &mut dyn ReadSeek,
@@ -759,82 +903,110 @@ impl WorkerAv1Provider {
         if req.count == 0 {
             return Err(ReelError::Unsupported { what: "zero-count" }.into());
         }
-        let file_len = verify_grant(src, req)?;
+        verify_grant(src, req)?;
         let head = read_head(src)?;
-        let plan = Plan::new(src, &head, file_len, req, limits, cancel)?;
-        // Exactly what reel's in-process decoder validates before its first packet.
-        let parsed = if plan.config.is_empty() {
+        let faults = FaultSlot::default();
+        let tracked = Tracked {
+            provider: self,
+            faults: Arc::clone(&faults),
+        };
+        let route = VideoRoute::untrusted().with_external(&tracked);
+        let mut routed = req.clone();
+        let result = if IsobmffProvider.sniff(&head) {
+            routed.codec = ISOBMFF_PROVIDER_ID.to_owned();
+            IsobmffProvider.decode_segment_routed(src, &routed, limits, cancel, sink, &route)
+        } else if MatroskaProvider.sniff(&head) {
+            routed.codec = MATROSKA_PROVIDER_ID.to_owned();
+            MatroskaProvider.decode_segment_routed(src, &routed, limits, cancel, sink, &route)
+        } else {
+            return Err(ReelError::ImportUnsupported {
+                detected: detect_type(&head).to_owned(),
+            }
+            .into());
+        };
+        result.map_err(|error| match lock(&faults).take() {
+            Some(fault) => Av1Error::Worker(fault),
+            None => Av1Error::Reel(error),
+        })
+    }
+
+    /// Checks a worker out of the pool, opens a decoder on it for the stream and returns the session.
+    fn open_session(
+        &self,
+        spec: &VideoStreamSpec<'_>,
+        cancel: &CancellationToken,
+        faults: Option<FaultSlot>,
+    ) -> Result<WorkerSession, VideoDecodeError> {
+        check_cancel(cancel)?;
+        let pool = &self.pool;
+        // The route validated the record already; the declared size caps below need its fields.
+        let parsed = if spec.config.is_empty() {
             None
         } else {
-            Some(parse_av1c(&plan.config)?)
+            Some(parse_av1c(spec.config)?)
         };
-        let frame_cap = declared_frame_cap(parsed.as_ref(), plan.width, plan.height, limits);
+        let frame_cap = declared_frame_cap(parsed.as_ref(), spec.width, spec.height, &spec.limits);
         let open = OpenRequest {
-            max_chunk_bytes: u64::try_from(decoder_budget(plan.width, plan.height, limits))
+            max_chunk_bytes: u64::try_from(decoder_budget(spec.width, spec.height, &spec.limits))
                 .unwrap_or(u64::MAX),
-            color: plan.color,
-            config: plan.config.clone(),
+            color: spec.color,
+            config: spec.config.to_vec(),
         };
-        let pool = &*self.pool;
-        let clock = Clock {
-            cancel,
+        let mut worker = WorkerSession {
+            pool: Arc::clone(pool),
+            session: None,
             segment_wall: Instant::now() + pool.segment_deadline,
-        };
-        let mut lease = Lease {
-            pool,
-            session: Some(pool.checkout().map_err(Av1Error::Worker)?),
-        };
-        let session = lease.session.as_mut().expect("lease holds the session");
-        let mut pump = Pump {
-            pool,
-            session,
-            clock: &clock,
             reply_cap: frame_cap + wire::REPLY_SLACK,
-            max_packet_bytes: limits.max_chunk_bytes.min(wire::MAX_REQUEST_FRAME - 64),
-            fwd: Forward {
-                pending: VecDeque::new(),
-                sink,
-                max_chunk_bytes: limits.max_chunk_bytes,
-                format: None,
-                delivered: 0,
-                packed: Vec::new(),
-            },
-            fault: None,
+            max_packet_bytes: spec
+                .limits
+                .max_chunk_bytes
+                .min(wire::MAX_REQUEST_FRAME - 64),
+            faults,
         };
-        pump.open(&open)?;
-        let delivered = match &plan.demux {
-            Demux::Iso(index) => IsobmffProvider.decode_packets(
-                src,
-                index,
-                &plan.packet_request(req),
-                limits,
-                cancel,
-                &mut pump,
-            ),
-            Demux::Mkv(index) => MatroskaProvider.decode_packets(
-                src,
-                index,
-                &plan.packet_request(req),
-                limits,
-                cancel,
-                &mut pump,
-            ),
-        };
-        let mut receipt = match delivered {
-            Ok(receipt) => receipt,
-            Err(error) => return Err(pump.fault.take().unwrap_or(Av1Error::Reel(error))),
-        };
-        pump.finish()?;
-        receipt.bytes_read += plan.index_bytes;
-        receipt.decoder_id = DECODER_ID;
-        receipt.decoder_version = decoder_version();
-        receipt.video = pump.fwd.format;
-        receipt.actual.units = pump.fwd.delivered;
-        if pump.fwd.delivered < req.count {
-            receipt.disposition = Disposition::Partial;
-            receipt.complete = false;
+        match pool.checkout() {
+            Ok(session) => worker.session = Some(session),
+            Err(fault) => {
+                return Err(WorkerSession::convert(
+                    worker.faults.as_ref(),
+                    Av1Error::Worker(fault),
+                ));
+            }
         }
-        Ok(receipt)
+        let id = pool.next_id();
+        // OPEN is answered by OPENED alone: a picture here is the worker breaking the protocol.
+        worker.request(
+            wire::encode_open(id, &open),
+            id,
+            Want::Opened,
+            cancel,
+            &mut |_| {
+                Err(ReelError::DecoderFault {
+                    fault: DecoderFault::Protocol,
+                })
+            },
+        )?;
+        Ok(worker)
+    }
+}
+
+impl ExternalVideoDecoder for WorkerAv1Provider {
+    fn identity(&self) -> DecoderIdentity {
+        DecoderIdentity {
+            id: DECODER_ID,
+            version: decoder_version(),
+        }
+    }
+
+    fn supports(&self, codec: VideoCodec) -> bool {
+        codec == VideoCodec::Av1
+    }
+
+    fn open(
+        &self,
+        spec: &VideoStreamSpec<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<Box<dyn VideoDecodeSession>, VideoDecodeError> {
+        Ok(Box::new(self.open_session(spec, cancel, None)?))
     }
 }
 
@@ -868,106 +1040,6 @@ fn read_head(src: &mut dyn ReadSeek) -> Result<Vec<u8>, ReelError> {
     }
     src.seek(SeekFrom::Start(0))?;
     Ok(head[..filled].to_vec())
-}
-
-enum Demux {
-    Iso(MediaIndex),
-    Mkv(MkvIndex),
-}
-
-/// The container side of one segment: which track carries AV1 and what the decoder needs to know.
-struct Plan {
-    demux: Demux,
-    track: u32,
-    config: Vec<u8>,
-    color: ColorTag,
-    width: u32,
-    height: u32,
-    index_bytes: u64,
-}
-
-impl Plan {
-    fn new(
-        src: &mut dyn ReadSeek,
-        head: &[u8],
-        file_len: u64,
-        req: &SegmentRequest,
-        limits: &Limits,
-        cancel: &CancellationToken,
-    ) -> Result<Self, ReelError> {
-        if IsobmffProvider.sniff(head) {
-            let index = build_index(src, file_len, limits, cancel)?;
-            let track = match req.track {
-                Some(id) => index.track(id).ok_or(ReelError::Unsupported {
-                    what: "track-not-found",
-                })?,
-                None => index.default_track().ok_or(ReelError::Unsupported {
-                    what: "no-audio-or-video-track",
-                })?,
-            };
-            if track.codec != *b"av01" {
-                return Err(ReelError::CodecUnavailable {
-                    codec: fourcc_string(track.codec),
-                });
-            }
-            let plan = Self {
-                track: track.track_id,
-                config: track.codec_config.clone(),
-                color: track.color,
-                width: track.width,
-                height: track.height,
-                index_bytes: index.bytes_read,
-                demux: Demux::Iso(index),
-            };
-            Ok(plan)
-        } else if MatroskaProvider.sniff(head) {
-            let index = build_matroska_index(src, file_len, limits, cancel)?;
-            let track = match req.track {
-                Some(number) => index.track(number).ok_or(ReelError::Unsupported {
-                    what: "track-not-found",
-                })?,
-                None => index.default_track().ok_or(ReelError::Unsupported {
-                    what: "no-audio-or-video-track",
-                })?,
-            };
-            if track.info.codec_id != "V_AV1" {
-                return Err(ReelError::CodecUnavailable {
-                    codec: track.info.codec_id.clone(),
-                });
-            }
-            if track.info.content_encoded {
-                return Err(ReelError::Unsupported {
-                    what: "content-encoding",
-                });
-            }
-            Ok(Self {
-                track: track.info.number,
-                config: track.info.codec_private.clone(),
-                color: ColorTag::Untagged,
-                width: track.info.width,
-                height: track.info.height,
-                index_bytes: index.bytes_read,
-                demux: Demux::Mkv(index),
-            })
-        } else {
-            Err(ReelError::ImportUnsupported {
-                detected: detect_type(head).to_owned(),
-            })
-        }
-    }
-
-    /// The same request as the caller's, retargeted at the container provider's packet delivery.
-    fn packet_request(&self, req: &SegmentRequest) -> SegmentRequest {
-        let mut packets = req.clone();
-        packets.codec = match self.demux {
-            Demux::Iso(_) => ISOBMFF_PROVIDER_ID,
-            Demux::Mkv(_) => MATROSKA_PROVIDER_ID,
-        }
-        .to_owned();
-        packets.output = OutputMode::Packets;
-        packets.track = Some(self.track);
-        packets
-    }
 }
 
 /// Largest packed picture the declared dimensions allow (container track size, `av1C` chroma and bit
@@ -1008,146 +1080,6 @@ fn decoder_budget(width: u32, height: u32, limits: &Limits) -> usize {
     usize::try_from(u64::from(width) * u64::from(height) * 6)
         .unwrap_or(usize::MAX)
         .min(limits.max_chunk_bytes)
-}
-
-#[derive(Clone, Copy)]
-struct PacketMeta {
-    index: u64,
-    pts: i64,
-    duration: Ticks,
-    sync: bool,
-    preroll: bool,
-    trim_start: u64,
-}
-
-/// Forwards returned pictures to the caller's sink with the same matching and bookkeeping as reel's
-/// in-process `Pump`: a picture belongs to the packet whose tag it carries, pre-roll pictures are
-/// dropped, and the first delivered format must not change inside one segment.
-struct Forward<'a> {
-    pending: VecDeque<PacketMeta>,
-    sink: &'a mut dyn ChunkSink,
-    max_chunk_bytes: usize,
-    format: Option<VideoFormat>,
-    delivered: u64,
-    packed: Vec<u8>,
-}
-
-impl Forward<'_> {
-    fn forward(&mut self, frame: WireFrame) -> Result<(), ReelError> {
-        let Some(at) = self.pending.iter().position(|m| m.index == frame.tag) else {
-            return Ok(()); // configuration units and dropped packets carry no presentable frame
-        };
-        let meta = self.pending[at];
-        self.pending.drain(..=at);
-        if meta.preroll {
-            return Ok(()); // decoded only to reach the requested frames
-        }
-        match self.format {
-            None => self.format = Some(frame.format),
-            Some(first) if first != frame.format => {
-                return Err(ReelError::Unsupported {
-                    what: "av1-format-change-mid-segment",
-                });
-            }
-            Some(_) => {}
-        }
-        self.packed.clear();
-        for plane in &frame.planes {
-            self.packed.extend_from_slice(plane);
-        }
-        if self.packed.len() > self.max_chunk_bytes {
-            return Err(ReelError::LimitExceeded {
-                what: "av1-frame-bytes",
-            });
-        }
-        self.sink.accept(Chunk {
-            kind: ChunkKind::VideoFrame,
-            pts: meta.pts,
-            duration: meta.duration,
-            index: meta.index,
-            units: 1,
-            sync: meta.sync,
-            preroll: false,
-            trim_start: meta.trim_start,
-            bytes: &self.packed,
-        })?;
-        self.delivered += 1;
-        Ok(())
-    }
-}
-
-/// The chunk sink that container packet delivery feeds: each packet becomes one worker request.
-struct Pump<'a, 'b> {
-    pool: &'a Pool,
-    session: &'a mut Session,
-    clock: &'a Clock<'a>,
-    reply_cap: usize,
-    max_packet_bytes: usize,
-    fwd: Forward<'b>,
-    /// A worker fault raised inside `accept` (the port can only return a `ReelError` there).
-    fault: Option<Av1Error>,
-}
-
-impl Pump<'_, '_> {
-    fn request(&mut self, frame: Vec<u8>, id: u64, want: Want) -> Result<(), Av1Error> {
-        let Self {
-            pool,
-            session,
-            clock,
-            reply_cap,
-            fwd,
-            ..
-        } = self;
-        let call = Call {
-            id,
-            frame,
-            cap: *reply_cap,
-            want,
-        };
-        pool.exchange(session, call, clock, &mut |picture| fwd.forward(picture))
-    }
-
-    fn open(&mut self, open: &OpenRequest) -> Result<(), Av1Error> {
-        let id = self.pool.next_id();
-        self.request(wire::encode_open(id, open), id, Want::Opened)
-    }
-
-    fn finish(&mut self) -> Result<(), Av1Error> {
-        let id = self.pool.next_id();
-        self.request(wire::encode_finish(id), id, Want::BatchEnd)
-    }
-}
-
-impl ChunkSink for Pump<'_, '_> {
-    fn accept(&mut self, chunk: Chunk<'_>) -> Result<(), ReelError> {
-        check_cancel(self.clock.cancel)?;
-        if chunk.bytes.len() > self.max_packet_bytes {
-            return Err(ReelError::LimitExceeded {
-                what: "av1-packet-bytes",
-            });
-        }
-        self.fwd.pending.push_back(PacketMeta {
-            index: chunk.index,
-            pts: chunk.pts,
-            duration: chunk.duration,
-            sync: chunk.sync,
-            preroll: chunk.preroll,
-            trim_start: chunk.trim_start,
-        });
-        if chunk.bytes.is_empty() {
-            return Ok(()); // an empty unit decodes to nothing, as in-process
-        }
-        let id = self.pool.next_id();
-        let frame = wire::encode_packet(id, chunk.index, chunk.bytes);
-        match self.request(frame, id, Want::BatchEnd) {
-            Ok(()) => Ok(()),
-            Err(Av1Error::Reel(error)) => Err(error),
-            Err(fault) => {
-                self.fault = Some(fault);
-                Err(ReelError::Io(std::io::ErrorKind::Other))
-            }
-        }
-    }
 }
 
 impl MediaProvider for WorkerAv1Provider {
