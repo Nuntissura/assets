@@ -541,6 +541,157 @@ fn last_parms(dict: &Dict) -> Option<&Dict> {
     }
 }
 
+/// Size a raster codec decodes `data` to, read from the codec's own header BEFORE any decoder runs
+/// (R13-F5; `render_bounds.rs` sizes the renderer's allocations with it): `(width, height,
+/// components)`, each the largest the header declares. JPEG: the SOF frame header (ITU-T T.81 B.2.2);
+/// JPEG 2000: the `ihdr` box and every `SIZ` marker (ISO/IEC 15444-1 I.5.3.1, A.5.1); JBIG2: the page
+/// information segment and every region segment information field (ITU-T T.88 7.4.1, 7.4.8); CCITT:
+/// `/Columns` (default 1728) and `/Rows` of the decode parameters (`dict` is the image dictionary whose
+/// last filter is the codec). `None` when the header is not readable (the codec then refuses too).
+pub(crate) fn codec_dims(filter: &[u8], data: &[u8], dict: &Dict) -> Option<(u64, u64, u64)> {
+    match filter {
+        b"DCTDecode" | b"DCT" => jpeg_dims(data),
+        b"JPXDecode" => jpx_dims(data),
+        b"JBIG2Decode" => jbig2_dims(data),
+        b"CCITTFaxDecode" | b"CCF" => {
+            let parms = last_parms(dict);
+            let columns = int_of(parms, "Columns").unwrap_or(1728);
+            let rows = int_of(parms, "Rows").unwrap_or(0);
+            Some((u64::try_from(columns).ok()?, u64::try_from(rows).unwrap_or(0), 1))
+        }
+        _ => None,
+    }
+}
+
+fn jpeg_dims(d: &[u8]) -> Option<(u64, u64, u64)> {
+    let mut p = 2usize;
+    if !d.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    while p < d.len() {
+        if d.get(p) != Some(&0xFF) {
+            p = p.checked_add(1)?;
+            continue;
+        }
+        let m = *d.get(p.checked_add(1)?)?;
+        match m {
+            0xFF => p = p.checked_add(1)?,
+            0x00 | 0x01 | 0xD0..=0xD9 => p = p.checked_add(2)?,
+            0xC0..=0xCF if !matches!(m, 0xC4 | 0xC8 | 0xCC) => {
+                // FF Cn, Lf (2), P (1), Y (2), X (2), Nf (1)
+                let h = be16(d, p.checked_add(5)?)?;
+                let w = be16(d, p.checked_add(7)?)?;
+                let nf = *d.get(p.checked_add(9)?)?;
+                return Some((u64::try_from(w).ok()?, u64::try_from(h).ok()?, u64::from(nf)));
+            }
+            _ => p = p.checked_add(2)?.checked_add(be16(d, p.checked_add(2)?)?)?,
+        }
+    }
+    None
+}
+
+/// Largest of every `SIZ` (Xsiz, Ysiz, Csiz) in a codestream starting at `c`.
+fn siz_dims(c: &[u8]) -> Option<(u64, u64, u64)> {
+    if !c.starts_with(&[0xFF, 0x4F, 0xFF, 0x51]) {
+        return None;
+    }
+    let w = be32(c, 8)?;
+    let h = be32(c, 12)?;
+    let n = be16(c, 40)?;
+    Some((u64::from(w), u64::from(h), u64::try_from(n).ok()?))
+}
+
+fn jpx_dims(d: &[u8]) -> Option<(u64, u64, u64)> {
+    if !d.starts_with(&JP2_SIGNATURE) {
+        return siz_dims(d);
+    }
+    let mut best: Option<(u64, u64, u64)> = None;
+    let mut keep = |v: Option<(u64, u64, u64)>| {
+        if let Some((w, h, n)) = v {
+            let b = best.unwrap_or((0, 0, 0));
+            best = Some((b.0.max(w), b.1.max(h), b.2.max(n)));
+        }
+    };
+    // Top-level boxes and the boxes of the `jp2h` super-box (one level: ihdr lives there).
+    let mut stack: Vec<(usize, usize)> = vec![(0, d.len())];
+    let mut boxes = 0usize;
+    while let Some((mut p, end)) = stack.pop() {
+        while p < end {
+            boxes = boxes.checked_add(1)?;
+            if boxes > 4096 {
+                return best;
+            }
+            let lbox = be32(d, p)?;
+            let tbox = d.get(p.checked_add(4)?..p.checked_add(8)?)?;
+            let (header, len) = match lbox {
+                0 => (8usize, end.checked_sub(p)?),
+                1 => (16usize, usize::try_from(be64(d, p.checked_add(8)?)?).ok()?),
+                n => (8usize, usize::try_from(n).ok()?),
+            };
+            let body = p.checked_add(header)?;
+            let next = p.checked_add(len).filter(|e| *e <= end && len >= header)?;
+            match tbox {
+                b"jp2h" => stack.push((body, next)),
+                b"ihdr" => keep(be32(d, body.checked_add(4)?).zip(be32(d, body)).zip(be16(d, body.checked_add(8)?)).and_then(|((w, h), n)| {
+                    Some((u64::from(w), u64::from(h), u64::try_from(n).ok()?))
+                })),
+                b"jp2c" => keep(siz_dims(d.get(body..next)?)),
+                _ => {}
+            }
+            p = next;
+        }
+    }
+    best
+}
+
+/// JBIG2 region segment types carrying a region segment information field (T.88 7.3 table 2).
+const JBIG2_REGIONS: [u8; 12] = [4, 6, 7, 20, 22, 23, 36, 38, 39, 40, 42, 43];
+
+fn jbig2_dims(d: &[u8]) -> Option<(u64, u64, u64)> {
+    let (mut p, mut w, mut h, mut segments) = (0usize, 0u64, 0u64, 0usize);
+    while p < d.len() && !rest_is_ws(d, p) {
+        segments = segments.checked_add(1)?;
+        if segments > 1 << 20 {
+            break;
+        }
+        let number = be32(d, p)?;
+        let flags = *d.get(p.checked_add(4)?)?;
+        let referred = *d.get(p.checked_add(5)?)?;
+        let (count, mut q) = match referred >> 5 {
+            7 => {
+                let count = usize::try_from(be32(d, p.checked_add(5)?)? & 0x1FFF_FFFF).ok()?;
+                (count, p.checked_add(9)?.checked_add(count.checked_add(8)? / 8)?)
+            }
+            short => (usize::from(short), p.checked_add(6)?),
+        };
+        let size: usize = if number <= 256 {
+            1
+        } else if number <= 65_536 {
+            2
+        } else {
+            4
+        };
+        q = q.checked_add(count.checked_mul(size)?)?;
+        q = q.checked_add(if flags & 0x40 != 0 { 4 } else { 1 })?;
+        let len = be32(d, q)?;
+        let data = q.checked_add(4)?;
+        let kind = flags & 0x3F;
+        if kind == 48 || JBIG2_REGIONS.contains(&kind) {
+            // Page information and region segment information both start with width, height.
+            let sw = be32(d, data)?;
+            let sh = be32(d, data.checked_add(4)?)?;
+            // A striped page of unknown height (0xFFFFFFFF) grows to at most the decoder's 65535 rows.
+            w = w.max(u64::from(sw).min(65_535));
+            h = h.max(u64::from(sh).min(65_535));
+        }
+        if len == u32::MAX {
+            break;
+        }
+        p = data.checked_add(usize::try_from(len).ok()?)?;
+    }
+    (w > 0 && h > 0).then_some((w, h, 1))
+}
+
 /// CCITT data that decodes to exactly `/Width` x `/Height` (module docs).
 fn ccitt(data: &[u8], dict: &Dict) -> std::result::Result<(), &'static str> {
     let parms = last_parms(dict);

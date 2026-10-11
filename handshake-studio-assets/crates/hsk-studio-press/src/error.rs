@@ -36,6 +36,12 @@ pub struct Limits {
     /// `flatten_dpi` is a typed refusal (`PressError::FlattenRefused(FlattenCause::PixelBudget)`,
     /// checked before anything is allocated; test `flatten_pixel_budget_is_a_typed_refusal`).
     pub max_flatten_pixels: u64,
+    /// Largest working memory the renderer may need to decode ONE image of a flattened page, estimated
+    /// BEFORE the renderer runs as width x height x (components x 6 + 15) bytes (16-bit samples, 32-bit
+    /// decoded samples, RGB and alpha planes); a larger image is a typed refusal
+    /// (`PressError::FlattenRefused(FlattenCause::ImageBudget)`, `render_bounds.rs`; R13-F5; test
+    /// `renderer_input_images_are_bounded`).
+    pub max_render_image_bytes: u64,
 }
 
 /// Hard ceiling for nesting depth and reference hops whatever `Limits` say: the tokenizer and the
@@ -69,6 +75,7 @@ impl Default for Limits {
             max_nodes: 16 << 20,
             flatten_dpi: 150,
             max_flatten_pixels: 1 << 24,
+            max_render_image_bytes: 1 << 30,
         }
     }
 }

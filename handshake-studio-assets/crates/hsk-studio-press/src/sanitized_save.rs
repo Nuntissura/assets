@@ -73,6 +73,7 @@ use crate::content::{Op, inline_dict};
 use crate::error::{Limits, PressError, RedactionClass, Result, TextCause};
 use crate::filters;
 use crate::flatten::{FlattenedPage, check_flattened, flatten_region_pages};
+use crate::flatten_purge::{check_document, drop_painted_sources, neutralize_structure, page_annotations, remove_annotations, strip_xfa};
 use crate::font::Font;
 use crate::norm::{Escapes, normalize, normalized, normalized_str, visual_order};
 use crate::pdf_edit::PdfDoc;
@@ -155,7 +156,8 @@ pub enum NotProven {
     /// A redaction region still holds a mark that was not removed (an image without
     /// `RemoveImages`, a vector, a deep form).
     RegionIncomplete,
-    /// A fresh redaction pass over the saved bytes still selects something in a region.
+    /// The independent checks of the saved bytes found a mismatch (`RedactedOutput::residual_in_region`:
+    /// `flatten::check_flattened`, `flatten_purge::check_document`).
     ResidualInRegion,
     /// The text-field report kept matches by policy or could not verify an appearance.
     TextFieldsKept,
@@ -181,6 +183,10 @@ pub enum NotProven {
     /// own parse (`PayloadProof::non_canonical_streams`): a viewer may read other operators from it
     /// than the proof did (lead decision 2026-10-11T15:00:20Z; test `canonical_rewrite_keeps_only_written_content`).
     NonCanonicalContent,
+    /// An image, form, pattern or shading a flattened page reached is still in the saved file and no kept
+    /// content is KNOWN to draw it: some content's usage could not be determined
+    /// (`RedactedOutput::painted_sources_kept`; R13-F6; test `painted_sources_under_a_region_do_not_survive`).
+    PaintedSourceKept,
 }
 
 impl NotProven {
@@ -198,6 +204,7 @@ impl NotProven {
             Self::UnreadableRemovedText => "unreadable_removed_text",
             Self::UnresolvedWritingMode => "unresolved_writing_mode",
             Self::NonCanonicalContent => "non_canonical_content",
+            Self::PaintedSourceKept => "painted_source_kept",
         }
     }
 }
@@ -1262,8 +1269,11 @@ pub struct RedactedOutput {
     /// occur elsewhere, so they are NOT part of `proof`; `residual_in_region` covers them, and their
     /// readability still counts (`unreadable_removed`).
     pub short_needles: u32,
-    /// Text strings, annotations and unsupported marks a fresh redaction pass over the SAVED
-    /// bytes still finds in the regions (0 = the saved bytes hold nothing the region test selects).
+    /// Mismatches the independent checks of the SAVED bytes find (0 = none): for every flattened page
+    /// `flatten::check_flattened` (page keys with `/Annots` empty, the `/Parent` chain holding nothing to
+    /// inherit, the canonical raster content, the raster image dictionary and size, every region pixel
+    /// the fill colour), and once for the document `flatten_purge::check_document` (no `/XFA`, no
+    /// `/NeedsRendering`, no annotation whose `/P` and no structure item whose `/Pg` is a flattened page).
     pub residual_in_region: u32,
     /// Outline/annotation text redaction of the removed strings (`redact_and_save_with` with a
     /// text policy); `None` when it was not requested.
@@ -1279,19 +1289,33 @@ pub struct RedactedOutput {
     /// draw (absent from the raster). Tests `flattened_pages_hold_only_the_raster`,
     /// `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`.
     pub flattened: Vec<FlattenedPage>,
+    /// Annotations a viewer drew on a flattened page (widgets included) that were removed from the file
+    /// with their AcroForm field entries (`flatten_purge.rs`; R13-F1, R13-P1).
+    pub flattened_annotations_removed: u32,
+    /// Structure elements that pointed at a flattened page and lost their text, attributes and the
+    /// content items on that page (`flatten_purge.rs`; R13-P1).
+    pub structure_elements_neutralized: u32,
+    /// `/AcroForm /XFA` or `/NeedsRendering` was removed (R13-F2; every redaction output is a PDF-page
+    /// document; test `xfa_is_stripped_from_redaction_outputs`).
+    pub xfa_removed: bool,
+    /// Images, forms, patterns and shadings (object numbers in `bytes`) a flattened page reached that
+    /// stay in the saved file only because some content's usage could not be determined; non-empty is
+    /// `NotProven::PaintedSourceKept` (R13-F6; test `painted_sources_under_a_region_do_not_survive`).
+    pub painted_sources_kept: Vec<u32>,
     /// `(region page index, class)`: text drawn on a region's page in the SAVED file whose glyph
     /// geometry the selector does not compute (Type 3, vertical, unresolved writing mode, unresolved
     /// font), from the determination pass of the proof (sorted, unique). Non-empty makes the region
     /// incomplete (`NotProven::RegionIncomplete`; lead decision 2026-10-11T13:10:26Z; tests
     /// `fonts_inherited_into_forms_are_resolved`, `writing_mode_is_read_from_the_cmap`,
-    /// `undetermined_fonts_never_read_as_cleared`).
+    /// `undetermined_fonts_never_read_as_cleared`). A flattened page holds no text, so for a redaction
+    /// output (every region page flattened) this is empty; the selector's own marks on the INPUT still
+    /// make a region incomplete (`RedactionReport::unredacted`).
     pub region_undetermined: Vec<(u32, RedactionClass)>,
 }
 
 impl RedactedOutput {
-    /// Every region fully removed (nothing left in `unredacted`), the saved bytes pass the payload
-    /// proof for every distinctive removed string, every removed string has a complete reading, and a
-    /// fresh pass over the saved bytes finds nothing left in the regions.
+    /// [`RedactedOutput::region_cleared`], the saved bytes pass the payload proof for every distinctive
+    /// removed string (no hit), and every removed string has a complete reading.
     pub fn is_proven(&self) -> bool {
         self.not_proven_reasons().is_empty()
     }
@@ -1317,6 +1341,9 @@ impl RedactedOutput {
         if self.residual_in_region != 0 {
             v.push(NotProven::ResidualInRegion);
         }
+        if !self.painted_sources_kept.is_empty() {
+            v.push(NotProven::PaintedSourceKept);
+        }
         // Positive determination: every text-showing operator of the saved file, whatever was removed.
         v.extend(self.proof.structural_reasons(true));
         // Canonical rewrite: the saved file holds only content this crate wrote from its own parse.
@@ -1327,22 +1354,27 @@ impl RedactedOutput {
     }
 
     /// Every page carrying a region was flattened (Operator decision D27) and the SAVED bytes hold, for
-    /// each, exactly the raster page with every pixel of every region the fill colour
-    /// (`flatten::check_flattened`; `residual_in_region == 0`), in a file with one xref section and no
-    /// unreachable or unlisted objects. This is the by-construction claim; it does not depend on the
-    /// needle search (tests `prereview_region_pages_are_flattened`,
-    /// `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`).
+    /// each, exactly the raster page with every pixel of every region the fill colour, nothing to inherit
+    /// on its `/Parent` chain, no annotation or structure item pointing at it and no XFA
+    /// (`residual_in_region == 0`: `flatten::check_flattened`, `flatten_purge::check_document`), no
+    /// painted source of the old page merely listed (`painted_sources_kept` empty), in a file with one
+    /// xref section and no unreachable or unlisted objects. This is the by-construction claim; it does
+    /// not depend on the needle search (tests `prereview_region_pages_are_flattened`,
+    /// `flattened_pages_hold_only_the_raster`, `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`).
     pub fn region_flattened(&self) -> bool {
         let pages: BTreeSet<u32> = self.reports.iter().map(|r| r.page_index).collect();
         let flat: BTreeSet<u32> = self.flattened.iter().map(|f| f.page_index).collect();
-        pages == flat && self.residual_in_region == 0 && !self.proof.structural_reasons(false).contains(&NotProven::Structure)
+        pages == flat
+            && self.residual_in_region == 0
+            && self.painted_sources_kept.is_empty()
+            && !self.proof.structural_reasons(false).contains(&NotProven::Structure)
     }
 
     /// The regions themselves are proven clear: every region page flattened and verified on the saved
-    /// bytes (`region_flattened`), every text the selector found in the regions placed (painted classes
-    /// do not count, `RedactionReport::painted_over`), no
-    /// text whose geometry is not computed on a region's page (`region_undetermined`), a fresh pass over
-    /// the saved bytes selects nothing, one xref section, no unreachable or unlisted objects, every
+    /// bytes (`region_flattened`: `residual_in_region == 0`, `painted_sources_kept` empty), every text
+    /// the selector found in the regions placed (painted classes do not count,
+    /// `RedactionReport::painted_over`), no text whose geometry is not computed on a region's page
+    /// (`region_undetermined`), one xref section, no unreachable or unlisted objects, every
     /// stream of the saved file decoded (`proof.streams_not_decodable` names the blockers; raster-class
     /// streams do not block), no bytes after an end-of-data marker (`NotProven::TrailingData`), and
     /// every text-showing operator of the saved file positively determined: font resolved, writing
@@ -1417,13 +1449,22 @@ pub fn redact_and_save_with(
             None => None,
         };
         // FLATTEN (Operator decision D27): every page carrying a region becomes a raster of itself with
-        // the regions painted opaque; nothing else of it survives (flatten.rs).
-        let flattened = flatten_region_pages(doc, regions, cancel)?;
+        // the regions painted opaque, detached from inheritance; nothing else of it survives (flatten.rs).
+        let flats = flatten_region_pages(doc, regions, cancel)?;
+        // What described or drew the old pages (R13 lead decision 2026-10-11T20:26:55Z, flatten_purge.rs):
+        // XFA, their annotations and widgets, the structure elements pointing at them.
+        let xfa_removed = strip_xfa(doc)?;
+        let annotations = page_annotations(doc, &flats);
+        let structure_elements_neutralized = neutralize_structure(doc, &flats, &annotations, cancel)?;
+        let flattened_annotations_removed = remove_annotations(doc, &annotations, cancel)?;
         // CANONICAL REWRITE (lead decision 2026-10-11T15:00:20Z): every other content stream of the
         // document is re-serialised from this crate's parse before the save (canon.rs).
         canonicalize(&mut doc.objects, &doc.trailer, &doc.limits, cancel)?;
+        // R13-F6: the old pages' images, forms, patterns and shadings that no kept content draws.
+        let painted_sources_kept = drop_painted_sources(doc, &flats, cancel)?;
+        let flattened: Vec<FlattenedPage> = flats.into_iter().map(|f| f.page).collect();
         let bytes = doc.save_full(cancel)?;
-        // Fresh re-open of the saved bytes: the region test must now select nothing.
+        // Fresh re-open of the saved bytes for the independent checks below.
         let saved = PdfDoc::open(&bytes, &doc.limits, cancel)?;
         let pages: Vec<(u32, u32)> =
             regions.iter().filter_map(|r| saved.pages.get(r.page_index as usize).map(|p| (r.page_index, *p))).collect();
@@ -1442,6 +1483,9 @@ pub fn redact_and_save_with(
             let rects: Vec<[f64; 4]> = regions.iter().filter(|r| r.page_index == flat.page_index).map(|r| r.rect).collect();
             residual = residual.saturating_add(check_flattened(&saved, flat, &rects, cancel)?);
         }
+        let flat_objects: BTreeSet<u32> =
+            flattened.iter().filter_map(|f| saved.pages.get(usize::try_from(f.page_index).unwrap_or(usize::MAX)).copied()).collect();
+        residual = residual.saturating_add(check_document(&saved, &flat_objects));
         Ok(RedactedOutput {
             bytes,
             reports,
@@ -1451,6 +1495,10 @@ pub fn redact_and_save_with(
             text_fields,
             unreadable_removed,
             flattened,
+            flattened_annotations_removed,
+            structure_elements_neutralized,
+            xfa_removed,
+            painted_sources_kept,
             region_undetermined,
         })
     })();

@@ -915,7 +915,7 @@ pub(crate) fn res<'a>(m: &'a BTreeMap<u32, Entry>, mut o: &'a Object) -> &'a Obj
     &NULL
 }
 
-fn purge_list(
+pub(crate) fn purge_list(
     m: &mut BTreeMap<u32, Entry>,
     items: Vec<Object>,
     removed: &mut BTreeSet<u32>,

@@ -158,9 +158,10 @@ fn region_black(f: &PageFacts, rect: [f64; 4]) -> bool {
     seen > 0
 }
 
-/// The saved page holds only the raster: `q cm Do Q`, no text operator, no annotations, nothing else.
+/// The saved page holds only the raster: `q cm Do Q`, no text operator, no annotations (R13-F1: an
+/// explicit empty `/Annots`), nothing else.
 fn raster_only(f: &PageFacts) -> bool {
-    let allowed = ["Type", "Parent", "MediaBox", "CropBox", "Rotate", "UserUnit", "Resources", "Contents"];
+    let allowed = ["Type", "Parent", "MediaBox", "CropBox", "Rotate", "UserUnit", "Resources", "Contents", "Annots"];
     f.ops == ["q", "cm", "Do", "Q"] && f.keys.iter().all(|k| allowed.contains(&k.as_str())) && f.raster.is_some()
 }
 
@@ -487,7 +488,32 @@ fn descriptor_states_the_narrowed_claim_and_its_limitations() {
     for id in ["R11-F1", "R11-F3", "R11-F6", "R11-P1", "R11-P2", "R11-P3", "R11-P4", "R10-P3", "R10-P5"] {
         assert!(DESCRIPTOR.contains(id), "limitation {id} not listed");
     }
-    for test in ["prereview_region_pages_are_flattened", "flattened_region_pixels_are_opaque_and_the_rest_is_rendered", "flatten_pixel_budget_is_a_typed_refusal", "pages_without_regions_stay_canonical_text"] {
+    // R13 (lead decision 2026-10-11T20:26:55Z): every finding is named where the DESCRIPTOR states it.
+    for id in ["R13-F1", "R13-F2", "R13-F3", "R13-F4", "R13-F5", "R13-F6", "R13-F7", "R13-P1"] {
+        assert!(DESCRIPTOR.contains(id), "R13 finding {id} not named");
+    }
+    // R13-F7 (CX-CAP-001 lead decision 2026-10-11T19:18:40Z): the colour limitation, verbatim.
+    assert!(DESCRIPTOR.contains("flattened page colour is renderer-internal, not prism-managed"), "CX-CAP-001 colour limitation missing");
+    // R13-F3: the corrected claim; the old one is gone.
+    assert!(!DESCRIPTOR.contains("absent content only removes information"), "uncorrected fails_safe claim");
+    assert!(DESCRIPTOR.contains("uncovers what it covered"));
+    for test in [
+        "prereview_region_pages_are_flattened",
+        "flattened_region_pixels_are_opaque_and_the_rest_is_rendered",
+        "flatten_pixel_budget_is_a_typed_refusal",
+        "pages_without_regions_stay_canonical_text",
+        "flattened_pages_hold_only_the_raster",
+        "xfa_is_stripped_from_redaction_outputs",
+        "optional_content_hidden_by_default_stays_hidden",
+        "renderer_input_is_bounded_before_rendering",
+        "renderer_input_images_are_bounded",
+        "painted_sources_under_a_region_do_not_survive",
+        "structure_and_widgets_of_flattened_pages_are_removed",
+        "flatten_aggregate_over_budget",
+        "renderer_refusal_is_typed",
+    ] {
         assert!(DESCRIPTOR.contains(test), "DESCRIPTOR does not cite {test}");
     }
+    // R13-V1: the names the DESCRIPTOR used to cite that no test carries.
+    assert!(!DESCRIPTOR.contains("renderer_failure_is_a_typed_refusal"));
 }

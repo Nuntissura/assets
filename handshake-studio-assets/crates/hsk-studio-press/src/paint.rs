@@ -6,15 +6,20 @@
 //! expansion, dashes), glyph outlines and Type 3 glyph procedures, raster and stencil images (nearest
 //! sample, image alpha), clip paths (nested, as coverage masks over their bounds), group and fill
 //! opacity, and the separable blend modes of ISO 32000-2 11.3.5.2 over the opaque white page.
-//! What it does not draw (absent from the raster, recorded as a [`FlattenNote`]; absent content can only
-//! remove information, never add it): pattern and shading paints, content under a soft mask, the
-//! non-separable blend modes (drawn as Normal), content past the clip nesting cap or the work budget.
+//! What it does not draw (absent from the raster, recorded as a [`FlattenNote`]): pattern and shading
+//! paints, content under a soft mask, the non-separable blend modes (drawn as Normal), content past the
+//! clip nesting cap or a budget. Absent content is not drawn, and an absent occluder uncovers what it
+//! covered (R13-F3: such content shows in the raster where a viewer shows the occluder; it is the page's
+//! own content). Region pixels are painted after drawing, so this never reaches a region.
 //!
 //! Bounds (V4-01/V4-02): the canvas size is checked by the caller against `Limits::max_flatten_pixels`
 //! before this module allocates it; every clip mask is sized to its bounds and charged to a memory cap
 //! (four canvases' worth of bytes); every draw charges the pixels it visits to a work budget (64 canvas
-//! passes) and every flattened path's segment count to a segment cap; past a cap the draw is skipped
-//! and [`FlattenNote::WorkBudget`] is recorded. The cancellation token is polled every 64 draws.
+//! passes) and every flattened path's segment count to a segment cap; every image the renderer is asked
+//! to decode charges its declared pixel count to a decode budget BEFORE it is decoded (the caller's
+//! aggregate, R13-F5; per-image sizes are bounded before rendering by `render_bounds.rs`); past a cap the
+//! draw is skipped, drawing stops and [`FlattenNote::WorkBudget`] is recorded. The cancellation token is
+//! polled every 64 draws.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::flatten::FlattenNote;
 use hayro_interpret::font::Glyph;
@@ -112,6 +117,8 @@ pub(crate) struct Painter<'c> {
     blend: BlendMode,
     pub notes: BTreeSet<FlattenNote>,
     work_left: u64,
+    /// Image pixels the renderer may still decode (aggregate over the page).
+    decode_left: u64,
     mem_left: usize,
     cancel: &'c CancellationToken,
     pub canceled: bool,
@@ -121,8 +128,9 @@ pub(crate) struct Painter<'c> {
 }
 
 impl<'c> Painter<'c> {
-    /// `w * h` must already be within the caller's pixel budget (checked arithmetic there).
-    pub(crate) fn new(w: usize, h: usize, cancel: &'c CancellationToken) -> Option<Self> {
+    /// `w * h` must already be within the caller's pixel budget (checked arithmetic there);
+    /// `decode_budget` is the number of image pixels the renderer may decode for this page.
+    pub(crate) fn new(w: usize, h: usize, decode_budget: u64, cancel: &'c CancellationToken) -> Option<Self> {
         let px_len = w.checked_mul(h)?.checked_mul(3)?;
         let canvas = w.checked_mul(h)?;
         Some(Self {
@@ -136,6 +144,7 @@ impl<'c> Painter<'c> {
             blend: BlendMode::Normal,
             notes: BTreeSet::new(),
             work_left: u64::try_from(canvas).ok()?.checked_mul(64)?,
+            decode_left: decode_budget,
             mem_left: canvas.checked_mul(4)?,
             cancel,
             canceled: false,
@@ -442,6 +451,17 @@ impl<'c> Painter<'c> {
             return;
         }
         let Some((alpha, blend)) = self.state() else { return };
+        // V4-02 aggregate (R13-F5): the renderer decodes the whole image before it is drawn, so its
+        // declared pixels are charged first; past the budget nothing more is decoded or drawn.
+        let declared = u64::from(image.width()).saturating_mul(u64::from(image.height()));
+        match self.decode_left.checked_sub(declared) {
+            Some(left) => self.decode_left = left,
+            None => {
+                self.out_of_budget = true;
+                self.notes.insert(FlattenNote::WorkBudget);
+                return;
+            }
+        }
         let bounds = self.clip().b;
         let bb = transform.transform_rect_bbox(kurbo::Rect::new(0.0, 0.0, f64::from(image.width()), f64::from(image.height())));
         let target = (
@@ -801,7 +821,7 @@ mod tests {
     use super::*;
 
     fn painter(cancel: &CancellationToken) -> Painter<'_> {
-        Painter::new(20, 10, cancel).expect("canvas")
+        Painter::new(20, 10, u64::MAX, cancel).expect("canvas")
     }
 
     #[test]
