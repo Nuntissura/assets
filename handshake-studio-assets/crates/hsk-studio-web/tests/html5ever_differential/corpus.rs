@@ -732,6 +732,77 @@ pub fn duplicate_attributes() -> Cases {
     )
 }
 
+/// 13.2.6.4 insertion modes: inputs whose well-nested markup a browser restructures (a `p` closed by a block start tag,
+/// nested `a`, formatting elements across misnested end tags, table and form content, `select`, list items, headings).
+/// The crate has no optional-tag inference, so it must refuse these typed or read them as a browser does.
+pub fn tree_construction_restructuring() -> Cases {
+    labelled(
+        "tree",
+        &[
+            "<p><div>x</div></p>",
+            "<p>a<div>x</div>b</p>",
+            "<a href=x><a href=y>t</a></a>",
+            "<a><b></a>t</b>",
+            "<b><i></b>t</i>",
+            "<table><tr><td>x</td></tr></table>",
+            "<table><tbody><tr><td>x</td></tr></tbody></table>",
+            "<table>x<tr><td>y</td></tr></table>",
+            "<table><svg><style>&lt;</style></svg></table>",
+            "<table><div>x</div></table>",
+            "<form><form></form></form>",
+            "<button><button></button></button>",
+            "<h1><h2>x</h2></h1>",
+            "<select><option>a</option></select>",
+            "<select><option>a</option><option>b</option></select>",
+            "<ul><li>a</li><li>b</li></ul>",
+            "<dl><dt>a</dt><dd>b</dd></dl>",
+            "<nobr><nobr>x</nobr></nobr>",
+            "<div><p>x</p></div>",
+            "<p>x</p><p>y</p>",
+            "<li><li></li></li>",
+            "<ul><li><ul><li>x</li></ul></li></ul>",
+            "<math><mi><p>x</p></mi></math>",
+            "<svg><foreignObject><p>a<p>b</p></p></foreignObject></svg>",
+            "<svg><foreignObject><table><tr><td>x</td></tr></table></foreignObject></svg>",
+            "<div><table></table></div>",
+            "<textarea></textarea><textarea></textarea>",
+            "<frameset></frameset>",
+            "<body><b>x</b></body>",
+            "<html><b>x</b></html>",
+            "<head><title>x</title></head>",
+            "<caption>x</caption>",
+            "<td>x</td>",
+            "<tr><td>x</td></tr>",
+            "<option>x</option>",
+            "<optgroup><option>x</option></optgroup>",
+            "<button>x</button>",
+            "<fieldset><legend>x</legend></fieldset>",
+            "<details><summary>x</summary></details>",
+            "<menu><li>x</li></menu>",
+            "<dd>x</dd>",
+            "<h1>x</h1><h2>y</h2>",
+            "<p><h1>x</h1></p>",
+            "<p><ul><li>x</li></ul></p>",
+            "<p><svg></svg></p>",
+            "<p><table></table></p>",
+            "<p><pre>x</pre></p>",
+            "<p><hr></p>",
+            "<p><xmp>x</xmp></p>",
+            "<p><textarea>x</textarea></p>",
+            "<p><button>x</button></p>",
+            "<p><form></form></p>",
+            "<p><address>x</address></p>",
+            "<p><center>x</center></p>",
+            "<p><section>x</section></p>",
+            "<p><div></div></p>",
+            "<p><details></details></p>",
+            "<p><dl></dl></p>",
+            "<p><ol></ol></p>",
+            "<p><blockquote></blockquote></p>",
+        ],
+    )
+}
+
 /// 13.2.5.6-13.2.5.40 tag open, tag name, attribute name and attribute value states: delimiters, stray quotes, missing
 /// whitespace, case folding, self-closing flag, form feed.
 pub fn tag_and_attribute_syntax() -> Cases {

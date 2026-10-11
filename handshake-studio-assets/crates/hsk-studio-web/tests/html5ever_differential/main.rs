@@ -399,6 +399,21 @@ fn null_bytes_and_newline_normalisation() {
 }
 
 #[test]
+fn tree_construction_restructuring_is_refused_or_read_like_a_browser() {
+    bounded_case(
+        "tree_construction_restructuring_is_refused_or_read_like_a_browser",
+        || {
+            run_cases(
+                "tree_restructuring",
+                corpus::tree_construction_restructuring(),
+                Mode::Fragment,
+                1,
+            )
+        },
+    );
+}
+
+#[test]
 fn image_start_tag_is_read_as_img() {
     bounded_case("image_start_tag_is_read_as_img", || {
         run_cases(
