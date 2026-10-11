@@ -18,6 +18,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::cmap::{Cmap, parse_to_unicode};
 use crate::content::{Op, parse_content};
+use crate::encoding::{SimpleEncoding, is_composite, same_words};
 use crate::error::{MAX_REF_HOPS, PressError, RedactionClass, Result};
 use crate::filters;
 use crate::pdf_edit::PdfDoc;
@@ -137,6 +138,9 @@ struct FontInfo {
     composite: bool,
     /// `/ToUnicode` reading of the font, when it has a usable one.
     cmap: Option<Rc<Cmap>>,
+    /// Encoding of a simple font (base encoding, `/Differences`, glyph names); `None` for composite
+    /// fonts and fonts the resources do not hold.
+    enc: Option<Rc<SimpleEncoding>>,
 }
 
 struct Shown {
@@ -227,7 +231,7 @@ impl<'a> Interp<'a> {
         if let Some(f) = self.fonts.get(name) {
             return f.clone();
         }
-        let none = FontInfo { first: 0, widths: Vec::new(), missing: 0.0, known: false, composite: false, cmap: None };
+        let none = FontInfo { first: 0, widths: Vec::new(), missing: 0.0, known: false, composite: false, cmap: None, enc: None };
         let doc = self.doc;
         let fd = self
             .resources
@@ -241,7 +245,7 @@ impl<'a> Interp<'a> {
             None => none,
             Some(fd) => {
                 let cmap = self.load_to_unicode(fd);
-                if fd.get("Subtype").is_some_and(|s| s.is_name("Type0")) {
+                if is_composite(fd) {
                     FontInfo { composite: true, cmap, ..none }
                 } else {
                     let first = fd.get("FirstChar").map(|x| doc.resolve(x)).and_then(Object::as_int).unwrap_or(0);
@@ -256,7 +260,9 @@ impl<'a> Interp<'a> {
                         .and_then(|d| d.get("MissingWidth"))
                         .and_then(|m| doc.resolve(m).as_f64())
                         .unwrap_or(0.0);
-                    FontInfo { first, known: !widths.is_empty(), widths, missing, composite: false, cmap }
+                    // Out of budget: no encoding reading (the selector's geometry does not need it).
+                    let enc = SimpleEncoding::of_font(&doc.objects, fd, &mut self.budget).ok().map(Rc::new);
+                    FontInfo { first, known: !widths.is_empty(), widths, missing, composite: false, cmap, enc }
                 }
             }
         };
@@ -274,10 +280,20 @@ impl<'a> Interp<'a> {
         parse_to_unicode(&data).map(Rc::new)
     }
 
-    /// `s` read through the current font's `/ToUnicode` map.
+    /// `s` as text the way a viewer draws it: through the simple font's encoding (base encoding,
+    /// `/Differences`, glyph names; a code it cannot read is completed by `/ToUnicode`) when that
+    /// reading is complete and tells more than the bytes do, else through the `/ToUnicode` map. `None`:
+    /// the bytes are the text (PDFDocEncoding reading by the caller) or nothing reads them.
     fn unicode_of(&mut self, s: &[u8]) -> Option<String> {
         let name = self.g.font.clone();
         let font = self.font(&name);
+        if let Some(enc) = &font.enc {
+            let read = enc.read(s, font.cmap.as_deref());
+            let raw: Vec<char> = s.iter().map(|b| char::from(*b)).collect();
+            if !read.opaque && !read.text.is_empty() && !same_words(&read.text, &raw) {
+                return Some(read.text.into_iter().collect());
+            }
+        }
         font.cmap.as_ref().map(|c| c.decode(s).into_iter().collect())
     }
 

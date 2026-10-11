@@ -2749,3 +2749,232 @@ fn raster_names_need_codec_structure() {
         assert!(p.is_clean() && p.raster_streams.len() == 1, "{codec} {parms}: {p:?}");
     }
 }
+
+// ------------------------------------- SMB-PRESS-DIFFERENCES (simple-font encodings, /Differences)
+// A simple font draws the glyph its /Encoding names for each byte code. At 1c3fd8c the proof and the
+// redaction read simple-font codes as bytes (or through /ToUnicode only), so text drawn through
+// /Differences glyph names read as proven. Fixed here: the encoding is decoded (base encoding,
+// /Differences, Adobe Glyph List names) and a code nothing reads makes the text opaque.
+
+/// Codes of SECRET-ALPHA under `DIFF_NAMES` from code 1 (S E C R E T - A L P H A).
+const DIFF_CODES: &str = "<010203040205060708090A07>";
+const DIFF_NAMES: &str = "/S /E /C /R /T /hyphen /A /L /P /H";
+
+fn diff_font(differences: &str, extra: &str) -> Vec<u8> {
+    format!("<< /Type /Font /Subtype /Type1 /BaseFont /Test /FirstChar 1 /LastChar 10 /Widths [600 600 600 600 600 600 600 600 600 600] /Encoding << /Type /Encoding /Differences [{differences}] >> {extra} >>").into_bytes()
+}
+
+/// A page with a FreeText annotation (outside any region) whose appearance 13 draws `DIFF_CODES`
+/// through font 20 with the given /Differences array.
+fn diff_ap_doc(differences: &str) -> Vec<u8> {
+    let mut objs = minimal_objs("", "5 0 R");
+    objs.extend([
+        (5, b"<< /Type /Annot /Subtype /FreeText /Rect [100 100 300 140] /Contents (label) /AP << /N 13 0 R >> >>".to_vec()),
+        (
+            13,
+            stream_body("/Type /XObject /Subtype /Form /BBox [0 0 200 40] /Resources << /Font << /F1 20 0 R >> >>", format!("BT /F1 12 Tf 2 5 Td {DIFF_CODES} Tj ET").as_bytes()),
+        ),
+        (20, diff_font(differences, "")),
+    ]);
+    build(&objs, "", b"")
+}
+
+fn verify_secret(pdf: &[u8]) -> hsk_studio_press::PayloadProof {
+    verify_payload_absent(pdf, &[b"SECRET-ALPHA".to_vec()], &Limits::default(), &token()).unwrap()
+}
+
+/// Text drawn with /Differences glyph names is found by the proof and the redaction, in an annotation
+/// appearance, in region-removed page text (its outline twin is redacted), in kept page text (a
+/// collision) and in content no page draws. At 1c3fd8c every one of these read as proven.
+#[test]
+fn differences_encoded_text_is_found_proven_and_redacted() {
+    let codes: Vec<u8> = vec![1, 2, 3, 4, 2, 5, 6, 7, 8, 9, 10, 7];
+    let differences = format!("1 {DIFF_NAMES}");
+
+    // (a) An appearance drawn through /Differences. Independent oracle: the file holds no plain
+    // spelling of the text, only codes.
+    let pdf = diff_ap_doc(&differences);
+    assert!(find(&pdf, b"SECRET").is_none() && find(&pdf, b"ALPHA").is_none() && !leaks(&pdf, "secret-alpha"));
+    let before = verify_secret(&pdf);
+    assert!(before.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedText { object: 13 })), "{:?}", before.hits);
+    assert!(!before.is_clean());
+    // A different needle is not found by the same reading (the check is not vacuous).
+    let other = verify_payload_absent(&pdf, &[b"OTHER-WORD".to_vec()], &Limits::default(), &token()).unwrap();
+    assert!(other.is_clean(), "{:?}", other.not_proven_reasons());
+    let mut doc = open(&pdf);
+    let out = redact_text_fields_and_save(&mut doc, &["SECRET-ALPHA".to_string()], &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(rows(&out.report, TextRole::Appearance), vec![(5, false, TextOutcomeKind::Dropped, 1)]);
+    assert!(out.is_proven(), "{:?}", out.not_proven_reasons());
+    assert!(find(&out.bytes, b"/N 13 0 R").is_none() && find(&out.bytes, b"010203040205060708090A07").is_none());
+    assert!(independent_streams(&out.bytes).iter().all(|s| find(s, &codes).is_none() && find(s, b"010203040205060708090A07").is_none()));
+
+    // (b) Region redaction of page text drawn through /Differences, with the same words in an outline
+    // title and a second, kept instance of the codes outside the region.
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 20 0 R >> >> >>".to_vec()),
+        (4, stream_body("", format!("BT /F1 12 Tf 72 700 Td {DIFF_CODES} Tj ET\nBT /F1 12 Tf 72 400 Td {DIFF_CODES} Tj ET").as_bytes())),
+        (10, b"<< /Type /Outlines /First 11 0 R /Last 11 0 R /Count 1 >>".to_vec()),
+        (11, b"<< /Title (SECRET-ALPHA plan) /Parent 10 0 R /Dest [3 0 R /Fit] >>".to_vec()),
+        (20, diff_font(&differences, "")),
+    ];
+    let pdf = build(&objs, "", b"");
+    let mut doc = open(&pdf);
+    let plain = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
+    assert_eq!(plain.reports[0].removed_text, vec![codes.clone()]);
+    assert_eq!(plain.reports[0].removed_unicode, vec![Some("SECRET-ALPHA".to_string())], "the redaction reads the codes through the encoding");
+    // The outline title still names the text: a leak, found because the proof knows the text.
+    assert!(!plain.is_proven(), "{:?}", plain.proof.hits);
+    assert!(plain.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 11 })), "{:?}", plain.proof.hits);
+    // The kept second instance, drawn through the same codes, is kept page text: a collision.
+    assert_eq!(plain.proof.kept_text_collisions.len(), 1, "{:?}", plain.proof);
+    let mut doc = open(&pdf);
+    let fixed = redact_and_save_with(&mut doc, &[region], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
+    assert!(fixed.is_proven(), "{:?}", fixed.not_proven_reasons());
+    assert_eq!(rows(fixed.text_fields.as_ref().unwrap(), TextRole::OutlineTitle), vec![(11, false, TextOutcomeKind::Replaced, 1)]);
+    assert!(!leaks(&fixed.bytes, "secret-alpha") && find(&fixed.bytes, b"SECRET-ALPHA").is_none());
+    assert_eq!(fixed.proof.kept_text_collisions.len(), 1);
+    // Independent oracle: the removed instance left the page content, the kept one is intact.
+    let kept: usize = independent_streams(&fixed.bytes).iter().map(|s| count(s, DIFF_CODES.as_bytes())).sum();
+    assert_eq!(kept, 1);
+
+    // (c) Content no page draws (a stray form) is read with its own resources: a leak.
+    let mut objs = minimal_objs("/Hidden 30 0 R", "");
+    objs.extend([
+        (30, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 9 9] /Resources << /Font << /F1 20 0 R >> >>", format!("BT /F1 12 Tf {DIFF_CODES} Tj ET").as_bytes())),
+        (20, diff_font(&differences, "")),
+    ]);
+    let p = verify_secret(&build(&objs, "", b""));
+    assert!(p.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedText { object: 30 })), "{:?}", p.hits);
+}
+
+/// A code nothing can read makes the text opaque: glyph names outside the Adobe Glyph List and its
+/// naming conventions (rule of dd1df63 for composite fonts, now for simple fonts and Type 3), codes
+/// left to an unread built-in encoding, a malformed /Differences. /ToUnicode, a readable name and a
+/// non-embedded font (implicit StandardEncoding) are the controls. At 1c3fd8c all of these read as
+/// proven.
+#[test]
+fn unmappable_glyph_names_and_encodingless_fonts_are_opaque() {
+    let doc_with = |font: Vec<u8>, extra: Vec<(u32, Vec<u8>)>, kept: &str| {
+        let mut objs = minimal_objs("", "");
+        objs[2].1 = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R /F2 20 0 R >> >> >>".to_vec();
+        objs[3].1 = stream_body("", format!("BT /F1 12 Tf 72 700 Td (SECRET-ALPHA) Tj ET\n{kept}").as_bytes());
+        objs.extend([(6, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec()), (20, font)]);
+        objs.extend(extra);
+        build(&objs, "", b"")
+    };
+    let show = |codes: &str| format!("BT /F2 12 Tf 72 400 Td {codes} Tj ET");
+    let type1 = |encoding: &str, extra: &str| format!("<< /Type /Font /Subtype /Type1 /BaseFont /Test {encoding} {extra} >>").into_bytes();
+    let diffs = |d: &str| format!("/Encoding << /Type /Encoding /Differences [{d}] >>");
+    let opaque = |what: &str, pdf: Vec<u8>| {
+        let out = r7_run(&pdf);
+        assert_eq!(out.proof.needles_searched, 1, "{what}");
+        assert_eq!(out.not_proven_reasons(), vec![NotProven::OpaqueText], "{what}");
+        assert!(!out.is_proven() && !out.region_cleared() && out.proof.opaque_text_streams.len() == 1, "{what}");
+    };
+    let proven = |what: &str, pdf: Vec<u8>| {
+        let out = r7_run(&pdf);
+        assert!(out.is_proven() && out.proof.opaque_text_streams.is_empty(), "{what}: {:?}", out.not_proven_reasons());
+        out
+    };
+    let to_unicode = stream_body("", b"1 begincodespacerange <00> <FF> endcodespacerange 3 beginbfchar <01> <0041> <02> <0042> <03> <0043> endbfchar");
+
+    // Glyph names outside the Adobe Glyph List.
+    let unmappable = doc_with(type1(&diffs("1 /g1 /g2 /g3"), ""), vec![], &show("<010203>"));
+    opaque("unmappable glyph names", unmappable.clone());
+    // The text-field flow gives the same answer.
+    let mut doc = open(&unmappable);
+    let fields = redact_text_fields_and_save(&mut doc, &["SECRET-ALPHA".to_string()], &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(fields.not_proven_reasons(), vec![NotProven::OpaqueText]);
+    // Control: the same names read through /ToUnicode.
+    proven("unmappable names with /ToUnicode", doc_with(type1(&diffs("1 /g1 /g2 /g3"), "/ToUnicode 21 0 R"), vec![(21, to_unicode.clone())], &show("<010203>")));
+    // uniXXXX naming: a surrogate is no character, a character is.
+    opaque("uniD800", doc_with(type1(&diffs("1 /uniD800"), ""), vec![], &show("<01>")));
+    proven("uni0053", doc_with(type1(&diffs("1 /uni0053"), ""), vec![], &show("<01>")));
+    // A malformed /Differences leaves every code unread.
+    opaque("name before any code", doc_with(type1(&diffs("/S"), ""), vec![], &show("(abc)")));
+    opaque("code out of range", doc_with(type1(&diffs("300 /S"), ""), vec![], &show("(abc)")));
+    // No /Encoding: a non-embedded non-symbolic font is StandardEncoding; an embedded or symbolic
+    // font's codes live in the font program, which is not read.
+    let desc = |flags: u32, file: &str| (31, format!("<< /Type /FontDescriptor /FontName /ABCDEF+Test /Flags {flags} {file} >>").into_bytes());
+    let described = type1("/FontDescriptor 31 0 R", "");
+    proven("non-embedded, no /Encoding", doc_with(described.clone(), vec![desc(32, "")], &show("(abc)")));
+    opaque("embedded, no /Encoding", doc_with(described.clone(), vec![desc(32, "/FontFile 32 0 R"), (32, stream_body("", b"%!PS-AdobeFont-1.0"))], &show("(abc)")));
+    opaque("symbolic, no /Encoding", doc_with(described.clone(), vec![desc(4, "")], &show("(abc)")));
+    proven("embedded with /ToUnicode", doc_with(type1("/FontDescriptor 31 0 R /ToUnicode 21 0 R", ""), vec![desc(32, "/FontFile 32 0 R"), (32, stream_body("", b"%!PS-AdobeFont-1.0")), (21, to_unicode.clone())], &show("<010203>")));
+    // Type 3: glyph names come only from /Differences; unmappable names are opaque, readable ones are text.
+    let type3 = |names: &str| {
+        let procs: String = names.split_whitespace().map(|n| format!("{n} 33 0 R ")).collect();
+        format!("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 600] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << {procs} >> /Encoding << /Type /Encoding /Differences [1 {names}] >> /FirstChar 1 /LastChar 10 /Widths [600 600 600 600 600 600 600 600 600 600] >>")
+            .into_bytes()
+    };
+    let glyph = (33, stream_body("", b"600 0 0 0 600 600 d1 0 0 600 600 re f"));
+    opaque("Type 3, unmappable names", doc_with(type3("/g1 /g2"), vec![glyph.clone()], &show("<0102>")));
+    let read = proven("Type 3, readable names", doc_with(type3(DIFF_NAMES), vec![glyph.clone()], &show(DIFF_CODES)));
+    assert_eq!(read.proof.kept_text_collisions.len(), 1, "the Type 3 text is read: the kept instance is a collision, not invisible");
+}
+
+/// V4-08: the /Differences array is PDF syntax. Names are read after #xx escapes, a comment hides what
+/// is inside it, and glyph-name conventions (uniXXXX, uXXXX, suffix after a period, underscore
+/// components, either hex case) apply with any white space; text spelled this hostile way is still found.
+#[test]
+fn differences_names_are_read_as_pdf_syntax() {
+    let spellings: [(&str, &str); 3] = [
+        ("name escapes", "1 /#53 /#45 /#43 /#52 /#54 /hyphen /#41 /#4C /#50 /#48"),
+        ("comment decoys", "1 /S % 9 /Z /Q\n /E /C /R /T /hyphen /A /L /P /H"),
+        ("conventions, hex case and white space", "1\n/uni0053\t/u0045\r/C.alt /R_ /T /hyphen.sc /uni0041 /L /P /uni0048"),
+    ];
+    for (what, d) in spellings {
+        let p = verify_secret(&diff_ap_doc(d));
+        assert!(p.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedText { object: 13 })), "{what}: {:?}", p.hits);
+    }
+    // Decoys that must not read as the text: one glyph differs, the whole run starts one code later.
+    for (what, d) in [("one glyph differs", "1 /S /E /C /R /T /hyphen /A /L /P /X"), ("code moved", "2 /S /E /C /R /T /hyphen /A /L /P /H")] {
+        let p = verify_secret(&diff_ap_doc(d));
+        assert!(p.hits.is_empty(), "{what}: {:?}", p.hits);
+    }
+}
+
+/// V4-02 for the encoding reader. Reading the longest legal /Differences array is charged to the
+/// decoded-byte budget, so a document that names thousands of such fonts runs out of
+/// `max_decoded_total` (aggregate_over_budget) instead of spending seconds per font; a font dictionary
+/// written directly into the resources and named by 50 000 Tf operators is read once; an array longer
+/// than any legal one and codes at the integer edges (dims_u32_max) leave the font unread.
+#[test]
+fn hostile_differences_are_bounded() {
+    // 15 blocks of 128 names: 1935 elements, the code restarts at 0 in each block.
+    let blocks: String = (0..15).map(|_| format!("0 {}", "/A ".repeat(128))).collect();
+    let font = |differences: &str| format!("<< /Type /Font /Subtype /Type1 /BaseFont /Test /Encoding << /Differences [{differences}] >> >>");
+    let zzz = [b"zzzzzz".to_vec()];
+
+    let n_fonts: u32 = 40;
+    let mut objs = minimal_objs("", "");
+    let names: Vec<String> = (0..n_fonts).map(|i| format!("/F{i} {} 0 R", 20 + i)).collect();
+    objs[2].1 = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << {} >> >> >>", names.join(" ")).into_bytes();
+    objs[3].1 = stream_body("", (0..n_fonts).map(|i| format!("BT /F{i} 12 Tf (x) Tj ET\n")).collect::<String>().as_bytes());
+    objs.extend((0..n_fonts).map(|i| (20 + i, font(&blocks).into_bytes())));
+    let pdf = build(&objs, "", b"");
+    let tight = Limits { max_decoded_total: 2 << 20, ..Limits::default() };
+    assert_eq!(verify_payload_absent(&pdf, &zzz, &tight, &token()).unwrap_err(), PressError::InputLimit("decoded_total"));
+    let p = verify_payload_absent(&pdf, &zzz, &Limits::default(), &token()).unwrap();
+    assert!(p.is_clean(), "within the default budget the fonts read: {:?}", p.not_proven_reasons());
+
+    // One direct font, 50 000 Tf: charged once. Uncached it would cost 50 000 x 125 KiB of budget.
+    let mut objs = minimal_objs("", "");
+    objs[2].1 = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 {} >> >> >>", font(&blocks)).into_bytes();
+    objs[3].1 = stream_body("", "BT /F1 12 Tf (x) Tj ET\n".repeat(50_000).as_bytes());
+    let p = verify_payload_absent(&build(&objs, "", b""), &zzz, &Limits::default(), &token()).unwrap();
+    assert!(p.is_clean(), "{:?}", p.not_proven_reasons());
+
+    // Too long for any legal array, and codes at the integer edges: the font is unread (opaque).
+    let too_long = format!("0 {}", "/A ".repeat(2100));
+    for (what, differences) in [("too long", too_long.as_str()), ("u32 edge", "4294967295 /A"), ("i64 edge", "9223372036854775807 /A"), ("negative", "-1 /A")] {
+        let mut objs = minimal_objs("", "");
+        objs[2].1 = format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 {} >> >> >>", font(differences)).into_bytes();
+        objs[3].1 = stream_body("", b"BT /F1 12 Tf (x) Tj ET");
+        let p = verify_payload_absent(&build(&objs, "", b""), &zzz, &Limits::default(), &token()).unwrap();
+        assert_eq!(p.not_proven_reasons(), vec![NotProven::OpaqueText], "{what}");
+    }
+}

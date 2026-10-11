@@ -1,8 +1,13 @@
 //! Text drawn by content streams (page content, form XObjects, annotation appearances), read
-//! through each font's `/ToUnicode` CMap where there is one. Two views of the same strings:
-//! `all` is what a redaction scan matches (single-byte reading plus ToUnicode text); `mapped` is the
-//! text that ONLY a ToUnicode map reveals (composite-font codes, custom encodings), which a byte
-//! scan cannot see and the payload proof therefore adds.
+//! through each font: the encoding of a simple font (base encoding plus `/Differences`, glyph names
+//! through the Adobe Glyph List, `encoding.rs`) and/or its `/ToUnicode` CMap. Two views of the same
+//! strings: `all` is what a redaction scan matches (single-byte reading plus every other reading);
+//! `mapped` is the text that ONLY a font's encoding or ToUnicode map reveals (composite-font codes,
+//! custom encodings), which a byte scan cannot see and the payload proof therefore adds.
+//! Font-decoding sites: [`read_font`] (font dictionary -> [`FontText`]) and the show branch of
+//! [`Walker::interp`] (string -> readings); the redaction selector decodes with the same
+//! `SimpleEncoding` (`redaction.rs`, `Interp::font` / `unicode_of`) and the proof's code spellings use
+//! `FontText` (`sanitized_save.rs`, `code_variants`).
 //!
 //! One interpreter, [`Walker`], serves the payload proof and the text-field appearance scan. It
 //! follows what a viewer draws, not what a dictionary lists:
@@ -23,6 +28,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 use crate::cmap::{Cmap, parse_to_unicode};
 use crate::content::{Op, parse_content_ext};
+use crate::encoding::{SimpleEncoding, expand_ligatures, is_composite};
 use crate::error::{Limits, PressError, Result};
 use crate::filters;
 use crate::reader::Entry;
@@ -34,17 +40,25 @@ use std::rc::Rc;
 pub(crate) type Objs = BTreeMap<u32, Entry>;
 
 pub(crate) enum FontText {
-    /// Single-byte codes read as Latin-1 (what the byte-level proof sees).
-    Simple,
-    /// `/ToUnicode` decodes the codes.
-    Cmap { cmap: Cmap, composite: bool },
+    /// One-byte codes: read through the font's encoding (base encoding, `/Differences`, glyph names),
+    /// through `/ToUnicode` where there is one, and as Latin-1 (what the byte-level proof sees). A code
+    /// none of them reads makes the text opaque.
+    Simple { enc: SimpleEncoding, cmap: Option<Cmap> },
+    /// Composite font: `/ToUnicode` decodes the codes.
+    Composite { cmap: Cmap },
     /// Composite font without a usable `/ToUnicode`: the codes cannot be read.
     Opaque,
 }
 
-/// Fonts already read, by font object number.
+/// Fonts already read: by font object number, and (for font dictionaries written directly into a
+/// resource dictionary) by the dictionary's address. The address entries are only valid while the
+/// object map is not mutated, so every [`Walker`] starts with none (a hostile content stream with a
+/// million `Tf` operators must not rebuild a direct font's encoding a million times).
 #[derive(Default)]
-pub(crate) struct FontCache(BTreeMap<u32, Rc<FontText>>);
+pub(crate) struct FontCache {
+    by_object: BTreeMap<u32, Rc<FontText>>,
+    by_address: BTreeMap<usize, Rc<FontText>>,
+}
 
 pub(crate) struct Shown {
     pub all: Vec<char>,
@@ -79,36 +93,44 @@ pub(crate) fn show_strings(op: &Op) -> Vec<&[u8]> {
 }
 
 fn read_font(objs: &Objs, fd: &Dict, limits: &Limits, budget: &mut usize) -> Result<FontText> {
-    let composite = fd.get("Subtype").is_some_and(|s| s.is_name("Type0"));
+    let composite = is_composite(fd);
+    let mut cmap = None;
     if let Some(Object::Stream(tu)) = fd.get("ToUnicode").map(|v| res(objs, v))
         && filters::is_decodable(&tu.dict)
     {
         match filters::decode_stream(tu, limits, budget) {
-            Ok(data) => {
-                if let Some(cmap) = parse_to_unicode(&data) {
-                    return Ok(FontText::Cmap { cmap, composite });
-                }
-            }
+            Ok(data) => cmap = parse_to_unicode(&data),
             Err(e @ (PressError::InputLimit(_) | PressError::Canceled)) => return Err(e),
             Err(_) => {}
         }
     }
-    Ok(if composite { FontText::Opaque } else { FontText::Simple })
+    Ok(match (composite, cmap) {
+        (true, Some(cmap)) => FontText::Composite { cmap },
+        (true, None) => FontText::Opaque,
+        (false, cmap) => FontText::Simple { enc: SimpleEncoding::of_font(objs, fd, budget)?, cmap },
+    })
 }
 
 /// The font a font-dictionary value selects (`None`: not a font dictionary).
 fn font_of(objs: &Objs, v: &Object, limits: &Limits, budget: &mut usize, cache: &mut FontCache) -> Result<Option<Rc<FontText>>> {
     let key = if let Object::Ref(r) = v { Some(r.num) } else { None };
     if let Some(k) = key
-        && let Some(hit) = cache.0.get(&k)
+        && let Some(hit) = cache.by_object.get(&k)
     {
         return Ok(Some(Rc::clone(hit)));
     }
     let Some(fd) = res(objs, v).as_dict() else { return Ok(None) };
-    let font = Rc::new(read_font(objs, fd, limits, budget)?);
-    if let Some(k) = key {
-        cache.0.insert(k, Rc::clone(&font));
+    let address = std::ptr::from_ref(fd) as usize;
+    if key.is_none()
+        && let Some(hit) = cache.by_address.get(&address)
+    {
+        return Ok(Some(Rc::clone(hit)));
     }
+    let font = Rc::new(read_font(objs, fd, limits, budget)?);
+    match key {
+        Some(k) => cache.by_object.insert(k, Rc::clone(&font)),
+        None => cache.by_address.insert(address, Rc::clone(&font)),
+    };
     Ok(Some(font))
 }
 
@@ -212,7 +234,8 @@ pub(crate) struct Walker<'o> {
 }
 
 impl<'o> Walker<'o> {
-    pub(crate) fn new(objs: &'o Objs, limits: &'o Limits, budget: usize, fonts: FontCache) -> Self {
+    pub(crate) fn new(objs: &'o Objs, limits: &'o Limits, budget: usize, mut fonts: FontCache) -> Self {
+        fonts.by_address.clear();
         Self {
             objs,
             limits,
@@ -422,24 +445,35 @@ impl<'o> Walker<'o> {
                     for s in strs {
                         match &st.font {
                             FontSel::Known(f) => match f.as_ref() {
-                                FontText::Cmap { cmap, composite } => {
+                                FontText::Composite { cmap } => {
                                     let decoded = cmap.decode(s);
-                                    let raw = latin1(s);
                                     rec.all.extend(decoded.iter().copied());
-                                    if !*composite {
-                                        rec.all.push(' ');
-                                        rec.all.extend(raw.iter().copied());
-                                    }
-                                    if *composite || decoded != raw {
-                                        rec.mapped.extend(decoded);
-                                        rec.mapped.push(' ');
-                                    }
+                                    rec.mapped.extend(decoded);
+                                    rec.mapped.push(' ');
                                 }
                                 FontText::Opaque => {
                                     rec.opaque |= !s.is_empty();
                                     rec.all.extend(latin1(s));
                                 }
-                                FontText::Simple => rec.all.extend(latin1(s)),
+                                FontText::Simple { enc, cmap } => {
+                                    // Every reading of the string a viewer may draw: the encoding's (and
+                                    // with ligature names spelled out), the font's /ToUnicode, and the
+                                    // bytes as Latin-1. A reading that equals the bytes adds nothing.
+                                    let raw = latin1(s);
+                                    let read = enc.read(s, cmap.as_ref());
+                                    rec.opaque |= read.opaque;
+                                    let mut readings: Vec<Vec<char>> = Vec::new();
+                                    readings.extend(expand_ligatures(&read.text));
+                                    readings.push(read.text);
+                                    readings.extend(cmap.as_ref().map(|c| c.decode(s)));
+                                    for reading in readings.into_iter().filter(|r| !r.is_empty() && *r != raw) {
+                                        rec.all.extend(reading.iter().copied());
+                                        rec.all.push(' ');
+                                        rec.mapped.extend(reading);
+                                        rec.mapped.push(' ');
+                                    }
+                                    rec.all.extend(raw);
+                                }
                             },
                             // Page content naming a font its resources do not hold: what a viewer
                             // substitutes is unknown, so the text cannot be checked. Appearance

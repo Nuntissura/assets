@@ -574,8 +574,18 @@ pub fn verify_payload_absent_unicode(
     verify_with_variants(output, variants_unicode(needles, unicode), limits, cancel)
 }
 
-/// Font-code spellings (raw and hex) of the needle texts under each of `fonts` that has a
-/// `/ToUnicode` map.
+/// The codes under which `font` draws `text`: through its `/ToUnicode` map (composite and simple
+/// fonts) and through the encoding of a simple font (base encoding, `/Differences`).
+fn font_codes(font: &FontText, text: &[char]) -> Vec<Vec<u8>> {
+    match font {
+        FontText::Composite { cmap } => cmap.encode(text).into_iter().collect(),
+        FontText::Simple { enc, cmap } => enc.encode(text).into_iter().chain(cmap.as_ref().and_then(|c| c.encode(text))).collect(),
+        FontText::Opaque => Vec::new(),
+    }
+}
+
+/// Font-code spellings (raw and hex) of the needle texts under each of `fonts` that can encode
+/// them (test `differences_encoded_text_is_found_proven_and_redacted` for the encoding side).
 fn code_variants(
     fonts: &[Rc<FontText>],
     texts: &[(usize, Vec<char>, bool)],
@@ -583,16 +593,16 @@ fn code_variants(
 ) -> Vec<Variant> {
     let mut out: Vec<Variant> = Vec::new();
     for f in fonts {
-        let FontText::Cmap { cmap, .. } = f.as_ref() else { continue };
         for (needle, text, _) in texts {
-            if out.len() >= MAX_CODE_VARIANTS {
-                return out;
-            }
-            let Some(codes) = cmap.encode(text).filter(|c| !c.is_empty()) else { continue };
-            // Content streams usually write codes as hex strings: the hex spellings too.
-            for (bytes, hex) in [(hex_of(&codes, true), true), (hex_of(&codes, false), true), (codes, false)] {
-                if !vars.iter().chain(out.iter()).any(|v| v.needle_index == *needle && v.bytes == bytes) {
-                    out.push(Variant { needle_index: *needle, bytes, token: false, text: None, hex });
+            for codes in font_codes(f, text).into_iter().filter(|c| !c.is_empty()) {
+                if out.len() >= MAX_CODE_VARIANTS {
+                    return out;
+                }
+                // Content streams usually write codes as hex strings: the hex spellings too.
+                for (bytes, hex) in [(hex_of(&codes, true), true), (hex_of(&codes, false), true), (codes.clone(), false)] {
+                    if !vars.iter().chain(out.iter()).any(|v| v.needle_index == *needle && v.bytes == bytes) {
+                        out.push(Variant { needle_index: *needle, bytes, token: false, text: None, hex });
+                    }
                 }
             }
         }
