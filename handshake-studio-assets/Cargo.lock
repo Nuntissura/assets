@@ -962,6 +962,7 @@ dependencies = [
  "hsk-studio-motion",
  "hsk-studio-observe",
  "rquickjs",
+ "windows-sys",
 ]
 
 [[package]]

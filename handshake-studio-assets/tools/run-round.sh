@@ -32,10 +32,22 @@
 #              unit's doctests without a verdict NOT_RUN, and the unit's run exit is 124. Compiling the crate before
 #              its first doctest is not covered.
 #   fixture    .config/oracle-fixtures.toml, built before the other units when a `needed_by` crate is selected:
-#              cargo build --offline --locked of the standalone fixture package into <target-dir>/fixtures/<id>, then
-#              placed with MANIFEST.json (library sha256, source sha256, round sha) under the oracle corpus root, where
-#              tests find it via .config/oracle-corpus.toml (no env vars); a build failure counts as a unit build
-#              failure, an absent corpus root is recorded corpus_absent (the tests then report NOT_PROVEN).
+#              cargo build --offline --locked of the standalone fixture package into <target-dir>/fixtures/<id> (the
+#              run's own target), then placed under the oracle corpus root at the content-addressed
+#              <dest>/sha256/<library sha256>/<file> (written only when absent or different; never replaces other
+#              bytes) with <dest>/MANIFEST.json (library = that relative path, sha256, source sha256, round sha;
+#              atomic replace), where tests find it via .config/oracle-corpus.toml (no env vars). The corpus is
+#              hashed AFTER placement; round.json "fixtures" binds library path, sha256 and MANIFEST.json sha256 and
+#              re-verifies both after the units ("binding_intact"; changed = exit 76). A build failure counts as a
+#              unit build failure; an absent corpus root is recorded corpus_absent (the tests then report NOT_PROVEN).
+# Disk-wide build lock (CX-984-002, tools/disk-build-lock.sh): held from the first build to the end of the run (all
+#   cargo calls, the python fixture build included); root from STUDIO_DISK_BUILD_LOCK_DIR or the walk-up of
+#   .config/disk-build-lock.toml (they must agree); waits print to stderr; results/disk-lock.json and round.json
+#   "disk_lock" record root, token, waited_s, a broken stale lock; giving up (STUDIO_DISK_BUILD_LOCK_TIMEOUT_S,
+#   default 7200) exits 75.
+# Tree binding: <target-dir>/.studio-workspace-root binds the target dir to ONE workspace root (`cargo
+#   locate-project --workspace` output; the team's studio-env.sh uses the same marker); another root is refused
+#   (exit 2), because trees sharing a target reuse each other's artifacts by mtime.
 # NOT_PROVEN: a test that cannot prove its claim on this host (no GPU adapter, oracle input absent, ...) prints a
 #   line starting `NOT_PROVEN:` (leading spaces allowed) followed by the reason, and may pass. Every such line in a
 #   nextest unit's captured output (junit system-out/system-err, stored for passing tests) is collected into
@@ -54,11 +66,12 @@
 #   "complete": false, the exit code and the reason (raw files kept).
 # Env: sets CARGO_TARGET_DIR, TMP/TEMP/TMPDIR (<target-dir>/../tmp), CARGO_PROFILE_{DEV,TEST}_DEBUG,
 #   CARGO_TERM_COLOR; unsets every HSK_* variable. Nothing else is required from the caller (python 3.11+).
-# Exit: 2 refused, 75 step 0 drift (infrastructure), 72 step 0 machine-local path (V4-03), 71 step 0 new
-#   frozen-duplicate site (V4-05), 70 results aggregation failed, else the first failing unit
+# Exit: 2 refused, 75 step 0 drift or disk build lock wait gave up (infrastructure), 72 step 0 machine-local path
+#   (V4-03), 71 step 0 new frozen-duplicate site (V4-05), 70 results aggregation failed, else the first failing unit
 #   build's exit code (default unit first), else the first failing test run's exit code (124 = doctest per-test
-#   timeout), else 74 when a declared feature-matrix unit is absent at the candidate, else 73 when any test
-#   reported NOT_PROVEN, else 0. Validators gate on round.json "exit" (== process exit) and "not_proven".
+#   timeout), else 76 when an oracle fixture binding changed during the run, else 74 when a declared feature-matrix
+#   unit is absent at the candidate, else 73 when any test reported NOT_PROVEN, else 0. Validators gate on
+#   round.json "exit" (== process exit), "not_proven" and "fixtures"[].binding_intact.
 set -euo pipefail
 
 reason=""
@@ -92,6 +105,41 @@ py=$(command -v python || command -v python3) || die "python 3.11+ required"
 root=$(abspath "$(dirname "${BASH_SOURCE[0]}")/..")
 target=$(abspath "$target")
 results=$(abspath "$results")
+# Disk-wide build lock (tools/disk-build-lock.sh). The round holds it for its whole run, so its cargo calls (and the
+# python fixture build) use the real cargo: drop a cargo wrapper function a caller may have exported.
+source "$root/tools/disk-build-lock.sh"
+unset -f cargo 2>/dev/null || true
+lock_root="${STUDIO_DISK_BUILD_LOCK_DIR:-}"
+cfg_lock=$("$py" -X utf8 -I - "$root" "$root/.config/disk-build-lock.toml" <<'PY'
+import pathlib, re, sys
+root, cfg = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+if not cfg.exists():
+    sys.exit(0)
+kv = {}
+for line in cfg.read_text(encoding="utf-8").splitlines():
+    m = re.fullmatch(r'\s*([A-Za-z0-9_-]+)\s*=\s*(?:"([^"]*)"|(\d+))\s*', line)
+    if m:
+        kv[m.group(1)] = m.group(2) if m.group(2) is not None else int(m.group(3))
+    elif line.strip() and not line.lstrip().startswith("#"):
+        sys.exit(f"run-round: disk-build-lock.toml: not a `key = value` line: {line!r}")
+if kv.get("schema") != "hsk.studio.disk-build-lock@1" or not all(isinstance(kv.get(k), str) for k in ("search", "lock-dir")) \
+        or not isinstance(kv.get("max-ancestors"), int):
+    sys.exit("run-round: disk-build-lock.toml needs schema hsk.studio.disk-build-lock@1, search, lock-dir, max-ancestors")
+for k in ("search", "lock-dir"):
+    p = pathlib.PurePosixPath(kv[k])
+    if p.is_absolute() or ".." in p.parts or ":" in kv[k]:
+        sys.exit(f"run-round: disk-build-lock.toml {k} must be a relative path without '..'")
+found = next((a / kv["search"] for a in [root, *root.parents][: kv["max-ancestors"] + 1] if (a / kv["search"]).is_dir()), None)
+if found:
+    print((found / kv["lock-dir"]).as_posix())
+PY
+) || die "invalid .config/disk-build-lock.toml"
+if [ -n "$lock_root" ] && [ -n "$cfg_lock" ] && [ "$(abspath "$lock_root")" != "$(abspath "$cfg_lock")" ]; then
+  die "STUDIO_DISK_BUILD_LOCK_DIR=$lock_root differs from the .config/disk-build-lock.toml root $cfg_lock"
+fi
+lock_root=${lock_root:-$cfg_lock}
+[ -n "$lock_root" ] || die "no disk build lock root (.config/disk-build-lock.toml search not found; or set STUDIO_DISK_BUILD_LOCK_DIR)"
+lock_root=$(abspath "$lock_root")
 for p in "$target" "$results"; do
   case "$p" in [cC]:*|/c/*) die "refusing C: path $p (build output and temp stay off C:)" ;; esac
   under "$p" "$root" && die "refusing path inside the workspace: $p"
@@ -130,6 +178,7 @@ started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # minimal record (complete=false, exit, reason) so a stalled or refused run is never silent.
 finish() {
   local rc=$?
+  dbl_release
   [ -e "$results/round.json" ] && return
   {
     printf '{\n "schema": "hsk.studio.round-run@2",\n "complete": false,\n "exit": %s,\n "reason": %s,\n' "$rc" "$(jstr "${reason:-exit $rc}")"
@@ -142,6 +191,19 @@ finish() {
 }
 trap finish EXIT
 trap 'reason="interrupted"; exit 130' INT TERM HUP
+
+# Tree binding: Cargo names workspace-member artifacts by their path relative to the workspace root, so two trees
+# building into one target dir reuse each other's artifacts by mtime (stale artifacts). The target dir is bound to
+# ONE workspace root by <target>/.studio-workspace-root (what `cargo locate-project --workspace` prints; the
+# team's studio-env.sh uses the same marker); a different root is refused.
+ws_manifest=$(cd "$root" && cargo locate-project --workspace --message-format plain 2>/dev/null) \
+  || die "cargo locate-project failed in $root"
+if [ -f "$target/.studio-workspace-root" ]; then
+  bound=$(cat "$target/.studio-workspace-root")
+  [ "$bound" = "$ws_manifest" ] || die "target dir $target is bound to $bound, not $ws_manifest (use one target dir per tree)"
+else
+  printf '%s' "$ws_manifest" >"$target/.studio-workspace-root"
+fi
 
 # Environment: only what this script sets.
 unset_vars=$(compgen -e | grep '^HSK_' || true)
@@ -298,14 +360,17 @@ for kind, crate, feats, status in feature_units + doc_units:
     print(f"{kind}\t{crate}\t{feats or '-'}\t{status}")
 PY
 
-# Oracle corpus (read-only): resolve the commit-free root as tests do (.config/oracle-corpus.toml) and bind its
-# content (oracle-corpus.json + oracle-corpus.manifest.txt); an absent root is recorded, not a failure here.
-"$py" -X utf8 -I - "$root" "$root/.config/oracle-corpus.toml" "$results/oracle-corpus.manifest.txt" \
+# Oracle corpus: resolve the commit-free root as tests do (.config/oracle-corpus.toml): `corpus_json resolve` before
+# the fixtures (root only), `corpus_json bind` after they are placed, so the bound content (oracle-corpus.json +
+# oracle-corpus.manifest.txt) is what the tests load; an absent root is recorded, not a failure here.
+corpus_json() {
+"$py" -X utf8 -I - "$root" "$root/.config/oracle-corpus.toml" "$results/oracle-corpus.manifest.txt" "$1" \
   >"$results/oracle-corpus.json" <<'PY' || die "invalid .config/oracle-corpus.toml (see above)"
 import hashlib, json, pathlib, re, sys
 
 sys.stdout.reconfigure(newline="\n")
 root, cfg, manifest_out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+bind = sys.argv[4] == "bind"
 if not cfg.exists():
     print(json.dumps({"config": None, "present": False}))
     sys.exit(0)
@@ -324,8 +389,8 @@ if pathlib.PurePosixPath(search).is_absolute() or ".." in pathlib.PurePosixPath(
     sys.exit("run-round: oracle-corpus.toml search must be a relative path without '..'")
 found = next((a / search for a in [root, *root.parents][: limit + 1] if (a / search).is_dir()), None)
 out = {"config": ".config/oracle-corpus.toml", "search": search, "max_ancestors": limit, "present": found is not None,
-       "root": found.as_posix() if found else None}
-if found:
+       "root": found.as_posix() if found else None, "bound": bind}
+if found and bind:
     lines, total = [], 0
     for f in sorted((p for p in found.rglob("*") if p.is_file()), key=lambda p: p.relative_to(found).as_posix()):
         h = hashlib.sha256()
@@ -339,6 +404,8 @@ if found:
                manifest_sha256=hashlib.sha256("".join(lines).encode("utf-8")).hexdigest())
 print(json.dumps(out))
 PY
+}
+corpus_json resolve
 
 profile=default
 [ $canary -eq 1 ] && profile=canary
@@ -424,9 +491,19 @@ doctest_unit() {
 
 if [ $all -eq 1 ]; then sel=(--workspace); else sel=(); for c in "${crates[@]}"; do sel+=(-p "$c"); done; fi
 doctest_budget=$(awk -F'\t' '$1 == "config" && $2 == "doctest-per-test-timeout-s" { print $3 }' "$plan")
+# Disk-wide build lock: held from the first build (the fixture) to the end of the run (released by finish).
+lock_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+dbl_acquire "$lock_root" "run-round $(basename "${owner_dir:-$root}")" "run-round $([ $all -eq 1 ] && echo --all || echo "${crates[*]}") sha ${identity_sha:0:12} results $results" run-round \
+  || { reason="disk build lock: gave up waiting ($lock_root)"; exit 75; }
+printf '{"root": %s, "token": %s, "nested": %s, "waited_s": %s, "broke_stale": %s, "requested_at": %s, "acquired_at": %s}\n' \
+  "$(jstr "$lock_root")" "$(jstr "$DBL_TOKEN")" "$([ "$DBL_NESTED" -eq 1 ] && echo true || echo false)" "$DBL_WAITED_S" \
+  "$(jstr "$DBL_BROKE")" "$(jstr "$lock_started")" "$(jstr "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" >"$results/disk-lock.json"
 set +e
-# Oracle fixtures (.config/oracle-fixtures.toml): built before any unit and placed in the corpus root (with
-# MANIFEST.json) so tests find them via the corpus convention; rows join units.tsv after the default unit.
+# Oracle fixtures (.config/oracle-fixtures.toml): built before any unit into the run's own target dir, then placed in
+# the corpus root under a content-addressed name (<dest>/sha256/<library sha256>/<file>, written only when absent or
+# different, never replacing other content) with <dest>/MANIFEST.json naming that file (atomic replace), so tests find
+# them via the corpus convention. fixtures/<id>.json binds library path, sha256 and MANIFEST.json sha256; the corpus
+# is hashed after placement, and both are re-verified after the units (fixture_binding; changed = exit 76).
 mkdir -p "$results/fixtures"
 "$py" -X utf8 -I - "$root" "$results" "$target" "$identity_sha" "$all" ${crates[@]+"${crates[@]}"} \
   >"$results/fixtures/units.tsv" 2>"$results/fixtures/step.stderr.txt" <<'PY'
@@ -468,23 +545,34 @@ for fx in cfg.get("fixture", []):
         name = lib_file.format(fx["lib"])
         built = tdir / "debug" / name
         data = built.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
         dest = pathlib.Path(corpus["root"]) / fx["dest"]
-        dest.mkdir(parents=True, exist_ok=True)
-        tmp = dest / f".{name}.tmp-{os.getpid()}"
-        tmp.write_bytes(data)
-        os.replace(tmp, dest / name)
-        record = {"schema": "hsk.studio.oracle-fixture@1", "id": fid, "library": name,
-                  "sha256": hashlib.sha256(data).hexdigest(), "source_manifest": fx["manifest"],
+        rel = f"sha256/{digest}/{name}"   # content-addressed: a name never holds other bytes
+        lib_path = dest / rel
+        placed = "existing"
+        if not lib_path.is_file() or hashlib.sha256(lib_path.read_bytes()).hexdigest() != digest:
+            lib_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = lib_path.parent / f".{name}.tmp-{os.getpid()}"
+            tmp.write_bytes(data)
+            os.replace(tmp, lib_path)
+            placed = "written"
+        record = {"schema": "hsk.studio.oracle-fixture@1", "id": fid, "library": rel,
+                  "sha256": digest, "source_manifest": fx["manifest"],
                   "source_sha256": tree_sha(manifest.parent / "src"), "round_sha": sha,
                   "built_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        manifest_bytes = (json.dumps(record, indent=1) + "\n").encode("utf-8")
         tmp = dest / f".MANIFEST.json.tmp-{os.getpid()}"
-        tmp.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8", newline="\n")
+        tmp.write_bytes(manifest_bytes)
         os.replace(tmp, dest / "MANIFEST.json")
-        (res / "fixtures" / f"{safe}.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8",
+        binding = dict(record, manifest_path=f"{fx['dest']}/MANIFEST.json",
+                       manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+                       library_path=f"{fx['dest']}/{rel}", placed=placed, built_from=built.as_posix())
+        (res / "fixtures" / f"{safe}.json").write_text(json.dumps(binding, indent=1) + "\n", encoding="utf-8",
                                                        newline="\n")
     print(f"fixture:{fid}\tfixture\t{fx['needed_by'][0]}\t-\t{status}\t{rc}\t-\t{dest_rel}")
 PY
 [ $? -eq 0 ] || { reason="oracle fixture step failed (fixtures/step.stderr.txt)"; cat "$results/fixtures/step.stderr.txt" >&2; exit 2; }
+corpus_json bind   # after placement: binds the corpus the tests will load
 nextest_unit "$results" - "${sel[@]}"
 rec default nextest '*' - run "$U_BUILD" "$U_RUN" .
 cat "$results/fixtures/units.tsv" >>"$units"
@@ -606,6 +694,23 @@ policy_file = res / "step0.policy.json"
 policy = json.loads(policy_file.read_text(encoding="utf-8")) if policy_file.exists() else None
 corpus_file = res / "oracle-corpus.json"
 corpus = json.loads(corpus_file.read_text(encoding="utf-8")) if corpus_file.exists() else {"present": False}
+# Fixture binding: what the placement step bound must still be what MANIFEST.json and the library hold after the units.
+fixtures = []
+for f in sorted((res / "fixtures").glob("*.json")) if (res / "fixtures").is_dir() else []:
+    b = json.loads(f.read_text(encoding="utf-8"))
+    if b.get("schema") != "hsk.studio.oracle-fixture@1" or not corpus.get("root"):
+        continue
+    croot = pathlib.Path(corpus["root"])
+    def sha_of(p):
+        return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+    now_manifest, now_library = sha_of(croot / b["manifest_path"]), sha_of(croot / b["library_path"])
+    b["after_units"] = {"manifest_sha256": now_manifest, "library_sha256": now_library}
+    b["binding_intact"] = now_manifest == b["manifest_sha256"] and now_library == b["sha256"]
+    fixtures.append(b)
+disk_lock_file = res / "disk-lock.json"
+disk_lock = json.loads(disk_lock_file.read_text(encoding="utf-8")) if disk_lock_file.exists() else None
+if any(not b["binding_intact"] for b in fixtures) and code in (0, 73, 74):
+    code = 76
 mx = matrix.read_bytes() if matrix.exists() else b""
 absent = [u["unit"] + " (" + u["status"] + ")" for u in units if u["status"].startswith(("feature_absent", "crate_absent"))]
 round_json = {
@@ -617,7 +722,7 @@ round_json = {
     "started_at": E["RR_STARTED"], "ended_at": E["RR_ENDED"],
     "build_exit": default["build_exit"], "run_exit": default["run_exit"], "summary": default.get("summary", ""),
     "canary_filter": E["RR_FILTER"], "exit": code,
-    "not_proven": not_proven, "oracle_corpus": corpus,
+    "not_proven": not_proven, "oracle_corpus": corpus, "fixtures": fixtures, "disk_lock": disk_lock,
     "step0_policy": None if policy is None else {
         "machine_path_files_with_hits": policy["machine_paths"]["files_with_hits"],
         "machine_path_pins_dropped": policy["machine_paths"]["pins_dropped"],
@@ -644,9 +749,12 @@ for u in units:
           u["not_run"], u["not_proven"]))
 for n in not_proven:
     print("  NOT_PROVEN %s %s: %s" % (n["unit"], n["test"], n["reason"]))
-print("SUMMARY exit=%d units=%d not_proven=%d absent=%d timed_out=%d oracle_corpus=%s" % (code, len(units),
-      len(not_proven), len(round_json["absent_units"]), len(round_json["timed_out_tests"]),
-      corpus.get("root") or "absent"))
+for b in fixtures:
+    print("  FIXTURE %s %s sha256 %s manifest %s intact=%s placed=%s" % (b["id"], b["library_path"], b["sha256"][:16],
+          b["manifest_sha256"][:16], b["binding_intact"], b["placed"]))
+print("SUMMARY exit=%d units=%d not_proven=%d absent=%d timed_out=%d oracle_corpus=%s disk_lock_waited_s=%s" % (code,
+      len(units), len(not_proven), len(round_json["absent_units"]), len(round_json["timed_out_tests"]),
+      corpus.get("root") or "absent", (disk_lock or {}).get("waited_s")))
 PY
   reason="results aggregation failed (raw files kept)"
   echo "run-round: $reason" >&2

@@ -504,7 +504,7 @@ const APPROVED: &[(&str, &[&str])] = &[
     ("hsk-studio-score-device", &["cpal"]),
     ("hsk-studio-score-plugin", &["clack-host"]),
     ("hsk-studio-interop-lrcat", &["sha2"]),
-    ("hsk-studio-motion-js", &["rquickjs"]),
+    ("hsk-studio-motion-js", &["rquickjs", "windows-sys"]),
 ];
 // END GENERATED APPROVED
 // Isolated native/FFI provider owners (STUDIO_MODULES): only these may hold `-sys`/native-ffi closure records.
