@@ -175,7 +175,14 @@ fn apply_edits_in_place(
             continue;
         }
         let is_group = folio.kind == "group" && matches!(folio.payload, Payload::Group);
-        let before = imported_look(layer, is_group);
+        let mut before = imported_look(layer, is_group);
+        // The importer unclips a layer clipped to an adjustment layer (`clip_to_adjustment_not_supported`)
+        // while the file keeps its clipping byte: compare against the value it wrote to Folio, so an
+        // unedited export leaves that byte alone (test
+        // `clipped_to_adjustment_layer_is_unclipped_with_a_typed_loss_and_exports_unchanged`).
+        if let Some(imported) = proposal.snapshot.document().layers.iter().find(|l| l.layer_id == entry.layer_id) {
+            before.clipped = imported.effective_appearance().clipped;
+        }
         let look = folio.effective_appearance();
         if look.opacity != before.opacity {
             layer.opacity = percent_to_byte(look.opacity);

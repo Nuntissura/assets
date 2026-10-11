@@ -24,6 +24,14 @@
 //! converter (tests `gray_black_point_compensation_is_applied_when_the_profile_black_is_not_zero`,
 //! `rgb_intent_and_black_point_compensation_reach_prism_or_are_recorded`). Opacity, fill opacity,
 //! blend mode, clipping, group isolation and the mask reference are written to the Folio layer.
+//!
+//! A mapped adjustment layer is an image `source` operation of the composition graph with its own
+//! edge into the parent group (root layers are listed in `graph.outputs`), so it keeps its
+//! Photoshop stack position as the `input_ordinal` (test
+//! `adjustment_layer_between_raster_layers_keeps_its_stack_position`). Folio refuses a layer clipped
+//! to an adjustment layer; such a layer is imported unclipped with the typed loss
+//! `clip_to_adjustment_not_supported` (test
+//! `clipped_to_adjustment_layer_is_unclipped_with_a_typed_loss_and_exports_unchanged`).
 #![deny(clippy::arithmetic_side_effects)]
 
 use hsk_studio_accord::CancellationToken;
@@ -193,6 +201,22 @@ pub struct LayerExtras {
 pub struct LayerMapEntry {
     pub layer_id: String,
     pub psd_index: usize,
+}
+
+/// One node of a layer stack that takes part in the composition graph: a raster or adjustment
+/// source, or a group's composite. It carries the output port the group edge starts at, the Folio
+/// layer it belongs to, the position of that layer in the wire document and the two facts the
+/// clip-base rule needs.
+#[derive(Clone, Debug)]
+struct StackEntry {
+    out: Value,
+    layer_id: String,
+    psd_index: usize,
+    /// Index of the layer's JSON in `Builder::layers`.
+    slot: usize,
+    /// The `clipped` flag written to the layer's appearance.
+    clipped: bool,
+    adjustment: bool,
 }
 
 /// What a CMYK, Lab or gray (profile) display conversion did. The layer channels stay as read; the
@@ -503,9 +527,11 @@ impl Builder<'_, '_, '_> {
     }
 
     /// Maps an adjustment layer whose block this crate parses to an `adjustment` layer with a
-    /// `PrimitiveReference` payload and its record. Returns `false` (nothing pushed) when the layer
-    /// stays a typed unsupported layer: unmapped key, unreadable record, unknown or `pass` blend key,
-    /// unmapped pixels, or a host resolver that binds no adjustment primitive.
+    /// `PrimitiveReference` payload, its record and a graph `source` operation (Folio accepts an
+    /// adjustment layer as an image source whose stack position is its `input_ordinal`, STU-CMP-092).
+    /// Returns `None` (nothing pushed) when the layer stays a typed unsupported layer: unmapped key,
+    /// unreadable record, unknown or `pass` blend key, unmapped pixels, or a host resolver that binds
+    /// no adjustment primitive.
     fn mapped_adjustment_layer(
         &mut self,
         index: usize,
@@ -513,19 +539,19 @@ impl Builder<'_, '_, '_> {
         block: &crate::layers::TaggedBlock,
         id: &str,
         parent: &Value,
-    ) -> Result<bool> {
+    ) -> Result<Option<StackEntry>> {
         if !self.pixels_mapped || matches!(layer.blend_mode(), None | Some(StudioBlendMode::PassThrough)) {
-            return Ok(false);
+            return Ok(None);
         }
         let path = format!("layer[{index}]/tagged/{}", key_text(block.key));
         let Some(result) = adjust::adjustment(layer, block, self.doc.header.color_mode, self.cfg.limits) else {
-            return Ok(false);
+            return Ok(None);
         };
         let mapped = match result {
             Ok(mapped) => mapped,
             Err(reason) => {
                 self.note(path, LossKind::Unsupported, reason);
-                return Ok(false);
+                return Ok(None);
             }
         };
         let resolver = self.cfg.resolver;
@@ -533,17 +559,22 @@ impl Builder<'_, '_, '_> {
             && resolver.primitive(ADJUSTMENT_SCHEMA, id) == Resolution::Available)
         {
             self.note(path, LossKind::Unsupported, "adjustment_primitive_unresolved");
-            return Ok(false);
+            return Ok(None);
         }
         let mask = self.mask_for(index, layer, id)?;
         let has_mask = mask.is_some();
         let mask_default = layer.mask().map(|m| m.default_color);
         let appearance = Self::appearance_json(layer, false, mask);
+        let slot = self.layers.len();
         self.layers.push(json!({
             "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
             "kind": "adjustment",
             "payload": {"payload_kind": "primitive_reference", "schema_id": ADJUSTMENT_SCHEMA, "object_id": id},
             "visible": layer.visible(), "appearance": appearance,
+        }));
+        self.operations.push(json!({
+            "layer_id": id, "operation_key": "source", "operation_kind": "source",
+            "inputs": [], "outputs": [port("out", "one", "source")],
         }));
         self.record(id, index, layer, mask_default);
         // The record holds the mapped values; the block stays byte-exact in the document.
@@ -551,7 +582,52 @@ impl Builder<'_, '_, '_> {
         self.note(path.clone(), LossKind::Preserved, "adjustment_mapped_to_record");
         self.notes(&path, mapped.notes);
         self.collect_records(index, layer, id, has_mask, Some(mapped.value), false);
-        Ok(true)
+        Ok(Some(StackEntry {
+            out: address(id, "source", "out"),
+            layer_id: id.to_owned(),
+            psd_index: index,
+            slot,
+            clipped: imported_look(layer, false).clipped,
+            adjustment: true,
+        }))
+    }
+
+    /// Folio refuses a layer clipped to an adjustment layer (`Code::AdjustmentClipBase`; its base
+    /// is the nearest earlier stack input that is not itself clipped), and the render-plan IR refuses
+    /// it too. Photoshop allows it (UNVERIFIED), so the importer unclips each such layer in the wire
+    /// document and records `clip_to_adjustment_not_supported` naming the layer and its base. The
+    /// base of a layer is decided by the clip flags as read from the file, so a whole run of layers
+    /// clipped to the same adjustment layer is unclipped together instead of re-clipping to each
+    /// other. `panel_order` is one stack, top-first, as walked. The source record keeps its clipping
+    /// byte (the exporter compares against the written Folio value, test
+    /// `clipped_to_adjustment_layer_is_unclipped_with_a_typed_loss_and_exports_unchanged`).
+    fn unclip_adjustment_bases(&mut self, panel_order: &[StackEntry]) -> Result<()> {
+        let mut base: Option<&StackEntry> = None;
+        for entry in panel_order.iter().rev() {
+            if !entry.clipped {
+                base = Some(entry);
+                continue;
+            }
+            let Some(adjustment_base) = base.filter(|b| b.adjustment) else {
+                continue;
+            };
+            let appearance = self
+                .layers
+                .get_mut(entry.slot)
+                .and_then(|layer| layer.get_mut("appearance"))
+                .and_then(Value::as_object_mut)
+                .ok_or(PsdError::Proposal("clip_demotion_appearance_missing"))?;
+            appearance.insert("clipped".to_owned(), Value::Bool(false));
+            self.note(
+                format!(
+                    "layer[{}]/clipping(layer_id={},base_layer_id={})",
+                    entry.psd_index, entry.layer_id, adjustment_base.layer_id
+                ),
+                LossKind::Unsupported,
+                "clip_to_adjustment_not_supported",
+            );
+        }
+        Ok(())
     }
 
     fn note(&mut self, path: String, kind: LossKind, code: &'static str) {
@@ -592,25 +668,26 @@ impl Builder<'_, '_, '_> {
         a
     }
 
-    /// Walks nodes in panel order; returns the output ports of the nodes that composite, in the
-    /// same order.
-    fn walk(&mut self, nodes: &[TreeNode], parent: &Value) -> Result<Vec<Value>> {
-        let mut outputs = Vec::new();
+    /// Walks nodes in panel order; returns the nodes that composite, in the same order, after the
+    /// clip-base rule of [`Self::unclip_adjustment_bases`] was applied to this stack.
+    fn walk(&mut self, nodes: &[TreeNode], parent: &Value) -> Result<Vec<StackEntry>> {
+        let mut entries = Vec::new();
         for node in nodes {
             self.cancel.check()?;
             match node {
                 TreeNode::Layer { index } => {
-                    if let Some(out) = self.leaf(*index, parent)? {
-                        outputs.push(out);
+                    if let Some(entry) = self.leaf(*index, parent)? {
+                        entries.push(entry);
                     }
                 }
-                TreeNode::Group { folder, children, .. } => outputs.push(self.group(*folder, children, parent)?),
+                TreeNode::Group { folder, children, .. } => entries.push(self.group(*folder, children, parent)?),
             }
         }
-        Ok(outputs)
+        self.unclip_adjustment_bases(&entries)?;
+        Ok(entries)
     }
 
-    fn group(&mut self, folder: usize, children: &[TreeNode], parent: &Value) -> Result<Value> {
+    fn group(&mut self, folder: usize, children: &[TreeNode], parent: &Value) -> Result<StackEntry> {
         let doc = self.doc;
         let layer = &doc.layers()[folder];
         let id = self.mint.layer_id();
@@ -618,6 +695,7 @@ impl Builder<'_, '_, '_> {
         let has_mask = mask.is_some();
         let mask_default = layer.mask().map(|m| m.default_color);
         let appearance = Self::appearance_json(layer, true, mask);
+        let slot = self.layers.len();
         self.layers.push(json!({
             "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
             "kind": "group", "payload": {"payload_kind": "group"}, "visible": layer.visible(),
@@ -626,23 +704,31 @@ impl Builder<'_, '_, '_> {
         self.record(&id, folder, layer, mask_default);
         self.collect_records(folder, layer, &id, has_mask, None, true);
         let inner_parent = json!({"node_kind": "layer", "node_id": id});
-        let child_outputs = self.walk(children, &inner_parent)?;
+        let children = self.walk(children, &inner_parent)?;
         self.operations.push(json!({
             "layer_id": id, "operation_key": "mix", "operation_kind": "composite",
             "inputs": [port("inputs", "many", "ordered_composite")],
             "outputs": [port("out", "one", "composite_result")],
         }));
-        // Ordinal 0 is the bottom-most child (first composited); panel order is top-first.
-        for (ordinal, source) in child_outputs.iter().rev().enumerate() {
+        // Ordinal 0 is the bottom-most child (first composited); panel order is top-first. The
+        // ordinal is the only stack position, adjustment layers included (STU-CMP-092).
+        for (ordinal, child) in children.iter().rev().enumerate() {
             self.edges.push(json!({
-                "source": source, "target": address(&id, "mix", "inputs"),
+                "source": child.out, "target": address(&id, "mix", "inputs"),
                 "dependency_kind": "data", "input_ordinal": ordinal,
             }));
         }
-        Ok(address(&id, "mix", "out"))
+        Ok(StackEntry {
+            out: address(&id, "mix", "out"),
+            layer_id: id,
+            psd_index: folder,
+            slot,
+            clipped: imported_look(layer, true).clipped,
+            adjustment: false,
+        })
     }
 
-    fn leaf(&mut self, index: usize, parent: &Value) -> Result<Option<Value>> {
+    fn leaf(&mut self, index: usize, parent: &Value) -> Result<Option<StackEntry>> {
         let doc = self.doc;
         let layer = &doc.layers()[index];
         let role = layer.group_role();
@@ -653,9 +739,9 @@ impl Builder<'_, '_, '_> {
         let adjustment = layer.blocks.iter().find(|b| ADJUSTMENT_KEYS.contains(&&b.key));
         let fill = layer.blocks.iter().find(|b| FILL_KEYS.contains(&&b.key));
         if let Some(block) = adjustment
-            && self.mapped_adjustment_layer(index, layer, block, &id, parent)?
+            && let Some(entry) = self.mapped_adjustment_layer(index, layer, block, &id, parent)?
         {
-            return Ok(None);
+            return Ok(Some(entry));
         }
         if let Some(block) = adjustment.or(fill) {
             let (kind, code) = if adjustment.is_some() {
@@ -707,6 +793,7 @@ impl Builder<'_, '_, '_> {
         let has_mask = mask.is_some();
         let mask_default = layer.mask().map(|m| m.default_color);
         let appearance = Self::appearance_json(layer, false, mask);
+        let slot = self.layers.len();
         self.layers.push(json!({
             "schema_id": "hsk.studio.layer@1", "layer_id": id, "name": layer.name, "parent": parent,
             "kind": "raster", "payload": {"payload_kind": "raster", "tiles": tiles}, "visible": layer.visible(),
@@ -718,7 +805,14 @@ impl Builder<'_, '_, '_> {
         }));
         self.record(&id, index, layer, mask_default);
         self.collect_records(index, layer, &id, has_mask, None, true);
-        Ok(Some(address(&id, "source", "out")))
+        Ok(Some(StackEntry {
+            out: address(&id, "source", "out"),
+            layer_id: id,
+            psd_index: index,
+            slot,
+            clipped: imported_look(layer, false).clipped,
+            adjustment: false,
+        }))
     }
 
     /// Folio `StudioMask` for the layer's user mask (the real user mask when both a user and a
@@ -1341,8 +1435,7 @@ pub fn to_proposal(
     };
     let converter_present = b.converter.is_some();
     // Panel order is top-first; graph outputs follow the group convention (bottom-most first).
-    let mut outputs = b.walk(&tree, &Value::Null)?;
-    outputs.reverse();
+    let outputs: Vec<Value> = b.walk(&tree, &Value::Null)?.into_iter().rev().map(|entry| entry.out).collect();
 
     let icc = doc.resources.icc_profile();
     let pixels_mapped = routing.pixels_mapped;
