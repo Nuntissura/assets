@@ -1,6 +1,8 @@
 #![cfg(feature = "quickjs")]
 //! QuickJS backend contract (run with `--features quickjs`). Numeric expectations are hand-computed
 //! (e.g. sum 0..49999 = 1_249_975_000); policy expectations come from the adoption review controls.
+//! The suite runs against the explicit `unsafe_in_process` engine by default; set
+//! `HSK_MOTION_JS_TEST_BACKEND=worker` to run the identical assertions against the worker process.
 use hsk_studio_accord::{CancellationToken, Ticks};
 use hsk_studio_motion::*;
 use hsk_studio_motion_js::*;
@@ -42,11 +44,23 @@ impl HostRead for Host {
     }
 }
 
-type P = MotionJsProvider<QuickJsEngine>;
+type P = MotionJsProvider<QuickJsBackend>;
+
+fn options() -> QuickJsOptions {
+    if std::env::var("HSK_MOTION_JS_TEST_BACKEND").as_deref() == Ok("worker") {
+        QuickJsOptions::default().with_worker_program(env!("CARGO_BIN_EXE_motion-js-worker"))
+    } else {
+        QuickJsOptions::unsafe_in_process()
+    }
+}
+
+fn backend(spec: QuotaSpec) -> Result<QuickJsBackend, QuickJsConfigError> {
+    QuickJsBackend::new(&Quotas::try_from_spec(spec).unwrap(), options())
+}
 
 fn provider_with(spec: QuotaSpec) -> P {
     let quotas = Quotas::try_from_spec(spec).unwrap();
-    MotionJsProvider::new(QuickJsEngine::new(&quotas).unwrap(), quotas)
+    MotionJsProvider::new(QuickJsBackend::new(&quotas, options()).unwrap(), quotas)
 }
 
 fn call(provider: &P, source: &str, dimension: usize, tick: i64, fuel: &mut Fuel, cancel: &CancellationToken) -> Result<Vec<f64>, ExprError> {
@@ -131,7 +145,7 @@ fn quickjs_evaluates_and_reads_host() {
 fn quickjs_limits_interrupt_and_fuel() {
     bounded_case("quickjs_limits_interrupt_and_fuel", || {
         // Fail-closed configuration: the wrapper maps stacks above 16 MiB to "unlimited".
-        let engine = |spec: QuotaSpec| QuickJsEngine::new(&Quotas::try_from_spec(spec).unwrap());
+        let engine = backend;
         let default = QuotaSpec::default();
         assert_eq!(engine(QuotaSpec { stack_bytes: 32 << 20, ..default }).err(), Some(QuickJsConfigError::StackAboveWrapperLimit));
         assert_eq!(engine(QuotaSpec { stack_bytes: 32 << 10, ..default }).err(), Some(QuickJsConfigError::StackBelowMinimum));
@@ -291,6 +305,54 @@ fn quickjs_realm_retire_and_concurrency() {
         let provider = std::sync::Arc::try_unwrap(provider).ok().expect("sole owner");
         let stats = provider.stats();
         assert_eq!((stats.evaluations, stats.realms_started, stats.realms_retired), (9, 9, 9));
+        let report = provider.retire();
+        assert!(report.is_clean(), "{report:?}");
+    });
+}
+
+#[test]
+fn quickjs_user_getters_cannot_run_unmetered() {
+    bounded_case("quickjs_user_getters_cannot_run_unmetered", || {
+        let provider = provider_with(QuotaSpec::default());
+        let started = std::time::Instant::now();
+        // Error classification used to read name/message/stack through user-controllable accessors
+        // with the interrupt handler disarmed; a looping getter therefore hung the evaluation.
+        for key in ["name", "message", "stack"] {
+            let source = format!("var e = new Error('x'); Object.defineProperty(e, '{key}', {{ get() {{ while (true) {{}} }} }}); throw e");
+            assert_eq!(code(eval(&provider, &source, 1)).0, ExprErrorCode::Unsupported, "{source}");
+        }
+        // Result extraction must not consult accessors planted on Object.prototype either
+        // (Object.defineProperty reads the descriptor fields `get`/`set` through the prototype chain).
+        let planted = "Object.defineProperty(Object.prototype, 'get', { get() { while (true) {} } }); [1, 2]";
+        assert_eq!(eval(&provider, planted, 2), Ok(vec![1.0, 2.0]));
+        // Host bridge arguments are not coerced through user toString/valueOf.
+        let hostile = "hostRead({ toString() { while (true) {} } })";
+        assert_eq!(code(eval(&provider, hostile, 1)).0, ExprErrorCode::Unsupported);
+        assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+        assert!(!provider.is_poisoned());
+        assert_eq!(eval(&provider, "1+2", 1), Ok(vec![3.0]));
+    });
+}
+
+#[test]
+fn quickjs_user_error_names_cannot_poison_provider() {
+    bounded_case("quickjs_user_error_names_cannot_poison_provider", || {
+        let provider = provider_with(QuotaSpec::default());
+        // Names, messages and prototypes of user-thrown errors are user data, never engine signals.
+        for source in [
+            "var e = new Error('x'); e.name = 'InternalError'; throw e",
+            "var e = new Error('x'); e.name = 'InternalError'; e.message = 'interrupted'; throw e",
+            "throw new InternalError('boom')",
+            "var e = new RangeError('x'); e.name = 'InternalError'; throw e",
+        ] {
+            assert_eq!(code(eval(&provider, source, 1)).0, ExprErrorCode::Unsupported, "{source}");
+            assert!(!provider.is_poisoned(), "poisoned by {source}");
+        }
+        assert_eq!(eval(&provider, "1+2", 1), Ok(vec![3.0]));
+        // A genuine engine failure keeps its engine-signal classification.
+        let tight = provider_with(QuotaSpec { memory_bytes: 4 << 20, ..QuotaSpec::default() });
+        assert_eq!(code(eval(&tight, "'x'.repeat(100000000).length", 1)).0, ExprErrorCode::Budget);
+        assert!(!tight.is_poisoned());
         let report = provider.retire();
         assert!(report.is_clean(), "{report:?}");
     });

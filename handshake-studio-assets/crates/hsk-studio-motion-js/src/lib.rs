@@ -9,16 +9,25 @@ mod limits;
 mod provider;
 #[cfg(feature = "quickjs")]
 mod quickjs;
+#[cfg(feature = "quickjs")]
+mod quickjs_wire;
+#[cfg(feature = "quickjs")]
+mod quickjs_worker;
 mod scripted;
 
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use descriptor::DESCRIPTOR;
 pub use engine::{
-    BudgetKind, Engine, EngineFailure, EngineIdentity, EngineLimits, EngineRun, EvalJob,
-    HostBridge, JsValue, RealmReceipt, ThrownKind,
+    BudgetKind, Engine, EngineFailure, EngineFault, EngineIdentity, EngineLimits, EngineRun,
+    EvalJob, HostBridge, JsValue, RealmReceipt, ThrownKind,
 };
 pub use limits::{ConfigError, QuotaSpec, Quotas};
 pub use provider::{MotionJsProvider, PROFILE_ID, ProviderStats, RetireReport, report_eval};
 #[cfg(feature = "quickjs")]
-pub use quickjs::{LimitReadback, QuickJsConfigError, QuickJsEngine, WRAPPER_STACK_LIMIT};
+pub use quickjs::{
+    LimitReadback, QuickJsBackend, QuickJsConfigError, QuickJsOptions, WRAPPER_STACK_LIMIT,
+    WorkerTestFault,
+};
+#[cfg(feature = "quickjs")]
+pub use quickjs_worker::{WORKER_PROGRAM, WorkerConfig, WorkerStats, worker_main};
 pub use scripted::ScriptedEngine;

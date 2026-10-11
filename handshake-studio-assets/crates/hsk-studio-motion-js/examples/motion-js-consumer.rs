@@ -1,6 +1,9 @@
 //! MotionJS-local consumer. Default engine: the deterministic scripted test double (not JavaScript).
-//! With `--features quickjs`: `--engine quickjs` evaluates real JavaScript in-process.
-//! `motion-js-consumer --eval "num:3" [--engine scripted|quickjs] [--fuel N] [--dimension N]`
+//! With `--features quickjs`: `--engine quickjs` evaluates real JavaScript in the isolated
+//! `motion-js-worker` process (must sit next to this executable or one directory above it);
+//! `--engine quickjs-unsafe-in-process` is the test-only in-process engine (hostile source can abort
+//! this process).
+//! `motion-js-consumer --eval "num:3" [--engine scripted|quickjs|quickjs-unsafe-in-process] [--fuel N] [--dimension N]`
 use hsk_studio_accord::CancellationToken;
 use hsk_studio_motion::{EvalTick, ExprRequest, ExpressionProvider, Fuel, HostRead, NoHost};
 use hsk_studio_motion_js::*;
@@ -40,6 +43,7 @@ fn run() -> Result<(), String> {
                 engine = match value.as_str() {
                     "scripted" => "scripted",
                     "quickjs" => "quickjs",
+                    "quickjs-unsafe-in-process" => "quickjs-unsafe-in-process",
                     "boa" => return Err("engine_unavailable".into()),
                     _ => return Err("unknown_engine".into()),
                 }
@@ -55,8 +59,9 @@ fn run() -> Result<(), String> {
     match engine {
         "scripted" => evaluate(ScriptedEngine::new(), quotas, &source, fuel, dimension),
         #[cfg(feature = "quickjs")]
-        "quickjs" => {
-            let engine = QuickJsEngine::new(&quotas).map_err(|error| error.code().to_owned())?;
+        "quickjs" | "quickjs-unsafe-in-process" => {
+            let options = if engine == "quickjs" { QuickJsOptions::default() } else { QuickJsOptions::unsafe_in_process() };
+            let engine = QuickJsBackend::new(&quotas, options).map_err(|error| error.code().to_owned())?;
             evaluate(engine, quotas, &source, fuel, dimension);
         }
         _ => return Err("engine_unavailable".into()),

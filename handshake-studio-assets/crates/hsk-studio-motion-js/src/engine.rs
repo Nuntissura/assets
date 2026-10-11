@@ -93,6 +93,41 @@ impl BudgetKind {
     }
 }
 
+/// Typed isolation faults of an out-of-process engine (never produced by in-process engines).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineFault {
+    /// The worker process died (abort, native crash, killed from outside) without a valid reply.
+    Crashed,
+    /// The worker answered with an invalid, mismatched or wrongly versioned protocol frame.
+    Protocol,
+    /// The worker process could not be started or did not complete its handshake.
+    SpawnFailed,
+    /// Starting another worker was refused by the bounded respawn rate.
+    RespawnLimited,
+}
+
+impl EngineFault {
+    pub const COUNT: usize = 4;
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Crashed => 0,
+            Self::Protocol => 1,
+            Self::SpawnFailed => 2,
+            Self::RespawnLimited => 3,
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Crashed => "engine_crashed",
+            Self::Protocol => "engine_protocol",
+            Self::SpawnFailed => "engine_spawn_failed",
+            Self::RespawnLimited => "engine_respawn_limited",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThrownKind {
     /// Undeclared identifier / unresolved reference.
@@ -115,6 +150,9 @@ pub enum EngineFailure {
     /// Host/bridge failure propagated verbatim (typed code preserved).
     Host(ExprError),
     Canceled,
+    /// Isolation fault of an out-of-process engine; the provider stays usable (the next call may
+    /// respawn the worker, subject to the bounded respawn rate).
+    Faulted(EngineFault),
     /// Adapter invariant broken; the provider poisons itself (fail closed).
     Internal,
 }
@@ -157,6 +195,9 @@ pub trait HostBridge {
     fn charge(&mut self, units: u64) -> Result<(), EngineFailure>;
     /// Polls cancel/deadline without charging.
     fn checkpoint(&mut self) -> Result<(), EngineFailure>;
+    /// Extends the evaluation deadline by `ns` of host-side setup time that is not script time
+    /// (e.g. starting a worker process). The default ignores it (no deadline to extend).
+    fn grant_time(&mut self, _ns: u64) {}
     /// Deterministic Date instant (MOT-256) for the canonical tick; the only clock script may see.
     fn utc_ms(&mut self) -> Result<i64, EngineFailure>;
 }

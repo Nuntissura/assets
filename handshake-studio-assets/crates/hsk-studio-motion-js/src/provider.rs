@@ -4,8 +4,8 @@
 use crate::{
     clock::{Clock, SystemClock},
     engine::{
-        BudgetKind, Engine, EngineFailure, EngineIdentity, EvalJob, EngineLimits, HostBridge,
-        JsValue, ThrownKind,
+        BudgetKind, Engine, EngineFailure, EngineFault, EngineIdentity, EngineLimits, EvalJob,
+        HostBridge, JsValue, ThrownKind,
     },
     limits::Quotas,
 };
@@ -36,6 +36,7 @@ struct Counters {
     checkpoints: AtomicU64,
     host_reads: AtomicU64,
     denials: [AtomicU64; BudgetKind::COUNT],
+    faults: [AtomicU64; EngineFault::COUNT],
 }
 
 /// Monotonic counters since construction.
@@ -49,11 +50,17 @@ pub struct ProviderStats {
     pub host_reads: u64,
     /// Budget denials indexed by `BudgetKind::index()`.
     pub denials: [u64; BudgetKind::COUNT],
+    /// Out-of-process isolation faults indexed by `EngineFault::index()`.
+    pub faults: [u64; EngineFault::COUNT],
 }
 
 impl ProviderStats {
     pub fn denied(&self, kind: BudgetKind) -> u64 {
         self.denials[kind.index()]
+    }
+
+    pub fn faulted(&self, kind: EngineFault) -> u64 {
+        self.faults[kind.index()]
     }
 }
 
@@ -126,6 +133,11 @@ impl<E: Engine> MotionJsProvider<E> {
         self.engine.identity()
     }
 
+    /// The engine adapter (for engine-specific diagnostics such as worker-pool counters).
+    pub fn engine(&self) -> &E {
+        &self.engine
+    }
+
     pub fn quotas(&self) -> &Quotas {
         &self.quotas
     }
@@ -140,6 +152,10 @@ impl<E: Engine> MotionJsProvider<E> {
         for (slot, counter) in denials.iter_mut().zip(&c.denials) {
             *slot = counter.load(Ordering::Acquire);
         }
+        let mut faults = [0; EngineFault::COUNT];
+        for (slot, counter) in faults.iter_mut().zip(&c.faults) {
+            *slot = counter.load(Ordering::Acquire);
+        }
         ProviderStats {
             evaluations: c.evaluations.load(Ordering::Acquire),
             realms_started: c.realms_started.load(Ordering::Acquire),
@@ -148,6 +164,7 @@ impl<E: Engine> MotionJsProvider<E> {
             checkpoints: c.checkpoints.load(Ordering::Acquire),
             host_reads: c.host_reads.load(Ordering::Acquire),
             denials,
+            faults,
         }
     }
 
@@ -167,6 +184,14 @@ impl<E: Engine> MotionJsProvider<E> {
     fn deny(&self, kind: BudgetKind) -> ExprError {
         self.counters.denials[kind.index()].fetch_add(1, Ordering::AcqRel);
         ExprError::new(ExprErrorCode::Budget)
+    }
+
+    /// An isolation fault (worker crash, protocol violation, spawn refusal) fails this evaluation
+    /// only. Motion has no engine-fault code, so it maps to `Unsupported` (UNVERIFIED mapping); the
+    /// typed cause is `ProviderStats::faulted` (and `EngineFailure::Faulted` at the engine API).
+    fn fault(&self, kind: EngineFault) -> ExprError {
+        self.counters.faults[kind.index()].fetch_add(1, Ordering::AcqRel);
+        ExprError::new(ExprErrorCode::Unsupported)
     }
 
     fn poison(&self) -> ExprError {
@@ -207,6 +232,7 @@ impl<E: Engine> MotionJsProvider<E> {
             EngineFailure::Output => ExprError::new(ExprErrorCode::OutputType),
             EngineFailure::Host(error) => error,
             EngineFailure::Canceled => ExprError::canceled(),
+            EngineFailure::Faulted(kind) => self.fault(kind),
             EngineFailure::Internal => self.poison(),
         }
     }
@@ -255,6 +281,10 @@ impl HostBridge for Bridge<'_> {
             return Err(EngineFailure::Budget(BudgetKind::Deadline));
         }
         Ok(())
+    }
+
+    fn grant_time(&mut self, ns: u64) {
+        self.deadline_ns = self.deadline_ns.saturating_add(ns);
     }
 
     fn charge(&mut self, units: u64) -> Result<(), EngineFailure> {
