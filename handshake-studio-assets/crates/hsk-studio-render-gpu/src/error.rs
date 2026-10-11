@@ -1,9 +1,11 @@
 //! Typed GPU backend failures. Richer than the shared port vocabulary; mapped to
 //! `pigment::render_plan::BackendError` at the port (`From<GpuError> for BackendError`).
 //! Plain data only: no wgpu type appears here (STU-ARC-002).
+#![deny(clippy::arithmetic_side_effects)]
 use hsk_studio_pigment::render_plan::BackendError;
 
-/// Why no device could be acquired. Determinate typed outcome, never a panic or a skip.
+/// Why no device could be acquired. Determinate typed outcome, not a panic or a skip (tests
+/// admission_refusals_run_without_adapter, no_adapter_is_not_a_green_gpu_proof_when_the_gpu_is_required).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
     /// No adapter on the requested backend(s), or the backend was set to `None`.
@@ -39,9 +41,9 @@ pub enum GpuError {
     /// Unexpected GPU-side failure (validation error, failed mapping, timeout).
     Gpu(&'static str),
     /// An adapter and a device were acquired, but the WGSL shader or the compute pipeline failed
-    /// validation (`shader_validation`, `shader_validation_timeout`). A defect of this crate, never
-    /// an environment condition: distinct from `Unavailable` (no adapter/device), so a test or a
-    /// supervisor can never mistake it for "no GPU here".
+    /// validation (`shader_validation`, `shader_validation_timeout`). A defect of this crate, not an
+    /// environment condition: distinct from `Unavailable` (no adapter/device), so a test or a
+    /// supervisor can tell it from "no GPU here" (test pipeline_failure_is_typed_and_fails_the_gpu_gate).
     Pipeline(&'static str),
 }
 impl From<BackendError> for GpuError {

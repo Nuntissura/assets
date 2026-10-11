@@ -1,6 +1,7 @@
 //! Headless device lifecycle: adapter/device acquire (no surface, no window, no focus), a
 //! generation counter, device-loss latching and typed `Unavailable`. wgpu types stay private
 //! fields; everything public here is plain data (STU-ARC-002).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::{GpuError, Reason};
 use crate::kernel::Kernel;
 use hsk_studio_accord::CancellationToken;
@@ -36,7 +37,7 @@ pub enum BackendChoice {
     Vulkan,
     Dx12,
     Metal,
-    /// Never acquire a device: `acquire` returns `Unavailable(NoAdapter)` (explicit kill switch,
+    /// Do not acquire a device: `acquire` returns `Unavailable(NoAdapter)` (explicit kill switch,
     /// and the hardware-independent way to exercise the unavailable path).
     None,
 }
@@ -123,8 +124,8 @@ struct Signals {
     fault: AtomicBool,
 }
 
-/// One device generation. All wgpu objects are private; a lost context is never reused: acquire a
-/// new one with a higher generation.
+/// One device generation. All wgpu objects are private; a lost context is not reused: acquire a
+/// new one with a higher generation (test device_destroy_is_detected_by_the_lost_callback).
 pub struct GpuContext {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
@@ -153,7 +154,8 @@ impl GpuContext {
 
     /// `acquire_next` with an optional WGSL override (`None` = the generated shader). The override
     /// exists only for fault injection: a shader that fails validation yields the typed
-    /// `GpuError::Pipeline`, never `Unavailable`.
+    /// `GpuError::Pipeline`, not `Unavailable` (test
+    /// pipeline_failure_is_typed_and_fails_the_gpu_gate).
     pub(crate) fn acquire_with(
         options: &DeviceOptions,
         cancel: &CancellationToken,
@@ -290,11 +292,13 @@ impl GpuContext {
         let _ = self.device.poll(wgpu::PollType::Poll);
         self.is_lost()
     }
-    /// Fault injection for supervisors and tests: `wgpu::Device::destroy`, wgpu's own
+    /// Fault injection (V4-04: compiled only with the `test-faults` feature):
+    /// `wgpu::Device::destroy`, wgpu's own
     /// lose-the-device path. It does NOT touch the loss latch: only the wgpu device-lost callback
     /// sets it, delivered during a later poll ([`GpuContext::poll_lost`]; the backend polls before
     /// every execute and state query). A driver-initiated loss (TDR, adapter removal) is a
     /// different trigger and is not exercised by this.
+    #[cfg(feature = "test-faults")]
     pub fn simulate_device_loss(&self) {
         self.device.destroy();
     }

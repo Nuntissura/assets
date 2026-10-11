@@ -10,7 +10,15 @@
 //! WGSL formula bodies (`FORMULAS` per channel, `FORMULAS_RGB` over the whole colour, transcribed
 //! from `blend_math`); a qualifying mode without a body is simply unsupported (admission refuses
 //! it) and the drift test in `tests/gpu_plan.rs` fails until a body with a parity case exists.
+//!
+//! The plan-extension envelope follows the same rule: `gpu_adjust_supported` is "pigment's
+//! `AdjustmentKind::ALL` has this kind and `ADJ_FORMULAS` has a body", the adjustment switch is
+//! generated from `ALL` (the opcode of a kind is its position in `ALL`), and the module holds three
+//! entry points: `composite` (v1, bindings 0-3), `composite_ext` (adds the Blend-If weight,
+//! bindings 0-4) and `adjust` (adjustment layers, bindings 0-5).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::GpuError;
+use hsk_studio_pigment::adjust_math::AdjustmentKind;
 use hsk_studio_pigment::blend_math::{Applicability, Exactness, Family, MODES, StudioBlendMode};
 
 pub(crate) const WORKGROUP_SIDE: u32 = 8;
@@ -128,7 +136,7 @@ fn formula_rgb(mode: StudioBlendMode) -> Option<&'static str> {
 }
 
 /// Does pigment's fact table say the GPU backend should implement `mode`? Layer-applicable, a
-/// usable formula (class Exact or Approximate, never Unsupported), and `Normal`, the separable,
+/// usable formula (class Exact or Approximate, not Unsupported), and `Normal`, the separable,
 /// the non-separable or the whole-pixel family. Stochastic (dissolve: the plan carries no seed),
 /// structural, tool-only and unspecified modes are not in the list. This is the single source of
 /// the supported list; the class itself stays pigment's (`facts().exactness`).
@@ -152,8 +160,63 @@ pub fn gpu_blend_supported(mode: StudioBlendMode) -> bool {
             || formula_rgb(mode).is_some())
 }
 
-/// The shader with its blend functions and mode switch generated from `MODES`.
+/// WGSL bodies of `fn adj_<key>(rgb: vec3<f32>) -> vec3<f32>`: one-line calls into the helper
+/// functions of `kernel.wgsl`, which transcribe `hsk_studio_pigment::adjust_math`. `Invert` is
+/// inline (`1 - x`). `BrightnessContrast` has no body: it stays a typed refusal.
+const ADJ_FORMULAS: &[(AdjustmentKind, &str)] = &[
+    (AdjustmentKind::Levels, "return levels_apply(rgb);"),
+    (AdjustmentKind::Curves, "return curves_apply(rgb);"),
+    (
+        AdjustmentKind::HueSaturation,
+        "return hue_saturation_apply(rgb);",
+    ),
+    (AdjustmentKind::Exposure, "return exposure_apply(rgb);"),
+    (AdjustmentKind::Invert, "return vec3<f32>(1.0) - rgb;"),
+    (AdjustmentKind::Threshold, "return threshold_apply(rgb);"),
+    (AdjustmentKind::Posterize, "return posterize_apply(rgb);"),
+];
+
+fn adjust_formula(kind: AdjustmentKind) -> Option<&'static str> {
+    ADJ_FORMULAS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, body)| *body)
+}
+
+/// Does the shader carry an adjustment body for `kind`? Only these kinds pass
+/// `extension_exactness`; the rest (brightness/contrast) are refused at admission.
+pub fn gpu_adjust_supported(kind: AdjustmentKind) -> bool {
+    adjust_formula(kind).is_some()
+}
+
+/// The shader with its blend functions and mode switch generated from `MODES`, its adjustment
+/// switch generated from `AdjustmentKind::ALL`, and the two composite entry points instantiated.
 pub(crate) fn shader_source() -> String {
+    let mut adjust_functions = String::new();
+    let mut adjust_cases = String::new();
+    for (opcode, kind) in AdjustmentKind::ALL.iter().enumerate() {
+        let Some(body) = adjust_formula(*kind) else {
+            continue;
+        };
+        let key = kind.key();
+        adjust_functions.push_str(&format!(
+            "fn adj_{key}(rgb: vec3<f32>) -> vec3<f32> {{\n    {body}\n}}\n"
+        ));
+        adjust_cases.push_str(&format!(
+            "        case {opcode}u: {{\n            out = adj_{key}(rgb);\n        }}\n"
+        ));
+    }
+    let pixel = include_str!("kernel_pixel.wgsl");
+    let entries = format!(
+        "{}\n{}",
+        pixel
+            .replace("@ENTRY@", "composite")
+            .replace("//@BLEND_IF@", ""),
+        pixel.replace("@ENTRY@", "composite_ext").replace(
+            "//@BLEND_IF@",
+            "opacity = opacity * blend_if_weight(s.rgb, b.rgb);"
+        )
+    );
     let mut functions = String::new();
     let mut cases = String::new();
     for facts in &MODES {
@@ -186,8 +249,11 @@ pub(crate) fn shader_source() -> String {
         }
     }
     include_str!("kernel.wgsl")
+        .replace("//@PIXEL_ENTRIES@", &entries)
         .replace("//@BLEND_FUNCTIONS@", &functions)
         .replace("//@BLEND_CASES@", &cases)
+        .replace("//@ADJUST_FUNCTIONS@", &adjust_functions)
+        .replace("//@ADJUST_CASES@", &adjust_cases)
 }
 
 /// Where a layer's source texels come from.
@@ -215,6 +281,8 @@ pub(crate) struct LayerParams {
     pub replace: bool,
     /// Clipped layer inside a run: source alpha times the destination's alpha, alpha held.
     pub clip: bool,
+    /// Mask density (`1.0` = plain mask: the shader leaves the coverage bit-for-bit).
+    pub density: f32,
 }
 impl LayerParams {
     pub(crate) fn to_bytes(self) -> [u8; PARAMS_BYTES as usize] {
@@ -223,28 +291,29 @@ impl LayerParams {
             SourceKind::Region => (1, [0.0; 4]),
             SourceKind::Chunk => (2, [0.0; 4]),
         };
-        let mut out = [0u8; PARAMS_BYTES as usize];
-        let words: [u32; 8] = [
-            self.chunk_w,
-            self.chunk_h,
-            self.region[0],
-            self.region[1],
-            self.region[2],
-            self.region[3],
-            u32::from(self.mode.discriminant()),
-            kind,
+        let flags = u32::from(self.replace) | if self.clip { 2 } else { 0 };
+        // The 16 words of `Params` in declaration order (the solid colour starts at byte 48).
+        let words: [[u8; 4]; 16] = [
+            self.chunk_w.to_ne_bytes(),
+            self.chunk_h.to_ne_bytes(),
+            self.region[0].to_ne_bytes(),
+            self.region[1].to_ne_bytes(),
+            self.region[2].to_ne_bytes(),
+            self.region[3].to_ne_bytes(),
+            u32::from(self.mode.discriminant()).to_ne_bytes(),
+            kind.to_ne_bytes(),
+            self.opacity.to_ne_bytes(),
+            u32::from(self.has_mask).to_ne_bytes(),
+            flags.to_ne_bytes(),
+            self.density.to_ne_bytes(),
+            solid[0].to_ne_bytes(),
+            solid[1].to_ne_bytes(),
+            solid[2].to_ne_bytes(),
+            solid[3].to_ne_bytes(),
         ];
-        for (i, w) in words.iter().enumerate() {
-            out[i * 4..i * 4 + 4].copy_from_slice(&w.to_ne_bytes());
-        }
-        out[32..36].copy_from_slice(&self.opacity.to_ne_bytes());
-        out[36..40].copy_from_slice(&u32::from(self.has_mask).to_ne_bytes());
-        out[40..44].copy_from_slice(
-            &(u32::from(self.replace) | (u32::from(self.clip) << 1)).to_ne_bytes(),
-        );
-        // bytes 44..48 stay zero (padding); the solid colour starts at the 16-byte aligned 48.
-        for (i, c) in solid.iter().enumerate() {
-            out[48 + i * 4..52 + i * 4].copy_from_slice(&c.to_ne_bytes());
+        let mut out = [0u8; PARAMS_BYTES as usize];
+        for (slot, word) in out.chunks_exact_mut(4).zip(words) {
+            slot.copy_from_slice(&word);
         }
         out
     }
@@ -253,13 +322,17 @@ impl LayerParams {
 pub(crate) struct Kernel {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
+    /// The envelope pipelines read the extra bindings 4 (`ext`) and 5 (`lut`).
+    pipeline_ext: wgpu::ComputePipeline,
+    pipeline_adjust: wgpu::ComputePipeline,
+    layout_ext: wgpu::BindGroupLayout,
 }
 
 impl Kernel {
     /// Build the pipeline from `source` (`None` = the generated [`shader_source`]; `Some` is the
     /// fault-injection route for a broken shader). Shader/pipeline validation failures surface as
-    /// the typed `GpuError::Pipeline`, never as an uncaptured-error panic and never as
-    /// `Unavailable`.
+    /// the typed `GpuError::Pipeline`, not as an uncaptured-error panic and not as
+    /// `Unavailable` (test pipeline_failure_is_typed_and_fails_the_gpu_gate).
     pub(crate) fn new(device: &wgpu::Device, source: Option<&str>) -> Result<Self, GpuError> {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let wgsl = source.map_or_else(shader_source, str::to_owned);
@@ -291,19 +364,90 @@ impl Kernel {
             bind_group_layouts: &[&layout],
             push_constant_ranges: &[],
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hsk-studio-render-gpu composite"),
-            layout: Some(&pipeline_layout),
-            module: &module,
-            entry_point: Some("composite"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
+        let layout_ext = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hsk-studio-render-gpu envelope layout"),
+            entries: &[
+                entry(0, wgpu::BufferBindingType::Uniform),
+                entry(1, wgpu::BufferBindingType::Storage { read_only: true }),
+                entry(2, wgpu::BufferBindingType::Storage { read_only: false }),
+                entry(3, wgpu::BufferBindingType::Storage { read_only: true }),
+                entry(4, wgpu::BufferBindingType::Uniform),
+                entry(5, wgpu::BufferBindingType::Storage { read_only: true }),
+            ],
         });
+        let pipeline_layout_ext = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hsk-studio-render-gpu envelope pipeline layout"),
+            bind_group_layouts: &[&layout_ext],
+            push_constant_ranges: &[],
+        });
+        let make = |label, layout: &wgpu::PipelineLayout, entry_point| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                module: &module,
+                entry_point: Some(entry_point),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            })
+        };
+        let pipeline = make(
+            "hsk-studio-render-gpu composite",
+            &pipeline_layout,
+            "composite",
+        );
+        let pipeline_ext = make(
+            "hsk-studio-render-gpu composite envelope",
+            &pipeline_layout_ext,
+            "composite_ext",
+        );
+        let pipeline_adjust = make(
+            "hsk-studio-render-gpu adjust",
+            &pipeline_layout_ext,
+            "adjust",
+        );
         match crate::device::block_on_bounded(device.pop_error_scope(), None) {
-            Some(None) => Ok(Self { pipeline, layout }),
+            Some(None) => Ok(Self {
+                pipeline,
+                layout,
+                pipeline_ext,
+                pipeline_adjust,
+                layout_ext,
+            }),
             Some(Some(_)) => Err(GpuError::Pipeline("shader_validation")),
             None => Err(GpuError::Pipeline("shader_validation_timeout")),
         }
+    }
+
+    /// Bind group of the envelope entry points: the v1 bindings plus `ext` (4) and `lut` (5).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bind_ext(
+        &self,
+        device: &wgpu::Device,
+        params: &wgpu::Buffer,
+        src: &wgpu::Buffer,
+        mask: &wgpu::Buffer,
+        dst: &wgpu::Buffer,
+        ext: &wgpu::Buffer,
+        lut: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        fn at(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: buffer.as_entire_binding(),
+            }
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hsk-studio-render-gpu envelope bind"),
+            layout: &self.layout_ext,
+            entries: &[
+                at(0, params),
+                at(1, src),
+                at(2, dst),
+                at(3, mask),
+                at(4, ext),
+                at(5, lut),
+            ],
+        })
     }
 
     pub(crate) fn bind(
@@ -338,9 +482,41 @@ impl Kernel {
         })
     }
 
-    /// Record one dispatch covering `width` x `height` texels.
+    /// Record one v1 composite dispatch covering `width` x `height` texels.
     pub(crate) fn dispatch(
         &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        Self::dispatch_with(&self.pipeline, encoder, bind, width, height);
+    }
+
+    /// Composite with the Blend-If weight (bind groups from [`Kernel::bind_ext`]).
+    pub(crate) fn dispatch_ext(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        Self::dispatch_with(&self.pipeline_ext, encoder, bind, width, height);
+    }
+
+    /// Adjustment layer over the destination in place (bind groups from [`Kernel::bind_ext`]).
+    pub(crate) fn dispatch_adjust(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind: &wgpu::BindGroup,
+        width: u32,
+        height: u32,
+    ) {
+        Self::dispatch_with(&self.pipeline_adjust, encoder, bind, width, height);
+    }
+
+    fn dispatch_with(
+        pipeline: &wgpu::ComputePipeline,
         encoder: &mut wgpu::CommandEncoder,
         bind: &wgpu::BindGroup,
         width: u32,
@@ -350,7 +526,7 @@ impl Kernel {
             label: Some("hsk-studio-render-gpu composite"),
             timestamp_writes: None,
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind, &[]);
         pass.dispatch_workgroups(
             width.div_ceil(WORKGROUP_SIDE),

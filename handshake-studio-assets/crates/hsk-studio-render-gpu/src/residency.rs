@@ -2,6 +2,8 @@
 //! in-flight work and exact counters. Pure Rust (no GPU types), so it is testable on machines
 //! without an adapter. The executor charges every real device allocation here before creating it
 //! (STU-ARC-008/012/013: bounded admission, device allocations counted, release on every exit).
+//! All counter and byte arithmetic is checked or saturating (V4-01).
+#![deny(clippy::arithmetic_side_effects)]
 use crate::error::GpuError;
 use hsk_studio_pigment::Rect;
 
@@ -83,13 +85,13 @@ impl Residency {
     pub fn reset_peak(&mut self) {
         self.peak_used = self.used;
     }
-    /// Bytes held by pinned entries (never evictable).
+    /// Bytes held by pinned entries (not evictable: test residency_lru_budget_accounting).
     pub fn pinned_bytes(&self) -> u64 {
         self.entries
             .iter()
             .filter(|e| e.pinned)
             .map(|e| e.bytes)
-            .sum()
+            .fold(0_u64, u64::saturating_add)
     }
     pub fn contains(&self, key: &ResidentKey) -> bool {
         self.entries.iter().any(|e| e.key == *key)
@@ -101,7 +103,7 @@ impl Residency {
     /// even after evicting every unpinned entry, and a single entry larger than the budget is
     /// refused outright (`BudgetExceeded`).
     pub fn reserve(&mut self, key: ResidentKey, bytes: u64) -> Result<Reservation, GpuError> {
-        self.tick += 1;
+        self.tick = self.tick.saturating_add(1);
         if let Some(entry) = self.entries.iter_mut().find(|e| e.key == key) {
             if entry.bytes != bytes {
                 return Err(GpuError::Gpu("residency_size_mismatch"));
@@ -121,7 +123,7 @@ impl Residency {
         if bytes > self.budget_bytes {
             return Err(exceeded);
         }
-        let reachable = self.budget_bytes - self.pinned_bytes();
+        let reachable = self.budget_bytes.saturating_sub(self.pinned_bytes());
         if bytes > reachable {
             return Err(exceeded);
         }
@@ -139,13 +141,13 @@ impl Residency {
                 .map(|(i, _)| i)
                 .ok_or(exceeded)?;
             let gone = self.entries.remove(victim);
-            self.used -= gone.bytes;
-            self.evictions += 1;
+            self.used = self.used.saturating_sub(gone.bytes);
+            self.evictions = self.evictions.saturating_add(1);
             evicted.push(gone.key);
         }
         let used = self.used.checked_add(bytes).ok_or(exceeded)?;
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         self.entries.push(Entry {
             id,
             key,
@@ -164,7 +166,7 @@ impl Residency {
 
     /// Mark most recently used without changing its pin state; `false` when not resident.
     pub fn touch(&mut self, key: &ResidentKey) -> bool {
-        self.tick += 1;
+        self.tick = self.tick.saturating_add(1);
         let tick = self.tick;
         self.entries
             .iter_mut()
@@ -184,7 +186,8 @@ impl Residency {
     pub fn release(&mut self, id: ReservationId) -> bool {
         match self.entries.iter().position(|e| e.id == id.0) {
             Some(at) => {
-                self.used -= self.entries.remove(at).bytes;
+                let gone = self.entries.remove(at);
+                self.used = self.used.saturating_sub(gone.bytes);
                 true
             }
             None => false,
@@ -200,11 +203,11 @@ impl Residency {
         self.entries.retain(|e| {
             let drop_it = e.id >= mark.0;
             if drop_it {
-                freed += e.bytes;
+                freed = u64::saturating_add(freed, e.bytes);
             }
             !drop_it
         });
-        self.used -= freed;
+        self.used = self.used.saturating_sub(freed);
         freed
     }
     /// Forget everything (a new device generation owns none of the old allocations). Counters stay.

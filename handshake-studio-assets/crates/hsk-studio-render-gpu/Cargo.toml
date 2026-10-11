@@ -6,6 +6,7 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+test-faults = []
 
 [dependencies]
 hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
