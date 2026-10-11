@@ -7,5 +7,18 @@ rust-version = { workspace = true }
 [features]
 default = []
 
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-folio = { path = "../hsk-studio-folio", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+
+[dev-dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "composite-consumer"
+path = "examples/composite-consumer.rs"
