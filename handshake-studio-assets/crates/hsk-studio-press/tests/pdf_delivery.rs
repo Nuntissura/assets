@@ -1426,3 +1426,432 @@ fn popup_irt_annotations_and_composite_font_appearances() {
     assert!(find(&out.bytes, b"/N 15 0 R").is_some() && find(&out.bytes, b"/N 17 0 R").is_some());
     assert_eq!(open(&out.bytes).inspect().page_count, 1);
 }
+
+// ----------------------------------------------------------------- slice 5
+// Raster class, image removal, file targets, embedded-file names, XMP everywhere, ToUnicode in the
+// proof, hostile decoder bounds and PDF string tokenization.
+
+use hsk_studio_press::{RASTER_CLASS, RasterStream};
+
+/// A minimal JPEG-shaped byte string: SOI, a comment segment, EOI.
+fn jpeg(comment: &[u8]) -> Vec<u8> {
+    let mut v = vec![0xFF, 0xD8, 0xFF, 0xFE];
+    v.extend_from_slice(&((comment.len() + 2) as u16).to_be_bytes());
+    v.extend_from_slice(comment);
+    v.extend_from_slice(&[0xFF, 0xD9]);
+    v
+}
+
+fn hex_stream(bytes: &[u8]) -> Vec<u8> {
+    let mut s: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
+    s.push('>');
+    s.into_bytes()
+}
+
+const IMG: &str = "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8";
+const TEXT_IN_REGION: &str = "BT /F1 12 Tf 72 700 Td (SECRET-ALPHA) Tj ET";
+
+/// base_objs page with the image object 8 replaced and the given content.
+fn raster_doc(img_dict_extra: &str, img_data: &[u8], content: &str) -> Vec<u8> {
+    let mut objs = base_objs(content.as_bytes(), "<< /Title (T) >>");
+    objs[7].1 = stream_body(&format!("{IMG} {img_dict_extra}"), img_data);
+    build(&objs, "/Info 7 0 R", b"")
+}
+
+#[test]
+fn raster_class_is_listed_and_region_images_are_removed() {
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let run = |pdf: &[u8], policy: UnsupportedPolicy| {
+        let mut doc = open(pdf);
+        redact_and_save(&mut doc, &[region], policy, &token())
+    };
+    let outside = format!("{TEXT_IN_REGION}\nq 100 0 0 100 300 300 cm /Im1 Do Q");
+    let both = format!("{TEXT_IN_REGION}\nq 100 0 0 100 50 650 cm /Im1 Do Q\nq 100 0 0 100 300 300 cm /Im1 Do Q");
+    let only_in = format!("{TEXT_IN_REGION}\nq 100 0 0 100 50 650 cm /Im1 Do Q");
+
+    // The class: image XObject, chain ends in a raster codec after implemented filters. Listed,
+    // not blocking: the document is proven.
+    let out = run(&raster_doc("/Filter /DCTDecode", &jpeg(b"harmless"), &outside), UnsupportedPolicy::Refuse).unwrap();
+    assert_eq!(
+        out.proof.raster_streams,
+        vec![RasterStream { object: 8, class: RASTER_CLASS, filter: "DCTDecode".into(), inline: false }]
+    );
+    assert!(out.proof.fully_decoded() && out.region_cleared() && out.is_proven(), "{:?}", out.proof);
+    assert_eq!(RASTER_CLASS, "raster_unsearchable");
+
+    // Still scanned: the decodable prefix (ASCIIHex) is searched, so a needle in the JPEG comment
+    // segment is a hit even though it is invisible in the raw file.
+    let hidden = hex_stream(&jpeg(b"scan SECRET-ALPHA here"));
+    let out = run(&raster_doc("/Filter [/ASCIIHexDecode /DCTDecode]", &hidden, &outside), UnsupportedPolicy::Refuse).unwrap();
+    assert!(find(&out.bytes, b"SECRET-ALPHA").is_none(), "hex-coded: not visible as raw bytes");
+    assert_eq!(out.proof.raster_streams.len(), 1);
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 8, .. })));
+    assert!(!out.is_proven());
+
+    // Every other codec of the class is listed under its own name and does not block.
+    for codec in ["DCTDecode", "JPXDecode", "CCITTFaxDecode", "JBIG2Decode"] {
+        let pdf = raster_doc(&format!("/Filter /{codec}"), b"codestream bytes", &outside);
+        let proof = verify_payload_absent(&pdf, &[b"zzzzzz".to_vec()], &Limits::default(), &token()).unwrap();
+        assert_eq!(proof.raster_streams.iter().map(|r| r.filter.as_str()).collect::<Vec<_>>(), vec![codec]);
+        assert!(proof.fully_decoded() && proof.is_clean(), "{codec}: {proof:?}");
+    }
+
+    // Outside the class: raster codec not last, Crypt anywhere, a non-image stream.
+    let blocked = |dict: &str, subtype_image: bool| {
+        let pdf = if subtype_image {
+            raster_doc(dict, b"x", &outside)
+        } else {
+            let mut objs = base_objs(outside.as_bytes(), "<< /Title (T) >>");
+            objs[0].1 = b"<< /Type /Catalog /Pages 2 0 R /Hidden 20 0 R >>".to_vec();
+            objs.push((20, stream_body(dict, b"x")));
+            build(&objs, "/Info 7 0 R", b"")
+        };
+        verify_payload_absent(&pdf, &[b"zzzzzz".to_vec()], &Limits::default(), &token()).unwrap()
+    };
+    for (dict, image) in [
+        ("/Filter [/DCTDecode /FlateDecode]", true),
+        ("/Filter /Crypt", true),
+        ("/Filter [/Crypt /DCTDecode]", true),
+        ("/Filter /DCTDecode", false),
+        ("/Filter /JBIG2Decode", false),
+    ] {
+        let proof = blocked(dict, image);
+        assert!(!proof.fully_decoded() && !proof.is_clean() && proof.raster_streams.is_empty(), "{dict} image={image}: {proof:?}");
+    }
+
+    // A region over an image is not proven unless the image is removed.
+    let pdf = raster_doc("/Filter /DCTDecode", &jpeg(b"x"), &both);
+    assert_eq!(run(&pdf, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::Image));
+    let partial = run(&pdf, UnsupportedPolicy::ReportAndContinue).unwrap();
+    assert_eq!(partial.reports[0].unredacted, vec![RedactionClass::Image]);
+    assert!(!partial.region_cleared() && !partial.is_proven());
+    // RemoveImages: the placement inside the region goes, the one outside stays, the image object
+    // stays because it is still used.
+    let removed = run(&pdf, UnsupportedPolicy::RemoveImages).unwrap();
+    assert_eq!(removed.reports[0].images_removed, vec![ObjRef { num: 8, generation: 0 }]);
+    assert_eq!(removed.reports[0].inline_images_removed, 0);
+    assert!(removed.reports[0].complete && removed.region_cleared() && removed.is_proven(), "{:?}", removed.proof);
+    let streams = independent_streams(&removed.bytes);
+    assert_eq!(streams.iter().map(|s| count(s, b"/Im1 Do")).sum::<usize>(), 1);
+    assert!(find(&removed.bytes, b"/Subtype /Image").is_some() && removed.proof.raster_streams.len() == 1);
+    // Only placement in the region: the image and its resource entry leave the file.
+    let removed = run(&raster_doc("/Filter /DCTDecode", &jpeg(b"x"), &only_in), UnsupportedPolicy::RemoveImages).unwrap();
+    assert!(removed.is_proven());
+    assert!(find(&removed.bytes, b"/Subtype /Image").is_none() && find(&removed.bytes, b"/Im1").is_none());
+    assert!(removed.proof.raster_streams.is_empty());
+    assert_eq!(independent_streams(&removed.bytes).iter().map(|s| count(s, b"/Im1 Do")).sum::<usize>(), 0);
+
+    // Inline images: same class and same rules.
+    let inline = |at: &str, filter: &str| {
+        format!("{TEXT_IN_REGION}\nq 50 0 0 50 {at} cm BI /W 1 /H 1 /CS /G /BPC 8 /F /{filter} ID XXJPEGDATAXX\nEI Q")
+    };
+    let out = run(&raster_doc("", b"x", &inline("300 300", "DCT")), UnsupportedPolicy::Refuse).unwrap();
+    assert!(out.proof.raster_streams.iter().any(|r| r.inline && r.filter == "DCT" && r.class == RASTER_CLASS));
+    assert!(out.is_proven(), "{:?}", out.proof);
+    let near = raster_doc("", b"x", &inline("80 660", "DCT"));
+    assert_eq!(run(&near, UnsupportedPolicy::Refuse).unwrap_err(), PressError::UnsupportedRedactionClass(RedactionClass::InlineImage));
+    let removed = run(&near, UnsupportedPolicy::RemoveImages).unwrap();
+    assert_eq!(removed.reports[0].inline_images_removed, 1);
+    assert!(removed.is_proven() && independent_streams(&removed.bytes).iter().all(|s| find(s, b"XXJPEGDATAXX").is_none()));
+    // An inline image with an unknown filter blocks, like a stream would.
+    let out = run(&raster_doc("", b"x", &inline("300 300", "Foo")), UnsupportedPolicy::Refuse).unwrap();
+    assert!(out.proof.streams_not_decodable.iter().any(|(_, f)| f == "inline:Foo") && !out.is_proven());
+}
+
+#[test]
+fn file_targets_embedded_names_and_xmp_redacted() {
+    let xmp = |title: &str| {
+        format!("<?xpacket begin='x'?><x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:li>{title}</rdf:li></x:xmpmeta><?xpacket end='w'?>").into_bytes()
+    };
+    let mut objs = minimal_objs("/Names << /EmbeddedFiles 40 0 R >> /AF [53 0 R]", "20 0 R 21 0 R 22 0 R 23 0 R 24 0 R");
+    objs[2].1 = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Metadata 60 0 R /Resources << /XObject << /Im1 61 0 R >> >> /Annots [20 0 R 21 0 R 22 0 R 23 0 R 24 0 R] >>".to_vec();
+    let link = |action: &str| format!("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << {action} >> >>").into_bytes();
+    objs.extend([
+        (20, link("/S /GoToR /F (Budget Plan.pdf) /D (Budget Plan A) /NewWindow true")),
+        (21, link(r"/S /Launch /F (C:\\Budget Plan\\run.exe) /Win << /F (budget plan.exe) /D (C:\\budget plan) /O (open) /P (-open budget plan) >>")),
+        (
+            22,
+            link("/S /ImportData /F << /Type /Filespec /F (budget plan.fdf) /UF (Budget Plan.fdf) /DOS (BUDGET PLAN.FDF) /Mac (Budget Plan) /Unix (budget plan.fdf) /Desc (the Budget Plan import) >>"),
+        ),
+        (23, link("/S /SubmitForm /F << /FS /URL /F (http://x.example/budget plan) >>")),
+        (24, b"<< /Type /Annot /Subtype /FileAttachment /Rect [0 0 5 5] /Contents (attachment) /FS 50 0 R >>".to_vec()),
+        (40, b"<< /Names [(Budget Plan.txt) 50 0 R (other.txt) 52 0 R] >>".to_vec()),
+        (50, b"<< /Type /Filespec /F (Budget Plan.txt) /UF (Budget Plan.txt) /Desc (Budget Plan notes) /EF << /F 51 0 R >> >>".to_vec()),
+        (51, stream_body("/Type /EmbeddedFile", b"unrelated payload")),
+        (52, b"<< /Type /Filespec /F (other.txt) /EF << /F 51 0 R >> >>".to_vec()),
+        (53, b"<< /F (af-Budget Plan.xml) /Desc (assoc Budget Plan) >>".to_vec()),
+        (60, stream_body("/Type /Metadata /Subtype /XML", &xmp("page Budget Plan"))),
+        (61, stream_body(&format!("{IMG} /Metadata 62 0 R"), b"\x00")),
+        (62, stream_body("/Type /Metadata /Subtype /XML", &xmp("image Budget Plan"))),
+    ]);
+    let input = build(&objs, "", b"");
+    let needle = ["Budget Plan".to_string()];
+    use TextOutcomeKind::{Dropped, KeptByPolicy, Replaced};
+    let r = |n: u32, direct: bool| (n, direct, Replaced, 1);
+
+    let mut doc = open(&input);
+    let out = redact_text_fields_and_save(&mut doc, &needle, &TextFieldPolicy::default(), &token()).unwrap();
+    assert_eq!(
+        rows(&out.report, TextRole::FileSpecName),
+        vec![r(20, true), r(21, true), r(22, true), r(22, true), r(22, true), r(22, true), r(22, true), r(23, true), r(50, false), r(50, false), r(53, false)]
+    );
+    assert_eq!(rows(&out.report, TextRole::FileSpecDesc), vec![r(22, true), r(50, false), r(53, false)]);
+    assert_eq!(rows(&out.report, TextRole::LaunchWin), vec![r(21, true), r(21, true), r(21, true)]);
+    assert_eq!(rows(&out.report, TextRole::RemoteDest), vec![r(20, true)]);
+    assert_eq!(rows(&out.report, TextRole::EmbeddedFileName), vec![r(40, false)]);
+    assert_eq!(rows(&out.report, TextRole::Xmp), vec![(3, false, Dropped, 1), (61, false, Dropped, 1)]);
+    assert!(out.report.complete && out.is_proven(), "{:?}", out.proof);
+
+    assert!(!leaks(&out.bytes, "budget plan") && find(&out.bytes, b"xmpmeta").is_none());
+    let strings = all_strings(&out.bytes);
+    for expect in [
+        "[redacted].pdf",
+        "[redacted] a",
+        "c:\\[redacted]\\run.exe",
+        "[redacted].exe",
+        "-open [redacted]",
+        "[redacted].fdf",
+        "http://x.example/[redacted]",
+        "[redacted].txt",
+        "[redacted] notes",
+        "af-[redacted].xml",
+        "other.txt",
+    ] {
+        assert!(strings.iter().any(|s| s == expect), "missing {expect:?} in {strings:?}");
+    }
+    // The embedded-file tree key became one opaque name; the tree is one sorted leaf.
+    let root = {
+        let at = find(&out.bytes, b"40 0 obj").expect("tree object");
+        out.bytes[at..at + find(&out.bytes[at..], b"endobj").unwrap()].to_vec()
+    };
+    assert_eq!(strings_of(&root), vec!["hskrd0", "other.txt"]);
+    assert!(find(&root, b"50 0 R").is_some() && find(&out.bytes, b"unrelated payload").is_some());
+    assert_eq!(open(&out.bytes).inspect().page_count, 1);
+
+    // file_targets off: every match is reported kept, nothing is silent (XMP is its own class).
+    let mut doc = open(&input);
+    let off = TextFieldPolicy { file_targets: false, ..TextFieldPolicy::default() };
+    let kept = redact_text_fields_and_save(&mut doc, &needle, &off, &token()).unwrap();
+    assert_eq!((kept.report.kept_by_policy, kept.report.complete), (19, false));
+    assert!(rows(&kept.report, TextRole::FileSpecName).iter().all(|row| row.2 == KeptByPolicy));
+    assert_eq!(rows(&kept.report, TextRole::Xmp).len(), 2);
+    assert!(!kept.is_proven() && leaks(&kept.bytes, "budget plan"));
+}
+
+fn cmap_for(base: u32) -> Vec<u8> {
+    let mut s = String::from("/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n11 beginbfchar\n");
+    for (i, ch) in "Budget Plan".chars().enumerate() {
+        s.push_str(&format!("<{:04X}> <{:04X}>\n", base + i as u32, ch as u32));
+    }
+    s.push_str("endbfchar\nendcmap\nend end");
+    s.into_bytes()
+}
+
+fn codes(base: u32) -> String {
+    (0..11).map(|i| format!("{:04X}", base + i)).collect()
+}
+
+#[test]
+fn proof_reads_tounicode_text_and_region_needles() {
+    let font = |tounicode: Option<u32>| {
+        let extra = tounicode.map(|n| format!("/ToUnicode {n} 0 R")).unwrap_or_default();
+        format!("<< /Type /Font /Subtype /Type0 /BaseFont /Test /Encoding /Identity-H /DescendantFonts [21 0 R] {extra} >>").into_bytes()
+    };
+    let (a, b) = (codes(1), codes(0x1001));
+    let mut objs = minimal_objs("", "5 0 R");
+    objs[2].1 = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 20 0 R /F2 23 0 R /F3 26 0 R >> >> /Annots [5 0 R] >>".to_vec();
+    objs[3].1 = stream_body(
+        "",
+        format!("BT /F1 12 Tf 72 700 Td <{a}> Tj ET\nBT /F2 12 Tf 72 400 Td <{b}> Tj ET\nBT /F3 12 Tf 72 300 Td <00010002> Tj ET").as_bytes(),
+    );
+    objs.extend([
+        (5, b"<< /Type /Annot /Subtype /FreeText /Rect [100 100 300 140] /Contents (label) /AP << /N 13 0 R >> >>".to_vec()),
+        (
+            13,
+            stream_body(
+                "/Type /XObject /Subtype /Form /BBox [0 0 200 40] /Resources << /Font << /F2 23 0 R >> >>",
+                format!("BT /F2 12 Tf 2 5 Td <{b}> Tj ET").as_bytes(),
+            ),
+        ),
+        (20, font(Some(22))),
+        (21, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Test /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>".to_vec()),
+        (22, stream_body("", &cmap_for(1))),
+        (23, font(Some(24))),
+        (24, stream_body("", &cmap_for(0x1001))),
+        (26, font(None)),
+    ]);
+    let pdf = build(&objs, "", b"");
+    let region = RedactionRegion { page_index: 0, rect: [60.0, 690.0, 200.0, 720.0] };
+    let code_bytes: Vec<u8> = (1u16..=11).flat_map(u16::to_be_bytes).collect();
+
+    // The removed string is composite-font codes; read through its /ToUnicode it is text.
+    let mut doc = open(&pdf);
+    let plain = redact_and_save(&mut doc, &[region], UnsupportedPolicy::Refuse, &token()).unwrap();
+    assert_eq!(plain.reports[0].removed_text, vec![code_bytes.clone()]);
+    assert_eq!(plain.reports[0].removed_unicode, vec![Some("Budget Plan".to_string())]);
+    assert!(plain.region_cleared());
+    // The same words in other font codes are found: kept page text is a collision, the same text
+    // in an annotation appearance is a hit (it is annotation text), and the page's composite text
+    // that cannot be read at all is listed.
+    assert_eq!(plain.proof.kept_text_collisions.len(), 1);
+    let page_content = plain.proof.kept_text_collisions[0].object;
+    assert_eq!(plain.proof.opaque_text_streams, vec![page_content]);
+    assert!(plain.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedText { object: 13 })));
+    assert!(!plain.is_proven());
+    // A byte-only needle (no ToUnicode reading) is blind to both.
+    let blind = verify_payload_absent(&plain.bytes, &[code_bytes], &Limits::default(), &token()).unwrap();
+    assert!(blind.kept_text_collisions.is_empty() && blind.hits.is_empty());
+
+    // With a text policy the appearance (found through its ToUnicode) is dropped and the document is proven.
+    let mut doc = open(&pdf);
+    let fixed = redact_and_save_with(&mut doc, &[region], UnsupportedPolicy::Refuse, Some(&TextFieldPolicy::default()), &token()).unwrap();
+    assert!(fixed.is_proven(), "{:?}", fixed.proof);
+    assert_eq!(fixed.proof.kept_text_collisions.len(), 1);
+    assert_eq!(rows(fixed.text_fields.as_ref().unwrap(), TextRole::Appearance), vec![(5, false, TextOutcomeKind::Dropped, 1)]);
+    assert!(find(&fixed.bytes, b"/N 13 0 R").is_none());
+}
+
+#[test]
+fn hostile_decoder_bounds_dims_and_aggregate() {
+    let needle = vec!["Budget Plan".to_string()];
+    let policy = TextFieldPolicy::default();
+    // An annotation whose appearance draws code 0001 with a composite font whose /ToUnicode is `map`.
+    let ap_doc = |map: &[u8], second_map: Option<&[u8]>| {
+        let mut objs = minimal_objs("", if second_map.is_some() { "5 0 R 6 0 R" } else { "5 0 R" });
+        let annot = |ap: u32| format!("<< /Type /Annot /Subtype /FreeText /Rect [0 0 9 9] /Contents (fine) /AP << /N {ap} 0 R >> >>").into_bytes();
+        let ap = |font: u32| {
+            stream_body(
+                &format!("/Type /XObject /Subtype /Form /BBox [0 0 9 9] /Resources << /Font << /F1 {font} 0 R >> >>"),
+                b"BT /F1 12 Tf <0001> Tj ET",
+            )
+        };
+        let f = |tu: u32| format!("<< /Type /Font /Subtype /Type0 /BaseFont /T /Encoding /Identity-H /DescendantFonts [21 0 R] /ToUnicode {tu} 0 R >>").into_bytes();
+        objs.extend([
+            (5, annot(13)),
+            (13, ap(20)),
+            (20, f(22)),
+            (21, b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /T >>".to_vec()),
+            (22, stream_body("", map)),
+        ]);
+        if let Some(m2) = second_map {
+            objs.extend([(6, annot(14)), (14, ap(23)), (23, f(24)), (24, stream_body("", m2))]);
+        }
+        build(&objs, "", b"")
+    };
+
+    // dims_u32_max: code widths and ranges at the u32 edge are refused (the font becomes opaque and
+    // the appearance Unverifiable), never followed; a valid edge-of-range map does not wrap or panic.
+    let five_ranges: String = (0..5).map(|i| format!("1 beginbfrange <{i:02X}0000> <{i:02X}FFFF> <0041> endbfrange\n")).collect();
+    let maps: [(&str, Vec<u8>, usize); 4] = [
+        ("range 0..u32::MAX", b"1 beginbfrange <00000000> <FFFFFFFF> <0041> endbfrange".to_vec(), 1),
+        ("five-byte code", b"1 beginbfchar <0000000001> <0041> endbfchar".to_vec(), 1),
+        ("entry cap", five_ranges.into_bytes(), 1),
+        ("u32 edge, valid", b"1 beginbfrange <FFFFFFFE> <FFFFFFFF> <FFFF> endbfrange".to_vec(), 0),
+    ];
+    for (what, map, unverifiable) in maps {
+        let mut doc = open(&ap_doc(&map, None));
+        let report = doc.redact_text_fields(&needle, &policy, &token()).unwrap();
+        assert_eq!(report.unverifiable as usize, unverifiable, "{what}: {report:?}");
+    }
+
+    // aggregate_over_budget: streams that are each within the per-stream cap (512 KiB of 1 MiB) but
+    // sum past the total (2 MiB).
+    let zeros = vec![0u8; 512 << 10];
+    let mut objs = minimal_objs("", "");
+    objs[2].1 = format!(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents [{}] /Resources << >> >>",
+        (10..18).map(|n| format!("{n} 0 R")).collect::<Vec<_>>().join(" ")
+    )
+    .into_bytes();
+    objs.extend((10..18).map(|n| (n, stream_body("", &zeros))));
+    let tight = Limits { max_decoded_bytes: 1 << 20, max_decoded_total: 2 << 20, ..Limits::default() };
+    let pdf = build(&objs, "", b"");
+    assert_eq!(verify_payload_absent(&pdf, &[b"zzzzzz".to_vec()], &tight, &token()).unwrap_err(), PressError::InputLimit("decoded_total"));
+    let mut doc = PdfDoc::open(&pdf, &tight, &token()).unwrap();
+    let region = RedactionRegion { page_index: 0, rect: [0.0, 0.0, 10.0, 10.0] };
+    assert_eq!(doc.redact_region(&region, UnsupportedPolicy::Refuse, &token()).unwrap_err(), PressError::InputLimit("decoded_total"));
+    // The same budget covers /ToUnicode streams read by the text-field pass: two fonts of 1 MiB each
+    // against a 1.5 MiB total, and the document is unchanged afterwards.
+    let big_map = |tail: &str| {
+        let mut m = vec![b' '; 1 << 20];
+        m.extend_from_slice(format!("1 beginbfchar <0001> <0041> endbfchar {tail}").as_bytes());
+        m
+    };
+    let budget = Limits { max_decoded_bytes: 2 << 20, max_decoded_total: 3 << 19, ..Limits::default() };
+    let pdf = ap_doc(&big_map(""), Some(&big_map("")));
+    let mut doc = PdfDoc::open(&pdf, &budget, &token()).unwrap();
+    let before = doc.save_full(&token()).unwrap();
+    assert!(matches!(doc.redact_text_fields(&needle, &policy, &token()), Err(PressError::InputLimit(_))));
+    assert_eq!(doc.save_full(&token()).unwrap(), before);
+
+    // An inline image dictionary is bounded like any operand list.
+    let keys: String = (0..300).map(|i| format!("/K{i} 1 ")).collect();
+    let mut bad = base_objs(format!("BT ET\nBI {keys}ID x\nEI").as_bytes(), "<< /Title (T) >>");
+    bad[7].1 = stream_body(IMG, b"\x00");
+    let mut doc = open(&build(&bad, "", b""));
+    let region = RedactionRegion { page_index: 0, rect: [0.0, 0.0, 10.0, 10.0] };
+    assert_eq!(doc.redact_region(&region, UnsupportedPolicy::Refuse, &token()).unwrap_err(), PressError::InputLimit("operands"));
+
+    // The decodable prefix of a raster stream is bounded like any stream.
+    let bomb = miniz_oxide::deflate::compress_to_vec_zlib(&vec![0u8; 8 << 20], 6);
+    let pdf = raster_doc("/Filter [/FlateDecode /DCTDecode]", &bomb, "q Q");
+    let small = Limits { max_decoded_bytes: 1 << 20, ..Limits::default() };
+    assert_eq!(verify_payload_absent(&pdf, &[b"zzzzzz".to_vec()], &small, &token()).unwrap_err(), PressError::InputLimit("decoded_bytes"));
+}
+
+#[test]
+fn pdf_string_tokenization_adversarial() {
+    let mut objs = minimal_objs("/Outlines 10 0 R", "20 0 R 21 0 R 22 0 R 23 0 R 24 0 R");
+    let link = |action: &str| format!("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << {action} >> >>").into_bytes();
+    let u16hex_raw = |s: &str| u16hex(s);
+    objs.extend([
+        // Escapes: a name spelled with #xx, octal escapes, a hex string with white space.
+        (20, link(r"/S /U#52I /URI (http://x.example/\102udget\040Plan)")),
+        (21, link("/S /URI /URI <6874 7470 3A2F 2F78 2E65 7861 6D70 6C65 2F42 7564 6765 7420 506C 616E>")),
+        (22, link(r"/S /GoT#6FR /F (\102udget Plan.pdf)")),
+        // Nested parentheses and PDF syntax inside text are text, not structure.
+        (23, b"<< /Type /Annot /Subtype /Text /Rect [0 0 5 5] /Contents (a (Budget Plan) b /S /URI /URI (http://evil/Budget Plan)) >>".to_vec()),
+        // Comment decoy and a wrongly cased action name: /uri is no URI action.
+        (
+            24,
+            b"<< /Type /Annot /Subtype /Link /Rect [0 0 5 5] % /S /URI /URI (Budget Plan)\n /A << /S /uri /URI (http://x.example/Budget Plan) >> >>".to_vec(),
+        ),
+        (10, b"<< /Type /Outlines /First 11 0 R /Last 13 0 R /Count 3 >>".to_vec()),
+        // Case, white space, no-break space, zero-width space.
+        (11, b"<< /Title (BUDGET \\t\\n  plan) /Parent 10 0 R /Next 12 0 R >>".to_vec()),
+        (12, format!("<< /Title {} /Parent 10 0 R /Prev 11 0 R /Next 13 0 R >>", u16hex_raw("Budget\u{a0}Plan")).into_bytes()),
+        (13, format!("<< /Title {} /Parent 10 0 R /Prev 12 0 R >>", u16hex_raw("Bud\u{200b}get   Plan")).into_bytes()),
+    ]);
+    let input = build(&objs, "", b"");
+    let mut doc = open(&input);
+    let out = redact_text_fields_and_save(&mut doc, &["Budget Plan".to_string()], &TextFieldPolicy::default(), &token()).unwrap();
+    use TextOutcomeKind::Replaced;
+    let r = |n: u32, direct: bool| (n, direct, Replaced, 1);
+
+    // Escapes are decoded before matching, names are decoded before dispatch.
+    assert_eq!(rows(&out.report, TextRole::ActionUri), vec![r(20, true), r(21, true)]);
+    assert_eq!(rows(&out.report, TextRole::FileSpecName), vec![r(22, true)]);
+    let strings = all_strings(&out.bytes);
+    assert_eq!(strings.iter().filter(|s| *s == "http://x.example/[redacted]").count(), 2);
+    assert!(strings.iter().any(|s| s == "[redacted].pdf"));
+    // Nested parentheses balance; the URI-looking text inside /Contents is text, redacted as text,
+    // and does not become an action.
+    assert_eq!(rows(&out.report, TextRole::AnnotContents), vec![(23, false, Replaced, 2)]);
+    assert!(strings.iter().any(|s| s == "a ([redacted]) b /s /uri /uri (http://evil/[redacted])"), "{strings:?}");
+    // Case, white-space runs, NBSP and zero-width characters do not hide a title.
+    assert_eq!(rows(&out.report, TextRole::OutlineTitle), vec![r(11, false), r(12, false), r(13, false)]);
+    // The comment decoy and the wrongly cased /uri are not actions: no outcome for object 24, and the
+    // proof keeps reporting what it still sees there (nothing is silently kept).
+    assert!(out.report.outcomes.iter().all(|o| o.object.num != 24));
+    assert!(!out.is_proven());
+    let at = find(&out.bytes, b"24 0 obj").expect("object 24");
+    let end = at + find(&out.bytes[at..], b"endobj").unwrap();
+    assert!(!out.proof.hits.is_empty());
+    assert!(out.proof.hits.iter().all(|h| match h.location {
+        PayloadLocation::StringObject { object } => object == 24,
+        PayloadLocation::RawBytes { offset } => (at..end).contains(&offset),
+        _ => false,
+    }));
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::StringObject { object: 24 })));
+    assert!(out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::RawBytes { .. })));
+}
