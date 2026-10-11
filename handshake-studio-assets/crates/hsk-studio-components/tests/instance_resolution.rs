@@ -7,7 +7,7 @@ use hsk_studio_components::{
     NodeGeometry, OverrideEdit, OverrideRecord, PropType, PropertyDef, PrototypeFlow, Reaction,
     RectPt, SizePt, Source, Trigger, Value, VarEntry, VarRegistry, VarType, Variable,
     apply_constraints, check_footprint, instance_layer, propose_overrides, resize_component,
-    resolve_instance, resolve_variable, switch_variant, validate_flow,
+    resolve_instance, resolve_variable, swap_component, switch_variant, validate_flow,
 };
 use hsk_studio_folio as folio;
 use std::collections::BTreeMap;
@@ -664,5 +664,171 @@ fn folio_shape_and_prototype_graph() {
         let stop = CancellationToken::default();
         stop.cancel();
         assert_eq!(validate_flow(&flow, snap.document(), &limits, &stop), Err(E::Canceled));
+    });
+}
+
+// ---- R3 regression tests: one per recorded finding ----------------------------------------------
+
+#[test]
+fn override_value_type_is_checked_against_property_and_variable_types() {
+    bounded_case("override_value_type_vs_property_and_variable", || {
+        let (defs, vars) = fixture();
+        let (limits, cancel) = (Limits::default(), CancellationToken::default());
+        let run = |i: &Instance| resolve_instance(i, &defs, &vars, &no_modes(), 1, &limits, &cancel);
+        let large = id("SCMP", 12);
+
+        // Label 4 `visible` is driven by the Boolean property showIcon (no definition literal), so a
+        // String override has no type to hide behind; it used to resolve as Source::Override.
+        let mut i = instance(1, &large);
+        i.overrides.push(record(4, "visible", s("x")));
+        assert_eq!(run(&i), Err(E::TypeMismatch("visible".into())));
+        // Button 3 `fills` is bound to a Color variable: a Float override is refused likewise.
+        let mut i = instance(1, &large);
+        i.overrides.push(record(3, "fills", Value::Float(1.0)));
+        assert_eq!(run(&i), Err(E::TypeMismatch("fills".into())));
+        // The proposal path resolves the successor, so it refuses the same edit.
+        let edit = OverrideEdit { node_id: id("SLYR", 4), field: "visible".into(), value: s("x") };
+        assert_eq!(
+            propose_overrides(&instance(1, &large), &[edit], &defs, &vars, &no_modes(), 1, &limits, &cancel),
+            Err(E::TypeMismatch("visible".into()))
+        );
+
+        // Right-typed overrides still win over the property default and the variable binding.
+        let mut i = instance(1, &large);
+        i.overrides.push(record(4, "visible", Value::Boolean(false)));
+        i.overrides.push(record(3, "fills", Value::Color([1.0, 0.0, 0.0, 1.0])));
+        let r = run(&i).unwrap();
+        let (visible, fills) = (
+            r.field(&id("SLYR", 4), "visible").unwrap(),
+            r.field(&id("SLYR", 3), "fills").unwrap(),
+        );
+        assert_eq!((&visible.value, &visible.source), (&Value::Boolean(false), &Source::Override));
+        assert_eq!((&fills.value, &fills.source), (&Value::Color([1.0, 0.0, 0.0, 1.0]), &Source::Override));
+    });
+}
+
+#[test]
+fn set_members_must_have_distinct_ids() {
+    bounded_case("set_members_distinct_ids", || {
+        let set = |default: u32, members: Vec<ComponentDef>| ComponentSet {
+            component_id: id("SCMP", 50),
+            default_variant_id: id("SCMP", default),
+            variant_group_properties: BTreeMap::from([(
+                "size".to_owned(),
+                vec!["small".to_owned(), "large".to_owned()],
+            )]),
+            property_definitions: vec![],
+            members,
+        };
+        let mut defs = DefRegistry::new();
+        // Two different definitions under one member id: the lookup would return the first while a
+        // variant selection could pick the second.
+        assert_eq!(
+            defs.add_set(set(51, vec![member(51, "small", vec![]), member(51, "large", vec![])])),
+            Err(E::Duplicate(id("SCMP", 51)))
+        );
+        // A member sharing the set's own id is the same ambiguity.
+        assert_eq!(
+            defs.add_set(set(51, vec![member(51, "small", vec![]), member(50, "large", vec![])])),
+            Err(E::Duplicate(id("SCMP", 50)))
+        );
+        assert_eq!(defs, DefRegistry::new(), "a refused set registers nothing");
+        // Distinct ids register, and each member is found under its own id.
+        defs.add_set(set(51, vec![member(51, "small", vec![]), member(52, "large", vec![])])).unwrap();
+        for (comp, size) in [(51, "small"), (52, "large")] {
+            let found = defs.component(&id("SCMP", comp)).unwrap();
+            assert_eq!(found.component_id, id("SCMP", comp));
+            assert_eq!(found.variant_properties.as_ref().unwrap()["size"], size);
+        }
+    });
+}
+
+#[test]
+fn actions_after_the_first_add_no_reachability_edge() {
+    bounded_case("dead_actions_add_no_reachability_edge", || {
+        let token = CancellationToken::default();
+        let snap = folio::validate_document(
+            folio_document(), folio::Budget::default(), &token, &Host(folio::Resolution::Available),
+        )
+        .unwrap();
+        let (f1, f2, f3) = (id("SART", 1), id("SART", 2), id("SART", 3));
+        let to = |dest: &str| Action::Node {
+            destination_id: Some(dest.to_owned()),
+            navigation: Navigation::Navigate,
+            overlay_relative_position: None,
+        };
+        let flow = |actions: Vec<Action>| PrototypeFlow {
+            flow_id: id("SPTF", 1),
+            start_frame_id: f1.clone(),
+            reactions: vec![Reaction {
+                node_id: id("SLYR", 1), // Button, on Frame 1
+                trigger: Some(Trigger::OnClick),
+                actions,
+            }],
+        };
+        let limits = hsk_studio_components::FlowLimits::default();
+        let run = |f: &PrototypeFlow| validate_flow(f, snap.document(), &limits, &token).unwrap();
+
+        // [Navigate F2, Navigate F3]: only the first runs, so F3 is warned about and unreachable
+        // (it used to be reported reachable through the dead second action).
+        let report = run(&flow(vec![to(&f2), to(&f3)]));
+        assert_eq!(report.reachable_frames, vec![f1.clone(), f2.clone()]);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!((report.warnings[0].reaction_index, report.warnings[0].action_index), (0, 1));
+        // The same destination as the first action does arm the edge.
+        let report = run(&flow(vec![to(&f3), to(&f2)]));
+        assert_eq!(report.reachable_frames, vec![f1.clone(), f3.clone()]);
+        // A dead action's destination is still validated.
+        assert_eq!(
+            validate_flow(&flow(vec![to(&f2), to(&id("SART", 9))]), snap.document(), &limits, &token),
+            Err(E::PrototypeTarget(id("SART", 9)))
+        );
+    });
+}
+
+#[test]
+fn switch_variant_and_swap_never_return_an_unresolvable_instance() {
+    bounded_case("switch_and_swap_resolvable", || {
+        let (mut defs, vars) = fixture();
+        let (limits, cancel) = (Limits::default(), CancellationToken::default());
+        // A plain component (60) and one whose Label `characters` literal is a Float (61).
+        defs.add_component(plain(60, vec![node(70, "Button", None)])).unwrap();
+        let mut odd_label = node(72, "Label", Some(71));
+        odd_label.fields.insert("characters".into(), Value::Float(1.0));
+        defs.add_component(plain(61, vec![node(71, "Button", None), odd_label])).unwrap();
+        let resolves =
+            |i: &Instance| resolve_instance(i, &defs, &vars, &no_modes(), 1, &limits, &cancel);
+
+        // A plain instance has no variant to switch. It used to return Ok with a VARIANT property
+        // that resolve_instance then refuses (UnsupportedProperty).
+        let on_plain = instance(1, &id("SCMP", 60));
+        assert_eq!(
+            switch_variant(&on_plain, &defs, "size", "small"),
+            Err(E::UnsupportedProperty("size".into()))
+        );
+        // Swapping a set instance that carries a variant selection to a plain component is refused
+        // for the same reason; the caller's instance is untouched.
+        let mut on_set = instance(2, &id("SCMP", 10));
+        on_set.component_properties.insert("size".into(), variant_prop("large"));
+        let before = on_set.clone();
+        assert_eq!(
+            swap_component(&on_set, &defs, &id("SCMP", 60)),
+            Err(E::UnsupportedProperty("size".into()))
+        );
+        assert_eq!(on_set, before);
+        // A carried override whose value no longer fits the target node's type is refused.
+        let mut typed = instance(3, &id("SCMP", 12));
+        typed.overrides.push(record(4, "characters", s("Buy now")));
+        assert_eq!(
+            swap_component(&typed, &defs, &id("SCMP", 61)),
+            Err(E::TypeMismatch("characters".into()))
+        );
+        // A compatible swap still succeeds and the result resolves.
+        let (next, dropped) = swap_component(&typed, &defs, &id("SCMP", 60)).unwrap();
+        assert_eq!(dropped.len(), 1, "Label 4 has no counterpart in the plain component");
+        assert!(resolves(&next).is_ok());
+        let (next, dropped) = switch_variant(&on_set, &defs, "size", "small").unwrap();
+        assert!(dropped.is_empty());
+        assert_eq!(resolves(&next).unwrap().component_id, id("SCMP", 11));
     });
 }

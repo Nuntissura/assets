@@ -479,8 +479,14 @@ fn validate_set(s: &ComponentSet) -> R<()> {
         }
     }
     let mut assignments: BTreeSet<&BTreeMap<String, String>> = BTreeSet::new();
+    // One id names one definition: `component()` finds a member by id, so two members (or a member
+    // and the set) sharing an id would let a variant selection pick the one the lookup hides.
+    let mut ids: BTreeSet<&str> = BTreeSet::from([s.component_id.as_str()]);
     for m in &s.members {
         validate_def(m, true)?;
+        if !ids.insert(m.component_id.as_str()) {
+            return Err(E::Duplicate(m.component_id.clone()));
+        }
         let a = m.variant_properties.as_ref().ok_or(E::NoSuchVariant)?;
         for (prop, declared) in &s.variant_group_properties {
             match a.get(prop) {
@@ -664,8 +670,50 @@ fn select_member<'a>(
 }
 
 type Overrides<'a> = BTreeMap<(&'a str, &'a str), &'a Value>;
+type PropDefs<'a> = BTreeMap<&'a str, &'a PropertyDef>;
 
-fn build_overrides<'a>(inst: &'a Instance, member: &'a ComponentDef) -> R<Overrides<'a>> {
+/// Property definitions in force for a member: the member's win over its set's.
+fn prop_defs_of<'a>(member: &'a ComponentDef, set: Option<&'a ComponentSet>) -> PropDefs<'a> {
+    let mut defs: PropDefs = BTreeMap::new();
+    for d in set.iter().flat_map(|s| s.property_definitions.iter()) {
+        defs.insert(d.name.as_str(), d);
+    }
+    for d in &member.property_definitions {
+        defs.insert(d.name.as_str(), d);
+    }
+    defs
+}
+
+/// Checks an instance property against its definition. `true`: it carries a value to use;
+/// `false`: a VARIANT property, which only selects the member and is legal only on a set.
+fn check_property(name: &str, p: &InstanceProp, defs: &PropDefs, in_set: bool) -> R<bool> {
+    if p.ty == PropType::Variant {
+        return if in_set { Ok(false) } else { Err(E::UnsupportedProperty(name.to_owned())) };
+    }
+    let def = defs.get(name).ok_or_else(|| E::UnsupportedProperty(name.to_owned()))?;
+    if p.ty != def.ty {
+        return Err(E::TypeMismatch(name.to_owned()));
+    }
+    Ok(true)
+}
+
+fn check_property_value(name: &str, ty: PropType, value: &Value) -> R<()> {
+    value.validate(name)?;
+    if !prop_value_ok(ty, value) {
+        return Err(E::TypeMismatch(name.to_owned()));
+    }
+    Ok(())
+}
+
+/// Every override must fit the node it names and the type of each source that can feed the field:
+/// a definition literal, the referenced component property, the bound variable. `vars` is `None`
+/// where no registry is at hand (swap and variant switch), which skips only the variable check.
+fn build_overrides<'a>(
+    inst: &'a Instance,
+    member: &'a ComponentDef,
+    prop_defs: &PropDefs,
+    vars: Option<&VarRegistry>,
+) -> R<Overrides<'a>> {
     let nodes: BTreeMap<&str, &DefNode> =
         member.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
     let mut out: Overrides = BTreeMap::new();
@@ -682,9 +730,17 @@ fn build_overrides<'a>(inst: &'a Instance, member: &'a ComponentDef) -> R<Overri
             }
             let v = rec.values.get(f).ok_or_else(|| E::InvalidValue(f.clone()))?;
             v.validate(f)?;
-            if let Some(lit) = node.fields.get(f)
-                && lit.var_type() != v.var_type()
-            {
+            let literal_clash = node.fields.get(f).is_some_and(|lit| lit.var_type() != v.var_type());
+            let property_clash = node
+                .property_references
+                .get(f)
+                .and_then(|pname| prop_defs.get(pname.as_str()))
+                .is_some_and(|def| !prop_value_ok(def.ty, v));
+            let variable_clash = vars
+                .zip(node.variable_bindings.get(f))
+                .and_then(|(registry, vid)| registry.variable(vid))
+                .is_some_and(|var| var.resolved_type != v.var_type());
+            if literal_clash || property_clash || variable_clash {
                 return Err(E::TypeMismatch(f.clone()));
             }
             if out.insert((node.node_id.as_str(), f.as_str()), v).is_some() {
@@ -699,6 +755,21 @@ fn build_overrides<'a>(inst: &'a Instance, member: &'a ComponentDef) -> R<Overri
         }
     }
     Ok(out)
+}
+
+/// What `resolve_instance` can decide without variables or modes: every property is defined by the
+/// member (or its set) with the right type and value type, and every override fits its node.
+/// Swap and variant switch run it so they never return an instance that cannot resolve.
+fn check_shape(inst: &Instance, member: &ComponentDef, set: Option<&ComponentSet>) -> R<()> {
+    let prop_defs = prop_defs_of(member, set);
+    for (name, p) in &inst.component_properties {
+        check_key(name)?;
+        if check_property(name, p, &prop_defs, set.is_some())? && p.bound_variable_id.is_none() {
+            check_property_value(name, p.ty, &p.value)?;
+        }
+    }
+    build_overrides(inst, member, &prop_defs, None)?;
+    Ok(())
 }
 
 fn record_keys(out: &mut Vec<(String, String)>, ids: &[String]) {
@@ -723,27 +794,12 @@ pub fn resolve_instance(
         return Err(E::BudgetExceeded);
     }
     // Property definitions: the member's win over the set's; every instance property must be known.
-    let mut prop_defs: BTreeMap<&str, &PropertyDef> = BTreeMap::new();
-    for d in set.iter().flat_map(|s| s.property_definitions.iter()) {
-        prop_defs.insert(d.name.as_str(), d);
-    }
-    for d in &member.property_definitions {
-        prop_defs.insert(d.name.as_str(), d);
-    }
+    let prop_defs = prop_defs_of(member, set);
     let mut given: BTreeMap<&str, (Value, Footprint)> = BTreeMap::new();
     for (name, p) in &inst.component_properties {
         check_key(name)?;
-        if p.ty == PropType::Variant {
-            if set.is_none() {
-                return Err(E::UnsupportedProperty(name.clone()));
-            }
-            continue; // selected the member above
-        }
-        let def = prop_defs
-            .get(name.as_str())
-            .ok_or_else(|| E::UnsupportedProperty(name.clone()))?;
-        if p.ty != def.ty {
-            return Err(E::TypeMismatch(name.clone()));
+        if !check_property(name, p, &prop_defs, set.is_some())? {
+            continue; // VARIANT: it selected the member above
         }
         let mut reads = vec![(inst.instance_id.clone(), format!("property/{name}"))];
         let value = if let Some(vid) = &p.bound_variable_id {
@@ -753,13 +809,10 @@ pub fn resolve_instance(
         } else {
             p.value.clone()
         };
-        value.validate(name)?;
-        if !prop_value_ok(p.ty, &value) {
-            return Err(E::TypeMismatch(name.clone()));
-        }
+        check_property_value(name, p.ty, &value)?;
         given.insert(name.as_str(), (value, reads));
     }
-    let overrides = build_overrides(inst, member)?;
+    let overrides = build_overrides(inst, member, &prop_defs, Some(vars))?;
     let mut ov_by_node: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (n, f) in overrides.keys() {
         ov_by_node.entry(n).or_default().push(f);
@@ -882,7 +935,8 @@ pub fn rematch_overrides(
     Ok((kept, dropped))
 }
 
-/// `instance.swap_component`: points the instance at `new_main`, carrying matched overrides.
+/// `instance.swap_component`: points the instance at `new_main`, carrying matched overrides. The
+/// result is checked against the new definition (properties, value types), never returned unresolvable.
 pub fn swap_component(
     inst: &Instance,
     defs: &DefRegistry,
@@ -891,13 +945,15 @@ pub fn swap_component(
     let (from, _) = select_member(inst, defs)?;
     let mut next = inst.clone();
     next.main_component_id = Some(new_main.to_owned());
-    let (to, _) = select_member(&next, defs)?;
+    let (to, set) = select_member(&next, defs)?;
     let (overrides, dropped) = rematch_overrides(inst, from, to)?;
     next.overrides = overrides;
+    check_shape(&next, to, set)?;
     Ok((next, dropped))
 }
 
 /// Variant switch in place: sets the VARIANT property `property` to `value` and re-matches overrides.
+/// The result is checked against the new member, so `Ok` is never an instance that cannot resolve.
 pub fn switch_variant(
     inst: &Instance,
     defs: &DefRegistry,
@@ -914,9 +970,11 @@ pub fn switch_variant(
             bound_variable_id: None,
         },
     );
-    let (to, _) = select_member(&next, defs)?;
+    // A plain (non-set) instance has no variant to switch: `check_shape` refuses the VARIANT property.
+    let (to, set) = select_member(&next, defs)?;
     let (overrides, dropped) = rematch_overrides(inst, from, to)?;
     next.overrides = overrides;
+    check_shape(&next, to, set)?;
     Ok((next, dropped))
 }
 

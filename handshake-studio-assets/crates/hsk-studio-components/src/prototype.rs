@@ -167,7 +167,8 @@ pub fn validate_flow(
             {
                 return Err(E::InvalidValue(format!("overlay_relative_position@{}", r.node_id)));
             }
-            if let (Some(from), Some(_)) = (&from, r.trigger) {
+            // Only the first action runs; later ones are warned about above and add no edge.
+            if let (Some(from), Some(_), 0) = (&from, r.trigger, ai) {
                 edges.entry(from.clone()).or_default().insert(dest.to_owned());
             }
         }
