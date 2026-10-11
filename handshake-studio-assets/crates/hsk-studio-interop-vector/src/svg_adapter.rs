@@ -2,6 +2,7 @@
 //! supported subset. Input is hostile: DTD internal subsets are refused, no link is ever
 //! followed, and node, depth, segment and byte budgets are enforced while decoding.
 use crate::error::{Result, VectorError};
+use crate::gzip;
 use crate::ids::IdMint;
 use crate::model::*;
 use hsk_studio_accord::{CancellationToken, DomainId, Length as AccordLength, Unit};
@@ -14,6 +15,7 @@ use hsk_studio_folio::{
 use hsk_studio_nib::{Anchor, Mirroring, Point, Winding};
 use roxmltree::{Document, Node, ParsingOptions};
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::str::FromStr;
 
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
@@ -232,14 +234,25 @@ impl SubpathBuilder {
 // Style cascade
 // ----------------------------------------------------------------------------------------------
 
+/// Fallback after `url(#id)` when the reference cannot be used.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum PaintValue {
+enum Fallback {
+    Unspecified,
     None,
     Current,
     Color(u8, u8, u8, f64),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
+enum PaintValue {
+    None,
+    Current,
+    Color(u8, u8, u8, f64),
+    /// `url(#id)`: resolved when the shape is emitted (a gradient needs the bounding box).
+    Url(Rc<str>, Fallback),
+}
+
+#[derive(Clone, Debug)]
 struct Inherited {
     fill: PaintValue,
     stroke: PaintValue,
@@ -250,6 +263,14 @@ struct Inherited {
     stroke_opacity: f64,
     color: (u8, u8, u8, f64),
     visible: bool,
+    cap: StrokeCap,
+    join: StrokeJoin,
+    miter_limit: f64,
+    /// User units; empty is solid.
+    dash: Vec<f64>,
+    dash_offset: f64,
+    /// `paint-order` puts the stroke below the fill.
+    stroke_first: bool,
 }
 
 impl Inherited {
@@ -263,6 +284,12 @@ impl Inherited {
             stroke_opacity: 1.0,
             color: (0, 0, 0, 1.0),
             visible: true,
+            cap: StrokeCap::Butt,
+            join: StrokeJoin::Miter,
+            miter_limit: 4.0,
+            dash: Vec::new(),
+            dash_offset: 0.0,
+            stroke_first: false,
         }
     }
 }
@@ -279,12 +306,6 @@ struct Ctx {
     st: Inherited,
     parent: Parent,
     depth: usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct StyleKey {
-    fill: Option<(u8, u8, u8, u64)>,
-    stroke: Option<(u8, u8, u8, u64, u64)>,
 }
 
 fn unit_to_user(l: svgtypes::Length) -> Option<f64> {
@@ -369,7 +390,7 @@ fn scan_doctype(text: &str) -> DoctypeScan {
     DoctypeScan::InternalSubset
 }
 
-struct Importer<'a> {
+struct Importer<'a, 'd> {
     limits: Limits,
     cancel: &'a CancellationToken,
     mint: &'a mut dyn IdMint,
@@ -377,9 +398,14 @@ struct Importer<'a> {
     layers: Vec<StudioLayer>,
     paths: Vec<VectorPath>,
     styles: Vec<StyleProposal>,
-    style_index: BTreeMap<StyleKey, usize>,
+    /// Canonical text of an item list -> index into `styles` (dedupe).
+    style_index: BTreeMap<String, usize>,
     segments: usize,
     elements: u32,
+    /// Gradient elements by id (first wins), found by one pass before the walk.
+    gradients: BTreeMap<&'d str, Node<'d, 'd>>,
+    /// Viewport in user units: the basis of percentage lengths in `userSpaceOnUse` gradients.
+    user_viewport: [f64; 2],
 }
 
 /// Imports an SVG into a Folio proposal (nodes) plus nib anchor geometry, with a typed loss report.
@@ -400,6 +426,16 @@ pub fn import_svg(
     if bytes.len() > policy.limits.max_bytes {
         return Err(VectorError::BudgetExceeded("bytes"));
     }
+    let source_len = bytes.len();
+    // SVGZ: one gzip member, inflated under the decompression cap and never unwrapped twice.
+    let inflated;
+    let (bytes, source_format) = if gzip::is_gzip(bytes) {
+        inflated = gzip::gunzip(bytes, policy.limits.max_decompressed_bytes)?;
+        cancel.check().map_err(|_| VectorError::Canceled)?;
+        (inflated.as_slice(), "svgz")
+    } else {
+        (bytes, "svg")
+    };
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let text = std::str::from_utf8(bytes).map_err(|_| VectorError::NotSvg)?;
     let mut loss = Vec::new();
@@ -436,6 +472,16 @@ pub fn import_svg(
         .map_err(|_| VectorError::InvalidPolicy("pixels_per_inch"))?
         .value();
 
+    let mut gradients = BTreeMap::new();
+    for node in doc.descendants() {
+        if node.is_element()
+            && node.tag_name().namespace() == Some(SVG_NS)
+            && matches!(node.tag_name().name(), "linearGradient" | "radialGradient")
+            && let Some(id) = plain_attr(node, "id")
+        {
+            gradients.entry(id).or_insert(node);
+        }
+    }
     let mut imp = Importer {
         limits: policy.limits,
         cancel,
@@ -447,6 +493,8 @@ pub fn import_svg(
         style_index: BTreeMap::new(),
         segments: 0,
         elements: 1,
+        gradients,
+        user_viewport: DEFAULT_VIEWPORT,
     };
     let document_id = imp.mint_id("SDOC")?;
     let artboard_id = imp.mint_id("SART")?;
@@ -478,6 +526,7 @@ pub fn import_svg(
     if vw > COORDINATE_LIMIT || vh > COORDINATE_LIMIT {
         return Err(VectorError::InvalidGeometry);
     }
+    imp.user_viewport = view_box.map_or([vw, vh], |vb| [vb.w, vb.h]);
     let mut base = Affine::scale(px_to_pt, px_to_pt);
     if let Some(vb) = view_box {
         let par = plain_attr(root, "preserveAspectRatio")
@@ -593,11 +642,12 @@ pub fn import_svg(
         styles,
         loss,
         provenance: Provenance {
-            source_format: "svg",
+            source_format,
             source_unit: "px",
             pixels_per_inch: policy.pixels_per_inch,
             px_to_pt,
-            source_len: bytes.len(),
+            source_len,
+            decoded_len: bytes.len(),
             view_box: view_box.map(|v| [v.x, v.y, v.w, v.h]),
             viewport_px: [vw, vh],
         },
@@ -618,7 +668,7 @@ fn pt(value: f64) -> FolioLength {
     }
 }
 
-impl Importer<'_> {
+impl<'d> Importer<'_, 'd> {
     fn note(&mut self, loc: &str, kind: LossKind, code: &'static str) {
         self.loss.push(LossEntry {
             path: loc.to_owned(),
@@ -694,6 +744,9 @@ impl Importer<'_> {
             "path" | "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" => {
                 self.shape(el, ctx, loc)
             }
+            "defs" => self.defs(el, loc),
+            // Gradients are resolved where a paint references them (see `gradient`).
+            "linearGradient" | "radialGradient" => Ok(()),
             "title" | "desc" | "metadata" => {
                 self.note(loc, LossKind::Ignored, "metadata");
                 Ok(())
@@ -708,6 +761,35 @@ impl Importer<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// `defs` draws nothing. Gradients are looked up on use; every other child is reported.
+    fn defs(&mut self, el: Node, loc: &str) -> Result<()> {
+        let mut counts: BTreeMap<&str, u32> = BTreeMap::new();
+        for child in el.children().filter(Node::is_element) {
+            self.checkpoint()?;
+            self.elements = self.elements.saturating_add(1);
+            if self.elements > self.limits.max_nodes {
+                return Err(VectorError::BudgetExceeded("nodes"));
+            }
+            let tag = child.tag_name().name();
+            let n = counts.entry(tag).or_insert(0);
+            *n += 1;
+            let child_loc = format!("{loc}/{tag}[{n}]");
+            let svg = child.tag_name().namespace() == Some(SVG_NS);
+            if svg && matches!(tag, "linearGradient" | "radialGradient") {
+                continue;
+            }
+            self.check_href(child, &child_loc);
+            if !svg {
+                self.note(&child_loc, LossKind::Ignored, "foreign_namespace_element");
+            } else if matches!(tag, "title" | "desc" | "metadata") {
+                self.note(&child_loc, LossKind::Ignored, "metadata");
+            } else {
+                self.note(&child_loc, LossKind::Unsupported, unsupported_code(tag));
+            }
+        }
+        Ok(())
     }
 
     /// Parses the element's own `transform`, if any, and records the bake.
@@ -746,22 +828,8 @@ impl Importer<'_> {
             opacity: 1.0,
             display_none: false,
         };
-        let mut props: Vec<(&str, &str)> = el
-            .attributes()
-            .filter(|a| a.namespace().is_none())
-            .map(|a| (a.name(), a.value()))
-            .collect();
-        if let Some(style) = plain_attr(el, "style") {
-            for decl in style.split(';') {
-                if let Some((name, value)) = decl.split_once(':') {
-                    let value = value.trim();
-                    let value = value.strip_suffix("!important").map_or(value, str::trim_end);
-                    props.push((name.trim(), value));
-                }
-            }
-        }
-        for (name, value) in props {
-            self.apply_prop(name, value.trim(), st, &mut local, loc);
+        for (name, value) in collect_props(el) {
+            self.apply_prop(name, value, st, &mut local, loc);
         }
         local
     }
@@ -774,10 +842,17 @@ impl Importer<'_> {
             Ok(svgtypes::Paint::Color(c)) => {
                 PaintValue::Color(c.red, c.green, c.blue, f64::from(c.alpha) / 255.0)
             }
-            Ok(svgtypes::Paint::FuncIRI(..)) => {
-                self.note(loc, LossKind::Unsupported, "unsupported_paint_server");
-                PaintValue::None
-            }
+            Ok(svgtypes::Paint::FuncIRI(id, fallback)) => PaintValue::Url(
+                Rc::from(id),
+                match fallback {
+                    None => Fallback::Unspecified,
+                    Some(svgtypes::PaintFallback::None) => Fallback::None,
+                    Some(svgtypes::PaintFallback::CurrentColor) => Fallback::Current,
+                    Some(svgtypes::PaintFallback::Color(c)) => {
+                        Fallback::Color(c.red, c.green, c.blue, f64::from(c.alpha) / 255.0)
+                    }
+                },
+            ),
             Ok(_) => {
                 self.note(loc, LossKind::Unsupported, "unsupported_paint_context");
                 current
@@ -795,8 +870,8 @@ impl Importer<'_> {
 
     fn apply_prop(&mut self, name: &str, value: &str, st: &mut Inherited, local: &mut Local, loc: &str) {
         match name {
-            "fill" => st.fill = self.paint(value, st.fill, loc),
-            "stroke" => st.stroke = self.paint(value, st.stroke, loc),
+            "fill" => st.fill = self.paint(value, st.fill.clone(), loc),
+            "stroke" => st.stroke = self.paint(value, st.stroke.clone(), loc),
             "stroke-width" => match svgtypes::Length::from_str(value).ok().and_then(unit_to_user) {
                 Some(w) if w >= 0.0 && w.is_finite() => st.stroke_width = w,
                 _ => self.note(loc, LossKind::Unsupported, "stroke_width_unparsed"),
@@ -832,18 +907,49 @@ impl Importer<'_> {
                 "visible" => st.visible = true,
                 _ => {}
             },
-            "stroke-linecap" if value != "butt" => {
-                self.note(loc, LossKind::Unsupported, "unsupported_stroke_linecap");
-            }
-            "stroke-linejoin" if value != "miter" => {
-                self.note(loc, LossKind::Unsupported, "unsupported_stroke_linejoin");
-            }
-            "stroke-miterlimit" if value != "4" => {
-                self.note(loc, LossKind::Unsupported, "unsupported_stroke_miterlimit");
-            }
-            "stroke-dasharray" if value != "none" => {
-                self.note(loc, LossKind::Unsupported, "unsupported_stroke_dasharray");
-            }
+            "stroke-linecap" => match value {
+                "butt" => st.cap = StrokeCap::Butt,
+                "round" => st.cap = StrokeCap::Round,
+                "square" => st.cap = StrokeCap::Projecting,
+                "inherit" => {}
+                _ => self.note(loc, LossKind::Unsupported, "stroke_linecap_unparsed"),
+            },
+            "stroke-linejoin" => match value {
+                "miter" => st.join = StrokeJoin::Miter,
+                "round" => st.join = StrokeJoin::Round,
+                "bevel" => st.join = StrokeJoin::Bevel,
+                "miter-clip" | "arcs" => {
+                    st.join = StrokeJoin::Miter;
+                    self.note(loc, LossKind::Approximated, "stroke_linejoin_fallback_miter");
+                }
+                "inherit" => {}
+                _ => self.note(loc, LossKind::Unsupported, "stroke_linejoin_unparsed"),
+            },
+            "stroke-miterlimit" => match value.parse::<f64>() {
+                Ok(v) if v.is_finite() && v >= 1.0 => {
+                    if v > MITER_LIMIT_MAX {
+                        st.miter_limit = MITER_LIMIT_MAX;
+                        self.note(loc, LossKind::Approximated, "stroke_miterlimit_clamped");
+                    } else {
+                        st.miter_limit = v;
+                    }
+                }
+                _ if value == "inherit" => {}
+                _ => self.note(loc, LossKind::Unsupported, "stroke_miterlimit_unparsed"),
+            },
+            "stroke-dasharray" => self.dash_array(value, st, loc),
+            "stroke-dashoffset" => match svgtypes::Length::from_str(value).ok().and_then(unit_to_user) {
+                Some(v) if v.is_finite() => st.dash_offset = v,
+                _ if value == "inherit" => {}
+                _ => self.note(loc, LossKind::Unsupported, "stroke_dashoffset_unparsed"),
+            },
+            "paint-order" => match value {
+                "inherit" => {}
+                _ => match paint_order_stroke_first(value) {
+                    Some(first) => st.stroke_first = first,
+                    None => self.note(loc, LossKind::Unsupported, "paint_order_unparsed"),
+                },
+            },
             "filter" if value != "none" => self.note(loc, LossKind::Unsupported, "unsupported_filter"),
             "mask" if value != "none" => self.note(loc, LossKind::Unsupported, "unsupported_mask"),
             "clip-path" if value != "none" => {
@@ -855,11 +961,46 @@ impl Importer<'_> {
             "marker-start" | "marker-mid" | "marker-end" if value != "none" => {
                 self.note(loc, LossKind::Unsupported, "unsupported_marker");
             }
-            "paint-order" if value != "normal" => {
-                self.note(loc, LossKind::Unsupported, "unsupported_paint_order");
-            }
             _ => {}
         }
+    }
+
+    /// `stroke-dasharray`: lengths in user units. Negative or unparsable lists are invalid and
+    /// ignored (solid), percentages are not resolved, an all-zero list is solid, an odd list is
+    /// repeated once (the SVG rule).
+    fn dash_array(&mut self, value: &str, st: &mut Inherited, loc: &str) {
+        if value == "inherit" {
+            return;
+        }
+        st.dash.clear();
+        if value == "none" {
+            return;
+        }
+        let mut list = Vec::new();
+        for token in value
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|t| !t.is_empty())
+        {
+            let parsed = svgtypes::Length::from_str(token).ok();
+            if parsed.is_some_and(|l| l.unit == svgtypes::LengthUnit::Percent) {
+                self.note(loc, LossKind::Unsupported, "unsupported_stroke_dasharray_percent");
+                return;
+            }
+            match parsed.and_then(unit_to_user) {
+                Some(v) if v >= 0.0 && v.is_finite() && list.len() < MAX_DASH_ENTRIES => list.push(v),
+                _ => {
+                    self.note(loc, LossKind::Unsupported, "stroke_dasharray_invalid");
+                    return;
+                }
+            }
+        }
+        if list.iter().sum::<f64>() <= 0.0 {
+            return;
+        }
+        if list.len() % 2 == 1 {
+            list.extend_from_within(..);
+        }
+        st.dash = list;
     }
 
     fn layer_name(el: Node) -> String {
@@ -1037,27 +1178,307 @@ impl Importer<'_> {
         Ok(())
     }
 
-    fn resolve(&self, p: PaintValue, st: &Inherited, opacity: f64) -> Option<Rgba> {
-        let (r, g, b, a) = match p {
-            PaintValue::None => return None,
-            PaintValue::Current => st.color,
-            PaintValue::Color(r, g, b, a) => (r, g, b, a),
+    /// Resolves a computed paint to a typed proposal paint. `opacity` is the element's fill or
+    /// stroke opacity, folded into every alpha (exact: opacity multiplies the interpolated colour).
+    fn resolve_paint(
+        &mut self,
+        pv: &PaintValue,
+        st: &Inherited,
+        opacity: f64,
+        bbox: Option<[f64; 4]>,
+        m: Affine,
+        loc: &str,
+    ) -> Result<Option<Paint>> {
+        let solid = |(r, g, b, a): (u8, u8, u8, f64)| {
+            Some(Paint::Solid(Rgba {
+                r,
+                g,
+                b,
+                a: (a * opacity).clamp(0.0, 1.0),
+            }))
         };
-        Some(Rgba {
-            r,
-            g,
-            b,
-            a: (a * opacity).clamp(0.0, 1.0),
+        Ok(match pv {
+            PaintValue::None => None,
+            PaintValue::Current => solid(st.color),
+            PaintValue::Color(r, g, b, a) => solid((*r, *g, *b, *a)),
+            PaintValue::Url(id, fallback) => match self.gradient(id, opacity, bbox, m, loc)? {
+                GradientOutcome::Paint(p) => Some(p),
+                GradientOutcome::Nothing => None,
+                GradientOutcome::Missing => {
+                    self.note(loc, LossKind::Unsupported, "unsupported_paint_server");
+                    match fallback {
+                        Fallback::Color(r, g, b, a) => solid((*r, *g, *b, *a)),
+                        Fallback::Current => solid(st.color),
+                        Fallback::None | Fallback::Unspecified => None,
+                    }
+                }
+            },
         })
     }
 
-    fn style_id(&mut self, data: (Option<Rgba>, Option<StrokePaint>)) -> Result<String> {
-        let key = StyleKey {
-            fill: data.0.map(|c| (c.r, c.g, c.b, c.a.to_bits())),
-            stroke: data
-                .1
-                .map(|s| (s.color.r, s.color.g, s.color.b, s.color.a.to_bits(), s.width_pt.to_bits())),
+    /// Resolves `url(#id)` to a gradient. Follows `href` chains inside the file only (depth 8,
+    /// cycles refused); attributes and stops are inherited along the chain as SVG defines.
+    fn gradient(
+        &mut self,
+        id: &str,
+        opacity: f64,
+        bbox: Option<[f64; 4]>,
+        m: Affine,
+        loc: &str,
+    ) -> Result<GradientOutcome> {
+        let Some(&first) = self.gradients.get(id) else {
+            return Ok(GradientOutcome::Missing);
         };
+        let mut chain: Vec<Node<'d, 'd>> = vec![first];
+        while chain.len() < MAX_GRADIENT_CHAIN {
+            let current = chain[chain.len() - 1];
+            let href = current
+                .attributes()
+                .find(|a| a.name() == "href" && matches!(a.namespace(), None | Some(XLINK_NS)))
+                .map(|a| a.value().trim());
+            let Some(href) = href else { break };
+            let Some(target) = href.strip_prefix('#') else {
+                self.note(loc, LossKind::ExternalDenied, "external_href_denied");
+                break;
+            };
+            let Some(&next) = self.gradients.get(target) else {
+                break;
+            };
+            if chain.iter().any(|n| n.id() == next.id()) {
+                self.note(loc, LossKind::Unsupported, "gradient_href_cycle");
+                break;
+            }
+            chain.push(next);
+        }
+        let kind = first.tag_name().name();
+        let attr = |name: &str, same_kind: bool| -> Option<&'d str> {
+            chain
+                .iter()
+                .filter(|n| !same_kind || n.tag_name().name() == kind)
+                .find_map(|n| plain_attr(*n, name))
+        };
+        let units = match attr("gradientUnits", false) {
+            Some("userSpaceOnUse") => GradientUnits::UserSpaceOnUse,
+            _ => GradientUnits::ObjectBoundingBox,
+        };
+        let spread = match attr("spreadMethod", false) {
+            None | Some("pad") => SpreadMethod::Pad,
+            Some("reflect") => SpreadMethod::Reflect,
+            Some("repeat") => SpreadMethod::Repeat,
+            Some(_) => {
+                self.note(loc, LossKind::Unsupported, "gradient_spread_unparsed");
+                SpreadMethod::Pad
+            }
+        };
+        let transform = match attr("gradientTransform", false).map(svgtypes::Transform::from_str) {
+            None => Affine::IDENTITY,
+            Some(Ok(t)) => Affine {
+                a: t.a,
+                b: t.b,
+                c: t.c,
+                d: t.d,
+                e: t.e,
+                f: t.f,
+            },
+            Some(Err(_)) => {
+                self.note(loc, LossKind::Unsupported, "gradient_transform_unparsed");
+                Affine::IDENTITY
+            }
+        };
+        if !transform.finite() {
+            return Err(VectorError::InvalidGeometry);
+        }
+        let stop_owner = chain
+            .iter()
+            .find(|n| n.children().any(|c| is_svg_stop(c)))
+            .copied();
+        let stops = match stop_owner {
+            Some(owner) => self.stops(owner, opacity, loc)?,
+            None => Vec::new(),
+        };
+        let Some(last) = stops.last().copied() else {
+            self.note(loc, LossKind::Ignored, "gradient_no_stops");
+            return Ok(GradientOutcome::Nothing);
+        };
+        if stops.len() == 1 {
+            return Ok(GradientOutcome::Paint(Paint::Solid(last.color)));
+        }
+        let view = self.user_viewport;
+        let coord = |imp: &mut Self, name: &str, default_percent: f64, axis: usize| -> f64 {
+            let text = attr(name, true);
+            imp.gradient_coordinate(text, default_percent, units, axis, view, loc)
+        };
+        enum Geometry {
+            Linear([f64; 4]),
+            Radial([f64; 6]),
+        }
+        let geometry = if kind == "linearGradient" {
+            let g = [
+                coord(self, "x1", 0.0, 0),
+                coord(self, "y1", 0.0, 1),
+                coord(self, "x2", 100.0, 0),
+                coord(self, "y2", 0.0, 1),
+            ];
+            if g[0] == g[2] && g[1] == g[3] {
+                return Ok(GradientOutcome::Paint(Paint::Solid(last.color)));
+            }
+            Geometry::Linear(g)
+        } else {
+            let (cx, cy) = (coord(self, "cx", 50.0, 0), coord(self, "cy", 50.0, 1));
+            let r = coord(self, "r", 50.0, 2);
+            let fx = if attr("fx", true).is_some() { coord(self, "fx", 50.0, 0) } else { cx };
+            let fy = if attr("fy", true).is_some() { coord(self, "fy", 50.0, 1) } else { cy };
+            let fr = coord(self, "fr", 0.0, 2);
+            if r < 0.0 || fr < 0.0 {
+                self.note(loc, LossKind::Unsupported, "gradient_invalid_radius");
+                return Ok(GradientOutcome::Nothing);
+            }
+            if r == 0.0 {
+                return Ok(GradientOutcome::Paint(Paint::Solid(last.color)));
+            }
+            if (fx - cx).hypot(fy - cy) > r + 1e-12 {
+                self.note(loc, LossKind::Approximated, "radial_focal_outside_circle");
+            }
+            Geometry::Radial([cx, cy, r, fx, fy, fr])
+        };
+        let full = match units {
+            GradientUnits::ObjectBoundingBox => {
+                let Some([x0, y0, x1, y1]) = bbox.filter(|b| b[2] > b[0] && b[3] > b[1]) else {
+                    self.note(loc, LossKind::Unsupported, "gradient_degenerate_bbox");
+                    return Ok(GradientOutcome::Nothing);
+                };
+                let map = Affine {
+                    a: x1 - x0,
+                    b: 0.0,
+                    c: 0.0,
+                    d: y1 - y0,
+                    e: x0,
+                    f: y0,
+                };
+                m.then(map).then(transform)
+            }
+            GradientUnits::UserSpaceOnUse => m.then(transform),
+        };
+        if !full.finite() || (full.a * full.d - full.b * full.c).abs() < 1e-18 {
+            self.note(loc, LossKind::Unsupported, "gradient_singular_transform");
+            return Ok(GradientOutcome::Nothing);
+        }
+        let transform = [full.a, full.b, full.c, full.d, full.e, full.f];
+        Ok(GradientOutcome::Paint(match geometry {
+            Geometry::Linear([x1, y1, x2, y2]) => Paint::Linear(LinearGradient {
+                x1,
+                y1,
+                x2,
+                y2,
+                units,
+                transform,
+                spread,
+                stops,
+            }),
+            Geometry::Radial([cx, cy, r, fx, fy, fr]) => Paint::Radial(RadialGradient {
+                cx,
+                cy,
+                r,
+                fx,
+                fy,
+                fr,
+                units,
+                transform,
+                spread,
+                stops,
+            }),
+        }))
+    }
+
+    /// A gradient coordinate in the gradient's own space. Percentages are fractions for
+    /// `objectBoundingBox` and a share of the viewport for `userSpaceOnUse`.
+    fn gradient_coordinate(
+        &mut self,
+        text: Option<&str>,
+        default_percent: f64,
+        units: GradientUnits,
+        axis: usize,
+        view: [f64; 2],
+        loc: &str,
+    ) -> f64 {
+        let basis = match axis {
+            0 => view[0],
+            1 => view[1],
+            _ => ((view[0] * view[0] + view[1] * view[1]) / 2.0).sqrt(),
+        };
+        let percent = |p: f64| match units {
+            GradientUnits::ObjectBoundingBox => p / 100.0,
+            GradientUnits::UserSpaceOnUse => p / 100.0 * basis,
+        };
+        let Some(text) = text else {
+            return percent(default_percent);
+        };
+        match svgtypes::Length::from_str(text.trim()) {
+            Ok(l) if l.unit == svgtypes::LengthUnit::Percent && l.number.is_finite() => percent(l.number),
+            Ok(l) if l.unit == svgtypes::LengthUnit::None && l.number.is_finite() => l.number,
+            Ok(l) => unit_to_user(l).filter(|v| v.is_finite()).unwrap_or_else(|| {
+                self.note(loc, LossKind::Unsupported, "unsupported_length_unit");
+                percent(default_percent)
+            }),
+            Err(_) => {
+                self.note(loc, LossKind::Unsupported, "length_unparsed");
+                percent(default_percent)
+            }
+        }
+    }
+
+    /// Stops of one gradient element: offsets clamped to `0..=1` and made non-decreasing, colour
+    /// alpha folded with `stop-opacity` and the painted element's opacity.
+    fn stops(&mut self, owner: Node, opacity: f64, loc: &str) -> Result<Vec<GradientStop>> {
+        let mut out = Vec::new();
+        let mut previous = 0.0_f64;
+        for stop in owner.children().filter(|c| is_svg_stop(*c)) {
+            if out.len() >= MAX_GRADIENT_STOPS {
+                return Err(VectorError::BudgetExceeded("gradient_stops"));
+            }
+            let mut offset = match plain_attr(stop, "offset") {
+                Some(text) => fraction(text).unwrap_or_else(|| {
+                    self.note(loc, LossKind::Unsupported, "stop_offset_unparsed");
+                    0.0
+                }),
+                None => 0.0,
+            };
+            offset = offset.max(previous);
+            previous = offset;
+            let mut color = (0u8, 0u8, 0u8, 1.0_f64);
+            let mut stop_opacity = 1.0_f64;
+            for (name, value) in collect_props(stop) {
+                match name {
+                    "stop-color" if value == "currentColor" => {
+                        self.note(loc, LossKind::Approximated, "stop_color_current_color");
+                    }
+                    "stop-color" => match svgtypes::Color::from_str(value) {
+                        Ok(c) => color = (c.red, c.green, c.blue, f64::from(c.alpha) / 255.0),
+                        Err(_) => self.note(loc, LossKind::Unsupported, "stop_color_unparsed"),
+                    },
+                    "stop-opacity" => match fraction(value) {
+                        Some(v) => stop_opacity = v,
+                        None => self.note(loc, LossKind::Unsupported, "opacity_unparsed"),
+                    },
+                    _ => {}
+                }
+            }
+            out.push(GradientStop {
+                offset,
+                color: Rgba {
+                    r: color.0,
+                    g: color.1,
+                    b: color.2,
+                    a: (color.3 * stop_opacity * opacity).clamp(0.0, 1.0),
+                },
+            });
+        }
+        Ok(out)
+    }
+
+    /// Stores an appearance stack once; identical stacks share one proposed style id.
+    fn style_id(&mut self, items: Vec<AppearanceItem>) -> Result<String> {
+        let key = format!("{items:?}");
         if let Some(&i) = self.style_index.get(&key) {
             return Ok(self.styles[i].style_id.clone());
         }
@@ -1065,8 +1486,7 @@ impl Importer<'_> {
         self.style_index.insert(key, self.styles.len());
         self.styles.push(StyleProposal {
             style_id: style_id.clone(),
-            fill: data.0,
-            stroke: data.1,
+            items,
         });
         Ok(style_id)
     }
@@ -1084,27 +1504,50 @@ impl Importer<'_> {
         if !m.uniform() {
             self.note(loc, LossKind::Approximated, "stroke_width_nonuniform_scale");
         }
+        let bbox = user_bbox(&subpaths);
+        let st = &ctx.st;
         let fill = if no_fill {
             None
         } else {
-            self.resolve(ctx.st.fill, &ctx.st, ctx.st.fill_opacity)
+            self.resolve_paint(&st.fill, st, st.fill_opacity, bbox, m, loc)?
         };
-        let stroke = self
-            .resolve(ctx.st.stroke, &ctx.st, ctx.st.stroke_opacity)
-            .filter(|_| ctx.st.stroke_width > 0.0)
-            .map(|color| StrokePaint {
-                color,
-                width_pt: ctx.st.stroke_width * m.mean_scale(),
-            });
+        let stroke = if st.stroke_width > 0.0 {
+            self.resolve_paint(&st.stroke, st, st.stroke_opacity, bbox, m, loc)?
+        } else {
+            None
+        };
+        let scale = m.mean_scale();
+        let stroke_item = stroke.map(|paint| {
+            AppearanceItem::Stroke(StrokeAppearance {
+                paint,
+                style: StrokeStyle {
+                    width_pt: st.stroke_width * scale,
+                    cap: st.cap,
+                    join: st.join,
+                    miter_limit: st.miter_limit,
+                    dash_pt: st.dash.iter().map(|d| d * scale).collect(),
+                    dash_offset_pt: st.dash_offset * scale,
+                },
+            })
+        });
         let winding = if fill.is_some() {
-            ctx.st.fill_rule
+            st.fill_rule
         } else {
             Winding::None
         };
-        let style_id = if fill.is_some() || stroke.is_some() {
-            Some(self.style_id((fill, stroke))?)
+        let fill_item = fill.map(AppearanceItem::Fill);
+        let mut items = Vec::with_capacity(2);
+        if st.stroke_first {
+            items.extend(stroke_item);
+            items.extend(fill_item);
         } else {
+            items.extend(fill_item);
+            items.extend(stroke_item);
+        }
+        let style_id = if items.is_empty() {
             None
+        } else {
+            Some(self.style_id(items)?)
         };
         let layer_id = self.mint_id("SLYR")?;
         let mut path_ids = Vec::with_capacity(subpaths.len());
@@ -1148,6 +1591,116 @@ impl Importer<'_> {
         });
         Ok(())
     }
+}
+
+enum GradientOutcome {
+    Paint(Paint),
+    /// The reference resolves but paints nothing (no stops, degenerate); already reported.
+    Nothing,
+    /// No gradient has this id.
+    Missing,
+}
+
+const MITER_LIMIT_MAX: f64 = 500.0;
+const MAX_DASH_ENTRIES: usize = 256;
+const MAX_GRADIENT_CHAIN: usize = 8;
+const MAX_GRADIENT_STOPS: usize = 1024;
+
+fn is_svg_stop(n: Node) -> bool {
+    n.is_element() && n.tag_name().namespace() == Some(SVG_NS) && n.tag_name().name() == "stop"
+}
+
+/// Presentation attributes followed by inline `style` declarations, in cascade order.
+fn collect_props<'a>(el: Node<'a, '_>) -> Vec<(&'a str, &'a str)> {
+    let mut props: Vec<(&str, &str)> = el
+        .attributes()
+        .filter(|a| a.namespace().is_none())
+        .map(|a| (a.name(), a.value().trim()))
+        .collect();
+    if let Some(style) = plain_attr(el, "style") {
+        for decl in style.split(';') {
+            if let Some((name, value)) = decl.split_once(':') {
+                let value = value.trim();
+                let value = value.strip_suffix("!important").map_or(value, str::trim_end);
+                props.push((name.trim(), value));
+            }
+        }
+    }
+    props
+}
+
+/// `paint-order`: true when the stroke is painted before the fill. `None` for unknown keywords.
+fn paint_order_stroke_first(value: &str) -> Option<bool> {
+    let mut order: Vec<&str> = Vec::new();
+    for token in value.split_whitespace() {
+        if !matches!(token, "normal" | "fill" | "stroke" | "markers") || order.contains(&token) {
+            return None;
+        }
+        order.push(token);
+    }
+    if order.first() == Some(&"normal") {
+        return (order.len() == 1).then_some(false);
+    }
+    for default in ["fill", "stroke", "markers"] {
+        if !order.contains(&default) {
+            order.push(default);
+        }
+    }
+    let at = |k: &str| order.iter().position(|t| *t == k);
+    Some(at("stroke") < at("fill"))
+}
+
+/// Tight bounding box `[x0, y0, x1, y1]` of all subpaths in user space (curve extrema included).
+fn user_bbox(subpaths: &[RawSubpath]) -> Option<[f64; 4]> {
+    let mut b: Option<[f64; 4]> = None;
+    let mut extend = |p: [f64; 2]| {
+        b = Some(match b {
+            None => [p[0], p[1], p[0], p[1]],
+            Some(c) => [c[0].min(p[0]), c[1].min(p[1]), c[2].max(p[0]), c[3].max(p[1])],
+        });
+    };
+    for sub in subpaths {
+        let n = sub.anchors.len();
+        let segments = if sub.closed { n } else { n.saturating_sub(1) };
+        for a in &sub.anchors {
+            extend(a.pos);
+        }
+        for i in 0..segments {
+            let (p, q) = (&sub.anchors[i], &sub.anchors[(i + 1) % n]);
+            if p.cout == p.pos && q.cin == q.pos {
+                continue;
+            }
+            for axis in 0..2 {
+                let (p0, c1, c2, p1) = (p.pos[axis], p.cout[axis], q.cin[axis], q.pos[axis]);
+                let (d0, d1, d2) = (c1 - p0, c2 - c1, p1 - c2);
+                // B'(t) / 3 = a t^2 + b t + c
+                let (a, bq, c) = (d0 - 2.0 * d1 + d2, 2.0 * (d1 - d0), d0);
+                let mut roots = [f64::NAN; 2];
+                if a.abs() < 1e-12 {
+                    if bq.abs() > 1e-12 {
+                        roots[0] = -c / bq;
+                    }
+                } else {
+                    let disc = bq * bq - 4.0 * a * c;
+                    if disc >= 0.0 {
+                        let s = disc.sqrt();
+                        roots = [(-bq + s) / (2.0 * a), (-bq - s) / (2.0 * a)];
+                    }
+                }
+                for t in roots {
+                    if t > 0.0 && t < 1.0 {
+                        let u = 1.0 - t;
+                        let at = |k: usize| {
+                            let (p0, c1, c2, p1) = (p.pos[k], p.cout[k], q.cin[k], q.pos[k]);
+                            u * u * u * p0 + 3.0 * u * u * t * c1 + 3.0 * u * t * t * c2 + t * t * t * p1
+                        };
+                        extend([at(0), at(1)]);
+                    }
+                }
+            }
+        }
+    }
+    b
 }
 
 fn point(v: [f64; 2]) -> Result<Point> {

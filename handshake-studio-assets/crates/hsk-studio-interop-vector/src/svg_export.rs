@@ -96,15 +96,211 @@ fn path_data(p: &VectorPath, segs: &[Seg], k: f64) -> String {
     d
 }
 
+/// Text plus the losses the export itself had to take (SVG expresses one fill and one stroke
+/// per element, so longer appearance stacks are written as duplicated path elements).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SvgExport {
+    pub text: String,
+    pub loss: Vec<LossEntry>,
+}
+
+/// Gradient definitions collected while writing; identical gradients share one definition.
+struct Defs {
+    k: f64,
+    ids: BTreeMap<String, String>,
+    text: String,
+}
+
+impl Defs {
+    /// Paint attribute value and the separate opacity attribute a solid colour needs.
+    fn paint(&mut self, paint: &Paint) -> (String, Option<f64>) {
+        match paint {
+            Paint::Solid(c) => (hex(*c), (c.a < 1.0).then_some(c.a)),
+            Paint::Linear(_) | Paint::Radial(_) => {
+                let key = format!("{paint:?}");
+                if let Some(id) = self.ids.get(&key) {
+                    return (format!("url(#{id})"), None);
+                }
+                let id = format!("g{}", self.ids.len() + 1);
+                self.write_gradient(&id, paint);
+                self.ids.insert(key, id.clone());
+                (format!("url(#{id})"), None)
+            }
+        }
+    }
+
+    fn write_gradient(&mut self, id: &str, paint: &Paint) {
+        let (tag, geometry, transform, spread, stops) = match paint {
+            Paint::Linear(g) => (
+                "linearGradient",
+                format!(
+                    "x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"",
+                    num(g.x1),
+                    num(g.y1),
+                    num(g.x2),
+                    num(g.y2)
+                ),
+                g.transform,
+                g.spread,
+                &g.stops,
+            ),
+            Paint::Radial(g) => {
+                let mut geometry = format!(
+                    "cx=\"{}\" cy=\"{}\" r=\"{}\" fx=\"{}\" fy=\"{}\"",
+                    num(g.cx),
+                    num(g.cy),
+                    num(g.r),
+                    num(g.fx),
+                    num(g.fy)
+                );
+                if g.fr != 0.0 {
+                    geometry.push_str(&format!(" fr=\"{}\"", num(g.fr)));
+                }
+                ("radialGradient", geometry, g.transform, g.spread, &g.stops)
+            }
+            Paint::Solid(_) => return,
+        };
+        // Gradient space -> points -> px: scaling every matrix entry by `k` applies `scale(k)`.
+        let [a, b, c, d, e, f] = transform.map(|v| v * self.k);
+        let mut open = format!("    <{tag} id=\"{id}\" gradientUnits=\"userSpaceOnUse\" {geometry}");
+        if [a, b, c, d, e, f] != [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+            open.push_str(&format!(
+                " gradientTransform=\"matrix({} {} {} {} {} {})\"",
+                num(a),
+                num(b),
+                num(c),
+                num(d),
+                num(e),
+                num(f)
+            ));
+        }
+        match spread {
+            SpreadMethod::Pad => {}
+            SpreadMethod::Reflect => open.push_str(" spreadMethod=\"reflect\""),
+            SpreadMethod::Repeat => open.push_str(" spreadMethod=\"repeat\""),
+        }
+        self.text.push_str(&open);
+        self.text.push_str(">\n");
+        for s in stops {
+            self.text.push_str(&format!(
+                "      <stop offset=\"{}\" stop-color=\"{}\"",
+                num(s.offset),
+                hex(s.color)
+            ));
+            if s.color.a < 1.0 {
+                self.text
+                    .push_str(&format!(" stop-opacity=\"{}\"", num(s.color.a)));
+            }
+            self.text.push_str("/>\n");
+        }
+        self.text.push_str(&format!("    </{tag}>\n"));
+    }
+}
+
+enum Row<'a> {
+    Fill(&'a Paint),
+    Stroke(&'a StrokeAppearance),
+}
+
+const DEFAULT_FILL: Paint = Paint::Solid(Rgba {
+    r: 0,
+    g: 0,
+    b: 0,
+    a: 1.0,
+});
+
 struct Writer<'a> {
     k: f64,
     styles: BTreeMap<&'a str, &'a StyleProposal>,
+    defs: Defs,
+    loss: Vec<LossEntry>,
 }
 
 impl Writer<'_> {
-    /// One `<path>` element for all subpaths of one layer (the first path carries the style).
-    fn path_element(&self, out: &mut String, depth: usize, group: &[(&VectorPath, Vec<Seg>)], extra: &str) {
+    /// Paint attributes of one element: an optional fill row, an optional stroke row.
+    fn attrs(
+        &mut self,
+        fill: Option<&Paint>,
+        stroke: Option<&StrokeAppearance>,
+        rule: Winding,
+    ) -> String {
+        let mut out = String::new();
+        match fill {
+            None => out.push_str(" fill=\"none\""),
+            Some(paint) => {
+                let (value, opacity) = self.defs.paint(paint);
+                out.push_str(&format!(" fill=\"{value}\""));
+                if let Some(a) = opacity {
+                    out.push_str(&format!(" fill-opacity=\"{}\"", num(a)));
+                }
+                if rule == Winding::EvenOdd {
+                    out.push_str(" fill-rule=\"evenodd\"");
+                }
+            }
+        }
+        if let Some(s) = stroke {
+            let (value, opacity) = self.defs.paint(&s.paint);
+            let st = &s.style;
+            out.push_str(&format!(
+                " stroke=\"{value}\" stroke-width=\"{}\"",
+                num(st.width_pt * self.k)
+            ));
+            if let Some(a) = opacity {
+                out.push_str(&format!(" stroke-opacity=\"{}\"", num(a)));
+            }
+            match st.cap {
+                StrokeCap::Butt => {}
+                StrokeCap::Round => out.push_str(" stroke-linecap=\"round\""),
+                StrokeCap::Projecting => out.push_str(" stroke-linecap=\"square\""),
+            }
+            match st.join {
+                StrokeJoin::Miter => {}
+                StrokeJoin::Round => out.push_str(" stroke-linejoin=\"round\""),
+                StrokeJoin::Bevel => out.push_str(" stroke-linejoin=\"bevel\""),
+            }
+            if st.miter_limit != 4.0 {
+                out.push_str(&format!(" stroke-miterlimit=\"{}\"", num(st.miter_limit)));
+            }
+            if !st.dash_pt.is_empty() {
+                let list: Vec<String> = st.dash_pt.iter().map(|d| num(d * self.k)).collect();
+                out.push_str(&format!(" stroke-dasharray=\"{}\"", list.join(" ")));
+                if st.dash_offset_pt != 0.0 {
+                    out.push_str(&format!(
+                        " stroke-dashoffset=\"{}\"",
+                        num(st.dash_offset_pt * self.k)
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    fn element(
+        &mut self,
+        out: &mut String,
+        pad: &str,
+        d: &str,
+        rule: Winding,
+        rows: (Option<&Paint>, Option<&StrokeAppearance>),
+        tail: &str,
+    ) {
+        let attrs = self.attrs(rows.0, rows.1, rule);
+        out.push_str(&format!("{pad}<path d=\"{d}\"{attrs}{tail}/>\n"));
+    }
+
+    /// All subpaths of one layer as `<path>` elements (the first path carries style and winding).
+    /// One fill and one stroke (either order) fit one element; any other stack is written as one
+    /// element per row, wrapped in a `<g>` that carries `extra`, and reported.
+    fn layer_paths(
+        &mut self,
+        out: &mut String,
+        depth: usize,
+        group: &[(&VectorPath, Vec<Seg>)],
+        extra: &str,
+        label: &str,
+    ) {
         let first = group[0].0;
+        let rule = first.winding;
         let d = group
             .iter()
             .map(|(p, segs)| path_data(p, segs, self.k))
@@ -114,38 +310,64 @@ impl Writer<'_> {
             .fill_style_id
             .as_deref()
             .and_then(|id| self.styles.get(id).copied());
-        out.push_str(&"  ".repeat(depth));
-        out.push_str(&format!("<path d=\"{d}\""));
-        match (first.winding, style.and_then(|s| s.fill)) {
-            (Winding::None, _) => out.push_str(" fill=\"none\""),
-            (rule, fill) => {
-                let c = fill.unwrap_or(Rgba {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                    a: 1.0,
+        let filled = rule != Winding::None;
+        let mut rows: Vec<Row> = Vec::new();
+        let mut dropped_fill = false;
+        if let Some(style) = style {
+            for item in &style.items {
+                match item {
+                    AppearanceItem::Fill(p) if filled => rows.push(Row::Fill(p)),
+                    AppearanceItem::Fill(_) => dropped_fill = true,
+                    AppearanceItem::Stroke(s) => rows.push(Row::Stroke(s)),
+                }
+            }
+        } else if filled {
+            // No style: the SVG default fill.
+            rows.push(Row::Fill(&DEFAULT_FILL));
+        }
+        if dropped_fill {
+            self.loss.push(LossEntry {
+                path: label.to_owned(),
+                kind: LossKind::Ignored,
+                code: "fill_ignored_winding_none",
+            });
+        }
+        let pad = "  ".repeat(depth);
+        match rows.as_slice() {
+            [] => self.element(out, &pad, &d, rule, (None, None), extra),
+            [Row::Fill(f)] => self.element(out, &pad, &d, rule, (Some(f), None), extra),
+            [Row::Stroke(s)] => self.element(out, &pad, &d, rule, (None, Some(s)), extra),
+            [Row::Fill(f), Row::Stroke(s)] => {
+                self.element(out, &pad, &d, rule, (Some(f), Some(s)), extra);
+            }
+            [Row::Stroke(s), Row::Fill(f)] => {
+                let tail = format!(" paint-order=\"stroke\"{extra}");
+                self.element(out, &pad, &d, rule, (Some(f), Some(s)), &tail);
+            }
+            _ => {
+                self.loss.push(LossEntry {
+                    path: label.to_owned(),
+                    kind: LossKind::Approximated,
+                    code: "appearance_stack_duplicated",
                 });
-                out.push_str(&format!(" fill=\"{}\"", hex(c)));
-                if c.a < 1.0 {
-                    out.push_str(&format!(" fill-opacity=\"{}\"", num(c.a)));
+                let wrap = !extra.is_empty();
+                let inner = if wrap {
+                    out.push_str(&format!("{pad}<g{extra}>\n"));
+                    format!("{pad}  ")
+                } else {
+                    pad.clone()
+                };
+                for row in &rows {
+                    match row {
+                        Row::Fill(f) => self.element(out, &inner, &d, rule, (Some(f), None), ""),
+                        Row::Stroke(s) => self.element(out, &inner, &d, rule, (None, Some(s)), ""),
+                    }
                 }
-                if rule == Winding::EvenOdd {
-                    out.push_str(" fill-rule=\"evenodd\"");
+                if wrap {
+                    out.push_str(&format!("{pad}</g>\n"));
                 }
             }
         }
-        if let Some(s) = style.and_then(|s| s.stroke) {
-            out.push_str(&format!(
-                " stroke=\"{}\" stroke-width=\"{}\"",
-                hex(s.color),
-                num(s.width_pt * self.k)
-            ));
-            if s.color.a < 1.0 {
-                out.push_str(&format!(" stroke-opacity=\"{}\"", num(s.color.a)));
-            }
-        }
-        out.push_str(extra);
-        out.push_str("/>\n");
     }
 }
 
@@ -181,39 +403,84 @@ fn extent<'a>(converted: impl Iterator<Item = &'a Vec<Seg>>) -> [f64; 2] {
     [x, y]
 }
 
-/// Flat export: one `<path>` per layer (consecutive paths sharing a `layer_id` form one compound
-/// `d`), absolute `M`/`L`/`C`/`Z` data, `viewBox="0 0 W H"` in px. Group structure, names,
-/// visibility and element opacity live in the Folio document; use [`export_proposal`] to keep them.
+fn finish(open: String, writer: Writer<'_>, body: &str) -> SvgExport {
+    let mut text = open;
+    if !writer.defs.text.is_empty() {
+        text.push_str("  <defs>\n");
+        text.push_str(&writer.defs.text);
+        text.push_str("  </defs>\n");
+    }
+    text.push_str(body);
+    text.push_str("</svg>\n");
+    SvgExport {
+        text,
+        loss: writer.loss,
+    }
+}
+
+fn writer(k: f64, styles: &[StyleProposal]) -> Writer<'_> {
+    Writer {
+        k,
+        styles: styles.iter().map(|s| (s.style_id.as_str(), s)).collect(),
+        defs: Defs {
+            k,
+            ids: BTreeMap::new(),
+            text: String::new(),
+        },
+        loss: Vec::new(),
+    }
+}
+
+/// Flat export: one element per layer (consecutive paths sharing a `layer_id` form one compound
+/// `d`), absolute `M`/`L`/`C`/`Z` data, gradients in `<defs>`, `viewBox="0 0 W H"` in px.
+/// Group structure, names, visibility and element opacity live in the Folio document; use
+/// [`export_proposal`] to keep them.
 pub fn export_svg(
     paths: &[VectorPath],
     styles: &[StyleProposal],
     opts: &ExportOptions,
 ) -> Result<String> {
+    export_svg_with_loss(paths, styles, opts).map(|e| e.text)
+}
+
+/// [`export_svg`] plus the losses the export took.
+pub fn export_svg_with_loss(
+    paths: &[VectorPath],
+    styles: &[StyleProposal],
+    opts: &ExportOptions,
+) -> Result<SvgExport> {
     let converted = paths.iter().map(convert).collect::<Result<Vec<_>>>()?;
-    let (k, mut out) = header(opts, extent(converted.iter()))?;
-    let writer = Writer {
-        k,
-        styles: styles.iter().map(|s| (s.style_id.as_str(), s)).collect(),
-    };
+    let (k, open) = header(opts, extent(converted.iter()))?;
+    let mut w = writer(k, styles);
+    let mut body = String::new();
     let mut items = paths.iter().zip(converted).peekable();
+    let mut ordinal = 0usize;
     while let Some(first) = items.next() {
         let layer = &first.0.layer_id;
         let mut group = vec![first];
         while let Some(next) = items.next_if(|(p, _)| &p.layer_id == layer) {
             group.push(next);
         }
-        writer.path_element(&mut out, 1, &group, "");
+        ordinal += 1;
+        w.layer_paths(&mut body, 1, &group, "", &format!("/layer[{ordinal}]"));
     }
-    out.push_str("</svg>\n");
-    Ok(out)
+    Ok(finish(open, w, &body))
 }
 
-/// Hierarchical export of a proposal (or an edited copy of its `paths`): the Folio layers become
-/// `<g>` and `<path>` elements in document order, with `id` (when the layer name differs from the
-/// element name), `opacity` from the layer appearance and `display="none"` for hidden layers.
-/// Only paths whose `layer_id` names a vector layer of the snapshot are written. The artboard size
-/// comes from the first artboard unless `opts.artboard_pt` overrides it.
+/// Hierarchical export of a proposal (or an edited copy of its `paths` and `styles`): the Folio
+/// layers become `<g>` and `<path>` elements in document order, with `id` (when the layer name
+/// differs from the element name), `opacity` from the layer appearance and `display="none"` for
+/// hidden layers. Only paths whose `layer_id` names a vector layer of the snapshot are written.
+/// The artboard size comes from the first artboard unless `opts.artboard_pt` overrides it.
 pub fn export_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> Result<String> {
+    export_proposal_with_loss(proposal, opts).map(|e| e.text)
+}
+
+/// [`export_proposal`] plus the losses the export took.
+pub fn export_proposal_with_loss(
+    proposal: &VectorProposal,
+    opts: &ExportOptions,
+) -> Result<SvgExport> {
     let doc = proposal.snapshot.document();
     let mut by_layer: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (i, p) in proposal.paths.iter().enumerate() {
@@ -223,26 +490,20 @@ pub fn export_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> Resul
     for p in &proposal.paths {
         converted.push(Some(convert(p)?));
     }
-    let artboard = doc.artboards.first().map(|a| {
-        let to_pt = |l: &hsk_studio_folio::Length| match l.unit {
-            GeometryUnit::Pt => Some(l.value),
+    let artboard_pt = doc.artboards.first().and_then(|a| {
+        let pt = |l: &hsk_studio_folio::Length| (l.unit == GeometryUnit::Pt).then_some(l.value);
+        match (pt(&a.bounds.width), pt(&a.bounds.height)) {
+            (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some([w, h]),
             _ => None,
-        };
-        (to_pt(&a.bounds.width), to_pt(&a.bounds.height), a.artboard_id.as_str())
+        }
     });
-    let content = extent(converted.iter().flatten());
     let opts = ExportOptions {
-        artboard_pt: opts.artboard_pt.or(match artboard {
-            Some((Some(w), Some(h), _)) if w > 0.0 && h > 0.0 => Some([w, h]),
-            _ => None,
-        }),
+        artboard_pt: opts.artboard_pt.or(artboard_pt),
         ..*opts
     };
-    let (k, mut out) = header(&opts, content)?;
-    let writer = Writer {
-        k,
-        styles: proposal.styles.iter().map(|s| (s.style_id.as_str(), s)).collect(),
-    };
+    let (k, open) = header(&opts, extent(converted.iter().flatten()))?;
+    let mut w = writer(k, &proposal.styles);
+    let mut body = String::new();
     // Children per parent layer id (None = artboard or root), in document order.
     let mut children: BTreeMap<Option<&str>, Vec<usize>> = BTreeMap::new();
     for (i, layer) in doc.layers.iter().enumerate() {
@@ -267,11 +528,15 @@ pub fn export_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> Resul
         let layer = &doc.layers[i];
         if !entering {
             depth -= 1;
-            out.push_str(&"  ".repeat(depth));
-            out.push_str("</g>\n");
+            body.push_str(&"  ".repeat(depth));
+            body.push_str("</g>\n");
             continue;
         }
-        let tag = if matches!(layer.payload, Payload::Group) { "g" } else { "path" };
+        let tag = if matches!(layer.payload, Payload::Group) {
+            "g"
+        } else {
+            "path"
+        };
         let mut extra = String::new();
         if layer.name != tag && !layer.name.is_empty() {
             extra.push_str(&format!(" id=\"{}\"", attr_text(&layer.name)));
@@ -286,8 +551,8 @@ pub fn export_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> Resul
         }
         match &layer.payload {
             Payload::Group => {
-                out.push_str(&"  ".repeat(depth));
-                out.push_str(&format!("<g{extra}>\n"));
+                body.push_str(&"  ".repeat(depth));
+                body.push_str(&format!("<g{extra}>\n"));
                 depth += 1;
                 stack.push((i, false));
                 for &c in children
@@ -305,19 +570,15 @@ pub fn export_proposal(proposal: &VectorProposal, opts: &ExportOptions) -> Resul
                 };
                 let group: Vec<(&VectorPath, Vec<Seg>)> = indices
                     .iter()
-                    .filter_map(|&j| {
-                        converted[j]
-                            .take()
-                            .map(|segs| (&proposal.paths[j], segs))
-                    })
+                    .filter_map(|&j| converted[j].take().map(|segs| (&proposal.paths[j], segs)))
                     .collect();
                 if !group.is_empty() {
-                    writer.path_element(&mut out, depth, &group, &extra);
+                    let label = format!("/layer[{}]", i + 1);
+                    w.layer_paths(&mut body, depth, &group, &extra, &label);
                 }
             }
             _ => {}
         }
     }
-    out.push_str("</svg>\n");
-    Ok(out)
+    Ok(finish(open, w, &body))
 }

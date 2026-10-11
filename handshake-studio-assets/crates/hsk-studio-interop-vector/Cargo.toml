@@ -14,6 +14,7 @@ hsk-studio-nib = { path = "../hsk-studio-nib", version = "=0.1.0", default-featu
 hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
 roxmltree = { version = "=0.21.1", default-features = false, features = ["std"] }
 svgtypes = { version = "=0.16.1", default-features = false, features = ["std"] }
+miniz_oxide = { version = "=0.9.1", default-features = false, features = ["with-alloc"] }
 
 [lib]
 path = "src/lib.rs"

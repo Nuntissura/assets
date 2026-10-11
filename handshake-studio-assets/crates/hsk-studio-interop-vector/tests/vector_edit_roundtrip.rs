@@ -105,10 +105,11 @@ fn svg_edit_transform_style_reopen_twice() {
         );
         // Style: red fill + blue stroke 4 px = 3 pt, and a stroke-only style for the rect.
         assert_eq!(one.styles.len(), 2);
-        let red = one.styles.iter().find(|s| s.fill.is_some()).unwrap();
-        assert_eq!(red.fill.unwrap(), Rgba { r: 255, g: 0, b: 0, a: 1.0 });
-        let stroke = red.stroke.unwrap();
-        assert_eq!((stroke.color.b, stroke.width_pt), (255, 3.0));
+        let red = one.styles.iter().find(|s| s.fills().next().is_some()).unwrap();
+        assert_eq!(red.fills().next().unwrap(), &Paint::Solid(Rgba { r: 255, g: 0, b: 0, a: 1.0 }));
+        let stroke = red.strokes().next().unwrap();
+        assert_eq!(stroke.paint, Paint::Solid(Rgba { r: 0, g: 0, b: 255, a: 1.0 }));
+        assert_eq!(stroke.style.width_pt, 3.0);
 
         // Export is deterministic; reopen twice keeps geometry, style and winding.
         let text = export_svg(&one.paths, &one.styles, &opts).unwrap();
@@ -123,7 +124,7 @@ fn svg_edit_transform_style_reopen_twice() {
         let (s2, s3) = (&two.styles, &three.styles);
         assert_eq!(s2.len(), s3.len());
         for (a, b) in s2.iter().zip(s3) {
-            assert_eq!((a.fill, a.stroke), (b.fill, b.stroke));
+            assert_eq!(a.items, b.items);
         }
 
         // An edit (move the middle anchor 6 pt right) survives export and reopen.
@@ -257,10 +258,10 @@ fn unit_loss_stale_profile() {
         let end = xy(anchors.last().unwrap())[0];
         assert!((end.0 - 15.0).abs() < 1e-9 && end.1.abs() < 1e-9);
 
-        // Gradient fill and filter: reported, never silently dropped.
-        let gradient = r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g"/></defs><rect width="10" height="10" fill="url(#g)" filter="url(#f)"/></svg>"##;
+        // A pattern paint server and a filter: reported, never silently dropped.
+        let gradient = r##"<svg xmlns="http://www.w3.org/2000/svg"><defs><pattern id="p"/></defs><rect width="10" height="10" fill="url(#p)" filter="url(#f)"/></svg>"##;
         let p = import(gradient).unwrap();
-        for code in ["unsupported_defs", "unsupported_paint_server", "unsupported_filter"] {
+        for code in ["unsupported_pattern", "unsupported_paint_server", "unsupported_filter"] {
             assert!(p.has_loss_code(code), "missing {code}: {:?}", p.loss);
         }
 

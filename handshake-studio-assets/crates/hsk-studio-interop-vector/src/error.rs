@@ -22,6 +22,8 @@ pub enum VectorError {
     InvalidGeometry,
     /// The bytes are not UTF-8 text or the root is not an SVG-namespace `svg` element.
     NotSvg,
+    /// The SVGZ container is damaged or unsupported (`what` names the check).
+    Gzip(&'static str),
     /// The XML is malformed (including undefined entity references).
     MalformedXml,
     /// A DOCTYPE with an internal subset (entity declarations) was refused; hostile by default.
@@ -52,6 +54,7 @@ impl VectorError {
             Self::InvalidGeometry => "invalid_geometry",
             Self::NotSvg => "not_svg",
             Self::MalformedXml => "malformed_xml",
+            Self::Gzip(_) => "gzip_invalid",
             Self::EntityDenied => "entity_denied",
             Self::InvalidPolicy(_) => "invalid_policy",
             Self::NativeEditabilityBlocked { .. } => "native_editability_blocked",
