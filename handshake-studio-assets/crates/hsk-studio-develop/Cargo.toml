@@ -7,5 +7,15 @@ rust-version = { workspace = true }
 [features]
 default = []
 
+[dependencies]
+hsk-studio-accord = { path = "../hsk-studio-accord", version = "=0.1.0", default-features = false }
+hsk-studio-observe = { path = "../hsk-studio-observe", version = "=0.1.0", default-features = false }
+hsk-studio-pigment = { path = "../hsk-studio-pigment", version = "=0.1.0", default-features = false }
+sha2 = { version = "=0.11.0", default-features = false, features = [] }
+
 [lib]
 path = "src/lib.rs"
+
+[[example]]
+name = "develop-consumer"
+path = "examples/develop-consumer.rs"
