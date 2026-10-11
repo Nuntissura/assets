@@ -120,8 +120,20 @@ fn verify_tile(
         return Err(unsupported("alpha_premultiplied"));
     }
     if !planes.matches(input, plan_space)
-        || !plane_ok(planes.colour, planes.colour_stride_bytes, planes.width, planes.height, 12)
-        || !plane_ok(planes.alpha, planes.alpha_stride_bytes, planes.width, planes.height, 4)
+        || !plane_ok(
+            planes.colour,
+            planes.colour_stride_bytes,
+            planes.width,
+            planes.height,
+            12,
+        )
+        || !plane_ok(
+            planes.alpha,
+            planes.alpha_stride_bytes,
+            planes.width,
+            planes.height,
+            4,
+        )
     {
         return Err(mismatch(key));
     }
@@ -161,7 +173,10 @@ fn leaf<'a>(
             Ok((Source::Tile(planes), t.placement))
         }
         PlanNode::Solid { rect, rgba } => {
-            if !rgba.iter().all(|c| c.is_finite() && (0.0..=1.0).contains(c)) {
+            if !rgba
+                .iter()
+                .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
+            {
                 return Err(unsupported("sample_range_outside_unit"));
             }
             rect.end().map_err(|_| overflow())?;
@@ -362,9 +377,7 @@ impl GpuBackend {
     ) -> Result<(RenderReceipt, GpuStats), GpuError> {
         let ledger = admit::<NoVector>(plan, self, request, cancel)?;
         let prepared = prepare(plan, sources)?;
-        let digest = plan
-            .digest()
-            .map_err(|_| GpuError::Gpu("plan_digest"))?;
+        let digest = plan.digest().map_err(|_| GpuError::Gpu("plan_digest"))?;
 
         let mut guard = self.lock();
         let inner = &mut *guard;
@@ -575,7 +588,9 @@ fn run(
         let dst = buffer(
             "hsk-studio-render-gpu dst",
             chunk_bytes,
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
         );
         let staging = buffer(
             "hsk-studio-render-gpu staging",
@@ -683,15 +698,15 @@ fn run(
             encoder.copy_buffer_to_buffer(&dst, 0, &staging, 0, count);
             queue.submit(Some(encoder.finish()));
             let (tx, rx) = std::sync::mpsc::channel();
-            staging.slice(0..count).map_async(wgpu::MapMode::Read, move |outcome| {
-                let _ = tx.send(outcome);
-            });
-            let wait = request
-                .deadline
-                .map_or(DEFAULT_POLL_LIMIT, |d| {
-                    d.saturating_duration_since(Instant::now())
-                        .max(Duration::from_millis(1))
+            staging
+                .slice(0..count)
+                .map_async(wgpu::MapMode::Read, move |outcome| {
+                    let _ = tx.send(outcome);
                 });
+            let wait = request.deadline.map_or(DEFAULT_POLL_LIMIT, |d| {
+                d.saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1))
+            });
             let polled = device.poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: Some(wait),

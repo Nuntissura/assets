@@ -83,7 +83,11 @@ impl Residency {
     }
     /// Bytes held by pinned entries (never evictable).
     pub fn pinned_bytes(&self) -> u64 {
-        self.entries.iter().filter(|e| e.pinned).map(|e| e.bytes).sum()
+        self.entries
+            .iter()
+            .filter(|e| e.pinned)
+            .map(|e| e.bytes)
+            .sum()
     }
     pub fn contains(&self, key: &ResidentKey) -> bool {
         self.entries.iter().any(|e| e.key == *key)
