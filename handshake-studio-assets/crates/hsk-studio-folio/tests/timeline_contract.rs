@@ -131,14 +131,29 @@ fn sequences_roundtrip_as_integer_ticks_and_stay_optional() {
                 Some(Ticks::new(2500))
             );
             assert!(seq.tracks[1].clips[0].speed.is_reversed());
-            assert_eq!(seq.frame_rate.fps_fraction(), Some((24, 1)));
+            // Folio stores ticks/frame and validates canonical rates; fps fractions are Pulse's.
+            assert_eq!(
+                seq.frame_rate.accord().map(|r| r.ticks_per_frame()),
+                Some(seq.frame_rate.ticks_per_frame)
+            );
             assert_eq!(
                 SequenceFrameRate {
                     ticks_per_frame: 10_594_584_000
                 }
-                .fps_fraction(),
-                Some((24_000, 1001))
+                .accord()
+                .map(|r| r.ticks_per_frame()),
+                Some(10_594_584_000)
             );
+            for rate in [0u64, 12_345, 10_594_594_594] {
+                assert!(
+                    SequenceFrameRate {
+                        ticks_per_frame: rate
+                    }
+                    .accord()
+                    .is_none(),
+                    "{rate}"
+                );
+            }
             // Validated successor re-encodes to the same wire form, with ticks as plain integers.
             let again = validate_document(
                 snapshot.document().clone(),
@@ -233,6 +248,50 @@ fn invalid_timelines_reject_with_stable_codes_and_targets() {
             b["tracks"][0]["track_id"] = json!(identity("STRK", 10));
             b["tracks"][0]["clips"][0]["clip_id"] = json!(identity("SCLP", 10));
             expect(&document(vec![nested("a", "b"), b]), Code::ContainmentCycle, "sequences");
+        },
+    );
+}
+#[test]
+fn path_like_handles_are_rejected_for_media_and_primitive_sources() {
+    bounded_case(
+        "path_like_handles_are_rejected_for_media_and_primitive_sources",
+        || {
+            let source = |d: &mut Value, v: Value| {
+                d["sequences"][0]["tracks"][0]["clips"][0]["source_ref"] = v;
+            };
+            let media = |id: &str| {
+                json!({"source_kind":"media","artifact_manifest_id":id,
+                    "content_digest":{"algorithm":"sha256","digest":"abc123"}})
+            };
+            let primitive = |id: &str| {
+                json!({"source_kind":"primitive","schema_id":"hsk.studio.motion_timeline@1","object_id":id})
+            };
+            // Relative, dot-segment, home, URL, UNC and separator spellings are paths, not handles.
+            for path in [
+                "media/a.mov",
+                "./a.mov",
+                "../a.mov",
+                "sub\\a.mov",
+                "~/a.mov",
+                "~",
+                ".",
+                "..",
+                "dir/",
+                "file:///a.mov",
+                "//host/share/a.mov",
+            ] {
+                for make in [&media as &dyn Fn(&str) -> Value, &primitive] {
+                    let mut d = standard();
+                    source(&mut d, make(path));
+                    expect(&d, Code::InvalidField, "/source");
+                }
+            }
+            // Opaque ids (including dots and dashes inside the id) stay valid.
+            for id in ["manifest-a", "offline-reel-A001.mov", "sha256_ab.cd", "a..b"] {
+                let mut d = standard();
+                source(&mut d, media(id));
+                open(&d);
+            }
         },
     );
 }

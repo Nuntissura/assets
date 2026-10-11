@@ -104,6 +104,19 @@ fn legacy_rates_and_conversions() {
         assert_eq!(fps_fraction(r2), (30_000, 1001));
         assert_eq!(fps_fraction(r), (24_000, 1001));
         assert_eq!(fps_fraction(r25), (25, 1));
+        // Folio's stored sequence rate converts here (Folio owns no fraction logic); non-canonical
+        // spellings are refused.
+        let stored = |ticks_per_frame| hsk_studio_folio::SequenceFrameRate { ticks_per_frame };
+        assert_eq!(fps_fraction_of(&stored(10_584_000_000)), Ok((24, 1)));
+        assert_eq!(fps_fraction_of(&stored(10_594_584_000)), Ok((24_000, 1001)));
+        assert_eq!(fps_fraction_of(&stored(8_467_200_000)), Ok((30, 1)));
+        for bad in [0, 12_345, 10_594_594_594] {
+            assert_eq!(
+                fps_fraction_of(&stored(bad)),
+                Err(PulseError::UnsupportedFrameRate),
+                "{bad}"
+            );
+        }
         assert_eq!(frame_rate_from_fps(30_000, 1001).unwrap(), r2);
         assert_eq!(frame_rate_from_fps(25, 1).unwrap(), r25);
         assert_eq!(

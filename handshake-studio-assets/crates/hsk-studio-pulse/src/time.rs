@@ -3,6 +3,7 @@
 use crate::error::{PulseError, Result};
 use crate::rational::{Rounding, gcd};
 use hsk_studio_accord::{FrameRate, FrameRateNormalization, TICKS_PER_SECOND, Ticks};
+use hsk_studio_folio::SequenceFrameRate;
 
 /// Normalizes a ticks/frame import value (legacy 10594594594/8475675675 map to the 1001-ratio
 /// canonical values) and returns the receipt. Unknown rates are refused.
@@ -32,6 +33,15 @@ pub fn ticks_to_frames_floor(ticks: Ticks, rate: FrameRate) -> u64 {
 pub fn fps_fraction(rate: FrameRate) -> (u64, u64) {
     let g = gcd(TICKS_PER_SECOND, rate.ticks_per_frame());
     (TICKS_PER_SECOND / g, rate.ticks_per_frame() / g)
+}
+
+/// Frames per second of a Folio sequence's stored `frame_rate` as a reduced fraction. Folio stores
+/// only ticks/frame; the conversion lives here. A value that is not a canonical STU-VID-013 table
+/// rate (including legacy spellings Folio refuses to validate) is `UnsupportedFrameRate`.
+pub fn fps_fraction_of(rate: &SequenceFrameRate) -> Result<(u64, u64)> {
+    rate.accord()
+        .map(fps_fraction)
+        .ok_or(PulseError::UnsupportedFrameRate)
 }
 
 /// Interchange entry: exact `num/den` frames per second to a table rate. Rates whose ticks per
