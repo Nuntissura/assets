@@ -10,6 +10,9 @@ use std::sync::Arc;
 
 mod admitted;
 pub use admitted::*;
+mod wide;
+mod wide_plan;
+pub use wide::*;
 
 pub const ENGINE_NAME: &str = "moxcms";
 pub const ENGINE_VERSION: &str = "0.9.1";
