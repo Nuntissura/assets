@@ -574,9 +574,32 @@ struct IdEntry {
 
 #[cfg(test)]
 thread_local! {
-    /// Target elements `Collector::id_loads` evaluated on this thread (the hostile-size test in `assets/tests.rs` bounds
+    /// Target elements `Collector::id_loads` evaluated on this thread (the hostile-size tests in `assets/tests.rs` bound
     /// it).
     static TARGET_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Nodes the id-map loop of `Collector::id_loads` passed on this thread.
+    static MAP_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// `(map visits, target visits, token)`: the loops cancel `token` themselves once that many of their iterations ran
+    /// (0 = never). The only deterministic way to cancel between two cancellation checks, and the operation-count bound
+    /// of the gate-scale test: work past the bound ends as `Canceled`, not after minutes.
+    static CANCEL_AFTER: std::cell::RefCell<Option<(usize, usize, CancellationToken)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Counts one iteration of the id-map loop (`map`) or of the target walk and fires `CANCEL_AFTER` (tests only).
+#[cfg(test)]
+fn tick(map: bool) {
+    let visits = if map { &MAP_VISITS } else { &TARGET_VISITS };
+    let n = visits.with(|v| {
+        v.set(v.get().saturating_add(1));
+        v.get()
+    });
+    CANCEL_AFTER.with(|armed| {
+        if let Some((after_map, after_target, token)) = &*armed.borrow()
+            && n == if map { *after_map } else { *after_target }
+        {
+            token.cancel();
+        }
+    });
 }
 
 /// The load contexts of a `link` element's `href` from its `rel` and `as` attributes (decoded, first of each wins).
@@ -673,6 +696,8 @@ impl Collector<'_> {
                 if id & 0x3ff == 0 {
                     cancel.check()?;
                 }
+                #[cfg(test)]
+                tick(true);
                 let Some(node) = doc.node(id).filter(|n| n.kind == NodeKind::Element) else {
                     continue;
                 };
@@ -698,7 +723,7 @@ impl Collector<'_> {
                 cancel.check()?;
             }
             #[cfg(test)]
-            TARGET_VISITS.with(|v| v.set(v.get().saturating_add(1)));
+            tick(false);
             loads = loads.union(target_loads(doc, target, name));
         }
         entry.loads.insert(name.to_owned(), loads);

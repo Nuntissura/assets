@@ -609,8 +609,9 @@ pub(crate) fn decide(load: Load, url: &DataUrl<'_>) -> Decision {
 /// The decision for a carrier with several load contexts (`Loads`): every context applies, so the strictest decision wins
 /// (`Inline` < `ScanCss` < `Deny`). No context at all is `Deny` (fail closed; `Load::Script` is not the strictest single
 /// reading: for `image/svg+xml` it is `Inline` while `Manifest`, `Track`, `Document` and `Resource` deny, test
-/// `load_context_decides_before_the_type`). The collector produces an empty set for no carrier: `carriers::link_loads`
-/// falls back to a document and `animated_loads` returns at least one context (test `link_keywords_choose_the_load_contexts`).
+/// `load_context_decides_before_the_type`). The collector hands this function no empty set: `carriers::link_loads` falls
+/// back to a document (test `link_keywords_choose_the_load_contexts`) and `animated_loads` returns at least one context for
+/// every target shape (test `animated_loads_returns_a_context_for_every_target_shape`).
 pub(crate) fn decide_all(loads: Loads, url: &DataUrl<'_>) -> Decision {
     let mut decision: Option<Decision> = None;
     for load in loads.iter() {

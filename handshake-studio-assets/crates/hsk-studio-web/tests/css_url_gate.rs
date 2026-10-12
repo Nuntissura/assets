@@ -1961,10 +1961,12 @@ fn r13_p3_url_only_refresh_content_is_read_fail_closed() {
 
 /// R13-F1: a document within the default limits with many animations of `href`/`xlink:href` naming one id shared by many
 /// elements (the quadratic case: every animation walked every sharing element) is scanned in linear work. At e409030 this
-/// document (20000 x 20000 = 4e8 target evaluations) runs for minutes; here the declared bound is 45 s (`bounded_case`) and
-/// the scan itself must finish within 20 s, measured in a few seconds in the unoptimised test profile (the operation
-/// counter test is `assets::tests::animated_loads_walks_each_shared_id_once_per_attribute_name`). The contexts are still the
-/// union over every sharing element: one `script` among the `g` elements makes each animated `href` a script load.
+/// document (20000 x 20000 = 4e8 target evaluations) runs for minutes. This test is the production-boundary proof of the
+/// outcome (the contexts, the reports and the port calls of that document); the declared deadline is the 45 s of
+/// `bounded_case`, and it asserts no other wall-clock bound. The work bound is an operation count, in the unit test
+/// `assets::tests::animated_loads_stays_within_the_operation_bound_at_the_gate_scale` (the same document: 2 attribute names x
+/// the sharing elements target evaluations, a scan past it is cancelled). The contexts are still the union over every
+/// sharing element: one `script` among the `g` elements makes each animated `href` a script load.
 #[test]
 fn r13_f1_many_animations_sharing_ids_finish_within_the_bound() {
     bounded_case(
@@ -1984,20 +1986,11 @@ fn r13_f1_many_animations_sharing_ids_finish_within_the_bound() {
                 assert!(src.len() < Limits::default().max_bytes);
                 let doc = parse(&src, 0, &Limits::default(), &CancellationToken::default())
                     .expect("the document is within the default limits");
-                let started = std::time::Instant::now();
                 let port = Port {
                     calls: Mutex::new(Vec::new()),
                 };
                 let found = collect_assets(&doc, &port, &CancellationToken::default())
                     .expect("the scan completes");
-                let elapsed = started.elapsed();
-                eprintln!(
-                    "r13_f1: {count} animations over {count} shared ids scanned in {elapsed:?}"
-                );
-                assert!(
-                    elapsed < std::time::Duration::from_secs(20),
-                    "scan of {count} animations sharing an id took {elapsed:?}"
-                );
                 let to: Vec<_> = found.iter().filter(|a| a.reference == "#y").collect();
                 assert_eq!(to.len(), count);
                 assert!(

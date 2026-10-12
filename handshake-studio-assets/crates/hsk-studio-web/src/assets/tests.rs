@@ -42,8 +42,21 @@ fn visits() -> usize {
     TARGET_VISITS.with(std::cell::Cell::get)
 }
 
+fn map_visits() -> usize {
+    MAP_VISITS.with(std::cell::Cell::get)
+}
+
+/// Zeroes both counters and disarms [`arm_cancel`].
 fn reset_visits() {
     TARGET_VISITS.with(|v| v.set(0));
+    MAP_VISITS.with(|v| v.set(0));
+    CANCEL_AFTER.with(|armed| *armed.borrow_mut() = None);
+}
+
+/// Makes the id-map loop cancel `token` after `map` of its iterations and the target walk after `target` of its iterations
+/// (0 = not at all), see `CANCEL_AFTER`.
+fn arm_cancel(map: usize, target: usize, token: &CancellationToken) {
+    CANCEL_AFTER.with(|armed| *armed.borrow_mut() = Some((map, target, token.clone())));
 }
 
 /// `count` elements `<g id="x"/>` followed by `count` animations of `href`/`xlink:href` naming them in four spellings.
@@ -98,8 +111,10 @@ fn animated_loads_walks_each_shared_id_once_per_attribute_name() {
     );
 }
 
-/// R13-F1: cancellation is checked inside the id-map loop and inside the target walk, every 1024 elements. The map is built
-/// with a live token first, so the cancelled call can only stop in the target loop.
+/// R13-F1: cancellation is checked inside the id-map loop and inside the target walk. This test cancels BEFORE the call, so it
+/// proves the check at the first iteration of each loop (the map is built with a live token first, so the cancelled call can
+/// only stop in the target loop); that the check recurs every 1024 iterations is
+/// `animated_loads_cancellation_recurs_every_1024_iterations_in_both_loops`.
 #[test]
 fn animated_loads_checks_cancellation_inside_its_loops() {
     let doc = doc_of(&shared_id_document(3000, ""));
@@ -126,6 +141,191 @@ fn animated_loads_checks_cancellation_inside_its_loops() {
     reset_visits();
     assert_eq!(c.id_loads("x", "href"), first);
     assert_eq!(visits(), 0, "the second call is the memo");
+}
+
+/// PLR-071 (R14-O2): the cancellation check recurs every 1024 iterations in BOTH loops, not only at the first. The token is
+/// cancelled from inside the loop (`arm_cancel`) after the first iteration (and after the 1025th), so the next check, at
+/// iteration 1024 (and 2048), is the one that stops it: exactly 1024 (and 2048) iterations ran, nothing was memoised and
+/// the map of a cancelled build was not kept. A loop that checked only at its first iteration, or at another stride, ends
+/// differently.
+#[test]
+fn animated_loads_cancellation_recurs_every_1024_iterations_in_both_loops() {
+    let doc = doc_of(&shared_id_document(3000, ""));
+    // id-map loop (the first call builds the map)
+    for (armed_after, stops_at) in [(1, 1024), (1025, 2048)] {
+        let cancel = CancellationToken::default();
+        let mut c = collector(&doc, &cancel, &Port);
+        reset_visits();
+        arm_cancel(armed_after, 0, &cancel);
+        assert_eq!(
+            c.id_loads("x", "href"),
+            Err(WebError::Canceled),
+            "map loop cancelled after iteration {armed_after}"
+        );
+        assert_eq!(map_visits(), stops_at, "map iterations that ran");
+        assert_eq!(visits(), 0, "the walk was never reached");
+        assert!(c.ids.is_none(), "a cancelled build leaves no partial map");
+    }
+    // target walk (the map is built with the live token first)
+    for (armed_after, stops_at) in [(1, 1024), (1025, 2048)] {
+        let cancel = CancellationToken::default();
+        let mut c = collector(&doc, &cancel, &Port);
+        reset_visits();
+        assert_eq!(c.id_loads("no-such-id", "href"), Ok(None));
+        let built = map_visits();
+        assert!(built > 2048, "the map loop itself was not stopped");
+        arm_cancel(0, armed_after, &cancel);
+        assert_eq!(
+            c.id_loads("x", "href"),
+            Err(WebError::Canceled),
+            "walk cancelled after iteration {armed_after}"
+        );
+        assert_eq!(visits(), stops_at, "targets walked");
+        assert_eq!(map_visits(), built, "the map was not rebuilt");
+        let entry = c
+            .ids
+            .as_ref()
+            .and_then(|ids| ids.get("x"))
+            .expect("the id is in the map");
+        assert!(entry.loads.is_empty(), "a cancelled walk memoises nothing");
+    }
+}
+
+/// PLR-071 (R14-O2): the operation-count bound of the gate-scale case (`tests/css_url_gate.rs`
+/// `r13_f1_many_animations_sharing_ids_finish_within_the_bound`: 20000 animations of one id shared by 20000 elements, within
+/// the default limits), in place of a wall-clock bound. Targets walked: 2 attribute names x the sharing elements. The token
+/// is armed to cancel one iteration past that bound, so a scan that does more work (the old per-animation walk is 4e8
+/// iterations) ends `Canceled` within a stride instead of running for minutes.
+#[test]
+fn animated_loads_stays_within_the_operation_bound_at_the_gate_scale() {
+    let count = 20_000;
+    for (extra, targets) in [("", count), ("<script id=\"x\"/>", count + 1)] {
+        let src = shared_id_document(count, extra);
+        assert!(src.len() < Limits::default().max_bytes);
+        let doc = doc_of(&src);
+        let bound = 2 * targets;
+        let cancel = CancellationToken::default();
+        reset_visits();
+        arm_cancel(0, bound + 1, &cancel);
+        let found = collect_assets(&doc, &Port, &cancel)
+            .expect("the scan stays within 2 x sharing elements target evaluations");
+        assert_eq!(visits(), bound, "targets walked: 2 names x {targets}");
+        assert_eq!(
+            found.len(),
+            2 * count,
+            "each animation reports its href and its to"
+        );
+        assert!(cancel.check().is_ok(), "the bound was not crossed");
+    }
+}
+
+/// The first `set` element of `doc`.
+fn first_set(doc: &WebDoc) -> NodeId {
+    (0..doc.len())
+        .find(|&id| doc.local_name(id).as_deref() == Some("set"))
+        .expect("the document has a set element")
+}
+
+/// PLR-071 (R14-N1): `animated_loads` hands `decide_all` a non-empty set for every shape of target, so the empty-set arm of
+/// `decide_all` is not reachable from the collector. Strict (script and resource) where nothing can be found out: no
+/// parent, a href that is not a fragment of this document, an id that no element carries, an attribute without a URL row;
+/// the element's own contexts where it can.
+#[test]
+fn animated_loads_returns_a_context_for_every_target_shape() {
+    let strict = Loads::of(Load::Script).and(Load::Resource);
+    let loads_of = |src: &str, name: &str| {
+        let doc = doc_of(src);
+        let cancel = CancellationToken::default();
+        let animation = first_set(&doc);
+        collector(&doc, &cancel, &Port)
+            .animated_loads(animation, name)
+            .expect("not cancelled")
+    };
+    // (shape, document, attribute name, expected contexts when they are exactly known)
+    let strict_shapes = [
+        (
+            "href is not a fragment",
+            "<svg><set href=\"other.svg#y\" attributeName=\"href\" to=\"#z\"/></svg>",
+            "href",
+        ),
+        (
+            "fragment names no element",
+            "<svg><set href=\"#nobody\" attributeName=\"href\" to=\"#z\"/></svg>",
+            "href",
+        ),
+        (
+            "fragment with an escape names no element",
+            "<svg><g id=\"x\"/><set href=\"#%79\" attributeName=\"href\" to=\"#z\"/></svg>",
+            "href",
+        ),
+        (
+            "empty href",
+            "<svg><set href=\"\" attributeName=\"href\" to=\"#z\"/></svg>",
+            "href",
+        ),
+        (
+            "attribute without a URL row on the parent",
+            "<svg><rect><set attributeName=\"data-x\" to=\"#z\"/></rect></svg>",
+            "data-x",
+        ),
+    ];
+    for (shape, src, name) in strict_shapes {
+        assert_eq!(loads_of(src, name), strict, "{shape}");
+    }
+    // shapes where the target is found or the parent decides: never empty
+    let found_shapes = [
+        (
+            "parent without href",
+            "<svg><a><set attributeName=\"href\" to=\"#z\"/></a></svg>",
+            "href",
+        ),
+        (
+            "parent is a link",
+            "<svg><link rel=\"stylesheet\"><set attributeName=\"href\" to=\"#z\"/></link></svg>",
+            "href",
+        ),
+        (
+            "link without keyword",
+            "<svg><link><set attributeName=\"href\" to=\"#z\"/></link></svg>",
+            "href",
+        ),
+        (
+            "fragment names a g",
+            "<svg><g id=\"x\"/><set href=\"#x\" attributeName=\"href\" to=\"#z\"/></svg>",
+            "href",
+        ),
+        (
+            "fragment spelled with an escape",
+            "<svg><g id=\"x\"/><set href=\"#%78\" attributeName=\"href\" to=\"#z\"/></svg>",
+            "href",
+        ),
+        (
+            "fragment names a script",
+            "<svg><script id=\"x\"/><set href=\"#x\" attributeName=\"href\" to=\"#z\"/></svg>",
+            "href",
+        ),
+        (
+            "set at the root of the document",
+            "<set attributeName=\"href\" to=\"#z\"></set>",
+            "href",
+        ),
+        (
+            "xlink:href",
+            "<svg><a><set attributeName=\"xlink:href\" to=\"#z\"/></a></svg>",
+            "xlink:href",
+        ),
+    ];
+    for (shape, src, name) in found_shapes {
+        assert!(!loads_of(src, name).is_empty(), "{shape}");
+    }
+    let script = loads_of(
+        "<svg><script id=\"x\"/><set href=\"#x\" attributeName=\"href\" to=\"#z\"/></svg>",
+        "href",
+    );
+    assert!(
+        script.contains(Load::Script),
+        "a script target is a script load: {script:?}"
+    );
 }
 
 /// R13-P2: which relative spellings resolve to the document, with the document at an absolute URL, at `file:` and as a
