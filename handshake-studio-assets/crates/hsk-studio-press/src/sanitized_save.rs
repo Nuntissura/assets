@@ -1308,9 +1308,13 @@ pub struct RedactedOutput {
     /// the fill colour), and once for the document `flatten_purge::check_document` (no `/XFA`, no
     /// `/NeedsRendering`, no annotation whose `/P` and no structure item whose `/Pg` is a flattened page, and, in a
     /// structure tree the purge did not edit (a root written directly into the catalog or reached through a chain of
-    /// references), no element that is not on a kept page: PLR-094, fail closed; over-reporting is accepted; tests
+    /// references), no element that is not on a kept page, and, in the tree it edited, no element below a `/K` array
+    /// reached through a reference (or nested in a `/K` array) that is not on a kept page and still holds structure text:
+    /// PLR-094, fail closed; over-reporting is accepted; tests
     /// `direct_structure_tree_elements_off_the_kept_pages_are_reported`,
-    /// `direct_structure_tree_on_kept_pages_stays_flattened`, `kept_annotation_with_a_flattened_p_is_reported`).
+    /// `direct_structure_tree_on_kept_pages_stays_flattened`, `indirect_array_k_elements_off_the_kept_pages_are_reported`,
+    /// `indirect_array_k_controls_stay_as_they_were`, `indirect_array_walk_over_the_bounds_is_reported`,
+    /// `kept_annotation_with_a_flattened_p_is_reported`).
     pub residual_in_region: u32,
     /// Outline/annotation text redaction of the removed strings (`redact_and_save_with` with a
     /// text policy); `None` when it was not requested.
@@ -1426,7 +1430,8 @@ impl RedactedOutput {
     /// Every page carrying a region was flattened (Operator decision D27) and the SAVED bytes hold, for
     /// each, exactly the raster page with every pixel of every region the fill colour, nothing to inherit
     /// on its `/Parent` chain, no annotation or structure item pointing at it, no element of an unedited structure
-    /// tree that is off the kept pages (PLR-094) and no XFA
+    /// tree that is off the kept pages, no element below an unread `/K` array of the edited tree that is off the kept
+    /// pages and holds structure text (PLR-094) and no XFA
     /// (`residual_in_region == 0`: `flatten::check_flattened`, `flatten_purge::check_document`), no
     /// painted source of the old page kept that is not silent (`painted_sources_kept` empty), in a file with one
     /// xref section and no unreachable or unlisted objects. This is the by-construction claim; it does

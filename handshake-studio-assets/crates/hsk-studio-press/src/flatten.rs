@@ -25,7 +25,10 @@
 //! kept page is reported instead: it counts in `RedactedOutput::residual_in_region`, `region_flattened` reads
 //! false and `NotProven::ResidualInRegion` is reported (PLR-094; tests
 //! `direct_structure_tree_elements_off_the_kept_pages_are_reported`,
-//! `direct_structure_tree_on_kept_pages_stays_flattened`). The
+//! `direct_structure_tree_on_kept_pages_stays_flattened`). In the edited tree, an element below a `/K` array that is
+//! reached through a reference (the purge reads a direct array or one item) keeps its text; one that is off the kept pages
+//! and still holds structure text is reported the same way (PLR-094; test
+//! `indirect_array_k_elements_off_the_kept_pages_are_reported`). The
 //! painted sources (images, forms, patterns, shadings) and the graphics states and fonts it reached are
 //! dropped from the file when no kept content names them and no kept object references them. A painted
 //! source that stays (a kept page draws it, or a kept object only references it) is not pruned and the kept
