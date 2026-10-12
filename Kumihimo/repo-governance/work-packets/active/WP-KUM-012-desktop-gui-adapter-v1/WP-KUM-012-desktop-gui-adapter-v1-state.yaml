@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 25
+generation: 26
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -281,6 +281,32 @@ proof:
     slot/epoch/fresh draw, preserving actual selection/open/generation/actions/readback checks. Original14
     exact prefix/all29/frozen13 preserved; all source writers HOLD; fresh affected owning/default/combined/raster/native
     pending. Existing provider/Core/JSON/content/lock proof reused.'
+- kind: actual_all_programs_green_four_frozen_visual_semantic_gaps
+  source_revision: 849f005cc3681115032407037cac206b7cad688c
+  log_sha256:
+    test: 93813b0e5b1c105d57fa2e1180b33bf4465fb9ea55b9cc680898aeac55ba1ea4
+    default: 1bb5a9d94bcc8e1a3fa06850fb4f7e64bfe526d2f1eed9165572801308bb9983
+    combined: 076304603b7ccd61b7335982f9a01e051a7d8e150855f20b8c77fbdc0754c248
+    capture: ced03b21a1bba78225e512c306be31e8c9bfcab7916d403367e98d094aacf686
+    native: 716e4f14082b142235a37ea81311e835e4f393880ce9ce43ad6ce35ece603bda
+  observed: 'Owning29 GREEN compile16.66s/run5.08s; default/combined all-target PASS2.07s/3.62s; capture terminal
+    PASS80 scenes compile5.93s; native terminal PASS22 captures/3 returns/18 UIA actions compile10.68s/gen71/bindings0.
+    Evaluator opened all102 and reconciled original13: persistent float order and nested selection now pass.
+    Four remaining gaps: transparent floating header and dismissed notice text overlap; native15 captures invisible
+    first Area sizing pass before recovery label repaint; selectable button omits selected semantics, actual
+    OS selected null. Program success is not whole-packet acceptance. Existing provider/media alpha remains
+    host owned.'
+- kind: held_four_causal_visual_and_accessibility_repairs
+  baseline_revision: 849f005cc3681115032407037cac206b7cad688c
+  source_fence17_raw_sha256: b6a9ec0bd7cba5dec59297711bf50b0ed22817e5eb486e05e8f9e3d3930581c0
+  source_fence17_lf_sha256: 16919f7c0d9827c520ba2e33213d42001b704d8146022b1d1522e1ed6f4537e3
+  observed: 'Root inspected chrome/native-only candidate: bounded opaque theme header and notice backing; unchanged
+    failure notice gets one untagged healthy-root sizing draw before tagged capture, fade disabled and bounded
+    opaque panel; actual tab response declares RoleTab and canonical selected state. Observer remains byte
+    exact and genuinely selects supported SelectionItem; native requires actual OS beforefalse/aftertrue alongside
+    unchanged canonical, generation, action, mounted-slot and quiet checks. All29 tests byte exact/original14
+    prefix/frozen13 methods preserved; writers HOLD; one fresh affected batch pending. Existing dependency/provider/Core/JSON/content/lock
+    proof reused.'
 blockers: []
 next_action: Run one consolidated serial affected owning/default/combined/raster/native bundle; independent
   original13 evaluation afterward

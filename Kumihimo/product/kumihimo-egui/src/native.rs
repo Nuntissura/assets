@@ -670,10 +670,21 @@ impl<H: NativeHost> App<H> {
                 )))
                 .order(egui::Order::Foreground)
                 .fixed_pos(egui::pos2(20.0, 80.0))
+                .constrain_to(to_egui(w.surface.bounds))
+                .fade_in(false)
                 .show(ctx, |ui| {
-                    ui.label(
-                        "Native surface recovery failed; bounded retry pending (injected probe)",
-                    );
+                    ui.set_clip_rect(ui.clip_rect().intersect(to_egui(w.surface.bounds)));
+                    let frame = egui::Frame::popup(ui.style())
+                        .fill(ui.visuals().window_fill().to_opaque());
+                    let width = (w.surface.bounds.width() as f32
+                        - 40.0
+                        - frame.total_margin().sum().x).max(0.0);
+                    frame.show(ui, |ui| {
+                        ui.set_max_width(width);
+                        ui.add(egui::Label::new(
+                            "Native surface recovery failed; bounded retry pending (injected probe)",
+                        ).wrap());
+                    });
                 });
             }
         });
@@ -1032,6 +1043,8 @@ impl<H: NativeHost> App<H> {
                     .iter()
                     .find_map(|(id, w)| (w.surface.root == self.root).then_some(*id))
                     .ok_or(AdapterError::Invalid("recovery status root"))?;
+                // Settle the new notice Area's invisible sizing pass before tagged readback.
+                self.draw(source)?;
                 self.request_capture(source, "injected-failed-recovery-visible-status", None)?;
             }
             ProbePhase::FailedStatus => {
@@ -2008,7 +2021,15 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                             };
                             workspace = owner.workspace;
                         }
-                        let changed = actual == Some(target)
+                        let result = &self
+                            .observer_results
+                            .last()
+                            .ok_or(AdapterError::Invalid("tab observer result"))?["result"];
+                        let os_before = &result["action_before"]["selected"];
+                        let os_after = &result["action_after"]["selected"];
+                        let changed = os_before.as_bool() == Some(false)
+                            && os_after.as_bool() == Some(true)
+                            && actual == Some(target)
                             && workspace == w.surface.root
                             && w.draw_count > self.observer_draw_before
                             && w.report.epoch == w.surface.epoch
@@ -2023,7 +2044,7 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                             && self.controller.snapshot().generation
                                 > self.observer_generation.unwrap_or(u64::MAX)
                             && self.uia_actions > self.observer_actions_before;
-                        self.observations.push(serde_json::json!({"phase":"independent-uia-canonical-selection-read","stage":self.observer_stage,"root":w.surface.root.raw(),"owned_window":os_observation(Some(hwnd(&w.window))),"target_view":target.raw(),"target_frame":frame.raw(),"before_selected":self.observer_previous.map(|v|v.raw()),"after_selected":actual.map(|v|v.raw()),"before_generation":self.observer_generation,"after_generation":self.controller.snapshot().generation,"actions_before":self.observer_actions_before,"actions_after":self.uia_actions,"matched":changed}));
+                        self.observations.push(serde_json::json!({"phase":"independent-uia-canonical-selection-read","stage":self.observer_stage,"root":w.surface.root.raw(),"owned_window":os_observation(Some(hwnd(&w.window))),"target_view":target.raw(),"target_frame":frame.raw(),"before_selected":self.observer_previous.map(|v|v.raw()),"after_selected":actual.map(|v|v.raw()),"os_before_selected":os_before,"os_after_selected":os_after,"before_generation":self.observer_generation,"after_generation":self.controller.snapshot().generation,"actions_before":self.observer_actions_before,"actions_after":self.uia_actions,"matched":changed}));
                         if !changed {
                             return Err(AdapterError::Host(
                                 "UIA action did not select exact canonical target".into(),

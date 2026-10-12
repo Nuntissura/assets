@@ -773,7 +773,9 @@ pub fn draw(
             (surface.bounds.right() as f32 - 170.0).max(surface.bounds.x() as f32),
             surface.bounds.y() as f32,
         ))
+        .constrain_to(to_egui(surface.bounds))
         .show(ctx, |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(to_egui(surface.bounds)));
             let mut dismissed = false;
             let panes_menu = ui.menu_button("Panes / reveal (F6)", |ui| {
                 if button(
@@ -839,8 +841,22 @@ pub fn draw(
                 if *viewport == surface.viewport {
                     let response = ui
                         .push_id("pane-menu-announcement", |ui| {
-                            ui.set_max_width(panes_menu.response.rect.width().max(120.0));
-                            ui.add(egui::Label::new(announcement).wrap())
+                            let frame = egui::Frame::popup(ui.style())
+                                .fill(ui.visuals().window_fill().to_opaque());
+                            let width = (panes_menu
+                                .response
+                                .rect
+                                .width()
+                                .max(120.0)
+                                .min(surface.bounds.width() as f32)
+                                - frame.total_margin().sum().x)
+                                .max(0.0);
+                            frame
+                                .show(ui, |ui| {
+                                    ui.set_max_width(width);
+                                    ui.add(egui::Label::new(announcement).wrap())
+                                })
+                                .inner
                         })
                         .inner;
                     ctx.accesskit_node_builder(response.id, |node| {
@@ -1063,6 +1079,10 @@ pub fn draw(
         );
         ui.set_clip_rect(header.intersect(to_egui(frame.clip)));
         ui.set_width(header.width());
+        if frame.z_root.is_some() {
+            ui.painter()
+                .rect_filled(header, 0.0, ui.visuals().panel_fill.to_opaque());
+        }
         ui.horizontal(|ui| {
             let drag = ui
                 .add(
@@ -1327,6 +1347,10 @@ fn tab_button(
             ui.selectable_label(row.selected, text)
         })
         .inner;
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::Tab);
+        node.set_selected(row.selected);
+    });
     record(
         report,
         &response,
