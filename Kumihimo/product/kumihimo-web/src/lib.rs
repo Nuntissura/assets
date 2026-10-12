@@ -68,7 +68,18 @@ impl From<kumihimo_content::Error> for WebError {
             Admission { .. } => Self::new("admission"),
             PermissionDenied => Self::new("permission_denied"),
             Unsupported(_) => Self::new("unsupported"),
-            _ => Self::new("content_failure"),
+            Invalid(cause) => Self::new(match cause {
+                "geometry clip" => "content_geometry_clip",
+                "geometry scale" => "content_geometry_scale",
+                "acknowledgment result kind/content" => "content_acknowledgment",
+                _ => "content_invalid",
+            })
+            .scoped(cause),
+            Expired(request) => Self::new("content_expired").scoped(request.0.to_string()),
+            Conflict(request) => Self::new("content_conflict").scoped(request.0.to_string()),
+            Busy(instance) => Self::new("content_busy").scoped(instance.0.to_string()),
+            TimeWentBack => Self::new("content_time_went_back"),
+            Exhausted(cause) => Self::new("content_exhausted").scoped(cause),
         }
     }
 }
