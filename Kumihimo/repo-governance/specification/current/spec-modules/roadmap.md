@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 12
+revision: 13
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -30,6 +30,8 @@ Twelve feature areas now have partial headless implementation. The remaining are
 WP009 proves the headless tab/group/pin/list, bounded schema1 JSON/semantic recovery and carried layout-operation scope. Core0.3 remains default std-only with optional saved-type Serde and an independent JSON package. The host storage protocol is documented; actual filesystem interruption/replacement and complete RECOVERY acceptance remain open.
 
 WP010 proves the independent std-only content companion at ba2d6189704ced50c621dab18e6140e301aab136: scoped typed requests/ACKs, distinct mount/instance reservations, protected cleanup, asset/tool routing and honest diagnostics. The affected all-target check, all twelve public consumers and quiet example passed with independent scoped evaluation. Queued expiry is enforced before exposure; a confirmed instance stays reserved after its last mount detaches until explicit cleanup. Real host engines, GUI, text/asset behavior, physical resources and performance remain open.
+
+WP011 selects independently optional navigation/backgrounds within content0.2/protocol2.0: four modes, continuous transient minimap, host-fed bounded overview and real frame/workspace media targets sharing existing request/resource/recovery authority. Current full requirements remain open; this is preparation, not executed GUI/decoder/media-resource proof.
 
 A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 

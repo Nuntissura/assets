@@ -1,29 +1,381 @@
 schema_version: kumihimo.wp-contract.v1
-kind: work_packet_stub
+kind: work_packet
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-title: Implement host-fed navigation and background contracts
-scope:
+title: Implement optional host-fed navigation and scoped media controls
+scope: &id001
 - Four navigation modes, continuous transient minimap drag, configurable rail/thumb, provider-fed media backgrounds
   and reduced-work requests; actual GUI and decoders remain optional adapters
 files:
-- product/
-- repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/
+- product/kumihimo-content/Cargo.toml
+- product/kumihimo-content/src/lib.rs
+- product/kumihimo-content/src/protocol.rs
+- product/kumihimo-content/src/routing.rs
+- product/kumihimo-content/src/scheduler.rs
+- product/kumihimo-content/src/lifecycle.rs
+- product/kumihimo-content/src/diagnostics.rs
+- product/kumihimo-content/src/settings.rs
+- product/kumihimo-content/src/navigation.rs
+- product/kumihimo-content/src/overview.rs
+- product/kumihimo-content/src/backgrounds.rs
+- product/kumihimo-content/tests/recording_host.rs
+- product/kumihimo-content/tests/navigation_contracts.rs
+- product/kumihimo-content/tests/background_contracts.rs
+- product/kumihimo-content/examples/recording_host.rs
+- product/kumihimo-content/examples/controls_host.rs
+- product/README.md
+- product/Cargo.lock
+- repo-governance\work-packets\active\WP-KUM-011-navigation-and-media-controls-v1/
 - repo-governance/specification/current/
+- repo-governance/specification/spec-archive/
 - repo-governance/topology/
-dependencies:
+- repo-governance/codex/build-rules/current/build-rules.yaml
+file_ownership:
+  coder03:
+  - product/kumihimo-content/Cargo.toml
+  - product/kumihimo-content/src/lib.rs
+  - product/kumihimo-content/src/protocol.rs
+  - product/kumihimo-content/src/routing.rs
+  - product/kumihimo-content/src/scheduler.rs
+  - product/kumihimo-content/src/lifecycle.rs
+  - product/kumihimo-content/src/diagnostics.rs
+  - product/kumihimo-content/src/settings.rs
+  - product/kumihimo-content/src/navigation.rs
+  - product/kumihimo-content/src/overview.rs
+  - product/kumihimo-content/src/backgrounds.rs
+  - product/kumihimo-content/tests/recording_host.rs
+  - product/kumihimo-content/tests/navigation_contracts.rs
+  - product/kumihimo-content/tests/background_contracts.rs
+  - product/kumihimo-content/examples/recording_host.rs
+  - product/kumihimo-content/examples/controls_host.rs
+  lead:
+  - product/README.md
+  - product/Cargo.lock
+  - repo-governance/specification/
+  - repo-governance/topology/
+  - repo-governance/codex/build-rules/current/
+  - WP state/session/taskboard/publication
+  dependencies:
+  - WP-KUM-011-navigation-and-media-controls-v1-dependency-readiness.yaml
+  evaluation:
+  - WP-KUM-011-navigation-and-media-controls-v1-evaluation.yaml
+dependencies: &id002
 - WP-KUM-010-content-and-lifecycle-contracts-v1
 spec_refs:
 - TOPIC-KUM-NAVIGATION
 - TOPIC-KUM-BACKGROUNDS
 - TOPIC-KUM-INPUT
+- TOPIC-KUM-CHROME
+- TOPIC-KUM-CHOICES
+- DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+spec_requirement_refs:
+- REQ-KUM-NAVIGATION-001
+- REQ-KUM-NAVIGATION-002
+- REQ-KUM-NAVIGATION-003
+- REQ-KUM-NAVIGATION-004
+- REQ-KUM-NAVIGATION-005
+- REQ-KUM-NAVIGATION-006
+- REQ-KUM-BACKGROUNDS-001
+- REQ-KUM-BACKGROUNDS-002
+- REQ-KUM-BACKGROUNDS-003
+- REQ-KUM-BACKGROUNDS-004
+- REQ-KUM-INPUT-001
+- REQ-KUM-INPUT-002
+- REQ-KUM-INPUT-003
+- REQ-KUM-INPUT-004
+- REQ-KUM-CHROME-004
+- REQ-KUM-CHROME-005
 requirements:
-- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
-  eval before coding
-- Reuse existing core and verified cache; no parallel Cargo or long default suites
-- Preserve host ownership and existing accepted scope; explicit exact platform proof
+- '[WP011-R001] Publish this full contract and matching complete self-contained spec choice, dependency readiness
+  and twelve frozen evaluator cases; independently read exact origin artifacts before lead coding admission. Coder03
+  owns only admitted product files; lead owns spec/state/README/lock/Git and one serial Cargo lane. Preserve the
+  full original stub scope archived with this contract.'
+- '[WP011-R002] Advance unreleased kumihimo-content to0.2 with independent Cargo features navigation and backgrounds,
+  default[]. Keep the sole std-only local Core0.3 dependency/default-features=false. Use small cohesive settings/navigation/overview/backgrounds
+  modules and minimal existing protocol/routing/lifecycle/scheduler/diagnostics integration. One owned Core and
+  existing request/instance/cache/recovery authority; no second controller/queue/arrangement. Core0.3/Snapshot3/saved
+  schema1/JSON and their files remain unchanged. No GUI/codec/async/serializer dependency.'
+- '[WP011-R003] Require exact protocol2.0, reject1.0 and every other version explicitly. Replace public Scope.view
+  with typed MountTarget View(ViewId), FrameBackground(FrameId), WorkspaceBackground(WorkspaceId), with background
+  variants/APIs only under backgrounds. Preserve all WP010 identity/session/epoch/counter/permission/replay/close/recovery
+  guarantees and current admission defaults; narrow fixture migration retains all twelve WP010 behavior cases. Document
+  intentional0.1-to0.2 API break and feature selection.'
+- '[WP011-R004] View attach remains canonical; background attach uses a real canonical ResourceId/provider plus
+  existing FrameId or WorkspaceId and supported image/video capability, without creating a dummy view/tab or changing
+  Core arrangement. At most one active mount per typed target. Common instance allocator, canonical/negotiated/explicit
+  host sharing grant, cache ownership and exact cleanup are reused. Mixed View/background sharing rejects for this
+  packet; background-to-background sharing requires all grants and same resource.'
+- '[WP011-R005] Validate typed target/current Core identity/resource/provider/connection/mount before updates, enqueue,
+  dispatch and ACK. Successful identical-ID Restore retires all target bindings; rejected/replayed Core operations
+  cause no extra effects. CloseView affects View mounts only. Moving a frame preserves its FrameBackground target/resource,
+  invalidates affected geometry and active gesture prerequisites, and never disposes an instance. Provider changes/removal/unavailability
+  and relevant target disappearance stale effects; unrelated metadata does not blanket-stale them. Retired exact
+  cleanup never updates replacement targets.'
+- '[WP011-R006] Expose version2 typed settings with field patches and observable effective value/source, resolved
+  defaults then host profile then workspace then surface, constrained by explicit host policy and negotiated adapter/provider
+  capability. Unsupported mode/compositing or denied policy has structured reason and host-selected ScrollbarOnly
+  or Unavailable fallback. Validate every level before mutation; supported live changes preserve Core identity and
+  document state. Adapter recreation/restart requirements are explicit metadata, never silently executed. No separate
+  persisted settings authority or saved-schema migration.'
+- '[WP011-R007] Expose exactly four navigation modes: ScrollbarOnly, MinimapAlways, ScrollbarAndMinimap, ScrubToMinimap.
+  Distinguish selected mode from effective/fallback mode and persistent/active-drag controls in inspectable projection.
+  Minimap capability and currently admitted host overview are required; never fabricate a document map or automatically
+  read content. Transient mode is optional and expansion beside the document keeps its document rectangle unchanged.'
+- '[WP011-R008] Use finite validated logical geometry and separate host document units: content extent C>=0, viewport
+  V>=0, range R=max(C-V,0), offset in[0,R], rail origin/length>=0 with checked derived arithmetic. Thumb=min(track,max(minimum,track*(V/C)))
+  with explicit C0 handling; position uses normalized offset/R over track-thumb, including exact endpoints. Visible
+  rail/thumb width and hit area are independent. R0 means offset0; R>0/travel0 reports pointer mapping unavailable,
+  never divides by0 or invents movement; keyboard/page/Home/End still expose full range. Very large finite inputs
+  and signed zero remain coherent; invalid/nonfinite/overflow rejects unchanged.'
+- '[WP011-R009] Provide Standard rail12/thumb8/minimum24/hit24 DIP and Comfortable rail24/thumb16/minimum48/hit40
+  DIP defaults, host-overridable finite positive actionable dimensions and bounded contrast/visibility fields. Expose
+  always-visible/auto-hide and hover/focus/reveal control projection. Publish keyboard line step default40 host
+  document units (positive host-overridable), page step viewport, Home0/EndR, progress/value/orientation/accessible-name
+  metadata and explicit disabled reasons; host owns shortcut dispatch/actual accessibility tree/native input. Pointer/touch/pen
+  kind and host thresholds are explicit; gesture recognition remains adapter-owned.'
+- '[WP011-R010] Keep one active gesture per View mount with checked nonzero monotone gesture ID/pointer identity,
+  exact target Scope/model/settings/geometry revisions, captured press position, grab offset and presentation anchor.
+  Stationary press, representation expansion and unchanged pointer produce no scroll or Geometry request. After
+  thumb press, the held item is the minimap viewport rectangle and subsequent movement continues the same captured
+  delta/anchor, including outside rail bounds and clamped endpoints. Other pointer/old gesture/invalid events reject
+  unchanged. Map projection preserves captured document bounds; ordinary mode mapping and transient held rectangle
+  remain consistent.'
+- '[WP011-R011] Release immediately settles local drag and restores configured idle controls at latest host-observed
+  position, while accepted final intent remains pending/confirmed/Unknown explicitly. Cancel/Escape/lost capture/focus
+  loss settles local gesture, cancels only its unsent work and never assumes dispatched effects or document position
+  reverted. A bounded last exact settlement is idempotent; conflicting or older events reject. Model/extent/rail
+  geometry/effective mode/settings/binding changes cancel active drag without emitting scroll; later host observation
+  establishes actual position. Overview-only update does not move the document.'
+- '[WP011-R012] Host supplies exact-scope document model revision and monotone observation revision with coherent
+  extent/viewport/actual offset, and an independently revised sparse semantic overview. Model includes semantic/extent
+  identity, not every offset ACK. Same revision/same data is idempotent, same revision/different data conflicts,
+  older revisions stale; checked counters never wrap. Offset observations bound model and current attachment; stale/foreign/late
+  data never updates current document state. Frame movement/restore/rebind/focus/model change invalidates appropriate
+  gesture/request prerequisites without blanket invalidating unrelated metadata.'
+- '[WP011-R013] Admit at most one current overview per View mount, default4096 markers per overview,65536 aggregate
+  retained marker entries,65536 UTF-8 bytes per overview and256 bytes per opaque marker ID/jump target/label/style/unit
+  token. Host may choose explicit None for unrestricted dimensions. Validate candidate shape/finite ranges/unique
+  marker IDs and checked sums before replacement; full replacement work is O(admitted overview), never whole-document
+  scanning. Every retained opaque copy in overview/settings/request/receipt metadata is charged to existing16MiB
+  aggregate, existing per-field65536 cap still applies; fixed metadata is bounded by mounts/pending/receipts. Lowered
+  limits preserve existing obligations and allow unchanged/decreasing replacement while blocking growth. Caller-owned
+  snapshot copies/host render handles are outside retained library bytes, explicitly disclosed.'
+- '[WP011-R014] Route typed absolute-scroll and semantic-jump requests through the existing bounded pull/ACK lifecycle,
+  with model/gesture/revision identity and current permission. Coalesce only unsent absolute-scroll in the same
+  gesture/model/causal segment; semantic jump, input/tool/assets/lifecycle/attach/detach and anchored geometry are
+  barriers. Captured geometry/focus prerequisites still apply; dispatched work serial per instance, independent
+  instances pullable. Reject stale model/target/permission before delivery. Actual offset comes only from exact
+  typed provider ACK/fresh host observation and may be provider-clamped; requested position never becomes confirmed
+  merely from local projection.'
+- '[WP011-R015] Generic Reconciled Applied settles only its exact old effect/busy obligation. Without an exact validated
+  typed actual-offset/applied-budget observation, navigation/media observation remains Unknown; never synthesize
+  actual values from requested intent or Confirmation::Done. Existing terminal duplicate/history, conflict/expiry,
+  deadline, reserved recovery slot and retired cleanup semantics remain. Queued expiry is known-not-delivered; dispatched
+  timeout/cancel ambiguity stays Unknown and does not release unrelated/shared reservations.'
+- '[WP011-R016] For FrameBackground and WorkspaceBackground project a provider-fed image/video slot behind content:
+  brightness default1/range[0,2], opacity default1/range[0,1], fit Cover default or Contain/Stretch/Native, normalized
+  positive crop inside[0,1], layer BehindContent. Source is canonical host ResourceId; poster/reference/style fields
+  default<=256UTF8bytes. Validate all visual ranges and adapter composition support before mutation. Visibility
+  and opacity are visual facts independent of decoding; changing them neither disposes content nor confirms pause/resource
+  savings.'
+- '[WP011-R017] Expose legibility overlay defaultopacity0.35/range[0,1] or explicitly supported host contrast treatment,
+  reduced-motion preference with declared poster or explicit unavailable fallback, and decorative audio muted by
+  default with host policy/capability constraints. Backgrounds cannot capture ordinary content input: reject Input/Focus/ToolAction/AssetAction/CloseDecision/Navigation
+  on background targets regardless broad provider caps. Geometry/Presentation/Invalidate/Animation/Lifecycle/Cache
+  and media policy require declared support. Actual compositing/readability/motion/audio/OS routing remain adapter
+  proof, no headless GUI claim.'
+- '[WP011-R018] Keep per-consumer media work policy, current instance aggregate request and exact provider-confirmed
+  actual/Unknown separate. Policies Run/Throttle/Paused/Poster use upper work ceilings, not minimum quality demand:
+  default30fps/1920x1080, fps1..240 and dimensions1..16384 with checked pixel product; None denotes unconstrained
+  allowance only where host policy permits. Pause is separate from these ceilings, never a side effect of opacity0
+  or visibility alone. Unsupported, pending, refused, failed, stale and Unknown are observable. Typed applied echo
+  binds exact ticket, aggregate/policy revision and reports actual pause/fps/resolution satisfying current aggregate
+  ceilings before confirmation; lower actual work is allowed and does not promise quality, physical allocation bounds
+  or performance measurements.'
+- '[WP011-R019] For a shared background instance compute each aggregate work ceiling as the component-wise minimum
+  of finite ceilings across consumers requiring active work plus separate host instance hard ceilings; None imposes
+  no additional ceiling, allNone remains unconstrained. Never use a maximum and falsely claim that a smaller consumer
+  ceiling was met. Pause only when every reserved consumer explicitly opts Paused/Poster and none is protected/audio/keep-alive/unsaved/downloading;
+  a visible consumer explicitly choosing a still/paused presentation is allowed, while any visible or hidden Run/Throttle
+  consumer vetoes pause. Missing/Unknown policy is an active-work veto. Default sharingfalse; explicit background
+  grants only. Revalidate current consumer policies/eligibility at enqueue, dispatch and ACK. New consumer/protection/policy
+  changes invalidate old aggregate satisfaction; a dispatched old effect may have happened, so preserve exact effect
+  recovery/history and Unknown current policy until fresh observation. Hiding one consumer changes no other policy
+  and never pauses media needed by another. Report instance-confirmed actual separately from per-consumer policy
+  satisfaction.'
+- '[WP011-R020] Reuse existing declared cache/render reservations and exact CacheRelease/Detach/Dispose recovery
+  for backgrounds. Sharing one source/engine never means all consumers disappeared; detach releases mount only,
+  confirmed-started instance remains reserved until exact disposal/cleanup, final cache consumer release does not
+  invent physical decoder/texture release. Pending/retired/Unknown reservations count existing limits; no second
+  background cache/decoder allocation store, Drop frees metadata only. Media-demand recomputation observes remaining
+  consumers and does not mutate unrelated Core/content.'
+- '[WP011-R021] Provide bounded redacted settings/navigation/background projections, current target/model/gesture/policy/request
+  IDs, structured cause/disabled/fallback/Unknown status and honest desired-versus-confirmed diagnostics, excluding
+  opaque content/marker/poster payloads. Use supplied host ticks and existing timeout defaults, no hidden IO/threads/timers/measurement.
+  No-context model manual/public commands/examples remain quiet and deterministic; host mutation ownership serializes
+  parallel model commands.'
+- '[WP011-R022] Implement the twelve frozen public WP011 recording-host cases once in their owning targets, preserving/revalidating
+  the twelve affected WP010 consumers with narrow API migration. Include default/navigation-only/backgrounds-only/all-feature
+  compilation plus one all-feature focused test batch and quiet controls example using stable target/verified cache,
+  locked/offline j2 lead lane. No duplicated helper self-tests, no extra broad Core/JSON suite when inputs remain
+  identical, no actual GUI/decoder/physical/platform proof inferred.'
+- '[WP011-R023] Update self-contained spec/complete prior six-file archive, package compatibility/manual, topology,
+  build matrix and WP/board status from observed proof only. Preserve every original99 full requirement record and
+  accepted user intent; all complete GUI/provider acceptance stays open until actual integration. Lead publishes
+  owned paths and independently verifies exact origin/runtime input containment before done/rotation. Research/role
+  reports import no product authority.'
 acceptance:
-- No scrub position jump; metadata revisions/cancel/focus cleanup; density/minimum thumb; media opacity distinct
-  from acknowledged resource policy
+- '[WP011-A001] Four selected/effective modes, precedence/provenance, denied capability/policy and explicit fallback;
+  validated safe settings changes preserve canonical identity.'
+- '[WP011-A002] Complete logical range with enlarged thumb/exact endpoints; empty/short/zero travel/nonfinite/large
+  finite arithmetic; precise keyboard/page/Home/End independent from pointer travel.'
+- '[WP011-A003] Stationary mouse/touch/pen press and different grab offsets emit no scroll/layout mutation; document
+  rectangle and held presentation anchor stay stable during expansion.'
+- '[WP011-A004] Continuous captured viewport-rectangle drag across outside/clamped positions uses exact original
+  anchor/delta, no transformation jump; current provider result differs explicitly from intent.'
+- '[WP011-A005] Model/reflow/extent/rail/mode/settings/binding change settles gesture with no fabricated rollback;
+  same/lower/conflicting revisions and generic Applied reconciliation never invent actual offset.'
+- '[WP011-A006] Release outside/cancel/Escape/lost capture/focus loss and exact duplicate settlement restore idle
+  controls; only unsent gesture work cancels, dispatched/Unknown obligation remains recoverable.'
+- '[WP011-A007] Bounded sparse overview atomically replaces with exact scope/revisions; marker/field/aggregate byte
+  limits, lowering and semantic jumps preserve host meaning and never scan documents.'
+- '[WP011-A008] Independent visible/hit dimensions, density/reveal/keyboard/progress/accessibility metadata; correct
+  chrome/content owner and no ordinary typing hijack under denied background routing.'
+- '[WP011-A009] Real canonical workspace/frame background attach without dummy views, version2/feature isolation,
+  exact target restore/movement/close/rebind and unchanged arrangement.'
+- '[WP011-A010] Visual ranges/composition/legibility/reduced-motion/poster/mute support and behind-content/input-transparent
+  projection; opacity/visibility do not imply pause or physical savings.'
+- '[WP011-A011] Requested versus confirmed/Unknown media budget with delayed/refused/unsupported/stale/duplicate
+  ACK, actual echo and generic reconciliation; shared active/protected consumer and hard-ceiling policy upheld.'
+- '[WP011-A012] Shared resource/cache/mount/confirmed-started-instance cleanup, saturated/expired recovery, old/foreign
+  ACK and overflow rejection; redacted diagnostics reflect exact obligations, no premature physical release.'
+- '[WP011-A013] Default, navigation-only, backgrounds-only and combined feature compilation, all affected public
+  cases and quiet example pass on observed Windows x64; manifest/lock graph std-only/local preserved and explicit
+  migration/manual/topology/matrix bind exact observed source.'
+- '[WP011-A014] Complete original stub archived; full99 requirement records identical, exact six-file prior Spec13
+  archive retained and new self-contained choice current; focused independent report, taskboard/state and exact
+  origin containment agree before done.'
 proof:
-- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+- Publish full spec/contract/readiness/frozen twelve cases before admission
+- Lead-only offline local lock resolution after content manifest version change, no new/external package
+- cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --locked --offline -j 2
+- cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --features navigation --locked
+  --offline -j 2
+- cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --features backgrounds --locked
+  --offline -j 2
+- cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --all-features --locked --offline
+  -j 2
+- cargo test --manifest-path product/Cargo.toml -p kumihimo-content --all-features --no-fail-fast --locked --offline
+  -j 2
+- cargo run --manifest-path product/Cargo.toml -p kumihimo-content --all-features --example controls_host --locked
+  --offline -j 2
+- Reconcile unchanged Core0.3/JSON package inputs and prior49 proof; no repeated unrelated Cargo
+- python repo-governance/repo-scripts/sync.py --check
+- git diff --check -- Kumihimo
+- git ls-remote origin refs/heads/codex/handpick
+non_goals:
+- Actual GUI/native capture/accessibility tree/compositing/readability, decoders/audio/provider engines, host full
+  documents/reflow/semantic maps, physical CPU/memory/GPU or speed measurement, non-observed platforms
+- Core/Snapshot/saved JSON schema changes, dummy views, another controller/queue/cache authority, mixed View/background
+  engine sharing, hidden IO/threads/timers
+preserved_stub_scope:
+  schema_version: kumihimo.wp-contract.v1
+  kind: work_packet_stub
+  wp_id: WP-KUM-011-navigation-and-media-controls-v1
+  title: Implement host-fed navigation and background contracts
+  scope: *id001
+  files:
+  - product/
+  - repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/
+  - repo-governance/specification/current/
+  - repo-governance/topology/
+  dependencies: *id002
+  spec_refs:
+  - TOPIC-KUM-NAVIGATION
+  - TOPIC-KUM-BACKGROUNDS
+  - TOPIC-KUM-INPUT
+  requirements:
+  - Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+    eval before coding
+  - Reuse existing core and verified cache; no parallel Cargo or long default suites
+  - Preserve host ownership and existing accepted scope; explicit exact platform proof
+  acceptance:
+  - No scrub position jump; metadata revisions/cancel/focus cleanup; density/minimum thumb; media opacity distinct
+    from acknowledged resource policy
+  proof:
+  - Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+  status_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
+research_basis:
+  sources:
+  - id: vscode-scrollbar
+    url: https://raw.githubusercontent.com/microsoft/vscode/main/src/vs/base/browser/ui/scrollbar/scrollbarState.ts
+    observed_pattern: Minimum slider clamp recomputes usable travel/full-range ratio; page/delta navigation separate
+      from drawing.
+    use: Independent geometry and range mapping, with additional explicit zero-travel guards.
+  - id: vscode-minimap
+    url: https://raw.githubusercontent.com/microsoft/vscode/main/src/vs/editor/browser/viewParts/minimap/minimap.ts
+    observed_pattern: Viewport slider derives document/viewport ranges and drag delta; minimap rendering uses bounded
+      line window and invalidation.
+    use: Host-fed revised sparse overview and captured delta, no full-document rendering in this module.
+  - id: egui-scroll-style
+    url: https://docs.rs/egui/latest/egui/style/struct.ScrollStyle.html
+    observed_pattern: Visible width, minimum handle length and floating/solid allocation are separate style controls.
+    use: Host-exposed independent visible/hit geometry and stable document allocation; pattern only, no toolkit
+      dependency.
+  - id: pointer-events
+    url: https://www.w3.org/TR/pointerevents3/
+    observed_pattern: Capture, pointerup, pointercancel and lost capture are explicit input stream lifecycle events.
+    use: Bounded local gesture settlement; actual OS/browser capture remains adapter work.
+  - id: aria-slider
+    url: https://www.w3.org/WAI/ARIA/apg/patterns/slider/
+    observed_pattern: Step/Home/End/page commands and value/orientation/name semantics are separate from visual
+      thumb.
+    use: Precise keyboard and inspectable accessibility metadata; actual assistive technology proof remains open.
+  - id: html-media
+    url: https://html.spec.whatwg.org/multipage/media.html#dom-media-pause
+    observed_pattern: Media pause, playback, mute and poster are distinct actions/state.
+    use: Separate visual/audio policy and exact acknowledged decoder budget; no HTML engine dependency.
+  - id: chrome-lifecycle
+    url: https://developer.chrome.com/docs/web-platform/page-lifecycle-api
+    observed_pattern: Hidden, frozen and discarded differ; disappearance need not emit a reliable terminal event.
+    use: Visibility never proves paused/disposed resources; retain Unknown and old exact reconciliation.
+  - id: cargo-features
+    url: https://doc.rust-lang.org/cargo/reference/features.html
+    observed_pattern: Features compose additive conditional compilation and default selection.
+    use: Two independent optional features, default[], with all four relevant compilation combinations.
+  selected: Content0.2/protocol2.0 one existing controller with independent optional navigation/backgrounds feature
+    modules and typed non-tab background targets
+  reuse:
+  - Core0.3 IDs/immutable snapshot/routed execute
+  - WP010 scoped queue/terminal history/Unknown/recovery/instance/cache ownership
+  - Stable target and verified cache; existing quiet public recording-host/manual
+  rejected:
+  - Mandatory toolkit/codec/async/serializer or another controller/resource ledger
+  - Dummy tab/view for frame or workspace background
+  - Opacity/hidden/request/Drop as proof of pause/release or speed
+  - Whole-document overview scan or generic Applied as actual offset/media budget
+  - Unrelated ML/asset-training/social claims as runtime dependency evidence; primary source implementations fit
+    this problem
+  risks_controls:
+  - risk: Generalized mount misses view-only close/protection/tool or restore paths.
+    control: Exhaustive typed target matching plus unchanged Core files, retained twelve WP010 cases and real non-tab/background
+      target acceptance.
+  - risk: Thumb clamp/zero travel or expanded map jumps or loses endpoints.
+    control: Separate normalized range mapping, captured anchor, no-motion assertion and explicit unavailable pointer/full
+      keyboard fallback.
+  - risk: Model/setting change or cancellation invents rollback of already dispatched scroll.
+    control: Cancel local gesture/unsent only; retain exact Unknown recovery and require fresh typed actual observation.
+  - risk: Generic Applied reconciliation or old media ACK fabricates current actual state.
+    control: Settle exact old obligation only; observation remains Unknown without validated actual echo/current
+      revision.
+  - risk: Sparse overview/settings copies evade bounded admission or atomic replacement.
+    control: Per-item/field/current and aggregate retained-copy accounting, checked net size and lower-limit preservation.
+  - risk: One hidden consumer pauses a shared visible/protected engine or premature release.
+    control: Aggregate all reserved consumers, revalidate before pull/ACK, preserve instance/cache reservations
+      until exact cleanup.
+  - risk: Optional modes grow into toolkit/decoder integration or fake physical/GUI proof.
+    control: Default[] features, local Core dependency only, quiet recording-host proof and explicit actual integration
+      limits.
+  validation: Twelve WP011 cases and twelve affected WP010 consumers in one all-feature batch; four compile feature
+    combinations and quiet example; unchanged Core/JSON proof reused; exact source/origin binding; GUI/decoder/physical/platform
+    open
 status_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml

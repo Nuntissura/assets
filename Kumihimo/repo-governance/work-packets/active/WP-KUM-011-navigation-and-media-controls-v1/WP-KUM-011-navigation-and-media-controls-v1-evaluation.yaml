@@ -1,0 +1,714 @@
+schema_version: kumihimo.wp-evaluation.v1
+evaluation_id: EVAL-KUM-011-v1
+wp_id: WP-KUM-011-navigation-and-media-controls-v1
+evaluator: ROLE-KUM-EVALUATION
+phase: acceptance_cases_prepared
+verdict: PREPARED_NOT_RUNTIME_EVALUATED
+cases_frozen: true
+report_frozen_for_publication: true
+baseline_revision: 451f7c13cb7527b9f831c4f16854ce4638d75a04
+spec_revision: 14
+scope: Complete original WP011 four-mode navigation/transient drag/rail-thumb/provider media/reduced-work
+  stub preserved; twelve frozen headless cases cover NAVIGATION6/BACKGROUNDS4/INPUT4 and CHROME004/005
+  settings anchors. Complete host GUI/decoder/input/accessibility/physical/platform requirement acceptance
+  remains open.
+authority_limit: Full WP011 contract and Spec14 DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2 select the implementation
+  boundary. This report reconciles and freezes only the existing twelve cases; it adds no product authority,
+  acceptance gate or coding admission. Runtime verdict remains PREPARED_NOT_RUNTIME_EVALUATED. Lead publication,
+  dependency readiness and independent origin read precede explicit coding admission.
+inspected_sources:
+- repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
+- repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
+- repo-governance/sessions/current.yaml
+- repo-governance/specification/current/spec-modules/master-spec.md (NAVIGATION/BACKGROUNDS/INPUT, CHROME004/005
+  settings, CHOICES modular/host boundary)
+- product/kumihimo-core/src/model.rs
+- product/kumihimo-core/src/command.rs
+- product/kumihimo-content/src/protocol.rs
+- product/kumihimo-content/src/routing.rs
+- product/kumihimo-content/src/lifecycle.rs
+- product/kumihimo-content/src/scheduler.rs
+- product/kumihimo-content/src/diagnostics.rs
+preparation_binding:
+  observed_at: '2026-10-12'
+  contract_kind: work_packet
+  contract_sha256: 10e9e08706bec6b5556d9c64a9793d19a87c7d8bf5d4e556f2c4926542321e8f
+  contract_requirement_count: 23
+  contract_acceptance_count: 14
+  spec_requirement_ref_count: 16
+  master_spec_sha256: 960a3ee9c3558a70809d611b0a28e51f67fbe2bf18d506276eb662009c77ae3b
+  spec_manifest_sha256: 6fe410c654faf5a801f7c6bcfffa1ff6d353cee0d1a65075140390c8f80e278a
+  derived_index_sha256: 9c3f5237c8b376fed5b2fbb94f0f8594660fafbedac6d9471653338c570529ff
+  roadmap_sha256: 65a79a568394fdf982ffd9c9c70e1c2667dd04cbefd3e3c71dbf1c04cf5801d5
+  master_revision: 14
+  roadmap_revision: 13
+  decision_id: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+  original_stub_sha256: 001a4b810e6cc64e9e1be59f4d1d2fb8b2d260929be2c472cf65e40357a109f8
+  prior_archive_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v13-r13-451f7c13cb75
+  prior_archive_verification: All six archived raw files exactly equal Git blobs at 451f7c13cb7527b9f831c4f16854ce4638d75a04;
+    original stub raw bytes equal that revision and full parsed stub equals contract preserved_stub_scope.
+    All99 ordered full requirement records unchanged; selected decision contains exact R002-R022 plus
+    narrow supersession scope.
+  publication_status: Local final cases frozen for lead publication; origin containment and coding admission
+    not yet evaluated. Foreign role report hashes are dated observations, not a live hash-cycle prerequisite.
+observed_baseline:
+- Historical preparation at 451f7c13cb7527b9f831c4f16854ce4638d75a04 was read-only. This reconciliation
+  edits only evaluator-owned YAML; no Cargo/product/Git/state/spec changes. Current full contract is 23R/14A
+  with16 accepted specification references.
+- Actual settings authority is TOPIC-KUM-CHROME REQ004/005; precedence defaultsâ†’host profileâ†’workspace
+  overrideâ†’surface override, constrained by host policy/capability; safe runtime change validates ranges
+  and preserves layout identity.
+- Existing content privately owns Core; immutable core/snapshot and routed execute expose canonical transition
+  path. Scope binds Core identity/session/provider/resource/view/connection/instance/mount; public attach
+  requires canonical ViewId.
+- Existing typed requests expose attach/input/geometry/focus/presentation/lifecycle and asset/tool/cache/recovery;
+  media fps/resolution budget, overview/model and gesture are not existing dedicated typed variants. Capability/support
+  and requested/confirmed resource semantics need explicit selected011 extension.
+- Core Snapshot canonical records do not provide a universal scrollbar/media settings model; relevant
+  host settings projection belongs at the selected modular boundary rather than an invented SETTINGS topic
+  or second arrangement.
+- Current lifecycle reconciliation result carries effect plus optional lifecycle; generic request kinds
+  map to Confirmation::Done. New navigation/media actual values therefore need typed result/observation
+  semantics; Applied alone cannot prove requested offset or fps/resolution.
+scope_preservation:
+- stub_item: Four navigation modes
+  case_refs:
+  - EVAL-KUM-011-001
+- stub_item: Continuous transient minimap drag
+  case_refs:
+  - EVAL-KUM-011-003
+  - EVAL-KUM-011-004
+  - EVAL-KUM-011-005
+  - EVAL-KUM-011-006
+- stub_item: Configurable rail/thumb
+  case_refs:
+  - EVAL-KUM-011-001
+  - EVAL-KUM-011-002
+  - EVAL-KUM-011-008
+- stub_item: Provider-fed media backgrounds
+  case_refs:
+  - EVAL-KUM-011-009
+  - EVAL-KUM-011-010
+  - EVAL-KUM-011-011
+  - EVAL-KUM-011-012
+- stub_item: Reduced-work requests
+  case_refs:
+  - EVAL-KUM-011-011
+  - EVAL-KUM-011-012
+- stub_item: Optional actual GUI/decoder adapters and host semantic ownership
+  case_refs:
+  - EVAL-KUM-011-007
+  - EVAL-KUM-011-008
+  - EVAL-KUM-011-009
+  - EVAL-KUM-011-010
+  - EVAL-KUM-011-011
+  - EVAL-KUM-011-012
+acceptance_scenarios:
+- case_id: EVAL-KUM-011-001
+  refs:
+  - REQ-KUM-NAVIGATION-001
+  - REQ-KUM-NAVIGATION-005
+  - REQ-KUM-CHROME-004
+  - REQ-KUM-CHROME-005
+  title: Modes, settings precedence and declared capability fallback
+  method: Select thumb/rail only, persistent minimap, persistent combined controls and transient scrub
+    mode through defaults/host/workspace/surface overrides; negotiate providers with missing overview/compositing/input
+    capability. Change valid and invalid settings at runtime.
+  expected: Supported modes expose exact configured controls; host policy/capability constraints and explicit
+    fallback are observable. Unsupported map capability never fabricates overview. Invalid settings preserve
+    prior effective state/layout identity; recreation/restart requirement is reported when applicable.
+  red_team_control: Selected contract fixes supported settings subset/version/projection and fallback
+    policy; no fictitious SETTINGS topic or default transient mandate.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R006
+  - WP011-R007
+  - WP011-R009
+  contract_acceptance_refs:
+  - WP011-A001
+  selected_contract_controls: Version2 typed field patches resolve defaults→host profile→workspace→surface
+    with value/source and explicit policy/capability constraints; selected and effective mode are distinct.
+    Four exact modes are ScrollbarOnly/MinimapAlways/ScrollbarAndMinimap/ScrubToMinimap; overview support
+    and admitted overview required. Host chooses ScrollbarOnly or Unavailable fallback; invalid settings
+    reject unchanged; restart/recreation metadata never executes implicitly.
+- case_id: EVAL-KUM-011-002
+  refs:
+  - REQ-KUM-NAVIGATION-001
+  - REQ-KUM-NAVIGATION-002
+  - REQ-KUM-INPUT-001
+  - REQ-KUM-INPUT-002
+  title: Complete range with enlarged thumb and degenerate metrics
+  method: Use start/middle/end offsets and a large minimum thumb; vary content extent/viewport/rail length,
+    zero scrollable extent or thumb travel, extremely large finite ratios and nonfinite/negative/overflowing
+    inputs. Include precise keyboard/page navigation.
+  expected: Enlargement preserves reachable complete range on a usable rail and agrees with host scroll
+    state. Short/zero travel follows explicit fallback instead of dividing by zero or falsely claiming
+    drag reachability; keyboard/page path remains declared. Invalid dimensions/arithmetical overflow reject
+    atomically; accessible hit area and visible thumb dimensions stay independent.
+  red_team_control: Compare public navigation outputs against known host metrics/endpoints, not a test
+    that copies production mapping; selected contract fixes degenerate range/precision policy and large-control
+    profile.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R008
+  - WP011-R009
+  contract_acceptance_refs:
+  - WP011-A002
+  selected_contract_controls: Check C,V>=0; R=max(C-V,0); offset[0,R]; rail origin/length>=0 and checked
+    finite arithmetic. Thumb=min(track,max(minimum,track*(V/C))) with explicit C0 handling; normalized
+    offset/R maps across track-thumb, including exact endpoints. R0 yields offset0; R>0/travel0 disables
+    pointer mapping but retains full keyboard range. Include signed zero and large finite inputs. Standard
+    rail12/thumb8/min24/hit24 DIP and Comfortable24/16/48/40; positive finite overrides; line40 host document
+    units, pageV, Home0/EndR.
+- case_id: EVAL-KUM-011-003
+  refs:
+  - REQ-KUM-NAVIGATION-006
+  - REQ-KUM-INPUT-001
+  title: Stationary press and grab-anchor preservation
+  method: Press without moving at top/middle/bottom thumb grab offsets using mouse/touch/pen metadata;
+    expand transient overview beside the document.
+  expected: Stationary press emits no document-position jump; same pointer/gesture identity and grab anchor
+    survive thumb-to-viewport transformation. Document rect/layout remains stable; only selected transient
+    presentation changes.
+  red_team_control: Distinct rail and map coordinate systems must not turn presentation expansion into
+    an absolute document jump; actual OS capture and rendered pixels remain later adapter proof.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R007
+  - WP011-R008
+  - WP011-R010
+  contract_acceptance_refs:
+  - WP011-A003
+  selected_contract_controls: One active gesture per View mount; checked nonzero monotone ID, exact pointer/Scope/model/settings/geometry
+    revisions, captured press/grab/presentation anchors. Stationary press, expansion and unchanged pointer
+    emit neither Scroll nor Geometry. Held thumb becomes viewport rectangle with unchanged document bounds;
+    conflicting pointer/old gesture rejects unchanged.
+- case_id: EVAL-KUM-011-004
+  refs:
+  - REQ-KUM-NAVIGATION-002
+  - REQ-KUM-NAVIGATION-006
+  - REQ-KUM-INPUT-001
+  - REQ-KUM-INPUT-004
+  title: One continuous transformed viewport drag
+  method: Continue one held drag through expansion using distinct rail/map origins/scales and viewport
+    sizes; cross map boundaries and reach known content endpoints without a second press.
+  expected: Drag uses the captured anchor and selected coordinate transform, clamps coherently to complete
+    content range, and remains one gesture. Representation changes alone do not change position; accepted
+    navigation is host-owned scroll intent/confirmation.
+  red_team_control: Use a public host consumer recording press/move/scroll intent and viewport projection,
+    including negative/wrong/nonfinite coordinates; no simulated GUI smoothness claim.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R008
+  - WP011-R010
+  - WP011-R014
+  contract_acceptance_refs:
+  - WP011-A004
+  selected_contract_controls: Use captured delta/anchor throughout one gesture across outside/clamped
+    positions; no second press. Typed absolute-scroll uses bounded existing queue and captured geometry/focus
+    prerequisites. Coalesce only unsent same-gesture/model/causal-segment scroll; semantic jump/input/tool/assets/lifecycle/attach/detach/anchored
+    geometry are barriers. Verify typed actual provider offset may differ from requested offset through
+    clamping.
+- case_id: EVAL-KUM-011-005
+  refs:
+  - REQ-KUM-NAVIGATION-003
+  - REQ-KUM-NAVIGATION-004
+  - REQ-KUM-NAVIGATION-005
+  - REQ-KUM-NAVIGATION-006
+  - REQ-KUM-CHROME-005
+  title: Freshness across model, reflow, resize and mode revisions
+  method: While dragging, change authoritative scroll/extent/overview data, reflow, viewport/rail/map
+    size or settings mode; also wheel/key-scroll from the host. Reconnect/replace provider, close/reopen
+    binding and restore identical canonical IDs; deliver older update/intent replies. Reconcile an old
+    dispatched navigation intent as Applied without a typed actual offset; obtain a later fresh scoped
+    observation.
+  expected: Each update binds exact provider/model/overview/geometry/settings/gesture scope fixed by selected
+    contract. Stale work cannot jump a revised document or revive old gesture. Selected cancel-without-scroll
+    policy preserves current authoritative position on stationary representation change; unrelated metadata
+    generation alone does not blanket-stale valid work. Applied-effect reconciliation without typed actual
+    data settles only the old obligation; actual offset stays Unknown until a valid fresh observation,
+    never synthesized from requested offset.
+  red_team_control: Check selected revision domains and canonical transition observation owner; final
+    IDs and global Core generation alone cannot detect away/back or identical-ID restore.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R005
+  - WP011-R011
+  - WP011-R012
+  - WP011-R014
+  - WP011-R015
+  contract_acceptance_refs:
+  - WP011-A005
+  selected_contract_controls: Model semantic/extent revision, actual-offset observation revision and independent
+    overview revision are separate. Same revision/same data is idempotent, changed data conflicts, older
+    revision stale; counters never wrap. Model/extent/rail geometry/effective mode/settings/binding changes
+    cancel drag without scroll; overview-only update never moves document. Observe identical-ID Restore
+    and frame movement on canonical transition path; unrelated metadata is not blanket invalidation. Generic
+    Applied settles exact old obligation only, leaving current actual Unknown absent fresh typed data.
+- case_id: EVAL-KUM-011-006
+  refs:
+  - REQ-KUM-NAVIGATION-006
+  - REQ-KUM-INPUT-001
+  - REQ-KUM-INPUT-002
+  - REQ-KUM-INPUT-003
+  - REQ-KUM-INPUT-004
+  title: Release, cancellation, focus and idempotent settlement
+  method: Release outside pane, cancel/Escape, lose focus/capture, change pointer identity and duplicate/reorder
+    settlement events during transient drag, including unconfirmed host scroll intent.
+  expected: Exactly one gesture settlement returns usable ordinary scrollbar or configured persistent
+    controls. Pending versus confirmed scroll position and unsent-only cancellation and no assumed rollback
+    policy stay explicit; late movement/release cannot restart or retarget settled gesture. Cancellation
+    never rewrites document/layout state from stale start metadata.
+  red_team_control: Selected contract fixes cancellation policy and bounded terminal gesture history;
+    input focus/capture signals are host facts, not actual native focus/accessibility proof.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R010
+  - WP011-R011
+  - WP011-R014
+  - WP011-R015
+  contract_acceptance_refs:
+  - WP011-A006
+  selected_contract_controls: 'Release immediately returns idle controls at latest host-observed position
+    while final accepted intent remains pending. Cancel/Escape/capture/focus loss settles local gesture
+    and cancels only its own unsent work; dispatched/Unknown effects remain recoverable and position never
+    rolls back by assumption. Keep bounded last exact settlement: exact duplicate idempotent, conflicting/older
+    reject. Late events never restart drag.'
+- case_id: EVAL-KUM-011-007
+  refs:
+  - REQ-KUM-NAVIGATION-003
+  - REQ-KUM-NAVIGATION-004
+  title: Bounded sparse overview and provider semantic ownership
+  method: Attach text and non-text providers carrying sparse overview markers/opaque descriptors, viewport
+    metadata and explicit jump targets. Overflow item/byte/window/update bounds, replace/coalesce updates
+    and lower limits while prior overview or request is retained.
+  expected: Public requests/projected state preserve host semantics and exact jump target/revision. Work
+    is bounded by accepted sparse input, never by automatically loading entire documents. Overflow/growing
+    replacement rejects unchanged; accepted lowering preserves obligations and permits selected non-growing
+    recovery. Unsupported providers disclose capability/fallback.
+  red_team_control: Provider owns virtualization, text/scene meaning, content generation and font/layout.
+    Selected contract fixes finite defaults, accounting copies and replacement policy as specified.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R007
+  - WP011-R012
+  - WP011-R013
+  - WP011-R014
+  contract_acceptance_refs:
+  - WP011-A007
+  selected_contract_controls: One current overview per View; defaults4096 markers/overview,65536 aggregate
+    retained entries,65536 UTF8 bytes/overview,256 bytes per marker ID/jump target/label/style/unit token.
+    Explicit None may lift selected limits. Validate uniqueness/finite ranges/checked sums atomically;
+    replacement O(admitted overview), never full-document scan. Every opaque overview/settings/request/receipt
+    copy charges existing16MiB aggregate and existing per-field65536 cap. Lowering preserves obligations
+    and admits only unchanged/decreasing replacement. Caller snapshot copies and host render handles excluded/disclosed.
+    Semantic jump keeps exact host meaning/revision and queue barriers.
+- case_id: EVAL-KUM-011-008
+  refs:
+  - REQ-KUM-NAVIGATION-001
+  - REQ-KUM-NAVIGATION-002
+  - REQ-KUM-INPUT-001
+  - REQ-KUM-INPUT-002
+  - REQ-KUM-INPUT-003
+  - REQ-KUM-INPUT-004
+  - REQ-KUM-CHROME-004
+  title: Input routing, density, keyboard and accessibility metadata
+  method: Use declared mouse/touch/pen thresholds, keyboard/page/reveal commands, role/name/value/focus
+    metadata and conflicting content versus navigation shortcuts/wheel/gestures; include disabled capability
+    paths.
+  expected: Navigation controls distinguish drag/scroll/cancel ownership, expose supported non-drag command
+    routes and structured unsupported reasons. Frame/background controls do not hijack ordinary content
+    typing or gestures. Host settings precedence and metadata are inspectable.
+  red_team_control: Headless metadata/command routing does not prove accessibility tree, screen reader,
+    cross-window focus or touch/pen/OS behavior; all four INPUT requirement acceptance surfaces stay open
+    for actual adapters.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R006
+  - WP011-R009
+  - WP011-R017
+  - WP011-R021
+  contract_acceptance_refs:
+  - WP011-A008
+  selected_contract_controls: Check independent visible/hit dimensions, Standard/Comfortable profiles,
+    reveal/hover/focus/visibility, line/page/Home/End, progress/value/orientation/name and structured
+    disabled reasons. Host supplies thresholds/input kinds and owns recognition/accessibility/native focus.
+    Background targets reject Input/Focus/ToolAction/AssetAction/CloseDecision/Navigation even with broad
+    provider caps; explicit owner routing preserves ordinary editor typing.
+- case_id: EVAL-KUM-011-009
+  refs:
+  - REQ-KUM-BACKGROUNDS-001
+  - REQ-KUM-CHROME-004
+  - REQ-KUM-CHROME-005
+  title: Scoped media settings and compositing capability
+  method: Declare image/video backgrounds at workspace and frame scope; vary brightness, opacity, fit/crop,
+    layer and support. Supply invalid ranges/nonfinite values, incompatible composition or stale slot/mount/provider.
+  expected: Only selected slot/layer receives supported validated settings; incompatible composition returns
+    typed reason/fallback. Canonical owner identity and actual media mount remain distinct and checked.
+    Brightness/opacity changes are visual intent, never proof of decoder work, pause or physical release.
+  red_team_control: Selected contract fixes workspace/frame slot to media instance binding and range/fit
+    policy; no fake view creation, engine or canonical arrangement tree.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R003
+  - WP011-R004
+  - WP011-R005
+  - WP011-R016
+  contract_acceptance_refs:
+  - WP011-A009
+  selected_contract_controls: Exact protocol2.0 only; Scope uses feature-gated View/FrameBackground/WorkspaceBackground
+    targets. Background attach uses existing canonical FrameId/WorkspaceId and real canonical ResourceId/provider
+    image/video support, no dummy View/tab or Core arrangement mutation. One active mount per target.
+    Mixed View/background instance sharing rejects before mutation; background sharing requires same resource
+    plus canonical/negotiated/host grants. CloseView retires View only; frame movement preserves frame
+    background target/resource but stales relevant geometry/gestures; identical-ID Restore retires all.
+    Validate current target/provider/resource/connection/mount at updates/enqueue/dispatch/ACK.
+- case_id: EVAL-KUM-011-010
+  refs:
+  - REQ-KUM-BACKGROUNDS-001
+  - REQ-KUM-BACKGROUNDS-002
+  - REQ-KUM-INPUT-004
+  title: Legibility, motion, poster, audio and ordinary input
+  method: Use bright/moving media metadata with content/control layer, host contrast/overlay treatment,
+    reduced motion, poster availability, mute/decorative audio, and ordinary editor input. Refuse unsupported
+    poster/treatment/audio policy.
+  expected: Declared overlay/contrast treatment and reduced-motion/poster/audio policy are explicit, supported
+    or disclosed with fallback. Background receives no ordinary content input ownership. Policy intent
+    remains distinct from provider-confirmed media behavior.
+  red_team_control: Actual contrast/readability, composited pixels, audible mute, decoder freeze and native
+    input delivery require GUI/provider evidence; headless case proves routing and declarations only.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R006
+  - WP011-R016
+  - WP011-R017
+  contract_acceptance_refs:
+  - WP011-A010
+  selected_contract_controls: Brightness1[0,2], opacity1[0,1], Cover default/Contain/Stretch/Native, positive
+    normalized crop inside[0,1], BehindContent, poster/reference/style<=256UTF8bytes; unsupported composition
+    rejects or explicit fallback. Legibility overlay0.35[0,1] or supported host treatment; reduced-motion
+    poster/explicit unavailable; decorative audio muted by default, constrained by policy/capability.
+    Visual hide/opacity does not imply pause/physical savings. Background routing denials apply regardless
+    broad caps; geometry/presentation/invalidate/animation/lifecycle/cache/media require declared support.
+- case_id: EVAL-KUM-011-011
+  refs:
+  - REQ-KUM-BACKGROUNDS-003
+  title: Requested versus confirmed reduced media work
+  method: Hide media or change host frame-rate/resolution/visibility policy; request pause/throttle/budget
+    through capable/incapable provider. Delay/refuse/mismatch/duplicate ACK, expire/cancel queued and
+    dispatched work, then reconcile exact uncertain effect. Reconcile Applied without typed actual fps/resolution/pause
+    observation, then send current and stale-model actual observations.
+  expected: Requested/pending/confirmed/unsupported/rejected/failed/Unknown stay distinct; only exact
+    current supported applied result confirms pause/throttle and budget. Opacity/hide/submission never
+    establishes reduced decode work. Queued expiry is known-not-dispatched; dispatched uncertainty holds
+    obligations until reconciliation; stale replies cannot apply newer requested settings. Generic Applied
+    reconciliation cannot invent actual pause/fps/resolution; confirmation requires selected typed actual
+    echo or fresh scoped observation. Old effect settlement cannot replace newer model observations.
+  red_team_control: Reuse010 scoped tickets, host ticks, deadline/barrier, reserved recovery and one-instance
+    effect ordering; selected contract fixes typed media request/capability/applied-budget echo rather
+    than generic status claiming media facts.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R015
+  - WP011-R018
+  - WP011-R019
+  contract_acceptance_refs:
+  - WP011-A011
+  selected_contract_controls: Run/Throttle/Paused/Poster policies are upper work ceilings, no quality
+    minimum. Defaults30fps1920x1080; fps1..240, dimensions1..16384 checked pixels; None only policy-permitted
+    unconstrained. Shared aggregate uses component-wise MIN finite active-consumer ceilings plus separate
+    host hard ceilings;60/15fps consumers require actual<=15, lower actual allowed. AllNone stays unconstrained.
+    Pause only if every reserved consumer explicitly Paused/Poster and none protected/audio/keep-alive/unsaved/downloading;
+    visible explicitPaused/Poster allowed, visible or hiddenRun/Throttle and missing/Unknown policy veto.
+    Hiding one changes no other policy. Revalidate enqueue/dispatch/ACK; old aggregate ACK cannot confirm
+    current policy after changes. Instance actual and each consumer satisfaction separate; exact ticket/policy
+    revision typed actual required, generic Applied leaves current observation Unknown.
+- case_id: EVAL-KUM-011-012
+  refs:
+  - REQ-KUM-BACKGROUNDS-004
+  - REQ-KUM-NAVIGATION-003
+  - REQ-KUM-NAVIGATION-004
+  title: Shared media/cache ownership, release and protocol bounds
+  method: Share a declared media instance/cache across consumers and close/detach all but one; dispose
+    only under grants/protections and exact ACK. Exercise full/lowered budgets, old controller/provider/slot/model
+    tickets, foreign and conflicting duplicate replies, recovery reuse and receipt eviction; inspect diagnostics.
+  expected: Sharing requires explicit canonical/negotiated/host ownership grant. Remaining consumer and
+    confirmed instance stay held until exact cleanup; never-started reservations alone may free on unsent
+    cancellation/expiry. Cache declarations and instance/mount/saved/pending counts are separate. Foreign/stale/overflow
+    rejects unchanged; bounded recovery remains possible and opaque diagnostics stay redacted with honest
+    units/provenance.
+  red_team_control: Reuse010 identity/lifecycle/cache semantics and existing green proof when unchanged;
+    new media/overview boundaries require affected public consumers. Counters/reserved bytes are not decoder/physical
+    memory, throughput or cross-platform proof.
+  runtime_status: NOT_RUNTIME_EVALUATED
+  contract_requirement_refs:
+  - WP011-R003
+  - WP011-R004
+  - WP011-R005
+  - WP011-R013
+  - WP011-R015
+  - WP011-R019
+  - WP011-R020
+  - WP011-R021
+  contract_acceptance_refs:
+  - WP011-A012
+  selected_contract_controls: Reuse one controller/allocator/cache/recovery. Remaining consumers retain
+    shared resource/cache ownership. Detach releases mount only; confirmed-started instance held until
+    exact Dispose/cleanup; only never-started unsent reservations may free on known cancellation/expiry.
+    Pending/retired/Unknown count existing limits, final cache release never proves physical decoder release;
+    Drop metadata only. Preserve queued expiry, exact/foreign/conflicting ACK, fixed recovery, deadline/receipt
+    eviction and redacted counts/causes/IDs without opaque marker/poster payload. Host ticks only; no
+    hidden IO/timer/performance claim.
+risk_controls:
+- risk_id: EVAL-KUM-011-RISK01
+  risk: Enlarged thumb/representation transform or new overview origin changes document position on press
+    or mid-drag.
+  control: Known endpoint/grab-anchor/no-motion assertions; selected normalized mapping, degenerate pointer-unavailable
+    and cancel-without-scroll policy.
+- risk_id: EVAL-KUM-011-RISK02
+  risk: Old model/provider/gesture reply jumps reflowed/restored/reconnected content or resurrects cancelled
+    drag.
+  control: Scoped monotone revisions/transition ownership plus foreign/old/out-of-order/settlement assertions;
+    preserve current authoritative position.
+- risk_id: EVAL-KUM-011-RISK03
+  risk: Full document/overview copies or replacing pending payload exceed finite budget; lowered budgets
+    strand cleanup.
+  control: Sparse host semantic data, every retained copy accounted, atomic admission/net-size replacement,
+    reused010 reserved recovery.
+- risk_id: EVAL-KUM-011-RISK04
+  risk: Hide/opacity/pause submission frees a confirmed decoder/shared reservation or claims reduced work.
+  control: Requested/confirmed/Unknown and exact applied-budget echoes, preserve other consumers/started
+    instances until correlated cleanup.
+- risk_id: EVAL-KUM-011-RISK05
+  risk: Background/navigation captures editor input or headless flags masquerade as actual legibility/accessibility/native
+    motion proof.
+  control: Explicit owner routing and host policy reasons; defer actual GUI/accessibility/decoder/physical/platform
+    verdicts.
+reuse_plan:
+- Reuse unchanged010 identity/session/transition, queued expiry, scoped ACK/terminal history, one-instance
+  dispatch, held Unknown and fixed recovery proof; only new navigation/media assertions require fresh
+  affected proof.
+- Reuse010 explicit instance/mount/cache declaration and started-instance lifetime controls; actual engines,
+  documents/overview semantics, media decoder/cache storage and physical cleanup stay host-owned.
+- 'Selected lead-only matrix: default/navigation-only/backgrounds-only/all-feature all-target compilation,
+  one all-feature batch containing twelve011 plus twelve affected010 public cases, quiet controls_host
+  example. Evaluator reads stabilized source/consumers/observed logs once; unchanged Core/JSON proof reusable
+  only with exact input identity. No new broad gate or mandatory GUI/decoder dependency.'
+coordination:
+  coder_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
+  dependencies_thread: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
+  status: Full contract and corrected Spec14 read; existing12 cases reconciled/frozen for publication.
+    Dependency readiness may reference case IDs/status without live role hash cycle. Lead owns origin
+    verification and explicit coder03 admission; no runtime implementation evaluated.
+INDEPENDENT_FINDINGS: []
+RESIDUAL_UNCERTAINTY:
+- No011 product implementation, actual consumer or runtime batch inspected; prepared cases only.
+- Actual rendered minimap/scrollbar controls, composited legibility, accessibility tree, native pointer/capture/focus,
+  decoder/poster/audio behavior and physical/platform performance remain later host-adapter proof.
+next_action: Hold report bytes/hash for lead publication. Lead refreshes dependency readiness, independently
+  reads exact origin artifacts and explicitly admits coder03; evaluator waits for stabilized candidate
+  and lead-owned proof before runtime verdict.
+architecture_alignment:
+  status: selected_by_lead_full_contract_and_self_contained_spec
+  package_direction: '[WP011-R002] Advance unreleased kumihimo-content to0.2 with independent Cargo features
+    navigation and backgrounds, default[]. Keep the sole std-only local Core0.3 dependency/default-features=false.
+    Use small cohesive settings/navigation/overview/backgrounds modules and minimal existing protocol/routing/lifecycle/scheduler/diagnostics
+    integration. One owned Core and existing request/instance/cache/recovery authority; no second controller/queue/arrangement.
+    Core0.3/Snapshot3/saved schema1/JSON and their files remain unchanged. No GUI/codec/async/serializer
+    dependency.'
+  scope_direction: '[WP011-R003] Require exact protocol2.0, reject1.0 and every other version explicitly.
+    Replace public Scope.view with typed MountTarget View(ViewId), FrameBackground(FrameId), WorkspaceBackground(WorkspaceId),
+    with background variants/APIs only under backgrounds. Preserve all WP010 identity/session/epoch/counter/permission/replay/close/recovery
+    guarantees and current admission defaults; narrow fixture migration retains all twelve WP010 behavior
+    cases. Document intentional0.1-to0.2 API break and feature selection. [WP011-R004] View attach remains
+    canonical; background attach uses a real canonical ResourceId/provider plus existing FrameId or WorkspaceId
+    and supported image/video capability, without creating a dummy view/tab or changing Core arrangement.
+    At most one active mount per typed target. Common instance allocator, canonical/negotiated/explicit
+    host sharing grant, cache ownership and exact cleanup are reused. Mixed View/background sharing rejects
+    for this packet; background-to-background sharing requires all grants and same resource. [WP011-R005]
+    Validate typed target/current Core identity/resource/provider/connection/mount before updates, enqueue,
+    dispatch and ACK. Successful identical-ID Restore retires all target bindings; rejected/replayed Core
+    operations cause no extra effects. CloseView affects View mounts only. Moving a frame preserves its
+    FrameBackground target/resource, invalidates affected geometry and active gesture prerequisites, and
+    never disposes an instance. Provider changes/removal/unavailability and relevant target disappearance
+    stale effects; unrelated metadata does not blanket-stale them. Retired exact cleanup never updates
+    replacement targets.'
+  navigation_direction: '[WP011-R011] Release immediately settles local drag and restores configured idle
+    controls at latest host-observed position, while accepted final intent remains pending/confirmed/Unknown
+    explicitly. Cancel/Escape/lost capture/focus loss settles local gesture, cancels only its unsent work
+    and never assumes dispatched effects or document position reverted. A bounded last exact settlement
+    is idempotent; conflicting or older events reject. Model/extent/rail geometry/effective mode/settings/binding
+    changes cancel active drag without emitting scroll; later host observation establishes actual position.
+    Overview-only update does not move the document. [WP011-R012] Host supplies exact-scope document model
+    revision and monotone observation revision with coherent extent/viewport/actual offset, and an independently
+    revised sparse semantic overview. Model includes semantic/extent identity, not every offset ACK. Same
+    revision/same data is idempotent, same revision/different data conflicts, older revisions stale; checked
+    counters never wrap. Offset observations bound model and current attachment; stale/foreign/late data
+    never updates current document state. Frame movement/restore/rebind/focus/model change invalidates
+    appropriate gesture/request prerequisites without blanket invalidating unrelated metadata.'
+  pending_direction: '[WP011-R015] Generic Reconciled Applied settles only its exact old effect/busy obligation.
+    Without an exact validated typed actual-offset/applied-budget observation, navigation/media observation
+    remains Unknown; never synthesize actual values from requested intent or Confirmation::Done. Existing
+    terminal duplicate/history, conflict/expiry, deadline, reserved recovery slot and retired cleanup
+    semantics remain. Queued expiry is known-not-delivered; dispatched timeout/cancel ambiguity stays
+    Unknown and does not release unrelated/shared reservations.'
+  overview_direction: '[WP011-R013] Admit at most one current overview per View mount, default4096 markers
+    per overview,65536 aggregate retained marker entries,65536 UTF-8 bytes per overview and256 bytes per
+    opaque marker ID/jump target/label/style/unit token. Host may choose explicit None for unrestricted
+    dimensions. Validate candidate shape/finite ranges/unique marker IDs and checked sums before replacement;
+    full replacement work is O(admitted overview), never whole-document scanning. Every retained opaque
+    copy in overview/settings/request/receipt metadata is charged to existing16MiB aggregate, existing
+    per-field65536 cap still applies; fixed metadata is bounded by mounts/pending/receipts. Lowered limits
+    preserve existing obligations and allow unchanged/decreasing replacement while blocking growth. Caller-owned
+    snapshot copies/host render handles are outside retained library bytes, explicitly disclosed.'
+  media_direction: '[WP011-R018] Keep per-consumer media work policy, current instance aggregate request
+    and exact provider-confirmed actual/Unknown separate. Policies Run/Throttle/Paused/Poster use upper
+    work ceilings, not minimum quality demand: default30fps/1920x1080, fps1..240 and dimensions1..16384
+    with checked pixel product; None denotes unconstrained allowance only where host policy permits. Pause
+    is separate from these ceilings, never a side effect of opacity0 or visibility alone. Unsupported,
+    pending, refused, failed, stale and Unknown are observable. Typed applied echo binds exact ticket,
+    aggregate/policy revision and reports actual pause/fps/resolution satisfying current aggregate ceilings
+    before confirmation; lower actual work is allowed and does not promise quality, physical allocation
+    bounds or performance measurements. [WP011-R019] For a shared background instance compute each aggregate
+    work ceiling as the component-wise minimum of finite ceilings across consumers requiring active work
+    plus separate host instance hard ceilings; None imposes no additional ceiling, allNone remains unconstrained.
+    Never use a maximum and falsely claim that a smaller consumer ceiling was met. Pause only when every
+    reserved consumer explicitly opts Paused/Poster and none is protected/audio/keep-alive/unsaved/downloading;
+    a visible consumer explicitly choosing a still/paused presentation is allowed, while any visible or
+    hidden Run/Throttle consumer vetoes pause. Missing/Unknown policy is an active-work veto. Default
+    sharingfalse; explicit background grants only. Revalidate current consumer policies/eligibility at
+    enqueue, dispatch and ACK. New consumer/protection/policy changes invalidate old aggregate satisfaction;
+    a dispatched old effect may have happened, so preserve exact effect recovery/history and Unknown current
+    policy until fresh observation. Hiding one consumer changes no other policy and never pauses media
+    needed by another. Report instance-confirmed actual separately from per-consumer policy satisfaction.'
+  validation_effect: '[WP011-R022] Implement the twelve frozen public WP011 recording-host cases once
+    in their owning targets, preserving/revalidating the twelve affected WP010 consumers with narrow API
+    migration. Include default/navigation-only/backgrounds-only/all-feature compilation plus one all-feature
+    focused test batch and quiet controls example using stable target/verified cache, locked/offline j2
+    lead lane. No duplicated helper self-tests, no extra broad Core/JSON suite when inputs remain identical,
+    no actual GUI/decoder/physical/platform proof inferred.'
+non_case_contract_coverage:
+- requirement_refs:
+  - WP011-R001
+  - WP011-R002
+  - WP011-R022
+  - WP011-R023
+  acceptance_refs:
+  - WP011-A013
+  - WP011-A014
+  method: Lead publication/origin read/admission; exact package/dependency/feature/source/lock/manual/topology/matrix
+    inspection; four selected compile configurations, one all-feature owning-target batch and quiet example;
+    full99/stub/six-file archive comparison and final state/board/source containment. These are existing
+    contract obligations, not additional case IDs or gates.
+  status: NOT_RUNTIME_EVALUATED
+boundary_decisions:
+- decision_id: EVAL-KUM-011-D01
+  status: selected_by_lead_contract_pending_publication
+  source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+  original_question: Module/package ownership and canonical transition route; exact workspace/frame media-slot
+    to actual content mount binding without second arrangement, mutable Core escape or missed identical-ID
+    Restore.
+  selected_choice: One content0.2 Controller/private Core0.3; protocol2.0 typed targets; canonical transition
+    observation, identical-ID Restore, real frame/workspace resource mounts; reject mixed sharing.
+  contract_requirement_refs:
+  - WP011-R002
+  - WP011-R003
+  - WP011-R004
+  - WP011-R005
+- decision_id: EVAL-KUM-011-D02
+  status: selected_by_lead_contract_pending_publication
+  source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+  original_question: Navigation/model/overview/geometry/settings/gesture freshness, explicit rebase-or-cancel
+    policy during reflow/resize/mode or authoritative scroll updates; no stationary jump.
+  selected_choice: Separate model/actual observation/overview revisions; cancel on changed model/geometry/settings/mode/binding
+    without scroll; overview-only no movement.
+  contract_requirement_refs:
+  - WP011-R005
+  - WP011-R010
+  - WP011-R011
+  - WP011-R012
+  - WP011-R014
+  - WP011-R015
+- decision_id: EVAL-KUM-011-D03
+  status: selected_by_lead_contract_pending_publication
+  source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+  original_question: Enlarged-thumb mapping and zero/short-track precision policy, keyboard/page route,
+    large-control defaults and settings precedence/capability fallback.
+  selected_choice: Exact normalized complete-range formula; zero-range0/zero-travel pointer unavailable;
+    selected Standard/Comfortable profiles and version2 settings/fallback/keyboard routes.
+  contract_requirement_refs:
+  - WP011-R006
+  - WP011-R007
+  - WP011-R008
+  - WP011-R009
+- decision_id: EVAL-KUM-011-D04
+  status: selected_by_lead_contract_pending_publication
+  source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+  original_question: Gesture cancellation/commit/rollback, focus/capture/release-out/duplicate settlement,
+    host pointer/tick ownership and bounded terminal state.
+  selected_choice: Immediate release idle/latest observation with pending final intent; cancel own unsent
+    only, no dispatched rollback; bounded exact last settlement.
+  contract_requirement_refs:
+  - WP011-R010
+  - WP011-R011
+  - WP011-R015
+- decision_id: EVAL-KUM-011-D05
+  status: selected_by_lead_contract_pending_publication
+  source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+  original_question: Finite overview/item/string/update/media-slot/cache/request bounds, retained-copy
+    accounting and atomic replacement/coalescing/lowering policy.
+  selected_choice: Selected overview4096/65536 entries/65536bytes/256 fields, all retained opaque copies
+    existing16MiB; atomic no-growth lowering; existing request/recovery limits.
+  contract_requirement_refs:
+  - WP011-R013
+  - WP011-R014
+  - WP011-R015
+  - WP011-R020
+- decision_id: EVAL-KUM-011-D06
+  status: selected_by_lead_contract_pending_publication
+  source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+  original_question: Typed media capabilities/visual ranges/fallback/legibility and reduced-motion/poster/audio,
+    frame-rate/resolution budget request and exact applied ACK echo. Define Applied reconciliation versus
+    typed actual observations without inventing requested scroll/budget as confirmed.
+  selected_choice: Typed visuals/capabilities/policies and actual-offset/budget observations; generic
+    Applied settles old obligation only/current Unknown; explicit host adapter fallback.
+  contract_requirement_refs:
+  - WP011-R006
+  - WP011-R015
+  - WP011-R016
+  - WP011-R017
+  - WP011-R018
+- decision_id: EVAL-KUM-011-D07
+  status: selected_by_lead_contract_pending_publication
+  source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
+  original_question: Shared media consumer aggregation, confirmed-instance hold and exact cache/provider
+    release via reused010 reservation/recovery boundary.
+  selected_choice: Component-wise MIN ceilings; pause only all explicitly Paused/Poster/unprotected, hiddenRun/Unknown
+    veto; revalidate current policy and keep confirmed-started lifetime.
+  contract_requirement_refs:
+  - WP011-R004
+  - WP011-R018
+  - WP011-R019
+  - WP011-R020
+proof_plan:
+  source: Full WP011 contract proof; executed only by lead when admitted candidate is stable.
+  commands:
+  - Publish full spec/contract/readiness/frozen twelve cases before admission
+  - Lead-only offline local lock resolution after content manifest version change, no new/external package
+  - cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --locked --offline
+    -j 2
+  - cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --features navigation
+    --locked --offline -j 2
+  - cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --features backgrounds
+    --locked --offline -j 2
+  - cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --all-features --locked
+    --offline -j 2
+  - cargo test --manifest-path product/Cargo.toml -p kumihimo-content --all-features --no-fail-fast --locked
+    --offline -j 2
+  - cargo run --manifest-path product/Cargo.toml -p kumihimo-content --all-features --example controls_host
+    --locked --offline -j 2
+  - Reconcile unchanged Core0.3/JSON package inputs and prior49 proof; no repeated unrelated Cargo
+  - python repo-governance/repo-scripts/sync.py --check
+  - git diff --check -- Kumihimo
+  - git ls-remote origin refs/heads/codex/handpick
+  runtime_status: NOT_RUNTIME_EVALUATED

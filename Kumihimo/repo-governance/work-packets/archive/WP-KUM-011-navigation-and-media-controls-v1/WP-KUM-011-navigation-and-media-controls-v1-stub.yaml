@@ -1,0 +1,29 @@
+schema_version: kumihimo.wp-contract.v1
+kind: work_packet_stub
+wp_id: WP-KUM-011-navigation-and-media-controls-v1
+title: Implement host-fed navigation and background contracts
+scope:
+- Four navigation modes, continuous transient minimap drag, configurable rail/thumb, provider-fed media backgrounds
+  and reduced-work requests; actual GUI and decoders remain optional adapters
+files:
+- product/
+- repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/
+- repo-governance/specification/current/
+- repo-governance/topology/
+dependencies:
+- WP-KUM-010-content-and-lifecycle-contracts-v1
+spec_refs:
+- TOPIC-KUM-NAVIGATION
+- TOPIC-KUM-BACKGROUNDS
+- TOPIC-KUM-INPUT
+requirements:
+- Promote this stub to a full bounded contract with current research, exact ownership, dependency readiness and
+  eval before coding
+- Reuse existing core and verified cache; no parallel Cargo or long default suites
+- Preserve host ownership and existing accepted scope; explicit exact platform proof
+acceptance:
+- No scrub position jump; metadata revisions/cancel/focus cleanup; density/minimum thumb; media opacity distinct
+  from acknowledged resource policy
+proof:
+- Focused component/adapter proof to be fixed on promotion; no runtime success implied by this stub
+status_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml

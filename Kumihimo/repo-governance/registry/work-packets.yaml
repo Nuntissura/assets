@@ -77,13 +77,12 @@ work_packets:
     before any product admission
   blockers: []
 - wp_id: WP-KUM-011-navigation-and-media-controls-v1
-  title: Implement host-fed navigation and background contracts
-  phase: planned
+  title: Implement optional host-fed navigation and scoped media controls
+  phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
-  next_action: Promote complete stub to full bounded contract/self-contained spec with current primary research,
-    exact modular ownership, dependency readiness and focused frozen evaluator cases; publish and independently
-    read origin before product admission
+  next_action: Lead publish frozen full contract/spec14/readiness/twelve cases; independently reread exact origin
+    and canonical artifacts, then admit coder03 owned product paths only
   blockers: []
 - wp_id: WP-KUM-012-desktop-gui-adapter-v1
   title: Prove a replaceable desktop adapter
