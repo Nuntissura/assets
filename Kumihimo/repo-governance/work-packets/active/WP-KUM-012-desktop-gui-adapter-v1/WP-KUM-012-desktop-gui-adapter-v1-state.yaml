@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 27
-phase: active
+generation: 28
+phase: done
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - product/kumihimo-egui/src/lib.rs
@@ -317,6 +317,10 @@ proof:
     physical display changes, ARM64/other platforms, real Servo/video/editor engines, genuine GPU fault injection,
     performance gains and physical memory release remain unproven. All full future requirement acceptances remain
     open. Fresh canonical origin containment required before DONE.'
+- kind: fresh_canonical_origin_containment
+  publication_revision: d51333c65109de9b2b23ddcd9390d2dc919d3f2d
+  observed: Fresh ls-remote and fetched origin equal published HEAD; eleven exact closure artifacts and seventeen
+    exact source blobs independently reread. All thirteen original scoped cases PASS. Spec20 retains all full future
+    requirement acceptances open; web proof remains intact.
 blockers: []
-next_action: Publish independent evaluation and scoped outcome; fresh canonical origin reread, then DONE and coder
-  rotation
+next_action: Complete; reuse scoped desktop evidence until asserted inputs change

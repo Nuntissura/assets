@@ -7,7 +7,7 @@ git:
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: WP-KUM-012-desktop-gui-adapter-v1
+active_wp: WP-KUM-014-servo-and-heavy-rendering-v1
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
@@ -31,7 +31,7 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP012 standalone Windows45-node owning closure ready; standby next required graph
+    assignment: WP014 dependency readiness after full contract promotion; no coding before recorded readiness
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
@@ -43,35 +43,7 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Final original13 desktop scoped PASS held; canonical publication pending
-  coder:
-    role_id: ROLE-KUM-CODER-03
-    thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
-    model: gpt-6.1-sol
-    reasoning: high
-    completed_implementation_wps:
-    - WP-KUM-011-navigation-and-media-controls-v1
-    rotate_after: 2
-    assignment: All original13 scoped desktop cases accepted; source held; canonical origin closure pending before
-      second-packet rotation
-    subteam_ownership:
-    - agent: chrome_geometry_remediation
-      parent_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
-      files:
-      - product/kumihimo-egui/src/chrome.rs
-      - product/kumihimo-egui/src/workspace.rs
-      - product/kumihimo-egui/src/lib.rs
-      - product/kumihimo-egui/tests/adapter_contracts.rs suffix only
-      model: gpt-6.1-sol
-      reasoning: high
-      status: held
-    - agent: capture_pin_remediation
-      parent_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
-      files:
-      - product/kumihimo-egui/examples/capture_host.rs
-      model: gpt-6.1-sol
-      reasoning: high
-      status: held
+    assignment: Desktop original13 PASS published; prepare WP014 cases after full contract promotion
   coder04:
     role_id: ROLE-KUM-CODER-04
     thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
@@ -80,8 +52,7 @@ roles:
     completed_implementation_wps:
     - WP-KUM-013-web-adapter-portal-pilot-v1
     rotate_after: 2
-    assignment: WP013 DONE, first of two implementation packets; all web source held, available after dependency/predecessor
-      admission
+    assignment: WP013 DONE first of two; WP014 code held pending full spec/contract, dependencies and frozen evaluation
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -89,7 +60,7 @@ communication:
     dispatched reports
 build_lane:
   owner: null
-  phase: idle_desktop_outcome_canonical_publication
+  phase: idle_wp014_admission
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -107,7 +78,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish and close WP012 after exact canonical origin reread; WP014 admission only after WP012 DONE
+next_action: Promote WP014 with current source research, published spec/contract, dependency readiness and frozen
+  evaluation before coding
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
@@ -131,3 +103,32 @@ role_history:
   assignment: Two implementation packets complete; source writes held, retire before WP011 coding
   retired_reason: Two completed implementation packets; fresh coder03 rotation required
   retired_after_outcome: d30e660218f04f498d63ba2f388196b11fdc9ec9
+- role_id: ROLE-KUM-CODER-03
+  thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
+  model: gpt-6.1-sol
+  reasoning: high
+  completed_implementation_wps:
+  - WP-KUM-011-navigation-and-media-controls-v1
+  - WP-KUM-012-desktop-gui-adapter-v1
+  rotate_after: 2
+  assignment: Two implementation packets complete; all product source held; rotate to coder04 for WP014
+  subteam_ownership:
+  - agent: chrome_geometry_remediation
+    parent_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
+    files:
+    - product/kumihimo-egui/src/chrome.rs
+    - product/kumihimo-egui/src/workspace.rs
+    - product/kumihimo-egui/src/lib.rs
+    - product/kumihimo-egui/tests/adapter_contracts.rs suffix only
+    model: gpt-6.1-sol
+    reasoning: high
+    status: held
+  - agent: capture_pin_remediation
+    parent_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
+    files:
+    - product/kumihimo-egui/examples/capture_host.rs
+    model: gpt-6.1-sol
+    reasoning: high
+    status: held
+  retired_reason: Two completed implementation packets; operator rotation required
+  retired_after_outcome: d51333c65109de9b2b23ddcd9390d2dc919d3f2d
