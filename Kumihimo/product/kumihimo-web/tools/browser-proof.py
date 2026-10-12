@@ -147,12 +147,28 @@ async function run() {
   await page.evaluate(()=>{
     const bridge=window.kumihimo, adapter=bridge.adapter, original=adapter.route.bind(adapter);
     bridge.proofRoutes=[];
+    bridge.proofSequence=0;
+    bridge.proofMoves=[];
+    bridge.proofMoveCount=0;
+    bridge.proofMoveOverflow=false;
     adapter.route=function(request) {
+      const sequence=++bridge.proofSequence;
       const response=original(request);
-      bridge.proofRoutes.push({route:request.route,action:request.action?.kind,
+      bridge.proofRoutes.push({sequence,route:request.route,action:request.action?.kind,
         frame:request.action?.frame,rect:request.action?.rect,ok:response.ok,
         error:response.error,receipt:response.result?.receipt});
       if(bridge.proofRoutes.length>80)bridge.proofRoutes.splice(0,bridge.proofRoutes.length-80);
+      if(request.route==='command'&&request.action?.kind==='move_frame') {
+        bridge.proofMoveCount++;
+        if(bridge.proofMoves.length>=8)bridge.proofMoveOverflow=true;
+        else bridge.proofMoves.push(JSON.parse(JSON.stringify({sequence,
+          request:{version:request.version,route:request.route,identity:request.identity,
+            actor:request.actor,operation:request.operation,expected_generation:request.expected_generation,
+            action:{kind:request.action.kind,frame:request.action.frame,destination:request.action.destination,index:request.action.index}},
+          response:{version:response.version,route:response.route,ok:response.ok,error:response.error,
+            result:{receipt:response.result?.receipt}}
+        })));
+      }
       return response;
     };
   });
@@ -179,14 +195,22 @@ async function run() {
   })?.id;
   assert(eligibleDestination&&moveDest.includes(eligibleDestination),'eligible foreign child workspace absent');
   await page.locator('#destination-select').selectOption(eligibleDestination);
+  const parentMoveMark=await page.evaluate(()=>{const b=window.kumihimo;b.proofMoves=[];b.proofMoveCount=0;b.proofMoveOverflow=false;return b.proofSequence;});
   await page.locator('[data-action="move-frame"]').click(); await idle();
-  const parentMove=await page.evaluate(()=>window.kumihimo.adapter.lastCommand);
+  const parentPhase=await page.evaluate(({since,frame,destination})=>{const b=window.kumihimo;return {count:b.proofMoveCount,overflow:b.proofMoveOverflow,matches:b.proofMoves.filter(m=>m.sequence>since&&m.request.action.frame===frame&&m.request.action.destination===destination)};},{since:parentMoveMark,frame:first.id,destination:eligibleDestination});
+  assert(!parentPhase.overflow&&parentPhase.count===1&&parentPhase.matches.length===1,'parent move observation missing, duplicate, wrong target or overflow');
+  const parentMove=parentPhase.matches[0];
   assert(parentMove?.request.action.kind==='move_frame'&&parentMove.request.action.destination===eligibleDestination&&parentMove.response.ok===true&&parentMove.response.result.receipt.ok===true,'actual parent move route rejected');
+  assert(parentMove.request.action.frame===first.id&&parentMove.response.result.receipt.replayed===false&&parentMove.request.actor===parentMove.response.result.receipt.actor&&parentMove.request.operation===parentMove.response.result.receipt.operation&&parentMove.request.identity.lineage===parentMove.response.result.receipt.identity.lineage&&parentMove.request.identity.incarnation===parentMove.response.result.receipt.identity.incarnation,'parent move actual request/receipt correlation failed');
   assert((await canonical()).rust.frames.find(f=>f.id===first.id).workspace===eligibleDestination,'parent move click did not commit');
   await page.locator('#destination-select').selectOption(gestureBefore.rust.root);
+  const returnMoveMark=await page.evaluate(()=>{const b=window.kumihimo;b.proofMoves=[];b.proofMoveCount=0;b.proofMoveOverflow=false;return b.proofSequence;});
   await page.locator('[data-action="move-frame"]').click(); await idle();
-  const returnMove=await page.evaluate(()=>window.kumihimo.adapter.lastCommand);
+  const returnPhase=await page.evaluate(({since,frame,destination})=>{const b=window.kumihimo;return {count:b.proofMoveCount,overflow:b.proofMoveOverflow,matches:b.proofMoves.filter(m=>m.sequence>since&&m.request.action.frame===frame&&m.request.action.destination===destination)};},{since:returnMoveMark,frame:first.id,destination:gestureBefore.rust.root});
+  assert(!returnPhase.overflow&&returnPhase.count===1&&returnPhase.matches.length===1,'return move observation missing, duplicate, wrong target or overflow');
+  const returnMove=returnPhase.matches[0];
   assert(returnMove?.request.action.kind==='move_frame'&&returnMove.request.action.destination===gestureBefore.rust.root&&returnMove.response.ok===true&&returnMove.response.result.receipt.ok===true,'actual return parent move route rejected');
+  assert(returnMove.request.action.frame===first.id&&returnMove.response.result.receipt.replayed===false&&returnMove.request.actor===returnMove.response.result.receipt.actor&&returnMove.request.operation===returnMove.response.result.receipt.operation&&returnMove.request.identity.lineage===returnMove.response.result.receipt.identity.lineage&&returnMove.request.identity.incarnation===returnMove.response.result.receipt.identity.incarnation,'return move actual request/receipt correlation failed');
   assert((await canonical()).rust.frames.find(f=>f.id===first.id).workspace===gestureBefore.rust.root,'return parent move click did not commit');
   await page.locator('#dock-edge').selectOption('Left');
   await page.locator('[data-action="dock"]').click(); await idle();

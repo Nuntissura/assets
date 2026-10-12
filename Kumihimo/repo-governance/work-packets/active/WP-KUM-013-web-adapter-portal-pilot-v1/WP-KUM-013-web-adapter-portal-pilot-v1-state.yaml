@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-generation: 5
+generation: 6
 phase: active
 owner: ROLE-KUM-CODER-04
 changed_files:
@@ -54,6 +54,14 @@ proof:
     case001 normal/narrow count/geometry passed; case002 realFloat rejected invalid_geometry. Diagnostic retains
     trustedclick, requestedx70/y238.5/w292.25/h560, queuedactualviewportx46/y-167.5/w1193/h560 and failurePNG; actualbrowsercleanuptrue.
     OriginalDOMowner pilot.mjs minimalmeasurementflush/freshcanonicalparent-containedfloatcandidate held; nofullbrowserPASS.
+- kind: actual_browser_float_and_parent_move_observation
+  source_revision: 711efe012ce89f88e0f9868d7ded72f8cc4fc784
+  observed: "InitialpersistentbrowserAPItransporttimeout before navigation; actualcurrentHTTP/standalone/privatebrowser\
+    \ GET200 exactgeneratedbytes, originalpersistentretrypassedgeneratedhashes/startup/case001. Timeoutcauseunproven.\
+    \ RealFloatpreviewcontained y-167.5/commitgen135 andRedockPASS. Trustedparentmove frame3\u2192workspace19 acceptedactualreceipt\
+    \ op184/gen164; freshcanonicalframe3workspace19 provesmovement. TestlastCommand-after-idle sampledlaterautoViewport\
+    \ op195/gen175 andFAILED owningreceiptassertion. Proof-only actualmove phasecapture bc5b2879 preservesbothoriginalparent/returnacceptedreceipt+canonicalrecipientassertions,\
+    \ addsattribution/unique/newrecord controls; independentlyopened byeval/diag, actualreturn/remainingcasespending."
 blockers: []
-next_action: Publish singleDOMfloatrepair, reuseunchangedcompiledWASM withfreshbindingmanifest; actualoriginalbrowsercases,
-  causalrepairifneeded, independenteval/publication
+next_action: Publishsingleproofreceipt-attribution repair; reusecompiledWASM/exactmanifest and runoriginalbrowserbatch;
+  focusedremainingfailures thenindependenteval/closure
