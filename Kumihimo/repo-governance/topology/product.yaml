@@ -56,3 +56,25 @@ nodes:
 - id: KUM-JSON-EXAMPLE
   path: product/kumihimo-layout-json/examples/roundtrip.rs
   responsibility: Quiet bounded save/restore console example
+- id: KUM-CONTENT
+  manifest_ref: product/kumihimo-content/Cargo.toml
+  entrypoint: product/kumihimo-content/src/lib.rs
+  status: implementation_in_progress
+  responsibility: Privately owned Core with bounded replaceable host-content request/ACK routing, lifecycle reservations
+    and diagnostics
+  modules:
+  - product/kumihimo-content/src/protocol.rs
+  - product/kumihimo-content/src/routing.rs
+  - product/kumihimo-content/src/lifecycle.rs
+  - product/kumihimo-content/src/scheduler.rs
+  - product/kumihimo-content/src/diagnostics.rs
+  integration_boundary: Host executes engines/input/rendering/assets/cleanup; read-only Core plus routed canonical
+    mutations, no mutable escape or physical release claim
+- id: KUM-CONTENT-CONTRACTS
+  path: product/kumihimo-content/tests/recording_host.rs
+  status: not_runtime_evaluated
+  responsibility: Twelve public recording-host consumers bound frozen WP010 cases
+- id: KUM-CONTENT-EXAMPLE
+  path: product/kumihimo-content/examples/recording_host.rs
+  status: not_runtime_evaluated
+  responsibility: Quiet headless request/ACK consumer

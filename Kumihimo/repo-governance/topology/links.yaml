@@ -84,3 +84,27 @@ edges:
   from: EVAL-KUM-009-v1
   to: KUM-JSON-CONTRACTS
   relation: evaluates
+- id: KUM-LINK-WP010-CONTENT
+  from: WP-KUM-010-content-and-lifecycle-contracts-v1
+  to: KUM-CONTENT
+  relation: bounds_implementation
+- id: KUM-LINK-CONTENT-CORE
+  from: KUM-CONTENT
+  to: KUM-CORE
+  relation: consumes
+- id: KUM-LINK-CONTENT-CONTRACTS
+  from: KUM-CONTENT-CONTRACTS
+  to: KUM-CONTENT
+  relation: validates
+- id: KUM-LINK-EVAL010-CONTENT
+  from: EVAL-KUM-010-v1
+  to: KUM-CONTENT-CONTRACTS
+  relation: evaluates
+- id: KUM-LINK-CONTENT-EXAMPLE
+  from: KUM-CONTENT-EXAMPLE
+  to: KUM-CONTENT
+  relation: consumes
+- id: KUM-LINK-MANUAL-CONTENT
+  from: KUM-PRODUCT-MANUAL
+  to: KUM-CONTENT
+  relation: explains_operation

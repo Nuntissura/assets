@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
-generation: 4
+generation: 7
 phase: active
 owner: ROLE-KUM-CODER-02
 changed_files:
@@ -8,6 +8,13 @@ changed_files:
 - repo-governance/specification/current/
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v11-r11-c35af554d2e1/
 - repo-governance/work-packets/archive/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-stub.yaml
+- product/kumihimo-content/
+- product/Cargo.toml
+- product/Cargo.lock
+- repo-governance/topology/product.yaml
+- repo-governance/topology/links.yaml
+- product/README.md
+- repo-governance/registry/ids.yaml
 proof:
 - kind: predecessor_and_preparation
   source_revision: c35af554d2e1710c507b26dc75c3dcdb62263778
@@ -18,6 +25,19 @@ proof:
   observed: Exact origin SHA matched; nine canonical published artifacts independently reread equal currentbytes;23R/14A/21spec
     refs,12frozen cases, finalstd-only dependencyreadiness, exactSpec11archive/99preserved requirements; coder02
     admitted product only, no Cargo/lock/Git
+- kind: offline_local_dependency_closure
+  source_revision: 674a8e8bc2510e1016da8d1bde36e2e3fe651636
+  observed: Admitted manifests read and solelane offline metadata exit0/PASS before_submit; lock adds only content0.1
+    localCore dependency, all13 prior lock entries unchanged;14package metadata; no compile/runtime proof; target/cache
+    processlocal; resourcesCPU16%/free64.6GiB/noRust beforelane
+- kind: intermediate_source_fence
+  git_base: 674a8e8bc2510e1016da8d1bde36e2e3fe651636
+  product_file_count: 40
+  product_digest: 65f2914c72e984fb327441be56601e3f6418bd08e730d4fb00686ed59dbe0870
+  coder_owned11_digest: 9e6e26d933927269a68a3a1f8c2a250201666263b0408b324de27139907af291
+  observed: Allthree coding actors held;40productfiles exactrawUTF8LF; allCore/JSONpackage source/tests/manifests
+    unchanged from testedc387;12publicconsumers present but notrun. Intermediateall-targetcompilecandidate only;
+    no completed010acceptance claim
 blockers: []
-next_action: Coder02 implement full010 bounded std-only content companion/public recording-host cases; no parallel
-  Cargo; lead resolves local lock after manifest exists and freezes/publishes candidate before focused proof
+next_action: Publish exact intermediate source candidate; lead serial focused content all-target compiler check
+  before behavioral tests; coder holds until compiler feedback
