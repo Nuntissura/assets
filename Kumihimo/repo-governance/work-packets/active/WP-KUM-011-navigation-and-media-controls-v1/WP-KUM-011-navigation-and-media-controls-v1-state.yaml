@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 8
+generation: 9
 phase: active
-owner: ROLE-KUM-DEV-LEAD
+owner: ROLE-KUM-EVALUATION
 changed_files:
 - product/Cargo.lock
 - product/README.md
@@ -71,9 +71,29 @@ proof:
     test SHA227897e0; product fence be747afc0888b6ebec72a23f0c4fae68df47917584bf8cec8ae252885ba471dd. Failed backgrounds
     compile outcome remains pending retry; default/navigation source/config/behavior closure unchanged and their
     green proof retained.'
-blockers:
-- 'Backgrounds-only test-target E0618: background_contracts.rs730 helper call shadowed by local Scope binding626;
-  narrow fixture rename before remaining proof'
-next_action: Lead publish exact five-file fixture-remediation candidate, fresh origin/fence/resource observations
-  and GP020 confirmation; retry backgrounds predecessor, then combined/focused24cases/quietexample; no unrelated
-  proof reruns
+- kind: focused_headless_runtime
+  source_revision: 9e69ab98feb1609fe9df169efc0e64b158ebfc68
+  product_sha256: be747afc0888b6ebec72a23f0c4fae68df47917584bf8cec8ae252885ba471dd
+  logs:
+    default: .local/kumihimo-controls/proof/default-15cb5cfa1440.log
+    navigation: .local/kumihimo-controls/proof/navigation-15cb5cfa1440.log
+    backgrounds: .local/kumihimo-controls/proof/backgrounds-9e69ab98feb1.log
+    combined: .local/kumihimo-controls/proof/combined-9e69ab98feb1.log
+    test: .local/kumihimo-controls/proof/test-9e69ab98feb1.log
+    example: .local/kumihimo-controls/proof/example-9e69ab98feb1.log
+  log_sha256:
+    default: 8c6aacdfa99f663ece327bd81e8cb3bed8ab478914c52c779d453635ac61c4d7
+    navigation: 63fb722b6f2bc3fe96e6b4c7067fc40ddc6ef06c215c7d07b0f7b3344f5baf34
+    backgrounds: 00f84a838a18c166ba0eb828d66067b872ba176c05fb969afcb462400caa6bf3
+    combined: e95355d704676c38e3930dc1af7a55acc777bdbe061bba73a77fdd54c6570aa1
+    test: 43a352f01916b8e56871e559cf3c4adf485099489d21946a2ff7769766329aa7
+    example: 8224fb61ee5329b0b715db7fb3bf88f77ea11a83075b47d92a94e6c272e556b4
+  observed: 'Default/navigation all-target compile PASS on15cb5cf (2.00s/1.45s), reused because sole later change
+    is backgrounds-gated helper rename. Backgrounds/combined compile PASS on9e69ab9 (0.21s/1.82s), original E0618
+    resolved. All-feature public tests24passed (12preserved010+8navigation+4backgrounds), compile8.51s and eachtarget0.01s.
+    Quiet controls_host PASS dev0.02s: Protocol2 navigation/media observations confirmed; host rendering external.
+    Post-run47product inputs unchanged. Independent scoped evaluation and complete outcome/spec/status/origin containment
+    pending; actualGUI/engines/physicalresources/platforms unproven.'
+blockers: []
+next_action: Evaluator independently inspect exact9e69ab9 source, frozen12cases and all6actual proof logs; lead
+  then record scoped outcome/spec archive/current views and exact published containment before DONE
