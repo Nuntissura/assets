@@ -6,12 +6,14 @@
 //! visibility rule, which over-counts a visible layer with no pixels and a visible clipped layer whose base is hidden
 //! or empty (test `the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases`; nested
 //! groups: `nested_hidden_groups_hide_every_descendant_until_the_outermost_closes`). A stack that does not fit is not mapped (its `lfx2` block stays byte-exact) and the layer reports a typed
-//! loss: `effects_over_budget` (per layer, or past Folio's own per-stack ceiling),
+//! loss: `effects_over_budget` (per layer, or a stack with no counted instances past Folio's own per-stack ceiling),
 //! `effects_over_document_budget` (counted instances past the plan limit: the crossing stack and every later
 //! stack that has counted instances) or `effects_unrendered_over_document_budget` (the kept instances no plan counts
 //! are bounded too: the crossing stack and every later stack that has NO counted instances). Each bound cuts only
-//! its own category (R10): a stack with counted instances is never refused for the unrendered bound (past it the
+//! its own category (R10, PLR-063): a stack with counted instances is never refused for the unrendered bound (past it the
 //! stack keeps its counted instances and loses its switched-off ones, `effects_unrendered_dropped_over_document_budget`),
+//! nor for Folio's per-stack ceiling (same record, `effects_unrendered_dropped_over_stack_ceiling`, test
+//! `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`),
 //! and a stack without counted instances is never refused for the counted bound. Folio's
 //! record-validation node budget (records + kept instances, `validate_raster_records`) is sized from the input
 //! inside those bounds. All inputs are synthetic byte fixtures built here, independently of the crate's encoder.
@@ -30,6 +32,7 @@ const OVER_LAYER: &str = "effects_over_budget";
 const OVER_DOCUMENT: &str = "effects_over_document_budget";
 const OVER_UNRENDERED: &str = "effects_unrendered_over_document_budget";
 const DROPPED_UNRENDERED: &str = "effects_unrendered_dropped_over_document_budget";
+const DROPPED_STACK: &str = "effects_unrendered_dropped_over_stack_ceiling";
 
 /// Host identity minting; `stacks` counts the `SEFX` ids it was asked for.
 struct Mint {
@@ -397,6 +400,10 @@ enum Fate {
     /// the single typed loss entry (kind `Transformed`, `effects_unrendered_dropped_over_document_budget`) names the
     /// layer.
     CountedOnly(usize),
+    /// Mapped to a record with this many instances, all of them enabled: its counted and switched-off instances did not
+    /// fit Folio's per-stack ceiling together and the single typed loss entry (kind `Transformed`,
+    /// `effects_unrendered_dropped_over_stack_ceiling`) names the layer.
+    CountedOnlyStack(usize),
     /// Not mapped; the single typed loss entry names the layer and has this code.
     Lost(&'static str),
 }
@@ -424,13 +431,16 @@ fn fate(p: &ImportProposal, name: &str) -> Fate {
             [] => Fate::Kept(stack.effects.len()),
             [entry] => {
                 assert_eq!(entry.kind, LossKind::Transformed, "{name}");
-                assert_eq!(entry.code, DROPPED_UNRENDERED, "{name}");
                 assert!(entry.path.starts_with("layer["), "{name}: {}", entry.path);
                 assert!(
                     stack.effects.iter().all(|effect| effect.enabled),
                     "{name}: only the counted instances are recorded"
                 );
-                Fate::CountedOnly(stack.effects.len())
+                match entry.code {
+                    DROPPED_UNRENDERED => Fate::CountedOnly(stack.effects.len()),
+                    DROPPED_STACK => Fate::CountedOnlyStack(stack.effects.len()),
+                    other => panic!("{name}: unexpected Transformed code {other}"),
+                }
             }
             _ => panic!("{name}: at most one budget loss entry is expected, got {entries:?}"),
         },
@@ -803,9 +813,11 @@ fn the_per_layer_limit_counts_live_instances_of_visible_layers() {
     );
 }
 
-/// Folio refuses a stack of more than `MAX_EFFECTS` (1024) instances, whether or not any is live: that would be
-/// a rejected import (`raster_records_rejected`). The importer does not map such a stack, whatever its switches,
-/// and reports the layer; a stack of exactly 1024 switched-off instances is kept.
+/// Folio refuses a stack of more than `MAX_EFFECTS` (1024) instances: that would be a rejected import
+/// (`raster_records_rejected`). The importer does not map a stack with NO counted instances past it (switched-off
+/// instances only, a hidden layer, a master-off stack) and reports the layer; a stack of exactly 1024 switched-off
+/// instances is kept. A stack WITH counted instances is not lost to the ceiling, see
+/// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`.
 #[test]
 fn a_stack_past_folios_ceiling_is_a_typed_loss_not_a_rejected_import() {
     bounded_case(
@@ -833,6 +845,170 @@ fn a_stack_past_folios_ceiling_is_a_typed_loss_not_a_rejected_import() {
                 &Host,
             )
             .expect("what was kept validates under the caller's own budget");
+        },
+    );
+}
+
+/// PLR-063: Folio's 1024 instances per record hold the counted and the switched-off instances of a stack together, and
+/// the counted category is bounded far below it (64 per layer), so the ceiling can only ever cut the switched-off
+/// category. A stack with counted instances keeps ALL of them and drops its switched-off ones when the two do not fit
+/// together (`Transformed` `effects_unrendered_dropped_over_stack_ceiling`, the same record as the unrendered bound
+/// produces); a stack with NO counted instances (switched-off instances only, a hidden layer, a master-off stack) is
+/// all switched-off instances and is not mapped past the ceiling (`effects_over_budget`). The reported shape is one
+/// live instance and 1024 switched-off ones (1025 in all): before the fix the whole visible stack was lost. The
+/// switched-off instances dropped for the ceiling were never kept, so they cost the document's bound on the
+/// instances no plan counts nothing: five such stacks (5 x 1024 dropped) leave the whole 4096 to hidden stacks.
+#[test]
+fn folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances() {
+    bounded_case(
+        "folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances",
+        || {
+            let room = MAX_EFFECTS - MAX_EFFECTS_PER_LAYER;
+            let panel = layers_of([
+                Fx::mixed(1, MAX_EFFECTS),
+                Fx::mixed(1, MAX_EFFECTS - 1),
+                Fx::mixed(MAX_EFFECTS_PER_LAYER, room),
+                Fx::mixed(MAX_EFFECTS_PER_LAYER, room + 1),
+                Fx::mixed(1, MAX_EFFECTS + 100),
+                Fx::disabled(MAX_EFFECTS + 1),
+                Fx::mixed(1, MAX_EFFECTS).hidden(),
+                Fx::mixed(1, MAX_EFFECTS).master_off(),
+            ]);
+            let bytes = build(&panel);
+            let (doc, p, minted) = import_counting(&bytes).expect("imports");
+            assert_fates(
+                &p,
+                &[
+                    // 1 live + 1024 off: the reported shape, 1025 in all
+                    (0, Fate::CountedOnlyStack(1)),
+                    // 1 live + 1023 off: exactly 1024, whole
+                    (1, Fate::Kept(MAX_EFFECTS)),
+                    // 64 live + 960 off: exactly 1024, whole
+                    (2, Fate::Kept(MAX_EFFECTS)),
+                    // 64 live + 961 off: one past
+                    (3, Fate::CountedOnlyStack(MAX_EFFECTS_PER_LAYER)),
+                    // far past
+                    (4, Fate::CountedOnlyStack(1)),
+                    // no counted instance: switched-off instances only, hidden, master-off
+                    (5, Fate::Lost(OVER_LAYER)),
+                    (6, Fate::Lost(OVER_LAYER)),
+                    (7, Fate::Lost(OVER_LAYER)),
+                ],
+            );
+            assert_eq!(kept_stacks(&p), 5);
+            assert_eq!(minted, 5, "a refused stack consumes no SEFX id");
+            assert_eq!(
+                kept_total(&p),
+                1 + 2 * MAX_EFFECTS + MAX_EFFECTS_PER_LAYER + 1
+            );
+            assert_eq!(
+                write_psd(&doc, &Limits::default()).unwrap(),
+                bytes,
+                "nothing is dropped from the file: the dropped instances are still in the lfx2 blocks"
+            );
+            assert_record_need_is_exact(&p);
+
+            // the dropped instances cost the bound on the instances no plan counts nothing
+            let mut panel = layers_of(repeated(5, Fx::mixed(1, MAX_EFFECTS)));
+            panel.extend(layers_of(repeated(
+                MAX_EFFECTS_PLAN_LAYERS,
+                Fx::live(MAX_EFFECTS_PER_LAYER).hidden(),
+            )));
+            panel.extend(layers_of([Fx::live(1).hidden()]));
+            let (_, p) = import(&build(&panel)).expect("imports");
+            let mut want: Vec<(usize, Fate)> =
+                (0..5).map(|n| (n, Fate::CountedOnlyStack(1))).collect();
+            want.extend(
+                (5..5 + MAX_EFFECTS_PLAN_LAYERS).map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER))),
+            );
+            want.push((5 + MAX_EFFECTS_PLAN_LAYERS, Fate::Lost(OVER_UNRENDERED)));
+            assert_fates(&p, &want);
+            assert_eq!(kept_total(&p), 5 + MAX_EFFECTS_PER_PLAN);
+            assert_record_need_is_exact(&p);
+        },
+    );
+}
+
+/// The ceiling cuts the switched-off category wherever the counted instances sit in the stack: the stack is scanned to
+/// its end after the switched-off instances stop fitting, so a counted instance that comes after more than 1024
+/// switched-off ones is kept, and every kept instance keeps its source ordinal (its position in the descriptor's
+/// stack, dropped instances included).
+#[test]
+fn a_counted_instance_after_more_switched_off_ones_than_the_ceiling_is_still_kept() {
+    bounded_case(
+        "a_counted_instance_after_more_switched_off_ones_than_the_ceiling_is_still_kept",
+        || {
+            let mut interleaved = vec![true];
+            interleaved.extend(vec![false; MAX_EFFECTS + 76]);
+            interleaved.push(true);
+            interleaved.extend(vec![false; 10]);
+            interleaved.push(true);
+            let mut trailing = vec![false; MAX_EFFECTS + 5];
+            trailing.extend([true, true]);
+            let fx = |enabled: &Vec<bool>| Fx {
+                enabled: enabled.clone(),
+                master: true,
+                hidden: false,
+                clipped: false,
+            };
+            let ordinals = |enabled: &Vec<bool>| -> Vec<usize> {
+                enabled
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, on)| **on)
+                    .map(|(n, _)| n)
+                    .collect()
+            };
+            let panel = layers_of([fx(&interleaved), fx(&trailing)]);
+            let bytes = build(&panel);
+            let (doc, p, minted) = import_counting(&bytes).expect("imports");
+            assert_fates(
+                &p,
+                &[(0, Fate::CountedOnlyStack(3)), (1, Fate::CountedOnlyStack(2))],
+            );
+            assert_eq!(ordinals(&interleaved), vec![0, MAX_EFFECTS + 77, MAX_EFFECTS + 88]);
+            assert_eq!(kept_ordinals(&p, "L0"), ordinals(&interleaved));
+            assert_eq!(ordinals(&trailing), vec![MAX_EFFECTS + 5, MAX_EFFECTS + 6]);
+            assert_eq!(kept_ordinals(&p, "L1"), ordinals(&trailing));
+            assert_eq!(minted, 2);
+            assert_eq!(write_psd(&doc, &Limits::default()).unwrap(), bytes);
+        },
+    );
+}
+
+/// PLR-063: the counted (live) bound still cuts what it bounds. A visible stack with more than 64 live instances is
+/// not mapped (`effects_over_budget`) whatever its switched-off instances are and however many (1025 live, 1024
+/// live, 65 live next to 1024 switched-off ones); 64 live instances next to 1024 switched-off ones are within the
+/// live bound and keep the 64. A hidden stack of 1025 enabled instances has none counted, and the ceiling cuts it
+/// whole. A refused stack consumes no `SEFX` id and its `lfx2` block stays in the file.
+#[test]
+fn the_live_bound_still_cuts_a_stack_whatever_its_switched_off_instances() {
+    bounded_case(
+        "the_live_bound_still_cuts_a_stack_whatever_its_switched_off_instances",
+        || {
+            let panel = layers_of([
+                Fx::live(MAX_EFFECTS + 1),
+                Fx::live(MAX_EFFECTS),
+                Fx::mixed(MAX_EFFECTS_PER_LAYER + 1, MAX_EFFECTS),
+                Fx::mixed(MAX_EFFECTS_PER_LAYER, MAX_EFFECTS),
+                Fx::live(MAX_EFFECTS + 1).hidden(),
+            ]);
+            let bytes = build(&panel);
+            let (doc, p, minted) = import_counting(&bytes).expect("imports");
+            assert_fates(
+                &p,
+                &[
+                    (0, Fate::Lost(OVER_LAYER)),
+                    (1, Fate::Lost(OVER_LAYER)),
+                    (2, Fate::Lost(OVER_LAYER)),
+                    (3, Fate::CountedOnlyStack(MAX_EFFECTS_PER_LAYER)),
+                    (4, Fate::Lost(OVER_LAYER)),
+                ],
+            );
+            assert_eq!(minted, 1, "a refused stack consumes no SEFX id");
+            assert_eq!(kept_total(&p), MAX_EFFECTS_PER_LAYER);
+            assert_eq!(write_psd(&doc, &Limits::default()).unwrap(), bytes);
+            assert_record_need_is_exact(&p);
         },
     );
 }
@@ -1243,6 +1419,41 @@ fn descriptor_states_the_importers_over_counts() {
     ] {
         assert!(effect_limits.contains(needle), "effect_limits does not state {needle}");
     }
+    assert!(
+        include_str!("effects_budget.rs").contains(&format!("fn {cited}()")),
+        "the cited test does not exist"
+    );
+}
+
+/// PLR-063 (V4-07): the shipped DESCRIPTOR (`effect_limits` and the capabilities) states how Folio's per-stack ceiling
+/// is counted (the two categories together, cutting only the switched-off one), names the loss code the importer
+/// reports for it, and cites the test that pins it; the test it cites exists in this file.
+#[test]
+fn descriptor_states_the_folio_ceiling_rule() {
+    let effect_limits = DESCRIPTOR
+        .split("\"effect_limits\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the DESCRIPTOR has an effect_limits entry");
+    let cited =
+        "folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances";
+    for needle in [
+        "with_no_counted_instances_and_over_folios_per_stack_ceiling_of_1024_is_not_mapped_loss_effects_over_budget",
+        "folios_per_stack_ceiling_of_1024_holds_counted_and_switched_off_instances_together_and_cuts_only_the_switched_off_ones",
+        "a_stack_with_counted_instances_keeps_all_of_them_and_drops_its_switched_off_ones",
+        "loss_transformed_effects_unrendered_dropped_over_stack_ceiling",
+        "each_bound_cuts_only_its_own_category",
+        cited,
+    ] {
+        assert!(
+            effect_limits.contains(needle),
+            "effect_limits does not state {needle}"
+        );
+    }
+    assert!(
+        DESCRIPTOR.contains(DROPPED_STACK),
+        "the capabilities name the loss code the importer reports"
+    );
     assert!(
         include_str!("effects_budget.rs").contains(&format!("fn {cited}()")),
         "the cited test does not exist"

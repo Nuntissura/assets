@@ -129,7 +129,9 @@ pub struct ProposalConfig<'a> {
     /// with the default limits) and a smaller `nodes` is raised to it for that one validation. Effect stacks beyond
     /// those bounds are typed losses, never an error; each bound cuts only its own category (the bound on the
     /// instances no plan counts never costs a stack its counted instances: a stack that has some keeps them and
-    /// loses only its switched-off ones). Tests
+    /// loses only its switched-off ones; Folio's own 1024 instances per stack count the two categories together and
+    /// cut only the switched-off one the same way). Tests
+    /// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`,
     /// `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`,
     /// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on`,
     /// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`,
@@ -516,8 +518,15 @@ impl Builder<'_, '_, '_> {
     /// every later stack that has NO counted instances). Each bound cuts only its own category: a stack that has
     /// counted instances is never refused for the uncounted bound; past it the stack is mapped with its counted
     /// instances and without its switched-off ones, and the layer reports
-    /// `effects_unrendered_dropped_over_document_budget` (kind `Transformed`). The import itself never fails on an
-    /// effect count. Tests `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on`,
+    /// `effects_unrendered_dropped_over_document_budget` (kind `Transformed`). Folio's own per-stack ceiling
+    /// (`MAX_EFFECTS`, 1024 instances in one record) is no exception: it holds the counted and the switched-off
+    /// instances together, so it cuts only the switched-off ones. A stack with counted instances keeps all of them and
+    /// drops its switched-off ones when they do not fit next to them (`effects_unrendered_dropped_over_stack_ceiling`,
+    /// kind `Transformed`, and nothing is charged to the uncounted bound for the dropped ones); a stack with NO counted
+    /// instances is all switched-off instances and is not mapped past the ceiling (`effects_over_budget`). The import
+    /// itself never fails on an effect count. Tests
+    /// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`,
+    /// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on`,
     /// `instances_no_plan_counts_are_bounded_too_so_the_kept_total_and_the_record_validation_stay_bounded`,
     /// `the_unrendered_bound_never_costs_a_stack_with_counted_instances_its_rendered_effects` and
     /// `the_counted_bound_never_costs_a_stack_without_counted_instances_its_record`.
@@ -572,10 +581,14 @@ impl Builder<'_, '_, '_> {
                 Some(Ok((m, fit))) => {
                     self.effect_tally.charge(effects::StackShape::of(m.value.enabled, &m.value.effects, visible), fit);
                     self.notes(&path, m.notes);
-                    if fit == effects::Fit::CountedOnly {
-                        // The stack is mapped with its counted instances; its switched-off ones are not recorded.
-                        let dropped = effects::EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET;
-                        self.note(format!("{path}(layer_id={layer_id})"), LossKind::Transformed, dropped);
+                    // The stack is mapped with its counted instances; its switched-off ones are not recorded.
+                    let dropped = match fit {
+                        effects::Fit::Whole => None,
+                        effects::Fit::CountedOnly => Some(effects::EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET),
+                        effects::Fit::CountedOnlyOverStack => Some(effects::EFFECTS_UNRENDERED_DROPPED_OVER_STACK_CEILING),
+                    };
+                    if let Some(code) = dropped {
+                        self.note(format!("{path}(layer_id={layer_id})"), LossKind::Transformed, code);
                     }
                     self.note(path, LossKind::Preserved, "effects_mapped_to_record_not_rendered");
                     record.effects = Some(m.value);

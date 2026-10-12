@@ -55,15 +55,24 @@ use crate::adjust::{Mapped, Note, Reason};
 // layer alone (a layer the plan never renders), which an ordinary document does not have. Test
 // `the_importer_counts_layers_without_pixels_and_clipped_layers_on_hidden_or_empty_bases` (every fixture of
 // `tests/effects_budget.rs` is a layer without pixels, so all of them count under (a)).
-// Each bound cuts only what it bounds (R10): the counted bounds decide the fate of counted instances, the
+// Each bound cuts only what it bounds (R10, PLR-063): the counted bounds decide the fate of counted instances, the
 // uncounted bound decides the fate of uncounted instances, and passing one never costs a stack the other category.
+// Folio's own per-stack ceiling (`MAX_EFFECTS`, 1024) holds the counted and the switched-off instances of one record
+// together, but the counted ones are already bounded far below it (`MAX_EFFECTS_PER_LAYER`), so what it can cut is
+// the switched-off category: a stack with counted instances keeps all of them and drops its switched-off ones when
+// the two do not fit the ceiling together (`Fit::CountedOnlyOverStack`, typed loss
+// `effects_unrendered_dropped_over_stack_ceiling`); a stack with NO counted instances is all switched-off instances
+// and is not mapped past the ceiling (`effects_over_budget`). The switched-off instances dropped for the ceiling are
+// not kept, so they are not charged to the document's uncounted bound either.
 // A stack that does not fit is not mapped (its `lfx2` block stays byte-exact in the document) and is reported as a
 // typed loss; the layer and the rest of the document import. The one exception is the switched-off part of a stack
-// that has counted instances: past the uncounted bound it is dropped from the record (the stack keeps every counted
-// instance) with a typed loss. Tests `tests/effects_budget.rs`.
+// that has counted instances: past the uncounted bound, or past Folio's ceiling next to its counted instances, it is
+// dropped from the record (the stack keeps every counted instance) with a typed loss. Tests `tests/effects_budget.rs`.
 
-/// Loss code of a stack whose layer has more counted instances than [`MAX_EFFECTS_PER_LAYER`], or more mapped
-/// instances than Folio's own per-stack ceiling (`MAX_EFFECTS`, which is above pigment's).
+/// Loss code of a stack whose layer has more counted instances than [`MAX_EFFECTS_PER_LAYER`], and of a stack with NO
+/// counted instances that holds more instances than Folio's own per-stack ceiling (`MAX_EFFECTS`, above pigment's).
+/// Folio's ceiling never produces it for a stack that has counted instances
+/// ([`EFFECTS_UNRENDERED_DROPPED_OVER_STACK_CEILING`]).
 pub(crate) const EFFECTS_OVER_BUDGET: Reason = "effects_over_budget";
 /// Loss code of a stack that would take the counted instances of the document past [`MAX_EFFECTS_PER_PLAN`], and of
 /// every later stack that has counted instances (the cut is a prefix of the import order, see [`EffectTally`]).
@@ -78,6 +87,10 @@ pub(crate) const EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET: Reason = "effects_unre
 /// its switched-off ones.
 pub(crate) const EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET: Reason =
     "effects_unrendered_dropped_over_document_budget";
+/// Loss code (kind `Transformed`, the stack IS mapped) of a stack with counted instances whose counted and
+/// switched-off instances together exceed Folio's per-stack ceiling (`MAX_EFFECTS`): the record keeps its counted
+/// instances and none of its switched-off ones (PLR-063).
+pub(crate) const EFFECTS_UNRENDERED_DROPPED_OVER_STACK_CEILING: Reason = "effects_unrendered_dropped_over_stack_ceiling";
 /// Kept effect instances no render plan counts (hidden layer or group, switched-off stack, switched-off instance)
 /// that one document may hold. This bound is the crate's, not pigment's; it is the size of pigment's own plan limit
 /// so that the memory and the record-validation work of the instances nobody renders stay as bounded as those that
@@ -103,10 +116,16 @@ pub(crate) struct StackShape {
 impl StackShape {
     /// `enabled` is the stack's master switch, `visible` is the layer's own visibility and that of all its groups.
     pub(crate) fn of(enabled: bool, effects: &[StudioEffect], visible: bool) -> Self {
-        let live = if enabled { effects.iter().filter(|e| e.enabled).count() } else { 0 };
-        let counted = if visible { live } else { 0 };
+        let counted = effects.iter().filter(|e| counts(enabled, visible, e.enabled)).count();
         Self { counted, uncounted: effects.len().saturating_sub(counted) }
     }
+}
+
+/// Whether an instance is a COUNTED one: a plan counts it. `stack_enabled` is the stack's master switch, `visible` the
+/// layer's own visibility and that of all its groups, `instance_enabled` the instance's own switch. The one place the
+/// category of an instance is decided, so the shape of a stack and the Folio ceiling in `map_stack` cannot disagree.
+fn counts(stack_enabled: bool, visible: bool, instance_enabled: bool) -> bool {
+    stack_enabled && visible && instance_enabled
 }
 
 /// How much of a stack the tally keeps.
@@ -116,6 +135,10 @@ pub(crate) enum Fit {
     Whole,
     /// Its counted instances only: it has counted instances and its switched-off ones do not fit the uncounted bound.
     CountedOnly,
+    /// Its counted instances only: it has counted instances and its counted and switched-off instances together exceed
+    /// Folio's per-stack ceiling. The dropped instances were never kept, so nothing is charged to the uncounted bound
+    /// for them and this does not close it.
+    CountedOnlyOverStack,
 }
 
 /// The running effect totals of one import, in import order (panel order, top-most first, a group before its
@@ -494,13 +517,18 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
 }
 
 /// Maps the effects block of `layer`. `None` when it has no `lfx2` / `lmfx` block; `Err` when the
-/// descriptor cannot be read or the stack does not fit: more mapped instances than Folio's per-stack ceiling, more
-/// counted instances than [`MAX_EFFECTS_PER_LAYER`] ([`EFFECTS_OVER_BUDGET`]), or past a document total of `tally`
+/// descriptor cannot be read or the stack does not fit: more counted instances than [`MAX_EFFECTS_PER_LAYER`], or a
+/// stack with NO counted instances that holds more instances than Folio's per-stack ceiling
+/// ([`EFFECTS_OVER_BUDGET`]), or past a document total of `tally`
 /// ([`EFFECTS_OVER_DOCUMENT_BUDGET`] for a stack with counted instances, [`EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET`]
 /// for one without). A stack with counted instances whose switched-off instances do not fit the uncounted bound is
-/// `Ok` with [`Fit::CountedOnly`]: the stack holds its counted instances only. `visible` is the layer's own
-/// visibility and that of all its groups (see the rule at the top of this file). `stack_id` mints the `SEFX`
-/// identity and is only called once the descriptor parsed and the stack fits, so a refused stack consumes no id.
+/// `Ok` with [`Fit::CountedOnly`]: the stack holds its counted instances only; one whose counted and switched-off
+/// instances together exceed Folio's per-stack ceiling is `Ok` with [`Fit::CountedOnlyOverStack`], the same record.
+/// Folio's ceiling therefore cuts only the switched-off category (test
+/// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`). `visible` is
+/// the layer's own visibility and that of all its groups (see the rule at the top of this file). `stack_id` mints
+/// the `SEFX` identity and is only called once the descriptor parsed and the stack fits, so a refused stack consumes
+/// no id.
 pub(crate) fn effect_stack(
     layer: &PsdLayer,
     visible: bool,
@@ -528,6 +556,14 @@ fn map_stack(
         Some(_) => return Err("effect_scale_invalid"),
     };
     let mut effects: Vec<StudioEffect> = Vec::new();
+    // Folio's per-stack ceiling holds the counted and the switched-off instances of the record together, and the
+    // category of an instance is known as it is mapped (`counts`). The loop therefore holds at most
+    // `MAX_EFFECTS_PER_LAYER` counted instances (the stack is refused at the one that crosses it) and at most
+    // `MAX_EFFECTS` switched-off ones (the rest are mapped for their notes and ordinal but not kept), so the stack
+    // stays bounded by the loop alone and the counted category is never cut by the ceiling.
+    let mut mapped = 0usize; // instances mapped so far, kept or not: the ordinal of the next one
+    let mut counted = 0usize;
+    let mut off_dropped = false;
     let (mut singles, mut multis) = ([false; 10], [false; 10]);
     for (key, value) in &root.items {
         let Some((slot, multi)) = slot_of(key) else {
@@ -554,16 +590,30 @@ fn map_stack(
             }
         };
         for object in objects {
-            match map_effect(slot, object, effects.len(), &mut notes) {
+            match map_effect(slot, object, mapped, &mut notes) {
                 Ok(effect) => {
-                    // The instance that would be one past Folio's per-stack ceiling refuses the whole stack,
-                    // before any more of the descriptor is mapped (test `a_stack_past_folios_ceiling_...`).
-                    // `MAX_EFFECTS_PER_LAYER` counts only the live instances of a visible layer and is judged
-                    // below, once the stack is known.
-                    if effects.len() >= MAX_EFFECTS {
+                    mapped = mapped.saturating_add(1);
+                    if counts(enabled, visible, effect.enabled) {
+                        // A counted instance is bounded by the per-layer limit alone (`admit` judges the same
+                        // number); it never meets Folio's ceiling first.
+                        counted = counted.saturating_add(1);
+                        if counted > MAX_EFFECTS_PER_LAYER {
+                            return Err(EFFECTS_OVER_BUDGET);
+                        }
+                        effects.push(effect);
+                    } else if effects.len().saturating_sub(counted) < MAX_EFFECTS {
+                        effects.push(effect);
+                    } else if enabled && visible {
+                        // One switched-off instance past the ceiling whatever the stack ends up holding: dropped.
+                        // The scan goes on, a counted instance may still follow (test
+                        // `a_counted_instance_after_more_switched_off_ones_than_the_ceiling_is_still_kept`).
+                        off_dropped = true;
+                    } else {
+                        // A stack with nothing a plan counts is all switched-off instances: past the ceiling it is
+                        // not mapped, before any more of the descriptor is mapped (test
+                        // `a_stack_past_folios_ceiling_is_a_typed_loss_not_a_rejected_import`).
                         return Err(EFFECTS_OVER_BUDGET);
                     }
-                    effects.push(effect);
                 }
                 Err(code) => notes.push((LossKind::Unsupported, code)),
             }
@@ -572,7 +622,23 @@ fn map_stack(
     if singles.iter().zip(&multis).any(|(single, multi)| *single && *multi) {
         notes.push((LossKind::Transformed, "effect_single_and_multi_slots_merged"));
     }
-    let fit = tally.admit(StackShape::of(enabled, &effects, visible))?;
+    // Folio's per-stack ceiling: the counted and the kept switched-off instances of one record together (the loop
+    // above keeps at most `MAX_EFFECTS` switched-off ones and notes that it dropped more). It can only cut the
+    // switched-off category: a stack with counted instances keeps all of them, a stack with none is all switched-off
+    // instances and is not mapped (PLR-063).
+    let over_stack = off_dropped || effects.len() > MAX_EFFECTS;
+    if over_stack {
+        if counted == 0 {
+            return Err(EFFECTS_OVER_BUDGET);
+        }
+        // `enabled` and `visible` hold (a stack that cannot count never gets here), so the counted instances are
+        // exactly the enabled ones, in their stack order. The instances that are switched off are not recorded.
+        effects.retain(|effect| effect.enabled);
+    }
+    let fit = match tally.admit(StackShape::of(enabled, &effects, visible))? {
+        Fit::Whole if over_stack => Fit::CountedOnlyOverStack,
+        fit => fit,
+    };
     if fit == Fit::CountedOnly {
         // Only a stack with counted instances gets here: `enabled` and `visible`, so the live instances are exactly
         // the enabled ones, in their stack order. The instances that are switched off are not recorded.
