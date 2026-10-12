@@ -1398,6 +1398,7 @@ fn painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhe
             "BDC /OC closed by EMC in the next stream, no stream listed twice",
             doc(&list(&[70, 71, 72]), false, &[s(70, "/OC /MC0 BDC"), s(71, &format!("EMC {draw}")), s(72, bad)], "", Vec::new()),
         ),
+        // PLR-083, R18 validator V-2: form 80 leaves BDC /OC open and this control expects the page's later Do silent (a nested form starts a fresh marked-content stack, flatten_purge.rs read_scope); pdf.js closes marked content left open when the form stream ends, other viewers UNVERIFIED.
         (
             "a form the page draws is a stream of its own, not a content stream",
             doc(&list(&[70, 71, 72, 73]), false, &[s(70, "/Fx Do"), s(71, "/OC /MC0 BDC EMC"), s(72, draw), s(73, bad)], "/Fx 80 0 R", vec![(80, form("/OC /MC0 BDC"))]),
@@ -1521,6 +1522,54 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "every other source that stays",
     ] {
         assert!(!hsk_studio_press::DESCRIPTOR.contains(stale), "DESCRIPTOR still says {stale:?}");
+    }
+}
+
+/// PLR-084 (lead decision 2026-10-12T05:10:24Z; D27 "narrow": no visibility analysis is added): the silence of the minimal
+/// draw set is syntactic. Page two draws the region image (object 10) directly with `Do` in its own content, and the draw
+/// cannot be seen: a zero-scale `cm`, an empty clip, an alpha of 0 set by `gs`, a later object painted over it. The image
+/// stays and nothing is reported in each case (the residual the DESCRIPTOR states). Control: the same invisible draw
+/// inside `BDC /OC` marked content is reported, so the harness tells a silent draw from a reported one.
+#[test]
+fn silent_painted_source_visibility_is_not_checked() {
+    let text = "BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
+    let own = "/Resources << /Font << /F1 6 0 R >> /XObject << /Im1 10 0 R >> /ExtGState << /G0 50 0 R >> >>";
+    let doc = |content: &str| painted_doc_with("inherited", &format!("{content} {text}"), "", own, vec![(50, b"<< /Type /ExtGState /ca 0 /CA 0 >>".to_vec())]);
+    let mut red: Vec<String> = Vec::new();
+    for (what, draw) in [
+        ("a zero-scale cm", "q 0 0 0 0 0 0 cm /Im1 Do Q"),
+        ("an empty clip", "q 0 0 0 0 re W n /Im1 Do Q"),
+        ("an alpha of 0 set by gs", "q /G0 gs 10 0 0 10 400 100 cm /Im1 Do Q"),
+        ("a later object painted over it", "q 10 0 0 10 400 100 cm /Im1 Do Q 1 g 390 90 30 30 re f"),
+    ] {
+        silent_drawn_image(what, &doc(draw), &mut red);
+    }
+    reported_kept_image_too("control: the zero-scale draw inside BDC /OC", &doc("/OC << /Type /OCG >> BDC q 0 0 0 0 0 0 cm /Im1 Do Q EMC"), &mut red);
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-084 (V4-07): the DESCRIPTOR states the residual of the minimal draw set (silence is syntactic, the visibility of the
+/// direct draw is not checked) where it defines silence (`redaction.flatten.painted_over`, `redaction.flatten.purge`) and in
+/// the list of limitations, cites the test that shows it, and the sentence holds none of the words V4-07 reserves for claims
+/// with a proof (never, always, guarantees, proves).
+#[test]
+fn descriptor_states_that_painted_source_silence_is_syntactic() {
+    let residual = "silence is syntactic: it means a kept page's own content stream draws the image directly with Do, and the visibility of that draw (a zero-scale cm, an empty clip, an alpha of 0, a later object painted over it) is not checked, so a silent source can be invisible or covered on the kept page (PLR-084, test silent_painted_source_visibility_is_not_checked)";
+    let descriptor = hsk_studio_press::DESCRIPTOR;
+    assert_eq!(descriptor.matches(residual).count(), 3, "the residual is stated once in each of three keys");
+    for (key, from, to) in [
+        ("redaction.flatten.painted_over", "\"painted_over\":", "\"renderer_differential\":"),
+        ("redaction.flatten.purge", "\"purge\":", "\"removes\":"),
+        ("proof.limitations", "\"limitations\":", "\"scope\":"),
+    ] {
+        let start = descriptor.find(from).unwrap_or_else(|| panic!("DESCRIPTOR lacks the key {key}"));
+        let end = start + descriptor[start..].find(to).unwrap_or_else(|| panic!("DESCRIPTOR has no key after {key}"));
+        assert!(descriptor[start..end].contains(residual), "{key} does not state the residual");
+    }
+    let cited = "silent_painted_source_visibility_is_not_checked";
+    assert!(include_str!("flatten_r13.rs").contains(&format!("fn {cited}()")), "the cited test {cited} does not exist");
+    for word in ["never", "always", "guarantee", "proves"] {
+        assert!(!residual.contains(word), "the residual sentence says {word:?}");
     }
 }
 

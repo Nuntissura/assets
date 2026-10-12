@@ -215,7 +215,10 @@ pub enum NotProven {
     /// `painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported`,
     /// `painted_sources_rendered_with_a_drawn_image_are_reported`,
     /// `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`,
-    /// `a_font_or_graphics_state_that_stays_is_not_a_painted_source`).
+    /// `a_font_or_graphics_state_that_stays_is_not_a_painted_source`). Residual (PLR-084): the silence of an image
+    /// that is not reported is syntactic: a kept page's own content stream draws it directly with `Do`, and the
+    /// visibility of that draw (a zero-scale `cm`, an empty clip, an alpha of 0, a later object painted over it) is not
+    /// checked (test `silent_painted_source_visibility_is_not_checked`).
     PaintedSourceKept,
 }
 
@@ -1360,7 +1363,10 @@ pub struct RedactedOutput {
     /// `painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported`,
     /// `painted_sources_rendered_with_a_drawn_image_are_reported`,
     /// `painted_source_is_reported_when_a_content_stream_of_the_page_is_named_elsewhere`,
-    /// `a_font_or_graphics_state_that_stays_is_not_a_painted_source`).
+    /// `a_font_or_graphics_state_that_stays_is_not_a_painted_source`). Residual (PLR-084): an image that is not listed is
+    /// silent by syntax only: a kept page's own content stream draws it directly with `Do`, and the visibility of that
+    /// draw (a zero-scale `cm`, an empty clip, an alpha of 0, a later object painted over it) is not checked (test
+    /// `silent_painted_source_visibility_is_not_checked`).
     pub painted_sources_kept: Vec<u32>,
     /// `(region page index, class)`: text drawn on a region's page in the SAVED file whose glyph
     /// geometry the selector does not compute (Type 3, vertical, unresolved writing mode, unresolved
@@ -1520,7 +1526,8 @@ pub fn redact_and_save_with(
         // CANONICAL REWRITE (lead decision 2026-10-11T15:00:20Z): every other content stream of the
         // document is re-serialised from this crate's parse before the save (canon.rs).
         canonicalize(&mut doc.objects, &doc.trailer, &doc.limits, cancel)?;
-        // R13-F6: the old pages' images, forms, patterns and shadings that no kept content draws.
+        // R13-F6: the old pages' images, forms, patterns and shadings that no kept content names and no kept object
+        // references are dropped; a painted source that stays and is not drawn directly by a kept page is returned (reported).
         let painted_sources_kept = drop_painted_sources(doc, &flats, cancel)?;
         let flattened: Vec<FlattenedPage> = flats.into_iter().map(|f| f.page).collect();
         let bytes = doc.save_full(cancel)?;

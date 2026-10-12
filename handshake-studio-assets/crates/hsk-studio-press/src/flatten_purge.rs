@@ -88,6 +88,11 @@
 //! or one named through an object of another kind. Tests `painted_sources_under_a_region_do_not_survive`,
 //! `painted_source_drawn_directly_by_a_kept_page_is_not_reported`, `painted_source_under_optional_content_is_reported`,
 //! `painted_source_shadowed_by_a_nearer_resource_entry_is_reported`, and the tests listed above.
+//!
+//! Residual (PLR-084, lead decision 2026-10-12T05:10:24Z; D27 "narrow": no visibility analysis is added): silence is
+//! syntactic. It means a kept page's own content stream draws the image directly with `Do`; the visibility of that draw
+//! (a zero-scale `cm`, an empty clip, an alpha of 0, a later object painted over it) is not checked, so a silent source
+//! can be invisible or covered on the kept page. Test `silent_painted_source_visibility_is_not_checked`.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::content::parse_strict;
 use crate::error::{Limits, PressError, Result};
@@ -838,7 +843,7 @@ impl<'a> Usage<'a> {
     }
 }
 
-/// Drops the flattened pages' sources no kept content names (module docs). Returns the painted sources
+/// Drops the flattened pages' sources that no kept content names and no kept object references (module docs). Returns the painted sources
 /// (images, forms, patterns, shadings; fonts and graphics states are not painted sources) that stay in the file without
 /// being silent (module docs, Silent: an image the own content of a kept page draws with `Do` directly, the page's
 /// content streams being named by one reference each): some usage is not determined, a kept object only references

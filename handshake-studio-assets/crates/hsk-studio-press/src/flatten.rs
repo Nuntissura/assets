@@ -14,9 +14,18 @@
 //! `/Pages` node on a flattened page's `/Parent` chain keeps only `/Type /Kids /Count /Parent`; the
 //! inheritable attributes it held (`/Resources`, `/MediaBox`, `/CropBox`, `/Rotate`) are first written
 //! explicitly on every OTHER page that inherited them, and every other key it held (`/Annots`, which
-//! only some viewers inherit, included) is dropped. What the old page reached and nothing else draws is
-//! then dropped from the file (`flatten_purge.rs`: its annotations and widgets, the structure elements
-//! that describe it, the images, forms, patterns and shadings no kept content draws).
+//! only some viewers inherit, included) is dropped. What the old page reached and nothing kept still names
+//! or references is then dropped from the file (`flatten_purge.rs`: its annotations and widgets, the
+//! structure elements that describe it, the images, forms, patterns and shadings that no kept content names
+//! and no kept object references). A painted source that stays (a kept page draws it, or a kept object only
+//! references it) is not pruned and the kept reference is not edited. Only an image that a kept page's own
+//! content stream draws directly with `Do` stays silent; every other painted source that stays is reported
+//! (`RedactedOutput::painted_sources_kept`, `NotProven::PaintedSourceKept`, `region_flattened` false; tests
+//! `painted_source_drawn_directly_by_a_kept_page_is_not_reported`,
+//! `painted_source_referenced_by_a_kept_catalog_structure_is_reported`). Residual (PLR-084): that silence is
+//! syntactic. The visibility of the direct draw (a zero-scale `cm`, an empty clip, an alpha of 0, a later
+//! object painted over it) is not checked, so a silent source can be invisible or covered on the kept page
+//! (test `silent_painted_source_visibility_is_not_checked`).
 //!
 //! Clearing a region is true by construction: whatever any reader would draw there from the file's objects
 //! (content a document script creates at run time is out of scope: DESCRIPTOR `out_of_scope`), the raster holds the
