@@ -194,3 +194,145 @@ fn focus() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn provider_options_for_owned_hidden_roots() -> Result<()> {
+    use crate::{context::Context, node::PlatformNode};
+    use windows::Win32::UI::WindowsAndMessaging::*;
+
+    scope(|s| {
+        let hwnd = s.window.0;
+        let assert_quiet = || {
+            let mut pid = 0;
+            assert_ne!(unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) }, 0);
+            assert_eq!(pid, std::process::id());
+            assert!(!unsafe { IsWindowVisible(hwnd) }.as_bool());
+            let foreground = unsafe { GetForegroundWindow() };
+            assert_ne!(foreground, hwnd);
+            if !foreground.0.is_null() {
+                let mut foreground_pid = 0;
+                assert_ne!(
+                    unsafe { GetWindowThreadProcessId(foreground, Some(&mut foreground_pid)) },
+                    0
+                );
+                assert_ne!(foreground_pid, 0);
+                assert_ne!(foreground_pid, std::process::id());
+            }
+        };
+        let original_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+        assert_eq!(original_style & WS_EX_NOACTIVATE.0 as isize, 0);
+        let _restore_style = scopeguard::guard((), |_| {
+            let mut pid = 0;
+            if unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) } != 0
+                && pid == std::process::id()
+            {
+                unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, original_style) };
+            }
+        });
+        let set_style = |style| {
+            assert_quiet();
+            unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style) };
+            assert_eq!(unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) }, style);
+            assert_quiet();
+        };
+        let context = |window: WindowHandle, placeholder| {
+            let update = if placeholder {
+                TreeUpdate {
+                    nodes: vec![(WINDOW_ID, Node::new(Role::Window))],
+                    tree: Some(Tree::new(WINDOW_ID)),
+                    focus: WINDOW_ID,
+                }
+            } else {
+                get_initial_state()
+            };
+            Context::new(
+                window,
+                accesskit_consumer::Tree::new(update, false),
+                Arc::new(ActionHandlerWrapper::new(NullActionHandler)),
+                placeholder,
+            )
+        };
+        let options = |node: PlatformNode| -> Result<i32> {
+            let provider: IRawElementProviderSimple = node.into();
+            assert_quiet();
+            let result = unsafe { provider.ProviderOptions() };
+            assert_quiet();
+            result.map(|options| options.0)
+        };
+
+        set_style(original_style | WS_EX_NOACTIVATE.0 as isize);
+        let normal = context(s.window, false);
+        let placeholder = context(s.window, true);
+        for (case, node, expected) in [
+            ("root", PlatformNode::new(&normal, WINDOW_ID), 18),
+            ("child", PlatformNode::new(&normal, BUTTON_1_ID), 2),
+            (
+                "unspecified root",
+                PlatformNode::unspecified_root(&normal),
+                18,
+            ),
+            (
+                "placeholder root",
+                PlatformNode::new(&placeholder, WINDOW_ID),
+                18,
+            ),
+            (
+                "unspecified placeholder",
+                PlatformNode::unspecified_root(&placeholder),
+                18,
+            ),
+            ("missing node", PlatformNode::new(&normal, NodeId(99)), 2),
+        ] {
+            assert_eq!(options(node)?, expected, "{case}");
+        }
+
+        let expired = {
+            let context = context(s.window, false);
+            PlatformNode::new(&context, WINDOW_ID)
+        };
+        assert_eq!(options(expired)?, 2, "expired context");
+        let invalid = context(HWND::default().into(), false);
+        assert_eq!(
+            options(PlatformNode::new(&invalid, WINDOW_ID))?,
+            2,
+            "invalid HWND"
+        );
+
+        // Read PID only; never register, mutate, show, or act on the foreign HWND.
+        let foreign_hwnd = unsafe { GetDesktopWindow() };
+        let mut foreign_pid = 0;
+        assert_ne!(
+            unsafe { GetWindowThreadProcessId(foreign_hwnd, Some(&mut foreign_pid)) },
+            0
+        );
+        assert_ne!(foreign_pid, 0);
+        assert_ne!(foreign_pid, std::process::id());
+        let foreign = context(foreign_hwnd.into(), false);
+        assert_eq!(
+            options(PlatformNode::new(&foreign, WINDOW_ID))?,
+            2,
+            "foreign PID"
+        );
+
+        set_style(original_style);
+        for (case, node) in [
+            ("normal root", PlatformNode::new(&normal, WINDOW_ID)),
+            (
+                "normal unspecified root",
+                PlatformNode::unspecified_root(&normal),
+            ),
+            (
+                "normal placeholder",
+                PlatformNode::new(&placeholder, WINDOW_ID),
+            ),
+            (
+                "normal unspecified placeholder",
+                PlatformNode::unspecified_root(&placeholder),
+            ),
+        ] {
+            assert_eq!(options(node)?, 2, "{case}");
+        }
+        assert_quiet();
+        Ok(())
+    })
+}

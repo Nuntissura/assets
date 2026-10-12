@@ -36,4 +36,8 @@ original_files:
   src/window_handle.rs: dec1d78c81784a18c50f066e89d57d0fe02a7c9199a11e47a0833f8b9113d8c2
 patch_scope: ProviderOptions only for resolved root, actual owned HWND and WS_EX_NOACTIVATE; unchanged default and
   action forwarding
-proof_status: Original sources materialized; patch and focused/native runtime proof pending
+proof_status: Exact two-file provider policy and hidden-only test implemented; focused component/native runtime
+  proof pending
+patched_files:
+  src/node.rs: 21c14bd3e1e323726f08fac6b2a0dc6aa745ee57efe222aa719e10510825e0cd
+  src/tests/simple.rs: 3e623a87aec05d1316d14675d78c478994d955ae10d09ed381ade8bd5d231d00

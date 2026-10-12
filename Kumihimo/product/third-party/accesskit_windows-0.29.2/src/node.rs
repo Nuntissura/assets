@@ -679,7 +679,30 @@ impl PlatformNode {
 #[allow(non_snake_case)]
 impl IRawElementProviderSimple_Impl for PlatformNode_Impl {
     fn ProviderOptions(&self) -> Result<ProviderOptions> {
-        Ok(ProviderOptions_ServerSideProvider)
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, GetWindowThreadProcessId, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+        };
+
+        let base = ProviderOptions_ServerSideProvider;
+        Ok(self
+            .resolve_with_context(|node, context| {
+                if !node.is_root() {
+                    return Ok(base);
+                }
+                let hwnd = context.hwnd.0;
+                let mut pid = 0;
+                let thread = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+                if thread == 0 || pid != std::process::id() {
+                    return Ok(base);
+                }
+                let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+                Ok(if style & WS_EX_NOACTIVATE.0 as isize != 0 {
+                    base | ProviderOptions_ProviderOwnsSetFocus
+                } else {
+                    base
+                })
+            })
+            .unwrap_or(base))
     }
 
     fn GetPatternProvider(&self, pattern_id: UIA_PATTERN_ID) -> Result<IUnknown> {
