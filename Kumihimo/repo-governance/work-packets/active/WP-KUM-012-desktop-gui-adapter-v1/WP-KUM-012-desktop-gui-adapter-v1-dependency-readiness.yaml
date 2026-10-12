@@ -76,7 +76,7 @@ product_baseline:
   workspace:
     ref: product/Cargo.toml
     sha256: 848f50294cc6e626fc6f755d0a451e90951119b4428b10a43dcec4da953303d2
-    members: [kumihimo-core, kumihimo-layout-json, kumihimo-content]
+    members: [kumihimo-core, kumihimo-layout-json, kumihimo-content, kumihimo-egui]
     default_members: [kumihimo-core, kumihimo-layout-json, kumihimo-content]
   lockfile:
     ref: product/Cargo.lock
