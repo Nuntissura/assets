@@ -1061,7 +1061,7 @@ fn holds(d: &Dict, key: &str) -> bool {
 
 /// `d` has the shape of a structure element, of a structure tree root, or of an outline item that names a structure element
 /// (PLR-102, lead decision R24-P2: structure text survives in a file whose catalog names no tree). Read from the PARSED
-/// dictionary (names decoded, comments and strings never matched), a value that is a reference is followed (`resolve`, at most
+/// dictionary (names decoded; comments and strings are not read as keys), a value that is a reference is followed (`resolve`, at most
 /// `MAX_REF_HOPS` hops): `/Type` is the name `StructElem` or `StructTreeRoot`; or `/S` is a name and `/P` is held together with
 /// any key of `STRUCT_TEXT_KEYS` (a dictionary with only `/S`, as an action or a border style has, is not one); or `/SE` is held
 /// (the outline item entry that names a structure element).
@@ -1131,24 +1131,15 @@ impl Scan<'_> {
             self.structure = true;
             return;
         };
-        // Every member needs at least two bytes of header ("n o").
-        if n > (data.len() / 2).saturating_add(1) {
-            self.structure = true;
-            return;
-        }
         let mut header = Lexer::new(&data, 0, limits.max_depth);
-        let mut offsets = Vec::with_capacity(n.min(4096));
-        for _ in 0..n {
-            match (header.read_uint(), header.read_uint()) {
-                (Ok(_), Ok(offset)) => offsets.push(offset),
-                _ => {
-                    self.structure = true;
-                    return;
-                }
-            }
-        }
         let mut parsed_bytes = 0usize;
-        for offset in offsets {
+        for _ in 0..n {
+            // One header pair ("number offset") and its member at a time: nothing is collected, and the loop ends at the first
+            // pair the data does not hold.
+            let Ok(offset) = header.read_uint().and_then(|_| header.read_uint()) else {
+                self.structure = true;
+                return;
+            };
             let at = usize::try_from(offset).ok().and_then(|o| first.checked_add(o)).filter(|a| *a < data.len());
             let Some(at) = at else {
                 self.structure = true;

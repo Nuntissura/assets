@@ -2441,8 +2441,9 @@ fn outline_with(item: &str) -> Vec<(u32, String)> {
 /// that names one) reads `region_flattened` false and `NotProven::ResidualInRegion` only, wherever the dictionary sits: J1 a
 /// `/StructTreeRoot` dictionary under a private catalog key, J2a and J2b a stripped tree whose element an outline item still names
 /// with `/SE` (J2a with the element's `/Pg` the flattened page, which the `/Pg` scan already counted), K1 an object stream the
-/// catalog references whose members no cross-reference entry names (plain and ASCIIHex-encoded). Cases that need the text to
-/// survive check that it does.
+/// catalog references whose members no cross-reference entry names (plain and ASCIIHex-encoded). An object stream the file holds as
+/// a stream that cannot be read (a refused filter, no `/N`, an offset past the data, a header longer than the data, members that
+/// overlap past the decoded size) counts as well (fail closed). Cases that need the text to survive check that it does.
 #[test]
 fn detached_structure_elements_are_reported() {
     let root = "<< /Type /StructTreeRoot /K [81 0 R] >>";
@@ -2453,6 +2454,7 @@ fn detached_structure_elements_are_reported() {
         (81, "<< /Type /StructElem /S /Figure /P 80 0 R /Alt (ALT-DIRECT-SECRET) /ActualText (ACTUAL-DIRECT-SECRET) /E (EXPANSION-DIRECT-SECRET) /K 0 >>"),
     ];
     let item = |se: &str| format!("<< /Title (Figure) /Parent 70 0 R {se} /Dest [5 0 R /Fit] >>");
+    let raw_stream = |dict: &str, data: &str| String::from_utf8(stream_body(dict, data.as_bytes())).expect("ascii");
     let with_outline = |item: String, more: Vec<(u32, String)>| -> Vec<(u32, String)> {
         let mut v = outline_with(&item);
         v.extend(more);
@@ -2489,6 +2491,28 @@ fn detached_structure_elements_are_reported() {
             vec![(80, "<< /Type /StructTreeRoot /ClassMap << /Cls1 << /O /UserProperties /P [<< /N (note) /V (CLASSMAP-DETACHED-SECRET) >>] >> >> >>".to_string())],
             &["CLASSMAP-DETACHED-SECRET"],
         ),
+        // Fail closed: an object stream the file holds as a stream that cannot be read counts, whatever it holds.
+        (
+            "an object stream with a filter this crate refuses (DCTDecode)",
+            "/HskJunk 50 0 R",
+            vec![(50, raw_stream("/Type /ObjStm /N 1 /First 5 /Filter /DCTDecode", "60 0 << >>"))],
+            &[],
+        ),
+        ("an object stream without /N", "/HskJunk 50 0 R", vec![(50, raw_stream("/Type /ObjStm /First 5", "60 0 << >>"))], &[]),
+        ("an object stream whose member offset is past its data", "/HskJunk 50 0 R", vec![(50, raw_stream("/Type /ObjStm /N 1 /First 5", "60 900 << >>"))], &[]),
+        ("an object stream whose member does not parse", "/HskJunk 50 0 R", vec![(50, raw_stream("/Type /ObjStm /N 1 /First 5", "60 0 >>>>"))], &[]),
+        (
+            "an object stream whose header lists more members than it holds",
+            "/HskJunk 50 0 R",
+            vec![(50, raw_stream("/Type /ObjStm /N 3 /First 5", "60 0 << >>"))],
+            &[],
+        ),
+        (
+            "an object stream whose three members are one dictionary (parsed bytes over the decoded size)",
+            "/HskJunk 50 0 R",
+            vec![(50, raw_stream("/Type /ObjStm /N 3 /First 15", "60 0 61 0 62 0 << /Hsk (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) >>"))],
+            &[],
+        ),
     ];
     let mut red: Vec<String> = Vec::new();
     for (name, catalog_extra, objects, survive) in cases {
@@ -2498,9 +2522,14 @@ fn detached_structure_elements_are_reported() {
                 red.push(format!("{name}: {marker} was removed (the case needs the text to survive)"));
             }
         }
-        if !reported_for_the_tree(&out) {
+        let counted = !out.region_flattened()
+            && !out.region_cleared()
+            && out.residual_in_region >= 1
+            && out.not_proven_reasons().contains(&hsk_studio_press::NotProven::ResidualInRegion);
+        // The unreadable object streams may add their own reasons (a refused filter); every other case reports for this rule alone.
+        if !counted || (!name.starts_with("an object stream") && !reported_for_the_tree(&out)) {
             red.push(format!(
-                "{name}: region_flattened {} cleared {} residual {} reasons {:?}, expected only ResidualInRegion",
+                "{name}: region_flattened {} cleared {} residual {} reasons {:?}, expected ResidualInRegion",
                 out.region_flattened(),
                 out.region_cleared(),
                 out.residual_in_region,
@@ -2514,7 +2543,7 @@ fn detached_structure_elements_are_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// PLR-102, V4-08 (hostile text format): the shape is read from the PARSED dictionary, never matched in raw text. A name escape
+/// PLR-102, V4-08 (hostile text format): the shape is read from the PARSED dictionary, not matched in raw text. A name escape
 /// spells the key or the value, white space and line breaks separate them, a value that is a reference to a name is followed:
 /// these count. A comment, a string that holds the keys, the keys in another case, null values, and the dictionaries that only look
 /// like an element (an action and a border style that have `/S`, a page label with `/S` and `/P`) do not, and read flattened with
