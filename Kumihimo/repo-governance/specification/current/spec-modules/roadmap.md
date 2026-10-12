@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 11
+revision: 12
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -25,11 +25,11 @@ content_blocks:
 ```markdown
 # Planned
 
-Eight feature areas now have partial core implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.
+Twelve feature areas now have partial headless implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.
 
 WP009 proves the headless tab/group/pin/list, bounded schema1 JSON/semantic recovery and carried layout-operation scope. Core0.3 remains default std-only with optional saved-type Serde and an independent JSON package. The host storage protocol is documented; actual filesystem interruption/replacement and complete RECOVERY acceptance remain open.
 
-WP010 selects the independent std-only content companion: bounded capability/attach/input/geometry/lifecycle requests, scoped replies, shared-instance versus mount reservations, protected cleanup, asset/tool routing and honest diagnostics. The complete protocol choice lives in the master specification. This is preparation scope, not executed engine, GUI or performance proof.
+WP010 proves the independent std-only content companion at ba2d6189704ced50c621dab18e6140e301aab136: scoped typed requests/ACKs, distinct mount/instance reservations, protected cleanup, asset/tool routing and honest diagnostics. The affected all-target check, all twelve public consumers and quiet example passed with independent scoped evaluation. Queued expiry is enforced before exposure; a confirmed instance stays reserved after its last mount detaches until explicit cleanup. Real host engines, GUI, text/asset behavior, physical resources and performance remain open.
 
 A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 
@@ -171,7 +171,7 @@ roadmap:
   source_topic_refs:
   - TOPIC-KUM-CONTENT
   overview_summary: Hosted modules and plugin contracts
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-CONTENT-001
@@ -181,9 +181,12 @@ roadmap:
   - REQ-KUM-CONTENT-005
   - REQ-KUM-CONTENT-006
   - REQ-KUM-CONTENT-007
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  verification_summary: 'Partial: typed capability negotiation, private Core routing/scoped ACKs, placeholders,
+    pinned tools and opaque host asset/undo contracts proven; actual content engines/editors/asset store remain
+    host integration.'
+  matrix_entry_refs:
+  - BM-KUM-CONTENT-WINX64-001
 - item_ref: FEAT-KUM-RENDER
   source_topic_refs:
   - TOPIC-KUM-RENDER
@@ -202,7 +205,7 @@ roadmap:
   source_topic_refs:
   - TOPIC-KUM-PERFORMANCE
   overview_summary: Redraw scheduling and responsiveness
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-PERFORMANCE-001
@@ -210,22 +213,27 @@ roadmap:
   - REQ-KUM-PERFORMANCE-003
   - REQ-KUM-PERFORMANCE-004
   - REQ-KUM-PERFORMANCE-005
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  verification_summary: 'Partial: causal bounded queues, independent signals, invalidation/animation deadlines,
+    declared cache reservations and provenance diagnostics proven; actual responsiveness/rendering/CPU/memory/GPU
+    measurements remain host integration.'
+  matrix_entry_refs:
+  - BM-KUM-CONTENT-WINX64-001
 - item_ref: FEAT-KUM-TEXT
   source_topic_refs:
   - TOPIC-KUM-TEXT
   overview_summary: Text reflow and media inside documents
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-TEXT-001
   - REQ-KUM-TEXT-002
   - REQ-KUM-TEXT-003
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  verification_summary: 'Partial: finite geometry/scale, declared embed input and matched opaque anchor completion
+    protocol proven; actual typography/wrapping/selection/scroll/reflow and inline engines remain host integration.'
+  matrix_entry_refs:
+  - BM-KUM-CONTENT-WINX64-001
 - item_ref: FEAT-KUM-NAVIGATION
   source_topic_refs:
   - TOPIC-KUM-NAVIGATION
@@ -260,7 +268,7 @@ roadmap:
   source_topic_refs:
   - TOPIC-KUM-LIFECYCLE
   overview_summary: Many saved tabs and bounded live content
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-LIFECYCLE-001
@@ -269,9 +277,12 @@ roadmap:
   - REQ-KUM-LIFECYCLE-004
   - REQ-KUM-LIFECYCLE-005
   - REQ-KUM-LIFECYCLE-006
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  verification_summary: 'Partial: requested/confirmed/Unknown, separate mount/instance reservations, protected shared
+    cleanup, saturated recovery, queued deadlines and confirmed-instance retention proven; actual engine lifecycle/physical
+    release and restart recovery remain host integration.'
+  matrix_entry_refs:
+  - BM-KUM-CONTENT-WINX64-001
 - item_ref: FEAT-KUM-SERVO
   source_topic_refs:
   - TOPIC-KUM-SERVO

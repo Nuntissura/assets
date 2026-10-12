@@ -79,8 +79,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-state.yaml
-  next_action: Publish remediedexactcandidate thenlead serial focusedcontentcheck/twelvecases/quietexample; evaluatorreconcileonlyaffectedfinaldiff/logs
-    beforefullscopedverdict
+  next_action: Publish final Spec13/manual/topology/buildmatrix/eval outcome; independent exact origin/runtime-input
+    containment readback, then settle010done and rotatecoder02
   blockers: []
 - wp_id: WP-KUM-011-navigation-and-media-controls-v1
   title: Implement host-fed navigation and background contracts

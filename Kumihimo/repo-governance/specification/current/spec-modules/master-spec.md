@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 12
+revision: 13
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -1418,6 +1418,8 @@ An editor, a browser, a video player and a 3D viewer can all occupy a frame if t
 Plugins may fail or disappear. Keep a labeled placeholder and recovery reference instead of deleting their tabs. Security and process isolation belong to the host integration; a decorative frame cannot provide them.
 
 One host asset may have multiple declared views, such as an image in Notes, a moodboard and Studio, with independent per-view state. Shared-view support must be explicit. The host decides linked references versus independent copies and coordinates revisions and content undo. Providers can declare preview, quick-edit or full-editor presentations; Kumihimo does not implement image tools, rich-text editing, scene tools or kanban transitions. For Portal, dragging an arrangement surface and changing a card column are distinct host-routed actions.
+
+WP010 observed scope at ba2d6189704ced50c621dab18e6140e301aab136: Partial: typed capability negotiation, private Core routing/scoped ACKs, placeholders, pinned tools and opaque host asset/undo contracts proven; actual content engines/editors/asset store remain host integration. Twelve recording-host consumers, compilation and quiet example passed on Windows x64; full requirement acceptance remains open at the host boundaries.
 ```
 
 ```yaml
@@ -1800,6 +1802,8 @@ content_blocks:
 Kumihimo can report which panes are visible, batch layout changes and request redraw only when needed. It can prioritize a pane you are using and reduce background work when the host agrees.
 
 That helps avoid wasted work; it does not make expensive content magically cheap. A static editor and an animation need different schedules. Measure the actual adapter and content workload before claiming faster rendering or lower resource use.
+
+WP010 observed scope at ba2d6189704ced50c621dab18e6140e301aab136: Partial: causal bounded queues, independent signals, invalidation/animation deadlines, declared cache reservations and provenance diagnostics proven; actual responsiveness/rendering/CPU/memory/GPU measurements remain host integration. Twelve recording-host consumers, compilation and quiet example passed on Windows x64; full requirement acceptance remains open at the host boundaries.
 ```
 
 ```yaml
@@ -1974,6 +1978,8 @@ content_blocks:
 Kumihimo tells content how much space it has. The editor decides line wrapping, font size, document layout and how an image or embedded tool changes surrounding text. Those decisions need the document model, which the frame does not own.
 
 Kumihimo can provide useful resize information and a consistent embedding slot. A host that supports rich text may then reflow a document or let you drag media through it.
+
+WP010 observed scope at ba2d6189704ced50c621dab18e6140e301aab136: Partial: finite geometry/scale, declared embed input and matched opaque anchor completion protocol proven; actual typography/wrapping/selection/scroll/reflow and inline engines remain host integration. Twelve recording-host consumers, compilation and quiet example passed on Windows x64; full requirement acceptance remains open at the host boundaries.
 ```
 
 ```yaml
@@ -2471,6 +2477,8 @@ content_blocks:
 Keep a saved tab record separate from a live editor, decoder or browser instance. The host may keep a few views active, leave others warm, freeze supported work, or unload and later reload content.
 
 Kumihimo supplies visibility and user-priority signals. The host resource manager supplies policy and real CPU, memory and GPU information. Hidden, throttled, frozen and unloaded are different states. Downloads, audio, unsaved content and explicit keep-alive choices may need protection. No universal memory ceiling or exact browser-session restoration is promised.
+
+WP010 observed scope at ba2d6189704ced50c621dab18e6140e301aab136: Partial: requested/confirmed/Unknown, separate mount/instance reservations, protected shared cleanup, saturated recovery, queued deadlines and confirmed-instance retention proven; actual engine lifecycle/physical release and restart recovery remain host integration. Twelve recording-host consumers, compilation and quiet example passed on Windows x64; full requirement acceptance remains open at the host boundaries.
 ```
 
 ```yaml
@@ -3533,7 +3541,7 @@ Equalize resets selected workspace weights to1 while minima still apply; swap af
 Saving exposes immutable identity/generation-stamped semantic data/bytes and a current-stamp check. The host protocol serializes writers, validates before publication, rejects stale writes and atomically replaces a complete valid blob or retains recoverable prior/new blobs. The packet proves wire/semantic/stamp behavior; actual filesystem replacement, interrupted-save recovery, monitor effects and content recovery remain host-adapter acceptance. Complete RECOVERY acceptance stays open until those boundaries are proven.
 
 
-The next bounded packet selects the independent std-only kumihimo-content companion described completely below. It coordinates provider requests and later replies while the host runs actual engines and owns edits, assets and resource policy. Its private Core ownership ensures that close/reopen, provider changes and identical-ID layout restore cannot be missed by an observer. A hidden tab is a visibility fact; physical unloading, memory release and restoration strength require explicit host/provider confirmation. These are selected implementation choices, not runtime proof.
+WP010 implements the independent std-only kumihimo-content companion described completely below. At published source ba2d6189704ced50c621dab18e6140e301aab136, the affected Windows x64 all-target check, twelve public recording-host consumers and quiet example passed; the independent evaluator recorded PASS_SCOPED_RUNTIME. The companion coordinates typed provider requests and later replies while the host runs actual engines and owns edits, assets and resource policy. Its private Core ownership observes close/reopen, provider changes and identical-ID layout restore. A hidden tab remains a visibility fact; physical unloading, memory release and restoration strength require explicit host/provider confirmation. This proves the bounded headless protocol, not actual browser/editor engines, GUI, text layout, physical resources, performance or other platforms.
 
 ```
 

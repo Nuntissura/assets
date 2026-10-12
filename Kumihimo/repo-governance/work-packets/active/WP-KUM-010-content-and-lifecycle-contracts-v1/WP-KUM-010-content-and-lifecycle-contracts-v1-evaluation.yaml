@@ -2,16 +2,16 @@ schema_version: kumihimo.wp-evaluation.v1
 evaluation_id: EVAL-KUM-010-v1
 wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
 evaluator: ROLE-KUM-EVALUATION
-phase: acceptance_cases_prepared
-verdict: PREPARED_NOT_RUNTIME_EVALUATED
+phase: runtime_evaluated
+verdict: PASS_SCOPED_RUNTIME
 cases_frozen: true
 report_frozen_for_publication: true
 baseline_revision: c35af554d2e1710c507b26dc75c3dcdb62263778
 spec_revision: 12
 scope: Twelve frozen recording-host cases cover all21 accepted CONTENT/LIFECYCLE/TEXT/PERFORMANCE requirements within the full WP010 bounded companion
   contract; actual engines, document edits, asset store, GUI and physical/performance integration remain host-owned open specification boundaries.
-authority_limit: Full WP010 contract and Spec12/DEC-KUM-CONTENT-PROTOCOL-v1 govern the selected protocol. This report freezes acceptance cases only;
-  no runtime verdict or coding admission. Exact publication readback and explicit lead admission remain required.
+authority_limit: Full WP010 contract and Spec12/DEC-KUM-CONTENT-PROTOCOL-v1 govern the selected protocol. This report records independent bounded source/case
+  read and exact lead-owned headless runtime evidence; lead owns final specification/status/build-matrix settlement and publication.
 inspected_sources:
 - repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
 - repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-state.yaml
@@ -23,6 +23,18 @@ inspected_sources:
 - product/kumihimo-core/src/ids.rs
 - repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-dependency-readiness.yaml
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v11-r11-c35af554d2e1 (all six files)
+- product/kumihimo-content/src/lib.rs
+- product/kumihimo-content/src/protocol.rs
+- product/kumihimo-content/src/routing.rs
+- product/kumihimo-content/src/scheduler.rs
+- product/kumihimo-content/src/lifecycle.rs
+- product/kumihimo-content/src/diagnostics.rs
+- product/kumihimo-content/tests/recording_host.rs
+- product/kumihimo-content/examples/recording_host.rs
+- product/kumihimo-content/Cargo.toml
+- product/Cargo.toml
+- product/Cargo.lock
+- product/README.md
 observed_baseline:
 - Session-start observed clean c35af554, WP009 settled/done, WP010 planned, idle build lane and coder02 second-packet read-only preparation.
 - Core0.3/Snapshot3 exposes canonical provider/resource/view ownership, closed state, host view flags and Core identity. execute checks identity before
@@ -44,7 +56,8 @@ preparation_binding:
   decision_sha256: 8a8acc8b8d7adc63c221d10d078964ee0b32e70ecdb048afba1cd8fcc7bc0d8d
   decision_hash_encoding: SHA256 of UTF-8 JSON parsed decision record, sorted keys, compact separators, ensure_ascii=false
   decision_matches: Exact full contract R002-R022 concatenation present in selected decision
-  publication_status: Frozen local cases; exact lead publication/origin readback pending
+  publication_status: Frozen preparation published at e5308d55dca869e2807ee57a9b999a8338a9879b and independently origin/blob matched; contract/master
+    hashes still match tested source candidate.
 scope_preservation:
 - stub_item: Capability negotiation
   case_refs:
@@ -98,7 +111,14 @@ acceptance_scenarios:
   - WP010-R006
   acceptance_refs:
   - WP010-A001
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Exact version/capability rejection preserves prior state and labeled recovery reference; preview attach is publicly dispatched/ACKed,
+    unsupported full-editor/input rejected.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_001_capability_version_and_placeholder
+    line: 229
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-002
   refs:
   - REQ-KUM-CONTENT-004
@@ -126,7 +146,14 @@ acceptance_scenarios:
   - WP010-R016
   acceptance_refs:
   - WP010-A002
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Public geometryA/focus-in/action/geometryB/focus-out dispatch/ACK order preserved; frame-chrome, undispatched/wrong-scope ACK and
+    queue overflow reject with unchanged snapshots.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_002_segmented_causality_and_atomic_queue_bounds
+    line: 291
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-003
   refs:
   - REQ-KUM-CONTENT-001
@@ -157,7 +184,14 @@ acceptance_scenarios:
   - WP010-R014
   acceptance_refs:
   - WP010-A003
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Unrelated rename preserves current attach ACK; exact duplicate is historical, conflicting/session replies reject; actual identical-ID
+    Restore retires binding, rejected/replayed Restore preserves state; old reconciliation/detach cannot revive replacement; exhaustion atomic.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_003_epochs_restore_replay_and_exact_ack
+    line: 398
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-004
   refs:
   - REQ-KUM-LIFECYCLE-002
@@ -180,7 +214,15 @@ acceptance_scenarios:
   - WP010-R014
   acceptance_refs:
   - WP010-A004
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Queued ordinary expiry through advance or direct pull terminally cancels before exposure and rejects dependent input; uncommitted
+    attach frees only its reservations. Dispatched timeout/cancel/ambiguous failure remains Unknown; exact reconciliation, backward-time/overflow,
+    state distinctions and receipt eviction asserted.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_004_lifecycle_unknown_timeout_and_reconciliation
+    line: 604
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-005
   refs:
   - REQ-KUM-CONTENT-002
@@ -208,7 +250,14 @@ acceptance_scenarios:
   - WP010-R013
   acceptance_refs:
   - WP010-A005
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Provider close-permit staleness on dirty/pinned/protection changes, zero/stale/missing/host-veto delegation, arrangement move identity,
+    canonical historical close replay after reopen, shared consumer retention and metadata-only Drop asserted.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_005_shared_moves_close_veto_and_historical_close
+    line: 948
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-006
   refs:
   - REQ-KUM-CONTENT-004
@@ -240,7 +289,15 @@ acceptance_scenarios:
   - WP010-R012
   acceptance_refs:
   - WP010-A006
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Twenty saved views use one shared instance/two mounts; admission/protection/lowered-limit cleanup and payload bounds reject atomically.
+    Final detach of active or retired started instance retains reservation until exact Dispose; queued shared attach expiry/cancel cannot free confirmed
+    instance. Saturated queued recovery expiry/reuse retains original Unknown and rejects delayed prior query ACK.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_006_saved_live_protection_and_saturated_recovery
+    line: 1174
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-007
   refs:
   - REQ-KUM-CONTENT-003
@@ -258,7 +315,14 @@ acceptance_scenarios:
   - WP010-R014
   acceptance_refs:
   - WP010-A007
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Placeholder retains canonical label/reference/resource/view count across missing provider; compatible renegotiation uses fresh
+    mount; layout/page-reload/provider-state/Unknown strength and rejected restoring remain explicit.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_007_placeholder_recovery_and_restoration_strength
+    line: 1662
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-008
   refs:
   - REQ-KUM-CONTENT-005
@@ -284,7 +348,14 @@ acceptance_scenarios:
   - WP010-R018
   acceptance_refs:
   - WP010-A008
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Linked-edit/copy/domain requests cross public host boundary with declared undo; malformed asset rejects atomically; real canonical
+    ToolId/EditingTarget away-and-back rebind rejects queued action without substitution.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_008_assets_and_pinned_tool_delivery
+    line: 1774
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-009
   refs:
   - REQ-KUM-TEXT-001
@@ -305,7 +376,14 @@ acceptance_scenarios:
   - WP010-R016
   acceptance_refs:
   - WP010-A009
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Anchored geometry survives later ordinary geometry, requires exact echo; wrong anchor/zero scale/unsupported anchor/embed reject
+    unchanged; ordinary geometry and supported embed input dispatch/ACK.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_009_geometry_scale_embed_and_anchored_reflow
+    line: 1917
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-010
   refs:
   - REQ-KUM-PERFORMANCE-001
@@ -326,7 +404,14 @@ acceptance_scenarios:
   - WP010-R019
   acceptance_refs:
   - WP010-A010
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Selected/visible/focused/minimized/Unknown occlusion retain independent values; redundant invalidation coalesces; earliest animation
+    deadline retained; permission rejection unchanged and hiding does not imply frozen state.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_010_independent_signals_invalidation_and_animation_deadline
+    line: 2018
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-011
   refs:
   - REQ-KUM-PERFORMANCE-004
@@ -346,7 +431,14 @@ acceptance_scenarios:
   - WP010-R020
   acceptance_refs:
   - WP010-A011
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Known declared cache bytes and exact sharing owner/instance/grant validated; one consumer release retains the other, duplicate
+    release historical, final release clears declaration only; absent physical GPU bytes remain Unknown.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_011_shared_cache_reservations_and_exact_release
+    line: 2095
+    proof_ref: EVAL-KUM-010-P-tests
 - case_id: EVAL-KUM-010-012
   refs:
   - REQ-KUM-PERFORMANCE-005
@@ -367,10 +459,17 @@ acceptance_scenarios:
   - WP010-R022
   acceptance_refs:
   - WP010-A012
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME
+  runtime_observed: Public diagnostics redact opaque payload, retain units/provenance/scope/counts; malformed unit/provenance and foreign Core identity
+    reject unchanged; host duration/byte samples stay declarations, not independent physical measurements.
+  runtime_consumer:
+    path: product/kumihimo-content/tests/recording_host.rs
+    function: eval_012_attributable_diagnostics_and_sample_rejection
+    line: 2167
+    proof_ref: EVAL-KUM-010-P-tests
 boundary_decisions:
 - decision_id: EVAL-KUM-010-D01
-  status: adopted_in_full_contract_and_spec12_pending_publication
+  status: adopted_published_and_scoped_runtime_inspected
   case_refs:
   - EVAL-KUM-010-002
   - EVAL-KUM-010-003
@@ -392,7 +491,7 @@ boundary_decisions:
     fresh controller session, exact provider/resource/view, attachment epoch and request/channel revision. Reuse canonical Snapshot rather than owning
     a second arrangement; retain existing lease entries for historical cleanup.
 - decision_id: EVAL-KUM-010-D02
-  status: adopted_in_full_contract_and_spec12_pending_publication
+  status: adopted_published_and_scoped_runtime_inspected
   case_refs:
   - EVAL-KUM-010-003
   - EVAL-KUM-010-004
@@ -410,7 +509,7 @@ boundary_decisions:
     lease metadata; one fixed typed recovery slot reserved at lease creation permits bounded cleanup despite ordinary pending/queue exhaustion. Every
     slot reuse has a fresh checked revision, and exact duplicate terminal ACK returns historical status only.
 - decision_id: EVAL-KUM-010-D03
-  status: adopted_in_full_contract_and_spec12_pending_publication
+  status: adopted_published_and_scoped_runtime_inspected
   case_refs:
   - EVAL-KUM-010-002
   - EVAL-KUM-010-006
@@ -444,7 +543,7 @@ boundary_decisions:
     ordinary_deadline_ms: 30000
     dispatched_provider_effects_per_resource_instance: 1
 - decision_id: EVAL-KUM-010-D04
-  status: adopted_in_full_contract_and_spec12_pending_publication
+  status: adopted_published_and_scoped_runtime_inspected
   case_refs:
   - EVAL-KUM-010-001
   - EVAL-KUM-010-007
@@ -467,7 +566,7 @@ boundary_decisions:
     tools: Current ToolId/EditingTarget plus relevant target epoch and active attachment, canonical origin/target/provider applicability and explicit
       host permission revalidated at invocation; focus never substitutes target.
 - decision_id: EVAL-KUM-010-D05
-  status: adopted_in_full_contract_and_spec12_pending_publication
+  status: adopted_published_and_scoped_runtime_inspected
   case_refs:
   - EVAL-KUM-010-010
   - EVAL-KUM-010-011
@@ -488,11 +587,10 @@ boundary_decisions:
     diagnostics: Typed units and host-supplied tick/duration provenance; measured/estimated/Unknown values distinct, bounded reasons/IDs and no physical/performance
       claims.
 gap_flags:
-- Exact contract/spec/cases publication and independent origin readback remain pending; this local freeze does not authorize coding.
-- Dependency readiness inspected as selected_dependency_ready_pending_case_freeze; dependencies role must reconcile its evaluator binding to this frozen
-  report.
-- Actual text rendering/reflow, host engines/assets/physical resources, GUI and performance remain open specification integration boundaries; protocol-only
-  acceptance preserves them.
+- Actual host engines, text/fonts/reflow, asset/document mutation, native focus/GUI, physical CPU/memory/GPU release and performance remain unproven
+  host integration boundaries.
+- Final lead-owned outcome specification/status/topology/build-matrix settlement and report publication require subsequent exact containment readback;
+  this report does not claim WP state done.
 proof_plan:
 - Published full contract/spec + dependency readiness and frozen twelve evaluator cases before coding
 - Lead-only offline local workspace lock resolution before candidate publication
@@ -507,9 +605,14 @@ proof_plan:
   causality and both accepted and rejected/unchanged observations. No evaluator Cargo or additional case/gate.
 INDEPENDENT_FINDINGS: []
 RESIDUAL_UNCERTAINTY:
-- No010 implementation, protocol consumer, production host adapter or runtime proof inspected; PREPARED_NOT_RUNTIME_EVALUATED only.
-next_action: Lead/dependencies reconcile frozen report, publish exact contract/spec/readiness/cases and obtain independent origin containment readback
-  before explicit coder02 admission; evaluator awaits exact publication dispatch.
+- PASS_SCOPED_RUNTIME proves the observed bounded headless companion/public recording-host behavior only. No actual engine/editor/browser, typography/media/GPU,
+  asset store/domain edit or GUI/OS input integration was executed.
+- Declarations/reservations, synthetic host ACKs and submitted diagnostics do not prove physical engine release, measured host memory/CPU/GPU or performance
+  improvement.
+- Linux/macOS, Windows ARM64, browser/WASM and platform-specific occlusion/focus/popout behavior were not run.
+- Host controller-session uniqueness and cross-restart exactly-once are host-owned assumptions/limits, not proved by this process-local test suite.
+next_action: Lead publish scoped runtime report and final specification/status/manual/topology/build-matrix outcome; evaluator independently read exact
+  resulting publication, preserving unchanged runtime input identity. Hold report/source writes meanwhile.
 specification_preservation:
   archive_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v11-r11-c35af554d2e1
   compared_revision: c35af554d2e1710c507b26dc75c3dcdb62263778
@@ -531,17 +634,128 @@ non_case_acceptance:
 - contract_refs:
   - WP010-R001
   acceptance_refs: []
-  observed: Local full contract/spec/readiness read and twelve cases frozen; publication/origin readback and lead admission pending.
+  observed: Full contract/spec/readiness/frozen cases were published at e5308d55 and independently origin/blob matched before source implementation
+    admission.
 - contract_refs:
   - WP010-R002
   - WP010-R022
   - WP010-R023
   acceptance_refs:
   - WP010-A013
-  observed: Architecture/source/manual/topology/package/proof reconciliation required against stabilized published implementation; no implementation
-    or Cargo verdict in this preparation report.
+  observed: Std-only companion/default-disabled Core path dependency, private Core/read-only API, focused all-target/test/example and exact candidate
+    origin/blob evidence independently inspected; lead final matrix/topology/status settlement pending.
 - contract_refs: []
   acceptance_refs:
   - WP010-A014
-  observed: All99 full prior requirement records preserved and complete Spec11 six-file archive independently matched to baseline Git blobs; final
-    manual/topology/taskboard/state/build-matrix scope reconciliation awaits implementation.
+  observed: Prior99 records and exact six-file Spec11 archive verified during preparation; full Spec12/master hashes unchanged through tested source.
+    Content manual directly inspected; final lead specification/topology/taskboard/state/build-matrix settlement and outcome publication remain pending.
+runtime_evaluation:
+  status: independently_verified_scoped_runtime_pass
+  observed_at: '2026-10-12'
+  candidate: ba2d6189704ced50c621dab18e6140e301aab136
+  product_file_count: 40
+  product_manifest_sha256: 195f1eca659828cd208b4d0ae45d36fb72cab19abd532059bc33e629af618c75
+  owned_file_count: 11
+  owned_manifest_sha256: ecc920872dd185e61e3948948251f1adb0074b373b7c4515d382fdcadcbed391
+  manifest_algorithm: SHA256 of ordinal-sorted lowercase POSIX product/path:SHA256(raw bytes), LF joined without final LF
+  independent_binding:
+    remote_command: git ls-remote origin refs/heads/codex/handpick
+    expected: ba2d6189704ced50c621dab18e6140e301aab136
+    observed: ba2d6189704ced50c621dab18e6140e301aab136
+    blob_command: git show <candidate>:Kumihimo/<product-path>
+    all40_local_files_equal_published_git_blobs: true
+    contract_spec_binding: Frozen contract4c737514/master046326a0 still exact; original full preparation publication independently confirmed at e5308d55
+    lead_metadata: Actual three commandExecution completed/exit0 records independently read from lead chat; complete three candidate-tagged logs directly
+      opened
+    read_scope: One bounded six-module/public-consumer/example/manual/manifest read, reconciled final five-file remediation diff; evaluator ran no
+      Cargo.
+  proof:
+  - proof_id: EVAL-KUM-010-P-check
+    candidate: ba2d6189704ced50c621dab18e6140e301aab136
+    log: .local/kumihimo-content/proof/check-ba2d6189704c.log
+    log_root: shared Git root
+    sha256: 541cd96f8a6c75aced410dbf62f9d7bcdf7103473bf1bcad77a67a49b0ddab77
+    command: cargo check --manifest-path product/Cargo.toml -p kumihimo-content --all-targets --locked --offline -j 2
+    lead_command_execution_id: exec-e40d9ca7-2885-49d7-8f14-217a97cde428
+    status: completed
+    exit_code: 0
+    gameplan: PASS14/14
+    profile_duration_seconds: 5.83
+    observed: Affected companion all-target compilation passed.
+  - proof_id: EVAL-KUM-010-P-tests
+    candidate: ba2d6189704ced50c621dab18e6140e301aab136
+    log: .local/kumihimo-content/proof/test-ba2d6189704c.log
+    log_root: shared Git root
+    sha256: c0f12df798c9f8cde16da95105d4385173ec0f6f27a965bc3cb6648311354311
+    command: cargo test --manifest-path product/Cargo.toml -p kumihimo-content --no-fail-fast --locked --offline -j 2
+    lead_command_execution_id: exec-7483e709-3e25-4c05-839b-2b9bd5f2863e
+    status: completed
+    exit_code: 0
+    gameplan: PASS14/14
+    profile_duration_seconds: 4.19
+    observed: All12 public recording-host consumers passed; zero failed/ignored/filtered, execution0.01s; unit/doc targets each0 tests.
+  - proof_id: EVAL-KUM-010-P-example
+    candidate: ba2d6189704ced50c621dab18e6140e301aab136
+    log: .local/kumihimo-content/proof/example-ba2d6189704c.log
+    log_root: shared Git root
+    sha256: 42f9b3bd11f46b4a755593f72dbb77bf17fd989dff58dc823049285b026ebb41
+    command: cargo run --manifest-path product/Cargo.toml -p kumihimo-content --example recording_host --locked --offline -j 2
+    lead_command_execution_id: exec-8d356fc2-2847-4dc6-b11c-aa00e47d90db
+    status: completed
+    exit_code: 0
+    gameplan: PASS14/14
+    profile_duration_seconds: 0.02
+    observed: Quiet example records1 reserved instance,1 mount,2 terminal receipts; host engines/physical usage explicitly unmeasured.
+  warnings:
+  - Unused Fixture.frame field emits dead_code warning in consumer test target; no runtime blocker.
+  platform_scope: Observed Windows x64 headless native executable only; no other platform or host engine/GUI proof.
+  lead_runner: Stable project .local/cargo-target; verified lead runner uses sccache, CARGO_INCREMENTAL=0, locked/offline initialj2, no parallel evaluator
+    Cargo.
+resolved_findings:
+- finding_id: EVAL-KUM-010-F001
+  contract_refs:
+  - WP010-R010
+  case_refs:
+  - EVAL-KUM-010-004
+  - EVAL-KUM-010-006
+  observed_candidate: 950b7c3df02dd1da3b3a885cd2c8e271cfdddd8b
+  failure: expire handled only Dispatched; ordinary/recovery queued work could outlive deadline and later dispatch; old12 green consumers lacked queued
+    timeout coverage.
+  remediation: Expire Queued as known-not-dispatched terminal cancellation; reject dependents, free only never-started attach reservations; both dispatch
+    routes expire after valid permission and before exposure. Keep dispatched ambiguity Unknown.
+  resolved_candidate: ba2d6189704ced50c621dab18e6140e301aab136
+  evidence: Final lifecycle/scheduler diff directly read; existing004/006 public assertions pass for advance/direct-pull, permission atomicity, backward
+    time, ordinary/recovery expiry, saturated reuse and delayed historical query rejection.
+  status: resolved_with_focused_runtime_proof
+- finding_id: EVAL-KUM-010-F002
+  contract_refs:
+  - WP010-R006
+  - WP010-R010
+  case_refs:
+  - EVAL-KUM-010-005
+  - EVAL-KUM-010-006
+  observed_candidate: 950b7c3df02dd1da3b3a885cd2c8e271cfdddd8b
+  failure: release_empty_uncommitted_instance could free a previously confirmed instance after final Detach without Dispose.
+  remediation: Instance.started startsfalse, becomestrue on confirmed or reconciled Applied Attach; helper releases only never-started instance. Mount
+    release stales its queued work; committed instance remains until exact disposal/cleanup.
+  resolved_candidate: ba2d6189704ced50c621dab18e6140e301aab136
+  evidence: Final routing/lifecycle diff directly read; existing006 active/retired final-detach and shared unsent expiry/cancel assertions hold instance
+    until confirmed Dispose; exact duplicate detach remains historical.
+  status: resolved_with_focused_runtime_proof
+reused_runtime_evidence:
+  from_evaluation: EVAL-KUM-009-v1
+  tested_candidate: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  status: Reuse only unaffected existing Core/JSON proof; not rerun
+  input_reconciliation: Independently compared28 Core/JSON source/test/example/manifests files byte-for-byte to c387 candidate; all13 prior lock package
+    records retained unchanged. Workspace only adds local std-only companion; Core default[]/optional serde dependency unchanged; selected companion
+    depends on Core0.3 with default-features=false.
+  proof_refs:
+  - EVAL-KUM-009-P-default_core
+  - EVAL-KUM-009-P-all_targets_check
+  - EVAL-KUM-009-P-workspace_tests
+  - EVAL-KUM-009-P-workspace_example
+  - EVAL-KUM-009-P-json_roundtrip_example
+  - EVAL-KUM-009-P-focused_layout_recovery
+  - EVAL-KUM-009-P-focused_json_recovery
+  result: Prior49 Core/JSON tests, optional all-feature compilation, default-core check and quiet Core/JSON examples remain valid for unchanged inputs;
+    fresh companion evidence covers changed local workspace surface.

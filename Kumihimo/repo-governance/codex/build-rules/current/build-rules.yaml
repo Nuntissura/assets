@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 30
+  version: 31
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -23,7 +23,7 @@ project_profile:
   - aarch64 Windows development host
   product_workspace:
     manifest_file: product/Cargo.toml
-  implementation_status: ownership_layout_and_recovery_packets_proven
+  implementation_status: ownership_layout_recovery_and_content_contract_packets_proven
   gui_applicability: planned
   test_entrypoint: product/Cargo.toml
   build_environment:
@@ -43,7 +43,7 @@ canonical_commands:
 rule_sets: {}
 build_matrix:
   matrix_id: BM-KUMIHIMO-001
-  revision: 4
+  revision: 5
   entries:
   - entry_id: BM-KUM-CORE-WINX64-001
     wp_ref: WP-KUM-007-core-model-v1
@@ -111,6 +111,26 @@ build_matrix:
     - performance
     - host atomic filesystem/interrupted-save recovery
     - provider engines
+  - entry_id: BM-KUM-CONTENT-WINX64-001
+    wp_ref: WP-KUM-010-content-and-lifecycle-contracts-v1
+    source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+    package_manifest: product/kumihimo-content/Cargo.toml
+    package_version: 0.1.0
+    protocol_version: '1.0'
+    observed_target: x86_64-pc-windows-msvc
+    rustc_version: 1.91.1
+    proof:
+      affected_all_target_check: passed;dev5.83s
+      recording_host_consumers: 12passed;compile4.19s/execution0.01s
+      quiet_example: passed;dev0.02s;1instance reservation/1mount/2terminal receipts
+      independent_evaluation: PASS_SCOPED_RUNTIME; two recorded deadline/instance findings resolved
+      prior_core_json: Unchanged28 package source/test/manifest files and old13 lock records reconcile c387 WP009
+        evidence; no repeated broad Cargo
+    not_proven:
+    - Actual provider/browser/editor engines, text layout, assets/domain edits and GUI/OS focus/popouts
+    - Physical CPU/memory/GPU use/release, performance improvement
+    - ARM64/WASM/Linux/macOS or other platform execution
+    - Cross-restart exactly-once or host session uniqueness
   policy: Record only actual implemented feature proof; no mandatory pillar universe
 dependency_policy: {}
 rules:

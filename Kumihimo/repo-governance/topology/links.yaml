@@ -87,7 +87,7 @@ edges:
 - id: KUM-LINK-WP010-CONTENT
   from: WP-KUM-010-content-and-lifecycle-contracts-v1
   to: KUM-CONTENT
-  relation: bounds_implementation
+  relation: implements
 - id: KUM-LINK-CONTENT-CORE
   from: KUM-CONTENT
   to: KUM-CORE

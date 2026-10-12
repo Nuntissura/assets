@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
-generation: 9
+generation: 11
 phase: active
 owner: ROLE-KUM-CODER-02
 changed_files:
@@ -15,6 +15,8 @@ changed_files:
 - repo-governance/topology/links.yaml
 - product/README.md
 - repo-governance/registry/ids.yaml
+- repo-governance/codex/build-rules/current/build-rules.yaml
+- repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v12-r12-ba2d6189704c/
 proof:
 - kind: predecessor_and_preparation
   source_revision: c35af554d2e1710c507b26dc75c3dcdb62263778
@@ -52,6 +54,25 @@ proof:
   observed: Allcodersheld; rootmatched11fence/exact5changedfilesUTF8LF; openedrouting/lifecycle/scheduler diff forR010queueddeadline/known-not-started
     cancellation andR006everconfirmedinstancehold afterdetach; existingCases004/006 expanded; runtimepending. Core/JSON/manifests/lock
     unchanged
+- kind: focused_runtime
+  source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  observed_target: x86_64-pc-windows-msvc
+  rustc: 1.91.1
+  product_digest: 195f1eca659828cd208b4d0ae45d36fb72cab19abd532059bc33e629af618c75
+  logs_git_root: .local/kumihimo-content/proof/
+  log_hashes:
+    check: sha256:541cd96f8a6c75aced410dbf62f9d7bcdf7103473bf1bcad77a67a49b0ddab77
+    test: sha256:c0f12df798c9f8cde16da95105d4385173ec0f6f27a965bc3cb6648311354311
+    example: sha256:42f9b3bd11f46b4a755593f72dbb77bf17fd989dff58dc823049285b026ebb41
+  observed: Serial lockedofflinej2 alltargetcheck exit0/dev5.83s;12publiccases exit0/testcompile4.19s/execution0.01s;
+    quietexampleexit0/dev0.02s reports1reservedinstance/1mount/2terminalreceipts. Gameplan14/14each;40fence unchanged/Gitclean
+    throughbatch. Core/JSONunchangedprior49green reused; currentstd-onlytree verified. NoGUI/engine/physical/otherplatformproof;
+    independentbounded evaluation pending
+- kind: independent_scoped_evaluation
+  source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  report_sha256: 07d205bb9f80fd333294e7b930dcb15e8c7b7290985275e12527ede066f98ac4
+  observed: PASS_SCOPED_RUNTIME,12cases/threeactual logs/exact40blobs, bothR010/R006findingsresolved, noopenfindings;
+    full99requirements preserved and realhost boundaries remainopen
 blockers: []
-next_action: Publish remediedexactcandidate thenlead serial focusedcontentcheck/twelvecases/quietexample; evaluatorreconcileonlyaffectedfinaldiff/logs
-  beforefullscopedverdict
+next_action: Publish final Spec13/manual/topology/buildmatrix/eval outcome; independent exact origin/runtime-input
+  containment readback, then settle010done and rotatecoder02
