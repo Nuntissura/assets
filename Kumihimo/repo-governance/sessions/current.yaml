@@ -84,13 +84,13 @@ build_lane:
     free_disk_gib: 3056.6
     rust_processes: []
     scope: Fresh before final desktop source publication; proof runner refreshes before each serial command
-  candidate_revision: 04924d995d551609bc9ac0122dec44ae3ced8fc1
+  candidate_revision: f73697526c8ec00e1e64cc0fd3cfdcb53b8a2d55
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Run one affected owning29 target on held pager/diagnostic candidate; inspect exact remaining observations
-  before repair; WP014 remains gated by WP012 DONE
+next_action: Run one affected owning29 target after exact Memory receiver repair; inspect remaining actual
+  GUI observations; WP014 remains gated by WP012 DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

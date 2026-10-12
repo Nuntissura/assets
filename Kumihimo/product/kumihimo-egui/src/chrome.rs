@@ -922,7 +922,6 @@ pub fn draw(
                         .into_iter()
                         .filter(|layer| {
                             memory
-                                .areas()
                                 .area_rect(layer.id)
                                 .is_some_and(|rect| rect.contains(point))
                         })

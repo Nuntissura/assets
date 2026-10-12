@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 13
+generation: 14
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -132,6 +132,14 @@ proof:
     and exact original14 prefix: Tabs/groups inherits existing CloseOnClickOutside for real paging, bounded
     exact-stage preview and actual reveal hit observations added. Reveal winner and preview stage remain unproven;
     no speculative placement/preview changes. All owners HOLD, no captures/native yet.'
+- kind: causal_diagnostic_compile_receiver_repair
+  baseline_revision: f73697526c8ec00e1e64cc0fd3cfdcb53b8a2d55
+  source_fence17_raw_sha256: 9195ca7cdc4d833180e15496fe73d348f18633829bf006be094ad8408664024e
+  source_fence17_lf_sha256: 7a8942d1806a1bac5a4f11218407735268ebd9f53f9aab8be4faaffa9f10046d
+  observed: 'Owning f736975 stopped before tests with E0599 chrome926: area_rect belongs to pinned egui Memory,
+    not Areas. Exact public cached API and compile output inspected; only that method receiver repaired. Original29
+    tests and fourteen prefix preserved; all owners HOLD. Pager runtime, reveal winner and preview stage still
+    unproven.'
 blockers: []
-next_action: Run one affected owning29 target on held pager/diagnostic candidate; inspect exact remaining observations
-  before repair
+next_action: Run one affected owning29 target after exact Memory receiver repair; inspect remaining actual
+  GUI observations
