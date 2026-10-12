@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 14
-  revision: 14
+  version: 15
+  revision: 15
   status: accepted_direction_implementation_authorized
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 14
-    digest: sha256:960a3ee9c3558a70809d611b0a28e51f67fbe2bf18d506276eb662009c77ae3b
+    revision: 15
+    digest: sha256:37f0c284a7dc50f843f17c81ceae7bad514e5372b51cbc58c081d948faf7a6be
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -347,8 +347,8 @@ storage:
     - DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
-    revision: 13
-    digest: sha256:65a79a568394fdf982ffd9c9c70e1c2667dd04cbefd3e3c71dbf1c04cf5801d5
+    revision: 14
+    digest: sha256:1318085652e4320e86f7579f50884d8a31939cce6a774a308c5685f542b8815e
     semantic_entity_refs:
     - TOPIC-KUM-ROADMAP
   document_record_required_fields:
@@ -587,8 +587,20 @@ change_history:
   archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v10-r10-8387dd939bf0
   changed_anchor_ids:
   - TOPIC-KUM-CHOICES
+- revision: 15
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v14-r14-449dfd41f3de
+  changed_anchor_ids:
+  - TOPIC-KUM-WORKSPACE
+  - TOPIC-KUM-CHROME
+  - TOPIC-KUM-NAVIGATION
+  - TOPIC-KUM-BACKGROUNDS
+  - TOPIC-KUM-INPUT
+  - TOPIC-KUM-CHOICES
+  - TOPIC-KUM-ROADMAP
 design_status:
-  accepted: Eight feature areas partially implemented at the proven headless boundary; all full requirement acceptances
+  accepted: Fifteen feature areas partially implemented at the proven headless boundary; all full requirement acceptances
     remain open.
   pending: Concrete GUI/native/web adapters, host storage, lifecycle/engines, ARM/WASM and performance acceptance.
 topic_format_contract:

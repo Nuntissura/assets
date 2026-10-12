@@ -2,20 +2,22 @@ schema_version: kumihimo.wp-evaluation.v1
 evaluation_id: EVAL-KUM-011-v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
 evaluator: ROLE-KUM-EVALUATION
-phase: independent_evaluation_remediation_required
-verdict: FAIL_SCOPED_CONTRACT
+phase: independent_evaluation_complete
+verdict: PASS_SCOPED_RUNTIME
 cases_frozen: true
-report_frozen_for_publication: false
+report_frozen_for_publication: true
 baseline_revision: 451f7c13cb7527b9f831c4f16854ce4638d75a04
 spec_revision: 14
 scope: Complete original WP011 four-mode navigation/transient drag/rail-thumb/provider media/reduced-work
   stub preserved; twelve frozen headless cases cover NAVIGATION6/BACKGROUNDS4/INPUT4 and CHROME004/005
   settings anchors. Complete host GUI/decoder/input/accessibility/physical/platform requirement acceptance
   remains open.
-authority_limit: Full WP011 contract and Spec14 DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2 select the implementation
-  boundary. This report reconciles and freezes only the existing twelve cases; it adds no product authority,
-  acceptance gate or coding admission. Runtime verdict remains PREPARED_NOT_RUNTIME_EVALUATED. Lead publication,
-  dependency readiness and independent origin read precede explicit coding admission.
+authority_limit: Published full WP011 contract and Spec14 DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2 select
+  the implementation boundary. Existing twelve frozen cases add no product authority or acceptance gate.
+  Independent runtime evaluation is PASS_SCOPED_RUNTIME on551ea5731931611f5a5a24f5c422684247edbdfb with
+  F01 resolved; prior preparation verdict is historical. Lead owns final outcome/current views/status
+  publication and independent origin containment before WP done. Actual GUI/engines/physical/platform
+  acceptance remains open.
 inspected_sources:
 - repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
 - repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
@@ -51,6 +53,8 @@ preparation_binding:
     narrow supersession scope.
   publication_status: Local final cases frozen for lead publication; origin containment and coding admission
     not yet evaluated. Foreign role report hashes are dated observations, not a live hash-cycle prerequisite.
+  status_scope: Historical frozen preparation observation before publication734c9fc and admission663f814;
+    not current runtime status.
 observed_baseline:
 - Historical preparation at 451f7c13cb7527b9f831c4f16854ce4638d75a04 was read-only. This reconciliation
   edits only evaluator-owned YAML; no Cargo/product/Git/state/spec changes. Current full contract is 23R/14A
@@ -134,7 +138,7 @@ acceptance_scenarios:
   observed_public_test:
     target: navigation_contracts
     name: eval_001_modes_precedence_and_declared_fallback
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Four modes/effective fallback, precedence/provenance and every-level invalid/version
     rejection preserve Core identity/generation.
 - case_id: EVAL-KUM-011-002
@@ -169,7 +173,7 @@ acceptance_scenarios:
   observed_public_test:
     target: navigation_contracts
     name: eval_002_enlarged_thumb_full_range_and_degenerate_metrics
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Known independent endpoints10/36/62 with minimum48; empty/zero/short/signed-zero/huge
     finite/overflow paths and full keyboard range inspected. Map-only pointer independent of hidden rail.
 - case_id: EVAL-KUM-011-003
@@ -198,7 +202,7 @@ acceptance_scenarios:
   observed_public_test:
     target: navigation_contracts
     name: eval_003_stationary_press_and_grab_anchor_preservation
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Mouse/touch/pen stationary press at distinct grab fractions emits no request, preserves
     anchor/document rect/canonical snapshot. Source press changes local gesture only.
 - case_id: EVAL-KUM-011-004
@@ -230,7 +234,7 @@ acceptance_scenarios:
   observed_public_test:
     target: navigation_contracts
     name: eval_004_one_continuous_transformed_drag_and_typed_actual
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Captured18/36delta coalesces unsent intents; request630 versus provideractual620 distinct;
     outside motion clamps0/900, wrong pointer rejects unchanged.
 - case_id: EVAL-KUM-011-005
@@ -254,7 +258,7 @@ acceptance_scenarios:
     never synthesized from requested offset.
   red_team_control: Check selected revision domains and canonical transition observation owner; final
     IDs and global Core generation alone cannot detect away/back or identical-ID restore.
-  runtime_status: FAIL_CONTRACT_STATIC_TRACE
+  runtime_status: PASS_SCOPED_HEADLESS
   contract_requirement_refs:
   - WP011-R005
   - WP011-R011
@@ -272,10 +276,13 @@ acceptance_scenarios:
   observed_public_test:
     target: navigation_contracts
     name: eval_005_revision_freshness_restore_and_reconcile_unknown
-    result: PASS exact9e69ab9 all-feature log
-  observed_result: Model/settings/rail change cancels; stale/conflicting model ACK/observation rejects;
-    Restore/replay/foreign scope and genericAppliedUnknown/fresh typedactual inspected. F01 actual same-workspace
-    reorder missing.
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
+  observed_result: Original model/settings/rail/Restore/replay/foreignscope/genericAppliedUnknown assertions
+    retained. Existing005 now proves real[A,B]→[B,A] MoveFrame settles active gesture Invalidated with
+    actual450 unchanged/noNavigation, rejects queuedgeometry or holds exposedgeometryUnknown/stale/busy,
+    preservesScope/resource/instance/reservations. Metadata/Unchanged/replay preserve state. Nestedownertarget
+    and shifteddefaultsibling settle while defaultpositionoutsideinterval/unrelatedworkspace retain gesture/pending
+    unchanged. Same005 exactRED→GREEN inspected;F01resolved.
 - case_id: EVAL-KUM-011-006
   refs:
   - REQ-KUM-NAVIGATION-006
@@ -308,7 +315,7 @@ acceptance_scenarios:
   observed_public_test:
     target: navigation_contracts
     name: eval_006_release_cancellation_focus_and_idempotent_settlement
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Release immediateidle/latestactual with pendingfinal; exact duplicate/conflict/late
     event behavior; cancel/Escape/capture/focus loss cancels own unsent, dispatched remainsUnknown/busy/reserved;
     released final survives new gesture.
@@ -344,7 +351,7 @@ acceptance_scenarios:
   observed_public_test:
     target: navigation_contracts
     name: eval_007_sparse_overview_limits_semantic_barriers_and_lowering
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Sparse exact semantics, duplicate/range/257byte/4097marker rejects; lowered caps no
     growth; semanticjump barrier, old admitted payload survives lowering, overview-only retains gesture/actual.
     All retained model/overview/settings/request copies charged through transaction/admit.
@@ -383,7 +390,7 @@ acceptance_scenarios:
   observed_public_test:
     target: navigation_contracts
     name: eval_008_keyboard_density_accessibility_and_input_prerequisites
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Independent24/16/hit40 dimensions, reveal/thresholds/keyboard/role/name/value metadata;
     confirmed geometry/focus prerequisites and denied/stale permission/chrome typing rejection. OS/accessibility
     external.
@@ -400,7 +407,7 @@ acceptance_scenarios:
     Brightness/opacity changes are visual intent, never proof of decoder work, pause or physical release.
   red_team_control: Selected contract fixes workspace/frame slot to media instance binding and range/fit
     policy; no fake view creation, engine or canonical arrangement tree.
-  runtime_status: FAIL_CONTRACT_STATIC_TRACE
+  runtime_status: PASS_SCOPED_HEADLESS
   contract_requirement_refs:
   - WP011-R003
   - WP011-R004
@@ -418,10 +425,12 @@ acceptance_scenarios:
   observed_public_test:
     target: background_contracts
     name: eval_kum_011_009_real_targets_composition_and_binding
-    result: PASS exact9e69ab9 all-feature log
-  observed_result: Canonical frame/workspace resource attach without dummyview/tree mutation; grant/mixed-sharing
-    rejection, CloseView backgrounds unaffected, Restore/replay/reconnect scope; settings atomic. Current
-    movement test index0 is Unchanged; F01 real reorder not covered.
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
+  observed_result: Original realtarget/composition/mixedsharing/CloseView/Restore/replay/reconnect assertions
+    retained. Existing009 adds queued/exposedgeometry for realreorder, nestedFrameBackground/WorkspaceBackground
+    and retainedcustomplan sibling C whose canonicalordinal2 stayssame while geometrychanges. Each affectedtarget
+    keepsScope/resource/instance/reservations, queuesreject/exposedUnknown/staleACKreject/noDispose; rootWorkspaceBackgroundgeometry
+    remainsqueued andconfirms; replay/Unchanged noextraeffects. Fullcurrentowning009PASS;F01resolved.
 - case_id: EVAL-KUM-011-010
   refs:
   - REQ-KUM-BACKGROUNDS-001
@@ -452,7 +461,7 @@ acceptance_scenarios:
   observed_public_test:
     target: background_contracts
     name: eval_kum_011_010_legibility_motion_audio_and_input_denial
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Visual opacity/brightness/fit/crop/overlay0.35/reduced-motion/poster/mute/fallback;
     no visual pause inference; ordinary five input routes reject; sourceNavigation rejects background;
     malformed crop/oversized fields and redacted diagnostics.
@@ -492,7 +501,7 @@ acceptance_scenarios:
   observed_public_test:
     target: background_contracts
     name: eval_kum_011_011_shared_min_ceilings_exact_echo_and_unknown
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: MIN60/15=15 and loweractual accepted, visible explicitPaused allowed, active/protected
     veto; exact/mismatched/duplicate/stale ACK, timeout/reconciliationUnknown/fresholderobs, hostcaps/unconstrained,
     refusal and queuedexpiry inspected. Source missingpolicy veto and enqueue/dispatch/ACK revalidation;
@@ -536,7 +545,7 @@ acceptance_scenarios:
   observed_public_test:
     target: background_contracts
     name: eval_kum_011_012_exact_shared_cache_release_and_bounded_recovery
-    result: PASS exact9e69ab9 all-feature log
+    result: PASS exact551ea5731931611f5a5a24f5c422684247edbdfb all-feature log
   observed_result: Shared cache survivor held; lowered/saturated recovery, foreign replies, detach invalidated
     old media, remaining consumer blocksDispose; finalcache/detach holds confirmed-started instance until
     exactDispose. Same010 reservation/recovery/metadataDrop boundary.
@@ -578,13 +587,13 @@ reuse_plan:
 coordination:
   coder_thread: 01a12d8f-5516-7c01-9047-db8c696cd4ac
   dependencies_thread: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
-  status: Full contract and corrected Spec14 read; existing12 cases reconciled/frozen for publication.
-    Dependency readiness may reference case IDs/status without live role hash cycle. Lead owns origin
-    verification and explicit coder03 admission; no runtime implementation evaluated.
+  status: Original12frozencases reconciled on exact551ea57. Lead/coder03/diagnostics coordinatedF01; natural005RED→GREEN
+    and existing009regressions inspected, F01resolved. Reportfrozenforpublication; leadownsfinaloutcome/currentviews
+    and scopedorigincontainment.
 INDEPENDENT_FINDINGS:
 - finding_id: EVAL-KUM-011-F01
   priority: P1
-  status: OPEN
+  status: RESOLVED
   source_revision: 9e69ab98feb1609fe9df169efc0e64b158ebfc68
   case_refs:
   - EVAL-KUM-011-005
@@ -607,16 +616,25 @@ INDEPENDENT_FINDINGS:
     metadata no-effects.
   required_proof: Existing005/009 two-frame sameworkspace differentindex movement with active drag and
     queued/dispatchedgeometry; owningtarget RED→GREEN exactcandidate. No newcases/gates/broadsuite.
-  proof_status: Exact static trace; no evaluator runtime reproduction. Coder03 independently confirmed
-    real MoveFrame→Change::Moved and proposed frame-order fingerprint; lead owns remediation admission.
+  proof_status: Exact published patch/public regressions and actual owning005RED→GREEN plus current009/all24test/fourfeatures/example
+    directly inspected; no evaluatorCargo.
+  resolution_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  red_source_revision: ceab0b9a3e7ef74a154fc24025caefdc73d46ba0
+  routing_sha256: 9b55f61a16e07b375cc684562f36e4f262f598693f2256cc313722c332c3562b
+  resolution: FrameMovement captures existing frame order/membership/floating plus atmosttwo retainedsource/destinationplans;
+    peractivebinding fixed3boolimpact via iterativeownerancestors, exactpostplancomparison. Existingfresh/successful/nonreplayed/nonUnchanged
+    guard retained; onlyaffectedtargets stale_geometry once, Viewmovetuple still handled, rootbackground/unrelatedmetadata
+    unaffected. No newfallibleerrorafterCorecommit. PreservesScope/resource/instance/cleanup obligations.
+  red_log: .local/kumihimo-controls/proof/f01-ceab0b9a3e7e.log
+  red_log_sha256: 90421baf49c3060b310ac05ea9337c51f462933b3fd7a84bdeca1aa04b4725d6
+  green_log: .local/kumihimo-controls/proof/f01-551ea5731931.log
+  green_log_sha256: dbc5e3edf7f300e79ab084059feb24a60d80fc890b116f60c9f09889e3287888
 RESIDUAL_UNCERTAINTY:
-- F01 focused runtime reproduction/remediation pending; original12green011consumers do not exercise real
-  sameworkspace reorder.
-- Finallead outcome/spec/status/origin containment pending.
-- Actual GUI/readability/accessibility/native input/focus/capture/decoders/poster/audio/physicalresources/performance/unobserved
-  platforms remain host-adapter proof.
-next_action: Lead/coder03/diagnostics remediate recordedF01 in existing005/009; evaluator inspect exactnarrowdiff
-  and affected lead-owned proof. Preserve12frozen cases; no evaluator Cargo/Git/product changes.
+- Lead finaloutcome/currentviews/status/origincontainment stillpending; runtimePASS doesnotprove finalWPdone.
+- ActualGUI/readability/accessibility/nativeinput/focus/capture/decoders/poster/audio/physicalresources/performance/unobservedplatforms
+  remain hostadapterproof.
+next_action: Holdfinalscopedruntime report bytes/hash forleadpublication; independentlyinspectexactpublishedoutcome/currentviews/containedreport
+  whenleadsupplies them. No furtherCargo absentchangedinputs/findings.
 architecture_alignment:
   status: selected_by_lead_full_contract_and_self_contained_spec
   package_direction: '[WP011-R002] Advance unreleased kumihimo-content to0.2 with independent Cargo features
@@ -709,10 +727,10 @@ non_case_contract_coverage:
     inspection; four selected compile configurations, one all-feature owning-target batch and quiet example;
     full99/stub/six-file archive comparison and final state/board/source containment. These are existing
     contract obligations, not additional case IDs or gates.
-  status: NOT_RUNTIME_EVALUATED
+  status: PASS_SCOPED_RUNTIME_A013; FINAL_OUTCOME_A014_PENDING_PUBLICATION
 boundary_decisions:
 - decision_id: EVAL-KUM-011-D01
-  status: selected_by_lead_contract_pending_publication
+  status: selected_by_published_lead_contract
   source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
   original_question: Module/package ownership and canonical transition route; exact workspace/frame media-slot
     to actual content mount binding without second arrangement, mutable Core escape or missed identical-ID
@@ -725,7 +743,7 @@ boundary_decisions:
   - WP011-R004
   - WP011-R005
 - decision_id: EVAL-KUM-011-D02
-  status: selected_by_lead_contract_pending_publication
+  status: selected_by_published_lead_contract
   source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
   original_question: Navigation/model/overview/geometry/settings/gesture freshness, explicit rebase-or-cancel
     policy during reflow/resize/mode or authoritative scroll updates; no stationary jump.
@@ -739,7 +757,7 @@ boundary_decisions:
   - WP011-R014
   - WP011-R015
 - decision_id: EVAL-KUM-011-D03
-  status: selected_by_lead_contract_pending_publication
+  status: selected_by_published_lead_contract
   source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
   original_question: Enlarged-thumb mapping and zero/short-track precision policy, keyboard/page route,
     large-control defaults and settings precedence/capability fallback.
@@ -751,7 +769,7 @@ boundary_decisions:
   - WP011-R008
   - WP011-R009
 - decision_id: EVAL-KUM-011-D04
-  status: selected_by_lead_contract_pending_publication
+  status: selected_by_published_lead_contract
   source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
   original_question: Gesture cancellation/commit/rollback, focus/capture/release-out/duplicate settlement,
     host pointer/tick ownership and bounded terminal state.
@@ -762,7 +780,7 @@ boundary_decisions:
   - WP011-R011
   - WP011-R015
 - decision_id: EVAL-KUM-011-D05
-  status: selected_by_lead_contract_pending_publication
+  status: selected_by_published_lead_contract
   source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
   original_question: Finite overview/item/string/update/media-slot/cache/request bounds, retained-copy
     accounting and atomic replacement/coalescing/lowering policy.
@@ -774,7 +792,7 @@ boundary_decisions:
   - WP011-R015
   - WP011-R020
 - decision_id: EVAL-KUM-011-D06
-  status: selected_by_lead_contract_pending_publication
+  status: selected_by_published_lead_contract
   source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
   original_question: Typed media capabilities/visual ranges/fallback/legibility and reduced-motion/poster/audio,
     frame-rate/resolution budget request and exact applied ACK echo. Define Applied reconciliation versus
@@ -788,7 +806,7 @@ boundary_decisions:
   - WP011-R017
   - WP011-R018
 - decision_id: EVAL-KUM-011-D07
-  status: selected_by_lead_contract_pending_publication
+  status: selected_by_published_lead_contract
   source_decision_ref: DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
   original_question: Shared media consumer aggregation, confirmed-instance hold and exact cache/provider
     release via reused010 reservation/recovery boundary.
@@ -800,7 +818,8 @@ boundary_decisions:
   - WP011-R019
   - WP011-R020
 proof_plan:
-  source: Full WP011 contract proof; executed only by lead when admitted candidate is stable.
+  source: Published full WP011 contract proof; runtime commands executed in lead-owned serial lane and
+    actual logs independently inspected.
   commands:
   - Publish full spec/contract/readiness/frozen twelve cases before admission
   - Lead-only offline local lock resolution after content manifest version change, no new/external package
@@ -820,9 +839,101 @@ proof_plan:
   - python repo-governance/repo-scripts/sync.py --check
   - git diff --check -- Kumihimo
   - git ls-remote origin refs/heads/codex/handpick
-  runtime_status: NOT_RUNTIME_EVALUATED
+  runtime_status: PASS_SCOPED_RUNTIME; FINAL_OUTCOME_PUBLICATION_PENDING
 risk_tier: HIGH
 runtime_binding:
+  source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  runtime_state_revision: 449dfd41f3de5f3999cda74787407a706cf84cfa
+  product_file_count: 47
+  product_sha256: 351c3d734589ea9d27e5bf90144a8f064055a356dbd29051567f38dc70a4b1c0
+  fence_serialization: Case-preserving Git-root-relative POSIX path:raw-byte SHA256 rows, Python lexical
+    sorted(files.items()), LF join without trailing newline, UTF8 SHA256.
+  independent_read: All47 exact551ea57 Git blobs=current raw bytes=frozen individual hashes; lexical case-preserving
+    manifest351c3d734589ea9d27e5bf90144a8f064055a356dbd29051567f38dc70a4b1c0 reproduced. Onlyrouting changed
+    from ceab0b9 RED; other46product bytes including regression consumers unchanged. ActualRED and all7current
+    logs directly opened and hashes matched state gen14.
+  logs:
+    f01: .local/kumihimo-controls/proof/f01-551ea5731931.log
+    default: .local/kumihimo-controls/proof/default-551ea5731931.log
+    navigation: .local/kumihimo-controls/proof/navigation-551ea5731931.log
+    backgrounds: .local/kumihimo-controls/proof/backgrounds-551ea5731931.log
+    combined: .local/kumihimo-controls/proof/combined-551ea5731931.log
+    test: .local/kumihimo-controls/proof/test-551ea5731931.log
+    example: .local/kumihimo-controls/proof/example-551ea5731931.log
+  log_sha256:
+    f01: dbc5e3edf7f300e79ab084059feb24a60d80fc890b116f60c9f09889e3287888
+    default: 87ddb3574007c33120b1534d64d0dee4cfdfee542a15649da7e55a89127923f8
+    navigation: 2ea4d2aad397e753e23fac653ad83108b7a997bae0d5c9293c774ca4ed4ebca1
+    backgrounds: 4bd0409094d535f19123f66e25decf882dbd14197bb15d731b192bdb977adfef
+    combined: e42f248bdf3025dbf3401c95bc78dbedf0b0c58ba52b8b8f1a5639ef7dee8b24
+    test: 7bc513b802ceaae91f4bd8c69eb3ac9ddbac68d13904ee51e731455fe828c24e
+    example: 8e34a22ef7812444072a3e56647b5a7e962a660486eb419edcdf0cbf8ba278fd
+  observed_runtime: Owning005RED ceab0b9 compile3.65s/1fail7filtered at262/no localdrag settlement; same005GREEN551ea57
+    compile5.26s/1pass7filtered0.01s. Freshdefault1.56s/navigation2.82s/backgrounds1.63s/combined1.78s
+    all-targetchecksPASS. All24publictestsPASS compile5.53s/eachtarget0.01s, including existing005/009
+    regressions. Quietcontrols_hostPASS0.02s typedactuals/hostrenderingexternal. ExistingunusedFixture.framewarning
+    does not affect proof.
+  dependency_inputs: 29protected Core/JSON/workspace files unchanged vs734c9fc;14lock entries, only content0.1→0.2
+    changed, other13records exact. No external dependency.
+  outcome_containment: Lead finaloutcome/currentviews publication and independent scoped containment pending;
+    PASS is headless runtime evaluation, not WPdone or completeGUI/engine acceptance.
+DIFF_ATTACK_SURFACES:
+- Protocol2/public0.2 typed-target and independently gated producer/consumer migration.
+- Canonical real transition to relevant gesture/geometry invalidation.
+- Typed actual offset/media ACK versus pending request and generic old-effect reconciliation.
+- Retained opaque model/overview/settings/request/receipt copies and atomic lowered-limit admission.
+- SharedMINmedia/protected-consumer veto/current aggregate and started-instance/cache cleanup.
+INDEPENDENT_CHECKS_RUN:
+- check: Canonical input/artifact reconciliation
+  observed: 47Git blobs=current bytes=frozen hashes; exact fence reproduced;6actual log hashes;29protectedfiles/13otherlockrecords
+    unchanged.
+- check: Canonical movement producer/consumer trace independent of provided movement test
+  observed: Core mutation.rs306–355 changes real sameworkspace differentindex frame order; content routing.rs617/645
+    compares only(frame,workspace), missing invalidationF01.
+- check: Retained-copy and typed-current-observation boundary read
+  observed: Navigation/overview/settings/background requested+effective/pending/receipt accounting and
+    transaction/admit inspected; typedACK model/aggregate validation and genericAppliedUnknown traced
+    independently.
+- check: F01 exact remediation and same-input natural regression reconciliation
+  observed: Onlyrouting9b55f61a changed betweenREDceab0b9 andGREEN551ea57; same005consumer, all46otherproductinputs
+    exact. Current47blobs/fence and8actualRED/currentlogs checked. Existing009 geometry proof distinguishes
+    unchangedcanonicalordinal from changedretainedpacking.
+COUNTERFACTUAL_CHECKS:
+- If navigation_move used expanded map origin instead of captured press/travel, expansion/drag anchor
+  would jump; current delta gives630request with620actual kept separate.
+- If MediaCeilings::intersect used max or missingpolicy opted pause,60/15 ceiling or unconfigured shared-consumer
+  safety would break; sourceMIN/Noneveto read.
+- If lifecycle genericApplied fabricated typedDone, Unknown actual would become invented offset/budget;
+  current guard preservesUnknown.
+- If FrameMovement::impact omitted owner traversal or packing_changed omitted exactretainedplan comparison,
+  existing005nested descendant or009unchangedordinal custom sibling would retain obsoletegesture/geometry.
+  Both paths now inspected and currentowningtestsPASS.
+BOUNDARY_PROBES:
+- Public recording-host requests/typedactual responses read alongside navigation/media validation/apply;
+  provider clamp/lower work distinct from intent, currentexact revisions enforced.
+- 'Core real MoveFrame order mutation read against content target_frame/execute/stale_geometry: sameworkspace
+  reorder holeF01. No evaluator Cargo or runtime mutation.'
+- 'F01 producer→consumer reconciliation: actualCoreMoved/frameorder plus independentlycomputedCoregeometry
+  versus queued/exposedcompanioneffects. Exactbefore/afterretainedplan and ownerchain handling matches
+  affectedtarget tests; originalfail branch nowGREEN.'
+NEGATIVE_PATH_CHECKS:
+- Invalid patch/pointer/duplicate marker/loweredlimits public callers compared to transactional admission
+  and observed unchanged snapshots.
+- Old model/aggregate ACK, timeout/cancelUnknown and genericApplied traced into held exact recovery rather
+  than invented values.
+- Existing movement test is CoreUnchanged; cannot prove real reorder invalidation. Owning coder/lead asked
+  for focused sameworkspace differentindex regression.
+- 'F01 current controls: unchangedindex/replay/metadatanoinvalidation, unrelatedworkspace/defaultoutsideinterval/rootbackground
+  preserved; exposedoldgeometryACK rejects whilebusy/reservationheld. Currentpublicassertions/logs inspected.'
+conclusions:
+  tests: PASS:owning005RED→GREEN,fourfreshfeaturechecks,24publictests,quietexample at551ea57.
+  requirement_alignment: PASS for selectedheadless23R/14A scope; original12cases/16specrefs preserved,F01resolved.
+    Finaloutcome/status/origincontainment obligations remain pendingleadpublication.
+  code_quality: Oneboundedcontroller, typedactual/Unknown, retainedcopyadmission/sharedMIN/cleanup checked;
+    narrowmovementfix no newpostcommiterrors. No unresolvedindependentfinding in evaluatedscope.
+  environment: ObservedWindowsx64headless; actualGUI/engines/physicalresources/otherplatform acceptanceopen.
+  final: PASS_SCOPED_RUNTIME; does notmarkWPdonebefore publishedoutcomecontainment.
+prior_runtime_observation:
   source_revision: 9e69ab98feb1609fe9df169efc0e64b158ebfc68
   runtime_state_revision: 22871602d72f355b391ca6eda46d78cf928a9229
   product_file_count: 47
@@ -853,48 +964,3 @@ runtime_binding:
   dependency_inputs: 29protected Core/JSON/workspace files unchanged vs734c9fc;14lock entries, only content0.1→0.2
     changed, other13records exact. No external dependency.
   outcome_containment: Pending lead final outcome/current views publication.
-DIFF_ATTACK_SURFACES:
-- Protocol2/public0.2 typed-target and independently gated producer/consumer migration.
-- Canonical real transition to relevant gesture/geometry invalidation.
-- Typed actual offset/media ACK versus pending request and generic old-effect reconciliation.
-- Retained opaque model/overview/settings/request/receipt copies and atomic lowered-limit admission.
-- SharedMINmedia/protected-consumer veto/current aggregate and started-instance/cache cleanup.
-INDEPENDENT_CHECKS_RUN:
-- check: Canonical input/artifact reconciliation
-  observed: 47Git blobs=current bytes=frozen hashes; exact fence reproduced;6actual log hashes;29protectedfiles/13otherlockrecords
-    unchanged.
-- check: Canonical movement producer/consumer trace independent of provided movement test
-  observed: Core mutation.rs306–355 changes real sameworkspace differentindex frame order; content routing.rs617/645
-    compares only(frame,workspace), missing invalidationF01.
-- check: Retained-copy and typed-current-observation boundary read
-  observed: Navigation/overview/settings/background requested+effective/pending/receipt accounting and
-    transaction/admit inspected; typedACK model/aggregate validation and genericAppliedUnknown traced
-    independently.
-COUNTERFACTUAL_CHECKS:
-- If navigation_move used expanded map origin instead of captured press/travel, expansion/drag anchor
-  would jump; current delta gives630request with620actual kept separate.
-- If MediaCeilings::intersect used max or missingpolicy opted pause,60/15 ceiling or unconfigured shared-consumer
-  safety would break; sourceMIN/Noneveto read.
-- If lifecycle genericApplied fabricated typedDone, Unknown actual would become invented offset/budget;
-  current guard preservesUnknown.
-- If routing movement captured canonical order, sameworkspace reorder would settle affectedgesture; missing
-  order propagation isF01.
-BOUNDARY_PROBES:
-- Public recording-host requests/typedactual responses read alongside navigation/media validation/apply;
-  provider clamp/lower work distinct from intent, currentexact revisions enforced.
-- 'Core real MoveFrame order mutation read against content target_frame/execute/stale_geometry: sameworkspace
-  reorder holeF01. No evaluator Cargo or runtime mutation.'
-NEGATIVE_PATH_CHECKS:
-- Invalid patch/pointer/duplicate marker/loweredlimits public callers compared to transactional admission
-  and observed unchanged snapshots.
-- Old model/aggregate ACK, timeout/cancelUnknown and genericApplied traced into held exact recovery rather
-  than invented values.
-- Existing movement test is CoreUnchanged; cannot prove real reorder invalidation. Owning coder/lead asked
-  for focused sameworkspace differentindex regression.
-conclusions:
-  tests: PASS:four compile configurations/24public tests/quietexample observed.
-  requirement_alignment: FAIL:R005/R012 real sameworkspace movement invalidation absent; cases005/009
-    require remediation.
-  code_quality: Oneboundedcontroller/accounting/typedobservations inspected;F01 unresolved.
-  environment: Windowsx64 headless only.
-  final: FAIL_SCOPED_CONTRACT until exactF01 remediation proof; outcome containment later.

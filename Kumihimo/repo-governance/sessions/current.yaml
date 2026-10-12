@@ -32,7 +32,8 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP011 final independent F01 closure on exact551ea57 original12cases and actualRED/Green/affectedlogs
+    assignment: WP011 PASS_SCOPED_RUNTIME/F01 resolved report052630ac held; scoped published outcome containment
+      next
   coder:
     role_id: ROLE-KUM-CODER-03
     thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
@@ -40,8 +41,7 @@ roles:
     reasoning: high
     completed_implementation_wps: []
     rotate_after: 2
-    assignment: WP011 F01 routing/test source held; exact005 GREEN/four features/all24/example PASS; await final
-      independent verdict
+    assignment: WP011 source held; independent scoped PASS/F01 resolved; wait DONE then same coder WP012
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -66,8 +66,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Independent F01 resolution/final WP011 scoped verdict; then complete archived/current outcome and exact
-  origin containment; no additional Cargo without changed inputs/findings
+next_action: Publish scoped WP011 outcome/report/Spec15 exact prior6filearchive; independent origin readback and
+  evaluator containment, then DONE and WP012 preparation
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

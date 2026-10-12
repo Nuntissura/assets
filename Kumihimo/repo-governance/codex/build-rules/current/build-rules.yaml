@@ -3,7 +3,7 @@ kind: build_rulebook
 identity:
   rulebook_id: RB-KUMIHIMO-BUILD-v1
   project_id: KUMIHIMO
-  version: 31
+  version: 32
   seed_version: handshake-universal-v9
   status: active_model_operated
 authority:
@@ -23,7 +23,7 @@ project_profile:
   - aarch64 Windows development host
   product_workspace:
     manifest_file: product/Cargo.toml
-  implementation_status: ownership_layout_recovery_and_content_contract_packets_proven
+  implementation_status: ownership_layout_recovery_content_navigation_media_contract_packets_proven
   gui_applicability: planned
   test_entrypoint: product/Cargo.toml
   build_environment:
@@ -43,7 +43,7 @@ canonical_commands:
 rule_sets: {}
 build_matrix:
   matrix_id: BM-KUMIHIMO-001
-  revision: 5
+  revision: 6
   entries:
   - entry_id: BM-KUM-CORE-WINX64-001
     wp_ref: WP-KUM-007-core-model-v1
@@ -129,6 +129,28 @@ build_matrix:
     not_proven:
     - Actual provider/browser/editor engines, text layout, assets/domain edits and GUI/OS focus/popouts
     - Physical CPU/memory/GPU use/release, performance improvement
+    - ARM64/WASM/Linux/macOS or other platform execution
+    - Cross-restart exactly-once or host session uniqueness
+  - entry_id: BM-KUM-NAVIGATION-MEDIA-WINX64-001
+    wp_ref: WP-KUM-011-navigation-and-media-controls-v1
+    source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+    package_manifest: product/kumihimo-content/Cargo.toml
+    package_version: 0.2.0
+    protocol_version: '2.0'
+    observed_target: x86_64-pc-windows-msvc
+    rustc_version: 1.91.1
+    proof:
+      four_feature_checks: PASS default1.56s/navigation2.82s/backgrounds1.63s/combined1.78s
+      public_consumers: 24passed (12preserved010+8navigation+4backgrounds); compile5.53s/eachtarget0.01s
+      movement_regression: F01 owning005 ceab0b9 RED to551ea57 GREEN; nested/custom packing and exact obligations
+        preserved
+      quiet_example: controls_host PASS dev0.02s; typed navigation/media observations, host rendering external
+      independent_evaluation: PASS_SCOPED_RUNTIME; F01 RESOLVED
+      dependency_reuse: 29protected Core/JSON/workspace files and13other lock records unchanged; no repeated49case
+        broad Cargo
+    not_proven:
+    - Actual GUI/native input/capture/accessibility/compositing and provider/decoder/audio engines
+    - Physical CPU/memory/GPU use or release, performance improvement
     - ARM64/WASM/Linux/macOS or other platform execution
     - Cross-restart exactly-once or host session uniqueness
   policy: Record only actual implemented feature proof; no mandatory pillar universe

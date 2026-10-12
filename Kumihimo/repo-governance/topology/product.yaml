@@ -1,5 +1,5 @@
 kind: product_topology
-implementation_status: ownership_layout_and_recovery_packets_proven
+implementation_status: ownership_layout_recovery_content_navigation_media_contract_packets_proven
 nodes:
 - id: KUM-PRODUCT
   path: product/
@@ -61,23 +61,40 @@ nodes:
   entrypoint: product/kumihimo-content/src/lib.rs
   status: verified_headless_contract_scope
   responsibility: Privately owned Core with bounded replaceable host-content request/ACK routing, lifecycle reservations
-    and diagnostics
+    and diagnostics; optional host-fed navigation/overview/settings and typed frame/workspace media policy under
+    the same controller
   modules:
   - product/kumihimo-content/src/protocol.rs
   - product/kumihimo-content/src/routing.rs
   - product/kumihimo-content/src/lifecycle.rs
   - product/kumihimo-content/src/scheduler.rs
   - product/kumihimo-content/src/diagnostics.rs
+  - product/kumihimo-content/src/settings.rs
+  - product/kumihimo-content/src/navigation.rs
+  - product/kumihimo-content/src/overview.rs
+  - product/kumihimo-content/src/backgrounds.rs
   integration_boundary: Host executes engines/input/rendering/assets/cleanup; read-only Core plus routed canonical
     mutations, no mutable escape or physical release claim
-  verification_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  verification_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
 - id: KUM-CONTENT-CONTRACTS
-  path: product/kumihimo-content/tests/recording_host.rs
+  path: product/kumihimo-content/tests/
   status: verified_headless_contract_scope
-  responsibility: Twelve public recording-host consumers bound frozen WP010 cases
-  verification_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  responsibility: 'Twenty-four public recording-host consumers: twelve preserved WP010 and twelve frozen WP011,
+    including movement RED/GREEN'
+  verification_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  targets:
+  - product/kumihimo-content/tests/recording_host.rs
+  - product/kumihimo-content/tests/navigation_contracts.rs
+  - product/kumihimo-content/tests/background_contracts.rs
 - id: KUM-CONTENT-EXAMPLE
   path: product/kumihimo-content/examples/recording_host.rs
   status: verified_headless_contract_scope
   responsibility: Quiet headless request/ACK consumer
   verification_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  verification_scope: Historical protocol1 quiet runtime at ba2d618; current protocol2 fixture all-target compilation
+    verified at 551ea5731931611f5a5a24f5c422684247edbdfb
+- id: KUM-CONTROLS-EXAMPLE
+  path: product/kumihimo-content/examples/controls_host.rs
+  status: verified_headless_contract_scope
+  responsibility: Quiet typed navigation and frame-background media recording-provider example, no GUI or engine
+  verification_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb

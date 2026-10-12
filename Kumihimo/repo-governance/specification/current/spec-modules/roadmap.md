@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-ROADMAP-v1
-revision: 13
+revision: 14
 title: Kumihimo roadmap
 updated_at: '2026-10-12'
 ---
@@ -25,13 +25,13 @@ content_blocks:
 ```markdown
 # Planned
 
-Twelve feature areas now have partial headless implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.
+Fifteen feature areas now have partial headless implementation. The remaining areas stay planned, and all requirements remain open until their full acceptance surfaces are proven. Completed repository preparation is separate from product implementation.
 
 WP009 proves the headless tab/group/pin/list, bounded schema1 JSON/semantic recovery and carried layout-operation scope. Core0.3 remains default std-only with optional saved-type Serde and an independent JSON package. The host storage protocol is documented; actual filesystem interruption/replacement and complete RECOVERY acceptance remain open.
 
 WP010 proves the independent std-only content companion at ba2d6189704ced50c621dab18e6140e301aab136: scoped typed requests/ACKs, distinct mount/instance reservations, protected cleanup, asset/tool routing and honest diagnostics. The affected all-target check, all twelve public consumers and quiet example passed with independent scoped evaluation. Queued expiry is enforced before exposure; a confirmed instance stays reserved after its last mount detaches until explicit cleanup. Real host engines, GUI, text/asset behavior, physical resources and performance remain open.
 
-WP011 selects independently optional navigation/backgrounds within content0.2/protocol2.0: four modes, continuous transient minimap, host-fed bounded overview and real frame/workspace media targets sharing existing request/resource/recovery authority. Current full requirements remain open; this is preparation, not executed GUI/decoder/media-resource proof.
+WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684247edbdfb: content 0.2/protocol 2.0, independent navigation/backgrounds features disabled by default, four successful Windows x64 all-target feature checks, twenty-four passing public cases (twelve preserved WP010 plus eight navigation/four backgrounds), and the quiet controls_host example. Independent evaluation is PASS_SCOPED_RUNTIME. F01 real frame movement was reproduced in existing case005 and passed after the routing correction; existing005/009 cover affected nested owners/custom packing, queued rejection/exposed Unknown, stable target/resource/instance and no-op/metadata/replay controls. Core0.3/JSON/schema1 remain unchanged. This proves typed host-fed policy, gestures, observations and bounded recovery, not native pointer capture, rendered GUI/readability/accessibility trees, actual provider/decoder engines, physical CPU/memory/GPU savings, performance or unobserved platforms. All full requirement acceptance remains open.
 
 A future prototype can exercise a host-configured recursive workspace with varying window/tab counts and simple host-owned content: tabs/groups/colors, resizing, docking, exposed settings and save/restore. It should demonstrate an actual usable surface, then prove native popout handoff and the web adapter at their own boundaries. Keep the full roadmap intact as these areas are implemented.
 
@@ -163,12 +163,15 @@ roadmap:
   - REQ-KUM-CHROME-008
   - REQ-KUM-CHROME-009
   - REQ-KUM-CHROME-010
-  implementation_source_revision: c387f9e4f6d353e8dedeb9ed49590a4681c73b30
+  implementation_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
   verification_summary: 'Partial: semantic pinned target/placement, tool reservations, closed/unavailable target
-    safety and projection guards proven; actual configurable chrome/widgets/accessibility remain open.'
+    safety and projection guards proven; actual configurable chrome/widgets/accessibility remain open. WP011 adds
+    version2 layered settings/capability provenance and current content0.2/protocol2 typed targets; all24 public
+    cases proved, actual GUI/host effects remain open.'
   matrix_entry_refs:
   - BM-KUM-LAYOUT-WINX64-001
   - BM-KUM-RECOVERY-WINX64-001
+  - BM-KUM-NAVIGATION-MEDIA-WINX64-001
 - item_ref: FEAT-KUM-CONTENT
   source_topic_refs:
   - TOPIC-KUM-CONTENT
@@ -183,12 +186,14 @@ roadmap:
   - REQ-KUM-CONTENT-005
   - REQ-KUM-CONTENT-006
   - REQ-KUM-CONTENT-007
-  implementation_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  implementation_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
   verification_summary: 'Partial: typed capability negotiation, private Core routing/scoped ACKs, placeholders,
     pinned tools and opaque host asset/undo contracts proven; actual content engines/editors/asset store remain
-    host integration.'
+    host integration. WP011 adds version2 layered settings/capability provenance and current content0.2/protocol2
+    typed targets; all24 public cases proved, actual GUI/host effects remain open.'
   matrix_entry_refs:
   - BM-KUM-CONTENT-WINX64-001
+  - BM-KUM-NAVIGATION-MEDIA-WINX64-001
 - item_ref: FEAT-KUM-RENDER
   source_topic_refs:
   - TOPIC-KUM-RENDER
@@ -240,7 +245,7 @@ roadmap:
   source_topic_refs:
   - TOPIC-KUM-NAVIGATION
   overview_summary: Large scrollbars and content minimaps
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-NAVIGATION-001
@@ -249,23 +254,29 @@ roadmap:
   - REQ-KUM-NAVIGATION-004
   - REQ-KUM-NAVIGATION-005
   - REQ-KUM-NAVIGATION-006
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  verification_summary: 'Partial: four modes, full-range/minimum-thumb mapping, keyboard metadata, continuous transient
+    gesture, bounded host overview and typed actual/Unknown recovery proved headlessly; GUI/capture/accessibility/host
+    document acceptance remains open.'
+  matrix_entry_refs:
+  - BM-KUM-NAVIGATION-MEDIA-WINX64-001
 - item_ref: FEAT-KUM-BACKGROUNDS
   source_topic_refs:
   - TOPIC-KUM-BACKGROUNDS
   overview_summary: Image and video backgrounds
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-BACKGROUNDS-001
   - REQ-KUM-BACKGROUNDS-002
   - REQ-KUM-BACKGROUNDS-003
   - REQ-KUM-BACKGROUNDS-004
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  verification_summary: 'Partial: real frame/workspace mounts, visual/legibility/motion/audio policy, explicit shared
+    media MIN ceilings and exact applied/Unknown cleanup proved headlessly; actual compositing/decoding/audio/physical
+    savings remain open.'
+  matrix_entry_refs:
+  - BM-KUM-NAVIGATION-MEDIA-WINX64-001
 - item_ref: FEAT-KUM-LIFECYCLE
   source_topic_refs:
   - TOPIC-KUM-LIFECYCLE
@@ -321,16 +332,19 @@ roadmap:
   source_topic_refs:
   - TOPIC-KUM-INPUT
   overview_summary: Tablet input, keyboard and accessibility
-  implementation_status: planned
+  implementation_status: partially_implemented
   implemented_requirement_refs: []
   remaining_requirement_refs:
   - REQ-KUM-INPUT-001
   - REQ-KUM-INPUT-002
   - REQ-KUM-INPUT-003
   - REQ-KUM-INPUT-004
-  implementation_source_revision: null
-  verification_summary: No Rust implementation, GUI adapter or runtime acceptance yet.
-  matrix_entry_refs: []
+  implementation_source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  verification_summary: 'Partial: typed mouse/touch/pen gesture identity/settlement, keyboard navigation, accessibility
+    range metadata and denied background input routes proved headlessly; native/browser input/capture/focus/assistive
+    technology remains open.'
+  matrix_entry_refs:
+  - BM-KUM-NAVIGATION-MEDIA-WINX64-001
 - item_ref: FEAT-KUM-MODEL
   source_topic_refs:
   - TOPIC-KUM-MODEL

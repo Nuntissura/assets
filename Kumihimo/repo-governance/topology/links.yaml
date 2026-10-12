@@ -108,3 +108,15 @@ edges:
   from: KUM-PRODUCT-MANUAL
   to: KUM-CONTENT
   relation: explains_operation
+- id: KUM-LINK-WP011-CONTENT
+  from: WP-KUM-011-navigation-and-media-controls-v1
+  to: KUM-CONTENT
+  relation: implements
+- id: KUM-LINK-EVAL011-CONTENT
+  from: EVAL-KUM-011-v1
+  to: KUM-CONTENT-CONTRACTS
+  relation: evaluates
+- id: KUM-LINK-CONTROLS-EXAMPLE
+  from: KUM-CONTROLS-EXAMPLE
+  to: KUM-CONTENT
+  relation: consumes

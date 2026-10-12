@@ -201,6 +201,8 @@ On stale scope/permission, reread canonical and protocol state before new intent
 
 ## Supply navigation without owning the document
 
+Observed WP011 source `551ea5731931611f5a5a24f5c422684247edbdfb` passed all four feature checks, all 24 public cases and the quiet controls example on Windows x64 MSVC/rustc1.91.1. Independent evaluation is `PASS_SCOPED_RUNTIME`; real movement case005 was reproduced RED and proved GREEN, including nested/custom-packing prerequisites. Other platforms, actual GUI/provider engines and physical/performance acceptance remain open.
+
 `navigation` is optional and disabled by default. Enable it on the content dependency to expose `navigation.rs` and `overview.rs`; shared field resolution lives in `settings.rs`. Core 0.3 and saved-layout schema 1 remain unchanged. Protocol 2 uses `Scope.target: MountTarget`; protocol 1 and unknown versions reject. The twelve WP010 consumers keep their original behavior assertions after this fixture migration.
 
 For an attached view's exact scope, supply `DocumentModel` and a fresh `NavigationObservation` with `update_navigation`, then `RailGeometry` with `update_navigation_rail`. Models use host document units; observations report actual offsets independently of requested movement. `update_overview` accepts a sparse host-produced overview and semantic targets, never full document text. Default bounds are 4,096 markers per overview, 65,536 aggregate markers, 65,536 overview UTF-8 bytes and 256 bytes per opaque field; retained copies also consume the content controller's aggregate byte budget. Invalid replacement is atomic.

@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 14
+revision: 15
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -38,6 +38,8 @@ The baseline reflects the clarified intent: recursively nested windows and tabs 
 Read the explanation at the start of each topic for the plain-language intent. The structured block records the corresponding requirements and focused acceptance scenarios. Optional field-inspired ideas live in the research note and are not required features.
 
 Intended consumers include Handshake Notes, Studio and the planned Atelier suite, plus handshake-portal ingestion and movable taskboard/detail frames. These are operator-provided use cases, not implemented integrations. Modules can present views alongside or within other modules through host-declared capabilities. The host coordinates shared assets, editing actions and domain meaning; Kumihimo supplies arrangement and view boundaries.
+
+WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684247edbdfb: content 0.2/protocol 2.0, independent navigation/backgrounds features disabled by default, four successful Windows x64 all-target feature checks, twenty-four passing public cases (twelve preserved WP010 plus eight navigation/four backgrounds), and the quiet controls_host example. Independent evaluation is PASS_SCOPED_RUNTIME. F01 real frame movement was reproduced in existing case005 and passed after the routing correction; existing005/009 cover affected nested owners/custom packing, queued rejection/exposed Unknown, stable target/resource/instance and no-op/metadata/replay controls. Core0.3/JSON/schema1 remain unchanged. This proves typed host-fed policy, gestures, observations and bounded recovery, not native pointer capture, rendered GUI/readability/accessibility trees, actual provider/decoder engines, physical CPU/memory/GPU savings, performance or unobserved platforms. All full requirement acceptance remains open.
 ```
 
 ```yaml
@@ -1119,6 +1121,8 @@ Docking location and editing target are independent. A Studio toolbar moved to t
 Hosts choose whether hidden docked tools release their space or leave it reserved. They also declare supported orientations, sizes and destinations. The core handles placement and geometry; optional GUI adapters supply controls; providers supply actual tool actions. Hiding a toolbar does not unload its editor.
 
 The first portable tool-placement packet stores original host owner/origin and bound editing view/resource independently of tab/frame/workspace edge or grid-cell placement. Hosts declare compatible rebinding, eligibility, orientation, preferred/minimum sizes and ordering; only an explicit compatible host rebind changes the target. Binding/visibility policies and supplied target visibility, usability and command applicability are independent of keyboard focus. The default remains pinned with visibility while its target is visible and usable. No provider command is invoked by these semantic controls. Edge strips reserve in top, bottom, left, right order, then host order and tool identity for ties. Hidden release/retain controls reservation; remaining space follows host proportions/minima. Cell conflicts or forbidden placement reject atomically.
+
+WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684247edbdfb: content 0.2/protocol 2.0, independent navigation/backgrounds features disabled by default, four successful Windows x64 all-target feature checks, twenty-four passing public cases (twelve preserved WP010 plus eight navigation/four backgrounds), and the quiet controls_host example. Independent evaluation is PASS_SCOPED_RUNTIME. F01 real frame movement was reproduced in existing case005 and passed after the routing correction; existing005/009 cover affected nested owners/custom packing, queued rejection/exposed Unknown, stable target/resource/instance and no-op/metadata/replay controls. Core0.3/JSON/schema1 remain unchanged. This proves typed host-fed policy, gestures, observations and bounded recovery, not native pointer capture, rendered GUI/readability/accessibility trees, actual provider/decoder engines, physical CPU/memory/GPU savings, performance or unobserved platforms. All full requirement acceptance remains open.
 ```
 
 ```yaml
@@ -2120,6 +2124,8 @@ The host selects navigation presentation per its profile/workspace/surface setti
 In transient mode, grabbing the thumb expands a map beside the document and turns the held object into the map's viewport rectangle. Continue the same vertical drag; release hides the map and restores the rail/thumb at the new position. Expansion preserves the grab anchor and document layout. Other modes retain their configured persistent controls.
 
 If a content provider cannot supply minimap data, report that capability and use the host's declared fallback rather than inventing an overview.
+
+WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684247edbdfb: content 0.2/protocol 2.0, independent navigation/backgrounds features disabled by default, four successful Windows x64 all-target feature checks, twenty-four passing public cases (twelve preserved WP010 plus eight navigation/four backgrounds), and the quiet controls_host example. Independent evaluation is PASS_SCOPED_RUNTIME. F01 real frame movement was reproduced in existing case005 and passed after the routing correction; existing005/009 cover affected nested owners/custom packing, queued rejection/exposed Unknown, stable target/resource/instance and no-op/metadata/replay controls. Core0.3/JSON/schema1 remain unchanged. This proves typed host-fed policy, gestures, observations and bounded recovery, not native pointer capture, rendered GUI/readability/accessibility trees, actual provider/decoder engines, physical CPU/memory/GPU savings, performance or unobserved platforms. All full requirement acceptance remains open.
 ```
 
 ```yaml
@@ -2321,6 +2327,8 @@ content_blocks:
 Allow a pane or workspace to use an image or video background with brightness, opacity and crop controls. Keep controls and text readable above it. Host policy can mute decorative video, reduce motion or choose a still poster.
 
 Brightness and transparency are visual controls. Decoder scheduling, resolution and pausing are the resource controls. Hiding a background should request reduced work from its media provider and wait for confirmation.
+
+WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684247edbdfb: content 0.2/protocol 2.0, independent navigation/backgrounds features disabled by default, four successful Windows x64 all-target feature checks, twenty-four passing public cases (twelve preserved WP010 plus eight navigation/four backgrounds), and the quiet controls_host example. Independent evaluation is PASS_SCOPED_RUNTIME. F01 real frame movement was reproduced in existing case005 and passed after the routing correction; existing005/009 cover affected nested owners/custom packing, queued rejection/exposed Unknown, stable target/resource/instance and no-op/metadata/replay controls. Core0.3/JSON/schema1 remain unchanged. This proves typed host-fed policy, gestures, observations and bounded recovery, not native pointer capture, rendered GUI/readability/accessibility trees, actual provider/decoder engines, physical CPU/memory/GPU savings, performance or unobserved platforms. All full requirement acceptance remains open.
 ```
 
 ```yaml
@@ -3035,6 +3043,8 @@ content_blocks:
 Docking, resizing and selecting tabs need usable touch and pen targets, plus keyboard equivalents. Dragging must be distinguishable from scrolling. A disabled cross-window gesture should have a command alternative.
 
 Use accessible names, focus order and announcements for layout changes. Hidden bars, collapsed groups and popouts must leave a route back to the content.
+
+WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684247edbdfb: content 0.2/protocol 2.0, independent navigation/backgrounds features disabled by default, four successful Windows x64 all-target feature checks, twenty-four passing public cases (twelve preserved WP010 plus eight navigation/four backgrounds), and the quiet controls_host example. Independent evaluation is PASS_SCOPED_RUNTIME. F01 real frame movement was reproduced in existing case005 and passed after the routing correction; existing005/009 cover affected nested owners/custom packing, queued rejection/exposed Unknown, stable target/resource/instance and no-op/metadata/replay controls. Core0.3/JSON/schema1 remain unchanged. This proves typed host-fed policy, gestures, observations and bounded recovery, not native pointer capture, rendered GUI/readability/accessibility trees, actual provider/decoder engines, physical CPU/memory/GPU savings, performance or unobserved platforms. All full requirement acceptance remains open.
 ```
 
 ```yaml
@@ -3840,7 +3850,17 @@ decisions:
     cache, locked/offline j2 lead lane. No duplicated helper self-tests, no extra broad Core/JSON suite when inputs
     remain identical, no actual GUI/decoder/physical/platform proof inferred. Supersession scope: Only content package0.1/protocol1.0/view-only
     Scope fields and feature extension choices are superseded for new0.2 integrations; every remaining WP010 guarantee
-    and its historical ba2d618 proof is carried forward, Core0.3/Snapshot3/schema1 unchanged.'
+    and its historical ba2d618 proof is carried forward, Core0.3/Snapshot3/schema1 unchanged. Observed implementation
+    boundary: WP011 observed headless implementation at source 551ea5731931611f5a5a24f5c422684247edbdfb: content
+    0.2/protocol 2.0, independent navigation/backgrounds features disabled by default, four successful Windows x64
+    all-target feature checks, twenty-four passing public cases (twelve preserved WP010 plus eight navigation/four
+    backgrounds), and the quiet controls_host example. Independent evaluation is PASS_SCOPED_RUNTIME. F01 real frame
+    movement was reproduced in existing case005 and passed after the routing correction; existing005/009 cover affected
+    nested owners/custom packing, queued rejection/exposed Unknown, stable target/resource/instance and no-op/metadata/replay
+    controls. Core0.3/JSON/schema1 remain unchanged. This proves typed host-fed policy, gestures, observations and
+    bounded recovery, not native pointer capture, rendered GUI/readability/accessibility trees, actual provider/decoder
+    engines, physical CPU/memory/GPU savings, performance or unobserved platforms. All full requirement acceptance
+    remains open.'
   rationale: One existing request/resource authority avoids duplicated lifecycle state; independent features keep
     selection small. Explicit gesture settlement, current revisions and typed actual observations prevent jumps,
     stale effects and fictitious resource claims.

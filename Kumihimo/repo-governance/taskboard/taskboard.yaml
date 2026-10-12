@@ -87,12 +87,10 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
-  next_action: Evaluator independently inspect exact551ea57 F01 diff, existing005/009 assertions and all7actual
-    Green logs plus ceab RED; resolve original F01 only if proved and freeze final scoped report, then lead outcome/spec/status/origin
-    settlement
-  blockers:
-  - 'EVAL-KUM-011-F01: owning RED→GREEN and all affected proof now passed on551ea57; final independent scoped reevaluation/containment
-    pending'
+  next_action: Lead validate and publish complete scoped outcome/report/currentviews; independently reread exact
+    origin and sixfilearchive/46unchanged runtimeinputs; evaluator scoped containment, then DONE settlement and
+    WP012 promotion
+  blockers: []
 - wp_id: WP-KUM-012-desktop-gui-adapter-v1
   title: Prove a replaceable desktop adapter
   phase: planned

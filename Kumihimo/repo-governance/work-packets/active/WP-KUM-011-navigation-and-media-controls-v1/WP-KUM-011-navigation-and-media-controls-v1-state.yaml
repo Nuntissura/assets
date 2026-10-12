@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 14
+generation: 15
 phase: active
-owner: ROLE-KUM-EVALUATION
+owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - product/Cargo.lock
 - product/README.md
@@ -157,9 +157,13 @@ proof:
     metadata replay controls inside original005/009. Quiet controls_host PASS dev0.02s, typedobservations confirmed/hostrendering
     external. Postrun47rawinputs unchanged; protected29files/13otherlockrecords unchanged. Independent F01 resolution/scoped
     verdict/outcome containment pending; no GUI/physical/platform claim.'
-blockers:
-- 'EVAL-KUM-011-F01: owning RED→GREEN and all affected proof now passed on551ea57; final independent scoped reevaluation/containment
-  pending'
-next_action: Evaluator independently inspect exact551ea57 F01 diff, existing005/009 assertions and all7actual Green
-  logs plus ceab RED; resolve original F01 only if proved and freeze final scoped report, then lead outcome/spec/status/origin
-  settlement
+- kind: independent_scoped_pass_and_local_outcome
+  source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  evaluation_sha256: 052630ac206f1a8fbd1ab646f6d2bd01ca5c69887c66b2f0767449fc34eadec1
+  observed: Root opened final12PASS/F01resolved report, exact source/REDGREEN/allaffected runtime inspected independently.
+    Local Spec15/master15/roadmap14, exactsixfile priorSpec14 archive from449dfd4, rulebook32/matrix6/topology/manual
+    record only scoped headless outcome; full99ordered requirement records unchanged/allfullacceptances open. Publication/independent
+    containment before DONE pending.
+blockers: []
+next_action: Lead validate and publish complete scoped outcome/report/currentviews; independently reread exact origin
+  and sixfilearchive/46unchanged runtimeinputs; evaluator scoped containment, then DONE settlement and WP012 promotion
