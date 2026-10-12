@@ -2501,6 +2501,19 @@ fn detached_structure_elements_are_reported() {
         ("an object stream without /N", "/HskJunk 50 0 R", vec![(50, raw_stream("/Type /ObjStm /First 5", "60 0 << >>"))], &[]),
         ("an object stream whose member offset is past its data", "/HskJunk 50 0 R", vec![(50, raw_stream("/Type /ObjStm /N 1 /First 5", "60 900 << >>"))], &[]),
         ("an object stream whose member does not parse", "/HskJunk 50 0 R", vec![(50, raw_stream("/Type /ObjStm /N 1 /First 5", "60 0 >>>>"))], &[]),
+        // V4-02 dims_u32_max-style rows: the header sizes are read as claims and checked against the decoded data.
+        (
+            "an object stream with /N 4294967295",
+            "/HskJunk 50 0 R",
+            vec![(50, raw_stream("/Type /ObjStm /N 4294967295 /First 5", "60 0 << >>"))],
+            &[],
+        ),
+        (
+            "an object stream with /First 4294967295",
+            "/HskJunk 50 0 R",
+            vec![(50, raw_stream("/Type /ObjStm /N 1 /First 4294967295", "60 0 << >>"))],
+            &[],
+        ),
         (
             "an object stream whose header lists more members than it holds",
             "/HskJunk 50 0 R",
