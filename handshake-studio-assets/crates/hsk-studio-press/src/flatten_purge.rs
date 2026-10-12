@@ -27,9 +27,12 @@
 //!   pages stay. The parent-tree entries of the flattened pages and removed annotations are nulled.
 //! - Painted sources ([`drop_painted_sources`], R13-F6): the images, forms, patterns, shadings, graphics
 //!   states and fonts the old page reached are dropped from every resource dictionary that lists them
-//!   when no kept content DRAWS them (usage analysis below); a source that stays only because some
-//!   content's usage cannot be determined is reported (`RedactedOutput::painted_sources_kept`,
-//!   `NotProven::PaintedSourceKept`).
+//!   when no kept content DRAWS them (usage analysis below); a source that stays in the file without a kept
+//!   page or annotation appearance drawing it is reported (`RedactedOutput::painted_sources_kept`,
+//!   `NotProven::PaintedSourceKept`): either some content's usage cannot be determined, or a kept object
+//!   only REFERENCES it (R14-P1: a catalog `/AF`, a `/Names` or `/Dests` name tree, any plain reference).
+//!   Such a source is not pruned (the kept structure is not edited) and `region_flattened` reads false (test
+//!   `painted_source_referenced_by_a_kept_catalog_structure_is_reported`).
 //!
 //! Usage analysis: every page of the tree is a scope whose names resolve in its own `/Resources` and in
 //! every ancestor's (pdf.js merges them); a scope's content is decoded and strictly parsed and the names
@@ -38,7 +41,9 @@
 //! its own `/Resources` is read in the same scope; every stream (and Type 3 font) WITH its own
 //! `/Resources`, however it is reached, is a scope of its own. Everything else is followed as a plain
 //! reference. Content that cannot be decoded or parsed makes every entry of its scope used (kept,
-//! uncertain). Test `painted_sources_under_a_region_do_not_survive`.
+//! uncertain). Certain (= drawn): the entries named by the content of a kept page, of the appearance streams
+//! of the annotations a kept page lists, and of what those draw; whatever is reached from the trailer roots
+//! by plain references alone is reached, not certain (R14-P1). Test `painted_sources_under_a_region_do_not_survive`.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::content::parse_strict;
 use crate::error::{Limits, PressError, Result};
@@ -693,8 +698,28 @@ impl<'a> Usage<'a> {
     }
 }
 
+/// Object numbers of the appearance streams (`/AP` `/N`, `/R`, `/D`; the streams of a state dictionary) of the
+/// annotations `page` lists in its own `/Annots`: besides its content, the one thing a viewer renders from a page.
+fn appearance_streams(objs: &Objs, page: &Dict) -> Vec<u32> {
+    let Some(annots) = page.get("Annots").map(|a| res(objs, a)).and_then(Object::as_array) else { return Vec::new() };
+    let mut out = Vec::new();
+    for annot in annots {
+        let Some(ap) = res(objs, annot).as_dict().and_then(|d| d.get("AP")).map(|a| res(objs, a)).and_then(Object::as_dict) else { continue };
+        for key in ["N", "R", "D"] {
+            let Some(entry) = ap.get(key) else { continue };
+            match res(objs, entry) {
+                Object::Stream(_) => out.extend(entry.as_ref().map(|r| r.num)),
+                Object::Dict(states) => out.extend(states.entries.iter().filter_map(|(_, v)| v.as_ref()).map(|r| r.num)),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// Drops the flattened pages' sources no kept content draws (module docs). Returns the painted sources
-/// (images, forms, patterns, shadings) that stay in the file only because some usage is not determined.
+/// (images, forms, patterns, shadings) that stay in the file without a kept page or annotation drawing them: some
+/// usage is not determined, or a kept object only references them (R14-P1).
 pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &CancellationToken) -> Result<Vec<u32>> {
     let sources: BTreeSet<u32> = flats.iter().flat_map(|f| f.sources.iter().copied()).collect();
     if sources.is_empty() {
@@ -729,12 +754,20 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
             steps: 0,
             incomplete: false,
         };
+        // R14-P1: the trailer roots are followed as plain references only (reached, NOT certain): a painted
+        // source that nothing draws but that a kept catalog structure merely points at (`/AF`, a `/Names` or
+        // `/Dests` tree, `/OutputIntents`, ...) stays in the file, so it is reported, not silently kept.
+        // What a kept page draws is certain through the page scopes below.
         for r in trailer_roots(&doc.trailer) {
-            u.push(r, true);
+            u.push(r, false);
         }
         // Page scopes: own /Resources and every ancestor's.
         for p in &doc.pages {
             let Some(pd) = objs.get(p).and_then(|e| e.obj.as_dict()) else { continue };
+            // A viewer also renders the appearance streams of the annotations the page lists: they draw (certain).
+            for ap in appearance_streams(objs, pd) {
+                u.push(ap, true);
+            }
             let mut chain: Vec<&Dict> = Vec::new();
             let mut node = Some(pd);
             for _ in 0..=doc.limits.depth_cap() {

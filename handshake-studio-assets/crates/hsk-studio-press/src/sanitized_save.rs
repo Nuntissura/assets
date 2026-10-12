@@ -184,8 +184,10 @@ pub enum NotProven {
     /// than the proof did (lead decision 2026-10-11T15:00:20Z; test `canonical_rewrite_keeps_only_written_content`).
     NonCanonicalContent,
     /// An image, form, pattern or shading a flattened page reached is still in the saved file and no kept
-    /// content is KNOWN to draw it: some content's usage could not be determined
-    /// (`RedactedOutput::painted_sources_kept`; R13-F6; test `painted_sources_under_a_region_do_not_survive`).
+    /// page or annotation appearance is KNOWN to draw it: some content's usage could not be determined, or a
+    /// kept object only references it (a catalog `/AF`, a `/Names` or `/Dests` tree, any plain reference;
+    /// `RedactedOutput::painted_sources_kept`; R13-F6, R14-P1; tests `painted_sources_under_a_region_do_not_survive`,
+    /// `painted_source_referenced_by_a_kept_catalog_structure_is_reported`).
     PaintedSourceKept,
 }
 
@@ -1299,8 +1301,11 @@ pub struct RedactedOutput {
     /// document; test `xfa_is_stripped_from_redaction_outputs`).
     pub xfa_removed: bool,
     /// Images, forms, patterns and shadings (object numbers in `bytes`) a flattened page reached that
-    /// stay in the saved file only because some content's usage could not be determined; non-empty is
-    /// `NotProven::PaintedSourceKept` (R13-F6; test `painted_sources_under_a_region_do_not_survive`).
+    /// stay in the saved file without a kept page or annotation appearance drawing them: some content's
+    /// usage could not be determined, or a kept object only references them (R14-P1: not pruned, the kept
+    /// structure is not edited); non-empty is `NotProven::PaintedSourceKept` (R13-F6; tests
+    /// `painted_sources_under_a_region_do_not_survive`,
+    /// `painted_source_referenced_by_a_kept_catalog_structure_is_reported`).
     pub painted_sources_kept: Vec<u32>,
     /// `(region page index, class)`: text drawn on a region's page in the SAVED file whose glyph
     /// geometry the selector does not compute (Type 3, vertical, unresolved writing mode, unresolved
@@ -1357,7 +1362,7 @@ impl RedactedOutput {
     /// each, exactly the raster page with every pixel of every region the fill colour, nothing to inherit
     /// on its `/Parent` chain, no annotation or structure item pointing at it and no XFA
     /// (`residual_in_region == 0`: `flatten::check_flattened`, `flatten_purge::check_document`), no
-    /// painted source of the old page merely listed (`painted_sources_kept` empty), in a file with one
+    /// painted source of the old page kept without being drawn (`painted_sources_kept` empty), in a file with one
     /// xref section and no unreachable or unlisted objects. This is the by-construction claim; it does
     /// not depend on the needle search (tests `prereview_region_pages_are_flattened`,
     /// `flattened_pages_hold_only_the_raster`, `flattened_region_pixels_are_opaque_and_the_rest_is_rendered`).
