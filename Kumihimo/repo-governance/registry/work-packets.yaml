@@ -81,9 +81,11 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
-  next_action: Evaluator independently inspect exact9e69ab9 source, frozen12cases and all6actual proof logs; lead
-    then record scoped outcome/spec archive/current views and exact published containment before DONE
-  blockers: []
+  next_action: Publish held existing-case RED candidate and inspect exact origin/fence/resource; lead run owning
+    navigation005 once, then admit routing-only F01 correction from its concrete outcome
+  blockers:
+  - 'EVAL-KUM-011-F01: actual same-workspace frame reorder must invalidate affected navigation/geometry while preserving
+    target/resource/instance; existing move case is a no-op'
 - wp_id: WP-KUM-012-desktop-gui-adapter-v1
   title: Prove a replaceable desktop adapter
   phase: planned

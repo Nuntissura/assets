@@ -4,7 +4,7 @@ use kumihimo_core::{
     self as core, Command, Core, EntityId, Envelope, FrameId, ProviderId, ResourceId, Scalar,
     WorkspaceId,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn permission() -> HostPermission {
     HostPermission {
@@ -23,6 +23,19 @@ fn envelope(c: &Core, command: Command) -> Envelope {
 }
 fn create(c: &mut Core, command: Command) -> EntityId {
     match c.execute(envelope(c, command)).outcome.result.unwrap() {
+        core::Change::Created(id) => id,
+        _ => panic!("creation"),
+    }
+}
+fn canonical(c: &mut Controller, command: Command) -> core::Change {
+    c.execute(envelope(c.core(), command))
+        .unwrap()
+        .outcome
+        .result
+        .unwrap()
+}
+fn create_controlled(c: &mut Controller, command: Command) -> EntityId {
+    match canonical(c, command) {
         core::Change::Created(id) => id,
         _ => panic!("creation"),
     }
@@ -192,6 +205,271 @@ fn apply_budget(c: &mut Controller, mount: MountId, now: u64, obs_revision: u64)
 
 #[test]
 fn eval_kum_011_009_real_targets_composition_and_binding() {
+    // Exercise actual reorders, descendant placement and retained packing with both delivery states.
+    for dispatched in [false, true] {
+        for scenario in 0..3 {
+            let mut moved = fixture(ContentLimits::default());
+            let root = moved.workspace;
+            let ancestor = moved.frame;
+            let EntityId::Frame(second) = create_controlled(
+                &mut moved.c,
+                Command::CreateFrame {
+                    workspace: root,
+                    index: 1,
+                },
+            ) else {
+                unreachable!()
+            };
+            let mut affected_targets = vec![MountTarget::FrameBackground(ancestor)];
+            let mut nested_identity = None;
+            let mut packing_sibling = None;
+            if scenario == 1 {
+                let EntityId::Workspace(child) = create_controlled(
+                    &mut moved.c,
+                    Command::CreateWorkspace {
+                        owner: Some(ancestor),
+                    },
+                ) else {
+                    unreachable!()
+                };
+                let EntityId::Frame(owner) = create_controlled(
+                    &mut moved.c,
+                    Command::CreateFrame {
+                        workspace: child,
+                        index: 0,
+                    },
+                ) else {
+                    unreachable!()
+                };
+                let EntityId::Workspace(grandchild) = create_controlled(
+                    &mut moved.c,
+                    Command::CreateWorkspace { owner: Some(owner) },
+                ) else {
+                    unreachable!()
+                };
+                let EntityId::Frame(leaf) = create_controlled(
+                    &mut moved.c,
+                    Command::CreateFrame {
+                        workspace: grandchild,
+                        index: 0,
+                    },
+                ) else {
+                    unreachable!()
+                };
+                affected_targets = vec![
+                    MountTarget::FrameBackground(leaf),
+                    MountTarget::WorkspaceBackground(grandchild),
+                ];
+                nested_identity = Some((
+                    leaf,
+                    moved.c.snapshot().frames[&leaf].clone(),
+                    grandchild,
+                    moved.c.snapshot().workspaces[&grandchild].clone(),
+                ));
+            } else if scenario == 2 {
+                let EntityId::Frame(third) = create_controlled(
+                    &mut moved.c,
+                    Command::CreateFrame {
+                        workspace: root,
+                        index: 2,
+                    },
+                ) else {
+                    unreachable!()
+                };
+                let plan = core::LayoutPlan {
+                    root: Some(core::NodeId(4)),
+                    nodes: BTreeMap::from([
+                        (
+                            core::NodeId(1),
+                            core::LayoutNode::Leaf(core::LayoutItem::Frame(ancestor)),
+                        ),
+                        (
+                            core::NodeId(2),
+                            core::LayoutNode::Leaf(core::LayoutItem::Frame(third)),
+                        ),
+                        (
+                            core::NodeId(3),
+                            core::LayoutNode::Leaf(core::LayoutItem::Frame(second)),
+                        ),
+                        (
+                            core::NodeId(4),
+                            core::LayoutNode::Split {
+                                axis: core::Axis::Horizontal,
+                                children: (1..=3)
+                                    .map(|id| core::WeightedNode {
+                                        node: core::NodeId(id),
+                                        weight: Scalar::new(1.0).unwrap(),
+                                    })
+                                    .collect(),
+                            },
+                        ),
+                    ]),
+                };
+                canonical(
+                    &mut moved.c,
+                    Command::SetLayout {
+                        workspace: root,
+                        plan,
+                    },
+                );
+                affected_targets = vec![MountTarget::FrameBackground(third)];
+                packing_sibling = Some((third, moved.c.snapshot().frames[&third].clone()));
+            }
+            canonical(
+                &mut moved.c,
+                Command::SetGeometryContext {
+                    workspace: root,
+                    context: core::GeometryContext::new(
+                        core::Rect::new(0.0, 0.0, 900.0, 600.0).unwrap(),
+                    ),
+                },
+            );
+            let before_geometry = moved.c.snapshot().geometry(root).unwrap();
+            let before_plan = moved.c.snapshot().layouts.get(&root).cloned();
+            let root_mount = attached(&mut moved, MountTarget::WorkspaceBackground(root), None);
+            let affected: Vec<_> = affected_targets
+                .into_iter()
+                .map(|target| attached(&mut moved, target, None))
+                .collect();
+            let host_geometry = Geometry {
+                rect: core::Rect::new(0.0, 0.0, 200.0, 100.0).unwrap(),
+                clip: core::Rect::new(0.0, 0.0, 200.0, 100.0).unwrap(),
+                scale: Scalar::new(1.0).unwrap(),
+                anchor: None,
+            };
+            let root_request = moved
+                .c
+                .request(
+                    root_mount,
+                    RequestKind::Geometry(host_geometry.clone()),
+                    permission(),
+                    0,
+                )
+                .unwrap();
+            let mut old_effects = vec![];
+            for mount in &affected {
+                let before = moved.c.inspect().mounts[mount].clone();
+                let id = moved
+                    .c
+                    .request(
+                        *mount,
+                        RequestKind::Geometry(host_geometry.clone()),
+                        permission(),
+                        0,
+                    )
+                    .unwrap();
+                let delivered =
+                    dispatched.then(|| moved.c.dispatch(*mount, permission(), 0).unwrap().unwrap());
+                old_effects.push((*mount, before, id, delivered));
+            }
+            let counts = moved.c.inspect().counts;
+            let command = envelope(
+                moved.c.core(),
+                Command::MoveFrame {
+                    frame: ancestor,
+                    destination: root,
+                    index: 1,
+                },
+            );
+            assert!(
+                matches!(moved.c.execute(command.clone()).unwrap().outcome.result.unwrap(),core::Change::Moved(EntityId::Frame(id)) if id==ancestor)
+            );
+            assert_eq!(moved.c.snapshot().workspaces[&root].frames[1], ancestor);
+            let after_geometry = moved.c.snapshot().geometry(root).unwrap();
+            assert_ne!(
+                before_geometry.frames[&ancestor],
+                after_geometry.frames[&ancestor]
+            );
+            assert_eq!(before_geometry.content, after_geometry.content);
+            if let Some((leaf, frame, workspace, record)) = nested_identity {
+                assert_eq!(moved.c.snapshot().frames[&leaf], frame);
+                assert_eq!(moved.c.snapshot().workspaces[&workspace], record);
+            }
+            if let Some((sibling, frame)) = packing_sibling {
+                assert_eq!(moved.c.snapshot().frames[&sibling], frame);
+                assert_eq!(moved.c.snapshot().workspaces[&root].frames[2], sibling);
+                assert_ne!(before_plan, moved.c.snapshot().layouts.get(&root).cloned());
+                assert_ne!(
+                    before_geometry.frames[&sibling],
+                    after_geometry.frames[&sibling]
+                );
+            }
+            for (mount, before, id, delivered) in old_effects {
+                let state = moved.c.inspect();
+                let current = &state.mounts[&mount];
+                assert_eq!(current.scope, before.scope);
+                assert_eq!(current.instance, before.instance);
+                assert!(current.active && current.reserved);
+                assert!(state.instances[&current.instance].reserved);
+                if let Some(request) = delivered {
+                    assert_eq!(
+                        state.pending[&id].status,
+                        RequestStatus::Unknown,
+                        "scenario {scenario}"
+                    );
+                    assert!(state.pending[&id].stale);
+                    assert_eq!(state.instances[&current.instance].busy, Some(id));
+                    assert!(moved
+                        .c
+                        .ack(
+                            Ack {
+                                ticket: request.ticket,
+                                result: AckResult::Confirmed(Confirmation::Geometry {
+                                    anchor: None
+                                })
+                            },
+                            0
+                        )
+                        .is_err());
+                } else {
+                    assert!(!state.pending.contains_key(&id), "scenario {scenario}");
+                    assert!(state
+                        .receipts
+                        .iter()
+                        .any(|r| r.ticket.id == id && r.status == RequestStatus::Rejected));
+                }
+                assert!(!moved.c.inspect().pending.values().any(|p| p
+                    .request
+                    .ticket
+                    .scope
+                    .instance
+                    == before.instance
+                    && matches!(p.request.kind, RequestKind::Dispose)));
+            }
+            let state = moved.c.inspect();
+            assert_eq!(state.counts.mounts, counts.mounts);
+            assert_eq!(state.counts.instances, counts.instances);
+            assert_eq!(state.pending[&root_request].status, RequestStatus::Queued);
+            assert!(!state.pending[&root_request].stale);
+            let request = moved
+                .c
+                .dispatch(root_mount, permission(), 0)
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.ticket.id, root_request);
+            ack(
+                &mut moved.c,
+                request,
+                Confirmation::Geometry { anchor: None },
+                0,
+            );
+            let unchanged = moved.c.inspect();
+            assert!(moved.c.execute(command).unwrap().replayed);
+            assert_eq!(moved.c.inspect(), unchanged);
+            assert_eq!(
+                canonical(
+                    &mut moved.c,
+                    Command::MoveFrame {
+                        frame: ancestor,
+                        destination: root,
+                        index: 1
+                    }
+                ),
+                core::Change::Unchanged
+            );
+            assert_eq!(moved.c.inspect(), unchanged);
+        }
+    }
     let mut f = fixture(ContentLimits::default());
     let before = f.c.snapshot().clone();
     let workspace = f.workspace;

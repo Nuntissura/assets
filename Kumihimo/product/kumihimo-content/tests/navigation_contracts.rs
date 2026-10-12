@@ -189,6 +189,307 @@ fn absolute(request: &Request) -> f64 {
     }
 }
 
+fn create_live(c: &mut Controller, command: Command) -> EntityId {
+    match c
+        .execute(envelope(c.core(), command))
+        .unwrap()
+        .outcome
+        .result
+        .unwrap()
+    {
+        core::Change::Created(id) => id,
+        _ => panic!("live creation"),
+    }
+}
+fn attach_navigation(c: &mut Controller, view: ViewId) -> Scope {
+    let mount = c.attach(view, Default::default(), permit(), 0).unwrap();
+    let request = c.dispatch(mount, permit(), 0).unwrap().unwrap();
+    let scope = request.ticket.scope.clone();
+    c.ack(
+        Ack {
+            ticket: request.ticket,
+            result: AckResult::Confirmed(Confirmation::Attached {
+                strength: RestorationStrength::Unknown,
+            }),
+        },
+        0,
+    )
+    .unwrap();
+    c.update_navigation(&scope, model(1, 1000.0, 100.0), obs(1, 1, 450.0))
+        .unwrap();
+    c.update_navigation_rail(&scope, 1, rail(100.0)).unwrap();
+    scope
+}
+fn geometry_before_press(c: &mut Controller, scope: &Scope, dispatched: bool) -> RequestId {
+    let rect = rail(100.0).document_rect;
+    let id = c
+        .request(
+            scope.mount,
+            RequestKind::Geometry(Geometry {
+                rect,
+                clip: rect,
+                scale: v(1.0),
+                anchor: None,
+            }),
+            permit(),
+            0,
+        )
+        .unwrap();
+    if dispatched {
+        assert_eq!(
+            c.dispatch(scope.mount, permit(), 0)
+                .unwrap()
+                .unwrap()
+                .ticket
+                .id,
+            id
+        );
+    }
+    let thumb = c.navigation_projection(scope).unwrap().thumb.unwrap();
+    c.navigation_press(
+        scope,
+        1,
+        7,
+        PointerKind::Mouse,
+        v(thumb.start.get() + thumb.length.get() / 2.0),
+    )
+    .unwrap();
+    id
+}
+fn assert_moved_navigation(c: &Controller, scope: &Scope, geometry: RequestId, dispatched: bool) {
+    let snapshot = c.inspect();
+    let n = &snapshot.navigation[&scope.mount];
+    assert!(
+        n.gesture.is_none(),
+        "real canonical placement change must settle local drag"
+    );
+    assert_eq!(
+        n.settled.as_ref().unwrap().reason,
+        GestureSettlement::Invalidated
+    );
+    assert_eq!(n.observation, Observation::Known(obs(1, 1, 450.0)));
+    assert!(
+        snapshot
+            .pending
+            .values()
+            .all(|p| !matches!(p.request.kind, RequestKind::Navigation(_))),
+        "movement invalidation must emit no navigation"
+    );
+    let mount = &snapshot.mounts[&scope.mount];
+    assert_eq!(&mount.scope, scope);
+    assert_eq!(mount.instance, scope.instance);
+    assert!(mount.active && mount.reserved);
+    assert!(snapshot.instances[&scope.instance].reserved);
+    if dispatched {
+        let old = &snapshot.pending[&geometry];
+        assert!(old.stale);
+        assert_eq!(old.status, RequestStatus::Unknown);
+        assert_eq!(snapshot.instances[&scope.instance].busy, Some(geometry));
+    } else {
+        assert!(!snapshot.pending.contains_key(&geometry));
+        assert!(snapshot
+            .receipts
+            .iter()
+            .any(|r| r.ticket.id == geometry && r.status == RequestStatus::Rejected));
+    }
+}
+fn frame_reorder_regression(dispatched: bool) {
+    let mut h = host(Capabilities::default());
+    let a = h.c.snapshot().views[&h.view].frame;
+    let workspace = h.c.snapshot().frames[&a].workspace;
+    let EntityId::Frame(b) = create_live(
+        &mut h.c,
+        Command::CreateFrame {
+            workspace,
+            index: 1,
+        },
+    ) else {
+        unreachable!()
+    };
+    assert_eq!(h.c.snapshot().workspaces[&workspace].frames, vec![a, b]);
+    let old_geometry = geometry_before_press(&mut h.c, &h.scope, dispatched);
+    let before = h.c.inspect();
+    let noop = envelope(
+        h.c.core(),
+        Command::MoveFrame {
+            frame: a,
+            destination: workspace,
+            index: 0,
+        },
+    );
+    assert_eq!(
+        h.c.execute(noop.clone()).unwrap().outcome.result,
+        Ok(core::Change::Unchanged)
+    );
+    assert_eq!(h.c.inspect(), before);
+    assert!(h.c.execute(noop).unwrap().replayed);
+    assert_eq!(h.c.inspect(), before);
+    h.c.execute(envelope(
+        h.c.core(),
+        Command::SetViewMetadata {
+            view: h.view,
+            label: "metadata only".into(),
+            pinned: false,
+            unsaved: false,
+        },
+    ))
+    .unwrap()
+    .outcome
+    .result
+    .unwrap();
+    assert_eq!(h.c.inspect(), before);
+    let movement = envelope(
+        h.c.core(),
+        Command::MoveFrame {
+            frame: a,
+            destination: workspace,
+            index: 1,
+        },
+    );
+    assert_eq!(
+        h.c.execute(movement.clone()).unwrap().outcome.result,
+        Ok(core::Change::Moved(EntityId::Frame(a)))
+    );
+    assert_eq!(h.c.snapshot().workspaces[&workspace].frames, vec![b, a]);
+    assert_moved_navigation(&h.c, &h.scope, old_geometry, dispatched);
+    let after = h.c.inspect();
+    assert!(h.c.execute(movement).unwrap().replayed);
+    assert_eq!(h.c.inspect(), after);
+    if dispatched {
+        let ticket = after.pending[&old_geometry].request.ticket.clone();
+        assert!(h
+            .c
+            .ack(
+                Ack {
+                    ticket,
+                    result: AckResult::Confirmed(Confirmation::Geometry { anchor: None })
+                },
+                0
+            )
+            .is_err());
+        assert_eq!(h.c.inspect(), after);
+    }
+}
+fn ancestor_and_interval_regression() {
+    let mut h = host(Capabilities::default());
+    let a = h.c.snapshot().views[&h.view].frame;
+    let workspace = h.c.snapshot().frames[&a].workspace;
+    let resource = h.scope.resource;
+    let EntityId::Frame(b) = create_live(
+        &mut h.c,
+        Command::CreateFrame {
+            workspace,
+            index: 1,
+        },
+    ) else {
+        unreachable!()
+    };
+    let EntityId::Frame(outside) = create_live(
+        &mut h.c,
+        Command::CreateFrame {
+            workspace,
+            index: 2,
+        },
+    ) else {
+        unreachable!()
+    };
+    let EntityId::Workspace(child) =
+        create_live(&mut h.c, Command::CreateWorkspace { owner: Some(a) })
+    else {
+        unreachable!()
+    };
+    let EntityId::Frame(leaf) = create_live(
+        &mut h.c,
+        Command::CreateFrame {
+            workspace: child,
+            index: 0,
+        },
+    ) else {
+        unreachable!()
+    };
+    let EntityId::Workspace(other) =
+        create_live(&mut h.c, Command::CreateWorkspace { owner: None })
+    else {
+        unreachable!()
+    };
+    let EntityId::Frame(unaffected) = create_live(
+        &mut h.c,
+        Command::CreateFrame {
+            workspace: other,
+            index: 0,
+        },
+    ) else {
+        unreachable!()
+    };
+    let mut scopes = vec![];
+    for frame in [b, leaf, outside, unaffected] {
+        let EntityId::View(view) = create_live(
+            &mut h.c,
+            Command::CreateView {
+                frame,
+                resource,
+                index: 0,
+            },
+        ) else {
+            unreachable!()
+        };
+        scopes.push(attach_navigation(&mut h.c, view));
+    }
+    // No custom layout is installed; only [A,B] changes position in default [A,B,C].
+    assert!(!h.c.snapshot().layouts.contains_key(&workspace));
+    let old_leaf_tuple = (
+        h.c.snapshot().views[&scopes[1].target.view().unwrap()].frame,
+        h.c.snapshot().frames[&leaf].workspace,
+    );
+    let mut geometry = vec![];
+    for scope in &scopes {
+        geometry.push(geometry_before_press(&mut h.c, scope, false));
+    }
+    let before = h.c.inspect();
+    let result =
+        h.c.execute(envelope(
+            h.c.core(),
+            Command::MoveFrame {
+                frame: a,
+                destination: workspace,
+                index: 1,
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        result.outcome.result,
+        Ok(core::Change::Moved(EntityId::Frame(a)))
+    );
+    assert_eq!(
+        h.c.snapshot().workspaces[&workspace].frames,
+        vec![b, a, outside]
+    );
+    assert_eq!(
+        (
+            h.c.snapshot().views[&scopes[1].target.view().unwrap()].frame,
+            h.c.snapshot().frames[&leaf].workspace
+        ),
+        old_leaf_tuple
+    );
+    assert_moved_navigation(&h.c, &scopes[0], geometry[0], false);
+    assert_moved_navigation(&h.c, &scopes[1], geometry[1], false);
+    let after = h.c.inspect();
+    for index in [2, 3] {
+        assert_eq!(
+            after.navigation[&scopes[index].mount], before.navigation[&scopes[index].mount],
+            "unaffected default position/workspace must preserve its gesture"
+        );
+        assert_eq!(
+            after.mounts[&scopes[index].mount],
+            before.mounts[&scopes[index].mount]
+        );
+        assert_eq!(
+            after.pending[&geometry[index]],
+            before.pending[&geometry[index]]
+        );
+    }
+}
+
 #[test]
 fn eval_001_modes_precedence_and_declared_fallback() {
     let mut h = host(Capabilities::default());
@@ -475,6 +776,9 @@ fn eval_004_one_continuous_transformed_drag_and_typed_actual() {
 
 #[test]
 fn eval_005_revision_freshness_restore_and_reconcile_unknown() {
+    frame_reorder_regression(false);
+    frame_reorder_regression(true);
+    ancestor_and_interval_regression();
     let mut h = host(Capabilities::default());
     h.c.update_overview(&h.scope, overview(1)).unwrap();
     configure(&mut h, 2, NavigationMode::ScrubToMinimap);

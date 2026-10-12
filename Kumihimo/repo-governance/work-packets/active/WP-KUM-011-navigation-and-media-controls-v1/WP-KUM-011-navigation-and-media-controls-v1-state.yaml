@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 9
+generation: 11
 phase: active
-owner: ROLE-KUM-EVALUATION
+owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - product/Cargo.lock
 - product/README.md
@@ -94,6 +94,24 @@ proof:
     Quiet controls_host PASS dev0.02s: Protocol2 navigation/media observations confirmed; host rendering external.
     Post-run47product inputs unchanged. Independent scoped evaluation and complete outcome/spec/status/origin containment
     pending; actualGUI/engines/physicalresources/platforms unproven.'
-blockers: []
-next_action: Evaluator independently inspect exact9e69ab9 source, frozen12cases and all6actual proof logs; lead
-  then record scoped outcome/spec archive/current views and exact published containment before DONE
+- kind: independent_evaluation_finding
+  finding_id: EVAL-KUM-011-F01
+  source_revision: 9e69ab98feb1609fe9df169efc0e64b158ebfc68
+  observed: 'Evaluator/root/coder opened observer617/helper645 and Core MoveFrame306-355: actual same-workspace
+    index reorder changes canonical placement but current (FrameId,WorkspaceId) comparison stays equal, missing
+    stale_geometry/navigation settlement. Existing background movement case252-263 uses only frame/index0 and returns
+    Core Unchanged. Maps existing R005/R012/frozen005/009. Prior24green proves tested paths only; independent evaluation
+    not PASS.'
+- kind: held_existing_case_red_candidate
+  failed_source: 9e69ab98feb1609fe9df169efc0e64b158ebfc68
+  product_sha256: 5fd1839422ca1f5ba5eeedb32df8e359720d401ea67ad6e5eddd11ed4f4d230b
+  evaluation_report_sha256: 95ffbb3edd04d7d33de12e5db6da98dfbac69de14cc4221ecdd427fa84f49ffb
+  observed: Only existing navigation005/background009 consumer assertions changed; other45product bytes unchanged
+    including original routing c379cc9d. Cases now actual two-frame reorder, nested ancestor movement, queued/exposed
+    geometry and unchanged controls/custom packing. All writers held for one owning005 RED before routing repair;
+    frozen12 evaluator cases unchanged, report FAIL_SCOPED_CONTRACT with only F01 open.
+blockers:
+- 'EVAL-KUM-011-F01: actual same-workspace frame reorder must invalidate affected navigation/geometry while preserving
+  target/resource/instance; existing move case is a no-op'
+next_action: Publish held existing-case RED candidate and inspect exact origin/fence/resource; lead run owning navigation005
+  once, then admit routing-only F01 correction from its concrete outcome
