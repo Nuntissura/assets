@@ -421,3 +421,53 @@ focused_original_vendor_admission:
       generated_web_wasm_matches_manifest: true
       reuse_verdict: Reuse the existing compiled WASM for the unchanged WASM target dependency graph; no Cargo compilation was performed.
     scope_note: Browser-side product/kumihimo-web/web/pilot.mjs differs from the artifact manifest input list; it is not a Rust WASM compilation input, so browser proof is not re-certified by this dependency finding.
+focused_standalone_owning_test_admission:
+  observed_at: '2026-10-12'
+  scope: Dependency readiness for the one hidden provider-options library test through the excluded vendor's standalone manifest.
+  verdict: ready_for_owning_test
+  manifest_ref: product/third-party/accesskit_windows-0.29.2/Cargo.toml
+  manifest_sha256: 0cb24e74669f987d52b8b4d5091aa3f90c406f594e25640e478c7813881793ab
+  upstream_manifest_dependencies_and_features_unchanged: true
+  owning_lock:
+    ref: product/third-party/accesskit_windows-0.29.2/Cargo.lock
+    sha256: b5203dafa4a447f1d3fb4187eae8a50b53bfded0aa4d7b61b89c60bdd41d86d1
+    format_version: 4
+    package_records: 204
+    common_root_package_identities_and_checksums_unchanged: 199
+    extra_linux_dev_records_outside_windows_closure:
+    - arrayref 0.3.9
+    - sctk-adwaita 0.10.1
+    - strict-num 0.1.1
+    - tiny-skia 0.11.4
+    - tiny-skia-path 0.11.4
+  windows_resolution:
+    ref: ../.local/kumihimo-desktop/provider-owning-metadata.json
+    sha256: 0c0ffae9d25735a2a8123ea1ae22c412d539a43a5e8eb522b319c6e5f69adc75
+    target: x86_64-pc-windows-msvc
+    metadata_command_owner: dev_lead
+    lead_reported_offline_metadata_exit_code: 0
+    independent_breadth_first_closure_nodes: 45
+    registry_packages: 44
+    cached_sources_and_archives: 44
+    missing_sources_or_archives: 0
+    archive_checksum_mismatches: 0
+    selected_registry_versions_and_checksums_match_root_lock: true
+    declared_rust_versions_above_1_91: []
+    packages_without_declared_rust_version:
+    - cfg_aliases 0.2.2
+    - scopeguard 1.2.0
+    - smallvec 1.16.3
+    - smol_str 0.2.2
+    - static_assertions 1.1.0
+    undeclared_msrv_proof: Focused compilation remains required; metadata does not prove compiler compatibility for undeclared minimum versions.
+    owning_package_features: []
+    dev_feature_note: Upstream winit 0.30 retains default dev features; the five extra Linux records are absent from the Windows target closure.
+  root_boundary:
+    product_lock_sha256: d33c396e6827d8acdb4c1591974f71e3c15bc31f17129712aa67a436b21b24d8
+    product_lock_unchanged_from_previous_scoped_record: true
+    product_workspace_members: 5
+    product_default_members: 3
+    vendor_excluded_from_product_workspace: true
+    standalone_workspace_member: accesskit_windows 0.29.2 only
+    product_feature_change: false
+  proof_boundary: Dependency readiness permits the standalone owning test; its compilation and result remain pending. The root native consumer continues to use the root lock and local patch. Component proof does not replace the required strict quiet UIA/native acceptance.
