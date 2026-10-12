@@ -36,8 +36,9 @@
 //!   `/Names` or `/Dests` name tree, the entries of a kept page's `/Resources` outside the five gated
 //!   categories such as `/Properties` and `/ColorSpace`, a plain key of an object a kept page draws such as an
 //!   image's `/Alternates` or a form's `/PieceInfo`, an object used as a `/Resources` value, as a gated
-//!   sub-dictionary (`/XObject 10 0 R`) or as an appearance state, a name an operator uses for an object of another
-//!   kind, an entry a nearer entry of the same name shadows, any other plain reference). Such a source is not
+//!   sub-dictionary (`/XObject 10 0 R`) or as an appearance state, an appearance state the annotation's `/AS` does
+//!   not select, the appearance of an Invisible, Hidden or NoView annotation, a name an operator uses for an object
+//!   of another kind, an entry a nearer entry of the same name shadows, any other plain reference). Such a source is not
 //!   pruned (the kept structure is not edited). Tests
 //!   `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
 //!   `painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported`,
@@ -46,7 +47,8 @@
 //!   `painted_source_placed_as_a_gated_sub_dictionary_is_reported`,
 //!   `painted_source_placed_as_an_appearance_state_is_reported`,
 //!   `painted_source_named_where_it_is_not_drawn_is_reported`,
-//!   `painted_source_shadowed_by_a_nearer_resource_entry_is_reported`.
+//!   `painted_source_shadowed_by_a_nearer_resource_entry_is_reported`,
+//!   `painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported`.
 //!
 //! Usage analysis: every page of the tree is a scope whose names resolve in its own `/Resources` and in
 //! every ancestor's (pdf.js merges them); a scope's content is decoded and strictly parsed and the names
@@ -62,9 +64,10 @@
 //! soft-mask groups and Type 3 glyph procedures so drawn), the name resolves to it (the nearest entry of its
 //! category in the scope's resource chain; an entry a nearer one shadows is reached only) and it is the kind
 //! that operator draws (`Do` an image or form stream, `sh` a shading, `scn`/`SCN` a pattern, `gs` and `Tf` a
-//! plain dictionary), or it is a form XObject that is an appearance stream (`/AP` `/N` `/R` `/D`, the streams of a
-//! state dictionary included; annotation flags and the `/AS` state selection are not read) of an annotation a
-//! kept page lists in its own `/Annots`, or it is rendered along with such an object: the `/SMask` and `/Mask`
+//! plain dictionary), or it is a form XObject that is an appearance stream a viewer draws (`/AP` `/N` `/R` `/D`: the
+//! stream itself, or in a state dictionary only the state the annotation's `/AS` names, none when `/AS` is missing or
+//! names no state) of an annotation a kept page lists in its own `/Annots` and whose `/F` has none of the Invisible,
+//! Hidden and NoView flags (bits 1, 2 and 6), or it is rendered along with such an object: the `/SMask` and `/Mask`
 //! image of a drawn image, the `/Shading` of a drawn shading pattern, the `/SMask` `/G` form of a drawn graphics
 //! state. Everything else only references, even from a kept page or a drawn object: a position is not a draw (an
 //! image placed as a kept page's `/Resources` value, as a gated sub-dictionary such as `/XObject 10 0 R`, as an
@@ -818,19 +821,26 @@ impl<'a> Usage<'a> {
 
 /// Object numbers of the appearance streams (`/AP` `/N`, `/R`, `/D`; the streams of a state dictionary) of the
 /// annotations `page` lists in its own `/Annots`: besides its content, the one thing a viewer renders from a page.
-/// Each comes with whether it is drawn: only a form XObject is (R17: an image or any other object placed there is
-/// reached, not drawn).
+/// Each comes with whether a viewer draws it (R17): only a form XObject is (an image or any other object placed there
+/// is reached, not drawn); an entry that is a stream itself is the drawn one, of an entry that is a state dictionary
+/// only the state the annotation's `/AS` names (none when `/AS` is missing or names no state); and an annotation whose
+/// `/F` has the Invisible (bit 1), Hidden (bit 2) or NoView (bit 6) flag draws nothing.
 fn appearance_streams(objs: &Objs, page: &Dict) -> Vec<(u32, bool)> {
     let Some(annots) = page.get("Annots").map(|a| res(objs, a)).and_then(Object::as_array) else { return Vec::new() };
     let mut out = Vec::new();
     let form = |o: &Object| kind_of(objs, o) == Kind::Form;
     for annot in annots {
-        let Some(ap) = res(objs, annot).as_dict().and_then(|d| d.get("AP")).map(|a| res(objs, a)).and_then(Object::as_dict) else { continue };
+        let Some(ad) = res(objs, annot).as_dict() else { continue };
+        let Some(ap) = ad.get("AP").map(|a| res(objs, a)).and_then(Object::as_dict) else { continue };
+        let shown = ad.get("F").map(|f| res(objs, f)).and_then(Object::as_int).is_none_or(|f| f & 0b10_0011 == 0);
+        let state = ad.get("AS").map(|s| res(objs, s)).and_then(Object::as_name);
         for key in ["N", "R", "D"] {
             let Some(entry) = ap.get(key) else { continue };
             match res(objs, entry) {
-                Object::Stream(_) => out.extend(entry.as_ref().map(|r| (r.num, form(entry)))),
-                Object::Dict(states) => out.extend(states.entries.iter().filter_map(|(_, v)| v.as_ref().map(|r| (r.num, form(v))))),
+                Object::Stream(_) => out.extend(entry.as_ref().map(|r| (r.num, shown && form(entry)))),
+                Object::Dict(states) => {
+                    out.extend(states.entries.iter().filter_map(|(k, v)| v.as_ref().map(|r| (r.num, shown && state == Some(k.as_slice()) && form(v)))))
+                }
                 _ => {}
             }
         }
@@ -887,8 +897,9 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
         // /Resources outside the gated categories are plain references (`Usage::resources`), not certain.
         for p in &doc.pages {
             let Some(pd) = objs.get(p).and_then(|e| e.obj.as_dict()) else { continue };
-            // A viewer also renders the appearance streams of the annotations the page lists: a form XObject there
-            // draws (certain); any other object placed there is only reached (R17).
+            // A viewer also renders the appearance streams of the annotations the page lists: a form XObject that it
+            // draws there is certain; any other object, an unselected state and the appearance of a hidden annotation
+            // are only reached (R17).
             for (ap, form) in appearance_streams(objs, pd) {
                 u.push(ap, form);
             }

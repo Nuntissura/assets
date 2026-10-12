@@ -810,7 +810,8 @@ fn painted_source_placed_as_a_gated_sub_dictionary_is_reported() {
 /// An appearance is drawn only as a form XObject: an image there is no draw, so it stays and is reported.
 #[test]
 fn painted_source_placed_as_an_appearance_state_is_reported() {
-    let annot = |ap: &str| format!("<< /Type /Annot /Subtype /Stamp /Rect [300 100 400 200] /P 5 0 R /AP << {ap} >> >>").into_bytes();
+    // `/AS /x` selects the state `x`, so it is the kind of the object, not the selection, that keeps the state undrawn.
+    let annot = |ap: &str| format!("<< /Type /Annot /Subtype /Stamp /Rect [300 100 400 200] /P 5 0 R /AS /x /AP << {ap} >> >>").into_bytes();
     let mut red: Vec<String> = Vec::new();
     for (what, ap) in [
         ("the image is an /AP /N state value", "/N << /x 10 0 R >>"),
@@ -840,6 +841,52 @@ fn painted_source_placed_as_an_appearance_state_is_reported() {
     }
     if !out.not_proven_reasons().contains(&hsk_studio_press::NotProven::PaintedSourceKept) {
         red.push(format!("a shading as an /AP /N state value: not-proven reasons {:?} lack PaintedSourceKept", out.not_proven_reasons()));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R17 (lead decision, press rules): an appearance form that draws the region image counts as drawn only when a viewer
+/// draws that appearance. A stream under `/AP` `/N` `/R` `/D` is the drawn one; in a state dictionary only the state the
+/// annotation's `/AS` names is (no `/AS`, or one that names no state: none); an annotation whose `/F` has the Invisible
+/// (1), Hidden (2) or NoView (32) bit draws nothing. Form 31 draws the image through its own `/Resources`, form 32 is a
+/// blank. Each undrawn case keeps the image and reports it; the drawn cases (selected state, a flag that hides nothing)
+/// keep it silently.
+#[test]
+fn painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported() {
+    let text_only = "BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
+    let draws_image = stream_body(
+        "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /XObject << /Im1 10 0 R >> >>",
+        b"q 100 0 0 100 0 0 cm /Im1 Do Q",
+    );
+    let blank = stream_body("/Type /XObject /Subtype /Form /BBox [0 0 100 100]", b"0 g");
+    let doc = |extra: &str, ap: &str| {
+        let annot = format!("<< /Type /Annot /Subtype /Stamp /Rect [300 100 400 200] /P 5 0 R {extra} /AP << {ap} >> >>").into_bytes();
+        painted_doc_with("inherited", text_only, "", "/Annots [30 0 R]", vec![(30, annot), (31, draws_image.clone()), (32, blank.clone())])
+    };
+    let states = "/N << /On 31 0 R /Off 32 0 R >>";
+    let mut red: Vec<String> = Vec::new();
+    for (what, pdf) in [
+        ("the state /AS does not name (/AS /Off)", doc("/AS /Off", states)),
+        ("a state dictionary and no /AS", doc("", states)),
+        ("/AS names no state of the dictionary", doc("/AS /Gone", states)),
+        ("an unselected rollover state (/AP /R)", doc("/AS /Off", "/R << /On 31 0 R >>")),
+        ("an unselected down state (/AP /D)", doc("/AS /Off", "/D << /On 31 0 R >>")),
+        ("the Invisible flag (/F 1)", doc("/F 1", "/N 31 0 R")),
+        ("the Hidden flag (/F 2)", doc("/F 2", "/N 31 0 R")),
+        ("the NoView flag (/F 32)", doc("/F 32", "/N 31 0 R")),
+        ("Print and Hidden (/F 6)", doc("/F 6", "/N 31 0 R")),
+        ("Hidden over a selected state", doc("/F 2 /AS /On", states)),
+    ] {
+        reported_kept_image_too(what, &pdf, &mut red);
+    }
+    for (what, pdf) in [
+        ("the state /AS names (/AS /On)", doc("/AS /On", states)),
+        ("the selected rollover state", doc("/AS /On", "/R << /On 31 0 R >>")),
+        ("the stream itself, no flags", doc("", "/N 31 0 R")),
+        ("a flag that hides nothing (/F 4, Print)", doc("/F 4", "/N 31 0 R")),
+        ("Print and a selected state (/F 4 /AS /On)", doc("/F 4 /AS /On", states)),
+    ] {
+        silent_drawn_image(what, &pdf, &mut red);
     }
     assert!(red.is_empty(), "{red:#?}");
 }
@@ -945,9 +992,9 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "R16",
         "R17",
         "unless a kept page, or an annotation appearance a kept page lists, draws them",
-        "a kept object only references it or places it where a viewer draws nothing from it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font that it does not draw, a plain key of an object a kept page draws, an object used as a /Resources value, as a gated sub-dictionary or as an appearance state, a name an operator uses for an object of another kind, any plain reference)",
+        "a kept object only references it or places it where a viewer draws nothing from it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font that it does not draw, a plain key of an object a kept page draws, an object used as a /Resources value, as a gated sub-dictionary or as an appearance state, an appearance state the annotation's /AS does not select, the appearance of an Invisible, Hidden or NoView annotation, a name an operator uses for an object of another kind, any plain reference)",
         "the Do, sh, scn/SCN, gs and Tf targets of its content and of the content of what it draws in turn (forms, patterns, soft-mask groups, Type 3 glyph procedures), each of the kind its operator draws (Do an image or form stream, sh a shading, scn/SCN a pattern, gs and Tf a plain dictionary)",
-        "the form XObject appearance streams of the annotations it lists (/AP /N /R /D, state dictionaries included; annotation flags and /AS are not read)",
+        "the form XObject appearance streams of the annotations it lists that a viewer draws (/AP /N /R /D: the stream itself, or in a state dictionary only the state the annotation's /AS names, none without a matching /AS; none for an annotation whose /F has the Invisible, Hidden or NoView bit)",
         "painted_source_referenced_by_a_kept_catalog_structure_is_reported",
         "painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported",
         "painted_source_referenced_by_a_key_of_a_drawn_object_is_reported",
@@ -958,6 +1005,7 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "painted_source_placed_as_an_appearance_state_is_reported",
         "painted_source_named_where_it_is_not_drawn_is_reported",
         "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
+        "painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported",
         "a name resolves to the nearest entry of its category in the resource chain, an entry a nearer entry of the same name shadows is reached, not drawn",
     ] {
         assert!(hsk_studio_press::DESCRIPTOR.contains(needle), "DESCRIPTOR lacks {needle:?}");
@@ -973,6 +1021,7 @@ fn descriptor_names_the_painted_source_kept_by_reference_case() {
         "painted_source_placed_as_an_appearance_state_is_reported",
         "painted_source_named_where_it_is_not_drawn_is_reported",
         "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
+        "painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported",
     ] {
         assert!(source.contains(&format!("fn {cited}()")), "the cited test {cited} does not exist");
     }
