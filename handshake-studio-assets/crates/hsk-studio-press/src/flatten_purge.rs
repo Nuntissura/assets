@@ -3,15 +3,13 @@
 //! redaction save purges, by category below, what described or drew the OLD page: its annotations and widgets
 //! that no kept page lists are dropped, the painted sources it reached that no kept content names and no kept
 //! object references are dropped (one a kept object references stays and is reported), and, in a structure tree
-//! whose root is an indirect object, the structure elements that point at it stay with their text removed (a root
-//! written any other way is not edited, and an element of it that is not on a kept page is reported; an element under
-//! a `/K` array that is reached through a reference is not edited either, and is reported when it is off the kept
-//! pages and still holds structure text). So an
-//! image, form, annotation or widget value of a flattened page is not kept in the file by being merely listed,
-//! and the structure text of an element that points at it is removed from an edited tree, except below such an array
+//! whose root is an indirect object, the structure elements that the purge reads and that point at it stay with their
+//! text removed (best effort). The structure tree itself is NOT PROVEN (lead decision 2026-10-12T08:41:40Z, R23 FIX_FIRST):
+//! when the saved document has one, `RedactedOutput::residual_in_region` counts it once, `region_flattened` reads false and
+//! `NotProven::ResidualInRegion` is reported, whatever the purge removed; the redaction proof covers untagged documents.
+//! So an image, form, annotation or widget value of a flattened page is not kept in the file by being merely listed
 //! (tests `painted_sources_under_a_region_do_not_survive`, `structure_and_widgets_of_flattened_pages_are_removed`,
-//! `direct_structure_tree_elements_off_the_kept_pages_are_reported`,
-//! `indirect_array_k_elements_off_the_kept_pages_are_reported`).
+//! `tagged_documents_read_not_proven_whatever_the_tree_looks_like`).
 //!
 //! - XFA ([`strip_xfa`], R13-F2): `/AcroForm /XFA` and the catalog's `/NeedsRendering` are removed from
 //!   every redaction output. Choice (strip, not refuse): XFA is deprecated in ISO 32000-2 and is a second
@@ -27,26 +25,25 @@
 //!   in its own `/Annots`; their AcroForm field entries are purged (emptied parents too) and every other
 //!   direct reference to them is dropped (dictionary key removed, array element nulled; `/CO` entries
 //!   removed); none may stay reachable (`RedactionIncomplete` otherwise).
-//! - Structure ([`neutralize_structure`], R13-P1): every structure element that points at a flattened
-//!   page (its `/Pg` is one, the page's `/StructParents` entry of the parent tree names it, or it holds a
-//!   marked-content or object reference on such a page or to a removed annotation) loses its text and
-//!   attributes (`/Alt /ActualText /E /T /Lang /A /C /ID /Ref /AF /Phoneme /PhoneticAlphabet`, and `/Pg`
-//!   when it is a flattened page) and the content items on flattened pages; its child elements on other
-//!   pages stay. The parent-tree entries of the flattened pages and removed annotations are nulled. This edits
-//!   only a structure tree root that is an indirect reference to a dictionary (`edited_structure_root`); a root
-//!   written directly into the catalog, or reached through a chain of references, is not edited (PLR-094, lead
-//!   decision 2026-10-12T07:26:27Z, fail closed): every element of it that is not on a kept page, because neither
-//!   its own `/Pg` nor the nearest ancestor element's names a kept page of the saved file, counts in
-//!   `RedactedOutput::residual_in_region` (`unplaced_structure_elements`, over-reporting accepted), so
-//!   `region_flattened` reads false and `NotProven::ResidualInRegion` is reported (tests
-//!   `direct_structure_tree_elements_off_the_kept_pages_are_reported`,
-//!   `direct_structure_tree_on_kept_pages_stays_flattened`). In an edited tree the purge reads a `/K` that is a direct array
-//!   or one item, not a `/K` that is a reference to an array or an array nested in a `/K` array: the elements below such an
-//!   array keep their text, and each one that is off the kept pages by the same rule and still holds a key above counts in
-//!   `residual_in_region` too (PLR-094 sibling, lead decision 2026-10-12T07:54:54Z; tests
-//!   `indirect_array_k_elements_off_the_kept_pages_are_reported`, `indirect_array_k_controls_stay_as_they_were`,
-//!   `indirect_array_walk_over_the_bounds_is_reported`). The tree is not edited there either (option 1, walking the array, is
-//!   PLR-097).
+//! - Structure ([`neutralize_structure`], R13-P1; best effort, STRUCTURE TREE = NOT PROVEN): every structure element that the
+//!   purge reads and that points at a flattened page (its `/Pg` is one, the page's `/StructParents` entry of the parent
+//!   tree names it, or it holds a marked-content or object reference on such a page or to a removed annotation) loses its
+//!   text and attributes (`/Alt /ActualText /E /T /Lang /A /C /ID /Ref /AF /Phoneme /PhoneticAlphabet`, and `/Pg` when it is
+//!   a flattened page) and the content items on flattened pages; its child elements on other pages stay. The parent-tree
+//!   entries of the flattened pages and removed annotations are nulled. This edits only a structure tree root that is an
+//!   indirect reference to a dictionary (`edited_structure_root`). The purge does not read a root written directly into the
+//!   catalog or reached through a chain of references, an alias object (an object that is a reference to another), a `/K`
+//!   that is a reference to an array or an array nested in a `/K` array, an element that only the `/ParentTree` or the
+//!   `/IDTree` reaches, an element nested deeper than 64 levels, the `/IDTree` keys, the `/ClassMap`, or a grouping element
+//!   without `/Pg` whose children are on a flattened page: their text stays in the file. So the removal is not what the
+//!   save relies on. [`check_document`] reports the tree instead (R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN, lead decision
+//!   2026-10-12T08:41:40Z): when the saved document has a structure tree, a `/StructTreeRoot` that the catalog holds (directly
+//!   or through any chain of references) or any `/StructParents` or `/StructParent` entry left in the file, it counts 1 in
+//!   `RedactedOutput::residual_in_region` (one count for the tree, not one per element), `region_flattened` reads false and
+//!   `NotProven::ResidualInRegion` is reported. A document without one is not affected, and a caller who strips the tree
+//!   before the save gets `region_flattened` true again (tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
+//!   `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
+//!   `structure_parents_left_in_the_file_are_reported`).
 //! - Painted sources ([`drop_painted_sources`], R13-F6): the images, forms, patterns, shadings, graphics
 //!   states and fonts the old page reached are dropped from every resource dictionary that lists them
 //!   when nothing refers to them but a gated (`/XObject`, `/Pattern`, `/Shading`, `/ExtGState`, `/Font`)
@@ -117,7 +114,7 @@
 //! can be invisible or covered on the kept page. Test `silent_painted_source_visibility_is_not_checked`.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::content::parse_strict;
-use crate::error::{Limits, PressError, Result};
+use crate::error::{Limits, MAX_REF_HOPS, PressError, Result};
 use crate::filters;
 use crate::flatten::{Flat, refs_in};
 use crate::pdf_edit::PdfDoc;
@@ -467,7 +464,7 @@ fn scrub_parent_tree(objects: &mut Objs, root: &mut Dict, keys: &BTreeSet<i64>, 
 
 /// The structure tree root [`neutralize_structure`] edits: the catalog's `/StructTreeRoot` when it is an indirect reference
 /// to a dictionary. Any other spelling (a dictionary written directly into the catalog, a chain of references) is left as
-/// it is, and [`unplaced_structure_elements`] reports its elements (PLR-094).
+/// it is. The save reports a structure tree whatever its spelling ([`check_document`], STRUCTURE TREE = NOT PROVEN).
 fn edited_structure_root(doc: &PdfDoc, catalog: u32) -> Option<ObjRef> {
     let r = doc.dict_of(catalog)?.get("StructTreeRoot").and_then(Object::as_ref)?;
     doc.dict_of(r.num).map(|_| r)
@@ -1031,150 +1028,42 @@ fn prune_gated(o: &mut Object, gone: &BTreeSet<u32>, subdicts: &mut BTreeSet<u32
     }
 }
 
-/// The element references and direct element dictionaries (dictionaries with `/S`, as in [`neutralize_structure`]) that the
-/// roots `roots` (a structure tree's `/ParentTree` and `/IDTree`) lead to, whatever the nodes between are; `None` when the
-/// walk needs more than `cap` steps or `depth_cap` levels.
-fn tree_elements<'a>(saved: &'a PdfDoc, roots: Vec<&'a Object>, cap: usize, depth_cap: usize) -> Option<Vec<&'a Object>> {
-    let mut out: Vec<&Object> = Vec::new();
-    let mut seen: BTreeSet<u32> = BTreeSet::new();
-    let mut stack: Vec<(&Object, usize)> = roots.into_iter().map(|o| (o, 0)).collect();
-    let mut steps = 0usize;
-    while let Some((o, depth)) = stack.pop() {
-        steps = steps.saturating_add(1);
-        if steps > cap || depth > depth_cap {
-            return None;
-        }
-        if let Object::Ref(r) = o
-            && !seen.insert(r.num)
-        {
-            continue;
-        }
-        let next = depth.saturating_add(1);
-        let resolved = saved.resolve(o);
-        if let Object::Array(a) = resolved {
-            stack.extend(a.iter().map(|x| (x, next)));
-        } else if let Some(d) = resolved.as_dict() {
-            if d.get("S").is_some() {
-                out.push(o);
-            } else {
-                stack.extend(d.entries.iter().map(|(_, v)| (v, next)));
-            }
-        }
-    }
-    Some(out)
-}
-
-/// The items of a `/K` entry: the members of an array (direct or indirect), else the entry itself; and whether the members
-/// come from an array that is reached through a reference (`/K 85 0 R`, 85 an array), which [`neutralize_structure`] does not
-/// read (its `element` and root `/K` read take a direct array or one item).
-fn children<'a>(saved: &'a PdfDoc, k: &'a Object) -> (Vec<&'a Object>, bool) {
-    match saved.resolve(k) {
-        Object::Array(a) => (a.iter().collect(), matches!(k, Object::Ref(_))),
-        _ => (vec![k], false),
-    }
-}
-
-/// PLR-094 (lead decision 2026-10-12T07:26:27Z, FAIL CLOSED): counts the elements of a structure tree that the purge did not
-/// edit and cannot place on a kept page. Two kinds of tree are read.
-///
-/// - A tree that is not an indirect reference to a dictionary (a dictionary written directly into the catalog, a chain of
-///   references; `edited_structure_root`) keeps every `/Alt`, `/ActualText` and `/E` it holds, and the purge does not read which
-///   page that text describes; so an element is accepted only when its page is known to be a kept page of the saved file: its own
-///   `/Pg`, else the nearest ancestor element's, names a page of `saved` that is not a flattened page. Any other element counts
-///   one: no `/Pg` anywhere on its path, a `/Pg` that is not a reference, names no object or an object that is not a page, or
-///   names a flattened page. Elements are reached from the root's `/K` (the page inherited down the tree), then from its
-///   `/ParentTree` and `/IDTree` (no page inherited). Over-reporting is accepted: a `Document` element without `/Pg` counts.
-/// - An edited tree (an indirect root) is read from its `/K` only, and only the elements that `neutralize_structure` could not
-///   reach: it reads a `/K` that is a direct array or one item, so the members of a `/K` array reached through a reference (and of
-///   an array nested in a `/K` array) are not edited (PLR-094 sibling, lead decision 2026-10-12T07:54:54Z, fail closed). Such an
-///   element, and every element below it, counts one when the same page rule puts it off the kept pages AND it still holds a
-///   key of `STRUCT_TEXT_KEYS` (an element the purge neutralized holds none). The page is read from the saved file: a parent
-///   neutralized because its `/Pg` was a flattened page has lost that `/Pg`, so its child under an indirect array has no page.
-///
-/// A walk that needs more than `Limits::max_objects` steps or `Limits::depth_cap` levels counts one more; a reference is walked
-/// once, so a cycle ends. The tree is not edited. 0 for a file without a structure tree and when no page was flattened. Tests
-/// `direct_structure_tree_elements_off_the_kept_pages_are_reported`, `direct_structure_tree_on_kept_pages_stays_flattened`,
-/// `indirect_array_k_elements_off_the_kept_pages_are_reported`, `indirect_array_k_controls_stay_as_they_were`,
-/// `indirect_array_walk_over_the_bounds_is_reported`.
-fn unplaced_structure_elements(saved: &PdfDoc, flat_pages: &BTreeSet<u32>) -> u32 {
-    if flat_pages.is_empty() {
-        return 0;
-    }
-    let Some(root_num) = saved.trailer.get("Root").and_then(Object::as_ref).map(|r| r.num) else { return 0 };
-    let edited = edited_structure_root(saved, root_num).is_some();
-    let Some(tree) = saved.catalog().ok().and_then(|c| c.get("StructTreeRoot")).map(|t| saved.resolve(t)).and_then(Object::as_dict) else { return 0 };
-    let kept: BTreeSet<u32> = saved.pages.iter().copied().filter(|p| !flat_pages.contains(p)).collect();
-    let (cap, depth_cap) = (saved.limits.max_objects, saved.limits.depth_cap());
-    let mut bad = 0u32;
-    let mut late = match tree_elements(saved, ["ParentTree", "IDTree"].iter().filter_map(|k| tree.get(k)).filter(|_| !edited).collect(), cap, depth_cap) {
-        Some(found) => found,
-        None => {
-            bad = bad.saturating_add(1);
-            Vec::new()
-        }
-    };
-    // Each item: the object, the page it inherits, its depth, and whether the purge could not have reached it (below a `/K` array
-    // that is reached through a reference or nested; unused in a tree that is not edited, where every element counts).
-    let mut work: Vec<(&Object, Option<u32>, usize, bool)> = Vec::new();
-    if let Some(k) = tree.get("K") {
-        let (items, unread) = children(saved, k);
-        work.extend(items.into_iter().map(|o| (o, None, 0, unread)));
-    }
-    let mut seen: BTreeSet<u32> = BTreeSet::new();
-    let mut steps = 0usize;
-    loop {
-        let (item, inherited, depth, unread) = match work.pop() {
-            Some(w) => w,
-            None => match late.pop() {
-                Some(o) => (o, None, 0, false),
-                None => break,
+/// The saved document names a structure tree: the catalog holds a `/StructTreeRoot` that is not null, directly or through a
+/// chain of references. A null value, a reference to an object the file does not hold and a chain that ends in either read as
+/// no entry (the null object); a chain that does not end within `MAX_REF_HOPS` hops, a catalog the file does not yield and any
+/// other value count as a tree (fail closed).
+fn catalog_names_structure_tree(saved: &PdfDoc) -> bool {
+    let Ok(catalog) = saved.catalog() else { return true };
+    let Some(mut o) = catalog.get("StructTreeRoot") else { return false };
+    for _ in 0..=MAX_REF_HOPS {
+        match o {
+            Object::Null => return false,
+            Object::Ref(r) => match saved.objects.get(&r.num) {
+                Some(e) => o = &e.obj,
+                None => return false,
             },
-        };
-        if let Object::Ref(r) = item
-            && !seen.insert(r.num)
-        {
-            continue;
-        }
-        steps = steps.saturating_add(1);
-        if steps > cap {
-            bad = bad.saturating_add(1);
-            break;
-        }
-        if depth > depth_cap {
-            bad = bad.saturating_add(1);
-            continue;
-        }
-        let next = depth.saturating_add(1);
-        let resolved = saved.resolve(item);
-        // An array nested in a `/K` array is not read by `neutralize_structure`: its members are unread, whatever the tree.
-        if let Object::Array(a) = resolved {
-            work.extend(a.iter().map(|o| (o, inherited, next, true)));
-            continue;
-        }
-        // An integer, a marked-content or object reference dictionary (no `/S`) is a content item, not an element.
-        let Some(d) = resolved.as_dict().filter(|d| d.get("S").is_some()) else { continue };
-        let page = match d.get("Pg") {
-            None => inherited,
-            Some(p) => p.as_ref().map(|r| r.num),
-        };
-        let holds_text = STRUCT_TEXT_KEYS.iter().any(|key| d.get(key).is_some());
-        if (!edited || (unread && holds_text)) && !page.is_some_and(|p| kept.contains(&p)) {
-            bad = bad.saturating_add(1);
-        }
-        if let Some(k) = d.get("K") {
-            let (items, from_reference) = children(saved, k);
-            work.extend(items.into_iter().map(|o| (o, page, next, unread || from_reference)));
+            _ => return true,
         }
     }
-    bad
+    true
 }
 
-/// Document-level check of the SAVED file (counted in `residual_in_region`): no `/XFA`, no
-/// `/NeedsRendering`, no annotation whose `/P` and no structure item whose `/Pg` is a flattened page, no element of a
-/// structure tree the purge did not edit that is off the kept pages and, in the tree it edited, no element below a `/K` array
-/// it did not read that is off the kept pages and still holds structure text (`unplaced_structure_elements`, PLR-094).
+/// `d` holds `key` with a value other than the null object (a null value is an absent entry).
+fn holds(d: &Dict, key: &str) -> bool {
+    d.get(key).is_some_and(|v| !matches!(v, Object::Null))
+}
+
+/// Document-level check of the SAVED file (counted in `residual_in_region`): no `/XFA`, no `/NeedsRendering`, no annotation
+/// whose `/P` and no structure item whose `/Pg` is a flattened page, and no structure tree: the tree counts 1 when the catalog
+/// holds a `/StructTreeRoot` (`catalog_names_structure_tree`) or any dictionary of the file holds a `/StructParents` or
+/// `/StructParent` entry, however many elements it has and whatever the purge removed (R23 FIX_FIRST -> STRUCTURE TREE = NOT
+/// PROVEN, lead decision 2026-10-12T08:41:40Z; tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
+/// `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
+/// `structure_parents_left_in_the_file_are_reported`). Every dictionary and stream dictionary of the file is read, to the depth
+/// the parser admits (`Limits::depth_cap`); a value deeper than that counts 1 (fail closed; a parsed file has none).
 pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>) -> u32 {
     let mut bad = 0u32;
+    let mut tagged = catalog_names_structure_tree(saved);
     if let Ok(c) = saved.catalog() {
         if c.get("NeedsRendering").is_some() {
             bad = bad.saturating_add(1);
@@ -1183,10 +1072,12 @@ pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>) -> u32 
             bad = bad.saturating_add(1);
         }
     }
+    let depth_cap = saved.limits.depth_cap();
     for e in saved.objects.values() {
         let mut stack: Vec<(&Object, usize)> = vec![(&e.obj, 0)];
         while let Some((o, depth)) = stack.pop() {
-            if depth > 64 {
+            if depth > depth_cap {
+                bad = bad.saturating_add(1);
                 continue;
             }
             let next = depth.saturating_add(1);
@@ -1198,11 +1089,12 @@ pub(crate) fn check_document(saved: &PdfDoc, flat_pages: &BTreeSet<u32>) -> u32 
                     if on("Pg") || (on("P") && d.get("Subtype").is_some()) {
                         bad = bad.saturating_add(1);
                     }
+                    tagged |= holds(d, "StructParents") || holds(d, "StructParent");
                     stack.extend(d.entries.iter().map(|(_, v)| (v, next)));
                 }
                 _ => {}
             }
         }
     }
-    bad.saturating_add(unplaced_structure_elements(saved, flat_pages))
+    bad.saturating_add(u32::from(tagged))
 }

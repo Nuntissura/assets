@@ -157,7 +157,7 @@ pub enum NotProven {
     /// `RemoveImages`, a vector, a deep form).
     RegionIncomplete,
     /// The independent checks of the saved bytes found a mismatch (`RedactedOutput::residual_in_region`:
-    /// `flatten::check_flattened`, `flatten_purge::check_document`).
+    /// `flatten::check_flattened`, `flatten_purge::check_document`), a structure tree remaining in the saved document included.
     ResidualInRegion,
     /// The text-field report kept matches by policy or could not verify an appearance.
     TextFieldsKept,
@@ -1306,15 +1306,14 @@ pub struct RedactedOutput {
     /// `flatten::check_flattened` (page keys with `/Annots` empty, the `/Parent` chain holding nothing to
     /// inherit, the canonical raster content, the raster image dictionary and size, every region pixel
     /// the fill colour), and once for the document `flatten_purge::check_document` (no `/XFA`, no
-    /// `/NeedsRendering`, no annotation whose `/P` and no structure item whose `/Pg` is a flattened page, and, in a
-    /// structure tree the purge did not edit (a root written directly into the catalog or reached through a chain of
-    /// references), no element that is not on a kept page, and, in the tree it edited, no element below a `/K` array
-    /// reached through a reference (or nested in a `/K` array) that is not on a kept page and still holds structure text:
-    /// PLR-094, fail closed; over-reporting is accepted; tests
-    /// `direct_structure_tree_elements_off_the_kept_pages_are_reported`,
-    /// `direct_structure_tree_on_kept_pages_stays_flattened`, `indirect_array_k_elements_off_the_kept_pages_are_reported`,
-    /// `indirect_array_k_controls_stay_as_they_were`, `indirect_array_walk_over_the_bounds_is_reported`,
-    /// `kept_annotation_with_a_flattened_p_is_reported`).
+    /// `/NeedsRendering`, no annotation whose `/P` and no structure item whose `/Pg` is a flattened page, and no structure
+    /// tree: 1 when the catalog holds a `/StructTreeRoot`, directly or through a chain of references, or any dictionary of
+    /// the file holds a `/StructParents` or `/StructParent` entry, however many elements the tree has and whatever the
+    /// purge removed of it. R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN, lead decision 2026-10-12T08:41:40Z: the redaction
+    /// proof covers untagged documents, and for a tagged one the structure tree is neutralized best effort and reported;
+    /// tests `tagged_documents_read_not_proven_whatever_the_tree_looks_like`,
+    /// `untagged_documents_and_stripped_trees_still_read_flattened`, `structure_tree_keys_are_read_as_names_not_text`,
+    /// `structure_parents_left_in_the_file_are_reported`, `kept_annotation_with_a_flattened_p_is_reported`).
     pub residual_in_region: u32,
     /// Outline/annotation text redaction of the removed strings (`redact_and_save_with` with a
     /// text policy); `None` when it was not requested.
@@ -1429,9 +1428,8 @@ impl RedactedOutput {
 
     /// Every page carrying a region was flattened (Operator decision D27) and the SAVED bytes hold, for
     /// each, exactly the raster page with every pixel of every region the fill colour, nothing to inherit
-    /// on its `/Parent` chain, no annotation or structure item pointing at it, no element of an unedited structure
-    /// tree that is off the kept pages, no element below an unread `/K` array of the edited tree that is off the kept
-    /// pages and holds structure text (PLR-094) and no XFA
+    /// on its `/Parent` chain, no annotation or structure item pointing at it, no structure tree (STRUCTURE TREE = NOT
+    /// PROVEN: a document that has one reads false, so this claim covers untagged documents) and no XFA
     /// (`residual_in_region == 0`: `flatten::check_flattened`, `flatten_purge::check_document`), no
     /// painted source of the old page kept that is not silent (`painted_sources_kept` empty), in a file with one
     /// xref section and no unreachable or unlisted objects. This is the by-construction claim; it does

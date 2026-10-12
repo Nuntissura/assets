@@ -1575,7 +1575,8 @@ fn descriptor_states_that_painted_source_silence_is_syntactic() {
 
 /// R13-P1 (lead decision: no structure content, no widgets): the `/Alt` of a structure element on the
 /// flattened page and the value of a widget of that page (outside the region) are gone; the structure of
-/// the other page stays.
+/// the other page stays. R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN: the document is tagged, so the save reads not proven
+/// for exactly that tree, counted once (`residual_in_region` 1) although the purge read it all and it holds two elements.
 #[test]
 fn structure_and_widgets_of_flattened_pages_are_removed() {
     let pdf = build(&[
@@ -1607,8 +1608,8 @@ fn structure_and_widgets_of_flattened_pages_are_removed() {
     if out.structure_elements_neutralized != 1 || out.flattened_annotations_removed != 1 { // R13-new-api
         red.push(format!("neutralized {} annotations {}", out.structure_elements_neutralized, out.flattened_annotations_removed)); // R13-new-api
     } // R13-new-api
-    if !out.region_flattened() {
-        red.push(format!("region_flattened false (residual {})", out.residual_in_region));
+    if out.region_flattened() || out.residual_in_region != 1 || out.not_proven_reasons() != [hsk_studio_press::NotProven::ResidualInRegion] {
+        red.push(format!("region_flattened {} residual {} reasons {:?}, expected the tree reported once", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
     }
     assert!(red.is_empty(), "{red:#?}");
 }
@@ -1618,6 +1619,7 @@ fn structure_and_widgets_of_flattened_pages_are_removed() {
 /// plain key and in an array (kept objects that reference it); page two lists 71 in its own `/Annots`. Result: 70 leaves the
 /// file and both references to it are removed (key dropped, array element nulled); 71 stays with its appearance. The
 /// structure element of page one is not dropped: it stays in the tree without its `/Alt`, the element of page two keeps its text.
+/// R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN: the tagged document reads not proven for the tree (`residual_in_region` 1).
 #[test]
 fn flattened_page_annotations_leave_and_structure_elements_stay() {
     let pdf = build(&[
@@ -1675,8 +1677,8 @@ fn flattened_page_annotations_leave_and_structure_elements_stay() {
     if out.structure_elements_neutralized != 1 {
         red.push(format!("neutralized {}", out.structure_elements_neutralized));
     }
-    if !out.region_flattened() {
-        red.push(format!("region_flattened false (residual {})", out.residual_in_region));
+    if out.region_flattened() || out.residual_in_region != 1 || out.not_proven_reasons() != [hsk_studio_press::NotProven::ResidualInRegion] {
+        red.push(format!("region_flattened {} residual {} reasons {:?}, expected the tree reported once", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
     }
     assert!(red.is_empty(), "{red:#?}");
 }
@@ -1698,10 +1700,11 @@ fn descriptor_states_the_painted_source_condition_and_the_purge_categories() {
     }
 }
 
-/// PLR-094 fixture (lead decision 2026-10-12T07:26:27Z, FAIL CLOSED): the catalog holds its `/StructTreeRoot` as `tree`, in a
-/// spelling the purge does not edit (flatten_purge.rs `edited_structure_root`: only an indirect reference to a dictionary is
-/// edited). Page one (index 0, with the region) is flattened, page two is kept; `objects` are the structure objects (and any
-/// extra), `nums` the `/Nums` array of parent tree 83 (page one is `/StructParents 0`, page two `/StructParents 1`).
+/// PLR-094 fixture (lead decision 2026-10-12T07:26:27Z; since R23 FIX_FIRST every tagged document is reported): the catalog holds its
+/// `/StructTreeRoot` as `tree`, here in a spelling the purge does not edit (flatten_purge.rs `edited_structure_root`: only an
+/// indirect reference to a dictionary is edited). Page one (index 0, with the region) is flattened, page two is kept; `objects`
+/// are the structure objects (and any extra), `nums` the `/Nums` array of parent tree 83 (page one is `/StructParents 0`, page
+/// two `/StructParents 1`).
 fn direct_tree_output(tree: &str, objects: &[(u32, String)], nums: &str) -> hsk_studio_press::RedactedOutput {
     tree_output_with(&quick(), tree, objects, nums)
 }
@@ -1709,15 +1712,23 @@ fn direct_tree_output(tree: &str, objects: &[(u32, String)], nums: &str) -> hsk_
 /// `direct_tree_output` under the limits `limits` (the same fixture; the sibling tests below pass `80 0 R` as `tree` and the root
 /// dictionary as object 80, which is the one spelling the purge edits).
 fn tree_output_with(limits: &Limits, tree: &str, objects: &[(u32, String)], nums: &str) -> hsk_studio_press::RedactedOutput {
+    let mut all = vec![(83, format!("<< /Nums {nums} >>"))];
+    all.extend(objects.iter().cloned());
+    pages_output_with(limits, &format!("/StructTreeRoot {tree} /MarkInfo << /Marked true >>"), "/StructParents 0", "/StructParents 1", &all)
+}
+
+/// The fixture family of the structure tests: page one (index 0, with the region `R` and `SECRET`) is flattened, page two is kept.
+/// `catalog_extra`, `page_one_extra` and `page_two_extra` are appended to the catalog and the two page dictionaries (the structure
+/// keys of a tagged document, or none) and `objects` are further objects of the file.
+fn pages_output_with(limits: &Limits, catalog_extra: &str, page_one_extra: &str, page_two_extra: &str, objects: &[(u32, String)]) -> hsk_studio_press::RedactedOutput {
     let mut objs: Vec<(u32, Vec<u8>)> = vec![
-        (1, format!("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot {tree} /MarkInfo << /Marked true >> >>").into_bytes()),
+        (1, format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>").into_bytes()),
         (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
-        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> /StructParents 0 >>".to_vec()),
+        (3, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> {page_one_extra} >>").into_bytes()),
         (4, stream_body("", format!("/Figure << /MCID 0 >> BDC 0 g 300 300 100 100 re f EMC {SECRET}").as_bytes())),
-        (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> >> /StructParents 1 >>".to_vec()),
+        (5, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> >> {page_two_extra} >>").into_bytes()),
         (6, HELVETICA.to_vec()),
         (7, stream_body("", b"/P << /MCID 0 >> BDC BT /F1 12 Tf 72 700 Td (Page two) Tj ET EMC")),
-        (83, format!("<< /Nums {nums} >>").into_bytes()),
     ];
     objs.extend(objects.iter().map(|(n, body)| (*n, body.clone().into_bytes())));
     let pdf = build(&objs);
@@ -1728,12 +1739,12 @@ fn tree_output_with(limits: &Limits, tree: &str, objects: &[(u32, String)], nums
 const DIRECT_TEXTS: [&str; 3] = ["ALT-DIRECT-SECRET", "ACTUAL-DIRECT-SECRET", "EXPANSION-DIRECT-SECRET"];
 const DIRECT_TEXT_KEYS: &str = "/Alt (ALT-DIRECT-SECRET) /ActualText (ACTUAL-DIRECT-SECRET) /E (EXPANSION-DIRECT-SECRET)";
 
-/// PLR-094 (FAIL CLOSED; probe and fix): the catalog holds the structure tree root in a spelling the purge does not edit
-/// (a direct dictionary, or a chain of references) and an element of it carries `/Alt`, `/ActualText` and `/E` text but no
-/// kept page: the text stays in the file, so the save reports it (`residual_in_region`, `NotProven::ResidualInRegion`,
-/// `region_flattened` false). Before the fix 11 of the 12 cases read `region_flattened` true while the text survived (only the
-/// case that names the flattened page as `/Pg` was reported). Elements are placed by their own `/Pg`, else the nearest
-/// ancestor element's; they are reached from the root's `/K`, `/ParentTree` and `/IDTree`.
+/// PLR-094 (FAIL CLOSED; probe and fix), kept under STRUCTURE TREE = NOT PROVEN: the catalog holds the structure tree root in a
+/// spelling the purge does not edit (a direct dictionary, or a chain of references) and an element of it carries `/Alt`,
+/// `/ActualText` and `/E` text but no kept page: the text stays in the file, so the save reports it (`residual_in_region`,
+/// `NotProven::ResidualInRegion`, `region_flattened` false). These 12 inputs (a `/Pg` that names nothing, a decoy comment, a key
+/// in lower case, a name escape, an element only the parent tree or id tree reaches, a root behind a chain of references) were
+/// the adversarial cases of the per-element rule that R23 replaced; they stay as inputs of the tree rule.
 #[test]
 fn direct_structure_tree_elements_off_the_kept_pages_are_reported() {
     let tree = "<< /Type /StructTreeRoot /K [81 0 R] /ParentTree 83 0 R >>".to_string();
@@ -1797,10 +1808,11 @@ fn direct_structure_tree_elements_off_the_kept_pages_are_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// PLR-094, the other side: a catalog-direct structure tree whose every element sits on the kept page (its own `/Pg`, or the
-/// nearest ancestor element's) is not reported: `region_flattened` reads true, no reason, and the unedited text stays.
+/// PLR-094, the other side of the per-element rule that R23 replaced: a catalog-direct structure tree whose every element sits on
+/// the kept page (its own `/Pg`, or the nearest ancestor element's) is reported too, because the document is tagged
+/// (`region_flattened` false, `NotProven::ResidualInRegion` only, `residual_in_region` 1); the unedited text stays.
 #[test]
-fn direct_structure_tree_on_kept_pages_stays_flattened() {
+fn direct_structure_tree_on_kept_pages_is_reported_too() {
     let objects = vec![
         (82, "<< /Type /StructElem /S /Document /Pg 5 0 R /K [84 0 R 85 0 R 86 0 R] >>".to_string()),
         // V4-08: the key is spelled with a name escape and the reference is spread over lines and a tab.
@@ -1818,8 +1830,8 @@ fn direct_structure_tree_on_kept_pages_stays_flattened() {
     if out.structure_elements_neutralized != 0 {
         red.push(format!("neutralized {}", out.structure_elements_neutralized));
     }
-    if !out.region_flattened() || !out.not_proven_reasons().is_empty() {
-        red.push(format!("region_flattened {} reasons {:?} residual {}", out.region_flattened(), out.not_proven_reasons(), out.residual_in_region));
+    if out.region_flattened() || out.residual_in_region != 1 || out.not_proven_reasons() != [hsk_studio_press::NotProven::ResidualInRegion] {
+        red.push(format!("region_flattened {} reasons {:?} residual {}, expected the tree reported once", out.region_flattened(), out.not_proven_reasons(), out.residual_in_region));
     }
     assert!(red.is_empty(), "{red:#?}");
 }
@@ -1840,14 +1852,13 @@ fn indirect_root_output(limits: &Limits, root: &str, objects: &[(u32, String)], 
     tree_output_with(limits, "80 0 R", &all, nums)
 }
 
-/// PLR-094 sibling (lead decision 2026-10-12T07:54:54Z, FAIL CLOSED; V4-06 site flatten_purge.rs `element` and the root `/K` read):
-/// `neutralize_structure` reads a `/K` that is a direct array or one element, not a `/K` that is a reference to an array, so the
-/// elements under such an array are not edited. Probe A (the first case) was fail-open before the fix: a parent whose `/Pg` is
-/// the flattened page is neutralized (its `/Pg` leaves the file) while the child under its indirect `/K` array keeps `/Alt`,
-/// `/ActualText` and `/E`, and the save read `region_flattened` true with no reason. Now an element that is reached through such
-/// an array (or through an array written inside a `/K` array), is off the kept pages and still holds structure text is counted in
-/// `residual_in_region`: `region_flattened` false, `NotProven::ResidualInRegion` only. The text stays in the file (the tree is not
-/// edited here). Each case also checks that the text survived (the case needs it) and the number of elements the purge neutralized.
+/// PLR-094 sibling (lead decision 2026-10-12T07:54:54Z, FAIL CLOSED; V4-06 site flatten_purge.rs `element` and the root `/K` read),
+/// kept under STRUCTURE TREE = NOT PROVEN: `neutralize_structure` reads a `/K` that is a direct array or one element, not a `/K`
+/// that is a reference to an array, so the elements under such an array are not edited. Probe A (the first case) was fail-open
+/// before the sibling fix: a parent whose `/Pg` is the flattened page is neutralized (its `/Pg` leaves the file) while the child
+/// under its indirect `/K` array keeps `/Alt`, `/ActualText` and `/E`. The text stays in the file (the tree is not edited here)
+/// and the save reports the tree: `region_flattened` false, `NotProven::ResidualInRegion` only. Each case also checks that the
+/// text survived (the case needs it) and the number of elements the purge neutralized.
 #[test]
 fn indirect_array_k_elements_off_the_kept_pages_are_reported() {
     let parent = |k: &str| format!("<< /Type /StructElem /S /Document /Pg 3 0 R /K {k} >>");
@@ -1927,14 +1938,15 @@ fn indirect_array_k_elements_off_the_kept_pages_are_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// PLR-094 sibling, the controls of probe A (the scratch probe's cases B, C and D, plus one for the kept page): what was reported
-/// stays reported (B: the element names the flattened page as `/Pg`, which stays because the purge does not read the array); what
-/// the purge edits stays flattened with the text gone (C: the parent tree maps the element to the flattened page; D: the same tree
-/// as probe A with direct arrays); an indirect array whose elements sit on the kept page is not reported and keeps its text (E);
-/// and an edited tree read through direct arrays only is not reported for a `Document` element with `/Lang` and no `/Pg` (F: the
-/// new check reads only what the purge could not).
+/// PLR-094 sibling, the controls of probe A (the scratch probe's cases B, C and D, plus two for the kept page), which pin what the
+/// best-effort purge does and does not remove; since R23 FIX_FIRST (STRUCTURE TREE = NOT PROVEN) all of them are tagged documents
+/// and read not proven, with the same text facts as before: the element names the flattened page as `/Pg`, which stays because
+/// the purge does not read the array (B); the parent tree maps the element to the flattened page, so the text is gone (C); the
+/// same tree as probe A with direct arrays, text gone (D); an indirect array whose elements sit on the kept page keeps its text
+/// (E); and an edited tree read through direct arrays only, with a `Document` element holding `/Lang` and no `/Pg`, keeps that text
+/// (F). C, D, E and F read `flattened` before R23.
 #[test]
-fn indirect_array_k_controls_stay_as_they_were() {
+fn indirect_array_k_neutralization_controls() {
     let parent = |k: &str| format!("<< /Type /StructElem /S /Document /Pg 3 0 R /K {k} >>");
     let kept_p = "<< /Type /StructElem /S /P /Pg 5 0 R /ActualText (KEPT-INDIRECT-TEXT) /K 86 0 R >>".to_string();
     let kept_span = "<< /Type /StructElem /S /Span /Alt (KEPT-INHERITED-INDIRECT) /K 1 >>".to_string();
@@ -1946,7 +1958,6 @@ fn indirect_array_k_controls_stay_as_they_were() {
         neutralized: u32,
         /// Whether the three texts of `text_element` are gone from the saved bytes; `None` when the case holds none.
         direct_gone: Option<bool>,
-        reported: bool,
         /// Texts of the kept page that must stay.
         stay: &'static [&'static str],
     }
@@ -1958,7 +1969,6 @@ fn indirect_array_k_controls_stay_as_they_were() {
             nums: "[]",
             neutralized: 0,
             direct_gone: Some(false),
-            reported: true,
             stay: &[],
         },
         Control {
@@ -1968,7 +1978,6 @@ fn indirect_array_k_controls_stay_as_they_were() {
             nums: "[0 [81 0 R]]",
             neutralized: 1,
             direct_gone: Some(true),
-            reported: false,
             stay: &[],
         },
         Control {
@@ -1978,7 +1987,6 @@ fn indirect_array_k_controls_stay_as_they_were() {
             nums: "[]",
             neutralized: 2,
             direct_gone: Some(true),
-            reported: false,
             stay: &[],
         },
         Control {
@@ -1988,7 +1996,6 @@ fn indirect_array_k_controls_stay_as_they_were() {
             nums: "[1 [82 0 R]]",
             neutralized: 0,
             direct_gone: None,
-            reported: false,
             stay: &["KEPT-INDIRECT-TEXT", "KEPT-INHERITED-INDIRECT"],
         },
         Control {
@@ -2001,7 +2008,6 @@ fn indirect_array_k_controls_stay_as_they_were() {
             nums: "[1 [82 0 R]]",
             neutralized: 0,
             direct_gone: None,
-            reported: false,
             stay: &["KEPT-DOCUMENT-LANG", "KEPT-DIRECT-ARRAY-TEXT"],
         },
     ];
@@ -2024,56 +2030,8 @@ fn indirect_array_k_controls_stay_as_they_were() {
             red.push(format!("{name}: neutralized {}, expected {}", out.structure_elements_neutralized, c.neutralized));
         }
         let reasons = out.not_proven_reasons();
-        if c.reported && (out.region_flattened() || reasons != [hsk_studio_press::NotProven::ResidualInRegion] || out.residual_in_region == 0) {
+        if out.region_flattened() || reasons != [hsk_studio_press::NotProven::ResidualInRegion] || out.residual_in_region == 0 {
             red.push(format!("{name}: region_flattened {} reasons {reasons:?} residual {}, expected reported", out.region_flattened(), out.residual_in_region));
-        }
-        if !c.reported && (!out.region_flattened() || !reasons.is_empty()) {
-            red.push(format!("{name}: region_flattened {} reasons {reasons:?} residual {}, expected flattened", out.region_flattened(), out.residual_in_region));
-        }
-    }
-    assert!(red.is_empty(), "{red:#?}");
-}
-
-/// PLR-094 sibling, V4-01/V4-02 (the walk is bounded and cycle-safe; over a bound it counts one more, fail closed): a chain of
-/// elements on the kept page, each holding the next in an indirect `/K` array and none holding structure text, is not reported
-/// at 10 levels or 20 items (the control), and is reported at 40 levels (`Limits::max_depth` 32) and at 150 items against
-/// `Limits::max_objects` 100. The cycle case of `indirect_array_k_elements_off_the_kept_pages_are_reported` covers the visited set.
-#[test]
-fn indirect_array_walk_over_the_bounds_is_reported() {
-    // `levels` elements, each on the kept page (5) and without text, element i (object 100 + 2i) holding array 101 + 2i.
-    let chain = |levels: u32| -> Vec<(u32, String)> {
-        (0..levels)
-            .flat_map(|i| {
-                let (element, array) = (100 + 2 * i, 101 + 2 * i);
-                let k = if i + 1 == levels { "1".to_string() } else { format!("{array} 0 R") };
-                let mut v = vec![(element, format!("<< /Type /StructElem /S /Div /Pg 5 0 R /K {k} >>"))];
-                if i + 1 < levels {
-                    v.push((array, format!("[{} 0 R]", array + 1)));
-                }
-                v
-            })
-            .collect()
-    };
-    let chain_root = "<< /Type /StructTreeRoot /K [100 0 R] /ParentTree 83 0 R >>";
-    // One element on the kept page whose indirect `/K` array holds `items` integers (marked-content ids).
-    let wide = |items: usize| -> Vec<(u32, String)> {
-        vec![(81, "<< /Type /StructElem /S /Document /Pg 5 0 R /K 85 0 R >>".to_string()), (85, format!("[{}]", vec!["1"; items].join(" ")))]
-    };
-    let tight = Limits { max_objects: 100, ..quick() };
-    let mut red: Vec<String> = Vec::new();
-    let runs: [(&str, hsk_studio_press::RedactedOutput, bool); 4] = [
-        ("10 levels", indirect_root_output(&quick(), chain_root, &chain(10), "[1 [100 0 R]]"), false),
-        ("40 levels", indirect_root_output(&quick(), chain_root, &chain(40), "[1 [100 0 R]]"), true),
-        ("20 items against 100", indirect_root_output(&tight, INDIRECT_ROOT, &wide(20), "[1 [81 0 R]]"), false),
-        ("150 items against 100", indirect_root_output(&tight, INDIRECT_ROOT, &wide(150), "[1 [81 0 R]]"), true),
-    ];
-    for (name, out, reported) in runs {
-        let reasons = out.not_proven_reasons();
-        if reported && (out.region_flattened() || reasons != [hsk_studio_press::NotProven::ResidualInRegion]) {
-            red.push(format!("{name}: region_flattened {} reasons {reasons:?}, expected reported", out.region_flattened()));
-        }
-        if !reported && (!out.region_flattened() || !reasons.is_empty()) {
-            red.push(format!("{name}: region_flattened {} reasons {reasons:?} residual {}, expected flattened", out.region_flattened(), out.residual_in_region));
         }
     }
     assert!(red.is_empty(), "{red:#?}");
@@ -2111,21 +2069,362 @@ fn kept_annotation_with_a_flattened_p_is_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// PLR-093, PLR-094 (V4-07): the DESCRIPTOR states the fail-closed rule for a structure tree root the purge does not edit, in
-/// `purge` (the residual) and in `region_clearing` (what `check_document` counts), instead of the old sentence that named
-/// only the `/Pg` detection, and the sibling clause for the elements below an unread `/K` array of the edited tree (PLR-094
-/// sibling); the rule sentence cites tests that exist and uses none of the words that need a citation.
+/// The save reads not proven for the structure tree, for that reason alone: `region_flattened` and `region_cleared` false, a
+/// non-zero `residual_in_region` and `NotProven::ResidualInRegion` as the only reason.
+fn reported_for_the_tree(out: &hsk_studio_press::RedactedOutput) -> bool {
+    !out.region_flattened()
+        && !out.region_cleared()
+        && out.residual_in_region >= 1
+        && out.not_proven_reasons() == [hsk_studio_press::NotProven::ResidualInRegion]
+}
+
+/// The save reads the region as flattened: `region_flattened`, nothing counted, no reason at all.
+fn read_as_flattened(out: &hsk_studio_press::RedactedOutput) -> bool {
+    out.region_flattened() && out.residual_in_region == 0 && out.not_proven_reasons().is_empty()
+}
+
+/// R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN (lead decision 2026-10-12T08:41:40Z): a saved document that has a structure tree
+/// reads `region_flattened` false and `NotProven::ResidualInRegion`, whatever the tree looks like and whatever the purge removed
+/// of it. The inputs are the R23 pre-review probes (validation/R23-prereview-narrow.json; probe file r23_probe.rs), every one of
+/// which read `region_flattened` true at 54c60f9 while structure text survived: P1/P2/P3/P10 alias objects, P4/P5 an element only
+/// the id tree or a foreign parent-tree key reaches, P9 an element deeper than the purge's 64 levels, P11 an element without
+/// `/Pg`, and the well-formed files of R23-P4 (P6 `/IDTree` key text, P7 `/ClassMap` attribute text, P8 a `/Table` without
+/// `/Pg`). The controls P3c, P5c and P9c show the best-effort removal still running (the text is gone) and the save still
+/// reports the tree. Cases that need text to survive check that it does.
 #[test]
-fn descriptor_states_the_unedited_structure_tree_rule() {
+fn tagged_documents_read_not_proven_whatever_the_tree_looks_like() {
+    // `levels` element dictionaries written directly inside each other, the innermost naming the flattened page.
+    let nested = |levels: usize| -> String {
+        let mut s = format!("<< /S /Figure /Pg 3 0 R {DIRECT_TEXT_KEYS} /K 0 >>");
+        for _ in 1..levels {
+            s = format!("<< /S /Div /K {s} >>");
+        }
+        format!("<< /Type /StructTreeRoot /K {s} /ParentTree 83 0 R >>")
+    };
+    struct Case {
+        name: &'static str,
+        limits: Limits,
+        root: String,
+        objects: Vec<(u32, String)>,
+        nums: &'static str,
+        /// Texts that must survive in the saved file (the case needs them to).
+        survive: &'static [&'static str],
+        /// Texts the best-effort removal takes out.
+        removed: &'static [&'static str],
+    }
+    let deep = Limits { max_depth: 200, ..quick() };
+    let sect = "<< /Type /StructElem /S /Sect /Pg 3 0 R /K [84 0 R] >>".to_string();
+    let document = "<< /Type /StructElem /S /Document /Pg 3 0 R /K 0 >>".to_string();
+    let alias_root = "<< /Type /StructTreeRoot /K [84 0 R] /ParentTree 83 0 R >>".to_string();
+    let case = |name: &'static str,
+                limits: &Limits,
+                root: &str,
+                objects: Vec<(u32, String)>,
+                nums: &'static str,
+                survive: &'static [&'static str],
+                removed: &'static [&'static str]| Case {
+        name,
+        limits: *limits,
+        root: root.to_string(),
+        objects,
+        nums,
+        survive,
+        removed,
+    };
+    let all: &'static [&'static str] = &DIRECT_TEXTS;
+    let cases = vec![
+        case(
+            "P1: a /K member is an alias object (84 = 86 0 R) under a parent on the flattened page",
+            &quick(),
+            INDIRECT_ROOT,
+            vec![(81, sect.clone()), (84, "86 0 R".into()), (86, text_element("", "0"))],
+            "[]",
+            all,
+            &[],
+        ),
+        case(
+            "P2: the same, the parent tree maps page one to the alias",
+            &quick(),
+            INDIRECT_ROOT,
+            vec![(81, sect), (84, "86 0 R".into()), (86, text_element("", "0"))],
+            "[0 [84 0 R]]",
+            all,
+            &[],
+        ),
+        case(
+            "P3: a root /K member is an alias object, the parent tree maps page one through the alias",
+            &quick(),
+            &alias_root,
+            vec![(84, "86 0 R".into()), (86, text_element("", "0"))],
+            "[0 [84 0 R]]",
+            all,
+            &[],
+        ),
+        case(
+            "P3c control: the parent tree maps page one to the element itself, the removal runs",
+            &quick(),
+            &alias_root,
+            vec![(84, "86 0 R".into()), (86, text_element("", "0"))],
+            "[0 [86 0 R]]",
+            &[],
+            all,
+        ),
+        case(
+            "P4: an element only the id tree reaches (its /P is the element on the flattened page)",
+            &quick(),
+            "<< /Type /StructTreeRoot /K [81 0 R] /ParentTree 83 0 R /IDTree << /Names [(e1) 86 0 R] >> >>",
+            vec![(81, document.clone()), (86, text_element("/P 81 0 R /ID (e1)", "1"))],
+            "[0 [81 0 R]]",
+            all,
+            &[],
+        ),
+        case(
+            "P5: an element only a parent-tree key no page names reaches",
+            &quick(),
+            INDIRECT_ROOT,
+            vec![(81, document.clone()), (86, text_element("/P 81 0 R", "1"))],
+            "[0 [81 0 R] 7 [86 0 R]]",
+            all,
+            &[],
+        ),
+        case(
+            "P5c control: the element is reached through the flattened page's parent-tree entry, the removal runs",
+            &quick(),
+            INDIRECT_ROOT,
+            vec![(81, document), (86, text_element("/P 81 0 R", "1"))],
+            "[0 [81 0 R 86 0 R]]",
+            &[],
+            all,
+        ),
+        case(
+            "P6 (R23-P4, well-formed): the /IDTree key of a neutralized element keeps the id text",
+            &quick(),
+            "<< /Type /StructTreeRoot /K [81 0 R] /ParentTree 83 0 R /IDTree << /Names [(R23-ID-SECRET) 81 0 R] >> >>",
+            vec![(81, text_element("/Pg 3 0 R /ID (R23-ID-SECRET)", "0"))],
+            "[0 [81 0 R]]",
+            &["R23-ID-SECRET"],
+            all,
+        ),
+        case(
+            "P7 (R23-P4, well-formed): the /ClassMap attribute text of a neutralized element stays",
+            &quick(),
+            "<< /Type /StructTreeRoot /K [81 0 R] /ParentTree 83 0 R /ClassMap << /Cls1 << /O /UserProperties /P [<< /N (note) /V (R23-CLASSMAP-SECRET) >>] >> >> >>",
+            vec![(81, text_element("/Pg 3 0 R /C /Cls1", "0"))],
+            "[0 [81 0 R]]",
+            &["R23-CLASSMAP-SECRET"],
+            all,
+        ),
+        case(
+            "P8 (R23-P4, well-formed): a /Table without /Pg keeps its /Alt and /T, its only child is on the flattened page",
+            &quick(),
+            INDIRECT_ROOT,
+            vec![
+                (81, "<< /Type /StructElem /S /Table /Alt (R23-GROUP-ALT) /T (R23-GROUP-TITLE) /K [82 0 R] >>".into()),
+                (82, "<< /Type /StructElem /S /TR /P 81 0 R /Pg 3 0 R /K 0 >>".into()),
+            ],
+            "[0 [82 0 R]]",
+            &["R23-GROUP-ALT", "R23-GROUP-TITLE"],
+            &[],
+        ),
+        case("P9: 70 element dictionaries nested directly, Limits::max_depth 200", &deep, &nested(70), vec![], "[]", all, &[]),
+        case("P9c control: 20 levels, Limits::max_depth 200, the removal runs", &deep, &nested(20), vec![], "[]", &[], all),
+        case(
+            "P10: an element whose /Pg is an alias object of the flattened page (90 = 3 0 R)",
+            &quick(),
+            INDIRECT_ROOT,
+            vec![(81, text_element("/Pg 90 0 R", "0")), (90, "3 0 R".into())],
+            "[]",
+            all,
+            &[],
+        ),
+        case(
+            "P11: an element without /Pg, marked-content content the parent tree does not map",
+            &quick(),
+            INDIRECT_ROOT,
+            vec![(81, text_element("", "0"))],
+            "[]",
+            all,
+            &[],
+        ),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for c in cases {
+        let out = indirect_root_output(&c.limits, &c.root, &c.objects, c.nums);
+        for marker in c.survive {
+            if gone(&out.bytes, marker) {
+                red.push(format!("{}: {marker} was removed (the case needs the text to survive)", c.name));
+            }
+        }
+        for marker in c.removed {
+            if !gone(&out.bytes, marker) {
+                red.push(format!("{}: {marker} survives (the removal is expected to run here)", c.name));
+            }
+        }
+        if !reported_for_the_tree(&out) {
+            red.push(format!(
+                "{}: region_flattened {} residual {} reasons {:?}, expected only ResidualInRegion",
+                c.name,
+                out.region_flattened(),
+                out.residual_in_region,
+                out.not_proven_reasons()
+            ));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// STRUCTURE TREE = NOT PROVEN, the controls: a document without a structure tree reads flattened (nothing counted, no reason),
+/// and so does a tagged document whose caller stripped the tree before the save (the catalog's `/StructTreeRoot` and `/MarkInfo`
+/// and every `/StructParents` removed): the tree objects left in the file unreferenced are not written, so their texts are gone.
+/// `/MarkInfo` alone, and a `/StructParents` that only the flattened page carried (the flatten drops it), are not a tree.
+#[test]
+fn untagged_documents_and_stripped_trees_still_read_flattened() {
+    let tree = vec![
+        (80, INDIRECT_ROOT.to_string()),
+        (81, text_element("/Pg 3 0 R", "0")),
+        (82, text_element("/Pg 5 0 R", "1")),
+        (83, "<< /Nums [0 [81 0 R] 1 [82 0 R]] >>".to_string()),
+    ];
+    let cases = vec![
+        ("an untagged document", pages_output_with(&quick(), "", "", "", &[])),
+        ("a tagged document stripped by the caller, its tree objects left in the file unreferenced", pages_output_with(&quick(), "", "", "", &tree)),
+        ("/MarkInfo alone", pages_output_with(&quick(), "/MarkInfo << /Marked true >>", "", "", &[])),
+        ("a /StructParents only the flattened page carried, no tree", pages_output_with(&quick(), "", "/StructParents 0", "", &[])),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, out) in cases {
+        if !read_as_flattened(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+        if !gone(&out.bytes, "SECRET-ALPHA") {
+            red.push(format!("{name}: SECRET-ALPHA survives"));
+        }
+    }
+    let stripped = pages_output_with(&quick(), "", "", "", &tree);
+    for text in DIRECT_TEXTS {
+        if !gone(&stripped.bytes, text) {
+            red.push(format!("the unreferenced tree object text {text} was written"));
+        }
+    }
+    // The same file with the tree wired in is the tagged document these controls differ from.
+    let tagged = tree_output_with(&quick(), "80 0 R", &tree[..3], "[0 [81 0 R] 1 [82 0 R]]");
+    if !reported_for_the_tree(&tagged) {
+        red.push(format!("the tagged counterpart: region_flattened {} reasons {:?}", tagged.region_flattened(), tagged.not_proven_reasons()));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// STRUCTURE TREE = NOT PROVEN, V4-08 (hostile text format: the keys are read from the parsed dictionary, not matched in raw
+/// text): a name escape spells the key (`/Struct#54reeRoot`, `/Struct#50arents`) and counts; whitespace between key and value
+/// counts; a comment, a string that holds the key text, and a key in another case (`/structtreeroot`, `/STRUCTPARENTS`) do not.
+/// The value is read through references with the crate's bound: a null value, a reference to no object, a reference to a null
+/// object and a short chain that ends in either read as no tree (the null object); a chain of 20 aliases counts, whatever it ends
+/// in (fail closed past `MAX_REF_HOPS`), so does an alias chain that ends in the root dictionary (R23-P1's class).
+#[test]
+fn structure_tree_keys_are_read_as_names_not_text() {
+    let tree = vec![(80, "<< /Type /StructTreeRoot /K [81 0 R] >>".to_string()), (81, text_element("/Pg 5 0 R", "1"))];
+    // `hops` aliases (80 -> 81 -> ...) and then `end` as the last object.
+    let chain = |hops: u32, end: &str| -> Vec<(u32, String)> {
+        (0..hops).map(|i| (80 + i, format!("{} 0 R", 81 + i))).chain([(80 + hops, end.to_string())]).collect()
+    };
+    let root = "<< /Type /StructTreeRoot /K [] >>";
+    let limits = quick();
+    // (case, catalog extra, page two extra, objects, expected: true = reported for the tree)
+    type Case = (&'static str, &'static str, &'static str, Vec<(u32, String)>, bool);
+    let cases: Vec<Case> = vec![
+        ("control: the key spelled plainly", "/StructTreeRoot 80 0 R", "", tree.clone(), true),
+        ("the catalog key spelled with a name escape", "/Struct#54reeRoot 80 0 R", "", tree.clone(), true),
+        ("a /StructParents spelled with a name escape on a kept page", "", "/Struct#50arents 1", vec![], true),
+        ("whitespace between the key and its value", "", "/StructParents\n\t 1", vec![], true),
+        (
+            "the key text only in comments and strings",
+            "% /StructTreeRoot 80 0 R\n /Lang (/StructTreeRoot 80 0 R) /Title (/StructParents 1)",
+            "% /StructParents 1\n /HskNote (/StructParents 1 /StructTreeRoot 80 0 R)",
+            tree.clone(),
+            false,
+        ),
+        ("the keys in another case", "/structtreeroot 80 0 R /STRUCTTREEROOT 80 0 R", "/structparents 1 /STRUCTPARENTS 1 /Structparents 1", tree.clone(), false),
+        ("a null /StructTreeRoot and a null /StructParents", "/StructTreeRoot null", "/StructParents null", tree.clone(), false),
+        ("a /StructTreeRoot that names no object", "/StructTreeRoot 99 0 R", "", vec![], false),
+        ("a /StructTreeRoot that names a null object", "/StructTreeRoot 80 0 R", "", vec![(80, "null".to_string())], false),
+        ("a chain of 3 aliases that ends in a null object", "/StructTreeRoot 80 0 R", "", chain(3, "null"), false),
+        ("a chain of 3 aliases that ends in the root dictionary", "/StructTreeRoot 80 0 R", "", chain(3, root), true),
+        ("a chain of 20 aliases that ends in a null object", "/StructTreeRoot 80 0 R", "", chain(20, "null"), true),
+        ("a chain of 20 aliases that ends in the root dictionary", "/StructTreeRoot 80 0 R", "", chain(20, root), true),
+        ("a /StructTreeRoot that is not a dictionary", "/StructTreeRoot 12", "", vec![], true),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, catalog_extra, page_extra, objects, reported) in cases {
+        let out = pages_output_with(&limits, catalog_extra, "", page_extra, &objects);
+        if reported && !reported_for_the_tree(&out) {
+            red.push(format!("{name}: region_flattened {} reasons {:?}, expected the tree reported", out.region_flattened(), out.not_proven_reasons()));
+        }
+        if !reported && !read_as_flattened(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected flattened", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// STRUCTURE TREE = NOT PROVEN: a `/StructParents` or `/StructParent` entry left in the file counts although the catalog names no
+/// tree: on a kept page, in a nested direct dictionary of a kept object, on an annotation a kept page lists. The same keys on the
+/// flattened page and on its annotation do not (the flatten drops the page's key, the purge removes the annotation). A file that is
+/// saved with no region at all is reported as well when it holds a tree (the rule reads the saved document, not the regions).
+#[test]
+fn structure_parents_left_in_the_file_are_reported() {
+    let annot = |n: u32, key: &str| (n, format!("<< /Type /Annot /Subtype /Text /Rect [10 10 20 20] /Contents (note) {key} >>"));
+    let cases = vec![
+        ("a kept page keeps /StructParents", pages_output_with(&quick(), "", "", "/StructParents 1", &[]), true),
+        ("a nested direct dictionary of a kept page holds /StructParents", pages_output_with(&quick(), "", "", "/HskNested << /Inner << /StructParents 3 >> >>", &[]), true),
+        ("an annotation a kept page lists keeps /StructParent", pages_output_with(&quick(), "", "", "/Annots [71 0 R]", &[annot(71, "/StructParent 5")]), true),
+        ("an annotation of the flattened page held /StructParent, it is removed", pages_output_with(&quick(), "", "/Annots [72 0 R]", "", &[annot(72, "/StructParent 6")]), false),
+        ("an annotation a kept page lists holds no key", pages_output_with(&quick(), "", "", "/Annots [71 0 R]", &[annot(71, "")]), false),
+    ];
+    let mut red: Vec<String> = Vec::new();
+    for (name, out, reported) in cases {
+        if reported && !reported_for_the_tree(&out) {
+            red.push(format!("{name}: region_flattened {} reasons {:?}, expected the key reported", out.region_flattened(), out.not_proven_reasons()));
+        }
+        if !reported && !read_as_flattened(&out) {
+            red.push(format!("{name}: region_flattened {} residual {} reasons {:?}, expected flattened", out.region_flattened(), out.residual_in_region, out.not_proven_reasons()));
+        }
+    }
+    let pdf = build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 80 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> /StructParents 0 >>".to_vec()),
+        (4, stream_body("", b"BT /F1 12 Tf 72 700 Td (Page one) Tj ET")),
+        (6, HELVETICA.to_vec()),
+        (80, b"<< /Type /StructTreeRoot /K [] >>".to_vec()),
+    ]);
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let none = redact_and_save(&mut doc, &[], UnsupportedPolicy::Refuse, &token()).expect("redact with no region");
+    if !reported_for_the_tree(&none) {
+        red.push(format!("no region: region_flattened {} reasons {:?}, expected the tree reported", none.region_flattened(), none.not_proven_reasons()));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R23 FIX_FIRST -> STRUCTURE TREE = NOT PROVEN (V4-07): the DESCRIPTOR states the narrowed claim in `purge` (the residual) and in
+/// `region_clearing` (what `check_document` counts), in place of the per-element sentences of 54c60f9 (the unedited-root rule and
+/// the unread-`/K`-array rule); the residual cites tests that exist and uses none of the words that need a citation.
+#[test]
+fn descriptor_states_the_structure_tree_rule() {
     let descriptor = hsk_studio_press::DESCRIPTOR;
-    let rule_start = "a structure tree root that is not an indirect reference to a dictionary (written directly into the catalog";
-    let counted = "in a structure tree the purge did not edit, no element that is off the kept pages, and, in the tree it edited, no element below an unread /K array that is off the kept pages and still holds structure text, PLR-094); each mismatch counts in residual_in_region";
-    let sibling = "in the tree the purge does edit, an element below a /K array that is reached through a reference, or below an array nested in a /K array, is not read";
-    for needle in [rule_start, counted, sibling] {
+    let rule_start = "residuals: STRUCTURE TREE = NOT PROVEN (R23 FIX_FIRST, lead decision 2026-10-12T08:41:40Z): the redaction proof covers untagged documents;";
+    let counted = "and no structure tree: a /StructTreeRoot in the catalog or any /StructParents or /StructParent entry counts 1, so region_flattened is true only for an untagged document, or one whose caller stripped the tree before the save";
+    for needle in [rule_start, counted] {
         assert_eq!(descriptor.matches(needle).count(), 1, "DESCRIPTOR lacks {needle:?}");
     }
-    let stale = "a structure tree root written directly into the catalog (not an indirect object) is not edited, so an element that still names";
-    assert!(!descriptor.contains(stale), "DESCRIPTOR still says the old residual");
+    for stale in [
+        "a structure tree root that is not an indirect reference to a dictionary (written directly into the catalog",
+        "in a structure tree the purge did not edit, no element that is off the kept pages",
+        "below an unread /K array",
+        "elements are reached from the root's /K, /ParentTree and /IDTree",
+        "a structure tree root written directly into the catalog (not an indirect object) is not edited, so an element that still names",
+    ] {
+        assert!(!descriptor.contains(stale), "DESCRIPTOR still says {stale:?}");
+    }
     let start = descriptor.find(rule_start).expect("rule sentence");
     let end = start + descriptor[start..].find("; an object reference (OBJR)").expect("the residual that follows the rule");
     let rule = &descriptor[start..end];
@@ -2133,11 +2432,14 @@ fn descriptor_states_the_unedited_structure_tree_rule() {
         assert!(!rule.contains(word), "the rule sentence says {word:?}");
     }
     for name in [
+        "tagged_documents_read_not_proven_whatever_the_tree_looks_like",
+        "untagged_documents_and_stripped_trees_still_read_flattened",
+        "structure_tree_keys_are_read_as_names_not_text",
+        "structure_parents_left_in_the_file_are_reported",
         "direct_structure_tree_elements_off_the_kept_pages_are_reported",
-        "direct_structure_tree_on_kept_pages_stays_flattened",
+        "direct_structure_tree_on_kept_pages_is_reported_too",
         "indirect_array_k_elements_off_the_kept_pages_are_reported",
-        "indirect_array_k_controls_stay_as_they_were",
-        "indirect_array_walk_over_the_bounds_is_reported",
+        "indirect_array_k_neutralization_controls",
     ] {
         assert!(rule.contains(name), "the rule sentence does not cite {name}");
         assert!(include_str!("flatten_r13.rs").contains(&format!("fn {name}()")), "the cited test {name} does not exist");
