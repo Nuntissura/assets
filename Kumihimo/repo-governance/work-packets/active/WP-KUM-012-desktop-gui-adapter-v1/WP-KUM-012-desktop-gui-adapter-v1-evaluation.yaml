@@ -1296,3 +1296,543 @@ provider_options_preparation_addendum:
   next_action: Lead publishes exact appendix and admitted inputs, completes dependency readiness and source
     admission, then runs one owning hidden test and original actual strict native/UIA cases; evaluator
     independently inspects exact outputs before any runtime verdict.
+
+native_runtime_evaluation_b7dec3f107cb:
+  evaluation_id: EVAL-KUM-012-NATIVE-b7dec3f107cb-v1
+  updated_at: '2026-10-12T06:13:46.104208+00:00'
+  risk_tier: HIGH
+  phase: actual_native_evaluated_original_method_variants_pending
+  effective_verdict: INCOMPLETE_FROZEN_CASE_PROOF
+  observed_native_verdict: PASS_SCOPED_WINDOWS_X64_HIDDEN_NATIVE_UIA
+  owning_provider_test_verdict: PASS_R019_SCOPED
+  publication_status: LOCAL_EVALUATION_PENDING_LEAD_PUBLICATION
+  original_preparation_sha256: 48764d27e86ab28f9d44e7f0c9ccdaf3b8fb0853f586a325015eba8c7c724a34
+  preservation: Complete original13 frozen definitions, historical preparation bytes/bindings and R019 addendum
+    retained as exact prefix. Top-level preparation verdict remains historical; this addendum is runtime assessment
+    for candidate below.
+  candidate:
+    revision: b7dec3f107cb59c82d69c74f5a760b4c7cbcd4ad
+    target: Windows x64 MSVC
+    backend: Dx12
+    source_binding: Independently compared21 current native/egui source/example/test/observer/provider/manifests-lock
+      files byte-for-byte with published b7dec3 candidate. Source was held at inspection; later original-variant
+      repairs need new proof binding.
+    native_artifacts:
+    - ref: .local/desktop-proof/b7dec3f107cb/native-manifest.json
+      sha256: 009bfb28b7aa191d16e711a8f91a15a4e32375b87fc1fc1fa115961bb147ecd0
+    - ref: .local/desktop-proof/b7dec3f107cb/native-uia.trace.json
+      sha256: eeeb7d572f5280de147bfe403498098f89a53ca77814adee480179e0b326660b
+    - ref: .local/desktop-proof/b7dec3f107cb/native-accesskit.trace.json
+      sha256: 1ba36d7ffc5b1623e3bd6ecd111f1b38aeae6f5515d44b48da3591c25c00136d
+    - ref: .local/desktop-proof/b7dec3f107cb/native-uia.json
+      sha256: 9e170a0adc30a218898fe57b31f0a25d8b82feb7536f6f62375835b1498fa569
+    - ref: .local/desktop-proof/b7dec3f107cb/native-session.json
+      sha256: d57c9d9d16a5b04cc2358339970dda46c629db9709c9335c728bb716d71718d0
+  observed_runs:
+    provider:
+      log: ../.local/kumihimo-desktop/proof/provider-b7dec3f107cb.log
+      compile_seconds: 38.05
+      run_seconds: 0.22
+      passed: 1
+      failed: 0
+      filtered: 7
+      scope: Exact hidden-only owning ProviderOptions test; no upstream visible focus tests.
+    all_feature_all_target:
+      log: ../.local/kumihimo-desktop/proof/combined-b7dec3f107cb.log
+      seconds: 4.1
+      result: PASS
+    consumer:
+      log: ../.local/kumihimo-desktop/proof/test-b7dec3f107cb.log
+      compile_seconds: 4.39
+      run_seconds: 0.19
+      passed: 13
+      failed: 0
+      filtered: 1
+      e006_reuse: test-acb2920256fa.log individually passes pure local_point test while13other tests failed; inspected
+        lib.rs/local_point unchanged acb->b7. Reuse is only e006, not that failed suite.
+    native:
+      log: ../.local/kumihimo-desktop/proof/native-b7dec3f107cb.log
+      compile_seconds: 15.99
+      exit: 0
+      captures: 14
+      returned: 3
+      forwarded_accesskit_actions: 3
+    default: Most recent inspected successful default log547e75647193 is older than changed default-source inputs;
+      allfeature proof does not replace default proof. Lead notified to run original default command once final
+      inputs stabilize.
+  DIFF_ATTACK_SURFACES:
+  - ProviderOptions root/context/PID/NOACTIVATE guard and upstream fallback, actual UIA implicit OS focus before
+    egui queue.
+  - Native preflight/readback/ready/commit association, epoch/nonce/size/HWND/identity and partial-close return
+    lifetimes.
+  - Offscreen DIP versus physical pixels scale sequence and navigation document/overlay bounds.
+  - Frozen13 full method coverage versus narrow owning test assertions; replayed historical results cannot replace
+    unexecuted variants.
+  INDEPENDENT_CHECKS_RUN:
+  - id: EVAL-KUM-012-INDEPENDENT-QUIET-UIA
+    result: PASS_OBSERVED
+    observation: Reconciled independent observer and native AccessKit traces exact nonce kumihimo-346276-100/PID346276/HWND150868484.
+      Invoke begins1791784940731ms; native Focus at0740/0767 and Click0796ms before egui queue; every trace checkpoint
+      owned hidden window and external foreground HWND14942936/PID329152. Canonical fresh read selects exactview12
+      from10 generation43->44. All95window checkpoints and cleanup preserve hidden/NOACTIVATE/TOOLWINDOW/not APPWINDOW/nonforeground.
+      Sampling proves observed checkpoints, not continuous universal OS focus immunity.
+  - id: EVAL-KUM-012-INDEPENDENT-CAPTURE-IDENTITY
+    result: PASS_OBSERVED
+    observation: Opened all14 exact nativePNG; independently decoded dimensions/readbackbytes vs manifest, sequential
+      nonces1..14, four distinctHWNDs, every populated slot scale/epoch matches native capture. Three preflight
+      images have no provider content; subsequent populated images show correct Canvas16, Document10 and wholeframe
+      Document12. Resize1000x720->760x520 epoch1->2; recreated epoch3 image bytes equal resized pixels with fresh
+      capture nonce. Inspected readback rejects stale HWND/epoch/size/scale/identity before constructing Ready and
+      canonical commit.
+  - id: EVAL-KUM-012-INDEPENDENT-RASTER-NAVIGATION
+    result: PASS_OBSERVED
+    observation: Opened exact11e88 rasterPNG and correspondingJSON. Every rawPNG dimensions and all slot scales
+      match render scale; injected1.5 output1440x960 and return1 output960x640. Transient stationary/moved exposes
+      viewport rectangle beside same document bounds; idle/released17controls vs held19controls. Independent JSON
+      slot10 bounds equal idle/stationary. Actual scoped provider receipts match pictured Canvas local196.5,137.5
+      and tool view10/resource9; injected interactions explicitly labelled.
+  - id: EVAL-KUM-012-INDEPENDENT-PARTIAL-CLOSE
+    result: PASS_OBSERVED
+    observation: Manifest fresh canonical partial-close read proves closed10 and surviving12/14 under two close-veto
+      errors; native14 shows selected pinnedDocument2 plus dirtyDocument3 on held distinct HWND. Three returns recorded
+      no fallback used; remainingnativebindings0. This does not prove every custom-anchor/maximized/failure variant.
+  COUNTERFACTUAL_CHECKS:
+  - If PlatformNode_Impl::ProviderOptions in vendor/src/node.rs omitted the owned resolved root/NOACTIVATE flag,
+    OS UIA could activate the hidden root before AccessKit callbacks, matching prior9419 observed foreground failure;
+    exact guarded flag18 owning test and actual b7 traces now preserve quiet.
+  - If native.rs screenshot readback built Ready before validating HWND/epoch/size/scale/identity, a stale readback
+    could authorize canonical migration into the wrong surface; inspected code rejects stale capture2/10 before
+    Ready, actual preflight/populated sequence follows readiness.
+  - If capture.rs used set_pixels_per_point before Context::run instead of fixed zoom1 plus native scale, prior1->1.5->1
+    sequence could reuse previous-native scaling and produce2.25/0.6667; e88 exact scale guard and actual pixels
+    now match1.5/1.
+  BOUNDARY_PROBES:
+  - Actual independent Windows UIA Invoke -> pre-egui AccessKit callbacks -> fresh canonical exact tab selection
+    -> native pixels/quiet metadata.
+  - Actual egui-wgpu readback tags -> validated Ready -> one Controller canonical View/Group/Frame recipient ->
+    populated HWND pixels.
+  - Actual raster PNG dimensions/scale -> slot DIP/physical representation and stationary overlay/document bounds.
+  - Actual sessionDTO version1 alongside schema1 saved layout; roundtrip/fresh incarnation validation is codec/association
+    proof, not atomic filesystem storage.
+  NEGATIVE_PATH_CHECKS:
+  - 'R019 owning COM test: concrete/unspecified/placeholder ownedNOACTIVATEroot18; child/missing/expired/invalid/foreign/styleoff2.
+    Quiet guard verifies nonzero OS PID/TID before accepting foreground observation. Foreign test uses desktop PID
+    and proves fallback; it does not isolate foreignNOACTIVATE as a counterexample.'
+  - Native stale capture2/10 rejected; partialclose veto12/14 retains content/heldwindow, no duplicate loss; no-ready
+    prepare/cancel reuses empty slot without binding.
+  - Owning malformed settings NaN/scaleINF/stale preview/epoch/incarnation/duplicate session/byte bounds reject;
+    tested focused results separate from remaining frozen failure variants.
+  INDEPENDENT_FINDINGS:
+  - id: EVAL-KUM-012-FROZEN-001
+    case_id: EVAL-KUM-012-001
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:52; capture_host.rs
+    covered: Mixed demo providers, nested split/grid, still background, compact/narrow/scale rendered.
+    unproven_original_variant: Varied grid weights/holes and added containment-level variant not executed in owning
+      artifacts.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-002
+    case_id: EVAL-KUM-012-002
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:79
+    covered: 24 canonical views with page2 and last-view selection; raster pin/dirty/group labels; native partial-close
+      veto.
+    unproven_original_variant: Tab reorder/group move/collapse-expand/colors-off/overflow navigation/dirty close-veto
+      and forbidden pinned-action sequence absent.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-003
+    case_id: EVAL-KUM-012-003
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:94
+    covered: Cancelled Core Float preview, stale commit rejection; capture direct maximize/restore.
+    unproven_original_variant: Adapter eligible/forbidden docking preview cancel/commit, float/redock/equalize/swap/snap
+      and preview/final geometry sequence absent.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-004
+    case_id: EVAL-KUM-012-004
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:132; capture_host.rs
+    covered: Exact pinned tool view10/resource9 receipt and actual appended tool text; toolbar follows native whole
+      frame.
+    unproven_original_variant: Ancestor-edge/beside-view toolbar, focus no-retarget, hidden target release/retain-space
+      restore, rotation and closed-target rejection sequence absent.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-005
+    case_id: EVAL-KUM-012-005
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:156
+    covered: Surface header50 wins workspace40, recreation flag and NaN rejection; full/compact rendered.
+    unproven_original_variant: Contextual/hidden keyboard/supported-touch reveal and safe settings identity/native-system-control
+      variants absent.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-006
+    case_id: EVAL-KUM-012-006
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:198; capture_host.rs
+    covered: Pure global-clip/local-point check; injected adapter mouse stationary transient grab/move/release and
+      four navigation modes rendered.
+    unproven_original_variant: Adapter mouse tab/splitter/dock/wheel content-vs-rail/outside-hit-area Escape/capture/focus
+      terminal sequences and navigation cancel/Unknown distinctions absent.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-007
+    case_id: EVAL-KUM-012-007
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:222
+    covered: HostPen capture ownership, second Touch ignored, epoch invalidation; Touch threshold motion and stationary
+      long-press/cancel.
+    unproven_original_variant: Full distinct touch/pen scroll/tab/resize/release/cancel variants absent; no physical-device
+      claim required or made.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-008
+    case_id: EVAL-KUM-012-008
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:394
+    covered: CtrlTab canonical selection with frame_shortcuts_first=true.
+    unproven_original_variant: Ordinary editor typing/conflicting chord under both host policies and supported keyboard
+      arrangement/reveal/close focus variants absent.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-009
+    case_id: EVAL-KUM-012-009
+    severity: proof_gap
+    inspected_source: native.rs:1324; native-uia.trace.json
+    covered: Actual initial root UIA Invoke, pre-egui Focus/Focus/Click, exact canonical selected10->12 generation43->44
+      with quiet preserved.
+    unproven_original_variant: Observer runs once before migrations; original post-dock/popout accessibility action
+      plus modal/temporary overlay dismissal/focus-return/announcement variant absent.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-010
+    case_id: EVAL-KUM-012-010
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:452; native-manifest.json
+    covered: Injected scale1.5/1440x960 then1; actual owned1000x720->760x520/DPI1/epoch1->2; float clamp and undersized
+      explicit recovery.
+    unproven_original_variant: Known provider mark picking after scale/geometry update and zero/unavailable viewport
+      recovery-input variant absent.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-011
+    case_id: EVAL-KUM-012-011
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:531; native.rs:944
+    covered: Actual owned surface teardown/recreation epoch2->3 with new readback/correct pixels; stale provider
+      epoch and wrong restore incarnation reject.
+    unproven_original_variant: Failed recovery/zero-size suspend-resume/bounded retry and restored input variant
+      absent; physical GPU fault remains out of proved scope.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-012
+    case_id: EVAL-KUM-012-012
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:569,594; native-manifest.json
+    covered: Actual distinct View/Group/Frame native destinations, readback before commit, populated/resize/recreated
+      images, return3, partial close10/veto12,14 held window; bounded slot cancel/reuse and session/schema/fresh-restore/duplicate/size
+      checks.
+    unproven_original_variant: Creation/interrupted/partial-preparation failure, removed original pane/custom return
+      anchors/maximized destination/foreign-stale-occupied carrier variants not executed.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  - id: EVAL-KUM-012-FROZEN-013
+    case_id: EVAL-KUM-012-013
+    severity: proof_gap
+    inspected_source: adapter_contracts.rs:668; native-manifest.json
+    covered: Exact byte-bounded redacted diagnostics; hidden/noactivate/taskbar-excluded windows, same external
+      foreground, source-bound runs.
+    unproven_original_variant: Static idle versus animated demand/delayed provider/overload cancellation/supported
+      minimize-visibility signals not exercised. Current-valid default compile proof still pending; lead closure
+      metadata/publication/origin remain separate.
+    remediation: Coder03/lead preserve original case and add minimum supported owning/capture/native shared-path
+      proof; no new suite or revised acceptance. Unsupported variant must remain explicit rather than silently narrowed.
+  case_assessments:
+  - case_id: EVAL-KUM-012-001
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Mixed demo providers, nested split/grid, still background, compact/narrow/scale rendered.
+    unproven: Varied grid weights/holes and added containment-level variant not executed in owning artifacts.
+  - case_id: EVAL-KUM-012-002
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: 24 canonical views with page2 and last-view selection; raster pin/dirty/group labels; native partial-close
+      veto.
+    unproven: Tab reorder/group move/collapse-expand/colors-off/overflow navigation/dirty close-veto and forbidden
+      pinned-action sequence absent.
+  - case_id: EVAL-KUM-012-003
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Cancelled Core Float preview, stale commit rejection; capture direct maximize/restore.
+    unproven: Adapter eligible/forbidden docking preview cancel/commit, float/redock/equalize/swap/snap and preview/final
+      geometry sequence absent.
+  - case_id: EVAL-KUM-012-004
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Exact pinned tool view10/resource9 receipt and actual appended tool text; toolbar follows native whole
+      frame.
+    unproven: Ancestor-edge/beside-view toolbar, focus no-retarget, hidden target release/retain-space restore,
+      rotation and closed-target rejection sequence absent.
+  - case_id: EVAL-KUM-012-005
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Surface header50 wins workspace40, recreation flag and NaN rejection; full/compact rendered.
+    unproven: Contextual/hidden keyboard/supported-touch reveal and safe settings identity/native-system-control
+      variants absent.
+  - case_id: EVAL-KUM-012-006
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Pure global-clip/local-point check; injected adapter mouse stationary transient grab/move/release and
+      four navigation modes rendered.
+    unproven: Adapter mouse tab/splitter/dock/wheel content-vs-rail/outside-hit-area Escape/capture/focus terminal
+      sequences and navigation cancel/Unknown distinctions absent.
+  - case_id: EVAL-KUM-012-007
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: HostPen capture ownership, second Touch ignored, epoch invalidation; Touch threshold motion and stationary
+      long-press/cancel.
+    unproven: Full distinct touch/pen scroll/tab/resize/release/cancel variants absent; no physical-device claim
+      required or made.
+  - case_id: EVAL-KUM-012-008
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: CtrlTab canonical selection with frame_shortcuts_first=true.
+    unproven: Ordinary editor typing/conflicting chord under both host policies and supported keyboard arrangement/reveal/close
+      focus variants absent.
+  - case_id: EVAL-KUM-012-009
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Actual initial root UIA Invoke, pre-egui Focus/Focus/Click, exact canonical selected10->12 generation43->44
+      with quiet preserved.
+    unproven: Observer runs once before migrations; original post-dock/popout accessibility action plus modal/temporary
+      overlay dismissal/focus-return/announcement variant absent.
+  - case_id: EVAL-KUM-012-010
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Injected scale1.5/1440x960 then1; actual owned1000x720->760x520/DPI1/epoch1->2; float clamp and undersized
+      explicit recovery.
+    unproven: Known provider mark picking after scale/geometry update and zero/unavailable viewport recovery-input
+      variant absent.
+  - case_id: EVAL-KUM-012-011
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Actual owned surface teardown/recreation epoch2->3 with new readback/correct pixels; stale provider
+      epoch and wrong restore incarnation reject.
+    unproven: Failed recovery/zero-size suspend-resume/bounded retry and restored input variant absent; physical
+      GPU fault remains out of proved scope.
+  - case_id: EVAL-KUM-012-012
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Actual distinct View/Group/Frame native destinations, readback before commit, populated/resize/recreated
+      images, return3, partial close10/veto12,14 held window; bounded slot cancel/reuse and session/schema/fresh-restore/duplicate/size
+      checks.
+    unproven: Creation/interrupted/partial-preparation failure, removed original pane/custom return anchors/maximized
+      destination/foreign-stale-occupied carrier variants not executed.
+  - case_id: EVAL-KUM-012-013
+    runtime_status: PASS_OBSERVED_SUBSET_FROZEN_VARIANTS_PENDING
+    covered: Exact byte-bounded redacted diagnostics; hidden/noactivate/taskbar-excluded windows, same external
+      foreground, source-bound runs.
+    unproven: Static idle versus animated demand/delayed provider/overload cancellation/supported minimize-visibility
+      signals not exercised. Current-valid default compile proof still pending; lead closure metadata/publication/origin
+      remain separate.
+  provider_r019_assessment:
+    case_id: EVAL-KUM-012-R019-001
+    runtime_status: PASS_SCOPED
+    source: product/third-party/accesskit_windows-0.29.2/src/node.rs:681; src/tests/simple.rs:199
+    observation: Inspected exact resolve_with_context -> root -> nonzeroTID/ownPID -> NOACTIVATE guard -> ServerSide|ProviderOwnsSetFocus;
+      all unavailable/nonmatching fallback Ok(base), no feature/API/action filtering/window-show changes. Hidden
+      owning COM options test1PASS and actual native UIA quiet now independently observed.
+    preparation_preserved: true
+  native_images:
+  - ref: .local/desktop-proof/b7dec3f107cb/native-01-root.png
+    sha256: 338820726c43ec31ab3b35ce4a350466ed0582215a8b8e51205e3536bc174c86
+    opened: true
+    nonce: 1
+    hwnd: 150868484
+    epoch: 1
+    scale: 1.0
+    size:
+    - 1000
+    - 720
+  - ref: .local/desktop-proof/b7dec3f107cb/native-02-preflight.png
+    sha256: b89fa74c2b7bc43ba23f4d7ac626c18caeae82255e8685b6bf78c5317f6872b5
+    opened: true
+    nonce: 2
+    hwnd: 61416516
+    epoch: 1
+    scale: 1.0
+    size:
+    - 1000
+    - 720
+  - ref: .local/desktop-proof/b7dec3f107cb/native-03-populated.png
+    sha256: bf74611a17a76862c498df3434deb62eacfde579a391e1c4c2dbcb720b5dfb37
+    opened: true
+    nonce: 3
+    hwnd: 61416516
+    epoch: 1
+    scale: 1.0
+    size:
+    - 1000
+    - 720
+  - ref: .local/desktop-proof/b7dec3f107cb/native-04-resized.png
+    sha256: cdd361bdfcdcf378029cad1b71c2b5fad1a0c5abeb6354f6f6a35c01adccd074
+    opened: true
+    nonce: 4
+    hwnd: 61416516
+    epoch: 2
+    scale: 1.0
+    size:
+    - 760
+    - 520
+  - ref: .local/desktop-proof/b7dec3f107cb/native-05-recreated.png
+    sha256: cdd361bdfcdcf378029cad1b71c2b5fad1a0c5abeb6354f6f6a35c01adccd074
+    opened: true
+    nonce: 5
+    hwnd: 61416516
+    epoch: 3
+    scale: 1.0
+    size:
+    - 760
+    - 520
+  - ref: .local/desktop-proof/b7dec3f107cb/native-06-preflight.png
+    sha256: b89fa74c2b7bc43ba23f4d7ac626c18caeae82255e8685b6bf78c5317f6872b5
+    opened: true
+    nonce: 6
+    hwnd: 351930066
+    epoch: 1
+    scale: 1.0
+    size:
+    - 1000
+    - 720
+  - ref: .local/desktop-proof/b7dec3f107cb/native-07-populated.png
+    sha256: 70b69d29000badd751c67173cab6a9d0150f387cab808f437dbae1673e65e4c7
+    opened: true
+    nonce: 7
+    hwnd: 351930066
+    epoch: 1
+    scale: 1.0
+    size:
+    - 1000
+    - 720
+  - ref: .local/desktop-proof/b7dec3f107cb/native-08-resized.png
+    sha256: e6b4ff219d8acf7850304bbf66b77f74631ca2f1b2400ed6380779943f26bda4
+    opened: true
+    nonce: 8
+    hwnd: 351930066
+    epoch: 2
+    scale: 1.0
+    size:
+    - 760
+    - 520
+  - ref: .local/desktop-proof/b7dec3f107cb/native-09-recreated.png
+    sha256: e6b4ff219d8acf7850304bbf66b77f74631ca2f1b2400ed6380779943f26bda4
+    opened: true
+    nonce: 9
+    hwnd: 351930066
+    epoch: 3
+    scale: 1.0
+    size:
+    - 760
+    - 520
+  - ref: .local/desktop-proof/b7dec3f107cb/native-10-preflight.png
+    sha256: 8762ff0dce8e0a58cdf11da88dc9a98fcd6927bda6e39e62eaf1751862c659ca
+    opened: true
+    nonce: 10
+    hwnd: 294785996
+    epoch: 1
+    scale: 1.0
+    size:
+    - 1000
+    - 720
+  - ref: .local/desktop-proof/b7dec3f107cb/native-11-populated.png
+    sha256: cc956ca4b2c43dddfd938267f5674b271bdf8fdce5671d4f8aab0010d5714f23
+    opened: true
+    nonce: 11
+    hwnd: 294785996
+    epoch: 1
+    scale: 1.0
+    size:
+    - 1000
+    - 720
+  - ref: .local/desktop-proof/b7dec3f107cb/native-12-resized.png
+    sha256: d995ef5301fc1b6d42c7c18c119cad58cf6a45b93841aed1b973651420da226f
+    opened: true
+    nonce: 12
+    hwnd: 294785996
+    epoch: 2
+    scale: 1.0
+    size:
+    - 760
+    - 520
+  - ref: .local/desktop-proof/b7dec3f107cb/native-13-recreated.png
+    sha256: d995ef5301fc1b6d42c7c18c119cad58cf6a45b93841aed1b973651420da226f
+    opened: true
+    nonce: 13
+    hwnd: 294785996
+    epoch: 3
+    scale: 1.0
+    size:
+    - 760
+    - 520
+  - ref: .local/desktop-proof/b7dec3f107cb/native-14-partial-close-survivors.png
+    sha256: a32ecf0e7a69b1e2faee4ea62e890bf2df6d584f1178658be2ef907aff562d63
+    opened: true
+    nonce: 14
+    hwnd: 294785996
+    epoch: 3
+    scale: 1.0
+    size:
+    - 760
+    - 520
+  reused_raster_images:
+  - ref: .local/desktop-proof/e88c30580548/compact-narrow.png
+    sha256: fb4ff4da6e32c9b1d7c009216ae40d73a816d3d37c4172d1aaeb93974ee72494
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/injected-scale-150.png
+    sha256: 515a0df73033bdd01e3686d0e1c993c2308a523a9f64d24691ce148722137194
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/minimap-always.png
+    sha256: 979d7dffde816a95abc2bac39a7204abd21d988bb56868d7facf08a80d87f7e0
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/nested.png
+    sha256: eea7d58460c6c74226c980fc87b190982d9d6ae136eb8c6e76cbe71d558a18fb
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/scrollbar-and-minimap.png
+    sha256: a494820fa8efb0cd7ada7d1ec40834f4e96d7eef32d5e64ddfe85cb6dd3fcb45
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/scrollbar.png
+    sha256: 8d172bbe8038a53690e7dcadd7d79d524f8122c205ab8d89916d16cb119b136e
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/standard.png
+    sha256: c16572cc857c3965a0b29c361c7c20f090aba3c9a87cb5f89c237f4b1219b634
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/transient-idle.png
+    sha256: 861d82e2a168e07f1021a9f196a8863c38791826d2b797e5edf1063917bc633c
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/transient-moved.png
+    sha256: 647fd9877d17198e315d4d25df86c584cf674121556825f1230dbedac3568173
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/transient-released.png
+    sha256: ec457845779820e64df77a82bdb5ff1a4071ffd77287a97ec15282f659b3f53b
+    opened: true
+  - ref: .local/desktop-proof/e88c30580548/transient-stationary-grab.png
+    sha256: 0430807327345a313847ac8d0b62851a02f7f7ec1bbd56aef063e86924ebfa78
+    opened: true
+  reuse_scope: Eguisource capture/render/demo/input and capture_host unchanged e88->b7; desktop provider patch affects
+    OS UIA/native consumer, newly proved separately. Raster evidence remains bounded actual offscreen readback;
+    no native/physical proof substituted.
+  failure_resolution_history:
+  - Earlier MissingContext/session fixture failures corrected; newest13 consumers pass and unchanged puremappinge006
+    reused.
+  - F012-SCALE actual raster2.25/0.6667 resolved by e88zoom1/native-scale consistency, all11opened actual1.5/1 outputs.
+  - Prior9419 native UIA activated root before egui queue; guarded R019 ProviderOwnsSetFocus remedy at b7 owningtest
+    and actual Invoke traces resolves observed quiet failure.
+  verdict_separation:
+    tests: Newest13 owning consumers pass, unchanged e006 reused; R0191 testPASS, allfeaturealltargetPASS.
+    native: Actual scoped b7 quiet/UIA/migration/resize/recreation/partial-close PASS.
+    frozen_contract_alignment: Original full13 methods retain unexecuted variants above; no full13PASS.
+    environment: Windows x64MSVC/DX12 hidden ownedHWND/currentDPI1; rasteremulated1.5 separate.
+    final: INCOMPLETE_FROZEN_CASE_PROOF; retain green results and original methods pending bounded additions.
+  RESIDUAL_UNCERTAINTY:
+  - Unexecuted original13 variants identified individually; no defect inferred merely from absence of proof.
+  - Foreground checkpoints are sampled; physicaltouch/pen/monitortransition/GPUfault, actual idleCPU/memory release,
+    external engines/devices, otherOS/ARM remain unproven.
+  - Cleanup captures hiddenownedwindow metadata; eventloop/probe completion and bindings0 prove bounded owned-run
+    closure, not all externalprocess or OSresource reclamation.
+  - Lead manual/matrix/topology/state/taskboard/publication and canonicalorigin closure remains pending.
+  report_frozen_for_publication: true
+  next_action: Coder03 owns minimum original13 source/proof additions, providerfiles held. Lead runs one affected
+    default/allfeature/owning/capture/native batch after stable handoff. Evaluator receives fresh exact outputs
+    before final scoped verdict; no source/Cargo/Git mutation by evaluator.
