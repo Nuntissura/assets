@@ -3,8 +3,7 @@ kind: derived_taskboard
 project_id: KUMIHIMO
 source: WP contracts and state
 counts:
-  done: 10
-  active: 1
+  done: 11
   planned: 3
 work_packets:
 - wp_id: WP-KUM-001-init-v1
@@ -84,12 +83,11 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-011-navigation-and-media-controls-v1
   title: Implement optional host-fed navigation and scoped media controls
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
-  next_action: Lead validate and publish complete scoped outcome/report/currentviews; independently reread exact
-    origin and sixfilearchive/46unchanged runtimeinputs; evaluator scoped containment, then DONE settlement and
-    WP012 promotion
+  next_action: WP011 complete; promote WP012 desktop GUI adapter with current research, dependency readiness and
+    frozen evaluation before coding
   blockers: []
 - wp_id: WP-KUM-012-desktop-gui-adapter-v1
   title: Prove a replaceable desktop adapter

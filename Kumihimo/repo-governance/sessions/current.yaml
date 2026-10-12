@@ -7,7 +7,7 @@ git:
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: WP-KUM-011-navigation-and-media-controls-v1
+active_wp: WP-KUM-012-desktop-gui-adapter-v1
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
@@ -19,7 +19,7 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6-luna
     reasoning: high
-    assignment: WP011 readiness frozen and published at734c9fc; standby for dependency blockers only
+    assignment: WP011 complete; WP012 field/dependency readiness preparation next, no Cargo
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
@@ -32,16 +32,18 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP011 PASS_SCOPED_RUNTIME/F01 resolved report052630ac held; scoped published outcome containment
-      next
+    assignment: WP011 runtime and outcome independently PASS, final report published; prepare focused WP012 cases
+      after lead draft
   coder:
     role_id: ROLE-KUM-CODER-03
     thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
     model: gpt-6.1-sol
     reasoning: high
-    completed_implementation_wps: []
+    completed_implementation_wps:
+    - WP-KUM-011-navigation-and-media-controls-v1
     rotate_after: 2
-    assignment: WP011 source held; independent scoped PASS/F01 resolved; wait DONE then same coder WP012
+    assignment: WP011 done count1/2; same coder03 selected for WP012, no source admission before published full
+      contract/readiness/eval
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -66,8 +68,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish scoped WP011 outcome/report/Spec15 exact prior6filearchive; independent origin readback and
-  evaluator containment, then DONE and WP012 preparation
+next_action: Promote WP012 desktop GUI adapter; research exact current primary implementations/API/MSRV/cache and
+  honest quiet rendered proof before full contract/admission
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

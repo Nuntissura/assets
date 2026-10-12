@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 15
-phase: active
+generation: 16
+phase: done
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - product/Cargo.lock
@@ -164,6 +164,15 @@ proof:
     Local Spec15/master15/roadmap14, exactsixfile priorSpec14 archive from449dfd4, rulebook32/matrix6/topology/manual
     record only scoped headless outcome; full99ordered requirement records unchanged/allfullacceptances open. Publication/independent
     containment before DONE pending.
+- kind: published_independent_outcome_containment
+  source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  outcome_revision: 0871701e19f3bb44ff60c19fd98d3b84b65227ca
+  report_revision: 5057594a7c6809ce0ae3835f13b358c73a3ab3c6
+  report_sha256: dea80b78cbb08f45b8d020d48f97e27a39dc79cfd8751b86f6a6cfb0a3e5dacc
+  observed: Independent scoped outcome containment PASS; root fresh exact origin and final report canonical bytes
+    verified. Four feature checks/all24/quietexample PASS and F01 resolved; 99 full records preserved, prior6 archive
+    exact. WP011 selected headless contract done; actual GUI/provider/physical/platform/full requirement acceptance
+    remains open.
 blockers: []
-next_action: Lead validate and publish complete scoped outcome/report/currentviews; independently reread exact origin
-  and sixfilearchive/46unchanged runtimeinputs; evaluator scoped containment, then DONE settlement and WP012 promotion
+next_action: WP011 complete; promote WP012 desktop GUI adapter with current research, dependency readiness and frozen
+  evaluation before coding
