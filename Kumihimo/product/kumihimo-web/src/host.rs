@@ -585,12 +585,9 @@ impl PilotHost {
             // Provider input and geometry share one local coordinate system.
             // Projection rectangles remain global browser logical DIPs.
             let local_rect = core::Rect::new(0.0, 0.0, rect.width(), rect.height())?;
-            let local_clip = core::Rect::new(
-                clip.x() - rect.x(),
-                clip.y() - rect.y(),
-                clip.width(),
-                clip.height(),
-            )?;
+            let (x, width) = local_clip_axis(clip.x(), clip.right(), rect.x(), rect.width());
+            let (y, height) = local_clip_axis(clip.y(), clip.bottom(), rect.y(), rect.height());
+            let local_clip = core::Rect::new(x, y, width, height)?;
             self.controller.request(
                 mount,
                 content::RequestKind::Geometry(content::Geometry {
@@ -1255,6 +1252,17 @@ fn intersect(rect: core::Rect, clip: core::Rect) -> Result<core::Rect, WebError>
         (rect.right().min(clip.right()) - x).max(0.0),
         (rect.bottom().min(clip.bottom()) - y).max(0.0),
     )?)
+}
+fn local_clip_axis(start: f64, end: f64, origin: f64, extent: f64) -> (f64, f64) {
+    // Global subtraction may round beyond the original provider-local extent.
+    let start = (start - origin).clamp(0.0, extent);
+    let end = (end - origin).clamp(start, extent);
+    let mut length = end - start;
+    if start + length > extent {
+        // Keep exact containment when reconstructing the endpoint also rounds up.
+        length = extent.next_down().max(start) - start;
+    }
+    (start, length)
 }
 fn validate_tasks(
     tasks: &TaskStore,

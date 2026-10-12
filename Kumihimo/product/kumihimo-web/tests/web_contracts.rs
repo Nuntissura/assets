@@ -72,6 +72,64 @@ fn float_action(frame: &Value) -> Value {
 
 #[test]
 fn case001_variable_nested_geometry_preserves_membership() {
+    // Own the actual browser startup configuration and its fractional measured
+    // viewport; the last card exercises accumulated split/clip rounding.
+    let mut default_host =
+        PilotHost::new("native-default-startup", PilotConfig::default()).unwrap();
+    let default_before = snapshot(&mut default_host);
+    let default_tasks = read(&mut default_host, "host_snapshot");
+    assert_eq!(default_tasks["tasks"].as_array().unwrap().len(), 3);
+    let fractional = command(
+        &mut default_host,
+        json!({"kind":"viewport","rect":{"x":17.25,"y":29.5,"width":1100.125,"height":700.375},"scale":1.0}),
+    );
+    assert_eq!(fractional["ok"], true, "{fractional}");
+    assert_eq!(fractional["result"]["receipt"]["ok"], true);
+    assert!(
+        fractional["result"]["postcommit_error"].is_null(),
+        "{fractional}"
+    );
+    assert!(fractional["result"]["current"].is_object(), "{fractional}");
+    let default_fractional = snapshot(&mut default_host);
+    assert_eq!(membership(&default_fractional), membership(&default_before));
+    assert_eq!(read(&mut default_host, "host_snapshot"), default_tasks);
+    for frame in default_fractional["frames"].as_array().unwrap() {
+        for field in ["rect", "content", "clip"] {
+            for coordinate in ["x", "y", "width", "height"] {
+                let value = frame[field][coordinate].as_f64().unwrap();
+                assert!(value.is_finite());
+                if coordinate == "width" || coordinate == "height" {
+                    assert!(value >= 0.0);
+                }
+            }
+        }
+    }
+    let last_task = default_tasks["tasks"].as_array().unwrap().last().unwrap();
+    let surface = default_fractional["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|frame| frame["selected_view"] == last_task["views"][0])
+        .unwrap();
+    let mapped = route(
+        &mut default_host,
+        json!({"version":1,"route":"input","identity":default_fractional["identity"],"epoch":default_fractional["epoch"],
+            "view":last_task["views"][0],"resource":last_task["resource"],"provider":last_task["provider"],
+            "x":surface["content"]["x"].as_f64().unwrap()+2.0,"y":surface["content"]["y"].as_f64().unwrap()+3.0,
+            "scale":default_fractional["scale"],"payload":"fractional-startup-pointer"}),
+    );
+    assert_eq!(mapped["ok"], true, "{mapped}");
+    assert_eq!(mapped["result"]["local"], json!({"x":2.0,"y":3.0}));
+    assert_eq!(mapped["result"]["recipient"]["view"], last_task["views"][0]);
+    assert_eq!(
+        mapped["result"]["recipient"]["resource"],
+        last_task["resource"]
+    );
+    assert_eq!(
+        mapped["result"]["recipient"]["provider"],
+        last_task["provider"]
+    );
+
     let mut host = pilot();
     let before = snapshot(&mut host);
     assert!(before["frames"].as_array().unwrap().len() > 4);
