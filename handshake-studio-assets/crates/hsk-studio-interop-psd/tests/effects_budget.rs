@@ -18,8 +18,9 @@
 //! record-validation node budget (records + kept instances, `validate_raster_records`) is sized from the input
 //! inside those bounds. The two `Transformed` dropped-instances losses name the count of the instances the record does
 //! not hold and the dropped instances add no note (PLR-089, SMB-INTEROP-PSD-LOSS-DETAIL); the descriptor reader's 512
-//! entries per list is a parse bound that cannot know a category (PLR-086). All inputs are synthetic byte fixtures built
-//! here, independently of the crate's encoder.
+//! entries per list is a parse bound that cannot know a category (PLR-086), and so are its 8192 items per descriptor,
+//! measured per effect kind (PLR-095). All inputs are synthetic byte fixtures built here, independently of the crate's
+//! encoder.
 
 mod common;
 
@@ -1850,6 +1851,536 @@ fn descriptor_states_the_loss_detail_and_the_list_cap_rules() {
             "the cited test {test} does not exist"
         );
     }
+}
+
+// ---- PLR-095: the descriptor reader's 8192-item cap, measured for every mapped effect kind ----------------------------
+
+/// The descriptor reader's two parse bounds (`descriptor.rs`, both crate-private): items in the whole descriptor and
+/// entries in one list. The first is MEASURED through the importer below and asserted against this number.
+const ITEM_CAP: usize = 8192;
+const LIST_CAP: usize = 512;
+
+fn v_double(value: f64) -> Vec<u8> {
+    tagged(b"doub", value.to_be_bytes().to_vec())
+}
+fn v_unit(unit: &[u8; 4], value: f64) -> Vec<u8> {
+    let mut payload = unit.to_vec();
+    payload.extend(value.to_be_bytes());
+    tagged(b"UntF", payload)
+}
+fn v_text(text: &str) -> Vec<u8> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut payload = be32(units.len() as u32);
+    for unit in units {
+        payload.extend(unit.to_be_bytes());
+    }
+    tagged(b"TEXT", payload)
+}
+/// An `RGBC` colour object: three items.
+fn v_colour() -> Vec<u8> {
+    v_objc(
+        "RGBC",
+        vec![
+            ("Rd  ", v_double(10.0)),
+            ("Grn ", v_double(20.0)),
+            ("Bl  ", v_double(30.0)),
+        ],
+    )
+}
+/// A `TrnS` contour of `points` points, strictly ascending, which the importer maps.
+fn v_contour(points: usize) -> Vec<u8> {
+    let curve = (0..points)
+        .map(|i| {
+            v_objc(
+                "CrPt",
+                vec![
+                    ("Hrzn", v_double(i as f64)),
+                    ("Vrtc", v_double(i as f64)),
+                    ("Cnty", v_bool(false)),
+                ],
+            )
+        })
+        .collect();
+    v_objc(
+        "ShpC",
+        vec![("Nm  ", v_text("Linear")), ("Crv ", v_list(curve))],
+    )
+}
+
+/// The effect kinds the importer maps (`Slot` of `src/effects.rs` without the gradient and pattern overlays, which it
+/// reports and does not map).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    DropShadow,
+    InnerShadow,
+    OuterGlow,
+    InnerGlow,
+    Bevel,
+    ColourOverlay,
+    Satin,
+    Stroke,
+}
+const KINDS: [Kind; 8] = [
+    Kind::DropShadow,
+    Kind::InnerShadow,
+    Kind::OuterGlow,
+    Kind::InnerGlow,
+    Kind::Bevel,
+    Kind::ColourOverlay,
+    Kind::Satin,
+    Kind::Stroke,
+];
+
+impl Kind {
+    /// The word the DESCRIPTOR uses for the kind.
+    fn word(self) -> &'static str {
+        match self {
+            Kind::DropShadow => "drop_shadow",
+            Kind::InnerShadow => "inner_shadow",
+            Kind::OuterGlow => "outer_glow",
+            Kind::InnerGlow => "inner_glow",
+            Kind::Bevel => "bevel",
+            Kind::ColourOverlay => "colour_overlay",
+            Kind::Satin => "satin",
+            Kind::Stroke => "stroke",
+        }
+    }
+    /// The single-slot key of the kind and its multi-list key, when the kind has one (`slot_of` in `src/effects.rs`).
+    fn keys(self) -> (&'static str, Option<&'static str>) {
+        match self {
+            Kind::DropShadow => ("DrSh", Some("dropShadowMulti")),
+            Kind::InnerShadow => ("IrSh", Some("innerShadowMulti")),
+            Kind::OuterGlow => ("OrGl", None),
+            Kind::InnerGlow => ("IrGl", None),
+            Kind::Bevel => ("ebbl", None),
+            Kind::ColourOverlay => ("SoFi", Some("solidFillMulti")),
+            Kind::Satin => ("ChFX", None),
+            Kind::Stroke => ("FrFX", Some("frameFXMulti")),
+        }
+    }
+    /// The items besides `Md  ` that `map_effect` requires for the kind (an absent one leaves the instance unmapped).
+    fn required(self) -> Vec<(&'static str, Vec<u8>)> {
+        let blend = || v_enum("BlnM", "Mltp");
+        match self {
+            Kind::OuterGlow => vec![("GlwT", v_enum("GlwT", "SfBL"))],
+            Kind::InnerGlow => vec![
+                ("GlwT", v_enum("GlwT", "SfBL")),
+                ("glwS", v_enum("glwS", "SrcE")),
+            ],
+            Kind::Stroke => vec![
+                ("PntT", v_enum("PntT", "SClr")),
+                ("Styl", v_enum("Styl", "InsF")),
+            ],
+            Kind::Bevel => vec![
+                ("bvlS", v_enum("bvlS", "InrB")),
+                ("bvlT", v_enum("bvlT", "SfBL")),
+                ("bvlD", v_enum("bvlD", "In  ")),
+                ("hglM", blend()),
+                ("hglC", v_colour()),
+                ("sdwM", blend()),
+                ("sdwC", v_colour()),
+            ],
+            Kind::DropShadow | Kind::InnerShadow | Kind::ColourOverlay | Kind::Satin => Vec::new(),
+        }
+    }
+    /// The other kind-specific items `map_effect` reads (it defaults them when absent).
+    fn optional(self) -> Vec<(&'static str, Vec<u8>)> {
+        let (prc, pxl) = (|v| v_unit(b"#Prc", v), |v| v_unit(b"#Pxl", v));
+        match self {
+            Kind::DropShadow => vec![
+                ("Dstn", pxl(4.0)),
+                ("Ckmt", prc(10.0)),
+                ("blur", pxl(5.0)),
+                ("layerConceals", v_bool(true)),
+            ],
+            Kind::InnerShadow => vec![("Dstn", pxl(4.0)), ("Ckmt", prc(10.0)), ("blur", pxl(5.0))],
+            Kind::OuterGlow | Kind::InnerGlow => vec![
+                ("Ckmt", prc(10.0)),
+                ("blur", pxl(5.0)),
+                ("Inpr", prc(50.0)),
+                ("ShdN", prc(0.0)),
+            ],
+            Kind::Satin => vec![
+                ("Dstn", pxl(4.0)),
+                ("blur", pxl(5.0)),
+                ("Invr", v_bool(false)),
+            ],
+            Kind::ColourOverlay => Vec::new(),
+            Kind::Stroke => vec![("Sz  ", pxl(3.0)), ("overprint", v_bool(false))],
+            Kind::Bevel => vec![
+                ("useTexture", v_bool(false)),
+                ("Lald", v_unit(b"#Ang", 30.0)),
+                ("srgR", prc(100.0)),
+                ("blur", pxl(5.0)),
+                ("Sftn", pxl(1.0)),
+                ("hglO", prc(75.0)),
+                ("sdwO", prc(75.0)),
+                ("antialiasGloss", v_bool(false)),
+                ("useShape", v_bool(false)),
+            ],
+        }
+    }
+}
+
+/// How much of an effect instance a descriptor spells out.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// `Md  `, the items the importer requires for the kind and `enab`: the smallest instance that maps and is
+    /// switched off (the kind of instance the Folio ceiling cuts).
+    Required,
+    /// Every item `map_effect` reads for the kind, with a contour of this many points.
+    AllKeys(usize),
+}
+
+/// One effect instance object. `padding` adds that many unread `bool` items (an unknown key is just an item).
+fn effect_object(kind: Kind, shape: Shape, enabled: bool, padding: usize) -> Vec<u8> {
+    let mut items = vec![("Md  ", v_enum("BlnM", "Mltp"))];
+    items.extend(kind.required());
+    items.push(("enab", v_bool(enabled)));
+    if let Shape::AllKeys(points) = shape {
+        items.extend([
+            ("showInDialog", v_bool(true)),
+            ("Opct", v_unit(b"#Prc", 80.0)),
+            ("Clr ", v_colour()),
+            ("AntA", v_bool(true)),
+            ("Nose", v_unit(b"#Prc", 5.0)),
+            ("lagl", v_unit(b"#Ang", 30.0)),
+            ("uglg", v_bool(true)),
+            ("TrnS", v_contour(points)),
+        ]);
+        items.extend(kind.optional());
+    }
+    items.extend((0..padding).map(|_| ("Pad ", v_bool(true))));
+    v_objc("null", items)
+}
+
+/// Root items holding `instances` in `key` lists of at most 512 entries, the key repeated once per list (the reader
+/// and the importer accept a repeated key; it costs what distinct list keys cost).
+fn lists_of(key: &'static str, instances: Vec<Vec<u8>>) -> Vec<(&'static str, Vec<u8>)> {
+    instances
+        .chunks(LIST_CAP)
+        .map(|chunk| (key, v_list(chunk.to_vec())))
+        .collect()
+}
+/// Root items worth exactly `n` descriptor items and nothing else: lists of `bool` entries (a list of `e` entries
+/// costs `e + 1` items).
+fn filler(n: usize) -> Vec<(&'static str, Vec<u8>)> {
+    let mut left = n;
+    let mut items = Vec::new();
+    while left > 0 {
+        let entries = (left - 1).min(LIST_CAP);
+        items.push(("Fill", v_list(vec![v_bool(true); entries])));
+        left -= entries + 1;
+    }
+    items
+}
+
+/// Imports a one-layer document whose `lfx2` has these root items. Returns the proposal and the loss entries on the
+/// stack's path (kind, code), without the standing `layer_effects_not_rendered`.
+fn import_stack(items: Vec<(&str, Vec<u8>)>) -> (ImportProposal, Vec<(LossKind, &'static str)>) {
+    let bytes = doc_of_stacks(&[lfx2_block(items)], |_| false);
+    let (_, proposal, _) = import_counting(&bytes).expect("imports");
+    let losses = proposal
+        .loss
+        .entries
+        .iter()
+        .filter(|e| {
+            e.path.starts_with("layer[0]/tagged/lfx2") && e.code != "layer_effects_not_rendered"
+        })
+        .map(|e| (e.kind, e.code))
+        .collect();
+    (proposal, losses)
+}
+/// Whether the reader refused the descriptor for a parse bound (`descriptor_item_limit`: a refusal of the whole
+/// descriptor; with these fixtures only the 8192-item cap can be the bound, no list has more than 512 entries).
+fn item_limit_hit(items: Vec<(&str, Vec<u8>)>) -> bool {
+    import_stack(items)
+        .1
+        .contains(&(LossKind::Unsupported, DESCRIPTOR_LIMIT))
+}
+/// The largest `k < over` with `fits(k)`, by bisection; `fits` is monotone, true at 0 and false at `over`.
+fn largest_fit(over: usize, fits: impl Fn(usize) -> bool) -> usize {
+    assert!(fits(0), "nothing at all fits");
+    assert!(!fits(over), "the upper bound {over} is not refused");
+    let (mut fit, mut over) = (0, over);
+    while over - fit > 1 {
+        let mid = fit + (over - fit) / 2;
+        if fits(mid) {
+            fit = mid;
+        } else {
+            over = mid;
+        }
+    }
+    fit
+}
+/// The descriptor items the reader charges for `items`, measured from outside: the least `cost` for which `items` plus
+/// `cap - cost` filler items still parse (galloping on `cost`, then bisection).
+fn item_cost(cap: usize, items: &[(&'static str, Vec<u8>)]) -> usize {
+    let fits = |cost: usize| !item_limit_hit([items.to_vec(), filler(cap - cost)].concat());
+    if fits(0) {
+        return 0;
+    }
+    let (mut under, mut over) = (0, 1);
+    while !fits(over) {
+        (under, over) = (over, over * 2);
+        assert!(over <= cap, "the items do not fit the cap at all");
+    }
+    while over - under > 1 {
+        let mid = under + (over - under) / 2;
+        if fits(mid) {
+            over = mid;
+        } else {
+            under = mid;
+        }
+    }
+    over
+}
+/// `fits` (monotone) holds at `n` and not at `n + 1`: `n` is where the reader's verdict changes.
+fn assert_boundary(what: &str, n: usize, fits: impl Fn(usize) -> bool) {
+    assert!(fits(n), "{what}: {n} fits");
+    assert!(!fits(n + 1), "{what}: {} does not fit", n + 1);
+}
+/// A drop shadow that costs `3 + padding` items in a list (the entry, `Md  `, `enab`, the padding).
+fn padded_stack(live: usize, off: usize, padding: usize) -> Vec<(&'static str, Vec<u8>)> {
+    let instance = |enabled| effect_object(Kind::DropShadow, Shape::Required, enabled, padding);
+    let mut instances = vec![instance(true); live];
+    instances.extend(vec![instance(false); off]);
+    lists_of("dropShadowMulti", instances)
+}
+/// `from` is the smallest per-instance cost (items, list entry included) at which `live` + `off` padded drop shadows no
+/// longer fit the item cap: they fit at `from - 1` (padding `from - 4`) and do not fit at `from`.
+fn assert_first_cost_over_cap(what: &str, live: usize, off: usize, from: usize) {
+    assert_boundary(what, from - 4, |padding| {
+        !item_limit_hit(padded_stack(live, off, padding))
+    });
+}
+/// `fn names(values)`: `drop_shadow_3_inner_shadow_3_...`
+fn figures(values: &[(Kind, usize)]) -> String {
+    values
+        .iter()
+        .map(|(kind, n)| format!("{}_{n}", kind.word()))
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+/// PLR-095 (R22-S2, V4-07): the descriptor reader has a second category-blind parse bound besides the 512 entries per
+/// list: 8192 items per descriptor, every object item and every list entry at every depth. This test MEASURES it through
+/// the importer (no estimate): the cap itself; the items one instance of every mapped effect kind costs (the smallest
+/// instance that maps, and an instance with every key the importer reads); the most instances of a kind one descriptor
+/// holds; and the per-instance cost from which 8192 items no longer hold the smallest stack Folio's 1024 ceiling cuts
+/// (1 live + 1024 switched off), a full 512-entry list, or the smallest stack over the 64 per-layer limit. It also pins
+/// the loss code a stack gets on either side of those costs, and that the shipped DESCRIPTOR (`effect_limits`) states the
+/// measured numbers. Nothing in the importer changes: the caps are the reader's and pigment's, unchanged.
+#[test]
+fn the_descriptor_readers_8192_item_cap_is_measured_per_effect_kind_and_stated_in_the_descriptor() {
+    bounded_case(
+        "the_descriptor_readers_8192_item_cap_is_measured_per_effect_kind_and_stated_in_the_descriptor",
+        || {
+            // The cap itself: the most items of bare filler that still parse.
+            let cap = largest_fit(2 * ITEM_CAP, |k| !item_limit_hit(filler(k)));
+            assert_eq!(cap, ITEM_CAP, "the reader's whole-descriptor item cap");
+            assert_eq!(
+                item_cost(cap, &[]),
+                0,
+                "the method charges nothing for nothing"
+            );
+
+            // Items per instance (slot key or list entry included), the smallest instance that maps and one with every
+            // key the importer reads; each instance is checked to MAP, so the figures are those of mapped effects.
+            let max_points = hsk_studio_folio::MAX_CURVE_POINTS;
+            let (mut required, mut all_keys) = (Vec::new(), Vec::new());
+            for kind in KINDS {
+                let slot = kind.keys().0;
+                for (shape, name) in [
+                    (Shape::Required, "required"),
+                    (Shape::AllKeys(2), "all keys"),
+                ] {
+                    let (proposal, losses) =
+                        import_stack(vec![(slot, effect_object(kind, shape, true, 0))]);
+                    assert_eq!(
+                        effect_count_of(&proposal, 0),
+                        Some(1),
+                        "{kind:?} {name}: the instance maps"
+                    );
+                    assert!(
+                        !losses
+                            .iter()
+                            .any(|(kind, _)| *kind == LossKind::Unsupported),
+                        "{kind:?} {name}: reports {losses:?}"
+                    );
+                }
+                let cost = |shape| item_cost(cap, &[(slot, effect_object(kind, shape, false, 0))]);
+                required.push((kind, cost(Shape::Required)));
+                all_keys.push((kind, cost(Shape::AllKeys(2))));
+            }
+            assert_eq!(
+                required.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
+                [3, 3, 4, 5, 16, 3, 3, 5],
+                "items per instance, required items only: {required:?}"
+            );
+            assert_eq!(
+                all_keys.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
+                [28, 27, 29, 30, 46, 24, 27, 28],
+                "items per instance, every key read: {all_keys:?}"
+            );
+            // A contour point is a list entry plus Hrzn, Vrtc, Cnty.
+            let point = item_cost(
+                cap,
+                &[(
+                    "DrSh",
+                    effect_object(Kind::DropShadow, Shape::AllKeys(3), false, 0),
+                )],
+            ) - all_keys[0].1;
+            assert_eq!(point, 4, "items per contour point");
+            let widest = item_cost(
+                cap,
+                &[(
+                    "DrSh",
+                    effect_object(Kind::DropShadow, Shape::AllKeys(max_points), false, 0),
+                )],
+            );
+            assert_eq!(
+                widest,
+                all_keys[0].1 + point * (max_points - 2),
+                "a drop shadow with a 256-point contour"
+            );
+
+            // The most instances one descriptor holds, for the kinds that have a multi list (lists of 512): the
+            // reader's verdict flips exactly there (fits at `n`, refused at `n + 1`).
+            let holds = |kind: Kind, shape: Shape, n: usize| {
+                let key = kind.keys().1.expect("a kind with a multi list");
+                assert_boundary(&format!("{kind:?}"), n, |count| {
+                    !item_limit_hit(lists_of(
+                        key,
+                        vec![effect_object(kind, shape, false, 0); count],
+                    ))
+                });
+            };
+            let multi = [
+                Kind::DropShadow,
+                Kind::InnerShadow,
+                Kind::ColourOverlay,
+                Kind::Stroke,
+            ];
+            let holds_required: Vec<(Kind, usize)> =
+                multi.into_iter().zip([2728, 2728, 2728, 1637]).collect();
+            let holds_all: Vec<(Kind, usize)> =
+                multi.into_iter().zip([292, 303, 341, 292]).collect();
+            let holds_widest = 7;
+            for (kind, n) in &holds_required {
+                holds(*kind, Shape::Required, *n);
+            }
+            for (kind, n) in &holds_all {
+                holds(*kind, Shape::AllKeys(2), *n);
+            }
+            holds(Kind::DropShadow, Shape::AllKeys(max_points), holds_widest);
+
+            // The per-instance cost from which 8192 items no longer hold the stack a cap would otherwise decide: 1 live
+            // + 1024 switched off (the smallest stack Folio's ceiling cuts), a full list of 512 entries (the most the
+            // 512-entry cap accepts), 65 live (the smallest stack over the 64 per-layer limit).
+            let (from_ceiling, from_list, from_layer) = (8, 16, 127);
+            assert_first_cost_over_cap("1 live + 1024 off", 1, MAX_EFFECTS, from_ceiling);
+            assert_first_cost_over_cap("512 off", 0, LIST_CAP, from_list);
+            assert_first_cost_over_cap("65 live", MAX_EFFECTS_PER_LAYER + 1, 0, from_layer);
+            // The measured kinds sit on the sides these costs say: a kind that costs less than the cost from which a
+            // stack no longer fits holds more instances than that stack has.
+            for (kind, cost) in &required {
+                if let Some((_, n)) = holds_required.iter().find(|(k, _)| k == kind) {
+                    assert_eq!(
+                        *n > MAX_EFFECTS,
+                        *cost < from_ceiling,
+                        "{kind:?} required: the ceiling stack"
+                    );
+                    assert_eq!(
+                        *n >= LIST_CAP,
+                        *cost < from_list,
+                        "{kind:?} required: the full list"
+                    );
+                }
+            }
+            for (kind, cost) in &all_keys {
+                if let Some((_, n)) = holds_all.iter().find(|(k, _)| k == kind) {
+                    assert_eq!(
+                        *n > MAX_EFFECTS,
+                        *cost < from_ceiling,
+                        "{kind:?} all keys: the ceiling stack"
+                    );
+                    assert_eq!(
+                        *n >= LIST_CAP,
+                        *cost < from_list,
+                        "{kind:?} all keys: the full list"
+                    );
+                }
+            }
+
+            // The loss code on either side: the ceiling cut, and the per-layer loss, are reached only by a stack that
+            // fits 8192 items; a stack that does not is refused whole, before any instance is mapped.
+            let codes = |items| {
+                import_stack(items)
+                    .1
+                    .into_iter()
+                    .map(|(_, code)| code)
+                    .collect::<Vec<_>>()
+            };
+            let fits_ceiling = codes(padded_stack(1, MAX_EFFECTS, from_ceiling - 1 - 3));
+            assert!(
+                fits_ceiling.contains(&DROPPED_STACK) && !fits_ceiling.contains(&DESCRIPTOR_LIMIT),
+                "{fits_ceiling:?}"
+            );
+            let over_ceiling = codes(padded_stack(1, MAX_EFFECTS, from_ceiling - 3));
+            assert!(
+                over_ceiling.contains(&DESCRIPTOR_LIMIT) && !over_ceiling.contains(&DROPPED_STACK),
+                "{over_ceiling:?}"
+            );
+            let fits_layer = codes(padded_stack(
+                MAX_EFFECTS_PER_LAYER + 1,
+                0,
+                from_layer - 1 - 3,
+            ));
+            assert!(
+                fits_layer.contains(&OVER_LAYER) && !fits_layer.contains(&DESCRIPTOR_LIMIT),
+                "{fits_layer:?}"
+            );
+            let over_layer = codes(padded_stack(MAX_EFFECTS_PER_LAYER + 1, 0, from_layer - 3));
+            assert!(
+                over_layer.contains(&DESCRIPTOR_LIMIT) && !over_layer.contains(&OVER_LAYER),
+                "{over_layer:?}"
+            );
+
+            // The shipped DESCRIPTOR states the measured numbers (V4-07: the claim cites this test).
+            let effect_limits = DESCRIPTOR
+                .split("\"effect_limits\":\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .expect("the DESCRIPTOR has an effect_limits entry");
+            let cited = "the_descriptor_readers_8192_item_cap_is_measured_per_effect_kind_and_stated_in_the_descriptor";
+            for needle in [
+                "the_descriptor_readers_cap_of_8192_items_per_descriptor_counts_every_object_item_and_every_list_entry_at_every_nesting_depth_category_blind_and_checked_as_each_item_is_read".to_owned(),
+                "a_descriptor_over_8192_items_refuses_the_descriptor_loss_unsupported_descriptor_item_limit_and_that_stack_is_lost_before_any_instance_is_mapped_so_every_cap_and_loss_code_stated_above_applies_to_a_stack_whose_descriptor_fits_8192_items".to_owned(),
+                format!("measured_items_per_effect_instance_with_its_list_entry_or_slot_key_and_enab_and_only_the_items_the_importer_requires_{}", figures(&required)),
+                format!("measured_items_per_effect_instance_with_every_key_the_importer_reads_and_a_2_point_contour_{}", figures(&all_keys)),
+                format!("a_contour_point_costs_{point}_items_and_a_contour_holds_up_to_{max_points}_points"),
+                format!(
+                    "most_instances_one_descriptor_holds_in_lists_of_512_with_the_required_items_only_{}_with_every_key_{}_and_with_a_{max_points}_point_contour_drop_shadow_{holds_widest}",
+                    figures(&holds_required),
+                    figures(&holds_all)
+                ),
+                format!(
+                    "{}_instances_do_not_fit_8192_items_from_{from_ceiling}_items_per_instance_a_full_list_of_512_entries_from_{from_list}_items_per_instance_and_{}_counted_instances_from_{from_layer}_items_per_instance",
+                    MAX_EFFECTS + 1,
+                    MAX_EFFECTS_PER_LAYER + 1
+                ),
+                "for_instances_of_at_least_those_costs_the_stack_is_refused_whole_with_descriptor_item_limit_before_it_reaches_folios_ceiling_a_full_512_entry_list_or_the_64_per_layer_limit_so_the_ceiling_cut_loss_and_effects_over_budget_for_the_per_layer_limit_are_not_reported_for_it".to_owned(),
+                format!("test_{cited}"),
+            ] {
+                assert!(effect_limits.contains(&needle), "effect_limits does not state {needle}");
+            }
+            assert!(
+                include_str!("effects_budget.rs").contains(&format!("fn {cited}()")),
+                "the cited test does not exist"
+            );
+        },
+    );
 }
 
 /// Layers that exactly fill pigment's plan limit at the per-layer limit.

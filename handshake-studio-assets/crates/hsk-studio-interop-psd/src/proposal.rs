@@ -525,7 +525,8 @@ impl Builder<'_, '_, '_> {
     /// kind `Transformed`, and nothing is charged to the uncounted bound for the dropped ones); a stack with NO counted
     /// instances is all switched-off instances and is not mapped past the ceiling (`effects_over_budget`). Each of the
     /// two `Transformed` entries is one entry per stack whose path ends `(layer_id=<id>,dropped=<count>)`: `<count>` is
-    /// exactly the number of switched-off instances the record does not hold, and a switched-off instance that was
+    /// the number of MAPPED switched-off instances the record does not hold (a switched-off instance the importer does
+    /// not map reports itself, is not in the record and is not counted), and a switched-off instance that was
     /// mapped and left out of the record adds no loss entry of its own (tests
     /// `the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them` and
     /// `the_document_budget_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them`). The import
