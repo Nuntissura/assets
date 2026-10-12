@@ -461,6 +461,69 @@ fn e010_projection_scaling_and_maximized_hidden_descendants() {
     assert_eq!(d.controller.snapshot().views.len(), 9);
     binding.pixels_per_point = f32::INFINITY;
     assert!(binding.validate().is_err());
+
+    let mut d = demo::new().unwrap();
+    let before = d.controller.snapshot().clone();
+    let (&floating_frame, floating) = before.floats.iter().next().unwrap();
+    assert_eq!(
+        floating.rect,
+        core::Rect::new(570.0, 320.0, 330.0, 250.0).unwrap()
+    );
+    let mut narrow = surface(d.root);
+    narrow.bounds = core::Rect::new(0.0, 0.0, 460.0, 420.0).unwrap();
+    narrow.epoch += 1;
+    let projection = workspace::project(&mut d.controller, narrow, &mut d.host).unwrap();
+    assert!(projection.rejected.is_empty());
+    let after = d.controller.snapshot();
+    assert_eq!(after.identity, before.identity);
+    assert_eq!(after.frames, before.frames);
+    assert_eq!(after.views, before.views);
+    assert_eq!(after.workspaces, before.workspaces);
+    assert_eq!(
+        after.floats.keys().collect::<Vec<_>>(),
+        before.floats.keys().collect::<Vec<_>>()
+    );
+    let fitted = &after.floats[&floating_frame];
+    assert_eq!(fitted.return_location, floating.return_location);
+    assert_eq!(fitted.kind, floating.kind);
+    assert_eq!(
+        fitted.rect,
+        core::Rect::new(130.0, 170.0, 330.0, 250.0).unwrap()
+    );
+    assert!(narrow.bounds.contains(fitted.rect));
+    assert_eq!(after.contexts[&d.root].viewport, narrow.bounds);
+    assert!(projection
+        .frames
+        .iter()
+        .any(|f| f.frame == floating_frame && f.bounds == fitted.rect));
+
+    let mut context = after.contexts[&d.root].clone();
+    context
+        .minimums
+        .insert(floating_frame, core::Size::new(330.0, 250.0).unwrap());
+    let root = d.root;
+    command(
+        &mut d,
+        Command::SetGeometryContext {
+            workspace: root,
+            context,
+        },
+    );
+    let before_rejection = d.controller.snapshot().clone();
+    narrow.bounds = core::Rect::new(0.0, 0.0, 200.0, 200.0).unwrap();
+    narrow.epoch += 1;
+    let (output, report) = paint(&mut d, &mut DesktopAdapter::default(), narrow);
+    assert_eq!(d.controller.snapshot(), &before_rejection);
+    assert!(!report.rejected.is_empty());
+    assert!(report.slots.is_empty());
+    assert!(report
+        .controls
+        .iter()
+        .any(|c| c.id == "workspace/layout-unavailable"));
+    assert!(output.shapes.iter().any(|shape| match &shape.shape {
+        egui::epaint::Shape::Text(text) => text.galley.text().contains("Panes / reveal"),
+        _ => false,
+    }));
 }
 
 #[cfg(feature = "capture")]

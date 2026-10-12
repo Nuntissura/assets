@@ -55,6 +55,83 @@ pub fn project(
 ) -> Result<Projection> {
     project_with_chrome(controller, surface, host, &chrome::ChromeState::default())
 }
+fn transition_context(
+    controller: &mut Controller,
+    workspace: WorkspaceId,
+    context: GeometryContext,
+    host: &mut impl DesktopHost,
+    max_pending: usize,
+) -> Result<()> {
+    if let Some(old) = controller.snapshot().contexts.get(&workspace) {
+        if old.viewport != context.viewport {
+            let geometry = controller.snapshot().geometry(workspace)?;
+            if context.overflow == kumihimo_core::Overflow::Reject
+                && (context.viewport.width() < geometry.required_extent.width()
+                    || context.viewport.height() < geometry.required_extent.height())
+            {
+                return Err(AdapterError::Core(
+                    kumihimo_core::GeometryError::Infeasible.into(),
+                ));
+            }
+            let common = intersect(old.viewport, context.viewport)?;
+            let mut intents = Vec::new();
+            for (frame, floating) in &controller.snapshot().floats {
+                if controller.snapshot().frames[frame].workspace != workspace
+                    || context.viewport.contains(floating.rect)
+                {
+                    continue;
+                }
+                if common.width() <= 0.0 || common.height() <= 0.0 {
+                    return Err(AdapterError::Unsupported(
+                        "viewport transition has no shared float area",
+                    ));
+                }
+                let width = floating.rect.width().min(common.width());
+                let height = floating.rect.height().min(common.height());
+                let rect = Rect::new(
+                    floating
+                        .rect
+                        .x()
+                        .clamp(common.x(), (common.right() - width).max(common.x())),
+                    floating
+                        .rect
+                        .y()
+                        .clamp(common.y(), (common.bottom() - height).max(common.y())),
+                    width,
+                    height,
+                )?;
+                if !old.viewport.contains(rect) || !context.viewport.contains(rect) {
+                    return Err(AdapterError::Unsupported(
+                        "float cannot fit both viewport contexts",
+                    ));
+                }
+                if intents.len() >= max_pending {
+                    return Err(AdapterError::Budget("viewport float transitions"));
+                }
+                let intent = kumihimo_core::DockIntent::Float {
+                    frame: *frame,
+                    rect,
+                };
+                // Check every required move before mutation. Core owns minima and eligibility.
+                controller.core().preview(intent.clone())?;
+                intents.push(intent);
+            }
+            for intent in intents {
+                let preview = controller.core().preview(intent)?;
+                host.dispatch(controller, Command::CommitPreview(preview))?
+                    .outcome
+                    .result?;
+            }
+        }
+    }
+    host.dispatch(
+        controller,
+        Command::SetGeometryContext { workspace, context },
+    )?
+    .outcome
+    .result?;
+    Ok(())
+}
 pub fn project_with_chrome(
     controller: &mut Controller,
     surface: SurfaceBinding,
@@ -94,11 +171,17 @@ pub fn project_with_chrome(
             .unwrap_or_else(|| GeometryContext::new(bounds));
         context.viewport = bounds;
         if controller.snapshot().contexts.get(&workspace) != Some(&context) {
-            let response = host.dispatch(
-                controller,
-                Command::SetGeometryContext { workspace, context },
-            )?;
-            response.outcome.result?;
+            if let Err(error) =
+                transition_context(controller, workspace, context, host, policy.max_pending)
+            {
+                if output.rejected.len() < 64 {
+                    output.rejected.push(format!(
+                        "workspace {} unavailable: {error}; enlarge the viewport or use Panes / reveal",
+                        workspace.raw()
+                    ));
+                }
+                continue;
+            }
         }
         let geometry = match controller.snapshot().geometry(workspace) {
             Ok(g) => g,

@@ -638,6 +638,38 @@ pub fn draw(
                     });
                 }
             });
+            if !projection.rejected.is_empty() {
+                let label = "Layout unavailable";
+                let response = ui
+                    .push_id("layout-unavailable", |ui| {
+                        ui.label(egui::RichText::new(label).color(egui::Color32::LIGHT_RED))
+                    })
+                    .inner;
+                record(
+                    report,
+                    &response,
+                    "workspace/layout-unavailable".into(),
+                    label.into(),
+                    None,
+                );
+                ui.menu_button("Details / recovery", |ui| {
+                    ui.set_max_width(240.0);
+                    ui.label(
+                        "Current geometry rejected. Use Panes / reveal or resize the surface.",
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            for rejection in projection.rejected.iter().take(64) {
+                                let detail: String = rejection.chars().take(512).collect();
+                                ui.label(detail);
+                            }
+                            if projection.rejected.len() > 64 {
+                                ui.label("Additional rejection details omitted.");
+                            }
+                        });
+                });
+            }
             if let Some(preview) = state.preview.clone() {
                 ui.horizontal(|ui| {
                     ui.label("Nonmutating dock preview");
