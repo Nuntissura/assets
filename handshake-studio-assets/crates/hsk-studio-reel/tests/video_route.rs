@@ -54,6 +54,9 @@ struct Seen {
     opens: Vec<(&'static str, Vec<u8>, u32, u32)>,
     packets: Vec<(u64, Vec<u8>)>,
     finished: u32,
+    /// Tags of the pictures a holding fake released inside `finish` (empty for a fake that releases inside
+    /// `send`), in release order.
+    released_at_finish: Vec<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +85,7 @@ struct Fake {
     seen: Arc<Mutex<Seen>>,
     plan: Plan,
     supports: bool,
+    hold: bool,
 }
 
 impl Fake {
@@ -92,15 +96,25 @@ impl Fake {
                 seen: Arc::clone(&seen),
                 plan,
                 supports: true,
+                hold: false,
             },
             seen,
         )
+    }
+
+    /// A decoder that releases NOTHING inside `send`: every picture the plan does not drop is held and
+    /// released inside `finish`, in the order the packets arrived (PLR-092).
+    fn holding(mut self) -> Self {
+        self.hold = true;
+        self
     }
 }
 
 struct FakeSession {
     seen: Arc<Mutex<Seen>>,
     plan: Plan,
+    hold: bool,
+    held: Vec<u64>,
 }
 
 impl ExternalVideoDecoder for Fake {
@@ -127,6 +141,8 @@ impl ExternalVideoDecoder for Fake {
         Ok(Box::new(FakeSession {
             seen: Arc::clone(&self.seen),
             plan: self.plan,
+            hold: self.hold,
+            held: Vec::new(),
         }))
     }
 }
@@ -154,6 +170,10 @@ impl VideoDecodeSession for FakeSession {
         if matches!(self.plan, Plan::DropPicture(at) if at == tag)
             || matches!(self.plan, Plan::DropFrom(from) if tag >= from)
         {
+            return Ok(());
+        }
+        if self.hold {
+            self.held.push(tag);
             return Ok(());
         }
         if let Plan::Picture {
@@ -199,9 +219,18 @@ impl VideoDecodeSession for FakeSession {
     fn finish(
         &mut self,
         _cancel: &CancellationToken,
-        _out: &mut dyn PictureSink,
+        out: &mut dyn PictureSink,
     ) -> Result<(), VideoDecodeError> {
         self.seen.lock().unwrap().finished += 1;
+        for tag in std::mem::take(&mut self.held) {
+            self.seen.lock().unwrap().released_at_finish.push(tag);
+            out.accept(DecodedPicture {
+                tag,
+                format: picture_format(),
+                film_grain_applied: false,
+                planes: vec![vec![tag as u8; 256], vec![0x80; 64], vec![0x81; 64]],
+            })?;
+        }
         match self.plan {
             Plan::FaultOnFinish(fault) => Err(fault.into()),
             _ => Ok(()),
@@ -1178,6 +1207,30 @@ fn picture_spans(registry: &Registry, bytes: &[u8], container: &str) -> Vec<(u64
         .collect()
 }
 
+/// A registry whose external decoder follows `plan`; `hold` makes that decoder release nothing inside
+/// `send` and every picture it does not drop inside `finish` (PLR-092).
+fn fake_registry(plan: Plan, hold: bool) -> (Registry, Arc<Mutex<Seen>>) {
+    let (fake, seen) = Fake::new(plan);
+    let fake = if hold { fake.holding() } else { fake };
+    (
+        Registry::standard().with_video_decoder(Arc::new(fake)),
+        seen,
+    )
+}
+
+/// What a run of a `fake_registry` decoder released inside `finish`: nothing when it releases inside `send`;
+/// when it holds, the pictures the sink took are the tail of the release (the leading ones are pre-roll
+/// pictures the route drops). Clears the record for the next run.
+fn assert_release_timing(seen: &Mutex<Seen>, hold: bool, delivered: &[u64], label: &str) {
+    let mut seen = seen.lock().unwrap();
+    let released = std::mem::take(&mut seen.released_at_finish);
+    if hold {
+        assert!(released.ends_with(delivered), "{label}: {released:?}");
+    } else {
+        assert!(released.is_empty(), "{label}: {released:?}");
+    }
+}
+
 /// One row of the fixture table: (plan, first frame, count, delivered tags, expected (start, end) of the
 /// actual span).
 type SpanCase = (Plan, usize, u64, &'static [u64], (u64, u64));
@@ -1191,6 +1244,18 @@ type SpanCase = (Plan, usize, u64, &'static [u64], (u64, u64));
 /// pre-roll offset (with and without the first requested picture dropped).
 #[test]
 fn partial_video_receipt_spans_the_delivered_pictures() {
+    partial_video_receipt_spans(false);
+}
+
+/// PLR-092: the same table with a decoder that releases nothing inside `send` and every picture it keeps
+/// inside `finish`: the span of the `Partial` receipt is read from the pictures delivered at `finish`, so
+/// every row gives the receipt of the decoder that releases as it goes.
+#[test]
+fn partial_video_receipt_spans_the_pictures_a_decoder_holds_until_finish() {
+    partial_video_receipt_spans(true);
+}
+
+fn partial_video_receipt_spans(hold: bool) {
     for (name, bytes, container, pts) in [
         ("mp4", MP4, ISOBMFF_PROVIDER_ID, PTS_MP4),
         ("mkv", MKV, MATROSKA_PROVIDER_ID, PTS_MKV),
@@ -1230,8 +1295,7 @@ fn partial_video_receipt_spans_the_delivered_pictures() {
         for (n, (plan, first, count, delivered, (want_start, want_end))) in
             cases.into_iter().enumerate()
         {
-            let (fake, _) = Fake::new(plan);
-            let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+            let (registry, seen) = fake_registry(plan, hold);
             let range = (pts[first], count);
             let (result, sink) = run_video(
                 &registry,
@@ -1241,9 +1305,10 @@ fn partial_video_receipt_spans_the_delivered_pictures() {
                 OutputMode::Decoded,
             );
             let receipt = result.unwrap();
-            let label = format!("{name} case {n}");
+            let label = format!("{name} case {n} hold {hold}");
             let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
             assert_eq!(tags, delivered, "{label}");
+            assert_release_timing(&seen, hold, delivered, &label);
             assert_eq!(receipt.disposition, Disposition::Partial, "{label}");
             assert!(!receipt.complete, "{label}");
             assert_eq!(receipt.requested.units, count, "{label}");
@@ -1273,7 +1338,11 @@ const UNIT: u64 = 423_360_000;
 /// A 600 Hz av01 clip of 16x16 samples of 20 units each, in decode order (`offsets` = their composition
 /// offsets, only the first sample is sync), with this edit list `(segment duration, media time)`.
 fn av01_clip(offsets: &[i32], edits: Vec<(u64, i64)>) -> Vec<u8> {
-    mp4_bytes(&Mp4Spec {
+    mp4_bytes(&av01_spec(offsets, Some(edits)))
+}
+
+fn av01_spec(offsets: &[i32], edits: Option<Vec<(u64, i64)>>) -> Mp4Spec {
+    Mp4Spec {
         movie_timescale: 600,
         media_timescale: 600,
         codec: *b"av01",
@@ -1289,14 +1358,14 @@ fn av01_clip(offsets: &[i32], edits: Vec<(u64, i64)>) -> Vec<u8> {
                 sync: k == 0,
             })
             .collect(),
-        edits: Some(edits),
+        edits,
         samples_per_chunk: 2,
         co64: false,
         ctts_version: 0,
         moov_first: true,
         colr_nclx: None,
         pasp: None,
-    })
+    }
 }
 
 /// PLR-077 and PLR-085: nothing changes when the decoder delivers every picture the packets offered. The
@@ -1306,13 +1375,23 @@ fn av01_clip(offsets: &[i32], edits: Vec<(u64, i64)>) -> Vec<u8> {
 /// two units, ending at 40 units).
 #[test]
 fn fully_delivered_video_receipt_end_is_the_packet_end() {
+    fully_delivered_video_receipt(false);
+}
+
+/// PLR-092: the same, with a decoder that releases nothing inside `send` and all its pictures inside
+/// `finish` (a complete decode that arrives at `finish` keeps the packet receipt, units included).
+#[test]
+fn fully_delivered_video_receipt_with_pictures_held_until_finish_is_the_packet_receipt() {
+    fully_delivered_video_receipt(true);
+}
+
+fn fully_delivered_video_receipt(hold: bool) {
     let repeating = av01_clip(&[0, 0, 0, 0], vec![(40, 0), (40, 0)]);
     for (name, bytes, container, pts) in [
         ("mp4", MP4, ISOBMFF_PROVIDER_ID, PTS_MP4),
         ("mkv", MKV, MATROSKA_PROVIDER_ID, PTS_MKV),
     ] {
-        let (fake, _) = Fake::new(Plan::Works);
-        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let (registry, seen) = fake_registry(Plan::Works, hold);
         let last_end = picture_spans(&registry, bytes, container)[2].1;
         for (range, purpose) in [
             ((0, 3), Purpose::Preview),
@@ -1321,7 +1400,7 @@ fn fully_delivered_video_receipt_end_is_the_packet_end() {
             ((pts[2], 1), Purpose::Preview),
             ((pts[2], 1), Purpose::Export),
         ] {
-            let label = format!("{name} {range:?} {purpose:?}");
+            let label = format!("{name} {range:?} {purpose:?} hold {hold}");
             let (result, sink) = run_video(
                 &registry,
                 (bytes, container),
@@ -1333,6 +1412,8 @@ fn fully_delivered_video_receipt_end_is_the_packet_end() {
             assert!(receipt.complete, "{label}");
             assert_eq!(receipt.actual.units, range.1, "{label}");
             assert_eq!(sink.chunks.len() as u64, range.1, "{label}");
+            let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
+            assert_release_timing(&seen, hold, &tags, &label);
             let packets = packet_receipt(&registry, (bytes, container), range);
             assert_eq!(receipt.actual, packets.actual, "{label}");
             assert_eq!(receipt.requested, packets.requested, "{label}");
@@ -1342,8 +1423,7 @@ fn fully_delivered_video_receipt_end_is_the_packet_end() {
     }
 
     let source = (&repeating[..], ISOBMFF_PROVIDER_ID);
-    let (fake, _) = Fake::new(Plan::Works);
-    let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+    let (registry, seen) = fake_registry(Plan::Works, hold);
     let (result, sink) = run_video(
         &registry,
         source,
@@ -1354,6 +1434,8 @@ fn fully_delivered_video_receipt_end_is_the_packet_end() {
     let receipt = result.unwrap();
     assert_eq!(receipt.disposition, Disposition::Partial);
     assert_eq!((sink.chunks.len(), receipt.actual.units), (2, 2));
+    let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
+    assert_release_timing(&seen, hold, &tags, "repeating");
     assert_eq!(receipt.actual.end_pts.value(), 40 * UNIT);
     // The requested span is the end of the presented range (four samples of 20 units), unchanged.
     assert_eq!(receipt.requested.end_pts.value(), 80 * UNIT);
@@ -1415,6 +1497,17 @@ type OutOfOrderCase = (Plan, &'static [u64], &'static [u64], (u64, u64));
 /// the start, fails the row that drops the first picture.
 #[test]
 fn partial_video_receipt_follows_pictures_released_out_of_order() {
+    partial_video_receipt_out_of_order(false);
+}
+
+/// PLR-092: the same table with a decoder that releases nothing inside `send` and its pictures, in packet
+/// order, inside `finish`: pictures that arrive late and out of presentation order give the same span.
+#[test]
+fn partial_video_receipt_follows_out_of_order_pictures_held_until_finish() {
+    partial_video_receipt_out_of_order(true);
+}
+
+fn partial_video_receipt_out_of_order(hold: bool) {
     // pts = dts + offset: I 0 + 40, P 20 + 60, B 40 + 20; the edit (60, 40) starts the clip at media time
     // 40, so the units on the presentation line are I 0, B 20, P 40.
     let clip = av01_clip(&[40, 60, 20], vec![(60, 40)]);
@@ -1439,8 +1532,7 @@ fn partial_video_receipt_follows_pictures_released_out_of_order() {
         (0, 60 * UNIT)
     );
     for (n, (plan, delivered, at, (want_start, want_end))) in cases.into_iter().enumerate() {
-        let (fake, _) = Fake::new(plan);
-        let registry = Registry::standard().with_video_decoder(Arc::new(fake));
+        let (registry, seen) = fake_registry(plan, hold);
         let (result, sink) = run_video(
             &registry,
             source,
@@ -1449,10 +1541,11 @@ fn partial_video_receipt_follows_pictures_released_out_of_order() {
             OutputMode::Decoded,
         );
         let receipt = result.unwrap();
-        let label = format!("out of order case {n}");
+        let label = format!("out of order case {n} hold {hold}");
         // The fixture really is out of order: the arrival order and presentation times are pinned.
         let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
         assert_eq!(tags, delivered, "{label}");
+        assert_release_timing(&seen, hold, delivered, &label);
         let times: Vec<u64> = sink.chunks.iter().map(|c| c.1 as u64 / UNIT).collect();
         assert_eq!(times, at, "{label}");
         assert_eq!(receipt.requested, packets.requested, "{label}");
@@ -1470,6 +1563,136 @@ fn partial_video_receipt_follows_pictures_released_out_of_order() {
         } else {
             assert!(!receipt.complete, "{label}");
             assert_eq!(receipt.disposition, Disposition::Partial, "{label}");
+        }
+    }
+}
+
+/// PLR-092 (R22-R1): the premise of the bound on the span `Forward` keeps, tested at the route. A negative
+/// presentation time never reaches a delivered picture. A track without an edit list keeps its negative
+/// composition times (here three samples of 20 units that present at -10, 10 and 30), and the packet loop
+/// refuses a range whose FIRST requested entry is negative before it reads a sample, so a decoder session
+/// is never fed. Presentation order makes every later entry at least as late, so a range that starts at or
+/// after zero delivers pictures with pts >= 0 only; the one negative time left is the pre-roll sample before
+/// the range: it goes to the decoder, its picture is dropped and no receipt reports it.
+#[test]
+fn a_negative_presentation_time_never_reaches_a_delivered_picture() {
+    let clip = mp4_bytes(&Mp4Spec {
+        ctts_version: 1,
+        ..av01_spec(&[-10, -10, -10], None)
+    });
+    let source = (&clip[..], ISOBMFF_PROVIDER_ID);
+    let unit = UNIT as i64;
+    // Ground truth from the index: the first presented entry is negative, the others are not.
+    let index = build_index(
+        &mut Cursor::new(clip.clone()),
+        clip.len() as u64,
+        &Limits::default(),
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    let presented: Vec<i64> = index
+        .default_track()
+        .unwrap()
+        .presented()
+        .iter()
+        .map(|p| p.pts)
+        .collect();
+    assert_eq!(presented, [-10 * unit, 10 * unit, 30 * unit]);
+
+    let negative = ReelError::Unsupported {
+        what: "negative-presentation-time",
+    };
+    // The packet loop refuses the range that starts inside the negative first entry, without a decoder.
+    let probe = Registry::standard();
+    let (packets, sink) = run_video(
+        &probe,
+        source,
+        (0, 3),
+        Purpose::Preview,
+        OutputMode::Packets,
+    );
+    assert_eq!(packets.unwrap_err(), negative);
+    assert!(sink.chunks.is_empty());
+    // The pre-roll sample of a range that starts at the second entry does carry the negative time.
+    let (_, sink) = run_video(
+        &probe,
+        source,
+        (10 * UNIT, 2),
+        Purpose::Preview,
+        OutputMode::Packets,
+    );
+    let times: Vec<(u64, i64)> = sink.chunks.iter().map(|c| (c.2, c.1)).collect();
+    assert_eq!(times, [(0, -10 * unit), (1, 10 * unit), (2, 30 * unit)]);
+    let packets = packet_receipt(&probe, source, (10 * UNIT, 2));
+    assert_eq!(
+        (
+            packets.actual.start_pts.value(),
+            packets.actual.end_pts.value()
+        ),
+        (10 * UNIT, 50 * UNIT)
+    );
+
+    for hold in [false, true] {
+        // (plan, purpose, request, delivered tags, expected (start, end) of the actual span in units)
+        let rows = [
+            (
+                Plan::Works,
+                Purpose::Preview,
+                (10, 2),
+                &[1u64, 2][..],
+                (10u64, 50u64),
+            ),
+            (Plan::Works, Purpose::Export, (10, 2), &[1, 2][..], (10, 50)),
+            (Plan::Works, Purpose::Preview, (30, 1), &[2][..], (30, 50)),
+            // The first requested picture is dropped: the span starts at the next one, never at pre-roll.
+            (
+                Plan::DropPicture(1),
+                Purpose::Preview,
+                (10, 2),
+                &[2][..],
+                (30, 50),
+            ),
+        ];
+        for (n, (plan, purpose, (start, count), delivered, (want_start, want_end))) in
+            rows.into_iter().enumerate()
+        {
+            let label = format!("negative pre-roll row {n} hold {hold}");
+            let (registry, seen) = fake_registry(plan, hold);
+            let (refused, sink) = run_video(
+                &registry,
+                source,
+                (0, 3),
+                Purpose::Preview,
+                OutputMode::Decoded,
+            );
+            assert_eq!(refused.unwrap_err(), negative, "{label}");
+            {
+                let seen = seen.lock().unwrap();
+                assert!(seen.packets.is_empty() && seen.finished == 0, "{label}");
+            }
+            assert!(sink.chunks.is_empty(), "{label}");
+
+            let (result, sink) = run_video(
+                &registry,
+                source,
+                (start * UNIT, count),
+                purpose,
+                OutputMode::Decoded,
+            );
+            let receipt = result.unwrap();
+            let tags: Vec<u64> = sink.chunks.iter().map(|c| c.2).collect();
+            assert_eq!(tags, delivered, "{label}");
+            assert!(sink.chunks.iter().all(|c| c.1 >= 0), "{label}");
+            assert_release_timing(&seen, hold, delivered, &label);
+            // The pre-roll sample (tag 0, presented at -10 units) went to the decoder and nowhere else.
+            let sent: Vec<u64> = seen.lock().unwrap().packets.iter().map(|p| p.0).collect();
+            assert_eq!(sent, [0, 1, 2], "{label}");
+            assert_eq!(
+                receipt.actual.start_pts.value(),
+                want_start * UNIT,
+                "{label}"
+            );
+            assert_eq!(receipt.actual.end_pts.value(), want_end * UNIT, "{label}");
         }
     }
 }

@@ -284,21 +284,22 @@ struct Forward<'a> {
     packed: Vec<u8>,
 }
 
-/// `(start, end)` of a delivered picture (`pts`, `pts + duration` of its packet) in ticks, checked: an
-/// overflow is `tick-range`, a start or an end before presentation zero the same refusal the packet
-/// receipt gives.
+/// `(start, end)` of a delivered picture (`pts`, `pts + duration` of its packet) in ticks, checked: a start
+/// before presentation zero is the refusal the packet receipt gives, and an end past `i64::MAX` is
+/// `tick-range`, the packet loop's own bound. The end of a picture whose start is not negative is not
+/// negative either (its duration is unsigned), so the start is the only sign check. No container hands a
+/// negative start to a delivered picture (the packet loop refuses a range whose first entry is negative
+/// before it reads a sample, and presentation order keeps every later entry at or after it; tests
+/// `a_negative_presentation_time_never_reaches_a_delivered_picture` and `picture_span_is_checked_and_typed`).
 fn picture_span(pts: i64, duration: Ticks) -> Result<(u64, u64), ReelError> {
-    let end = i64::try_from(duration.value())
-        .ok()
-        .and_then(|duration| pts.checked_add(duration))
-        .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
-    let negative = |_| ReelError::Unsupported {
+    let start = u64::try_from(pts).map_err(|_| ReelError::Unsupported {
         what: "negative-presentation-time",
-    };
-    Ok((
-        u64::try_from(pts).map_err(negative)?,
-        u64::try_from(end).map_err(negative)?,
-    ))
+    })?;
+    let end = start
+        .checked_add(duration.value())
+        .filter(|end| i64::try_from(*end).is_ok())
+        .ok_or(ReelError::LimitExceeded { what: "tick-range" })?;
+    Ok((start, end))
 }
 
 /// True when the picture has the plane count its format implies and every plane has exactly
@@ -571,4 +572,54 @@ pub(crate) fn decode_video_track_with(
         }
     }
     Ok(receipt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn negative() -> ReelError {
+        ReelError::Unsupported {
+            what: "negative-presentation-time",
+        }
+    }
+
+    fn tick_range() -> ReelError {
+        ReelError::LimitExceeded { what: "tick-range" }
+    }
+
+    /// PLR-092 (R22-R1): the span of a delivered picture is computed with checked arithmetic and typed
+    /// refusals. No demuxer hands a negative presentation time to a delivered picture (test
+    /// `a_negative_presentation_time_never_reaches_a_delivered_picture` in tests/video_route.rs), so the
+    /// refusals cannot be reached through a container; they are proven here on the function itself.
+    #[test]
+    fn picture_span_is_checked_and_typed() {
+        assert_eq!(picture_span(0, Ticks::new(0)), Ok((0, 0)));
+        assert_eq!(picture_span(7, Ticks::new(5)), Ok((7, 12)));
+        // A start before presentation zero is refused whether its end is before, at or after zero.
+        for (pts, duration) in [(-1, 0), (-5, 10), (-10, 3), (-10, 10), (i64::MIN, 0)] {
+            assert_eq!(
+                picture_span(pts, Ticks::new(duration)),
+                Err(negative()),
+                "pts {pts} duration {duration}"
+            );
+        }
+        // The end is bounded as the packet loop bounds it: a sum past i64::MAX is the tick-range limit.
+        let top = u64::try_from(i64::MAX).unwrap();
+        assert_eq!(picture_span(0, Ticks::new(top)), Ok((0, top)));
+        assert_eq!(picture_span(i64::MAX, Ticks::new(0)), Ok((top, top)));
+        for (pts, duration) in [
+            (1, top),
+            (i64::MAX, 1),
+            (i64::MAX, top),
+            (i64::MAX, u64::MAX),
+            (0, u64::MAX),
+        ] {
+            assert_eq!(
+                picture_span(pts, Ticks::new(duration)),
+                Err(tick_range()),
+                "pts {pts} duration {duration}"
+            );
+        }
+    }
 }
