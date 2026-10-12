@@ -203,3 +203,84 @@ fn unreachable_nested_effect_entries_admit_and_reachable_ones_are_refused() {
     );
     assert_eq!(grid.calls, 0);
 }
+
+/// PLR-081 (V4-07): `reachable()` in `plan_sink.rs` indexes `reach` directly, so it relies on
+/// shared admission having refused every plan whose root or inputs are out of range or not earlier
+/// nodes. Both execution paths admit first: each hostile plan is the typed `InvalidPlan` of
+/// `RenderPlan::validate`, nothing reaches the sink and nothing panics, on the v1 path and, with a
+/// non-empty envelope (which runs the sweep after `admit_extended_with_limits`), on the envelope
+/// path. Node indexes are derived by hand.
+#[test]
+fn invalid_plan_indexes_are_refused_before_the_reachable_sweep() {
+    let one = rect(0, 0, 1, 1);
+    let normal = StudioBlendMode::Normal;
+    // 0 solid | 1 group {one layer over `input`}, with the given root.
+    let shaped = |input: u32, root: u32| {
+        plan(
+            one,
+            vec![solid(one, BASE), group(vec![layer(input, normal, 1.0)])],
+            root,
+        )
+    };
+    // 0 solid | 1 group {layer over node 2} | 2 group {layer over node 0}, root 1.
+    let later = plan(
+        one,
+        vec![
+            solid(one, BASE),
+            group(vec![layer(2, normal, 1.0)]),
+            group(vec![layer(0, normal, 1.0)]),
+        ],
+        1,
+    );
+    let cases = [
+        ("root out of range", shaped(0, 9), PlanError::RootOutOfRange),
+        (
+            "input out of range",
+            shaped(9, 1),
+            PlanError::ForwardReference { node: 1, input: 9 },
+        ),
+        (
+            "input is a later node",
+            later,
+            PlanError::ForwardReference { node: 1, input: 2 },
+        ),
+        (
+            "input is the node itself",
+            shaped(1, 1),
+            PlanError::ForwardReference { node: 1, input: 1 },
+        ),
+    ];
+    let renderer = Renderer::new(1).unwrap();
+    let ext = envelope(vec![one_layer(1, 0).with_adjustment(AdjustmentOp::Invert)]);
+    for (what, hostile, want) in cases {
+        let mut grid = Grid::new(one);
+        let result = renderer.execute(
+            &hostile,
+            &req(Exactness::Approximate, 1 << 20),
+            &no_sources(),
+            &CancellationToken::default(),
+            &mut grid,
+        );
+        assert_eq!(
+            result,
+            Err(BackendError::InvalidPlan(want)),
+            "{what}: v1 path"
+        );
+        assert_eq!(grid.calls, 0, "{what}: v1 path reached the sink");
+
+        let (result, grid) = run_ext(
+            &renderer,
+            &hostile,
+            &ext,
+            Exactness::Approximate,
+            1 << 20,
+            &no_sources(),
+        );
+        assert_eq!(
+            result,
+            Err(BackendError::InvalidPlan(want)),
+            "{what}: envelope path"
+        );
+        assert_eq!(grid.calls, 0, "{what}: envelope path reached the sink");
+    }
+}

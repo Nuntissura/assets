@@ -191,8 +191,11 @@ impl ExtPrep {
     /// Prepares the envelope of a plan that `admit_extended` already validated: adjustments are
     /// prepared once per plan (`AdjustmentOp::prepare`), identical feather radii share a kernel.
     /// Only the entries of groups in `reach` (the nodes the root reaches, as `prepare` computes
-    /// them) are prepared: an entry on any other group is never looked up, renders nothing and
-    /// charges nothing to `limit` (pigment's admission skips its operators the same way).
+    /// them) are prepared: an entry on any other group renders nothing and charges nothing to
+    /// `limit` (test `tests/cpu_envelope_reach.rs`
+    /// `unreachable_envelope_entries_are_neither_admitted_nor_prepared`: the pixel and
+    /// `peak_working_bytes` equal the plain plan's); pigment's admission skips its operators the
+    /// same way.
     pub(super) fn build(
         extensions: &PlanExtensions,
         reach: &[bool],

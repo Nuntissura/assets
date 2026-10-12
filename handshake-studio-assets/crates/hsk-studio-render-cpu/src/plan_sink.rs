@@ -444,10 +444,13 @@ fn verify_tile(
     Ok(())
 }
 
-/// `reach[i]`: node `i` is the root or the input of a layer of a reachable group. Admission
-/// guarantees every index is in range and every input an earlier node, so one reverse sweep
-/// visits each group after all the groups that reference it. This is the set `prepare` executes
-/// and the set the envelope entries are prepared for.
+/// `reach[i]`: node `i` is the root or the input of a layer of a reachable group. Both callers
+/// run after shared admission, whose `RenderPlan::validate` refuses a root or an input out of
+/// range and an input that is not an earlier node as a typed `InvalidPlan` before this sweep runs
+/// (test `tests/cpu_envelope_reach.rs` `invalid_plan_indexes_are_refused_before_the_reachable_sweep`),
+/// so the indexing below is in range and one reverse sweep visits each group after all the groups
+/// that reference it. This is the set `prepare` executes and the set the envelope entries are
+/// prepared for.
 fn reachable<V>(plan: &RenderPlan<V>) -> Vec<bool> {
     let n = plan.nodes.len();
     let mut reach = vec![false; n];
