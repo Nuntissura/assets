@@ -589,8 +589,6 @@ boundary_decisions:
 gap_flags:
 - Actual host engines, text/fonts/reflow, asset/document mutation, native focus/GUI, physical CPU/memory/GPU release and performance remain unproven
   host integration boundaries.
-- Final lead-owned outcome specification/status/topology/build-matrix settlement and report publication require subsequent exact containment readback;
-  this report does not claim WP state done.
 proof_plan:
 - Published full contract/spec + dependency readiness and frozen twelve evaluator cases before coding
 - Lead-only offline local workspace lock resolution before candidate publication
@@ -611,8 +609,8 @@ RESIDUAL_UNCERTAINTY:
   improvement.
 - Linux/macOS, Windows ARM64, browser/WASM and platform-specific occlusion/focus/popout behavior were not run.
 - Host controller-session uniqueness and cross-restart exactly-once are host-owned assumptions/limits, not proved by this process-local test suite.
-next_action: Lead publish scoped runtime report and final specification/status/manual/topology/build-matrix outcome; evaluator independently read exact
-  resulting publication, preserving unchanged runtime input identity. Hold report/source writes meanwhile.
+next_action: Hold owned report bytes for lead publication and WP010 settlement; final scoped runtime verdict retained. Lead alone owns state done transition
+  and coder rotation.
 specification_preservation:
   archive_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v11-r11-c35af554d2e1
   compared_revision: c35af554d2e1710c507b26dc75c3dcdb62263778
@@ -642,13 +640,13 @@ non_case_acceptance:
   - WP010-R023
   acceptance_refs:
   - WP010-A013
-  observed: Std-only companion/default-disabled Core path dependency, private Core/read-only API, focused all-target/test/example and exact candidate
-    origin/blob evidence independently inspected; lead final matrix/topology/status settlement pending.
+  observed: A013 scoped proof and origin containment confirmed; final published matrix/topology/manual bind exact ba2d618, and all39 runtime/config/test
+    inputs remain byte-identical after README proof-only change.
 - contract_refs: []
   acceptance_refs:
   - WP010-A014
-  observed: Prior99 records and exact six-file Spec11 archive verified during preparation; full Spec12/master hashes unchanged through tested source.
-    Content manual directly inspected; final lead specification/topology/taskboard/state/build-matrix settlement and outcome publication remain pending.
+  observed: 'A014 observed publication confirmed: self-contained Spec13 preserves all99 complete Spec12 requirement records; exact six-file Spec12
+    archive retained; manual/topology/board/state/build-matrix record scoped proof and open host/platform boundaries. Lead owns WP done settlement.'
 runtime_evaluation:
   status: independently_verified_scoped_runtime_pass
   observed_at: '2026-10-12'
@@ -759,3 +757,80 @@ reused_runtime_evidence:
   - EVAL-KUM-009-P-focused_json_recovery
   result: Prior49 Core/JSON tests, optional all-feature compilation, default-core check and quiet Core/JSON examples remain valid for unchanged inputs;
     fresh companion evidence covers changed local workspace surface.
+outcome_publication:
+  status: independently_verified
+  observed_at: '2026-10-12'
+  outcome_revision: ec7c2fd3199450e0f1398cc32e85847d5e7b50c5
+  tested_source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+  acceptance_refs:
+  - WP010-A013
+  - WP010-A014
+  remote_command: git ls-remote origin refs/heads/codex/handpick
+  expected_remote_revision: ec7c2fd3199450e0f1398cc32e85847d5e7b50c5
+  observed_remote_and_HEAD_revision: ec7c2fd3199450e0f1398cc32e85847d5e7b50c5
+  published_outcome_blob_count: 20
+  all20_published_outcome_blobs_equal_local_bytes_at_readback: true
+  published_evaluation_sha256_at_readback: 07d205bb9f80fd333294e7b930dcb15e8c7b7290985275e12527ede066f98ac4
+  published_evaluation_hash_semantics: Pinned prior report blob at outcome revision; this containment update creates new local report bytes for lead
+    publication, not a live self-hash gate.
+  runtime_input_count: 39
+  runtime39_sha256: e473d0c1336e8580dc4186b63eceadf9dba021ffb2c027df6430de36c7d3dcf9
+  all39_runtime_config_test_inputs_equal_tested_candidate: true
+  published_product_file_count: 40
+  published_product40_manifest_sha256: ea591783777576bfbd225d92bc81d6f06ffd8cc9a62d6557a852e15644414fd5
+  only_product_change_from_tested_candidate: README observed-proof paragraph; no runtime/config/test input changed and no repeated Cargo warranted.
+  manual:
+    ref: product/README.md
+    sha256: e0f9c50c5b91646f6ee3a6ffab941487ce4c4654ac894bc302e986457eab7702
+    observed: Names exact ba2d618 Windows x64 check/twelve consumers/example and PASS_SCOPED_RUNTIME;1instance/1mount/2receipts; explicit unproven
+      host/physical/platform limits.
+  specification:
+    version: 13
+    master_revision: 13
+    roadmap_revision: 12
+    current_bundle_sha256:
+      INDEX.json: 56e7cb607466613b1694cb2115b42db6cd4efdca8f4fb32a14a89636bbc9249e
+      primitive-feature-mix-matrix.json: 22bab16a073f2496969a8e356ec58896ba778103c635ff1ad4a6463885d76762
+      primitive-list.json: a26928428e9b30a212a77fd6693f6726f56976cd14d30425cadef1e2c804d5f5
+      specification.yaml: e41c0ee9e2005fa6e057888d9bf3434de368f8b18b138045128bc36ec2750ab3
+      spec-modules/master-spec.md: 644cec0a13d70c04ffdbfd5affa1a04c7fc9569ea6445ae6c3a7c377e7a56923
+      spec-modules/roadmap.md: d505512cbc0505952ea7723f97597c9ea8295e64a4f39115b08c13b155b0e079
+    prior_version: 12
+    archive_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v12-r12-ba2d6189704c
+    archive_file_count: 6
+    archive_sha256:
+      INDEX.json: 8dc4ed7f723e5411b34b7afd7df0225b4f3e8be125f63f2c940d1d750fb526c2
+      primitive-feature-mix-matrix.json: 5dcc780ee6735eaa2c6da27e34ebb7aaec71d366ad4b7092c3072f0e5a9ff5ff
+      primitive-list.json: 8cff5753b4bb5224c84a11ffcdbf90541b7283597ca4de1283ff0ceaa92e9d73
+      specification.yaml: de93356bdebb3a1f3bf7147ab461d989ae49516de59ed5478c40c6c7a0d9704f
+      spec-modules/master-spec.md: 046326a0ad1bbadbd244791d5de69d177ff81e2752176ab9d22d69caa7cbfb2a
+      spec-modules/roadmap.md: 552a963ccb244ce9a360fea9db5e4b9e3c8ba633d4c281356585ac85e22dff6a
+    all6_archive_files_equal_tested_Spec12_git_blobs: true
+    prior_requirement_records: 99
+    current_requirement_records: 99
+    complete_ordered_requirement_records_identical: true
+    roadmap_partial_areas: 12
+    all_implemented_requirement_refs_empty: true
+    observed: Full requirement statements/records unchanged; four additional headless partial areas bind observed protocol proof while host integration
+      acceptance stays open.
+  matrix:
+    ref: repo-governance/codex/build-rules/current/build-rules.yaml
+    sha256: 72bcfc2c9e7e8ecd6e724581f9f2d0cf254679a8bf56474048d777fcccc32c3c
+    entry_id: BM-KUM-CONTENT-WINX64-001
+    source_revision: ba2d6189704ced50c621dab18e6140e301aab136
+    target: x86_64-pc-windows-msvc
+    rustc: 1.91.1
+    observed: Check5.83s,12consumers compile4.19s/execution0.01s,example0.02s and scoped evaluation; unchanged Core/JSON reuse; explicit real engine/GUI/physical/performance/other-platform/session
+      limits.
+  topology:
+    product_ref: repo-governance/topology/product.yaml
+    product_sha256: 07a88ff7027890091fa84b74a909c928f1d82211acb57bbec5d950081f6b13d0
+    links_ref: repo-governance/topology/links.yaml
+    links_sha256: a31b317300196522707cc81fe9147866edec7ee0133ac3ce248e26eb63b81456
+    observed: KUM-CONTENT, KUM-CONTENT-CONTRACTS and KUM-CONTENT-EXAMPLE declare verified_headless_contract_scope at tested ba2d618; WP010 link implements;
+      host engines/input/rendering/assets/cleanup boundary retained.
+  workflow_state_observed: Published state/board/registry remain active, recording actual scoped proof and lead settlement next action. Evaluator made
+    no state/spec edits or done transition.
+  verification_method: Independent remote/HEAD read; git show exact outcome20 blobs/current bytes; all40 product outcome blobs/current bytes;39 runtime
+    files also compared against ba2d618; six archive bytes compared against ba2d618 Spec12; every fenced-YAML master requirements record parsed and
+    full ordered99 records compared.
