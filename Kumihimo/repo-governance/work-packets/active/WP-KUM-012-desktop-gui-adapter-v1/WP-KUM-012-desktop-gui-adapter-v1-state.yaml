@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 16
+generation: 17
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -157,5 +157,17 @@ proof:
     bounded actual hit/response and group dispatch receipts; actual focused response correlated without assigned
     IDs. Original fourteen exact prefix and twenty-nine assertions retained. No floating ordering or command
     logic guess; fresh owning outcome pending.'
+- kind: actual_gui_causes_and_held_popup_fixture_remediation
+  baseline_revision: d97dbf81ea0e7ce5eda1b79ea3752651aa75af82
+  source_fence17_raw_sha256: 3bdf1dd9366bf28576db62a2f8213bb5e7980fff3163f1b13ff2406dc4ced36b
+  source_fence17_lf_sha256: 6bd29111c5f14f275c28129c85eb542cf3fc450cc14d1a96d05c2000dcf9e55c
+  observed: Actual d97 owning29 compile13.71s/run2.74s:26 PASS; Full profile typed-touch/precedence passed
+    before Compact nonexistent question-mark assertion. Exact redock leaf interaction loses to actual floating
+    TextEdit response; group leaf clicks and dispatch rejects Geometry(MissingContext), never-projected child
+    context needed by anchored tool. Held lib/tests repair skips unconditional float raise during existing
+    popup; valid group fixture restores/projects child, then remaximizes and confirms hidden child before original
+    move assertions; Compact checks actual shipped glyph/Tabs/enabled IDs. All29/original14 prefix exact; no
+    cold-hidden-context product claim, Core guard/tool binding unchanged; runtime pending.
 blockers: []
-next_action: Run one affected owning29 target on reveal geometry and exact leaf observation candidate
+next_action: Run one affected owning29 target on held popup and actual valid-fixture repairs; captures/native
+  only after green

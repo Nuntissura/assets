@@ -1229,7 +1229,26 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     assert!(!h.state().demo.controller.snapshot().groups[&group].collapsed);
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
+    // Derive the nested context through the actual restore route before hiding it again.
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Restore workspace");
     let destination = h.state().demo.controller.snapshot().views[&h.state().demo.canvas_view].frame;
+    let destination_workspace = h.state().demo.controller.snapshot().frames[&destination].workspace;
+    assert!(h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .contexts
+        .contains_key(&destination_workspace));
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Maximize frame");
+    assert!(!h
+        .state()
+        .report
+        .controls
+        .iter()
+        .any(|control| control.id == format!("frame/{}/menu", destination.raw())));
     ui_click(&mut h, "Tabs / groups");
     ui_click(&mut h, "Group: Proof group");
     ui_click(&mut h, "Move entire canonical group to\u{2026}");
@@ -1487,7 +1506,13 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
                 .any(|c| c.id == format!("frame/{}/drag", frame.raw())));
         }
         if profile == ChromeProfile::Compact {
-            assert!(h.query_by_label("?").is_some());
+            assert!(h.query_by_label("\u{22ee}").is_some());
+            assert!(h.query_by_label("Tabs").is_some());
+            for suffix in ["menu", "tabs-menu"] {
+                assert!(h.state().report.controls.iter().any(|control| control.id
+                    == format!("frame/{}/{suffix}", frame.raw())
+                    && control.enabled));
+            }
         }
         {
             let state = h.state_mut();

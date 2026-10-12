@@ -383,11 +383,14 @@ impl DesktopAdapter {
             &mut self.input,
             &mut report,
         );
-        let mut raised = std::collections::BTreeSet::new();
-        for frame in &projection.frames {
-            if let Some(root) = frame.z_root {
-                if raised.insert(root) {
-                    ctx.move_to_top(frame.layer());
+        // Popups must retain precedence over the floating content that owns them.
+        if !egui::Popup::is_any_open(ctx) {
+            let mut raised = std::collections::BTreeSet::new();
+            for frame in &projection.frames {
+                if let Some(root) = frame.z_root {
+                    if raised.insert(root) {
+                        ctx.move_to_top(frame.layer());
+                    }
                 }
             }
         }
