@@ -10,7 +10,7 @@ updated_at: '2026-10-12'
 
 `kumihimo-core` 0.3 is independently usable with std-only default features. It owns root workspaces, frames, frame-owned child workspaces, ordered open and retained closed views, groups, host resource references, tool surfaces and flat split/grid packing. Geometry is a pure projection of canonical inputs. Flat records avoid recursively owned trees. Optional `serde` supports the schema-1 saved DTO; independent `kumihimo-layout-json` 0.1 provides bounded JSON encoding and decoding.
 
-The host owns actual content, provider engines, synchronization, file IO and resource policy. Registering or restoring a provider/resource creates a lightweight identity record; it neither starts an engine nor duplicates its data. Independently selectable std-only `kumihimo-content` 0.2 privately owns Core and coordinates host-executed content effects. This workspace has no GUI, renderer, native popout or engine implementation. Whole-state recovery validates detached saved data before replacing the arrangement. Adapters consume the same core commands; they must not maintain a competing canonical arrangement.
+The host owns actual content, provider engines, synchronization, file IO and resource policy. Registering or restoring a provider/resource creates a lightweight identity record; it neither starts an engine nor duplicates its data. Independently selectable std-only `kumihimo-content` 0.2 privately owns Core and coordinates host-executed content effects. The portable Core contains no GUI, renderer or engine. Optional desktop and browser adapters supply presentation; their packet state records actual runtime proof. Whole-state recovery validates detached saved data before replacing the arrangement. Adapters consume the same core commands; they must not maintain a competing canonical arrangement.
 
 </topic>
 
@@ -32,6 +32,32 @@ cargo run --manifest-path product/Cargo.toml -p kumihimo-egui --all-features --e
 `capture_host` writes PNGs and redacted geometry/control/provider observations for nested, narrow, scale and navigation states. `native_probe` owns hidden inactive windows, waits for actual correlated surface pixels before Frame/View/Group migration, invokes the independent UIA observer, exercises return/veto/recreation and writes a native manifest/session. Its bounded deadline exits with a causal error; inspect the output and current canonical bindings before retrying. `--no-uia` explicitly leaves OS accessibility proof incomplete. Automation never requests foreground input. For a visible manual sample, explicitly run `desktop_host --interactive` through the same Cargo example command.
 
 Stable `ControlRecord` IDs and `FrameReport` identify targets, bounds, epochs, rejections and post-action generation. Host dispatch allocates canonical envelopes. `DesktopSession` wraps host storage metadata without persisting window or texture handles. Native return uses validated semantic anchors; missing destinations or vetoed survivors remain recoverable. Physical pen/touch, assistive hardware, GPU faults, other platforms and full editor/browser engines require separate proof. Current implementation checks and runtime observations are recorded per packet; these commands are reproduction paths, not a claim they have passed.
+
+</topic>
+
+<topic id="web-adapter" ingestable="true">
+
+## Browser adapter and Portal-style pilot
+
+`kumihimo-web` 0.1 supplies a borrowed `WebAdapter` over the host's sole content `Controller` and dispatcher. The sample `PilotHost` owns task meaning separately from arrangement. Native consumers use `PilotHost::new` and `route_json`; the optional `wasm` feature exports `BrowserPilot(incarnation, config_json)` with `route_json(request)` through matching wasm-bindgen 0.2.128 bindings. Plain DOM modules display canonical Rust geometry.
+
+From the project root, configure `KUMIHIMO_WASM_BINDGEN` with the verified matching CLI and retain the selected reusable Cargo target:
+
+```powershell
+cargo check --manifest-path product/Cargo.toml -p kumihimo-web --all-targets --locked --offline -j 2
+cargo test --manifest-path product/Cargo.toml -p kumihimo-web --test web_contracts --locked --offline -j 2
+cargo build --manifest-path product/Cargo.toml -p kumihimo-web --features wasm --target wasm32-unknown-unknown --target-dir .local/cargo-target --locked --offline -j 2
+& product/kumihimo-web/tools/build-web.ps1 -SkipBuild -CargoTargetDir .local/cargo-target -WasmBindgen $env:KUMIHIMO_WASM_BINDGEN
+python product/kumihimo-web/tools/serve.py --pkg .local/web/pkg --port 0
+```
+
+The server prints its owned loopback URL. The pilot exposes Cards, Details, Depth and live record budget, nested tabs/frames, arrangement controls and a separate task editor. Drag frame headers or use the labelled arrangement controls; Escape cancels an uncommitted preview. Save publishes separate selected layout/task storage keys; a fresh session restores through candidate validation. Malformed or incomplete storage retains the current valid workspace. Missing providers remain reachable placeholders. Full browser popup migration is unsupported; the restricted iframe tests browser denial while retaining source ownership.
+
+Version-1 routes are `snapshot`, `host_snapshot`, `preview`, `cancel_preview`, `command`, `host_command`, `input`, `save` and `load`. IDs, operations and generations are decimal strings. Use fresh canonical identity/generation for new intent; retry the exact old envelope to reconcile its receipt. Receipt generation and current snapshot generation can differ. Task revision changes through explicit domain actions. Stable DOM IDs, `window.kumihimo` routes/state and bounded event records support models without prior context.
+
+`tools/browser-proof.py` accepts `--url`, `--node`, `--node-modules`, `--browser`, `--out` and `--build-manifest`. Runtime settings may come from `KUMIHIMO_NODE`, `KUMIHIMO_NODE_MODULES` and `KUMIHIMO_BROWSER`. It uses a private headless profile with configured existing Node/Playwright/Chrome, checks served module hashes, exercises the six packet cases and closes its owned browser. Outputs include browser evidence and PNGs in `.local/web`; open the images and read Rust/host/storage observations before accepting a GUI result.
+
+If startup fails, inspect the structured constructor/route error and current packet state before retrying. Successful compilation and native consumers do not prove browser startup. Storage refusal leaves current valid state usable. Real Notes/Studio/Servo engines, physical input, other browsers/platforms and performance need separate proof.
 
 </topic>
 
