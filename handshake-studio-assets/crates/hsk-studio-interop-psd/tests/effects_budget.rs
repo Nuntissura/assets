@@ -16,7 +16,10 @@
 //! `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`),
 //! and a stack without counted instances is never refused for the counted bound. Folio's
 //! record-validation node budget (records + kept instances, `validate_raster_records`) is sized from the input
-//! inside those bounds. All inputs are synthetic byte fixtures built here, independently of the crate's encoder.
+//! inside those bounds. The two `Transformed` dropped-instances losses name the count of the instances the record does
+//! not hold and the dropped instances add no note (PLR-089, SMB-INTEROP-PSD-LOSS-DETAIL); the descriptor reader's 512
+//! entries per list is a parse bound that cannot know a category (PLR-086). All inputs are synthetic byte fixtures built
+//! here, independently of the crate's encoder.
 
 mod common;
 
@@ -417,14 +420,36 @@ fn layer_id_by_name(p: &ImportProposal, name: &str) -> String {
         .layer_id
         .clone()
 }
+/// How a loss path names the effect stack of layer `id`: `None` when it does not end in `lfx2(layer_id=<id>...)`;
+/// `Some(None)` for `lfx2(layer_id=<id>)` (a stack that was not mapped); `Some(Some(count))` for
+/// `lfx2(layer_id=<id>,dropped=<count>)` (a stack mapped without `count` switched-off instances).
+fn lfx2_loss_tail(path: &str, id: &str) -> Option<Option<usize>> {
+    let tail = path.rsplit('/').next()?;
+    let rest = tail.strip_prefix("lfx2(layer_id=")?.strip_prefix(id)?;
+    if rest == ")" {
+        return Some(None);
+    }
+    let count = rest.strip_prefix(",dropped=")?.strip_suffix(')')?;
+    Some(Some(count.parse().ok()?))
+}
+/// The `dropped=<count>` of the `Transformed` entry of layer `name` (`None` when it has no such entry).
+fn dropped_count(p: &ImportProposal, name: &str) -> Option<usize> {
+    let id = layer_id_by_name(p, name);
+    p.loss
+        .entries
+        .iter()
+        .find_map(|e| match lfx2_loss_tail(&e.path, &id) {
+            Some(Some(count)) => Some(count),
+            _ => None,
+        })
+}
 fn fate(p: &ImportProposal, name: &str) -> Fate {
     let id = layer_id_by_name(p, name);
-    let suffix = format!("lfx2(layer_id={id})");
     let entries: Vec<&LossEntry> = p
         .loss
         .entries
         .iter()
-        .filter(|e| e.path.ends_with(&suffix))
+        .filter(|e| lfx2_loss_tail(&e.path, &id).is_some())
         .collect();
     match p.raster_records.layer(&id).and_then(|r| r.effects.as_ref()) {
         Some(stack) => match entries.as_slice() {
@@ -432,6 +457,11 @@ fn fate(p: &ImportProposal, name: &str) -> Fate {
             [entry] => {
                 assert_eq!(entry.kind, LossKind::Transformed, "{name}");
                 assert!(entry.path.starts_with("layer["), "{name}: {}", entry.path);
+                assert!(
+                    matches!(lfx2_loss_tail(&entry.path, &id), Some(Some(count)) if count > 0),
+                    "{name}: a dropped-instances entry names how many instances the record does not hold: {}",
+                    entry.path
+                );
                 assert!(
                     stack.effects.iter().all(|effect| effect.enabled),
                     "{name}: only the counted instances are recorded"
@@ -452,6 +482,12 @@ fn fate(p: &ImportProposal, name: &str) -> Fate {
             };
             assert_eq!(entry.kind, LossKind::Unsupported, "{name}");
             assert!(entry.path.starts_with("layer["), "{name}: {}", entry.path);
+            assert_eq!(
+                lfx2_loss_tail(&entry.path, &id),
+                Some(None),
+                "{name}: a stack that was not mapped drops no instance from a record: {}",
+                entry.path
+            );
             Fate::Lost(entry.code)
         }
     }
@@ -1464,6 +1500,356 @@ fn descriptor_states_the_folio_ceiling_rule() {
         include_str!("effects_budget.rs").contains(&format!("fn {cited}()")),
         "the cited test does not exist"
     );
+}
+
+// ---- PLR-089: the dropped-instances losses are exact; PLR-086: the descriptor reader's list cap ----------------------
+
+/// One instance of a hand-built stack.
+#[derive(Clone, Copy)]
+enum Inst {
+    /// Enabled; maps cleanly.
+    Live,
+    /// Enabled; maps, and adds one `effect_contour_unmapped` note (an optional contour the importer cannot read).
+    LiveNoisy,
+    /// Switched off; maps cleanly.
+    Off,
+    /// Switched off; maps, and adds one `effect_contour_unmapped` note.
+    OffNoisy,
+    /// Switched off and not mappable (a plain number where a percent is required): the importer reports it itself
+    /// (`effect_unit_unexpected`). It is not an instance the record dropped.
+    OffBroken,
+}
+use Inst::{Live, LiveNoisy, Off, OffBroken, OffNoisy};
+const CONTOUR_NOTE: &str = "effect_contour_unmapped";
+const BROKEN_NOTE: &str = "effect_unit_unexpected";
+const DESCRIPTOR_LIMIT: &str = "descriptor_item_limit";
+
+fn inst_effect(instance: Inst) -> Vec<u8> {
+    let enabled = matches!(instance, Live | LiveNoisy);
+    let mut items = vec![("Md  ", v_enum("BlnM", "Mltp")), ("enab", v_bool(enabled))];
+    match instance {
+        LiveNoisy | OffNoisy => items.push(("TrnS", v_objc("ShpC", Vec::new()))),
+        OffBroken => items.push(("Opct", tagged(b"doub", 50f64.to_be_bytes().to_vec()))),
+        Live | Off => {}
+    }
+    v_objc("null", items)
+}
+/// An `lfx2` block of these instances in stack order, spread over three multi lists (no list passes the descriptor
+/// reader's 512 entries).
+fn stack_of(instances: &[Inst]) -> Vec<u8> {
+    let keys = ["dropShadowMulti", "innerShadowMulti", "solidFillMulti"];
+    let per_list = instances.len().div_ceil(keys.len()).max(1);
+    let items = keys
+        .iter()
+        .zip(instances.chunks(per_list))
+        .map(|(key, chunk)| {
+            (
+                *key,
+                v_list(chunk.iter().map(|i| inst_effect(*i)).collect()),
+            )
+        })
+        .collect();
+    lfx2_block(items)
+}
+/// An `lfx2` block of these instances in ONE multi list.
+fn one_list_of(instances: &[Inst]) -> Vec<u8> {
+    lfx2_block(vec![(
+        "dropShadowMulti",
+        v_list(instances.iter().map(|i| inst_effect(*i)).collect()),
+    )])
+}
+fn repeat(instance: Inst, n: usize) -> Vec<Inst> {
+    vec![instance; n]
+}
+/// A document of stack layers named `L0`, `L1`, ... in FILE order (bottom to top: the import order is the reverse);
+/// the layers `hidden` accepts are hidden.
+fn doc_of_stacks(stacks: &[Vec<u8>], hidden: impl Fn(usize) -> bool) -> Vec<u8> {
+    let layers: Vec<TLayer> = stacks
+        .iter()
+        .enumerate()
+        .map(|(n, lfx2)| effects_layer(leaked(name_of(n)), hidden(n), lfx2.clone()))
+        .collect();
+    doc_of(&layers)
+}
+/// Loss entries with `code` on the effect stack path of the layer at `psd_index` (the notes of its instances).
+fn stack_notes(p: &ImportProposal, psd_index: usize, code: &str) -> usize {
+    let path = format!("layer[{psd_index}]/tagged/lfx2");
+    p.loss
+        .entries
+        .iter()
+        .filter(|e| e.code == code && e.path == path)
+        .count()
+}
+
+/// PLR-089 (R21 pre-review S2, S3), Folio's ceiling: the `Transformed` loss `effects_unrendered_dropped_over_stack_ceiling`
+/// is one entry per stack and names how many instances the record does not hold (`dropped=<count>`), whatever that count
+/// is (1024, 1500: the output stays one entry per stack); and a switched-off instance that was mapped and left out of the
+/// record, whether it was dropped as it was scanned or removed with its stack's other switched-off instances, adds no note
+/// (`effect_contour_unmapped` here). An instance that cannot be mapped is not a dropped instance: it keeps the note of
+/// its own and is not in the count, so kept + dropped + unmapped is every instance of the file. Kept instances keep their
+/// notes (1 live + 1023 switched-off instances is a whole stack). The reported shape is the one of PLR-063.
+#[test]
+fn the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them() {
+    bounded_case(
+        "the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them",
+        || {
+            let stacks: Vec<Vec<Inst>> = vec![
+                // 0: 1 live + 1024 switched off: the reported shape, 1025 in all
+                [vec![LiveNoisy], repeat(OffNoisy, MAX_EFFECTS)].concat(),
+                // 1: far past, no note anywhere
+                [vec![Live], repeat(OffNoisy, 1500)].concat(),
+                // 2: switched-off instances that map cleanly
+                [vec![LiveNoisy], repeat(Off, 1100)].concat(),
+                // 3: live instances between and after the switched-off ones, three that cannot be mapped
+                [
+                    vec![LiveNoisy],
+                    repeat(OffNoisy, 1030),
+                    repeat(OffBroken, 3),
+                    vec![LiveNoisy],
+                    repeat(OffNoisy, 10),
+                    vec![Live],
+                ]
+                .concat(),
+                // 4: 1 live + 1023 switched off: exactly the ceiling, whole, every instance keeps its note
+                [vec![LiveNoisy], repeat(OffNoisy, MAX_EFFECTS - 1)].concat(),
+                // 5: switched-off instances only, past the ceiling: not mapped (outcome unchanged, PLR-090)
+                repeat(OffNoisy, MAX_EFFECTS + 1),
+                // 6: the same switched-off instances with one live instance after them: mapped (PLR-090: the scan
+                // cannot stop at the ceiling, a live instance may follow)
+                [repeat(OffNoisy, MAX_EFFECTS + 1), vec![LiveNoisy]].concat(),
+            ];
+            let blocks: Vec<Vec<u8>> = stacks.iter().map(|s| stack_of(s)).collect();
+            let bytes = doc_of_stacks(&blocks, |_| false);
+            let (doc, p, minted) = import_counting(&bytes).expect("imports");
+            assert_fates(
+                &p,
+                &[
+                    (0, Fate::CountedOnlyStack(1)),
+                    (1, Fate::CountedOnlyStack(1)),
+                    (2, Fate::CountedOnlyStack(1)),
+                    (3, Fate::CountedOnlyStack(3)),
+                    (4, Fate::Kept(MAX_EFFECTS)),
+                    (5, Fate::Lost(OVER_LAYER)),
+                    (6, Fate::CountedOnlyStack(1)),
+                ],
+            );
+            // the count is exactly the switched-off instances the record does not hold
+            let dropped = [
+                (0, Some(1024)),
+                (1, Some(1500)),
+                (2, Some(1100)),
+                (3, Some(1040)),
+                (4, None),
+                (5, None),
+                (6, Some(1025)),
+            ];
+            for (n, want) in dropped {
+                assert_eq!(dropped_count(&p, &name_of(n)), want, "layer {}", name_of(n));
+            }
+            // kept + dropped + unmapped = every instance of the file (layer 3: 1046 in all)
+            let unmapped = 3;
+            assert_eq!(
+                kept_ordinals(&p, &name_of(3)).len()
+                    + dropped_count(&p, &name_of(3)).unwrap()
+                    + unmapped,
+                stacks[3].len()
+            );
+            // one entry per stack, not one per instance: five stacks, 5689 instances dropped
+            assert_eq!(
+                p.loss
+                    .entries
+                    .iter()
+                    .filter(|e| e.code == DROPPED_STACK)
+                    .count(),
+                5
+            );
+            // notes: only the instances the record holds report anything
+            for (index, notes) in [
+                (0, 1),
+                (1, 0),
+                (2, 1),
+                (3, 2),
+                (4, MAX_EFFECTS),
+                (5, 0),
+                (6, 1),
+            ] {
+                assert_eq!(
+                    stack_notes(&p, index, CONTOUR_NOTE),
+                    notes,
+                    "contour notes of layer {index}"
+                );
+            }
+            assert_eq!(
+                stack_notes(&p, 3, BROKEN_NOTE),
+                3,
+                "an unmapped instance reports itself"
+            );
+            assert_eq!(kept_total(&p), 1 + 1 + 1 + 3 + MAX_EFFECTS + 1);
+            assert_eq!(minted, 6, "a refused stack consumes no SEFX id");
+            assert_eq!(
+                write_psd(&doc, &Limits::default()).unwrap(),
+                bytes,
+                "nothing is dropped from the file: the dropped instances are still in the lfx2 blocks"
+            );
+            assert_record_need_is_exact(&p);
+        },
+    );
+}
+
+/// PLR-089, the unrendered bound (the same class, the other cut): a stack with counted instances whose switched-off
+/// instances do not fit the bound on the instances no plan counts keeps its counted instances, and the
+/// `Transformed` loss `effects_unrendered_dropped_over_document_budget` names how many instances the record does not hold
+/// (`dropped=<count>`) and nothing else reports the dropped ones (no note). A stack that fits keeps its notes. Import order
+/// is the reverse of the file order: the control stack (4 instances) first, 64 hidden stacks that fill the bound
+/// exactly (3 + 63 x 64 + 61 = 4096), then the two stacks that are cut.
+#[test]
+fn the_document_budget_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them()
+{
+    bounded_case(
+        "the_document_budget_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them",
+        || {
+            let cut_last = [vec![LiveNoisy], repeat(OffNoisy, 7), repeat(Off, 3)].concat();
+            let cut_first = [repeat(OffNoisy, 2), vec![Live], repeat(OffBroken, 1)].concat();
+            let control = [vec![LiveNoisy], repeat(OffNoisy, 3)].concat();
+            // file order: L0 cut_last, L1 cut_first, L2 (61 instances) and L3 .. L65 (64 each) hidden, L66 control
+            let mut blocks = vec![
+                stack_of(&cut_last),
+                stack_of(&cut_first),
+                stack_of(&repeat(Live, 61)),
+            ];
+            blocks.extend((0..63).map(|_| stack_of(&repeat(Live, MAX_EFFECTS_PER_LAYER))));
+            blocks.push(stack_of(&control));
+            let bytes = doc_of_stacks(&blocks, |n| (2..=65).contains(&n));
+            let (doc, p, _) = import_counting(&bytes).expect("imports");
+            let mut want = vec![
+                (0, Fate::CountedOnly(1)),
+                (1, Fate::CountedOnly(1)),
+                (2, Fate::Kept(61)),
+            ];
+            want.extend((3..=65).map(|n| (n, Fate::Kept(MAX_EFFECTS_PER_LAYER))));
+            want.push((66, Fate::Kept(4)));
+            assert_fates(&p, &want);
+            assert_eq!(dropped_count(&p, &name_of(0)), Some(10));
+            assert_eq!(dropped_count(&p, &name_of(1)), Some(2));
+            assert_eq!(dropped_count(&p, &name_of(66)), None);
+            assert_eq!(
+                p.loss
+                    .entries
+                    .iter()
+                    .filter(|e| e.code == DROPPED_UNRENDERED)
+                    .count(),
+                2,
+                "one entry per cut stack"
+            );
+            // notes: the cut stacks keep the note of their live instance only, the stack that fit keeps all of its own
+            assert_eq!(stack_notes(&p, 0, CONTOUR_NOTE), 1);
+            assert_eq!(stack_notes(&p, 1, CONTOUR_NOTE), 0);
+            assert_eq!(stack_notes(&p, 66, CONTOUR_NOTE), 4);
+            assert_eq!(
+                stack_notes(&p, 1, BROKEN_NOTE),
+                1,
+                "an unmapped instance reports itself"
+            );
+            assert_eq!(write_psd(&doc, &Limits::default()).unwrap(), bytes);
+            assert_record_need_is_exact(&p);
+        },
+    );
+}
+
+/// PLR-086 (lead decision DOC): the descriptor reader's cap of 512 entries per list is a parse bound checked before any
+/// entry is read, so it cannot know a category: a list over 512 entries refuses the whole descriptor
+/// (`descriptor_item_limit`, kind `Unsupported`, the layer named without a stack id) and that layer's stack is lost,
+/// whether its entries are live or switched off, while the same entries spread over three lists (or 512 in one list) are
+/// kept. The `lfx2` block stays byte-exact in the file.
+#[test]
+fn a_list_over_the_descriptor_readers_512_entry_cap_loses_the_stack_whatever_the_categories_of_its_entries()
+ {
+    bounded_case(
+        "a_list_over_the_descriptor_readers_512_entry_cap_loses_the_stack_whatever_the_categories_of_its_entries",
+        || {
+            let blocks = vec![
+                // 0: 512 entries in one list: kept
+                one_list_of(&[vec![Live], repeat(Off, 511)].concat()),
+                // 1: 513 entries: lost, 1 live + 512 switched off
+                one_list_of(&[vec![Live], repeat(Off, 512)].concat()),
+                // 2: 513 switched-off entries
+                one_list_of(&repeat(Off, 513)),
+                // 3: 513 live entries: the parse bound comes first, not the live bound
+                one_list_of(&repeat(Live, 513)),
+                // 4: the 513 entries of layer 1 spread over three lists: kept
+                stack_of(&[vec![Live], repeat(Off, 512)].concat()),
+            ];
+            let bytes = doc_of_stacks(&blocks, |_| false);
+            let (doc, p, minted) = import_counting(&bytes).expect("imports");
+            assert_fates(&p, &[(0, Fate::Kept(512)), (4, Fate::Kept(513))]);
+            for lost in 1..=3 {
+                let id = layer_id_by_name(&p, &name_of(lost));
+                assert!(
+                    p.raster_records.layer(&id).is_none(),
+                    "layer {lost} keeps no stack"
+                );
+                let entries: Vec<&LossEntry> = p
+                    .loss
+                    .entries
+                    .iter()
+                    .filter(|e| e.path.starts_with(&format!("layer[{lost}]/tagged/lfx2")))
+                    .filter(|e| e.code != "layer_effects_not_rendered")
+                    .collect();
+                let [entry] = entries.as_slice() else {
+                    panic!("layer {lost}: one loss entry for the stack expected, got {entries:?}");
+                };
+                assert_eq!(
+                    (entry.kind, entry.code, entry.path.as_str()),
+                    (
+                        LossKind::Unsupported,
+                        DESCRIPTOR_LIMIT,
+                        format!("layer[{lost}]/tagged/lfx2").as_str()
+                    ),
+                    "layer {lost}"
+                );
+            }
+            assert_eq!(minted, 2, "a refused stack consumes no SEFX id");
+            assert_eq!(write_psd(&doc, &Limits::default()).unwrap(), bytes);
+        },
+    );
+}
+
+/// PLR-089 and PLR-086 (V4-07): the shipped DESCRIPTOR (`effect_limits`) states that the two dropped-instances losses are
+/// one entry per stack naming the count, that an instance left out of the record adds no loss entry of its own, and
+/// that the descriptor reader's 512-entry list cap is a category-blind parse bound; it cites the tests that pin each, and
+/// the tests it cites exist in this file.
+#[test]
+fn descriptor_states_the_loss_detail_and_the_list_cap_rules() {
+    let effect_limits = DESCRIPTOR
+        .split("\"effect_limits\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the DESCRIPTOR has an effect_limits entry");
+    let cited = [
+        "the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them",
+        "the_document_budget_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them",
+        "a_list_over_the_descriptor_readers_512_entry_cap_loses_the_stack_whatever_the_categories_of_its_entries",
+    ];
+    for needle in [
+        "are_one_entry_per_stack_with_the_path_ending_layer_id_dropped_naming_the_count_of_the_switched_off_instances_the_record_does_not_hold",
+        "a_switched_off_instance_that_was_mapped_and_left_out_of_the_record_adds_no_loss_entry_of_its_own",
+        "the_descriptor_readers_cap_of_512_entries_per_list_is_a_category_blind_parse_bound",
+        "a_list_over_512_entries_refuses_the_descriptor_loss_unsupported_descriptor_item_limit_and_that_stack_is_lost",
+        cited[0],
+        cited[1],
+        cited[2],
+    ] {
+        assert!(
+            effect_limits.contains(needle),
+            "effect_limits does not state {needle}"
+        );
+    }
+    for test in cited {
+        assert!(
+            include_str!("effects_budget.rs").contains(&format!("fn {test}()")),
+            "the cited test {test} does not exist"
+        );
+    }
 }
 
 /// Layers that exactly fill pigment's plan limit at the per-layer limit.

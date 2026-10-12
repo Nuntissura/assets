@@ -523,7 +523,12 @@ impl Builder<'_, '_, '_> {
     /// instances together, so it cuts only the switched-off ones. A stack with counted instances keeps all of them and
     /// drops its switched-off ones when they do not fit next to them (`effects_unrendered_dropped_over_stack_ceiling`,
     /// kind `Transformed`, and nothing is charged to the uncounted bound for the dropped ones); a stack with NO counted
-    /// instances is all switched-off instances and is not mapped past the ceiling (`effects_over_budget`). The import
+    /// instances is all switched-off instances and is not mapped past the ceiling (`effects_over_budget`). Each of the
+    /// two `Transformed` entries is one entry per stack whose path ends `(layer_id=<id>,dropped=<count>)`: `<count>` is
+    /// exactly the number of switched-off instances the record does not hold, and a switched-off instance that was
+    /// mapped and left out of the record adds no loss entry of its own (tests
+    /// `the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them` and
+    /// `the_document_budget_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them`). The import
     /// itself never fails on an effect count. Tests
     /// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`,
     /// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on`,
@@ -581,14 +586,22 @@ impl Builder<'_, '_, '_> {
                 Some(Ok((m, fit))) => {
                     self.effect_tally.charge(effects::StackShape::of(m.value.enabled, &m.value.effects, visible), fit);
                     self.notes(&path, m.notes);
-                    // The stack is mapped with its counted instances; its switched-off ones are not recorded.
+                    // The stack is mapped with its counted instances; its switched-off ones are not recorded. One
+                    // entry per stack (the output stays bounded by the layer count) names how many instances the
+                    // record does not hold (`dropped=<count>`, exact: tests
+                    // `the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them` and
+                    // `the_document_budget_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them`).
                     let dropped = match fit {
                         effects::Fit::Whole => None,
-                        effects::Fit::CountedOnly => Some(effects::EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET),
-                        effects::Fit::CountedOnlyOverStack => Some(effects::EFFECTS_UNRENDERED_DROPPED_OVER_STACK_CEILING),
+                        effects::Fit::CountedOnly(count) => {
+                            Some((effects::EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET, count))
+                        }
+                        effects::Fit::CountedOnlyOverStack(count) => {
+                            Some((effects::EFFECTS_UNRENDERED_DROPPED_OVER_STACK_CEILING, count))
+                        }
                     };
-                    if let Some(code) = dropped {
-                        self.note(format!("{path}(layer_id={layer_id})"), LossKind::Transformed, code);
+                    if let Some((code, count)) = dropped {
+                        self.note(format!("{path}(layer_id={layer_id},dropped={count})"), LossKind::Transformed, code);
                     }
                     self.note(path, LossKind::Preserved, "effects_mapped_to_record_not_rendered");
                     record.effects = Some(m.value);
