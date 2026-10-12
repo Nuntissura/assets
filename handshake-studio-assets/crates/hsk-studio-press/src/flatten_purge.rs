@@ -1,7 +1,8 @@
 //! What a flattened page leaves behind in the document (R13-F1, R13-F2, R13-F6, R13-P1; lead decision
 //! 2026-10-11T20:26:55Z): after `flatten.rs` replaced the page and detached it from inheritance, the
-//! redaction save drops everything that described or drew the OLD page and that nothing kept still
-//! draws, so an image, form, annotation, widget value or structure text of a flattened page does not stay
+//! redaction save purges what described or drew the OLD page and that nothing kept still draws (annotations,
+//! widgets and painted sources are dropped, structure elements stay with their text removed, by category
+//! below), so an image, form, annotation, widget value or structure text of a flattened page does not stay
 //! in the file by being merely listed (tests `painted_sources_under_a_region_do_not_survive`,
 //! `structure_and_widgets_of_flattened_pages_are_removed`).
 //!

@@ -14,11 +14,16 @@
 //! `/Pages` node on a flattened page's `/Parent` chain keeps only `/Type /Kids /Count /Parent`; the
 //! inheritable attributes it held (`/Resources`, `/MediaBox`, `/CropBox`, `/Rotate`) are first written
 //! explicitly on every OTHER page that inherited them, and every other key it held (`/Annots`, which
-//! only some viewers inherit, included) is dropped. What the old page reached and nothing kept still names
-//! or references is then dropped from the file (`flatten_purge.rs`: its annotations and widgets, the
-//! structure elements that describe it, the images, forms, patterns and shadings that no kept content names
-//! and no kept object references). A painted source that stays (a kept page draws it, or a kept object only
-//! references it) is not pruned and the kept reference is not edited. Only an image that a kept page's own
+//! only some viewers inherit, included) is dropped. What described or drew the old page is then purged, by
+//! category (`flatten_purge.rs`): its annotations and widgets are dropped from the file even when a kept
+//! object references them, and those references are removed (AcroForm `/Fields` and `/CO` entries included);
+//! an annotation that a kept page lists in its own `/Annots` stays. The structure elements that point at it
+//! are not dropped: they stay in the structure tree with their text, their attributes and their content
+//! items on the page removed (test `flattened_page_annotations_leave_and_structure_elements_stay`). The
+//! painted sources (images, forms, patterns, shadings) and the graphics states and fonts it reached are
+//! dropped from the file when no kept content names them and no kept object references them. A painted
+//! source that stays (a kept page draws it, or a kept object only references it) is not pruned and the kept
+//! reference is not edited. Only an image that a kept page's own
 //! content stream draws directly with `Do` stays silent; every other painted source that stays is reported
 //! (`RedactedOutput::painted_sources_kept`, `NotProven::PaintedSourceKept`, `region_flattened` false; tests
 //! `painted_source_drawn_directly_by_a_kept_page_is_not_reported`,

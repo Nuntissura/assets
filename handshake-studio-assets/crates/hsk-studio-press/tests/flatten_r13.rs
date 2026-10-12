@@ -1613,6 +1613,91 @@ fn structure_and_widgets_of_flattened_pages_are_removed() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
+/// PLR-087 (V4-07): the overview of `flatten.rs` says what happens to the annotations and the structure elements of a
+/// flattened page; this test shows each part. Page one (flattened) lists annotations 70 and 71; the catalog names 70 by a
+/// plain key and in an array (kept objects that reference it); page two lists 71 in its own `/Annots`. Result: 70 leaves the
+/// file and both references to it are removed (key dropped, array element nulled); 71 stays with its appearance. The
+/// structure element of page one is not dropped: it stays in the tree without its `/Alt`, the element of page two keeps its text.
+#[test]
+fn flattened_page_annotations_leave_and_structure_elements_stay() {
+    let pdf = build(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 80 0 R /MarkInfo << /Marked true >> /HskNote 70 0 R /HskList [70 0 R 6 0 R] >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> /StructParents 0 /Annots [70 0 R 71 0 R] >>".to_vec()),
+        (4, stream_body("", format!("/Figure << /MCID 0 >> BDC 0 g 300 300 100 100 re f EMC {SECRET}").as_bytes())),
+        (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> >> /StructParents 1 /Annots [71 0 R] >>".to_vec()),
+        (6, HELVETICA.to_vec()),
+        (7, stream_body("", b"/P << /MCID 0 >> BDC BT /F1 12 Tf 72 700 Td (Page two) Tj ET EMC")),
+        (70, b"<< /Type /Annot /Subtype /FreeText /Rect [400 100 500 120] /P 3 0 R /AP << /N 72 0 R >> >>".to_vec()),
+        (71, b"<< /Type /Annot /Subtype /FreeText /Rect [400 200 500 220] /P 5 0 R /AP << /N 73 0 R >> >>".to_vec()),
+        (72, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 100 20] /Resources << /Font << /F1 6 0 R >> >>", b"BT /F1 10 Tf 2 5 Td (ANNOT-GONE-SECRET) Tj ET")),
+        (73, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 100 20] /Resources << /Font << /F1 6 0 R >> >>", b"BT /F1 10 Tf 2 5 Td (ANNOT-KEPT-TEXT) Tj ET")),
+        (80, b"<< /Type /StructTreeRoot /K [81 0 R 82 0 R] /ParentTree 83 0 R >>".to_vec()),
+        (81, b"<< /Type /StructElem /S /Figure /P 80 0 R /Pg 3 0 R /Alt (ALT-SECRET-PHOTO) /K 0 >>".to_vec()),
+        (82, b"<< /Type /StructElem /S /P /P 80 0 R /Pg 5 0 R /ActualText (KEPT-STRUCT-TEXT) /K 0 >>".to_vec()),
+        (83, b"<< /Nums [0 [81 0 R] 1 [82 0 R]] >>".to_vec()),
+    ]);
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    let bytes = &out.bytes;
+    let mut red: Vec<String> = Vec::new();
+    if !gone(bytes, "ANNOT-GONE-SECRET") {
+        red.push("the annotation a kept catalog references survives".into());
+    }
+    if find(bytes, b"/HskNote").is_some() {
+        red.push("the catalog key that named the removed annotation stays".into());
+    }
+    match find(bytes, b"/HskList") {
+        Some(at) => {
+            let tail = &bytes[at..bytes.len().min(at + 48)];
+            if find(tail, b"70 0 R").is_some() {
+                red.push(format!("the catalog array still references the removed annotation: {}", String::from_utf8_lossy(tail)));
+            }
+        }
+        None => red.push("the catalog array disappeared".into()),
+    }
+    if gone(bytes, "ANNOT-KEPT-TEXT") {
+        red.push("the annotation a kept page lists in its own /Annots was removed".into());
+    }
+    if out.flattened_annotations_removed != 1 {
+        red.push(format!("annotations removed {}", out.flattened_annotations_removed));
+    }
+    if !gone(bytes, "ALT-SECRET-PHOTO") {
+        red.push("the /Alt of the structure element of the flattened page survives".into());
+    }
+    if gone(bytes, "KEPT-STRUCT-TEXT") {
+        red.push("the structure text of the kept page was removed".into());
+    }
+    let elements = bytes.windows(b"/StructElem".len()).filter(|w| *w == b"/StructElem").count();
+    if elements != 2 {
+        red.push(format!("{elements} structure element(s) in the saved file, expected both"));
+    }
+    if out.structure_elements_neutralized != 1 {
+        red.push(format!("neutralized {}", out.structure_elements_neutralized));
+    }
+    if !out.region_flattened() {
+        red.push(format!("region_flattened false (residual {})", out.residual_in_region));
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// PLR-087, R20-O3 (V4-07): the DESCRIPTOR states the condition `region_cleared` checks for painted sources
+/// (`painted_sources_kept` empty) without the looser clause "kept unread", and its `purge` key opens with the category
+/// wording (annotations and widgets leave the file, structure elements stay neutralized), not with "dropped from the file".
+#[test]
+fn descriptor_states_the_painted_source_condition_and_the_purge_categories() {
+    let descriptor = hsk_studio_press::DESCRIPTOR;
+    for needle in [
+        "redaction.flatten.region_clearing; painted_sources_kept empty, R13-F6)",
+        "what described or drew the old page is purged by category (flatten_purge.rs): R13-F2",
+    ] {
+        assert_eq!(descriptor.matches(needle).count(), 1, "DESCRIPTOR lacks {needle:?}");
+    }
+    for stale in ["kept unread", "what described or drew the old page is dropped from the file"] {
+        assert!(!descriptor.contains(stale), "DESCRIPTOR still says {stale:?}");
+    }
+}
+
 /// V4-02 aggregates (R13-V1: the bounds the docs cite): the streams isolated for the renderer are
 /// decoded against `Limits::max_decoded_total` (typed `InputLimit`), and image decoding inside the
 /// renderer is charged to the page's decode budget before each image is decoded (`FlattenNote::WorkBudget`
