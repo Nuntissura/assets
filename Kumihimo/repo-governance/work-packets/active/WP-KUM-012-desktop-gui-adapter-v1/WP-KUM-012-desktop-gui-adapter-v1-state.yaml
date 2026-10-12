@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 18
+generation: 19
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -178,5 +178,15 @@ proof:
     existing actual Tabs pointer to computed owner without tool retarget, adds bounded actual Swap dispatch
     receipt and existing trace messages to remaining assertions. Original29/prefix14 exact, no guessed Swap/Core
     change; runtime pending.
+- kind: actual_owning27_and_nonnoop_stable_destination_fixture
+  baseline_revision: fbffecdb8244acba5ecfcc7ac9a661c326fb94f1
+  source_fence17_raw_sha256: 67cf1ebcd842743046b23d13877b9054f84d7cb6d6525bf54120e0d1fe14b0d1
+  source_fence17_lf_sha256: 28f52fcb11564e86c9d20c5de2e77bdccb5cb69f1a427ffea4e521eee1b21828
+  observed: 'Actual owning29 compile9.94s/run4.91s:27 PASS. Swap actual leaf selected destination4 and dispatched4/4
+    no-op without rejection; no paging occurred. Pin case requested MoveFirst while pinned view11 was already
+    first; Core returns unchanged before pin guard. Only test suffix now held: scoped requested destination
+    ID with bounded eight fresh hover/bounds reacquisitions and exact fresh Swap recipient receipt; actual
+    nonnoop MoveLast with pinned/currentindex preconditions, unchanged membership and exact Pinned rejection
+    after fresh pass. Original29/prefix14 preserved; no product/Core/menu policy guess; runtime pending.'
 blockers: []
-next_action: Run one affected owning29 target on corrected tab owner and actual Swap receipt candidate
+next_action: Run one affected owning29 target on stable intended destination and actual forbidden reorder fixture

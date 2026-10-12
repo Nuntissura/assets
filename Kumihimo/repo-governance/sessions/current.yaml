@@ -85,13 +85,13 @@ build_lane:
     free_disk_gib: 3055.7
     rust_processes: []
     scope: Fresh coordination tick; next proof runner refreshes before serial Cargo
-  candidate_revision: e2b9459646989b325e88f9fcab550640477ebb2e
+  candidate_revision: fbffecdb8244acba5ecfcc7ac9a661c326fb94f1
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Run one affected owning29 target on corrected tab owner and actual Swap receipt candidate; WP014
-  remains gated by WP012 DONE
+next_action: Run one affected owning29 target on stable intended destination and actual forbidden reorder fixture;
+  WP014 remains gated by WP012 DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

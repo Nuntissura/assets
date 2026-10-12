@@ -1083,8 +1083,48 @@ fn ui_click(h: &mut egui_kittest::Harness<'_, UiProof>, label: &str) {
     }
     if label.starts_with("Frame ") {
         for _ in 0..64 {
-            if h.query_all_by_label(label).next().is_some() {
-                break;
+            if let Some(target) = h
+                .state()
+                .report
+                .controls
+                .iter()
+                .find(|control| {
+                    control.enabled
+                        && control.label == label
+                        && (control.id.starts_with("destination/group-destinations/")
+                            || control.id.starts_with("destination/swap-destinations/"))
+                })
+                .cloned()
+            {
+                let mut target = target;
+                for _ in 0..8 {
+                    h.hover_at(to_egui(target.bounds).center());
+                    h.run_steps(1);
+                    let current = h
+                        .state()
+                        .report
+                        .controls
+                        .iter()
+                        .find(|control| control.id == target.id && control.enabled)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "current destination {}; trace: {:?}",
+                                target.id,
+                                h.state().trace
+                            )
+                        })
+                        .clone();
+                    if current.bounds == target.bounds {
+                        ui_click_id(h, &current.id);
+                        return;
+                    }
+                    target = current;
+                }
+                panic!(
+                    "unstable destination {}; trace: {:?}",
+                    target.id,
+                    h.state().trace
+                );
             }
             let next = h
                 .state()
@@ -1336,8 +1376,23 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     let before = h.state().demo.controller.snapshot().frames[&frame]
         .views
         .clone();
+    let pinned_index = before.iter().position(|view| *view == original[1]).unwrap();
+    assert_eq!(
+        pinned_index,
+        0,
+        "pin fixture index; trace: {:?}",
+        h.state().trace
+    );
+    assert!(
+        before.len() > 1,
+        "pin fixture needs distinct last index; trace: {:?}",
+        h.state().trace
+    );
+    assert!(h.state().demo.controller.snapshot().views[&original[1]].pinned);
     ui_tab_actions(&mut h, original[1]);
-    ui_click(&mut h, "Move tab first");
+    let attempt_after_pass = h.ctx.cumulative_pass_nr();
+    let pin_error = core::Error::Pinned(original[1]).to_string();
+    ui_click(&mut h, "Move tab last");
     assert_eq!(
         h.state().demo.controller.snapshot().frames[&frame].views,
         before,
@@ -1345,7 +1400,14 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
         h.state().trace
     );
     assert!(
-        !h.state().report.rejected.is_empty(),
+        h.state().trace.iter().any(|receipt| receipt["pass"]
+            .as_u64()
+            .is_some_and(|pass| pass > attempt_after_pass)
+            && receipt["rejected"]
+                .as_array()
+                .is_some_and(|rejections| rejections
+                    .iter()
+                    .any(|error| error.as_str() == Some(pin_error.as_str())))),
         "canonical/widget stage; trace: {:?}",
         h.state().trace
     );
@@ -1420,7 +1482,31 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
     let before = h.state().demo.controller.snapshot().layouts.clone();
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Swap with\u{2026}");
+    let swap_after_pass = h.ctx.cumulative_pass_nr();
     ui_click(&mut h, &format!("Frame {}", second.raw()));
+    let swap_result = h
+        .ctx
+        .data(|data| data.get_temp::<serde_json::Value>(egui::Id::new("kumihimo-swap-result")))
+        .unwrap_or_else(|| panic!("missing actual swap dispatch; trace: {:?}", h.state().trace));
+    assert!(
+        swap_result["pass"]
+            .as_u64()
+            .is_some_and(|pass| pass > swap_after_pass),
+        "fresh swap dispatch; trace: {:?}",
+        h.state().trace
+    );
+    assert_eq!(
+        swap_result["first"].as_u64(),
+        Some(frame.raw()),
+        "actual swap source; trace: {:?}",
+        h.state().trace
+    );
+    assert_eq!(
+        swap_result["second"].as_u64(),
+        Some(second.raw()),
+        "actual swap destination; trace: {:?}",
+        h.state().trace
+    );
     assert_ne!(
         h.state().demo.controller.snapshot().layouts,
         before,
