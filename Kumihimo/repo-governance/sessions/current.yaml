@@ -43,7 +43,7 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Focused original13/6 acceptance reconciliation and actual evidence; no new suites or broad audit
+    assignment: WP013 original6 PASS and published; await final original13 desktop actual bundle
   coder:
     role_id: ROLE-KUM-CODER-03
     thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
@@ -59,10 +59,11 @@ roles:
     thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
     model: gpt-6.1-sol
     reasoning: high
-    completed_implementation_wps: []
+    completed_implementation_wps:
+    - WP-KUM-013-web-adapter-portal-pilot-v1
     rotate_after: 2
-    assignment: All original six browser cases passed; all source held, independent evaluation and origin closure
-      pending
+    assignment: WP013 DONE, first of two implementation packets; all web source held, available after dependency/predecessor
+      admission
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -70,7 +71,7 @@ communication:
     dispatched reports
 build_lane:
   owner: null
-  phase: idle_parallel_original_acceptance_source
+  phase: idle_desktop_original_source_completion
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -83,13 +84,12 @@ build_lane:
     free_disk_gib: 3057.6
     rust_processes: []
     scope: Fresh before owning13 serial test; stable target/cache retained; test completed
-  candidate_revision: b7dec3f107cb59c82d69c74f5a760b4c7cbcd4ad
+  candidate_revision: cdc3033c567624e72484b1748758d8a9f98caf6e
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish and close WP013 after canonical origin reread; finish original desktop cases in parallel; Servo
-  starts only after WP012 DONE
+next_action: Finish and publish desktop original acceptance; WP014 promotion begins only after WP012 DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

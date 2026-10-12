@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
-generation: 9
-phase: active
+generation: 10
+phase: done
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-contract.yaml
@@ -96,5 +96,10 @@ proof:
     input/display changes, other browsers/platforms, actual Portal/Notes/Studio/Servo engines, performance improvements
     and physical resource release remain unproven. Full future requirement acceptance remains open. Exact canonical
     origin containment pending before DONE.'
+- kind: fresh_canonical_origin_containment
+  publication_revision: cdc3033c567624e72484b1748758d8a9f98caf6e
+  observed: Fresh ls-remote and fetched origin/codex/handpick equal published HEAD; eleven exact canonical source/evaluation/spec/matrix/topology/manual/state
+    blobs independently reread. Original six scoped cases PASS; no unresolved runtime findings. All full future
+    spec acceptances remain open.
 blockers: []
-next_action: Publish scoped outcome/evaluation; independently reread exact canonical origin blobs, then DONE
+next_action: Complete; reuse existing browser proof until its asserted inputs change
