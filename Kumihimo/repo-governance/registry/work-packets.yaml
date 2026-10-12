@@ -81,7 +81,9 @@ work_packets:
   phase: planned
   contract_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
-  next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+  next_action: Promote complete stub to full bounded contract/self-contained spec with current primary research,
+    exact modular ownership, dependency readiness and focused frozen evaluator cases; publish and independently
+    read origin before product admission
   blockers: []
 - wp_id: WP-KUM-012-desktop-gui-adapter-v1
   title: Prove a replaceable desktop adapter

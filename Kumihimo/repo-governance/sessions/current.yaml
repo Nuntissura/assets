@@ -19,7 +19,7 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6-luna
     reasoning: high
-    assignment: WP010 local std-only graph verified; prepare WP011 dependency boundary and readiness before coding
+    assignment: WP011 current research/readiness report before coding; coordinate package options with coder03
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
@@ -31,17 +31,16 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP010 runtime/outcome independent PASS contained; prepare WP011 after fresh coder architecture/readiness
+    assignment: WP010 settled; WP011 prepare focused acceptance cases from complete stub/spec and coder03 architecture
   coder:
-    role_id: ROLE-KUM-CODER-02
-    thread_id: 01a12cff-0f3f-72e3-b1ca-3befa8471878
+    role_id: ROLE-KUM-CODER-03
+    thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
     model: gpt-6.1-sol
     reasoning: high
-    completed_implementation_wps:
-    - WP-KUM-009-tabs-and-layout-recovery-v1
-    - WP-KUM-010-content-and-lifecycle-contracts-v1
+    completed_implementation_wps: []
     rotate_after: 2
-    assignment: Two implementation packets complete; source writes held, retire before WP011 coding
+    assignment: WP011 read-only architecture/research preparation; no product/Cargo/lock/Git until full published
+      contract and readiness
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -55,12 +54,19 @@ build_lane:
   parallel_kumihimo_cargo: false
   other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
   gameplan_relative_git_root: .local/kumihimo-content/gameplan.yaml
+  last_resource_observation:
+    observed_utc: '2026-10-12T00:33:04.8651585Z'
+    cpu_percent: 12
+    available_memory_gib: 66.4
+    free_disk_gib: 3069.2
+    rust_processes: []
+    scope: Read-only tick; no compilation lane granted
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Rotate coder02 to fresh coder03; prepare WP011 exact modular scope/current research/dependency readiness/frozen
-  evaluation before publishing full spec and coding admission
+next_action: Prepare full WP011 modular navigation/media contract and self-contained spec; dependency/eval readiness
+  before exact origin publication and coding admission
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
@@ -73,3 +79,14 @@ role_history:
   assignment: Two implementation packets complete; rotate to fresh coder before WP009
   retired_reason: Two completed implementation packets; rotation required
   retired_after_outcome: 72903fb43ed2c6a6c57a5fe01825447a7a89373d
+- role_id: ROLE-KUM-CODER-02
+  thread_id: 01a12cff-0f3f-72e3-b1ca-3befa8471878
+  model: gpt-6.1-sol
+  reasoning: high
+  completed_implementation_wps:
+  - WP-KUM-009-tabs-and-layout-recovery-v1
+  - WP-KUM-010-content-and-lifecycle-contracts-v1
+  rotate_after: 2
+  assignment: Two implementation packets complete; source writes held, retire before WP011 coding
+  retired_reason: Two completed implementation packets; fresh coder03 rotation required
+  retired_after_outcome: d30e660218f04f498d63ba2f388196b11fdc9ec9

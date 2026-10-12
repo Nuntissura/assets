@@ -1,9 +1,16 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 1
+generation: 2
 phase: planned
-owner: unassigned
+owner: ROLE-KUM-DEV-LEAD
 changed_files: []
-proof: []
+proof:
+- kind: predecessor_published_acceptance
+  source_revision: d30e660218f04f498d63ba2f388196b11fdc9ec9
+  observed: Fresh origin and four canonical settlement blobs independently reread; WP010 done from ba2d618 runtime/PASS
+    and ec7c2fd scoped outcome/80f59a0 contained report. Coder02 completed009+010; fresh coder03 read-only preparation,
+    no WP011 product admission.
 blockers: []
-next_action: Promote after predecessor proof; dependency and eval agents prepare before coding
+next_action: Promote complete stub to full bounded contract/self-contained spec with current primary research, exact
+  modular ownership, dependency readiness and focused frozen evaluator cases; publish and independently read origin
+  before product admission
