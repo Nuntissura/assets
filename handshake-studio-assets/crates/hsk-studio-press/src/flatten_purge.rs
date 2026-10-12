@@ -28,19 +28,17 @@
 //! - Painted sources ([`drop_painted_sources`], R13-F6): the images, forms, patterns, shadings, graphics
 //!   states and fonts the old page reached are dropped from every resource dictionary that lists them
 //!   when nothing refers to them but a gated (`/XObject`, `/Pattern`, `/Shading`, `/ExtGState`, `/Font`)
-//!   entry no kept content DRAWS (usage analysis below). A painted source (image, form, pattern, shading)
-//!   that stays in the file is silent only when a kept page DRAWS it ("Certain" below); a source that
-//!   stays without that is reported (`RedactedOutput::painted_sources_kept`, `NotProven::PaintedSourceKept`)
-//!   and `region_flattened` reads false: some content's usage cannot be determined, or a kept object only
-//!   REFERENCES it or places it where a viewer draws nothing from it (R14-P1, R16, R17: a catalog `/AF`, a
-//!   `/Names` or `/Dests` name tree, the entries of a kept page's `/Resources` outside the five gated
-//!   categories such as `/Properties` and `/ColorSpace`, a plain key of an object a kept page draws such as an
-//!   image's `/Alternates` or a form's `/PieceInfo`, an object used as a `/Resources` value, as a gated
-//!   sub-dictionary (`/XObject 10 0 R`) or as an appearance state, an appearance state the annotation's `/AS` does
-//!   not select, the appearance of an Invisible, Hidden or NoView annotation, an object or annotation with an `/OC`,
-//!   a draw inside `BDC /OC` marked content, a name an operator uses for an object of another kind, an entry a nearer
-//!   entry of the same name shadows, any other plain reference). Such a source is not
-//!   pruned (the kept structure is not edited). Tests
+//!   entry no kept content names (usage analysis below). A painted source (image, form, pattern, shading)
+//!   that stays in the file is silent only under the minimal draw set ("Silent" below); every other source that
+//!   stays is reported (`RedactedOutput::painted_sources_kept`, `NotProven::PaintedSourceKept`) and
+//!   `region_flattened` reads false (R14-P1, R16, R17, R18). That is a source some content's usage cannot be
+//!   determined for, one a kept object only REFERENCES (a catalog `/AF`, a `/Names` or `/Dests` name tree, the
+//!   entries of a kept page's `/Resources` outside the five gated categories such as `/Properties` and
+//!   `/ColorSpace`, a plain key of an object a kept page draws such as an image's `/Alternates`, an object used
+//!   as a `/Resources` value or as a gated sub-dictionary, any other plain reference), and one a viewer draws
+//!   through anything but a direct `Do` of the image by a kept page (a form, tiling pattern, Type 3 glyph
+//!   procedure, soft-mask group, mask, shading, annotation appearance, an image listed under another
+//!   category). Over-reporting is accepted. Such a source is not pruned (the kept structure is not edited). Tests
 //!   `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
 //!   `painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported`,
 //!   `painted_source_referenced_by_a_key_of_a_drawn_object_is_reported`,
@@ -49,8 +47,13 @@
 //!   `painted_source_placed_as_an_appearance_state_is_reported`,
 //!   `painted_source_named_where_it_is_not_drawn_is_reported`,
 //!   `painted_source_shadowed_by_a_nearer_resource_entry_is_reported`,
-//!   `painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported`,
-//!   `painted_source_under_optional_content_is_reported`.
+//!   `painted_source_in_an_annotation_appearance_is_reported`,
+//!   `painted_source_under_optional_content_is_reported`,
+//!   `painted_source_named_through_a_stream_used_as_a_dictionary_is_reported`,
+//!   `painted_source_drawn_by_an_image_or_shading_stream_read_as_content_is_reported`,
+//!   `painted_source_selected_by_a_type3_font_pattern_or_soft_mask_is_reported`,
+//!   `painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported`,
+//!   `painted_sources_rendered_with_a_drawn_image_are_reported`.
 //!
 //! Usage analysis: every page of the tree is a scope whose names resolve in its own `/Resources` and in
 //! every ancestor's (pdf.js merges them); a scope's content is decoded and strictly parsed and the names
@@ -58,30 +61,25 @@
 //! `/ExtGState` and `/Font` it uses. A used form, tiling pattern, soft-mask group or Type 3 font WITHOUT
 //! its own `/Resources` is read in the same scope; every stream (and Type 3 font) WITH its own
 //! `/Resources`, however it is reached, is a scope of its own. Everything else is followed as a plain
-//! reference (reached, not certain). Content that cannot be decoded or parsed makes every entry of its
-//! scope used (kept, uncertain).
+//! reference (reached, not silent). Content that cannot be decoded or parsed makes every entry of its
+//! scope used (kept, not silent). This analysis decides what is reached and so what is pruned; it does not decide
+//! what is silent.
 //!
-//! Certain (= drawn), R16, R17: an object is certain only when a scope that a kept page draws names it with
-//! `Do`, `sh`, `scn`/`SCN`, `gs` or `Tf` (the content of a kept page, and in turn of the forms, tiling patterns,
-//! soft-mask groups and Type 3 glyph procedures so drawn), the name resolves to it (the nearest entry of its
-//! category in the scope's resource chain; an entry a nearer one shadows is reached only) and it is the kind
-//! that operator draws (`Do` an image or form stream, `sh` a shading, `scn`/`SCN` a pattern, `gs` and `Tf` a
-//! plain dictionary), or it is a form XObject that is an appearance stream a viewer draws (`/AP` `/N` `/R` `/D`: the
-//! stream itself, or in a state dictionary only the state the annotation's `/AS` names, none when `/AS` is missing or
-//! names no state) of an annotation a kept page lists in its own `/Annots` and whose `/F` has none of the Invisible,
-//! Hidden and NoView flags (bits 1, 2 and 6), or it is rendered along with such an object: the `/SMask` and `/Mask`
-//! image of a drawn image, the `/Shading` of a drawn shading pattern, the `/SMask` `/G` form of a drawn graphics
-//! state. Optional content is not evaluated, it counts as possibly hidden: an object that has an `/OC` (an annotation,
-//! a drawn image, form, mask or shading) is not certain, and neither is a draw inside marked content opened by `BDC`
-//! with the tag `/OC` (whatever property list it names; from the `BDC` to its matching `EMC`, across the streams of a
-//! scope, with the nesting of `BMC`, `BDC` and `EMC` tracked per operator, the content of a form so drawn included).
-//! Everything else only references, even from a kept page or a drawn object: a position is not a draw (an
-//! image placed as a kept page's `/Resources` value, as a gated sub-dictionary such as `/XObject 10 0 R`, as an
-//! appearance state or under a category its operator does not draw is reached, not certain), and whatever is
-//! reached from the trailer roots by plain references alone is reached, not certain (R14-P1). Tests
-//! `painted_sources_under_a_region_do_not_survive`,
-//! `painted_sources_drawn_by_kept_pages_or_annotation_appearances_are_not_reported`,
-//! `painted_sources_rendered_with_a_drawn_object_are_not_reported`, and the R17 tests listed above.
+//! Silent (R18, the minimal draw set; lead decision 2026-10-12T02:48:02Z): a painted source that stays in the file is
+//! silent only when it is an image XObject stream (`/Subtype /Image`, no `/OC`) that a kept page draws with `Do`
+//! directly in its own content stream(s): the `Do` is in the page's own `/Contents`, not in a form, tiling pattern,
+//! Type 3 glyph procedure, annotation appearance, soft-mask group, shading or any other stream read as content; it is
+//! outside optional content (inside no marked content opened by `BDC` with the tag `/OC`, from the `BDC` to its
+//! matching `EMC`, with the nesting of `BMC`, `BDC` and `EMC` tracked per operator across the streams of the page,
+//! and the image has no `/OC`: optional content is not evaluated, it counts as possibly hidden); and its name resolves
+//! through the page's own nearest resource entry (the nearest entry of that name in `/Resources` `/XObject` of the page
+//! and of its ancestors; an entry a nearer one shadows is reached only), every container on that path (the page, each
+//! ancestor node, the `/Resources` value, the `/XObject` value) being a dictionary object, not a stream. Nothing
+//! else is silent, however a viewer draws it: a source that a form, tiling pattern, Type 3 font, soft-mask group,
+//! image mask, shading or annotation appearance draws, one an operator selects without painting (`Tf`, `scn`, `gs`),
+//! or one named through an object of another kind. Tests `painted_sources_under_a_region_do_not_survive`,
+//! `painted_source_drawn_directly_by_a_kept_page_is_not_reported`, `painted_source_under_optional_content_is_reported`,
+//! `painted_source_shadowed_by_a_nearer_resource_entry_is_reported`, and the tests listed above.
 #![deny(clippy::arithmetic_side_effects)]
 use crate::content::parse_strict;
 use crate::error::{Limits, PressError, Result};
@@ -517,11 +515,23 @@ pub(crate) fn neutralize_structure(doc: &mut PdfDoc, flats: &[Flat], annots: &BT
 /// Resource categories a content stream reaches only by naming an entry.
 const GATED: [&str; 5] = ["XObject", "Pattern", "Shading", "ExtGState", "Font"];
 
+/// A resource dictionary of a scope's chain, and whether every container on the way to it is a dictionary object (R18):
+/// the page or page-tree node that holds the `/Resources` entry (with the nodes between them) and the `/Resources`
+/// value. A stream is read as a dictionary too, so what a name resolves to through it is still reached and not pruned,
+/// but it is not `plain`: a name resolved through it is not silent (test
+/// `painted_source_named_through_a_stream_used_as_a_dictionary_is_reported`).
+#[derive(Clone, Copy)]
+struct ResDict<'a> {
+    dict: &'a Dict,
+    plain: bool,
+}
+
 /// One scope: content streams and the resource dictionaries their names resolve in (nearest first).
 struct Scope<'a> {
     streams: Vec<u32>,
-    chain: Vec<&'a Dict>,
-    certain: bool,
+    chain: Vec<ResDict<'a>>,
+    /// The own content of a kept page: the one scope in which a `Do` can be silent (module docs, Silent).
+    page: bool,
 }
 
 struct Usage<'a> {
@@ -530,11 +540,13 @@ struct Usage<'a> {
     /// Pages and page-tree nodes: their `/Resources` is read by page scopes, not followed.
     page_holders: &'a BTreeSet<u32>,
     reached: BTreeSet<u32>,
-    certain: BTreeSet<u32>,
-    traversed: BTreeSet<(u32, bool)>,
-    work: Vec<(u32, bool)>,
+    /// The image XObjects a kept page's own content draws with `Do` directly (module docs, Silent): the only sources
+    /// that stay in the file without being reported.
+    silent: BTreeSet<u32>,
+    traversed: BTreeSet<u32>,
+    work: Vec<u32>,
     scopes: Vec<Scope<'a>>,
-    scoped: BTreeSet<(u32, bool)>,
+    scoped: BTreeSet<u32>,
     /// Resource dictionaries whose plain (not gated) entries were followed.
     plain_done: BTreeSet<usize>,
     budget: usize,
@@ -546,100 +558,31 @@ fn ptr(d: &Dict) -> usize {
     d as *const Dict as usize
 }
 
-/// The `/SMask` `/G` transparency group of a graphics-state dictionary.
+/// The `/SMask` `/G` transparency group of a graphics-state dictionary (read like a form: what it draws is reached).
 fn smask_group(objs: &Objs, gs: &Dict) -> Option<u32> {
     gs.get("SMask").map(|m| res(objs, m)).and_then(Object::as_dict).and_then(|m| m.get("G")).and_then(Object::as_ref).map(|g| g.num)
 }
 
-/// What a viewer draws an object as, read from the object and not from the place a document lists it (R17): a
-/// position is not a draw, so a draw makes an object certain only when the object is the kind that draw needs.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// An image XObject stream (`/Subtype /Image`).
-    Image,
-    /// A form XObject stream (`/Subtype /Form`): also what an appearance stream and a soft-mask group are.
-    Form,
-    /// A pattern (`/PatternType`).
-    Pattern,
-    /// A shading (`/ShadingType`).
-    Shading,
-    /// A dictionary that is none of those (a graphics state, a font).
-    Plain,
-    /// Anything else: not a dictionary, an XObject subtype on a non-stream, a stream of no drawable kind, an object
-    /// with an `/OC` (optional content is not evaluated: possibly hidden, so not a certain draw; test
-    /// `painted_source_under_optional_content_is_reported`).
-    Other,
-}
-
-fn kind_of(objs: &Objs, o: &Object) -> Kind {
-    let o = res(objs, o);
-    let Some(d) = o.as_dict() else { return Kind::Other };
-    if d.get("OC").is_some() {
-        return Kind::Other;
-    }
-    let stream = matches!(o, Object::Stream(_));
-    let subtype = |s: &str| d.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name(s));
-    if subtype("Image") || subtype("Form") {
-        return match (stream, subtype("Image")) {
-            (true, true) => Kind::Image,
-            (true, false) => Kind::Form,
-            _ => Kind::Other,
-        };
-    }
-    if d.get("PatternType").is_some() {
-        Kind::Pattern
-    } else if d.get("ShadingType").is_some() {
-        Kind::Shading
-    } else if stream {
-        Kind::Other
-    } else {
-        Kind::Plain
-    }
-}
-
-/// The kind of object the operator that names an entry of resource category `cat` draws (`Do` an image or form
-/// stream, `sh` a shading, `scn`/`SCN` a pattern, `gs` and `Tf` a plain dictionary).
-fn draws(cat: &str, kind: Kind) -> bool {
-    match cat {
-        "XObject" => matches!(kind, Kind::Image | Kind::Form),
-        "Pattern" => kind == Kind::Pattern,
-        "Shading" => kind == Kind::Shading,
-        _ => kind == Kind::Plain,
-    }
-}
-
-/// What a viewer renders along with `d`, the object a kept scope's `Do` (image), `scn`/`SCN` (pattern) or `gs` names
-/// (category `cat`), and so what a kept page draws through it (module docs, certain): the `/SMask` and `/Mask`
-/// image of an image, the `/Shading` of a shading pattern (`/PatternType 2`), the `/SMask` `/G` form of a graphics
-/// state, each only when it is that kind of object (R17). Every other key of `d` (an image's `/Alternates`, a
-/// form's `/PieceInfo`, ...) only references.
-fn rendered_with(objs: &Objs, cat: &str, d: &Dict) -> Vec<u32> {
-    let image = d.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Image"));
-    let shading_pattern = d.get("PatternType").map(|t| res(objs, t)).and_then(Object::as_int) == Some(2);
-    let of = |kind: Kind, o: Option<&Object>| o.filter(|o| kind_of(objs, o) == kind).and_then(Object::as_ref).map(|r| r.num);
-    match cat {
-        "XObject" if image => ["SMask", "Mask"].into_iter().filter_map(|k| of(Kind::Image, d.get(k))).collect(),
-        "Pattern" if shading_pattern => of(Kind::Shading, d.get("Shading")).into_iter().collect(),
-        "ExtGState" => smask_group(objs, d).filter(|g| objs.get(g).is_some_and(|e| kind_of(objs, &e.obj) == Kind::Form)).into_iter().collect(),
-        _ => Vec::new(),
-    }
+/// Object `n` itself is an image XObject stream without an `/OC` (optional content is not evaluated, it counts as
+/// possibly hidden): the one kind of object a kept page's `Do` makes silent (module docs, Silent; test
+/// `painted_source_under_optional_content_is_reported`).
+fn plain_image(objs: &Objs, n: u32) -> bool {
+    let Some(Object::Stream(s)) = objs.get(&n).map(|e| &e.obj) else { return false };
+    s.dict.get("OC").is_none() && s.dict.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Image"))
 }
 
 impl<'a> Usage<'a> {
-    fn mark(&mut self, n: u32, certain: bool) {
+    fn mark(&mut self, n: u32) {
         self.reached.insert(n);
-        if certain {
-            self.certain.insert(n);
-        }
     }
 
-    fn push(&mut self, n: u32, certain: bool) {
-        self.mark(n, certain);
-        self.work.push((n, certain));
+    fn push(&mut self, n: u32) {
+        self.mark(n);
+        self.work.push(n);
     }
 
     /// Follows every reference inside `o` as a PLAIN reference: the objects are reached (so they are not
-    /// pruned) and not certain (R16: a draw makes a source certain, module docs).
+    /// pruned) and not silent (R16: only a direct draw is, module docs).
     fn follow(&mut self, o: &'a Object) {
         let mut stack: Vec<(&'a Object, usize)> = vec![(o, 0)];
         while let Some((o, depth)) = stack.pop() {
@@ -648,7 +591,7 @@ impl<'a> Usage<'a> {
             }
             let next = depth.saturating_add(1);
             match o {
-                Object::Ref(r) => self.push(r.num, false),
+                Object::Ref(r) => self.push(r.num),
                 Object::Array(a) => stack.extend(a.iter().map(|x| (x, next))),
                 Object::Dict(d) => stack.extend(d.entries.iter().map(|(_, v)| (v, next))),
                 Object::Stream(s) => stack.extend(s.dict.entries.iter().map(|(_, v)| (v, next))),
@@ -657,35 +600,35 @@ impl<'a> Usage<'a> {
         }
     }
 
-    /// A resource dictionary of a scope: marks it (and its gated sub-dictionaries) reached and follows
-    /// its plain entries (`/Properties`, `/ColorSpace`, ...) as plain references. Nothing here is certain, in a
-    /// scope a kept page draws too: a resource dictionary and a gated sub-dictionary are reached by position, not
-    /// drawn, whatever object a document places there (R16: an entry of a kept page it does not draw only
-    /// references; R17: an image as a `/Resources` value or as `/XObject 10 0 R`).
-    fn resources(&mut self, holder_value: &'a Object) -> Option<&'a Dict> {
+    /// A resource dictionary of a scope: marks it (and its gated sub-dictionaries) reached and follows its plain
+    /// entries (`/Properties`, `/ColorSpace`, ...) as plain references. Reached, not silent: a resource dictionary and
+    /// a gated sub-dictionary are reached by position, not drawn, whatever object a document places there. The result
+    /// says whether the `/Resources` value is a dictionary object (R18).
+    fn resources(&mut self, holder_value: &'a Object) -> Option<ResDict<'a>> {
         if let Some(r) = holder_value.as_ref() {
-            self.mark(r.num, false);
+            self.mark(r.num);
         }
-        let d = res(self.objs, holder_value).as_dict()?;
+        let value = res(self.objs, holder_value);
+        let d = value.as_dict()?;
         if self.plain_done.insert(ptr(d)) {
             for (k, v) in &d.entries {
                 if GATED.iter().any(|g| g.as_bytes() == k.as_slice()) {
                     if let Some(r) = v.as_ref() {
-                        self.mark(r.num, false);
+                        self.mark(r.num);
                     }
                 } else {
                     self.follow(v);
                 }
             }
         }
-        Some(d)
+        Some(ResDict { dict: d, plain: matches!(value, Object::Dict(_)) })
     }
 
     /// Plain traversal of one object (module docs: scope holders' `/Resources` are not followed). Every key is a
-    /// plain reference whatever `certain` says: `certain` (n is drawn) only makes the scope of n, if it has one,
-    /// a scope a kept page draws. What drawing n renders besides n is pushed by `read_scope` (`rendered_with`).
-    fn traverse(&mut self, n: u32, certain: bool) {
-        if !self.traversed.insert((n, certain)) {
+    /// plain reference. A stream (and a Type 3 font) with its own `/Resources` is a scope of its own, read for what
+    /// it names (so that is reached), not a page scope: nothing it draws is silent.
+    fn traverse(&mut self, n: u32) {
+        if !self.traversed.insert(n) {
             return;
         }
         let objs = self.objs;
@@ -711,17 +654,17 @@ impl<'a> Usage<'a> {
             } else {
                 vec![n]
             };
-            if self.scoped.insert((n, certain)) {
-                self.scopes.push(Scope { streams, chain: vec![rd], certain });
+            if self.scoped.insert(n) {
+                self.scopes.push(Scope { streams, chain: vec![rd], page: false });
             }
         }
     }
 
     /// Follows every gated entry of a scope's dictionaries (its content could not be read).
-    fn all_used(&mut self, chain: &[&'a Dict]) {
-        for d in chain {
+    fn all_used(&mut self, chain: &[ResDict<'a>]) {
+        for r in chain {
             for g in GATED {
-                if let Some(sub) = d.get(g).map(|s| res(self.objs, s)).and_then(Object::as_dict) {
+                if let Some(sub) = r.dict.get(g).map(|s| res(self.objs, s)).and_then(Object::as_dict) {
                     for (_, v) in &sub.entries {
                         self.follow(v);
                     }
@@ -731,14 +674,23 @@ impl<'a> Usage<'a> {
     }
 
     /// The entries `name` of category `cat` in the scope's dictionaries, nearest first: the first one is what a
-    /// viewer resolves the name to, the others are shadowed by it (R17: reached, not drawn).
-    fn lookup(&self, chain: &[&'a Dict], cat: &str, name: &[u8]) -> Vec<&'a Object> {
-        chain.iter().filter_map(|d| d.get(cat).map(|s| res(self.objs, s)).and_then(Object::as_dict).and_then(|s| s.get_key(name))).collect()
+    /// viewer resolves the name to, the others are shadowed by it (reached, not drawn). Each comes with whether it
+    /// was found through dictionary objects only (the chain element and the category value, R18).
+    fn lookup(&self, chain: &[ResDict<'a>], cat: &str, name: &[u8]) -> Vec<(&'a Object, bool)> {
+        chain
+            .iter()
+            .filter_map(|r| {
+                let sub = res(self.objs, r.dict.get(cat)?);
+                Some((sub.as_dict()?.get_key(name)?, r.plain && matches!(sub, Object::Dict(_))))
+            })
+            .collect()
     }
 
     /// Reads one scope (module docs). `Err(())`: its content (or that of something it draws in the same
-    /// scope) could not be read.
-    fn read_scope(&mut self, streams: &[u32], chain: &[&'a Dict], certain: bool, depth: usize, seen: &mut BTreeSet<u32>) -> std::result::Result<(), ()> {
+    /// scope) could not be read. `page`: the streams are the own content of a kept page (the only scope in which a
+    /// `Do` can be silent); what a form, soft-mask group or Type 3 font without `/Resources` draws is read in the
+    /// caller's chain and is not page content.
+    fn read_scope(&mut self, streams: &[u32], chain: &[ResDict<'a>], page: bool, depth: usize, seen: &mut BTreeSet<u32>) -> std::result::Result<(), ()> {
         if depth > 16 {
             return Err(());
         }
@@ -758,7 +710,7 @@ impl<'a> Usage<'a> {
             }
             let Some(Object::Stream(s)) = objs.get(num).map(|e| &e.obj) else { return Err(()) };
             let data = filters::decode_stream(s, self.limits, &mut self.budget).map_err(|_| ())?;
-            let cs = |n: &[u8]| chain.iter().find_map(|d| resource_components(objs, Some(*d), n));
+            let cs = |n: &[u8]| chain.iter().find_map(|r| resource_components(objs, Some(r.dict), n));
             let parsed = parse_strict(&data, self.limits, &cs, &mut self.budget).map_err(|_| ())?;
             for op in &parsed.ops {
                 match op.name.as_slice() {
@@ -778,25 +730,25 @@ impl<'a> Usage<'a> {
                     _ => continue,
                 };
                 let Some(name) = name.and_then(Object::as_name) else { continue };
-                for (nearest, target) in self.lookup(chain, cat, name).into_iter().enumerate() {
-                    // R16, R17: a DRAW makes the named object certain (and what drawing it renders, below); every
-                    // other reference inside it is a plain one. A draw is the entry the name resolves to (the nearest;
-                    // an entry it shadows is only reached) and an object of the kind the operator draws (an image
-                    // listed under /Font is no font) that is not optional content, inside no optional-content
-                    // marked content (not evaluated: possibly hidden). In a scope no kept page draws, nothing is
-                    // certain.
-                    let drawn = certain && nearest == 0 && !marked.contains(&true) && draws(cat, kind_of(objs, target));
-                    match target.as_ref() {
-                        Some(r) if drawn => self.push(r.num, true),
-                        _ => self.follow(target),
+                for (nearest, (target, plain)) in self.lookup(chain, cat, name).into_iter().enumerate() {
+                    // R18: every named entry is reached (a plain reference). The one draw that is silent is `Do` of an
+                    // image XObject by the own content of a kept page (module docs, Silent): the entry the name
+                    // resolves to (the nearest; an entry it shadows is only reached), found through dictionary objects
+                    // only, not optional content, inside no optional-content marked content (not evaluated: possibly
+                    // hidden). Every other draw, nested content included, is reached only.
+                    self.follow(target);
+                    if page
+                        && cat == "XObject"
+                        && nearest == 0
+                        && plain
+                        && !marked.contains(&true)
+                        && let Some(r) = target.as_ref()
+                        && plain_image(objs, r.num)
+                    {
+                        self.silent.insert(r.num);
                     }
-                    // Drawn in this scope: what has no resources of its own names in this scope.
+                    // Used in this scope: what has no resources of its own names in this scope.
                     let Some(d) = res(objs, target).as_dict() else { continue };
-                    if drawn {
-                        for n in rendered_with(objs, cat, d) {
-                            self.push(n, true);
-                        }
-                    }
                     let inner: Vec<u32> = match cat {
                         "XObject" | "Pattern" if d.get("Resources").is_none() => target.as_ref().map(|r| vec![r.num]).unwrap_or_default(),
                         "ExtGState" => smask_group(objs, d)
@@ -817,7 +769,7 @@ impl<'a> Usage<'a> {
                         .filter(|n| matches!(objs.get(n).map(|e| &e.obj), Some(Object::Stream(s)) if !s.dict.get("Subtype").map(|t| res(objs, t)).is_some_and(|t| t.is_name("Image"))))
                         .collect();
                     if !inner.is_empty() {
-                        self.read_scope(&inner, chain, drawn, depth.saturating_add(1), seen)?;
+                        self.read_scope(&inner, chain, false, depth.saturating_add(1), seen)?;
                     }
                 }
             }
@@ -827,63 +779,34 @@ impl<'a> Usage<'a> {
 
     fn drain(&mut self, cancel: &CancellationToken) -> Result<()> {
         loop {
-            if let Some((n, certain)) = self.work.pop() {
+            if let Some(n) = self.work.pop() {
                 self.steps = self.steps.saturating_add(1);
                 if self.steps & 1023 == 0 {
                     check_cancel(cancel)?;
                 }
-                self.traverse(n, certain);
+                self.traverse(n);
                 continue;
             }
             let Some(scope) = self.scopes.pop() else { return Ok(()) };
             let mut seen = BTreeSet::new();
-            if self.read_scope(&scope.streams, &scope.chain, scope.certain, 0, &mut seen).is_err() {
+            if self.read_scope(&scope.streams, &scope.chain, scope.page, 0, &mut seen).is_err() {
                 self.all_used(&scope.chain);
             }
         }
     }
 }
 
-/// Object numbers of the appearance streams (`/AP` `/N`, `/R`, `/D`; the streams of a state dictionary) of the
-/// annotations `page` lists in its own `/Annots`: besides its content, the one thing a viewer renders from a page.
-/// Each comes with whether a viewer draws it (R17): only a form XObject is (an image or any other object placed there
-/// is reached, not drawn); an entry that is a stream itself is the drawn one, of an entry that is a state dictionary
-/// only the state the annotation's `/AS` names (none when `/AS` is missing or names no state); and an annotation whose
-/// `/F` has the Invisible (bit 1), Hidden (bit 2) or NoView (bit 6) flag draws nothing, as one with an `/OC` (optional
-/// content is not evaluated: possibly hidden).
-fn appearance_streams(objs: &Objs, page: &Dict) -> Vec<(u32, bool)> {
-    let Some(annots) = page.get("Annots").map(|a| res(objs, a)).and_then(Object::as_array) else { return Vec::new() };
-    let mut out = Vec::new();
-    let form = |o: &Object| kind_of(objs, o) == Kind::Form;
-    for annot in annots {
-        let Some(ad) = res(objs, annot).as_dict() else { continue };
-        let Some(ap) = ad.get("AP").map(|a| res(objs, a)).and_then(Object::as_dict) else { continue };
-        let shown = ad.get("OC").is_none() && ad.get("F").map(|f| res(objs, f)).and_then(Object::as_int).is_none_or(|f| f & 0b10_0011 == 0);
-        let state = ad.get("AS").map(|s| res(objs, s)).and_then(Object::as_name);
-        for key in ["N", "R", "D"] {
-            let Some(entry) = ap.get(key) else { continue };
-            match res(objs, entry) {
-                Object::Stream(_) => out.extend(entry.as_ref().map(|r| (r.num, shown && form(entry)))),
-                Object::Dict(states) => {
-                    out.extend(states.entries.iter().filter_map(|(k, v)| v.as_ref().map(|r| (r.num, shown && state == Some(k.as_slice()) && form(v)))))
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
-/// Drops the flattened pages' sources no kept content draws (module docs). Returns the painted sources
-/// (images, forms, patterns, shadings) that stay in the file without a kept page or annotation appearance drawing
-/// them (certain, module docs): some usage is not determined, or a kept object only references them or places them
-/// where a viewer draws nothing from them (R14-P1, R16, R17).
+/// Drops the flattened pages' sources no kept content names (module docs). Returns the painted sources
+/// (images, forms, patterns, shadings) that stay in the file without being silent (module docs, Silent: an image a
+/// kept page's own content draws with `Do` directly): some usage is not determined, a kept object only references
+/// them or places them where a viewer draws nothing from them, or a viewer draws them through anything else than that
+/// direct `Do`: over-reporting is accepted (R14-P1, R16, R17, R18).
 pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &CancellationToken) -> Result<Vec<u32>> {
     let sources: BTreeSet<u32> = flats.iter().flat_map(|f| f.sources.iter().copied()).collect();
     if sources.is_empty() {
         return Ok(Vec::new());
     }
-    let (reached, certain, incomplete) = {
+    let (reached, silent, incomplete) = {
         let objs: &Objs = &doc.objects;
         let mut holders: BTreeSet<u32> = doc.pages.iter().copied().collect();
         // Page-tree nodes: every node on a page's /Parent chain.
@@ -902,7 +825,7 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
             limits: &doc.limits,
             page_holders: &holders,
             reached: BTreeSet::new(),
-            certain: BTreeSet::new(),
+            silent: BTreeSet::new(),
             traversed: BTreeSet::new(),
             work: Vec::new(),
             scopes: Vec::new(),
@@ -912,39 +835,37 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
             steps: 0,
             incomplete: false,
         };
-        // R14-P1: the trailer roots are followed as plain references only (reached, NOT certain): a painted
+        // R14-P1: the trailer roots are followed as plain references only (reached, not silent): a painted
         // source that nothing draws but that a kept catalog structure merely points at (`/AF`, a `/Names` or
-        // `/Dests` tree, `/OutputIntents`, ...) stays in the file, so it is reported, not silently kept.
-        // What a kept page draws is certain through the page scopes below, and only that (R16).
+        // `/Dests` tree, `/OutputIntents`, ...) stays in the file, so it is reported, not silently kept. The
+        // annotations a kept page lists, their appearance streams included, are reached through the page the same way.
         for r in trailer_roots(&doc.trailer) {
-            u.push(r, false);
+            u.push(r);
         }
-        // Page scopes: own /Resources and every ancestor's. The page's content draws (certain); the entries of its
-        // /Resources outside the gated categories are plain references (`Usage::resources`), not certain.
+        // Page scopes: own /Resources and every ancestor's. The page's own content is the one thing that can make a source
+        // silent (R18); the entries of its /Resources outside the gated categories are plain references
+        // (`Usage::resources`). A chain element is `plain` when the page, every node up to it and its `/Resources` value
+        // are dictionary objects (R18: a stream there is read, so its names are reached, but nothing found through it
+        // is silent).
         for p in &doc.pages {
-            let Some(pd) = objs.get(p).and_then(|e| e.obj.as_dict()) else { continue };
-            // A viewer also renders the appearance streams of the annotations the page lists: a form XObject that it
-            // draws there is certain; any other object, an unselected state and the appearance of a hidden annotation
-            // are only reached (R17).
-            for (ap, form) in appearance_streams(objs, pd) {
-                u.push(ap, form);
-            }
-            let mut chain: Vec<&Dict> = Vec::new();
-            let mut node = Some(pd);
+            let Some(pe) = objs.get(p) else { continue };
+            let Some(pd) = pe.obj.as_dict() else { continue };
+            let mut chain: Vec<ResDict> = Vec::new();
+            let mut node = Some((pd, matches!(pe.obj, Object::Dict(_))));
             for _ in 0..=doc.limits.depth_cap() {
-                let Some(d) = node else { break };
+                let Some((d, nodes_plain)) = node else { break };
                 if let Some(rv) = d.get("Resources")
                     && let Some(rd) = u.resources(rv)
                 {
-                    chain.push(rd);
+                    chain.push(ResDict { dict: rd.dict, plain: rd.plain && nodes_plain });
                 }
-                node = d.get("Parent").map(|x| res(objs, x)).and_then(Object::as_dict);
+                node = d.get("Parent").map(|x| res(objs, x)).and_then(|x| x.as_dict().map(|d| (d, nodes_plain && matches!(x, Object::Dict(_)))));
             }
             let streams = crate::show_text::content_streams_of(objs, pd).unwrap_or_default();
-            u.scopes.push(Scope { streams, chain, certain: true });
+            u.scopes.push(Scope { streams, chain, page: true });
         }
         u.drain(cancel)?;
-        (u.reached, u.certain, u.incomplete)
+        (u.reached, u.silent, u.incomplete)
     };
     let painted: BTreeSet<u32> = sources
         .iter()
@@ -987,7 +908,7 @@ pub(crate) fn drop_painted_sources(doc: &mut PdfDoc, flats: &[Flat], cancel: &Ca
         }
     }
     let live = reachable(&doc.objects, &trailer_roots(&doc.trailer));
-    Ok(painted.iter().filter(|n| live.contains(n) && !certain.contains(n)).copied().collect())
+    Ok(painted.iter().filter(|n| live.contains(n) && !silent.contains(n)).copied().collect())
 }
 
 /// Removes gated entries naming `gone` from every resource dictionary inside `o`; gated sub-dictionaries

@@ -599,78 +599,61 @@ fn painted_source_referenced_by_a_key_of_a_drawn_object_is_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R14-P1, R16, the other side: a painted source a kept page DRAWS (also when a catalog structure references it too), or
-/// that the appearance stream of an annotation a kept page lists draws (`/AP` `/N`, `/R` or `/D`), is drawn content of
-/// the kept file: it stays and is not reported.
+/// R14-P1, R16, R18, the other side: a painted source a kept page DRAWS with `Do` directly in its own content (also
+/// when a catalog structure references it too, when a form draws it as well, through the page's own `/Resources`, an
+/// ancestor's inherited ones, a shared dictionary or an indirect `/XObject` dictionary) is drawn content of the kept
+/// file: it stays and is not reported. The minimal draw set: nothing else is silent, so the same `Do` inside
+/// `BDC /OC` marked content is reported.
 #[test]
-fn painted_sources_drawn_by_kept_pages_or_annotation_appearances_are_not_reported() {
-    let text_only = "BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
+fn painted_source_drawn_directly_by_a_kept_page_is_not_reported() {
+    let text = "BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
+    let draw = "q 10 0 0 10 400 100 cm /Im1 Do Q";
     let mut red: Vec<String> = Vec::new();
-    // (a) page two draws the image and /AF lists it as well.
-    let drawn = painted_doc_with(
+    // (a) page two draws the image and /AF lists it as well (resources inherited from the /Pages node).
+    let af = painted_doc_with("inherited", &format!("{draw} {text}"), "/AF [20 0 R]", "", vec![(20, IMAGE_FILESPEC.to_vec())]);
+    // (b) page two's own /Resources, direct dictionaries.
+    let own = painted_doc_with("inherited", &format!("{draw} {text}"), "", "/Resources << /Font << /F1 6 0 R >> /XObject << /Im1 10 0 R >> >>", Vec::new());
+    // (c) one resource dictionary object both pages share.
+    let shared = painted_doc("shared", &format!("{draw} {text}"));
+    // (d) the /XObject sub-dictionary is an indirect dictionary object.
+    let indirect = painted_doc_with("inherited", &format!("{draw} {text}"), "", "/Resources << /Font << /F1 6 0 R >> /XObject 41 0 R >>", vec![(41, b"<< /Im1 10 0 R >>".to_vec())]);
+    // (e) a form page two draws draws the image too: the direct `Do` of the page decides, the form changes nothing.
+    let form = stream_body("/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /XObject << /Im1 10 0 R >> >>", b"q 100 0 0 100 0 0 cm /Im1 Do Q");
+    let and_a_form = painted_doc_with(
         "inherited",
-        "q 10 0 0 10 400 100 cm /Im1 Do Q BT /F1 12 Tf 72 700 Td (Page two) Tj ET",
-        "/AF [20 0 R]",
+        &format!("/Fx Do {draw} {text}"),
         "",
-        vec![(20, IMAGE_FILESPEC.to_vec())],
-    );
-    // (b) only the appearance stream of an annotation page two lists draws the image.
-    let appearance = stream_body(
-        "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /XObject << /Im1 10 0 R >> >>",
-        b"q 100 0 0 100 0 0 cm /Im1 Do Q",
-    );
-    let stamp = b"<< /Type /Annot /Subtype /Stamp /Rect [300 100 400 200] /P 5 0 R /AP << /N 31 0 R >> >>".to_vec();
-    let annotated = painted_doc_with("inherited", text_only, "", "/Annots [30 0 R]", vec![(30, stamp), (31, appearance.clone())]);
-    // (d) the same, the appearance stream listed as the rollover (/R) or the down (/D) appearance only.
-    let [rollover, down] = ["R", "D"].map(|key| {
-        let annot = format!("<< /Type /Annot /Subtype /Stamp /Rect [300 100 400 200] /P 5 0 R /AP << /{key} 31 0 R >> >>").into_bytes();
-        painted_doc_with("inherited", text_only, "", "/Annots [30 0 R]", vec![(30, annot), (31, appearance.clone())])
-    });
-    // (c) the same, with the appearance stream behind a state dictionary and /AF listing the image too.
-    let states = painted_doc_with(
-        "inherited",
-        text_only,
-        "/AF [20 0 R]",
-        "/Annots [30 0 R]",
-        vec![
-            (20, IMAGE_FILESPEC.to_vec()),
-            (30, b"<< /Type /Annot /Subtype /Widget /FT /Btn /Rect [300 100 400 200] /P 5 0 R /AS /On /AP << /N 32 0 R >> >>".to_vec()),
-            (31, appearance),
-            (32, b"<< /On 31 0 R >>".to_vec()),
-        ],
+        "/Resources << /Font << /F1 6 0 R >> /XObject << /Im1 10 0 R /Fx 40 0 R >> >>",
+        vec![(40, form)],
     );
     for (what, pdf) in [
-        ("kept page draws it, /AF lists it", drawn),
-        ("annotation appearance draws it", annotated),
-        ("rollover (/AP /R) appearance draws it", rollover),
-        ("down (/AP /D) appearance draws it", down),
-        ("state-dictionary appearance draws it, /AF lists it", states),
+        ("kept page draws it, /AF lists it", af),
+        ("page two's own /Resources", own),
+        ("one shared resource dictionary object", shared),
+        ("an indirect /XObject dictionary", indirect),
+        ("a form draws it too", and_a_form),
     ] {
+        silent_drawn_image(what, &pdf, &mut red);
         let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
         let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
-        if !out.painted_sources_kept.is_empty() {
-            red.push(format!("{what}: reported kept {:?}", out.painted_sources_kept));
-        }
-        if !out.region_flattened() {
-            red.push(format!("{what}: region_flattened false (residual {}, not proven {:?})", out.residual_in_region, out.not_proven_reasons()));
-        }
-        if gone(&out.bytes, "SCAN-PIXELS-SECRET") {
-            red.push(format!("{what}: a drawn image was dropped"));
-        }
         if !gone(&out.bytes, "VECTOR-FORM-SECRET") {
             red.push(format!("{what}: the form nothing draws survives"));
         }
     }
+    // The same `Do` inside BDC /OC marked content (optional content counts as possibly hidden) is reported.
+    let hidden = painted_doc("inherited", &format!("/OC << /Type /OCG >> BDC {draw} EMC {text}"));
+    reported_kept_image_too("the same Do inside BDC /OC", &hidden, &mut red);
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R16: what a kept page draws includes what drawing renders along with the named object: the `/SMask` and `/Mask`
-/// of an image (object 12), the `/Shading` of a shading pattern (15) and the `/SMask` `/G` group of a graphics state
-/// (17). Page two draws the image, a shading, the shading pattern and the graphics state; the same resource
-/// dictionary lists them on the flattened page one. Every one of them stays, nothing is reported (a shared logo with
-/// an alpha mask is the usual case).
+/// R18 (replaces the R16 test of the same case, which expected nothing reported): drawing an image does not make what
+/// is rendered along with it silent. Page two draws the image (object 10, silent), a shading, the shading pattern and
+/// the graphics state; the same resource dictionary lists them on the flattened page one. Only the image is silent: its
+/// `/SMask` image (12), the shading (13), the pattern (14), the pattern's `/Shading` (15) and the `/SMask` `/G` group of
+/// the graphics state (17) are reported (a shared logo with an alpha mask is the usual case: its mask is reported, an
+/// over-report that is accepted), and every one of them stays in the file.
 #[test]
-fn painted_sources_rendered_with_a_drawn_object_are_not_reported() {
+fn painted_sources_rendered_with_a_drawn_image_are_reported() {
     let resources = "<< /XObject << /Im1 10 0 R >> /Shading << /Sh1 13 0 R >> /Pattern << /P1 14 0 R >> /ExtGState << /G1 16 0 R >> /Font << /F1 6 0 R >> >>";
     let axial = |coords: &str| format!("<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [{coords}] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>").into_bytes();
     let page_two = "q /G1 gs 10 0 0 10 400 100 cm /Im1 Do Q q /Sh1 sh Q /Pattern cs /P1 scn 100 100 50 50 re f BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
@@ -694,15 +677,15 @@ fn painted_sources_rendered_with_a_drawn_object_are_not_reported() {
     let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
     let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
     let mut red: Vec<String> = Vec::new();
-    if !out.painted_sources_kept.is_empty() {
-        red.push(format!("reported kept {:?} (12 = the image's /SMask, 15 = the pattern's /Shading, 17 = the soft-mask group)", out.painted_sources_kept));
+    if out.painted_sources_kept != [12, 13, 14, 15, 17] {
+        red.push(format!("painted_sources_kept {:?}, expected [12, 13, 14, 15, 17] (12 = the image's /SMask, 13 = the shading, 14 = the pattern, 15 = its /Shading, 17 = the soft-mask group; the image 10 is silent)", out.painted_sources_kept));
     }
-    if !out.region_flattened() {
-        red.push(format!("region_flattened false (residual {}, not proven {:?})", out.residual_in_region, out.not_proven_reasons()));
+    if out.not_proven_reasons() != [hsk_studio_press::NotProven::PaintedSourceKept] || out.region_flattened() {
+        red.push(format!("reasons {:?}, region_flattened {}", out.not_proven_reasons(), out.region_flattened()));
     }
     for marker in ["SCAN-PIXELS-SECRET", "MASK-PIXELS-SECRET", "SMASK-GROUP-SECRET"] {
         if gone(&out.bytes, marker) {
-            red.push(format!("{marker}: a source page two draws was dropped"));
+            red.push(format!("{marker}: a kept page's source was dropped (the kept reference would dangle)"));
         }
     }
     assert!(red.is_empty(), "{red:#?}");
@@ -747,13 +730,14 @@ fn silent_drawn_image(what: &str, pdf: &[u8], red: &mut Vec<String>) {
     }
 }
 
-/// R17: kept page two takes the extra entries `keys` (no `/Annots`), the extra objects `more` and runs `content` before
-/// its text; `annots` are the numbers of the annotations in `more` that it lists. The image (object 10) is placed or
-/// named where a viewer does not draw it (or does not draw it as an image): it stays and is reported. The same
-/// document in which a kept page also DRAWS the image keeps it silently: a draw, not a position, is what makes a
-/// source certain. The draw is the appearance form (object 34) of one more annotation (33) page two lists: it names
-/// the image in its own `/Resources`, so it does not depend on the page's resources the case replaces.
-fn reported_unless_drawn(what: &str, keys: &str, content: &str, more: Vec<(u32, Vec<u8>)>, annots: &[u32], red: &mut Vec<String>) {
+/// R17, R18: kept page two takes the extra entries `keys` (no `/Annots`), the extra objects `more` and runs `content`
+/// before its text; `annots` are the numbers of the annotations in `more` that it lists. The image (object 10) is placed
+/// or named where a viewer does not draw it (or does not draw it as an image): it stays and is reported. R18 (the
+/// minimal draw set): the same document in which an annotation appearance page two lists draws the image (object 34, one
+/// more annotation, 33) is reported too, because a draw by an appearance is not a direct `Do` in a kept page's own
+/// content. (Before R18 that control was silent; the controls that stay silent draw with a direct `Do`, tests
+/// `painted_source_drawn_directly_by_a_kept_page_is_not_reported`, `painted_sources_under_a_region_do_not_survive`.)
+fn reported_even_when_an_appearance_draws_it(what: &str, keys: &str, content: &str, more: Vec<(u32, Vec<u8>)>, annots: &[u32], red: &mut Vec<String>) {
     let text = format!("{content} BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
     let list = |extra: &[u32]| {
         let all: Vec<String> = annots.iter().chain(extra).map(|n| format!("{n} 0 R")).collect();
@@ -767,7 +751,7 @@ fn reported_unless_drawn(what: &str, keys: &str, content: &str, more: Vec<(u32, 
     );
     let mut drawn = more;
     drawn.extend([(33, stamp), (34, appearance)]);
-    silent_drawn_image(
+    reported_kept_image_too(
         &format!("{what}, and an annotation appearance page two lists draws it"),
         &painted_doc_with("inherited", &text, "", &format!("{keys} {}", list(&[33])), drawn),
         red,
@@ -779,9 +763,9 @@ fn reported_unless_drawn(what: &str, keys: &str, content: &str, more: Vec<(u32, 
 #[test]
 fn painted_source_placed_as_a_resources_value_is_reported() {
     let mut red: Vec<String> = Vec::new();
-    reported_unless_drawn("the image is page two's /Resources value", "/Resources 10 0 R", "", Vec::new(), &[], &mut red);
+    reported_even_when_an_appearance_draws_it("the image is page two's /Resources value", "/Resources 10 0 R", "", Vec::new(), &[], &mut red);
     let form = stream_body("/Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources 10 0 R", b"0 g 0 0 10 10 re f");
-    reported_unless_drawn(
+    reported_even_when_an_appearance_draws_it(
         "the image is the /Resources value of a form page two draws",
         "/Resources << /Font << /F1 6 0 R >> /XObject << /Fx 40 0 R >> >>",
         "q /Fx Do Q",
@@ -801,7 +785,7 @@ fn painted_source_placed_as_a_gated_sub_dictionary_is_reported() {
         ("the image is page two's /XObject value", "/Resources << /Font << /F1 6 0 R >> /XObject 10 0 R >>"),
         ("the image is page two's /ExtGState value", "/Resources << /Font << /F1 6 0 R >> /ExtGState 10 0 R >>"),
     ] {
-        reported_unless_drawn(what, keys, "", Vec::new(), &[], &mut red);
+        reported_even_when_an_appearance_draws_it(what, keys, "", Vec::new(), &[], &mut red);
     }
     assert!(red.is_empty(), "{red:#?}");
 }
@@ -818,7 +802,7 @@ fn painted_source_placed_as_an_appearance_state_is_reported() {
         ("the image is the /AP /N stream", "/N 10 0 R"),
         ("the image is an /AP /D state value", "/D << /x 10 0 R >>"),
     ] {
-        reported_unless_drawn(what, "", "", vec![(30, annot(ap))], &[30], &mut red);
+        reported_even_when_an_appearance_draws_it(what, "", "", vec![(30, annot(ap))], &[30], &mut red);
     }
     // Not an image either, but no form: a shading (object 13, a painted source because page one draws it with `sh`) as the
     // appearance state of an annotation page two lists is not drawn as an appearance.
@@ -845,14 +829,15 @@ fn painted_source_placed_as_an_appearance_state_is_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R17 (lead decision, press rules): an appearance form that draws the region image counts as drawn only when a viewer
-/// draws that appearance. A stream under `/AP` `/N` `/R` `/D` is the drawn one; in a state dictionary only the state the
-/// annotation's `/AS` names is (no `/AS`, or one that names no state: none); an annotation whose `/F` has the Invisible
-/// (1), Hidden (2) or NoView (32) bit draws nothing. Form 31 draws the image through its own `/Resources`, form 32 is a
-/// blank. Each undrawn case keeps the image and reports it; the drawn cases (selected state, a flag that hides nothing)
-/// keep it silently.
+/// R18 (the minimal draw set; replaces the R17b test `painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported`,
+/// which expected the appearances a viewer draws to be silent): an annotation appearance is not a direct `Do` in a
+/// kept page's own content, so the image an appearance form draws is reported whether or not a viewer draws that
+/// appearance: the unselected state (`/AS` another state, missing, or naming no state), an unselected `/R` or `/D`
+/// state, the Invisible (1), Hidden (2) and NoView (32) flags, and the appearances a viewer does draw (the selected
+/// state, the stream itself, a flag that hides nothing, `/R` and `/D`, with `/AF` listing the image too). Form 31 draws
+/// the image through its own `/Resources`, form 32 is a blank.
 #[test]
-fn painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported() {
+fn painted_source_in_an_annotation_appearance_is_reported() {
     let text_only = "BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
     let draws_image = stream_body(
         "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /XObject << /Im1 10 0 R >> >>",
@@ -864,6 +849,18 @@ fn painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported() {
         painted_doc_with("inherited", text_only, "", "/Annots [30 0 R]", vec![(30, annot), (31, draws_image.clone()), (32, blank.clone())])
     };
     let states = "/N << /On 31 0 R /Off 32 0 R >>";
+    let with_af = painted_doc_with(
+        "inherited",
+        text_only,
+        "/AF [20 0 R]",
+        "/Annots [30 0 R]",
+        vec![
+            (20, IMAGE_FILESPEC.to_vec()),
+            (30, b"<< /Type /Annot /Subtype /Widget /FT /Btn /Rect [300 100 400 200] /P 5 0 R /AS /On /AP << /N 32 0 R >> >>".to_vec()),
+            (31, draws_image.clone()),
+            (32, b"<< /On 31 0 R >>".to_vec()),
+        ],
+    );
     let mut red: Vec<String> = Vec::new();
     for (what, pdf) in [
         ("the state /AS does not name (/AS /Off)", doc("/AS /Off", states)),
@@ -876,28 +873,28 @@ fn painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported() {
         ("the NoView flag (/F 32)", doc("/F 32", "/N 31 0 R")),
         ("Print and Hidden (/F 6)", doc("/F 6", "/N 31 0 R")),
         ("Hidden over a selected state", doc("/F 2 /AS /On", states)),
-    ] {
-        reported_kept_image_too(what, &pdf, &mut red);
-    }
-    for (what, pdf) in [
         ("the state /AS names (/AS /On)", doc("/AS /On", states)),
         ("the selected rollover state", doc("/AS /On", "/R << /On 31 0 R >>")),
         ("the stream itself, no flags", doc("", "/N 31 0 R")),
+        ("the rollover appearance stream (/AP /R)", doc("", "/R 31 0 R")),
+        ("the down appearance stream (/AP /D)", doc("", "/D 31 0 R")),
         ("a flag that hides nothing (/F 4, Print)", doc("/F 4", "/N 31 0 R")),
         ("Print and a selected state (/F 4 /AS /On)", doc("/F 4 /AS /On", states)),
+        ("a selected state dictionary, /AF lists the image too", with_af),
     ] {
-        silent_drawn_image(what, &pdf, &mut red);
+        reported_kept_image_too(what, &pdf, &mut red);
     }
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R17c (lead decision): optional content is not evaluated, it counts as possibly hidden, so a draw is certain only when
-/// it is not optional content: an annotation with an `/OC`, a drawn image or form with an `/OC`, and a draw inside
-/// marked content opened by `BDC` with the tag `/OC` (from the `BDC` to its `EMC`, across the content streams of the
-/// page, the tag also written with a name escape, other marked content nested inside included, a form drawn there
-/// included) leave the region image kept and reported. A draw outside such marked content (none, before, after, a
-/// non-optional `BDC`) and objects without `/OC` keep it silently. Page two draws the image `/Im1` (object 10) or the
-/// form `/Fx` (40, which draws it), or lists the annotation 30 whose appearance form (31) draws it.
+/// R17c, R18 (lead decisions): optional content is not evaluated, it counts as possibly hidden, so a direct `Do` is
+/// silent only when it is not optional content: an image with an `/OC`, and a draw inside marked content opened by `BDC`
+/// with the tag `/OC` (from the `BDC` to its `EMC`, across the content streams of the page, the tag also written with a
+/// name escape, other marked content nested inside included) leave the region image kept and reported, as does every draw
+/// that is not a direct `Do` (an annotation, with or without an `/OC`, a form with or without an `/OC`, a form drawn
+/// inside `BDC /OC`). A direct `Do` outside such marked content (none, before, after, a non-optional `BDC`) keeps it
+/// silently. Page two draws the image `/Im1` (object 10) or the form `/Fx` (40, which draws it), or lists the annotation
+/// 30 whose appearance form (31) draws it.
 #[test]
 fn painted_source_under_optional_content_is_reported() {
     let text = "BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
@@ -948,13 +945,14 @@ fn painted_source_under_optional_content_is_reported() {
         ("Do inside BDC /OC after other marked content nested in it was closed", doc("", "", &[hidden(&format!("/OC /MC0 BDC /Span BMC EMC {draw} EMC"))], None)),
         ("BDC /OC in the first content stream, Do in the second", doc("", "", &["/OC /MC0 BDC".to_string(), hidden(&format!("{draw} EMC"))], None)),
         ("a form drawn inside BDC /OC", doc("", "", &[hidden("/OC /MC0 BDC /Fx Do EMC")], None)),
+        // R18: not a direct Do, so reported without any optional content (these two were silent controls before R18).
+        ("a plain form drawn (a form is not a direct Do)", doc("", "", &[hidden("/Fx Do")], None)),
+        ("an annotation without an /OC (an appearance is not a direct Do)", doc("", "", &[text.to_string()], Some(""))),
     ] {
         reported_kept_image_too(what, &pdf, &mut red);
     }
     for (what, pdf) in [
         ("a plain draw", doc("", "", &[hidden(draw)], None)),
-        ("a plain form drawn", doc("", "", &[hidden("/Fx Do")], None)),
-        ("an annotation without an /OC", doc("", "", &[text.to_string()], Some(""))),
         ("Do after the BDC /OC sequence is closed", doc("", "", &[hidden(&format!("/OC /MC0 BDC EMC {draw}"))], None)),
         ("Do before a BDC /OC sequence", doc("", "", &[hidden(&format!("{draw} /OC /MC0 BDC EMC"))], None)),
         ("Do inside BDC with another tag", doc("", "", &[hidden(&format!("/Span << /ActualText (x) >> BDC {draw} EMC"))], None)),
@@ -996,7 +994,7 @@ fn painted_source_named_where_it_is_not_drawn_is_reported() {
             vec![(42, b"<< /PatternType 2 /Shading 10 0 R >>".to_vec())],
         ),
     ] {
-        reported_unless_drawn(what, &keys, content, more, &[], &mut red);
+        reported_even_when_an_appearance_draws_it(what, &keys, content, more, &[], &mut red);
     }
     // The /SMask of a drawn image is the vector form (object 11): not an image, so not rendered with it.
     let drawn_image = stream_body("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /SMask 11 0 R", &[0u8]);
@@ -1056,56 +1054,288 @@ fn painted_source_shadowed_by_a_nearer_resource_entry_is_reported() {
     assert!(red.is_empty(), "{red:#?}");
 }
 
-/// R14-P1, R16 (V4-07): the DESCRIPTOR sentence about what happens to a painted source names the kept-by-reference
-/// cases and cites tests that exist.
+/// R18 (N1): a stream is read as a dictionary wherever a dictionary is read, so a name can resolve THROUGH a stream placed
+/// where a page's `/Resources` value, a `/XObject` category value or an inherited `/Resources` belongs (a viewer reads those
+/// as dictionary objects). Page two draws `/Im1` directly (a draw that is silent when the path is dictionaries): through a
+/// stream the image stays and is reported. Every case also runs with a dictionary on the path as the control: silent.
+#[test]
+fn painted_source_named_through_a_stream_used_as_a_dictionary_is_reported() {
+    let text = "q 10 0 0 10 400 100 cm /Im1 Do Q BT /F1 12 Tf 72 700 Td (Page two) Tj ET";
+    let names = "/XObject << /Im1 10 0 R >> /Font << /F1 6 0 R >>";
+    // `image_keys`: more entries of the image dictionary (object 10); `page_two`: more entries of page two; `node`: more
+    // entries of the /Pages node; `tree`: the /Kids of the /Pages node and the /Parent of page two; `more`: more objects.
+    let doc_in = |image_keys: &str, page_two: &str, node: &str, tree: (&str, u32), more: Vec<(u32, Vec<u8>)>| -> Vec<u8> {
+        let mut objs = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, format!("<< /Type /Pages /Kids [{}] /Count 2 /MediaBox [0 0 612 792] {node} >>", tree.0).into_bytes()),
+            (3, b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources 9 0 R >>".to_vec()),
+            (4, stream_body("", format!("q 612 0 0 792 0 0 cm /Im1 Do Q q /Fm9 Do Q BT /F1 12 Tf 72 300 Td (Public) Tj ET {SECRET}").as_bytes())),
+            (5, format!("<< /Type /Page /Parent {} 0 R /Contents 7 0 R {page_two} >>", tree.1).into_bytes()),
+            (6, HELVETICA.to_vec()),
+            (7, stream_body("", text.as_bytes())),
+            (9, b"<< /XObject << /Im1 10 0 R /Fm9 11 0 R >> /Font << /F1 6 0 R >> >>".to_vec()),
+            (10, stream_body(&format!("/Type /XObject /Subtype /Image /Width 18 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 {image_keys}"), b"SCAN-PIXELS-SECRET")),
+            (11, stream_body("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /HskMarker (VECTOR-FORM-SECRET)", b"0 g 100 690 50 20 re f")),
+        ];
+        objs.extend(more);
+        build(&objs)
+    };
+    let doc = |image_keys: &str, page_two: &str, node: &str, more: Vec<(u32, Vec<u8>)>| doc_in(image_keys, page_two, node, ("3 0 R 5 0 R", 2), more);
+    let stream = |dict: &str| stream_body(dict, b"x");
+    let dict_names = format!("<< {names} >>").into_bytes();
+    let mut red: Vec<String> = Vec::new();
+    for (what, through_stream, through_dict) in [
+        (
+            "page two's /XObject value",
+            doc("", "/Resources << /Font << /F1 6 0 R >> /XObject 20 0 R >>", "", vec![(20, stream("/Im1 10 0 R"))]),
+            doc("", "/Resources << /Font << /F1 6 0 R >> /XObject 20 0 R >>", "", vec![(20, b"<< /Im1 10 0 R >>".to_vec())]),
+        ),
+        (
+            "page two's /XObject value (the image itself, whose dictionary names it)",
+            doc("/Im1 10 0 R", "/Resources << /Font << /F1 6 0 R >> /XObject 10 0 R >>", "", Vec::new()),
+            doc("", "/Resources << /Font << /F1 6 0 R >> /XObject 20 0 R >>", "", vec![(20, b"<< /Im1 10 0 R >>".to_vec())]),
+        ),
+        (
+            "page two's /Resources value",
+            doc("", "/Resources 20 0 R", "", vec![(20, stream(names))]),
+            doc("", "/Resources 20 0 R", "", vec![(20, dict_names.clone())]),
+        ),
+        (
+            "page two's /Resources value (the image itself, whose dictionary holds the resources)",
+            doc(names, "/Resources 10 0 R", "", Vec::new()),
+            doc("", "/Resources 20 0 R", "", vec![(20, dict_names.clone())]),
+        ),
+        (
+            "the /Resources value inherited from the /Pages node",
+            doc("", "", "/Resources 20 0 R", vec![(20, stream(names))]),
+            doc("", "", "/Resources 20 0 R", vec![(20, dict_names.clone())]),
+        ),
+        (
+            "the /Resources holder, a page-tree node between page two and the root",
+            doc_in(
+                "",
+                "",
+                "",
+                ("3 0 R 21 0 R", 21),
+                vec![(21, stream_body("/Type /Pages /Parent 2 0 R /Kids [5 0 R] /Count 1 /Resources 22 0 R", b"x")), (22, dict_names.clone())],
+            ),
+            doc_in(
+                "",
+                "",
+                "",
+                ("3 0 R 21 0 R", 21),
+                vec![(21, b"<< /Type /Pages /Parent 2 0 R /Kids [5 0 R] /Count 1 /Resources 22 0 R >>".to_vec()), (22, dict_names.clone())],
+            ),
+        ),
+    ] {
+        reported_kept_image_too(&format!("{what} is a stream"), &through_stream, &mut red);
+        silent_drawn_image(&format!("{what} is a dictionary"), &through_dict, &mut red);
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R18 (N2): any stream with `/Resources` is a content scope, whatever it is. The bytes of an image, a mesh shading or an
+/// image mask are not content to any viewer, so what they would name is no draw: the image stays and is reported. The
+/// image 20 (a 6 x 1 grey image to a viewer), the mask 22 of the image 21 and the mesh shading 23 each carry `/Resources`
+/// naming the region image and hold the bytes `/A Do`.
+#[test]
+fn painted_source_drawn_by_an_image_or_shading_stream_read_as_content_is_reported() {
+    let names = "/Resources << /XObject << /A 10 0 R >> >>";
+    let image = |extra: &str| {
+        stream_body(&format!("/Type /XObject /Subtype /Image /Width 6 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 {extra}"), b"/A Do ")
+    };
+    let mesh = stream_body(&format!("/ShadingType 4 /ColorSpace /DeviceGray /BitsPerCoordinate 8 /BitsPerComponent 8 /BitsPerFlag 8 /Decode [0 1 0 1 0 1] {names}"), b"/A Do ");
+    let mut red: Vec<String> = Vec::new();
+    for (what, keys, content, more) in [
+        (
+            "an image page two draws carries /Resources",
+            "/Resources << /Font << /F1 6 0 R >> /XObject << /Im2 20 0 R >> >>",
+            "q 10 0 0 10 400 100 cm /Im2 Do Q",
+            vec![(20, image(names))],
+        ),
+        (
+            "the /SMask image of an image page two draws carries /Resources",
+            "/Resources << /Font << /F1 6 0 R >> /XObject << /Im2 21 0 R >> >>",
+            "q 10 0 0 10 400 100 cm /Im2 Do Q",
+            vec![(21, image("/SMask 22 0 R")), (22, image(names))],
+        ),
+        (
+            "a mesh shading page two draws with sh carries /Resources",
+            "/Resources << /Font << /F1 6 0 R >> /Shading << /Sh2 23 0 R >> >>",
+            "/Sh2 sh",
+            vec![(23, mesh)],
+        ),
+    ] {
+        let text = format!("{content} BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
+        reported_kept_image_too(what, &painted_doc_with("inherited", &text, "", keys, more), &mut red);
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R18 (N3): `Tf`, `scn`/`SCN` and `gs` select, they do not paint. A Type 3 font selected by `Tf` (no text shown, or text
+/// shown: a glyph procedure is not a direct `Do`), a dictionary a `gs` names under `/ExtGState` that is a Type 3 font, a
+/// tiling pattern `scn` or `SCN` selects (painting or not) and a soft mask `gs` sets, each holding a draw of the region
+/// image in a glyph procedure, a pattern cell or a mask group, leave the image kept and reported.
+#[test]
+fn painted_source_selected_by_a_type3_font_pattern_or_soft_mask_is_reported() {
+    let type3 = |resources: &str| {
+        format!(
+            "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [1 0 0 1 0 0] /CharProcs << /a 51 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [1] {resources} >>"
+        )
+        .into_bytes()
+    };
+    let glyph = stream_body("", b"1 0 d0 q 1 0 0 1 0 0 cm /Im1 Do Q");
+    let own = "/Resources << /XObject << /Im1 10 0 R >> >>";
+    let cell = |resources: &str| {
+        stream_body(&format!("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 {resources}"), b"q 10 0 0 10 0 0 cm /Im1 Do Q")
+    };
+    let group = |resources: &str| {
+        stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Group << /S /Transparency /CS /DeviceGray >> {resources}"), b"q 612 0 0 792 0 0 cm /Im1 Do Q")
+    };
+    let fonts = "/Font << /F1 6 0 R /F3 50 0 R >>";
+    let mut red: Vec<String> = Vec::new();
+    for (what, keys, content, more) in [
+        ("Tf selects a Type 3 font with /Resources, no text is shown", format!("/Resources << {fonts} >>"), "BT /F3 12 Tf ET", vec![(50, type3(own)), (51, glyph.clone())]),
+        (
+            "Tf selects a Type 3 font with /Resources and text is shown",
+            format!("/Resources << {fonts} >>"),
+            "BT /F3 12 Tf 72 600 Td (a) Tj ET",
+            vec![(50, type3(own)), (51, glyph.clone())],
+        ),
+        (
+            "Tf selects a Type 3 font without /Resources, its glyph procedure draws with the page's resources",
+            format!("/Resources << {fonts} /XObject << /Im1 10 0 R >> >>"),
+            "BT /F3 12 Tf 72 600 Td (a) Tj ET",
+            vec![(50, type3("")), (51, glyph.clone())],
+        ),
+        (
+            "gs names a Type 3 font dictionary under /ExtGState",
+            "/Resources << /Font << /F1 6 0 R >> /ExtGState << /G3 50 0 R >> >>".to_string(),
+            "/G3 gs",
+            vec![(50, type3(own)), (51, glyph.clone())],
+        ),
+        (
+            "SCN selects a tiling pattern, nothing is painted",
+            "/Resources << /Font << /F1 6 0 R >> /Pattern << /P1 52 0 R >> >>".to_string(),
+            "/Pattern CS /P1 SCN",
+            vec![(52, cell(own))],
+        ),
+        (
+            "scn selects a tiling pattern and a rectangle is filled",
+            "/Resources << /Font << /F1 6 0 R >> /Pattern << /P1 52 0 R >> >>".to_string(),
+            "/Pattern cs /P1 scn 100 100 50 50 re f",
+            vec![(52, cell(own))],
+        ),
+        (
+            "gs sets a soft mask whose group draws it, nothing is painted",
+            "/Resources << /Font << /F1 6 0 R >> /ExtGState << /G1 53 0 R >> >>".to_string(),
+            "/G1 gs",
+            vec![(53, b"<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G 54 0 R >> >>".to_vec()), (54, group(own))],
+        ),
+    ] {
+        let text = format!("{content} BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
+        reported_kept_image_too(what, &painted_doc_with("inherited", &text, "", &keys, more), &mut red);
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R18 (the minimal draw set): the region image drawn by anything but a `Do` in a kept page's own content is reported: a
+/// form page two draws (with `/Resources` of its own, or without: it then names the page's `/Im1`), a tiling pattern it
+/// paints with (likewise), a soft-mask group a `gs` sets (likewise). Each case also runs with a direct `Do` of the image
+/// added to page two's content: silent, the direct `Do` alone decides.
+#[test]
+fn painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported() {
+    let draws = b"q 100 0 0 100 0 0 cm /Im1 Do Q";
+    let own = "/Resources << /XObject << /Im1 10 0 R >> >>";
+    let form = |resources: &str| stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 100 100] {resources}"), draws);
+    let cell = |resources: &str| stream_body(&format!("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 100 100] /XStep 100 /YStep 100 {resources}"), draws);
+    let group = |resources: &str| {
+        stream_body(&format!("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Group << /S /Transparency /CS /DeviceGray >> {resources}"), draws)
+    };
+    let resources = |extra: &str| format!("/Resources << /Font << /F1 6 0 R >> /XObject << /Im1 10 0 R >> {extra} >>");
+    let gstate = b"<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G 45 0 R >> >>".to_vec();
+    let direct = "q 10 0 0 10 400 100 cm /Im1 Do Q";
+    let mut red: Vec<String> = Vec::new();
+    let forms = "/Resources << /Font << /F1 6 0 R >> /XObject << /Im1 10 0 R /Fx 40 0 R >> >>".to_string();
+    let patterns = resources("/Pattern << /P1 42 0 R >>");
+    let gstates = resources("/ExtGState << /G1 44 0 R >>");
+    for (what, keys, content, more) in [
+        ("a form with /Resources of its own", &forms, "/Fx Do", vec![(40, form(own))]),
+        ("a form without /Resources (it names the page's /Im1)", &forms, "/Fx Do", vec![(40, form(""))]),
+        ("a tiling pattern with /Resources of its own, painted", &patterns, "/Pattern cs /P1 scn 100 100 50 50 re f", vec![(42, cell(own))]),
+        ("a tiling pattern without /Resources, painted", &patterns, "/Pattern cs /P1 scn 100 100 50 50 re f", vec![(42, cell(""))]),
+        ("a soft-mask group with /Resources of its own, set by gs and painted through", &gstates, "/G1 gs 100 100 50 50 re f", vec![(44, gstate.clone()), (45, group(own))]),
+        ("a soft-mask group without /Resources", &gstates, "/G1 gs 100 100 50 50 re f", vec![(44, gstate.clone()), (45, group(""))]),
+    ] {
+        let text = format!("{content} BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
+        reported_kept_image_too(what, &painted_doc_with("inherited", &text, "", keys, more.clone()), &mut red);
+        let with_direct = format!("{content} {direct} BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
+        silent_drawn_image(&format!("{what}, and page two also draws the image directly"), &painted_doc_with("inherited", &with_direct, "", keys, more), &mut red);
+    }
+    assert!(red.is_empty(), "{red:#?}");
+}
+
+/// R14-P1, R16, R17, R18 (V4-07): the DESCRIPTOR sentences about what happens to a painted source state the minimal draw
+/// set and the reported cases exactly, and cite tests that exist. No sentence of the earlier rules (an annotation
+/// appearance a viewer draws, the mask, shading or soft-mask group rendered with a drawn object, the draws of nested
+/// content) is left in it.
 #[test]
 fn descriptor_names_the_painted_source_kept_by_reference_case() {
     let source = include_str!("flatten_r13.rs");
+    let cited_tests = [
+        "painted_sources_under_a_region_do_not_survive",
+        "painted_source_drawn_directly_by_a_kept_page_is_not_reported",
+        "painted_source_referenced_by_a_kept_catalog_structure_is_reported",
+        "painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported",
+        "painted_source_referenced_by_a_key_of_a_drawn_object_is_reported",
+        "painted_source_placed_as_a_resources_value_is_reported",
+        "painted_source_placed_as_a_gated_sub_dictionary_is_reported",
+        "painted_source_placed_as_an_appearance_state_is_reported",
+        "painted_source_named_where_it_is_not_drawn_is_reported",
+        "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
+        "painted_source_in_an_annotation_appearance_is_reported",
+        "painted_source_under_optional_content_is_reported",
+        "painted_source_named_through_a_stream_used_as_a_dictionary_is_reported",
+        "painted_source_drawn_by_an_image_or_shading_stream_read_as_content_is_reported",
+        "painted_source_selected_by_a_type3_font_pattern_or_soft_mask_is_reported",
+        "painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported",
+        "painted_sources_rendered_with_a_drawn_image_are_reported",
+    ];
     for needle in [
         "R14-P1",
         "R16",
         "R17",
-        "unless a kept page, or an annotation appearance a kept page lists, draws them",
-        "a kept object only references it or places it where a viewer draws nothing from it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font that it does not draw, a plain key of an object a kept page draws, an object used as a /Resources value, as a gated sub-dictionary or as an appearance state, an appearance state the annotation's /AS does not select, the appearance of an Invisible, Hidden or NoView annotation, an object or annotation with an /OC, a draw inside BDC /OC marked content, a name an operator uses for an object of another kind, any plain reference)",
-        "the Do, sh, scn/SCN, gs and Tf targets of its content and of the content of what it draws in turn (forms, patterns, soft-mask groups, Type 3 glyph procedures), each of the kind its operator draws (Do an image or form stream, sh a shading, scn/SCN a pattern, gs and Tf a plain dictionary)",
-        "the form XObject appearance streams of the annotations it lists that a viewer draws (/AP /N /R /D: the stream itself, or in a state dictionary only the state the annotation's /AS names, none without a matching /AS; none for an annotation whose /F has the Invisible, Hidden or NoView bit or that has an /OC)",
-        "optional content is not evaluated and counts as possibly hidden: an object that has an /OC (an annotation, a drawn image, form, mask or shading) and a draw inside BDC /OC marked content (through its EMC, across the streams of a scope) are not drawn",
-        "painted_source_referenced_by_a_kept_catalog_structure_is_reported",
-        "painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported",
-        "painted_source_referenced_by_a_key_of_a_drawn_object_is_reported",
-        "painted_sources_rendered_with_a_drawn_object_are_not_reported",
-        "painted_sources_drawn_by_kept_pages_or_annotation_appearances_are_not_reported",
-        "painted_source_placed_as_a_resources_value_is_reported",
-        "painted_source_placed_as_a_gated_sub_dictionary_is_reported",
-        "painted_source_placed_as_an_appearance_state_is_reported",
-        "painted_source_named_where_it_is_not_drawn_is_reported",
-        "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
-        "painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported",
-        "painted_source_under_optional_content_is_reported",
-        "a name resolves to the nearest entry of its category in the resource chain, an entry a nearer entry of the same name shadows is reached, not drawn",
+        "R18",
+        "the minimal draw set",
+        "a source that stays is silent only when a kept page draws it with Do directly in its own content",
+        "an image XObject stream without an /OC that a kept page draws with Do directly in its own content stream(s)",
+        "outside BDC /OC marked content (from the BDC to its matching EMC, the nesting of BMC, BDC and EMC tracked per operator across the streams of the page; optional content is not evaluated and counts as possibly hidden)",
+        "resolved through the page's own nearest resource entry (the nearest entry of the name in /Resources /XObject of the page and of its ancestors; an entry a nearer entry of the same name shadows is reached, not drawn)",
+        "with a dictionary object, not a stream, as the page, every ancestor node, the /Resources value and the /XObject value on the path",
+        "every other source that stays is not pruned and is reported",
+        "every other source that stays is reported",
+        "a kept object only references it or places it where a viewer draws nothing from it (a catalog /AF, a /Names or /Dests name tree, a kept page's /Resources entry outside /XObject /Pattern /Shading /ExtGState /Font, a plain key of an object a kept page draws, an object used as a /Resources value or as a gated sub-dictionary, a name an operator uses for an object of another kind, any plain reference)",
+        "or a viewer draws it through a form, tiling pattern, Type 3 glyph procedure, soft-mask group, image mask, shading or annotation appearance",
+        "or because a viewer draws it through anything but that direct Do (R18: a form, tiling pattern, Type 3 glyph procedure, soft-mask group, image mask, shading or annotation appearance, a Tf, scn, SCN or gs that selects without painting, a name an operator uses for an object of another kind)",
+        "over-reporting is accepted",
     ] {
         assert!(hsk_studio_press::DESCRIPTOR.contains(needle), "DESCRIPTOR lacks {needle:?}");
     }
-    for cited in [
-        "painted_source_referenced_by_a_kept_catalog_structure_is_reported",
-        "painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported",
-        "painted_source_referenced_by_a_key_of_a_drawn_object_is_reported",
-        "painted_sources_rendered_with_a_drawn_object_are_not_reported",
-        "painted_sources_drawn_by_kept_pages_or_annotation_appearances_are_not_reported",
-        "painted_source_placed_as_a_resources_value_is_reported",
-        "painted_source_placed_as_a_gated_sub_dictionary_is_reported",
-        "painted_source_placed_as_an_appearance_state_is_reported",
-        "painted_source_named_where_it_is_not_drawn_is_reported",
-        "painted_source_shadowed_by_a_nearer_resource_entry_is_reported",
-        "painted_source_in_an_appearance_a_viewer_does_not_draw_is_reported",
-        "painted_source_under_optional_content_is_reported",
-    ] {
+    for cited in cited_tests {
+        assert!(hsk_studio_press::DESCRIPTOR.contains(cited), "DESCRIPTOR does not cite {cited}");
         assert!(source.contains(&format!("fn {cited}()")), "the cited test {cited} does not exist");
     }
-    assert!(
-        !hsk_studio_press::DESCRIPTOR.contains("dropped from the file unless a kept page draws them (redaction.flatten.purge"),
-        "the uncorrected sentence"
-    );
+    for stale in [
+        "an annotation appearance a kept page lists, draws them",
+        "the image /SMask and /Mask of a drawn image",
+        "the /Shading of a drawn shading pattern",
+        "none without a matching /AS",
+        "Invisible, Hidden or NoView",
+        "each of the kind its operator draws",
+        "dropped from the file unless a kept page draws them (redaction.flatten.purge",
+    ] {
+        assert!(!hsk_studio_press::DESCRIPTOR.contains(stale), "DESCRIPTOR still says {stale:?}");
+    }
 }
 
 /// R13-P1 (lead decision: no structure content, no widgets): the `/Alt` of a structure element on the

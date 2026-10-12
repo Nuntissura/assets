@@ -2923,9 +2923,15 @@ fn listed_but_undrawn_forms_are_not_kept_text() {
     // Listed by a drawn form, never drawn by it.
     let out = r7_run(&two(&format!("{public}\nq /Fm1 Do Q"), "/Fm1 21 0 R", vec![(21, form("BT /F1 9 Tf (shell) Tj ET", "/XObject << /Fm9 20 0 R >>")), (20, form(secret, ""))]));
     assert!(!out.is_proven() && out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 20, .. })), "{:?}", out.proof);
-    // Control: drawn by the page, the same form is kept text (a collision, not a leak).
+    // Control: drawn by the page, the same form is kept text (a collision, not a leak). R18 (the minimal draw set): the
+    // form is a painted source of the flattened page one that stays in the file and only an image a kept page draws
+    // with a direct `Do` is silent, so the form is reported (`painted_sources_kept`, `NotProven::PaintedSourceKept`) and
+    // the output is not proven; its text is still kept text, not a leak (no hit in object 20).
     let out = r7_run(&doc(&format!("{page}\nq /Fm9 Do Q"), "/Fm9 20 0 R", vec![(20, form(secret, ""))]));
-    assert!(out.is_proven() && out.proof.kept_text_collisions.iter().any(|c| c.object == 20), "{:?}", out.proof);
+    assert!(out.proof.kept_text_collisions.iter().any(|c| c.object == 20), "{:?}", out.proof);
+    assert!(!out.proof.hits.iter().any(|h| matches!(h.location, PayloadLocation::DecodedStream { object: 20, .. })), "{:?}", out.proof);
+    assert!(out.painted_sources_kept == [20] && !out.is_proven(), "{:?} {:?}", out.painted_sources_kept, out.not_proven_reasons());
+    assert!(out.not_proven_reasons().contains(&NotProven::PaintedSourceKept), "{:?}", out.not_proven_reasons());
 }
 
 /// Smallest data with each raster codec's structure: (codec, data, extra dictionary entries).
