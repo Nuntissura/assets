@@ -67,7 +67,8 @@
 //! plain dictionary), or it is a form XObject that is an appearance stream a viewer draws (`/AP` `/N` `/R` `/D`: the
 //! stream itself, or in a state dictionary only the state the annotation's `/AS` names, none when `/AS` is missing or
 //! names no state) of an annotation a kept page lists in its own `/Annots` and whose `/F` has none of the Invisible,
-//! Hidden and NoView flags (bits 1, 2 and 6), or it is rendered along with such an object: the `/SMask` and `/Mask`
+//! Hidden and NoView flags (bits 1, 2 and 6; an annotation's optional-content `/OC` is not read), or it is rendered
+//! along with such an object: the `/SMask` and `/Mask`
 //! image of a drawn image, the `/Shading` of a drawn shading pattern, the `/SMask` `/G` form of a drawn graphics
 //! state. Everything else only references, even from a kept page or a drawn object: a position is not a draw (an
 //! image placed as a kept page's `/Resources` value, as a gated sub-dictionary such as `/XObject 10 0 R`, as an
