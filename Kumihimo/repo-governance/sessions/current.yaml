@@ -1,13 +1,13 @@
 schema_version: kumihimo.session.v1
 session_id: SESSION-KUM-2026-10-11-v1
-phase: active
+phase: done
 dev_lead: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
 git:
   workspace_relative_root: ..
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: WP-KUM-015-spec-status-update-v1
+active_wp: null
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
@@ -122,7 +122,8 @@ tick:
   operator_request: remove the tick
   observed_result: automation_update delete returned deleteStatus=deleted for kumihimo-dev-lead-tick
   automatic_restart_authorized: false
-next_action: Publish accepted documentation candidate, independently read exact origin revision, then settle DONE
+next_action: All15 current work packets complete and published, including the documentation status update. No active
+  assignment; automatic tick deleted; future implementation requires current operator scope reconciliation
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

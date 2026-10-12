@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-015-spec-status-update-v1
-generation: 3
-phase: active
+generation: 4
+phase: done
 owner: dev_lead
 changed_files:
 - README.md
@@ -44,5 +44,9 @@ proof:
   evaluation_ref: repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-evaluation.yaml
   evaluation_sha256: d6a6088750c46e4df2542fedfa902791176ca7801db21660258fff424daa998a
   observed: PASS_SCOPED_DOCUMENTATION; six focused cases pass/no findings; no new runtime claims
+- kind: fresh_canonical_origin_publication
+  publication_revision: af473c9d7a767008e37297743b64ef55b311abb0
+  observed: Live origin, HEAD and freshly fetched origin/codex/handpick matched;22 canonical document/archive/packet
+    blobs independently reread and matched working LF bytes; product tree unchanged
 blockers: []
-next_action: Publish accepted documentation candidate, independently read exact origin revision, then settle DONE
+next_action: Documentation update complete; future product changes require an operator-authorized packet

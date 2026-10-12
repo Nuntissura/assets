@@ -108,8 +108,8 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-015-spec-status-update-v1
   title: Reconcile demonstrated scope and removed heartbeat in documentation
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-015-spec-status-update-v1/WP-KUM-015-spec-status-update-v1-state.yaml
-  next_action: Publish accepted documentation candidate, independently read exact origin revision, then settle DONE
+  next_action: Documentation update complete; future product changes require an operator-authorized packet
   blockers: []
