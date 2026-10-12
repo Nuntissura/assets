@@ -30,6 +30,46 @@ const route = async request => {
   return response;
 };
 const observed = state => ({rust:state.rust,host:{revision:state.host.revision,tasks:tasks(state.host),last_recipient:state.host.last_recipient}});
+async function diagnosticStep(label, action) {
+  let timer;
+  try {return await Promise.race([action(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(label+' diagnostic timeout')),3000);})]);}
+  finally {clearTimeout(timer);}
+}
+async function captureFailure() {
+  if(!page||page.isClosed()) {evidence.failure_capture={page_alive:false};return;}
+  evidence.failure_capture={page_alive:true};
+  try {
+    evidence.failure_capture.dom=await diagnosticStep('DOM',()=>page.evaluate(()=>{
+      const bridge=window.kumihimo, adapter=bridge?.adapter;
+      const last=adapter?.lastCommand;
+      return {
+        url:location.href,document_state:document.readyState,bridge_present:!!bridge,ready:bridge?.ready??null,
+        status:document.querySelector('#status')?.textContent?.slice(0,500),
+        status_state:document.querySelector('#status')?.dataset.state,
+        capabilities:document.querySelector('#capabilities')?.textContent?.slice(0,500),
+        selected_frame:document.querySelector('#frame-select')?.value,
+        selected_view:document.querySelector('#view-select')?.value,
+        destination:document.querySelector('#destination-select')?.value,
+        proof_routes:bridge?.proofRoutes?.slice(-40)??[],
+        adapter:adapter?{
+          disposed:adapter.disposed,render_ticket:adapter.renderTicket,measure_ticket:adapter.measureTicket,
+          preview:adapter.previewState,last_command:last?{
+            request:last.request,response:{version:last.response.version,route:last.response.route,ok:last.response.ok,
+              error:last.response.error,receipt:last.response.result?.receipt,
+              postcommit_error:last.response.result?.postcommit_error,
+              current_generation:last.response.result?.current?.generation}
+          }:null,events:adapter.events.slice(-80)
+        }:null
+      };
+    }));
+  } catch(error) {evidence.failure_capture.dom_error=String(error).slice(0,500);}
+  try {
+    const state=await diagnosticStep('canonical',canonical);
+    evidence.failure_capture.canonical=observed(state);
+  } catch(error) {evidence.failure_capture.canonical_error=String(error).slice(0,500);}
+  try {await diagnosticStep('screenshot',()=>capture('failure-state'));}
+  catch(error) {evidence.failure_capture.screenshot_error=String(error).slice(0,500);}
+}
 async function capture(name) {
   assert(evidence.screenshots.length<8,'capture count bound');
   const filename=path.join(config.out, name+'.png');
@@ -102,6 +142,20 @@ async function run() {
   await page.setViewportSize({width:1280,height:900}); await idle();
   evidence.cases.push({id:'EVAL-KUM-013-001',startup:observed(startup),before:observed(initial),normal_bounds:normalBounds,narrow:observed(narrow),narrow_bounds:narrowBounds,requested_counts:{tasks:4,details:1,depth:2}});
 
+  // Passive proof observation retains rejected preview errors; the adapter sees
+  // precisely its original request/response and no host text is copied here.
+  await page.evaluate(()=>{
+    const bridge=window.kumihimo, adapter=bridge.adapter, original=adapter.route.bind(adapter);
+    bridge.proofRoutes=[];
+    adapter.route=function(request) {
+      const response=original(request);
+      bridge.proofRoutes.push({route:request.route,action:request.action?.kind,
+        frame:request.action?.frame,rect:request.action?.rect,ok:response.ok,
+        error:response.error,receipt:response.result?.receipt});
+      if(bridge.proofRoutes.length>80)bridge.proofRoutes.splice(0,bridge.proofRoutes.length-80);
+      return response;
+    };
+  });
   const gestureBefore=await canonical();
   await selectFrame(first.id);
   // Real header pointer entry followed by Escape cancels the pending Rust preview.
@@ -267,7 +321,7 @@ async function run() {
 }
 (async()=>{
   try {await Promise.race([run(),new Promise((_,reject)=>{deadline=setTimeout(()=>reject(new Error('bounded browser batch deadline')),180000);})]);}
-  catch(error){evidence.verdict='FAIL';evidence.failure=String(error).slice(0,1000);process.exitCode=1;}
+  catch(error){evidence.verdict='FAIL';evidence.failure=String(error).slice(0,1000);process.exitCode=1;await captureFailure();}
   finally {
     clearTimeout(deadline);
     if(context) {try {await context.close();evidence.owned_cleanup=true;}catch(error){evidence.owned_cleanup=false;evidence.cleanup_error=String(error).slice(0,300);process.exitCode=1;}}
