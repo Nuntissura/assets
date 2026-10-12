@@ -108,6 +108,41 @@ pub(crate) fn command(
 fn button(ui: &mut egui::Ui, key: &str, label: &str, report: &mut FrameReport) -> bool {
     let response = ui.push_id(key, |ui| ui.button(label)).inner;
     record(report, &response, key.into(), label.into(), None);
+    if key.ends_with("/preview-float-redock") || key.starts_with("destination/") {
+        let events = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }
+                    )
+                })
+                .take(64)
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        let point = events.iter().rev().find_map(|event| match event {
+            egui::Event::PointerMoved(point) | egui::Event::PointerButton { pos: point, .. } => {
+                Some(*point)
+            }
+            _ => None,
+        });
+        if let Some(point) = point.filter(|point| response.rect.contains(*point)) {
+            let hit = ui.ctx().layer_id_at(point);
+            let trace = serde_json::json!({"control":key,"pass":ui.ctx().cumulative_pass_nr(),
+                "report_epoch":report.epoch,"report_generation":report.generation,
+                "actual_response_id":format!("{:?}",response.id),"point":[point.x,point.y],
+                "rect":[response.rect.min.x,response.rect.min.y,response.rect.max.x,response.rect.max.y],
+                "response_layer":format!("{:?}",response.layer_id),"hit_layer":format!("{hit:?}"),
+                "hit_same_layer":hit==Some(response.layer_id),"clicked":response.clicked(),
+                "hovered":response.hovered(),"contains_pointer":response.contains_pointer(),
+                "down":response.is_pointer_button_down_on(),"events":format!("{events:?}")});
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(egui::Id::new("kumihimo-control-hit"), trace));
+        }
+    }
     response.clicked()
 }
 fn native_button(
@@ -503,6 +538,8 @@ fn group_menu(
                     0
                 };
             let group_index = target.groups.len() - usize::from(destination == record.frame);
+            let before_generation = controller.snapshot().generation;
+            let rejection_start = report.rejected.len();
             command(
                 controller,
                 host,
@@ -514,6 +551,11 @@ fn group_menu(
                 },
                 report,
             );
+            let trace = serde_json::json!({"group":group.raw(),"requested_destination":destination.raw(),
+                "before_generation":before_generation,"after_generation":controller.snapshot().generation,
+                "actual_group_frame":controller.snapshot().groups[&group].frame.raw(),
+                "dispatch_rejections":report.rejected.iter().skip(rejection_start).collect::<Vec<_>>()});
+            ui.ctx().data_mut(|data| data.insert_temp(egui::Id::new("kumihimo-group-move-result"), trace));
         }
     });
     crate::chrome::record(
@@ -860,8 +902,10 @@ pub fn draw(
                     .is_some_and(|p| to_egui(frame.bounds).contains(p))
             });
         if (settings.profile == ChromeProfile::Hidden && !revealed) || contextual {
-            let rect = egui::Rect::from_min_size(to_egui(frame.bounds).min, egui::vec2(26.0, 24.0))
-                .intersect(to_egui(frame.clip));
+            let rect =
+                egui::Rect::from_min_size(to_egui(frame.content).min, egui::vec2(26.0, 24.0))
+                    .intersect(to_egui(frame.content))
+                    .intersect(to_egui(frame.clip));
             let mut ui = egui::Ui::new(
                 ctx.clone(),
                 egui::Id::new((surface.viewport, frame.frame.raw(), "reveal")),

@@ -37,7 +37,8 @@ roles:
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Inspect exact nine additive GUI failures and shared menu/event/label causes; direct coder coordination
+    assignment: Exact redock/destination hit and dispatch evidence; direct coder consultation, no duplicate
+      audit
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
@@ -78,19 +79,19 @@ build_lane:
     processes
   gameplan_relative_git_root: .local/kumihimo-desktop/gameplan.yaml
   last_resource_observation:
-    observed_utc: '2026-10-12T06:51:49.9220433Z'
-    cpu_percent: 14
-    available_memory_gib: 63.5
-    free_disk_gib: 3056.6
+    observed_utc: '2026-10-12T08:01:38.1276722Z'
+    cpu_percent: 23
+    available_memory_gib: 62.8
+    free_disk_gib: 3055.7
     rust_processes: []
-    scope: Fresh before final desktop source publication; proof runner refreshes before each serial command
-  candidate_revision: f73697526c8ec00e1e64cc0fd3cfdcb53b8a2d55
+    scope: Fresh coordination tick; next proof runner refreshes before serial Cargo
+  candidate_revision: e0b684ecd144f6f30dfeb3a8f0fb2f87a947ad15
 tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Run one affected owning29 target after exact Memory receiver repair; inspect remaining actual
-  GUI observations; WP014 remains gated by WP012 DONE
+next_action: Run one affected owning29 target on reveal geometry and exact leaf observation candidate; WP014
+  remains gated by WP012 DONE
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

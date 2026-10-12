@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 14
+generation: 16
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -140,6 +140,22 @@ proof:
     not Areas. Exact public cached API and compile output inspected; only that method receiver repaired. Original29
     tests and fourteen prefix preserved; all owners HOLD. Pager runtime, reveal winner and preview stage still
     unproven.'
+- kind: actual_owning26_precise_hit_and_action_failures
+  source_revision: e0b684ecd144f6f30dfeb3a8f0fb2f87a947ad15
+  observed: Owning29 compile9.92s/run2.61s:26 PASS, three additive failures. Exact Touch Start/End loses reveal
+    Middle response to Foreground tool20, active capture Tool20; redock-before-Commit stage receives no pending
+    preview or rejection after actual leaf click; group destination reached but canonical frame4 remains instead
+    of7. Source ordering inspection shows float and popup share Foreground; actual redock/destination hit winner
+    still unproven. Coder owns minimum reveal correction and exact leaf diagnostics; no captures/native or
+    unchanged provider rerun.
+- kind: held_reveal_geometry_and_leaf_observations
+  baseline_revision: e0b684ecd144f6f30dfeb3a8f0fb2f87a947ad15
+  source_fence17_raw_sha256: 3d86704a396478bae76d61338a5add522cd0c7fa4e9bc51c112a572ea7badfec
+  source_fence17_lf_sha256: 2f7b09a64aaab01a78d81556aa56514c5620c407214cc723468c46ddfaea6e74
+  observed: 'Minimum two-file source held: reveal rectangle starts at validated remaining content and clips
+    to content/ancestor, correcting actual tool-strip collision. Existing redock/destination leaf helpers retain
+    bounded actual hit/response and group dispatch receipts; actual focused response correlated without assigned
+    IDs. Original fourteen exact prefix and twenty-nine assertions retained. No floating ordering or command
+    logic guess; fresh owning outcome pending.'
 blockers: []
-next_action: Run one affected owning29 target after exact Memory receiver repair; inspect remaining actual
-  GUI observations
+next_action: Run one affected owning29 target on reveal geometry and exact leaf observation candidate

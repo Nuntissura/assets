@@ -1003,6 +1003,13 @@ fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiPro
                         "input_focused":ctx.input(|input|input.focused),"popup":egui::Popup::is_any_open(ctx),
                         "controls":state.report.controls.iter().take(128).map(|control|(&control.id,control.enabled)).collect::<Vec<_>>(),
                         "capture":format!("{:?}",state.adapter.input.active_capture())
+                        ,"pass":ctx.cumulative_pass_nr(),
+                        "control_hit":ctx.data(|data|data.get_temp::<serde_json::Value>(egui::Id::new("kumihimo-control-hit"))),
+                        "group_move_result":ctx.data(|data|data.get_temp::<serde_json::Value>(egui::Id::new("kumihimo-group-move-result"))),
+                        "focused_response":ctx.memory(|memory|memory.focused()).and_then(|id|ctx.read_response(id))
+                            .map(|response|serde_json::json!({"actual_id":format!("{:?}",response.id),
+                                "rect":[response.rect.min.x,response.rect.min.y,response.rect.max.x,response.rect.max.y],
+                                "layer":format!("{:?}",response.layer_id)}))
                     }));
                 }
             },
@@ -1228,7 +1235,12 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     ui_click(&mut h, "Move entire canonical group to\u{2026}");
     ui_click(&mut h, &format!("Frame {}", destination.raw()));
     let snapshot = h.state().demo.controller.snapshot();
-    assert_eq!(snapshot.groups[&group].frame, destination);
+    assert_eq!(
+        snapshot.groups[&group].frame,
+        destination,
+        "group destination stage; trace: {:?}",
+        h.state().trace
+    );
     assert!(snapshot.frames[&destination].views.contains(&original[0]));
     assert!(snapshot.frames[&destination].views.contains(&last));
     h.key_press(egui::Key::Escape);
