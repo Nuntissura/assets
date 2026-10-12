@@ -185,9 +185,13 @@ pub enum NotProven {
     NonCanonicalContent,
     /// An image, form, pattern or shading a flattened page reached is still in the saved file and no kept
     /// page or annotation appearance is KNOWN to draw it: some content's usage could not be determined, or a
-    /// kept object only references it (a catalog `/AF`, a `/Names` or `/Dests` tree, any plain reference;
-    /// `RedactedOutput::painted_sources_kept`; R13-F6, R14-P1; tests `painted_sources_under_a_region_do_not_survive`,
-    /// `painted_source_referenced_by_a_kept_catalog_structure_is_reported`).
+    /// kept object only references it (a catalog `/AF`, a `/Names` or `/Dests` tree, an entry of a kept page's
+    /// `/Resources` outside `/XObject` `/Pattern` `/Shading` `/ExtGState` `/Font`, a plain key of an object a kept
+    /// page draws, any other plain reference; `RedactedOutput::painted_sources_kept`; R13-F6, R14-P1, R16; tests
+    /// `painted_sources_under_a_region_do_not_survive`,
+    /// `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
+    /// `painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported`,
+    /// `painted_source_referenced_by_a_key_of_a_drawn_object_is_reported`).
     PaintedSourceKept,
 }
 
@@ -1302,10 +1306,13 @@ pub struct RedactedOutput {
     pub xfa_removed: bool,
     /// Images, forms, patterns and shadings (object numbers in `bytes`) a flattened page reached that
     /// stay in the saved file without a kept page or annotation appearance drawing them: some content's
-    /// usage could not be determined, or a kept object only references them (R14-P1: not pruned, the kept
-    /// structure is not edited); non-empty is `NotProven::PaintedSourceKept` (R13-F6; tests
-    /// `painted_sources_under_a_region_do_not_survive`,
-    /// `painted_source_referenced_by_a_kept_catalog_structure_is_reported`).
+    /// usage could not be determined, or a kept object only references them (R14-P1, R16: a catalog structure,
+    /// a kept page's `/Resources` entry it does not draw, a plain key of an object a kept page draws, any other
+    /// plain reference; not pruned, the kept structure is not edited); non-empty is `NotProven::PaintedSourceKept`
+    /// (R13-F6; tests `painted_sources_under_a_region_do_not_survive`,
+    /// `painted_source_referenced_by_a_kept_catalog_structure_is_reported`,
+    /// `painted_source_referenced_but_not_drawn_by_a_kept_page_is_reported`,
+    /// `painted_source_referenced_by_a_key_of_a_drawn_object_is_reported`).
     pub painted_sources_kept: Vec<u32>,
     /// `(region page index, class)`: text drawn on a region's page in the SAVED file whose glyph
     /// geometry the selector does not compute (Type 3, vertical, unresolved writing mode, unresolved
