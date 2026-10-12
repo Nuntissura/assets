@@ -1494,41 +1494,92 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
     let mut layered = demo::new().unwrap();
     let floating = *layered.controller.snapshot().floats.keys().next().unwrap();
     let binding = surface(layered.root);
-    let (output, report) = paint(&mut layered, &mut DesktopAdapter::default(), binding);
-    let menu = report
-        .controls
-        .iter()
-        .find(|control| control.id == format!("frame/{}/menu", floating.raw()))
-        .expect("actual floating header control");
-    let menu_rect = to_egui(menu.bounds);
-    let overlap = menu_rect.center();
-    let docked = report
-        .slots
-        .iter()
-        .find(|slot| slot.frame != floating && to_egui(slot.clip).contains(overlap))
-        .expect("floating header overlaps actual docked provider clip");
-    let docked_clip = to_egui(docked.clip);
-    let last_docked_paint = output
-        .shapes
-        .iter()
-        .enumerate()
-        .filter(|(_, shape)| {
-            docked_clip.contains_rect(shape.clip_rect)
-                && shape.shape.visual_bounding_rect().intersects(docked_clip)
-        })
-        .map(|(index, _)| index)
-        .last()
-        .expect("actual docked provider paint shapes");
-    let floating_label = output
-        .shapes
-        .iter()
-        .position(|shape| match &shape.shape {
-            egui::epaint::Shape::Text(text) => menu_rect.contains(text.pos),
-            _ => false,
-        })
-        .expect("actual floating menu text shape");
-    assert!(floating_label > last_docked_paint,
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut layered_adapter = DesktopAdapter::default();
+    let render = |demo: &mut demo::Demo, adapter: &mut DesktopAdapter| {
+        let mut report = None;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(to_egui(binding.bounds)),
+                ..Default::default()
+            },
+            |ctx| {
+                report = Some(
+                    adapter
+                        .show(ctx, &mut demo.controller, binding, &mut demo.host)
+                        .unwrap(),
+                );
+            },
+        );
+        (output, report.unwrap())
+    };
+    let assert_paint_order = |output: &egui::FullOutput, report: &FrameReport| {
+        let menu = report
+            .controls
+            .iter()
+            .find(|control| control.id == format!("frame/{}/menu", floating.raw()))
+            .expect("actual floating header control");
+        let menu_rect = to_egui(menu.bounds);
+        let overlap = menu_rect.center();
+        let docked = report
+            .slots
+            .iter()
+            .find(|slot| slot.frame != floating && to_egui(slot.clip).contains(overlap))
+            .expect("floating header overlaps actual docked provider clip");
+        let docked_clip = to_egui(docked.clip);
+        let last_docked_paint = output
+            .shapes
+            .iter()
+            .enumerate()
+            .filter(|(_, shape)| {
+                docked_clip.contains_rect(shape.clip_rect)
+                    && shape.shape.visual_bounding_rect().intersects(docked_clip)
+            })
+            .map(|(index, _)| index)
+            .last()
+            .expect("actual docked provider paint shapes");
+        let floating_label = output
+            .shapes
+            .iter()
+            .position(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => menu_rect.contains(text.pos),
+                _ => false,
+            })
+            .expect("actual floating menu text shape");
+        assert!(floating_label > last_docked_paint,
         "float header paint must follow docked provider paint at overlap: {floating_label} <= {last_docked_paint}");
+    };
+    for _ in 0..3 {
+        let (output, report) = render(&mut layered, &mut layered_adapter);
+        assert_paint_order(&output, &report);
+    }
+    let owner = layered
+        .controller
+        .snapshot()
+        .workspaces
+        .values()
+        .find_map(|workspace| workspace.owner)
+        .expect("nested owner");
+    command(&mut layered, Command::Maximize { frame: owner });
+    let (_, hidden_report) = render(&mut layered, &mut layered_adapter);
+    assert!(
+        !hidden_report
+            .controls
+            .iter()
+            .any(|control| control.id == format!("frame/{}/menu", floating.raw())),
+        "maximize actually hides the float in the persistent context"
+    );
+    command(
+        &mut layered,
+        Command::RestoreLayout {
+            workspace: binding.root,
+        },
+    );
+    for _ in 0..3 {
+        let (output, report) = render(&mut layered, &mut layered_adapter);
+        assert_paint_order(&output, &report);
+    }
     let mut h = ui_proof(3, false);
     let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
     ui_click(&mut h, "Frame");

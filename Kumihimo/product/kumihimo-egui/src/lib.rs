@@ -334,10 +334,11 @@ impl DesktopAdapter {
         let policy = host.policy();
         policy.settings.validate()?;
         // Register the base before floats: egui drains unregistered layers last.
-        ctx.move_to_top(egui::LayerId::new(
+        let base_layer = egui::LayerId::new(
             egui::Order::Middle,
             egui::Id::new(("kumihimo-surface", 0_u64)),
-        ));
+        );
+        ctx.move_to_top(base_layer);
         let projection = workspace::project_with_chrome(controller, surface, host, &self.chrome)?;
         let control_limit = policy
             .max_regions
@@ -394,6 +395,8 @@ impl DesktopAdapter {
             if let Some(root) = frame.z_root {
                 if raised.insert(root) {
                     ctx.move_to_top(frame.layer());
+                    // Visibility changes can invert cached Middle order; pin floats above base.
+                    ctx.set_sublayer(base_layer, frame.layer());
                 }
             }
         }

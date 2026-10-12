@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 24
+generation: 25
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -257,6 +257,30 @@ proof:
     slot, visible reserved header/clip and unique enabled full label. Parent and diagnostic inspection complete;
     all source owners HOLD. Original14 exact prefix, all29 tests and frozen13 methods preserved. Fresh affected
     owning/default/combined/raster/native proof pending; unchanged provider/Core/JSON/content/lock proof reused.'
+- kind: actual_owning29_and_persistent_float_nested_predicate_failures
+  source_revision: 8b92e5e49ef77522ec9ed890fb600b49659c2a10
+  log_sha256:
+    test: b14f7d74f287b20df5a5cc4421d59ccd3442fd49cfb88ccf731c3391bb0af9b3
+    default: ea87caeacc6d8698653f5a761045b7085b8cc3945c675ca030fb793905d24ab2
+    combined: 4505e7d6b133c7a04d7ba139d6cedbdd8640ad4c82c9a583f5dfb5e59042bdb7
+    capture: 13e01186058796e70607da35a0dd79ba6ed1aabdabe86ea6bb0f91dbdff61726
+    native: c14204f08599ab7109ca22e8af7fa833c80d15037f37403ee502141abc9aae12
+  observed: 'Owning29 GREEN compile15.61s/run5.01s; default/combined all-target PASS3.43s/3.10s; capture terminal
+    PASS80 scenes compile5.53s. Evaluator opened all80: four earlier preview/header/popup/pin findings remain
+    repaired; floats still below base after actual maximize-hide/restore. Cold standard matches1b3 pixels,
+    five later scenes match failed7f; persistent Areas stable flag sort retains inversion. Native19 captures/3
+    returns compile5.23s fails validator despite actual selected18to16/gen70to71/actions9to12: direct workspace7==physicalroot1
+    rejects valid mounted nested target. No whole-packet PASS; source-supported minimum repairs held.'
+- kind: held_persistent_layer_relation_and_nested_selection_membership
+  baseline_revision: 8b92e5e49ef77522ec9ed890fb600b49659c2a10
+  source_fence17_raw_sha256: 8d72afc363183d90d94b841517e4596c5ba610b350bbc1a0ada93266f56cf648
+  source_fence17_lf_sha256: 2d0ae4fbba841da31084934dea4668b361de3757e980ea853b217c47022f2411
+  observed: 'Root inspected three-file candidate: sameOrder one-level base-to-visible-float sublayer relation
+    in existing deduplicated loop; E003 uses actual persistent Context maximize-hide/restore before paint-order
+    assertions. Native predicate qualifies bounded fresh canonical ancestor and current visible mounted target
+    slot/epoch/fresh draw, preserving actual selection/open/generation/actions/readback checks. Original14
+    exact prefix/all29/frozen13 preserved; all source writers HOLD; fresh affected owning/default/combined/raster/native
+    pending. Existing provider/Core/JSON/content/lock proof reused.'
 blockers: []
 next_action: Run one consolidated serial affected owning/default/combined/raster/native bundle; independent
   original13 evaluation afterward

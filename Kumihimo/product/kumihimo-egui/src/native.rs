@@ -1991,9 +1991,34 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                             .frames
                             .get(&frame)
                             .and_then(|f| f.selected_view);
+                        let snapshot = self.controller.snapshot();
+                        let target_workspace = snapshot.frames[&frame].workspace;
+                        let mut workspace = target_workspace;
+                        for _ in 0..snapshot.workspaces.len() {
+                            if workspace == w.surface.root {
+                                break;
+                            }
+                            let Some(owner) =
+                                snapshot.workspaces.get(&workspace).and_then(|ws| ws.owner)
+                            else {
+                                break;
+                            };
+                            let Some(owner) = snapshot.frames.get(&owner) else {
+                                break;
+                            };
+                            workspace = owner.workspace;
+                        }
                         let changed = actual == Some(target)
-                            && self.controller.snapshot().frames[&frame].workspace
-                                == w.surface.root
+                            && workspace == w.surface.root
+                            && w.draw_count > self.observer_draw_before
+                            && w.report.epoch == w.surface.epoch
+                            && w.report.slots.iter().any(|slot| {
+                                slot.view == target
+                                    && slot.frame == frame
+                                    && slot.workspace == target_workspace
+                                    && slot.visible
+                                    && slot.epoch == w.surface.epoch
+                            })
                             && self.controller.snapshot().views[&target].closed.is_none()
                             && self.controller.snapshot().generation
                                 > self.observer_generation.unwrap_or(u64::MAX)
