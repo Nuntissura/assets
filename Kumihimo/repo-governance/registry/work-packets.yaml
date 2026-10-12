@@ -89,8 +89,7 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
-  next_action: Publish one-line qualified group recorder, rerun narrow default; proceed to remaining single affected
-    bundle only when green
+  next_action: Run one fresh owning29 target on published causal repair; remaining captures/native only after green
   blockers: []
 - wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
   title: Implement reusable Rust/WASM browser adapter and Portal-style workspace pilot

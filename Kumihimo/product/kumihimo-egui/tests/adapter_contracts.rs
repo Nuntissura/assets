@@ -997,8 +997,37 @@ fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiPro
             },
         )
 }
+fn ui_click_point(h: &mut egui_kittest::Harness<'_, UiProof>, point: egui::Pos2) {
+    h.hover_at(point);
+    h.run_steps(1);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: point,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(3);
+}
+fn ui_click_id(h: &mut egui_kittest::Harness<'_, UiProof>, id: &str) {
+    let point = to_egui(
+        h.state()
+            .report
+            .controls
+            .iter()
+            .find(|c| c.id == id && c.enabled)
+            .unwrap_or_else(|| panic!("current pointer target {id}"))
+            .bounds,
+    )
+    .center();
+    ui_click_point(h, point);
+}
 fn ui_click(h: &mut egui_kittest::Harness<'_, UiProof>, label: &str) {
     if label == "Frame" || label == "Tabs / groups" {
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
         let state = h.state();
         let frame = state.demo.controller.snapshot().views[&state.demo.text_view].frame;
         let suffix = if label == "Frame" {
@@ -1016,11 +1045,7 @@ fn ui_click(h: &mut egui_kittest::Harness<'_, UiProof>, label: &str) {
                 .bounds,
         )
         .center();
-        h.hover_at(point);
-        h.drag_at(point);
-        h.run_steps(1);
-        h.drop_at(point);
-        h.run_steps(3);
+        ui_click_point(h, point);
         return;
     }
     if label.starts_with("Frame ") {
@@ -1039,14 +1064,30 @@ fn ui_click(h: &mut egui_kittest::Harness<'_, UiProof>, label: &str) {
                 .unwrap()
                 .clone();
             let point = to_egui(next.bounds).center();
-            h.hover_at(point);
-            h.drag_at(point);
-            h.run_steps(1);
-            h.drop_at(point);
-            h.run_steps(3);
+            ui_click_point(h, point);
         }
     }
-    h.get_all_by_label(label).next().unwrap().click_accesskit();
+    if let Some(point) = h
+        .state()
+        .report
+        .controls
+        .iter()
+        .find(|c| c.label == label && c.enabled)
+        .map(|c| to_egui(c.bounds).center())
+    {
+        ui_click_point(h, point);
+        return;
+    }
+    let decorated = format!("{label} \u{23f5}");
+    let accessible = if h.query_all_by_label(label).next().is_some() {
+        label
+    } else {
+        &decorated
+    };
+    h.get_all_by_label(accessible)
+        .next()
+        .unwrap()
+        .click_accesskit();
     h.run_steps(3);
 }
 fn ui_tab_actions(h: &mut egui_kittest::Harness<'_, UiProof>, view: core::ViewId) {
@@ -1065,7 +1106,7 @@ fn ui_tab_actions(h: &mut egui_kittest::Harness<'_, UiProof>, view: core::ViewId
         .insert(format!("tabs/{}", frame.raw()), index);
     h.run_steps(3);
     ui_click(h, "Tabs / groups");
-    ui_click(h, "Actions");
+    ui_click_id(h, &format!("view/{}/actions-menu", view.raw()));
 }
 fn ui_pointer(
     h: &mut egui_kittest::Harness<'_, UiProof>,
@@ -1150,7 +1191,7 @@ fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
     let destination = h.state().demo.controller.snapshot().views[&h.state().demo.canvas_view].frame;
     ui_click(&mut h, "Tabs / groups");
     ui_click(&mut h, "Group: Proof group");
-    ui_click(&mut h, "Move entire canonical group to.");
+    ui_click(&mut h, "Move entire canonical group to\u{2026}");
     ui_click(&mut h, &format!("Frame {}", destination.raw()));
     let snapshot = h.state().demo.controller.snapshot();
     assert_eq!(snapshot.groups[&group].frame, destination);
@@ -1236,7 +1277,7 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
     let second = h.state().demo.controller.snapshot().workspaces[&h.state().demo.root].frames[1];
     let before = h.state().demo.controller.snapshot().layouts.clone();
     ui_click(&mut h, "Frame");
-    ui_click(&mut h, "Swap with.");
+    ui_click(&mut h, "Swap with\u{2026}");
     ui_click(&mut h, &format!("Frame {}", second.raw()));
     assert_ne!(h.state().demo.controller.snapshot().layouts, before);
     ui_click(&mut h, "Frame");
@@ -1281,10 +1322,7 @@ fn e004_widget_tool_rotation_hidden_space_focus_and_closed_target() {
         state.adapter.input.focused_view = Some(other);
     }
     h.run_steps(3);
-    ui_click(
-        &mut h,
-        &format!("Tool {}  view {}", tool.raw(), target.view.raw()),
-    );
+    ui_click_id(&mut h, &format!("tool/{}/action", tool.raw()));
     let receipt = h
         .state()
         .demo
@@ -1423,15 +1461,15 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
             (egui::TouchPhase::Start, true),
             (egui::TouchPhase::End, false),
         ] {
-            h.event(egui::Event::Touch {
+            h.input_mut().events.push(egui::Event::Touch {
                 device_id: egui::TouchDeviceId(1),
                 id: egui::TouchId(9),
                 phase,
                 pos: point,
                 force: None,
             });
-            h.event(egui::Event::PointerMoved(point));
-            h.event(egui::Event::PointerButton {
+            h.input_mut().events.push(egui::Event::PointerMoved(point));
+            h.input_mut().events.push(egui::Event::PointerButton {
                 pos: point,
                 button: egui::PointerButton::Primary,
                 pressed,
@@ -1440,7 +1478,21 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
             h.run_steps(1);
         }
         h.run_steps(3);
-        assert!(h.state().adapter.chrome.revealed.contains(&frame));
+        assert!(
+            h.state().adapter.chrome.revealed.contains(&frame),
+            "touch reveal frame {} at {:?}; revealed: {:?}; controls: {:?}; focus: {:?}; popup: {}",
+            frame.raw(),
+            point,
+            h.state().adapter.chrome.revealed,
+            h.state()
+                .report
+                .controls
+                .iter()
+                .map(|c| (&c.id, c.enabled))
+                .collect::<Vec<_>>(),
+            h.ctx.memory(|m| m.focused()),
+            egui::Popup::is_any_open(&h.ctx)
+        );
         let state = h.state_mut();
         let p = workspace::project_with_chrome(
             &mut state.demo.controller,
@@ -1775,6 +1827,19 @@ fn e006_all_modes_rail_wheel_ack_is_distinct_from_content_wheel() {
 fn e003_actual_drag_preview_forbidden_cancel_and_valid_release() {
     let mut h = ui_proof(3, false);
     let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
+    {
+        let state = h.state_mut();
+        let workspace = state.demo.root;
+        let mut plan = state.demo.controller.snapshot().layouts[&workspace].clone();
+        let core::LayoutNode::Grid { rows, .. } = plan.nodes.get_mut(&plan.root.unwrap()).unwrap()
+        else {
+            panic!("demo grid");
+        };
+        // A vacant second row leaves room for an eligible viewport-contained float.
+        rows.push(core::Scalar::new(1.0).unwrap());
+        command(&mut state.demo, Command::SetLayout { workspace, plan });
+    }
+    h.run_steps(3);
     let point = to_egui(
         h.state()
             .report
@@ -1785,7 +1850,31 @@ fn e003_actual_drag_preview_forbidden_cancel_and_valid_release() {
             .bounds,
     )
     .center();
-    let outside = point + egui::vec2(-250.0, -170.0);
+    let outside = point + egui::vec2(80.0, 90.0);
+    let snapshot = h.state().demo.controller.snapshot();
+    let bounds = snapshot.geometry(h.state().demo.root).unwrap().frames[&frame];
+    let delta = outside - point;
+    let floated = core::Rect::new(
+        bounds.x() + delta.x as f64,
+        bounds.y() + delta.y as f64,
+        bounds.width(),
+        bounds.height(),
+    )
+    .unwrap();
+    assert!(snapshot.contexts[&h.state().demo.root]
+        .viewport
+        .contains(floated));
+    for workspace in snapshot.contexts.keys() {
+        assert!(snapshot
+            .snap_candidates(
+                *workspace,
+                core::Scalar::new(outside.x as f64).unwrap(),
+                core::Scalar::new(outside.y as f64).unwrap(),
+                core::Scalar::new(24.0).unwrap()
+            )
+            .unwrap()
+            .is_empty());
+    }
     let before = h.state().demo.controller.snapshot().layouts.clone();
     h.hover_at(point);
     h.drag_at(point);
@@ -1988,6 +2077,12 @@ fn e008_disabled_native_control_explains_explicit_host_capability() {
 }
 
 fn ui_tab_enter(h: &mut egui_kittest::Harness<'_, UiProof>, control_id: &str) {
+    if control_id.starts_with("frame/")
+        && (control_id.ends_with("/menu") || control_id.ends_with("/tabs-menu"))
+    {
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+    }
     for _ in 0..256 {
         let target = h
             .state()
@@ -1995,7 +2090,19 @@ fn ui_tab_enter(h: &mut egui_kittest::Harness<'_, UiProof>, control_id: &str) {
             .controls
             .iter()
             .find(|c| c.id == control_id && c.enabled)
-            .expect("current keyboard target")
+            .unwrap_or_else(|| {
+                panic!(
+                    "current keyboard target {control_id}; controls: {:?}; focus: {:?}; popup: {}",
+                    h.state()
+                        .report
+                        .controls
+                        .iter()
+                        .map(|c| (&c.id, c.enabled))
+                        .collect::<Vec<_>>(),
+                    h.ctx.memory(|m| m.focused()),
+                    egui::Popup::is_any_open(&h.ctx)
+                )
+            })
             .bounds;
         let focused = h
             .ctx

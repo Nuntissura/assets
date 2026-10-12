@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 10
+generation: 12
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -29,8 +29,9 @@ proof:
 - kind: local_full_contract_preparation
   source_revision: bdd19d6ca500cb524ffa5949c50738515f543698
   observed: Full18R/13A bounded GUI/native contract, priorstub and6fileSpec15 preserved, all99full orderedrecords
-    unchanged. Primarycachedsource/team deliberation resolved authenticnativeGraphicsReady and hiddenstartup defects.
-    No sourcecoding/runtime admission; dependency/frozenmatching evaluation/publication/manifest graph pending.
+    unchanged. Primarycachedsource/team deliberation resolved authenticnativeGraphicsReady and hiddenstartup
+    defects. No sourcecoding/runtime admission; dependency/frozenmatching evaluation/publication/manifest graph
+    pending.
 - kind: published_preparation_and_dependency_closure
   preparation_revision: 1f574dabfcf73ef889339c8247ee6420d33cfe2e
   manifest_revision: 6ed1d6f442131d165656878146da34b485b9d832
@@ -39,39 +40,42 @@ proof:
   evaluation_sha256: a718bc7d2f95c5622358cff649937f366fefede85baccea64f679b3ca368a74c
   observed: Exact origin revisions and canonical contract/spec/evaluation/manifests/lock re-read matched. Offline
     Windows x64 all-feature metadata completed exit0; independent dependency closure ready_for_coding. Original14
-    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only. Source
-    coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof yet.
+    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only.
+    Source coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof
+    yet.
 - kind: focused_compile_milestone
   source_revision: 547e756471939d3b00c1da9a8c2a4ff740c593c5
   source_fence17: fd067a4d2bd5e921bf6b7606f6e4ca0de481dac2129df00b3b99e0190a7d39db
   observed: First default check8b09e4f E0277 input255; exact two-file repair published547e756. Default all-target
-    check PASS2.76s, optional-unused/dead-field warnings only. Combined all-feature check currently running soleleadlane;
-    focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only; original317 lock
-    records unchanged.
+    check PASS2.76s, optional-unused/dead-field warnings only. Combined all-feature check currently running
+    soleleadlane; focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only;
+    original317 lock records unchanged.
 - kind: focused_consumer_failure
   source_revision: acb2920256fa
-  observed: 'Affected all-feature all-target check PASS8.40s; default547 PASS2.76s retained cfg-only fixes. Owning14consumer
-    batch compile3m46s/run0.04s: e006PASS, other13FAILED shared demo initialization CoreGeometryMissingContext.
-    Actual CreateTool preceded required root GeometryContext; existing configured context reordered before tool,
-    tests/Core unchanged. Native actual source idle Wait omitted hard probe deadline; minimal native-only cutoff/resize-freshness
-    repair in progress. No raster/native/UIA proof yet; reuse e006 pure mapping on unchanged inputs.'
+  observed: 'Affected all-feature all-target check PASS8.40s; default547 PASS2.76s retained cfg-only fixes.
+    Owning14consumer batch compile3m46s/run0.04s: e006PASS, other13FAILED shared demo initialization CoreGeometryMissingContext.
+    Actual CreateTool preceded required root GeometryContext; existing configured context reordered before
+    tool, tests/Core unchanged. Native actual source idle Wait omitted hard probe deadline; minimal native-only
+    cutoff/resize-freshness repair in progress. No raster/native/UIA proof yet; reuse e006 pure mapping on
+    unchanged inputs.'
 - kind: actual_gui_milestone
   source_revision: a65d19e811e950206cde3466efce72b6b97c91a3
   observed: All14 owning consumers passed via focused reuse90ce26f plus new e010 narrow/nonfit extension PASS18.03s/0.04s.
     Actual eleven-pair DX12 raster command completed5.03s; independent opened pixels found F012-SCALE injected1.5
     output2.25 and return1 output0.666667, repair capture.rs in progress. Native hidden HWND first pixels/readback
     actual; UIA forwarded1 then draw-before quiet assertion FAILED foreground_owned=true despite hidden/no-activate/toolwindow.
-    Exact native manifestation a65 output; causal diagnostic team read-only, no rerun until relevant source repair.
-    No whole-packet GUI/native PASS.
+    Exact native manifestation a65 output; causal diagnostic team read-only, no rerun until relevant source
+    repair. No whole-packet GUI/native PASS.
 - kind: causal_native_boundary_and_resolved_scale
   raster_revision: e88c30580548
   native_revision: 9419ec7a7670
-  observed: 'Corrected eleven-pair actual raster inspected independently: native scale1→1.5→1 agrees with slots;
-    F012-SCALE resolved. Original quiet native run still FAIL: real Button.Invoke view12 beforeFGforeign, actual
-    Action::Focus arrives51mslater with owned HWND alreadyforeground beforeeguiqueue. Typed-null Framework atomic
-    trace replacement proven in owned cheapfileprobe. Strict quiet acceptance/actions retained. Exact upstream0.29.2
-    provider localpatch admitted in Spec18/R019; originalsource19files/licenses materialized, ONElockbindingchanged;
-    independent readiness/onehiddencomponentappendix and publication pending. No native/popout wholepacketPASS.'
+  observed: "Corrected eleven-pair actual raster inspected independently: native scale1\u21921.5\u21921 agrees\
+    \ with slots; F012-SCALE resolved. Original quiet native run still FAIL: real Button.Invoke view12 beforeFGforeign,\
+    \ actual Action::Focus arrives51mslater with owned HWND alreadyforeground beforeeguiqueue. Typed-null Framework\
+    \ atomic trace replacement proven in owned cheapfileprobe. Strict quiet acceptance/actions retained. Exact\
+    \ upstream0.29.2 provider localpatch admitted in Spec18/R019; originalsource19files/licenses materialized,\
+    \ ONElockbindingchanged; independent readiness/onehiddencomponentappendix and publication pending. No native/popout\
+    \ wholepacketPASS."
 - kind: actual_quiet_native_and_affected_runtime
   source_revision: b7dec3f107cb59c82d69c74f5a760b4c7cbcd4ad
   logs:
@@ -86,11 +90,12 @@ proof:
     test: f071da81995dde32648764652886082fc720766782ef05d71cada72f7489a61e
   native_manifest_sha256: 009bfb28b7aa191d16e711a8f91a15a4e32375b87fc1fc1fa115961bb147ecd0
   observed: One standalone hidden ProviderOptions test PASS38.05s/0.22s; native original strict probe PASS15.99s
-    compile,14actual captures/3returns/3forwardedUIAactions. Canonical selected10 to12/gen43 to44; external foreground
-    unchanged and all owned windows hidden. All-feature all-target check PASS4.10s, owning13 PASS4.39s/0.19s; unchanged
-    e006 reused. Evaluator opened all14 native images and reports original frozen-method variants still unobserved
-    (post-popout accessibility and temporary overlay dismissal); coder03 admitted original17 source only for minimum
-    consolidated original13 proof completion. Provider source remains held, no full packet verdict.
+    compile,14actual captures/3returns/3forwardedUIAactions. Canonical selected10 to12/gen43 to44; external
+    foreground unchanged and all owned windows hidden. All-feature all-target check PASS4.10s, owning13 PASS4.39s/0.19s;
+    unchanged e006 reused. Evaluator opened all14 native images and reports original frozen-method variants
+    still unobserved (post-popout accessibility and temporary overlay dismissal); coder03 admitted original17
+    source only for minimum consolidated original13 proof completion. Provider source remains held, no full
+    packet verdict.
 - kind: held_original_acceptance_completion_source
   baseline_revision: b63d90324f1c276d526e59eaf2f23b0e0fc56a3d
   source_fence_sha256: c8e754db0ca9e627d1e71c41ad18f4a2051407e245c626a08eba74cd080bb512
@@ -100,9 +105,24 @@ proof:
 - kind: causal_default_compile_remediation
   failed_revision: 9de99ce6c7c40b47a637aae72e3807a088fa6731
   observed: 'Default check E0618 chrome519: existing Group local record shadowed newly added helper call. Coder
-    and diagnostic inspected actual output/source; only group call explicitly qualified, all arguments/control identity
-    retained. No runtime proof yet.'
+    and diagnostic inspected actual output/source; only group call explicitly qualified, all arguments/control
+    identity retained. No runtime proof yet.'
   repair_source_sha256: e053a3908fb56490f5319cebe958dbd4ad3aa4bcd274c2da5df045230e4a8e6e
+- kind: actual_affected_compile_and_owning_failures
+  source_revision: baff8133dc6b5d81edd2e46bb74b16ac3c7b98e9
+  observed: Default all-target PASS1.88s; all-feature/all-target PASS5.10s including shared package-cache wait.
+    Owning29 compiled11.02s/executed1.52s:20PASS including all original14, nine additive failures. Actual log
+    headers identify missing Actions/Preview/tool label targets, reveal assertion, capture-lost versus release,
+    absent float and keyboard target. Current images/native unexecuted. Coder and diagnostics directly inspect
+    shared causal source; no assertion weakening or repeated failing command.
+- kind: held_causal_gui_remediation
+  baseline_revision: baff8133dc6b5d81edd2e46bb74b16ac3c7b98e9
+  source_fence17_raw_sha256: 0a25b17654c4df5296d91037c87d1ee34e72b19cdf6082887f6d76e6b9e04409
+  source_fence17_lf_sha256: 9612ac4ce387fed7435221d3cc17a07ffee0946d82b9de0d6a67870e0d9377a0
+  observed: 'Three source paths changed: recorded control IDs/actual menu labels and pointer events, same-frame
+    typed touch fixture, bounded contained float fixture, and PointerGone cancellation only while capture exists.
+    Original fourteen test prefix exact; twenty-nine tests retained. All owners HOLD; runtime reveal/keyboard
+    outcomes unproven pending one fresh owning target.'
 blockers: []
-next_action: Publish one-line qualified group recorder, rerun narrow default; proceed to remaining single affected
-  bundle only when green
+next_action: Run one fresh owning29 target on published causal repair; remaining captures/native only after
+  green

@@ -1214,6 +1214,20 @@ fn dock_variants(
     use kumihimo_egui::DesktopHost;
     let mut s = CaptureScene::new(renderer, output, budget, 3, 400)?;
     let frame = s.demo.controller.snapshot().views[&s.demo.text_view].frame;
+    let mut plan = s.demo.controller.snapshot().layouts[&s.demo.root].clone();
+    let kumihimo_core::LayoutNode::Grid { rows, .. } = plan
+        .nodes
+        .get_mut(&plan.root.unwrap())
+        .ok_or("demo grid root")?
+    else {
+        return Err("demo grid".into());
+    };
+    rows.push(kumihimo_core::Scalar::new(1.0)?);
+    s.command(Command::SetLayout {
+        workspace: s.demo.root,
+        plan,
+    })?;
+    s.settle()?;
     let beside = s.demo.controller.snapshot().workspaces[&s.demo.root].frames[1];
     let identities = s.demo.controller.snapshot().views.clone();
     let projection = kumihimo_egui::workspace::project_with_chrome(
@@ -1265,7 +1279,7 @@ fn dock_variants(
         return Err("snap drag commit did not move arrangement".into());
     }
     s.checkpoint("dock-snap-committed")?;
-    // Remove one actual allowed edge: snap skips it and the resulting out-of-bounds float rejects.
+    // Keep the free float viewport-contained so disabled floating is the rejection cause.
     let mut context = s.demo.controller.snapshot().contexts[&s.demo.root].clone();
     context.allowed_docks.retain(|l| {
         *l != DockLocation::Beside {
@@ -1281,13 +1295,44 @@ fn dock_variants(
     s.settle()?;
     let unchanged = s.demo.controller.snapshot().clone();
     let press = s.point(&format!("frame/{}/drag", frame.raw()))?;
+    let forbidden_target = press + egui::vec2(80.0, 90.0);
+    let bounds = s.demo.controller.snapshot().geometry(s.demo.root)?.frames[&frame];
+    let delta = forbidden_target - press;
+    let floated = kumihimo_core::Rect::new(
+        bounds.x() + delta.x as f64,
+        bounds.y() + delta.y as f64,
+        bounds.width(),
+        bounds.height(),
+    )?;
+    if !s.demo.controller.snapshot().contexts[&s.demo.root]
+        .viewport
+        .contains(floated)
+    {
+        return Err("forbidden-policy drag fixture must remain viewport-contained".into());
+    }
+    for workspace in s.demo.controller.snapshot().contexts.keys() {
+        if !s
+            .demo
+            .controller
+            .snapshot()
+            .snap_candidates(
+                *workspace,
+                kumihimo_core::Scalar::new(forbidden_target.x as f64)?,
+                kumihimo_core::Scalar::new(forbidden_target.y as f64)?,
+                kumihimo_core::Scalar::new(24.0)?,
+            )?
+            .is_empty()
+        {
+            return Err("forbidden-policy drag fixture unexpectedly snaps".into());
+        }
+    }
     s.mouse(press, true)?;
     s.input(
-        vec![egui::Event::PointerMoved(egui::pos2(-80.0, -80.0))],
+        vec![egui::Event::PointerMoved(forbidden_target)],
         egui::Modifiers::NONE,
     )?;
     s.checkpoint("dock-forbidden-drag-preview")?;
-    s.mouse(egui::pos2(-80.0, -80.0), false)?;
+    s.mouse(forbidden_target, false)?;
     s.settle()?;
     if s.demo.controller.snapshot().layouts != unchanged.layouts
         || s.demo.controller.snapshot().floats != unchanged.floats

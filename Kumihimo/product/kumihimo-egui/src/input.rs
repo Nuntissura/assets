@@ -491,11 +491,13 @@ pub fn process(
     }
     let mut events = pointer_events(ctx, surface.epoch);
     events.extend(state.injected.drain(..));
-    if ctx.input(|i| {
-        i.events
-            .iter()
-            .any(|e| matches!(e, egui::Event::PointerGone))
-    }) && !events.iter().any(|e| e.phase == PointerPhase::Release)
+    if state.capture.is_some()
+        && ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::PointerGone))
+        })
+        && !events.iter().any(|e| e.phase == PointerPhase::Release)
     {
         state.cancel("capture lost");
     }
