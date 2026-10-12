@@ -928,6 +928,7 @@ struct UiProof {
     binding: SurfaceBinding,
     report: FrameReport,
     native_enabled: bool,
+    trace: Vec<serde_json::Value>,
 }
 struct NoNative<'a>(&'a mut demo::DemoHost);
 impl DesktopHost for NoNative<'_> {
@@ -987,6 +988,23 @@ fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiPro
                         )
                         .unwrap()
                 };
+                let events = ctx.input(|input| input.events.iter().filter(|event| matches!(event,
+                    egui::Event::Touch { .. } | egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }
+                    | egui::Event::PointerGone | egui::Event::Key { .. } | egui::Event::WindowFocused(_)))
+                    .take(64).cloned().collect::<Vec<_>>());
+                if !events.is_empty() || state.adapter.chrome.preview.is_some() || !state.report.rejected.is_empty() {
+                    if state.trace.len() == 16 { state.trace.remove(0); }
+                    state.trace.push(serde_json::json!({
+                        "events":format!("{events:?}"),"generation":state.demo.controller.snapshot().generation,
+                        "epoch":state.binding.epoch,"report_epoch":state.report.epoch,
+                        "pending_preview_generation":state.adapter.chrome.preview.as_ref().map(|preview|preview.generation()),
+                        "floats":state.demo.controller.snapshot().floats.keys().map(|frame|frame.raw()).collect::<Vec<_>>(),
+                        "rejected":state.report.rejected,"focus":format!("{:?}",ctx.memory(|memory|memory.focused())),
+                        "input_focused":ctx.input(|input|input.focused),"popup":egui::Popup::is_any_open(ctx),
+                        "controls":state.report.controls.iter().take(128).map(|control|(&control.id,control.enabled)).collect::<Vec<_>>(),
+                        "capture":format!("{:?}",state.adapter.input.active_capture())
+                    }));
+                }
             },
             UiProof {
                 demo: d,
@@ -994,6 +1012,7 @@ fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiPro
                 binding,
                 report: FrameReport::default(),
                 native_enabled: true,
+                trace: Vec::new(),
             },
         )
 }
@@ -1059,9 +1078,24 @@ fn ui_click(h: &mut egui_kittest::Harness<'_, UiProof>, label: &str) {
                 .controls
                 .iter()
                 .find(|c| {
-                    c.enabled && c.id.starts_with("page/") && c.id.ends_with("-destinations/next")
+                    c.enabled
+                        && (c.id == "page/group-destinations/next"
+                            || c.id == "page/swap-destinations/next")
                 })
-                .unwrap()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "destination {label}; pages: {:?}; controls: {:?}; popup: {}; trace: {:?}",
+                        h.state().adapter.chrome.pages,
+                        h.state()
+                            .report
+                            .controls
+                            .iter()
+                            .map(|control| (&control.id, control.enabled))
+                            .collect::<Vec<_>>(),
+                        egui::Popup::is_any_open(&h.ctx),
+                        h.state().trace
+                    )
+                })
                 .clone();
             let point = to_egui(next.bounds).center();
             ui_click_point(h, point);
@@ -1254,6 +1288,11 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
     assert!(h.state().adapter.chrome.preview.is_none());
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Preview in-app float");
+    assert!(
+        h.state().adapter.chrome.preview.is_some(),
+        "float commit stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Commit preview");
     assert!(h
         .state()
@@ -1264,6 +1303,11 @@ fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
         .contains_key(&frame));
     ui_click(&mut h, "Frame");
     ui_click(&mut h, "Preview redock");
+    assert!(
+        h.state().adapter.chrome.preview.is_some(),
+        "redock commit stage; trace: {:?}",
+        h.state().trace
+    );
     ui_click(&mut h, "Commit preview");
     assert!(!h
         .state()
@@ -1457,6 +1501,7 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
                 .bounds,
         )
         .center();
+        let mut touch_trace = Vec::new();
         for (phase, pressed) in [
             (egui::TouchPhase::Start, true),
             (egui::TouchPhase::End, false),
@@ -1476,11 +1521,14 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
                 modifiers: egui::Modifiers::NONE,
             });
             h.run_steps(1);
+            touch_trace.push(h.ctx.data(|data| {
+                data.get_temp::<serde_json::Value>(egui::Id::new("kumihimo-reveal-hit"))
+            }));
         }
         h.run_steps(3);
         assert!(
             h.state().adapter.chrome.revealed.contains(&frame),
-            "touch reveal frame {} at {:?}; revealed: {:?}; controls: {:?}; focus: {:?}; popup: {}",
+            "touch reveal frame {} at {:?}; revealed: {:?}; controls: {:?}; focus: {:?}; popup: {}; hit: {:?}; trace: {:?}",
             frame.raw(),
             point,
             h.state().adapter.chrome.revealed,
@@ -1491,7 +1539,7 @@ fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
                 .map(|c| (&c.id, c.enabled))
                 .collect::<Vec<_>>(),
             h.ctx.memory(|m| m.focused()),
-            egui::Popup::is_any_open(&h.ctx)
+            egui::Popup::is_any_open(&h.ctx), touch_trace, h.state().trace
         );
         let state = h.state_mut();
         let p = workspace::project_with_chrome(

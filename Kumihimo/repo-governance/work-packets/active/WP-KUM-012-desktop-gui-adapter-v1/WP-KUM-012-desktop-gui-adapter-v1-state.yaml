@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 12
+generation: 13
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -123,6 +123,15 @@ proof:
     typed touch fixture, bounded contained float fixture, and PointerGone cancellation only while capture exists.
     Original fourteen test prefix exact; twenty-nine tests retained. All owners HOLD; runtime reveal/keyboard
     outcomes unproven pending one fresh owning target.'
+- kind: actual_owning26_and_held_pager_diagnostics
+  baseline_revision: 04924d995d551609bc9ac0122dec44ae3ced8fc1
+  source_fence17_raw_sha256: 4a52baf372db92abebce041cae8cc561a2769f5bdc8d16724a50dd34adcccfac
+  source_fence17_lf_sha256: 2790eba87ef124ac31cbbbae6b464834f106714b88945652e4750816a76e3990
+  observed: 'Actual owning29 compiled19.18s/run2.74s:26 PASS including all original14, three additive failures
+    (reveal, preview confirmation, group destination paging). Minimum held chrome/tests candidate preserves29
+    and exact original14 prefix: Tabs/groups inherits existing CloseOnClickOutside for real paging, bounded
+    exact-stage preview and actual reveal hit observations added. Reveal winner and preview stage remain unproven;
+    no speculative placement/preview changes. All owners HOLD, no captures/native yet.'
 blockers: []
-next_action: Run one fresh owning29 target on published causal repair; remaining captures/native only after
-  green
+next_action: Run one affected owning29 target on held pager/diagnostic candidate; inspect exact remaining observations
+  before repair

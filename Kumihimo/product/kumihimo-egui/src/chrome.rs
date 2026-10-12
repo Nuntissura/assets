@@ -887,6 +887,64 @@ pub fn draw(
                 format!("Reveal frame {} controls", frame.frame.raw()),
                 None,
             );
+            let pointer_events = ctx.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            egui::Event::Touch { .. }
+                                | egui::Event::PointerMoved(_)
+                                | egui::Event::PointerButton { .. }
+                        )
+                    })
+                    .take(64)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+            if let Some(point) = pointer_events
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    egui::Event::Touch { pos, .. } | egui::Event::PointerButton { pos, .. } => {
+                        Some(*pos)
+                    }
+                    egui::Event::PointerMoved(pos) => Some(*pos),
+                    _ => None,
+                })
+                .filter(|point| response.rect.contains(*point))
+            {
+                let hit_layers = ctx.memory(|memory| {
+                    memory
+                        .areas()
+                        .visible_layer_ids()
+                        .into_iter()
+                        .filter(|layer| {
+                            memory
+                                .areas()
+                                .area_rect(layer.id)
+                                .is_some_and(|rect| rect.contains(point))
+                        })
+                        .take(64)
+                        .map(|layer| format!("{layer:?}"))
+                        .collect::<Vec<_>>()
+                });
+                let trace = serde_json::json!({
+                    "viewport":format!("{:?}",surface.viewport),"frame":frame.frame.raw(),"epoch":surface.epoch,
+                    "generation":controller.snapshot().generation,"point":[point.x,point.y],
+                    "events":format!("{pointer_events:?}"),"actual_response_id":format!("{:?}",response.id),
+                    "rect":[response.rect.min.x,response.rect.min.y,response.rect.max.x,response.rect.max.y],
+                    "response_layer":format!("{:?}",response.layer_id),"hit_layer":format!("{:?}",ctx.layer_id_at(point)),
+                    "hit_areas":hit_layers,"clicked":response.clicked(),"hovered":response.hovered(),
+                    "contains_pointer":response.contains_pointer(),"down":response.is_pointer_button_down_on(),
+                    "tools_at_point":projection.tools.iter().filter(|tool| to_egui(tool.bounds).contains(point))
+                        .map(|tool|serde_json::json!({"tool":tool.tool.raw(),"bounds":format!("{:?}",tool.bounds),
+                            "clip":format!("{:?}",tool.clip),"visible":tool.presentation.visible})).collect::<Vec<_>>()
+                });
+                // One transient slot retains the actual response and hit evidence, never an expected ID.
+                ctx.data_mut(|data| data.insert_temp(egui::Id::new("kumihimo-reveal-hit"), trace));
+            }
             if response.clicked() {
                 state.revealed.insert(frame.frame);
                 ctx.request_repaint();
@@ -946,28 +1004,32 @@ pub fn draw(
                 "Frame menu".into(),
                 None,
             );
-            let tabs_menu_response = ui.menu_button(
+            let (tabs_menu_response, _) = egui::containers::menu::MenuButton::new(
                 if settings.profile == ChromeProfile::Compact {
                     "Tabs"
                 } else {
                     "Tabs / groups"
                 },
-                |ui| {
-                    tab_list(
-                        ui,
-                        frame.frame,
-                        controller,
-                        host,
-                        state,
-                        size,
-                        settings.group_colors,
-                        report,
-                    );
-                },
-            );
+            )
+            .config(
+                egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            )
+            .ui(ui, |ui| {
+                tab_list(
+                    ui,
+                    frame.frame,
+                    controller,
+                    host,
+                    state,
+                    size,
+                    settings.group_colors,
+                    report,
+                );
+            });
             record(
                 report,
-                &tabs_menu_response.response,
+                &tabs_menu_response,
                 format!("frame/{}/tabs-menu", frame.frame.raw()),
                 "Tabs and groups menu".into(),
                 None,
