@@ -457,8 +457,8 @@ fn scrub_parent_tree(objects: &mut Objs, root: &mut Dict, keys: &BTreeSet<i64>, 
 }
 
 /// The structure tree root [`neutralize_structure`] edits: the catalog's `/StructTreeRoot` when it is an indirect reference
-/// (to a dictionary, checked by the caller). Any other spelling (a dictionary written directly into the catalog, a chain of
-/// references) is left as it is, and [`unplaced_structure_elements`] reports it (PLR-094).
+/// to a dictionary. Any other spelling (a dictionary written directly into the catalog, a chain of references) is left as
+/// it is, and [`unplaced_structure_elements`] reports its elements (PLR-094).
 fn edited_structure_root(doc: &PdfDoc, catalog: u32) -> Option<ObjRef> {
     let r = doc.dict_of(catalog)?.get("StructTreeRoot").and_then(Object::as_ref)?;
     doc.dict_of(r.num).map(|_| r)
@@ -1066,7 +1066,7 @@ fn children<'a>(saved: &'a PdfDoc, k: &'a Object) -> Vec<&'a Object> {
 /// PLR-094 (lead decision 2026-10-12T07:26:27Z, FAIL CLOSED): counts the elements of a structure tree the purge did not
 /// edit that the purge cannot place on a kept page. A tree that is not an indirect reference to a dictionary (a dictionary
 /// written directly into the catalog, a chain of references; `edited_structure_root`) keeps every `/Alt`, `/ActualText` and
-/// `/E` it holds, and the purge never read which page that text describes; so an element is accepted only when its page is
+/// `/E` it holds, and the purge does not read which page that text describes; so an element is accepted only when its page is
 /// known to be a kept page of the saved file: its own `/Pg`, else the nearest ancestor element's, names a page of `saved`
 /// that is not a flattened page. Any other element counts one: no `/Pg` anywhere on its path, a `/Pg` that is not a
 /// reference, names no object or an object that is not a page, or names a flattened page. Elements are reached from the
