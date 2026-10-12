@@ -1,0 +1,26 @@
+[package]
+name = "kumihimo-render-bridge"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+description = "Bounded host-owned pixel, dirty-work and lifecycle bridge with optional desktop composition"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+desktop = ["dep:kumihimo-egui", "dep:kumihimo-core", "dep:kumihimo-content", "dep:egui", "dep:wgpu", "dep:egui-wgpu", "dep:image", "dep:serde", "dep:serde_json", "dep:bytemuck"]
+
+[dependencies]
+kumihimo-egui = { path = "../kumihimo-egui", version = "0.1.0", default-features = false, features = ["capture"], optional = true }
+kumihimo-core = { path = "../kumihimo-core", version = "0.3.0", default-features = false, optional = true }
+kumihimo-content = { path = "../kumihimo-content", version = "0.2.0", default-features = false, optional = true }
+egui = { version = "=0.33.3", default-features = false, optional = true }
+wgpu = { version = "=27.0.1", default-features = false, features = ["std", "dx12", "wgsl"], optional = true }
+egui-wgpu = { version = "=0.33.3", default-features = false, optional = true }
+image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
+serde_json = { version = "=1.0.151", optional = true }
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"], optional = true }
+bytemuck = { version = "=1.25.2", default-features = false, features = ["derive"], optional = true }

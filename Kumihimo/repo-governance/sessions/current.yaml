@@ -31,19 +31,20 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP014 dependency readiness after full contract promotion; no coding before recorded readiness
+    assignment: WP014 source graph/cache READY report frozen; native runtime NOT_READY pending exact local loader/introspection
+      proof
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Exact redock/destination hit and dispatch evidence; direct coder consultation, no duplicate audit
+    assignment: WP014 exact native runtime/worker failures; direct coder/dependency consultation; no broad audit
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: Desktop original13 PASS published; prepare WP014 cases after full contract promotion
+    assignment: WP014 exact seven cases frozen; await actual current engine/GPU bundle; no runtime verdict
   coder04:
     role_id: ROLE-KUM-CODER-04
     thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
@@ -52,8 +53,8 @@ roles:
     completed_implementation_wps:
     - WP-KUM-013-web-adapter-portal-pilot-v1
     rotate_after: 2
-    assignment: WP014 HOLD pending published Spec21/full9R7A, dependency readiness and frozen evaluation; second
-      packet after013
+    assignment: WP014 source admitted after canonical publication; expand disjoint teams as useful; second packet;
+      engine launch held
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -61,12 +62,12 @@ communication:
     dispatched reports
 build_lane:
   owner: null
-  phase: idle_wp014_dependency_and_evaluation_preparation
+  phase: parallel_source_wp014_runtime_prerequisites
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
   other_team_cargo_policy: Delay builds when contention is material; continue non-build work; never stop their processes
-  gameplan_relative_git_root: .local/kumihimo-desktop/gameplan.yaml
+  gameplan_relative_git_root: .local/kumihimo-servo/gameplan.yaml
   last_resource_observation:
     observed_utc: '2026-10-12T08:01:38.1276722Z'
     cpu_percent: 23
@@ -79,8 +80,9 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish full contract/Spec21; freeze seven evaluation cases; acquire verified runtime and inspect prerequisites/namespace;
-  dependency readiness before coder04 admission
+next_action: After canonical admission publication coder04 expands disjoint Rust bridge/GPU and Python worker teams;
+  root resolves local native prerequisites and independent per-launch namespace gate; bundle one affected serial
+  Cargo batch when source stable
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

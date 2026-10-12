@@ -1,0 +1,341 @@
+schema_version: kumihimo.dependency-readiness.v1
+kind: dependency_readiness
+wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
+role_id: ROLE-KUM-DEPENDENCIES
+updated_at: '2026-10-12'
+scope: Actual Rust manifest, resolved Windows graph/cache and bounded external runtime prerequisite plan; no compilation
+  or engine proof.
+verdict: READY_FOR_SOURCE
+coding_admission:
+  status: lead_owned_pending_publication
+  owner: ROLE-KUM-DEV-LEAD
+  source_dependency_blockers: []
+  engine_launch: NOT_READY
+  boundary: Source implementation may proceed after lead publication/admission. Native ELF libraries are external
+    process runtime prerequisites, not Rust linkage/build inputs. This report grants no engine launch or runtime
+    acceptance.
+baseline:
+  commit: 408ad9d96787d7787ed16d6bd86880f4ab07c954
+  publication: Lead reported exact canonical origin readback; this role independently read the local commit lock
+    and live contract/spec.
+  contract:
+    ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
+    sha256: 47b44d3d4fcf2a982ad1ed6854dd121284bddeb2d126b35e612c38a92e3f37d8
+    kind: work_packet
+    requirements: 9
+    acceptance_criteria: 7
+  specification:
+    ref: repo-governance/specification/current/specification.yaml
+    version: 21
+    revision: 21
+    sha256: 1e408274aebe987da874c0705099987a16d8a084191076b5e4505117c5b19525
+    master_spec_ref: repo-governance/specification/current/spec-modules/master-spec.md
+    master_spec_sha256: 792e3af99fef25a24ee096da5bf85c109404ac5d7a30c81479290af9ec060dae
+    decision_id: DEC-KUM-SERVO-RENDER-BRIDGE-v1
+  predecessor:
+    wp_id: WP-KUM-012-desktop-gui-adapter-v1
+    observed_phase: done
+    observed_generation: 28
+  evaluation:
+    ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-evaluation.yaml
+    sha256: 63460e850220fe87d0e051c4d440e8e823e1adf154eecab1cb61300fb72d3ca3
+    cases: 7
+    cases_frozen: true
+    report_frozen_for_publication: true
+    verdict: PREPARED_NOT_RUNTIME_PROVEN
+rust_source_readiness:
+  status: READY_FOR_SOURCE
+  package:
+    manifest_ref: product/kumihimo-render-bridge/Cargo.toml
+    sha256: b154bb8317dffd680ed33b5e4902f79788f2aa7fcf9c294a73f4a230fd46988a
+    name: kumihimo-render-bridge
+    version: 0.1.0
+    edition: '2021'
+    rust_version: '1.91'
+    default_features: []
+    normal_dependencies_all_optional: true
+    dev_build_target_dependencies: []
+    explicit_lib_path: src/lib.rs
+    source_exists_at_inspection: false
+    source_note: Lead-created manifest scaffold awaits admitted implementation; absent source means no compile
+      verdict.
+    desktop_features:
+    - dep:kumihimo-egui
+    - dep:kumihimo-core
+    - dep:kumihimo-content
+    - dep:egui
+    - dep:wgpu
+    - dep:egui-wgpu
+    - dep:image
+    - dep:serde
+    - dep:serde_json
+    - dep:bytemuck
+    direct_dependencies:
+      kumihimo-egui:
+        path: ../kumihimo-egui
+        version: 0.1.0
+        default-features: false
+        features:
+        - capture
+        optional: true
+      kumihimo-core:
+        path: ../kumihimo-core
+        version: 0.3.0
+        default-features: false
+        optional: true
+      kumihimo-content:
+        path: ../kumihimo-content
+        version: 0.2.0
+        default-features: false
+        optional: true
+      egui:
+        version: =0.33.3
+        default-features: false
+        optional: true
+      wgpu:
+        version: =27.0.1
+        default-features: false
+        features:
+        - std
+        - dx12
+        - wgsl
+        optional: true
+      egui-wgpu:
+        version: =0.33.3
+        default-features: false
+        optional: true
+      image:
+        version: =0.25.9
+        default-features: false
+        features:
+        - png
+        optional: true
+      serde_json:
+        version: =1.0.151
+        optional: true
+      serde:
+        version: =1.0.229
+        default-features: false
+        features:
+        - std
+        - derive
+        optional: true
+      bytemuck:
+        version: =1.25.2
+        default-features: false
+        features:
+        - derive
+        optional: true
+  workspace:
+    manifest_ref: product/Cargo.toml
+    sha256: f89e2caf71c47fca90f4055bc9e54f859d8b93e49747b50671162d403c7d966d
+    default_members:
+    - kumihimo-core
+    - kumihimo-layout-json
+    - kumihimo-content
+    default_members_unchanged: true
+    patch_unchanged: true
+    five_existing_package_manifests_byte_unchanged: true
+  lock:
+    ref: product/Cargo.lock
+    sha256: f702ba08fa103f379f6571bfe4cf1f4eaee7386a101f118175b7d872f4e894c8
+    format_version: 4
+    baseline_sha256: d33c396e6827d8acdb4c1591974f71e3c15bc31f17129712aa67a436b21b24d8
+    prior_package_records: 318
+    current_package_records: 319
+    all_prior_records_semantically_and_lf_normalized_raw_unchanged: true
+    added_records:
+    - name: kumihimo-render-bridge
+      version: 0.1.0
+      dependencies:
+      - bytemuck
+      - egui
+      - egui-wgpu
+      - image
+      - kumihimo-content
+      - kumihimo-core
+      - kumihimo-egui
+      - serde
+      - serde_json
+      - wgpu
+  resolved_graph:
+    ref: .local/servo-runtime/desktop-metadata.json
+    sha256: a4a6dda710f44c91e1152293da2a83f8446dfa99ffae1ef6242bfe567939758e
+    producer: Lead full offline Cargo metadata, all features, filter-platform x86_64-pc-windows-msvc; no compile.
+    whole_metadata_nodes: 141
+    render_bridge_reachable_nodes: 140
+    registry_nodes: 134
+    local_nodes:
+    - accesskit_windows
+    - kumihimo-content
+    - kumihimo-core
+    - kumihimo-egui
+    - kumihimo-layout-json
+    - kumihimo-render-bridge
+    feature_scope: 'Conservative all-workspace feature-unified superset: existing egui native/navigation/backgrounds/capture
+      are also enabled. Sufficient cache coverage; not a claim of minimal desktop feature closure.'
+    archive_checksums_matched: 134
+    unpacked_sources_present: 134
+    missing_or_mismatched: []
+    declared_msrv_over_1_91: []
+    no_servo_dependency_or_linkage_declared: true
+    registry_identity_checksum_manifest_sha256: d4cf13cf08913ed9fc54d3b42e4dbda97cdac259a2eaaae58302f661774915b6
+  compile_status: NOT_RUN_BY_DEPENDENCY_ROLE
+external_runtime:
+  status: NOT_READY
+  release: Servo v0.6.0 Linux x86_64 GNU
+  source_commit: c78d2c206f80a1c8b67eefa97f773bba513205d3
+  archive:
+    ref: .local/servo-runtime/servo-v0.6.0-x86_64-linux-gnu.tar.gz
+    bytes: 49202383
+    sha256: ad951ede1a1a73899b822c9464f6bdb3ec25b531b27cd806671d79ac8b6a60d0
+    dependency_role_hash_verified: true
+  binary:
+    bytes: 134456904
+    sha256: cb9267dfdbd89d0678cb4859857708a2c3c50affff2c091770ff73341263b09d
+    binding: Inspected lead-owned runtime-inspection.json; same exact binary must be retained for subsequent loader/engine
+      proof.
+  inspection:
+    ref: .local/servo-runtime/runtime-inspection.json
+    sha256: e1d64d8845fb9ed39ab807bd1dfb663450b2f3374853013717bdb0d9a4e7c6c3
+    elf_exit: 0
+    ldd_exit: 0
+    missing_sonames:
+    - libgstplay-1.0.so.0
+    - libgstvideo-1.0.so.0
+    - libgstwebrtc-1.0.so.0
+    - libgstsdp-1.0.so.0
+    - libgstaudio-1.0.so.0
+    - libgstapp-1.0.so.0
+    - libgstgl-1.0.so.0
+    diagnosis: Dynamic loader prerequisite absence; no engine initialization verdict.
+  namespace_capability:
+    ref: .local/servo-runtime/namespace-capability.json
+    sha256: 30e4f5057758a40dee0efacfbff3abf0c2648921c1017ca567eca2cc187cfa62
+    host_namespace: net:[4026531840]
+    holder_namespace: net:[4026532222]
+    loopback_only: true
+    owned_holder_exited: true
+    runtime_launch_admission: false
+    boundary: Ephemeral capability only; not an actual worker launch receipt.
+  runtime_blockers:
+  - Acquire/check exact library closure and inspect actual seven provider mappings/symlinks.
+  - Fresh loader proof under exact child environment with no missing SONAMEs or version errors.
+  - Fresh independent actual owned worker PID/starttime/private namespace admission before executable invocation.
+  - Actual bounded help/version output and exits inside independently admitted namespace.
+  - Post-listener independent ownership/isolation and outside-host inaccessibility proof.
+ubuntu_runtime_prerequisite_plan:
+  status: READY_FOR_LEAD_ACQUISITION_ONLY
+  distribution: Ubuntu 24.04.4 LTS Noble
+  evidence: Read cached apt-cache policy/show and apt-get simulation in existing Ubuntu WSL, UID1000. No apt refresh,
+    download, install, extraction or engine execution by dependency role.
+  simulation:
+    command: apt-get --simulate --no-install-recommends install libgstreamer-plugins-bad1.0-0
+    exit: 0
+    new_packages: 17
+    upgrades: 0
+    removals: 0
+    not_upgraded: 123
+  packages:
+  - package: libproxy1v5
+    version: 0.5.4-4build1
+    archive_bytes: 26508
+    installed_size_kib: 104
+  - package: glib-networking-common
+    version: 2.80.0-1build1
+    archive_bytes: 6702
+    installed_size_kib: 44
+  - package: glib-networking-services
+    version: 2.80.0-1build1
+    archive_bytes: 12830
+    installed_size_kib: 45
+  - package: glib-networking
+    version: 2.80.0-1build1
+    archive_bytes: 64136
+    installed_size_kib: 201
+  - package: libsoup-3.0-common
+    version: 3.4.4-5ubuntu0.7
+    archive_bytes: 11558
+    installed_size_kib: 48
+  - package: libsoup-3.0-0
+    version: 3.4.4-5ubuntu0.7
+    archive_bytes: 291712
+    installed_size_kib: 710
+  - package: libgssdp-1.6-0
+    version: 1.6.3-1build3
+    archive_bytes: 40374
+    installed_size_kib: 114
+  - package: liborc-0.4-0t64
+    version: 1:0.4.38-1ubuntu0.1
+    archive_bytes: 207380
+    installed_size_kib: 787
+  - package: libgstreamer-plugins-base1.0-0
+    version: 1.24.2-1ubuntu0.4
+    archive_bytes: 862084
+    installed_size_kib: 2812
+  - package: libgudev-1.0-0
+    version: 1:238-5ubuntu1
+    archive_bytes: 15906
+    installed_size_kib: 69
+  - package: libgstreamer-gl1.0-0
+    version: 1.24.2-1ubuntu0.4
+    archive_bytes: 213954
+    installed_size_kib: 658
+  - package: libgupnp-1.6-0
+    version: 1.6.6-1build3
+    archive_bytes: 92722
+    installed_size_kib: 276
+  - package: libgupnp-igd-1.6-0
+    version: 1.6.0-3build3
+    archive_bytes: 16540
+    installed_size_kib: 57
+  - package: libnice10
+    version: 0.1.21-2build3
+    archive_bytes: 157152
+    installed_size_kib: 400
+  - package: libxcb-xkb1
+    version: 1.15-1ubuntu2
+    archive_bytes: 32302
+    installed_size_kib: 151
+  - package: libxkbcommon-x11-0
+    version: 1.6.0-1build1
+    archive_bytes: 14536
+    installed_size_kib: 57
+  - package: libgstreamer-plugins-bad1.0-0
+    version: 1.24.2-1ubuntu4
+    archive_bytes: 797390
+    installed_size_kib: 2654
+  total_archive_bytes: 2863786
+  total_installed_size_kib: 9187
+  installed_compatibility:
+    libgstreamer1.0-0: 1.24.2-1ubuntu0.1
+    libglib2.0-0t64: 2.80.0-6ubuntu3.8
+    libegl1: 1.7.0-1build1
+    libgl1: 1.7.0-1build1
+    observed: Installed versions satisfy declared candidate constraints; actual loader/runtime compatibility remains
+      unproven.
+  provider_file_mapping_status: NOT_INSPECTED; primary Ubuntu online filelist retrieval failed. Root must inspect
+    acquired exact .deb contents before asserting seven provider mappings.
+  selected_route: Lead acquires exact checksum-bound 17 .debs and locally extracts their complete closure into
+    ignored configurable runtime prefix; metadata size is modest. No maintainer scripts, global install or profile
+    mutation needed for initial loader evaluation.
+  child_environment_controls:
+  - Only actually inspected extracted library directories in owned child LD_LIBRARY_PATH; no empty entries or
+    trailing colon.
+  - Same scoped environment for fresh loader proof and help/version. No host libc/loader replacement.
+  - GIO module/schema paths only if actual runtime diagnostics require and exact extracted contents support them.
+  - Namespace admission remains mandatory before any engine executable invocation; revalidate every launch/reload/recovery.
+  diagnostics_deliberation:
+    owner: ROLE-KUM-DIAGNOSTICS
+    observed: Diagnostics agrees package simulation is not runtime proof; inspect .deb contents and symlink targets,
+      exact child loader directories, same-env ldd/help/version, no host libc replacement, actual independent
+      worker admission then listener proof.
+    source: https://man7.org/linux/man-pages/man8/ld.so.8.html
+not_proven:
+- Rust compilation or behavior tests; no Cargo run by this role.
+- Seven SONAME actual resolved paths, help/version, actual worker admission or engines.
+- PNG/DOM/input/lifecycle/GPU integration and WP014 runtime acceptance.
+- Native Windows Servo, embedded libservo, zero-copy, media/audio/YouTube, ARM or universal performance.
+next_action: Lead publishes source readiness with manifest/lock scaffold and frozen seven cases, admits source
+  teams under explicit engine launch HOLD, acquires exact local native closure, independently proves actual runtime
+  gates, then grants one serial Cargo lane for affected implementation proof.

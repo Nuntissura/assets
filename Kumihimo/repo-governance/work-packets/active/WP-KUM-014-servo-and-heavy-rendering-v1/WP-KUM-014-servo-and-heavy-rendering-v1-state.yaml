@@ -1,17 +1,30 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
-generation: 2
+generation: 3
 phase: active
-owner: ROLE-KUM-DEV-LEAD
+owner: ROLE-KUM-CODER-04
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
 - repo-governance/specification/
 - repo-governance/work-packets/archive/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-stub.yaml
+- product/Cargo.toml
+- product/Cargo.lock
+- product/kumihimo-render-bridge/Cargo.toml
+- repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-dependency-readiness.yaml
+- repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-evaluation.yaml
 proof:
 - kind: full_contract_preparation
   source_revision: e5ba20ef16f538eb70c8dc4cd49871cf2f9b8446
   observed: Fresh canonical WP012 DONE; original stub preserved;9 requirements/7 cases; all99 future requirement
     records unchanged. No runtime/coding admission.
+- kind: source_dependency_and_frozen_evaluation_admission
+  dependency_sha256: e1eaaebb6ec8ed974a1be920d32d65d5dd0b156e7673c897a6b0366c6e0ad00e
+  evaluation_sha256: 63460e850220fe87d0e051c4d440e8e823e1adf154eecab1cb61300fb72d3ca3
+  observed: Source graph/cache READY; old318 lock records and allthree defaults preserved; seven cases frozen. Verified
+    Servo archive and independent ephemeral loopback namespace capability retained. Source coding admitted only
+    after exact publication; engine launch NOT_READY pending local libraries/introspection and fresh actual worker
+    kernel receipt before every launch.
 blockers: []
-next_action: Publish full contract/Spec21; freeze seven evaluation cases; acquire verified runtime and inspect prerequisites/namespace;
-  dependency readiness before coder04 admission
+next_action: After canonical admission publication coder04 expands disjoint Rust bridge/GPU and Python worker teams;
+  root resolves local native prerequisites and independent per-launch namespace gate; bundle one affected serial
+  Cargo batch when source stable

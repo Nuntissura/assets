@@ -1193,6 +1193,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kumihimo-render-bridge"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "egui",
+ "egui-wgpu",
+ "image",
+ "kumihimo-content",
+ "kumihimo-core",
+ "kumihimo-egui",
+ "serde",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
 name = "kumihimo-web"
 version = "0.1.0"
 dependencies = [

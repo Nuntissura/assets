@@ -1,0 +1,301 @@
+schema_version: kumihimo.evaluation.v1
+evaluation_id: EVAL-KUM-014-PREP-v1
+wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
+evaluator: ROLE-KUM-EVALUATION
+updated_at: '2026-10-12T11:01:16.437370+00:00'
+phase: frozen_preparation
+verdict: PREPARED_NOT_RUNTIME_PROVEN
+cases_frozen: true
+report_frozen_for_publication: true
+baseline_revision: 408ad9d96787d7787ed16d6bd86880f4ab07c954
+spec_revision: 21
+scope: Freeze all seven exact WP014 acceptance methods before coding; preserve full nine requirements and original
+  stub scope. Only this evaluation report is owned by evaluator.
+authority_limit: No runtime/dependency/coding success implied. Lead owns acquisition, independent namespace proof,
+  manifests/lock, Cargo/build/tests, process launch/cleanup, Git and state/publication. Worker cannot serve as sole
+  isolation or termination proof producer.
+preparation_binding:
+  contract_kind: work_packet
+  contract_requirements: 9
+  contract_acceptances: 7
+  decision_id: DEC-KUM-SERVO-RENDER-BRIDGE-v1
+  decision_source: repo-governance/specification/current/spec-modules/master-spec.md:4174
+  bindings:
+  - file: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
+    sha256: 47b44d3d4fcf2a982ad1ed6854dd121284bddeb2d126b35e612c38a92e3f37d8
+    candidate_and_origin_tracking_blobs_match_lf: true
+  - file: repo-governance/specification/current/specification.yaml
+    sha256: 1e408274aebe987da874c0705099987a16d8a084191076b5e4505117c5b19525
+    candidate_and_origin_tracking_blobs_match_lf: true
+  - file: repo-governance/specification/current/spec-modules/master-spec.md
+    sha256: 792e3af99fef25a24ee096da5bf85c109404ac5d7a30c81479290af9ec060dae
+    candidate_and_origin_tracking_blobs_match_lf: true
+  - file: repo-governance/specification/current/spec-modules/roadmap.md
+    sha256: 92536b2d79846e48dc2ea7352be13100534d85e3c8c878e539f6d9fc4364927e
+    candidate_and_origin_tracking_blobs_match_lf: true
+  publication_observation: Current local candidate and origin-tracking blobs408ad9d independently reread/matched;
+    root supplied fresh canonical fetch/read success. Evaluator did not perform network fetch/Git mutations.
+  runtime_status: NOT_EXECUTED
+  coding_admitted: false
+  evaluation_publication_status: LOCAL_PREPARATION_PENDING_LEAD_PUBLICATION
+cases:
+- case_id: EVAL-KUM-014-001
+  title: Independent optional package and bounded authenticated local bridge
+  contract_acceptance_refs:
+  - WP014-A001
+  contract_requirement_refs:
+  - WP014-R001
+  - WP014-R002
+  - WP014-R003
+  - WP014-R004
+  - WP014-R009
+  method: Inspect resolved graph/default build, independently verify pinned binary and namespace admission before
+    and after real listeners; challenge missing/stale admission and wrong/stale/oversized frame messages.
+  expected: Existing default members/external records unchanged; no Servo linkage; fail-closed namespace/payload
+    guards; actual listener isolation and scoped runtime metadata.
+  required_observations:
+  - 'Exact optional package/default std-only closure: original three default-members, public package versions/APIs,
+    Snapshot3/schema1 and old external lock records preserved; Core/content do not build/link Servo. Host-configurable
+    view/frame counts are not fixed to demo4.'
+  - Lead verifies actual acquired GNU release length49202383/SHA256ad951ede1a1a73899b822c9464f6bdb3ec25b531b27cd806671d79ac8b6a60d0
+    and actual runtime version/prerequisites; contract-pinned v0.6.0/c78d2c206f80a1c8b67eefa97f773bba513205d3 is
+    a target, not an observed binary until read.
+  - 'Before any engine/WebDriver launch: independent dev-lead kernel read of unchanged owned worker PID/starttime/private
+    namespaceID, different from host, loopback only/no non-loopback routes/interfaces/shared network or forwarding.
+    Controller and both engines inside; Windows communicates only through owned stdio/files.'
+  - Product launch fails closed with missing, stale or mismatched independent admission. Revalidate before EVERY
+    launch/reload/recovery against unchanged PID/starttime/kernel namespace. Worker-produced assertions alone never
+    qualify.
+  - 'After listeners: independent interfaces/routes/socket ownership read and outside-host namespace inaccessibility
+    proof. No public server, WSL shutdown, unowned stop, firewall weakening/global environment change.'
+  - Frame/message negatives cover unknown/stale/wrong-view/oversized/sequence/deadline responses, exact full content
+    Scope identity/session/provider/resource/target/connection/instance/mount, canonical geometry revision, engine
+    incarnation/sequence and separate renderer SurfaceBinding epoch; preserve last good pixels.
+  - 'Checked bounds: one pending capture/view, configurable engines2/host frames4, messages4MiB/PNG16MiB/rawRGBA16MiB/side2048
+    defaults. Top-left straight-alpha sRGB RGBA8, row_stride=width*4 and checked exact raw length; PNG dimensions/bytes
+    bounded before allocation.'
+  runtime_status: NOT_EXECUTED
+  evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+    complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+    composed pixels required here.
+- case_id: EVAL-KUM-014-002
+  title: Two real Servo contexts resize and accept input independently
+  contract_acceptance_refs:
+  - WP014-A002
+  contract_requirement_refs:
+  - WP014-R004
+  - WP014-R005
+  method: Capture A/B with different DOM dimensions, resize A, independently read both DOM states/images; send genuine
+    pointer and keyboard to each addressed view using current slot mapping.
+  expected: A changes intended size/content, B dimensions and pixels remain unchanged until targeted; real engine
+    receipts agree with canonical recipients and local coordinates.
+  required_observations:
+  - Two separately owned genuine Servo processes/software contexts, with current PID/starttime/incarnation and individual
+    DOM measurements/screenshots; no cross-process/thread engine-affine handles.
+  - Capture actual differently sized A/B, independently read DOM width/height and content, hash actual engine-received
+    screenshot bytes. Resize A and reread both; B retains exact dimensions and image/content until addressed.
+  - Genuine WebDriver pointer AND keyboard actions address each view through current RenderSlot mapping. Local/global/physical/scale
+    route is single mapping and current canonical recipient; inspect actual DOM/content change in intended engine
+    and absence of change in the other.
+  - Host mutation/resize dirtiness is distinct from unsupported direct engine frame-ready/animation notifications.
+    Resize/reload invalidates old geometry/engine/renderer bindings; independent exact byte lineage continues into
+    desktop composition in003.
+  runtime_status: NOT_EXECUTED
+  evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+    complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+    composed pixels required here.
+- case_id: EVAL-KUM-014-003
+  title: Actual browser, 2D and 3D clipped composition
+  contract_acceptance_refs:
+  - WP014-A003
+  contract_requirement_refs:
+  - WP014-R005
+  method: Render all four providers through DesktopAdapter and actual WGPU; inspect PNG/slot geometry and known
+    2D/3D points at normal/narrow/injected scale1.5; move/resize one pane.
+  expected: All actual content appears in correct clipped slots; 3D transform/depth is real GPU work; known point/pick
+    recipients agree without double scaling.
+  required_observations:
+  - Actual Linux engine screenshot receipts and independently computed hashes must match the EXACT encoded PNG or
+    decoded RGBA data consumed by Rust GPU upload; record transformation/format/stride if decoded. Unrelated browser
+    and GPU screenshots never prove integration.
+  - Open all current engine source images and actual Windows x64 DX12 composed images; compare intended page content
+    against independently read DOM and current canonical DesktopAdapter RenderSlots, ancestor clips, SurfaceBinding/GpuBinding.
+  - Two actual browser providers plus real2D provider and actual WGPU3D geometry use one existing canonical Controller/host
+    dispatcher; no alternate placement owner or native-child assumption.
+  - Exercise normal/narrow/injected scale1.5, move/resize one pane; read actual slot geometry/clip/physical size
+    and inspect known2D/3D projected points and actual GPU pixel readback/pick.
+  - Real depth/perspective or equivalent3D transformation is performed by GPU callback/texture, not a canned image.
+    Addressed2D/3D input changes only that scene; unchanged browser/other-scene data remains attributable. Channel
+    order/top-left/straight-alpha/sRGB/rowstride agree.
+  - Unsupported/background/compositing and engine/context capabilities stay explicit; injected scale is not an actual
+    monitor transition/physical-input claim.
+  runtime_status: NOT_EXECUTED
+  evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+    complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+    composed pixels required here.
+- case_id: EVAL-KUM-014-004
+  title: Affected dirty work and honest hidden lifecycle
+  contract_acceptance_refs:
+  - WP014-A004
+  contract_requirement_refs:
+  - WP014-R004
+  - WP014-R006
+  - WP014-R007
+  method: Independently count engine screenshot requests/texture uploads across static, A mutation, B unchanged,
+    hidden and explicit unsupported freeze/throttle; capture CPU/RSS ticks at actual times.
+  expected: Static/coalesced work bounded; A schedules only A; hidden retains engine and makes no suspension/release
+    claim; unsupported states remain visible and do not mutate confirmed state.
+  required_observations:
+  - Independently reconcile real per-engine screenshot requests and actual texture uploads over static, dirtyA/B-unchanged,
+    input/layout change and hidden states; baseline plus current counts/identities/deadlines distinguish requested
+    vs completed work.
+  - Static views produce no duplicate captures/uploads; coalesced A mutation schedules onlyA, notB. Hidden/unloaded/dirty/static
+    states and pending<=1/view are distinct; no perpetual capture/repaint.
+  - Read actual owned engine CPU ticks/RSS/elapsed at identified before/after times/PID/starttime, including visible/hidden/dirty.
+    Report scenario observations with units, never universal ceiling/performance improvement.
+  - Hidden/stopped capture does not prove engine suspension or released memory. Explicit freeze/throttle request
+    reports Unsupported/Unknown and preserves confirmed content/state; engine ownership stays observable.
+  runtime_status: NOT_EXECUTED
+  evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+    complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+    composed pixels required here.
+- case_id: EVAL-KUM-014-005
+  title: Renderer replacement and explicit popout context limits
+  contract_acceptance_refs:
+  - WP014-A005
+  contract_requirement_refs:
+  - WP014-R005
+  - WP014-R006
+  - WP014-R008
+  method: Replace actual renderer/device while retaining canonical IDs, challenge old device/epoch/frame bindings,
+    reupload real engine pixels and inspect recovery image; request unsupported raw-context native popout.
+  expected: Old binding rejected, recovered pixels current and clipped, source ownership retained on explained unsupported
+    context transfer; no real GPU-fault or engine-popout claim.
+  required_observations:
+  - Actually replace owned OffscreenRenderer/device, preserving canonical layout/view/resource IDs; fresh renderer
+    epoch/device and current GpuBinding must be observed, not a synthetic lost-state label alone.
+  - Challenge old device/SurfaceBinding epoch, superseded geometry, stale engine incarnation/sequence/full Scope
+    and old texture/frame bindings; reject before replacing/uploading last good content.
+  - Reload retained actual engine CPU pixels into new owned device, retain exact engine-byte linkage, inspect fresh
+    composed recovery PNG and known points/clips/input recipient.
+  - Request unsupported engine/rawGPU-context native popout before destructive canonical commit; explicit rejection/capability
+    reason retains source ownership/content. Unchanged WP012 window evidence may support only window machinery,
+    not real engine transfer/popout.
+  - No actual physical GPU-fault, zero-copy or cross-thread/context transfer claim from controlled device replacement.
+    Bounded failure leaves last valid content/recoverable placeholder.
+  runtime_status: NOT_EXECUTED
+  evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+    complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+    composed pixels required here.
+- case_id: EVAL-KUM-014-006
+  title: Actual owned unload/reload, protection and reconciliation
+  contract_acceptance_refs:
+  - WP014-A006
+  contract_requirement_refs:
+  - WP014-R007
+  - WP014-R008
+  method: Request protected unload then eligible reloadable unload; independently observe exact PID/starttime/descendant
+    absence, logical tab retention and placeholder; restore fresh engine/page pixels and reconcile one failed/unknown
+    lifecycle response.
+  expected: Protected engine remains; eligible owned process ends before confirmed unload; only page reload strength
+    claimed; bounded failure stays recoverable and unaffected engine remains live.
+  required_observations:
+  - 'Request protected keep-alive/dirty unload: exact owned engine remains live and logical content retained. Only
+    clean/reloadable host-reference eligibility admits destructive unload.'
+  - Eligible unload confirms only after INDEPENDENT /proc read proves exact owned PID/starttime absence and no live
+    descendants. Worker receipt/status/screenshot alone cannot prove termination. Observe unaffected engine remains
+    live with unchanged identity/content.
+  - Logical tab/view/resource/layout IDs remain present and placeholder reachable while unloaded; distinguish hidden,
+    requested shutdown, unknown outcome and confirmed unloaded.
+  - Restore revalidates independent namespace admission BEFORE launch, creates fresh owned process/software context/incarnation,
+    reloads declared page reference and shows actual engine pixels linked to fresh GPU composition.
+  - Advertise page-reload restoration only, not arbitrary JavaScript/media-state restoration. Reconcile one bounded
+    failed/unknown lifecycle response using independent canonical/kernel reads before changed-input/evidence-backed
+    retry.
+  - Startup30s/request15s/owned graceful shutdown10s/default scenario240s product timers and retries<=3 hold; terminate
+    only exactly owned starttime-validated children. No unowned stop/WSL/global side effects.
+  runtime_status: NOT_EXECUTED
+  evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+    complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+    composed pixels required here.
+- case_id: EVAL-KUM-014-007
+  title: Recoverable quiet shipped boundary and exact publication
+  contract_acceptance_refs:
+  - WP014-A007
+  contract_requirement_refs:
+  - WP014-R001
+  - WP014-R002
+  - WP014-R003
+  - WP014-R004
+  - WP014-R008
+  - WP014-R009
+  method: Run shipped actual engine/GPU batch with independent namespace/process checks, inspect all PNG/diagnostics,
+    verify cleanup only owned processes, manual/topology/matrix/state and canonical origin.
+  expected: Original six prior methods plus this case retained; exact source/engine/backend/version and artifact
+    fence recorded; no orphan owned engine/listener, no foreground input, honest unavailable/unsupported outcomes
+    and exact pushed closure.
+  required_observations:
+  - Lead runs shipped deterministic actual two-engine/GPU batch with product scenario deadline240s and current independent
+    namespace admission/ownership checks; no outer Cargo timeout or evaluator launch.
+  - Inspect ALL resulting actual engine/composed/recovery/placeholder PNGs directly, current redacted diagnostics
+    and independent engine/DOM/kernel/process/resource observations. Hash/version/metrics/log/name alone never prove
+    pixels or predecessor outcome.
+  - Validate missing-runtime/library/admission/provider, stale frame, resize failure/lost engine/unsupported transfer
+    causal recoverability and bounded timers/retries without replacing required real-engine acquisition with a proxy.
+  - Verify cleanup only exactly owned PID/starttime descendants, no orphan engines/listeners, no visible foreground
+    windows/operator input; no public server/unowned mutation. Independent postcleanup kernel/process read required.
+  - Bind exact source/package/lock/runtime archive/executable/engine version/backend/platform and artifact digests;
+    reuse prior Core/content/JSON/desktop/web proof only after affected inputs checked unchanged.
+  - No-context product manual/launcher covers configured runtime/output roots, namespace admission, message/pixel/scope/geometry/epoch
+    routes, input/dirty/lifecycle/unsupported behavior and recovery; topology/matrix/state/board align with actual
+    scope.
+  - All original seven methods remain unchanged. Lead commits/pushes owned result and independently rereads canonical
+    origin input/report containment before WP DONE; evaluator report preparation is not coding/runtime/publication
+    approval.
+  runtime_status: NOT_EXECUTED
+  evaluation_scope: Frozen bounded actual-engine/Linux-namespace/Windows-x64-DX12 experiment. Component fixtures
+    complement but cannot replace actual engine bytes, independent kernel/DOM/process reads or directly inspected
+    composed pixels required here.
+proof_boundary:
+  independent_checks_required:
+  - Current engine receipt byte hash reconciled with exact Rust-consumed PNG/RGBA and independently perceived GPU
+    composition.
+  - Dev-lead-owned kernel namespace/admission/socket/outside-host check independent of worker, before every engine
+    launch/reload/recovery.
+  - Independent /proc PID/starttime/descendant absence before confirmed unload; fresh namespace revalidation before
+    restore.
+  required_runtime_surfaces:
+  - Affected render-bridge default and desktop all-target checks; one owning contract consumer target
+  - Actual pinned two-engine batch inside independently admitted namespace; independently read kernel/DOM/PNG/PID/starttime/resource
+    data
+  - Actual Windows x64 DX12 composition and renderer replacement, all resulting images directly inspected
+  - Reuse unchanged existing selected proof; structural sync/check and exact canonical origin reread
+  focused_execution: One owning contract target plus affected default/desktop checks and one actual engine/GPU batch;
+    lead serial Cargo lane/stable cache. No duplicate prior broad suites.
+  risk_tier: HIGH
+  formal_runtime_addendum_fields:
+  - DIFF_ATTACK_SURFACES
+  - INDEPENDENT_CHECKS_RUN
+  - COUNTERFACTUAL_CHECKS
+  - BOUNDARY_PROBES
+  - NEGATIVE_PATH_CHECKS
+  - INDEPENDENT_FINDINGS
+  - RESIDUAL_UNCERTAINTY
+  runtime_pass_condition: All seven frozen methods/current required observations pass with no unresolved finding;
+    exact source/runtime/artifact binding and actual independent boundary evidence required. Final origin closure
+    remains separately gated.
+preservation:
+  all_nine_requirements_mapped: true
+  all_seven_exact_methods_and_expected_clauses_retained: true
+  original_stub_scope_retained_in_contract: true
+  accepted_future_spec_scope_not_narrowed: true
+  prior_desktop_web_reports_untouched: true
+not_proven:
+- Acquired Servo binary/hash/version/ELF prerequisites and independent private namespace admission.
+- Actual Servo contexts/DOM/input/pixel lineage into real GPU3D/2D composition.
+- Resource observations/owned termination/reload/device recovery/quiet cleanup.
+- Embedded libservo/native Windows Servo/direct GL-WGPU sharing/zero-copy/media-video-YouTube-audio/ARM/other platforms/physical
+  input or GPU fault/performance gains/arbitrary page-state restoration.
+next_action: Lead publishes exact frozen evaluation, completes runtime/dependency/namespace admission prerequisites
+  and owns coder04 admission. Evaluator remains report-only; runtime cases await exact real-engine/GPU outputs and
+  independent kernel/DOM/process evidence.

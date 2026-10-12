@@ -1,5 +1,5 @@
 [workspace]
-members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content", "kumihimo-egui", "kumihimo-web"]
+members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content", "kumihimo-egui", "kumihimo-web", "kumihimo-render-bridge"]
 default-members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content"]
 exclude = ["third-party/accesskit_windows-0.29.2"]
 resolver = "2"
