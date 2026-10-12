@@ -4,7 +4,9 @@ param(
     [Parameter(Mandatory=$true)][string]$Nonce,
     [Parameter(Mandatory=$true)][string]$Output,
     [Parameter(Mandatory=$true)][UInt64]$TargetView,
-    [Parameter(Mandatory=$true)][string]$TargetLabel
+    [Parameter(Mandatory=$true)][string]$TargetLabel,
+    [string]$TargetControlId,
+    [ValidateSet('initial','after-popout','after-docking','after-recovery','menu-open','menu-dismiss')][string]$Stage='initial'
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
@@ -35,14 +37,18 @@ $actionBefore = $null
 $actionAfter = $null
 $actionPattern = $null
 $failure = $null
-$tracePath = Join-Path ([System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($Output))) 'native-uia.trace.json'
+$tracePath = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetFullPath($Output),'trace.json')
+if ([string]::IsNullOrEmpty($TargetControlId)) { $TargetControlId="view/$TargetView/tab" }
+$overlayPresent=$null
+$returnFocus=$null
+$announcementPresent=$null
 $checkpoints = [System.Collections.Generic.List[object]]::new()
 $targetDetails = $null
 function Save-Checkpoint([string]$Phase, [object]$Details = $null, [string]$ExceptionMessage = $null) {
     # One observer writer; persist each bounded checkpoint before crossing the action boundary.
     if ($checkpoints.Count -ge 64) { $checkpoints.RemoveAt(0) }
     $checkpoints.Add([ordered]@{ phase=$Phase; timestamp_utc=[DateTime]::UtcNow.ToString('o'); timestamp_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString(); action_pattern=$actionPattern; target=$targetDetails; details=$Details; exception=$ExceptionMessage; owned_window=(Read-OwnedObservation) })
-    $trace = [ordered]@{ schema='kumihimo.uia-action-trace.v1'; writer='powershell-uia-observer'; nonce=$Nonce; expected_owned_pid=$ExpectedPid; hwnd=$Hwnd; target_view=$TargetView; target_control_id="view/$TargetView/tab"; target_label=$TargetLabel; checkpoints=@($checkpoints.ToArray()) }
+    $trace = [ordered]@{ schema='kumihimo.uia-action-trace.v1'; writer='powershell-uia-observer'; stage=$Stage; nonce=$Nonce; expected_owned_pid=$ExpectedPid; hwnd=$Hwnd; target_view=$TargetView; target_control_id=$TargetControlId; target_label=$TargetLabel; checkpoints=@($checkpoints.ToArray()) }
     $traceBytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($trace | ConvertTo-Json -Depth 16))
     if ($traceBytes.Length -gt 1048576) { throw 'UIA trace byte budget exceeded' }
     # Keep the last complete trace intact if owned helper cleanup interrupts this rewrite.
@@ -62,6 +68,21 @@ function Read-Patterns($node) {
     if ($node.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$toggle)) { $selected=($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On); $value=$toggle.Current.ToggleState.ToString() }
     if ($node.TryGetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern,[ref]$range)) { $value=$range.Current.Value }
     return [ordered]@{ selected=$selected; value=$value; actions=@($node.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) }
+}
+function Read-ControlTree {
+    $fresh=[System.Collections.Generic.List[object]]::new()
+    $nodes=[System.Collections.Generic.Queue[object]]::new()
+    $nodes.Enqueue(@([System.Windows.Automation.AutomationElement]::FromHandle($target),0))
+    while ($nodes.Count -gt 0 -and $fresh.Count -lt 128) {
+        $entry=$nodes.Dequeue(); $node=$entry[0]; $depth=[int]$entry[1]; $current=$node.Current
+        $patterns=Read-Patterns $node
+        $fresh.Add([ordered]@{ name=$current.Name; automation_id=$current.AutomationId; role=$current.ControlType.ProgrammaticName; enabled=$current.IsEnabled; offscreen=$current.IsOffscreen; focusable=$current.IsKeyboardFocusable; focused=$current.HasKeyboardFocus; depth=$depth; selected=$patterns.selected; value=$patterns.value; actions=$patterns.actions })
+        if ($depth -lt 8) {
+            $child=$walker.GetFirstChild($node)
+            while ($null -ne $child -and $nodes.Count -lt 128) { $nodes.Enqueue(@($child,($depth+1))); $child=$walker.GetNextSibling($child) }
+        }
+    }
+    return ,$fresh
 }
 try {
     Save-Checkpoint 'observer-start'
@@ -87,7 +108,10 @@ try {
             if ($null -eq $invoked -and $current.IsEnabled -and $current.Name -eq $TargetLabel) {
                 $pattern = $null
                 $actionBefore=$patterns
-                if ($node.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)) {
+                if ($Stage -like 'menu-*') {
+                    if (-not $node.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) { throw 'Menu target exposes no Invoke pattern' }
+                    $actionPattern='Invoke.Invoke'
+                } elseif ($node.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)) {
                     $actionPattern='SelectionItem.Select'
                 } elseif ($node.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)) {
                     $actionPattern='Invoke.Invoke'
@@ -109,12 +133,23 @@ try {
                 }
                 $invoked=$current.Name
                 for ($settle=0; $settle -lt 20; $settle++) {
-                    $actionAfter=Read-Patterns $node
-                    Save-Checkpoint 'action-settle' ([ordered]@{ attempt=$settle; selected=$actionAfter.selected; value=$actionAfter.value; actions=$actionAfter.actions })
-                    if ($actionAfter.selected -eq $true) { break }
+                    if ($Stage -like 'menu-*') {
+                        $fresh=Read-ControlTree
+                        $overlayPresent=@($fresh | Where-Object { $_.name -eq 'Dismiss pane list' -and $_.enabled }).Count -gt 0
+                        $returnFocus=@($fresh | Where-Object { $_.name -eq 'Panes / reveal (F6)' -and $_.focused }).Count -gt 0
+                        $announcementPresent=@($fresh | Where-Object { $_.name -eq 'Pane list dismissed; logical focus returned to Panes / reveal (F6)' }).Count -gt 0
+                        $actionAfter=[ordered]@{ overlay_present=$overlayPresent; return_focus=$returnFocus; announcement_present=$announcementPresent }
+                        Save-Checkpoint 'action-settle' ([ordered]@{ attempt=$settle; state=$actionAfter })
+                        if (($Stage -eq 'menu-open' -and $overlayPresent) -or ($Stage -eq 'menu-dismiss' -and -not $overlayPresent -and $announcementPresent)) { break }
+                    } else {
+                        $actionAfter=Read-Patterns $node
+                        Save-Checkpoint 'action-settle' ([ordered]@{ attempt=$settle; selected=$actionAfter.selected; value=$actionAfter.value; actions=$actionAfter.actions })
+                        if ($actionAfter.selected -eq $true) { break }
+                    }
                     Start-Sleep -Milliseconds 80
                 }
                 Save-Checkpoint 'action-settled' $actionAfter
+                break
             }
             if ($depth -lt 8) {
                 $child = $walker.GetFirstChild($node)
@@ -125,10 +160,11 @@ try {
     }
     if ($records.Count -lt 2) { throw 'Owned UIA tree did not expose controls before bounded deadline' }
     if ($null -eq $invoked) { throw 'Exact demo tab target was not found in owned UIA tree' }
+    $records=Read-ControlTree
 } catch { $failure = $_.Exception.Message; Save-Checkpoint 'observer-exception' $null $failure }
 $after = Read-OwnedObservation
 if ($after.visible -or $after.foreground_owned -or -not $after.owned_pid) { $failure = 'Quiet ownership condition changed during UIA observation' }
-$result = [ordered]@{ schema='kumihimo.uia-observation.v1'; hwnd=$Hwnd; pid=$ExpectedPid; nonce=$Nonce; before=$before; after=$after; controls=@($records.ToArray()); invoked=$invoked; target_view=$TargetView; target_control_id="view/$TargetView/tab"; action_pattern=$actionPattern; action_before=$actionBefore; action_after=$actionAfter; error=$failure; scope='Owned hidden HWND exact tab query and supported action only; no global input/focus' }
+$result = [ordered]@{ schema='kumihimo.uia-observation.v1'; hwnd=$Hwnd; pid=$ExpectedPid; nonce=$Nonce; before=$before; after=$after; controls=@($records.ToArray()); invoked=$invoked; target_view=$TargetView; target_control_id=$TargetControlId; action_pattern=$actionPattern; action_before=$actionBefore; action_after=$actionAfter; error=$failure; stage=$Stage; overlay_present=$overlayPresent; return_focus=$returnFocus; os_opener_has_keyboard_focus=$returnFocus; announcement_present=$announcementPresent; scope='Owned hidden HWND exact control query and supported action; logical egui focus proof is native-side, OS HasKeyboardFocus remains observed; no global input/focus' }
 $json = $result | ConvertTo-Json -Depth 12
 [System.IO.File]::WriteAllText($Output,$json,[System.Text.UTF8Encoding]::new($false))
 if ($null -ne $failure) { Write-Error $failure; exit 1 }

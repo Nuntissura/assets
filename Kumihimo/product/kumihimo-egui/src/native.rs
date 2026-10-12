@@ -6,7 +6,7 @@ use crate::{
     window_slots::{PendingNative, WindowSlots},
     *,
 };
-use kumihimo_core::{Identity, Snapshot};
+use kumihimo_core::{Identity, Scalar, Snapshot};
 use std::{
     collections::HashMap,
     num::NonZeroU32,
@@ -61,6 +61,7 @@ struct CaptureTag {
     identity: Identity,
     generation: u64,
     label: String,
+    requested_at: Instant,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SurfaceState {
@@ -135,10 +136,29 @@ pub trait NativeHost: DesktopHost {
     }
     fn renderer_binding(&mut self, _surface: SurfaceBinding, _binding: crate::content::GpuBinding) {
     }
+    fn surface_observation(
+        &mut self,
+        _controller: &mut Controller,
+        _surface: SurfaceBinding,
+        _minimized: bool,
+        _occlusion: kumihimo_content::Observation<bool>,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 impl NativeHost for crate::demo::DemoHost {
     fn take_native_actions(&mut self) -> Vec<AdapterAction> {
         std::mem::take(&mut self.native_actions)
+    }
+    fn surface_observation(
+        &mut self,
+        controller: &mut Controller,
+        surface: SurfaceBinding,
+        minimized: bool,
+        occlusion: kumihimo_content::Observation<bool>,
+    ) -> Result<()> {
+        // Hidden automation HWNDs still render logical content for owned readback.
+        self.set_surface_observation(controller, surface, true, minimized, occlusion)
     }
 }
 enum NativeEvent {
@@ -170,15 +190,29 @@ struct NativeWindow {
     focused: bool,
     occluded: Option<bool>,
     report: FrameReport,
+    draw_count: u64,
 }
 enum ProbePhase {
     Initial,
     ObserveInitial,
     Moving,
     Populated,
+    ObservePopout,
+    PopoutObserved,
     Resizing,
     Recreated,
+    FailedStatus,
+    Recovered,
+    ObserveRecovered,
+    RecoveredObserved,
     HeldSurvivors,
+    Docked,
+    ObserveDocked,
+    DockedObserved,
+    ObserveMenuOpen,
+    MenuOpened,
+    ObserveMenuDismiss,
+    MenuDismissed,
     Observer,
     Finished,
 }
@@ -210,6 +244,20 @@ struct App<H: NativeHost> {
     observer_generation: Option<u64>,
     observer_frame: Option<FrameId>,
     observer_previous: Option<ViewId>,
+    observer_target: Option<ViewId>,
+    observer_window: Option<WindowId>,
+    observer_stage: &'static str,
+    observer_actions_before: usize,
+    observer_draw_before: u64,
+    observer_results: Vec<serde_json::Value>,
+    popout_observed: bool,
+    recovery_exercised: bool,
+    recovery_snapshot: Option<Snapshot>,
+    recovery_window: Option<WindowId>,
+    recovery_notice: bool,
+    failure_exercised: bool,
+    surface_observations: Vec<serde_json::Value>,
+    redraw_observations: Vec<serde_json::Value>,
     uia_actions: usize,
     returned: usize,
     error: Option<AdapterError>,
@@ -316,6 +364,20 @@ pub fn run<H: NativeHost + 'static>(
             observer_generation: None,
             observer_frame: None,
             observer_previous: None,
+            observer_target: None,
+            observer_window: None,
+            observer_stage: "initial",
+            observer_actions_before: 0,
+            observer_draw_before: 0,
+            observer_results: Vec::new(),
+            popout_observed: false,
+            recovery_exercised: false,
+            recovery_snapshot: None,
+            recovery_window: None,
+            recovery_notice: false,
+            failure_exercised: false,
+            surface_observations: Vec::new(),
+            redraw_observations: Vec::new(),
             uia_actions: 0,
             returned: 0,
             error: None,
@@ -340,6 +402,9 @@ pub fn run<H: NativeHost + 'static>(
             "captures":app.captures, "canonical_generation":app.controller.snapshot().generation,
             "prepared_slots":app.slots.prepared().len(), "returned":app.returned,
             "remaining_native_bindings":app.slots.bindings().len(), "uia":app.observer_result,
+            "uia_stages":app.observer_results,
+            "native_surface_signals":app.surface_observations,
+            "native_redraw_demand":app.redraw_observations,
             "accesskit_forwarded_actions":app.uia_actions,
             "error":app.error.as_ref().map(ToString::to_string),
             "not_proven":["physical touch/pen", "physical GPU fault", "idle CPU/memory release", "external provider devices", "other OS/ARM"],
@@ -442,6 +507,7 @@ impl<H: NativeHost> App<H> {
                 focused: false,
                 occluded: None,
                 report: Default::default(),
+                draw_count: 0,
             },
         );
         if self.options.interactive {
@@ -526,6 +592,7 @@ impl<H: NativeHost> App<H> {
             identity: self.controller.snapshot().identity.clone(),
             generation: self.controller.snapshot().generation,
             label: label.into(),
+            requested_at: Instant::now(),
         });
         w.dirty = true;
         Ok(())
@@ -560,6 +627,20 @@ impl<H: NativeHost> App<H> {
             size.height as f64 / scale as f64,
         )?;
         w.surface.pixels_per_point = scale;
+        let os = os_observation(Some(hwnd(&window)));
+        let minimized = os["minimized"]
+            .as_bool()
+            .ok_or(AdapterError::Invalid("native minimized observation"))?;
+        let occlusion = w
+            .occluded
+            .map(kumihimo_content::Observation::Known)
+            .unwrap_or(kumihimo_content::Observation::Unknown);
+        self.host
+            .surface_observation(&mut self.controller, w.surface, minimized, occlusion)?;
+        if self.surface_observations.len() >= 64 {
+            self.surface_observations.remove(0);
+        }
+        self.surface_observations.push(serde_json::json!({"root":w.surface.root.raw(),"epoch":w.surface.epoch,"elapsed_millis":self.started.elapsed().as_millis().to_string(),"actual_window":os,"logical_render_eligible":true,"minimized":minimized,"os_occlusion":w.occluded,"native_focused":w.focused,"provenance":"Independent owned HWND visibility/IsIconic; Occluded and Focused only from actual winit events"}));
         if let Some(render) = self.painter.render_state() {
             self.host.renderer_binding(
                 w.surface,
@@ -577,12 +658,39 @@ impl<H: NativeHost> App<H> {
             .native_pixels_per_point = Some(scale);
         input.screen_rect = Some(to_egui(w.surface.bounds));
         let mut result = Ok(FrameReport::default());
+        let recovery_notice = self.recovery_notice && w.surface.root == self.root;
         let output = self.ctx.run(input, |ctx| {
             result = w
                 .adapter
                 .show(ctx, &mut self.controller, w.surface, &mut self.host);
+            if recovery_notice {
+                egui::Area::new(egui::Id::new((
+                    w.surface.viewport,
+                    "native-recovery-status",
+                )))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(20.0, 80.0))
+                .show(ctx, |ui| {
+                    ui.label(
+                        "Native surface recovery failed; bounded retry pending (injected probe)",
+                    );
+                });
+            }
         });
         w.report = result?;
+        w.draw_count = w
+            .draw_count
+            .checked_add(1)
+            .ok_or(AdapterError::Budget("native draw count"))?;
+        let mounts:Vec<_>=self.controller.inspect().mounts.values().filter_map(|mount|{
+            let view=mount.scope.target.view()?;
+            let record=self.controller.snapshot().views.get(&view)?;
+            (self.controller.snapshot().frames[&record.frame].workspace==w.surface.root).then(||serde_json::json!({"view":view.raw(),"selected":mount.signals.selected,"logical_visible":mount.signals.visible,"focused":mount.signals.focused,"minimized":mount.signals.minimized,"occlusion":format!("{:?}",mount.signals.occlusion)}))
+        }).take(32).collect();
+        if let Some(last) = self.surface_observations.last_mut() {
+            last["provider_signals_after_draw"] = serde_json::json!(mounts);
+            last["draw_count"] = serde_json::json!(w.draw_count);
+        }
         w.state
             .handle_platform_output(&window, output.platform_output);
         let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
@@ -655,20 +763,59 @@ impl<H: NativeHost> App<H> {
             let window = self.windows[&id].window.clone();
             self.assert_quiet(&window, "screenshot-readback")?;
             let w = self.windows.get_mut(&id).unwrap();
-            if w.capture.as_ref() != Some(&tag)
-                || tag.viewport != viewport_id
-                || tag.hwnd != hwnd(&window)
-                || tag.epoch != w.surface.epoch
-                || tag.size != [window.inner_size().width, window.inner_size().height]
-                || tag.scale != window.scale_factor() as f32
-                || image.size != [tag.size[0] as usize, tag.size[1] as usize]
-                || image.pixels.is_empty()
-                || tag.identity != self.controller.snapshot().identity
-            {
+            if !screenshot_matches(
+                w,
+                &tag,
+                viewport_id,
+                image.size,
+                image.pixels.is_empty(),
+                self.controller.snapshot(),
+                self.options.timeout,
+            ) {
                 self.observations.push(
                     serde_json::json!({"phase":"stale-screenshot-rejected","capture":tag.capture}),
                 );
                 continue;
+            }
+            if tag.pending_nonce.is_some() {
+                let mut challenges = Vec::new();
+                for kind in [
+                    "wrong-window",
+                    "old-epoch",
+                    "wrong-nonce",
+                    "wrong-size",
+                    "timed-out",
+                ] {
+                    let mut changed = tag.clone();
+                    match kind {
+                        "wrong-window" => changed.hwnd = 0,
+                        "old-epoch" => changed.epoch = 0,
+                        "wrong-nonce" => {
+                            changed.pending_nonce =
+                                changed.pending_nonce.and_then(|n| n.checked_add(1))
+                        }
+                        "wrong-size" => changed.size = [0, 0],
+                        _ => {
+                            changed.requested_at = Instant::now()
+                                .checked_sub(self.options.timeout + Duration::from_secs(1))
+                                .ok_or(AdapterError::Invalid("capture challenge clock"))?
+                        }
+                    }
+                    let rejected = !screenshot_matches(
+                        w,
+                        &changed,
+                        viewport_id,
+                        image.size,
+                        image.pixels.is_empty(),
+                        self.controller.snapshot(),
+                        self.options.timeout,
+                    );
+                    if !rejected {
+                        return Err(AdapterError::Invalid("adversarial screenshot accepted"));
+                    }
+                    challenges.push(serde_json::json!({"kind":kind,"rejected":rejected}));
+                }
+                self.observations.push(serde_json::json!({"phase":"authentic-screenshot-correlation-challenges","provenance":"Injected tag mutations checked against actual owned readback; no Ready minted for invalid tag","capture":tag.capture,"challenges":challenges}));
             }
             let bytes = image
                 .pixels
@@ -713,6 +860,27 @@ impl<H: NativeHost> App<H> {
                     bytes,
                     tag,
                 };
+                let mut wrong = pending.clone();
+                wrong.nonce = wrong
+                    .nonce
+                    .checked_add(1)
+                    .ok_or(AdapterError::Budget("pending challenge nonce"))?;
+                let wrong_nonce = ready.validate(&wrong, self.controller.snapshot()).is_err();
+                wrong = pending.clone();
+                wrong.slot.root = self.root;
+                let wrong_root = ready.validate(&wrong, self.controller.snapshot()).is_err();
+                wrong = pending.clone();
+                wrong.generation = wrong
+                    .generation
+                    .checked_add(1)
+                    .ok_or(AdapterError::Budget("pending challenge generation"))?;
+                let wrong_generation = ready.validate(&wrong, self.controller.snapshot()).is_err();
+                if !wrong_nonce || !wrong_root || !wrong_generation {
+                    return Err(AdapterError::Invalid(
+                        "authentic Ready accepted changed intent",
+                    ));
+                }
+                self.observations.push(serde_json::json!({"phase":"authentic-ready-intent-challenges","wrong_nonce_rejected":wrong_nonce,"wrong_root_rejected":wrong_root,"wrong_generation_rejected":wrong_generation,"source_before_commit":pending.source_frame.raw(),"provenance":"Actual native-minted Ready consumed only after mutated intent negatives"}));
                 let binding =
                     self.slots
                         .commit(pending, ready, &mut self.controller, &mut self.host)?;
@@ -758,6 +926,38 @@ impl<H: NativeHost> App<H> {
         if self.pending.is_some() || self.slots.bindings().len() >= self.host.policy().max_pending {
             return Err(AdapterError::Budget("native pending operation"));
         }
+        if self.options.probe && !self.failure_exercised {
+            let prepared =
+                self.slots
+                    .prepare(&mut self.controller, &mut self.host, content.clone())?;
+            let source_frame = prepared.source_frame;
+            let source_workspace = prepared.source_workspace;
+            let count = self.windows.len();
+            // Bounded fault injection at the creation boundary, not an OS creation failure claim.
+            let creation: Result<WindowId> = Err(AdapterError::Host(
+                "injected destination factory failure before owned HWND creation".into(),
+            ));
+            self.slots.cancel(&prepared, self.controller.snapshot())?;
+            self.observations.push(serde_json::json!({"phase":"injected-native-destination-creation-failure","error":creation.err().map(|e|format!("{e:?}")),"source_frame":source_frame.raw(),"source_workspace":source_workspace.raw(),"source_unchanged":self.controller.snapshot().frames[&source_frame].workspace==source_workspace,"owned_window_count_unchanged":self.windows.len()==count,"slot_retained":self.slots.prepared().iter().any(|s|s.root==prepared.slot.root)}));
+            let mut interrupted =
+                self.slots
+                    .prepare(&mut self.controller, &mut self.host, content.clone())?;
+            let viewport =
+                egui::ViewportId::from_hash_of(("interrupted-native", interrupted.nonce));
+            let interrupted_id = self.create_window(event_loop, interrupted.slot.root, viewport)?;
+            let bounds = self.windows[&interrupted_id].surface.bounds;
+            self.slots.arm(
+                &mut interrupted,
+                &mut self.controller,
+                &mut self.host,
+                bounds,
+            )?;
+            self.slots
+                .cancel(&interrupted, self.controller.snapshot())?;
+            self.observations.push(serde_json::json!({"phase":"injected-interrupted-native-handoff","provenance":"Actual owned HWND/Painter binding interrupted before capture request","ready_minted":false,"owned_window":os_observation(Some(hwnd(&self.windows[&interrupted_id].window))),"source_frame":source_frame.raw(),"source_workspace":source_workspace.raw(),"source_unchanged":self.controller.snapshot().frames[&source_frame].workspace==source_workspace,"same_prepared_slot_reused":interrupted.slot.root==prepared.slot.root,"committed_bindings":self.slots.bindings().len()}));
+            self.remove_window(interrupted_id)?;
+            self.failure_exercised = true;
+        }
         let mut pending = self
             .slots
             .prepare(&mut self.controller, &mut self.host, content)?;
@@ -777,10 +977,29 @@ impl<H: NativeHost> App<H> {
     fn advance_probe(&mut self, event_loop: &ActiveEventLoop, id: WindowId) -> Result<()> {
         match self.phase {
             ProbePhase::Initial => {
-                self.start_observer(id)?;
+                if self.options.observer_script.is_some() {
+                    let target = self
+                        .options
+                        .observer_target
+                        .ok_or(AdapterError::Invalid("initial UIA target"))?;
+                    self.start_tab_observer(id, "initial", target)?;
+                }
                 self.phase = ProbePhase::ObserveInitial;
             }
-            ProbePhase::Populated => {
+            ProbePhase::Populated
+                if !self.popout_observed
+                    && self.options.observer_script.is_some()
+                    && self.slots.bindings().iter().any(|b| {
+                        b.root == self.windows[&id].surface.root
+                            && matches!(b.content, NativeContent::Frame(_))
+                    }) =>
+            {
+                let target = self.unselected_tab(id)?;
+                self.start_tab_observer(id, "after-popout", target)?;
+                self.popout_observed = true;
+                self.phase = ProbePhase::ObservePopout;
+            }
+            ProbePhase::Populated | ProbePhase::PopoutObserved => {
                 // Request a real owned HWND resize; only Resized/current live size advances proof.
                 let _ = self.windows[&id]
                     .window
@@ -799,6 +1018,46 @@ impl<H: NativeHost> App<H> {
                 self.request_capture(id, "recreated", None)?;
             }
             ProbePhase::Recreated
+                if !self.recovery_exercised
+                    && self.slots.bindings().iter().any(|b| {
+                        b.root == self.windows[&id].surface.root
+                            && matches!(b.content, NativeContent::Frame(_))
+                    }) =>
+            {
+                self.exercise_recovery(id)?;
+                self.recovery_exercised = true;
+                self.phase = ProbePhase::FailedStatus;
+                let source = self
+                    .windows
+                    .iter()
+                    .find_map(|(id, w)| (w.surface.root == self.root).then_some(*id))
+                    .ok_or(AdapterError::Invalid("recovery status root"))?;
+                self.request_capture(source, "injected-failed-recovery-visible-status", None)?;
+            }
+            ProbePhase::FailedStatus => {
+                let native = self
+                    .recovery_window
+                    .take()
+                    .ok_or(AdapterError::Invalid("recovery window"))?;
+                self.windows.get_mut(&native).unwrap().retries = 0;
+                self.recovery_notice = false;
+                self.recreate(native)?;
+                if self.recovery_snapshot.take().as_ref() != Some(self.controller.snapshot()) {
+                    return Err(AdapterError::Invalid("recovery canonical identity"));
+                }
+                self.phase = ProbePhase::Recovered;
+                self.request_capture(native, "recovered-after-injected-failure", None)?;
+            }
+            ProbePhase::Recovered if self.options.observer_script.is_some() => {
+                let target = self.unselected_tab(id)?;
+                self.start_tab_observer(id, "after-recovery", target)?;
+                self.phase = ProbePhase::ObserveRecovered;
+            }
+            ProbePhase::Recovered => {
+                self.phase = ProbePhase::Recreated;
+                self.advance_probe(event_loop, id)?;
+            }
+            ProbePhase::Recreated | ProbePhase::RecoveredObserved
                 if self.options.probe_partial_close
                     && self.slots.bindings().iter().any(|b| {
                         b.root == self.windows[&id].surface.root
@@ -837,21 +1096,184 @@ impl<H: NativeHost> App<H> {
                 self.phase = ProbePhase::HeldSurvivors;
                 self.request_capture(id, "partial-close-survivors", None)?;
             }
-            ProbePhase::Recreated | ProbePhase::HeldSurvivors => {
+            ProbePhase::Recreated | ProbePhase::RecoveredObserved | ProbePhase::HeldSurvivors => {
                 let root = self.windows[&id].surface.root;
+                let was_frame = self
+                    .slots
+                    .bindings()
+                    .iter()
+                    .any(|b| b.root == root && matches!(b.content, NativeContent::Frame(_)));
+                let binding = self
+                    .slots
+                    .bindings()
+                    .iter()
+                    .find(|b| b.root == root)
+                    .cloned()
+                    .ok_or(AdapterError::Invalid("return binding"))?;
+                let mut relocated_origin = None;
+                if let (NativeContent::View(view), ReturnAnchor::View { frame, .. }) =
+                    (&binding.content, &binding.return_anchor)
+                {
+                    let origin = *frame;
+                    let workspace = self.controller.snapshot().frames[&origin].workspace;
+                    let index = self.controller.snapshot().workspaces[&workspace]
+                        .frames
+                        .iter()
+                        .position(|f| *f == origin)
+                        .ok_or(AdapterError::Invalid("origin pane position"))?;
+                    let storage = self.slots.prepare(
+                        &mut self.controller,
+                        &mut self.host,
+                        NativeContent::Frame(origin),
+                    )?;
+                    self.host
+                        .dispatch(
+                            &mut self.controller,
+                            Command::MoveFrame {
+                                frame: origin,
+                                destination: storage.slot.root,
+                                index: 0,
+                            },
+                        )?
+                        .outcome
+                        .result?;
+                    let removed = !self.controller.snapshot().workspaces[&workspace]
+                        .frames
+                        .contains(&origin);
+                    if !removed {
+                        return Err(AdapterError::Invalid(
+                            "original pane not removed from rendered root",
+                        ));
+                    }
+                    self.observations.push(serde_json::json!({"phase":"original-pane-removed-by-canonical-move","view":view.raw(),"origin_frame":origin.raw(),"original_workspace":workspace.raw(),"new_workspace":storage.slot.root.raw(),"removed_from_original_root":removed,"provenance":"Core MoveFrame; no DeleteFrame/DeleteWorkspace","owned_native_window":os_observation(Some(hwnd(&self.windows[&id].window)))}));
+                    relocated_origin = Some((origin, workspace, index, *view));
+                }
+                if was_frame {
+                    let neighbor = self.controller.snapshot().workspaces[&self.root]
+                        .frames
+                        .first()
+                        .copied()
+                        .ok_or(AdapterError::Invalid("maximize return target"))?;
+                    self.host
+                        .dispatch(&mut self.controller, Command::Maximize { frame: neighbor })?
+                        .outcome
+                        .result?;
+                    let canonical = self.controller.snapshot().clone();
+                    let rejected = self
+                        .slots
+                        .return_content(root, None, &mut self.controller, &mut self.host)
+                        .is_err();
+                    let held = self.slots.bindings().iter().any(|b| b.root == root);
+                    if !rejected || !held || self.controller.snapshot() != &canonical {
+                        return Err(AdapterError::Invalid(
+                            "maximized return did not hold content",
+                        ));
+                    }
+                    self.observations.push(serde_json::json!({"phase":"maximized-native-return-rejected-held","rejected":rejected,"binding_held":held,"canonical_unchanged":true,"owned_window":os_observation(Some(hwnd(&self.windows[&id].window)))}));
+                    self.host
+                        .dispatch(
+                            &mut self.controller,
+                            Command::RestoreLayout {
+                                workspace: self.root,
+                            },
+                        )?
+                        .outcome
+                        .result?;
+                    let mut plan = self.controller.snapshot().layouts[&self.root].clone();
+                    let mut changed = false;
+                    for node in plan.nodes.values_mut() {
+                        if let kumihimo_core::LayoutNode::Split { children, .. } = node {
+                            for (index, child) in children.iter_mut().enumerate() {
+                                child.weight = Scalar::new((index + 1) as f64 * 2.0)?;
+                            }
+                            changed = true;
+                        }
+                    }
+                    if !changed {
+                        return Err(AdapterError::Invalid("custom return layout needs split"));
+                    }
+                    self.host
+                        .dispatch(
+                            &mut self.controller,
+                            Command::SetLayout {
+                                workspace: self.root,
+                                plan,
+                            },
+                        )?
+                        .outcome
+                        .result?;
+                    self.observations.push(serde_json::json!({"phase":"custom-weight-return-layout-installed","semantic_anchor":format!("{:?}",binding.return_anchor),"generation":self.controller.snapshot().generation,"ordinal_restoration_claimed":false}));
+                }
                 let before = self.controller.snapshot().generation;
                 let fallback_used =
                     self.slots
                         .return_content(root, None, &mut self.controller, &mut self.host)?;
                 self.observations.push(serde_json::json!({"phase":"returned","root":root.raw(),"fallback_used":fallback_used,"before_generation":before,"after_generation":self.controller.snapshot().generation}));
+                if let Some((origin, workspace, index, view)) = relocated_origin {
+                    if self.controller.snapshot().views[&view].frame != origin {
+                        return Err(AdapterError::Invalid(
+                            "semantic return did not follow original pane identity",
+                        ));
+                    }
+                    self.host
+                        .dispatch(
+                            &mut self.controller,
+                            Command::MoveFrame {
+                                frame: origin,
+                                destination: workspace,
+                                index,
+                            },
+                        )?
+                        .outcome
+                        .result?;
+                    self.observations.push(serde_json::json!({"phase":"removed-origin-semantic-return-reconciled","view":view.raw(),"origin_frame":origin.raw(),"restored_workspace":workspace.raw(),"fresh_frame_anchor":true}));
+                }
                 self.returned += 1;
                 self.remove_window(id)?;
-                if let Some(content) = self.plan.pop() {
+                if was_frame && self.options.observer_script.is_some() {
+                    let source = self
+                        .windows
+                        .iter()
+                        .find_map(|(id, w)| (w.surface.root == self.root).then_some(*id))
+                        .ok_or(AdapterError::Invalid("docked UIA root window"))?;
+                    self.phase = ProbePhase::Docked;
+                    self.current = Some(source);
+                    self.request_capture(source, "returned-docked", None)?;
+                } else if let Some(content) = self.plan.pop() {
                     self.start_move(event_loop, content)?;
                 } else {
                     self.phase = ProbePhase::Observer;
                     self.current = None;
                 }
+            }
+            ProbePhase::Docked => {
+                let target = self.unselected_tab(id)?;
+                self.start_tab_observer(id, "after-docking", target)?;
+                self.phase = ProbePhase::ObserveDocked;
+            }
+            ProbePhase::DockedObserved => {
+                self.start_observer(
+                    id,
+                    "menu-open",
+                    None,
+                    "workspace/panes-menu",
+                    "Panes / reveal (F6)",
+                )?;
+                self.phase = ProbePhase::ObserveMenuOpen;
+            }
+            ProbePhase::MenuOpened => {
+                self.start_observer(
+                    id,
+                    "menu-dismiss",
+                    None,
+                    "workspace/panes-menu/dismiss",
+                    "Dismiss pane list",
+                )?;
+                self.phase = ProbePhase::ObserveMenuDismiss;
+            }
+            ProbePhase::MenuDismissed => {
+                self.phase = ProbePhase::Observer;
+                self.current = None;
             }
             _ => {}
         }
@@ -940,7 +1362,76 @@ impl<H: NativeHost> App<H> {
         }
         Ok(())
     }
+    fn exercise_recovery(&mut self, id: WindowId) -> Result<()> {
+        // Settle legitimate source-root geometry after the committed move BEFORE
+        // taking the identity/state baseline used by the loss/recovery proof.
+        let source = self
+            .windows
+            .iter()
+            .find_map(|(id, w)| (w.surface.root == self.root).then_some(*id))
+            .ok_or(AdapterError::Invalid("recovery source root"))?;
+        self.draw(source)?;
+        let canonical = self.controller.snapshot().clone();
+        let old_epoch = self.windows[&id].surface.epoch;
+        // Exercise the native unavailable transition with an injected zero extent.
+        // Actual HWND size is recorded separately and never described as a zero OS resize.
+        let keep = self
+            .windows
+            .iter()
+            .filter_map(|(key, w)| (*key != id).then_some(w.surface.viewport))
+            .collect();
+        self.painter.gc_viewports(&keep);
+        let w = self.windows.get_mut(&id).unwrap();
+        w.surface.epoch = w
+            .surface
+            .epoch
+            .checked_add(1)
+            .ok_or(AdapterError::Budget("surface epoch"))?;
+        w.status = SurfaceState::Unavailable;
+        w.capture = None;
+        w.capture_intent = None;
+        w.adapter.input.cancel("injected zero extent/suspend");
+        w.dirty = false;
+        self.observations.push(serde_json::json!({"phase":"injected-native-zero-suspend","injected_extent":[0,0],"actual_extent":w.actual_size,"epoch":w.surface.epoch,"ready_minted":false,"owned_window":os_observation(Some(hwnd(&w.window)))}));
+        self.draw(id)?;
+        if self.windows[&id].capture.is_some()
+            || self.windows[&id].status != SurfaceState::Unavailable
+        {
+            return Err(AdapterError::Invalid(
+                "zero/suspend produced capture or readiness",
+            ));
+        }
+        self.windows.get_mut(&id).unwrap().retries = 0;
+        for attempt in 1..=self.options.max_retries {
+            let error = self
+                .recreate_with_fault(id, true)
+                .err()
+                .ok_or(AdapterError::Invalid(
+                    "injected recovery unexpectedly succeeded",
+                ))?;
+            self.observations.push(serde_json::json!({"phase":"injected-recovery-attempt","attempt":attempt,"error":format!("{error:?}"),"status":format!("{:?}",self.windows[&id].status),"canonical_unchanged":self.controller.snapshot()==&canonical}));
+        }
+        if !matches!(
+            self.recreate(id),
+            Err(AdapterError::Budget("surface recreation retries"))
+        ) || self.windows[&id].status != SurfaceState::Failed
+        {
+            return Err(AdapterError::Invalid("recovery retry budget"));
+        }
+        self.observations.push(serde_json::json!({"phase":"injected-recovery-failed-bounded","retry_count":self.windows[&id].retries,"retry_limit":self.options.max_retries,"status":"Failed","physical_gpu_fault":false,"canonical_unchanged":self.controller.snapshot()==&canonical}));
+        if self.controller.snapshot() != &canonical || self.windows[&id].surface.epoch <= old_epoch
+        {
+            return Err(AdapterError::Invalid("recovery identity/epoch"));
+        }
+        self.recovery_snapshot = Some(canonical);
+        self.recovery_window = Some(id);
+        self.recovery_notice = true;
+        Ok(())
+    }
     fn recreate(&mut self, id: WindowId) -> Result<()> {
+        self.recreate_with_fault(id, false)
+    }
+    fn recreate_with_fault(&mut self, id: WindowId, injected_failure: bool) -> Result<()> {
         let w = self
             .windows
             .get_mut(&id)
@@ -966,6 +1457,13 @@ impl<H: NativeHost> App<H> {
             .collect();
         self.painter.gc_viewports(&keep);
         let w = self.windows.get_mut(&id).unwrap();
+        if injected_failure {
+            w.status = SurfaceState::Failed;
+            w.dirty = false;
+            return Err(AdapterError::Host(
+                "injected Painter recovery failure after actual owned teardown".into(),
+            ));
+        }
         w.status = SurfaceState::Recreating;
         pollster::block_on(
             self.painter
@@ -992,38 +1490,99 @@ impl<H: NativeHost> App<H> {
         self.observations.push(serde_json::json!({"phase":"owned-window-cleanup","window":os_observation(Some(handle))}));
         Ok(())
     }
-    fn start_observer(&mut self, id: WindowId) -> Result<()> {
+    fn unselected_tab(&self, id: WindowId) -> Result<ViewId> {
+        let w = &self.windows[&id];
+        self.controller
+            .snapshot()
+            .frames
+            .values()
+            .filter(|f| f.workspace == w.surface.root)
+            .flat_map(|f| f.views.iter().filter(move |v| Some(**v) != f.selected_view))
+            .copied()
+            .find(|view| {
+                self.controller
+                    .snapshot()
+                    .views
+                    .get(view)
+                    .is_some_and(|v| v.closed.is_none())
+                    && w.report
+                        .controls
+                        .iter()
+                        .any(|c| c.id == format!("view/{}/tab", view.raw()))
+            })
+            .ok_or(AdapterError::Invalid(
+                "UIA lifecycle needs projected unselected tab",
+            ))
+    }
+    fn start_tab_observer(
+        &mut self,
+        id: WindowId,
+        stage: &'static str,
+        target: ViewId,
+    ) -> Result<()> {
+        let control_id = format!("view/{}/tab", target.raw());
+        let label = self.windows[&id]
+            .report
+            .controls
+            .iter()
+            .find(|c| c.id == control_id)
+            .ok_or(AdapterError::Invalid("UIA target control not projected"))?
+            .label
+            .clone();
+        self.start_observer(id, stage, Some(target), &control_id, &label)
+    }
+    fn start_observer(
+        &mut self,
+        id: WindowId,
+        stage: &'static str,
+        target: Option<ViewId>,
+        control_id: &str,
+        label: &str,
+    ) -> Result<()> {
         let Some(script) = &self.options.observer_script else {
             return Ok(());
         };
+        if self.observer.is_some() {
+            return Err(AdapterError::Budget("one independent UIA observer"));
+        }
         let handle = hwnd(&self.windows[&id].window);
-        let target = self
-            .options
-            .observer_target
-            .ok_or(AdapterError::Invalid("UIA observer target required"))?;
-        let view = self
-            .controller
-            .snapshot()
-            .views
-            .get(&target)
-            .ok_or(AdapterError::Invalid("UIA target view"))?;
-        self.observer_frame = Some(view.frame);
-        self.observer_previous = self.controller.snapshot().frames[&view.frame].selected_view;
+        self.observer_target = target;
+        self.accesskit_trace.clear();
+        self.observer_window = Some(id);
+        self.observer_stage = stage;
+        self.observer_actions_before = self.uia_actions;
+        self.observer_draw_before = self.windows[&id].draw_count;
+        self.observer_frame = target.and_then(|target| {
+            self.controller
+                .snapshot()
+                .views
+                .get(&target)
+                .map(|v| v.frame)
+        });
+        self.observer_previous = self
+            .observer_frame
+            .and_then(|frame| self.controller.snapshot().frames[&frame].selected_view);
         self.observer_generation = Some(self.controller.snapshot().generation);
-        if self.observer_previous == Some(target) {
+        if target.is_some() && self.observer_previous == target {
             return Err(AdapterError::Invalid(
                 "UIA proof target must initially be unselected",
             ));
         }
-        let control = self.windows[&id]
-            .report
-            .controls
-            .iter()
-            .find(|c| c.id == format!("view/{}/tab", target.raw()))
-            .ok_or(AdapterError::Invalid("UIA target control not projected"))?;
-        let request = serde_json::json!({"hwnd":handle,"pid":std::process::id(),"nonce":self.observer_nonce,"output":self.observer_path,"target_view":target.raw(),"target_label":control.label,"target_control_id":control.id});
+        if stage != "initial" {
+            self.observer_path = self.options.output.join(format!("native-uia-{stage}.json"));
+        }
+        self.observer_nonce = format!(
+            "kumihimo-{}-{stage}-{}",
+            std::process::id(),
+            self.started.elapsed().as_nanos()
+        );
+        let request = serde_json::json!({"stage":stage,"hwnd":handle,"root":self.windows[&id].surface.root.raw(),"pid":std::process::id(),"nonce":self.observer_nonce,"output":self.observer_path,"target_view":target.map(|v|v.raw()),"target_label":label,"target_control_id":control_id});
         std::fs::write(
-            self.options.output.join("native-uia-request.json"),
+            self.options.output.join(if stage == "initial" {
+                "native-uia-request.json".into()
+            } else {
+                format!("native-uia-{stage}-request.json")
+            }),
             serde_json::to_vec_pretty(&request).map_err(|e| AdapterError::Host(e.to_string()))?,
         )
         .map_err(|e| AdapterError::Host(e.to_string()))?;
@@ -1046,9 +1605,13 @@ impl<H: NativeHost> App<H> {
             .arg("-Output")
             .arg(&self.observer_path)
             .arg("-TargetView")
-            .arg(target.raw().to_string())
+            .arg(target.map(|v| v.raw()).unwrap_or(0).to_string())
             .arg("-TargetLabel")
-            .arg(&control.label);
+            .arg(label)
+            .arg("-TargetControlId")
+            .arg(control_id)
+            .arg("-Stage")
+            .arg(stage);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -1078,10 +1641,26 @@ impl<H: NativeHost> App<H> {
                 }
                 let result: serde_json::Value = serde_json::from_slice(&bytes)
                     .map_err(|e| AdapterError::Host(e.to_string()))?;
-                if result["nonce"] != self.observer_nonce || result["pid"] != std::process::id() {
+                if result["nonce"] != self.observer_nonce
+                    || result["pid"] != std::process::id()
+                    || result["hwnd"]
+                        != hwnd(
+                            &self.windows[&self
+                                .observer_window
+                                .ok_or(AdapterError::Invalid("observer window"))?]
+                                .window,
+                        )
+                    || !result["error"].is_null()
+                {
                     return Err(AdapterError::Stale("UIA observer identity"));
                 }
-                self.observer_result = Some(result);
+                if self.observer_stage == "initial" {
+                    self.observer_result = Some(result.clone());
+                }
+                self.observer_results
+                    .push(serde_json::json!({"stage":self.observer_stage,"result":result}));
+            } else {
+                return Err(AdapterError::Host("independent UIA report missing".into()));
             }
             self.observer = None;
             if !status.success() {
@@ -1158,7 +1737,8 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                                 "action_kind":format!("{:?}",request.action),
                                 "action_type":"accesskit::ActionRequest",
                                 "target_node":request.target.0.to_string(),
-                                "expected_target_view":self.options.observer_target.map(|view|view.raw().to_string()),
+                                "expected_target_view":self.observer_target.map(|view|view.raw().to_string()),
+                                "observer_stage":self.observer_stage,
                                 "window_id":format!("{:?}",event.window_id),
                                 "surface_epoch":w.surface.epoch.to_string(),
                                 "core_generation":self.controller.snapshot().generation.to_string(),
@@ -1167,6 +1747,7 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                             let trace = write_accesskit_checkpoint(
                                 &self.options.output,
                                 &self.observer_nonce,
+                                self.observer_stage,
                                 &mut self.accesskit_trace,
                                 checkpoint,
                                 self.host.policy().max_capture_bytes.min(1024 * 1024),
@@ -1192,7 +1773,12 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                 after,
                 pass,
             } => {
-                if self.ctx.cumulative_pass_nr_for(viewport) <= pass.saturating_add(1) {
+                let accepted = self.ctx.cumulative_pass_nr_for(viewport) <= pass.saturating_add(1);
+                if self.redraw_observations.len() >= 64 {
+                    self.redraw_observations.remove(0);
+                }
+                self.redraw_observations.push(serde_json::json!({"phase":"actual-egui-repaint-request","viewport":format!("{:?}",viewport),"requested_delay_millis":after.as_millis().to_string(),"pass":pass,"accepted":accepted,"elapsed_millis":self.started.elapsed().as_millis().to_string(),"policy":"coalesce immediate demand and preserve earliest deadline"}));
+                if accepted {
                     if let Some(w) = self
                         .windows
                         .values_mut()
@@ -1314,33 +1900,135 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
                     self.draw(id)?;
                 }
             }
-            if matches!(self.phase, ProbePhase::ObserveInitial) && self.observer.is_none() {
+            if matches!(
+                self.phase,
+                ProbePhase::ObserveInitial
+                    | ProbePhase::ObservePopout
+                    | ProbePhase::ObserveDocked
+                    | ProbePhase::ObserveRecovered
+                    | ProbePhase::ObserveMenuOpen
+                    | ProbePhase::ObserveMenuDismiss
+            ) && self.observer.is_none()
+            {
                 if self.options.observer_script.is_some() {
-                    let target = self
-                        .options
-                        .observer_target
-                        .ok_or(AdapterError::Invalid("observer target"))?;
-                    let frame = self
-                        .observer_frame
-                        .ok_or(AdapterError::Invalid("observer frame"))?;
-                    let actual = self
-                        .controller
-                        .snapshot()
-                        .frames
-                        .get(&frame)
-                        .and_then(|f| f.selected_view);
-                    let changed = actual == Some(target)
-                        && self.controller.snapshot().generation
-                            > self.observer_generation.unwrap_or(u64::MAX)
-                        && self.uia_actions > 0;
-                    self.observations.push(serde_json::json!({"phase":"independent-uia-canonical-selection-read","target_view":target.raw(),"target_frame":frame.raw(),"before_selected":self.observer_previous.map(|v|v.raw()),"after_selected":actual.map(|v|v.raw()),"before_generation":self.observer_generation,"after_generation":self.controller.snapshot().generation,"matched":changed}));
-                    if !changed {
+                    let id = self
+                        .observer_window
+                        .ok_or(AdapterError::Invalid("observer window"))?;
+                    let w = &self.windows[&id];
+                    if self.uia_actions <= self.observer_actions_before {
                         return Err(AdapterError::Host(
-                            "UIA action did not select exact canonical target".into(),
+                            "UIA stage did not forward fresh action".into(),
                         ));
                     }
+                    if let Some(target) = self.observer_target {
+                        let frame = self
+                            .observer_frame
+                            .ok_or(AdapterError::Invalid("observer frame"))?;
+                        let actual = self
+                            .controller
+                            .snapshot()
+                            .frames
+                            .get(&frame)
+                            .and_then(|f| f.selected_view);
+                        let changed = actual == Some(target)
+                            && self.controller.snapshot().frames[&frame].workspace
+                                == w.surface.root
+                            && self.controller.snapshot().views[&target].closed.is_none()
+                            && self.controller.snapshot().generation
+                                > self.observer_generation.unwrap_or(u64::MAX)
+                            && self.uia_actions > self.observer_actions_before;
+                        self.observations.push(serde_json::json!({"phase":"independent-uia-canonical-selection-read","stage":self.observer_stage,"root":w.surface.root.raw(),"owned_window":os_observation(Some(hwnd(&w.window))),"target_view":target.raw(),"target_frame":frame.raw(),"before_selected":self.observer_previous.map(|v|v.raw()),"after_selected":actual.map(|v|v.raw()),"before_generation":self.observer_generation,"after_generation":self.controller.snapshot().generation,"actions_before":self.observer_actions_before,"actions_after":self.uia_actions,"matched":changed}));
+                        if !changed {
+                            return Err(AdapterError::Host(
+                                "UIA action did not select exact canonical target".into(),
+                            ));
+                        }
+                    } else {
+                        let result = &self
+                            .observer_results
+                            .last()
+                            .ok_or(AdapterError::Invalid("menu observer result"))?["result"];
+                        let matched = if self.observer_stage == "menu-open" {
+                            result["overlay_present"] == true
+                        } else {
+                            let focused = self
+                                .ctx
+                                .memory(|memory| memory.focused())
+                                .ok_or(AdapterError::Invalid("logical focused widget"))?;
+                            let response = self
+                                .ctx
+                                .read_response(focused)
+                                .ok_or(AdapterError::Invalid("fresh focused response"))?;
+                            let controls: Vec<_> = w
+                                .report
+                                .controls
+                                .iter()
+                                .filter(|c| c.id == "workspace/panes-menu")
+                                .collect();
+                            if controls.len() != 1 {
+                                return Err(AdapterError::Invalid(
+                                    "unique fresh opener projection",
+                                ));
+                            }
+                            let control = controls[0];
+                            let dismissed_absent = !w
+                                .report
+                                .controls
+                                .iter()
+                                .any(|c| c.id == "workspace/panes-menu/dismiss");
+                            let logical_focus_return = w.draw_count > self.observer_draw_before
+                                && w.report.epoch == w.surface.epoch
+                                && response.enabled()
+                                && control.enabled
+                                && response.rect.is_finite()
+                                && response.rect.width() > 0.0
+                                && response.rect.height() > 0.0
+                                && response.rect == to_egui(control.bounds)
+                                && dismissed_absent;
+                            self.observations.push(serde_json::json!({"phase":"actual-logical-menu-focus-return","viewport":format!("{:?}",w.surface.viewport),"focused_id":format!("{:?}",focused),"response_rect":[response.rect.min.x,response.rect.min.y,response.rect.max.x,response.rect.max.y],"opener_rect":[control.bounds.x(),control.bounds.y(),control.bounds.right(),control.bounds.bottom()],"draw_count":w.draw_count,"draw_before":self.observer_draw_before,"draw_epoch":w.report.epoch,"fresh_opener_bounds_agree":response.rect==to_egui(control.bounds),"logical_focus_return":logical_focus_return,"dismissed_control_absent":dismissed_absent,"os_has_keyboard_focus":result["os_opener_has_keyboard_focus"],"provenance":"Fresh focused egui response matches unique current-draw opener projection; no expected widget-ID or OS-focus claim"}));
+                            result["overlay_present"] == false
+                                && result["os_opener_has_keyboard_focus"] == false
+                                && result["announcement_present"] == true
+                                && logical_focus_return
+                        };
+                        if !matched
+                            || self.controller.snapshot().generation
+                                != self.observer_generation.unwrap_or(u64::MAX)
+                        {
+                            return Err(AdapterError::Host(
+                                "UIA menu dismissal/focus/announcement mismatch".into(),
+                            ));
+                        }
+                        self.observations.push(serde_json::json!({"phase":"independent-uia-menu-state-read","stage":self.observer_stage,"root":w.surface.root.raw(),"canonical_unchanged":true,"matched":matched,"owned_window":os_observation(Some(hwnd(&w.window)))}));
+                    }
                 }
-                if let Some(content) = self.plan.pop() {
+                if matches!(
+                    self.phase,
+                    ProbePhase::ObservePopout
+                        | ProbePhase::ObserveDocked
+                        | ProbePhase::ObserveRecovered
+                        | ProbePhase::ObserveMenuOpen
+                        | ProbePhase::ObserveMenuDismiss
+                ) {
+                    let id = self
+                        .observer_window
+                        .ok_or(AdapterError::Invalid("observer window"))?;
+                    let (phase, label) = match self.phase {
+                        ProbePhase::ObservePopout => {
+                            (ProbePhase::PopoutObserved, "uia-after-popout")
+                        }
+                        ProbePhase::ObserveDocked => {
+                            (ProbePhase::DockedObserved, "uia-after-docking")
+                        }
+                        ProbePhase::ObserveRecovered => {
+                            (ProbePhase::RecoveredObserved, "uia-after-recovery")
+                        }
+                        ProbePhase::ObserveMenuOpen => (ProbePhase::MenuOpened, "uia-menu-open"),
+                        _ => (ProbePhase::MenuDismissed, "uia-menu-dismissed"),
+                    };
+                    self.phase = phase;
+                    self.request_capture(id, label, None)?;
+                } else if let Some(content) = self.plan.pop() {
                     self.start_move(event_loop, content)?;
                 } else {
                     self.phase = ProbePhase::Observer;
@@ -1424,9 +2112,30 @@ impl<H: NativeHost> ApplicationHandler<NativeEvent> for App<H> {
         }
     }
 }
+fn screenshot_matches(
+    w: &NativeWindow,
+    tag: &CaptureTag,
+    viewport: egui::ViewportId,
+    image_size: [usize; 2],
+    image_empty: bool,
+    snapshot: &Snapshot,
+    timeout: Duration,
+) -> bool {
+    w.capture.as_ref() == Some(tag)
+        && tag.viewport == viewport
+        && tag.hwnd == hwnd(&w.window)
+        && tag.epoch == w.surface.epoch
+        && tag.size == [w.window.inner_size().width, w.window.inner_size().height]
+        && tag.scale == w.window.scale_factor() as f32
+        && image_size == [tag.size[0] as usize, tag.size[1] as usize]
+        && !image_empty
+        && tag.identity == snapshot.identity
+        && tag.requested_at.elapsed() < timeout
+}
 fn write_accesskit_checkpoint(
     output: &std::path::Path,
     nonce: &str,
+    stage: &str,
     checkpoints: &mut Vec<serde_json::Value>,
     checkpoint: serde_json::Value,
     max_bytes: usize,
@@ -1439,13 +2148,18 @@ fn write_accesskit_checkpoint(
     checkpoints.push(checkpoint);
     let value = serde_json::json!({
         "schema":"kumihimo.accesskit-action-trace.v1",
-        "writer":"native-runner", "nonce":nonce,
+        "writer":"native-runner", "nonce":nonce,"stage":stage,
         "expected_owned_pid":std::process::id(),
         "checkpoints":checkpoints,
         "scope":"Read-only owned HWND/foreground observations before egui action queueing"
     });
     let bytes = crate::diagnostics::encode_bounded(&value, max_bytes)?;
-    let mut file = std::fs::File::create(output.join("native-accesskit.trace.json"))
+    let path = if stage == "initial" {
+        "native-accesskit.trace.json".into()
+    } else {
+        format!("native-accesskit-{stage}.trace.json")
+    };
+    let mut file = std::fs::File::create(output.join(path))
         .map_err(|error| AdapterError::Host(format!("AccessKit trace create: {error}")))?;
     file.write_all(&bytes)
         .and_then(|()| file.sync_all())
@@ -1499,8 +2213,9 @@ fn os_observation(handle: Option<isize>) -> serde_json::Value {
         use windows_sys::Win32::{
             System::Threading::GetCurrentProcessId,
             UI::WindowsAndMessaging::{
-                GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow,
-                IsWindowVisible, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+                GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsIconic,
+                IsWindow, IsWindowVisible, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+                WS_EX_TOOLWINDOW,
             },
         };
         // Read-only OS observations, restricted to foreground metadata and our target HWND.
@@ -1517,7 +2232,7 @@ fn os_observation(handle: Option<isize>) -> serde_json::Value {
                 if IsWindow(window) != 0 {
                     GetWindowThreadProcessId(window, &mut owner);
                 }
-                serde_json::json!({"hwnd":raw,"exists":IsWindow(window)!=0,"visible":IsWindowVisible(window)!=0,
+                serde_json::json!({"hwnd":raw,"exists":IsWindow(window)!=0,"visible":IsWindowVisible(window)!=0,"minimized":IsIconic(window)!=0,
                     "pid":owner,"owned_pid":owner==pid,"foreground":foreground as isize,"foreground_pid":foreground_pid,
                     "foreground_owned":foreground_pid==pid,"taskbar_appwindow_style":GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_APPWINDOW as isize!=0,
                     "no_activate_style":GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_NOACTIVATE as isize!=0,

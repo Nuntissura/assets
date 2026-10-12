@@ -173,6 +173,76 @@ pub fn draw(
             .get(&scope.mount)
             .cloned()
             .unwrap_or(navigation.clone());
+        // Wheel ownership follows the same clipped rail hit target as pointer gestures.
+        if state.active_capture().is_none()
+            && state.navigation_capture.is_none()
+            && ctx.input(|i| i.pointer.hover_pos()).is_some_and(|point| {
+                hit_rect.contains(point)
+                    && crate::input::pick_frame(projection, point) == Some(slot.frame)
+            })
+        {
+            let wheels = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|event| {
+                        if let egui::Event::MouseWheel { unit, delta, .. } = event {
+                            Some((*unit, *delta))
+                        } else {
+                            None
+                        }
+                    })
+                    .take(16)
+                    .collect::<Vec<_>>()
+            });
+            for (unit, delta) in wheels {
+                state.consumed_pointer = true;
+                if !delta.y.is_finite() {
+                    report.reject(AdapterError::Invalid("navigation wheel delta"));
+                    continue;
+                }
+                let live = controller.inspect().navigation.get(&scope.mount).cloned();
+                if let Some(live) = live {
+                    if let (Some(model), Observation::Known(actual)) =
+                        (&live.model, &live.observation)
+                    {
+                        if let Ok(range) = model.range() {
+                            let scale = match unit {
+                                egui::MouseWheelUnit::Point => 1.0,
+                                egui::MouseWheelUnit::Line => 16.0,
+                                egui::MouseWheelUnit::Page => model.viewport.get(),
+                            };
+                            let value = (actual.offset.get() - delta.y as f64 * scale)
+                                .clamp(0.0, range.get());
+                            let request = kumihimo_content::NavigationRequest {
+                                model_revision: model.revision,
+                                settings_revision: live.settings_revision,
+                                rail_revision: live.rail_revision,
+                                gesture: None,
+                                action: kumihimo_content::NavigationAction::AbsoluteScroll(
+                                    Scalar::new(value).unwrap(),
+                                ),
+                            };
+                            let permission = host.navigation_permission(controller, &scope);
+                            if let Err(error) = controller.request(
+                                scope.mount,
+                                kumihimo_content::RequestKind::Navigation(request),
+                                permission,
+                                now,
+                            ) {
+                                report.reject(error);
+                            }
+                            if let Err(error) = host.navigation_pending(controller) {
+                                report.reject(error);
+                            }
+                        }
+                    } else {
+                        report.reject(AdapterError::Invalid(
+                            "navigation wheel observation unavailable",
+                        ));
+                    }
+                }
+            }
+        }
         for event in &events {
             if event.pointer == 0
                 || event.pointer == u64::MAX

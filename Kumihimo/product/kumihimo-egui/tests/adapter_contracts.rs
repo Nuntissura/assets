@@ -677,3 +677,1420 @@ fn e013_diagnostics_are_redacted_valid_and_byte_bounded() {
     assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_ok());
     assert!(diagnostics::encode_bounded(&v, 8).is_err());
 }
+
+#[cfg(feature = "capture")]
+#[test]
+fn e012_session_negative_bindings_reject_before_native_association() {
+    let mut d = demo::new().unwrap();
+    let frame = d.controller.snapshot().views[&d.text_view].frame;
+    let origin = d.root;
+    let root = match command(&mut d, Command::CreateWorkspace { owner: None }) {
+        core::Change::Created(EntityId::Workspace(id)) => id,
+        _ => panic!("native destination root"),
+    };
+    command(
+        &mut d,
+        Command::SetGeometryContext {
+            workspace: root,
+            context: core::GeometryContext::new(surface(root).bounds),
+        },
+    );
+    command(
+        &mut d,
+        Command::MoveFrame {
+            frame,
+            destination: root,
+            index: 0,
+        },
+    );
+    let binding = NativeBinding {
+        root,
+        carrier: None,
+        content: NativeContent::Frame(frame),
+        return_anchor: ReturnAnchor::Frame {
+            workspace: origin,
+            location: core::DockLocation::WorkspaceEdge {
+                workspace: origin,
+                edge: core::Edge::Left,
+            },
+        },
+    };
+    let session = DesktopSession::capture(d.controller.snapshot(), 8, vec![binding]).unwrap();
+    let before = d.controller.snapshot().clone();
+    for (case, rejected) in [
+        ("foreign root", {
+            let mut value = session.clone();
+            value.bindings[0].root = core::WorkspaceId::from_raw(u64::MAX - 1);
+            value
+        }),
+        ("foreign frame", {
+            let mut value = session.clone();
+            value.bindings[0].content = NativeContent::Frame(core::FrameId::from_raw(u64::MAX - 1));
+            value
+        }),
+        ("foreign carrier", {
+            let mut value = session.clone();
+            value.bindings[0].carrier = Some(core::FrameId::from_raw(u64::MAX - 1));
+            value
+        }),
+        ("owned root", {
+            let mut value = session.clone();
+            value.bindings[0].root = d
+                .controller
+                .snapshot()
+                .workspaces
+                .values()
+                .find(|workspace| workspace.owner.is_some())
+                .unwrap()
+                .id;
+            value
+        }),
+        ("duplicate binding", {
+            let mut value = session.clone();
+            value.bindings.push(value.bindings[0].clone());
+            value
+        }),
+        ("stale generation", {
+            let mut value = session.clone();
+            value.source_generation = value.source_generation.checked_sub(1).unwrap();
+            value
+        }),
+        ("foreign incarnation", {
+            let mut value = session.clone();
+            value.source =
+                core::Identity::new(value.source.lineage.clone(), "different-session-owner")
+                    .unwrap();
+            value
+        }),
+        ("wrong anchor kind", {
+            let mut value = session.clone();
+            value.bindings[0].return_anchor = ReturnAnchor::View { frame, index: 0 };
+            value
+        }),
+    ] {
+        assert!(
+            rejected.validate_current(d.controller.snapshot()).is_err(),
+            "{case}"
+        );
+        assert_eq!(
+            d.controller.snapshot(),
+            &before,
+            "{case} mutated canonical state"
+        );
+    }
+    command(&mut d, Command::Maximize { frame });
+    assert!(matches!(
+        DesktopSession::capture(d.controller.snapshot(), 8, session.bindings.clone()),
+        Err(AdapterError::Invalid(
+            "owned/duplicate/maximized native root"
+        ))
+    ));
+    command(&mut d, Command::RestoreLayout { workspace: root });
+    DesktopSession::capture(d.controller.snapshot(), 8, session.bindings.clone()).unwrap();
+    command(
+        &mut d,
+        Command::CreateFrame {
+            workspace: root,
+            index: 1,
+        },
+    );
+    let occupied = d.controller.snapshot().clone();
+    assert!(matches!(
+        DesktopSession::capture(d.controller.snapshot(), 8, session.bindings),
+        Err(AdapterError::Invalid(
+            "occupied or empty committed native root"
+        ))
+    ));
+    assert_eq!(d.controller.snapshot(), &occupied);
+    assert_eq!(d.controller.snapshot().identity, before.identity);
+    assert_eq!(d.controller.snapshot().views, before.views);
+}
+
+#[cfg(feature = "native")]
+struct PreparationFaultHost {
+    inner: demo::DemoHost,
+    fail_workspace: bool,
+    fail_carrier: bool,
+}
+#[cfg(feature = "native")]
+impl DesktopHost for PreparationFaultHost {
+    fn policy(&self) -> HostPolicy {
+        self.inner.policy()
+    }
+    fn dispatch(
+        &mut self,
+        controller: &mut kumihimo_content::Controller,
+        command: Command,
+    ) -> Result<core::Response> {
+        if (self.fail_workspace && matches!(command, Command::CreateWorkspace { .. }))
+            || (self.fail_carrier && matches!(command, Command::CreateFrame { .. }))
+        {
+            return Err(AdapterError::Host(
+                "injected preparation dispatch failure".into(),
+            ));
+        }
+        self.inner.dispatch(controller, command)
+    }
+    fn paint_content(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: &RenderSlot,
+        controller: &mut kumihimo_content::Controller,
+    ) -> Result<()> {
+        self.inner.paint_content(ui, slot, controller)
+    }
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn e012_failed_and_interrupted_preparation_retains_source_and_bounded_slots() {
+    let mut d = demo::new().unwrap();
+    d.host.policy.max_native_slots = 1;
+    let view = d.text_view;
+    let source = d.controller.snapshot().views[&view].frame;
+    let before = d.controller.snapshot().clone();
+    let mut host = PreparationFaultHost {
+        inner: d.host,
+        fail_workspace: true,
+        fail_carrier: false,
+    };
+    let mut slots = window_slots::WindowSlots::default();
+    assert!(slots
+        .prepare(&mut d.controller, &mut host, NativeContent::View(view))
+        .is_err());
+    assert_eq!(d.controller.snapshot(), &before);
+    assert!(slots.prepared().is_empty());
+    assert!(slots.bindings().is_empty());
+
+    host.fail_workspace = false;
+    host.fail_carrier = true;
+    assert!(slots
+        .prepare(&mut d.controller, &mut host, NativeContent::View(view))
+        .is_err());
+    assert_eq!(d.controller.snapshot().views, before.views);
+    assert_eq!(d.controller.snapshot().frames, before.frames);
+    assert_eq!(slots.prepared().len(), 1);
+    assert!(slots.prepared()[0].carrier.is_none());
+    assert!(slots.bindings().is_empty());
+    let partially_prepared = d.controller.snapshot().clone();
+    assert!(slots
+        .prepare(&mut d.controller, &mut host, NativeContent::View(view))
+        .is_err());
+    assert_eq!(d.controller.snapshot(), &partially_prepared);
+    assert_eq!(slots.prepared().len(), 1);
+    let mut pending = slots
+        .prepare(&mut d.controller, &mut host, NativeContent::Frame(source))
+        .unwrap();
+    slots.cancel(&pending, d.controller.snapshot()).unwrap();
+    assert_eq!(slots.prepared()[0].root, pending.slot.root);
+    assert!(slots.bindings().is_empty());
+
+    // Interrupt the pending handoff with a real canonical source move, not a forged Ready.
+    let destination_bounds = surface(pending.slot.root).bounds;
+    slots
+        .arm(
+            &mut pending,
+            &mut d.controller,
+            &mut host,
+            destination_bounds,
+        )
+        .unwrap();
+    host.inner
+        .dispatch(
+            &mut d.controller,
+            Command::MoveFrame {
+                frame: source,
+                destination: pending.slot.root,
+                index: 0,
+            },
+        )
+        .unwrap()
+        .outcome
+        .result
+        .unwrap();
+    let interrupted = d.controller.snapshot().clone();
+    assert!(slots.cancel(&pending, d.controller.snapshot()).is_err());
+    let mut stale = pending;
+    assert!(slots
+        .arm(&mut stale, &mut d.controller, &mut host, destination_bounds)
+        .is_err());
+    assert_eq!(d.controller.snapshot(), &interrupted);
+    assert!(slots.bindings().is_empty());
+    assert_eq!(d.controller.snapshot().identity, before.identity);
+    assert_eq!(d.controller.snapshot().views, before.views);
+}
+
+use egui_kittest::kittest::Queryable as _;
+
+struct UiProof {
+    demo: demo::Demo,
+    adapter: DesktopAdapter,
+    binding: SurfaceBinding,
+    report: FrameReport,
+    native_enabled: bool,
+}
+struct NoNative<'a>(&'a mut demo::DemoHost);
+impl DesktopHost for NoNative<'_> {
+    fn policy(&self) -> HostPolicy {
+        self.0.policy()
+    }
+    fn capabilities(&self) -> Capabilities {
+        let mut caps = self.0.capabilities();
+        caps.native = false;
+        caps
+    }
+    fn dispatch(
+        &mut self,
+        controller: &mut kumihimo_content::Controller,
+        command: Command,
+    ) -> Result<core::Response> {
+        self.0.dispatch(controller, command)
+    }
+    fn paint_content(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: &RenderSlot,
+        controller: &mut kumihimo_content::Controller,
+    ) -> Result<()> {
+        self.0.paint_content(ui, slot, controller)
+    }
+}
+fn ui_proof(tabs: usize, maximize: bool) -> egui_kittest::Harness<'static, UiProof> {
+    let mut d = demo::with_counts(2, tabs).unwrap();
+    let frame = d.controller.snapshot().views[&d.text_view].frame;
+    if maximize {
+        command(&mut d, Command::Maximize { frame });
+    }
+    let binding = surface(d.root);
+    egui_kittest::Harness::builder()
+        .with_size(egui::vec2(960.0, 640.0))
+        .build_state(
+            |ctx, state: &mut UiProof| {
+                state.report = if state.native_enabled {
+                    state
+                        .adapter
+                        .show(
+                            ctx,
+                            &mut state.demo.controller,
+                            state.binding,
+                            &mut state.demo.host,
+                        )
+                        .unwrap()
+                } else {
+                    state
+                        .adapter
+                        .show(
+                            ctx,
+                            &mut state.demo.controller,
+                            state.binding,
+                            &mut NoNative(&mut state.demo.host),
+                        )
+                        .unwrap()
+                };
+            },
+            UiProof {
+                demo: d,
+                adapter: DesktopAdapter::default(),
+                binding,
+                report: FrameReport::default(),
+                native_enabled: true,
+            },
+        )
+}
+fn ui_click(h: &mut egui_kittest::Harness<'_, UiProof>, label: &str) {
+    if label == "Frame" || label == "Tabs / groups" {
+        let state = h.state();
+        let frame = state.demo.controller.snapshot().views[&state.demo.text_view].frame;
+        let suffix = if label == "Frame" {
+            "menu"
+        } else {
+            "tabs-menu"
+        };
+        let point = to_egui(
+            state
+                .report
+                .controls
+                .iter()
+                .find(|c| c.id == format!("frame/{}/{suffix}", frame.raw()))
+                .unwrap()
+                .bounds,
+        )
+        .center();
+        h.hover_at(point);
+        h.drag_at(point);
+        h.run_steps(1);
+        h.drop_at(point);
+        h.run_steps(3);
+        return;
+    }
+    if label.starts_with("Frame ") {
+        for _ in 0..64 {
+            if h.query_all_by_label(label).next().is_some() {
+                break;
+            }
+            let next = h
+                .state()
+                .report
+                .controls
+                .iter()
+                .find(|c| {
+                    c.enabled && c.id.starts_with("page/") && c.id.ends_with("-destinations/next")
+                })
+                .unwrap()
+                .clone();
+            let point = to_egui(next.bounds).center();
+            h.hover_at(point);
+            h.drag_at(point);
+            h.run_steps(1);
+            h.drop_at(point);
+            h.run_steps(3);
+        }
+    }
+    h.get_all_by_label(label).next().unwrap().click_accesskit();
+    h.run_steps(3);
+}
+fn ui_tab_actions(h: &mut egui_kittest::Harness<'_, UiProof>, view: core::ViewId) {
+    let state = h.state_mut();
+    let frame = state.demo.controller.snapshot().views[&view].frame;
+    let index = state.demo.controller.snapshot().frames[&frame]
+        .views
+        .iter()
+        .position(|v| *v == view)
+        .unwrap();
+    state.demo.host.policy.tab_page_size = 1;
+    state
+        .adapter
+        .chrome
+        .pages
+        .insert(format!("tabs/{}", frame.raw()), index);
+    h.run_steps(3);
+    ui_click(h, "Tabs / groups");
+    ui_click(h, "Actions");
+}
+fn ui_pointer(
+    h: &mut egui_kittest::Harness<'_, UiProof>,
+    pointer: u64,
+    source: input::PointerSource,
+    phase: input::PointerPhase,
+    position: egui::Pos2,
+) {
+    let epoch = h.state().binding.epoch;
+    h.state_mut()
+        .adapter
+        .input
+        .feed_pointer(input::HostPointerEvent {
+            pointer,
+            source,
+            phase,
+            position,
+            epoch,
+        })
+        .unwrap();
+    h.run_steps(1);
+}
+
+#[test]
+fn e002_widget_reorder_group_move_collapse_and_guarded_close() {
+    let mut h = ui_proof(8, true);
+    let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
+    let original = h.state().demo.controller.snapshot().frames[&frame]
+        .views
+        .clone();
+    let last = *original.last().unwrap();
+    ui_tab_actions(&mut h, last);
+    ui_click(&mut h, "Move tab first");
+    assert_eq!(
+        h.state().demo.controller.snapshot().frames[&frame].views[0],
+        last
+    );
+    assert_eq!(h.state().report.canonical_views, 16);
+    let group = {
+        let state = h.state_mut();
+        let core::Change::Created(EntityId::Group(group)) = command(
+            &mut state.demo,
+            Command::CreateGroup {
+                frame,
+                label: "Proof group".into(),
+                color: Some("#ee2211".into()),
+            },
+        ) else {
+            panic!("group");
+        };
+        for view in [original[0], last] {
+            command(
+                &mut state.demo,
+                Command::AssignGroup {
+                    view,
+                    group: Some(group),
+                },
+            );
+        }
+        state
+            .adapter
+            .chrome
+            .workspace_settings
+            .entry(state.demo.root)
+            .or_default()
+            .group_colors = Some(false);
+        group
+    };
+    h.run_steps(3);
+    ui_click(&mut h, "Tabs / groups");
+    ui_click(&mut h, "Group: Proof group");
+    ui_click(&mut h, "Collapse group");
+    assert!(h.state().demo.controller.snapshot().groups[&group].collapsed);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    ui_click(&mut h, "Tabs / groups");
+    ui_click(&mut h, "Group: Proof group");
+    ui_click(&mut h, "Expand group");
+    assert!(!h.state().demo.controller.snapshot().groups[&group].collapsed);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    let destination = h.state().demo.controller.snapshot().views[&h.state().demo.canvas_view].frame;
+    ui_click(&mut h, "Tabs / groups");
+    ui_click(&mut h, "Group: Proof group");
+    ui_click(&mut h, "Move entire canonical group to.");
+    ui_click(&mut h, &format!("Frame {}", destination.raw()));
+    let snapshot = h.state().demo.controller.snapshot();
+    assert_eq!(snapshot.groups[&group].frame, destination);
+    assert!(snapshot.frames[&destination].views.contains(&original[0]));
+    assert!(snapshot.frames[&destination].views.contains(&last));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    ui_tab_actions(&mut h, original[2]);
+    ui_click(&mut h, "Close (host/provider approval)");
+    assert!(h.state().demo.controller.snapshot().views[&original[2]]
+        .closed
+        .is_none());
+    assert!(h
+        .state()
+        .demo
+        .host
+        .receipts
+        .iter()
+        .any(|r| r.view == original[2] && r.close_approved == Some(false)));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    {
+        let state = h.state_mut();
+        command(
+            &mut state.demo,
+            Command::SetPinPolicy(core::PinPolicy {
+                deny_close: true,
+                deny_reorder: true,
+                deny_cross_frame_move: true,
+            }),
+        );
+    }
+    let before = h.state().demo.controller.snapshot().frames[&frame]
+        .views
+        .clone();
+    ui_tab_actions(&mut h, original[1]);
+    ui_click(&mut h, "Move tab first");
+    assert_eq!(
+        h.state().demo.controller.snapshot().frames[&frame].views,
+        before
+    );
+    assert!(!h.state().report.rejected.is_empty());
+}
+
+#[test]
+fn e003_widget_preview_cancel_commit_redock_equalize_swap_and_restore() {
+    let mut h = ui_proof(3, false);
+    let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Preview in-app float");
+    assert!(h.state().adapter.chrome.preview.is_some());
+    assert!(!h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .floats
+        .contains_key(&frame));
+    ui_click(&mut h, "Cancel preview (Escape)");
+    assert!(h.state().adapter.chrome.preview.is_none());
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Preview in-app float");
+    ui_click(&mut h, "Commit preview");
+    assert!(h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .floats
+        .contains_key(&frame));
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Preview redock");
+    ui_click(&mut h, "Commit preview");
+    assert!(!h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .floats
+        .contains_key(&frame));
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Equalize workspace");
+    let second = h.state().demo.controller.snapshot().workspaces[&h.state().demo.root].frames[1];
+    let before = h.state().demo.controller.snapshot().layouts.clone();
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Swap with.");
+    ui_click(&mut h, &format!("Frame {}", second.raw()));
+    assert_ne!(h.state().demo.controller.snapshot().layouts, before);
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Maximize frame");
+    assert!(!h.state().demo.controller.snapshot().maximized.is_empty());
+    ui_click(&mut h, "Frame");
+    ui_click(&mut h, "Restore workspace");
+    assert!(h.state().demo.controller.snapshot().maximized.is_empty());
+}
+
+#[test]
+fn e004_widget_tool_rotation_hidden_space_focus_and_closed_target() {
+    let mut h = ui_proof(3, false);
+    let tool = h.state().demo.tool;
+    let target = h.state().demo.controller.snapshot().tools[&tool].target;
+    let left = core::ToolPlacement::Edge {
+        anchor: core::ToolAnchor::View(target.view),
+        edge: core::Edge::Left,
+    };
+    {
+        let state = h.state_mut();
+        let mut policy = state.demo.controller.snapshot().tools[&tool].policy.clone();
+        policy.orientations.push(core::Axis::Vertical);
+        policy.allowed.push(left);
+        command(&mut state.demo, Command::ConfigureTool { tool, policy });
+    }
+    h.run_steps(3);
+    ui_click(&mut h, "Dock tool");
+    ui_click(&mut h, &format!("{left:?}"));
+    ui_click(&mut h, "Commit preview");
+    assert_eq!(
+        h.state().demo.controller.snapshot().tools[&tool]
+            .policy
+            .orientation,
+        core::Axis::Vertical
+    );
+    let frame = h.state().demo.controller.snapshot().views[&target.view].frame;
+    let other = h.state().demo.controller.snapshot().frames[&frame].views[1];
+    {
+        let state = h.state_mut();
+        command(&mut state.demo, Command::SelectView { view: other });
+        state.adapter.input.focused_view = Some(other);
+    }
+    h.run_steps(3);
+    ui_click(
+        &mut h,
+        &format!("Tool {}  view {}", tool.raw(), target.view.raw()),
+    );
+    let receipt = h
+        .state()
+        .demo
+        .host
+        .receipts
+        .iter()
+        .rev()
+        .find(|r| r.kind == "tool")
+        .unwrap();
+    assert_eq!(
+        (receipt.view, receipt.resource),
+        (target.view, target.resource)
+    );
+    for hidden_space in [core::HiddenSpace::Retain, core::HiddenSpace::Release] {
+        {
+            let state = h.state_mut();
+            let mut policy = state.demo.controller.snapshot().tools[&tool].policy.clone();
+            policy.hidden_space = hidden_space;
+            policy.visibility = core::VisibilityPolicy::Hidden;
+            command(&mut state.demo, Command::ConfigureTool { tool, policy });
+        }
+        h.run_steps(3);
+        let state = h.state_mut();
+        let projection = workspace::project_with_chrome(
+            &mut state.demo.controller,
+            state.binding,
+            &mut state.demo.host,
+            &state.adapter.chrome,
+        )
+        .unwrap();
+        let item = projection.tools.iter().find(|t| t.tool == tool);
+        if hidden_space == core::HiddenSpace::Retain {
+            let item = item.unwrap();
+            assert!(!item.presentation.visible);
+            assert!(item.presentation.reserves_space);
+        } else {
+            assert!(item.is_none());
+        }
+    }
+    {
+        let state = h.state_mut();
+        let record = state.demo.controller.snapshot().views[&target.view].clone();
+        command(
+            &mut state.demo,
+            Command::SetViewMetadata {
+                view: target.view,
+                label: record.label,
+                pinned: false,
+                unsaved: false,
+            },
+        );
+        command(
+            &mut state.demo,
+            Command::CloseView {
+                view: target.view,
+                approved: true,
+            },
+        );
+    }
+    let state = h.state_mut();
+    assert!(state
+        .demo
+        .host
+        .tool_action(&mut state.demo.controller, tool, "closed-target")
+        .is_err());
+    assert_eq!(state.demo.controller.snapshot().tools[&tool].target, target);
+}
+
+#[test]
+fn e005_profiles_keyboard_and_touch_reveal_keep_settings_precedence() {
+    for profile in [
+        ChromeProfile::Full,
+        ChromeProfile::Compact,
+        ChromeProfile::Contextual,
+        ChromeProfile::Hidden,
+    ] {
+        let mut h = ui_proof(3, true);
+        {
+            let state = h.state_mut();
+            state.adapter.chrome.workspace_settings.insert(
+                state.demo.root,
+                chrome::SettingsPatch {
+                    profile: Some(profile),
+                    header_height: Some(38.0),
+                    ..Default::default()
+                },
+            );
+        }
+        h.run_steps(3);
+        let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
+        if profile == ChromeProfile::Hidden || profile == ChromeProfile::Contextual {
+            assert!(h
+                .state()
+                .report
+                .controls
+                .iter()
+                .any(|c| c.id == format!("frame/{}/reveal", frame.raw())));
+            h.key_press(egui::Key::F6);
+            h.run_steps(3);
+            assert!(h.state().adapter.chrome.revealed.contains(&frame));
+            assert!(h
+                .state()
+                .report
+                .controls
+                .iter()
+                .any(|c| c.id == format!("frame/{}/drag", frame.raw())));
+        }
+        if profile == ChromeProfile::Compact {
+            assert!(h.query_by_label("?").is_some());
+        }
+        {
+            let state = h.state_mut();
+            state.adapter.chrome.revealed.clear();
+            state.adapter.chrome.surface_settings.insert(
+                state.binding.viewport,
+                chrome::SettingsPatch {
+                    profile: Some(ChromeProfile::Hidden),
+                    header_height: Some(46.0),
+                    recreation_needed: true,
+                    ..Default::default()
+                },
+            );
+        }
+        h.run_steps(3);
+        let point = to_egui(
+            h.state()
+                .report
+                .controls
+                .iter()
+                .find(|c| c.id == format!("frame/{}/reveal", frame.raw()))
+                .unwrap()
+                .bounds,
+        )
+        .center();
+        for (phase, pressed) in [
+            (egui::TouchPhase::Start, true),
+            (egui::TouchPhase::End, false),
+        ] {
+            h.event(egui::Event::Touch {
+                device_id: egui::TouchDeviceId(1),
+                id: egui::TouchId(9),
+                phase,
+                pos: point,
+                force: None,
+            });
+            h.event(egui::Event::PointerMoved(point));
+            h.event(egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.run_steps(3);
+        assert!(h.state().adapter.chrome.revealed.contains(&frame));
+        let state = h.state_mut();
+        let p = workspace::project_with_chrome(
+            &mut state.demo.controller,
+            state.binding,
+            &mut state.demo.host,
+            &state.adapter.chrome,
+        )
+        .unwrap();
+        assert!(p.frames.iter().all(|f| f.settings_source == "surface"
+            && f.recreation_needed
+            && f.settings.header_height == 46.0));
+    }
+}
+
+#[test]
+fn e006_actual_mouse_tab_and_resize_release_escape_capture_and_focus_loss() {
+    let mut h = ui_proof(3, false);
+    let view = h.state().demo.text_view;
+    let frame = h.state().demo.controller.snapshot().views[&view].frame;
+    let next = h.state().demo.controller.snapshot().frames[&frame].views[1];
+    let label = h
+        .state()
+        .report
+        .controls
+        .iter()
+        .find(|c| c.id == format!("view/{}/tab", next.raw()))
+        .unwrap()
+        .label
+        .clone();
+    h.get_by_label(&label).click();
+    h.run_steps(3);
+    assert_eq!(
+        h.state().demo.controller.snapshot().frames[&frame].selected_view,
+        Some(next)
+    );
+    let control = h
+        .state()
+        .report
+        .controls
+        .iter()
+        .find(|c| c.id.starts_with("resize/"))
+        .unwrap()
+        .clone();
+    let point = to_egui(control.bounds).center();
+    let horizontal = control.id.split('/').nth(3) == Some("x");
+    let moved = point
+        + if horizontal {
+            egui::vec2(35.0, 0.0)
+        } else {
+            egui::vec2(0.0, 35.0)
+        };
+    let before = h.state().demo.controller.snapshot().layouts.clone();
+    h.hover_at(point);
+    h.drag_at(point);
+    h.run_steps(1);
+    h.hover_at(moved);
+    h.run_steps(1);
+    h.drop_at(moved);
+    h.run_steps(3);
+    assert_eq!(h.state().adapter.input.last_settlement, Some("release"));
+    assert_ne!(h.state().demo.controller.snapshot().layouts, before);
+    for terminal in [
+        egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        },
+        egui::Event::PointerGone,
+        egui::Event::WindowFocused(false),
+    ] {
+        let point = to_egui(
+            h.state()
+                .report
+                .controls
+                .iter()
+                .find(|c| c.id.starts_with("resize/"))
+                .unwrap()
+                .bounds,
+        )
+        .center();
+        ui_pointer(
+            &mut h,
+            77,
+            input::PointerSource::Mouse,
+            input::PointerPhase::Press,
+            point,
+        );
+        assert!(h.state().adapter.input.active_capture().is_some());
+        let before = h.state().demo.controller.snapshot().layouts.clone();
+        h.event(terminal);
+        h.run_steps(1);
+        assert!(h.state().adapter.input.active_capture().is_none());
+        assert_eq!(h.state().demo.controller.snapshot().layouts, before);
+        h.input_mut().focused = true;
+        h.event(egui::Event::WindowFocused(true));
+        h.run_steps(1);
+    }
+}
+
+#[test]
+fn e007_semantic_touch_and_pen_taps_cancel_outside_stale_and_scrolling() {
+    for source in [input::PointerSource::Touch, input::PointerSource::HostPen] {
+        let mut h = ui_proof(3, true);
+        let view = h.state().demo.text_view;
+        let frame = h.state().demo.controller.snapshot().views[&view].frame;
+        let next = h.state().demo.controller.snapshot().frames[&frame].views[1];
+        let point = to_egui(
+            h.state()
+                .report
+                .controls
+                .iter()
+                .find(|c| c.id == format!("view/{}/tab", next.raw()))
+                .unwrap()
+                .bounds,
+        )
+        .center();
+        ui_pointer(&mut h, 81, source, input::PointerPhase::Press, point);
+        ui_pointer(&mut h, 82, source, input::PointerPhase::Release, point);
+        assert_eq!(
+            h.state().demo.controller.snapshot().frames[&frame].selected_view,
+            Some(view)
+        );
+        ui_pointer(&mut h, 81, source, input::PointerPhase::Release, point);
+        assert_eq!(
+            h.state().demo.controller.snapshot().frames[&frame].selected_view,
+            Some(next)
+        );
+        let selected_generation = h.state().demo.controller.snapshot().generation;
+        ui_pointer(&mut h, 81, source, input::PointerPhase::Release, point);
+        assert_eq!(
+            h.state().demo.controller.snapshot().generation,
+            selected_generation
+        );
+        let point = to_egui(
+            h.state()
+                .report
+                .controls
+                .iter()
+                .find(|c| c.id == format!("view/{}/tab", view.raw()))
+                .unwrap()
+                .bounds,
+        )
+        .center();
+        for phase in [input::PointerPhase::Cancel, input::PointerPhase::Move] {
+            ui_pointer(&mut h, 83, source, input::PointerPhase::Press, point);
+            ui_pointer(&mut h, 83, source, phase, point + egui::vec2(100.0, 0.0));
+            ui_pointer(&mut h, 83, source, input::PointerPhase::Release, point);
+            assert_eq!(
+                h.state().demo.controller.snapshot().generation,
+                selected_generation
+            );
+        }
+        ui_pointer(&mut h, 84, source, input::PointerPhase::Press, point);
+        h.state_mut().binding.epoch += 1;
+        h.run_steps(1);
+        assert!(h.state().adapter.input.active_capture().is_none());
+        assert_eq!(h.state().adapter.input.last_settlement, Some("invalidated"));
+    }
+}
+
+#[test]
+fn e008_actual_editor_typing_and_both_conflicting_shortcut_policies() {
+    for frame_first in [false, true] {
+        let mut h = ui_proof(3, true);
+        h.state_mut()
+            .demo
+            .host
+            .policy
+            .settings
+            .frame_shortcuts_first = frame_first;
+        let view = h.state().demo.text_view;
+        let frame = h.state().demo.controller.snapshot().views[&view].frame;
+        h.get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .click();
+        h.run_steps(3);
+        assert_eq!(h.state().adapter.input.focused_view, Some(view));
+        h.get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .type_text("actual editor typing proof");
+        h.run_steps(3);
+        assert!(h
+            .get_by_role(egui::accesskit::Role::MultilineTextInput)
+            .value()
+            .unwrap()
+            .contains("actual editor typing proof"));
+        h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Tab);
+        h.run_steps(3);
+        let selected = h.state().demo.controller.snapshot().frames[&frame].selected_view;
+        if frame_first {
+            assert_ne!(selected, Some(view));
+        } else {
+            assert_eq!(selected, Some(view));
+        }
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        ui_tab_actions(&mut h, view);
+        ui_click(&mut h, "Select tab");
+        assert_eq!(
+            h.state().demo.controller.snapshot().frames[&frame].selected_view,
+            Some(view)
+        );
+    }
+}
+
+#[cfg(feature = "navigation")]
+#[test]
+fn e006_all_modes_rail_wheel_ack_is_distinct_from_content_wheel() {
+    use kumihimo_content::{NavigationMode, Observation};
+    for mode in [
+        NavigationMode::ScrollbarOnly,
+        NavigationMode::MinimapAlways,
+        NavigationMode::ScrollbarAndMinimap,
+        NavigationMode::ScrubToMinimap,
+    ] {
+        let mut h = ui_proof(3, true);
+        {
+            let state = h.state_mut();
+            state
+                .demo
+                .host
+                .navigation_mode(&mut state.demo.controller, mode)
+                .unwrap();
+        }
+        h.run_steps(3);
+        let view = h.state().demo.text_view;
+        let mount = h.state().demo.host.mounts[&view];
+        let point = to_egui(
+            h.state()
+                .report
+                .controls
+                .iter()
+                .find(|c| c.id == format!("view/{}/navigation", view.raw()))
+                .unwrap()
+                .bounds,
+        )
+        .center();
+        let content_bounds = h
+            .state()
+            .report
+            .slots
+            .iter()
+            .find(|s| s.view == view)
+            .unwrap()
+            .bounds;
+        let receipt_count = h
+            .state()
+            .demo
+            .host
+            .receipts
+            .iter()
+            .filter(|r| r.kind == "navigation")
+            .count();
+        h.hover_at(point);
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -3.0),
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(3);
+        assert!(
+            h.state()
+                .demo
+                .host
+                .receipts
+                .iter()
+                .filter(|r| r.kind == "navigation")
+                .count()
+                > receipt_count
+        );
+        let navigation = &h.state().demo.controller.inspect().navigation[&mount];
+        assert!(
+            matches!(&navigation.observation, Observation::Known(actual) if actual.offset.get() > 0.0)
+        );
+        assert_eq!(
+            h.state()
+                .report
+                .slots
+                .iter()
+                .find(|s| s.view == view)
+                .unwrap()
+                .bounds,
+            content_bounds
+        );
+        let receipt_count = h
+            .state()
+            .demo
+            .host
+            .receipts
+            .iter()
+            .filter(|r| r.kind == "navigation")
+            .count();
+        let inputs = h
+            .state()
+            .demo
+            .host
+            .receipts
+            .iter()
+            .filter(|r| r.kind == "input")
+            .count();
+        h.hover_at(to_egui(content_bounds).center());
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -4.0),
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(3);
+        assert_eq!(
+            h.state()
+                .demo
+                .host
+                .receipts
+                .iter()
+                .filter(|r| r.kind == "navigation")
+                .count(),
+            receipt_count
+        );
+        assert!(
+            h.state()
+                .demo
+                .host
+                .receipts
+                .iter()
+                .filter(|r| r.kind == "input")
+                .count()
+                > inputs
+        );
+    }
+}
+
+#[test]
+fn e003_actual_drag_preview_forbidden_cancel_and_valid_release() {
+    let mut h = ui_proof(3, false);
+    let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
+    let point = to_egui(
+        h.state()
+            .report
+            .controls
+            .iter()
+            .find(|c| c.id == format!("frame/{}/drag", frame.raw()))
+            .unwrap()
+            .bounds,
+    )
+    .center();
+    let outside = point + egui::vec2(-250.0, -170.0);
+    let before = h.state().demo.controller.snapshot().layouts.clone();
+    h.hover_at(point);
+    h.drag_at(point);
+    h.run_steps(1);
+    h.hover_at(outside);
+    h.run_steps(1);
+    assert!(h
+        .state()
+        .adapter
+        .input
+        .active_capture()
+        .is_some_and(|c| c.activated));
+    assert_eq!(h.state().demo.controller.snapshot().layouts, before);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(1);
+    h.drop_at(outside);
+    h.run_steps(3);
+    assert!(h.state().adapter.input.active_capture().is_none());
+    assert!(!h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .floats
+        .contains_key(&frame));
+    {
+        let state = h.state_mut();
+        let mut context = state.demo.controller.snapshot().contexts[&state.demo.root].clone();
+        context.allow_floating = false;
+        let workspace = state.demo.root;
+        command(
+            &mut state.demo,
+            Command::SetGeometryContext { workspace, context },
+        );
+    }
+    h.run_steps(3);
+    h.hover_at(point);
+    h.drag_at(point);
+    h.run_steps(1);
+    h.hover_at(outside);
+    h.run_steps(1);
+    assert!(!h.state().report.rejected.is_empty());
+    h.drop_at(outside);
+    h.run_steps(3);
+    assert!(!h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .floats
+        .contains_key(&frame));
+    {
+        let state = h.state_mut();
+        let mut context = state.demo.controller.snapshot().contexts[&state.demo.root].clone();
+        context.allow_floating = true;
+        let workspace = state.demo.root;
+        command(
+            &mut state.demo,
+            Command::SetGeometryContext { workspace, context },
+        );
+    }
+    h.run_steps(3);
+    h.hover_at(point);
+    h.drag_at(point);
+    h.run_steps(1);
+    h.hover_at(outside);
+    h.run_steps(1);
+    h.drop_at(outside);
+    h.run_steps(3);
+    assert!(h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .floats
+        .contains_key(&frame));
+    assert_eq!(h.state().adapter.input.last_settlement, Some("release"));
+}
+
+#[test]
+fn e007_touch_long_press_and_host_pen_resize_commit_and_cancel() {
+    for source in [input::PointerSource::Touch, input::PointerSource::HostPen] {
+        let mut h = ui_proof(3, false);
+        let control = h
+            .state()
+            .report
+            .controls
+            .iter()
+            .find(|c| c.id.starts_with("resize/"))
+            .unwrap()
+            .clone();
+        let point = to_egui(control.bounds).center();
+        let moved = point
+            + if control.id.split('/').nth(3) == Some("x") {
+                egui::vec2(20.0, 0.0)
+            } else {
+                egui::vec2(0.0, 20.0)
+            };
+        ui_pointer(&mut h, 91, source, input::PointerPhase::Press, point);
+        if source == input::PointerSource::Touch {
+            h.run_steps(45);
+        }
+        assert!(h
+            .state()
+            .adapter
+            .input
+            .active_capture()
+            .is_some_and(|c| c.activated && c.source == source));
+        let before = h.state().demo.controller.snapshot().layouts.clone();
+        ui_pointer(&mut h, 91, source, input::PointerPhase::Move, moved);
+        assert_eq!(h.state().demo.controller.snapshot().layouts, before);
+        ui_pointer(&mut h, 92, source, input::PointerPhase::Cancel, moved);
+        assert!(h.state().adapter.input.active_capture().is_some());
+        ui_pointer(&mut h, 91, source, input::PointerPhase::Release, moved);
+        assert_ne!(h.state().demo.controller.snapshot().layouts, before);
+        assert_eq!(h.state().adapter.input.last_settlement, Some("release"));
+        let point = to_egui(
+            h.state()
+                .report
+                .controls
+                .iter()
+                .find(|c| c.id.starts_with("resize/"))
+                .unwrap()
+                .bounds,
+        )
+        .center();
+        ui_pointer(&mut h, 93, source, input::PointerPhase::Press, point);
+        ui_pointer(&mut h, 93, source, input::PointerPhase::Cancel, point);
+        assert!(h.state().adapter.input.active_capture().is_none());
+    }
+}
+
+#[test]
+fn e008_keyboard_resize_focus_uses_actual_arrangement_response() {
+    let mut h = ui_proof(3, false);
+    let control = h
+        .state()
+        .report
+        .controls
+        .iter()
+        .find(|c| c.id.starts_with("resize/"))
+        .unwrap()
+        .clone();
+    let workspace: u64 = control.id.split('/').nth(1).unwrap().parse().unwrap();
+    let index: usize = control.id.split('/').nth(4).unwrap().parse().unwrap();
+    let label = format!("Resize {workspace} tracks {} and {}", index + 1, index + 2);
+    h.get_all_by_label(&label).next().unwrap().focus();
+    h.run_steps(3);
+    assert!(h.get_all_by_label(&label).next().unwrap().is_focused());
+    let before = h.state().demo.controller.snapshot().layouts.clone();
+    h.key_press(if control.id.split('/').nth(3) == Some("x") {
+        egui::Key::ArrowRight
+    } else {
+        egui::Key::ArrowDown
+    });
+    h.run_steps(3);
+    assert_ne!(h.state().demo.controller.snapshot().layouts, before);
+}
+
+#[test]
+fn e008_disabled_native_control_explains_explicit_host_capability() {
+    let mut h = ui_proof(3, true);
+    h.state_mut().native_enabled = false;
+    h.run_steps(3);
+    ui_click(&mut h, "Frame");
+    let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
+    let button = h
+        .state()
+        .report
+        .controls
+        .iter()
+        .find(|c| c.id == format!("frame/{}/native-popout", frame.raw()))
+        .unwrap();
+    assert!(!button.enabled);
+    assert!(h
+        .state()
+        .report
+        .controls
+        .iter()
+        .any(|c| c.label == "Native popout unavailable: host capability disabled"));
+    h.get_by_label("Native popout frame").click_accesskit();
+    h.run_steps(3);
+    assert!(h.state().demo.host.native_actions.is_empty());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    let view = h.state().demo.text_view;
+    ui_tab_actions(&mut h, view);
+    assert!(h
+        .state()
+        .report
+        .controls
+        .iter()
+        .any(|c| c.id == format!("view/{}/native-popout", view.raw()) && !c.enabled));
+    assert!(h
+        .state()
+        .report
+        .controls
+        .iter()
+        .any(|c| c.label == "Native popout unavailable: host capability disabled"));
+}
+
+fn ui_tab_enter(h: &mut egui_kittest::Harness<'_, UiProof>, control_id: &str) {
+    for _ in 0..256 {
+        let target = h
+            .state()
+            .report
+            .controls
+            .iter()
+            .find(|c| c.id == control_id && c.enabled)
+            .expect("current keyboard target")
+            .bounds;
+        let focused = h
+            .ctx
+            .memory(|m| m.focused())
+            .and_then(|id| h.ctx.read_response(id));
+        if focused.is_some_and(|response| response.enabled() && response.rect == to_egui(target)) {
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+            return;
+        }
+        h.key_press(egui::Key::Tab);
+        h.run_steps(1);
+    }
+    panic!("Tab traversal did not focus {control_id}");
+}
+
+#[test]
+fn e008_actual_tab_enter_group_float_redock_and_close_routes() {
+    let mut h = ui_proof(3, false);
+    let frame = h.state().demo.controller.snapshot().views[&h.state().demo.text_view].frame;
+    let group = {
+        let state = h.state_mut();
+        let core::Change::Created(EntityId::Group(group)) = command(
+            &mut state.demo,
+            Command::CreateGroup {
+                frame,
+                label: "Keyboard group".into(),
+                color: None,
+            },
+        ) else {
+            panic!("group");
+        };
+        let view = state.demo.text_view;
+        command(
+            &mut state.demo,
+            Command::AssignGroup {
+                view,
+                group: Some(group),
+            },
+        );
+        group
+    };
+    h.run_steps(3);
+    ui_tab_enter(&mut h, &format!("frame/{}/tabs-menu", frame.raw()));
+    ui_tab_enter(&mut h, &format!("group/{}/menu", group.raw()));
+    ui_tab_enter(&mut h, &format!("group/{}/collapse", group.raw()));
+    assert!(h.state().demo.controller.snapshot().groups[&group].collapsed);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    ui_tab_enter(&mut h, &format!("frame/{}/menu", frame.raw()));
+    ui_tab_enter(
+        &mut h,
+        &format!("frame/{}/preview-float-redock", frame.raw()),
+    );
+    assert!(h.state().adapter.chrome.preview.is_some());
+    ui_tab_enter(&mut h, "workspace/preview/commit");
+    assert!(h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .floats
+        .contains_key(&frame));
+    ui_tab_enter(&mut h, &format!("frame/{}/menu", frame.raw()));
+    ui_tab_enter(
+        &mut h,
+        &format!("frame/{}/preview-float-redock", frame.raw()),
+    );
+    ui_tab_enter(&mut h, "workspace/preview/commit");
+    assert!(!h
+        .state()
+        .demo
+        .controller
+        .snapshot()
+        .floats
+        .contains_key(&frame));
+    let view = h.state().demo.controller.snapshot().frames[&frame].views[2];
+    {
+        let state = h.state_mut();
+        let record = state.demo.controller.snapshot().views[&view].clone();
+        command(
+            &mut state.demo,
+            Command::SetViewMetadata {
+                view,
+                label: record.label,
+                pinned: false,
+                unsaved: false,
+            },
+        );
+    }
+    h.run_steps(3);
+    ui_tab_enter(&mut h, &format!("frame/{}/tabs-menu", frame.raw()));
+    ui_tab_enter(&mut h, &format!("view/{}/actions-menu", view.raw()));
+    ui_tab_enter(&mut h, &format!("view/{}/close", view.raw()));
+    assert!(h.state().demo.controller.snapshot().views[&view]
+        .closed
+        .is_some());
+}

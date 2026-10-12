@@ -13,6 +13,7 @@ pub struct CapturedFrame {
     pub render_ms: f64,
     pub scale: f32,
     pub viewport: egui::ViewportId,
+    pub repaint_after: Duration,
 }
 impl CapturedFrame {
     pub fn png(&self, max_bytes: usize) -> Result<Vec<u8>> {
@@ -60,7 +61,7 @@ impl CapturedFrame {
         Ok(output.bytes)
     }
     pub fn metadata(&self) -> serde_json::Value {
-        serde_json::json!({"kind":"kumihimo-offscreen-capture", "nonce":self.nonce, "viewport":format!("{:?}",self.viewport), "backend":self.backend, "width":self.image.width(), "height":self.image.height(), "pixels_per_point":self.scale, "render_ms":self.render_ms, "provenance":"actual egui-wgpu DX12 offscreen readback; no native presentation or physical-input claim", "frame":crate::diagnostics::report_json(&self.report)})
+        serde_json::json!({"kind":"kumihimo-offscreen-capture", "nonce":self.nonce, "viewport":format!("{:?}",self.viewport), "backend":self.backend, "width":self.image.width(), "height":self.image.height(), "pixels_per_point":self.scale, "render_ms":self.render_ms, "egui_repaint_after_ms":self.repaint_after.as_secs_f64()*1000.0, "provenance":"actual egui-wgpu DX12 offscreen readback; no native presentation or physical-input claim", "frame":crate::diagnostics::report_json(&self.report)})
     }
     pub fn write(&self, path: &Path, max_bytes: usize) -> Result<()> {
         let png = self.png(max_bytes)?;
@@ -183,6 +184,11 @@ impl OffscreenRenderer {
                 "offscreen egui scale differs from host surface",
             ));
         }
+        let repaint_after = output
+            .viewport_output
+            .get(&surface.viewport)
+            .map(|v| v.repaint_delay)
+            .unwrap_or(Duration::MAX);
         let jobs = self
             .context
             .tessellate(output.shapes, output.pixels_per_point);
@@ -309,6 +315,7 @@ impl OffscreenRenderer {
             render_ms: started.elapsed().as_secs_f64() * 1000.0,
             scale: output.pixels_per_point,
             viewport: surface.viewport,
+            repaint_after,
         })
     }
 }

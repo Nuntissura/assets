@@ -36,6 +36,7 @@ pub struct ChromeState {
     pub search: String,
     pub preview: Option<DockPreview>,
     preview_epoch: u64,
+    latest_announcement: Option<(egui::ViewportId, String)>,
 }
 impl ChromeState {
     pub fn resolve(
@@ -109,14 +110,51 @@ fn button(ui: &mut egui::Ui, key: &str, label: &str, report: &mut FrameReport) -
     record(report, &response, key.into(), label.into(), None);
     response.clicked()
 }
-fn page(ui: &mut egui::Ui, state: &mut ChromeState, key: &str, count: usize, size: usize) -> usize {
+fn native_button(
+    ui: &mut egui::Ui,
+    key: &str,
+    label: &str,
+    enabled: bool,
+    report: &mut FrameReport,
+) -> bool {
+    let response = ui
+        .push_id(key, |ui| ui.add_enabled(enabled, egui::Button::new(label)))
+        .inner;
+    record(report, &response, key.into(), label.into(), None);
+    let clicked = enabled && response.clicked();
+    if !enabled {
+        response.on_disabled_hover_text("Native popout unavailable: host capability disabled");
+        let reason = ui.label("Native popout unavailable: host capability disabled");
+        record(
+            report,
+            &reason,
+            format!("{key}/unavailable"),
+            "Native popout unavailable: host capability disabled".into(),
+            None,
+        );
+    }
+    clicked
+}
+fn page(
+    ui: &mut egui::Ui,
+    state: &mut ChromeState,
+    key: &str,
+    count: usize,
+    size: usize,
+    report: &mut FrameReport,
+) -> usize {
     let offset = state.pages.entry(key.to_owned()).or_default();
     *offset = (*offset / size * size).min(count.saturating_sub(1) / size * size);
     ui.horizontal(|ui| {
-        if ui
-            .add_enabled(*offset > 0, egui::Button::new("Previous page"))
-            .clicked()
-        {
+        let previous = ui.add_enabled(*offset > 0, egui::Button::new("Previous page"));
+        record(
+            report,
+            &previous,
+            format!("page/{key}/previous"),
+            "Previous page".into(),
+            None,
+        );
+        if previous.clicked() {
             *offset = offset.saturating_sub(size);
         }
         ui.label(format!(
@@ -125,10 +163,15 @@ fn page(ui: &mut egui::Ui, state: &mut ChromeState, key: &str, count: usize, siz
             (*offset + size).min(count),
             count
         ));
-        if ui
-            .add_enabled(*offset + size < count, egui::Button::new("Next page"))
-            .clicked()
-        {
+        let next = ui.add_enabled(*offset + size < count, egui::Button::new("Next page"));
+        record(
+            report,
+            &next,
+            format!("page/{key}/next"),
+            "Next page".into(),
+            None,
+        );
+        if next.clicked() {
             *offset += size;
         }
     });
@@ -167,12 +210,18 @@ fn destinations(
     state: &mut ChromeState,
     key: &str,
     size: usize,
+    report: &mut FrameReport,
 ) -> Option<FrameId> {
     let ids: Vec<_> = controller.snapshot().frames.keys().copied().collect();
-    let offset = page(ui, state, key, ids.len(), size);
+    let offset = page(ui, state, key, ids.len(), size, report);
     let mut selected = None;
     for id in ids.into_iter().skip(offset).take(size) {
-        if ui.button(format!("Frame {}", id.raw())).clicked() {
+        if button(
+            ui,
+            &format!("destination/{key}/{}", id.raw()),
+            &format!("Frame {}", id.raw()),
+            report,
+        ) {
             selected = Some(id);
         }
     }
@@ -206,7 +255,7 @@ fn view_menu(
         }
         ui.menu_button("Reopen in…", |ui| {
             if let Some(destination) =
-                destinations(ui, controller, state, "reopen-destinations", size)
+                destinations(ui, controller, state, "reopen-destinations", size, report)
             {
                 command(
                     controller,
@@ -251,10 +300,12 @@ fn view_menu(
         );
     }
     if let Some(view) = controller.snapshot().views.get(&row.id).cloned() {
-        if ui
-            .button(if view.pinned { "Unpin" } else { "Pin" })
-            .clicked()
-        {
+        if button(
+            ui,
+            &format!("view/{}/pin", view.id.raw()),
+            if view.pinned { "Unpin" } else { "Pin" },
+            report,
+        ) {
             command(
                 controller,
                 host,
@@ -279,7 +330,12 @@ fn view_menu(
             ),
             ("Move tab last", frame.views.len().saturating_sub(1)),
         ] {
-            if ui.button(label).clicked() {
+            if button(
+                ui,
+                &format!("view/{}/{}", row.id.raw(), label.replace(' ', "-")),
+                label,
+                report,
+            ) {
                 command(
                     controller,
                     host,
@@ -293,8 +349,10 @@ fn view_menu(
             }
         }
     }
-    ui.menu_button("Move tab to…", |ui| {
-        if let Some(destination) = destinations(ui, controller, state, "view-destinations", size) {
+    let move_menu = ui.menu_button("Move tab to…", |ui| {
+        if let Some(destination) =
+            destinations(ui, controller, state, "view-destinations", size, report)
+        {
             let index = controller.snapshot().frames[&destination]
                 .views
                 .len()
@@ -311,6 +369,13 @@ fn view_menu(
             );
         }
     });
+    record(
+        report,
+        &move_menu.response,
+        format!("view/{}/move-menu", row.id.raw()),
+        "Move tab to…".into(),
+        Some(row.id),
+    );
     ui.menu_button("Assign group…", |ui| {
         if ui.button("Ungrouped").clicked() {
             command(
@@ -324,7 +389,7 @@ fn view_menu(
             );
         }
         let groups = controller.snapshot().frames[&row.frame].groups.clone();
-        let offset = page(ui, state, "assign-groups", groups.len(), size);
+        let offset = page(ui, state, "assign-groups", groups.len(), size, report);
         for group in groups.into_iter().skip(offset).take(size) {
             let label = controller.snapshot().groups[&group].label.clone();
             if ui.button(label).clicked() {
@@ -340,7 +405,13 @@ fn view_menu(
             }
         }
     });
-    if host.capabilities().native && ui.button("Native popout tab").clicked() {
+    if native_button(
+        ui,
+        &format!("view/{}/native-popout", row.id.raw()),
+        "Native popout tab",
+        host.capabilities().native,
+        report,
+    ) {
         if let Err(error) = host.native_action(controller, AdapterAction::PopoutView(row.id)) {
             report.reject(error);
         }
@@ -357,14 +428,16 @@ fn group_menu(
 ) {
     let record = controller.snapshot().groups[&group].clone();
     ui.label(format!("Group {}: {}", group.raw(), record.description));
-    if ui
-        .button(if record.collapsed {
+    if button(
+        ui,
+        &format!("group/{}/collapse", group.raw()),
+        if record.collapsed {
             "Expand group"
         } else {
             "Collapse group"
-        })
-        .clicked()
-    {
+        },
+        report,
+    ) {
         command(
             controller,
             host,
@@ -399,7 +472,12 @@ fn group_menu(
             frame.views.len() - members,
         ),
     ] {
-        if ui.button(label).clicked() {
+        if button(
+            ui,
+            &format!("group/{}/{}", group.raw(), label.replace(' ', "-")),
+            label,
+            report,
+        ) {
             command(
                 controller,
                 host,
@@ -413,8 +491,10 @@ fn group_menu(
             );
         }
     }
-    ui.menu_button("Move entire canonical group to…", |ui| {
-        if let Some(destination) = destinations(ui, controller, state, "group-destinations", size) {
+    let move_menu = ui.menu_button("Move entire canonical group to…", |ui| {
+        if let Some(destination) =
+            destinations(ui, controller, state, "group-destinations", size, report)
+        {
             let target = &controller.snapshot().frames[&destination];
             let index = target.views.len()
                 - if destination == record.frame {
@@ -436,7 +516,20 @@ fn group_menu(
             );
         }
     });
-    if host.capabilities().native && ui.button("Native popout group").clicked() {
+    record(
+        report,
+        &move_menu.response,
+        format!("group/{}/move-menu", group.raw()),
+        "Move entire canonical group to…".into(),
+        None,
+    );
+    if native_button(
+        ui,
+        &format!("group/{}/native-popout", group.raw()),
+        "Native popout group",
+        host.capabilities().native,
+        report,
+    ) {
         if let Err(error) = host.native_action(controller, AdapterAction::PopoutGroup(group)) {
             report.reject(error);
         }
@@ -476,14 +569,16 @@ fn frame_menu(
             command(controller, host, cmd, report);
         }
     }
-    if ui
-        .button(if f.floating {
+    if button(
+        ui,
+        &format!("frame/{}/preview-float-redock", f.frame.raw()),
+        if f.floating {
             "Preview redock"
         } else {
             "Preview in-app float"
-        })
-        .clicked()
-    {
+        },
+        report,
+    ) {
         preview(
             controller,
             if f.floating {
@@ -506,7 +601,7 @@ fn frame_menu(
             .values()
             .flat_map(|c| c.allowed_docks.iter().copied())
             .collect();
-        let offset = page(ui, state, "dock-locations", locations.len(), size);
+        let offset = page(ui, state, "dock-locations", locations.len(), size, report);
         for location in locations.into_iter().skip(offset).take(size) {
             if ui.button(format!("{location:?}")).clicked() {
                 preview(
@@ -522,8 +617,9 @@ fn frame_menu(
             }
         }
     });
-    ui.menu_button("Swap with…", |ui| {
-        if let Some(second) = destinations(ui, controller, state, "swap-destinations", size) {
+    let swap_menu = ui.menu_button("Swap with…", |ui| {
+        if let Some(second) = destinations(ui, controller, state, "swap-destinations", size, report)
+        {
             command(
                 controller,
                 host,
@@ -535,7 +631,20 @@ fn frame_menu(
             );
         }
     });
-    if host.capabilities().native && ui.button("Native popout frame").clicked() {
+    record(
+        report,
+        &swap_menu.response,
+        format!("frame/{}/swap-menu", f.frame.raw()),
+        "Swap with…".into(),
+        None,
+    );
+    if native_button(
+        ui,
+        &format!("frame/{}/native-popout", f.frame.raw()),
+        "Native popout frame",
+        host.capabilities().native,
+        report,
+    ) {
         if let Err(error) = host.native_action(controller, AdapterAction::PopoutFrame(f.frame)) {
             report.reject(error);
         }
@@ -607,10 +716,20 @@ pub fn draw(
             surface.bounds.y() as f32,
         ))
         .show(ctx, |ui| {
-            ui.menu_button("Panes / reveal (F6)", |ui| {
+            let mut dismissed = false;
+            let panes_menu = ui.menu_button("Panes / reveal (F6)", |ui| {
+                if button(
+                    ui,
+                    "workspace/panes-menu/dismiss",
+                    "Dismiss pane list",
+                    report,
+                ) {
+                    dismissed = true;
+                    ui.close();
+                }
                 ui.label("Canonical pane list — includes hidden and undersized panes");
                 let ids = surface_frames(controller, surface.root);
-                let offset = page(ui, state, "pane-list", ids.len(), size);
+                let offset = page(ui, state, "pane-list", ids.len(), size, report);
                 for frame in ids.into_iter().skip(offset).take(size) {
                     ui.horizontal(|ui| {
                         if ui.button(format!("Reveal frame {}", frame.raw())).clicked() {
@@ -633,11 +752,51 @@ pub fn draw(
                             }
                         }
                         ui.menu_button("Tabs", |ui| {
-                            tab_list(ui, frame, controller, host, state, size, report);
+                            let workspace = controller.snapshot().frames[&frame].workspace;
+                            let colors = state
+                                .resolve(&policy, workspace, surface.viewport)
+                                .map(|(settings, _, _)| settings.group_colors)
+                                .unwrap_or(false);
+                            tab_list(ui, frame, controller, host, state, size, colors, report);
                         });
                     });
                 }
             });
+            record(
+                report,
+                &panes_menu.response,
+                "workspace/panes-menu".into(),
+                "Panes / reveal (F6)".into(),
+                None,
+            );
+            if dismissed {
+                panes_menu.response.request_focus();
+                state.latest_announcement = Some((
+                    surface.viewport,
+                    "Pane list dismissed; logical focus returned to Panes / reveal (F6)".into(),
+                ));
+                ctx.request_repaint();
+            }
+            if let Some((viewport, announcement)) = &state.latest_announcement {
+                if *viewport == surface.viewport {
+                    let response = ui
+                        .push_id("pane-menu-announcement", |ui| {
+                            ui.set_max_width(panes_menu.response.rect.width().max(120.0));
+                            ui.add(egui::Label::new(announcement).wrap())
+                        })
+                        .inner;
+                    ctx.accesskit_node_builder(response.id, |node| {
+                        node.set_live(egui::accesskit::Live::Polite)
+                    });
+                    record(
+                        report,
+                        &response,
+                        "workspace/panes-menu/announcement".into(),
+                        announcement.clone(),
+                        None,
+                    );
+                }
+            }
             if !projection.rejected.is_empty() {
                 let label = "Layout unavailable";
                 let response = ui
@@ -673,11 +832,16 @@ pub fn draw(
             if let Some(preview) = state.preview.clone() {
                 ui.horizontal(|ui| {
                     ui.label("Nonmutating dock preview");
-                    if ui.button("Commit preview").clicked() {
+                    if button(ui, "workspace/preview/commit", "Commit preview", report) {
                         state.preview.take();
                         command(controller, host, Command::CommitPreview(preview), report);
                     }
-                    if ui.button("Cancel preview (Escape)").clicked() {
+                    if button(
+                        ui,
+                        "workspace/preview/cancel",
+                        "Cancel preview (Escape)",
+                        report,
+                    ) {
                         state.preview.take();
                     }
                 });
@@ -765,7 +929,7 @@ pub fn draw(
                 format!("Move frame {}", frame.frame.raw()),
                 None,
             );
-            ui.menu_button(
+            let frame_menu_response = ui.menu_button(
                 if settings.profile == ChromeProfile::Compact {
                     "⋮"
                 } else {
@@ -775,15 +939,38 @@ pub fn draw(
                     frame_menu(ui, frame, controller, surface, host, state, size, report);
                 },
             );
-            ui.menu_button(
+            record(
+                report,
+                &frame_menu_response.response,
+                format!("frame/{}/menu", frame.frame.raw()),
+                "Frame menu".into(),
+                None,
+            );
+            let tabs_menu_response = ui.menu_button(
                 if settings.profile == ChromeProfile::Compact {
                     "Tabs"
                 } else {
                     "Tabs / groups"
                 },
                 |ui| {
-                    tab_list(ui, frame.frame, controller, host, state, size, report);
+                    tab_list(
+                        ui,
+                        frame.frame,
+                        controller,
+                        host,
+                        state,
+                        size,
+                        settings.group_colors,
+                        report,
+                    );
                 },
+            );
+            record(
+                report,
+                &tabs_menu_response.response,
+                format!("frame/{}/tabs-menu", frame.frame.raw()),
+                "Tabs and groups menu".into(),
+                None,
             );
             if recreate {
                 ui.label("Surface recreation required");
@@ -877,16 +1064,29 @@ pub fn draw(
                             report.reject(e);
                         }
                     }
-                    ui.menu_button("Dock tool", |ui| {
+                    let dock = ui.menu_button("Dock tool", |ui| {
                         let offset = page(
                             ui,
                             state,
                             "tool-placements",
                             record_tool.policy.allowed.len(),
                             size,
+                            report,
                         );
-                        for placement in record_tool.policy.allowed.iter().skip(offset).take(size) {
-                            if ui.button(format!("{placement:?}")).clicked() {
+                        for (index, placement) in record_tool
+                            .policy
+                            .allowed
+                            .iter()
+                            .enumerate()
+                            .skip(offset)
+                            .take(size)
+                        {
+                            if button(
+                                ui,
+                                &format!("tool/{}/placement/{index}", tool.tool.raw()),
+                                &format!("{placement:?}"),
+                                report,
+                            ) {
                                 preview(
                                     controller,
                                     DockIntent::Tool {
@@ -900,6 +1100,13 @@ pub fn draw(
                             }
                         }
                     });
+                    record(
+                        report,
+                        &dock.response,
+                        format!("tool/{}/dock-menu", tool.tool.raw()),
+                        "Dock tool".into(),
+                        Some(record_tool.target.view),
+                    );
                 });
             });
     }
@@ -996,6 +1203,7 @@ fn tab_list(
     host: &mut impl DesktopHost,
     state: &mut ChromeState,
     size: usize,
+    colors: bool,
     report: &mut FrameReport,
 ) {
     ui.add(
@@ -1017,7 +1225,7 @@ fn tab_list(
             return;
         }
     };
-    let offset = page(ui, state, &key, first.matched, size);
+    let offset = page(ui, state, &key, first.matched, size, report);
     let query = TabQuery { offset, ..query };
     if let Ok(tabs) = controller.snapshot().tab_page(&query) {
         egui::ScrollArea::vertical()
@@ -1026,13 +1234,20 @@ fn tab_list(
                 for row in tabs.rows {
                     ui.horizontal(|ui| {
                         if !row.closed {
-                            tab_button(ui, &row, controller, host, true, report);
+                            tab_button(ui, &row, controller, host, colors, report);
                         } else {
                             ui.label(format!("{} (closed)", row.label));
                         }
-                        ui.menu_button("Actions", |ui| {
+                        let actions = ui.menu_button("Actions", |ui| {
                             view_menu(ui, &row, controller, host, state, size, report)
                         });
+                        record(
+                            report,
+                            &actions.response,
+                            format!("view/{}/actions-menu", row.id.raw()),
+                            "Tab actions".into(),
+                            Some(row.id),
+                        );
                     });
                 }
             });
@@ -1044,11 +1259,19 @@ fn tab_list(
         &format!("groups/{}", frame.raw()),
         groups.len(),
         size,
+        report,
     );
     for group in groups.into_iter().skip(offset).take(size) {
         let label = controller.snapshot().groups[&group].label.clone();
-        ui.menu_button(format!("Group: {label}"), |ui| {
+        let menu = ui.menu_button(format!("Group: {label}"), |ui| {
             group_menu(ui, group, controller, host, state, size, report)
         });
+        record(
+            report,
+            &menu.response,
+            format!("group/{}/menu", group.raw()),
+            format!("Group: {label}"),
+            None,
+        );
     }
 }

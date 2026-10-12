@@ -2,7 +2,7 @@
 use crate::*;
 use kumihimo_content as content;
 use kumihimo_core::{self as core, EntityId, Envelope, Scalar};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub struct Demo {
     pub controller: Controller,
@@ -38,6 +38,9 @@ pub struct DemoHost {
     geometries: BTreeMap<ViewId, content::Geometry>,
     last_draw: BTreeMap<ViewId, RenderSlot>,
     pub now_ms: u64,
+    delayed: BTreeSet<ViewId>,
+    animated: BTreeSet<ViewId>,
+    surface_observations: BTreeMap<WorkspaceId, (bool, bool, content::Observation<bool>)>,
     #[cfg(feature = "backgrounds")]
     backgrounds: BTreeMap<FrameId, content::MountId>,
     #[cfg(feature = "backgrounds")]
@@ -54,6 +57,9 @@ impl Default for DemoHost {
             geometries: BTreeMap::new(),
             last_draw: BTreeMap::new(),
             now_ms: 0,
+            delayed: BTreeSet::new(),
+            animated: BTreeSet::new(),
+            surface_observations: BTreeMap::new(),
             #[cfg(feature = "backgrounds")]
             backgrounds: BTreeMap::new(),
             #[cfg(feature = "backgrounds")]
@@ -78,6 +84,91 @@ impl DemoHost {
         };
         self.last_draw.retain(|view, _| live(view));
         self.geometries.retain(|view, _| live(view));
+        self.delayed.retain(|view| live(view));
+        self.animated.retain(|view| live(view));
+    }
+    /// Caller supplies observed native facts or explicitly labelled injected facts.
+    pub fn set_surface_observation(
+        &mut self,
+        controller: &mut Controller,
+        surface: SurfaceBinding,
+        visible: bool,
+        minimized: bool,
+        occlusion: content::Observation<bool>,
+    ) -> Result<()> {
+        if !controller.snapshot().workspaces.contains_key(&surface.root) {
+            return Err(AdapterError::Stale("surface observation root"));
+        }
+        if !self.surface_observations.contains_key(&surface.root)
+            && self.surface_observations.len() >= self.policy.max_regions
+        {
+            return Err(AdapterError::Budget("surface observations"));
+        }
+        self.surface_observations
+            .insert(surface.root, (visible, minimized, occlusion));
+        let visible_views = if visible && !minimized {
+            self.last_draw.keys().copied().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        self.content_visibility(controller, surface, &visible_views)
+    }
+    pub fn delay_provider(&mut self, view: ViewId, delayed: bool) -> Result<()> {
+        if !self.mounts.contains_key(&view) {
+            return Err(AdapterError::Stale("delayed provider view"));
+        }
+        if delayed {
+            self.delayed.insert(view);
+        } else {
+            self.delayed.remove(&view);
+        }
+        Ok(())
+    }
+    pub fn animate_provider(&mut self, view: ViewId, animated: bool) -> Result<()> {
+        if !self.mounts.contains_key(&view) {
+            return Err(AdapterError::Stale("animated provider view"));
+        }
+        if animated {
+            self.animated.insert(view);
+        } else {
+            self.animated.remove(&view);
+        }
+        Ok(())
+    }
+    fn surface_facts(
+        &self,
+        controller: &Controller,
+        workspace: WorkspaceId,
+    ) -> (bool, bool, content::Observation<bool>) {
+        let mut root = workspace;
+        while let Some(owner) = controller.snapshot().workspaces[&root].owner {
+            root = controller.snapshot().frames[&owner].workspace;
+        }
+        self.surface_observations.get(&root).cloned().unwrap_or((
+            true,
+            false,
+            content::Observation::Unknown,
+        ))
+    }
+    /// Provider-owned opaque mark, painted after the actual document/canvas content.
+    pub fn provider_mark(&self, slot: &RenderSlot) -> Result<(egui::Pos2, egui::Color32)> {
+        let doc = self
+            .documents
+            .get(&slot.resource)
+            .ok_or(AdapterError::Stale("mark resource"))?;
+        let point = egui::pos2(
+            (slot.bounds.x() + slot.bounds.width() - 18.0) as f32,
+            (slot.bounds.y() + 18.0) as f32,
+        );
+        slot.local_point(point)?;
+        Ok((
+            point,
+            if doc.canvas {
+                egui::Color32::from_rgb(30, 240, 70)
+            } else {
+                egui::Color32::from_rgb(240, 40, 210)
+            },
+        ))
     }
     pub fn permission(&self) -> content::HostPermission {
         content::HostPermission {
@@ -86,6 +177,15 @@ impl DemoHost {
         }
     }
     pub fn pump(&mut self, controller: &mut Controller, mount: content::MountId) -> Result<()> {
+        if controller
+            .inspect()
+            .mounts
+            .get(&mount)
+            .and_then(|m| m.scope.target.view())
+            .is_some_and(|v| self.delayed.contains(&v))
+        {
+            return Ok(());
+        }
         for _ in 0..self.policy.max_pending {
             let revision = controller
                 .inspect()
@@ -219,9 +319,12 @@ impl DemoHost {
                 }
                 content::RequestKind::Focus(_)
                 | content::RequestKind::Presentation(_)
-                | content::RequestKind::Invalidate
-                | content::RequestKind::Animation { .. } => (
+                | content::RequestKind::Invalidate => (
                     "presentation",
+                    content::AckResult::Confirmed(content::Confirmation::Done),
+                ),
+                content::RequestKind::Animation { .. } => (
+                    "animation",
                     content::AckResult::Confirmed(content::Confirmation::Done),
                 ),
                 _ => ("unsupported", content::AckResult::Unsupported),
@@ -334,12 +437,14 @@ impl DemoHost {
             self.geometries.insert(slot.view, geometry.clone());
             self.send(controller, mount, content::RequestKind::Geometry(geometry))?;
         }
+        let (surface_visible, minimized, occlusion) =
+            self.surface_facts(controller, slot.workspace);
         let signals = content::Signals {
             selected: true,
-            visible: slot.visible,
-            focused: slot.focused,
-            minimized: false,
-            occlusion: content::Observation::Unknown,
+            visible: slot.visible && surface_visible && !minimized,
+            focused: slot.focused && surface_visible && !minimized,
+            minimized,
+            occlusion,
         };
         if controller.inspect().mounts[&mount].signals != signals {
             self.send(
@@ -349,7 +454,11 @@ impl DemoHost {
             )?;
         }
         self.pump(controller, mount)?;
-        self.last_draw.insert(slot.view, slot.clone());
+        if surface_visible && !minimized {
+            self.last_draw.insert(slot.view, slot.clone());
+        } else {
+            self.last_draw.remove(&slot.view);
+        }
         Ok(())
     }
     #[cfg(feature = "navigation")]
@@ -454,6 +563,31 @@ impl DesktopHost for DemoHost {
         controller: &mut Controller,
     ) -> Result<()> {
         self.synchronize(controller, slot)?;
+        let (visible, minimized, occlusion) = self.surface_facts(controller, slot.workspace);
+        if !visible || minimized {
+            return Ok(());
+        }
+        if self.delayed.contains(&slot.view) {
+            ui.label("Demo provider work delayed; other panes remain responsive.");
+            return Ok(());
+        }
+        let animate =
+            self.animated.contains(&slot.view) && occlusion != content::Observation::Known(true);
+        if animate {
+            self.send(
+                controller,
+                self.mounts[&slot.view],
+                content::RequestKind::Animation {
+                    deadline: Some(
+                        self.now_ms
+                            .checked_add(33)
+                            .ok_or(AdapterError::Budget("animation deadline"))?,
+                    ),
+                },
+            )?;
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
+        }
         if self
             .documents
             .get(&slot.resource)
@@ -616,6 +750,22 @@ impl DesktopHost for DemoHost {
                 )?;
             }
         }
+        let (mark, color) = self.provider_mark(slot)?;
+        ui.painter().rect_filled(
+            egui::Rect::from_center_size(mark, egui::vec2(12.0, 12.0)),
+            0.0,
+            color,
+        );
+        if animate {
+            let time = ui.input(|i| i.time);
+            let width = (slot.bounds.width() - 32.0).max(1.0) as f32;
+            let x = slot.bounds.x() as f32 + 16.0 + ((time * 80.0) as f32).rem_euclid(width);
+            ui.painter().circle_filled(
+                egui::pos2(x, (slot.bounds.y() + slot.bounds.height() - 16.0) as f32),
+                5.0,
+                color,
+            );
+        }
         if edited {
             self.content_input(
                 controller,
@@ -728,6 +878,11 @@ impl DesktopHost for DemoHost {
         visible: &[ViewId],
     ) -> Result<()> {
         self.prune_draw_bindings(controller);
+        let (surface_visible, minimized, occlusion) = self
+            .surface_observations
+            .get(&surface.root)
+            .cloned()
+            .unwrap_or((true, false, content::Observation::Unknown));
         for (view, mount) in self.mounts.clone() {
             let Some(record) = controller.snapshot().views.get(&view) else {
                 continue;
@@ -743,16 +898,24 @@ impl DesktopHost for DemoHost {
                 && record.closed.is_none();
             let signals = content::Signals {
                 selected,
-                visible: visible.contains(&view) && record.closed.is_none(),
+                visible: surface_visible
+                    && !minimized
+                    && visible.contains(&view)
+                    && record.closed.is_none(),
                 focused: controller
                     .inspect()
                     .mounts
                     .get(&mount)
                     .is_some_and(|m| m.signals.focused)
+                    && surface_visible
+                    && !minimized
                     && visible.contains(&view),
-                minimized: false,
-                occlusion: content::Observation::Unknown,
+                minimized,
+                occlusion: occlusion.clone(),
             };
+            if !signals.visible {
+                self.last_draw.remove(&view);
+            }
             if controller
                 .inspect()
                 .mounts

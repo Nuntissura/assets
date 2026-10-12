@@ -95,8 +95,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml
-  next_action: Complete original frozen13 method variants with coder03/evaluator/diagnostics; preserve quiet success
-    and bundle only affected proof, then scoped evaluation/publication/DONE
+  next_action: 'One serial affected batch: default/all-feature checks, all29 owning cases, fresh capture states
+    and extended quiet native/UIA; independent original13 outcome before publication/DONE'
   blockers: []
 - wp_id: WP-KUM-013-web-adapter-portal-pilot-v1
   title: Implement reusable Rust/WASM browser adapter and Portal-style workspace pilot

@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 8
+generation: 9
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -91,6 +91,12 @@ proof:
     e006 reused. Evaluator opened all14 native images and reports original frozen-method variants still unobserved
     (post-popout accessibility and temporary overlay dismissal); coder03 admitted original17 source only for minimum
     consolidated original13 proof completion. Provider source remains held, no full packet verdict.
+- kind: held_original_acceptance_completion_source
+  baseline_revision: b63d90324f1c276d526e59eaf2f23b0e0fc56a3d
+  source_fence_sha256: c8e754db0ca9e627d1e71c41ad18f4a2051407e245c626a08eba74cd080bb512
+  observed: All seventeen admitted sources HOLD; nine changed paths, original fourteen test prefix exact, fifteen
+    additive owning functions and original capture sequence retained. New rendering inputs require fresh actual
+    captures. All new runtime variants unexecuted; unchanged provider owning b7 test reused.
 blockers: []
-next_action: Complete original frozen13 method variants with coder03/evaluator/diagnostics; preserve quiet success
-  and bundle only affected proof, then scoped evaluation/publication/DONE
+next_action: 'One serial affected batch: default/all-feature checks, all29 owning cases, fresh capture states and
+  extended quiet native/UIA; independent original13 outcome before publication/DONE'

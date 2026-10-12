@@ -28,6 +28,10 @@ pub struct HostPointerEvent {
 }
 #[derive(Clone, Debug)]
 enum DragTarget {
+    TabSelect {
+        view: ViewId,
+        bounds: Rect,
+    },
     Frame {
         frame: FrameId,
         bounds: Rect,
@@ -283,6 +287,7 @@ fn update_preview(
     capture.resize_plan = None;
     capture.resize_geometry = None;
     let intent = match &capture.target {
+        DragTarget::TabSelect { .. } => return,
         DragTarget::FloatResize { frame, bounds } => {
             let delta = capture.position - capture.press;
             match Rect::new(
@@ -515,7 +520,27 @@ pub fn process(
         }
         match event.phase {
             PointerPhase::Press if state.capture.is_none() => {
-                if let Some(target) = hit_drag(controller, projection, event.position, report) {
+                let tab = (event.source != PointerSource::Mouse)
+                    .then(|| {
+                        report.controls.iter().rev().find_map(|control| {
+                            let view = control.target?;
+                            (control.enabled
+                                && control.id == format!("view/{}/tab", view.raw())
+                                && to_egui(control.bounds).contains(event.position)
+                                && controller.snapshot().views.get(&view).is_some_and(|v| {
+                                    v.closed.is_none()
+                                        && pick_frame(projection, event.position) == Some(v.frame)
+                                }))
+                            .then_some(DragTarget::TabSelect {
+                                view,
+                                bounds: control.bounds,
+                            })
+                        })
+                    })
+                    .flatten();
+                if let Some(target) =
+                    tab.or_else(|| hit_drag(controller, projection, event.position, report))
+                {
                     let settings = projection
                         .frames
                         .iter()
@@ -550,6 +575,12 @@ pub fn process(
                     .filter(|c| c.pointer == event.pointer && c.source == event.source)
                 {
                     capture.position = event.position;
+                    if matches!(capture.target, DragTarget::TabSelect { .. }) {
+                        if capture.position.distance(capture.press) > capture.hit_size {
+                            state.cancel("tab tap moved into scrolling");
+                        }
+                        continue;
+                    }
                     if capture.source == PointerSource::Touch && !capture.activated {
                         if capture.position.distance(capture.press) > capture.hit_size {
                             state.cancel("touch scrolling before long press");
@@ -572,7 +603,19 @@ pub fn process(
                 {
                     let mut capture = state.capture.take().unwrap();
                     capture.position = event.position;
-                    if capture.activated && capture.position.distance(capture.press) > 2.0 {
+                    if let DragTarget::TabSelect { view, bounds } = &capture.target {
+                        if to_egui(*bounds).contains(capture.position)
+                            && capture.position.distance(capture.press) <= capture.hit_size
+                        {
+                            crate::chrome::command(
+                                controller,
+                                host,
+                                Command::SelectView { view: *view },
+                                report,
+                            );
+                            state.focused_view = Some(*view);
+                        }
+                    } else if capture.activated && capture.position.distance(capture.press) > 2.0 {
                         update_preview(&mut capture, controller, projection, report);
                         if let Some(preview) = capture.preview {
                             crate::chrome::command(
@@ -601,7 +644,7 @@ pub fn process(
                 if state
                     .capture
                     .as_ref()
-                    .is_some_and(|c| c.pointer == event.pointer)
+                    .is_some_and(|c| c.pointer == event.pointer && c.source == event.source)
                 {
                     state.cancel("pointer cancelled");
                 }
@@ -610,7 +653,10 @@ pub fn process(
         }
     }
     if let Some(capture) = &mut state.capture {
-        if capture.source == PointerSource::Touch && !capture.activated {
+        if capture.source == PointerSource::Touch
+            && !capture.activated
+            && !matches!(capture.target, DragTarget::TabSelect { .. })
+        {
             if now - capture.pressed_at >= capture.long_press_seconds {
                 capture.activated = true;
                 update_preview(capture, controller, projection, report);
