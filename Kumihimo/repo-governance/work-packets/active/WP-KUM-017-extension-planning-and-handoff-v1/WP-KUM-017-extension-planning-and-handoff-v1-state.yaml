@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-017-extension-planning-and-handoff-v1
-generation: 2
-phase: active
+generation: 3
+phase: done
 owner: dev_lead
 changed_files:
 - repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v23-r23-5069e3cea8e6/INDEX.json
@@ -43,6 +43,19 @@ proof:
 - kind: scope
   observed: Four planned dependency-ordered implementation contracts and lead brief written; product source unchanged;
     no runtime launch or compatibility claim
+- kind: fresh_canonical_origin_publication
+  publication_revision: 598d88c8cda05c33d3d73de6645270d2f16a3ba7
+  observed: Live origin, HEAD and freshly fetched branch match; all28 changed canonical blobs independently read
+    and match working LF bytes; planning tree clean
+- kind: fresh_chat_startup
+  thread_id: 01a1320b-8fbf-71d1-b742-39d9f761ea04
+  host_id: local
+  observed: create_thread returned a fresh local chat, no fork; wait_threads cursor0937c449-c444-48cf-a27b-1875434065fe:6
+    observed completed read-only session-start and explicit hold at598d88c; no source/Git/session changes
+- kind: exclusive_coordination_transfer
+  session_ref: repo-governance/sessions/current.yaml
+  observed: Canonical session names fresh lead and original lead releases source/Git/session/build ownership; implementation
+    starts only after transfer publication and explicit release follow-up
 blockers: []
-next_action: Publish planning bundle, create fresh non-fork implementation lead, then publish and release exclusive
-  coordination ownership
+next_action: Fresh implementation lead owns WP018-021 after published transfer and release; original lead has no
+  active implementation assignment

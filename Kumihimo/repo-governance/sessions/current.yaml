@@ -1,20 +1,19 @@
 schema_version: kumihimo.session.v1
 session_id: SESSION-KUM-2026-10-11-v1
 phase: active
-dev_lead: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
+dev_lead: 01a1320b-8fbf-71d1-b742-39d9f761ea04
 git:
   workspace_relative_root: ..
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: WP-KUM-017-extension-planning-and-handoff-v1
+active_wp: null
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
   operator_afk: false
   future_sessions_require_current_scope_reconciliation: true
   remaining_work_packets_authorized:
-  - WP-KUM-017-extension-planning-and-handoff-v1
   - WP-KUM-018-file-drop-integration-v1
   - WP-KUM-019-external-app-tiling-v1
   - WP-KUM-020-foreign-window-hosting-v1
@@ -39,18 +38,21 @@ roles:
     model: gpt-6.1-sol
     reasoning: high
     assignment: Completed scoped dependency/loader/CLI readiness; report held; no active assignment
+    status: held_no_new_assignment
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6.1-sol
     reasoning: high
     assignment: Recorded causal blockers resolved by exact source/runtime proof; read-only standby; no active assignment
+    status: held_no_new_assignment
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
     assignment: All original packet and WP015 documentation evaluations complete; reports held; no active assignment
+    status: held_no_new_assignment
   coder04:
     role_id: ROLE-KUM-CODER-04
     thread_id: 01a12e31-ce41-7eb0-9e51-fae60f404d49
@@ -108,9 +110,15 @@ roles:
   manual_verifier:
     role_id: ROLE-KUM-MANUAL-VERIFIER-016
     agent_path: /root/manual_verifier
-    assignment: WP016 code/spec capability inspection and focused independent documentation evaluation
+    assignment: WP016/017 focused evaluations complete; no active assignment
     status: completed_held
     source_ownership_released: true
+  implementation_lead:
+    role_id: ROLE-KUM-IMPLEMENTATION-LEAD-02
+    thread_id: 01a1320b-8fbf-71d1-b742-39d9f761ea04
+    assignment: Exclusive WP018-021 implementation coordination after published release; create fresh role/team
+      leader chats and helpers
+    status: ready_pending_release
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -141,7 +149,8 @@ tick:
   operator_request: remove the tick
   observed_result: automation_update delete returned deleteStatus=deleted for kumihimo-dev-lead-tick
   automatic_restart_authorized: false
-next_action: Publish WP017 planning and fresh-lead dispatch; do not admit implementation before ownership transfer
+next_action: Fresh lead awaits explicit original-lead release, then records transfer accepted, creates fresh role/coding
+  leader chats, obtains dependency readiness and begins WP018-021; tick stays deleted
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb
@@ -194,3 +203,13 @@ role_history:
     status: held
   retired_reason: Two completed implementation packets; operator rotation required
   retired_after_outcome: d51333c65109de9b2b23ddcd9390d2dc919d3f2d
+coordination_transfer:
+  from_thread_id: 01a12c1e-9cb4-70e0-a89f-a9db1ae48ab1
+  to_thread_id: 01a1320b-8fbf-71d1-b742-39d9f761ea04
+  state: published_pending_release_followup
+  planning_revision: 598d88c8cda05c33d3d73de6645270d2f16a3ba7
+  authorization_ref: repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-lead-brief.yaml
+  original_lead_source_ownership_released: true
+  original_lead_git_session_build_lane_released: true
+  release_condition: Original lead sends explicit release only after this transfer commit is independently verified
+    on origin

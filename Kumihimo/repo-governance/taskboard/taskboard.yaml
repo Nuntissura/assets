@@ -3,8 +3,7 @@ kind: derived_taskboard
 project_id: KUMIHIMO
 source: WP contracts and state
 counts:
-  done: 16
-  active: 1
+  done: 17
   planned: 4
 work_packets:
 - wp_id: WP-KUM-001-init-v1
@@ -129,11 +128,11 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-017-extension-planning-and-handoff-v1
   title: Author extension packets and dispatch a fresh implementation lead
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-017-extension-planning-and-handoff-v1/WP-KUM-017-extension-planning-and-handoff-v1-state.yaml
-  next_action: Publish planning bundle, create fresh non-fork implementation lead, then publish and release exclusive
-    coordination ownership
+  next_action: Fresh implementation lead owns WP018-021 after published transfer and release; original lead has
+    no active implementation assignment
   blockers: []
 - wp_id: WP-KUM-018-file-drop-integration-v1
   title: Host-owned file and asset drop integration for desktop and web
