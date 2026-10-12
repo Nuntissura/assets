@@ -1,16 +1,29 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 3
+generation: 4
 phase: active
 owner: ROLE-KUM-CODER-03
 changed_files:
-- repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
-- repo-governance/specification/
-- repo-governance/work-packets/archive/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-stub.yaml
+- product/kumihimo-egui/src/lib.rs
+- product/kumihimo-egui/src/workspace.rs
+- product/kumihimo-egui/src/chrome.rs
+- product/kumihimo-egui/src/input.rs
+- product/kumihimo-egui/src/content.rs
+- product/kumihimo-egui/src/navigation.rs
+- product/kumihimo-egui/src/native.rs
+- product/kumihimo-egui/src/window_slots.rs
+- product/kumihimo-egui/src/capture.rs
+- product/kumihimo-egui/src/diagnostics.rs
+- product/kumihimo-egui/src/persistence.rs
+- product/kumihimo-egui/src/demo.rs
+- product/kumihimo-egui/examples/desktop_host.rs
+- product/kumihimo-egui/examples/capture_host.rs
+- product/kumihimo-egui/examples/native_probe.rs
+- product/kumihimo-egui/tests/adapter_contracts.rs
+- product/kumihimo-egui/tools/observe-uia.ps1
+- product/README.md
 - product/Cargo.toml
 - product/Cargo.lock
-- product/kumihimo-egui/Cargo.toml
-- product/kumihimo-egui/src/lib.rs
 proof:
 - kind: local_full_contract_preparation
   source_revision: bdd19d6ca500cb524ffa5949c50738515f543698
@@ -27,6 +40,13 @@ proof:
     Windows x64 all-feature metadata completed exit0; independent dependency closure ready_for_coding. Original14
     package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only. Source
     coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof yet.
+- kind: focused_compile_milestone
+  source_revision: 547e756471939d3b00c1da9a8c2a4ff740c593c5
+  source_fence17: fd067a4d2bd5e921bf6b7606f6e4ca0de481dac2129df00b3b99e0190a7d39db
+  observed: First default check8b09e4f E0277 input255; exact two-file repair published547e756. Default all-target
+    check PASS2.76s, optional-unused/dead-field warnings only. Combined all-feature check currently running soleleadlane;
+    focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only; original317 lock
+    records unchanged.
 blockers: []
-next_action: Coder03 team implements17 admitted source paths in parallel with one writer per file; lead bundles
-  stable affected proof through one Cargo lane
+next_action: Lead completes bundled affected allfeature compile, focused consumers, actual raster/native/UIA; team
+  resolves exact failures; independent eval then published outcome
