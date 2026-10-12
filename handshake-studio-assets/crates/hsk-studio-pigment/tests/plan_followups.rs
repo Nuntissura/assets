@@ -13,7 +13,11 @@ use hsk_studio_pigment::effect_math::{
     DropShadowOp, EffectFeature, EffectKind, EffectOp, GlowFill, OuterGlowOp,
 };
 use hsk_studio_pigment::render_plan::*;
+use std::path::Path;
 use std::time::{Duration, Instant};
+
+mod reader_scan;
+use reader_scan::{ReaderRow, Reads, Source, read_sources};
 
 const R: Rect = Rect {
     x: 0,
@@ -1090,126 +1094,345 @@ fn descriptor_topics_state_the_rule_and_cite_existing_tests() {
     }
 }
 
-/// How a reader of plan nodes or envelope entries is classified.
-#[derive(Clone, Copy)]
-enum Reads {
-    /// Structure or a lookup: decided over every node or entry by design.
-    Every,
-    /// Capability: must go through the reachable set; the strings must all occur in the code.
-    Reachable(&'static [&'static str]),
-}
-/// One scanned source file: its name, its text and the classification of its readers.
-type Scanned = (&'static str, &'static str, &'static [(&'static str, Reads)]);
+/// PLR-073, widened by PLR-080: every function under `src/` that reads the nodes of a plan or the
+/// entries of an envelope (`.nodes`, `.layers` after any receiver or parameter name, plus the field
+/// shorthand of a pattern) is classified here by file and name. A new reader, in any file, under
+/// any parameter name, `const fn` or not, fails this test until it is classified; a capability
+/// reader must go through the reachable set that both backends execute; no `admit*` entry point
+/// reads nodes or entries itself or asks for the effect modes of every entry; and a row that
+/// matches no reader is stale. `tests/reader_scan/mod.rs` documents the scan and the tests below
+/// the `READERS` table feed it mutated sources. (The V4-06 regexes of the lane notes find the same
+/// sites by text.)
+const READERS: &[ReaderRow] = &[
+    (
+        "render_plan.rs",
+        "validate",
+        Reads::Reachable(&["reachable_nodes()"]),
+    ),
+    ("render_plan.rs", "reachable_nodes", Reads::Every),
+    // `Group::clip_role`: the layers of one group, by index.
+    ("render_plan.rs", "clip_role", Reads::Every),
+    ("render_plan.rs", "has_leaf_root", Reads::Every),
+    (
+        "render_plan.rs",
+        "has_pass_through_fill",
+        Reads::Reachable(&["reachable_nodes()"]),
+    ),
+    (
+        "render_plan.rs",
+        "has_pass_through_mask",
+        Reads::Reachable(&["reachable_nodes()"]),
+    ),
+    (
+        "render_plan.rs",
+        "uses_premultiplied_alpha",
+        Reads::Reachable(&["reachable_nodes()"]),
+    ),
+    (
+        "render_plan.rs",
+        "has_solid_outside_unit",
+        Reads::Reachable(&["reachable_nodes()"]),
+    ),
+    (
+        "render_plan.rs",
+        "has_mask_density",
+        Reads::Reachable(&["reachable_nodes()"]),
+    ),
+    // `PlanExtensions::from_layers`: builds the envelope from its entries, reads none.
+    ("render_plan/extensions.rs", "from_layers", Reads::Every),
+    ("render_plan/extensions.rs", "is_empty", Reads::Every),
+    ("render_plan/extensions.rs", "extension", Reads::Every),
+    ("render_plan/extensions.rs", "effect_modes", Reads::Every),
+    (
+        "render_plan/extensions.rs",
+        "effect_modes_in",
+        Reads::Reachable(&["reachable_nodes()"]),
+    ),
+    (
+        "render_plan/extensions.rs",
+        "nodes_holding_effects",
+        Reads::Reachable(&["reachable.get("]),
+    ),
+    (
+        "render_plan/extensions.rs",
+        "validate",
+        Reads::Reachable(&["reachable_nodes()", "if counts &&"]),
+    ),
+];
 
-/// PLR-073: every function of the plan IR that reads `plan.nodes`, `self.nodes` or the envelope
-/// `self.layers` is classified here. A new reader fails this test until it is classified, and a
-/// capability reader must go through the reachable set that both backends execute. (The V4-06
-/// regexes of the lane notes find the same sites by text.)
+fn crate_sources() -> Vec<Source> {
+    read_sources(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")))
+}
+fn problems_of(sources: &[Source], table: &[ReaderRow]) -> Vec<String> {
+    reader_scan::problems(&reader_scan::scan(sources), table)
+}
+
 #[test]
 fn admission_readers_of_nodes_and_entries_are_classified() {
-    let files: [Scanned; 2] = [
+    let sources = crate_sources();
+    // The walk is recursive and sees files the table does not name.
+    let paths: Vec<&str> = sources.iter().map(|s| s.path.as_str()).collect();
+    for want in [
+        "render_plan.rs",
+        "render_plan/extensions.rs",
+        "effect_math/window.rs",
+    ] {
+        assert!(
+            paths.contains(&want),
+            "the scan does not see {want}: {paths:?}"
+        );
+    }
+    let problems = problems_of(&sources, READERS);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// `sources` with `edit` applied to the text of `path`.
+fn mutated(sources: &[Source], path: &str, edit: impl Fn(&str) -> String) -> Vec<Source> {
+    assert!(
+        sources.iter().any(|s| s.path == path),
+        "{path} is not among the sources"
+    );
+    sources
+        .iter()
+        .map(|s| Source {
+            path: s.path.clone(),
+            text: if s.path == path {
+                edit(&s.text)
+            } else {
+                s.text.clone()
+            },
+        })
+        .collect()
+}
+/// `text` with `inject` placed right after the `{` that opens the body of the function whose
+/// signature starts with `signature`.
+fn inject_into_body(text: &str, signature: &str, inject: &str) -> String {
+    let at = text
+        .find(signature)
+        .unwrap_or_else(|| panic!("anchor {signature:?} is missing"));
+    let open = at + text[at..].find('{').expect("a body follows the signature");
+    format!("{} {inject} {}", &text[..=open], &text[open + 1..])
+}
+/// `sources` plus one new file.
+fn with_file(sources: &[Source], path: &str, text: &str) -> Vec<Source> {
+    let mut out = mutated(sources, "render_plan.rs", str::to_string);
+    out.push(Source {
+        path: path.to_string(),
+        text: text.to_string(),
+    });
+    out
+}
+
+/// PLR-080: each way the earlier tripwire missed a reader is a mutant of the real sources, and
+/// the scan reports it by function. The earlier scan looked for three spellings
+/// (`self.nodes`, `plan.nodes`, `self.layers`) in two `include_str!` files and listed only the
+/// declaration prefixes `pub(crate) fn`, `pub(super) fn`, `pub fn` and `fn`.
+#[test]
+fn the_reader_scan_flags_a_new_unclassified_reader() {
+    let base = crate_sources();
+    let extensions = "render_plan/extensions.rs";
+    // (what the mutant adds, the mutated sources, what a reported problem must contain)
+    let cases: Vec<(&str, Vec<Source>, &str)> = vec![
         (
-            "render_plan.rs",
-            include_str!("../src/render_plan.rs"),
-            &[
-                ("validate", Reads::Reachable(&["reachable_nodes()"])),
-                ("reachable_nodes", Reads::Every),
-                // `Group::clip_role`: the layers of one group, by index.
-                ("clip_role", Reads::Every),
-                ("has_leaf_root", Reads::Every),
-                (
-                    "has_pass_through_fill",
-                    Reads::Reachable(&["reachable_nodes()"]),
-                ),
-                (
-                    "has_pass_through_mask",
-                    Reads::Reachable(&["reachable_nodes()"]),
-                ),
-                (
-                    "uses_premultiplied_alpha",
-                    Reads::Reachable(&["reachable_nodes()"]),
-                ),
-                (
-                    "has_solid_outside_unit",
-                    Reads::Reachable(&["reachable_nodes()"]),
-                ),
-                ("has_mask_density", Reads::Reachable(&["reachable_nodes()"])),
-            ],
+            "`extensions.layers` read inside an admission function",
+            mutated(&base, extensions, |t| {
+                inject_into_body(
+                    t,
+                    "pub fn admit_extended_with_limits",
+                    "let _n = extensions.layers.len();",
+                )
+            }),
+            "fn admit_extended_with_limits: an admission entry point reads",
         ),
         (
-            "render_plan/extensions.rs",
-            include_str!("../src/render_plan/extensions.rs"),
-            &[
-                ("is_empty", Reads::Every),
-                ("extension", Reads::Every),
-                ("effect_modes", Reads::Every),
-                ("effect_modes_in", Reads::Reachable(&["reachable_nodes()"])),
-                (
-                    "nodes_holding_effects",
-                    Reads::Reachable(&["reachable.get("]),
-                ),
-                (
-                    "validate",
-                    Reads::Reachable(&["reachable_nodes()", "if counts &&"]),
-                ),
-            ],
+            "a reader whose parameter is neither `self` nor `plan`",
+            mutated(&base, "render_plan.rs", |t| {
+                format!(
+                    "pub fn leak_node_count(render: &RenderPlan) -> usize {{ render.nodes.len() }}\n{t}"
+                )
+            }),
+            "fn leak_node_count: reads plan nodes",
+        ),
+        (
+            "a `pub const fn` reading `self.layers`",
+            mutated(&base, extensions, |t| {
+                format!(
+                    "impl PlanExtensions {{ pub const fn all_len(&self) -> usize {{ self.layers.len() }} }}\n{t}"
+                )
+            }),
+            "fn all_len: reads plan nodes",
+        ),
+        (
+            "a reader in a new file",
+            with_file(
+                &base,
+                "render_plan/new_reader.rs",
+                "pub(crate) fn count(p: &super::RenderPlan) -> usize { p.nodes.len() }\n",
+            ),
+            "render_plan/new_reader.rs:1 fn count: reads plan nodes",
+        ),
+        (
+            "a reader in a new file two directories down",
+            with_file(
+                &base,
+                "extra/deeper/reader.rs",
+                "fn count(p: &RenderPlan) -> usize {\n    p.nodes.len()\n}\n",
+            ),
+            "extra/deeper/reader.rs:2 fn count: reads plan nodes",
+        ),
+        (
+            "a struct pattern that binds the field",
+            mutated(&base, "render_plan.rs", |t| {
+                format!(
+                    "fn destructure(p: &RenderPlan) {{ let RenderPlan {{ nodes, .. }} = p; let _ = nodes; }}\n{t}"
+                )
+            }),
+            "fn destructure: reads plan nodes",
+        ),
+        (
+            "a reader after a `#[cfg(test)]` item of the same file",
+            mutated(&base, "render_plan.rs", |t| {
+                format!(
+                    "#[cfg(test)]\nfn only_for_tests() {{}}\npub fn after_test_item(p: &RenderPlan) -> usize {{ p.nodes.len() }}\n{t}"
+                )
+            }),
+            "fn after_test_item: reads plan nodes",
+        ),
+        (
+            "an `unsafe fn` with a restricted visibility",
+            mutated(&base, "render_plan.rs", |t| {
+                format!(
+                    "pub(in crate::render_plan) unsafe fn raw_len(p: &RenderPlan) -> usize {{ p.nodes.len() }}\n{t}"
+                )
+            }),
+            "fn raw_len: reads plan nodes",
+        ),
+        (
+            "a function nested in a classified reader",
+            mutated(&base, "render_plan.rs", |t| {
+                inject_into_body(
+                    t,
+                    "pub fn has_leaf_root",
+                    "fn inner_count(p: &RenderPlan) -> usize { p.nodes.len() }",
+                )
+            }),
+            "fn inner_count: reads plan nodes",
+        ),
+        (
+            "a reader after text that looks like a comment and a brace",
+            mutated(&base, "render_plan.rs", |t| {
+                format!(
+                    "{}\npub fn after_decoy(p: &RenderPlan) -> usize {{ p.nodes.len() }}\n{t}",
+                    r#"fn decoy() { let _a = "/*"; let _b = '{'; let _c = '\\'; let _d = r"{"; }"#
+                )
+            }),
+            "fn after_decoy: reads plan nodes",
+        ),
+        (
+            "a capability reader that no longer goes through the reachable set",
+            mutated(&base, "render_plan.rs", |t| {
+                t.replace("reachable_nodes()", "every_node()")
+            }),
+            "a capability reader lacks \"reachable_nodes()\"",
+        ),
+        (
+            "an admission function asking for the effect modes of every entry (method call)",
+            mutated(&base, extensions, |t| {
+                inject_into_body(
+                    t,
+                    "pub fn admit_extended_with_limits",
+                    "let _m = extensions.effect_modes();",
+                )
+            }),
+            "fn admit_extended_with_limits asks for the effect modes of every entry",
+        ),
+        (
+            "an admission function asking for the effect modes of every entry (path call)",
+            mutated(&base, extensions, |t| {
+                inject_into_body(
+                    t,
+                    "pub fn admit_extended<",
+                    "let _m = PlanExtensions::effect_modes(extensions);",
+                )
+            }),
+            "fn admit_extended asks for the effect modes of every entry",
         ),
     ];
-    let mut seen = 0usize;
-    for (file, source, table) in files {
-        let code = source.split("#[cfg(test)]").next().unwrap();
-        let mut chunks: Vec<(String, String)> = Vec::new();
-        for line in code.lines() {
-            let trimmed = line.trim_start();
-            let declared = ["pub(crate) fn ", "pub(super) fn ", "pub fn ", "fn "]
-                .iter()
-                .find_map(|p| trimmed.strip_prefix(p));
-            if let Some(rest) = declared {
-                let name: String = rest
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                chunks.push((name, String::new()));
-            }
-            if trimmed.starts_with("//") {
-                continue;
-            }
-            if let Some((_, body)) = chunks.last_mut() {
-                body.push_str(line);
-                body.push('\n');
-            }
-        }
-        for (name, body) in &chunks {
-            let reads = ["self.nodes", "plan.nodes", "self.layers"]
-                .iter()
-                .any(|p| body.contains(p));
-            if !reads {
-                continue;
-            }
-            seen += 1;
-            let Some((_, class)) = table.iter().find(|(n, _)| n == name) else {
-                panic!(
-                    "{file}: fn {name} reads plan nodes or envelope entries and is not classified"
-                );
-            };
-            if let Reads::Reachable(needles) = class {
-                for needle in *needles {
-                    assert!(
-                        body.contains(needle),
-                        "{file}: fn {name} is a capability reader and lacks {needle:?}"
-                    );
-                }
-            }
-        }
-        // The admission entry points do not call the all-entries helper.
-        for (name, body) in &chunks {
-            if name.starts_with("admit") {
-                assert!(
-                    !body.contains(".effect_modes("),
-                    "{file}: fn {name} asks for the effect modes of every entry"
-                );
-            }
-        }
+    for (what, sources, expected) in &cases {
+        let problems = problems_of(sources, READERS);
+        assert!(
+            problems.iter().any(|p| p.contains(expected)),
+            "mutant not reported: {what}; wanted a problem containing {expected:?}, got {problems:?}"
+        );
     }
-    assert!(seen >= 12, "the scan found only {seen} readers");
+
+    // A row that matches no reader is stale.
+    let mut stale: Vec<ReaderRow> = READERS.to_vec();
+    stale.push(("render_plan.rs", "no_such_reader", Reads::Every));
+    let problems = problems_of(&base, &stale);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("classified fn no_such_reader matches no reader")),
+        "{problems:?}"
+    );
+}
+
+/// The scan does not invent readers: comments, doc comments, string, raw string and char
+/// literals, ranges, a local named like the field, struct definitions, trait declarations and
+/// `#[cfg(test)]` items hold the field names without reading them, and the one real reader among
+/// them is the only report.
+#[test]
+fn the_reader_scan_does_not_count_text_that_is_not_code() {
+    let decoys = r##"
+//! A module doc that mentions plan.nodes and extensions.layers.
+/// A doc comment with self.nodes, and a brace {.
+// a line comment: p.layers
+/* a block comment /* nested */ with q.nodes still inside */
+pub struct S { pub nodes: Vec<u8>, layers: Vec<u8> }
+pub trait T { fn nodes(&self) -> usize; fn layers(&self); }
+type Counter = fn(&S) -> usize;
+fn strings() -> usize {
+    let _a = "p.nodes and a quote \" then q.layers";
+    let _b = r#"raw "quoted" r.nodes"#;
+    let _c = b"bytes.nodes";
+    let _d = '"';
+    let _e = '\'';
+    let _f: &'static str = "x.layers";
+    1
+}
+fn ranges(nodes: usize, layers: usize) -> usize {
+    let _a = (0..nodes).count();
+    let _b = (0..=layers).count();
+    helper(1, nodes, 2);
+    helper(layers)
+}
+#[cfg(test)]
+mod tests {
+    fn test_only(p: &RenderPlan) -> usize { p.nodes.len() + p.layers.len() }
+}
+enum E {
+    #[cfg(test)]
+    OnlyInTests,
+    Other,
+}
+fn real_reader(p: &RenderPlan) -> usize { p.nodes.len() }
+"##;
+    let sources = [Source {
+        path: "decoys.rs".to_string(),
+        text: decoys.to_string(),
+    }];
+    let fns = reader_scan::scan(&sources);
+    let readers: Vec<(&str, &[usize])> = fns
+        .iter()
+        .filter(|f| !f.reads.is_empty())
+        .map(|f| (f.name.as_str(), f.reads.as_slice()))
+        .collect();
+    // Only `real_reader` reads, and on its own line.
+    assert_eq!(readers.len(), 1, "{readers:?}");
+    assert_eq!(readers[0].0, "real_reader");
+    assert_eq!(
+        decoys.lines().position(|l| l.starts_with("fn real_reader")),
+        Some(readers[0].1[0] - 1)
+    );
 }

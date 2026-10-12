@@ -37,8 +37,12 @@ fn group(layers: Vec<Layer>) -> PlanNode {
         layers,
     })
 }
+/// The plan whose root is its last node.
 fn plan(nodes: Vec<PlanNode>) -> RenderPlan {
     let root = u32::try_from(nodes.len() - 1).unwrap();
+    plan_rooted(nodes, root)
+}
+fn plan_rooted(nodes: Vec<PlanNode>, root: u32) -> RenderPlan {
     RenderPlan {
         revision: 3,
         target: OutputTarget {
@@ -334,11 +338,56 @@ fn effects_nested_is_reported_when_the_content_holds_effects() {
         sibling_nested.validate(&p),
         Ok(vec![DROP_SHADOW, ExtOperator::EffectsNested])
     );
-    // An input that is not an earlier node is never followed (the plan itself is invalid; the
-    // envelope validator must neither panic nor report nesting through it).
+    // An input that is not an earlier node is not followed (the plan itself is invalid; the
+    // envelope validator must neither panic nor report nesting through it). The default root of
+    // this plan is node 2, which reaches node 0 only, so the entry on node 1 asks nothing here
+    // whether or not the guard exists: the guard on a node the root reaches is pinned by
+    // `effects_nested_ignores_an_input_that_is_not_an_earlier_node_of_a_reachable_group` (PLR-079).
     let hostile = plan(vec![solid(), group(vec![layer(2)]), group(vec![layer(0)])]);
     let ext = PlanExtensions::from_layers(vec![fx(1, 0), fx(2, 0)]);
     assert_eq!(ext.validate(&hostile), Ok(vec![DROP_SHADOW]));
+}
+
+/// PLR-079 (R15 review PLAN-R15-1): the guard `layer.input.0 < node` of `PlanExtensions::validate`
+/// on a node the root REACHES. `validate` is public and documented to run after
+/// `RenderPlan::validate`, but nothing enforces the order, so an input that is not an earlier node
+/// (a forward reference, or the node itself) must be neither followed nor reported as nesting.
+/// Every plan here is rooted at the node under test, so its entries count (PLR-069) and deleting
+/// the guard, or relaxing `<` to `<=`, changes the result. Node indexes derived by hand.
+#[test]
+fn effects_nested_ignores_an_input_that_is_not_an_earlier_node_of_a_reachable_group() {
+    let drop_shadow_only = Ok(vec![DROP_SHADOW]);
+    let both = || PlanExtensions::from_layers(vec![fx(1, 0), fx(2, 0)]);
+    let entry_1 = || PlanExtensions::from_layers(vec![fx(1, 0)]);
+
+    // Forward input: 0 solid | 1 group {layer 0: node 2} | 2 group {layer 0: node 0}. Rooted at 1
+    // the walk is 1 -> 2 -> 0, so nodes 1 and 2 are both reached and both entries count.
+    let forward = || vec![solid(), group(vec![layer(2)]), group(vec![layer(0)])];
+    let rooted = plan_rooted(forward(), 1);
+    // Precondition: the entry on node 1 counts here. Rooted at node 2 (the default root) it does
+    // not, which is how the earlier fixture lost the guard.
+    assert_eq!(entry_1().validate(&rooted), drop_shadow_only);
+    assert_eq!(entry_1().validate(&plan(forward())), Ok(vec![]));
+    // Node 2 holds an effect (its entry counts) and is the forward input of node 1's layer, but
+    // 2 is not an earlier node than 1: no nesting. Without the guard this is
+    // [DROP_SHADOW, EffectsNested].
+    assert_eq!(both().validate(&rooted), drop_shadow_only);
+
+    // Self reference: 0 solid | 1 group {layer 0: node 1}, rooted at 1. The input is the node
+    // itself, which holds the effect of its own layer, so `<=` would report nesting.
+    let own = plan_rooted(vec![solid(), group(vec![layer(1)])], 1);
+    assert_eq!(entry_1().validate(&own), drop_shadow_only);
+
+    // Control: the same effects over a valid backward input are nested, so the guard does not
+    // swallow the legitimate case. 0 solid | 1 group {0} | 2 group {layer 0: node 1}, root 2.
+    let backward = plan_rooted(
+        vec![solid(), group(vec![layer(0)]), group(vec![layer(1)])],
+        2,
+    );
+    assert_eq!(
+        both().validate(&backward),
+        Ok(vec![DROP_SHADOW, ExtOperator::EffectsNested])
+    );
 }
 
 #[test]

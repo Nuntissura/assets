@@ -283,9 +283,12 @@ impl PlanExtensions {
     /// declares (test `tests/plan_followups.rs` `intrinsic_envelope_refusals_stay_on_every_entry`).
     ///
     /// CAPABILITY is collected over the entries addressed to a group REACHABLE from the root only,
-    /// like the operators of [`RenderPlan::validate`] and like both backends, which never look at
-    /// an entry of a group no layer reaches (render-cpu prepares reachable entries only,
-    /// render-gpu looks an entry up per executed layer). Returns the distinct envelope operators of
+    /// like the operators of [`RenderPlan::validate`] and like the backends. render-cpu does not
+    /// prepare an entry of a group no layer reaches and charges nothing for it (test
+    /// `hsk-studio-render-cpu` `tests/cpu_envelope_reach.rs`
+    /// `unreachable_envelope_entries_are_neither_admitted_nor_prepared`); render-gpu looks an entry
+    /// up per executed layer of a reachable group (by reading `plan_sink.rs` `prepare`: no GPU test
+    /// puts an entry on an unreachable group yet). Returns the distinct envelope operators of
     /// those entries in first-use order; an operator used only by an entry on an unreachable group
     /// is not reported, so a backend that refuses it still admits the plan, and the same entry on
     /// a reachable group is refused with the same key (test `tests/plan_followups.rs`
