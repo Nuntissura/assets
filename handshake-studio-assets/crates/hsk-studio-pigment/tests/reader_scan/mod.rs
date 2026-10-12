@@ -4,11 +4,14 @@
 //! A read is the token pair `.nodes` or `.layers` after any receiver or parameter name
 //! (`self.nodes`, `plan.nodes`, `render.nodes`, `extensions.layers`, `g.layers`), or the field
 //! shorthand of a pattern or literal inside a function body (`RenderPlan { nodes, .. }`).
-//! Comments and string and char literals are blanked first, so text cannot hide code or fake a
-//! read. Every `fn` is found by the keyword (`pub(in ..)`, `const`, `unsafe`, `async` and
-//! `extern` forms included) and its body by brace matching; a nested function owns its own reads.
-//! Only a `#[cfg(test)]` item is skipped, never the rest of the file. The functions are pure over
-//! `(path, text)` so the tests can feed mutated sources.
+//! Comments and string and char literals are blanked first, so a comment or a literal neither
+//! hides code nor fakes a read (`plan_followups.rs`
+//! `the_reader_scan_does_not_count_text_that_is_not_code` and the "text that looks like a comment
+//! and a brace" case of `the_reader_scan_flags_a_new_unclassified_reader`). Every `fn` is found
+//! by the keyword (`pub(in ..)`, `const`, `unsafe`, `async` and `extern` forms included) and its
+//! body by brace matching; a nested function owns its own reads. Only a `#[cfg(test)]` item is
+//! skipped, not the rest of the file (the "after a `#[cfg(test)]` item" case of the same test).
+//! The functions are pure over `(path, text)` so the tests can feed mutated sources.
 use std::path::Path;
 
 /// One source file: its path relative to `src/` with `/` separators, and its text.
@@ -445,7 +448,7 @@ fn scan_source(source: &Source, fns: &mut Vec<FnInfo>) {
         }
         i += 1;
     }
-    // A body whose `}` was never reached keeps what the tokens up to the end of the file show.
+    // A body whose `}` was not reached keeps what the tokens up to the end of the file show.
     for (f, _, start) in open {
         fns[f].code = join_tokens(&tokens[start..]);
     }
@@ -473,8 +476,10 @@ fn calls(code: &str, name: &str) -> bool {
 }
 
 /// Every way `fns` breaks the tripwire against `table`:
-/// - a reader that is not classified, or that is an admission entry point (`admit*` goes through
-///   `validate` and the reachable helpers and never reads nodes or entries itself);
+/// - a reader that is not classified, or that is an admission entry point (an `admit*` function
+///   goes through `validate` and the reachable helpers and does not read nodes or entries itself:
+///   the "`extensions.layers` read inside an admission function" case of
+///   `the_reader_scan_flags_a_new_unclassified_reader`);
 /// - a capability reader that lacks a needle;
 /// - a table row that matches no reader (a stale classification);
 /// - an admission entry point that asks for the effect modes of every entry.
