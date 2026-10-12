@@ -339,3 +339,465 @@ not_proven:
 next_action: Lead publishes source readiness with manifest/lock scaffold and frozen seven cases, admits source
   teams under explicit engine launch HOLD, acquires exact local native closure, independently proves actual runtime
   gates, then grants one serial Cargo lane for affected implementation proof.
+resolved_hash_and_verified_cli_extension:
+  extension_id: DEP-KUM-014-HASH-CLI-001
+  updated_at: '2026-10-12'
+  verdict: READY_FOR_SOURCE_WITH_VERIFIED_CLI
+  applicability: Latest scoped readiness observation. Preserved prefix remains historical; this extension supersedes
+    its graph/cache/native-library/help-version blockers only. Actual worker/engine/listener/GPU gates remain
+    outstanding.
+  preserved_prefix:
+    bytes: 13009
+    sha256: e1eaaebb6ec8ed974a1be920d32d65d5dd0b156e7673c897a6b0366c6e0ad00e
+    byte_unchanged: true
+  source_hash_extension:
+    manifest_ref: product/kumihimo-render-bridge/Cargo.toml
+    manifest_sha256: e2aa7483bff25f34816eb6023dc2c5106cdaccdb5d7382cf752e1be1859a47fd
+    sha2_exact: 0.11.0
+    optional: true
+    default_features: false
+    enabled_only_by_desktop: true
+    package_default_std_only_preserved: true
+    workspace_manifest_sha256: f89e2caf71c47fca90f4055bc9e54f859d8b93e49747b50671162d403c7d966d
+    default_members:
+    - kumihimo-core
+    - kumihimo-layout-json
+    - kumihimo-content
+    default_members_unchanged: true
+    lock:
+      ref: product/Cargo.lock
+      sha256: dc5dd403ba3ec7d51c6f67e278f1ec983920ab1749ea925e1a9dff47ef12be01
+      format_version: 4
+      baseline_source_admission_revision: 43cfe4a
+      baseline_sha256: f702ba08fa103f379f6571bfe4cf1f4eaee7386a101f118175b7d872f4e894c8
+      prior_records: 319
+      current_records: 326
+      new_registry_records: 7
+      all_318_pre_wp014_records_unchanged: true
+      all_prior_registry_records_unchanged: true
+      only_changed_existing_record: kumihimo-render-bridge adds one sha2 dependency edge; prior ten edges preserved.
+      new_nodes:
+      - name: block-buffer
+        version: 0.12.1
+        archive_bytes: 15902
+        sha256: d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa
+        rust_version: '1.85'
+        resolved_features: []
+        lock_dependencies:
+        - hybrid-array
+      - name: cpufeatures
+        version: 0.3.1
+        archive_bytes: 14272
+        sha256: 5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566
+        rust_version: '1.85'
+        resolved_features: []
+        lock_dependencies:
+        - libc
+      - name: crypto-common
+        version: 0.2.2
+        archive_bytes: 15449
+        sha256: ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453
+        rust_version: '1.85'
+        resolved_features: []
+        lock_dependencies:
+        - hybrid-array
+      - name: digest
+        version: 0.11.3
+        archive_bytes: 28955
+        sha256: f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2
+        rust_version: '1.85'
+        resolved_features:
+        - block-api
+        - default
+        lock_dependencies:
+        - block-buffer
+        - crypto-common
+      - name: hybrid-array
+        version: 0.4.15
+        archive_bytes: 36801
+        sha256: 27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17
+        rust_version: '1.85'
+        resolved_features: []
+        lock_dependencies:
+        - typenum
+      - name: sha2
+        version: 0.11.0
+        archive_bytes: 33969
+        sha256: 446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4
+        rust_version: '1.85'
+        resolved_features: []
+        lock_dependencies:
+        - cfg-if
+        - cpufeatures
+        - digest
+      - name: typenum
+        version: 1.20.1
+        archive_bytes: 105479
+        sha256: b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20
+        rust_version: 1.41.0
+        resolved_features:
+        - const-generics
+        lock_dependencies: []
+    graph:
+      ref: .local/servo-runtime/desktop-metadata.json
+      sha256: f192d2cb4c65dedafe1d59af24cccbd9261b4eacb40665dd73a84699b2a222c8
+      whole_nodes: 148
+      render_bridge_reachable_nodes: 147
+      registry_nodes: 141
+      archive_checksums_matched: 141
+      unpacked_sources_present: 141
+      additional_hash_source_files_byte_compared_to_verified_archives: true
+      registry_identity_checksum_manifest_sha256: cbf53750f09583b4e3a812c226420038ef45d75d8a32f36e0256a6e7c4683b73
+      feature_scope: Conservative Windows x64 all-workspace all-feature unified closure; sha2 features empty,
+        digest default/block-api, typenum const-generics. No sha2 alloc/oid/assembly extras.
+      highest_added_declared_msrv: '1.85'
+      project_rust_requirement: '1.91'
+      missing_or_mismatched: []
+    compile_status: NOT_RUN; lead metadata resolution is not compilation.
+  verified_local_native_extension:
+    native_receipt_ref: .local/servo-runtime/native-libraries.json
+    native_receipt_sha256: 85ad7d4bc7e47a6ea65286081240c7f20bfbf4365d849f1ea5ca1ff38eff4344
+    packages:
+    - package: libproxy1v5
+      version: 0.5.4-4build1
+      bytes: 26508
+      sha256: 4fa847fdf40dfaf198d94b1534bbc616410647dd917bca95bd28aba79d3796ba
+      verified_algorithm: SHA512
+      verified_digest: 42178fb364baca181ea068ba0cf9bdc3f0264af7dd6092fe2b9c4f5b861d7224987c5bf1ea9e58cff930970cd264ef4dfc61dccc645d92c4c2f2e22739d459d1
+    - package: glib-networking-common
+      version: 2.80.0-1build1
+      bytes: 6702
+      sha256: c9bc3b5c3dc8a75e752efcf246e5ef2d3b9e80cd1301fd37fcb0c36562062931
+      verified_algorithm: SHA512
+      verified_digest: 8d499866125a51ebedb71fd7fcd0a37f40ed41135d68e248fdf2c09d5f64e3f09587b3588534367b2f31d504e9bfc169e5d5760bc1c6520276c06d59425835f0
+    - package: glib-networking-services
+      version: 2.80.0-1build1
+      bytes: 12830
+      sha256: a8387f789fa6de0aaae9e09f56f07896a5820188ef82ee267c132b01c8a4859e
+      verified_algorithm: SHA512
+      verified_digest: ddc7929fe483996d75ea434820d55ff7f2625d0f26c035a5c0e20a8f259457a59f827d656f49037c3d8351549ed92e153246f1a8e87a0bc1cf88af7c184554b7
+    - package: glib-networking
+      version: 2.80.0-1build1
+      bytes: 64136
+      sha256: 25b32675dd3f8bc258cd204e9010876ed03422ab627dd7e39a5a52226e2ada98
+      verified_algorithm: SHA512
+      verified_digest: cb378f2294fe4712541545a9024ed7bc780146cfc689c648d92fb1df96314a293e918d6623eea78fd6c9dadb4968cab89de022697110388f54fa5dd7ac2ef0d0
+    - package: libsoup-3.0-common
+      version: 3.4.4-5ubuntu0.9
+      bytes: 12284
+      sha256: 950de96545c81a4bcf9c67600c6c6b84fcf5fd680f87d4301a1e3dc1238474f0
+      verified_algorithm: SHA512
+      verified_digest: 8e437e61f7912e7371bc9c7f6c462acecc2d63eff81a8494329ec57b92d0e4cf00ae19908e7e08c2343ed38c27146af1da2057df9d8e45eb3971e94896aea6dd
+    - package: libsoup-3.0-0
+      version: 3.4.4-5ubuntu0.9
+      bytes: 290828
+      sha256: cd6bab2b426b0c81b0f7856df11f3633df118df33517378049545ff440751fcc
+      verified_algorithm: SHA512
+      verified_digest: bb8aeff4f2360b614452caf8061d0861e003ac8c98546f4f1dad3e3e1073e5182f4c7d6b7966ce470f3cfcff2e59250e97b0b2af48f0d3ace2de04fbd1ce60d6
+    - package: libgssdp-1.6-0
+      version: 1.6.3-1build3
+      bytes: 40374
+      sha256: 49aa7c3eb2e75f55da069f5f18d3babc0376e4bf8f3bcbbf22a76d60d9f40f9e
+      verified_algorithm: SHA512
+      verified_digest: dafdbe3b7a80c443f7566499c51d03b347d2a2ec91bcc9dbf730db650e6c922f4f5c47d62d3e19c4a3a7f3bfe4f10fb99ba7d65b404c2cd4169202ec9e628932
+    - package: liborc-0.4-0t64
+      version: 1:0.4.38-1ubuntu0.1
+      bytes: 207380
+      sha256: a546ca6e237748693596ba469e84a2e0581bc39113abc62b718931df00a4c682
+      verified_algorithm: SHA512
+      verified_digest: f60c25a3f82b07f8b1a7cd01fe8883323fea7e52bc84c1be762704846775b5017d92f69fa209f998db9233aeafa4bac51d88487145f3136b2a61cb7d2a7e1e02
+    - package: libgstreamer-plugins-base1.0-0
+      version: 1.24.2-1ubuntu0.5
+      bytes: 862170
+      sha256: 3c5826eee14cb5077c7e53707fbe86cc0882c787ffe79b330cad636c0009473d
+      verified_algorithm: SHA512
+      verified_digest: f4e2c7bc0b06a8e77c6c6223229a060e20e2ec0c50e408709b3d2e6d1c343067ef4d146a7895fb184dea6892481f1626832cdcdf2f78a9e32557c4af37c10351
+    - package: libgudev-1.0-0
+      version: 1:238-5ubuntu1
+      bytes: 15906
+      sha256: 8bdd42c584a8d18759df2311b126dc679d438e9780038743b792cf5315f248dc
+      verified_algorithm: SHA512
+      verified_digest: bdc4f85e4e6f1863da47d2c579e8ad99b2f94d1edb94b2d82a9092e4a0834995bd793698b6b6f692dfa64f95fb8151c22d02f80ae834038d97fcf07bbe2cf7c7
+    - package: libgstreamer-gl1.0-0
+      version: 1.24.2-1ubuntu0.5
+      bytes: 213954
+      sha256: fb87a72e431d2c57c35b0b2bd4189bb6a6e771788c3ba389a9e3623886486b22
+      verified_algorithm: SHA512
+      verified_digest: 82b708166f046d164308ebc905818c837ddbfada128c376e3d702562fabcc126f323cbae3bf2683382e23d78626719017b105b7753c4390f22eae19dc864ac30
+    - package: libgupnp-1.6-0
+      version: 1.6.6-1build3
+      bytes: 92722
+      sha256: 491670df1732d15ced827446e26bcea76326d3c9cfc4856b5806e9911dc4264f
+      verified_algorithm: SHA512
+      verified_digest: 5d7a7f2e336b1438fe20bc2cc3ace8d9c71ca7e4dd604b45b032c1166f953992d00a8e7675afb206a54ddf17a4c5d9315a918a1659d2b46cc967e8225ae0d483
+    - package: libgupnp-igd-1.6-0
+      version: 1.6.0-3build3
+      bytes: 16540
+      sha256: e71897a39779ffc327b704ca7baef4fe079cfc6a5e1bd56819ac2ad05f8f9b86
+      verified_algorithm: SHA512
+      verified_digest: 55b86638b9873f2926d956b67d64807f179784f9098158ac3b82823c058e704e09d33b058e91c8a7a5b3fb47817858ae7063398e2855768daf1ceb9fbb186a82
+    - package: libnice10
+      version: 0.1.21-2build3
+      bytes: 157152
+      sha256: fd24e18e0d9d9ead31e192d46df04473fab2d51390ccb2a4a62cf3b90bf6f311
+      verified_algorithm: SHA512
+      verified_digest: 046a86b7a81671e0d3113dc70879b919f7e7acc9e3a2c1038415ad3785cd56ded79ccceb656c135cb3d9e041f6c9d6ef61590c1cb1a26416f38d06d5e5142000
+    - package: libxcb-xkb1
+      version: 1.15-1ubuntu2
+      bytes: 32302
+      sha256: 53bc0a58834c981fa8ce5c3ab6195387e5c8a417039d82cc7a8b49724fa53228
+      verified_algorithm: SHA512
+      verified_digest: 519a84e5376a7aa69cb9636735530f721d03ec5d7ae6f520ddd2ce89cafd53d0097f2abb680c654c7c15e98497e000efe06937b4f44534182332b5a4e170e74e
+    - package: libxkbcommon-x11-0
+      version: 1.6.0-1build1
+      bytes: 14536
+      sha256: 3befe840ce612ddfc0998d8610c6eed295726722a78e75cd08520bbd75065a23
+      verified_algorithm: SHA512
+      verified_digest: e70392bd86aa668a31787cec3850b512367cf97c1eee9952d5b68a5ed20da0ce9893d5bda32d281a2ec07b7139265854db466a7b21d622cadbddeb887c809252
+    - package: libgstreamer-plugins-bad1.0-0
+      version: 1.24.2-1ubuntu4
+      bytes: 797390
+      sha256: 6e8da41c0cbb2070f3477cf02360c2ce2eb55e825ba09e12b4270b3254e04f45
+      verified_algorithm: SHA512
+      verified_digest: 9bde46acd31b9aad9a1f1426b18ff8bc708a63bcc8e3b89d036ae0a115ffbc63ed9735e38832e9ccd12e46a229b51cabdc3654c9cc1effc99c9d38b0b4d0b34e
+    total_archive_bytes: 2863714
+    archive_count: 17
+    all_actual_archives_independently_rehashed_sha256_and_receipt_sha512: true
+    global_install_recorded: false
+    stale_cached_plan_superseded: Original Aug09 cached simulation remains history. Task-local signed Oct12 indices
+      replace libsoup0.7 with0.9 and gst base/gl0.4 with0.5; other13versions unchanged.
+    loader:
+      ref: .local/servo-runtime/loader-inspection.json
+      sha256: 716de5e14d9536dbe59f7badd80319d18be14afa81676156d3c318191adfcc26
+      ldd_exit: 0
+      missing_sonames: []
+      version_errors_in_retained_output: false
+      binary_sha256: cb9267dfdbd89d0678cb4859857708a2c3c50affff2c091770ff73341263b09d
+      actual_binary_bytes_independently_rehashed: 134456904
+      seven_providers:
+      - soname: libgstplay-1.0.so.0
+        package: libgstreamer-plugins-bad1.0-0
+        version: 1.24.2-1ubuntu4
+        link_relative_prefix: usr/lib/x86_64-linux-gnu/libgstplay-1.0.so.0
+        actual_relative_prefix: usr/lib/x86_64-linux-gnu/libgstplay-1.0.so.0.2402.0
+        sha256: 1eeb5e1b2c7eeb062896b34a833a20c8d92dfa46999922ab026b51a15c3d8bc4
+      - soname: libgstvideo-1.0.so.0
+        package: libgstreamer-plugins-base1.0-0
+        version: 1.24.2-1ubuntu0.5
+        link_relative_prefix: usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so.0
+        actual_relative_prefix: usr/lib/x86_64-linux-gnu/libgstvideo-1.0.so.0.2402.0
+        sha256: ad72ac097ade5740be40918ae0e08b3838dab9131af77d18f25061d78e82955f
+      - soname: libgstwebrtc-1.0.so.0
+        package: libgstreamer-plugins-bad1.0-0
+        version: 1.24.2-1ubuntu4
+        link_relative_prefix: usr/lib/x86_64-linux-gnu/libgstwebrtc-1.0.so.0
+        actual_relative_prefix: usr/lib/x86_64-linux-gnu/libgstwebrtc-1.0.so.0.2402.0
+        sha256: 10e43fede4aa65f97b1209b7f7acaf856fd6016dbcb094f2f283456bb61ba032
+      - soname: libgstsdp-1.0.so.0
+        package: libgstreamer-plugins-base1.0-0
+        version: 1.24.2-1ubuntu0.5
+        link_relative_prefix: usr/lib/x86_64-linux-gnu/libgstsdp-1.0.so.0
+        actual_relative_prefix: usr/lib/x86_64-linux-gnu/libgstsdp-1.0.so.0.2402.0
+        sha256: f11812bcfd8e53e2431ad6ea613bb74b306c223ae0e23db986173d5ee23c5de5
+      - soname: libgstaudio-1.0.so.0
+        package: libgstreamer-plugins-base1.0-0
+        version: 1.24.2-1ubuntu0.5
+        link_relative_prefix: usr/lib/x86_64-linux-gnu/libgstaudio-1.0.so.0
+        actual_relative_prefix: usr/lib/x86_64-linux-gnu/libgstaudio-1.0.so.0.2402.0
+        sha256: 5704d6af99e29cfa467b2669616fb77e60ea1cc221067fb7221a5e170f7e9cc3
+      - soname: libgstapp-1.0.so.0
+        package: libgstreamer-plugins-base1.0-0
+        version: 1.24.2-1ubuntu0.5
+        link_relative_prefix: usr/lib/x86_64-linux-gnu/libgstapp-1.0.so.0
+        actual_relative_prefix: usr/lib/x86_64-linux-gnu/libgstapp-1.0.so.0.2402.0
+        sha256: 1d554e70f189ad978dc43d100bec2d5dff6ca00b2ceff5d821ed54e9da0be5ea
+      - soname: libgstgl-1.0.so.0
+        package: libgstreamer-gl1.0-0
+        version: 1.24.2-1ubuntu0.5
+        link_relative_prefix: usr/lib/x86_64-linux-gnu/libgstgl-1.0.so.0
+        actual_relative_prefix: usr/lib/x86_64-linux-gnu/libgstgl-1.0.so.0.2402.0
+        sha256: f42e633a3320d476a5f41b60802378e20c0d55eeba00abf2522d14f3cdfa4d7b
+      actual_deb_contents_provider_mapping_independently_inspected: true
+      seven_live_symlink_targets_and_content_hashes_independently_rechecked: true
+      child_library_path: Configured ignored native prefix plus usr/lib/x86_64-linux-gnu; exact observed path
+        in loader artifact.
+      host_libc_and_loader_paths: Retained ldd resolves libc and ld-linux from host /lib, not extracted prefix.
+      proof_status: PASS_SCOPED_LOADER
+  verified_cli_extension:
+    ref: .local/servo-runtime/cli-inspection.json
+    sha256: 579b38a60ea9161d9061c8d38d706cf649065606287f38ccf4aed108b8ae766b
+    producer_ref: ../.local/kumihimo-servo/inspect-cli.py
+    producer_inspected: true
+    observed_binary_and_child_env_match_loader: true
+    runs:
+    - argument: --help
+      exit: 0
+      stdout_sha256: c91b79afd0b8797af2fabe1d9d1c6d5cfb7fd5fa595bdaa03e2f817e618355db
+      stderr_empty: true
+    - argument: --version
+      exit: 0
+      stdout_sha256: 0ac9cb9eab797ee7594dd7444724c57ee4b06c96b529d7fd8191f237e6cc2c78
+      stderr_empty: true
+    actual_version: 'Version: Servo 0.6.0-c78d2c206'
+    advertised_flags:
+    - --headless
+    - --webdriver
+    - --window-size
+    - --screen-size
+    - --device-pixel-ratio
+    - --output
+    - --temporary-storage
+    independent_outside_kernel_reads_before_each_execution:
+    - kernel:
+        pid: 22308
+        starttime: '213916754'
+        netns: net:[4026532222]
+        cmdline: 'python3 /mnt/d/Projects/LLM projects/.assets/assets/.local/kumihimo-servo/ns-holder.py '
+      interfaces:
+      - ifindex: 1
+        ifname: lo
+        flags:
+        - LOOPBACK
+        - UP
+        - LOWER_UP
+        mtu: 65536
+        qdisc: noqueue
+        operstate: UNKNOWN
+        group: default
+        txqlen: 1000
+        link_type: loopback
+        address: 00:00:00:00:00:00
+        broadcast: 00:00:00:00:00:00
+        addr_info:
+        - family: inet
+          local: 127.0.0.1
+          prefixlen: 8
+          scope: host
+          label: lo
+          valid_life_time: 4294967295
+          preferred_life_time: 4294967295
+        - family: inet6
+          local: ::1
+          prefixlen: 128
+          scope: host
+          valid_life_time: 4294967295
+          preferred_life_time: 4294967295
+      routes:
+      - type: local
+        dst: 127.0.0.0/8
+        dev: lo
+        table: local
+        protocol: kernel
+        scope: host
+        prefsrc: 127.0.0.1
+        flags: []
+      - type: local
+        dst: 127.0.0.1
+        dev: lo
+        table: local
+        protocol: kernel
+        scope: host
+        prefsrc: 127.0.0.1
+        flags: []
+      - type: broadcast
+        dst: 127.255.255.255
+        dev: lo
+        table: local
+        protocol: kernel
+        scope: link
+        prefsrc: 127.0.0.1
+        flags: []
+      - type: local
+        dst: ::1
+        dev: lo
+        table: local
+        protocol: kernel
+        metric: 0
+        flags: []
+        pref: medium
+      host_ns: net:[4026531840]
+    - kernel:
+        pid: 22308
+        starttime: '213916754'
+        netns: net:[4026532222]
+        cmdline: 'python3 /mnt/d/Projects/LLM projects/.assets/assets/.local/kumihimo-servo/ns-holder.py '
+      interfaces:
+      - ifindex: 1
+        ifname: lo
+        flags:
+        - LOOPBACK
+        - UP
+        - LOWER_UP
+        mtu: 65536
+        qdisc: noqueue
+        operstate: UNKNOWN
+        group: default
+        txqlen: 1000
+        link_type: loopback
+        address: 00:00:00:00:00:00
+        broadcast: 00:00:00:00:00:00
+        addr_info:
+        - family: inet
+          local: 127.0.0.1
+          prefixlen: 8
+          scope: host
+          label: lo
+          valid_life_time: 4294967295
+          preferred_life_time: 4294967295
+        - family: inet6
+          local: ::1
+          prefixlen: 128
+          scope: host
+          valid_life_time: 4294967295
+          preferred_life_time: 4294967295
+      routes:
+      - type: local
+        dst: 127.0.0.0/8
+        dev: lo
+        table: local
+        protocol: kernel
+        scope: host
+        prefsrc: 127.0.0.1
+        flags: []
+      - type: local
+        dst: 127.0.0.1
+        dev: lo
+        table: local
+        protocol: kernel
+        scope: host
+        prefsrc: 127.0.0.1
+        flags: []
+      - type: broadcast
+        dst: 127.255.255.255
+        dev: lo
+        table: local
+        protocol: kernel
+        scope: link
+        prefsrc: 127.0.0.1
+        flags: []
+      - type: local
+        dst: ::1
+        dev: lo
+        table: local
+        protocol: kernel
+        metric: 0
+        flags: []
+        pref: medium
+      host_ns: net:[4026531840]
+    owned_holder_exited: true
+    webdriver_or_render_engine_started: false
+    runtime_launch_admission: false
+    proof_status: PASS_SCOPED_CLI
+    boundary: Completed isolated CLI inspection only. No live actual product worker admission and no listener/render
+      proof.
+  remaining_launch_and_acceptance_gates:
+  - Fresh lead-owned independent kernel receipt binds actual owned worker PID/starttime/private loopback-only
+    namespace before every engine start/reload/recovery.
+  - 'After actual listeners: independent namespace/socket ownership and outside-host inaccessibility proof.'
+  - Actual Servo DOM/PNG/input/lifecycle/resource evidence and exact hash lineage into GPU composition.
+  - Affected Rust compilation, owning tests and seven independent runtime evaluation cases; unchanged prior proof
+    reused.
+  role_effects: Appended only this dependency report. Read-only cache/native/artifact inspection; no Cargo, downloads,
+    install, extraction, engine execution or product edits by dependency role.
+  next_action: Lead publishes bounded extension and retains runtime launch gate; admitted source teams continue
+    original nine requirements/seven cases.

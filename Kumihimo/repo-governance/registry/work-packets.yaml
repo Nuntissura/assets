@@ -103,7 +103,6 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-014-servo-and-heavy-rendering-v1/WP-KUM-014-servo-and-heavy-rendering-v1-state.yaml
-  next_action: After canonical admission publication coder04 expands disjoint Rust bridge/GPU and Python worker
-    teams; root resolves local native prerequisites and independent per-launch namespace gate; bundle one affected
-    serial Cargo batch when source stable
+  next_action: Parallel coder04 source teams finish stable handoff; root prepares independent worker launch gates
+    and runs one serial affected cached Cargo/actual engine-GPU batch
   blockers: []

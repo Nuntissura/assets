@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-014-servo-and-heavy-rendering-v1
-generation: 3
+generation: 4
 phase: active
 owner: ROLE-KUM-CODER-04
 changed_files:
@@ -24,7 +24,12 @@ proof:
     Servo archive and independent ephemeral loopback namespace capability retained. Source coding admitted only
     after exact publication; engine launch NOT_READY pending local libraries/introspection and fresh actual worker
     kernel receipt before every launch.
+- kind: optional_hash_and_local_native_cli_readiness
+  report_sha256: 1e46b50b53f012ee28caf48749bc6d81cb6053584bf524bbc5d405043de19aa2
+  observed: All318 pre014 lock records unchanged; seven cached SHA2 registry records added only behind desktop,
+    std-only default retained. Actual17 local debs2863714bytes verified, seven missing SONAMEs now resolve, unchanged
+    Servo0.6.0-c78d2c206 help/version pass inside independently inspected private namespace. Actual product worker/WebDriver/rendering
+    remains unproven; fresh root kernel gate required before every launch/reload.
 blockers: []
-next_action: After canonical admission publication coder04 expands disjoint Rust bridge/GPU and Python worker teams;
-  root resolves local native prerequisites and independent per-launch namespace gate; bundle one affected serial
-  Cargo batch when source stable
+next_action: Parallel coder04 source teams finish stable handoff; root prepares independent worker launch gates
+  and runs one serial affected cached Cargo/actual engine-GPU batch
