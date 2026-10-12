@@ -1,6 +1,6 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 11
+generation: 13
 phase: active
 owner: ROLE-KUM-DEV-LEAD
 changed_files:
@@ -110,8 +110,27 @@ proof:
     including original routing c379cc9d. Cases now actual two-frame reorder, nested ancestor movement, queued/exposed
     geometry and unchanged controls/custom packing. All writers held for one owning005 RED before routing repair;
     frozen12 evaluator cases unchanged, report FAIL_SCOPED_CONTRACT with only F01 open.
+- kind: owning_regression_red
+  finding_id: EVAL-KUM-011-F01
+  source_revision: ceab0b9a3e7ef74a154fc24025caefdc73d46ba0
+  log: .local/kumihimo-controls/proof/f01-ceab0b9a3e7e.log
+  log_sha256: 90421baf49c3060b310ac05ea9337c51f462933b3fd7a84bdeca1aa04b4725d6
+  observed: 'Exact47published input fence/origin, original routing unchanged. Owning navigation005 compiled3.65s
+    thenFAILED at262: real canonical placement change must settle local drag. Original Cargo101, onefailed/sevenfiltered/runtime0.00s;
+    expected RED proves reported boundary failure. No remaining broad checks run.'
+- kind: held_f01_routing_remediation
+  finding_id: EVAL-KUM-011-F01
+  red_source: ceab0b9a3e7ef74a154fc24025caefdc73d46ba0
+  product_sha256: 351c3d734589ea9d27e5bf90144a8f064055a356dbd29051567f38dc70a4b1c0
+  routing_sha256: 9b55f61a16e07b375cc684562f36e4f262f598693f2256cc313722c332c3562b
+  observed: 'Root opened exact bounded routing diff: fixed perbinding movement flags/iterative owner-chain scope,
+    atmost2affected retained plans captured once and exact postcompare. Existing successful/nonreplayed/nonUnchanged
+    guard and old View movement handling retained; stale_geometry reused, root backgrounds/unrelatedworkspaces/metadata
+    retained. Only routing changed since RED; other46product inputs/tests exact. All writers held/UTF8LF. F01 remains
+    open until same005 Green/affected proof/independent verdict.'
 blockers:
 - 'EVAL-KUM-011-F01: actual same-workspace frame reorder must invalidate affected navigation/geometry while preserving
   target/resource/instance; existing move case is a no-op'
-next_action: Publish held existing-case RED candidate and inspect exact origin/fence/resource; lead run owning navigation005
-  once, then admit routing-only F01 correction from its concrete outcome
+next_action: Publish held routing-only F01 candidate, exact origin/fence/resources; same005 GREEN first, then four
+  affected feature checks/all24publiccases; retain source-identical Core/JSON priorproof, independent reevaluation
+  closes F01

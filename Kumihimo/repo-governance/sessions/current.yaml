@@ -40,8 +40,7 @@ roles:
     reasoning: high
     completed_implementation_wps: []
     rotate_after: 2
-    assignment: WP011 F01 regression consumers ready and all writers held; original routing unchanged until lead
-      RED result
+    assignment: WP011 routing-only F01 correction formatted and held; await exact005 GREEN and affected proof
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -49,7 +48,7 @@ communication:
     dispatched reports
 build_lane:
   owner: ROLE-KUM-DEV-LEAD
-  phase: focused_red_prepared
+  phase: f01_green_prepared
   stable_target_relative_root: .local/cargo-target
   target_path_anchor: kumihimo_project_root
   parallel_kumihimo_cargo: false
@@ -66,8 +65,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish exact original-routing regression candidate and one owning005 RED; then routing-only F01 fix
-  and affected proof
+next_action: Publish held routing-only F01 candidate and prove same005 GREEN before affected feature/full24case
+  checks and independent verdict
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

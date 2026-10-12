@@ -1,8 +1,116 @@
 use crate::*;
 use kumihimo_core::{
-    Command, Core, Envelope, ProviderAvailability, ProviderId, ResourceId, Snapshot, ViewId,
+    Command, Core, Envelope, FrameId, LayoutPlan, ProviderAvailability, ProviderId, ResourceId,
+    Snapshot, ViewId, WorkspaceId,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+struct FrameMovement {
+    frame: FrameId,
+    source: WorkspaceId,
+    destination: WorkspaceId,
+    old_index: usize,
+    new_index: usize,
+    floating: bool,
+    source_plan: Option<LayoutPlan>,
+    destination_plan: Option<LayoutPlan>,
+}
+#[derive(Clone, Copy, Default)]
+struct MovementImpact {
+    direct: bool,
+    source_packing: bool,
+    destination_packing: bool,
+}
+impl MovementImpact {
+    fn changed(self, packing: (bool, bool)) -> bool {
+        self.direct || (self.source_packing && packing.0) || (self.destination_packing && packing.1)
+    }
+}
+impl FrameMovement {
+    fn capture(snap: &Snapshot, command: &Command) -> Option<Self> {
+        let Command::MoveFrame {
+            frame,
+            destination,
+            index,
+        } = command
+        else {
+            return None;
+        };
+        let source = snap.frames.get(frame)?.workspace;
+        let old_index = snap
+            .workspaces
+            .get(&source)?
+            .frames
+            .iter()
+            .position(|id| id == frame)?;
+        Some(Self {
+            frame: *frame,
+            source,
+            destination: *destination,
+            old_index,
+            new_index: *index,
+            floating: snap.floats.contains_key(frame),
+            source_plan: snap.layouts.get(&source).cloned(),
+            destination_plan: (source != *destination)
+                .then(|| snap.layouts.get(destination).cloned())
+                .flatten(),
+        })
+    }
+    fn impact(&self, snap: &Snapshot, target: MountTarget) -> MovementImpact {
+        let mut impact = MovementImpact::default();
+        let mut anchor = State::target_frame(snap, target).map(|(frame, _)| frame);
+        while let Some(frame) = anchor {
+            let Some(record) = snap.frames.get(&frame) else {
+                break;
+            };
+            let Some(workspace) = snap.workspaces.get(&record.workspace) else {
+                break;
+            };
+            if frame == self.frame {
+                impact.direct = true;
+            } else if !snap.floats.contains_key(&frame) {
+                let source = record.workspace == self.source;
+                let destination = record.workspace == self.destination;
+                let retained = if source {
+                    self.source_plan.is_some()
+                } else if destination {
+                    self.destination_plan.is_some()
+                } else {
+                    false
+                };
+                if retained {
+                    impact.source_packing |= source;
+                    impact.destination_packing |= destination;
+                } else if source || destination {
+                    // Membership changes alter default allocation; a pure reorder only shifts
+                    // the inclusive interval between its old and final insertion positions.
+                    impact.direct |= self.source != self.destination
+                        || self.floating
+                        || workspace
+                            .frames
+                            .iter()
+                            .position(|id| *id == frame)
+                            .is_some_and(|index| {
+                                (self.old_index.min(self.new_index)
+                                    ..=self.old_index.max(self.new_index))
+                                    .contains(&index)
+                            });
+                }
+            }
+            anchor = workspace.owner;
+        }
+        impact
+    }
+    fn packing_changed(&self, current: &Snapshot) -> (bool, bool) {
+        let source = self.source_plan.as_ref() != current.layouts.get(&self.source);
+        let destination = if self.source == self.destination {
+            source
+        } else {
+            self.destination_plan.as_ref() != current.layouts.get(&self.destination)
+        };
+        (source, destination)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachOptions {
@@ -564,7 +672,12 @@ impl Controller {
                 }
             }
         }
-        // Only bounded bindings are inspected; canonical saved trees are never copied.
+        // Capture bounded bindings and at most the two retained plans affected by MoveFrame.
+        let movement = if fresh && self.state.mounts.values().any(|m| m.active) {
+            FrameMovement::capture(snap, &envelope.command)
+        } else {
+            None
+        };
         let before: Vec<_> = self
             .state
             .mounts
@@ -577,6 +690,11 @@ impl Controller {
                     v.map(|v| (v.pinned, v.unsaved, v.frame)),
                     State::target_frame(snap, m.scope.target),
                     snap.pin_policy.clone(),
+                    movement
+                        .as_ref()
+                        .map_or_else(MovementImpact::default, |movement| {
+                            movement.impact(snap, m.scope.target)
+                        }),
                 )
             })
             .collect();
@@ -591,7 +709,10 @@ impl Controller {
         {
             let restore = matches!(command, Command::Restore(_));
             let current = self.core.snapshot();
-            for (id, old, old_frame, policy) in before {
+            let packing = movement
+                .as_ref()
+                .map_or((false, false), |movement| movement.packing_changed(current));
+            for (id, old, old_frame, policy, movement) in before {
                 let Some(m) = self.state.mounts.get(&id) else {
                     continue;
                 };
@@ -614,7 +735,7 @@ impl Controller {
                     self.state.permits.remove(&id);
                     self.state.stale_close(id);
                 }
-                if old_frame != new_frame {
+                if old_frame != new_frame || movement.changed(packing) {
                     self.state.stale_geometry(id);
                 }
             }
