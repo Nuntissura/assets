@@ -1064,13 +1064,20 @@ fn painted_source_named_through_a_stream_used_as_a_dictionary_is_reported() {
     let names = "/XObject << /Im1 10 0 R >> /Font << /F1 6 0 R >>";
     // `image_keys`: more entries of the image dictionary (object 10); `page_two`: more entries of page two; `node`: more
     // entries of the /Pages node; `tree`: the /Kids of the /Pages node and the /Parent of page two; `more`: more objects.
-    let doc_in = |image_keys: &str, page_two: &str, node: &str, tree: (&str, u32), more: Vec<(u32, Vec<u8>)>| -> Vec<u8> {
+    let doc_in = |image_keys: &str, page_two: &str, node: &str, tree: (&str, u32), page_is_stream: bool, more: Vec<(u32, Vec<u8>)>| -> Vec<u8> {
         let mut objs = vec![
             (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
             (2, format!("<< /Type /Pages /Kids [{}] /Count 2 /MediaBox [0 0 612 792] {node} >>", tree.0).into_bytes()),
             (3, b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources 9 0 R >>".to_vec()),
             (4, stream_body("", format!("q 612 0 0 792 0 0 cm /Im1 Do Q q /Fm9 Do Q BT /F1 12 Tf 72 300 Td (Public) Tj ET {SECRET}").as_bytes())),
-            (5, format!("<< /Type /Page /Parent {} 0 R /Contents 7 0 R {page_two} >>", tree.1).into_bytes()),
+            (
+                5,
+                if page_is_stream {
+                    stream_body(&format!("/Type /Page /Parent {} 0 R /Contents 7 0 R {page_two}", tree.1), b"x")
+                } else {
+                    format!("<< /Type /Page /Parent {} 0 R /Contents 7 0 R {page_two} >>", tree.1).into_bytes()
+                },
+            ),
             (6, HELVETICA.to_vec()),
             (7, stream_body("", text.as_bytes())),
             (9, b"<< /XObject << /Im1 10 0 R /Fm9 11 0 R >> /Font << /F1 6 0 R >> >>".to_vec()),
@@ -1080,7 +1087,7 @@ fn painted_source_named_through_a_stream_used_as_a_dictionary_is_reported() {
         objs.extend(more);
         build(&objs)
     };
-    let doc = |image_keys: &str, page_two: &str, node: &str, more: Vec<(u32, Vec<u8>)>| doc_in(image_keys, page_two, node, ("3 0 R 5 0 R", 2), more);
+    let doc = |image_keys: &str, page_two: &str, node: &str, more: Vec<(u32, Vec<u8>)>| doc_in(image_keys, page_two, node, ("3 0 R 5 0 R", 2), false, more);
     let stream = |dict: &str| stream_body(dict, b"x");
     let dict_names = format!("<< {names} >>").into_bytes();
     let mut red: Vec<String> = Vec::new();
@@ -1117,6 +1124,7 @@ fn painted_source_named_through_a_stream_used_as_a_dictionary_is_reported() {
                 "",
                 "",
                 ("3 0 R 21 0 R", 21),
+                false,
                 vec![(21, stream_body("/Type /Pages /Parent 2 0 R /Kids [5 0 R] /Count 1 /Resources 22 0 R", b"x")), (22, dict_names.clone())],
             ),
             doc_in(
@@ -1124,8 +1132,14 @@ fn painted_source_named_through_a_stream_used_as_a_dictionary_is_reported() {
                 "",
                 "",
                 ("3 0 R 21 0 R", 21),
+                false,
                 vec![(21, b"<< /Type /Pages /Parent 2 0 R /Kids [5 0 R] /Count 1 /Resources 22 0 R >>".to_vec()), (22, dict_names.clone())],
             ),
+        ),
+        (
+            "the page object itself (with its own /Resources)",
+            doc_in("", &format!("/Resources << {names} >>"), "", ("3 0 R 5 0 R", 2), true, Vec::new()),
+            doc_in("", &format!("/Resources << {names} >>"), "", ("3 0 R 5 0 R", 2), false, Vec::new()),
         ),
     ] {
         reported_kept_image_too(&format!("{what} is a stream"), &through_stream, &mut red);
@@ -1271,6 +1285,23 @@ fn painted_source_drawn_by_anything_but_a_kept_pages_own_content_is_reported() {
         reported_kept_image_too(what, &painted_doc_with("inherited", &text, "", keys, more.clone()), &mut red);
         let with_direct = format!("{content} {direct} BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
         silent_drawn_image(&format!("{what}, and page two also draws the image directly"), &painted_doc_with("inherited", &with_direct, "", keys, more), &mut red);
+    }
+    // Only an image is silent: the region FORM (object 11) that page two draws directly with `Do` stays and is reported
+    // (the image 10 is listed under a name nobody draws, so it is dropped).
+    let pdf = painted_doc("inherited", "q /Fm9 Do Q BT /F1 12 Tf 72 700 Td (Page two) Tj ET");
+    let mut doc = PdfDoc::open(&pdf, &quick(), &token()).expect("open");
+    let out = redact_and_save(&mut doc, &[region(R)], UnsupportedPolicy::Refuse, &token()).expect("redact");
+    if out.painted_sources_kept != [11] || out.region_flattened() {
+        red.push(format!("a form page two draws directly: painted_sources_kept {:?}, region_flattened {}, expected [11] and false", out.painted_sources_kept, out.region_flattened()));
+    }
+    if !out.not_proven_reasons().contains(&hsk_studio_press::NotProven::PaintedSourceKept) {
+        red.push(format!("a form page two draws directly: not-proven reasons {:?} lack PaintedSourceKept", out.not_proven_reasons()));
+    }
+    if gone(&out.bytes, "VECTOR-FORM-SECRET") {
+        red.push("a form page two draws directly was dropped (the kept reference would dangle)".into());
+    }
+    if !gone(&out.bytes, "SCAN-PIXELS-SECRET") {
+        red.push("the image nobody draws survives".into());
     }
     assert!(red.is_empty(), "{red:#?}");
 }
