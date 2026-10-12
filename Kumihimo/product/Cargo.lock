@@ -1195,6 +1195,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kumihimo-web"
+version = "0.1.0"
+dependencies = [
+ "kumihimo-content",
+ "kumihimo-core",
+ "kumihimo-layout-json",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"

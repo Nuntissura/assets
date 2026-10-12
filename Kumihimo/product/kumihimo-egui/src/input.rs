@@ -249,11 +249,8 @@ fn tool_point(
         ToolPlacement::Edge { anchor, edge } => {
             let rect = match anchor {
                 ToolAnchor::View(view) => {
-                    projection
-                        .frames
-                        .iter()
-                        .find(|f| f.frame == controller.snapshot().views.get(&view)?.frame)?
-                        .content
+                    let frame = controller.snapshot().views.get(&view)?.frame;
+                    projection.frames.iter().find(|f| f.frame == frame)?.content
                 }
                 ToolAnchor::Frame(frame) => {
                     projection.frames.iter().find(|f| f.frame == frame)?.bounds

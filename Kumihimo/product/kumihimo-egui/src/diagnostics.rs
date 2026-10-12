@@ -1,4 +1,5 @@
 //! Redacted target/state projections. Provider text and resource keys are omitted.
+#[cfg(feature = "capture")]
 use crate::*;
 
 pub fn control_id(kind: &str, raw: u64) -> String {
