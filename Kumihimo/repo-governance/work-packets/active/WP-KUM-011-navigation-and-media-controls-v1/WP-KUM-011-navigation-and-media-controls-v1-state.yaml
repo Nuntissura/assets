@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 13
+generation: 14
 phase: active
-owner: ROLE-KUM-DEV-LEAD
+owner: ROLE-KUM-EVALUATION
 changed_files:
 - product/Cargo.lock
 - product/README.md
@@ -128,9 +128,38 @@ proof:
     guard and old View movement handling retained; stale_geometry reused, root backgrounds/unrelatedworkspaces/metadata
     retained. Only routing changed since RED; other46product inputs/tests exact. All writers held/UTF8LF. F01 remains
     open until same005 Green/affected proof/independent verdict.'
+- kind: f01_green_and_affected_runtime
+  finding_id: EVAL-KUM-011-F01
+  red_source: ceab0b9a3e7ef74a154fc24025caefdc73d46ba0
+  source_revision: 551ea5731931611f5a5a24f5c422684247edbdfb
+  product_sha256: 351c3d734589ea9d27e5bf90144a8f064055a356dbd29051567f38dc70a4b1c0
+  digest_encoding: SHA256 UTF8 case-preserving Gitroot POSIX path:rawsha256 lines, sorted path lexical, LFjoin/no
+    trailingLF
+  logs:
+    f01: .local/kumihimo-controls/proof/f01-551ea5731931.log
+    default: .local/kumihimo-controls/proof/default-551ea5731931.log
+    navigation: .local/kumihimo-controls/proof/navigation-551ea5731931.log
+    backgrounds: .local/kumihimo-controls/proof/backgrounds-551ea5731931.log
+    combined: .local/kumihimo-controls/proof/combined-551ea5731931.log
+    test: .local/kumihimo-controls/proof/test-551ea5731931.log
+    example: .local/kumihimo-controls/proof/example-551ea5731931.log
+  log_sha256:
+    f01: dbc5e3edf7f300e79ab084059feb24a60d80fc890b116f60c9f09889e3287888
+    default: 87ddb3574007c33120b1534d64d0dee4cfdfee542a15649da7e55a89127923f8
+    navigation: 2ea4d2aad397e753e23fac653ad83108b7a997bae0d5c9293c774ca4ed4ebca1
+    backgrounds: 4bd0409094d535f19123f66e25decf882dbd14197bb15d731b192bdb977adfef
+    combined: e42f248bdf3025dbf3401c95bc78dbedf0b0c58ba52b8b8f1a5639ef7dee8b24
+    test: 7bc513b802ceaae91f4bd8c69eb3ac9ddbac68d13904ee51e731455fe828c24e
+    example: 8e34a22ef7812444072a3e56647b5a7e962a660486eb419edcdf0cbf8ba278fd
+  observed: 'Same owning005 RED→GREEN: compiled5.26s,1pass/7filtered/runtime0.01s. Four affected all-target checks
+    PASS default1.56s/navigation2.82s/backgrounds1.63s/combined1.78s. All24publiccases PASS (12preserved010+8navigation+4backgrounds),
+    compile5.53s/eachtarget0.01s; includes real frame reorder/nested ancestor/retained customplan movement/no-op
+    metadata replay controls inside original005/009. Quiet controls_host PASS dev0.02s, typedobservations confirmed/hostrendering
+    external. Postrun47rawinputs unchanged; protected29files/13otherlockrecords unchanged. Independent F01 resolution/scoped
+    verdict/outcome containment pending; no GUI/physical/platform claim.'
 blockers:
-- 'EVAL-KUM-011-F01: actual same-workspace frame reorder must invalidate affected navigation/geometry while preserving
-  target/resource/instance; existing move case is a no-op'
-next_action: Publish held routing-only F01 candidate, exact origin/fence/resources; same005 GREEN first, then four
-  affected feature checks/all24publiccases; retain source-identical Core/JSON priorproof, independent reevaluation
-  closes F01
+- 'EVAL-KUM-011-F01: owning RED→GREEN and all affected proof now passed on551ea57; final independent scoped reevaluation/containment
+  pending'
+next_action: Evaluator independently inspect exact551ea57 F01 diff, existing005/009 assertions and all7actual Green
+  logs plus ceab RED; resolve original F01 only if proved and freeze final scoped report, then lead outcome/spec/status/origin
+  settlement
