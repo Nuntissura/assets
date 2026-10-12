@@ -19,7 +19,7 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6-luna
     reasoning: high
-    assignment: WP011 current research/readiness report before coding; coordinate package options with coder03
+    assignment: WP011 readiness frozen and published at734c9fc; standby for dependency blockers only
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
@@ -31,7 +31,8 @@ roles:
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: WP010 settled; WP011 prepare focused acceptance cases from complete stub/spec and coder03 architecture
+    assignment: WP011 twelve cases frozen and published at734c9fc; await stabilized exact source and focused runtime
+      proof
   coder:
     role_id: ROLE-KUM-CODER-03
     thread_id: 01a12d8f-5516-7c01-9047-db8c696cd4ac
@@ -39,8 +40,8 @@ roles:
     reasoning: high
     completed_implementation_wps: []
     rotate_after: 2
-    assignment: WP011 read-only architecture/research preparation; no product/Cargo/lock/Git until full published
-      contract and readiness
+    assignment: WP011 coding admitted after exact734c9fc preparation origin readback; owns sixteen contract product
+      paths, no Cargo/lock/Git/governance
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -68,8 +69,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Publish frozen full WP011 preparation; independent exact origin/artifact readback then coder03 content0.2
-  optional navigation/backgrounds admission; lead sole lock/Cargo/Git lane
+next_action: Coder03 implement WP011 content0.2 optional navigation/backgrounds on admitted paths; lead sole lock/Cargo/Git;
+  evaluate exact stabilized candidate
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

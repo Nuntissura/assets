@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-011-navigation-and-media-controls-v1
-generation: 4
+generation: 5
 phase: active
-owner: ROLE-KUM-DEV-LEAD
+owner: ROLE-KUM-CODER-03
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
 - repo-governance/specification/current/
@@ -30,6 +30,12 @@ proof:
     Spec14 structural sync passed; full99records and exactsixfileSpec13archive preserved, no productchanges. Unsupported
     supersession_scope field corrected by preserving payload inside allowed decision text; no helper/schema expansion.
     Exact origin publication/readback before coding pending.
+- kind: published_preparation_admission
+  source_revision: 734c9fc1a73a9bb5c0353ca702d34000e1336bbf
+  observed: Fresh origin equals exact HEAD; all21 published preparation blobs independently reread against current
+    bytes, three frozen contract/readiness/evaluation hashes matched; complete priorSpec13 six-file archive exact451f7c1.
+    No product changes. Lead admits coder03 contract-owned sixteen product paths; no Cargo, lock, Git or governance
+    authority delegated.
 blockers: []
-next_action: Lead publish frozen full contract/spec14/readiness/twelve cases; independently reread exact origin
-  and canonical artifacts, then admit coder03 owned product paths only
+next_action: Coder03 implement full WP011 on sixteen contract-owned product files; lead owns offline lock, README,
+  serial Cargo, publication and status; evaluator cases remain frozen until candidate runtime evaluation

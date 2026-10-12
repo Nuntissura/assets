@@ -87,8 +87,8 @@ work_packets:
   phase: active
   contract_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-011-navigation-and-media-controls-v1/WP-KUM-011-navigation-and-media-controls-v1-state.yaml
-  next_action: Lead publish frozen full contract/spec14/readiness/twelve cases; independently reread exact origin
-    and canonical artifacts, then admit coder03 owned product paths only
+  next_action: Coder03 implement full WP011 on sixteen contract-owned product files; lead owns offline lock, README,
+    serial Cargo, publication and status; evaluator cases remain frozen until candidate runtime evaluation
   blockers: []
 - wp_id: WP-KUM-012-desktop-gui-adapter-v1
   title: Prove a replaceable desktop adapter
