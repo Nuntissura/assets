@@ -1034,6 +1034,9 @@ fn prepare_case(composition: &mut Composition, case: Case) -> Result<()> {
         // The canonical Controller owns both translation and resize. Other slot geometry stays unchanged.
         let mut context = composition.controller.snapshot().contexts[&composition.root].clone();
         context.allow_floating = true;
+        context.allowed_docks.push(core::DockLocation::Append {
+            workspace: composition.root,
+        });
         composition
             .host
             .dispatch(
