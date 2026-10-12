@@ -72,38 +72,51 @@ use crate::adjust::{Mapped, Note, Reason};
 // typed loss; the layer and the rest of the document import. The one exception is the switched-off part of a stack
 // that has counted instances: past the uncounted bound, or past Folio's ceiling next to its counted instances, it is
 // dropped from the record (the stack keeps every counted instance) with a typed loss. That loss is one entry per stack
-// and names the count of the instances the record does not hold; a switched-off instance that was mapped and then
-// left out of the record adds no note of its own (PLR-089; tests
+// and names the count of the MAPPED switched-off instances the record does not hold (an instance the importer does not
+// map reports itself and is not counted); a switched-off instance that was mapped and then left out of the record adds
+// no note of its own (PLR-089; tests
 // `the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them` and
 // `the_document_budget_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them`). A visible stack
 // whose instances are all switched off is scanned to its end before it is refused past the ceiling (PLR-090): a
 // counted instance may follow the ones already scanned and the outcome then differs (test
 // `a_counted_instance_after_more_switched_off_ones_than_the_ceiling_is_still_kept`). Tests `tests/effects_budget.rs`.
+// Every limit and loss code named in this file applies to a stack whose `lfx2` descriptor fits the descriptor reader's
+// 8192 items (`descriptor.rs` `MAX_TOTAL_ITEMS`, counted over every object item and list entry at every depth, category
+// blind). A larger descriptor is refused whole with `descriptor_item_limit` (kind `Unsupported`) before any instance is
+// mapped, so that stack is lost with that code instead of the ones named here: 1025 instances (1 live + 1024 switched
+// off) of 8 or more items each do not fit, and 65 live instances do not fit from 127 items each (DESCRIPTOR
+// `effect_limits`; test
+// `the_descriptor_readers_8192_item_cap_is_measured_per_effect_kind_and_stated_in_the_descriptor`).
 
 /// Loss code of a stack whose layer has more counted instances than [`MAX_EFFECTS_PER_LAYER`], and of a stack with NO
 /// counted instances that holds more instances than Folio's own per-stack ceiling (`MAX_EFFECTS`, above pigment's).
 /// Folio's ceiling does not produce it for a stack that has counted instances
 /// ([`EFFECTS_UNRENDERED_DROPPED_OVER_STACK_CEILING`]; test
-/// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`).
+/// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`). Reported only for
+/// a stack whose descriptor fits the reader's 8192 items (end of the limits header above).
 pub(crate) const EFFECTS_OVER_BUDGET: Reason = "effects_over_budget";
 /// Loss code of a stack that would take the counted instances of the document past [`MAX_EFFECTS_PER_PLAN`], and of
 /// every later stack that has counted instances (the cut is a prefix of the import order, see [`EffectTally`]).
+/// Reported only for a stack whose descriptor fits the reader's 8192 items (end of the limits header above).
 pub(crate) const EFFECTS_OVER_DOCUMENT_BUDGET: Reason = "effects_over_document_budget";
 /// Loss code of a stack that has NO counted instances (hidden layer or group, switched-off stack, all instances
 /// switched off) and would take the kept uncounted instances past [`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`], and of
 /// every later such stack. A stack with counted instances is never refused for this bound
-/// ([`EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET`]).
+/// ([`EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET`]). Reported only for a stack whose descriptor fits the reader's
+/// 8192 items (end of the limits header above).
 pub(crate) const EFFECTS_UNRENDERED_OVER_DOCUMENT_BUDGET: Reason = "effects_unrendered_over_document_budget";
 /// Loss code (kind `Transformed`, the stack IS mapped) of a stack with counted instances whose switched-off
 /// instances do not fit [`MAX_UNCOUNTED_EFFECTS_PER_DOCUMENT`]: the record keeps its counted instances and none of
-/// its switched-off ones. One entry per stack; its path names the count of the dropped instances (`dropped=<count>`,
-/// see [`Fit::CountedOnly`]).
+/// its switched-off ones. One entry per stack; its path names the count of the dropped MAPPED switched-off instances
+/// (`dropped=<count>`, see [`Fit::CountedOnly`]). Reported only for a stack whose descriptor fits the reader's 8192
+/// items (end of the limits header above).
 pub(crate) const EFFECTS_UNRENDERED_DROPPED_OVER_DOCUMENT_BUDGET: Reason =
     "effects_unrendered_dropped_over_document_budget";
 /// Loss code (kind `Transformed`, the stack IS mapped) of a stack with counted instances whose counted and
 /// switched-off instances together exceed Folio's per-stack ceiling (`MAX_EFFECTS`): the record keeps its counted
 /// instances and none of its switched-off ones (PLR-063). One entry per stack; its path names the count of the dropped
-/// instances (`dropped=<count>`, see [`Fit::CountedOnlyOverStack`]).
+/// MAPPED switched-off instances (`dropped=<count>`, see [`Fit::CountedOnlyOverStack`]). Reported only for a stack
+/// whose descriptor fits the reader's 8192 items (end of the limits header above).
 pub(crate) const EFFECTS_UNRENDERED_DROPPED_OVER_STACK_CEILING: Reason = "effects_unrendered_dropped_over_stack_ceiling";
 /// Kept effect instances no render plan counts (hidden layer or group, switched-off stack, switched-off instance)
 /// that one document may hold. This bound is the crate's, not pigment's; it is the size of pigment's own plan limit
@@ -142,8 +155,8 @@ fn counts(stack_enabled: bool, visible: bool, instance_enabled: bool) -> bool {
     stack_enabled && visible && instance_enabled
 }
 
-/// How much of a stack the tally keeps. The `usize` of a cut is the number of switched-off instances the record does
-/// not hold: the instances the stack's loss entry reports (PLR-089; test
+/// How much of a stack the tally keeps. The `usize` of a cut is the number of MAPPED switched-off instances the record
+/// does not hold: the instances the stack's loss entry reports (PLR-089; test
 /// `the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Fit {
@@ -542,8 +555,8 @@ fn map_effect(slot: Slot, o: &Object, ordinal: usize, notes: &mut Vec<Note>) -> 
 /// for one without). A stack with counted instances whose switched-off instances do not fit the uncounted bound is
 /// `Ok` with [`Fit::CountedOnly`]: the stack holds its counted instances only; one whose counted and switched-off
 /// instances together exceed Folio's per-stack ceiling is `Ok` with [`Fit::CountedOnlyOverStack`], the same record.
-/// Both carry the number of switched-off instances the record does not hold, and those instances add no note to the
-/// returned [`Mapped`] (PLR-089). Folio's ceiling therefore cuts only the switched-off category (test
+/// Both carry the number of MAPPED switched-off instances the record does not hold, and those instances add no note to
+/// the returned [`Mapped`] (PLR-089). Folio's ceiling therefore cuts only the switched-off category (test
 /// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`). `visible` is
 /// the layer's own visibility and that of all its groups (see the rule at the top of this file). `stack_id` mints
 /// the `SEFX` identity and is only called once the descriptor parsed and the stack fits, so a refused stack consumes
@@ -667,7 +680,7 @@ fn map_stack(
         dropped = dropped.saturating_add(drop_switched_off(&mut effects, &mut off_notes, &mut notes));
     }
     // The count of a cut is what left the record (the instances dropped in the loop and those removed here), so the
-    // loss entry reports exactly the instances the record does not hold (test
+    // loss entry reports exactly the MAPPED switched-off instances the record does not hold (test
     // `the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them`).
     let fit = match tally.admit(StackShape::of(enabled, &effects, visible))? {
         Fit::Whole if over_stack => Fit::CountedOnlyOverStack(dropped),

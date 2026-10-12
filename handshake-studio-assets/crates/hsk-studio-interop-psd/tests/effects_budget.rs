@@ -16,8 +16,9 @@
 //! `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`),
 //! and a stack without counted instances is never refused for the counted bound. Folio's
 //! record-validation node budget (records + kept instances, `validate_raster_records`) is sized from the input
-//! inside those bounds. The two `Transformed` dropped-instances losses name the count of the instances the record does
-//! not hold and the dropped instances add no note (PLR-089, SMB-INTEROP-PSD-LOSS-DETAIL); the descriptor reader's 512
+//! inside those bounds. The two `Transformed` dropped-instances losses name the count of the MAPPED switched-off
+//! instances the record does not hold and the dropped instances add no note (PLR-089, SMB-INTEROP-PSD-LOSS-DETAIL); the
+//! descriptor reader's 512
 //! entries per list is a parse bound that cannot know a category (PLR-086), and so are its 8192 items per descriptor,
 //! measured per effect kind (PLR-095). All inputs are synthetic byte fixtures built here, independently of the crate's
 //! encoder.
@@ -423,7 +424,7 @@ fn layer_id_by_name(p: &ImportProposal, name: &str) -> String {
 }
 /// How a loss path names the effect stack of layer `id`: `None` when it does not end in `lfx2(layer_id=<id>...)`;
 /// `Some(None)` for `lfx2(layer_id=<id>)` (a stack that was not mapped); `Some(Some(count))` for
-/// `lfx2(layer_id=<id>,dropped=<count>)` (a stack mapped without `count` switched-off instances).
+/// `lfx2(layer_id=<id>,dropped=<count>)` (a stack mapped without `count` MAPPED switched-off instances).
 fn lfx2_loss_tail(path: &str, id: &str) -> Option<Option<usize>> {
     let tail = path.rsplit('/').next()?;
     let rest = tail.strip_prefix("lfx2(layer_id=")?.strip_prefix(id)?;
@@ -1583,8 +1584,9 @@ fn stack_notes(p: &ImportProposal, psd_index: usize, code: &str) -> usize {
 }
 
 /// PLR-089 (R21 pre-review S2, S3), Folio's ceiling: the `Transformed` loss `effects_unrendered_dropped_over_stack_ceiling`
-/// is one entry per stack and names how many instances the record does not hold (`dropped=<count>`), whatever that count
-/// is (1024, 1500: the output stays one entry per stack); and a switched-off instance that was mapped and left out of the
+/// is one entry per stack and names how many MAPPED switched-off instances the record does not hold (`dropped=<count>`),
+/// whatever that count is (1024, 1500: the output stays one entry per stack); and a switched-off instance that was
+/// mapped and left out of the
 /// record, whether it was dropped as it was scanned or removed with its stack's other switched-off instances, adds no note
 /// (`effect_contour_unmapped` here). An instance that cannot be mapped is not a dropped instance: it keeps the note of
 /// its own and is not in the count, so kept + dropped + unmapped is every instance of the file. Kept instances keep their
@@ -1634,7 +1636,7 @@ fn the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note
                     (6, Fate::CountedOnlyStack(1)),
                 ],
             );
-            // the count is exactly the switched-off instances the record does not hold
+            // the count is exactly the MAPPED switched-off instances the record does not hold
             let dropped = [
                 (0, Some(1024)),
                 (1, Some(1500)),
@@ -1699,8 +1701,9 @@ fn the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note
 
 /// PLR-089, the unrendered bound (the same class, the other cut): a stack with counted instances whose switched-off
 /// instances do not fit the bound on the instances no plan counts keeps its counted instances, and the
-/// `Transformed` loss `effects_unrendered_dropped_over_document_budget` names how many instances the record does not hold
-/// (`dropped=<count>`) and nothing else reports the dropped ones (no note). A stack that fits keeps its notes. Import order
+/// `Transformed` loss `effects_unrendered_dropped_over_document_budget` names how many MAPPED switched-off instances the
+/// record does not hold (`dropped=<count>`) and nothing else reports the dropped ones (no note). A stack that fits keeps
+/// its notes. Import order
 /// is the reverse of the file order: the control stack (4 instances) first, 64 hidden stacks that fill the bound
 /// exactly (3 + 63 x 64 + 61 = 4096), then the two stacks that are cut.
 #[test]
@@ -1816,7 +1819,8 @@ fn a_list_over_the_descriptor_readers_512_entry_cap_loses_the_stack_whatever_the
 }
 
 /// PLR-089 and PLR-086 (V4-07): the shipped DESCRIPTOR (`effect_limits`) states that the two dropped-instances losses are
-/// one entry per stack naming the count, that an instance left out of the record adds no loss entry of its own, and
+/// one entry per stack naming the count of the MAPPED switched-off instances, that an instance left out of the record
+/// adds no loss entry of its own, and
 /// that the descriptor reader's 512-entry list cap is a category-blind parse bound; it cites the tests that pin each, and
 /// the tests it cites exist in this file.
 #[test]
@@ -1832,7 +1836,7 @@ fn descriptor_states_the_loss_detail_and_the_list_cap_rules() {
         "a_list_over_the_descriptor_readers_512_entry_cap_loses_the_stack_whatever_the_categories_of_its_entries",
     ];
     for needle in [
-        "are_one_entry_per_stack_with_the_path_ending_layer_id_dropped_naming_the_count_of_the_switched_off_instances_the_record_does_not_hold",
+        "are_one_entry_per_stack_with_the_path_ending_layer_id_dropped_naming_the_count_of_the_mapped_switched_off_instances_the_record_does_not_hold",
         "a_switched_off_instance_that_was_mapped_and_left_out_of_the_record_adds_no_loss_entry_of_its_own",
         "the_descriptor_readers_cap_of_512_entries_per_list_is_a_category_blind_parse_bound",
         "a_list_over_512_entries_refuses_the_descriptor_loss_unsupported_descriptor_item_limit_and_that_stack_is_lost",

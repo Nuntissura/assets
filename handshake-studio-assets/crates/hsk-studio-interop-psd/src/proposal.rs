@@ -130,7 +130,9 @@ pub struct ProposalConfig<'a> {
     /// those bounds are typed losses, never an error; each bound cuts only its own category (the bound on the
     /// instances no plan counts never costs a stack its counted instances: a stack that has some keeps them and
     /// loses only its switched-off ones; Folio's own 1024 instances per stack count the two categories together and
-    /// cut only the switched-off one the same way). Tests
+    /// cut only the switched-off one the same way). These bounds apply to a stack whose `lfx2` descriptor fits the
+    /// descriptor reader's 8192 items; a larger one is refused whole with `descriptor_item_limit` (a typed loss, not an
+    /// error; `effects.rs` limits header). Tests
     /// `folios_per_stack_ceiling_cuts_only_the_switched_off_instances_of_a_stack_with_counted_instances`,
     /// `effects_at_pigments_plan_limit_import_fully_with_the_record_budget_sized_from_the_input`,
     /// `effects_over_the_document_cap_become_typed_losses_from_the_crossing_stack_on`,
@@ -523,7 +525,12 @@ impl Builder<'_, '_, '_> {
     /// instances together, so it cuts only the switched-off ones. A stack with counted instances keeps all of them and
     /// drops its switched-off ones when they do not fit next to them (`effects_unrendered_dropped_over_stack_ceiling`,
     /// kind `Transformed`, and nothing is charged to the uncounted bound for the dropped ones); a stack with NO counted
-    /// instances is all switched-off instances and is not mapped past the ceiling (`effects_over_budget`). Each of the
+    /// instances is all switched-off instances and is not mapped past the ceiling (`effects_over_budget`). These limits
+    /// and loss codes apply to a stack whose `lfx2` descriptor fits the descriptor reader's 8192 items (`descriptor.rs`,
+    /// category blind): a larger descriptor is refused whole with `descriptor_item_limit` (kind `Unsupported`) before
+    /// any instance is mapped, so that stack is lost with that code instead of the ones above (1025 instances of 8 or
+    /// more items each, or 65 live instances of 127 or more items each, do not fit; DESCRIPTOR `effect_limits`, test
+    /// `the_descriptor_readers_8192_item_cap_is_measured_per_effect_kind_and_stated_in_the_descriptor`). Each of the
     /// two `Transformed` entries is one entry per stack whose path ends `(layer_id=<id>,dropped=<count>)`: `<count>` is
     /// the number of MAPPED switched-off instances the record does not hold (a switched-off instance the importer does
     /// not map reports itself, is not in the record and is not counted), and a switched-off instance that was
@@ -588,8 +595,8 @@ impl Builder<'_, '_, '_> {
                     self.effect_tally.charge(effects::StackShape::of(m.value.enabled, &m.value.effects, visible), fit);
                     self.notes(&path, m.notes);
                     // The stack is mapped with its counted instances; its switched-off ones are not recorded. One
-                    // entry per stack (the output stays bounded by the layer count) names how many instances the
-                    // record does not hold (`dropped=<count>`, exact: tests
+                    // entry per stack (the output stays bounded by the layer count) names how many MAPPED
+                    // switched-off instances the record does not hold (`dropped=<count>`, exact: tests
                     // `the_ceiling_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them` and
                     // `the_document_budget_loss_names_the_count_of_the_instances_it_dropped_and_adds_no_note_for_them`).
                     let dropped = match fit {
