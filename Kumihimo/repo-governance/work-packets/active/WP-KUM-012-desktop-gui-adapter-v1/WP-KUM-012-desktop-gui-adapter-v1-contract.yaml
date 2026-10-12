@@ -31,6 +31,7 @@ files:
 - repo-governance/specification/
 - repo-governance/topology/
 - repo-governance/codex/build-rules/current/
+- product/third-party/accesskit_windows-0.29.2/
 file_ownership:
   coder03:
   - product/kumihimo-egui/src/lib.rs
@@ -59,10 +60,14 @@ file_ownership:
   - repo-governance/topology/
   - repo-governance/codex/build-rules/current/
   - WP/session/taskboard/state/Git
+  - product/third-party/accesskit_windows-0.29.2/ original materialization, manifests, licenses and provenance
   dependencies:
   - WP-KUM-012-desktop-gui-adapter-v1-dependency-readiness.yaml
   evaluation:
   - WP-KUM-012-desktop-gui-adapter-v1-evaluation.yaml
+  coder03_vendor_patch:
+  - product/third-party/accesskit_windows-0.29.2/src/node.rs
+  - product/third-party/accesskit_windows-0.29.2/src/tests/simple.rs
 dependencies: &id002
 - WP-KUM-011-navigation-and-media-controls-v1
 spec_refs:
@@ -82,6 +87,7 @@ spec_refs:
 - TOPIC-KUM-MODEL
 - TOPIC-KUM-BOUNDARIES
 - DEC-KUM-DESKTOP-EGUI-v1
+- DEC-KUM-WINDOWS-QUIET-UIA-v1
 spec_requirement_refs:
 - REQ-KUM-WORKSPACE-001
 - REQ-KUM-WORKSPACE-002
@@ -308,6 +314,18 @@ requirements:
   Keep WP/state/taskboard recoverable with minimal bookkeeping. Publish owned changes and independently verify exact
   origin/input/report containment before DONE; coder03 rotates only after this second completed packet. No research/report
   sidecar imports product authority.'
+- '[WP012-R019] Resolve the observed pre-egui Windows UIA activation at the provider boundary using a project-local
+  exact accesskit_windows0.29.2 archive patch. Preserve upstream version, dependency versions/features, source copyright
+  and same-commit MIT/Apache/Chromium licenses. Exclude the vendor from product workspace membership. ProviderOptions
+  must always return upstream ServerSideProvider unless the resolved node is the root (including unspecified/placeholder
+  root), its actual Context HWND has a successful nonzero process lookup matching the current process, and current
+  extended style includes WS_EX_NOACTIVATE; only then add ProviderOwnsSetFocus. Missing/stale context or node and
+  failed/foreign HWND/style queries retain baseline options. No added feature, API hook, focus/show/activation mutation,
+  action filtering or changes to SetFocus/Invoke/Click forwarding. Downstream host workspaces explicitly apply the
+  local patch because Cargo workspace patches are not inherited; without it this quiet UIA guarantee is unsupported.
+  Lead owns original materialization, manifests/lock/spec admission and dependency readiness. Coder owns only node.rs
+  and one hidden-only provider-options test in existing tests; focused branch assertions complement the unchanged
+  required actual strict quiet UIA Invoke/canonical selection/rendered native lifecycle acceptance.'
 acceptance:
 - '[WP012-A001] Actual shared-path raster of variable-count recursive split/grid/overlap/mixed host demo providers;
   geometry/clipping/picking and stable IDs agree with canonical state, undersized content remains reachable.'
@@ -341,6 +359,8 @@ acceptance:
   Windows x64 source; original package inputs/99records/sixfilearchive preserved, truthful manual/matrix/topology/state/taskboard
   and published independent evaluation/origin agree.'
 proof:
+- Focused hidden-only actual ProviderOptions assertions for concrete/unspecified root, child, style-off, stale/foreign/invalid
+  window; do not run upstream visible focus test
 - Lead-only manifest-bound offline Cargo metadata/lock resolution; dependency agent reconciles target/features/cache
   before source coding admission
 - cargo check --manifest-path product/Cargo.toml -p kumihimo-egui --all-targets --locked --offline -j 2
@@ -431,4 +451,14 @@ research_basis:
     custom slot→semantic dock/fallback; duplicated UI path→shared rendering; wrong input→global clip then single
     local transform
   validation: Exact focused cases and native/visual observations above, no unrelated broad suites
+  uia_activation_remediation:
+    sources:
+    - https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-setfocus
+    - https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/ne-uiautomationcore-provideroptions
+    observed: 9419 real Button.Invoke emits Focus with owned foreground before egui queue; initial observer foreground
+      was foreign. Exact accesskit_windows ProviderOptions exposes no public quiet policy hook.
+    selected: Single exact provider root/ownedPID/NOACTIVATE patch; no new feature or dependency version
+    rejected: Post-queue Focus suppression/restoration, synthetic action, global OS focus workaround, quiet-check
+      relaxation
+    validation: One hidden-only owning test and original actual native UIA/lifecycle batch; preserve thirteen cases
 status_ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-state.yaml

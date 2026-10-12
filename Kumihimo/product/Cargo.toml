@@ -1,4 +1,8 @@
 [workspace]
 members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content", "kumihimo-egui", "kumihimo-web"]
 default-members = ["kumihimo-core", "kumihimo-layout-json", "kumihimo-content"]
+exclude = ["third-party/accesskit_windows-0.29.2"]
 resolver = "2"
+
+[patch.crates-io]
+accesskit_windows = { path = "third-party/accesskit_windows-0.29.2" }

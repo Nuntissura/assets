@@ -1,8 +1,8 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-012-desktop-gui-adapter-v1
-generation: 6
+generation: 7
 phase: active
-owner: ROLE-KUM-CODER-03
+owner: ROLE-KUM-DEV-LEAD
 changed_files:
 - product/kumihimo-egui/src/lib.rs
 - product/kumihimo-egui/src/workspace.rs
@@ -24,6 +24,7 @@ changed_files:
 - product/README.md
 - product/Cargo.toml
 - product/Cargo.lock
+- product/third-party/accesskit_windows-0.29.2/
 proof:
 - kind: local_full_contract_preparation
   source_revision: bdd19d6ca500cb524ffa5949c50738515f543698
@@ -38,15 +39,15 @@ proof:
   evaluation_sha256: a718bc7d2f95c5622358cff649937f366fefede85baccea64f679b3ca368a74c
   observed: Exact origin revisions and canonical contract/spec/evaluation/manifests/lock re-read matched. Offline
     Windows x64 all-feature metadata completed exit0; independent dependency closure ready_for_coding. Original14
-    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only.
-    Source coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof yet.
+    package identities/checksums/resolved edges preserved; serde_derive syn version label disambiguated only. Source
+    coding admitted to coder03 owned17 paths with disjoint bounded team; no runtime/native/GUI proof yet.
 - kind: focused_compile_milestone
   source_revision: 547e756471939d3b00c1da9a8c2a4ff740c593c5
   source_fence17: fd067a4d2bd5e921bf6b7606f6e4ca0de481dac2129df00b3b99e0190a7d39db
   observed: First default check8b09e4f E0277 input255; exact two-file repair published547e756. Default all-target
     check PASS2.76s, optional-unused/dead-field warnings only. Combined all-feature check currently running soleleadlane;
-    focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only; original317
-    lock records unchanged.
+    focused consumers/raster/native/UIA unexecuted. Added independent web workspace package only; original317 lock
+    records unchanged.
 - kind: focused_consumer_failure
   source_revision: acb2920256fa
   observed: 'Affected all-feature all-target check PASS8.40s; default547 PASS2.76s retained cfg-only fixes. Owning14consumer
@@ -62,6 +63,15 @@ proof:
     actual; UIA forwarded1 then draw-before quiet assertion FAILED foreground_owned=true despite hidden/no-activate/toolwindow.
     Exact native manifestation a65 output; causal diagnostic team read-only, no rerun until relevant source repair.
     No whole-packet GUI/native PASS.
+- kind: causal_native_boundary_and_resolved_scale
+  raster_revision: e88c30580548
+  native_revision: 9419ec7a7670
+  observed: 'Corrected eleven-pair actual raster inspected independently: native scale1→1.5→1 agrees with slots;
+    F012-SCALE resolved. Original quiet native run still FAIL: real Button.Invoke view12 beforeFGforeign, actual
+    Action::Focus arrives51mslater with owned HWND alreadyforeground beforeeguiqueue. Typed-null Framework atomic
+    trace replacement proven in owned cheapfileprobe. Strict quiet acceptance/actions retained. Exact upstream0.29.2
+    provider localpatch admitted in Spec18/R019; originalsource19files/licenses materialized, ONElockbindingchanged;
+    independent readiness/onehiddencomponentappendix and publication pending. No native/popout wholepacketPASS.'
 blockers: []
-next_action: Complete capture scale repair and causal UIA activation repair with team; publish coherent source;
-  retry only affected raster/native cases; independent eval then closure
+next_action: Publish bounded exact provider admission/readiness; coder patches onlynode.rs+singlehiddenowningtest;
+  affectedserialcomponent/nativeUIA/lifecycle proof, independent eval and closure

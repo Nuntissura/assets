@@ -1187,3 +1187,112 @@ proof_plan:
   - git ls-remote origin refs/heads/codex/handpick
   scope: Exact contract proof paths only; evaluator independently inspects actual source, rendered pixels/native/UIA
     outputs and canonical recipient. No evaluator Cargo or additional gate chain.
+provider_options_preparation_addendum:
+  addendum_id: EVAL-KUM-012-R019-v1
+  observed_at: '2026-10-12'
+  phase: preparation_complete_runtime_not_evaluated
+  verdict: READY_FOR_PREPARATION_PUBLICATION
+  addendum_frozen_for_publication: true
+  runtime_status: NOT_EXECUTED
+  authority_limit: Focused preparation for admitted WP012-R019 only; adds one component case without changing
+    the thirteen frozen GUI/native cases or substituting their actual runtime acceptance.
+  preparation_binding:
+    spec_revision: 18
+    decision_id: DEC-KUM-WINDOWS-QUIET-UIA-v1
+    inputs:
+      contract:
+        path: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
+        sha256: 47b102944ed9b5915be94bfc32eeda4d5958db5d62c03ed1f242625b14d5577d
+      master_spec:
+        path: repo-governance/specification/current/spec-modules/master-spec.md
+        sha256: 8c6981b10f096b4cca8c6e8907f3c35241221cac7edf44075ad2e3bdfdc6ce43
+      specification_manifest:
+        path: repo-governance/specification/current/specification.yaml
+        sha256: e6559bc3b4af20b92b6a2bde9c5237f2a6c580102a2a6cfd1eaf5c012eea0f25
+      vendor_provenance:
+        path: product/third-party/accesskit_windows-0.29.2/kumihimo-provenance.yaml
+        sha256: 894bdc5b79297b0f0fc87f634615821acf9c39d0cc21763d0664d4dcb1a36cb0
+    prior_revision: df4b3b0ac861e286f92034fd2749e4803c9db744
+    prior_archive_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v17-r17-df4b3b0ac861
+    prior_archive_sha256:
+      INDEX.json: a02139937e6ee11099ddae833696f17674c446cf45da77622c51a3666b233531
+      primitive-feature-mix-matrix.json: ed518e040df7081fbee451fd08a7ae74a75f99a413b1d348e95e2d385393b275
+      primitive-list.json: eb95b09a11feefd1b0a373a2ce2aab551a3ce09fd7fd175f43aff5a4ceb04264
+      spec-modules/master-spec.md: 88fef7ea0e6babd9721b7c4689b66acae79832e5800d67f912070923bafbb1c3
+      spec-modules/roadmap.md: fbf2a6de3b7880892a9b0ada660ac3663549041dd9813f4bd42b60f7c26a1d6a
+      specification.yaml: 8258253ed473032d6928b42e3e7834951bf96796b02eccbb2163d94d880b1227
+    historical_report_sha256: a718bc7d2f95c5622358cff649937f366fefede85baccea64f679b3ca368a74c
+    preservation: Original report bytes remain an exact prefix; every prior top-level value, thirteen
+      frozen cases and historical binding remain unchanged. Ordered full99 requirement records, prior
+      decisions, WP012-R001 through R018, thirteen acceptances and full stub independently equal prior
+      Git; all six archive files exactly equal prior Git blobs. Spec18 decision exactly equals R019 and
+      manifest document digests match actual files.
+    provenance_observation: Actual cached archive SHA and embedded commit match provenance; fifteen materialized
+      originals equal exact archive members; three local license hashes/lengths match recorded same-commit
+      provenance. No patched source, component runtime or origin admission claimed.
+    coding_admitted: false
+    publication_status: LOCAL_PREPARATION_PENDING_LEAD_PUBLICATION
+  selected_contract_control: '[WP012-R019] Resolve the observed pre-egui Windows UIA activation at the
+    provider boundary using a project-local exact accesskit_windows0.29.2 archive patch. Preserve upstream
+    version, dependency versions/features, source copyright and same-commit MIT/Apache/Chromium licenses.
+    Exclude the vendor from product workspace membership. ProviderOptions must always return upstream
+    ServerSideProvider unless the resolved node is the root (including unspecified/placeholder root),
+    its actual Context HWND has a successful nonzero process lookup matching the current process, and
+    current extended style includes WS_EX_NOACTIVATE; only then add ProviderOwnsSetFocus. Missing/stale
+    context or node and failed/foreign HWND/style queries retain baseline options. No added feature, API
+    hook, focus/show/activation mutation, action filtering or changes to SetFocus/Invoke/Click forwarding.
+    Downstream host workspaces explicitly apply the local patch because Cargo workspace patches are not
+    inherited; without it this quiet UIA guarantee is unsupported. Lead owns original materialization,
+    manifests/lock/spec admission and dependency readiness. Coder owns only node.rs and one hidden-only
+    provider-options test in existing tests; focused branch assertions complement the unchanged required
+    actual strict quiet UIA Invoke/canonical selection/rendered native lifecycle acceptance.'
+  component_cases:
+  - case_id: EVAL-KUM-012-R019-001
+    contract_requirement_refs:
+    - WP012-R019
+    contract_acceptance_refs:
+    - WP012-A007
+    - WP012-A010
+    - WP012-A013
+    title: Owned hidden provider root options and baseline fallbacks
+    proposed_target:
+      path: product/third-party/accesskit_windows-0.29.2/src/tests/simple.rs
+      test: provider_options_for_owned_hidden_roots
+      run_owner: ROLE-KUM-DEV-LEAD
+      scope: One named hidden-only owning test; existing fixture/mutex/message pump/owned cleanup; no
+        upstream visible focus test or broad upstream suite.
+    method: Query real IRawElementProviderSimple COM ProviderOptions from actual PlatformNode implementation
+      and manually constructed Context/tree on one verified owned hidden fixture. Check owned PID, hidden
+      visibility and non-owned foreground before/after each query and own style mutation; independently
+      read back changed style. Use actual metadata-only foreign Desktop HWND PID prerequisite for the
+      foreign negative; failed prerequisite is failure, never skip or fabricated PID.
+    expected: Always Ok. Exact ServerSideProvider|ProviderOwnsSetFocus (18) only for resolved concrete/unspecified
+      roots including both placeholder forms when actual PID is current and current style contains NOACTIVATE.
+      Exact upstream ServerSideProvider (2) for child, missing node, expired context, HWND0 failed PID,
+      confirmed foreign PID, and own root/unspecified/placeholder forms after removing NOACTIVATE.
+    red_team_control: Retain root resolution for node_id=None; PID success/ownership precedes style lookup.
+      Never mutate/query foreign style, register/traverse/action a foreign UIA provider, call show_and_focus_window,
+      SetFocus/Invoke/global input, restore foreground, filter actions, or modify SetFocus/Invoke/Click
+      forwarding. Style restoration and fixture destruction apply only to the started owned fixture.
+    proof_limits: Constructed Context plus actual COM option query is component policy proof, not adapter
+      activation or OS Invoke proof. HWND0 proves invalid/failed PID, not destruction of a real HWND.
+      Foreign Desktop PID negative exercises the branch but does not isolate guard necessity for a foreign
+      NOACTIVATE window; independently inspect gate order. Exact source/test proposal inspected; implementation
+      and runtime not executed.
+    runtime_status: NOT_EXECUTED
+  independent_runtime_acceptance:
+    unchanged_case_refs:
+    - EVAL-KUM-012-009
+    - EVAL-KUM-012-011
+    - EVAL-KUM-012-012
+    - EVAL-KUM-012-013
+    required: Original strict independent UIA observer invokes the supported pinned view12 control on
+      the actual owned hidden HWND/nonce/PID. Preserve native Focus/Click forwarding and freshly reread
+      canonical selected view12 plus generation advance. Independently observe hidden/nonforeground/ownership
+      before Invoke, at provider prequeue/action and after readback; require existing actual native correlated/populated
+      pixels, readiness, resize/recreation, return/partial-close/session lifecycle proof. Component flags
+      alone never resolve the observed9419 activation failure.
+    runtime_status: NOT_EXECUTED
+  next_action: Lead publishes exact appendix and admitted inputs, completes dependency readiness and source
+    admission, then runs one owning hidden test and original actual strict native/UIA cases; evaluator
+    independently inspects exact outputs before any runtime verdict.

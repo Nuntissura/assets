@@ -1,0 +1,39 @@
+schema_version: kumihimo.vendor-provenance.v1
+vendor_id: VENDOR-KUM-ACCESSKIT-WINDOWS-v1
+package: accesskit_windows
+version: 0.29.2
+archive_sha256: d2d63dd5041e49c363d83f5419a896ecb074d309c414036f616dc0b04faca971
+upstream_commit: 5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3
+upstream_path: platforms/windows
+license_files:
+  LICENSE-MIT:
+    url: https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE-MIT
+    sha256: 23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3
+    bytes: 1023
+  LICENSE-APACHE:
+    url: https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE-APACHE
+    sha256: 62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a
+    bytes: 9723
+  LICENSE.chromium:
+    url: https://raw.githubusercontent.com/AccessKit/accesskit/5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3/LICENSE.chromium
+    sha256: 845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308
+    bytes: 1559
+original_files:
+  Cargo.toml: 0cb24e74669f987d52b8b4d5091aa3f90c406f594e25640e478c7813881793ab
+  README.md: 622db8e92d711b64279a91e25ae9345959c82bb4d47157dbf5c3a6a53f80f6d6
+  examples/hello_world.rs: b8a8426848e6adaabcdcb2cb73f57166797933a57f9e7013182909b6c37c0dff
+  src/adapter.rs: 175f5f87c3b9801eec0b61c67dba36a988414acf025ca8d4224b3bdd92337c87
+  src/context.rs: 8a45005a8c1449e4ed234bb6f041f026f2dbc6d2935e76407637adb1c127601c
+  src/filters.rs: 744374b547065b153123c80028f129f5c6bb53052660205e1a2f231c3e169f64
+  src/lib.rs: 8a6f20ed5354c9834d88a59091c764f65aa31359f81c57386fe06e9d806e9396
+  src/node.rs: 59a1ed2a8aa5da1529a6d6164fb6ed335e207c7ebafbfa73176d1964d617ec9a
+  src/subclass.rs: 1504fe6a4058d304490e52eb30135170a39bf5caa442100d6581cee20bc66887
+  src/tests/mod.rs: 3007d7082af4c28574e4d70b8e5f89746dc01a17762d29e204e7ae21d9926a9b
+  src/tests/simple.rs: 9ad0c8b85921620d5ccb7e83b1d90a6c9d565925dda6d9d4fcae2afdfc17b252
+  src/tests/subclassed.rs: 74b551c9cffb2c14ecfc9509cc3dc4252388a3e80870ee8ecef6f2fb87619457
+  src/text.rs: bcf5610a718025206d1a5e48fb0ff8bea2d9e29b62bcfa4b73bc2b27f68e48b5
+  src/util.rs: 199fc46c7e00fac1c4912602587c6425093f5ef739f9b6520a452366ec7c396b
+  src/window_handle.rs: dec1d78c81784a18c50f066e89d57d0fe02a7c9199a11e47a0833f8b9113d8c2
+patch_scope: ProviderOptions only for resolved root, actual owned HWND and WS_EX_NOACTIVATE; unchanged default and
+  action forwarding
+proof_status: Original sources materialized; patch and focused/native runtime proof pending

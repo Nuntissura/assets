@@ -2,7 +2,7 @@
 schema_version: handshake.spec-document.v1
 specification_id: SPEC-KUMIHIMO-v1
 document_id: DOC-KUM-MASTER-v1
-revision: 17
+revision: 18
 title: Kumihimo master specification
 updated_at: '2026-10-12'
 ---
@@ -4116,5 +4116,31 @@ decisions:
   - https://developer.mozilla.org/en-US/docs/Web/API/Window/open
   - https://github.com/wasm-bindgen/wasm-bindgen/releases/tag/0.2.128
   - https://github.com/Nuntissura/assets
+  supersedes: []
+- decision_id: DEC-KUM-WINDOWS-QUIET-UIA-v1
+  anchor_refs:
+  - TOPIC-KUM-INPUT
+  - TOPIC-KUM-MODEL
+  - TOPIC-KUM-PLATFORMS
+  - TOPIC-KUM-CHOICES
+  decision: '[WP012-R019] Resolve the observed pre-egui Windows UIA activation at the provider boundary using a
+    project-local exact accesskit_windows0.29.2 archive patch. Preserve upstream version, dependency versions/features,
+    source copyright and same-commit MIT/Apache/Chromium licenses. Exclude the vendor from product workspace membership.
+    ProviderOptions must always return upstream ServerSideProvider unless the resolved node is the root (including
+    unspecified/placeholder root), its actual Context HWND has a successful nonzero process lookup matching the
+    current process, and current extended style includes WS_EX_NOACTIVATE; only then add ProviderOwnsSetFocus. Missing/stale
+    context or node and failed/foreign HWND/style queries retain baseline options. No added feature, API hook, focus/show/activation
+    mutation, action filtering or changes to SetFocus/Invoke/Click forwarding. Downstream host workspaces explicitly
+    apply the local patch because Cargo workspace patches are not inherited; without it this quiet UIA guarantee
+    is unsupported. Lead owns original materialization, manifests/lock/spec admission and dependency readiness.
+    Coder owns only node.rs and one hidden-only provider-options test in existing tests; focused branch assertions
+    complement the unchanged required actual strict quiet UIA Invoke/canonical selection/rendered native lifecycle
+    acceptance.'
+  rationale: Microsoft documents fragment-root ProviderOwnsSetFocus to prevent framework parent-window focus before
+    provider SetFocus. Real trace places the failure before egui queue; bound scope preserves normal interactive/provider
+    behavior.
+  research_source_refs:
+  - https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-irawelementproviderfragment-setfocus
+  - https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/ne-uiautomationcore-provideroptions
   supersedes: []
 ```

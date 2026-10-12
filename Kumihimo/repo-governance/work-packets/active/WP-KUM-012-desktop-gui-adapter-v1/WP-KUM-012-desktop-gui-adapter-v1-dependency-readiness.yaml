@@ -326,3 +326,98 @@ handoff:
     result: Sent semantic/offscreen/native proof split and eframe visibility blocker.
   - recipient: Kumihimo lead
     result: Sent readiness report location, the R002/R011 correction, exact manifest-bound Windows graph/cache reconciliation and ready_for_coding verdict; publication and coder admission remain lead-owned.
+focused_original_vendor_admission:
+  observed_at: '2026-10-12'
+  scope: Exact upstream accesskit_windows 0.29.2 vendor binding only; the future provider patch and runtime proof are not included.
+  verdict: ready_for_focused_provider_patch
+  current_contract_binding:
+    ref: repo-governance/work-packets/active/WP-KUM-012-desktop-gui-adapter-v1/WP-KUM-012-desktop-gui-adapter-v1-contract.yaml
+    sha256: 47b102944ed9b5915be94bfc32eeda4d5958db5d62c03ed1f242625b14d5577d
+    requirement_count: 19
+    relevant_requirement: WP012-R019
+    spec_manifest_sha256: e6559bc3b4af20b92b6a2bde9c5237f2a6c580102a2a6cfd1eaf5c012eea0f25
+    master_spec_sha256: 8c6981b10f096b4cca8c6e8907f3c35241221cac7edf44075ad2e3bdfdc6ce43
+    binding_note: This scoped follow-up binds the current WP012-R019 vendor patch requirement; the original baseline contract and specification fields above remain historical.
+  source_provenance:
+    package: accesskit_windows
+    version: 0.29.2
+    archive_bytes: 52892
+    archive_sha256: d2d63dd5041e49c363d83f5419a896ecb074d309c414036f616dc0b04faca971
+    upstream_commit: 5801c4a49ff9b2c9ec3f77b3c31272d0da4c5cd3
+    archive_source_file_count: 15
+    archive_source_bytes: 142478
+    vendor_file_count: 19
+    original_files_match_archive_byte_for_byte: true
+    provenance_ref: product/third-party/accesskit_windows-0.29.2/kumihimo-provenance.yaml
+    provenance_sha256: 894bdc5b79297b0f0fc87f634615821acf9c39d0cc21763d0664d4dcb1a36cb0
+    license_files:
+      LICENSE-MIT: 23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3
+      LICENSE-APACHE: 62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a
+      LICENSE.chromium: 845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308
+  package_binding:
+    vendor_manifest_sha256: 0cb24e74669f987d52b8b4d5091aa3f90c406f594e25640e478c7813881793ab
+    manifest_version: 0.29.2
+    manifest_dependencies_and_features_match_archive: true
+    workspace_members:
+    - kumihimo-core
+    - kumihimo-layout-json
+    - kumihimo-content
+    - kumihimo-egui
+    - kumihimo-web
+    default_members:
+    - kumihimo-core
+    - kumihimo-layout-json
+    - kumihimo-content
+    excluded_vendor_path: third-party/accesskit_windows-0.29.2
+    crates_io_patch_path: third-party/accesskit_windows-0.29.2
+    lock_package_identity: accesskit_windows 0.29.2 path package
+    lock_dependency_edges_match_original_manifest: true
+  metadata_observation:
+    source: Lead's fresh current-target all-features metadata and exact old/new lock reconciliation
+    command: cargo metadata --manifest-path product/Cargo.toml --all-features --locked --filter-platform x86_64-pc-windows-msvc --format-version 1 --offline
+    result: One package binding changed from registry source to the exact vendor path; the locked package version, dependency edges, and selected features are unchanged.
+    download_delta_bytes: 0
+  code_and_admission:
+    vendored_provider_source_matches_upstream: true
+    future_provider_patch: pending
+    coding_admission: pending_lead_publication_and_admission
+    runtime_proof: pending
+  wasm_web_reuse:
+    target: wasm32-unknown-unknown
+    prior_readiness_ref: repo-governance/work-packets/active/WP-KUM-013-web-adapter-portal-pilot-v1/WP-KUM-013-web-adapter-portal-pilot-v1-dependency-readiness.yaml
+    prior_metadata_sha256: 309a830cd23c5fbd585d33f96c3ec6dc5267533a2fb931ad5d8a11ea7eb7983d
+    prior_web_closure_nodes: 23
+    prior_registry_closure_packages: 19
+    current_metadata_observation:
+      ref: ../.local/kumihimo-desktop/provider-wasm32-unknown-unknown-metadata.json
+      sha256: 8bd487e317fbd7aa07443214951425d3e03f54572b2b30522a65db40c1995a93
+      source: Fresh current-target metadata, independently read and traversed from kumihimo-web
+      command: cargo metadata --manifest-path product/Cargo.toml --all-features --locked --filter-platform wasm32-unknown-unknown --format-version 1 --offline
+      exit_code: 0
+      web_closure_nodes: 23
+      package_edges_and_selected_feature_unions_unchanged: true
+      accesskit_windows_in_web_closure: false
+      comparison: Breadth-first traversal from kumihimo-web reached 23 nodes in both current and historical metadata; package identities, selected features, and dependency edges match exactly. The Windows-only accesskit_windows source binding is outside this closure.
+      download_delta_bytes: 0
+    lock_comparison:
+      current_package_records: 318
+      prior_package_records: 318
+      changed_binding: accesskit_windows 0.29.2 registry source and checksum replaced by the exact vendored path package
+      other_records_unchanged: 317
+      source: Lead's exact old/new lock comparison
+    web_package_manifest_sha256: fb67bed460aba0b7345b46613d5debdda4ed13f172e7982c7e5a8679bf3b5c6b
+    current_workspace_manifest_sha256: 0b291054c073284ffe8e62d9c0c74c0bc49d6e8b299b159f9bc8c563c0ac58ad
+    current_lockfile_sha256: d33c396e6827d8acdb4c1591974f71e3c15bc31f17129712aa67a436b21b24d8
+    existing_artifact:
+      revision: 71b9acc630da
+      build_manifest_ref: .local/web/71b9acc630da/build-manifest-current.json
+      build_manifest_says_build_executed: false
+      compiled_target_wasm_ref: .local/cargo-target/wasm32-unknown-unknown/debug/kumihimo_web.wasm
+      compiled_target_wasm_bytes: 43488875
+      compiled_target_wasm_sha256: 41294505a632fccac24d1c4f788787ee7cf9cec3efe2b4305ab0d3912d103f0b
+      generated_web_wasm_ref: .local/web/71b9acc630da/pkg/kumihimo_web_bg.wasm
+      generated_web_wasm_bytes: 6908624
+      generated_web_wasm_sha256: 85a3b4c54b32e2c6939d26641541e6b057a1550549fe38856d276943bb785b88
+      generated_web_wasm_matches_manifest: true
+      reuse_verdict: Reuse the existing compiled WASM for the unchanged WASM target dependency graph; no Cargo compilation was performed.
+    scope_note: Browser-side product/kumihimo-web/web/pilot.mjs differs from the artifact manifest input list; it is not a Rust WASM compilation input, so browser proof is not re-certified by this dependency finding.

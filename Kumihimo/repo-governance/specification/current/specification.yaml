@@ -3,8 +3,8 @@ kind: technical_specification
 identity:
   specification_id: SPEC-KUMIHIMO-v1
   project_id: KUMIHIMO
-  version: 17
-  revision: 17
+  version: 18
+  revision: 18
   status: accepted_direction_implementation_authorized
 authority:
   canonical_product_truth: true
@@ -32,8 +32,8 @@ storage:
   documents:
   - document_id: DOC-KUM-MASTER-v1
     path: spec-modules/master-spec.md
-    revision: 17
-    digest: sha256:88fef7ea0e6babd9721b7c4689b66acae79832e5800d67f912070923bafbb1c3
+    revision: 18
+    digest: sha256:8c6981b10f096b4cca8c6e8907f3c35241221cac7edf44075ad2e3bdfdc6ce43
     semantic_entity_refs:
     - TOPIC-KUM-WORKSPACE
     - REQ-KUM-WORKSPACE-001
@@ -347,6 +347,7 @@ storage:
     - DEC-KUM-NAVIGATION-MEDIA-PROTOCOL-v2
     - DEC-KUM-DESKTOP-EGUI-v1
     - DEC-KUM-WEB-DOM-v1
+    - DEC-KUM-WINDOWS-QUIET-UIA-v1
   - document_id: DOC-KUM-ROADMAP-v1
     path: spec-modules/roadmap.md
     revision: 16
@@ -615,6 +616,12 @@ change_history:
   changed_anchor_ids:
   - TOPIC-KUM-CHOICES
   - TOPIC-KUM-ROADMAP
+- revision: 18
+  refinement_enrichment_ref: null
+  receipt_ref: null
+  archived_snapshot_ref: repo-governance/specification/spec-archive/SPEC-KUMIHIMO-v1/v17-r17-df4b3b0ac861
+  changed_anchor_ids:
+  - TOPIC-KUM-CHOICES
 design_status:
   accepted: Fifteen feature areas partially implemented at the proven headless boundary; all full requirement acceptances
     remain open.
