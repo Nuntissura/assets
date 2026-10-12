@@ -1,7 +1,7 @@
 schema_version: kumihimo.wp-state.v1
 wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
-generation: 11
-phase: active
+generation: 12
+phase: done
 owner: ROLE-KUM-CODER-02
 changed_files:
 - repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
@@ -73,6 +73,14 @@ proof:
   report_sha256: 07d205bb9f80fd333294e7b930dcb15e8c7b7290985275e12527ede066f98ac4
   observed: PASS_SCOPED_RUNTIME,12cases/threeactual logs/exact40blobs, bothR010/R006findingsresolved, noopenfindings;
     full99requirements preserved and realhost boundaries remainopen
+- kind: independent_outcome_publication_and_report_containment
+  source_revision: 80f59a0059a030c0b46c4646c57d19382680ed9a
+  outcome_revision: ec7c2fd3199450e0f1398cc32e85847d5e7b50c5
+  report_sha256: ebc552f62f39a470f76d522d1f1955d7ce1972e8c539983f44ce21dfb36833d9
+  observed: Evaluator independently verified A013/A014 and all20 outcome blobs, exact six-file Spec12 archive, complete99
+    requirement records preserved, Spec13/manual/matrix/topology scoped proof and unchanged39 runtime inputs. Lead
+    fresh origin and canonical report blob read matched frozen report; runtime12cases/check/example PASS_SCOPED_RUNTIME
+    contained; real host/GUI/physical/platform acceptance stays open.
 blockers: []
-next_action: Publish final Spec13/manual/topology/buildmatrix/eval outcome; independent exact origin/runtime-input
-  containment readback, then settle010done and rotatecoder02
+next_action: Scoped packet complete; rotate coder02 after009+010; prepare full WP011 contract/spec/readiness/cases
+  before any product admission

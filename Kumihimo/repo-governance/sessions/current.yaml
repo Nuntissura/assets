@@ -7,7 +7,7 @@ git:
   branch: codex/handpick
   remote: origin
   initial_revision: 822ea9af3816a76720f153a62bf82692555ae47c
-active_wp: WP-KUM-010-content-and-lifecycle-contracts-v1
+active_wp: WP-KUM-011-navigation-and-media-controls-v1
 operator_scope:
   implementation_resumed: true
   scope_expansion_authorized_this_session: true
@@ -19,19 +19,19 @@ roles:
     thread_id: 01a12cb6-3fe9-7613-a2dd-40e2c3f5f6bf
     model: gpt-6-luna
     reasoning: high
-    assignment: 010 final std-only readiness published; verify changed local lock closure after manifest freeze
+    assignment: WP010 local std-only graph verified; prepare WP011 dependency boundary and readiness before coding
   diagnostics:
     role_id: ROLE-KUM-DIAGNOSTICS
     thread_id: 01a12cb6-45f8-70c1-80db-e063c165e374
     model: gpt-6.1-sol
     reasoning: high
-    assignment: 010 report syntax failure resolved; await exact candidate failure/resource dispatch
+    assignment: WP010 recorded failures resolved; standby for exact WP011 failure/resource dispatch
   evaluation:
     role_id: ROLE-KUM-EVALUATION
     thread_id: 01a12cb6-4ba1-7cf2-a666-db7028973de0
     model: gpt-6.1-sol
     reasoning: high
-    assignment: 010 twelve frozen cases published; independent origin readback, then await one stabilized candidate
+    assignment: WP010 runtime/outcome independent PASS contained; prepare WP011 after fresh coder architecture/readiness
   coder:
     role_id: ROLE-KUM-CODER-02
     thread_id: 01a12cff-0f3f-72e3-b1ca-3befa8471878
@@ -39,8 +39,9 @@ roles:
     reasoning: high
     completed_implementation_wps:
     - WP-KUM-009-tabs-and-layout-recovery-v1
+    - WP-KUM-010-content-and-lifecycle-contracts-v1
     rotate_after: 2
-    assignment: WP010 admitted full published contract; second of two, product/source/tests/example only, no Cargo/lock/Git
+    assignment: Two implementation packets complete; source writes held, retire before WP011 coding
 communication:
   direct_team_messages_authorized: true
   evidence: Operator explicitly requested all role chats communicate on blockers and failures
@@ -58,8 +59,8 @@ tick:
   interval_minutes: 15
   mechanism: Codex thread heartbeat
   automation_id: kumihimo-dev-lead-tick
-next_action: Coder02 implement full010 bounded std-only content companion/public recording-host cases; no parallel
-  Cargo; lead resolves local lock after manifest exists and freezes/publishes candidate before focused proof
+next_action: Rotate coder02 to fresh coder03; prepare WP011 exact modular scope/current research/dependency readiness/frozen
+  evaluation before publishing full spec and coding admission
 role_history:
 - role_id: ROLE-KUM-CODER-01
   thread_id: 01a12cb6-50f8-7d81-ae4b-7c4cf75485fb

@@ -3,8 +3,7 @@ kind: derived_taskboard
 project_id: KUMIHIMO
 source: WP contracts and state
 counts:
-  done: 9
-  active: 1
+  done: 10
   planned: 4
 work_packets:
 - wp_id: WP-KUM-001-init-v1
@@ -76,11 +75,11 @@ work_packets:
   blockers: []
 - wp_id: WP-KUM-010-content-and-lifecycle-contracts-v1
   title: Implement replaceable content and lifecycle contracts
-  phase: active
+  phase: done
   contract_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-contract.yaml
   state_ref: repo-governance/work-packets/active/WP-KUM-010-content-and-lifecycle-contracts-v1/WP-KUM-010-content-and-lifecycle-contracts-v1-state.yaml
-  next_action: Publish final Spec13/manual/topology/buildmatrix/eval outcome; independent exact origin/runtime-input
-    containment readback, then settle010done and rotatecoder02
+  next_action: Scoped packet complete; rotate coder02 after009+010; prepare full WP011 contract/spec/readiness/cases
+    before any product admission
   blockers: []
 - wp_id: WP-KUM-011-navigation-and-media-controls-v1
   title: Implement host-fed navigation and background contracts
